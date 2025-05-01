@@ -253,10 +253,37 @@ server.setRequestHandler(CallToolRequestSchema, async (request, extra) => {
   try {
     // Exécuter le handler de l'outil
     const result = await tool.execute(args as ToolInput);
-    // Assurer que le champ "content" est un tableau dans la réponse
+    
+    // Formater correctement la réponse selon les attentes du SDK MCP
+    // Le champ "content" doit être un tableau d'objets avec une structure spécifique
+    let formattedContent;
+    
+    if (toolName === 'convert_web_to_markdown') {
+      // Pour l'outil convert_web_to_markdown, on crée un objet avec le contenu Markdown
+      formattedContent = [{
+        type: 'text',
+        text: result.result || '',
+        mime: 'text/markdown'
+      }];
+    } else if (toolName === 'access_jina_resource') {
+      // Pour l'outil access_jina_resource, on utilise le contenu et le type de contenu
+      formattedContent = [{
+        type: 'text',
+        text: result.result?.content || '',
+        mime: result.result?.contentType || 'text/markdown'
+      }];
+    } else {
+      // Par défaut, on crée un tableau avec un élément texte vide
+      formattedContent = [{
+        type: 'text',
+        text: '',
+        mime: 'text/plain'
+      }];
+    }
+    
     return {
       result: result.result,
-      content: Array.isArray(result.result) ? result.result : [result.result]
+      content: formattedContent
     };
   } catch (error: any) {
     console.error(`Erreur lors de l'exécution de l'outil ${toolName}:`, error);

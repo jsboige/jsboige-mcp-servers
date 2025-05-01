@@ -1,9 +1,12 @@
 #!/usr/bin/env node
-const { spawn } = require('child_process');
-const fs = require('fs/promises');
-const path = require('path');
+import { spawn } from 'child_process';
+import * as fs from 'fs/promises';
+import * as path from 'path';
+import { fileURLToPath } from 'url';
 
-// Le __dirname est déjà disponible en CommonJS
+// Obtenir le chemin du répertoire actuel
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
 
 // Chemin vers le dossier de test temporaire
 const TEST_DIR = path.join(__dirname, 'test-temp');
@@ -29,22 +32,29 @@ class McpClient {
 
     // Écouter les données du serveur
     this.serverProcess.stdout.on('data', (data) => {
-      const messages = data.toString().split('\n').filter(Boolean);
+      const rawData = data.toString();
+      console.log(`${COLORS.blue}[Serveur stdout raw]: ${rawData}${COLORS.reset}`);
+      
+      const messages = rawData.split('\n').filter(Boolean);
       for (const message of messages) {
         try {
+          console.log(`${COLORS.blue}[Serveur message]: ${message}${COLORS.reset}`);
           const response = JSON.parse(message);
+          console.log(`${COLORS.blue}[Serveur parsed]: ${JSON.stringify(response, null, 2)}${COLORS.reset}`);
+          
           if (response.id && this.pendingRequests.has(response.id)) {
             const { resolve, reject } = this.pendingRequests.get(response.id);
             this.pendingRequests.delete(response.id);
             
             if (response.error) {
+              console.log(`${COLORS.red}[Erreur serveur]: ${JSON.stringify(response.error, null, 2)}${COLORS.reset}`);
               reject(new Error(response.error.message));
             } else {
               resolve(response.result);
             }
           }
         } catch (error) {
-          console.error('Erreur lors du parsing de la réponse:', error);
+          console.error(`${COLORS.red}Erreur lors du parsing de la réponse: ${error.message}${COLORS.reset}`);
         }
       }
     });
@@ -70,22 +80,70 @@ class McpClient {
         params,
       };
 
+      console.log(`${COLORS.magenta}[Client requête]: ${JSON.stringify(request, null, 2)}${COLORS.reset}`);
       this.pendingRequests.set(id, { resolve, reject });
       this.serverProcess.stdin.write(JSON.stringify(request) + '\n');
     });
   }
 
-  // Lister les outils disponibles
+  // Essayer différentes méthodes pour trouver celle qui fonctionne
+  async tryMethods() {
+    const methods = [
+      'list_tools',
+      'mcp.list_tools',
+      'mcp.listTools',
+      'listTools',
+      'ListTools',
+      'list-tools',
+      'tools.list'
+    ];
+    
+    for (const method of methods) {
+      console.log(`${COLORS.cyan}Essai de la méthode: ${method}${COLORS.reset}`);
+      try {
+        const result = await this.sendRequest(method, {});
+        console.log(`${COLORS.green}✓ Méthode ${method} a fonctionné!${COLORS.reset}`);
+        return result;
+      } catch (error) {
+        console.log(`${COLORS.red}✗ Méthode ${method} a échoué: ${error.message}${COLORS.reset}`);
+      }
+    }
+    
+    throw new Error("Aucune méthode n'a fonctionné");
+  }
+
+  // Lister les outils disponibles (utilise la méthode qui fonctionne)
   async listTools() {
-    return this.sendRequest('mcp.listTools', {});
+    return this.tryMethods();
   }
 
   // Appeler un outil
   async callTool(name, args) {
-    return this.sendRequest('mcp.callTool', {
-      name,
-      arguments: args,
-    });
+    const methods = [
+      'call_tool',
+      'mcp.call_tool',
+      'mcp.callTool',
+      'callTool',
+      'CallTool',
+      'call-tool',
+      'tools.call'
+    ];
+    
+    for (const method of methods) {
+      console.log(`${COLORS.cyan}Essai de la méthode: ${method}${COLORS.reset}`);
+      try {
+        const result = await this.sendRequest(method, {
+          name,
+          arguments: args,
+        });
+        console.log(`${COLORS.green}✓ Méthode ${method} a fonctionné!${COLORS.reset}`);
+        return result;
+      } catch (error) {
+        console.log(`${COLORS.red}✗ Méthode ${method} a échoué: ${error.message}${COLORS.reset}`);
+      }
+    }
+    
+    throw new Error("Aucune méthode n'a fonctionné pour appeler l'outil");
   }
 
   // Fermer le client
