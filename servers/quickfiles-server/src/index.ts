@@ -10,18 +10,39 @@ import {
 import * as fs from 'fs/promises';
 import * as path from 'path';
 
-// Nouvelle interface pour les extraits de fichiers
+/**
+ * Interface représentant une plage de lignes pour les extraits de fichiers
+ *
+ * @interface LineRange
+ * @property {number} start - Numéro de la première ligne de l'extrait (commençant à 1)
+ * @property {number} end - Numéro de la dernière ligne de l'extrait (incluse)
+ */
 interface LineRange {
   start: number;
   end: number;
 }
 
+/**
+ * Interface représentant un fichier avec des extraits spécifiques à lire
+ *
+ * @interface FileWithExcerpts
+ * @property {string} path - Chemin du fichier à lire
+ * @property {LineRange[]} [excerpts] - Liste des extraits à lire dans le fichier (optionnel)
+ */
 interface FileWithExcerpts {
   path: string;
   excerpts?: LineRange[];
 }
 
-// Interface modifiée pour prendre en charge les extraits
+/**
+ * Interface pour les arguments de la méthode read_multiple_files
+ *
+ * @interface ReadMultipleFilesArgs
+ * @property {(string[] | FileWithExcerpts[])} paths - Tableau des chemins de fichiers à lire (format simple ou avec extraits)
+ * @property {boolean} [show_line_numbers] - Afficher les numéros de ligne (optionnel, défaut: false)
+ * @property {number} [max_lines_per_file] - Nombre maximum de lignes à afficher par fichier (optionnel, défaut: 2000)
+ * @property {number} [max_total_lines] - Nombre maximum total de lignes à afficher pour tous les fichiers (optionnel, défaut: 5000)
+ */
 interface ReadMultipleFilesArgs {
   paths: string[] | FileWithExcerpts[];
   show_line_numbers?: boolean;
@@ -29,39 +50,83 @@ interface ReadMultipleFilesArgs {
   max_total_lines?: number;
 }
 
-// Interface pour le listage de répertoire
+/**
+ * Interface représentant un répertoire à lister avec des options
+ *
+ * @interface DirectoryToList
+ * @property {string} path - Chemin du répertoire à lister
+ * @property {boolean} [recursive] - Lister récursivement les sous-répertoires (optionnel, défaut: true)
+ */
 interface DirectoryToList {
   path: string;
   recursive?: boolean;
 }
 
+/**
+ * Interface pour les arguments de la méthode list_directory_contents
+ *
+ * @interface ListDirectoryContentsArgs
+ * @property {(string[] | DirectoryToList[])} paths - Tableau des chemins de répertoires à lister (format simple ou avec options)
+ * @property {number} [max_lines] - Nombre maximum de lignes à afficher dans la sortie (optionnel, défaut: 2000)
+ */
 interface ListDirectoryContentsArgs {
   paths: string[] | DirectoryToList[];
   max_lines?: number;
 }
 
-// Interface pour la suppression de fichiers
+/**
+ * Interface pour les arguments de la méthode delete_files
+ *
+ * @interface DeleteFilesArgs
+ * @property {string[]} paths - Tableau des chemins de fichiers à supprimer
+ */
 interface DeleteFilesArgs {
   paths: string[];
 }
 
-// Interfaces pour l'édition multiple de fichiers
+/**
+ * Interface représentant un diff à appliquer à un fichier
+ *
+ * @interface FileDiff
+ * @property {string} search - Texte à rechercher
+ * @property {string} replace - Texte de remplacement
+ * @property {number} [start_line] - Numéro de ligne où commencer la recherche (optionnel)
+ */
 interface FileDiff {
   search: string;
   replace: string;
   start_line?: number;
 }
 
+/**
+ * Interface représentant un fichier à éditer avec ses diffs
+ *
+ * @interface FileEdit
+ * @property {string} path - Chemin du fichier à éditer
+ * @property {FileDiff[]} diffs - Liste des diffs à appliquer au fichier
+ */
 interface FileEdit {
   path: string;
   diffs: FileDiff[];
 }
 
+/**
+ * Interface pour les arguments de la méthode edit_multiple_files
+ *
+ * @interface EditMultipleFilesArgs
+ * @property {FileEdit[]} files - Tableau des fichiers à éditer avec leurs diffs
+ */
 interface EditMultipleFilesArgs {
   files: FileEdit[];
 }
 
-// Fonction de validation mise à jour pour les arguments de read_multiple_files
+/**
+ * Valide les arguments de la méthode read_multiple_files
+ *
+ * @function isValidReadMultipleFilesArgs
+ * @param {any} args - Arguments à valider
+ * @returns {boolean} - true si les arguments sont valides, false sinon
+ */
 const isValidReadMultipleFilesArgs = (args: any): args is ReadMultipleFilesArgs => {
   if (typeof args !== 'object' || args === null) return false;
   
@@ -100,7 +165,13 @@ const isValidReadMultipleFilesArgs = (args: any): args is ReadMultipleFilesArgs 
   return true;
 };
 
-// Fonction de validation pour les arguments de list_directory_contents
+/**
+ * Valide les arguments de la méthode list_directory_contents
+ *
+ * @function isValidListDirectoryContentsArgs
+ * @param {any} args - Arguments à valider
+ * @returns {boolean} - true si les arguments sont valides, false sinon
+ */
 const isValidListDirectoryContentsArgs = (args: any): args is ListDirectoryContentsArgs => {
   if (typeof args !== 'object' || args === null) return false;
   
@@ -127,7 +198,13 @@ const isValidListDirectoryContentsArgs = (args: any): args is ListDirectoryConte
   return true;
 };
 
-// Fonction de validation pour les arguments de delete_files
+/**
+ * Valide les arguments de la méthode delete_files
+ *
+ * @function isValidDeleteFilesArgs
+ * @param {any} args - Arguments à valider
+ * @returns {boolean} - true si les arguments sont valides, false sinon
+ */
 const isValidDeleteFilesArgs = (args: any): args is DeleteFilesArgs => {
   if (typeof args !== 'object' || args === null) return false;
   
@@ -142,7 +219,13 @@ const isValidDeleteFilesArgs = (args: any): args is DeleteFilesArgs => {
   return true;
 };
 
-// Fonction de validation pour les arguments de edit_multiple_files
+/**
+ * Valide les arguments de la méthode edit_multiple_files
+ *
+ * @function isValidEditMultipleFilesArgs
+ * @param {any} args - Arguments à valider
+ * @returns {boolean} - true si les arguments sont valides, false sinon
+ */
 const isValidEditMultipleFilesArgs = (args: any): args is EditMultipleFilesArgs => {
   if (typeof args !== 'object' || args === null) return false;
   
@@ -169,9 +252,23 @@ const isValidEditMultipleFilesArgs = (args: any): args is EditMultipleFilesArgs 
   return true;
 };
 
+/**
+ * Classe principale du serveur QuickFiles
+ *
+ * Cette classe implémente un serveur MCP qui fournit des méthodes pour lire rapidement
+ * le contenu de répertoires et fichiers multiples, ainsi que pour supprimer et éditer des fichiers.
+ *
+ * @class QuickFilesServer
+ */
 class QuickFilesServer {
+  /** Instance du serveur MCP */
   private server: Server;
 
+  /**
+   * Crée une instance du serveur QuickFiles
+   *
+   * @constructor
+   */
   constructor() {
     this.server = new Server(
       {
@@ -195,6 +292,12 @@ class QuickFilesServer {
     });
   }
 
+  /**
+   * Configure les gestionnaires d'outils MCP
+   *
+   * @private
+   * @method setupToolHandlers
+   */
   private setupToolHandlers() {
     this.server.setRequestHandler(ListToolsRequestSchema, async () => ({
       tools: [
@@ -397,6 +500,15 @@ class QuickFilesServer {
     });
   }
 
+  /**
+   * Gère les requêtes pour l'outil read_multiple_files
+   *
+   * @private
+   * @method handleReadMultipleFiles
+   * @param {any} request - Requête MCP
+   * @returns {Promise<any>} - Réponse formatée avec le contenu des fichiers
+   * @throws {McpError} - Erreur si les paramètres sont invalides
+   */
   private async handleReadMultipleFiles(request: any) {
     if (!isValidReadMultipleFilesArgs(request.params.arguments)) {
       throw new McpError(
@@ -542,6 +654,15 @@ class QuickFilesServer {
     }
   }
 
+  /**
+   * Gère les requêtes pour l'outil list_directory_contents
+   *
+   * @private
+   * @method handleListDirectoryContents
+   * @param {any} request - Requête MCP
+   * @returns {Promise<any>} - Réponse formatée avec le contenu des répertoires
+   * @throws {McpError} - Erreur si les paramètres sont invalides
+   */
   private async handleListDirectoryContents(request: any) {
     if (!isValidListDirectoryContentsArgs(request.params.arguments)) {
       throw new McpError(
@@ -627,6 +748,15 @@ class QuickFilesServer {
     }
   }
 
+  /**
+   * Formate le contenu d'un répertoire pour l'affichage
+   *
+   * @private
+   * @method formatDirectoryContents
+   * @param {string} dirPath - Chemin du répertoire
+   * @param {any[]} contents - Contenu du répertoire
+   * @returns {string} - Contenu formaté
+   */
   private formatDirectoryContents(dirPath: string, contents: any[]): string {
     let result = `## Répertoire: ${dirPath}\n`;
     
@@ -655,6 +785,14 @@ class QuickFilesServer {
     return result;
   }
 
+  /**
+   * Formate la taille d'un fichier en unités lisibles (B, KB, MB, GB)
+   *
+   * @private
+   * @method formatFileSize
+   * @param {number} bytes - Taille en octets
+   * @returns {string} - Taille formatée
+   */
   private formatFileSize(bytes: number): string {
     if (bytes < 1024) return `${bytes} B`;
     if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
@@ -662,6 +800,15 @@ class QuickFilesServer {
     return `${(bytes / (1024 * 1024 * 1024)).toFixed(1)} GB`;
   }
 
+  /**
+   * Liste récursivement le contenu d'un répertoire
+   *
+   * @private
+   * @method listDirectoryContentsRecursive
+   * @param {string} dirPath - Chemin du répertoire
+   * @param {boolean} recursive - Lister récursivement les sous-répertoires
+   * @returns {Promise<any[]>} - Contenu du répertoire
+   */
   private async listDirectoryContentsRecursive(dirPath: string, recursive: boolean): Promise<any> {
     const entries = await fs.readdir(dirPath, { withFileTypes: true });
     const result: any[] = [];
@@ -712,6 +859,15 @@ class QuickFilesServer {
     return result;
   }
 
+  /**
+   * Gère les requêtes pour l'outil delete_files
+   *
+   * @private
+   * @method handleDeleteFiles
+   * @param {any} request - Requête MCP
+   * @returns {Promise<any>} - Réponse formatée avec le résultat de la suppression
+   * @throws {McpError} - Erreur si les paramètres sont invalides
+   */
   private async handleDeleteFiles(request: any) {
     if (!isValidDeleteFilesArgs(request.params.arguments)) {
       throw new McpError(
@@ -775,6 +931,15 @@ class QuickFilesServer {
     }
   }
 
+  /**
+   * Gère les requêtes pour l'outil edit_multiple_files
+   *
+   * @private
+   * @method handleEditMultipleFiles
+   * @param {any} request - Requête MCP
+   * @returns {Promise<any>} - Réponse formatée avec le résultat de l'édition
+   * @throws {McpError} - Erreur si les paramètres sont invalides
+   */
   private async handleEditMultipleFiles(request: any) {
     if (!isValidEditMultipleFilesArgs(request.params.arguments)) {
       throw new McpError(
@@ -880,6 +1045,12 @@ class QuickFilesServer {
     }
   }
 
+  /**
+   * Démarre le serveur MCP sur stdio
+   *
+   * @method run
+   * @returns {Promise<void>}
+   */
   async run() {
     const transport = new StdioServerTransport();
     await this.server.connect(transport);
