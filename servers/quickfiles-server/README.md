@@ -10,11 +10,15 @@ Ce serveur MCP fournit des méthodes pour lire rapidement le contenu de réperto
 - **Limitation de lignes** : option pour limiter le nombre de lignes lues par fichier
 - **Listage de répertoires** : liste le contenu des répertoires avec des informations détaillées (taille, type, nombre de lignes pour les fichiers texte)
 - **Navigation récursive** : option pour lister récursivement les sous-répertoires
+- **Suppression de fichiers** : supprime plusieurs fichiers en une seule opération
+- **Édition multiple de fichiers** : applique des modifications à plusieurs fichiers en une seule opération
 
 ## Outils MCP exposés
 
 1. `read_multiple_files` : Lit plusieurs fichiers en une seule requête avec numérotation de lignes optionnelle et extraits de fichiers
 2. `list_directory_contents` : Liste tous les fichiers et répertoires sous un chemin donné, avec la taille des fichiers
+3. `delete_files` : Supprime une liste de fichiers en une seule opération
+4. `edit_multiple_files` : Édite plusieurs fichiers en une seule opération en appliquant des diffs
 
 ## Prérequis
 
@@ -45,6 +49,20 @@ Pour démarrer le serveur MCP QuickFiles :
 npm start
 ```
 
+Pour exécuter les tests :
+
+```bash
+# Exécuter tous les tests (Jest + tests legacy)
+npm run test:all
+
+# Exécuter uniquement les tests Jest
+npm test
+
+# Exécuter les tests legacy
+npm run test:legacy
+npm run test:simple
+```
+
 ## Exemples d'utilisation
 
 ### Lecture de plusieurs fichiers
@@ -56,7 +74,9 @@ const result = await client.callTool('quickfiles-server', 'read_multiple_files',
     'chemin/vers/fichier1.txt',
     'chemin/vers/fichier2.txt'
   ],
-  show_line_numbers: true
+  show_line_numbers: true,
+  max_lines_per_file: 1000,
+  max_total_lines: 2000
 });
 ```
 
@@ -88,57 +108,443 @@ const result = await client.callTool('quickfiles-server', 'list_directory_conten
       path: 'chemin/vers/repertoire',
       recursive: true  // Lister récursivement
     }
+  ],
+  max_lines: 1000
+});
+```
+
+### Suppression de fichiers
+
+```javascript
+// Exemple d'appel à l'outil delete_files
+const result = await client.callTool('quickfiles-server', 'delete_files', {
+  paths: [
+    'chemin/vers/fichier1.txt',
+    'chemin/vers/fichier2.txt'
   ]
 });
 ```
 
-## Détails des outils
+### Édition de fichiers
+
+```javascript
+// Exemple d'appel à l'outil edit_multiple_files
+const result = await client.callTool('quickfiles-server', 'edit_multiple_files', {
+  files: [
+    {
+      path: 'chemin/vers/fichier.txt',
+      diffs: [
+        {
+          search: 'texte à remplacer',
+          replace: 'nouveau texte'
+        },
+        {
+          search: 'autre texte',
+          replace: 'autre remplacement',
+          start_line: 10  // Commencer la recherche à partir de la ligne 10
+        }
+      ]
+    }
+  ]
+});
+```
+
+## Schémas d'entrée/sortie détaillés
 
 ### read_multiple_files
 
-Lit plusieurs fichiers en une seule requête avec numérotation de lignes optionnelle et extraits de fichiers.
+#### Schéma d'entrée
 
-**Paramètres:**
-- `paths`: Tableau des chemins de fichiers à lire (format simple ou avec extraits)
-- `show_line_numbers`: Afficher les numéros de ligne (optionnel, défaut: false)
-- `max_lines_per_file`: Nombre maximum de lignes à afficher par fichier (optionnel)
+```json
+{
+  "type": "object",
+  "properties": {
+    "paths": {
+      "oneOf": [
+        {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Tableau des chemins de fichiers à lire"
+        },
+        {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "path": {
+                "type": "string",
+                "description": "Chemin du fichier à lire"
+              },
+              "excerpts": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "properties": {
+                    "start": {
+                      "type": "number",
+                      "description": "Numéro de la première ligne de l'extrait (commençant à 1)"
+                    },
+                    "end": {
+                      "type": "number",
+                      "description": "Numéro de la dernière ligne de l'extrait (incluse)"
+                    }
+                  },
+                  "required": ["start", "end"]
+                },
+                "description": "Liste des extraits à lire dans le fichier"
+              }
+            },
+            "required": ["path"]
+          },
+          "description": "Tableau des fichiers avec extraits à lire"
+        }
+      ],
+      "description": "Chemins des fichiers à lire (format simple ou avec extraits)"
+    },
+    "show_line_numbers": {
+      "type": "boolean",
+      "description": "Afficher les numéros de ligne",
+      "default": false
+    },
+    "max_lines_per_file": {
+      "type": "number",
+      "description": "Nombre maximum de lignes à afficher par fichier",
+      "default": 2000
+    },
+    "max_total_lines": {
+      "type": "number",
+      "description": "Nombre maximum total de lignes à afficher pour tous les fichiers",
+      "default": 5000
+    }
+  },
+  "required": ["paths"]
+}
+```
 
-**Format de paths:**
-- Format simple: `['fichier1.txt', 'fichier2.txt']`
-- Format avec extraits:
-```javascript
-[
-  {
-    path: 'fichier1.txt',
-    excerpts: [
-      { start: 10, end: 20 },
-      { start: 50, end: 60 }
-    ]
-  }
-]
+#### Schéma de sortie
+
+```json
+{
+  "type": "object",
+  "properties": {
+    "content": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "type": {
+            "type": "string",
+            "enum": ["text"]
+          },
+          "text": {
+            "type": "string",
+            "description": "Contenu formaté des fichiers lus"
+          }
+        },
+        "required": ["type", "text"]
+      }
+    },
+    "isError": {
+      "type": "boolean",
+      "description": "Indique si une erreur globale s'est produite"
+    }
+  },
+  "required": ["content"]
+}
 ```
 
 ### list_directory_contents
 
-Liste tous les fichiers et répertoires sous un chemin donné, avec la taille des fichiers.
+#### Schéma d'entrée
 
-**Paramètres:**
-- `paths`: Tableau des chemins de répertoires à lister (format simple ou avec options)
-
-**Format de paths:**
-- Format simple: `['repertoire1', 'repertoire2']`
-- Format avec options:
-```javascript
-[
-  {
-    path: 'repertoire1',
-    recursive: true  // ou false pour lister uniquement le niveau supérieur
-  }
-]
+```json
+{
+  "type": "object",
+  "properties": {
+    "paths": {
+      "oneOf": [
+        {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Tableau des chemins de répertoires à lister"
+        },
+        {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "path": {
+                "type": "string",
+                "description": "Chemin du répertoire à lister"
+              },
+              "recursive": {
+                "type": "boolean",
+                "description": "Lister récursivement les sous-répertoires",
+                "default": true
+              }
+            },
+            "required": ["path"]
+          },
+          "description": "Tableau des répertoires à lister avec options"
+        }
+      ],
+      "description": "Chemins des répertoires à lister (format simple ou avec options)"
+    },
+    "max_lines": {
+      "type": "number",
+      "description": "Nombre maximum de lignes à afficher dans la sortie",
+      "default": 2000
+    }
+  },
+  "required": ["paths"]
+}
 ```
+
+#### Schéma de sortie
+
+```json
+{
+  "type": "object",
+  "properties": {
+    "content": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "type": {
+            "type": "string",
+            "enum": ["text"]
+          },
+          "text": {
+            "type": "string",
+            "description": "Contenu formaté du listage des répertoires"
+          }
+        },
+        "required": ["type", "text"]
+      }
+    },
+    "isError": {
+      "type": "boolean",
+      "description": "Indique si une erreur globale s'est produite"
+    }
+  },
+  "required": ["content"]
+}
+```
+
+### delete_files
+
+#### Schéma d'entrée
+
+```json
+{
+  "type": "object",
+  "properties": {
+    "paths": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      },
+      "description": "Tableau des chemins de fichiers à supprimer"
+    }
+  },
+  "required": ["paths"]
+}
+```
+
+#### Schéma de sortie
+
+```json
+{
+  "type": "object",
+  "properties": {
+    "content": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "type": {
+            "type": "string",
+            "enum": ["text"]
+          },
+          "text": {
+            "type": "string",
+            "description": "Résultat de l'opération de suppression pour chaque fichier"
+          }
+        },
+        "required": ["type", "text"]
+      }
+    },
+    "isError": {
+      "type": "boolean",
+      "description": "Indique si une erreur globale s'est produite"
+    }
+  },
+  "required": ["content"]
+}
+```
+
+### edit_multiple_files
+
+#### Schéma d'entrée
+
+```json
+{
+  "type": "object",
+  "properties": {
+    "files": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "path": {
+            "type": "string",
+            "description": "Chemin du fichier à éditer"
+          },
+          "diffs": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "search": {
+                  "type": "string",
+                  "description": "Texte à rechercher"
+                },
+                "replace": {
+                  "type": "string",
+                  "description": "Texte de remplacement"
+                },
+                "start_line": {
+                  "type": "number",
+                  "description": "Numéro de ligne où commencer la recherche (optionnel)"
+                }
+              },
+              "required": ["search", "replace"]
+            },
+            "description": "Liste des diffs à appliquer au fichier"
+          }
+        },
+        "required": ["path", "diffs"]
+      },
+      "description": "Tableau des fichiers à éditer avec leurs diffs"
+    }
+  },
+  "required": ["files"]
+}
+```
+
+#### Schéma de sortie
+
+```json
+{
+  "type": "object",
+  "properties": {
+    "content": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "type": {
+            "type": "string",
+            "enum": ["text"]
+          },
+          "text": {
+            "type": "string",
+            "description": "Résultat de l'opération d'édition pour chaque fichier"
+          }
+        },
+        "required": ["type", "text"]
+      }
+    },
+    "isError": {
+      "type": "boolean",
+      "description": "Indique si une erreur globale s'est produite"
+    }
+  },
+  "required": ["content"]
+}
+```
+
+## Codes d'erreur
+
+Le serveur QuickFiles utilise les codes d'erreur standard du protocole MCP :
+
+| Code | Nom | Description |
+|------|-----|-------------|
+| -32700 | ParseError | Erreur d'analyse JSON |
+| -32600 | InvalidRequest | La requête n'est pas valide |
+| -32601 | MethodNotFound | La méthode demandée n'existe pas |
+| -32602 | InvalidParams | Les paramètres fournis sont invalides |
+| -32603 | InternalError | Erreur interne du serveur |
+| -32000 | ServerError | Erreur générique du serveur |
+
+### Erreurs spécifiques à QuickFiles
+
+En plus des codes d'erreur standard, les messages d'erreur suivants peuvent être retournés :
+
+| Situation | Message d'erreur |
+|-----------|-----------------|
+| Fichier inexistant | `Erreur lors de la lecture du fichier: ENOENT: no such file or directory, open '...'` |
+| Permission insuffisante | `Erreur lors de la lecture du fichier: EACCES: permission denied, open '...'` |
+| Répertoire inexistant | `Erreur lors du listage du répertoire: ENOENT: no such file or directory, scandir '...'` |
+| Chemin n'est pas un répertoire | `Le chemin spécifié n'est pas un répertoire: ...` |
+| Paramètres invalides | `Paramètres invalides pour [nom_outil]` |
+
+## Guide de dépannage
+
+### Problèmes courants et solutions
+
+#### Erreur "ENOENT: no such file or directory"
+
+**Problème** : Le fichier ou répertoire spécifié n'existe pas.
+
+**Solution** :
+- Vérifiez que le chemin est correct et que le fichier existe
+- Utilisez des chemins absolus si nécessaire
+- Vérifiez les permissions du répertoire parent
+
+#### Erreur "EACCES: permission denied"
+
+**Problème** : Permissions insuffisantes pour accéder au fichier ou répertoire.
+
+**Solution** :
+- Vérifiez les permissions du fichier/répertoire
+- Exécutez le serveur avec des privilèges suffisants
+- Modifiez les permissions du fichier/répertoire
+
+#### Erreur "Paramètres invalides"
+
+**Problème** : Les paramètres fournis ne correspondent pas au schéma attendu.
+
+**Solution** :
+- Vérifiez que tous les paramètres requis sont fournis
+- Vérifiez que les types de données sont corrects
+- Consultez la documentation pour le format exact des paramètres
+
+#### Problèmes de performance avec de grands fichiers
+
+**Problème** : Lenteur ou consommation excessive de mémoire lors de la lecture de fichiers volumineux.
+
+**Solution** :
+- Utilisez le paramètre `max_lines_per_file` pour limiter le nombre de lignes lues
+- Utilisez des extraits (`excerpts`) pour lire uniquement les parties nécessaires
+- Divisez les opérations en plusieurs requêtes plus petites
+
+#### Problèmes d'encodage de caractères
+
+**Problème** : Caractères incorrects ou corrompus dans la sortie.
+
+**Solution** :
+- Assurez-vous que les fichiers sont encodés en UTF-8
+- Vérifiez que le client gère correctement l'encodage UTF-8
 
 ## Remarques importantes
 
-- Ce serveur MCP accède aux fichiers locaux, assurez-vous donc qu'il dispose des permissions nécessaires pour lire les fichiers et répertoires demandés.
+- Ce serveur MCP accède aux fichiers locaux, assurez-vous donc qu'il dispose des permissions nécessaires pour lire, modifier ou supprimer les fichiers et répertoires demandés.
 - Pour des raisons de performance, la lecture de fichiers très volumineux peut être limitée. Utilisez les extraits ou `max_lines_per_file` pour ces cas.
 - Le comptage de lignes est effectué uniquement pour les fichiers texte reconnus par leur extension et de taille inférieure à 10 Mo.
+- Les opérations d'édition et de suppression sont irréversibles. Assurez-vous de sauvegarder vos fichiers importants avant d'utiliser ces fonctionnalités.
