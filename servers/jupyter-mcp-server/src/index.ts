@@ -111,9 +111,9 @@ class JupyterMcpServer {
     try {
       console.log('Initialisation du serveur MCP Jupyter...');
       
-      // En mode test, ne pas initialiser les services Jupyter
-      // await initializeJupyterServices();
-      console.log('Mode test: services Jupyter non initialisés');
+      // Initialiser les services Jupyter
+      await initializeJupyterServices();
+      console.log('Services Jupyter initialisés avec succès');
       
       const transport = new StdioServerTransport();
       await this.server.connect(transport);

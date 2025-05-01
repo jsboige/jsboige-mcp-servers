@@ -1,6 +1,8 @@
 {
   "name": "jinavigator-server",
   "version": "1.0.0",
+  "description": "MCP server for converting web pages to Markdown using Jina API",
+  "type": "module",
   "main": "dist/index.js",
   "scripts": {
     "build": "tsc",
@@ -13,10 +15,14 @@
     "test:error": "jest error-handling.test.js",
     "test:perf": "jest performance.test.js"
   },
-  "keywords": [],
+  "keywords": [
+    "mcp",
+    "jina",
+    "markdown",
+    "web"
+  ],
   "author": "",
-  "license": "ISC",
-  "description": "",
+  "license": "MIT",
   "devDependencies": {
     "@types/jest": "^29.5.12",
     "@types/node": "^22.15.3",
