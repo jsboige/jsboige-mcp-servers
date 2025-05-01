@@ -54,6 +54,36 @@ const convertWebToMarkdownSchema = {
   required: ['url']
 };
 
+// Définition du schéma d'entrée pour l'outil de conversion multi-URLs
+const convertMultipleWebsToMarkdownSchema = {
+  type: "object" as const,
+  properties: {
+    urls: {
+      type: "array",
+      items: {
+        type: "object",
+        properties: {
+          url: {
+            type: "string",
+            description: 'URL de la page web à convertir en Markdown'
+          },
+          start_line: {
+            type: "number",
+            description: 'Ligne de début pour extraire une partie spécifique du contenu (optionnel)'
+          },
+          end_line: {
+            type: "number",
+            description: 'Ligne de fin pour extraire une partie spécifique du contenu (optionnel)'
+          }
+        },
+        required: ['url']
+      },
+      description: 'Liste des URLs à convertir en Markdown avec leurs paramètres de bornage'
+    }
+  },
+  required: ['urls']
+};
+
 // Création du serveur MCP
 const server = new Server(
   {
@@ -216,6 +246,54 @@ const accessJinaResourceTool: JinaTool = {
   }
 };
 
+// Définition de l'outil de conversion multi-URLs
+const convertMultipleWebsToMarkdownTool: JinaTool = {
+  name: 'multi_convert',
+  description: 'Convertit plusieurs pages web en Markdown en une seule requête',
+  inputSchema: convertMultipleWebsToMarkdownSchema,
+  execute: async (input: ToolInput): Promise<ToolOutput> => {
+    try {
+      const { urls } = input as {
+        urls: Array<{
+          url: string;
+          start_line?: number;
+          end_line?: number;
+        }>;
+      };
+      
+      // Traitement de chaque URL en parallèle
+      const results = await Promise.all(
+        urls.map(async ({ url, start_line, end_line }) => {
+          try {
+            const markdown = await convertUrlToMarkdown(url, start_line, end_line);
+            return {
+              url,
+              success: true,
+              content: markdown
+            };
+          } catch (error) {
+            return {
+              url,
+              success: false,
+              error: (error as Error).message
+            };
+          }
+        })
+      );
+      
+      return {
+        result: results
+      };
+    } catch (error) {
+      return {
+        error: {
+          message: `Erreur lors de la conversion multiple: ${(error as Error).message}`
+        }
+      };
+    }
+  }
+};
+
 // Configuration du serveur
 server.setRequestHandler(ListToolsRequestSchema, async () => {
   const tools = [
@@ -228,6 +306,11 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
       name: accessJinaResourceTool.name,
       description: accessJinaResourceTool.description,
       inputSchema: accessJinaResourceTool.inputSchema
+    },
+    {
+      name: convertMultipleWebsToMarkdownTool.name,
+      description: convertMultipleWebsToMarkdownTool.description,
+      inputSchema: convertMultipleWebsToMarkdownTool.inputSchema
     }
   ];
   
@@ -240,7 +323,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request, extra) => {
   const args = request.params.arguments || {};
   
   // Trouver l'outil correspondant
-  const allTools = [convertWebToMarkdownTool, accessJinaResourceTool];
+  const allTools = [convertWebToMarkdownTool, accessJinaResourceTool, convertMultipleWebsToMarkdownTool];
   const tool = allTools.find(t => t.name === toolName) as JinaTool;
   
   if (!tool) {
@@ -271,6 +354,14 @@ server.setRequestHandler(CallToolRequestSchema, async (request, extra) => {
         type: 'text',
         text: result.result?.content || '',
         mime: result.result?.contentType || 'text/markdown'
+      }];
+    } else if (toolName === 'multi_convert') {
+      // Pour l'outil multi_convert, on crée un objet JSON formaté
+      const resultsText = JSON.stringify(result.result, null, 2);
+      formattedContent = [{
+        type: 'text',
+        text: resultsText,
+        mime: 'application/json'
       }];
     } else {
       // Par défaut, on crée un tableau avec un élément texte vide
