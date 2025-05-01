@@ -7,14 +7,37 @@
   "scripts": {
     "build": "tsc",
     "start": "node build/index.js",
-    "test": "node test-quickfiles.js",
-    "test:simple": "node test-quickfiles-simple.js"
+    "test": "node --experimental-vm-modules node_modules/jest/bin/jest.js",
+    "test:legacy": "node test-quickfiles.js",
+    "test:simple": "node test-quickfiles-simple.js",
+    "test:all": "npm run test && npm run test:legacy && npm run test:simple"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "latest"
   },
   "devDependencies": {
+    "@types/jest": "^29.5.12",
     "@types/node": "^22.15.3",
+    "jest": "^29.7.0",
+    "mock-fs": "^5.2.0",
+    "ts-jest": "^29.1.2",
     "typescript": "^5.0.0"
+  },
+  "jest": {
+    "transform": {},
+    "extensionsToTreatAsEsm": [".ts", ".js"],
+    "moduleNameMapper": {
+      "^(\\.{1,2}/.*)\\.js$": "$1"
+    },
+    "testEnvironment": "node",
+    "testMatch": ["**/__tests__/**/*.test.js", "**/__tests__/**/*.test.ts"],
+    "collectCoverage": true,
+    "coverageDirectory": "coverage",
+    "coverageReporters": ["text", "lcov"],
+    "collectCoverageFrom": [
+      "build/**/*.js",
+      "!**/node_modules/**",
+      "!**/__tests__/**"
+    ]
   }
 }
