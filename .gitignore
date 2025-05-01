@@ -25,6 +25,11 @@ yarn-error.log*
 dist/
 build/
 out/
+# Exception pour le serveur quickfiles minimal
+!servers/quickfiles-server/build/index.js
+
+# Node.js portable
+servers/quickfiles-server/node-portable/
 
 # Fichiers système
 .DS_Store

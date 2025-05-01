@@ -13,7 +13,8 @@
     "test:all": "npm run test && npm run test:legacy && npm run test:simple"
   },
   "dependencies": {
-    "@modelcontextprotocol/sdk": "latest"
+    "@modelcontextprotocol/sdk": "latest",
+    "jsboige-mcp-servers": "file:../.."
   },
   "devDependencies": {
     "@types/jest": "^29.5.12",
@@ -25,15 +26,24 @@
   },
   "jest": {
     "transform": {},
-    "extensionsToTreatAsEsm": [".ts", ".js"],
+    "extensionsToTreatAsEsm": [
+      ".ts",
+      ".js"
+    ],
     "moduleNameMapper": {
       "^(\\.{1,2}/.*)\\.js$": "$1"
     },
     "testEnvironment": "node",
-    "testMatch": ["**/__tests__/**/*.test.js", "**/__tests__/**/*.test.ts"],
+    "testMatch": [
+      "**/__tests__/**/*.test.js",
+      "**/__tests__/**/*.test.ts"
+    ],
     "collectCoverage": true,
     "coverageDirectory": "coverage",
-    "coverageReporters": ["text", "lcov"],
+    "coverageReporters": [
+      "text",
+      "lcov"
+    ],
     "collectCoverageFrom": [
       "build/**/*.js",
       "!**/node_modules/**",
