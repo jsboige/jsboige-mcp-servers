@@ -26,6 +26,7 @@ interface ReadMultipleFilesArgs {
   paths: string[] | FileWithExcerpts[];
   show_line_numbers?: boolean;
   max_lines_per_file?: number;
+  max_total_lines?: number;
 }
 
 // Interface pour le listage de répertoire
@@ -36,6 +37,28 @@ interface DirectoryToList {
 
 interface ListDirectoryContentsArgs {
   paths: string[] | DirectoryToList[];
+  max_lines?: number;
+}
+
+// Interface pour la suppression de fichiers
+interface DeleteFilesArgs {
+  paths: string[];
+}
+
+// Interfaces pour l'édition multiple de fichiers
+interface FileDiff {
+  search: string;
+  replace: string;
+  start_line?: number;
+}
+
+interface FileEdit {
+  path: string;
+  diffs: FileDiff[];
+}
+
+interface EditMultipleFilesArgs {
+  files: FileEdit[];
 }
 
 // Fonction de validation mise à jour pour les arguments de read_multiple_files
@@ -72,6 +95,7 @@ const isValidReadMultipleFilesArgs = (args: any): args is ReadMultipleFilesArgs 
   // Vérification des autres paramètres
   if (args.show_line_numbers !== undefined && typeof args.show_line_numbers !== 'boolean') return false;
   if (args.max_lines_per_file !== undefined && typeof args.max_lines_per_file !== 'number') return false;
+  if (args.max_total_lines !== undefined && typeof args.max_total_lines !== 'number') return false;
   
   return true;
 };
@@ -94,6 +118,51 @@ const isValidListDirectoryContentsArgs = (args: any): args is ListDirectoryConte
       if (item.recursive !== undefined && typeof item.recursive !== 'boolean') return false;
     } else {
       return false;
+    }
+  }
+  
+  // Vérification du paramètre max_lines
+  if (args.max_lines !== undefined && typeof args.max_lines !== 'number') return false;
+  
+  return true;
+};
+
+// Fonction de validation pour les arguments de delete_files
+const isValidDeleteFilesArgs = (args: any): args is DeleteFilesArgs => {
+  if (typeof args !== 'object' || args === null) return false;
+  
+  // Vérification du tableau paths
+  if (!Array.isArray(args.paths)) return false;
+  
+  // Vérification que chaque élément est une chaîne
+  for (const path of args.paths) {
+    if (typeof path !== 'string') return false;
+  }
+  
+  return true;
+};
+
+// Fonction de validation pour les arguments de edit_multiple_files
+const isValidEditMultipleFilesArgs = (args: any): args is EditMultipleFilesArgs => {
+  if (typeof args !== 'object' || args === null) return false;
+  
+  // Vérification du tableau files
+  if (!Array.isArray(args.files)) return false;
+  
+  // Vérification de chaque élément du tableau files
+  for (const file of args.files) {
+    if (typeof file !== 'object' || file === null) return false;
+    if (typeof file.path !== 'string') return false;
+    
+    // Vérification du tableau diffs
+    if (!Array.isArray(file.diffs)) return false;
+    
+    // Vérification de chaque élément du tableau diffs
+    for (const diff of file.diffs) {
+      if (typeof diff !== 'object' || diff === null) return false;
+      if (typeof diff.search !== 'string') return false;
+      if (typeof diff.replace !== 'string') return false;
+      if (diff.start_line !== undefined && typeof diff.start_line !== 'number') return false;
     }
   }
   
@@ -186,7 +255,13 @@ class QuickFilesServer {
               },
               max_lines_per_file: {
                 type: 'number',
-                description: 'Nombre maximum de lignes à afficher par fichier (optionnel)',
+                description: 'Nombre maximum de lignes à afficher par fichier',
+                default: 2000,
+              },
+              max_total_lines: {
+                type: 'number',
+                description: 'Nombre maximum total de lignes à afficher pour tous les fichiers',
+                default: 5000,
               },
             },
             required: ['paths'],
@@ -229,8 +304,76 @@ class QuickFilesServer {
                 ],
                 description: 'Chemins des répertoires à lister (format simple ou avec options)',
               },
+              max_lines: {
+                type: 'number',
+                description: 'Nombre maximum de lignes à afficher dans la sortie',
+                default: 2000,
+              },
             },
             required: ['paths'],
+          },
+        },
+        {
+          name: 'delete_files',
+          description: 'Supprime une liste de fichiers en une seule opération',
+          inputSchema: {
+            type: 'object',
+            properties: {
+              paths: {
+                type: 'array',
+                items: {
+                  type: 'string'
+                },
+                description: 'Tableau des chemins de fichiers à supprimer',
+              },
+            },
+            required: ['paths'],
+          },
+        },
+        {
+          name: 'edit_multiple_files',
+          description: 'Édite plusieurs fichiers en une seule opération en appliquant des diffs',
+          inputSchema: {
+            type: 'object',
+            properties: {
+              files: {
+                type: 'array',
+                items: {
+                  type: 'object',
+                  properties: {
+                    path: {
+                      type: 'string',
+                      description: 'Chemin du fichier à éditer',
+                    },
+                    diffs: {
+                      type: 'array',
+                      items: {
+                        type: 'object',
+                        properties: {
+                          search: {
+                            type: 'string',
+                            description: 'Texte à rechercher',
+                          },
+                          replace: {
+                            type: 'string',
+                            description: 'Texte de remplacement',
+                          },
+                          start_line: {
+                            type: 'number',
+                            description: 'Numéro de ligne où commencer la recherche (optionnel)',
+                          },
+                        },
+                        required: ['search', 'replace'],
+                      },
+                      description: 'Liste des diffs à appliquer au fichier',
+                    },
+                  },
+                  required: ['path', 'diffs'],
+                },
+                description: 'Tableau des fichiers à éditer avec leurs diffs',
+              },
+            },
+            required: ['files'],
           },
         },
       ],
@@ -241,6 +384,10 @@ class QuickFilesServer {
         return this.handleReadMultipleFiles(request);
       } else if (request.params.name === 'list_directory_contents') {
         return this.handleListDirectoryContents(request);
+      } else if (request.params.name === 'delete_files') {
+        return this.handleDeleteFiles(request);
+      } else if (request.params.name === 'edit_multiple_files') {
+        return this.handleEditMultipleFiles(request);
       } else {
         throw new McpError(
           ErrorCode.MethodNotFound,
@@ -258,7 +405,12 @@ class QuickFilesServer {
       );
     }
 
-    const { paths, show_line_numbers = false, max_lines_per_file } = request.params.arguments;
+    const {
+      paths,
+      show_line_numbers = false,
+      max_lines_per_file = 2000,
+      max_total_lines = 5000
+    } = request.params.arguments;
 
     try {
       const results = await Promise.all(
@@ -322,14 +474,52 @@ class QuickFilesServer {
         })
       );
 
+      // Compter le nombre total de lignes dans tous les fichiers
+      let totalLines = 0;
+      const processedResults = results.map(result => {
+        if (result.exists) {
+          const lineCount = result.content.split('\n').length;
+          totalLines += lineCount;
+          return {
+            ...result,
+            lineCount
+          };
+        }
+        return result;
+      });
+
+      // Limiter le nombre total de lignes si nécessaire
+      let totalLinesExceeded = false;
+      if (totalLines > max_total_lines) {
+        totalLinesExceeded = true;
+        let remainingLines = max_total_lines;
+        
+        for (let i = 0; i < processedResults.length; i++) {
+          const result = processedResults[i];
+          if (!result.exists) continue;
+          
+          const lines = result.content.split('\n');
+          const linesToKeep = Math.min(lines.length, remainingLines);
+          
+          if (linesToKeep < lines.length) {
+            lines.splice(linesToKeep);
+            lines.push(`... (${result.lineCount - linesToKeep} lignes supplémentaires non affichées)`);
+            result.content = lines.join('\n');
+          }
+          
+          remainingLines -= linesToKeep;
+          if (remainingLines <= 0) break;
+        }
+      }
+
       // Formatage de la réponse pour une meilleure lisibilité
-      const formattedResponse = results.map(result => {
+      const formattedResponse = processedResults.map(result => {
         if (result.exists) {
           return `## Fichier: ${result.path}\n\`\`\`\n${result.content}\n\`\`\`\n`;
         } else {
           return `## Fichier: ${result.path}\n**ERREUR**: ${result.error}\n`;
         }
-      }).join('\n');
+      }).join('\n') + (totalLinesExceeded ? `\n\n**Note**: Certains fichiers ont été tronqués car le nombre total de lignes dépasse la limite de ${max_total_lines}.` : '');
 
       return {
         content: [
@@ -360,7 +550,7 @@ class QuickFilesServer {
       );
     }
 
-    const { paths } = request.params.arguments;
+    const { paths, max_lines = 2000 } = request.params.arguments;
 
     try {
       const results = await Promise.all(
@@ -401,13 +591,20 @@ class QuickFilesServer {
       );
 
       // Formatage de la réponse pour une meilleure lisibilité
-      const formattedResponse = results.map(result => {
+      let formattedResponse = results.map(result => {
         if (result.exists) {
           return this.formatDirectoryContents(result.path, result.contents);
         } else {
           return `## Répertoire: ${result.path}\n**ERREUR**: ${result.error}\n`;
         }
       }).join('\n');
+
+      // Limiter le nombre de lignes dans la sortie
+      const lines = formattedResponse.split('\n');
+      if (lines.length > max_lines) {
+        formattedResponse = lines.slice(0, max_lines).join('\n') +
+          `\n\n... (${lines.length - max_lines} lignes supplémentaires non affichées)`;
+      }
 
       return {
         content: [
@@ -513,6 +710,174 @@ class QuickFilesServer {
     }
 
     return result;
+  }
+
+  private async handleDeleteFiles(request: any) {
+    if (!isValidDeleteFilesArgs(request.params.arguments)) {
+      throw new McpError(
+        ErrorCode.InvalidParams,
+        'Paramètres invalides pour delete_files'
+      );
+    }
+
+    const { paths } = request.params.arguments;
+
+    try {
+      const results = await Promise.all(
+        paths.map(async (filePath: string) => {
+          try {
+            // Vérifier que le fichier existe avant de le supprimer
+            await fs.access(filePath);
+            await fs.unlink(filePath);
+            
+            return {
+              path: filePath,
+              success: true,
+              error: null,
+            };
+          } catch (error) {
+            return {
+              path: filePath,
+              success: false,
+              error: `Erreur lors de la suppression du fichier: ${(error as Error).message}`,
+            };
+          }
+        })
+      );
+
+      // Formatage de la réponse pour une meilleure lisibilité
+      const formattedResponse = results.map(result => {
+        if (result.success) {
+          return `✅ Fichier supprimé: ${result.path}`;
+        } else {
+          return `❌ Échec de suppression: ${result.path} - ${result.error}`;
+        }
+      }).join('\n');
+
+      return {
+        content: [
+          {
+            type: 'text',
+            text: formattedResponse,
+          },
+        ],
+      };
+    } catch (error) {
+      return {
+        content: [
+          {
+            type: 'text',
+            text: `Erreur lors de la suppression des fichiers: ${(error as Error).message}`,
+          },
+        ],
+        isError: true,
+      };
+    }
+  }
+
+  private async handleEditMultipleFiles(request: any) {
+    if (!isValidEditMultipleFilesArgs(request.params.arguments)) {
+      throw new McpError(
+        ErrorCode.InvalidParams,
+        'Paramètres invalides pour edit_multiple_files'
+      );
+    }
+
+    const { files } = request.params.arguments;
+
+    try {
+      const results = await Promise.all(
+        files.map(async (file: FileEdit) => {
+          try {
+            // Lire le contenu du fichier
+            const content = await fs.readFile(file.path, 'utf-8');
+            let modifiedContent = content;
+            let hasChanges = false;
+
+            // Appliquer chaque diff
+            for (const diff of file.diffs) {
+              // Si start_line est spécifié, limiter la recherche à partir de cette ligne
+              if (diff.start_line !== undefined) {
+                const lines = modifiedContent.split('\n');
+                const startIdx = Math.max(0, diff.start_line - 1);
+                
+                if (startIdx >= lines.length) {
+                  continue; // Ignorer ce diff si start_line est hors limites
+                }
+                
+                const beforeLines = lines.slice(0, startIdx).join('\n');
+                const searchArea = lines.slice(startIdx).join('\n');
+                
+                // Appliquer le remplacement uniquement dans la zone de recherche
+                const modifiedSearchArea = searchArea.replace(diff.search, diff.replace);
+                
+                if (searchArea !== modifiedSearchArea) {
+                  modifiedContent = beforeLines + (beforeLines ? '\n' : '') + modifiedSearchArea;
+                  hasChanges = true;
+                }
+              } else {
+                // Appliquer le remplacement sur tout le contenu
+                const newContent = modifiedContent.replace(diff.search, diff.replace);
+                
+                if (newContent !== modifiedContent) {
+                  modifiedContent = newContent;
+                  hasChanges = true;
+                }
+              }
+            }
+
+            // Écrire le contenu modifié si des changements ont été effectués
+            if (hasChanges) {
+              await fs.writeFile(file.path, modifiedContent, 'utf-8');
+            }
+            
+            return {
+              path: file.path,
+              success: true,
+              modified: hasChanges,
+              error: null,
+            };
+          } catch (error) {
+            return {
+              path: file.path,
+              success: false,
+              modified: false,
+              error: `Erreur lors de l'édition du fichier: ${(error as Error).message}`,
+            };
+          }
+        })
+      );
+
+      // Formatage de la réponse pour une meilleure lisibilité
+      const formattedResponse = results.map(result => {
+        if (result.success) {
+          return result.modified
+            ? `✅ Fichier modifié: ${result.path}`
+            : `ℹ️ Aucune modification: ${result.path}`;
+        } else {
+          return `❌ Échec d'édition: ${result.path} - ${result.error}`;
+        }
+      }).join('\n');
+
+      return {
+        content: [
+          {
+            type: 'text',
+            text: formattedResponse,
+          },
+        ],
+      };
+    } catch (error) {
+      return {
+        content: [
+          {
+            type: 'text',
+            text: `Erreur lors de l'édition des fichiers: ${(error as Error).message}`,
+          },
+        ],
+        isError: true,
+      };
+    }
   }
 
   async run() {

@@ -27,25 +27,35 @@ Ce dépôt contient une collection de serveurs MCP placés directement dans le r
 
 ### Serveurs disponibles
 
-#### QuickFiles Server
+#### QuickFiles Server (Fonctionnel)
 
 Un serveur MCP qui fournit des méthodes pour lire rapidement le contenu de répertoires et fichiers multiples:
 - Lecture de plusieurs fichiers en une seule requête
 - Extraction de portions spécifiques de fichiers
 - Listage détaillé du contenu des répertoires
-- Et plus encore
+- Numérotation de lignes et limitation du nombre de lignes lues
 
 [En savoir plus sur QuickFiles Server](servers/quickfiles-server/README.md)
 
-#### Jupyter MCP Server
+#### Jupyter MCP Server (Partiellement fonctionnel - Mode test)
 
 Un serveur MCP qui permet d'interagir avec des notebooks Jupyter:
 - Gestion des notebooks (lecture, création, modification)
 - Gestion des kernels (démarrage, arrêt, interruption)
 - Exécution de code (cellules individuelles ou notebooks complets)
-- Et plus encore
+- Récupération des sorties textuelles et riches (images, HTML, etc.)
 
 [En savoir plus sur Jupyter MCP Server](servers/jupyter-mcp-server/README.md)
+
+#### JinaNavigator Server (À tester)
+
+Un serveur MCP qui utilise l'API Jina pour convertir des pages web en Markdown:
+- Conversion de pages web en format Markdown
+- Extraction de portions spécifiques du contenu
+- Accès via URI au format jina://{url}
+- Filtrage du contenu par numéros de lignes
+
+[En savoir plus sur JinaNavigator Server](servers/jinavigator-server/README.md)
 
 ## Installation
 
@@ -54,6 +64,7 @@ Un serveur MCP qui permet d'interagir avec des notebooks Jupyter:
 - Node.js 14.x ou supérieur
 - npm 6.x ou supérieur
 - Git
+- Python avec Jupyter installé (pour le serveur Jupyter MCP)
 
 ### Installation rapide
 
@@ -72,6 +83,30 @@ npm run install-all
 npm run setup-config
 ```
 
+### Installation spécifique par serveur
+
+#### QuickFiles Server
+```bash
+cd servers/quickfiles-server
+npm install
+npm run build
+```
+
+#### Jupyter MCP Server
+```bash
+cd servers/jupyter-mcp-server
+npm install
+npm run build
+# Assurez-vous d'avoir un serveur Jupyter en cours d'exécution sur http://localhost:8888
+```
+
+#### JinaNavigator Server
+```bash
+cd servers/jinavigator-server
+npm install
+npm run build
+```
+
 Pour des instructions d'installation plus détaillées, consultez le [Guide de démarrage](docs/getting-started.md).
 
 ## Utilisation
@@ -79,23 +114,51 @@ Pour des instructions d'installation plus détaillées, consultez le [Guide de d
 ### Démarrer un serveur MCP
 
 ```bash
-# Exemple pour démarrer un serveur météo
-cd servers/api-connectors/weather-api
-node server.js
+# Démarrer le serveur QuickFiles
+cd servers/quickfiles-server
+npm start
+
+# Démarrer le serveur Jupyter MCP
+cd servers/jupyter-mcp-server
+npm start
+# Note: Assurez-vous que le serveur Jupyter est en cours d'exécution
+
+# Démarrer le serveur JinaNavigator
+cd servers/jinavigator-server
+npm start
 ```
 
 ### Connecter un serveur MCP à un LLM
 
 Les serveurs MCP peuvent être connectés à différents LLM qui supportent le protocole MCP. Dans votre interface LLM, configurez la connexion au serveur MCP en utilisant l'URL du serveur (généralement `http://localhost:3000` ou similaire).
 
-### Exemple d'interaction
+### Exemples d'utilisation
 
+#### QuickFiles Server
 ```
-Utilisateur: Quelle est la météo à Paris aujourd'hui?
+Utilisateur: Peux-tu lire les fichiers de configuration dans le dossier config?
 
-LLM: Je vais vérifier la météo à Paris pour vous.
-[Utilisation de l'outil weather-api.get_weather avec les paramètres {"city": "Paris", "country": "FR"}]
-D'après les données météo actuelles, il fait 22°C à Paris avec un ciel partiellement nuageux. L'humidité est de 65% et le vent souffle à 10 km/h.
+LLM: Je vais lire les fichiers de configuration pour vous.
+[Utilisation de l'outil quickfiles-server.read_multiple_files avec les paramètres {"paths": ["config/config1.json", "config/config2.json"]}]
+Voici le contenu des fichiers de configuration...
+```
+
+#### Jupyter MCP Server
+```
+Utilisateur: Crée un notebook Python qui analyse des données.
+
+LLM: Je vais créer un notebook pour vous.
+[Utilisation de l'outil jupyter-mcp-server.create_notebook avec les paramètres {"path": "analyse_donnees.ipynb", "kernel": "python3"}]
+J'ai créé un nouveau notebook. Maintenant, je vais ajouter du code pour analyser des données...
+```
+
+#### JinaNavigator Server
+```
+Utilisateur: Peux-tu convertir la page d'accueil de GitHub en Markdown?
+
+LLM: Je vais convertir cette page pour vous.
+[Utilisation de l'outil jinavigator-server.convert_web_to_markdown avec les paramètres {"url": "https://github.com"}]
+Voici le contenu de la page GitHub en format Markdown...
 ```
 
 Pour plus d'exemples et d'informations sur l'utilisation, consultez le [Guide de démarrage](docs/getting-started.md).

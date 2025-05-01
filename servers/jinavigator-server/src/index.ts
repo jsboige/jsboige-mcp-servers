@@ -253,7 +253,11 @@ server.setRequestHandler(CallToolRequestSchema, async (request, extra) => {
   try {
     // Exécuter le handler de l'outil
     const result = await tool.execute(args as ToolInput);
-    return { result: result.result };
+    // Assurer que le champ "content" est un tableau dans la réponse
+    return {
+      result: result.result,
+      content: Array.isArray(result.result) ? result.result : [result.result]
+    };
   } catch (error: any) {
     console.error(`Erreur lors de l'exécution de l'outil ${toolName}:`, error);
     throw new McpError(
