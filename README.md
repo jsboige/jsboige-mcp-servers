@@ -34,6 +34,10 @@ Un serveur MCP qui fournit des méthodes pour lire rapidement le contenu de rép
 - Extraction de portions spécifiques de fichiers
 - Listage détaillé du contenu des répertoires
 - Numérotation de lignes et limitation du nombre de lignes lues
+- Suppression de fichiers multiples en une seule opération
+- Édition de fichiers multiples avec application de diffs
+- Tests unitaires complets avec Jest et mock-fs
+- Script de démonstration pour tester facilement les fonctionnalités
 
 [En savoir plus sur QuickFiles Server](servers/quickfiles-server/README.md)
 
@@ -141,6 +145,35 @@ Utilisateur: Peux-tu lire les fichiers de configuration dans le dossier config?
 LLM: Je vais lire les fichiers de configuration pour vous.
 [Utilisation de l'outil quickfiles-server.read_multiple_files avec les paramètres {"paths": ["config/config1.json", "config/config2.json"]}]
 Voici le contenu des fichiers de configuration...
+```
+
+```
+Utilisateur: Peux-tu modifier tous les fichiers JavaScript pour ajouter un commentaire de copyright?
+
+LLM: Je vais modifier les fichiers JavaScript.
+[Utilisation de l'outil quickfiles-server.edit_multiple_files avec les paramètres {
+  "files": [
+    {
+      "path": "src/app.js",
+      "diffs": [
+        {
+          "search": "// Début du fichier",
+          "replace": "// Début du fichier\n// Copyright 2025 - Tous droits réservés"
+        }
+      ]
+    },
+    {
+      "path": "src/utils.js",
+      "diffs": [
+        {
+          "search": "// Utilitaires",
+          "replace": "// Utilitaires\n// Copyright 2025 - Tous droits réservés"
+        }
+      ]
+    }
+  ]
+}]
+J'ai ajouté le commentaire de copyright à tous les fichiers JavaScript.
 ```
 
 #### Jupyter MCP Server
