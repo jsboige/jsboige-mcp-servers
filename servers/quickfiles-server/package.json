@@ -1,0 +1,18 @@
+{
+  "name": "quickfiles-server",
+  "version": "0.1.0",
+  "description": "MCP server for quickly reading multiple files",
+  "type": "module",
+  "main": "build/index.js",
+  "scripts": {
+    "build": "tsc",
+    "start": "node build/index.js"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "latest"
+  },
+  "devDependencies": {
+    "@types/node": "^22.15.3",
+    "typescript": "^5.0.0"
+  }
+}
