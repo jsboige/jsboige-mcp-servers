@@ -37,11 +37,10 @@ Un serveur MCP est un service qui implémente le protocole MCP et expose des out
 
 #### Types de serveurs MCP
 
-Dans ce dépôt, les serveurs MCP sont organisés en trois catégories:
+Dans ce dépôt, les serveurs MCP sont placés directement dans le répertoire `servers/`. Voici quelques exemples des serveurs disponibles:
 
-- **API Connectors**: Serveurs qui se connectent à des API externes (météo, recherche, bases de données, etc.)
-- **Dev Tools**: Outils de développement (analyse de code, génération de documentation, etc.)
-- **System Utils**: Utilitaires système (gestion de fichiers, monitoring, etc.)
+- **QuickFiles Server**: Serveur pour lire rapidement le contenu de répertoires et fichiers multiples
+- **Jupyter MCP Server**: Serveur pour interagir avec des notebooks Jupyter
 
 ### 2. Outils (Tools)
 
@@ -127,17 +126,18 @@ LLM -> HTTP Request -> MCP Server -> SSE -> LLM
 Chaque serveur MCP dans ce dépôt suit cette structure:
 
 ```
-server-name/
-├── README.md           # Documentation du serveur
-├── package.json        # Dépendances et scripts
-├── server.js           # Point d'entrée du serveur
-├── config.example.json # Configuration d'exemple
-├── config.json         # Configuration réelle (ignorée par git)
-├── src/                # Code source
-│   ├── tools/          # Implémentation des outils
-│   ├── resources/      # Implémentation des ressources
-│   └── utils/          # Utilitaires
-└── tests/              # Tests
+servers/
+└── server-name/
+    ├── README.md           # Documentation du serveur
+    ├── package.json        # Dépendances et scripts
+    ├── server.js ou index.ts # Point d'entrée du serveur
+    ├── config.example.json # Configuration d'exemple (si nécessaire)
+    ├── config.json         # Configuration réelle (ignorée par git)
+    ├── src/                # Code source
+    │   ├── tools/          # Implémentation des outils
+    │   ├── resources/      # Implémentation des ressources
+    │   └── utils/          # Utilitaires
+    └── tests/              # Tests
 ```
 
 ## Cycle de vie d'une requête MCP
