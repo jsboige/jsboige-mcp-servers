@@ -58,3 +58,9 @@ coverage/
 
 # Fichiers spécifiques aux serveurs MCP
 **/server-data/
+
+# Fichiers spécifiques à l'environnement
+.roomodes
+
+# Archives
+*.zip
