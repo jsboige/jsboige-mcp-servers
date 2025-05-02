@@ -3,6 +3,7 @@
   "version": "1.0.0",
   "description": "Collection de serveurs MCP (Model Context Protocol) pour étendre les capacités des LLM",
   "main": "index.js",
+  "type": "module",
   "scripts": {
     "install-all": "node scripts/install-all.js",
     "setup-config": "node scripts/setup-config.js",

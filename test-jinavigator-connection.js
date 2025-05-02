@@ -1,4 +1,4 @@
-// Script de test pour vérifier la connexion au serveur MCP quickfiles
+// Script de test pour vérifier la connexion au serveur MCP Jinavigator
 
 // Importation des modules nécessaires
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
@@ -12,13 +12,13 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
 async function main() {
-  console.log('Test de connexion au serveur MCP quickfiles...');
+  console.log('Test de connexion au serveur MCP Jinavigator...');
   
   // Chemin vers le script run-node-fixed.bat
-  const scriptPath = path.join(__dirname, 'servers', 'quickfiles-server', 'run-node-fixed.bat');
+  const scriptPath = path.join(__dirname, 'servers', 'jinavigator-server', 'run-node-fixed.bat');
   
   // Chemin vers le fichier index.js
-  const indexPath = path.join(__dirname, 'servers', 'quickfiles-server', 'build', 'index.js');
+  const indexPath = path.join(__dirname, 'servers', 'jinavigator-server', 'dist', 'index.js');
   
   console.log(`Lancement du serveur avec: cmd /c ${scriptPath} ${indexPath}`);
   
@@ -53,6 +53,17 @@ async function main() {
     // Récupération de la liste des outils disponibles
     const toolsResponse = await client.listTools();
     console.log('Outils disponibles :', toolsResponse.tools.map(tool => tool.name));
+    
+    // Test d'un outil
+    console.log('\nTest de l\'outil convert_web_to_markdown...');
+    try {
+      const result = await client.callTool('convert_web_to_markdown', {
+        url: 'https://github.com/jsboige/jsboige-mcp-servers'
+      });
+      console.log('Résultat (extrait):', result.content[0].text.substring(0, 200) + '...');
+    } catch (toolError) {
+      console.error('Erreur lors de l\'appel à l\'outil:', toolError);
+    }
     
     // Test terminé avec succès
     console.log('Test de connexion réussi !');
