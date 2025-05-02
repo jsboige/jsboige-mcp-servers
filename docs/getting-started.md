@@ -185,7 +185,7 @@ Les serveurs MCP peuvent être connectés à différents LLM qui supportent le p
 
 ### Exemples d'utilisation
 
-#### Exemple 1: Utilisation du serveur QuickFiles
+#### Exemple 1: Utilisation du serveur QuickFiles pour lister des répertoires
 
 ```
 Utilisateur: Peux-tu me lister les fichiers dans mon répertoire src?
@@ -257,7 +257,80 @@ LLM: Je vais vous montrer le contenu de ces fichiers.
 ```
 ```
 
-#### Exemple 3: Utilisation du serveur Jupyter MCP
+#### Exemple 3: Utilisation du serveur QuickFiles pour éditer plusieurs fichiers
+
+```
+Utilisateur: Peux-tu ajouter un commentaire de copyright à tous mes fichiers JavaScript?
+
+LLM: Je vais ajouter un commentaire de copyright à vos fichiers JavaScript.
+[Utilisation de l'outil quickfiles-server.edit_multiple_files avec les paramètres {
+  "files": [
+    {
+      "path": "src/index.js",
+      "diffs": [
+        {
+          "search": "import React from 'react';",
+          "replace": "/**\n * Copyright 2025 - Tous droits réservés\n */\nimport React from 'react';"
+        }
+      ]
+    },
+    {
+      "path": "src/App.js",
+      "diffs": [
+        {
+          "search": "import React, { useState } from 'react';",
+          "replace": "/**\n * Copyright 2025 - Tous droits réservés\n */\nimport React, { useState } from 'react';"
+        }
+      ]
+    },
+    {
+      "path": "src/components/Button.js",
+      "diffs": [
+        {
+          "search": "import React from 'react';",
+          "replace": "/**\n * Copyright 2025 - Tous droits réservés\n */\nimport React from 'react';"
+        }
+      ]
+    }
+  ]
+}]
+
+J'ai ajouté un commentaire de copyright à tous vos fichiers JavaScript. Voici un résumé des modifications:
+- src/index.js: Ajout du commentaire de copyright
+- src/App.js: Ajout du commentaire de copyright
+- src/components/Button.js: Ajout du commentaire de copyright
+```
+
+#### Exemple 4: Utilisation du serveur QuickFiles pour supprimer des fichiers
+
+```
+Utilisateur: Peux-tu supprimer tous les fichiers temporaires dans mon répertoire tmp?
+
+LLM: Je vais supprimer les fichiers temporaires.
+[Utilisation de l'outil quickfiles-server.list_directory_contents avec les paramètres {"paths": [{"path": "tmp", "recursive": false}]}]
+
+J'ai trouvé les fichiers suivants dans le répertoire tmp:
+- tmp/temp1.txt
+- tmp/temp2.txt
+- tmp/important.json
+- tmp/backup.zip
+
+Je vais supprimer uniquement les fichiers temporaires.
+[Utilisation de l'outil quickfiles-server.delete_files avec les paramètres {
+  "paths": [
+    "tmp/temp1.txt",
+    "tmp/temp2.txt"
+  ]
+}]
+
+J'ai supprimé les fichiers temporaires suivants:
+- tmp/temp1.txt
+- tmp/temp2.txt
+
+Les fichiers importants (important.json et backup.zip) ont été conservés.
+```
+
+#### Exemple 5: Utilisation du serveur Jupyter MCP
 
 ```
 Utilisateur: Peux-tu créer un notebook Jupyter qui analyse des données avec pandas?

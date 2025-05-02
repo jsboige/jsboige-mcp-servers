@@ -4,9 +4,11 @@
     "module": "NodeNext",
     "moduleResolution": "NodeNext",
     "esModuleInterop": true,
-    "outDir": "build",
+    "outDir": "dist",
     "strict": true,
-    "types": ["node"]
+    "types": ["node", "jest"],
+    "declaration": true,
+    "sourceMap": true
   },
   "include": ["src/**/*"]
 }

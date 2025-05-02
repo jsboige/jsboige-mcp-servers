@@ -54,7 +54,12 @@ export async function initializeJupyterServices(options?: {
  */
 async function testConnection() {
   try {
-    const response = await axios.get(`${serverSettings.baseUrl}/api/kernels`, {
+    // Assurer que l'URL est correctement formée sans double slash
+    const baseUrl = serverSettings.baseUrl.endsWith('/')
+      ? serverSettings.baseUrl.slice(0, -1)
+      : serverSettings.baseUrl;
+    
+    const response = await axios.get(`${baseUrl}/api/kernels`, {
       headers: {
         Authorization: `token ${serverSettings.token}`
       }
@@ -189,8 +194,13 @@ export async function executeCode(kernelId: string, code: string): Promise<any> 
 export async function listAvailableKernels(): Promise<any[]> {
   try {
     // Dans les versions récentes de @jupyterlab/services, la méthode est différente
+    // Assurer que l'URL est correctement formée sans double slash
+    const baseUrl = serverSettings.baseUrl.endsWith('/')
+      ? serverSettings.baseUrl.slice(0, -1)
+      : serverSettings.baseUrl;
+      
     const specs = await ServerConnection.makeRequest(
-      `${serverSettings.baseUrl}/api/kernelspecs`,
+      `${baseUrl}/api/kernelspecs`,
       {},
       serverSettings
     );

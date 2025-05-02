@@ -7,6 +7,8 @@ import {
   McpError,
   Tool,
 } from '@modelcontextprotocol/sdk/types.js';
+import * as fs from 'fs';
+import * as path from 'path';
 
 // Définir notre propre interface Tool pour le serveur
 interface JupyterTool {
@@ -15,6 +17,14 @@ interface JupyterTool {
   schema?: any;
   handler?: (args: any) => Promise<any>;
   inputSchema?: any;
+}
+
+// Interface pour la configuration
+interface Config {
+  jupyterServer: {
+    baseUrl: string;
+    token: string;
+  };
 }
 import { initializeJupyterServices } from './services/jupyter.js';
 import { notebookTools } from './tools/notebook.js';
@@ -111,9 +121,34 @@ class JupyterMcpServer {
     try {
       console.log('Initialisation du serveur MCP Jupyter...');
       
-      // En mode test, ne pas initialiser les services Jupyter
-      // await initializeJupyterServices();
-      console.log('Mode test: services Jupyter non initialisés');
+      // Charger la configuration
+      let config: Config = {
+        jupyterServer: {
+          baseUrl: 'http://localhost:8888',
+          token: ''
+        }
+      };
+      
+      try {
+        const configPath = path.resolve('./config.json');
+        if (fs.existsSync(configPath)) {
+          const configData = fs.readFileSync(configPath, 'utf8');
+          config = JSON.parse(configData);
+          console.log('Configuration chargée depuis config.json');
+        } else {
+          console.log('Fichier config.json non trouvé, utilisation des valeurs par défaut');
+        }
+      } catch (configError) {
+        console.error('Erreur lors du chargement de la configuration:', configError);
+        console.log('Utilisation des valeurs par défaut');
+      }
+      
+      // Initialiser les services Jupyter avec la configuration
+      await initializeJupyterServices({
+        baseUrl: config.jupyterServer.baseUrl,
+        token: config.jupyterServer.token
+      });
+      console.log('Services Jupyter initialisés avec succès');
       
       const transport = new StdioServerTransport();
       await this.server.connect(transport);

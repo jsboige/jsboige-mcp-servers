@@ -63,6 +63,19 @@ npm run test:legacy
 npm run test:simple
 ```
 
+Pour exécuter le script de démonstration :
+
+```bash
+# Exécuter la démonstration des fonctionnalités
+node test-quickfiles-demo.js
+```
+
+Ce script de démonstration montre comment utiliser les principales fonctionnalités du serveur MCP quickfiles, notamment :
+- Lister les outils disponibles
+- Lire plusieurs fichiers avec numérotation de lignes
+- Lire des extraits spécifiques de fichiers
+- Lister le contenu d'un répertoire
+
 ## Exemples d'utilisation
 
 ### Lecture de plusieurs fichiers
@@ -142,6 +155,38 @@ const result = await client.callTool('quickfiles-server', 'edit_multiple_files',
           search: 'autre texte',
           replace: 'autre remplacement',
           start_line: 10  // Commencer la recherche à partir de la ligne 10
+        }
+      ]
+    }
+  ]
+});
+```
+
+#### Exemple d'édition de plusieurs fichiers en une seule opération
+
+```javascript
+// Édition de plusieurs fichiers en une seule opération
+const result = await client.callTool('quickfiles-server', 'edit_multiple_files', {
+  files: [
+    {
+      path: 'src/app.js',
+      diffs: [
+        {
+          search: '// Configuration',
+          replace: '// Configuration mise à jour'
+        }
+      ]
+    },
+    {
+      path: 'src/utils.js',
+      diffs: [
+        {
+          search: 'function oldName',
+          replace: 'function newName'
+        },
+        {
+          search: 'const VERSION = "1.0.0"',
+          replace: 'const VERSION = "1.1.0"'
         }
       ]
     }
@@ -548,3 +593,31 @@ En plus des codes d'erreur standard, les messages d'erreur suivants peuvent êtr
 - Pour des raisons de performance, la lecture de fichiers très volumineux peut être limitée. Utilisez les extraits ou `max_lines_per_file` pour ces cas.
 - Le comptage de lignes est effectué uniquement pour les fichiers texte reconnus par leur extension et de taille inférieure à 10 Mo.
 - Les opérations d'édition et de suppression sont irréversibles. Assurez-vous de sauvegarder vos fichiers importants avant d'utiliser ces fonctionnalités.
+
+## Tests unitaires
+
+Le serveur QuickFiles est livré avec une suite complète de tests unitaires qui vérifient toutes les fonctionnalités :
+
+- Tests de lecture de fichiers multiples
+- Tests de listage de répertoires
+- Tests de suppression de fichiers
+- Tests d'édition de fichiers multiples
+- Tests de gestion des erreurs
+- Tests de performance
+
+Les tests utilisent Jest et mock-fs pour simuler le système de fichiers, ce qui permet de tester toutes les fonctionnalités sans modifier les fichiers réels.
+
+Pour exécuter les tests unitaires :
+
+```bash
+npm test
+```
+
+## Fichiers de démonstration
+
+Le dépôt inclut des fichiers de démonstration pour tester facilement les fonctionnalités du serveur :
+
+- `demo-file1.txt` et `demo-file2.txt` : Fichiers texte simples pour tester la lecture
+- `test-quickfiles-demo.js` : Script de démonstration qui montre comment utiliser les principales fonctionnalités
+
+Ces fichiers peuvent être utilisés comme point de départ pour vos propres tests et intégrations.

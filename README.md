@@ -4,6 +4,8 @@ Collection de serveurs MCP (Model Context Protocol) pour étendre les capacités
 
 [![CI](https://github.com/jsboige/jsboige-mcp-servers/actions/workflows/ci.yml/badge.svg)](https://github.com/jsboige/jsboige-mcp-servers/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
+[![Test Coverage](https://img.shields.io/codecov/c/github/jsboige/jsboige-mcp-servers)](https://codecov.io/gh/jsboige/jsboige-mcp-servers)
+[![Documentation](https://img.shields.io/badge/docs-complete-brightgreen.svg)](https://github.com/jsboige/jsboige-mcp-servers/tree/main/docs)
 
 ## Qu'est-ce que MCP?
 
@@ -34,26 +36,38 @@ Un serveur MCP qui fournit des méthodes pour lire rapidement le contenu de rép
 - Extraction de portions spécifiques de fichiers
 - Listage détaillé du contenu des répertoires
 - Numérotation de lignes et limitation du nombre de lignes lues
+- Suppression de fichiers multiples en une seule opération
+- Édition de fichiers multiples avec application de diffs
+- Tests unitaires complets avec Jest et mock-fs
+- Tests de performance et de gestion d'erreurs
+- Documentation complète et standardisée
+- Script de démonstration pour tester facilement les fonctionnalités
 
 [En savoir plus sur QuickFiles Server](servers/quickfiles-server/README.md)
 
-#### Jupyter MCP Server (Partiellement fonctionnel - Mode test)
+#### Jupyter MCP Server (Fonctionnel)
 
 Un serveur MCP qui permet d'interagir avec des notebooks Jupyter:
 - Gestion des notebooks (lecture, création, modification)
 - Gestion des kernels (démarrage, arrêt, interruption)
 - Exécution de code (cellules individuelles ou notebooks complets)
 - Récupération des sorties textuelles et riches (images, HTML, etc.)
+- Tests unitaires complets pour toutes les fonctionnalités
+- Tests de performance et de gestion d'erreurs
+- Documentation détaillée avec exemples d'utilisation
 
 [En savoir plus sur Jupyter MCP Server](servers/jupyter-mcp-server/README.md)
 
-#### JinaNavigator Server (À tester)
+#### JinaNavigator Server (Fonctionnel)
 
 Un serveur MCP qui utilise l'API Jina pour convertir des pages web en Markdown:
 - Conversion de pages web en format Markdown
 - Extraction de portions spécifiques du contenu
 - Accès via URI au format jina://{url}
 - Filtrage du contenu par numéros de lignes
+- Tests unitaires complets
+- Tests de performance et de gestion d'erreurs
+- Documentation standardisée
 
 [En savoir plus sur JinaNavigator Server](servers/jinavigator-server/README.md)
 
@@ -143,6 +157,35 @@ LLM: Je vais lire les fichiers de configuration pour vous.
 Voici le contenu des fichiers de configuration...
 ```
 
+```
+Utilisateur: Peux-tu modifier tous les fichiers JavaScript pour ajouter un commentaire de copyright?
+
+LLM: Je vais modifier les fichiers JavaScript.
+[Utilisation de l'outil quickfiles-server.edit_multiple_files avec les paramètres {
+  "files": [
+    {
+      "path": "src/app.js",
+      "diffs": [
+        {
+          "search": "// Début du fichier",
+          "replace": "// Début du fichier\n// Copyright 2025 - Tous droits réservés"
+        }
+      ]
+    },
+    {
+      "path": "src/utils.js",
+      "diffs": [
+        {
+          "search": "// Utilitaires",
+          "replace": "// Utilitaires\n// Copyright 2025 - Tous droits réservés"
+        }
+      ]
+    }
+  ]
+}]
+J'ai ajouté le commentaire de copyright à tous les fichiers JavaScript.
+```
+
 #### Jupyter MCP Server
 ```
 Utilisateur: Crée un notebook Python qui analyse des données.
@@ -170,19 +213,33 @@ Les serveurs MCP suivent une architecture standardisée qui facilite leur dével
 ```
 servers/
 └── server-name/
-    ├── README.md           # Documentation du serveur
-    ├── package.json        # Dépendances et scripts
-    ├── server.js ou index.ts # Point d'entrée du serveur
-    ├── config.example.json # Configuration d'exemple (si nécessaire)
-    ├── config.json         # Configuration réelle (ignorée par git)
+    ├── README.md           # Documentation standardisée du serveur
+    ├── package.json        # Dépendances et scripts standardisés
+    ├── jest.config.js      # Configuration Jest standardisée
+    ├── tsconfig.json       # Configuration TypeScript
     ├── src/                # Code source
+    │   ├── index.ts        # Point d'entrée du serveur
     │   ├── tools/          # Implémentation des outils
     │   ├── resources/      # Implémentation des ressources
     │   └── utils/          # Utilitaires
-    └── tests/              # Tests
+    └── __tests__/          # Tests unitaires standardisés
+        ├── *.test.js       # Tests fonctionnels
+        ├── error-handling.test.js # Tests de gestion d'erreurs
+        └── performance.test.js    # Tests de performance
 ```
 
 Pour plus d'informations sur l'architecture, consultez la [Documentation sur l'architecture MCP](docs/architecture.md).
+
+## Intégration Continue
+
+Ce projet utilise GitHub Actions pour l'intégration continue, avec les vérifications suivantes:
+
+- **Tests unitaires**: Exécution automatique de tous les tests pour chaque serveur
+- **Couverture de code**: Vérification du taux de couverture des tests
+- **Qualité de la documentation**: Vérification de la présence et de la structure des fichiers README.md
+- **Standardisation**: Vérification de la conformité aux standards du projet
+
+Le workflow d'intégration continue est configuré dans le fichier `.github/workflows/ci.yml`.
 
 ## Configuration
 

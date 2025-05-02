@@ -3,18 +3,29 @@
   "version": "0.1.0",
   "description": "MCP server for quickly reading multiple files",
   "type": "module",
-  "main": "build/index.js",
+  "main": "dist/index.js",
   "scripts": {
     "build": "tsc",
-    "start": "node build/index.js",
-    "test": "node --experimental-vm-modules node_modules/jest/bin/jest.js",
+    "start": "node dist/index.js",
+    "dev": "tsc && node dist/index.js",
+    "test": "jest",
+    "test:watch": "jest --watch",
+    "test:coverage": "jest --coverage",
+    "test:unit": "jest quickfiles.test.js",
+    "test:error": "jest error-handling.test.js",
+    "test:perf": "jest performance.test.js",
     "test:legacy": "node test-quickfiles.js",
     "test:simple": "node test-quickfiles-simple.js",
     "test:all": "npm run test && npm run test:legacy && npm run test:simple"
   },
+  "keywords": [
+    "mcp",
+    "files",
+    "quickfiles"
+  ],
+  "license": "MIT",
   "dependencies": {
-    "@modelcontextprotocol/sdk": "latest",
-    "jsboige-mcp-servers": "file:../.."
+    "@modelcontextprotocol/sdk": "latest"
   },
   "devDependencies": {
     "@types/jest": "^29.5.12",
@@ -23,31 +34,5 @@
     "mock-fs": "^5.2.0",
     "ts-jest": "^29.1.2",
     "typescript": "^5.0.0"
-  },
-  "jest": {
-    "transform": {},
-    "extensionsToTreatAsEsm": [
-      ".ts",
-      ".js"
-    ],
-    "moduleNameMapper": {
-      "^(\\.{1,2}/.*)\\.js$": "$1"
-    },
-    "testEnvironment": "node",
-    "testMatch": [
-      "**/__tests__/**/*.test.js",
-      "**/__tests__/**/*.test.ts"
-    ],
-    "collectCoverage": true,
-    "coverageDirectory": "coverage",
-    "coverageReporters": [
-      "text",
-      "lcov"
-    ],
-    "collectCoverageFrom": [
-      "build/**/*.js",
-      "!**/node_modules/**",
-      "!**/__tests__/**"
-    ]
   }
 }

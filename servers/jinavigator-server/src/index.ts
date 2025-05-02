@@ -1,3 +1,16 @@
+/**
+ * @fileoverview Serveur MCP JinaNavigator
+ *
+ * Ce module implémente un serveur MCP (Model Context Protocol) qui utilise l'API Jina
+ * pour convertir des pages web en Markdown. Le serveur expose trois outils principaux :
+ * - convert_web_to_markdown : Convertit une page web en Markdown
+ * - access_jina_resource : Accède au contenu Markdown via un URI au format jina://{url}
+ * - multi_convert : Convertit plusieurs pages web en parallèle
+ *
+ * @author JinaNavigator Team
+ * @version 1.0.0
+ */
+
 import { Server } from '@modelcontextprotocol/sdk/server/index.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import {
@@ -9,11 +22,26 @@ import {
 } from '@modelcontextprotocol/sdk/types.js';
 import axios from 'axios';
 
-// Interface pour les entrées et sorties d'outils
+/**
+ * Interface générique pour les entrées d'outils
+ * Permet de typer les paramètres d'entrée des outils MCP
+ *
+ * @interface ToolInput
+ */
 interface ToolInput {
   [key: string]: any;
 }
 
+/**
+ * Interface pour les sorties d'outils
+ * Définit la structure de retour des outils MCP
+ *
+ * @interface ToolOutput
+ * @property {any} [result] - Résultat de l'opération en cas de succès
+ * @property {Object} [error] - Informations d'erreur en cas d'échec
+ * @property {string} error.message - Message d'erreur
+ * @property {any} [error.details] - Détails supplémentaires sur l'erreur
+ */
 interface ToolOutput {
   result?: any;
   error?: {
@@ -22,19 +50,34 @@ interface ToolOutput {
   };
 }
 
-// Interface pour nos outils
+/**
+ * Interface pour les outils JinaNavigator
+ * Étend l'interface Tool du SDK MCP avec une méthode d'exécution
+ *
+ * @interface JinaTool
+ * @extends Tool
+ * @property {Function} execute - Fonction d'exécution de l'outil
+ */
 interface JinaTool extends Tool {
   execute: (input: ToolInput) => Promise<ToolOutput>;
 }
 
 /**
- * Serveur MCP Jinavigator
+ * Serveur MCP JinaNavigator
  *
  * Ce serveur MCP utilise l'API Jina pour convertir des pages web en Markdown.
  * L'API Jina fonctionne en ajoutant l'URL cible comme suffixe à l'URL de base "https://r.jina.ai/".
  */
 
-// Définition du schéma d'entrée pour l'outil de conversion
+/**
+ * Schéma d'entrée pour l'outil convert_web_to_markdown
+ * Définit la structure des paramètres attendus pour la conversion d'une page web en Markdown
+ *
+ * @constant {Object} convertWebToMarkdownSchema
+ * @property {string} url - URL de la page web à convertir en Markdown
+ * @property {number} [start_line] - Ligne de début pour extraire une partie spécifique du contenu
+ * @property {number} [end_line] - Ligne de fin pour extraire une partie spécifique du contenu
+ */
 const convertWebToMarkdownSchema = {
   type: "object" as const,
   properties: {
@@ -54,7 +97,16 @@ const convertWebToMarkdownSchema = {
   required: ['url']
 };
 
-// Définition du schéma d'entrée pour l'outil de conversion multi-URLs
+/**
+ * Schéma d'entrée pour l'outil multi_convert
+ * Définit la structure des paramètres attendus pour la conversion de plusieurs pages web en Markdown
+ *
+ * @constant {Object} convertMultipleWebsToMarkdownSchema
+ * @property {Array<Object>} urls - Liste des URLs à convertir avec leurs paramètres
+ * @property {string} urls[].url - URL de la page web à convertir
+ * @property {number} [urls[].start_line] - Ligne de début pour l'extrait
+ * @property {number} [urls[].end_line] - Ligne de fin pour l'extrait
+ */
 const convertMultipleWebsToMarkdownSchema = {
   type: "object" as const,
   properties: {
@@ -84,7 +136,11 @@ const convertMultipleWebsToMarkdownSchema = {
   required: ['urls']
 };
 
-// Création du serveur MCP
+/**
+ * Création du serveur MCP JinaNavigator
+ *
+ * @constant {Server} server
+ */
 const server = new Server(
   {
     name: 'jinavigator',
@@ -97,7 +153,13 @@ const server = new Server(
   }
 );
 
-// Définition de l'outil de conversion
+/**
+ * Outil de conversion de pages web en Markdown
+ * Cet outil permet de convertir n'importe quelle page web en format Markdown
+ * en utilisant l'API Jina, avec possibilité de filtrer le contenu par numéros de ligne
+ *
+ * @constant {JinaTool} convertWebToMarkdownTool
+ */
 const convertWebToMarkdownTool: JinaTool = {
   name: 'convert_web_to_markdown',
   description: 'Convertit une page web en Markdown en utilisant l\'API Jina',
@@ -152,7 +214,19 @@ const convertWebToMarkdownTool: JinaTool = {
   }
 };
 
-// Fonction utilitaire pour convertir une URL en Markdown via Jina
+/**
+ * Fonction utilitaire pour convertir une URL en Markdown via l'API Jina
+ * Cette fonction est utilisée par les différents outils du serveur pour
+ * effectuer la conversion et le filtrage du contenu
+ *
+ * @async
+ * @function convertUrlToMarkdown
+ * @param {string} url - URL de la page web à convertir
+ * @param {number} [startLine] - Ligne de début pour filtrer le contenu (optionnel)
+ * @param {number} [endLine] - Ligne de fin pour filtrer le contenu (optionnel)
+ * @returns {Promise<string>} Contenu Markdown de la page web, éventuellement filtré
+ * @throws {Error} En cas d'erreur lors de la conversion
+ */
 async function convertUrlToMarkdown(url: string, startLine?: number, endLine?: number): Promise<string> {
   try {
     // Construction de l'URL Jina
@@ -182,7 +256,16 @@ async function convertUrlToMarkdown(url: string, startLine?: number, endLine?: n
   }
 }
 
-// Définition du schéma d'entrée pour l'outil d'accès aux ressources Jina
+/**
+ * Schéma d'entrée pour l'outil access_jina_resource
+ * Définit la structure des paramètres attendus pour accéder au contenu
+ * d'une page web via un URI au format jina://{url}
+ *
+ * @constant {Object} accessJinaResourceSchema
+ * @property {string} uri - URI au format jina://{url}
+ * @property {number} [start_line] - Ligne de début pour l'extrait (optionnel)
+ * @property {number} [end_line] - Ligne de fin pour l'extrait (optionnel)
+ */
 const accessJinaResourceSchema = {
   type: "object" as const,
   properties: {
@@ -202,7 +285,13 @@ const accessJinaResourceSchema = {
   required: ['uri']
 };
 
-// Définition de l'outil d'accès aux ressources Jina
+/**
+ * Outil d'accès aux ressources via URI Jina
+ * Cet outil permet d'accéder au contenu Markdown d'une page web
+ * via un URI standardisé au format jina://{url}
+ *
+ * @constant {JinaTool} accessJinaResourceTool
+ */
 const accessJinaResourceTool: JinaTool = {
   name: 'access_jina_resource',
   description: 'Accède au contenu Markdown d\'une page web via un URI au format jina://{url}',
@@ -246,7 +335,13 @@ const accessJinaResourceTool: JinaTool = {
   }
 };
 
-// Définition de l'outil de conversion multi-URLs
+/**
+ * Outil de conversion multiple de pages web en Markdown
+ * Cet outil permet de convertir plusieurs pages web en Markdown
+ * en une seule requête, avec traitement parallèle des URLs
+ *
+ * @constant {JinaTool} convertMultipleWebsToMarkdownTool
+ */
 const convertMultipleWebsToMarkdownTool: JinaTool = {
   name: 'multi_convert',
   description: 'Convertit plusieurs pages web en Markdown en une seule requête',
@@ -294,7 +389,13 @@ const convertMultipleWebsToMarkdownTool: JinaTool = {
   }
 };
 
-// Configuration du serveur
+/**
+ * Configuration du gestionnaire de liste d'outils
+ * Cette fonction répond aux requêtes de liste des outils disponibles
+ * en renvoyant les métadonnées des trois outils du serveur
+ *
+ * @function setRequestHandler
+ */
 server.setRequestHandler(ListToolsRequestSchema, async () => {
   const tools = [
     {
@@ -317,7 +418,17 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
   return { tools };
 });
 
-// Gestion des appels d'outils
+/**
+ * Gestionnaire des appels d'outils
+ * Cette fonction traite les requêtes d'exécution d'outils,
+ * trouve l'outil correspondant, l'exécute et formate la réponse
+ * selon les attentes du SDK MCP
+ *
+ * @function setRequestHandler
+ * @param {Object} request - Requête d'appel d'outil
+ * @param {Object} extra - Informations supplémentaires sur la requête
+ * @throws {McpError} Si l'outil demandé n'existe pas ou si une erreur survient
+ */
 server.setRequestHandler(CallToolRequestSchema, async (request, extra) => {
   const toolName = request.params.name;
   const args = request.params.arguments || {};
@@ -385,14 +496,24 @@ server.setRequestHandler(CallToolRequestSchema, async (request, extra) => {
   }
 });
 
-// Gestion des erreurs
+/**
+ * Configuration de la gestion des erreurs
+ * Enregistre les erreurs dans la console et gère l'arrêt propre du serveur
+ */
 server.onerror = (error) => console.error('[MCP Error]', error);
 process.on('SIGINT', async () => {
   await server.close();
   process.exit(0);
 });
 
-// Démarrage du serveur
+/**
+ * Fonction de démarrage du serveur
+ * Initialise le transport stdio et connecte le serveur
+ *
+ * @async
+ * @function run
+ * @returns {Promise<void>}
+ */
 async function run() {
   try {
     console.log('Initialisation du serveur MCP Jinavigator...');
