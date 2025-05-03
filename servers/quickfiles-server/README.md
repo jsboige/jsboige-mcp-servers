@@ -10,13 +10,16 @@ Ce serveur MCP fournit des méthodes pour lire rapidement le contenu de réperto
 - **Limitation de lignes** : option pour limiter le nombre de lignes lues par fichier
 - **Listage de répertoires** : liste le contenu des répertoires avec des informations détaillées (taille, type, nombre de lignes pour les fichiers texte)
 - **Navigation récursive** : option pour lister récursivement les sous-répertoires
+- **Filtrage par motif glob** : filtre les fichiers selon un motif glob (ex: *.js, *.{js,ts})
+- **Tri personnalisable** : tri des fichiers et répertoires selon différents critères (nom, taille, date de modification, type)
+- **Ordre de tri configurable** : tri ascendant ou descendant
 - **Suppression de fichiers** : supprime plusieurs fichiers en une seule opération
 - **Édition multiple de fichiers** : applique des modifications à plusieurs fichiers en une seule opération
 
 ## Outils MCP exposés
 
 1. `read_multiple_files` : Lit plusieurs fichiers en une seule requête avec numérotation de lignes optionnelle et extraits de fichiers
-2. `list_directory_contents` : Liste tous les fichiers et répertoires sous un chemin donné, avec la taille des fichiers
+2. `list_directory_contents` : Liste tous les fichiers et répertoires sous un chemin donné, avec la taille des fichiers et options de filtrage et tri
 3. `delete_files` : Supprime une liste de fichiers en une seule opération
 4. `edit_multiple_files` : Édite plusieurs fichiers en une seule opération en appliquant des diffs
 
@@ -68,6 +71,9 @@ Pour exécuter le script de démonstration :
 ```bash
 # Exécuter la démonstration des fonctionnalités
 node test-quickfiles-demo.js
+
+# Exécuter la démonstration des fonctionnalités de tri et filtrage
+node test-quickfiles-sort.js
 ```
 
 Ce script de démonstration montre comment utiliser les principales fonctionnalités du serveur MCP quickfiles, notamment :
@@ -75,6 +81,8 @@ Ce script de démonstration montre comment utiliser les principales fonctionnali
 - Lire plusieurs fichiers avec numérotation de lignes
 - Lire des extraits spécifiques de fichiers
 - Lister le contenu d'un répertoire
+- Filtrer les fichiers par motif glob
+- Trier les fichiers selon différents critères
 
 ## Exemples d'utilisation
 
@@ -120,6 +128,39 @@ const result = await client.callTool('quickfiles-server', 'list_directory_conten
     {
       path: 'chemin/vers/repertoire',
       recursive: true  // Lister récursivement
+    }
+  ],
+  max_lines: 1000
+});
+```
+
+### Listage avec filtrage par motif glob
+
+```javascript
+// Exemple d'appel à l'outil list_directory_contents avec filtrage
+const result = await client.callTool('quickfiles-server', 'list_directory_contents', {
+  paths: [
+    {
+      path: 'chemin/vers/repertoire',
+      recursive: true,
+      file_pattern: '*.js'  // Ne lister que les fichiers JavaScript
+    }
+  ],
+  max_lines: 1000
+});
+```
+
+### Listage avec tri personnalisé
+
+```javascript
+// Exemple d'appel à l'outil list_directory_contents avec tri par taille
+const result = await client.callTool('quickfiles-server', 'list_directory_contents', {
+  paths: [
+    {
+      path: 'chemin/vers/repertoire',
+      recursive: true,
+      sort_by: 'size',        // Trier par taille
+      sort_order: 'desc'      // Ordre descendant (du plus grand au plus petit)
     }
   ],
   max_lines: 1000
@@ -189,6 +230,118 @@ const result = await client.callTool('quickfiles-server', 'edit_multiple_files',
           replace: 'const VERSION = "1.1.0"'
         }
       ]
+    }
+  ]
+});
+```
+
+## Fonctionnalités de filtrage et de tri
+
+### Filtrage par motif glob
+
+L'outil `list_directory_contents` permet de filtrer les fichiers selon un motif glob. Cette fonctionnalité est particulièrement utile pour ne lister que les fichiers correspondant à un certain pattern.
+
+#### Syntaxe des motifs glob supportés
+
+- `*` : correspond à n'importe quelle séquence de caractères (sauf les séparateurs de chemin)
+- `?` : correspond à un seul caractère
+- `{a,b,c}` : correspond à l'un des motifs a, b ou c
+
+#### Exemples de motifs glob
+
+- `*.js` : tous les fichiers JavaScript
+- `*.{js,ts}` : tous les fichiers JavaScript et TypeScript
+- `data*.json` : tous les fichiers JSON commençant par "data"
+- `test?.js` : fichiers comme "test1.js", "testA.js", mais pas "test10.js"
+
+#### Options de filtrage
+
+Le filtrage peut être appliqué :
+- Globalement à tous les répertoires listés via le paramètre `file_pattern` au niveau racine
+- Individuellement à chaque répertoire via le paramètre `file_pattern` dans l'objet de configuration du répertoire
+
+```javascript
+// Filtrage global
+const result = await client.callTool('quickfiles-server', 'list_directory_contents', {
+  paths: ['src', 'lib'],
+  file_pattern: '*.js'  // Appliqué à tous les répertoires
+});
+
+// Filtrage individuel
+const result = await client.callTool('quickfiles-server', 'list_directory_contents', {
+  paths: [
+    {
+      path: 'src',
+      file_pattern: '*.ts'  // Uniquement les fichiers .ts dans src
+    },
+    {
+      path: 'lib',
+      file_pattern: '*.js'  // Uniquement les fichiers .js dans lib
+    }
+  ]
+});
+```
+
+### Tri des fichiers et répertoires
+
+L'outil `list_directory_contents` permet de trier les fichiers et répertoires selon différents critères.
+
+#### Critères de tri disponibles
+
+- `name` : tri alphabétique par nom (insensible à la casse)
+- `size` : tri par taille (en octets)
+- `modified` : tri par date de modification
+- `type` : tri par type (répertoires d'abord, puis fichiers)
+
+#### Ordre de tri
+
+- `asc` : ordre ascendant (A à Z, du plus petit au plus grand, du plus ancien au plus récent)
+- `desc` : ordre descendant (Z à A, du plus grand au plus petit, du plus récent au plus ancien)
+
+#### Options de tri
+
+Le tri peut être appliqué :
+- Globalement à tous les répertoires listés via les paramètres `sort_by` et `sort_order` au niveau racine
+- Individuellement à chaque répertoire via les paramètres `sort_by` et `sort_order` dans l'objet de configuration du répertoire
+
+```javascript
+// Tri global
+const result = await client.callTool('quickfiles-server', 'list_directory_contents', {
+  paths: ['src', 'lib'],
+  sort_by: 'modified',    // Trier par date de modification
+  sort_order: 'desc'      // Du plus récent au plus ancien
+});
+
+// Tri individuel
+const result = await client.callTool('quickfiles-server', 'list_directory_contents', {
+  paths: [
+    {
+      path: 'src',
+      sort_by: 'size',      // Trier par taille
+      sort_order: 'desc'    // Du plus grand au plus petit
+    },
+    {
+      path: 'lib',
+      sort_by: 'name',      // Trier par nom
+      sort_order: 'asc'     // Ordre alphabétique
+    }
+  ]
+});
+```
+
+### Combinaison de filtrage et tri
+
+Les options de filtrage et de tri peuvent être combinées pour obtenir des résultats précis.
+
+```javascript
+// Combinaison de filtrage et tri
+const result = await client.callTool('quickfiles-server', 'list_directory_contents', {
+  paths: [
+    {
+      path: 'src',
+      file_pattern: '*.{js,ts}',  // Fichiers JavaScript et TypeScript
+      sort_by: 'modified',        // Triés par date de modification
+      sort_order: 'desc'          // Du plus récent au plus ancien
     }
   ]
 });
@@ -330,6 +483,22 @@ const result = await client.callTool('quickfiles-server', 'edit_multiple_files',
                 "type": "boolean",
                 "description": "Lister récursivement les sous-répertoires",
                 "default": true
+              },
+              "file_pattern": {
+                "type": "string",
+                "description": "Motif glob pour filtrer les fichiers (ex: *.js, *.{js,ts})"
+              },
+              "sort_by": {
+                "type": "string",
+                "enum": ["name", "size", "modified", "type"],
+                "description": "Critère de tri des fichiers et répertoires",
+                "default": "name"
+              },
+              "sort_order": {
+                "type": "string",
+                "enum": ["asc", "desc"],
+                "description": "Ordre de tri (ascendant ou descendant)",
+                "default": "asc"
               }
             },
             "required": ["path"]
@@ -343,6 +512,22 @@ const result = await client.callTool('quickfiles-server', 'edit_multiple_files',
       "type": "number",
       "description": "Nombre maximum de lignes à afficher dans la sortie",
       "default": 2000
+    },
+    "file_pattern": {
+      "type": "string",
+      "description": "Motif glob global pour filtrer les fichiers (ex: *.js, *.{js,ts})"
+    },
+    "sort_by": {
+      "type": "string",
+      "enum": ["name", "size", "modified", "type"],
+      "description": "Critère de tri global des fichiers et répertoires",
+      "default": "name"
+    },
+    "sort_order": {
+      "type": "string",
+      "enum": ["asc", "desc"],
+      "description": "Ordre de tri global (ascendant ou descendant)",
+      "default": "asc"
     }
   },
   "required": ["paths"]
@@ -619,5 +804,4 @@ Le dépôt inclut des fichiers de démonstration pour tester facilement les fonc
 
 - `demo-file1.txt` et `demo-file2.txt` : Fichiers texte simples pour tester la lecture
 - `test-quickfiles-demo.js` : Script de démonstration qui montre comment utiliser les principales fonctionnalités
-
-Ces fichiers peuvent être utilisés comme point de départ pour vos propres tests et intégrations.
+- `test-quickfiles-sort.js` : Script de démonstration qui montre comment utiliser les fonctionnalités de tri et filtrage
