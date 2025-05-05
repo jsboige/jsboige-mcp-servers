@@ -65,6 +65,8 @@ async function runTests() {
     
     // Méthodes à essayer pour appeler read_multiple_files
     const methods = [
+      'tools/call',
+      // Anciennes méthodes pour compatibilité avec les tests existants
       'call_tool',
       'mcp.call_tool',
       'callTool',
