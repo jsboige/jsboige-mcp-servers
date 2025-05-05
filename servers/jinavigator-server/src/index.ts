@@ -137,6 +137,42 @@ const convertMultipleWebsToMarkdownSchema = {
 };
 
 /**
+ * Schéma d'entrée pour l'outil extract_markdown_outline
+ * Définit la structure des paramètres attendus pour extraire le plan des titres markdown
+ * à partir d'une liste d'URLs
+ *
+ * @constant {Object} extractMarkdownOutlineSchema
+ * @property {Array<Object>} urls - Liste des URLs à analyser
+ * @property {string} urls[].url - URL de la page web à analyser
+ * @property {number} [max_depth=3] - Profondeur maximale des titres à extraire (1=h1, 2=h1+h2, etc.)
+ */
+const extractMarkdownOutlineSchema = {
+  type: "object" as const,
+  properties: {
+    urls: {
+      type: "array",
+      items: {
+        type: "object",
+        properties: {
+          url: {
+            type: "string",
+            description: 'URL de la page web dont on veut extraire le plan des titres'
+          }
+        },
+        required: ['url']
+      },
+      description: 'Liste des URLs à analyser pour extraire le plan des titres'
+    },
+    max_depth: {
+      type: "number",
+      description: 'Profondeur maximale des titres à extraire (1=h1, 2=h1+h2, etc.)',
+      default: 3
+    }
+  },
+  required: ['urls']
+};
+
+/**
  * Création du serveur MCP JinaNavigator
  *
  * @constant {Server} server
@@ -254,6 +290,89 @@ async function convertUrlToMarkdown(url: string, startLine?: number, endLine?: n
     }
     throw new Error(`Erreur inattendue: ${(error as Error).message}`);
   }
+}
+
+/**
+ * Interface pour représenter un titre dans le plan
+ *
+ * @interface HeadingNode
+ * @property {number} level - Niveau du titre (1 pour H1, 2 pour H2, etc.)
+ * @property {string} text - Texte du titre
+ * @property {number} line - Numéro de ligne où se trouve le titre
+ * @property {HeadingNode[]} [children] - Sous-titres (enfants) de ce titre
+ */
+interface HeadingNode {
+  level: number;
+  text: string;
+  line: number;
+  children?: HeadingNode[];
+}
+
+/**
+ * Fonction utilitaire pour extraire le plan des titres d'un contenu Markdown
+ * Cette fonction analyse le contenu ligne par ligne pour identifier les titres
+ * et leur niveau, en enregistrant également leur numéro de ligne
+ *
+ * @function extractMarkdownOutline
+ * @param {string} markdownContent - Contenu Markdown à analyser
+ * @param {number} [maxDepth=3] - Profondeur maximale des titres à extraire (1=h1, 2=h1+h2, etc.)
+ * @returns {Array<HeadingNode>} Structure hiérarchique des titres avec leur niveau, texte et numéro de ligne
+ */
+function extractMarkdownOutline(markdownContent: string, maxDepth: number = 3): Array<HeadingNode> {
+  const lines = markdownContent.split('\n');
+  const flatHeadings: Array<HeadingNode> = [];
+  
+  // Expression régulière pour détecter les titres markdown (# Titre)
+  const headingRegex = /^(#{1,6})\s+(.+)$/;
+  
+  // Première passe : extraire tous les titres jusqu'au niveau maxDepth
+  lines.forEach((line, index) => {
+    const match = line.match(headingRegex);
+    if (match) {
+      const level = match[1].length; // Nombre de # = niveau du titre
+      const text = match[2].trim();  // Texte du titre sans les # et espaces
+      
+      // Ne garder que les titres jusqu'au niveau maxDepth
+      if (level <= maxDepth) {
+        flatHeadings.push({
+          level,
+          text,
+          line: index + 1 // Les numéros de ligne commencent à 1
+        });
+      }
+    }
+  });
+  
+  // Deuxième passe : construire la structure hiérarchique
+  const rootHeadings: Array<HeadingNode> = [];
+  const headingStack: Array<HeadingNode> = [];
+  
+  flatHeadings.forEach(heading => {
+    // Vider la pile jusqu'à trouver un parent approprié
+    while (
+      headingStack.length > 0 &&
+      headingStack[headingStack.length - 1].level >= heading.level
+    ) {
+      headingStack.pop();
+    }
+    
+    // Si la pile est vide, c'est un titre racine
+    if (headingStack.length === 0) {
+      rootHeadings.push(heading);
+    } else {
+      // Sinon, c'est un enfant du dernier titre dans la pile
+      const parent = headingStack[headingStack.length - 1];
+      if (!parent.children) {
+        parent.children = [];
+      }
+      parent.children.push(heading);
+    }
+    
+    // Ajouter le titre courant à la pile
+    headingStack.push(heading);
+  });
+  
+  return rootHeadings;
 }
 
 /**
@@ -390,9 +509,73 @@ const convertMultipleWebsToMarkdownTool: JinaTool = {
 };
 
 /**
+ * Outil d'extraction du plan des titres Markdown
+ * Cet outil permet d'extraire le plan des titres (headings) d'une ou plusieurs pages web
+ * avec leurs numéros de ligne, en utilisant l'API Jina pour la conversion en Markdown.
+ *
+ * L'outil retourne une structure hiérarchique des titres, où chaque titre peut contenir
+ * des sous-titres (enfants) de niveau inférieur, permettant ainsi de visualiser la structure
+ * complète du document.
+ *
+ * @constant {JinaTool} extractMarkdownOutlineTool
+ */
+const extractMarkdownOutlineTool: JinaTool = {
+  name: 'extract_markdown_outline',
+  description: 'Extrait le plan hiérarchique des titres markdown avec numéros de ligne à partir d\'une liste d\'URLs',
+  inputSchema: extractMarkdownOutlineSchema,
+  execute: async (input: ToolInput): Promise<ToolOutput> => {
+    try {
+      const { urls, max_depth = 3 } = input as {
+        urls: Array<{ url: string }>;
+        max_depth?: number;
+      };
+      
+      // Validation de la profondeur maximale
+      const validatedMaxDepth = Math.min(Math.max(1, max_depth), 6); // Entre 1 et 6
+      
+      // Traitement de chaque URL en parallèle
+      const results = await Promise.all(
+        urls.map(async ({ url }) => {
+          try {
+            // Conversion de l'URL en Markdown
+            const markdown = await convertUrlToMarkdown(url);
+            
+            // Extraction du plan hiérarchique des titres
+            const outline = extractMarkdownOutline(markdown, validatedMaxDepth);
+            
+            return {
+              url,
+              success: true,
+              max_depth: validatedMaxDepth,
+              outline
+            };
+          } catch (error) {
+            return {
+              url,
+              success: false,
+              error: (error as Error).message
+            };
+          }
+        })
+      );
+      
+      return {
+        result: results
+      };
+    } catch (error) {
+      return {
+        error: {
+          message: `Erreur lors de l'extraction du plan des titres: ${(error as Error).message}`
+        }
+      };
+    }
+  }
+};
+
+/**
  * Configuration du gestionnaire de liste d'outils
  * Cette fonction répond aux requêtes de liste des outils disponibles
- * en renvoyant les métadonnées des trois outils du serveur
+ * en renvoyant les métadonnées des quatre outils du serveur
  *
  * @function setRequestHandler
  */
@@ -412,6 +595,11 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
       name: convertMultipleWebsToMarkdownTool.name,
       description: convertMultipleWebsToMarkdownTool.description,
       inputSchema: convertMultipleWebsToMarkdownTool.inputSchema
+    },
+    {
+      name: extractMarkdownOutlineTool.name,
+      description: extractMarkdownOutlineTool.description,
+      inputSchema: extractMarkdownOutlineTool.inputSchema
     }
   ];
   
@@ -434,7 +622,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request, extra) => {
   const args = request.params.arguments || {};
   
   // Trouver l'outil correspondant
-  const allTools = [convertWebToMarkdownTool, accessJinaResourceTool, convertMultipleWebsToMarkdownTool];
+  const allTools = [convertWebToMarkdownTool, accessJinaResourceTool, convertMultipleWebsToMarkdownTool, extractMarkdownOutlineTool];
   const tool = allTools.find(t => t.name === toolName) as JinaTool;
   
   if (!tool) {
@@ -468,6 +656,14 @@ server.setRequestHandler(CallToolRequestSchema, async (request, extra) => {
       }];
     } else if (toolName === 'multi_convert') {
       // Pour l'outil multi_convert, on crée un objet JSON formaté
+      const resultsText = JSON.stringify(result.result, null, 2);
+      formattedContent = [{
+        type: 'text',
+        text: resultsText,
+        mime: 'application/json'
+      }];
+    } else if (toolName === 'extract_markdown_outline') {
+      // Pour l'outil extract_markdown_outline, on crée un objet JSON formaté
       const resultsText = JSON.stringify(result.result, null, 2);
       formattedContent = [{
         type: 'text',
