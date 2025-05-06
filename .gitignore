@@ -8,6 +8,7 @@ yarn.lock
 
 # Fichiers de configuration réels (les exemples sont versionnés)
 **/config.json
+**/mcp_settings.json
 .env
 .env.local
 .env.development.local

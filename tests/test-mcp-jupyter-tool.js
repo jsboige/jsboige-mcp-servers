@@ -2,9 +2,15 @@
  * Script de test pour simuler un appel d'outil MCP Jupyter
  */
 
-const fs = require('fs');
-const path = require('path');
-const { spawn } = require('child_process');
+import fs from 'fs';
+import path from 'path';
+import { spawn } from 'child_process';
+import { fileURLToPath } from 'url';
+import { dirname } from 'path';
+
+// Obtenir le chemin du répertoire actuel en ES modules
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = dirname(__filename);
 
 // Fonction pour simuler un appel d'outil MCP
 function simulateMcpToolCall(serverName, toolName, args) {

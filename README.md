@@ -45,7 +45,7 @@ Un serveur MCP qui fournit des méthodes pour lire rapidement le contenu de rép
 
 [En savoir plus sur QuickFiles Server](servers/quickfiles-server/README.md)
 
-#### Jupyter MCP Server (Fonctionnel)
+#### Jupyter MCP Server (Fonctionnel avec limitations)
 
 Un serveur MCP qui permet d'interagir avec des notebooks Jupyter:
 - Gestion des notebooks (lecture, création, modification)
@@ -55,6 +55,8 @@ Un serveur MCP qui permet d'interagir avec des notebooks Jupyter:
 - Tests unitaires complets pour toutes les fonctionnalités
 - Tests de performance et de gestion d'erreurs
 - Documentation détaillée avec exemples d'utilisation
+
+> **Note**: Le serveur MCP Jupyter peut présenter des problèmes d'authentification dans certaines configurations. Consultez le [Guide de dépannage du MCP Jupyter](docs/jupyter-mcp-troubleshooting.md) pour les solutions recommandées.
 
 [En savoir plus sur Jupyter MCP Server](servers/jupyter-mcp-server/README.md)
 
@@ -111,7 +113,17 @@ npm run build
 cd servers/jupyter-mcp-server
 npm install
 npm run build
-# Assurez-vous d'avoir un serveur Jupyter en cours d'exécution sur http://localhost:8888
+
+# Démarrez un serveur Jupyter avec les options recommandées
+jupyter notebook --NotebookApp.token=test_token --NotebookApp.allow_origin='*' --no-browser
+
+# Configurez le fichier config.json avec le même token
+echo '{
+  "jupyterServer": {
+    "baseUrl": "http://localhost:8888",
+    "token": "test_token"
+  }
+}' > config.json
 ```
 
 #### JinaNavigator Server
@@ -135,7 +147,8 @@ npm start
 # Démarrer le serveur Jupyter MCP
 cd servers/jupyter-mcp-server
 npm start
-# Note: Assurez-vous que le serveur Jupyter est en cours d'exécution
+# Note: Assurez-vous que le serveur Jupyter est en cours d'exécution avec le bon token
+# jupyter notebook --NotebookApp.token=test_token --NotebookApp.allow_origin='*' --no-browser
 
 # Démarrer le serveur JinaNavigator
 cd servers/jinavigator-server
@@ -193,7 +206,16 @@ Utilisateur: Crée un notebook Python qui analyse des données.
 LLM: Je vais créer un notebook pour vous.
 [Utilisation de l'outil jupyter-mcp-server.create_notebook avec les paramètres {"path": "analyse_donnees.ipynb", "kernel": "python3"}]
 J'ai créé un nouveau notebook. Maintenant, je vais ajouter du code pour analyser des données...
+
+[Utilisation de l'outil jupyter-mcp-server.add_cell avec les paramètres {"path": "analyse_donnees.ipynb", "cell_type": "code", "source": "import pandas as pd\nimport matplotlib.pyplot as plt\nimport numpy as np\n\n# Créer des données d'exemple\ndata = {'x': np.random.rand(100), 'y': np.random.rand(100)}\ndf = pd.DataFrame(data)\ndf.plot.scatter(x='x', y='y')\nplt.show()"}]
+
+Le notebook a été créé avec succès avec une cellule de code pour l'analyse de données.
 ```
+
+> **Bonnes pratiques**: Pour éviter les erreurs 403 Forbidden, assurez-vous que:
+> 1. Le token dans config.json correspond exactement au token du serveur Jupyter
+> 2. Le serveur Jupyter est démarré avec `--NotebookApp.allow_origin='*'`
+> 3. Consultez le [Guide de dépannage](docs/jupyter-mcp-troubleshooting.md) pour plus de détails
 
 #### JinaNavigator Server
 ```
@@ -263,7 +285,9 @@ Pour contribuer:
 
 ## Dépannage
 
-Si vous rencontrez des problèmes lors de l'installation ou de l'utilisation des serveurs MCP, consultez le [Guide de dépannage](docs/troubleshooting.md).
+Si vous rencontrez des problèmes lors de l'installation ou de l'utilisation des serveurs MCP, consultez:
+- [Guide de dépannage général](docs/troubleshooting.md)
+- [Guide de dépannage du MCP Jupyter](docs/jupyter-mcp-troubleshooting.md)
 
 ## Licence
 
