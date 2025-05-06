@@ -4,11 +4,17 @@
  * sur l'état de la connexion au serveur Jupyter.
  */
 
-const axios = require('axios');
-const fs = require('fs');
-const path = require('path');
-const { spawn } = require('child_process');
-const net = require('net');
+import axios from 'axios';
+import fs from 'fs';
+import path from 'path';
+import { spawn } from 'child_process';
+import net from 'net';
+import { fileURLToPath } from 'url';
+import { dirname } from 'path';
+
+// Obtenir le chemin du répertoire actuel en ES modules
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = dirname(__filename);
 
 // Couleurs pour la console
 const colors = {
@@ -35,7 +41,7 @@ let config = {
  */
 function loadConfig() {
   try {
-    const configPath = path.join(__dirname, 'servers', 'jupyter-mcp-server', 'config.json');
+    const configPath = path.join(__dirname, '..', 'servers', 'jupyter-mcp-server', 'config.json');
     if (fs.existsSync(configPath)) {
       config = JSON.parse(fs.readFileSync(configPath, 'utf8'));
       console.log(`${colors.green}✓${colors.reset} Configuration chargée depuis ${configPath}`);

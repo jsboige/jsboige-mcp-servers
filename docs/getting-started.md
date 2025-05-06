@@ -114,33 +114,54 @@ Vous pouvez également configurer manuellement chaque serveur:
 ```bash
 # Exemple pour le serveur météo
 cp servers/api-connectors/weather-api/config.example.json servers/api-connectors/weather-api/config.json
+
+# Exemple pour le serveur Jupyter MCP
+cp servers/jupyter-mcp-server/config.example.json servers/jupyter-mcp-server/config.json
 ```
 
 2. **Éditez le fichier de configuration** avec votre éditeur préféré:
 
 ```bash
 # Exemple avec VS Code
-code servers/api-connectors/weather-api/config.json
+code servers/jupyter-mcp-server/config.json
 ```
 
-3. **Modifiez les paramètres** selon vos besoins.
-
-### Configuration des clés API
-
-De nombreux serveurs MCP nécessitent des clés API pour accéder à des services externes. Voici comment les configurer:
-
-1. **Obtenez une clé API** auprès du service concerné:
-   - Pour OpenWeatherMap: [openweathermap.org/api](https://openweathermap.org/api)
-   - Pour Google Search: [developers.google.com/custom-search](https://developers.google.com/custom-search)
-   - Etc.
-
-2. **Ajoutez la clé API** dans le fichier de configuration du serveur:
+3. **Modifiez les paramètres** selon vos besoins. Pour le serveur Jupyter MCP, assurez-vous que la configuration ressemble à ceci:
 
 ```json
+{
+  "jupyterServer": {
+    "baseUrl": "http://localhost:8888",
+    "token": "votre_token_jupyter"
+  }
+}
+```
+
+### Configuration des clés API et tokens
+
+De nombreux serveurs MCP nécessitent des clés API ou des tokens d'authentification pour accéder à des services externes. Voici comment les configurer:
+
+1. **Obtenez une clé API ou un token** auprès du service concerné:
+   - Pour OpenWeatherMap: [openweathermap.org/api](https://openweathermap.org/api)
+   - Pour Google Search: [developers.google.com/custom-search](https://developers.google.com/custom-search)
+   - Pour Jupyter: Utilisez le token généré au démarrage du serveur Jupyter ou spécifiez-en un avec `--NotebookApp.token=votre_token`
+
+2. **Ajoutez la clé API ou le token** dans le fichier de configuration du serveur:
+
+```json
+// Exemple pour un serveur API standard
 {
   "apiKey": "VOTRE_CLÉ_API_ICI",
   "endpoint": "https://api.example.com",
   "timeout": 5000
+}
+
+// Exemple pour le serveur Jupyter MCP
+{
+  "jupyterServer": {
+    "baseUrl": "http://localhost:8888",
+    "token": "VOTRE_TOKEN_JUPYTER_ICI"
+  }
 }
 ```
 
@@ -159,6 +180,10 @@ Pour démarrer un serveur MCP:
 # Exemple pour démarrer le serveur météo
 cd servers/api-connectors/weather-api
 node server.js
+
+# Exemple pour démarrer le serveur Jupyter MCP
+cd servers/jupyter-mcp-server
+node src/index.js
 ```
 
 Par défaut, le serveur démarrera sur le port 3000 (ou le port spécifié dans la configuration). Vous verrez un message indiquant que le serveur est en cours d'exécution.
@@ -169,6 +194,20 @@ Pour démarrer un serveur avec des options spécifiques:
 # Exemple pour démarrer le serveur sur un port différent
 node server.js --port 3001
 ```
+
+### Démarrer le serveur Jupyter (prérequis pour le MCP Jupyter)
+
+Avant de démarrer le serveur MCP Jupyter, vous devez démarrer un serveur Jupyter:
+
+```bash
+# Démarrer Jupyter avec les options recommandées
+jupyter notebook --NotebookApp.token=votre_token --NotebookApp.allow_origin='*' --no-browser
+```
+
+Options importantes:
+- `--NotebookApp.token=votre_token`: Définit un token d'authentification explicite (remplacez "votre_token" par un token de votre choix)
+- `--NotebookApp.allow_origin='*'`: Autorise les requêtes cross-origin (important pour l'API)
+- `--no-browser`: Empêche l'ouverture automatique du navigateur
 
 ### Connecter un serveur MCP à un LLM
 
@@ -352,9 +391,17 @@ J'ai créé un nouveau notebook. Maintenant, je vais ajouter des cellules avec d
 Le notebook a été créé avec succès. Vous pouvez maintenant l'ouvrir dans Jupyter et exécuter les cellules pour voir l'analyse de données.
 ```
 
+> **Note importante**: Pour que les outils du MCP Jupyter fonctionnent correctement, assurez-vous que:
+> 1. Le serveur Jupyter est démarré avec les bonnes options: `jupyter notebook --NotebookApp.token=votre_token --NotebookApp.allow_origin='*' --no-browser`
+> 2. Le token dans `config.json` correspond exactement au token utilisé pour démarrer le serveur Jupyter
+> 3. Si vous rencontrez des erreurs 403 Forbidden, consultez le [Guide de dépannage du MCP Jupyter](jupyter-mcp-troubleshooting.md)
+
 ## Dépannage
 
-Si vous rencontrez des problèmes lors de l'installation ou de l'utilisation des serveurs MCP, consultez le [Guide de dépannage](troubleshooting.md) pour des solutions aux problèmes courants.
+Si vous rencontrez des problèmes lors de l'installation ou de l'utilisation des serveurs MCP, consultez les guides de dépannage spécifiques:
+
+- [Guide de dépannage général](troubleshooting.md)
+- [Guide de dépannage du MCP Jupyter](jupyter-mcp-troubleshooting.md)
 
 Voici quelques problèmes fréquents:
 
@@ -362,6 +409,7 @@ Voici quelques problèmes fréquents:
 - **Erreur "EADDRINUSE"**: Le port est déjà utilisé. Essayez un autre port avec `--port`.
 - **Erreur "Invalid API key"**: Vérifiez que votre clé API est correcte et active.
 - **Le LLM ne peut pas se connecter au serveur**: Vérifiez que le serveur est en cours d'exécution et que l'URL est correcte.
+- **Erreurs 403 Forbidden avec Jupyter**: Problème d'authentification. Vérifiez que le token est correct et que vous utilisez la bonne méthode d'authentification.
 
 ## Ressources supplémentaires
 

@@ -2,9 +2,15 @@
  * Script de test pour vérifier la connexion au serveur MCP Jupyter
  */
 
-const { spawn } = require('child_process');
-const fs = require('fs');
-const path = require('path');
+import { spawn } from 'child_process';
+import fs from 'fs';
+import path from 'path';
+import { fileURLToPath } from 'url';
+import { dirname } from 'path';
+
+// Obtenir le chemin du répertoire actuel en ES modules
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = dirname(__filename);
 
 // Fonction pour exécuter une commande et capturer sa sortie
 function executeCommand(command, args) {
@@ -35,7 +41,7 @@ function executeCommand(command, args) {
 async function testJupyterConnection() {
   try {
     // Lire la configuration
-    const configPath = path.join(__dirname, 'servers', 'jupyter-mcp-server', 'config.json');
+    const configPath = path.join(__dirname, '..', 'servers', 'jupyter-mcp-server', 'config.json');
     const config = JSON.parse(fs.readFileSync(configPath, 'utf8'));
     
     // Construire l'URL avec le token
@@ -44,11 +50,18 @@ async function testJupyterConnection() {
     console.log(`Tentative de connexion à ${url}...`);
     
     // Tester la connexion avec curl
-    const result = await executeCommand('curl', ['-s', '-I', url]);
+    const result = await executeCommand('curl', ['-s', url]);
     console.log('Résultat de la requête:');
     console.log(result.stdout);
     
-    return result.stdout.includes('200 OK');
+    // Vérifier si la réponse est un tableau JSON valide
+    try {
+      const response = JSON.parse(result.stdout);
+      return Array.isArray(response);
+    } catch (e) {
+      console.error('Erreur lors de l\'analyse de la réponse JSON:', e);
+      return false;
+    }
   } catch (error) {
     console.error('Erreur lors du test de connexion:', error);
     return false;

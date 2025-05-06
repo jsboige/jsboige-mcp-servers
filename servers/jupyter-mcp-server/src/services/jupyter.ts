@@ -16,6 +16,9 @@ let sessionManager: SessionManager;
 // Map pour stocker les kernels actifs
 const activeKernels = new Map<string, any>();
 
+// Version de l'API Jupyter
+let jupyterApiVersion: string | null = null;
+
 /**
  * Initialise les services Jupyter avec les paramètres fournis
  * @param options Options de configuration pour la connexion au serveur Jupyter
@@ -27,30 +30,40 @@ export async function initializeJupyterServices(options?: {
   try {
     // Mettre à jour les paramètres si fournis
     if (options) {
-      // Conserver l'URL de base sans modification
+      // Normaliser l'URL de base
       let baseUrl = options.baseUrl || 'http://localhost:8888';
-      let wsUrl = options.baseUrl?.replace('http', 'ws') || 'ws://localhost:8888';
+      baseUrl = baseUrl.endsWith('/') ? baseUrl.slice(0, -1) : baseUrl;
       
-      // Stocker le token séparément pour l'utiliser dans les requêtes
-      // NOTE: Le token est crucial pour l'authentification, mais peut causer des erreurs 403
-      // si le format ou la méthode d'authentification n'est pas compatible avec le serveur Jupyter
+      let wsUrl = baseUrl.replace('http', 'ws');
       const token = options.token || '';
       
       serverSettings = ServerConnection.makeSettings({
         baseUrl: baseUrl,
         wsUrl: wsUrl,
-        token: token
+        token: token,
+        appendToken: true // Ajouter automatiquement le token aux requêtes
       });
       
-      console.log('Paramètres de connexion configurés avec token standard');
+      console.log(`URL de base configurée: ${baseUrl}`);
+      
+      console.log('Paramètres de connexion configurés avec token');
     }
 
     // Initialiser les gestionnaires
     kernelManager = new KernelManager({ serverSettings });
     sessionManager = new SessionManager({ kernelManager, serverSettings });
 
+    // Vérifier la connexion au serveur Jupyter et récupérer la version
+    await checkJupyterVersion();
+    
     // Vérifier la connexion au serveur Jupyter
-    await testConnection();
+    const connectionStatus = await testConnection();
+    
+    if (!connectionStatus) {
+      console.error('Échec de la connexion au serveur Jupyter. Vérifiez que le serveur est en cours d\'exécution et que le token est correct.');
+      // Nous continuons malgré l'erreur pour permettre une dégradation gracieuse
+      return true;
+    }
 
     console.log('Services Jupyter initialisés avec succès');
     return true;
@@ -65,55 +78,74 @@ export async function initializeJupyterServices(options?: {
 }
 
 /**
- * Teste la connexion au serveur Jupyter
+ * Vérifie la version de l'API Jupyter
  */
-async function testConnection() {
+async function checkJupyterVersion() {
   try {
-    // Assurer que l'URL est correctement formée sans double slash
+    // Normaliser l'URL de base pour éviter les doubles slashes
     const baseUrl = serverSettings.baseUrl.endsWith('/')
       ? serverSettings.baseUrl.slice(0, -1)
       : serverSettings.baseUrl;
     
-    // Utiliser l'authentification par URL plutôt que par en-tête
-    // NOTE: Cette méthode d'authentification est préférée car elle fonctionne
-    // avec la plupart des configurations de Jupyter, mais peut échouer avec
-    // certaines versions ou configurations spécifiques
-    const tokenParam = serverSettings.token ? `?token=${serverSettings.token}` : '';
-    const response = await axios.get(`${baseUrl}/api/kernels${tokenParam}`);
+    const token = serverSettings.token;
+    const apiUrl = `${baseUrl}/api`;
     
-    if (response.status !== 200) {
-      console.warn(`Avertissement: Réponse du serveur Jupyter avec code ${response.status}`);
+    console.log(`Vérification de la version de l'API Jupyter à: ${apiUrl}`);
+    
+    // Utiliser à la fois le token dans l'URL et dans l'en-tête pour une sécurité maximale
+    const response = await axios.get(`${apiUrl}?token=${token}`, {
+      headers: {
+        'Authorization': `token ${token}`
+      }
+    });
+    
+    if (response.status === 200 && response.data && response.data.version) {
+      jupyterApiVersion = response.data.version;
+      console.log(`Version de l'API Jupyter: ${jupyterApiVersion}`);
+      return jupyterApiVersion;
     }
     
-    console.log('Connexion au serveur Jupyter établie');
-    return true;
+    console.warn('Version de l\'API Jupyter non disponible');
+    return null;
   } catch (error) {
-    console.warn('Avertissement lors du test de connexion au serveur Jupyter:', error);
-    console.log('Tentative de continuer malgré l\'erreur de connexion...');
+    console.warn('Erreur lors de la vérification de la version de l\'API Jupyter:', error);
+    return null;
+  }
+}
+
+/**
+ * Teste la connexion au serveur Jupyter en utilisant la méthode recommandée:
+ * token dans l'URL et dans l'en-tête d'autorisation
+ */
+async function testConnection() {
+  try {
+    // Normaliser l'URL de base pour éviter les doubles slashes
+    const baseUrl = serverSettings.baseUrl.endsWith('/')
+      ? serverSettings.baseUrl.slice(0, -1)
+      : serverSettings.baseUrl;
     
-    // Essayer une autre méthode d'authentification
-    try {
-      console.log('Tentative avec une autre méthode d\'authentification...');
-      const baseUrl = serverSettings.baseUrl.endsWith('/')
-        ? serverSettings.baseUrl.slice(0, -1)
-        : serverSettings.baseUrl;
-      
-      // Essayer sans authentification
-      // NOTE: Certains endpoints comme /api peuvent être accessibles sans authentification
-      // Cette approche de fallback permet de vérifier si le serveur est au moins en cours d'exécution
-      // même si l'authentification échoue pour les endpoints protégés
-      const response = await axios.get(`${baseUrl}/api`);
-      console.log('Connexion au serveur Jupyter établie via /api');
+    const token = serverSettings.token;
+    const apiUrl = `${baseUrl}/api/kernels`;
+    
+    console.log(`Test de connexion à: ${apiUrl}`);
+    
+    // Utiliser à la fois le token dans l'URL et dans l'en-tête pour une sécurité maximale
+    const response = await axios.get(`${apiUrl}?token=${token}`, {
+      headers: {
+        'Authorization': `token ${token}`
+      }
+    });
+    
+    if (response.status === 200) {
+      console.log('Connexion au serveur Jupyter établie avec succès (token dans l\'URL et en-tête)');
       return true;
-    } catch (secondError) {
-      console.warn('Échec de la deuxième tentative:', secondError);
     }
     
-    // Ne pas propager l'erreur, retourner true pour continuer
-    // NOTE: Cette stratégie permet au serveur MCP de continuer à fonctionner
-    // même si la connexion au serveur Jupyter échoue initialement
-    // Les opérations ultérieures pourront réessayer avec des paramètres différents
-    return true;
+    console.warn(`Avertissement: Réponse du serveur Jupyter avec code ${response.status}`);
+    return false;
+  } catch (error) {
+    console.error('Erreur lors du test de connexion au serveur Jupyter:', error);
+    return false;
   }
 }
 
@@ -234,31 +266,33 @@ export async function executeCode(kernelId: string, code: string): Promise<any> 
  */
 export async function listAvailableKernels(): Promise<any[]> {
   try {
-    // Dans les versions récentes de @jupyterlab/services, la méthode est différente
-    // Assurer que l'URL est correctement formée sans double slash
+    // Utiliser axios pour récupérer les spécifications des kernels
+    // Normaliser l'URL de base pour éviter les doubles slashes
     const baseUrl = serverSettings.baseUrl.endsWith('/')
       ? serverSettings.baseUrl.slice(0, -1)
       : serverSettings.baseUrl;
     
-    // NOTE: Cette approche utilise directement l'API ServerConnection pour faire la requête
-    // ce qui permet d'inclure automatiquement les paramètres d'authentification configurés
-    // Cette méthode est plus robuste que d'utiliser axios directement car elle utilise
-    // la configuration d'authentification déjà établie
-    const specs = await ServerConnection.makeRequest(
-      `${baseUrl}/api/kernelspecs`,
-      {},
-      serverSettings
-    );
+    const token = serverSettings.token;
+    const apiUrl = `${baseUrl}/api/kernelspecs`;
     
-    if (specs.ok) {
-      const data = await specs.json();
-      return Object.values(data.kernelspecs);
+    console.log(`Récupération des kernels depuis: ${apiUrl}`);
+    
+    // Utiliser à la fois le token dans l'URL et dans l'en-tête
+    const response = await axios.get(`${apiUrl}?token=${token}`, {
+      headers: {
+        'Authorization': `token ${token}`
+      }
+    });
+    
+    if (response.status === 200) {
+      console.log('Récupération des kernels réussie via API REST');
+      return Object.values(response.data.kernelspecs);
     }
     
-    throw new Error(`Erreur lors de la récupération des kernels: ${specs.status}`);
+    throw new Error(`Erreur lors de la récupération des kernels: ${response.status}`);
   } catch (error) {
-    console.error('Erreur lors de la récupération des kernels disponibles:', error);
-    throw error;
+    console.error('Erreur lors de la récupération des kernels:', error);
+    throw new Error(`Erreur lors de la récupération des kernels: ${error}`);
   }
 }
 
@@ -277,6 +311,42 @@ export function listActiveKernels(): { id: string, name: string }[] {
   });
   
   return kernels;
+}
+
+/**
+ * Liste les sessions actives sur le serveur Jupyter
+ * @returns Liste des sessions actives
+ */
+export async function listActiveSessions(): Promise<any[]> {
+  try {
+    // Utiliser axios pour récupérer les sessions
+    // Normaliser l'URL de base pour éviter les doubles slashes
+    const baseUrl = serverSettings.baseUrl.endsWith('/')
+      ? serverSettings.baseUrl.slice(0, -1)
+      : serverSettings.baseUrl;
+    
+    const token = serverSettings.token;
+    const apiUrl = `${baseUrl}/api/sessions`;
+    
+    console.log(`Récupération des sessions depuis: ${apiUrl}`);
+    
+    // Utiliser à la fois le token dans l'URL et dans l'en-tête
+    const response = await axios.get(`${apiUrl}?token=${token}`, {
+      headers: {
+        'Authorization': `token ${token}`
+      }
+    });
+    
+    if (response.status === 200) {
+      console.log('Récupération des sessions réussie via API REST');
+      return response.data;
+    }
+    
+    throw new Error(`Erreur lors de la récupération des sessions: ${response.status}`);
+  } catch (error) {
+    console.error('Erreur lors de la récupération des sessions:', error);
+    throw new Error(`Erreur lors de la récupération des sessions: ${error}`);
+  }
 }
 
 /**
@@ -336,4 +406,16 @@ export async function restartKernel(kernelId: string): Promise<boolean> {
     console.error('Erreur lors du redémarrage du kernel:', error);
     throw error;
   }
+}
+
+/**
+ * Obtient des informations sur le serveur Jupyter
+ * @returns Informations sur le serveur Jupyter
+ */
+export function getJupyterInfo(): { version: string | null, baseUrl: string, connected: boolean } {
+  return {
+    version: jupyterApiVersion,
+    baseUrl: serverSettings.baseUrl,
+    connected: !!jupyterApiVersion
+  };
 }

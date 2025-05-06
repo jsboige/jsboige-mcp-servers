@@ -3,9 +3,15 @@
  * Ce script teste les fonctionnalités de base du serveur MCP Jupyter
  */
 
-const { spawn } = require('child_process');
-const path = require('path');
-const fs = require('fs');
+import { spawn } from 'child_process';
+import path from 'path';
+import fs from 'fs';
+import { fileURLToPath } from 'url';
+import { dirname } from 'path';
+
+// Obtenir le chemin du répertoire actuel en ES modules
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = dirname(__filename);
 
 // Fonction pour simuler un appel d'outil MCP
 async function callMcpTool(serverName, toolName, args) {
