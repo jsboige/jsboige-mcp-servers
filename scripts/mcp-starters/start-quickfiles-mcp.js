@@ -4,9 +4,14 @@
  * Compatible avec Windows, macOS et Linux
  */
 
-const { spawn } = require('child_process');
-const path = require('path');
-const fs = require('fs');
+import { spawn } from 'child_process';
+import path from 'path';
+import fs from 'fs';
+import { fileURLToPath } from 'url';
+
+// Obtenir le chemin du répertoire actuel
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
 
 // Configuration
 const config = {
@@ -20,7 +25,9 @@ function commandExists(command) {
   try {
     const isWindows = process.platform === 'win32';
     const checkCommand = isWindows ? 'where' : 'which';
-    require('child_process').execSync(`${checkCommand} ${command}`, { stdio: 'ignore' });
+    import('child_process').then(cp => {
+      cp.execSync(`${checkCommand} ${command}`, { stdio: 'ignore' });
+    });
     return true;
   } catch (e) {
     return false;
@@ -65,9 +72,12 @@ async function main() {
   if (!fs.existsSync(mcpServerJsPath)) {
     console.log('Compilation du serveur MCP QuickFiles...');
     try {
-      require('child_process').execSync('npm run build', {
-        cwd: config.mcpServerPath,
-        stdio: 'inherit'
+      // Utiliser une approche compatible avec ES Modules pour execSync
+      import('child_process').then(cp => {
+        cp.execSync('npm run build', {
+          cwd: config.mcpServerPath,
+          stdio: 'inherit'
+        });
       });
     } catch (e) {
       console.error('Échec de la compilation du serveur MCP QuickFiles.');

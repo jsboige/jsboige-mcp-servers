@@ -52,6 +52,10 @@ const isValidReadMultipleFilesArgs = (args) => {
         return false;
     if (args.max_total_lines !== undefined && typeof args.max_total_lines !== 'number')
         return false;
+    if (args.max_chars_per_file !== undefined && typeof args.max_chars_per_file !== 'number')
+        return false;
+    if (args.max_total_chars !== undefined && typeof args.max_total_chars !== 'number')
+        return false;
     return true;
 };
 /**
@@ -74,18 +78,30 @@ const isValidListDirectoryContentsArgs = (args) => {
             continue;
         }
         else if (typeof item === 'object' && item !== null) {
-            // Format avancé: objet avec path et recursive
+            // Format avancé: objet avec path et options
             if (typeof item.path !== 'string')
                 return false;
             if (item.recursive !== undefined && typeof item.recursive !== 'boolean')
+                return false;
+            if (item.file_pattern !== undefined && typeof item.file_pattern !== 'string')
+                return false;
+            if (item.sort_by !== undefined && !['name', 'size', 'modified', 'type'].includes(item.sort_by))
+                return false;
+            if (item.sort_order !== undefined && !['asc', 'desc'].includes(item.sort_order))
                 return false;
         }
         else {
             return false;
         }
     }
-    // Vérification du paramètre max_lines
+    // Vérification des paramètres globaux
     if (args.max_lines !== undefined && typeof args.max_lines !== 'number')
+        return false;
+    if (args.file_pattern !== undefined && typeof args.file_pattern !== 'string')
+        return false;
+    if (args.sort_by !== undefined && !['name', 'size', 'modified', 'type'].includes(args.sort_by))
+        return false;
+    if (args.sort_order !== undefined && !['asc', 'desc'].includes(args.sort_order))
         return false;
     return true;
 };
@@ -187,7 +203,7 @@ class QuickFilesServer {
             tools: [
                 {
                     name: 'read_multiple_files',
-                    description: 'Lit plusieurs fichiers en une seule requête avec numérotation de lignes optionnelle et extraits de fichiers',
+                    description: 'Lit plusieurs fichiers en une seule requête avec numérotation de lignes optionnelle et extraits de fichiers. Tronque automatiquement les contenus volumineux pour éviter les problèmes de mémoire et de performance.',
                     inputSchema: {
                         type: 'object',
                         properties: {
@@ -250,13 +266,23 @@ class QuickFilesServer {
                                 description: 'Nombre maximum total de lignes à afficher pour tous les fichiers',
                                 default: 5000,
                             },
+                            max_chars_per_file: {
+                                type: 'number',
+                                description: 'Nombre maximum de caractères à afficher par fichier (évite les problèmes de mémoire avec les gros fichiers)',
+                                default: 160000,
+                            },
+                            max_total_chars: {
+                                type: 'number',
+                                description: 'Nombre maximum total de caractères à afficher pour tous les fichiers',
+                                default: 400000,
+                            },
                         },
                         required: ['paths'],
                     },
                 },
                 {
                     name: 'list_directory_contents',
-                    description: 'Liste tous les fichiers et répertoires sous un chemin donné, avec la taille des fichiers',
+                    description: 'Liste tous les fichiers et répertoires sous un chemin donné, avec la taille des fichiers et le nombre de lignes. Tronque automatiquement les résultats volumineux pour éviter les problèmes de performance.',
                     inputSchema: {
                         type: 'object',
                         properties: {
@@ -283,6 +309,22 @@ class QuickFilesServer {
                                                     description: 'Lister récursivement les sous-répertoires',
                                                     default: true,
                                                 },
+                                                file_pattern: {
+                                                    type: 'string',
+                                                    description: 'Motif glob pour filtrer les fichiers (ex: *.js, *.{js,ts})',
+                                                },
+                                                sort_by: {
+                                                    type: 'string',
+                                                    enum: ['name', 'size', 'modified', 'type'],
+                                                    description: 'Critère de tri des fichiers et répertoires',
+                                                    default: 'name',
+                                                },
+                                                sort_order: {
+                                                    type: 'string',
+                                                    enum: ['asc', 'desc'],
+                                                    description: 'Ordre de tri (ascendant ou descendant)',
+                                                    default: 'asc',
+                                                },
                                             },
                                             required: ['path'],
                                         },
@@ -295,6 +337,22 @@ class QuickFilesServer {
                                 type: 'number',
                                 description: 'Nombre maximum de lignes à afficher dans la sortie',
                                 default: 2000,
+                            },
+                            file_pattern: {
+                                type: 'string',
+                                description: 'Motif glob global pour filtrer les fichiers (ex: *.js, *.{js,ts})',
+                            },
+                            sort_by: {
+                                type: 'string',
+                                enum: ['name', 'size', 'modified', 'type'],
+                                description: 'Critère de tri global des fichiers et répertoires',
+                                default: 'name',
+                            },
+                            sort_order: {
+                                type: 'string',
+                                enum: ['asc', 'desc'],
+                                description: 'Ordre de tri global (ascendant ou descendant)',
+                                default: 'asc',
                             },
                         },
                         required: ['paths'],
@@ -396,7 +454,9 @@ class QuickFilesServer {
         if (!isValidReadMultipleFilesArgs(request.params.arguments)) {
             throw new McpError(ErrorCode.InvalidParams, 'Paramètres invalides pour read_multiple_files');
         }
-        const { paths, show_line_numbers = false, max_lines_per_file = 2000, max_total_lines = 5000 } = request.params.arguments;
+        const { paths, show_line_numbers = false, max_lines_per_file = 2000, max_total_lines = 5000, max_chars_per_file = 160000, // ~80 caractères par ligne * 2000 lignes
+        max_total_chars = 400000 // ~80 caractères par ligne * 5000 lignes
+         } = request.params.arguments;
         try {
             const results = await Promise.all(paths.map(async (item) => {
                 // Déterminer le chemin du fichier et les extraits
@@ -405,25 +465,69 @@ class QuickFilesServer {
                 try {
                     const content = await fs.readFile(filePath, 'utf-8');
                     let lines = content.split('\n');
+                    let totalChars = content.length;
+                    let charsTruncated = false;
                     // Appliquer les extraits si spécifiés
                     if (excerpts && excerpts.length > 0) {
                         const extractedLines = [];
+                        let extractedChars = 0;
                         for (const excerpt of excerpts) {
                             // Ajuster les indices pour correspondre au tableau 0-indexé
                             const startIdx = Math.max(0, excerpt.start - 1);
                             const endIdx = Math.min(lines.length - 1, excerpt.end - 1);
                             if (extractedLines.length > 0) {
                                 extractedLines.push('...');
+                                extractedChars += 3;
                             }
-                            extractedLines.push(...lines.slice(startIdx, endIdx + 1).map((line, idx) => {
+                            const excerptLines = lines.slice(startIdx, endIdx + 1).map((line, idx) => {
                                 return show_line_numbers ? `${startIdx + idx + 1} | ${line}` : line;
-                            }));
+                            });
+                            // Calculer le nombre de caractères dans cet extrait
+                            const excerptChars = excerptLines.reduce((sum, line) => sum + line.length + 1, 0); // +1 pour le \n
+                            // Vérifier si l'ajout de cet extrait dépasserait la limite de caractères
+                            if (max_chars_per_file && extractedChars + excerptChars > max_chars_per_file) {
+                                // Ajouter autant de lignes que possible sans dépasser la limite
+                                let charsAdded = 0;
+                                for (const line of excerptLines) {
+                                    if (extractedChars + charsAdded + line.length + 1 <= max_chars_per_file) {
+                                        extractedLines.push(line);
+                                        charsAdded += line.length + 1;
+                                    }
+                                    else {
+                                        charsTruncated = true;
+                                        break;
+                                    }
+                                }
+                                if (charsTruncated) {
+                                    extractedLines.push(`... (contenu tronqué: limite de ${max_chars_per_file} caractères atteinte)`);
+                                    break; // Sortir de la boucle des extraits
+                                }
+                            }
+                            else {
+                                extractedLines.push(...excerptLines);
+                                extractedChars += excerptChars;
+                            }
                         }
                         lines = extractedLines;
                     }
                     else {
-                        // Appliquer la limite de lignes si spécifiée
-                        if (max_lines_per_file && lines.length > max_lines_per_file) {
+                        // Appliquer la limite de caractères si spécifiée
+                        if (max_chars_per_file && totalChars > max_chars_per_file) {
+                            // Trouver combien de lignes on peut inclure sans dépasser la limite de caractères
+                            let charsCount = 0;
+                            let i = 0;
+                            for (; i < lines.length; i++) {
+                                charsCount += lines[i].length + 1; // +1 pour le \n
+                                if (charsCount > max_chars_per_file) {
+                                    break;
+                                }
+                            }
+                            lines = lines.slice(0, i);
+                            lines.push(`... (contenu tronqué: ${totalChars - charsCount} caractères supplémentaires non affichés, taille totale: ${this.formatFileSize(totalChars)})`);
+                            charsTruncated = true;
+                        }
+                        // Appliquer la limite de lignes si spécifiée et si la limite de caractères n'a pas déjà tronqué le contenu
+                        if (!charsTruncated && max_lines_per_file && lines.length > max_lines_per_file) {
                             lines = lines.slice(0, max_lines_per_file);
                             lines.push(`... (${lines.length - max_lines_per_file} lignes supplémentaires non affichées)`);
                         }
@@ -448,22 +552,51 @@ class QuickFilesServer {
                     };
                 }
             }));
-            // Compter le nombre total de lignes dans tous les fichiers
+            // Compter le nombre total de lignes et de caractères dans tous les fichiers
             let totalLines = 0;
+            let totalChars = 0;
             const processedResults = results.map(result => {
                 if (result.exists) {
                     const lineCount = result.content.split('\n').length;
+                    const charCount = result.content.length;
                     totalLines += lineCount;
+                    totalChars += charCount;
                     return {
                         ...result,
-                        lineCount
+                        lineCount,
+                        charCount
                     };
                 }
                 return result;
             });
-            // Limiter le nombre total de lignes si nécessaire
+            // Variables pour suivre si les limites sont dépassées
             let totalLinesExceeded = false;
-            if (totalLines > max_total_lines) {
+            let totalCharsExceeded = false;
+            // Limiter le nombre total de caractères si nécessaire
+            if (totalChars > max_total_chars) {
+                totalCharsExceeded = true;
+                let remainingChars = max_total_chars;
+                for (let i = 0; i < processedResults.length; i++) {
+                    const result = processedResults[i];
+                    if (!result.exists)
+                        continue;
+                    const charCount = result.charCount;
+                    const charsToKeep = Math.min(charCount, remainingChars);
+                    if (charsToKeep < charCount) {
+                        // Tronquer le contenu pour respecter la limite de caractères
+                        const content = result.content;
+                        result.content = content.substring(0, charsToKeep) +
+                            `\n\n... (contenu tronqué: ${charCount - charsToKeep} caractères supplémentaires non affichés, taille totale: ${this.formatFileSize(charCount)})`;
+                        // Recalculer le nombre de lignes après troncature
+                        result.lineCount = result.content.split('\n').length;
+                    }
+                    remainingChars -= charsToKeep;
+                    if (remainingChars <= 0)
+                        break;
+                }
+            }
+            // Limiter le nombre total de lignes si nécessaire (seulement si la limite de caractères n'a pas déjà été appliquée)
+            else if (totalLines > max_total_lines) {
                 totalLinesExceeded = true;
                 let remainingLines = max_total_lines;
                 for (let i = 0; i < processedResults.length; i++) {
@@ -476,6 +609,8 @@ class QuickFilesServer {
                         lines.splice(linesToKeep);
                         lines.push(`... (${result.lineCount - linesToKeep} lignes supplémentaires non affichées)`);
                         result.content = lines.join('\n');
+                        // Mettre à jour le nombre de caractères après troncature
+                        result.charCount = result.content.length;
                     }
                     remainingLines -= linesToKeep;
                     if (remainingLines <= 0)
@@ -490,7 +625,9 @@ class QuickFilesServer {
                 else {
                     return `## Fichier: ${result.path}\n**ERREUR**: ${result.error}\n`;
                 }
-            }).join('\n') + (totalLinesExceeded ? `\n\n**Note**: Certains fichiers ont été tronqués car le nombre total de lignes dépasse la limite de ${max_total_lines}.` : '');
+            }).join('\n') +
+                (totalCharsExceeded ? `\n\n**Note**: Certains fichiers ont été tronqués car le nombre total de caractères dépasse la limite de ${max_total_chars} (${this.formatFileSize(max_total_chars)}).` :
+                    totalLinesExceeded ? `\n\n**Note**: Certains fichiers ont été tronqués car le nombre total de lignes dépasse la limite de ${max_total_lines}.` : '');
             return {
                 content: [
                     {
@@ -521,36 +658,76 @@ class QuickFilesServer {
      * @returns {Promise<any>} - Réponse formatée avec le contenu des répertoires
      * @throws {McpError} - Erreur si les paramètres sont invalides
      */
+    /**
+     * Gère les requêtes pour l'outil list_directory_contents
+     *
+     * @private
+     * @method handleListDirectoryContents
+     * @param {any} request - Requête MCP
+     * @returns {Promise<any>} - Réponse formatée avec le contenu des répertoires
+     * @throws {McpError} - Erreur si les paramètres sont invalides
+     */
+    /**
+     * Gère les requêtes pour l'outil list_directory_contents
+     *
+     * @private
+     * @method handleListDirectoryContents
+     * @param {any} request - Requête MCP
+     * @returns {Promise<any>} - Réponse formatée avec le contenu des répertoires
+     * @throws {McpError} - Erreur si les paramètres sont invalides
+     */
     async handleListDirectoryContents(request) {
         if (!isValidListDirectoryContentsArgs(request.params.arguments)) {
             throw new McpError(ErrorCode.InvalidParams, 'Paramètres invalides pour list_directory_contents');
         }
-        const { paths, max_lines = 2000 } = request.params.arguments;
+        const { paths, max_lines = 2000, file_pattern: globalFilePattern, sort_by: globalSortBy = 'name', sort_order: globalSortOrder = 'asc' } = request.params.arguments;
         try {
-            const results = await Promise.all(paths.map(async (item) => {
-                // Déterminer le chemin du répertoire et l'option recursive
+            // Journalisation détaillée des options de tri pour le débogage
+            console.error(`[DEBUG] Options de tri globales: critère=${globalSortBy}, ordre=${globalSortOrder}, filtre=${globalFilePattern || 'aucun'}`);
+            console.error(`[DEBUG] Nombre de chemins à traiter: ${paths.length}`);
+            const results = await Promise.all(paths.map(async (item, index) => {
+                // Déterminer le chemin du répertoire et les options
                 const dirPath = typeof item === 'string' ? item : item.path;
                 const recursive = typeof item === 'object' && item.recursive !== undefined ? item.recursive : true;
+                // Utiliser les options spécifiques à ce répertoire ou les options globales
+                const filePattern = typeof item === 'object' && item.file_pattern !== undefined
+                    ? item.file_pattern
+                    : globalFilePattern;
+                const sortBy = typeof item === 'object' && item.sort_by !== undefined
+                    ? item.sort_by
+                    : globalSortBy;
+                const sortOrder = typeof item === 'object' && item.sort_order !== undefined
+                    ? item.sort_order
+                    : globalSortOrder;
+                // Journalisation détaillée des options de tri spécifiques pour le débogage
+                console.error(`[DEBUG] Répertoire #${index + 1}: ${dirPath}`);
+                console.error(`[DEBUG] Options: recursive=${recursive}, critère=${sortBy}, ordre=${sortOrder}, filtre=${filePattern || 'aucun'}`);
                 try {
                     // Vérifier que le chemin existe et est un répertoire
                     const stats = await fs.stat(dirPath);
                     if (!stats.isDirectory()) {
+                        console.error(`[ERROR] Le chemin n'est pas un répertoire: ${dirPath}`);
                         return {
                             path: dirPath,
                             exists: false,
                             error: `Le chemin spécifié n'est pas un répertoire: ${dirPath}`,
                         };
                     }
-                    // Lister le contenu du répertoire
-                    const contents = await this.listDirectoryContentsRecursive(dirPath, recursive);
+                    console.error(`[DEBUG] Début du listage récursif pour ${dirPath}`);
+                    // Lister le contenu du répertoire avec les options de filtrage et de tri
+                    const contents = await this.listDirectoryContentsRecursive(dirPath, recursive, filePattern, sortBy, sortOrder);
+                    console.error(`[DEBUG] Fin du listage récursif pour ${dirPath}, ${contents.length} éléments trouvés`);
                     return {
                         path: dirPath,
                         exists: true,
                         contents,
                         error: null,
+                        // Stocker les options de tri utilisées pour référence
+                        sortOptions: { sortBy, sortOrder }
                     };
                 }
                 catch (error) {
+                    console.error(`[ERROR] Erreur lors du listage du répertoire ${dirPath}: ${error.message}`);
                     return {
                         path: dirPath,
                         exists: false,
@@ -559,21 +736,28 @@ class QuickFilesServer {
                     };
                 }
             }));
+            console.error(`[DEBUG] Tous les répertoires ont été traités, formatage de la réponse`);
             // Formatage de la réponse pour une meilleure lisibilité
-            let formattedResponse = results.map(result => {
+            let formattedResponse = results.map((result, index) => {
                 if (result.exists) {
+                    console.error(`[DEBUG] Formatage du répertoire #${index + 1}: ${result.path} (${result.contents.length} éléments)`);
+                    // Utiliser les contenus déjà triés
                     return this.formatDirectoryContents(result.path, result.contents);
                 }
                 else {
+                    console.error(`[DEBUG] Erreur pour le répertoire #${index + 1}: ${result.path}`);
                     return `## Répertoire: ${result.path}\n**ERREUR**: ${result.error}\n`;
                 }
             }).join('\n');
             // Limiter le nombre de lignes dans la sortie
             const lines = formattedResponse.split('\n');
+            console.error(`[DEBUG] Nombre total de lignes dans la réponse: ${lines.length}`);
             if (lines.length > max_lines) {
+                console.error(`[DEBUG] Troncature de la réponse à ${max_lines} lignes`);
                 formattedResponse = lines.slice(0, max_lines).join('\n') +
                     `\n\n... (${lines.length - max_lines} lignes supplémentaires non affichées)`;
             }
+            console.error(`[DEBUG] Réponse formatée avec succès`);
             return {
                 content: [
                     {
@@ -584,6 +768,7 @@ class QuickFilesServer {
             };
         }
         catch (error) {
+            console.error(`[ERROR] Erreur globale: ${error.message}`);
             return {
                 content: [
                     {
@@ -604,27 +789,61 @@ class QuickFilesServer {
      * @param {any[]} contents - Contenu du répertoire
      * @returns {string} - Contenu formaté
      */
+    /**
+     * Formate le contenu d'un répertoire pour l'affichage
+     *
+     * @private
+     * @method formatDirectoryContents
+     * @param {string} dirPath - Chemin du répertoire
+     * @param {any[]} contents - Contenu du répertoire (déjà trié)
+     * @returns {string} - Contenu formaté
+     */
+    /**
+     * Formate le contenu d'un répertoire pour l'affichage
+     *
+     * @private
+     * @method formatDirectoryContents
+     * @param {string} dirPath - Chemin du répertoire
+     * @param {any[]} contents - Contenu du répertoire (déjà trié)
+     * @returns {string} - Contenu formaté
+     */
     formatDirectoryContents(dirPath, contents) {
+        console.error(`[DEBUG] Formatage du répertoire: ${dirPath} avec ${contents.length} éléments`);
+        // Compter les fichiers et répertoires pour le résumé
+        const dirCount = contents.filter(item => item.type === 'directory').length;
+        const fileCount = contents.filter(item => item.type === 'file').length;
+        // Créer l'en-tête avec des informations sur le contenu
         let result = `## Répertoire: ${dirPath}\n`;
+        result += `> Contenu: ${contents.length} éléments (${dirCount} répertoires, ${fileCount} fichiers)\n\n`;
         // Fonction récursive pour formater le contenu
-        const formatContents = (items, indent = '') => {
+        const formatContents = (items, indent = '', depth = 0) => {
             let output = '';
+            // Journaliser le nombre d'éléments à ce niveau
+            console.error(`[DEBUG] Formatage de ${items.length} éléments au niveau ${depth}`);
+            // Utiliser directement les items triés sans les retrier
             for (const item of items) {
                 if (item.type === 'directory') {
+                    // Formater les répertoires
                     output += `${indent}📁 ${item.name}/\n`;
                     if (item.children && item.children.length > 0) {
-                        output += formatContents(item.children, indent + '  ');
+                        // Journaliser le nombre d'enfants
+                        console.error(`[DEBUG] Répertoire ${item.name} contient ${item.children.length} enfants`);
+                        output += formatContents(item.children, indent + '  ', depth + 1);
                     }
                 }
                 else {
+                    // Formater les fichiers
                     const sizeStr = this.formatFileSize(item.size);
+                    const modifiedStr = new Date(item.modified).toLocaleString();
                     const lineCountStr = item.lineCount ? ` (${item.lineCount} lignes)` : '';
-                    output += `${indent}📄 ${item.name} - ${sizeStr}${lineCountStr}\n`;
+                    output += `${indent}📄 ${item.name} - ${sizeStr}${lineCountStr} - Modifié: ${modifiedStr}\n`;
                 }
             }
             return output;
         };
+        // Ajouter le contenu formaté au résultat
         result += formatContents(contents);
+        console.error(`[DEBUG] Formatage terminé pour ${dirPath}`);
         return result;
     }
     /**
@@ -635,42 +854,145 @@ class QuickFilesServer {
      * @param {number} bytes - Taille en octets
      * @returns {string} - Taille formatée
      */
+    /**
+     * Formate la taille d'un fichier en unités lisibles (B, KB, MB, GB, TB)
+     * avec une précision adaptée à la taille
+     *
+     * @private
+     * @method formatFileSize
+     * @param {number} bytes - Taille en octets
+     * @returns {string} - Taille formatée
+     */
     formatFileSize(bytes) {
-        if (bytes < 1024)
+        // Constantes pour les conversions
+        const KB = 1024;
+        const MB = KB * 1024;
+        const GB = MB * 1024;
+        const TB = GB * 1024;
+        // Journaliser la taille pour le débogage
+        console.error(`[DEBUG] Formatage de la taille: ${bytes} octets`);
+        // Formater avec une précision adaptée à la taille
+        if (bytes === 0)
+            return '0 B';
+        if (bytes < KB)
             return `${bytes} B`;
-        if (bytes < 1024 * 1024)
-            return `${(bytes / 1024).toFixed(1)} KB`;
-        if (bytes < 1024 * 1024 * 1024)
-            return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
-        return `${(bytes / (1024 * 1024 * 1024)).toFixed(1)} GB`;
+        if (bytes < MB) {
+            // Pour les KB, utiliser 1 décimale
+            const kb = bytes / KB;
+            return `${kb.toFixed(1)} KB`;
+        }
+        if (bytes < GB) {
+            // Pour les MB, utiliser 2 décimales
+            const mb = bytes / MB;
+            return `${mb.toFixed(2)} MB`;
+        }
+        if (bytes < TB) {
+            // Pour les GB, utiliser 2 décimales
+            const gb = bytes / GB;
+            return `${gb.toFixed(2)} GB`;
+        }
+        // Pour les TB, utiliser 3 décimales
+        const tb = bytes / TB;
+        return `${tb.toFixed(3)} TB`;
     }
     /**
-     * Liste récursivement le contenu d'un répertoire
+     * Liste récursivement le contenu d'un répertoire avec options de filtrage et de tri
      *
      * @private
      * @method listDirectoryContentsRecursive
-     * @param {string} dirPath - Chemin du répertoire
+     * @param {string} dirPath - Chemin du répertoire à lister
      * @param {boolean} recursive - Lister récursivement les sous-répertoires
-     * @returns {Promise<any[]>} - Contenu du répertoire
+     * @param {string} [filePattern] - Motif glob pour filtrer les fichiers (ex: *.js, *.{js,ts})
+     * @param {string} [sortBy='name'] - Critère de tri:
+     *   - 'name': tri alphabétique par nom (insensible à la casse)
+     *   - 'size': tri par taille (en octets)
+     *   - 'modified': tri par date de modification
+     *   - 'type': tri par type (répertoires d'abord, puis fichiers)
+     * @param {string} [sortOrder='asc'] - Ordre de tri:
+     *   - 'asc': ordre ascendant (A à Z, du plus petit au plus grand, du plus ancien au plus récent)
+     *   - 'desc': ordre descendant (Z à A, du plus grand au plus petit, du plus récent au plus ancien)
+     * @returns {Promise<any[]>} - Contenu du répertoire filtré et trié
      */
-    async listDirectoryContentsRecursive(dirPath, recursive) {
+    async listDirectoryContentsRecursive(dirPath, recursive, filePattern, sortBy = 'name', sortOrder = 'asc') {
+        // Journalisation détaillée pour le débogage
+        console.error(`[DEBUG] Listage du répertoire: ${dirPath}`);
+        console.error(`[DEBUG] Options: recursive=${recursive}, filePattern=${filePattern || 'none'}, sortBy=${sortBy}, sortOrder=${sortOrder}`);
         const entries = await fs.readdir(dirPath, { withFileTypes: true });
+        console.error(`[DEBUG] Nombre d'entrées trouvées: ${entries.length}`);
         const result = [];
+        // Fonction pour vérifier si un fichier correspond au motif glob
+        // Supporte les motifs suivants:
+        // - * : correspond à n'importe quelle séquence de caractères
+        // - ? : correspond à un seul caractère
+        // - {a,b,c} : correspond à l'un des motifs a, b ou c
+        // Exemples: "*.js", "*.{js,ts}", "data?.json"
+        const matchesPattern = (filename, pattern) => {
+            if (!pattern)
+                return true; // Pas de filtrage si pas de motif
+            // Convertir le motif glob en regex
+            const regexPattern = pattern
+                .replace(/\./g, '\\.') // Échapper les points
+                .replace(/\*/g, '.*') // * devient .* (n'importe quelle séquence)
+                .replace(/\?/g, '.') // ? devient . (n'importe quel caractère)
+                .replace(/\{([^}]+)\}/g, (_, group) => `(${group.split(',').join('|')})`); // {a,b} devient (a|b)
+            const regex = new RegExp(`^${regexPattern}$`, 'i'); // Insensible à la casse
+            return regex.test(filename);
+        };
+        // Calculer la taille totale d'un répertoire (somme des tailles des fichiers)
+        const calculateDirectorySize = async (dirPath) => {
+            try {
+                let totalSize = 0;
+                const entries = await fs.readdir(dirPath, { withFileTypes: true });
+                for (const entry of entries) {
+                    const entryPath = path.join(dirPath, entry.name);
+                    const stats = await fs.stat(entryPath);
+                    if (entry.isDirectory()) {
+                        // Ajouter récursivement la taille des sous-répertoires
+                        totalSize += await calculateDirectorySize(entryPath);
+                    }
+                    else {
+                        // Ajouter la taille du fichier
+                        totalSize += stats.size;
+                    }
+                }
+                return totalSize;
+            }
+            catch (error) {
+                console.error(`[ERROR] Erreur lors du calcul de la taille du répertoire ${dirPath}: ${error.message}`);
+                return 0; // En cas d'erreur, retourner 0
+            }
+        };
+        // Collecter toutes les entrées (fichiers et répertoires)
         for (const entry of entries) {
             const entryPath = path.join(dirPath, entry.name);
             const stats = await fs.stat(entryPath);
             if (entry.isDirectory()) {
+                // Traitement des répertoires
+                let directorySize = stats.size;
+                // Récupérer les enfants si récursif
+                const children = recursive ? await this.listDirectoryContentsRecursive(entryPath, recursive, filePattern, sortBy, sortOrder) : [];
+                // Pour le tri par taille, calculer la taille totale du répertoire
+                if (sortBy === 'size') {
+                    directorySize = await calculateDirectorySize(entryPath);
+                    console.error(`[DEBUG] Taille calculée pour le répertoire ${entry.name}: ${directorySize} octets`);
+                }
                 const item = {
                     name: entry.name,
                     path: entryPath,
                     type: 'directory',
-                    size: stats.size,
+                    size: directorySize, // Utiliser la taille calculée pour les répertoires
                     modified: stats.mtime.toISOString(),
-                    children: recursive ? await this.listDirectoryContentsRecursive(entryPath, recursive) : [],
+                    children
                 };
                 result.push(item);
             }
             else {
+                // Traitement des fichiers
+                // Filtrer les fichiers selon le motif glob si spécifié
+                if (filePattern && !matchesPattern(entry.name, filePattern)) {
+                    console.error(`[DEBUG] Fichier ignoré (ne correspond pas au motif): ${entry.name}`);
+                    continue; // Ignorer ce fichier s'il ne correspond pas au motif
+                }
                 // Compter le nombre de lignes pour les fichiers texte
                 let lineCount = undefined;
                 try {
@@ -684,6 +1006,7 @@ class QuickFilesServer {
                 }
                 catch (error) {
                     // Ignorer les erreurs de lecture de fichier
+                    console.error(`[DEBUG] Erreur lors du comptage des lignes pour ${entry.name}: ${error.message}`);
                 }
                 const item = {
                     name: entry.name,
@@ -696,6 +1019,73 @@ class QuickFilesServer {
                 result.push(item);
             }
         }
+        // Journaliser les éléments avant le tri
+        console.error(`[DEBUG] Éléments avant tri (${result.length}):`);
+        result.forEach((item, index) => {
+            console.error(`[DEBUG]   ${index}. ${item.type === 'directory' ? 'DIR' : 'FILE'} ${item.name} (taille: ${item.size}, modifié: ${item.modified})`);
+        });
+        // Fonction de comparaison pour le tri des éléments (fichiers et répertoires)
+        const compareItems = (a, b) => {
+            // Variable pour stocker le résultat de la comparaison
+            let comparison = 0;
+            // Appliquer le critère de tri principal
+            switch (sortBy) {
+                case 'name':
+                    // Tri alphabétique par nom (insensible à la casse)
+                    // Utilise localeCompare pour un tri correct des caractères accentués et spéciaux
+                    comparison = a.name.toLowerCase().localeCompare(b.name.toLowerCase(), undefined, { sensitivity: 'base' });
+                    break;
+                case 'size':
+                    // Tri par taille en octets
+                    // Utilisation de la soustraction pour éviter les problèmes avec les grands nombres
+                    // Pour les répertoires, la taille est calculée comme la somme des tailles des fichiers contenus
+                    comparison = a.size - b.size;
+                    break;
+                case 'modified':
+                    // Tri par date de modification
+                    // Convertit les dates ISO en timestamps pour la comparaison
+                    const timeA = new Date(a.modified).getTime();
+                    const timeB = new Date(b.modified).getTime();
+                    comparison = timeA - timeB;
+                    break;
+                case 'type':
+                    // Tri par type: répertoires d'abord, puis fichiers
+                    if (a.type !== b.type) {
+                        comparison = a.type === 'directory' ? -1 : 1; // Répertoires avant fichiers
+                    }
+                    else {
+                        // Si même type, trier par nom comme critère secondaire
+                        comparison = a.name.toLowerCase().localeCompare(b.name.toLowerCase(), undefined, { sensitivity: 'base' });
+                    }
+                    break;
+            }
+            // Si le critère principal donne une égalité et que ce n'est pas déjà un tri par nom,
+            // utiliser le nom comme critère secondaire pour un tri stable et prévisible
+            if (comparison === 0 && sortBy !== 'name') {
+                comparison = a.name.toLowerCase().localeCompare(b.name.toLowerCase(), undefined, { sensitivity: 'base' });
+            }
+            // Inverser l'ordre si descendant est demandé
+            return sortOrder === 'desc' ? -comparison : comparison;
+        };
+        // Trier les résultats selon le critère et l'ordre spécifiés
+        if (sortBy === 'type') {
+            // Pour le tri par type, on utilise directement la fonction de comparaison
+            result.sort(compareItems);
+        }
+        else {
+            // Pour les autres critères, on trie d'abord par type (répertoires avant fichiers)
+            // puis on applique le critère de tri à l'intérieur de chaque groupe
+            const directories = result.filter(item => item.type === 'directory').sort(compareItems);
+            const files = result.filter(item => item.type === 'file').sort(compareItems);
+            // Réinitialiser le tableau result avec les éléments triés
+            result.length = 0;
+            result.push(...directories, ...files);
+        }
+        // Journaliser les éléments après le tri
+        console.error(`[DEBUG] Éléments après tri (${result.length}):`);
+        result.forEach((item, index) => {
+            console.error(`[DEBUG]   ${index}. ${item.type === 'directory' ? 'DIR' : 'FILE'} ${item.name} (taille: ${item.size}, modifié: ${item.modified})`);
+        });
         return result;
     }
     /**

@@ -89,6 +89,7 @@ class McpClient {
   // Essayer différentes méthodes pour trouver celle qui fonctionne
   async tryMethods() {
     const methods = [
+      'tools/list',  // Méthode correcte selon le standard MCP
       'list_tools',
       'mcp.list_tools',
       'mcp.listTools',
@@ -120,6 +121,7 @@ class McpClient {
   // Appeler un outil
   async callTool(name, args) {
     const methods = [
+      'tools/call',  // Méthode correcte selon le standard MCP
       'call_tool',
       'mcp.call_tool',
       'mcp.callTool',

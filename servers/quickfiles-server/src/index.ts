@@ -48,6 +48,8 @@ interface ReadMultipleFilesArgs {
   show_line_numbers?: boolean;
   max_lines_per_file?: number;
   max_total_lines?: number;
+  max_chars_per_file?: number;
+  max_total_chars?: number;
 }
 
 /**
@@ -173,6 +175,8 @@ const isValidReadMultipleFilesArgs = (args: any): args is ReadMultipleFilesArgs 
   if (args.show_line_numbers !== undefined && typeof args.show_line_numbers !== 'boolean') return false;
   if (args.max_lines_per_file !== undefined && typeof args.max_lines_per_file !== 'number') return false;
   if (args.max_total_lines !== undefined && typeof args.max_total_lines !== 'number') return false;
+  if (args.max_chars_per_file !== undefined && typeof args.max_chars_per_file !== 'number') return false;
+  if (args.max_total_chars !== undefined && typeof args.max_total_chars !== 'number') return false;
   
   return true;
 };
@@ -321,7 +325,7 @@ class QuickFilesServer {
       tools: [
         {
           name: 'read_multiple_files',
-          description: 'Lit plusieurs fichiers en une seule requête avec numérotation de lignes optionnelle et extraits de fichiers',
+          description: 'Lit plusieurs fichiers en une seule requête avec numérotation de lignes optionnelle et extraits de fichiers. Tronque automatiquement les contenus volumineux pour éviter les problèmes de mémoire et de performance.',
           inputSchema: {
             type: 'object',
             properties: {
@@ -384,13 +388,23 @@ class QuickFilesServer {
                 description: 'Nombre maximum total de lignes à afficher pour tous les fichiers',
                 default: 5000,
               },
+              max_chars_per_file: {
+                type: 'number',
+                description: 'Nombre maximum de caractères à afficher par fichier (évite les problèmes de mémoire avec les gros fichiers)',
+                default: 160000,
+              },
+              max_total_chars: {
+                type: 'number',
+                description: 'Nombre maximum total de caractères à afficher pour tous les fichiers',
+                default: 400000,
+              },
             },
             required: ['paths'],
           },
         },
         {
           name: 'list_directory_contents',
-          description: 'Liste tous les fichiers et répertoires sous un chemin donné, avec la taille des fichiers',
+          description: 'Liste tous les fichiers et répertoires sous un chemin donné, avec la taille des fichiers et le nombre de lignes. Tronque automatiquement les résultats volumineux pour éviter les problèmes de performance.',
           inputSchema: {
             type: 'object',
             properties: {
@@ -571,7 +585,9 @@ class QuickFilesServer {
       paths,
       show_line_numbers = false,
       max_lines_per_file = 2000,
-      max_total_lines = 5000
+      max_total_lines = 5000,
+      max_chars_per_file = 160000, // ~80 caractères par ligne * 2000 lignes
+      max_total_chars = 400000 // ~80 caractères par ligne * 5000 lignes
     } = request.params.arguments;
 
     try {
@@ -584,10 +600,13 @@ class QuickFilesServer {
           try {
             const content = await fs.readFile(filePath, 'utf-8');
             let lines = content.split('\n');
+            let totalChars = content.length;
+            let charsTruncated = false;
             
             // Appliquer les extraits si spécifiés
             if (excerpts && excerpts.length > 0) {
               const extractedLines: string[] = [];
+              let extractedChars = 0;
               
               for (const excerpt of excerpts) {
                 // Ajuster les indices pour correspondre au tableau 0-indexé
@@ -596,19 +615,61 @@ class QuickFilesServer {
                 
                 if (extractedLines.length > 0) {
                   extractedLines.push('...');
+                  extractedChars += 3;
                 }
                 
-                extractedLines.push(
-                  ...lines.slice(startIdx, endIdx + 1).map((line, idx) => {
-                    return show_line_numbers ? `${startIdx + idx + 1} | ${line}` : line;
-                  })
-                );
+                const excerptLines = lines.slice(startIdx, endIdx + 1).map((line, idx) => {
+                  return show_line_numbers ? `${startIdx + idx + 1} | ${line}` : line;
+                });
+                
+                // Calculer le nombre de caractères dans cet extrait
+                const excerptChars = excerptLines.reduce((sum, line) => sum + line.length + 1, 0); // +1 pour le \n
+                
+                // Vérifier si l'ajout de cet extrait dépasserait la limite de caractères
+                if (max_chars_per_file && extractedChars + excerptChars > max_chars_per_file) {
+                  // Ajouter autant de lignes que possible sans dépasser la limite
+                  let charsAdded = 0;
+                  for (const line of excerptLines) {
+                    if (extractedChars + charsAdded + line.length + 1 <= max_chars_per_file) {
+                      extractedLines.push(line);
+                      charsAdded += line.length + 1;
+                    } else {
+                      charsTruncated = true;
+                      break;
+                    }
+                  }
+                  
+                  if (charsTruncated) {
+                    extractedLines.push(`... (contenu tronqué: limite de ${max_chars_per_file} caractères atteinte)`);
+                    break; // Sortir de la boucle des extraits
+                  }
+                } else {
+                  extractedLines.push(...excerptLines);
+                  extractedChars += excerptChars;
+                }
               }
               
               lines = extractedLines;
             } else {
-              // Appliquer la limite de lignes si spécifiée
-              if (max_lines_per_file && lines.length > max_lines_per_file) {
+              // Appliquer la limite de caractères si spécifiée
+              if (max_chars_per_file && totalChars > max_chars_per_file) {
+                // Trouver combien de lignes on peut inclure sans dépasser la limite de caractères
+                let charsCount = 0;
+                let i = 0;
+                for (; i < lines.length; i++) {
+                  charsCount += lines[i].length + 1; // +1 pour le \n
+                  if (charsCount > max_chars_per_file) {
+                    break;
+                  }
+                }
+                
+                lines = lines.slice(0, i);
+                lines.push(`... (contenu tronqué: ${totalChars - charsCount} caractères supplémentaires non affichés, taille totale: ${this.formatFileSize(totalChars)})`);
+                charsTruncated = true;
+              }
+              
+              // Appliquer la limite de lignes si spécifiée et si la limite de caractères n'a pas déjà tronqué le contenu
+              if (!charsTruncated && max_lines_per_file && lines.length > max_lines_per_file) {
                 lines = lines.slice(0, max_lines_per_file);
                 lines.push(`... (${lines.length - max_lines_per_file} lignes supplémentaires non affichées)`);
               }
@@ -636,23 +697,56 @@ class QuickFilesServer {
         })
       );
 
-      // Compter le nombre total de lignes dans tous les fichiers
+      // Compter le nombre total de lignes et de caractères dans tous les fichiers
       let totalLines = 0;
+      let totalChars = 0;
       const processedResults = results.map(result => {
         if (result.exists) {
           const lineCount = result.content.split('\n').length;
+          const charCount = result.content.length;
           totalLines += lineCount;
+          totalChars += charCount;
           return {
             ...result,
-            lineCount
+            lineCount,
+            charCount
           };
         }
         return result;
       });
 
-      // Limiter le nombre total de lignes si nécessaire
+      // Variables pour suivre si les limites sont dépassées
       let totalLinesExceeded = false;
-      if (totalLines > max_total_lines) {
+      let totalCharsExceeded = false;
+      
+      // Limiter le nombre total de caractères si nécessaire
+      if (totalChars > max_total_chars) {
+        totalCharsExceeded = true;
+        let remainingChars = max_total_chars;
+        
+        for (let i = 0; i < processedResults.length; i++) {
+          const result = processedResults[i];
+          if (!result.exists) continue;
+          
+          const charCount = result.charCount;
+          const charsToKeep = Math.min(charCount, remainingChars);
+          
+          if (charsToKeep < charCount) {
+            // Tronquer le contenu pour respecter la limite de caractères
+            const content = result.content;
+            result.content = content.substring(0, charsToKeep) +
+              `\n\n... (contenu tronqué: ${charCount - charsToKeep} caractères supplémentaires non affichés, taille totale: ${this.formatFileSize(charCount)})`;
+            
+            // Recalculer le nombre de lignes après troncature
+            result.lineCount = result.content.split('\n').length;
+          }
+          
+          remainingChars -= charsToKeep;
+          if (remainingChars <= 0) break;
+        }
+      }
+      // Limiter le nombre total de lignes si nécessaire (seulement si la limite de caractères n'a pas déjà été appliquée)
+      else if (totalLines > max_total_lines) {
         totalLinesExceeded = true;
         let remainingLines = max_total_lines;
         
@@ -667,6 +761,9 @@ class QuickFilesServer {
             lines.splice(linesToKeep);
             lines.push(`... (${result.lineCount - linesToKeep} lignes supplémentaires non affichées)`);
             result.content = lines.join('\n');
+            
+            // Mettre à jour le nombre de caractères après troncature
+            result.charCount = result.content.length;
           }
           
           remainingLines -= linesToKeep;
@@ -681,7 +778,9 @@ class QuickFilesServer {
         } else {
           return `## Fichier: ${result.path}\n**ERREUR**: ${result.error}\n`;
         }
-      }).join('\n') + (totalLinesExceeded ? `\n\n**Note**: Certains fichiers ont été tronqués car le nombre total de lignes dépasse la limite de ${max_total_lines}.` : '');
+      }).join('\n') +
+      (totalCharsExceeded ? `\n\n**Note**: Certains fichiers ont été tronqués car le nombre total de caractères dépasse la limite de ${max_total_chars} (${this.formatFileSize(max_total_chars)}).` :
+       totalLinesExceeded ? `\n\n**Note**: Certains fichiers ont été tronqués car le nombre total de lignes dépasse la limite de ${max_total_lines}.` : '');
 
       return {
         content: [

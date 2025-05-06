@@ -61,7 +61,8 @@ async function runTests() {
     const listToolsRequest = {
       jsonrpc: '2.0',
       id: 1,
-      method: 'mcp.list_tools',
+      method: 'tools/list',
+      params: {}
     };
     
     console.log(`${COLORS.magenta}[Client requête]: ${JSON.stringify(listToolsRequest, null, 2)}${COLORS.reset}`);
@@ -86,12 +87,12 @@ async function runTests() {
       if (response.error) {
         console.log(`${COLORS.red}✗ Erreur lors de la requête: ${response.error.message}${COLORS.reset}`);
         
-        // Essayer une autre méthode
-        console.log(`${COLORS.cyan}Essai avec la méthode 'list_tools'...${COLORS.reset}`);
+        // Essayer une autre méthode (pour compatibilité avec d'anciens tests)
+        console.log(`${COLORS.cyan}Essai avec la méthode 'tools/list' (sans paramètres)...${COLORS.reset}`);
         const listToolsRequest2 = {
           jsonrpc: '2.0',
           id: 2,
-          method: 'list_tools',
+          method: 'tools/list'
         };
         
         console.log(`${COLORS.magenta}[Client requête]: ${JSON.stringify(listToolsRequest2, null, 2)}${COLORS.reset}`);
