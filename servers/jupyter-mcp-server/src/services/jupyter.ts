@@ -19,15 +19,40 @@ const activeKernels = new Map<string, any>();
 // Version de l'API Jupyter
 let jupyterApiVersion: string | null = null;
 
+// État de la connexion
+let connectionState = {
+  connected: false,
+  offlineMode: false,
+  lastError: null as Error | null,
+  serverInfo: {
+    baseUrl: '',
+    version: null as string | null
+  }
+};
+
+/**
+ * Retourne l'état actuel de la connexion au serveur Jupyter
+ */
+export function getConnectionState() {
+  return { ...connectionState };
+}
+
+/**
+ * Options pour l'initialisation des services Jupyter
+ */
+export interface JupyterServiceOptions {
+  baseUrl?: string;
+  token?: string;
+  skipConnectionCheck?: boolean;
+  autoReconnect?: boolean;
+  reconnectInterval?: number;
+}
+
 /**
  * Initialise les services Jupyter avec les paramètres fournis
  * @param options Options de configuration pour la connexion au serveur Jupyter
  */
-export async function initializeJupyterServices(options?: {
-  baseUrl?: string;
-  token?: string;
-  skipConnectionCheck?: boolean; // Nouvelle option pour éviter les tentatives de connexion
-}) {
+export async function initializeJupyterServices(options?: JupyterServiceOptions) {
   try {
     // Vérifier si nous devons sauter la vérification de connexion
     const skipConnectionCheck = options?.skipConnectionCheck || false;
@@ -39,6 +64,10 @@ export async function initializeJupyterServices(options?: {
       // Initialiser les gestionnaires avec les paramètres par défaut
       kernelManager = new KernelManager({ serverSettings });
       sessionManager = new SessionManager({ kernelManager, serverSettings });
+      
+      // Mettre à jour l'état de la connexion
+      connectionState.offlineMode = true;
+      connectionState.connected = false;
       
       console.log('Services Jupyter initialisés en mode hors ligne');
       return true;
@@ -60,8 +89,10 @@ export async function initializeJupyterServices(options?: {
         appendToken: true // Ajouter automatiquement le token aux requêtes
       });
       
-      console.log(`URL de base configurée: ${baseUrl}`);
+      // Mettre à jour l'état de la connexion
+      connectionState.serverInfo.baseUrl = baseUrl;
       
+      console.log(`URL de base configurée: ${baseUrl}`);
       console.log('Paramètres de connexion configurés avec token');
     }
 
@@ -70,10 +101,17 @@ export async function initializeJupyterServices(options?: {
     sessionManager = new SessionManager({ kernelManager, serverSettings });
 
     // Vérifier la connexion au serveur Jupyter et récupérer la version
-    await checkJupyterVersion();
+    const version = await checkJupyterVersion();
+    if (version) {
+      connectionState.serverInfo.version = version;
+    }
     
     // Vérifier la connexion au serveur Jupyter
     const connectionStatus = await testConnection();
+    
+    // Mettre à jour l'état de la connexion
+    connectionState.connected = connectionStatus;
+    connectionState.offlineMode = false;
     
     if (!connectionStatus) {
       console.error('Échec de la connexion au serveur Jupyter. Vérifiez que le serveur est en cours d\'exécution et que le token est correct.');
@@ -83,9 +121,14 @@ export async function initializeJupyterServices(options?: {
 
     console.log('Services Jupyter initialisés avec succès');
     return true;
-  } catch (error) {
+  } catch (error: any) {
     console.error('Erreur lors de l\'initialisation des services Jupyter:', error);
     console.log('Tentative de continuer malgré l\'erreur...');
+    
+    // Mettre à jour l'état de la connexion
+    connectionState.connected = false;
+    connectionState.lastError = error;
+    
     // NOTE: Nous continuons malgré l'erreur d'initialisation pour permettre
     // aux fonctionnalités qui ne nécessitent pas d'authentification de fonctionner
     // Cette approche permet une dégradation gracieuse plutôt qu'un échec complet

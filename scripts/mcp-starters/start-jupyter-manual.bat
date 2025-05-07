@@ -10,15 +10,17 @@ echo Que souhaitez-vous faire ?
 echo 1. Démarrer uniquement le serveur Jupyter
 echo 2. Démarrer uniquement le client MCP Jupyter
 echo 3. Démarrer les deux (serveur Jupyter + client MCP)
-echo 4. Quitter
+echo 4. Connecter le client MCP à un serveur Jupyter existant
+echo 5. Quitter
 echo.
 
-set /p CHOIX="Votre choix (1-4): "
+set /p CHOIX="Votre choix (1-5): "
 
 if "%CHOIX%"=="1" goto START_SERVER
 if "%CHOIX%"=="2" goto START_CLIENT
 if "%CHOIX%"=="3" goto START_BOTH
-if "%CHOIX%"=="4" goto EXIT
+if "%CHOIX%"=="4" goto CONNECT_EXISTING
+if "%CHOIX%"=="5" goto EXIT
 echo Choix invalide. Veuillez réessayer.
 goto MENU
 
@@ -50,6 +52,13 @@ echo Démarrage du client MCP Jupyter...
 call "%~dp0start-jupyter-mcp-client.bat"
 echo.
 echo Les deux composants ont été démarrés avec succès.
+goto EXIT
+
+:CONNECT_EXISTING
+echo.
+echo Connexion à un serveur Jupyter existant...
+call "%~dp0start-jupyter-mcp-connect.bat"
+echo.
 goto EXIT
 
 :EXIT
