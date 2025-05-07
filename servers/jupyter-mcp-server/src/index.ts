@@ -129,6 +129,9 @@ class JupyterMcpServer {
         }
       };
       
+      // Vérifier si l'environnement indique de sauter la vérification de connexion
+      const skipConnectionCheck = process.env.JUPYTER_MCP_OFFLINE === 'true';
+      
       try {
         const configPath = path.resolve('./config.json');
         if (fs.existsSync(configPath)) {
@@ -146,7 +149,8 @@ class JupyterMcpServer {
       // Initialiser les services Jupyter avec la configuration
       await initializeJupyterServices({
         baseUrl: config.jupyterServer.baseUrl,
-        token: config.jupyterServer.token
+        token: config.jupyterServer.token,
+        skipConnectionCheck: skipConnectionCheck
       });
       console.log('Services Jupyter initialisés avec succès');
       

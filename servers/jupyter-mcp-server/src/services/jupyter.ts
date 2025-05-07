@@ -26,8 +26,24 @@ let jupyterApiVersion: string | null = null;
 export async function initializeJupyterServices(options?: {
   baseUrl?: string;
   token?: string;
+  skipConnectionCheck?: boolean; // Nouvelle option pour éviter les tentatives de connexion
 }) {
   try {
+    // Vérifier si nous devons sauter la vérification de connexion
+    const skipConnectionCheck = options?.skipConnectionCheck || false;
+    
+    if (skipConnectionCheck) {
+      console.log('Mode hors ligne: les vérifications de connexion au serveur Jupyter sont désactivées');
+      console.log('Les fonctionnalités nécessitant un serveur Jupyter ne seront pas disponibles');
+      
+      // Initialiser les gestionnaires avec les paramètres par défaut
+      kernelManager = new KernelManager({ serverSettings });
+      sessionManager = new SessionManager({ kernelManager, serverSettings });
+      
+      console.log('Services Jupyter initialisés en mode hors ligne');
+      return true;
+    }
+    
     // Mettre à jour les paramètres si fournis
     if (options) {
       // Normaliser l'URL de base
