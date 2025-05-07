@@ -83,6 +83,8 @@ const isValidListDirectoryContentsArgs = (args) => {
                 return false;
             if (item.recursive !== undefined && typeof item.recursive !== 'boolean')
                 return false;
+            if (item.max_depth !== undefined && (typeof item.max_depth !== 'number' || item.max_depth < 1))
+                return false;
             if (item.file_pattern !== undefined && typeof item.file_pattern !== 'string')
                 return false;
             if (item.sort_by !== undefined && !['name', 'size', 'modified', 'type'].includes(item.sort_by))
@@ -96,6 +98,8 @@ const isValidListDirectoryContentsArgs = (args) => {
     }
     // Vérification des paramètres globaux
     if (args.max_lines !== undefined && typeof args.max_lines !== 'number')
+        return false;
+    if (args.max_depth !== undefined && (typeof args.max_depth !== 'number' || args.max_depth < 1))
         return false;
     if (args.file_pattern !== undefined && typeof args.file_pattern !== 'string')
         return false;
@@ -309,6 +313,10 @@ class QuickFilesServer {
                                                     description: 'Lister récursivement les sous-répertoires',
                                                     default: true,
                                                 },
+                                                max_depth: {
+                                                    type: 'number',
+                                                    description: 'Profondeur maximale d\'exploration des sous-répertoires',
+                                                },
                                                 file_pattern: {
                                                     type: 'string',
                                                     description: 'Motif glob pour filtrer les fichiers (ex: *.js, *.{js,ts})',
@@ -337,6 +345,10 @@ class QuickFilesServer {
                                 type: 'number',
                                 description: 'Nombre maximum de lignes à afficher dans la sortie',
                                 default: 2000,
+                            },
+                            max_depth: {
+                                type: 'number',
+                                description: 'Profondeur maximale globale d\'exploration des sous-répertoires',
                             },
                             file_pattern: {
                                 type: 'string',
@@ -680,7 +692,7 @@ class QuickFilesServer {
         if (!isValidListDirectoryContentsArgs(request.params.arguments)) {
             throw new McpError(ErrorCode.InvalidParams, 'Paramètres invalides pour list_directory_contents');
         }
-        const { paths, max_lines = 2000, file_pattern: globalFilePattern, sort_by: globalSortBy = 'name', sort_order: globalSortOrder = 'asc' } = request.params.arguments;
+        const { paths, max_lines = 2000, max_depth: globalMaxDepth, file_pattern: globalFilePattern, sort_by: globalSortBy = 'name', sort_order: globalSortOrder = 'asc' } = request.params.arguments;
         try {
             // Journalisation détaillée des options de tri pour le débogage
             console.error(`[DEBUG] Options de tri globales: critère=${globalSortBy}, ordre=${globalSortOrder}, filtre=${globalFilePattern || 'aucun'}`);
@@ -690,6 +702,9 @@ class QuickFilesServer {
                 const dirPath = typeof item === 'string' ? item : item.path;
                 const recursive = typeof item === 'object' && item.recursive !== undefined ? item.recursive : true;
                 // Utiliser les options spécifiques à ce répertoire ou les options globales
+                const maxDepth = typeof item === 'object' && item.max_depth !== undefined
+                    ? item.max_depth
+                    : globalMaxDepth;
                 const filePattern = typeof item === 'object' && item.file_pattern !== undefined
                     ? item.file_pattern
                     : globalFilePattern;
@@ -701,7 +716,7 @@ class QuickFilesServer {
                     : globalSortOrder;
                 // Journalisation détaillée des options de tri spécifiques pour le débogage
                 console.error(`[DEBUG] Répertoire #${index + 1}: ${dirPath}`);
-                console.error(`[DEBUG] Options: recursive=${recursive}, critère=${sortBy}, ordre=${sortOrder}, filtre=${filePattern || 'aucun'}`);
+                console.error(`[DEBUG] Options: recursive=${recursive}, max_depth=${maxDepth || 'illimité'}, critère=${sortBy}, ordre=${sortOrder}, filtre=${filePattern || 'aucun'}`);
                 try {
                     // Vérifier que le chemin existe et est un répertoire
                     const stats = await fs.stat(dirPath);
@@ -715,7 +730,7 @@ class QuickFilesServer {
                     }
                     console.error(`[DEBUG] Début du listage récursif pour ${dirPath}`);
                     // Lister le contenu du répertoire avec les options de filtrage et de tri
-                    const contents = await this.listDirectoryContentsRecursive(dirPath, recursive, filePattern, sortBy, sortOrder);
+                    const contents = await this.listDirectoryContentsRecursive(dirPath, recursive, filePattern, sortBy, sortOrder, maxDepth);
                     console.error(`[DEBUG] Fin du listage récursif pour ${dirPath}, ${contents.length} éléments trouvés`);
                     return {
                         path: dirPath,
@@ -913,10 +928,10 @@ class QuickFilesServer {
      *   - 'desc': ordre descendant (Z à A, du plus grand au plus petit, du plus récent au plus ancien)
      * @returns {Promise<any[]>} - Contenu du répertoire filtré et trié
      */
-    async listDirectoryContentsRecursive(dirPath, recursive, filePattern, sortBy = 'name', sortOrder = 'asc') {
+    async listDirectoryContentsRecursive(dirPath, recursive, filePattern, sortBy = 'name', sortOrder = 'asc', maxDepth, currentDepth = 1) {
         // Journalisation détaillée pour le débogage
         console.error(`[DEBUG] Listage du répertoire: ${dirPath}`);
-        console.error(`[DEBUG] Options: recursive=${recursive}, filePattern=${filePattern || 'none'}, sortBy=${sortBy}, sortOrder=${sortOrder}`);
+        console.error(`[DEBUG] Options: recursive=${recursive}, filePattern=${filePattern || 'none'}, sortBy=${sortBy}, sortOrder=${sortOrder}, maxDepth=${maxDepth || 'illimité'}, currentDepth=${currentDepth}`);
         const entries = await fs.readdir(dirPath, { withFileTypes: true });
         console.error(`[DEBUG] Nombre d'entrées trouvées: ${entries.length}`);
         const result = [];
@@ -969,8 +984,9 @@ class QuickFilesServer {
             if (entry.isDirectory()) {
                 // Traitement des répertoires
                 let directorySize = stats.size;
-                // Récupérer les enfants si récursif
-                const children = recursive ? await this.listDirectoryContentsRecursive(entryPath, recursive, filePattern, sortBy, sortOrder) : [];
+                // Récupérer les enfants si récursif et si la profondeur maximale n'est pas atteinte
+                const shouldRecurse = recursive && (!maxDepth || currentDepth < maxDepth);
+                const children = shouldRecurse ? await this.listDirectoryContentsRecursive(entryPath, recursive, filePattern, sortBy, sortOrder, maxDepth, currentDepth + 1) : [];
                 // Pour le tri par taille, calculer la taille totale du répertoire
                 if (sortBy === 'size') {
                     directorySize = await calculateDirectorySize(entryPath);

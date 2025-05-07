@@ -253,6 +253,45 @@ describe('QuickFiles Server', () => {
       expect(response.isError).toBeUndefined();
     });
     
+    test('devrait respecter la profondeur maximale spécifiée', async () => {
+      const request = mockRequest('list_directory_contents', {
+        paths: [{
+          path: TEST_DIR,
+          recursive: true,
+          max_depth: 1 // Limiter à la profondeur 1 (seulement les fichiers et répertoires directs)
+        }]
+      });
+      
+      const response = await server.handleListDirectoryContents(request);
+      
+      // Devrait contenir les fichiers et répertoires du premier niveau
+      expect(response.content[0].text).toContain('file1.txt');
+      expect(response.content[0].text).toContain('subdir');
+      
+      // Ne devrait pas contenir les fichiers du sous-répertoire 'nested'
+      expect(response.content[0].text).not.toContain('file5.txt');
+      expect(response.isError).toBeUndefined();
+    });
+    
+    test('devrait respecter la profondeur maximale globale', async () => {
+      const request = mockRequest('list_directory_contents', {
+        paths: [TEST_DIR],
+        recursive: true,
+        max_depth: 2 // Limiter à la profondeur 2 (fichiers et répertoires directs + un niveau de sous-répertoires)
+      });
+      
+      const response = await server.handleListDirectoryContents(request);
+      
+      // Devrait contenir les fichiers et répertoires du premier et deuxième niveau
+      expect(response.content[0].text).toContain('file1.txt');
+      expect(response.content[0].text).toContain('subdir');
+      expect(response.content[0].text).toContain('file3.txt');
+      
+      // Ne devrait pas contenir les fichiers du sous-répertoire 'nested' (niveau 3)
+      expect(response.content[0].text).not.toContain('file5.txt');
+      expect(response.isError).toBeUndefined();
+    });
+    
     test('devrait gérer les répertoires inexistants', async () => {
       const request = mockRequest('list_directory_contents', {
         paths: [path.join(TEST_DIR, 'non-existent-dir')]

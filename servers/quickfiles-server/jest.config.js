@@ -2,7 +2,7 @@
  * Configuration Jest pour les tests du serveur QuickFiles MCP
  */
 
-module.exports = {
+export default {
   // Utiliser ts-jest pour la transformation des fichiers TypeScript
   preset: 'ts-jest',
   
