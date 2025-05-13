@@ -140,6 +140,12 @@ export async function initializeJupyterServices(options?: JupyterServiceOptions)
  * Vérifie la version de l'API Jupyter
  */
 async function checkJupyterVersion() {
+  // Vérifier si le mode hors ligne est activé
+  if (connectionState.offlineMode) {
+    console.log('Mode hors ligne: pas de vérification de la version de l\'API Jupyter');
+    return null;
+  }
+
   try {
     // Normaliser l'URL de base pour éviter les doubles slashes
     const baseUrl = serverSettings.baseUrl.endsWith('/')
@@ -177,6 +183,12 @@ async function checkJupyterVersion() {
  * token dans l'URL et dans l'en-tête d'autorisation
  */
 async function testConnection() {
+  // Vérifier si le mode hors ligne est activé
+  if (connectionState.offlineMode) {
+    console.log('Mode hors ligne: pas de test de connexion au serveur Jupyter');
+    return false;
+  }
+
   try {
     // Normaliser l'URL de base pour éviter les doubles slashes
     const baseUrl = serverSettings.baseUrl.endsWith('/')
@@ -215,6 +227,42 @@ async function testConnection() {
  */
 export async function startKernel(kernelName: string = 'python3'): Promise<string> {
   try {
+    // Vérifier si le mode hors ligne est activé
+    if (connectionState.offlineMode) {
+      console.log('Mode hors ligne: simulation de démarrage du kernel');
+      const kernelId = uuidv4();
+      // Créer un objet simulant un kernel pour le mode hors ligne
+      const mockKernel = {
+        name: kernelName,
+        id: kernelId,
+        status: 'offline',
+        // Fonctions simulées pour le mode hors ligne
+        requestExecute: () => {
+          return {
+            onIOPub: () => {},
+            onReply: (callback: any) => {
+              callback({
+                content: {
+                  status: 'ok',
+                  execution_count: 0
+                }
+              });
+            },
+            onStderr: () => {},
+            done: Promise.resolve()
+          };
+        },
+        shutdown: async () => Promise.resolve(),
+        interrupt: async () => Promise.resolve(),
+        restart: async () => Promise.resolve()
+      };
+      
+      activeKernels.set(kernelId, mockKernel);
+      console.log(`Kernel simulé démarré en mode hors ligne: ${kernelId} (${kernelName})`);
+      
+      return kernelId;
+    }
+
     const kernel = await kernelManager.startNew({ name: kernelName });
     const kernelId = uuidv4();
     
@@ -265,6 +313,24 @@ export async function executeCode(kernelId: string, code: string): Promise<any> 
       throw new Error(`Kernel non trouvé: ${kernelId}`);
     }
     
+    // Vérifier si le mode hors ligne est activé
+    if (connectionState.offlineMode) {
+      console.log('Mode hors ligne: simulation d\'exécution de code');
+      
+      // Simuler une exécution de code en mode hors ligne
+      return {
+        status: 'ok',
+        execution_count: 0,
+        outputs: [
+          {
+            type: 'stream',
+            name: 'stdout',
+            text: `Mode hors ligne: le code suivant n'a pas été exécuté:\n\n${code}\n\nActivez un serveur Jupyter pour exécuter du code.`
+          }
+        ]
+      };
+    }
+    
     const future = kernel.requestExecute({ code });
     
     return new Promise((resolve, reject) => {
@@ -285,7 +351,7 @@ export async function executeCode(kernelId: string, code: string): Promise<any> 
               name: msg.content.name,
               text: msg.content.text
             });
-          } else if (msg.header.msg_type === 'execute_result' || 
+          } else if (msg.header.msg_type === 'execute_result' ||
                     msg.header.msg_type === 'display_data') {
             outputs.push({
               type: msg.header.msg_type,
@@ -324,6 +390,22 @@ export async function executeCode(kernelId: string, code: string): Promise<any> 
  * @returns Liste des spécifications de kernels disponibles
  */
 export async function listAvailableKernels(): Promise<any[]> {
+  // Vérifier si le mode hors ligne est activé
+  if (connectionState.offlineMode) {
+    console.log('Mode hors ligne: impossible de récupérer les kernels disponibles');
+    return [
+      {
+        name: 'python3',
+        spec: {
+          display_name: 'Python 3 (Offline)',
+          language: 'python',
+          argv: [],
+          env: {}
+        }
+      }
+    ];
+  }
+
   try {
     // Utiliser axios pour récupérer les spécifications des kernels
     // Normaliser l'URL de base pour éviter les doubles slashes
@@ -377,6 +459,12 @@ export function listActiveKernels(): { id: string, name: string }[] {
  * @returns Liste des sessions actives
  */
 export async function listActiveSessions(): Promise<any[]> {
+  // Vérifier si le mode hors ligne est activé
+  if (connectionState.offlineMode) {
+    console.log('Mode hors ligne: impossible de récupérer les sessions actives');
+    return [];
+  }
+
   try {
     // Utiliser axios pour récupérer les sessions
     // Normaliser l'URL de base pour éviter les doubles slashes
@@ -471,10 +559,11 @@ export async function restartKernel(kernelId: string): Promise<boolean> {
  * Obtient des informations sur le serveur Jupyter
  * @returns Informations sur le serveur Jupyter
  */
-export function getJupyterInfo(): { version: string | null, baseUrl: string, connected: boolean } {
+export function getJupyterInfo(): { version: string | null, baseUrl: string, connected: boolean, offlineMode: boolean } {
   return {
     version: jupyterApiVersion,
     baseUrl: serverSettings.baseUrl,
-    connected: !!jupyterApiVersion
+    connected: !!jupyterApiVersion && !connectionState.offlineMode,
+    offlineMode: connectionState.offlineMode
   };
 }

@@ -1,5 +1,13 @@
 #!/bin/bash
 
+# Vérifier si le paramètre --offline est fourni
+OFFLINE_MODE=false
+if [ "$1" == "--offline" ]; then
+    OFFLINE_MODE=true
+    export JUPYTER_MCP_OFFLINE=true
+    echo "Mode hors ligne activé - Le client MCP ne tentera pas de se connecter au serveur Jupyter"
+fi
+
 echo "===== Démarrage des serveurs Jupyter et MCP Jupyter ====="
 
 # Définir les chemins
@@ -34,7 +42,12 @@ sleep 5
 
 # Démarrer le serveur MCP Jupyter
 echo "Démarrage du serveur MCP Jupyter..."
-cd "${JUPYTER_MCP_SERVER}" && node dist/index.js &
+if [ "$OFFLINE_MODE" == "true" ]; then
+    cd "${JUPYTER_MCP_SERVER}" && JUPYTER_MCP_OFFLINE=true node dist/index.js &
+    echo "NOTE: Le client MCP est en mode hors ligne et ne tentera pas de se connecter au serveur Jupyter."
+else
+    cd "${JUPYTER_MCP_SERVER}" && node dist/index.js &
+fi
 MCP_PID=$!
 
 echo "===== Les deux serveurs ont été démarrés avec succès ====="

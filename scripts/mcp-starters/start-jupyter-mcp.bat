@@ -1,4 +1,14 @@
 @echo off
+setlocal
+
+REM Vérifier si le paramètre --offline est fourni
+set OFFLINE_MODE=false
+if "%1"=="--offline" (
+    set OFFLINE_MODE=true
+    set JUPYTER_MCP_OFFLINE=true
+    echo Mode hors ligne activé - Le client MCP ne tentera pas de se connecter au serveur Jupyter
+)
+
 echo ===== Démarrage des serveurs Jupyter et MCP Jupyter =====
 
 REM Définir les chemins
@@ -33,7 +43,12 @@ timeout /t 5 /nobreak >nul
 
 REM Démarrer le serveur MCP Jupyter
 echo Démarrage du serveur MCP Jupyter...
-cd "%JUPYTER_MCP_SERVER%" && start "MCP Jupyter Server" node dist/index.js
+if "%OFFLINE_MODE%"=="true" (
+    cd "%JUPYTER_MCP_SERVER%" && start "MCP Jupyter Server" cmd /c "set JUPYTER_MCP_OFFLINE=true && node dist/index.js"
+    echo NOTE: Le client MCP est en mode hors ligne et ne tentera pas de se connecter au serveur Jupyter.
+) else (
+    cd "%JUPYTER_MCP_SERVER%" && start "MCP Jupyter Server" node dist/index.js
+)
 
 echo ===== Les deux serveurs ont été démarrés avec succès =====
 echo Jupyter Notebook est accessible à l'adresse: http://localhost:8888

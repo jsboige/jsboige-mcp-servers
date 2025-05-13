@@ -9,17 +9,30 @@ import path from 'path';
 import fs from 'fs';
 import { fileURLToPath } from 'url';
 import { dirname } from 'path';
+import { parseArgs } from 'util';
 
 // Obtenir le chemin du répertoire actuel en ES modules
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
 
+// Analyser les arguments de ligne de commande
+const { values } = parseArgs({
+  options: {
+    offline: { type: 'boolean', default: false }
+  }
+});
+
 // Configuration
 const config = {
   mcpServerPath: path.join(__dirname, '../../servers/jupyter-mcp-server'),
   mcpServerCommand: 'node',
-  mcpServerArgs: ['dist/index.js']
+  mcpServerArgs: values.offline ? ['dist/index.js', '--offline'] : ['dist/index.js'],
+  offlineMode: values.offline
 };
+
+if (config.offlineMode) {
+  console.log('Mode hors ligne activé - Le client MCP ne tentera pas de se connecter au serveur Jupyter');
+}
 
 // Fonction pour démarrer un processus
 function startProcess(command, args, name, options = {}) {
@@ -75,7 +88,13 @@ async function main() {
     config.mcpServerCommand,
     config.mcpServerArgs,
     'MCP Jupyter Server',
-    { cwd: config.mcpServerPath }
+    {
+      cwd: config.mcpServerPath,
+      env: {
+        ...process.env,
+        JUPYTER_MCP_OFFLINE: config.offlineMode ? 'true' : process.env.JUPYTER_MCP_OFFLINE
+      }
+    }
   );
   
   console.log('===== Le serveur MCP Jupyter a été démarré avec succès =====');

@@ -33,6 +33,7 @@ interface CommandLineOptions {
   url?: string;
   token?: string;
   offline?: boolean;
+  skipConnectionCheck?: boolean;
   config?: string;
   help?: boolean;
 }
@@ -138,6 +139,7 @@ Options:
   --url <url>       URL du serveur Jupyter (ex: http://localhost:8888)
   --token <token>   Token d'authentification du serveur Jupyter
   --offline         Démarrer en mode hors ligne (sans tentatives de connexion)
+  --skip-connection-check  Ne pas vérifier la connexion au serveur Jupyter
   --config <path>   Chemin vers un fichier de configuration personnalisé
   --help            Afficher cette aide
 
@@ -150,6 +152,7 @@ Variables d'environnement:
   JUPYTER_SERVER_URL   URL du serveur Jupyter
   JUPYTER_SERVER_TOKEN Token d'authentification du serveur Jupyter
   JUPYTER_MCP_OFFLINE  Définir à 'true' pour le mode hors ligne
+  JUPYTER_SKIP_CONNECTION_CHECK  Définir à 'true' pour éviter les vérifications de connexion
   JUPYTER_MCP_CONFIG   Chemin vers un fichier de configuration personnalisé
 `);
     process.exit(0);
@@ -161,11 +164,12 @@ Variables d'environnement:
   private static parseCommandLineOptions(): CommandLineOptions {
     const argv = minimist(process.argv.slice(2), {
       string: ['url', 'token', 'config'],
-      boolean: ['offline', 'help'],
+      boolean: ['offline', 'help', 'skip-connection-check'],
       alias: {
         u: 'url',
         t: 'token',
         o: 'offline',
+        s: 'skip-connection-check',
         c: 'config',
         h: 'help'
       }
@@ -175,6 +179,7 @@ Variables d'environnement:
       url: argv.url,
       token: argv.token,
       offline: argv.offline,
+      skipConnectionCheck: argv['skip-connection-check'],
       config: argv.config,
       help: argv.help
     };
@@ -231,10 +236,13 @@ Variables d'environnement:
       
       // Vérifier si le mode hors ligne est activé
       const skipConnectionCheck = options.offline ||
-                                 process.env.JUPYTER_MCP_OFFLINE === 'true';
+                                 options.skipConnectionCheck ||
+                                 process.env.JUPYTER_MCP_OFFLINE === 'true' ||
+                                 process.env.JUPYTER_SKIP_CONNECTION_CHECK === 'true';
       
       if (skipConnectionCheck) {
         console.log('Mode hors ligne activé: aucune tentative de connexion au serveur Jupyter ne sera effectuée');
+        console.log('Les fonctionnalités nécessitant un serveur Jupyter ne seront pas disponibles');
       } else {
         console.log(`Tentative de connexion au serveur Jupyter à l'adresse: ${baseUrl}`);
         if (token) {

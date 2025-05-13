@@ -235,3 +235,114 @@ Testez régulièrement la connexion et les fonctionnalités:
 Les problèmes d'authentification sont à l'origine de la plupart des difficultés rencontrées avec le serveur MCP Jupyter. En suivant les recommandations de ce guide, vous devriez pouvoir résoudre ces problèmes et assurer un fonctionnement fiable du serveur MCP Jupyter.
 
 Si vous rencontrez des problèmes persistants, n'hésitez pas à consulter les logs détaillés du serveur Jupyter et du serveur MCP, et à ouvrir une issue sur le dépôt GitHub du projet.
+
+## Configuration du MCP Jupyter pour Roo
+
+Pour configurer correctement le MCP Jupyter afin qu'il fonctionne avec Roo, suivez ces étapes :
+
+### 1. Installation et configuration initiale
+
+1. **Vérifiez les prérequis** :
+   - Python 3.6+ avec Jupyter Notebook installé
+   - Node.js 14+ pour exécuter le serveur MCP
+
+2. **Configuration du serveur MCP** :
+   - Créez un fichier `config.json` dans le répertoire `servers/jupyter-mcp-server` :
+   ```json
+   {
+     "jupyterServer": {
+       "baseUrl": "http://localhost:8888",
+       "token": "votre_token_ici"
+     }
+   }
+   ```
+   - Pour le mode hors ligne, ajoutez `"offline": true` dans l'objet `jupyterServer`
+
+3. **Configuration de Roo** :
+   - Assurez-vous que le fichier `mcp_settings.json` contient une entrée pour le serveur Jupyter :
+   ```json
+   {
+     "mcp_servers": [
+       {
+         "name": "jupyter",
+         "command": "node servers/jupyter-mcp-server/dist/index.js",
+         "cwd": "chemin/vers/votre/projet"
+       }
+     ]
+   }
+   ```
+
+### 2. Démarrage automatique avec Roo
+
+Pour que Roo démarre automatiquement le MCP Jupyter :
+
+1. **Utilisez le script VSCode** :
+   - Configurez VSCode pour exécuter `scripts/mcp-starters/start-jupyter-mcp-vscode.bat` au démarrage
+   - Ce script détecte l'environnement VSCode et démarre le MCP en mode approprié
+
+2. **Mode hors ligne par défaut** :
+   - Pour éviter les erreurs de connexion, le MCP Jupyter démarre par défaut en mode hors ligne
+   - Vous pouvez activer la connexion manuellement lorsqu'un serveur Jupyter est disponible
+
+## Utilisation des scripts de test
+
+Les scripts de test suivants sont disponibles pour vérifier le bon fonctionnement du MCP Jupyter :
+
+### Scripts de test principaux
+
+1. **`test-jupyter-server-start.js`** :
+   - Démarre un serveur Jupyter local pour les tests
+   - Usage : `node tests/test-jupyter-server-start.js`
+
+2. **`test-jupyter-mcp-connect.js`** :
+   - Configure et teste la connexion entre le MCP et le serveur Jupyter
+   - Usage : `node tests/test-jupyter-mcp-connect.js`
+
+3. **`test-jupyter-mcp-features.js`** :
+   - Teste toutes les fonctionnalités du MCP Jupyter
+   - Usage : `node tests/test-jupyter-mcp-features.js`
+
+4. **`test-jupyter-mcp-offline.js`** :
+   - Vérifie le fonctionnement du mode hors ligne
+   - Usage : `node tests/test-jupyter-mcp-offline.js`
+
+5. **`test-jupyter-mcp-switch-offline.js`** :
+   - Teste le passage dynamique entre mode connecté et mode hors ligne
+   - Usage : `node tests/test-jupyter-mcp-switch-offline.js`
+
+### Automatisation des tests
+
+Pour exécuter tous les tests et effectuer un commit automatique des modifications :
+
+```bash
+node scripts/commit-jupyter-changes.js
+```
+
+Ce script :
+- Vérifie que tous les tests sont réussis
+- Effectue un commit des modifications avec un message approprié
+- Affiche un résumé des modifications effectuées
+
+## Comportement attendu
+
+### Mode connecté
+
+En mode connecté, le MCP Jupyter :
+1. Tente de se connecter au serveur Jupyter au démarrage
+2. Vérifie la version de l'API Jupyter
+3. Fournit toutes les fonctionnalités (kernels, notebooks, exécution de code)
+4. Affiche des messages de connexion réussie
+
+### Mode hors ligne
+
+En mode hors ligne, le MCP Jupyter :
+1. Ne tente pas de se connecter au serveur Jupyter au démarrage
+2. Affiche un message indiquant que le mode hors ligne est activé
+3. Fournit uniquement les fonctionnalités ne nécessitant pas de connexion
+4. Évite les erreurs de connexion même si aucun serveur Jupyter n'est disponible
+
+### Passage dynamique entre les modes
+
+Le MCP Jupyter peut passer d'un mode à l'autre sans redémarrage :
+1. En modifiant le fichier `config.json` pour ajouter ou supprimer `"offline": true`
+2. En utilisant l'outil MCP `set_offline_mode` avec le paramètre `enabled` à `true` ou `false`

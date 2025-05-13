@@ -29,12 +29,14 @@
     "@jupyterlab/services": "^7.0.0",
     "@modelcontextprotocol/sdk": "latest",
     "axios": "^1.4.0",
+    "minimist": "^1.2.8",
     "nbformat": "^0.0.2",
     "uuid": "^9.0.0",
     "ws": "^8.13.0"
   },
   "devDependencies": {
     "@types/jest": "^29.5.0",
+    "@types/minimist": "^1.2.5",
     "@types/node": "^18.15.11",
     "@types/uuid": "^9.0.1",
     "@types/ws": "^8.5.4",

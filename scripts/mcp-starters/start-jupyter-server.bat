@@ -10,8 +10,8 @@ if %ERRORLEVEL% NEQ 0 (
 )
 
 REM Démarrer Jupyter Notebook en arrière-plan
-echo Démarrage de Jupyter Notebook...
-start "Jupyter Notebook" jupyter notebook --no-browser
+echo Démarrage de Jupyter Notebook avec token d'authentification...
+start "Jupyter Notebook" jupyter notebook --NotebookApp.token=test_token --NotebookApp.allow_origin=* --no-browser
 
 REM Afficher un message d'information
 echo ===== Serveur Jupyter démarré avec succès =====
