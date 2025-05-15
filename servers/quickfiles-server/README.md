@@ -1,6 +1,20 @@
+<!-- START_SECTION: metadata -->
+---
+title: "Serveur MCP QuickFiles"
+description: "Documentation du serveur MCP pour la manipulation rapide et efficace de fichiers multiples"
+tags: #quickfiles #mcp #documentation #overview #files
+date_created: "2025-05-14"
+date_updated: "2025-05-14"
+version: "1.0.0"
+author: "Équipe MCP"
+---
+<!-- END_SECTION: metadata -->
+
 # Serveur MCP QuickFiles
 
+<!-- START_SECTION: introduction -->
 Ce serveur MCP fournit des méthodes pour lire rapidement le contenu de répertoires et fichiers multiples, offrant des fonctionnalités optimisées pour l'accès aux fichiers locaux.
+<!-- END_SECTION: introduction -->
 
 ## Fonctionnalités
 
@@ -805,3 +819,15 @@ Le dépôt inclut des fichiers de démonstration pour tester facilement les fonc
 - `demo-file1.txt` et `demo-file2.txt` : Fichiers texte simples pour tester la lecture
 - `test-quickfiles-demo.js` : Script de démonstration qui montre comment utiliser les principales fonctionnalités
 - `test-quickfiles-sort.js` : Script de démonstration qui montre comment utiliser les fonctionnalités de tri et filtrage
+
+<!-- START_SECTION: navigation -->
+## Navigation
+
+- [Index principal](../../../INDEX.md)
+- [Index des MCPs internes](../../INDEX.md)
+- [Installation](./INSTALLATION.md)
+- [Configuration](./CONFIGURATION.md)
+- [Utilisation](./USAGE.md)
+- [Dépannage](./TROUBLESHOOTING.md)
+- [Guide de recherche](../../../SEARCH.md)
+<!-- END_SECTION: navigation -->
