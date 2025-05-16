@@ -246,7 +246,9 @@ export const notebookTools: Tool[] = [
       try {
         const notebook = await readNotebookFile(path);
         return {
-          notebook
+          notebook,
+          // Ajout du champ content pour résoudre l'erreur de validation de schéma
+          content: notebook.cells
         };
       } catch (error) {
         throw new Error(`Erreur lors de la lecture du notebook: ${error}`);
@@ -262,7 +264,9 @@ export const notebookTools: Tool[] = [
         await writeNotebookFile(path, content);
         return {
           success: true,
-          message: `Notebook écrit avec succès: ${path}`
+          message: `Notebook écrit avec succès: ${path}`,
+          // Ajout du champ content pour résoudre l'erreur de validation de schéma
+          content: content.cells || []
         };
       } catch (error) {
         throw new Error(`Erreur lors de l'écriture du notebook: ${error}`);
@@ -280,7 +284,9 @@ export const notebookTools: Tool[] = [
         return {
           success: true,
           message: `Notebook créé avec succès: ${path}`,
-          notebook
+          notebook,
+          // Ajout du champ content pour résoudre l'erreur de validation de schéma
+          content: notebook.cells
         };
       } catch (error) {
         throw new Error(`Erreur lors de la création du notebook: ${error}`);
@@ -299,7 +305,9 @@ export const notebookTools: Tool[] = [
         return {
           success: true,
           message: `Cellule ajoutée avec succès au notebook: ${path}`,
-          cell_index: updatedNotebook.cells.length - 1
+          cell_index: updatedNotebook.cells.length - 1,
+          // Ajout du champ content pour résoudre l'erreur de validation de schéma
+          content: updatedNotebook.cells
         };
       } catch (error) {
         throw new Error(`Erreur lors de l'ajout de la cellule: ${error}`);
@@ -317,7 +325,9 @@ export const notebookTools: Tool[] = [
         await writeNotebookFile(path, updatedNotebook);
         return {
           success: true,
-          message: `Cellule supprimée avec succès du notebook: ${path}`
+          message: `Cellule supprimée avec succès du notebook: ${path}`,
+          // Ajout du champ content pour résoudre l'erreur de validation de schéma
+          content: updatedNotebook.cells
         };
       } catch (error) {
         throw new Error(`Erreur lors de la suppression de la cellule: ${error}`);
@@ -335,7 +345,9 @@ export const notebookTools: Tool[] = [
         await writeNotebookFile(path, updatedNotebook);
         return {
           success: true,
-          message: `Cellule modifiée avec succès dans le notebook: ${path}`
+          message: `Cellule modifiée avec succès dans le notebook: ${path}`,
+          // Ajout du champ content pour résoudre l'erreur de validation de schéma
+          content: updatedNotebook.cells
         };
       } catch (error) {
         throw new Error(`Erreur lors de la modification de la cellule: ${error}`);
