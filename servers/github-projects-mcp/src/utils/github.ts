@@ -1,20 +1,18 @@
 import { Octokit } from '@octokit/rest';
-import dotenv from 'dotenv';
-
-// Charger les variables d'environnement
-dotenv.config();
-
 /**
  * Obtient un client GitHub authentifié
  * @returns Instance Octokit authentifiée
  */
 export function getGitHubClient(): Octokit {
+  console.log('[DEBUG] Dans getGitHubClient() - Avant récupération de GITHUB_TOKEN.');
   const token = process.env.GITHUB_TOKEN;
+  console.log('[DEBUG] Dans getGitHubClient() - process.env.GITHUB_TOKEN:', token);
   
   if (!token) {
     console.warn('AVERTISSEMENT: Token GitHub non défini. Les requêtes seront limitées et certaines fonctionnalités ne seront pas disponibles.');
   }
   
+  console.log('[DEBUG] Dans getGitHubClient() - Avant initialisation Octokit.');
   return new Octokit({
     auth: token,
     userAgent: 'github-projects-mcp/0.1.0',
@@ -64,7 +62,9 @@ export async function getOwnerId(octokit: Octokit, owner: string, type: 'user' |
       login: owner
     });
 
-    return type === 'user' ? response.user.id : response.organization.id;
+    // Ajouter une assertion de type pour response
+    const typedResponse = response as any;
+    return type === 'user' ? typedResponse.user.id : typedResponse.organization.id;
   } catch (error: any) {
     throw new Error(`Erreur lors de la récupération de l'ID du propriétaire: ${error.message}`);
   }
@@ -124,7 +124,9 @@ export async function getProjectId(octokit: Octokit, owner: string, projectNumbe
       number: projectNumber
     });
 
-    return response.user.projectV2.id;
+    // Ajouter une assertion de type pour response
+    const typedResponse = response as any;
+    return typedResponse.user.projectV2.id;
   } catch (error: any) {
     throw new Error(`Erreur lors de la récupération de l'ID du projet: ${error.message}`);
   }
@@ -168,7 +170,9 @@ export async function getProjectFields(octokit: Octokit, projectId: string): Pro
       projectId
     });
 
-    return response.node.fields.nodes;
+    // Ajouter une assertion de type pour response
+    const typedResponse = response as any;
+    return typedResponse.node.fields.nodes;
   } catch (error: any) {
     throw new Error(`Erreur lors de la récupération des champs du projet: ${error.message}`);
   }

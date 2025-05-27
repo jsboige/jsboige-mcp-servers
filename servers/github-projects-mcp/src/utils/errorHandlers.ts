@@ -1,53 +1,14 @@
-import { MCPServer } from '@modelcontextprotocol/server';
+import { McpError, ErrorCode } from '@modelcontextprotocol/sdk/types.js';
 
 /**
  * Configure les gestionnaires d'erreurs pour le serveur MCP
  * @param server Instance du serveur MCP
  */
-export function setupErrorHandlers(server: MCPServer): void {
-  // Gestionnaire d'erreurs pour les outils
-  server.on('tool:error', (error, context) => {
-    console.error(`Erreur lors de l'exécution de l'outil ${context.toolName}:`, error);
-    
-    // Journaliser des informations supplémentaires pour le débogage
-    if (context.input) {
-      console.error('Entrée de l\'outil:', JSON.stringify(context.input, null, 2));
-    }
-    
-    // Vous pouvez ajouter ici une logique supplémentaire pour la gestion des erreurs,
-    // comme l'envoi de notifications, l'enregistrement dans un système de suivi des erreurs, etc.
-  });
-
-  // Gestionnaire d'erreurs pour les ressources
-  server.on('resource:error', (error, context) => {
-    console.error(`Erreur lors de l'accès à la ressource ${context.resourceName}:`, error);
-    
-    // Journaliser des informations supplémentaires pour le débogage
-    if (context.uri) {
-      console.error('URI de la ressource:', context.uri);
-    }
-  });
-
+export function setupErrorHandlers(server: any): void {
   // Gestionnaire d'erreurs pour le serveur
-  server.on('error', (error) => {
+  server.onerror = (error) => {
     console.error('Erreur du serveur MCP:', error);
-  });
-
-  // Gestionnaire pour les requêtes non valides
-  server.on('invalid:request', (error, context) => {
-    console.error('Requête non valide:', error);
-    console.error('Contexte de la requête:', context);
-  });
-
-  // Gestionnaire pour les déconnexions de clients
-  server.on('client:disconnect', (clientId) => {
-    console.log(`Client déconnecté: ${clientId}`);
-  });
-
-  // Gestionnaire pour les nouvelles connexions de clients
-  server.on('client:connect', (clientId) => {
-    console.log(`Nouveau client connecté: ${clientId}`);
-  });
+  };
 }
 
 /**
