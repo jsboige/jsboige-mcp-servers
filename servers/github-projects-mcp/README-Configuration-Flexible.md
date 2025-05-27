@@ -12,10 +12,10 @@ Cette configuration permet de gérer facilement plusieurs tokens GitHub et de ba
 ### 1. `.env` - Variables d'environnement
 ```bash
 # Token principal (jsboige@gmail.com)
-GITHUB_TOKEN=ghp_XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX
+GITHUB_TOKEN="VOTRE_TOKEN_ICI"
 
 # Token alternatif (jsboigeEpita)
-GITHUB_TOKEN_EPITA=ghp_YYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYY
+GITHUB_TOKEN_EPITA="VOTRE_TOKEN_EPITA_ICI"
 
 # Configuration par défaut
 DEFAULT_USER=jsboige
