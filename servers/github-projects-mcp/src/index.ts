@@ -7,15 +7,10 @@ import {
   McpError,
 } from '@modelcontextprotocol/sdk/types.js';
 import dotenv from 'dotenv';
-import { fileURLToPath } from 'url';
 import path from 'path'; // Ajout de l'import pour path
 import { setupTools } from './tools.js';
 import { setupResources } from './resources.js';
 import { setupErrorHandlers } from './utils/errorHandlers.js';
-
-// Polyfill pour __dirname en ES Module
-const __filename = fileURLToPath(import.meta.url);
-const __dirname = path.dirname(__filename);
 
 // Charger les variables d'environnement
 const envPath = path.resolve(__dirname, '../.env');

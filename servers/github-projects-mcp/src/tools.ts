@@ -106,6 +106,11 @@ interface GraphQLUpdateProjectItemFieldResponse {
   };
 }
 
+interface GraphQLDeleteProjectItemResponse {
+  deleteProjectV2Item: {
+    deletedItemId: string;
+  };
+}
 
 // Initialiser le client GitHub
 const octokit = getGitHubClient();
@@ -152,36 +157,66 @@ export function setupTools(server: any) {
     },
     {
       name: 'create_project',
-      description: 'Crée un nouveau projet GitHub',
+      description: 'Crée un nouveau projet GitHub, potentiellement lié à un dépôt.',
       inputSchema: {
-        type: 'object',
-        properties: {
-          owner: { type: 'string', description: 'Nom d\'utilisateur ou d\'organisation' },
-          title: { type: 'string', description: 'Titre du projet' },
-          description: { type: 'string', description: 'Description du projet' },
-          type: { type: 'string', enum: ['user', 'org'], default: 'user' }
-        },
-        required: ['owner', 'title']
+          type: 'object',
+          properties: {
+              owner: { type: 'string', description: 'Nom du propriétaire du projet (utilisateur ou organisation).' },
+              title: { type: 'string', description: 'Titre du nouveau projet.' },
+              repository_id: { type: 'string', description: 'ID du dépôt à lier au projet (optionnel).' },
+          },
+          required: ['owner', 'title']
       },
-      execute: async ({ owner, title, description = '', type = 'user' }: any) => {
-        try {
-          const ownerQuery = `query($login: String!) { ${type === 'user' ? 'user' : 'organization'}(login: $login) { id } }`;
-          const ownerData = await octokit.graphql(ownerQuery, { login: owner }) as any;
-          const ownerId = type === 'user' ? ownerData.user?.id : ownerData.organization?.id;
-          if (!ownerId) throw new Error(`Impossible de récupérer l'ID pour ${type} ${owner}`);
-          const createQuery = `
-            mutation($ownerId: ID!, $title: String!, $description: String) {
-              createProjectV2(input: { ownerId: $ownerId, title: $title, description: $description }) {
-                projectV2 { id, title, number, shortDescription, url, closed, createdAt, updatedAt }
+      execute: async ({ owner, title, repository_id }: { owner: string, title: string, repository_id?: string }) => {
+          try {
+              // Deviner le type de propriétaire (user/org) pour obtenir l'ID.
+              // Note: une approche plus robuste pourrait nécessiter un paramètre 'type' explicite.
+              let ownerId: string | undefined;
+              try {
+                const userQuery = await octokit.graphql<{ user: { id: string } }>(`query($login: String!) { user(login: $login) { id } }`, { login: owner });
+                ownerId = userQuery.user?.id;
+              } catch (e) {
+                  // Ignorer l'erreur si l'utilisateur n'est pas trouvé
               }
-            }`;
-          const response = await octokit.graphql(createQuery, { ownerId, title, description }) as any;
-          const project = response.createProjectV2?.projectV2;
-          if (!project) throw new Error('La création du projet a échoué.');
-          return { success: true, project };
-        } catch (error: any) {
-          return { success: false, error: error.message || 'Erreur lors de la création du projet' };
-        }
+
+              if (!ownerId) {
+                  try {
+                      const orgQuery = await octokit.graphql<{ organization: { id: string } }>(`query($login: String!) { organization(login: $login) { id } }`, { login: owner });
+                      ownerId = orgQuery.organization?.id;
+                  } catch (e) {
+                      // Ignorer l'erreur si l'organisation n'est pas trouvée
+                  }
+              }
+
+              if (!ownerId) {
+                  throw new Error(`Impossible de trouver un utilisateur ou une organisation nommé '${owner}'.`);
+              }
+
+              const mutation = `
+                  mutation CreateProject($input: CreateProjectV2Input!) {
+                      createProjectV2(input: $input) {
+                          projectV2 {
+                              id, title, number, url, closed
+                          }
+                      }
+                  }`;
+
+              const input: { ownerId: string; title: string; repositoryId?: string } = { ownerId, title };
+              if (repository_id) {
+                  input.repositoryId = repository_id;
+              }
+
+              const result = await octokit.graphql<GraphQLCreateProjectResponse>(mutation, { input });
+              const project = result.createProjectV2?.projectV2;
+
+              if (!project) {
+                  throw new Error('La réponse de l\'API n\'a pas retourné de projet.');
+              }
+
+              return { success: true, project };
+          } catch (error: any) {
+              return { success: false, error: error.message || 'Une erreur est survenue lors de la création du projet.' };
+          }
       }
     },
     {
@@ -302,6 +337,43 @@ export function setupTools(server: any) {
           return { success: true, item_id: updatedItemId };
         } catch (error: any) {
           return { success: false, error: error.message || 'Erreur lors de la mise à jour' };
+        }
+      }
+    },
+    {
+      name: 'delete_project_item',
+      description: 'Supprime un élément d\'un projet GitHub',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          project_id: { type: 'string', description: 'ID du projet' },
+          item_id: { type: 'string', description: 'ID de l\'élément à supprimer' },
+        },
+        required: ['project_id', 'item_id'],
+      },
+      execute: async ({ project_id, item_id }: { project_id: string, item_id: string }) => {
+        try {
+          const mutation = `
+            mutation($projectId: ID!, $itemId: ID!) {
+              deleteProjectV2Item(input: {projectId: $projectId, itemId: $itemId}) {
+                deletedItemId
+              }
+            }
+          `;
+          const result = await octokit.graphql<GraphQLDeleteProjectItemResponse>(mutation, {
+            projectId: project_id,
+            itemId: item_id,
+          });
+
+          const deletedItemId = result.deleteProjectV2Item?.deletedItemId;
+
+          if (!deletedItemId) {
+            throw new Error('La réponse de l\'API n\'a pas retourné d\'ID d\'élément supprimé.');
+          }
+
+          return { success: true, deleted_item_id: deletedItemId };
+        } catch (error: any) {
+          return { success: false, error: error.message || 'Une erreur est survenue lors de la suppression de l\'élément.' };
         }
       }
     }
