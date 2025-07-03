@@ -1,6 +1,7 @@
 import { Tool } from '@modelcontextprotocol/sdk/types.js';
 import { CallToolRequestSchema, ListToolsRequestSchema, ErrorCode, McpError } from '@modelcontextprotocol/sdk/types.js';
 import { getGitHubClient } from './utils/github.js';
+import logger from './logger.js';
 
 interface GitHubProjectNode {
   id: string;
@@ -151,6 +152,7 @@ export function setupTools(server: any) {
             projects: projects.map(p => ({ id: p.id, title: p.title, number: p.number, description: p.shortDescription, url: p.url, closed: p.closed, createdAt: p.createdAt, updatedAt: p.updatedAt }))
           };
         } catch (error: any) {
+          logger.error('Erreur dans list_projects', { error });
           return { success: false, error: error.message || 'Erreur lors de la récupération des projets' };
         }
       }
@@ -215,7 +217,20 @@ export function setupTools(server: any) {
 
               return { success: true, project };
           } catch (error: any) {
-              return { success: false, error: error.message || 'Une erreur est survenue lors de la création du projet.' };
+              // Log complet de l'erreur pour inspection
+              logger.error('Erreur détaillée dans create_project', {
+                  errorMessage: error.message,
+                  errorName: error.name,
+                  errorStack: error.stack,
+                  errorResponse: error.response,
+                  fullError: JSON.stringify(error, null, 2)
+              });
+
+              // Tentative d'extraire un message d'erreur plus précis de la réponse GraphQL
+              const graphqlErrors = error.response?.data?.errors;
+              const readableError = graphqlErrors ? graphqlErrors.map((e: any) => e.message).join(', ') : (error.message || 'Erreur inconnue.');
+
+              return { success: false, error: `Erreur GraphQL: ${readableError}` };
           }
       }
     },
@@ -254,6 +269,7 @@ export function setupTools(server: any) {
           if (!project) throw new Error(`Projet non trouvé pour ${owner}/${project_number}.`);
           return { success: true, project };
         } catch (error: any) {
+          logger.error('Erreur dans get_project', { error });
           return { success: false, error: error.message || 'Erreur lors de la récupération du projet' };
         }
       }
@@ -290,6 +306,7 @@ export function setupTools(server: any) {
           if (!itemId) throw new Error("Impossible d'ajouter l'élément.");
           return { success: true, item_id: itemId };
         } catch (error: any) {
+          logger.error('Erreur dans add_item_to_project', { error });
           return { success: false, error: error.message || 'Erreur lors de l\'ajout de l\'élément' };
         }
       }
@@ -336,6 +353,7 @@ export function setupTools(server: any) {
           if (!updatedItemId) throw new Error("Impossible de mettre à jour le champ.");
           return { success: true, item_id: updatedItemId };
         } catch (error: any) {
+          logger.error('Erreur dans update_project_item_field', { error });
           return { success: false, error: error.message || 'Erreur lors de la mise à jour' };
         }
       }
@@ -373,7 +391,56 @@ export function setupTools(server: any) {
 
           return { success: true, deleted_item_id: deletedItemId };
         } catch (error: any) {
+          logger.error('Erreur dans delete_project_item', { error });
           return { success: false, error: error.message || 'Une erreur est survenue lors de la suppression de l\'élément.' };
+        }
+      }
+    },
+    {
+      name: 'update_project',
+      description: "Modifie le titre, la description et l'état d'un projet.",
+      inputSchema: {
+        type: 'object',
+        properties: {
+          project_id: { type: 'string', description: 'L\'ID du projet à modifier.' },
+          title: { type: 'string', description: 'Le nouveau titre du projet.' },
+          description: { type: 'string', description: 'La nouvelle description courte du projet.' },
+          state: { type: 'string', enum: ['OPEN', 'CLOSED'], description: "Le nouvel état du projet ('OPEN' ou 'CLOSED'). NOTE: This parameter is currently ignored by the tool." }
+        },
+        required: ['project_id']
+      },
+      execute: async ({ project_id, title, description, state }: { project_id: string, title?: string, description?: string, state?: 'OPEN' | 'CLOSED' }) => {
+        let input: { projectId: string; title?: string; shortDescription?: string; state?: 'OPEN' | 'CLOSED' } | undefined;
+        try {
+          const mutation = `
+            mutation UpdateProject($input: UpdateProjectV2Input!) {
+              updateProjectV2(input: $input) {
+                projectV2 {
+                  id
+                }
+              }
+            }
+          `;
+          
+          input = {
+            projectId: project_id,
+          };
+          
+          if (title !== undefined) input.title = title;
+          if (description !== undefined) input.shortDescription = description;
+          // if (state) input.state = state; // This field is not accepted by the API
+          
+          logger.info('[DEBUG] Calling updateProjectV2 with input:', { input });
+          const response = await octokit.graphql<any>(mutation, { input });
+
+          if (!response?.updateProjectV2?.projectV2?.id) {
+            throw new Error("La mise à jour a échoué ou n'a pas retourné l'ID du projet.");
+          }
+
+          return { success: true, projectId: response.updateProjectV2.projectV2.id };
+        } catch (error: any) {
+          logger.error("Erreur dans update_project", { error, input });
+          return { success: false, error: error.message || "Une erreur est survenue lors de la mise à jour du projet." };
         }
       }
     }
@@ -398,8 +465,13 @@ export function setupTools(server: any) {
             isError: !result.success
         };
     } catch (error: any) {
+        const errorMessage = error.message || (typeof error === 'string' ? error : JSON.stringify(error));
+        logger.error(`Erreur lors de l'exécution de l'outil ${request.params.name}`, {
+            error: errorMessage,
+            stack: error.stack
+        });
         return {
-            content: [{ type: 'text', text: JSON.stringify({ success: false, error: error.message }, null, 2) }],
+            content: [{ type: 'text', text: JSON.stringify({ success: false, error: errorMessage }, null, 2) }],
             isError: true
         };
     }

@@ -6,23 +6,10 @@ import {
   ErrorCode,
   McpError,
 } from '@modelcontextprotocol/sdk/types.js';
-import dotenv from 'dotenv';
-import path from 'path'; // Ajout de l'import pour path
 import { setupTools } from './tools.js';
 import { setupResources } from './resources.js';
 import { setupErrorHandlers } from './utils/errorHandlers.js';
-
-// Charger les variables d'environnement
-const envPath = path.resolve(__dirname, '../.env');
-console.log('[DEBUG] Avant dotenv.config(). Chemin .env cible:', envPath);
-console.log('[DEBUG] process.env.GITHUB_TOKEN avant dotenv.config():', process.env.GITHUB_TOKEN);
-const dotenvResult = dotenv.config({ path: envPath, debug: true, override: true });
-
-if (dotenvResult.error) {
-  console.error('[DEBUG] Erreur de chargement dotenv:', dotenvResult.error);
-}
-console.log('[DEBUG] Après dotenv.config(). Variables chargées:', dotenvResult.parsed);
-console.log('[DEBUG] process.env.GITHUB_TOKEN après dotenv.config():', process.env.GITHUB_TOKEN);
+import logger from './logger.js';
 
 /**
  * Classe principale du serveur GitHub Projects MCP
@@ -56,8 +43,9 @@ class GitHubProjectsServer {
     setupErrorHandlers(this.server);
     
     // Gestion des erreurs
-    this.server.onerror = (error) => console.error('[MCP Error]', error);
+    this.server.onerror = (error) => logger.error('[MCP Error]', { error });
     process.on('SIGINT', async () => {
+      logger.info('SIGINT reçu, fermeture du serveur.');
       await this.server.close();
       process.exit(0);
     });
@@ -68,12 +56,12 @@ class GitHubProjectsServer {
    */
   async run() {
     try {
-      console.log('Démarrage du serveur MCP Gestionnaire de Projet...');
+      logger.info('Démarrage du serveur MCP Gestionnaire de Projet...');
       const transport = new StdioServerTransport();
       await this.server.connect(transport);
-      console.log('Serveur MCP Gestionnaire de Projet démarré sur stdio');
+      logger.info('Serveur MCP Gestionnaire de Projet démarré sur stdio');
     } catch (error) {
-      console.error('Erreur lors du démarrage du serveur MCP:', error);
+      logger.error('Erreur lors du démarrage du serveur MCP:', { error });
       process.exit(1);
     }
   }
