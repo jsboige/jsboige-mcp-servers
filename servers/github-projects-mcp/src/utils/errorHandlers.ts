@@ -6,7 +6,7 @@ import { McpError, ErrorCode } from '@modelcontextprotocol/sdk/types.js';
  */
 export function setupErrorHandlers(server: any): void {
   // Gestionnaire d'erreurs pour le serveur
-  server.onerror = (error) => {
+  server.onerror = (error: any) => {
     console.error('Erreur du serveur MCP:', error);
   };
 }

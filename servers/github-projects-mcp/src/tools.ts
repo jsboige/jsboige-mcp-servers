@@ -158,6 +158,44 @@ export function setupTools(server: any) {
       }
     },
     {
+      name: 'list_repositories',
+      description: "Liste les dépôts d'un utilisateur ou d'une organisation",
+      inputSchema: {
+        type: 'object',
+        properties: {
+          owner: { type: 'string', description: "Nom d_utilisateur ou d_organisation" },
+          type: { type: 'string', enum: ['user', 'org'], description: 'Type de propriétaire (utilisateur ou organisation)', default: 'user' }
+        },
+        required: ['owner']
+      },
+      execute: async ({ owner, type = 'user' }: any) => {
+        try {
+          const query = `
+            query($owner: String!) {
+              ${type === 'user' ? 'user' : 'organization'}(login: $owner) {
+                repositories(first: 50, orderBy: {field: PUSHED_AT, direction: DESC}) {
+                  nodes {
+                    id
+                    name
+                    url
+                  }
+                }
+              }
+            }
+          `;
+          const response = await octokit.graphql(query, { owner }) as any;
+          const repositories = (type === 'user' ? response.user?.repositories?.nodes : response.organization?.repositories?.nodes) || [];
+          return {
+            success: true,
+            repositories: repositories.map((r: any) => ({ id: r.id, name: r.name, url: r.url }))
+          };
+        } catch (error: any) {
+          logger.error('Erreur dans list_repositories', { error });
+          return { success: false, error: error.message || 'Erreur lors de la récupération des dépôts' };
+        }
+      }
+    },
+    {
       name: 'create_project',
       description: 'Crée un nouveau projet GitHub, potentiellement lié à un dépôt.',
       inputSchema: {
@@ -441,6 +479,62 @@ export function setupTools(server: any) {
         } catch (error: any) {
           logger.error("Erreur dans update_project", { error, input });
           return { success: false, error: error.message || "Une erreur est survenue lors de la mise à jour du projet." };
+        }
+      }
+    },
+    {
+      name: 'create_issue',
+      description: "Crée une issue dans un dépôt et l'ajoute optionnellement à un projet.",
+      inputSchema: {
+        type: 'object',
+        properties: {
+          repositoryId: { type: 'string', description: "L'ID du dépôt où créer l'issue." },
+          title: { type: 'string', description: "Le titre de l'issue." },
+          body: { type: 'string', description: "Le corps de l'issue." },
+          projectId: { type: 'string', description: "L'ID du projet auquel ajouter la nouvelle issue." }
+        },
+        required: ['repositoryId', 'title']
+      },
+      execute: async ({ repositoryId, title, body, projectId }: { repositoryId: string, title: string, body?: string, projectId?: string }) => {
+        try {
+          // 1. Créer l'issue
+          const createIssueMutation = `
+            mutation($repositoryId: ID!, $title: String!, $body: String) {
+              createIssue(input: {repositoryId: $repositoryId, title: $title, body: $body}) {
+                issue {
+                  id
+                }
+              }
+            }
+          `;
+          const createIssueResult = await octokit.graphql<{ createIssue: { issue: { id: string } } }>(createIssueMutation, { repositoryId, title, body });
+          const issueId = createIssueResult.createIssue?.issue?.id;
+
+          if (!issueId) {
+            throw new Error("La création de l'issue a échoué ou n'a pas retourné d'ID.");
+          }
+
+          // 2. Si projectId est fourni, ajouter l'issue au projet
+          if (projectId) {
+            const addItemMutation = `
+              mutation($projectId: ID!, $contentId: ID!) {
+                addProjectV2ItemById(input: {projectId: $projectId, contentId: $contentId}) {
+                  item {
+                    id
+                  }
+                }
+              }
+            `;
+            await octokit.graphql(addItemMutation, { projectId, contentId: issueId });
+          }
+
+          return { success: true, issueId: issueId };
+        } catch (error: any) {
+          logger.error("Erreur dans create_issue", { error: error.message });
+          // Renvoyer un message d'erreur plus détaillé au client
+          const graphqlErrors = error.response?.data?.errors;
+          const readableError = graphqlErrors ? graphqlErrors.map((e: any) => e.message).join(', ') : (error.message || 'Erreur inconnue.');
+          return { success: false, error: `Erreur GraphQL: ${readableError}` };
         }
       }
     }

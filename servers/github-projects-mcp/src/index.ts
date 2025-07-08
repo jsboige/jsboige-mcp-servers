@@ -1,5 +1,7 @@
 import { Server } from '@modelcontextprotocol/sdk/server/index.js';
-import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
+import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
+import express from 'express';
+import { randomUUID } from 'node:crypto';
 import {
   CallToolRequestSchema,
   ListToolsRequestSchema,
@@ -11,16 +13,9 @@ import { setupResources } from './resources.js';
 import { setupErrorHandlers } from './utils/errorHandlers.js';
 import logger from './logger.js';
 
-/**
- * Classe principale du serveur GitHub Projects MCP
- */
 class GitHubProjectsServer {
-  /** Instance du serveur MCP */
   private server: Server;
 
-  /**
-   * Crée une instance du serveur GitHub Projects MCP
-   */
   constructor() {
     this.server = new Server(
       {
@@ -35,38 +30,53 @@ class GitHubProjectsServer {
       }
     );
 
-    // Configurer les outils et les ressources
     setupTools(this.server);
     setupResources(this.server);
-    
-    // Configurer les gestionnaires d'erreurs
     setupErrorHandlers(this.server);
     
-    // Gestion des erreurs
     this.server.onerror = (error) => logger.error('[MCP Error]', { error });
     process.on('SIGINT', async () => {
-      logger.info('SIGINT reçu, fermeture du serveur.');
+      logger.info('SIGINT received, closing server.');
       await this.server.close();
       process.exit(0);
     });
   }
 
-  /**
-   * Démarre le serveur
-   */
   async run() {
     try {
-      logger.info('Démarrage du serveur MCP Gestionnaire de Projet...');
-      const transport = new StdioServerTransport();
+      const port = process.env.PORT || 3000;
+      const app = express();
+      app.use(express.json());
+
+      const transport = new StreamableHTTPServerTransport({
+        sessionIdGenerator: () => randomUUID(),
+      });
       await this.server.connect(transport);
-      logger.info('Serveur MCP Gestionnaire de Projet démarré sur stdio');
+
+      app.get('/', (req, res) => {
+        res.status(200).json({ status: 'ok' });
+      });
+
+      app.post('/mcp', (req, res) => {
+        logger.info('Received POST request on /mcp');
+        logger.info('Headers:', req.headers);
+        logger.info('Body:', req.body);
+        transport.handleRequest(req, res, req.body);
+      });
+      
+      app.get('/mcp', (req, res) => {
+        transport.handleRequest(req, res);
+      });
+
+      app.listen(port, () => {
+        logger.info(`MCP server listening on port ${port}`);
+      });
     } catch (error) {
-      logger.error('Erreur lors du démarrage du serveur MCP:', { error });
+      logger.error('Error starting MCP server:', { error });
       process.exit(1);
     }
   }
 }
 
-// Créer et démarrer le serveur
 const server = new GitHubProjectsServer();
 server.run();

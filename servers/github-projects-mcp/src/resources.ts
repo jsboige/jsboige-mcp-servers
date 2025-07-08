@@ -98,7 +98,7 @@ export function setupResources(server: any) {
     name: 'projects',
     description: 'Accès aux projets GitHub d\'un utilisateur ou d\'une organisation',
     uriSchema: 'github-projects://{owner}/{type}?state={state}',
-    fetch: async (uri) => {
+    fetch: async (uri: any) => {
       try {
         // Extraire les paramètres de l'URI
         const url = new URL(uri);
@@ -195,7 +195,7 @@ export function setupResources(server: any) {
     name: 'project',
     description: 'Accès à un projet GitHub spécifique',
     uriSchema: 'github-project://{owner}/{project_number}',
-    fetch: async (uri) => {
+    fetch: async (uri: any) => {
       try {
         // Extraire les paramètres de l'URI
         const url = new URL(uri);
@@ -393,7 +393,7 @@ export function setupResources(server: any) {
   }));
 
   // Gérer les requêtes de ressources
-  server.setRequestHandler(ReadResourceRequestSchema, async (request) => {
+  server.setRequestHandler(ReadResourceRequestSchema, async (request: any) => {
     const uri = request.params.uri;
     
     try {
