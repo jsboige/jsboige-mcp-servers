@@ -113,6 +113,16 @@ interface GraphQLDeleteProjectItemResponse {
   };
 }
 
+interface GraphQLUpdateIssueResponse {
+  updateIssue: {
+    issue: {
+      id: string;
+      number: number;
+      state: 'OPEN' | 'CLOSED';
+    };
+  };
+}
+
 // Initialiser le client GitHub
 const octokit = getGitHubClient();
 
@@ -532,6 +542,51 @@ export function setupTools(server: any) {
         } catch (error: any) {
           logger.error("Erreur dans create_issue", { error: error.message });
           // Renvoyer un message d'erreur plus détaillé au client
+          const graphqlErrors = error.response?.data?.errors;
+          const readableError = graphqlErrors ? graphqlErrors.map((e: any) => e.message).join(', ') : (error.message || 'Erreur inconnue.');
+          return { success: false, error: `Erreur GraphQL: ${readableError}` };
+        }
+      }
+    },
+    {
+      name: 'update_issue_state',
+      description: "Modifie l'état d'une issue (ouverte ou fermée).",
+      inputSchema: {
+        type: 'object',
+        properties: {
+          issueId: { type: 'string', description: "L'ID global de l'issue à modifier." },
+          state: { type: 'string', enum: ['OPEN', 'CLOSED'], description: "Le nouvel état de l'issue." }
+        },
+        required: ['issueId', 'state']
+      },
+      execute: async ({ issueId, state }: { issueId: string, state: 'OPEN' | 'CLOSED' }) => {
+        try {
+          const mutation = `
+            mutation UpdateIssue($issueId: ID!, $state: IssueState!) {
+              updateIssue(input: {id: $issueId, state: $state}) {
+                issue {
+                  id
+                  number
+                  state
+                }
+              }
+            }
+          `;
+
+          const result = await octokit.graphql<GraphQLUpdateIssueResponse>(mutation, {
+            issueId,
+            state
+          });
+
+          const issue = result.updateIssue?.issue;
+          if (!issue) {
+            throw new Error("La mise à jour de l'issue a échoué ou n'a pas retourné les informations attendues.");
+          }
+          
+          return { success: true, issue: { id: issue.id, number: issue.number, state: issue.state } };
+
+        } catch (error: any) {
+          logger.error("Erreur dans update_issue_state", { error: error.message, fullError: JSON.stringify(error, null, 2) });
           const graphqlErrors = error.response?.data?.errors;
           const readableError = graphqlErrors ? graphqlErrors.map((e: any) => e.message).join(', ') : (error.message || 'Erreur inconnue.');
           return { success: false, error: `Erreur GraphQL: ${readableError}` };

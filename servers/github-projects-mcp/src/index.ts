@@ -1,5 +1,6 @@
 import { Server } from '@modelcontextprotocol/sdk/server/index.js';
 import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
+import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import express from 'express';
 import { randomUUID } from 'node:crypto';
 import {
@@ -44,33 +45,38 @@ class GitHubProjectsServer {
 
   async run() {
     try {
-      const port = process.env.PORT || 3000;
-      const app = express();
-      app.use(express.json());
+      const transportType = process.env.MCP_TRANSPORT || 'http';
+      logger.info(`Using ${transportType} transport`);
 
-      const transport = new StreamableHTTPServerTransport({
-        sessionIdGenerator: () => randomUUID(),
-      });
-      await this.server.connect(transport);
+      if (transportType === 'http') {
+        const port = process.env.PORT || 3000;
+        const app = express();
+        app.use(express.json());
 
-      app.get('/', (req, res) => {
-        res.status(200).json({ status: 'ok' });
-      });
+        const transport = new StreamableHTTPServerTransport({
+          sessionIdGenerator: () => randomUUID(),
+        });
+        await this.server.connect(transport);
 
-      app.post('/mcp', (req, res) => {
-        logger.info('Received POST request on /mcp');
-        logger.info('Headers:', req.headers);
-        logger.info('Body:', req.body);
-        transport.handleRequest(req, res, req.body);
-      });
-      
-      app.get('/mcp', (req, res) => {
-        transport.handleRequest(req, res);
-      });
+        app.post('/mcp', (req, res) => {
+          logger.info('Received POST request on /mcp');
+          logger.info('Headers:', req.headers);
+          logger.info('Body:', req.body);
+          transport.handleRequest(req, res, req.body);
+        });
+        
+        app.get('/mcp', (req, res) => {
+          transport.handleRequest(req, res);
+        });
 
-      app.listen(port, () => {
-        logger.info(`MCP server listening on port ${port}`);
-      });
+        app.listen(port, () => {
+          logger.info(`MCP server listening on port ${port}`);
+        });
+      } else {
+        const transport = new StdioServerTransport();
+        await this.server.connect(transport);
+        logger.info('MCP server connected to stdio');
+      }
     } catch (error) {
       logger.error('Error starting MCP server:', { error });
       process.exit(1);
