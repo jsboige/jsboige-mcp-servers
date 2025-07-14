@@ -36,3 +36,32 @@ export async function executeUpdateIssueState(
     return { success: false, error: `Erreur GraphQL: ${readableError}` };
   }
 }
+
+export async function executeDeleteProject(
+  octokit: any,
+  { projectId }: { projectId: string }
+) {
+  try {
+    const mutation = `
+      mutation($projectId: ID!) {
+        deleteProject(input: {projectId: $projectId}) {
+          project {
+            id
+          }
+        }
+      }
+    `;
+
+    await octokit.graphql(mutation, {
+      projectId,
+    });
+
+    return { success: true };
+
+  } catch (error: any) {
+    logger.error("Erreur dans delete_project", { error: error.message, fullError: JSON.stringify(error, null, 2) });
+    const graphqlErrors = error.response?.data?.errors;
+    const readableError = graphqlErrors ? graphqlErrors.map((e: any) => e.message).join(', ') : (error.message || 'Erreur inconnue.');
+    return { success: false, message: `Erreur GraphQL: ${readableError}` };
+  }
+}

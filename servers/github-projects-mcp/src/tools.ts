@@ -1,7 +1,7 @@
 import { Tool } from '@modelcontextprotocol/sdk/types.js';
 import { CallToolRequestSchema, ListToolsRequestSchema, ErrorCode, McpError } from '@modelcontextprotocol/sdk/types.js';
 import { getGitHubClient } from './utils/github.js';
-import { executeUpdateIssueState } from './github-actions.js';
+import { executeDeleteProject, executeUpdateIssueState } from './github-actions.js';
 import logger from './logger.js';
 
 interface GitHubProjectNode {
@@ -433,6 +433,20 @@ export function setupTools(server: any) {
           logger.error('Erreur dans delete_project_item', { error });
           return { success: false, error: error.message || 'Une erreur est survenue lors de la suppression de l\'élément.' };
         }
+      }
+    },
+    {
+      name: 'delete_project',
+      description: 'Supprime un projet GitHub',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          projectId: { type: 'string', description: "L'ID du projet à supprimer." },
+        },
+        required: ['projectId'],
+      },
+      execute: async ({ projectId }: { projectId: string }) => {
+        return await executeDeleteProject(octokit, { projectId });
       }
     },
     {

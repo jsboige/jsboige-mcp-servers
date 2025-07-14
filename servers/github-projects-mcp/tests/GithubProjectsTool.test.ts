@@ -4,7 +4,7 @@
 // en l'isolant ici.
 
 import logger from '../src/logger';
-import { executeUpdateIssueState } from '../src/github-actions';
+import { executeUpdateIssueState, executeDeleteProject } from '../src/github-actions';
 
 // Mock du logger pour éviter les erreurs
 jest.mock('../src/logger', () => ({
@@ -78,5 +78,49 @@ describe(' logique de update_issue_state', () => {
         expect(mockGraphql).toHaveBeenCalledTimes(1);
         expect(result.success).toBe(false);
         expect(result.error).toBe("Erreur GraphQL: La mise à jour de l'issue a échoué ou n'a pas retourné les informations attendues.");
+    });
+});
+
+describe('logique de delete_project', () => {
+    const mockGraphql = jest.fn();
+    const mockOctokit = {
+        graphql: mockGraphql,
+    };
+
+    beforeEach(() => {
+        mockGraphql.mockClear();
+        (logger.error as jest.Mock).mockClear();
+    });
+
+    it('devrait retourner { success: true } après une suppression réussie', async () => {
+        const mockApiResponse = {
+            deleteProject: {
+                project: { id: 'PROJECT_ID' },
+            },
+        };
+        mockGraphql.mockResolvedValue(mockApiResponse);
+
+        const result = await executeDeleteProject(mockOctokit, {
+            projectId: 'PROJECT_ID',
+        });
+
+        expect(mockGraphql).toHaveBeenCalledTimes(1);
+        expect(result).toEqual({ success: true });
+    });
+
+    it('devrait retourner { success: false, message: "..." } en cas d\'erreur de l\'API', async () => {
+        const mockError = new Error('Projet non trouvé');
+        mockGraphql.mockRejectedValue(mockError);
+
+        const result = await executeDeleteProject(mockOctokit, {
+            projectId: 'UNKNOWN_PROJECT_ID',
+        });
+
+        expect(mockGraphql).toHaveBeenCalledTimes(1);
+        expect(result).toEqual({
+            success: false,
+            message: 'Erreur GraphQL: Projet non trouvé',
+        });
+        expect(logger.error).toHaveBeenCalled();
     });
 });
