@@ -1,6 +1,7 @@
 import { Tool } from '@modelcontextprotocol/sdk/types.js';
 import { CallToolRequestSchema, ListToolsRequestSchema, ErrorCode, McpError } from '@modelcontextprotocol/sdk/types.js';
 import { getGitHubClient } from './utils/github.js';
+import { executeUpdateIssueState } from './github-actions.js';
 import logger from './logger.js';
 
 interface GitHubProjectNode {
@@ -110,16 +111,6 @@ interface GraphQLUpdateProjectItemFieldResponse {
 interface GraphQLDeleteProjectItemResponse {
   deleteProjectV2Item: {
     deletedItemId: string;
-  };
-}
-
-interface GraphQLUpdateIssueResponse {
-  updateIssue: {
-    issue: {
-      id: string;
-      number: number;
-      state: 'OPEN' | 'CLOSED';
-    };
   };
 }
 
@@ -560,37 +551,7 @@ export function setupTools(server: any) {
         required: ['issueId', 'state']
       },
       execute: async ({ issueId, state }: { issueId: string, state: 'OPEN' | 'CLOSED' }) => {
-        try {
-          const mutation = `
-            mutation UpdateIssue($issueId: ID!, $state: IssueState!) {
-              updateIssue(input: {id: $issueId, state: $state}) {
-                issue {
-                  id
-                  number
-                  state
-                }
-              }
-            }
-          `;
-
-          const result = await octokit.graphql<GraphQLUpdateIssueResponse>(mutation, {
-            issueId,
-            state
-          });
-
-          const issue = result.updateIssue?.issue;
-          if (!issue) {
-            throw new Error("La mise à jour de l'issue a échoué ou n'a pas retourné les informations attendues.");
-          }
-          
-          return { success: true, issue: { id: issue.id, number: issue.number, state: issue.state } };
-
-        } catch (error: any) {
-          logger.error("Erreur dans update_issue_state", { error: error.message, fullError: JSON.stringify(error, null, 2) });
-          const graphqlErrors = error.response?.data?.errors;
-          const readableError = graphqlErrors ? graphqlErrors.map((e: any) => e.message).join(', ') : (error.message || 'Erreur inconnue.');
-          return { success: false, error: `Erreur GraphQL: ${readableError}` };
-        }
+        return await executeUpdateIssueState(octokit, { issueId, state });
       }
     }
   ];
