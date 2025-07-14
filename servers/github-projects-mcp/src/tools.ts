@@ -1,7 +1,7 @@
 import { Tool } from '@modelcontextprotocol/sdk/types.js';
 import { CallToolRequestSchema, ListToolsRequestSchema, ErrorCode, McpError } from '@modelcontextprotocol/sdk/types.js';
 import { getGitHubClient } from './utils/github.js';
-import { executeDeleteProject, executeUpdateIssueState } from './github-actions.js';
+import { executeDeleteProject, executeUpdateIssueState, getRepositoryId, executeCreateIssue } from './github-actions.js';
 import logger from './logger.js';
 
 interface GitHubProjectNode {
@@ -503,53 +503,24 @@ export function setupTools(server: any) {
       inputSchema: {
         type: 'object',
         properties: {
-          repositoryId: { type: 'string', description: "L'ID du dépôt où créer l'issue." },
+          repositoryName: { type: 'string', description: "Le nom complet du dépôt (ex: 'owner/repo')." },
           title: { type: 'string', description: "Le titre de l'issue." },
-          body: { type: 'string', description: "Le corps de l'issue." },
-          projectId: { type: 'string', description: "L'ID du projet auquel ajouter la nouvelle issue." }
+          body: { type: 'string', description: "Le corps de l'issue (optionnel)." },
+          projectId: { type: 'string', description: "L'ID du projet auquel ajouter la nouvelle issue (optionnel)." }
         },
-        required: ['repositoryId', 'title']
+        required: ['repositoryName', 'title']
       },
-      execute: async ({ repositoryId, title, body, projectId }: { repositoryId: string, title: string, body?: string, projectId?: string }) => {
+      execute: async ({ repositoryName, title, body, projectId }: { repositoryName: string, title: string, body?: string, projectId?: string }) => {
         try {
-          // 1. Créer l'issue
-          const createIssueMutation = `
-            mutation($repositoryId: ID!, $title: String!, $body: String) {
-              createIssue(input: {repositoryId: $repositoryId, title: $title, body: $body}) {
-                issue {
-                  id
-                }
-              }
-            }
-          `;
-          const createIssueResult = await octokit.graphql<{ createIssue: { issue: { id: string } } }>(createIssueMutation, { repositoryId, title, body });
-          const issueId = createIssueResult.createIssue?.issue?.id;
-
-          if (!issueId) {
-            throw new Error("La création de l'issue a échoué ou n'a pas retourné d'ID.");
+          const [owner, repo] = repositoryName.split('/');
+          if (!owner || !repo) {
+            throw new Error("Le format de 'repositoryName' doit être 'owner/repo'.");
           }
-
-          // 2. Si projectId est fourni, ajouter l'issue au projet
-          if (projectId) {
-            const addItemMutation = `
-              mutation($projectId: ID!, $contentId: ID!) {
-                addProjectV2ItemById(input: {projectId: $projectId, contentId: $contentId}) {
-                  item {
-                    id
-                  }
-                }
-              }
-            `;
-            await octokit.graphql(addItemMutation, { projectId, contentId: issueId });
-          }
-
-          return { success: true, issueId: issueId };
+          const repositoryId = await getRepositoryId(octokit, owner, repo);
+          return await executeCreateIssue(octokit, { repositoryId, title, body, projectId });
         } catch (error: any) {
-          logger.error("Erreur dans create_issue", { error: error.message });
-          // Renvoyer un message d'erreur plus détaillé au client
-          const graphqlErrors = error.response?.data?.errors;
-          const readableError = graphqlErrors ? graphqlErrors.map((e: any) => e.message).join(', ') : (error.message || 'Erreur inconnue.');
-          return { success: false, error: `Erreur GraphQL: ${readableError}` };
+          logger.error("Erreur dans l'outil create_issue", { error: error.message });
+          return { success: false, error: error.message };
         }
       }
     },

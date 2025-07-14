@@ -4,7 +4,7 @@
 // en l'isolant ici.
 
 import logger from '../src/logger';
-import { executeUpdateIssueState, executeDeleteProject } from '../src/github-actions';
+import { getRepositoryId, executeCreateIssue, executeUpdateIssueState, executeDeleteProject } from '../src/github-actions';
 
 // Mock du logger pour éviter les erreurs
 jest.mock('../src/logger', () => ({
@@ -121,6 +121,116 @@ describe('logique de delete_project', () => {
             success: false,
             message: 'Erreur GraphQL: Projet non trouvé',
         });
+        expect(logger.error).toHaveBeenCalled();
+    });
+});
+
+describe('logique de getRepositoryId', () => {
+    const mockGraphql = jest.fn();
+    const mockOctokit = {
+        graphql: mockGraphql,
+    };
+
+    beforeEach(() => {
+        mockGraphql.mockClear();
+    });
+
+    it('devrait retourner l\'ID du dépôt quand il est trouvé', async () => {
+        mockGraphql.mockResolvedValue({
+            repository: {
+                id: 'repo-id-123'
+            }
+        });
+        const result = await getRepositoryId(mockOctokit, 'owner', 'repo');
+        expect(result).toBe('repo-id-123');
+        expect(mockGraphql).toHaveBeenCalledWith(expect.any(String), { owner: 'owner', repo: 'repo' });
+    });
+
+    it('devrait jeter une erreur si le dépôt n\'est pas trouvé', async () => {
+        mockGraphql.mockResolvedValue({ repository: null });
+        await expect(getRepositoryId(mockOctokit, 'owner', 'repo')).rejects.toThrow('Dépôt non trouvé : owner/repo');
+    });
+});
+
+describe('logique de create_issue', () => {
+    const mockGraphql = jest.fn();
+    const mockOctokit = {
+        graphql: mockGraphql,
+    };
+
+    beforeEach(() => {
+        mockGraphql.mockClear();
+        (logger.error as jest.Mock).mockClear();
+    });
+
+    it('doit créer une issue avec succès (sans projectId)', async () => {
+        const mockApiResponse = {
+            createIssue: {
+                issue: { id: 'issue-1', number: 1, url: 'http://issue.url' }
+            }
+        };
+        mockGraphql.mockResolvedValue(mockApiResponse);
+
+        const result = await executeCreateIssue(mockOctokit, {
+            repositoryId: 'repo-1',
+            title: 'Test Issue',
+            body: 'This is a test'
+        });
+
+        expect(result.success).toBe(true);
+        expect(result.issue).toEqual({ id: 'issue-1', number: 1, url: 'http://issue.url' });
+        expect(result.projectItemId).toBeUndefined();
+        expect(mockGraphql).toHaveBeenCalledTimes(1);
+    });
+
+    it('doit créer une issue et l\'ajouter à un projet', async () => {
+        const createIssueResponse = {
+            createIssue: { issue: { id: 'issue-2', number: 2, url: 'http://issue.url/2' } }
+        };
+        const addItemResponse = {
+            addProjectV2ItemById: { item: { id: 'project-item-1' } }
+        };
+        mockGraphql.mockResolvedValueOnce(createIssueResponse).mockResolvedValueOnce(addItemResponse);
+
+        const result = await executeCreateIssue(mockOctokit, {
+            repositoryId: 'repo-1',
+            title: 'Test with Project',
+            projectId: 'project-1'
+        });
+
+        expect(result.success).toBe(true);
+        expect(result.issue?.id).toBe('issue-2');
+        expect(result.projectItemId).toBe('project-item-1');
+        expect(mockGraphql).toHaveBeenCalledTimes(2);
+    });
+
+    it('doit gérer un échec de la création de l\'issue', async () => {
+        mockGraphql.mockRejectedValue(new Error("API Error"));
+
+        const result = await executeCreateIssue(mockOctokit, {
+            repositoryId: 'repo-1',
+            title: 'Failed Issue'
+        });
+
+        expect(result.success).toBe(false);
+        expect(result.error).toContain('API Error');
+        expect(logger.error).toHaveBeenCalled();
+    });
+
+    it('doit gérer un échec de l\'ajout au projet', async () => {
+        const createIssueResponse = {
+            createIssue: { issue: { id: 'issue-3', number: 3, url: 'http://issue.url/3' } }
+        };
+        mockGraphql.mockResolvedValueOnce(createIssueResponse).mockRejectedValueOnce(new Error("Project Error"));
+
+        const result = await executeCreateIssue(mockOctokit, {
+            repositoryId: 'repo-1',
+            title: 'Test with Project Fail',
+            projectId: 'project-1'
+        });
+
+        expect(result.success).toBe(false);
+        expect(result.error).toContain('Project Error');
         expect(logger.error).toHaveBeenCalled();
     });
 });
