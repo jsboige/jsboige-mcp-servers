@@ -1,7 +1,7 @@
 import { Tool } from '@modelcontextprotocol/sdk/types.js';
 import { CallToolRequestSchema, ListToolsRequestSchema, ErrorCode, McpError } from '@modelcontextprotocol/sdk/types.js';
 import { getGitHubClient } from './utils/github.js';
-import { executeCreateProjectField, executeDeleteProject, executeUpdateIssueState, getRepositoryId, executeCreateIssue, executeUpdateProjectField, executeUpdateProjectItemField } from './github-actions.js';
+import { executeCreateProjectField, executeDeleteProject, executeDeleteProjectField, executeUpdateIssueState, getRepositoryId, executeCreateIssue, executeUpdateProjectField, executeUpdateProjectItemField } from './github-actions.js';
 import logger from './logger.js';
 
 interface GitHubProjectNode {
@@ -552,6 +552,21 @@ export function setupTools(server: any) {
       },
       execute: async ({ projectId, fieldId, name }: { projectId: string, fieldId: string, name: string }) => {
         return await executeUpdateProjectField(octokit, { projectId, fieldId, name });
+      }
+    },
+    {
+      name: 'delete_project_field',
+      description: 'Deletes a field from a project.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          projectId: { type: 'string', description: "The ID of the project." },
+          fieldId: { type: 'string', description: "The ID of the field to delete." },
+        },
+        required: ['projectId', 'fieldId']
+      },
+      execute: async ({ projectId, fieldId }: { projectId: string, fieldId: string }) => {
+        return await executeDeleteProjectField(octokit, { projectId, fieldId });
       }
     }
   ];

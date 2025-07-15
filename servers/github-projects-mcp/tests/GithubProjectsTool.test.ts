@@ -11,7 +11,8 @@ import {
   executeUpdateIssueState,
   executeDeleteProject,
   executeCreateProjectField,
-  executeUpdateProjectItemField // La fonction que nous allons tester
+  executeUpdateProjectItemField, // La fonction que nous allons tester
+  executeDeleteProjectField
 } from '../src/github-actions';
 
 // Mock du logger pour éviter les erreurs
@@ -387,5 +388,71 @@ describe('logique de update_project_item_field', () => {
         expect(mockGraphql).toHaveBeenCalledTimes(1);
         expect(result.success).toBe(false);
         expect(result.error).toBe("Erreur GraphQL: La mise à jour du champ a échoué ou n'a pas retourné les informations attendues.");
+    });
+});
+
+describe('logique de delete_project_field', () => {
+    const mockGraphql = jest.fn<(...args: any[]) => any>();
+    const mockOctokit = {
+        graphql: mockGraphql,
+    };
+
+    beforeEach(() => {
+        mockGraphql.mockClear();
+        (logger.error as jest.Mock).mockClear();
+    });
+
+    it('devrait supprimer un champ de projet avec succès', async () => {
+        const mockApiResponse = {
+            deleteProjectV2Field: {
+                projectV2Field: { id: 'field-id-to-delete' },
+            },
+        };
+        mockGraphql.mockResolvedValue(mockApiResponse);
+
+        const result = await executeDeleteProjectField(mockOctokit, {
+            projectId: 'project-id-123',
+            fieldId: 'field-id-to-delete',
+        });
+
+        expect(mockGraphql).toHaveBeenCalledTimes(1);
+        expect(mockGraphql.mock.calls[0][0]).toContain('deleteProjectV2Field');
+        expect(mockGraphql.mock.calls[0][1]).toEqual({
+            projectId: 'project-id-123',
+            fieldId: 'field-id-to-delete',
+        });
+
+        expect(result.success).toBe(true);
+        expect(result.deletedFieldId).toBe('field-id-to-delete');
+    });
+
+    it('devrait gérer une erreur de l\'API GraphQL lors de la suppression', async () => {
+        const mockApiError = new Error("GraphQL Error");
+        (mockApiError as any).response = { data: { errors: [{ message: 'Field not found' }] } };
+        mockGraphql.mockRejectedValue(mockApiError);
+
+        const result = await executeDeleteProjectField(mockOctokit, {
+            projectId: 'project-id-123',
+            fieldId: 'invalid-field-id',
+        });
+
+        expect(mockGraphql).toHaveBeenCalledTimes(1);
+        expect(result.success).toBe(false);
+        expect(result.error).toContain('Erreur GraphQL: Field not found');
+        expect(logger.error).toHaveBeenCalled();
+    });
+
+    it('devrait gérer le cas où l\'API ne retourne pas le champ supprimé attendu', async () => {
+        const mockApiResponse = { deleteProjectV2Field: { projectV2Field: null } };
+        mockGraphql.mockResolvedValue(mockApiResponse);
+
+        const result = await executeDeleteProjectField(mockOctokit, {
+            projectId: 'project-id-123',
+            fieldId: 'field-id-without-return',
+        });
+
+        expect(mockGraphql).toHaveBeenCalledTimes(1);
+        expect(result.success).toBe(false);
+        expect(result.error).toBe("Erreur GraphQL: La suppression du champ a échoué ou n'a pas retourné les informations attendues.");
     });
 });

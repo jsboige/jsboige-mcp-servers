@@ -288,3 +288,41 @@ export async function executeUpdateProjectItemField(
     return { success: false, error: `Erreur GraphQL: ${readableError}` };
   }
 }
+
+export async function executeDeleteProjectField(
+  octokit: any,
+  { projectId, fieldId }: { projectId: string; fieldId: string }
+) {
+  try {
+    const mutation = `
+      mutation($projectId: ID!, $fieldId: ID!) {
+        deleteProjectV2Field(input: {
+          projectId: $projectId,
+          fieldId: $fieldId
+        }) {
+          projectV2Field {
+            id
+          }
+        }
+      }
+    `;
+
+    const result = await octokit.graphql(mutation, {
+      projectId,
+      fieldId,
+    });
+
+    const deletedField = result.deleteProjectV2Field?.projectV2Field;
+    if (!deletedField) {
+      throw new Error("La suppression du champ a échoué ou n'a pas retourné les informations attendues.");
+    }
+
+    return { success: true, deletedFieldId: deletedField.id };
+
+  } catch (error: any) {
+    logger.error("Erreur dans deleteProjectV2Field", { error: error.message, fullError: JSON.stringify(error, null, 2) });
+    const graphqlErrors = error.response?.data?.errors;
+    const readableError = graphqlErrors ? graphqlErrors.map((e: any) => e.message).join(', ') : (error.message || 'Erreur inconnue.');
+    return { success: false, error: `Erreur GraphQL: ${readableError}` };
+  }
+}
