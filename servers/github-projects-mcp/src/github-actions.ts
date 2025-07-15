@@ -73,6 +73,47 @@ export async function executeCreateIssue(
   }
 }
 
+export async function executeUpdateProjectField(
+  octokit: any,
+  { projectId, fieldId, name }: { projectId: string; fieldId: string; name: string; }
+) {
+  try {
+    const mutation = `
+      mutation($projectId: ID!, $fieldId: ID!, $name: String!) {
+        updateProjectV2Field(input: {
+          projectId: $projectId,
+          fieldId: $fieldId,
+          name: $name
+        }) {
+          projectV2Field {
+            id
+            name
+          }
+        }
+      }
+    `;
+
+    const result = await octokit.graphql(mutation, {
+      projectId,
+      fieldId,
+      name,
+    });
+
+    const field = result.updateProjectV2Field?.projectV2Field;
+    if (!field) {
+      throw new Error("La mise à jour du champ a échoué ou n'a pas retourné les informations attendues.");
+    }
+
+    return { success: true, field: { id: field.id, name: field.name } };
+
+  } catch (error: any) {
+    logger.error("Erreur dans updateProjectV2Field", { error: error.message, fullError: JSON.stringify(error, null, 2) });
+    const graphqlErrors = error.response?.data?.errors;
+    const readableError = graphqlErrors ? graphqlErrors.map((e: any) => e.message).join(', ') : (error.message || 'Erreur inconnue.');
+    return { success: false, error: `Erreur GraphQL: ${readableError}` };
+  }
+}
+
 export async function executeUpdateIssueState(
   octokit: any,
   { issueId, state }: { issueId: string, state: 'OPEN' | 'CLOSED' }
@@ -173,6 +214,75 @@ export async function executeCreateProjectField(
 
   } catch (error: any) {
     logger.error("Erreur dans createProjectV2Field", { error: error.message, fullError: JSON.stringify(error, null, 2) });
+    const graphqlErrors = error.response?.data?.errors;
+    const readableError = graphqlErrors ? graphqlErrors.map((e: any) => e.message).join(', ') : (error.message || 'Erreur inconnue.');
+    return { success: false, error: `Erreur GraphQL: ${readableError}` };
+  }
+}
+
+export async function executeUpdateProjectItemField(
+  octokit: any,
+  { projectId, itemId, fieldId, fieldType, value, optionId }: 
+  { projectId: string; itemId: string; fieldId: string; fieldType: 'text' | 'date' | 'single_select' | 'number'; value?: string; optionId?: string; }
+) {
+  try {
+    let queryValue;
+    let variables: any = { projectId: projectId, itemId: itemId, fieldId: fieldId };
+    
+    switch (fieldType) {
+      case 'text':
+        if (typeof value !== 'string') throw new Error("La 'value' est requise pour le type 'text'.");
+        queryValue = 'value: { text: $text }'; 
+        variables.text = value; 
+        break;
+      case 'date':
+        if (typeof value !== 'string') throw new Error("La 'value' est requise pour le type 'date'.");
+        queryValue = 'value: { date: $date }'; 
+        variables.date = value; 
+        break;
+      case 'single_select':
+        if (!optionId) throw new Error("L''option_id' est requis pour le type 'single_select'.");
+        queryValue = 'value: { singleSelectOptionId: $optionId }'; 
+        variables.optionId = optionId; 
+        break;
+      case 'number':
+        if (typeof value !== 'string') throw new Error("La 'value' est requise pour le type 'number'.");
+        const numValue = parseFloat(value);
+        if(isNaN(numValue)) throw new Error("La valeur pour 'number' est invalide.");
+        queryValue = 'value: { number: $number }'; 
+        variables.number = numValue; 
+        break;
+      default:
+        throw new Error(`Type de champ non pris en charge: ${fieldType}`);
+    }
+
+    const getMutationString = () => {
+        let varType = '';
+        switch(fieldType) {
+            case 'text': varType = '$text: String!'; break;
+            case 'date': varType = '$date: Date!'; break;
+            case 'single_select': varType = '$optionId: String!'; break;
+            case 'number': varType = '$number: Float!'; break;
+        }
+        return `mutation($projectId: ID!, $itemId: ID!, $fieldId: ID!, ${varType}) {
+          updateProjectV2ItemFieldValue(input: { projectId: $projectId, itemId: $itemId, fieldId: $fieldId, ${queryValue} }) { 
+            projectV2Item { id } 
+          }
+        }`;
+    }
+    
+    const mutation = getMutationString();
+    const result = await octokit.graphql(mutation, variables);
+
+    const updatedItem = result.updateProjectV2ItemFieldValue?.projectV2Item;
+    if (!updatedItem) {
+      throw new Error("La mise à jour du champ a échoué ou n'a pas retourné les informations attendues.");
+    }
+
+    return { success: true, item: { id: updatedItem.id } };
+
+  } catch (error: any) {
+    logger.error("Erreur dans executeUpdateProjectItemField", { error: error.message, fullError: JSON.stringify(error, null, 2) });
     const graphqlErrors = error.response?.data?.errors;
     const readableError = graphqlErrors ? graphqlErrors.map((e: any) => e.message).join(', ') : (error.message || 'Erreur inconnue.');
     return { success: false, error: `Erreur GraphQL: ${readableError}` };

@@ -3,8 +3,16 @@
 // À la place, nous allons tester la *logique* de la fonction execute
 // en l'isolant ici.
 
+import { describe, it, expect, beforeEach, jest } from '@jest/globals';
 import logger from '../src/logger';
-import { getRepositoryId, executeCreateIssue, executeUpdateIssueState, executeDeleteProject, executeCreateProjectField } from '../src/github-actions';
+import {
+  getRepositoryId,
+  executeCreateIssue,
+  executeUpdateIssueState,
+  executeDeleteProject,
+  executeCreateProjectField,
+  executeUpdateProjectItemField // La fonction que nous allons tester
+} from '../src/github-actions';
 
 // Mock du logger pour éviter les erreurs
 jest.mock('../src/logger', () => ({
@@ -19,7 +27,7 @@ jest.mock('../src/logger', () => ({
 
 
 describe(' logique de update_issue_state', () => {
-    const mockGraphql = jest.fn();
+    const mockGraphql = jest.fn<(...args: any[]) => any>();
     const mockOctokit = {
         graphql: mockGraphql,
     };
@@ -82,7 +90,7 @@ describe(' logique de update_issue_state', () => {
 });
 
 describe('logique de delete_project', () => {
-    const mockGraphql = jest.fn();
+    const mockGraphql = jest.fn<(...args: any[]) => any>();
     const mockOctokit = {
         graphql: mockGraphql,
     };
@@ -126,7 +134,7 @@ describe('logique de delete_project', () => {
 });
 
 describe('logique de getRepositoryId', () => {
-    const mockGraphql = jest.fn();
+    const mockGraphql = jest.fn<(...args: any[]) => any>();
     const mockOctokit = {
         graphql: mockGraphql,
     };
@@ -153,7 +161,7 @@ describe('logique de getRepositoryId', () => {
 });
 
 describe('logique de create_issue', () => {
-    const mockGraphql = jest.fn();
+    const mockGraphql = jest.fn<(...args: any[]) => any>();
     const mockOctokit = {
         graphql: mockGraphql,
     };
@@ -236,7 +244,7 @@ describe('logique de create_issue', () => {
 });
 
 describe('logique de create_project_field', () => {
-    const mockGraphql = jest.fn();
+    const mockGraphql = jest.fn<(...args: any[]) => any>();
     const mockOctokit = {
         graphql: mockGraphql,
     };
@@ -302,5 +310,82 @@ describe('logique de create_project_field', () => {
         expect(mockGraphql).toHaveBeenCalledTimes(1);
         expect(result.success).toBe(false);
         expect(result.error).toBe("Erreur GraphQL: La création du champ a échoué ou n'a pas retourné les informations attendues.");
+    });
+});
+
+describe('logique de update_project_item_field', () => {
+    const mockGraphql = jest.fn<(...args: any[]) => any>();
+    const mockOctokit = {
+        graphql: mockGraphql,
+    };
+
+    beforeEach(() => {
+        mockGraphql.mockClear();
+        (logger.error as jest.Mock).mockClear();
+    });
+
+    it('devrait mettre à jour la valeur texte d\'un item avec succès', async () => {
+        const mockApiResponse = {
+            updateProjectV2ItemFieldValue: {
+                projectV2Item: { id: 'item-id-123' },
+            },
+        };
+        mockGraphql.mockResolvedValue(mockApiResponse);
+
+        const result = await executeUpdateProjectItemField(mockOctokit, {
+            projectId: 'project-id-456',
+            itemId: 'item-id-123',
+            fieldId: 'field-id-789',
+            fieldType: 'text',
+            value: 'Nouvelle valeur texte',
+        });
+
+        expect(mockGraphql).toHaveBeenCalledTimes(1);
+        expect(mockGraphql.mock.calls[0][0]).toContain('updateProjectV2ItemFieldValue');
+        expect(mockGraphql.mock.calls[0][1]).toEqual({
+            projectId: 'project-id-456',
+            itemId: 'item-id-123',
+            fieldId: 'field-id-789',
+            text: 'Nouvelle valeur texte',
+        });
+
+        expect(result.success).toBe(true);
+        expect(result.item).toEqual({ id: 'item-id-123' });
+    });
+
+    it('devrait gérer une erreur de l\'API GraphQL', async () => {
+        const mockApiError = new Error("GraphQL Error");
+        (mockApiError as any).response = { data: { errors: [{ message: 'Field value is invalid' }] } };
+        mockGraphql.mockRejectedValue(mockApiError);
+
+        const result = await executeUpdateProjectItemField(mockOctokit, {
+            projectId: 'project-id-456',
+            itemId: 'item-id-123',
+            fieldId: 'field-id-789',
+            fieldType: 'text',
+            value: 'valeur invalide',
+        });
+
+        expect(mockGraphql).toHaveBeenCalledTimes(1);
+        expect(result.success).toBe(false);
+        expect(result.error).toContain('Erreur GraphQL: Field value is invalid');
+        expect(logger.error).toHaveBeenCalled();
+    });
+
+    it('devrait gérer le cas où l\'API ne retourne pas l\'item attendu', async () => {
+        const mockApiResponse = { updateProjectV2ItemFieldValue: { projectV2Item: null } };
+        mockGraphql.mockResolvedValue(mockApiResponse);
+
+        const result = await executeUpdateProjectItemField(mockOctokit, {
+            projectId: 'project-id-456',
+            itemId: 'item-id-123',
+            fieldId: 'field-id-789',
+            fieldType: 'text',
+            value: 'une valeur',
+        });
+
+        expect(mockGraphql).toHaveBeenCalledTimes(1);
+        expect(result.success).toBe(false);
+        expect(result.error).toBe("Erreur GraphQL: La mise à jour du champ a échoué ou n'a pas retourné les informations attendues.");
     });
 });

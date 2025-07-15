@@ -1,7 +1,7 @@
 import { Tool } from '@modelcontextprotocol/sdk/types.js';
 import { CallToolRequestSchema, ListToolsRequestSchema, ErrorCode, McpError } from '@modelcontextprotocol/sdk/types.js';
 import { getGitHubClient } from './utils/github.js';
-import { executeCreateProjectField, executeDeleteProject, executeUpdateIssueState, getRepositoryId, executeCreateIssue } from './github-actions.js';
+import { executeCreateProjectField, executeDeleteProject, executeUpdateIssueState, getRepositoryId, executeCreateIssue, executeUpdateProjectField, executeUpdateProjectItemField } from './github-actions.js';
 import logger from './logger.js';
 
 interface GitHubProjectNode {
@@ -366,35 +366,14 @@ export function setupTools(server: any) {
         required: ['project_id', 'item_id', 'field_id', 'field_type']
       },
       execute: async ({ project_id, item_id, field_id, field_type, value, option_id }: any) => {
-        try {
-          let queryValue;
-          let variables: any = { projectId: project_id, itemId: item_id, fieldId: field_id };
-          switch (field_type) {
-            case 'text':
-              queryValue = 'value: { text: $text }'; variables.text = value; break;
-            case 'date':
-              queryValue = 'value: { date: $date }'; variables.date = value; break;
-            case 'single_select':
-              if (!option_id) throw new Error("option_id est requis.");
-              queryValue = 'value: { singleSelectOptionId: $optionId }'; variables.optionId = option_id; break;
-            case 'number':
-              const numValue = parseFloat(value!);
-              if(isNaN(numValue)) throw new Error("La valeur pour 'number' est invalide.");
-              queryValue = 'value: { number: $number }'; variables.number = numValue; break;
-            default:
-              throw new Error(`Type de champ non pris en charge: ${field_type}`);
-          }
-          const query = `mutation($projectId: ID!, $itemId: ID!, $fieldId: ID!, ${field_type === 'text' ? '$text: String!' : field_type === 'date' ? '$date: Date!' : field_type === 'single_select' ? '$optionId: String!' : '$number: Float!'}) {
-            updateProjectV2ItemFieldValue(input: { projectId: $projectId, itemId: $itemId, fieldId: $fieldId, ${queryValue} }) { projectV2Item { id } }
-          }`;
-          const response = await octokit.graphql(query, variables) as any;
-          const updatedItemId = response.updateProjectV2ItemFieldValue?.projectV2Item?.id;
-          if (!updatedItemId) throw new Error("Impossible de mettre à jour le champ.");
-          return { success: true, item_id: updatedItemId };
-        } catch (error: any) {
-          logger.error('Erreur dans update_project_item_field', { error });
-          return { success: false, error: error.message || 'Erreur lors de la mise à jour' };
-        }
+        return await executeUpdateProjectItemField(octokit, {
+          projectId: project_id,
+          itemId: item_id,
+          fieldId: field_id,
+          fieldType: field_type,
+          value: value,
+          optionId: option_id
+        });
       }
     },
     {
@@ -557,6 +536,22 @@ export function setupTools(server: any) {
       },
       execute: async ({ projectId, name, dataType }: { projectId: string, name: string, dataType: 'TEXT' | 'NUMBER' | 'DATE' | 'SINGLE_SELECT' }) => {
         return await executeCreateProjectField(octokit, { projectId, name, dataType });
+      }
+    },
+    {
+      name: 'update_project_field',
+      description: 'Updates an existing field in a project (e.g., renames a column).',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          projectId: { type: 'string', description: "The ID of the project." },
+          fieldId: { type: 'string', description: "The ID of the field to update." },
+          name: { type: 'string', description: "The new name for the field." },
+        },
+        required: ['projectId', 'fieldId', 'name']
+      },
+      execute: async ({ projectId, fieldId, name }: { projectId: string, fieldId: string, name: string }) => {
+        return await executeUpdateProjectField(octokit, { projectId, fieldId, name });
       }
     }
   ];
