@@ -1,7 +1,7 @@
 import { Tool } from '@modelcontextprotocol/sdk/types.js';
 import { CallToolRequestSchema, ListToolsRequestSchema, ErrorCode, McpError } from '@modelcontextprotocol/sdk/types.js';
 import { getGitHubClient } from './utils/github.js';
-import { executeDeleteProject, executeUpdateIssueState, getRepositoryId, executeCreateIssue } from './github-actions.js';
+import { executeCreateProjectField, executeDeleteProject, executeUpdateIssueState, getRepositoryId, executeCreateIssue } from './github-actions.js';
 import logger from './logger.js';
 
 interface GitHubProjectNode {
@@ -537,6 +537,26 @@ export function setupTools(server: any) {
       },
       execute: async ({ issueId, state }: { issueId: string, state: 'OPEN' | 'CLOSED' }) => {
         return await executeUpdateIssueState(octokit, { issueId, state });
+      }
+    },
+    {
+      name: 'create_project_field',
+      description: "Crée un nouveau champ (colonne) dans un projet GitHub.",
+      inputSchema: {
+        type: 'object',
+        properties: {
+          projectId: { type: 'string', description: "L'ID du projet." },
+          name: { type: 'string', description: "Le nom du nouveau champ." },
+          dataType: {
+            type: 'string',
+            enum: ['TEXT', 'NUMBER', 'DATE', 'SINGLE_SELECT'],
+            description: "Le type de données du champ."
+          }
+        },
+        required: ['projectId', 'name', 'dataType']
+      },
+      execute: async ({ projectId, name, dataType }: { projectId: string, name: string, dataType: 'TEXT' | 'NUMBER' | 'DATE' | 'SINGLE_SELECT' }) => {
+        return await executeCreateProjectField(octokit, { projectId, name, dataType });
       }
     }
   ];

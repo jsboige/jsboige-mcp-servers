@@ -4,7 +4,7 @@
 // en l'isolant ici.
 
 import logger from '../src/logger';
-import { getRepositoryId, executeCreateIssue, executeUpdateIssueState, executeDeleteProject } from '../src/github-actions';
+import { getRepositoryId, executeCreateIssue, executeUpdateIssueState, executeDeleteProject, executeCreateProjectField } from '../src/github-actions';
 
 // Mock du logger pour éviter les erreurs
 jest.mock('../src/logger', () => ({
@@ -232,5 +232,75 @@ describe('logique de create_issue', () => {
         expect(result.success).toBe(false);
         expect(result.error).toContain('Project Error');
         expect(logger.error).toHaveBeenCalled();
+    });
+});
+
+describe('logique de create_project_field', () => {
+    const mockGraphql = jest.fn();
+    const mockOctokit = {
+        graphql: mockGraphql,
+    };
+
+    beforeEach(() => {
+        mockGraphql.mockClear();
+        (logger.error as jest.Mock).mockClear();
+    });
+
+    it('devrait créer un champ de projet avec succès', async () => {
+        const mockApiResponse = {
+            createProjectV2Field: {
+                projectV2Field: { id: 'field-123', name: 'Nouveau Champ' },
+            },
+        };
+        mockGraphql.mockResolvedValue(mockApiResponse);
+
+        const result = await executeCreateProjectField(mockOctokit, {
+            projectId: 'project-id-456',
+            name: 'Nouveau Champ',
+            dataType: 'TEXT',
+        });
+
+        expect(mockGraphql).toHaveBeenCalledTimes(1);
+        expect(mockGraphql.mock.calls[0][0]).toContain('createProjectV2Field');
+        expect(mockGraphql.mock.calls[0][1]).toEqual({
+            projectId: 'project-id-456',
+            name: 'Nouveau Champ',
+            dataType: 'TEXT',
+        });
+
+        expect(result.success).toBe(true);
+        expect(result.field).toEqual({ id: 'field-123', name: 'Nouveau Champ' });
+    });
+
+    it('devrait gérer une erreur de l\'API GraphQL lors de la création d\'un champ', async () => {
+        const mockApiError = new Error("GraphQL Error");
+        (mockApiError as any).response = { data: { errors: [{ message: 'Invalid project ID' }] } };
+        mockGraphql.mockRejectedValue(mockApiError);
+
+        const result = await executeCreateProjectField(mockOctokit, {
+            projectId: 'invalid-id',
+            name: 'Champ Échoué',
+            dataType: 'TEXT',
+        });
+
+        expect(mockGraphql).toHaveBeenCalledTimes(1);
+        expect(result.success).toBe(false);
+        expect(result.error).toContain('Erreur GraphQL: Invalid project ID');
+        expect(logger.error).toHaveBeenCalled();
+    });
+
+    it('devrait gérer le cas où l\'API ne retourne pas le champ attendu', async () => {
+        const mockApiResponse = { createProjectV2Field: { projectV2Field: null } };
+        mockGraphql.mockResolvedValue(mockApiResponse);
+
+        const result = await executeCreateProjectField(mockOctokit, {
+            projectId: 'project-id-789',
+            name: 'Champ Inattendu',
+            dataType: 'NUMBER',
+        });
+
+        expect(mockGraphql).toHaveBeenCalledTimes(1);
+        expect(result.success).toBe(false);
+        expect(result.error).toBe("Erreur GraphQL: La création du champ a échoué ou n'a pas retourné les informations attendues.");
     });
 });
