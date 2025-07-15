@@ -326,3 +326,42 @@ export async function executeDeleteProjectField(
     return { success: false, error: `Erreur GraphQL: ${readableError}` };
   }
 }
+export async function executeConvertDraftToIssue(
+  octokit: any,
+  { projectId, draftId }: { projectId: string; draftId: string }
+) {
+  try {
+    const mutation = `
+      mutation($projectId: ID!, $draftId: ID!) {
+        convertProjectV2DraftIssueToIssue(input: {
+          projectId: $projectId,
+          draftIssueId: $draftId
+        }) {
+          issue {
+            id
+            number
+            url
+          }
+        }
+      }
+    `;
+
+    const result = await octokit.graphql(mutation, {
+      projectId,
+      draftId,
+    });
+
+    const issue = result.convertProjectV2DraftIssueToIssue?.issue;
+    if (!issue) {
+      throw new Error("La conversion de la note en issue a échoué ou n'a pas retourné les informations attendues.");
+    }
+
+    return { success: true, issue: { id: issue.id, number: issue.number, url: issue.url } };
+
+  } catch (error: any) {
+    logger.error("Erreur dans executeConvertDraftToIssue", { error: error.message, fullError: JSON.stringify(error, null, 2) });
+    const graphqlErrors = error.response?.data?.errors;
+    const readableError = graphqlErrors ? graphqlErrors.map((e: any) => e.message).join(', ') : (error.message || 'Erreur inconnue.');
+    return { success: false, error: `Erreur GraphQL: ${readableError}` };
+  }
+}

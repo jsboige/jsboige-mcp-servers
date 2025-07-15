@@ -1,7 +1,7 @@
 import { Tool } from '@modelcontextprotocol/sdk/types.js';
 import { CallToolRequestSchema, ListToolsRequestSchema, ErrorCode, McpError } from '@modelcontextprotocol/sdk/types.js';
 import { getGitHubClient } from './utils/github.js';
-import { executeCreateProjectField, executeDeleteProject, executeDeleteProjectField, executeUpdateIssueState, getRepositoryId, executeCreateIssue, executeUpdateProjectField, executeUpdateProjectItemField } from './github-actions.js';
+import { executeConvertDraftToIssue, executeCreateProjectField, executeDeleteProject, executeDeleteProjectField, executeUpdateIssueState, getRepositoryId, executeCreateIssue, executeUpdateProjectField, executeUpdateProjectItemField } from './github-actions.js';
 import logger from './logger.js';
 
 interface GitHubProjectNode {
@@ -567,6 +567,21 @@ export function setupTools(server: any) {
       },
       execute: async ({ projectId, fieldId }: { projectId: string, fieldId: string }) => {
         return await executeDeleteProjectField(octokit, { projectId, fieldId });
+      }
+    },
+    {
+      name: 'convert_draft_to_issue',
+      description: 'Converts a draft issue in a project into a standard GitHub issue.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          projectId: { type: 'string', description: "The ID of the project." },
+          draftId: { type: 'string', description: "The ID of the draft issue to convert." },
+        },
+        required: ['projectId', 'draftId']
+      },
+      execute: async ({ projectId, draftId }: { projectId: string, draftId: string }) => {
+        return await executeConvertDraftToIssue(octokit, { projectId, draftId });
       }
     }
   ];

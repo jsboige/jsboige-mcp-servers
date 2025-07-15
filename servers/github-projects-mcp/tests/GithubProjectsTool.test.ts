@@ -12,7 +12,8 @@ import {
   executeDeleteProject,
   executeCreateProjectField,
   executeUpdateProjectItemField, // La fonction que nous allons tester
-  executeDeleteProjectField
+  executeDeleteProjectField,
+  executeConvertDraftToIssue
 } from '../src/github-actions';
 
 // Mock du logger pour éviter les erreurs
@@ -454,5 +455,71 @@ describe('logique de delete_project_field', () => {
         expect(mockGraphql).toHaveBeenCalledTimes(1);
         expect(result.success).toBe(false);
         expect(result.error).toBe("Erreur GraphQL: La suppression du champ a échoué ou n'a pas retourné les informations attendues.");
+    });
+    
+    describe('logique de executeConvertDraftToIssue', () => {
+        const mockGraphql = jest.fn<(...args: any[]) => any>();
+        const mockOctokit = {
+            graphql: mockGraphql,
+        };
+    
+        beforeEach(() => {
+            mockGraphql.mockClear();
+            (logger.error as jest.Mock).mockClear();
+        });
+    
+        it('devrait convertir une note en issue avec succès', async () => {
+            const mockApiResponse = {
+                convertProjectV2DraftIssueToIssue: {
+                    issue: { id: 'new-issue-id', number: 1, url: 'http://issue.url' },
+                },
+            };
+            mockGraphql.mockResolvedValue(mockApiResponse);
+    
+            const result = await executeConvertDraftToIssue(mockOctokit, {
+                projectId: 'project-id-123',
+                draftId: 'draft-id-456',
+            });
+    
+            expect(mockGraphql).toHaveBeenCalledTimes(1);
+            expect(mockGraphql.mock.calls[0][0]).toContain('convertProjectV2DraftIssueToIssue');
+            expect(mockGraphql.mock.calls[0][1]).toEqual({
+                projectId: 'project-id-123',
+                draftId: 'draft-id-456',
+            });
+            
+            expect(result.success).toBe(true);
+            expect(result.issue).toEqual({ id: 'new-issue-id', number: 1, url: 'http://issue.url' });
+        });
+    
+        it('devrait gérer une erreur de l\'API GraphQL', async () => {
+            const mockApiError = new Error("GraphQL Error");
+            (mockApiError as any).response = { data: { errors: [{ message: 'Draft not found' }] } };
+            mockGraphql.mockRejectedValue(mockApiError);
+    
+            const result = await executeConvertDraftToIssue(mockOctokit, {
+                projectId: 'project-id-123',
+                draftId: 'invalid-draft-id',
+            });
+    
+            expect(mockGraphql).toHaveBeenCalledTimes(1);
+            expect(result.success).toBe(false);
+            expect(result.error).toContain('Erreur GraphQL: Draft not found');
+            expect(logger.error).toHaveBeenCalled();
+        });
+    
+        it('devrait gérer le cas où l\'API ne retourne pas l\'issue attendue', async () => {
+            const mockApiResponse = { convertProjectV2DraftIssueToIssue: { issue: null } };
+            mockGraphql.mockResolvedValue(mockApiResponse);
+    
+            const result = await executeConvertDraftToIssue(mockOctokit, {
+                projectId: 'project-id-123',
+                draftId: 'draft-id-789',
+            });
+    
+            expect(mockGraphql).toHaveBeenCalledTimes(1);
+            expect(result.success).toBe(false);
+            expect(result.error).toBe("Erreur GraphQL: La conversion de la note en issue a échoué ou n'a pas retourné les informations attendues.");
+        });
     });
 });
