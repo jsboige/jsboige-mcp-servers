@@ -1,7 +1,7 @@
 import { Tool } from '@modelcontextprotocol/sdk/types.js';
 import { CallToolRequestSchema, ListToolsRequestSchema, ErrorCode, McpError } from '@modelcontextprotocol/sdk/types.js';
 import { getGitHubClient } from './utils/github.js';
-import { analyze_task_complexity, checkRepoPermissions, executeGetProjectItems, executeArchiveProject, executeUnarchiveProject, executeConvertDraftToIssue, executeCreateProjectField, executeDeleteProject, executeDeleteProjectField, executeUpdateIssueState, getRepositoryId, executeCreateIssue, executeUpdateProjectField, executeUpdateProjectItemField } from './github-actions.js';
+import { analyze_task_complexity, checkReadOnlyMode, checkRepoPermissions, executeGetProjectItems, executeArchiveProject, executeUnarchiveProject, executeConvertDraftToIssue, executeCreateProjectField, executeDeleteProject, executeDeleteProjectField, executeUpdateIssueState, getRepositoryId, executeCreateIssue, executeUpdateProjectField, executeUpdateProjectItemField } from './github-actions.js';
 import logger from './logger.js';
 
 interface GitHubProjectNode {
@@ -210,6 +210,7 @@ export function setupTools(server: any) {
       },
       execute: async ({ owner, title, repository_id }: { owner: string, title: string, repository_id?: string }) => {
           try {
+              checkReadOnlyMode();
               // Deviner le type de propriétaire (user/org) pour obtenir l'ID.
               // Note: une approche plus robuste pourrait nécessiter un paramètre 'type' explicite.
               let ownerId: string | undefined;
@@ -353,6 +354,7 @@ export function setupTools(server: any) {
       },
       execute: async ({ project_id, content_id, content_type = 'issue', draft_title, draft_body }: any) => {
         try {
+          checkReadOnlyMode();
           let query;
           let variables: any = { projectId: project_id };
           if (content_type === 'draft_issue') {
@@ -390,6 +392,7 @@ export function setupTools(server: any) {
         required: ['project_id', 'item_id', 'field_id', 'field_type']
       },
       execute: async ({ project_id, item_id, field_id, field_type, value, option_id }: any) => {
+        checkReadOnlyMode();
         return await executeUpdateProjectItemField(octokit, {
           projectId: project_id,
           itemId: item_id,
@@ -413,6 +416,7 @@ export function setupTools(server: any) {
       },
       execute: async ({ project_id, item_id }: { project_id: string, item_id: string }) => {
         try {
+          checkReadOnlyMode();
           const mutation = `
             mutation($projectId: ID!, $itemId: ID!) {
               deleteProjectV2Item(input: {projectId: $projectId, itemId: $itemId}) {
@@ -449,6 +453,7 @@ export function setupTools(server: any) {
         required: ['projectId'],
       },
       execute: async ({ projectId }: { projectId: string }) => {
+        checkReadOnlyMode();
         return await executeDeleteProject(octokit, { projectId });
       }
     },
@@ -466,6 +471,7 @@ export function setupTools(server: any) {
         required: ['project_id']
       },
       execute: async ({ project_id, title, description, state }: { project_id: string, title?: string, description?: string, state?: 'OPEN' | 'CLOSED' }) => {
+        checkReadOnlyMode();
         let input: { projectId: string; title?: string; shortDescription?: string; state?: 'OPEN' | 'CLOSED' } | undefined;
         try {
           const mutation = `
@@ -515,6 +521,7 @@ export function setupTools(server: any) {
       },
       execute: async ({ repositoryName, title, body, projectId }: { repositoryName: string, title: string, body?: string, projectId?: string }) => {
         try {
+          checkReadOnlyMode();
           const [owner, repo] = repositoryName.split('/');
           if (!owner || !repo) {
             throw new Error("Le format de 'repositoryName' doit être 'owner/repo'.");
@@ -540,6 +547,7 @@ export function setupTools(server: any) {
         required: ['issueId', 'state']
       },
       execute: async ({ issueId, state }: { issueId: string, state: 'OPEN' | 'CLOSED' }) => {
+        checkReadOnlyMode();
         return await executeUpdateIssueState(octokit, { issueId, state });
       }
     },
@@ -560,6 +568,7 @@ export function setupTools(server: any) {
         required: ['projectId', 'name', 'dataType']
       },
       execute: async ({ projectId, name, dataType }: { projectId: string, name: string, dataType: 'TEXT' | 'NUMBER' | 'DATE' | 'SINGLE_SELECT' }) => {
+        checkReadOnlyMode();
         return await executeCreateProjectField(octokit, { projectId, name, dataType });
       }
     },
@@ -576,6 +585,7 @@ export function setupTools(server: any) {
         required: ['projectId', 'fieldId', 'name']
       },
       execute: async ({ projectId, fieldId, name }: { projectId: string, fieldId: string, name: string }) => {
+        checkReadOnlyMode();
         return await executeUpdateProjectField(octokit, { projectId, fieldId, name });
       }
     },
@@ -591,6 +601,7 @@ export function setupTools(server: any) {
         required: ['projectId', 'fieldId']
       },
       execute: async ({ projectId, fieldId }: { projectId: string, fieldId: string }) => {
+        checkReadOnlyMode();
         return await executeDeleteProjectField(octokit, { projectId, fieldId });
       }
     },
@@ -606,6 +617,7 @@ export function setupTools(server: any) {
         required: ['projectId', 'draftId']
       },
       execute: async ({ projectId, draftId }: { projectId: string, draftId: string }) => {
+        checkReadOnlyMode();
         return await executeConvertDraftToIssue(octokit, { projectId, draftId });
       }
     },
@@ -620,6 +632,7 @@ export function setupTools(server: any) {
         required: ['projectId'],
       },
       execute: async ({ projectId }: { projectId: string }) => {
+        checkReadOnlyMode();
         return await executeArchiveProject(octokit, { projectId });
       }
     },
@@ -634,6 +647,7 @@ export function setupTools(server: any) {
         required: ['projectId'],
       },
       execute: async ({ projectId }: { projectId: string }) => {
+        checkReadOnlyMode();
         return await executeUnarchiveProject(octokit, { projectId });
       }
     },
