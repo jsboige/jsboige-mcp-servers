@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeAll, afterAll } from '@jest/globals';
+import { describe, it, expect, beforeAll, afterAll, afterEach } from '@jest/globals';
 import { Octokit } from '@octokit/core';
 import {
   analyze_task_complexity,
@@ -205,5 +205,40 @@ describe('GitHub Actions E2E Tests', () => {
     expect(result.success).toBe(true);
     expect(result.result?.complexity).toBe('élevée');
     expect(result.result?.reasoning).toContain('mot-clé');
+  });
+});
+
+import { checkReadOnlyMode, checkRepoPermissions } from '../src/github-actions';
+
+describe('Security Features', () => {
+
+  afterEach(() => {
+    // Nettoyer les variables d'environnement après chaque test
+    delete process.env.GITHUB_PROJECTS_READ_ONLY;
+    delete process.env.GITHUB_PROJECTS_ALLOWED_REPOS;
+  });
+
+  it('should block write operations when in read-only mode', () => {
+    process.env.GITHUB_PROJECTS_READ_ONLY = 'true';
+    
+    expect(() => checkReadOnlyMode()).toThrow('Read-only mode is enabled.');
+  });
+
+  it('should block operations on unauthorized repositories', () => {
+    process.env.GITHUB_PROJECTS_ALLOWED_REPOS = 'owner/allowed-repo,another/allowed-repo';
+    
+    expect(() => checkRepoPermissions('unauthorized', 'repo')).toThrow("Access denied: Repository 'unauthorized/repo' is not in the allowed list.");
+  });
+
+  it('should allow operations on authorized repositories', () => {
+    process.env.GITHUB_PROJECTS_ALLOWED_REPOS = 'owner/allowed-repo,another/allowed-repo';
+    
+    expect(() => checkRepoPermissions('owner', 'allowed-repo')).not.toThrow();
+  });
+
+  it('should allow all operations when no restrictions are set', () => {
+    // No env variables set
+    expect(() => checkReadOnlyMode()).not.toThrow();
+    expect(() => checkRepoPermissions('any', 'repo')).not.toThrow();
   });
 });
