@@ -1,3 +1,21 @@
+import logger from './logger.js';
+
+// Gestionnaires d'erreurs globaux pour intercepter les problèmes non gérés
+// qui pourraient autrement faire planter le worker Jest de manière silencieuse.
+process.on('unhandledRejection', (reason, promise) => {
+  const reasonMessage = reason instanceof Error ? reason.message : String(reason);
+  const stack = reason instanceof Error ? reason.stack : 'No stack trace';
+  console.error('CRITICAL: Unhandled Rejection:', reasonMessage, stack);
+  logger.error('Unhandled Rejection caught globally:', { promise, reason: reasonMessage });
+});
+
+process.on('uncaughtException', (error) => {
+  console.error('CRITICAL: Uncaught Exception:', error.message, error.stack);
+  logger.error('Uncaught Exception caught globally:', { message: error.message, stack: error.stack });
+  // Il est généralement recommandé de quitter après une exception non gérée pour éviter un état imprévisible.
+  process.exit(1);
+});
+
 import { Server } from '@modelcontextprotocol/sdk/server/index.js';
 import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
@@ -12,7 +30,6 @@ import {
 import { setupTools } from './tools.js';
 import { setupResources } from './resources.js';
 import { setupErrorHandlers } from './utils/errorHandlers.js';
-import logger from './logger.js';
 
 class GitHubProjectsServer {
   private server: Server;
@@ -59,9 +76,6 @@ class GitHubProjectsServer {
         await this.server.connect(transport);
 
         app.post('/mcp', (req, res) => {
-          logger.info('Received POST request on /mcp');
-          logger.info('Headers:', req.headers);
-          logger.info('Body:', req.body);
           transport.handleRequest(req, res, req.body);
         });
         
@@ -78,6 +92,9 @@ class GitHubProjectsServer {
         logger.info('MCP server connected to stdio');
       }
     } catch (error) {
+      const errorMessage = error instanceof Error ? error.message : String(error);
+      const stack = error instanceof Error ? error.stack : 'No stack trace';
+      console.error('CRITICAL: Error starting MCP server:', errorMessage, stack);
       logger.error('Error starting MCP server:', { error });
       process.exit(1);
     }

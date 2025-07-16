@@ -1,7 +1,7 @@
 import { Tool } from '@modelcontextprotocol/sdk/types.js';
 import { CallToolRequestSchema, ListToolsRequestSchema, ErrorCode, McpError } from '@modelcontextprotocol/sdk/types.js';
 import { getGitHubClient } from './utils/github.js';
-import { executeConvertDraftToIssue, executeCreateProjectField, executeDeleteProject, executeDeleteProjectField, executeUpdateIssueState, getRepositoryId, executeCreateIssue, executeUpdateProjectField, executeUpdateProjectItemField } from './github-actions.js';
+import { analyze_task_complexity, checkRepoPermissions, executeGetProjectItems, executeArchiveProject, executeUnarchiveProject, executeConvertDraftToIssue, executeCreateProjectField, executeDeleteProject, executeDeleteProjectField, executeUpdateIssueState, getRepositoryId, executeCreateIssue, executeUpdateProjectField, executeUpdateProjectItemField } from './github-actions.js';
 import logger from './logger.js';
 
 interface GitHubProjectNode {
@@ -287,13 +287,16 @@ export function setupTools(server: any) {
       },
       execute: async ({ owner, project_number, type = 'user' }: any) => {
         try {
+          // On ne peut pas vérifier ici car on n'a pas le nom du repo
+          // La vérification se fera dans les fonctions qui utilisent le repo
+          checkRepoPermissions(owner, "any"); // TODO: Fix this by getting the repo name from the project
           const query = `
             query($owner: String!, $number: Int!) {
               ${type === 'user' ? 'user' : 'organization'}(login: $owner) {
                 projectV2(number: $number) {
                   id, title, number, shortDescription, url, closed, createdAt, updatedAt,
                   items(first: 100) { nodes { id, type, content {
-                    ... on Issue { title, number, state, url }, ... on PullRequest { title, number, state, url }, ... on DraftIssue { title, body }
+                    ... on Issue { title, number, state, url, repository { nameWithOwner } }, ... on PullRequest { title, number, state, url, repository { nameWithOwner } }, ... on DraftIssue { title, body }
                   }, fieldValues(first: 20) { nodes {
                     ... on ProjectV2ItemFieldTextValue { text, field { ... on ProjectV2FieldCommon { name } } }, ... on ProjectV2ItemFieldDateValue { date, field { ... on ProjectV2FieldCommon { name } } }, ... on ProjectV2ItemFieldSingleSelectValue { name, field { ... on ProjectV2FieldCommon { name } } }
                   }}}},
@@ -306,11 +309,32 @@ export function setupTools(server: any) {
           const response = await octokit.graphql(query, { owner, number: project_number }) as any;
           const project = type === 'user' ? response.user?.projectV2 : response.organization?.projectV2;
           if (!project) throw new Error(`Projet non trouvé pour ${owner}/${project_number}.`);
+          // La vérification est déléguée aux appels utilisant les repos
           return { success: true, project };
         } catch (error: any) {
           logger.error('Erreur dans get_project', { error });
           return { success: false, error: error.message || 'Erreur lors de la récupération du projet' };
         }
+      }
+    },
+    {
+      name: 'get_project_items',
+      description: "Récupère les éléments d'un projet, avec une option de filtrage.",
+      inputSchema: {
+        type: 'object',
+        properties: {
+          project_id: { type: 'string', description: "ID du projet." },
+          filterOptions: {
+            type: 'object',
+            description: "Critères de filtrage (ex: { 'status': 'Done' }).",
+            properties: {},
+            additionalProperties: true
+          }
+        },
+        required: ['project_id']
+      },
+      execute: async ({ project_id, filterOptions }: { project_id: string, filterOptions?: any }) => {
+        return await executeGetProjectItems(octokit, { projectId: project_id, filterOptions });
       }
     },
     {
@@ -495,6 +519,7 @@ export function setupTools(server: any) {
           if (!owner || !repo) {
             throw new Error("Le format de 'repositoryName' doit être 'owner/repo'.");
           }
+          checkRepoPermissions(owner, repo);
           const repositoryId = await getRepositoryId(octokit, owner, repo);
           return await executeCreateIssue(octokit, { repositoryId, title, body, projectId });
         } catch (error: any) {
@@ -582,6 +607,51 @@ export function setupTools(server: any) {
       },
       execute: async ({ projectId, draftId }: { projectId: string, draftId: string }) => {
         return await executeConvertDraftToIssue(octokit, { projectId, draftId });
+      }
+    },
+    {
+      name: 'archive_project',
+      description: 'Archive un projet GitHub.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          projectId: { type: 'string', description: "L'ID du projet à archiver." },
+        },
+        required: ['projectId'],
+      },
+      execute: async ({ projectId }: { projectId: string }) => {
+        return await executeArchiveProject(octokit, { projectId });
+      }
+    },
+    {
+      name: 'unarchive_project',
+      description: 'Ré-ouvre (désarchive) un projet GitHub.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          projectId: { type: 'string', description: "L'ID du projet à désarchiver." },
+        },
+        required: ['projectId'],
+      },
+      execute: async ({ projectId }: { projectId: string }) => {
+        return await executeUnarchiveProject(octokit, { projectId });
+      }
+    },
+    {
+      name: 'analyze_task_complexity',
+      description: "Analyse la complexité d'une tâche (item) dans un projet GitHub en se basant sur son titre et sa description.",
+      inputSchema: {
+        type: 'object',
+        properties: {
+          owner: { type: 'string', description: "Le propriétaire du dépôt." },
+          repo: { type: 'string', description: "Le nom du dépôt." },
+          projectNumber: { type: 'number', description: "Le numéro du projet." },
+          itemId: { type: 'string', description: "L'ID de l'item (tâche) à analyser." }
+        },
+        required: ['owner', 'repo', 'projectNumber', 'itemId']
+      },
+      execute: async ({ owner, repo, projectNumber, itemId }: { owner: string; repo: string; projectNumber: number; itemId: string; }) => {
+        return await analyze_task_complexity(octokit, { owner, repo, projectNumber, itemId });
       }
     }
   ];

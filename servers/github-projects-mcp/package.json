@@ -7,10 +7,9 @@
   "scripts": {
     "build": "tsc",
     "start": "node -r dotenv/config dist/index.js",
-    "start:e2e": "node -r dotenv/config dist/index.js",
+    "start:e2e": "cross-env MCP_TRANSPORT=http node -r dotenv/config dist/index.js",
     "dev": "ts-node src/index.ts",
-    "test": "jest",
-    "test:e2e": "jest tests/GithubProjectsToolE2E.test.js"
+    "test": "node --experimental-vm-modules node_modules/jest/bin/jest.js"
   },
   "keywords": [
     "mcp",
@@ -24,13 +23,16 @@
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.14.0",
     "@octokit/rest": "^19.0.7",
-    "dotenv": "^16.0.3",
+    "dotenv": "^16.6.1",
+    "eventsource": "^4.0.0",
+    "reconnecting-eventsource": "^1.6.4",
     "winston": "^3.17.0"
   },
   "devDependencies": {
     "@types/jest": "^29.5.0",
     "@types/node": "^18.15.11",
     "axios": "^1.10.0",
+    "cross-env": "^7.0.3",
     "jest": "^29.5.0",
     "ts-jest": "^29.1.0",
     "ts-node": "^10.9.1",

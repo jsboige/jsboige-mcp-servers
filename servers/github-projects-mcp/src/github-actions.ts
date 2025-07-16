@@ -1,6 +1,40 @@
-import logger from './logger';
+import logger from './logger.js';
+
+/**
+ * Vérifie si le mode lecture seule est activé.
+ * Lance une erreur si la variable d'environnement GITHUB_PROJECTS_READ_ONLY est définie sur 'true'.
+ */
+export function checkReadOnlyMode(): void {
+  const isReadOnly = process.env.GITHUB_PROJECTS_READ_ONLY;
+  if (isReadOnly === 'true' || isReadOnly === '1') {
+    throw new Error('Read-only mode is enabled. Write operations are disabled.');
+  }
+}
+
+/**
+ * Vérifie si le dépôt est dans la liste des dépôts autorisés définie par la variable d'environnement
+ * GITHUB_PROJECTS_ALLOWED_REPOS.
+ * @param owner - Le propriétaire du dépôt.
+ * @param repo - Le nom du dépôt.
+ * @throws {Error} Si le dépôt n'est pas autorisé.
+ */
+export function checkRepoPermissions(owner: string, repo: string): void {
+  const allowedReposVar = process.env.GITHUB_PROJECTS_ALLOWED_REPOS;
+  if (!allowedReposVar) {
+    // Si la variable n'est pas définie, on autorise tout
+    return;
+  }
+
+  const allowedRepos = allowedReposVar.split(',').map(r => r.trim());
+  const repoFullName = `${owner}/${repo}`;
+
+  if (!allowedRepos.includes(repoFullName)) {
+    throw new Error(`Access denied: Repository '${repoFullName}' is not in the allowed list.`);
+  }
+}
 
 export async function getRepositoryId(octokit: any, owner: string, repo: string): Promise<string> {
+  checkRepoPermissions(owner, repo);
   const query = `
     query GetRepositoryId($owner: String!, $repo: String!) {
       repository(owner: $owner, name: $repo) {
@@ -19,6 +53,7 @@ export async function executeCreateIssue(
   octokit: any,
   { repositoryId, title, body, projectId }: { repositoryId: string; title: string; body?: string, projectId?: string }
 ) {
+  checkReadOnlyMode();
   try {
     // 1. Créer l'issue
     const createIssueMutation = `
@@ -66,9 +101,9 @@ export async function executeCreateIssue(
     return { success: true, issue, projectItemId };
 
   } catch (error: any) {
-    logger.error("Erreur dans executeCreateIssue", { error: error.message, fullError: JSON.stringify(error, null, 2) });
     const graphqlErrors = error.response?.data?.errors;
     const readableError = graphqlErrors ? graphqlErrors.map((e: any) => e.message).join(', ') : (error.message || 'Erreur inconnue.');
+    logger.error(`Erreur dans executeCreateIssue: ${readableError}`);
     return { success: false, error: `Erreur GraphQL: ${readableError}` };
   }
 }
@@ -77,6 +112,7 @@ export async function executeUpdateProjectField(
   octokit: any,
   { projectId, fieldId, name }: { projectId: string; fieldId: string; name: string; }
 ) {
+  checkReadOnlyMode();
   try {
     const mutation = `
       mutation($projectId: ID!, $fieldId: ID!, $name: String!) {
@@ -107,9 +143,9 @@ export async function executeUpdateProjectField(
     return { success: true, field: { id: field.id, name: field.name } };
 
   } catch (error: any) {
-    logger.error("Erreur dans updateProjectV2Field", { error: error.message, fullError: JSON.stringify(error, null, 2) });
     const graphqlErrors = error.response?.data?.errors;
     const readableError = graphqlErrors ? graphqlErrors.map((e: any) => e.message).join(', ') : (error.message || 'Erreur inconnue.');
+    logger.error(`Erreur dans updateProjectV2Field: ${readableError}`);
     return { success: false, error: `Erreur GraphQL: ${readableError}` };
   }
 }
@@ -118,6 +154,7 @@ export async function executeUpdateIssueState(
   octokit: any,
   { issueId, state }: { issueId: string, state: 'OPEN' | 'CLOSED' }
 ) {
+  checkReadOnlyMode();
   try {
     const mutation = `
       mutation UpdateIssue($issueId: ID!, $state: IssueState!) {
@@ -144,9 +181,9 @@ export async function executeUpdateIssueState(
     return { success: true, issue: { id: issue.id, number: issue.number, state: issue.state } };
 
   } catch (error: any) {
-    logger.error("Erreur dans update_issue_state", { error: error.message, fullError: JSON.stringify(error, null, 2) });
     const graphqlErrors = error.response?.data?.errors;
     const readableError = graphqlErrors ? graphqlErrors.map((e: any) => e.message).join(', ') : (error.message || 'Erreur inconnue.');
+    logger.error(`Erreur dans update_issue_state: ${readableError}`);
     return { success: false, error: `Erreur GraphQL: ${readableError}` };
   }
 }
@@ -155,13 +192,12 @@ export async function executeDeleteProject(
   octokit: any,
   { projectId }: { projectId: string }
 ) {
+  checkReadOnlyMode();
   try {
     const mutation = `
       mutation($projectId: ID!) {
         deleteProject(input: {projectId: $projectId}) {
-          project {
-            id
-          }
+          clientMutationId
         }
       }
     `;
@@ -173,9 +209,9 @@ export async function executeDeleteProject(
     return { success: true };
 
   } catch (error: any) {
-    logger.error("Erreur dans delete_project", { error: error.message, fullError: JSON.stringify(error, null, 2) });
     const graphqlErrors = error.response?.data?.errors;
     const readableError = graphqlErrors ? graphqlErrors.map((e: any) => e.message).join(', ') : (error.message || 'Erreur inconnue.');
+    logger.error(`Erreur dans delete_project: ${readableError}`);
     return { success: false, message: `Erreur GraphQL: ${readableError}` };
   }
 }
@@ -183,6 +219,7 @@ export async function executeCreateProjectField(
   octokit: any,
   { projectId, name, dataType }: { projectId: string; name: string; dataType: 'TEXT' | 'NUMBER' | 'DATE' | 'SINGLE_SELECT' }
 ) {
+  checkReadOnlyMode();
   try {
     const mutation = `
       mutation($projectId: ID!, $dataType: ProjectV2FieldType!, $name: String!) {
@@ -213,18 +250,19 @@ export async function executeCreateProjectField(
     return { success: true, field: { id: field.id, name: field.name } };
 
   } catch (error: any) {
-    logger.error("Erreur dans createProjectV2Field", { error: error.message, fullError: JSON.stringify(error, null, 2) });
     const graphqlErrors = error.response?.data?.errors;
     const readableError = graphqlErrors ? graphqlErrors.map((e: any) => e.message).join(', ') : (error.message || 'Erreur inconnue.');
+    logger.error(`Erreur dans createProjectV2Field: ${readableError}`);
     return { success: false, error: `Erreur GraphQL: ${readableError}` };
   }
 }
 
 export async function executeUpdateProjectItemField(
   octokit: any,
-  { projectId, itemId, fieldId, fieldType, value, optionId }: 
+  { projectId, itemId, fieldId, fieldType, value, optionId }:
   { projectId: string; itemId: string; fieldId: string; fieldType: 'text' | 'date' | 'single_select' | 'number'; value?: string; optionId?: string; }
 ) {
+  checkReadOnlyMode();
   try {
     let queryValue;
     let variables: any = { projectId: projectId, itemId: itemId, fieldId: fieldId };
@@ -282,9 +320,9 @@ export async function executeUpdateProjectItemField(
     return { success: true, item: { id: updatedItem.id } };
 
   } catch (error: any) {
-    logger.error("Erreur dans executeUpdateProjectItemField", { error: error.message, fullError: JSON.stringify(error, null, 2) });
     const graphqlErrors = error.response?.data?.errors;
     const readableError = graphqlErrors ? graphqlErrors.map((e: any) => e.message).join(', ') : (error.message || 'Erreur inconnue.');
+    logger.error(`Erreur dans executeUpdateProjectItemField: ${readableError}`);
     return { success: false, error: `Erreur GraphQL: ${readableError}` };
   }
 }
@@ -293,6 +331,7 @@ export async function executeDeleteProjectField(
   octokit: any,
   { projectId, fieldId }: { projectId: string; fieldId: string }
 ) {
+  checkReadOnlyMode();
   try {
     const mutation = `
       mutation($projectId: ID!, $fieldId: ID!) {
@@ -320,9 +359,9 @@ export async function executeDeleteProjectField(
     return { success: true, deletedFieldId: deletedField.id };
 
   } catch (error: any) {
-    logger.error("Erreur dans deleteProjectV2Field", { error: error.message, fullError: JSON.stringify(error, null, 2) });
     const graphqlErrors = error.response?.data?.errors;
     const readableError = graphqlErrors ? graphqlErrors.map((e: any) => e.message).join(', ') : (error.message || 'Erreur inconnue.');
+    logger.error(`Erreur dans deleteProjectV2Field: ${readableError}`);
     return { success: false, error: `Erreur GraphQL: ${readableError}` };
   }
 }
@@ -330,6 +369,7 @@ export async function executeConvertDraftToIssue(
   octokit: any,
   { projectId, draftId }: { projectId: string; draftId: string }
 ) {
+  checkReadOnlyMode();
   try {
     const mutation = `
       mutation($projectId: ID!, $draftId: ID!) {
@@ -359,9 +399,259 @@ export async function executeConvertDraftToIssue(
     return { success: true, issue: { id: issue.id, number: issue.number, url: issue.url } };
 
   } catch (error: any) {
-    logger.error("Erreur dans executeConvertDraftToIssue", { error: error.message, fullError: JSON.stringify(error, null, 2) });
     const graphqlErrors = error.response?.data?.errors;
     const readableError = graphqlErrors ? graphqlErrors.map((e: any) => e.message).join(', ') : (error.message || 'Erreur inconnue.');
+    logger.error(`Erreur dans executeConvertDraftToIssue: ${readableError}`);
     return { success: false, error: `Erreur GraphQL: ${readableError}` };
   }
+}
+
+export async function executeArchiveProject(
+  octokit: any,
+  { projectId }: { projectId: string }
+) {
+  checkReadOnlyMode();
+  try {
+    const mutation = `
+      mutation($projectId: ID!) {
+        updateProjectV2(input: {
+          projectId: $projectId,
+          state: CLOSED
+        }) {
+          projectV2 {
+            id
+            closed
+          }
+        }
+      }
+    `;
+
+    const result = await octokit.graphql(mutation, {
+      projectId,
+    });
+
+    const project = result.updateProjectV2?.projectV2;
+    if (!project) {
+      throw new Error("L'archivage du projet a échoué ou n'a pas retourné les informations attendues.");
+    }
+
+    return { success: true, project: { id: project.id, closed: project.closed } };
+
+  } catch (error: any) {
+    const graphqlErrors = error.response?.data?.errors;
+    const readableError = graphqlErrors ? graphqlErrors.map((e: any) => e.message).join(', ') : (error.message || 'Erreur inconnue.');
+    logger.error(`Erreur dans executeArchiveProject: ${readableError}`);
+    return { success: false, error: `Erreur GraphQL: ${readableError}` };
+  }
+}
+
+export async function executeUnarchiveProject(
+  octokit: any,
+  { projectId }: { projectId: string }
+) {
+  checkReadOnlyMode();
+  try {
+    const mutation = `
+      mutation($projectId: ID!) {
+        updateProjectV2(input: {
+          projectId: $projectId,
+          state: OPEN
+        }) {
+          projectV2 {
+            id
+            closed
+          }
+        }
+      }
+    `;
+
+    const result = await octokit.graphql(mutation, {
+      projectId,
+    });
+
+    const project = result.updateProjectV2?.projectV2;
+    if (!project) {
+      throw new Error("Le désarchivage du projet a échoué ou n'a pas retourné les informations attendues.");
+    }
+
+    return { success: true, project: { id: project.id, closed: project.closed } };
+
+  } catch (error: any) {
+    const graphqlErrors = error.response?.data?.errors;
+    const readableError = graphqlErrors ? graphqlErrors.map((e: any) => e.message).join(', ') : (error.message || 'Erreur inconnue.');
+    logger.error(`Erreur dans executeUnarchiveProject: ${readableError}`);
+    return { success: false, error: `Erreur GraphQL: ${readableError}` };
+  }
+}
+
+export async function executeGetProjectItems(
+  octokit: any,
+  { projectId, filterOptions }: { projectId: string; filterOptions?: any }
+) {
+  try {
+    const variables: { [key: string]: any } = {
+      id: projectId,
+      first: 100,
+    };
+    
+    let queryDef = `query GetProjectWithItems($id: ID!, $first: Int!, $after: String`;
+    let itemsArgs = `first: $first, after: $after`;
+
+    if (filterOptions) {
+      queryDef += `, $filterBy: ProjectV2ItemFilterBy`;
+      itemsArgs += `, filterBy: $filterBy`;
+      variables.filterBy = filterOptions;
+    }
+    
+    queryDef += `)`;
+
+    const query = `
+      ${queryDef} {
+        node(id: $id) {
+          ... on ProjectV2 {
+            items(${itemsArgs}) {
+              totalCount
+              pageInfo {
+                endCursor
+                hasNextPage
+              }
+              nodes {
+                id
+                type
+                content {
+                  ... on DraftIssue {
+                    title
+                    body
+                  }
+                  ... on Issue {
+                     title
+                  }
+                  ... on PullRequest {
+                     title
+                  }
+                }
+                fieldValues(first: 20) {
+                  nodes {
+                    ... on ProjectV2ItemFieldTextValue {
+                      text
+                      field { ... on ProjectV2FieldCommon { name } }
+                    }
+                    ... on ProjectV2ItemFieldDateValue {
+                      date
+                      field { ... on ProjectV2FieldCommon { name } }
+                    }
+                    ... on ProjectV2ItemFieldSingleSelectValue {
+                      name
+                      field { ... on ProjectV2FieldCommon { name } }
+                    }
+                    ... on ProjectV2ItemFieldNumberValue {
+                        number
+                        field { ... on ProjectV2FieldCommon { name } }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    `;
+
+    const response = await octokit.graphql(query, variables);
+    const project = (response as any).node;
+    if (!project) {
+      throw new Error(`Projet non trouvé pour l'ID : ${projectId}.`);
+    }
+    return { success: true, items: project.items.nodes };
+  } catch (error: any) {
+    const graphqlErrors = error.response?.data?.errors;
+    const readableError = graphqlErrors ? graphqlErrors.map((e: any) => e.message).join(', ') : (error.message || 'Erreur inconnue.');
+    logger.error(`Erreur dans executeGetProjectItems: ${readableError}`);
+    return { success: false, error: `Erreur GraphQL: ${readableError}` };
+  }
+}
+export async function getProjectItemDetails(
+  octokit: any,
+  { itemId }: { itemId: string }
+): Promise<{ success: boolean; item?: { title: string; body: string }; error?: string }> {
+  try {
+    const query = `
+      query GetProjectItem($itemId: ID!) {
+        node(id: $itemId) {
+          ... on ProjectV2Item {
+            content {
+              ... on DraftIssue {
+                title
+                body
+              }
+              ... on Issue {
+                title
+                body
+              }
+              ... on PullRequest {
+                title
+                body
+              }
+            }
+          }
+        }
+      }
+    `;
+
+    const response = await octokit.graphql(query, { itemId });
+    const content = (response as any).node?.content;
+
+    if (!content) {
+      throw new Error(`Item non trouvé pour l'ID : ${itemId}.`);
+    }
+
+    return { success: true, item: { title: content.title, body: content.body } };
+  } catch (error: any) {
+    const graphqlErrors = error.response?.data?.errors;
+    const readableError = graphqlErrors ? graphqlErrors.map((e: any) => e.message).join(', ') : (error.message || 'Erreur inconnue.');
+    logger.error(`Erreur dans getProjectItemDetails: ${readableError}`);
+    return { success: false, error: `Erreur GraphQL: ${readableError}` };
+  }
+}
+
+export async function analyze_task_complexity(
+  octokit: any,
+  { owner, repo, projectNumber, itemId }: { owner: string; repo: string; projectNumber: number; itemId: string; }
+) {
+  checkRepoPermissions(owner, repo);
+
+  const itemDetails = await getProjectItemDetails(octokit, { itemId });
+
+  if (!itemDetails.success || !itemDetails.item) {
+    return { success: false, error: itemDetails.error || "Impossible de récupérer les détails de la tâche." };
+  }
+
+  const { title, body } = itemDetails.item;
+  const fullText = `${title}\n${body || ''}`.toLowerCase();
+  
+  const keywords = ["investigate", "refactor", "security", "bug critique"];
+  
+  let complexity: 'faible' | 'moyenne' | 'élevée' = 'moyenne';
+  let reasoning = 'La complexité est jugée moyenne par défaut.';
+
+  if ((body || '').length < 50) {
+    complexity = 'faible';
+    reasoning = 'Le corps de la tâche est très court (< 50 caractères).';
+  } else if ((body || '').length > 300 || keywords.some(kw => fullText.includes(kw))) {
+    complexity = 'élevée';
+    if ((body || '').length > 300) {
+      reasoning = 'La description de la tâche est longue (> 300 caractères).';
+    } else {
+      const foundKeyword = keywords.find(kw => fullText.includes(kw));
+      reasoning = `La tâche contient le mot-clé "${foundKeyword}".`;
+    }
+  }
+
+  return { 
+    success: true, 
+    result: { 
+      complexity, 
+      reasoning 
+    } 
+  };
 }
