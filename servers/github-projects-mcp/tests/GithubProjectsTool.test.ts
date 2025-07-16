@@ -114,7 +114,16 @@ describe('GitHub Actions E2E Tests', () => {
 
   afterAll(async () => {
     if (testProjectId) {
-      await executeDeleteProject(octokit, { projectId: testProjectId });
+      // On s'attend à ce que la suppression échoue si le projet n'existe plus,
+      // ou réussisse. Dans le cadre du test, nous ne voulons pas faire échouer
+      // le nettoyage si le projet a déjà été supprimé.
+      // Le test original échouait car il ne gérait pas l'erreur de l'API.
+      // Le nouveau code lance une exception.
+      try {
+        await executeDeleteProject(octokit, { projectId: testProjectId });
+      } catch (error) {
+        console.log(`Le nettoyage du projet a échoué (ce qui peut être normal si le projet a été supprimé par le test) : ${(error as Error).message}`);
+      }
     }
   }, 60000);
 
@@ -208,7 +217,7 @@ describe('GitHub Actions E2E Tests', () => {
   });
 });
 
-import { checkReadOnlyMode, checkRepoPermissions } from '../src/github-actions';
+import { checkReadOnlyMode, checkRepoPermissions } from '../src/security';
 
 describe('Security Features', () => {
 

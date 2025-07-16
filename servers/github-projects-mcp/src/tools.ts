@@ -1,7 +1,8 @@
 import { Tool } from '@modelcontextprotocol/sdk/types.js';
 import { CallToolRequestSchema, ListToolsRequestSchema, ErrorCode, McpError } from '@modelcontextprotocol/sdk/types.js';
 import { getGitHubClient } from './utils/github.js';
-import { analyze_task_complexity, checkReadOnlyMode, checkRepoPermissions, executeGetProjectItems, executeArchiveProject, executeUnarchiveProject, executeConvertDraftToIssue, executeCreateProjectField, executeDeleteProject, executeDeleteProjectField, executeUpdateIssueState, getRepositoryId, executeCreateIssue, executeUpdateProjectField, executeUpdateProjectItemField } from './github-actions.js';
+import { analyze_task_complexity, executeGetProjectItems, executeArchiveProject, executeUnarchiveProject, executeConvertDraftToIssue, executeCreateProjectField, executeDeleteProject, executeDeleteProjectField, executeUpdateIssueState, getRepositoryId, executeCreateIssue, executeUpdateProjectField, executeUpdateProjectItemField } from './github-actions.js';
+import { checkReadOnlyMode, checkRepoPermissions } from './security.js';
 import logger from './logger.js';
 
 interface GitHubProjectNode {
@@ -123,6 +124,14 @@ const octokit = getGitHubClient();
  */
 export function setupTools(server: any) {
   const allTools: Tool[] = [
+    /**
+     * @tool list_projects
+     * @description Liste les projets GitHub d'un utilisateur ou d'une organisation.
+     * @param {string} owner - Nom d'utilisateur ou d'organisation.
+     * @param {'user' | 'org'} [type='user'] - Type de propriétaire (utilisateur ou organisation).
+     * @param {'open' | 'closed' | 'all'} [state='open'] - État des projets à récupérer.
+     * @returns {Promise<object>} Un objet contenant la liste des projets.
+     */
     {
       name: 'list_projects',
       description: 'Liste les projets GitHub d\'un utilisateur ou d\'une organisation',
@@ -135,7 +144,7 @@ export function setupTools(server: any) {
         },
         required: ['owner']
       },
-      execute: async ({ owner, type = 'user', state = 'open' }: any) => {
+      execute: async ({ owner, type = 'user', state = 'open' }: { owner: string; type?: 'user' | 'org'; state?: 'open' | 'closed' | 'all' }) => {
         try {
           const query = `
             query($owner: String!) {
@@ -158,6 +167,13 @@ export function setupTools(server: any) {
         }
       }
     },
+    /**
+     * @tool list_repositories
+     * @description Liste les dépôts d'un utilisateur ou d'une organisation.
+     * @param {string} owner - Nom d'utilisateur ou d'organisation.
+     * @param {'user' | 'org'} [type='user'] - Type de propriétaire (utilisateur ou organisation).
+     * @returns {Promise<object>} Un objet contenant la liste des dépôts.
+     */
     {
       name: 'list_repositories',
       description: "Liste les dépôts d'un utilisateur ou d'une organisation",
@@ -169,7 +185,7 @@ export function setupTools(server: any) {
         },
         required: ['owner']
       },
-      execute: async ({ owner, type = 'user' }: any) => {
+      execute: async ({ owner, type = 'user' }: { owner: string; type?: 'user' | 'org' }) => {
         try {
           const query = `
             query($owner: String!) {
@@ -196,6 +212,14 @@ export function setupTools(server: any) {
         }
       }
     },
+    /**
+     * @tool create_project
+     * @description Crée un nouveau projet GitHub, potentiellement lié à un dépôt.
+     * @param {string} owner - Nom du propriétaire du projet (utilisateur ou organisation).
+     * @param {string} title - Titre du nouveau projet.
+     * @param {string} [repository_id] - ID du dépôt à lier au projet (optionnel).
+     * @returns {Promise<object>} Un objet contenant les détails du projet créé.
+     */
     {
       name: 'create_project',
       description: 'Crée un nouveau projet GitHub, potentiellement lié à un dépôt.',
@@ -274,6 +298,14 @@ export function setupTools(server: any) {
           }
       }
     },
+    /**
+     * @tool get_project
+     * @description Récupère les détails d'un projet GitHub, y compris ses éléments et ses champs.
+     * @param {string} owner - Nom d'utilisateur ou d'organisation propriétaire du projet.
+     * @param {number} project_number - Le numéro du projet à récupérer.
+     * @param {'user' | 'org'} [type='user'] - Le type de propriétaire ('user' or 'org').
+     * @returns {Promise<object>} Une promesse qui résout avec les détails complets du projet.
+     */
     {
       name: 'get_project',
       description: 'Récupère les détails d\'un projet GitHub',
@@ -286,7 +318,7 @@ export function setupTools(server: any) {
         },
         required: ['owner', 'project_number']
       },
-      execute: async ({ owner, project_number, type = 'user' }: any) => {
+      execute: async ({ owner, project_number, type = 'user' }: { owner: string; project_number: number; type?: 'user' | 'org' }) => {
         try {
           // On ne peut pas vérifier ici car on n'a pas le nom du repo
           // La vérification se fera dans les fonctions qui utilisent le repo
@@ -318,6 +350,13 @@ export function setupTools(server: any) {
         }
       }
     },
+    /**
+     * @tool get_project_items
+     * @description Récupère les éléments (issues, PRs, notes) d'un projet GitHub. Un filtrage optionnel peut être appliqué.
+     * @param {string} project_id - L'ID du projet dont les éléments doivent être récupérés.
+     * @param {object} [filterOptions] - Un objet de critères pour filtrer les éléments (par exemple, par statut).
+     * @returns {Promise<object>} Une promesse qui résout avec la liste des éléments du projet.
+     */
     {
       name: 'get_project_items',
       description: "Récupère les éléments d'un projet, avec une option de filtrage.",
@@ -338,6 +377,16 @@ export function setupTools(server: any) {
         return await executeGetProjectItems(octokit, { projectId: project_id, filterOptions });
       }
     },
+    /**
+     * @tool add_item_to_project
+     * @description Ajoute un élément (issue, pull request, ou une note) à un projet GitHub.
+     * @param {string} project_id - L'ID du projet auquel ajouter l'élément.
+     * @param {string} [content_id] - L'ID de l'issue ou de la pull request à ajouter. Requis si 'content_type' n'est pas 'draft_issue'.
+     * @param {'issue' | 'pull_request' | 'draft_issue'} [content_type='issue'] - Le type de contenu à ajouter.
+     * @param {string} [draft_title] - Le titre de la note (draft issue). Requis pour 'draft_issue'.
+     * @param {string} [draft_body] - Le corps de la note (draft issue).
+     * @returns {Promise<object>} Une promesse qui résout avec l'ID du nouvel élément de projet créé.
+     */
     {
       name: 'add_item_to_project',
       description: 'Ajoute un élément (issue, pull request ou note) à un projet GitHub',
@@ -352,7 +401,13 @@ export function setupTools(server: any) {
         },
         required: ['project_id']
       },
-      execute: async ({ project_id, content_id, content_type = 'issue', draft_title, draft_body }: any) => {
+      execute: async ({ project_id, content_id, content_type = 'issue', draft_title, draft_body }: {
+        project_id: string;
+        content_id?: string;
+        content_type?: 'issue' | 'pull_request' | 'draft_issue';
+        draft_title?: string;
+        draft_body?: string;
+      }) => {
         try {
           checkReadOnlyMode();
           let query;
@@ -376,6 +431,17 @@ export function setupTools(server: any) {
         }
       }
     },
+    /**
+     * @tool update_project_item_field
+     * @description Met à jour la valeur d'un champ spécifique pour un élément dans un projet GitHub.
+     * @param {string} project_id - L'ID du projet.
+     * @param {string} item_id - L'ID de l'élément à mettre à jour.
+     * @param {string} field_id - L'ID du champ à modifier.
+     * @param {'text' | 'date' | 'single_select' | 'number'} field_type - Le type de données du champ.
+     * @param {string} [value] - La nouvelle valeur pour les champs de type `text`, `date`, ou `number`.
+     * @param {string} [option_id] - L'ID de l'option sélectionnée pour un champ de type `single_select`.
+     * @returns {Promise<object>} Une promesse qui résout avec le résultat de l'opération de mise à jour.
+     */
     {
       name: 'update_project_item_field',
       description: 'Met à jour la valeur d\'un champ pour un élément dans un projet GitHub',
@@ -391,7 +457,14 @@ export function setupTools(server: any) {
         },
         required: ['project_id', 'item_id', 'field_id', 'field_type']
       },
-      execute: async ({ project_id, item_id, field_id, field_type, value, option_id }: any) => {
+      execute: async ({ project_id, item_id, field_id, field_type, value, option_id }: {
+        project_id: string;
+        item_id: string;
+        field_id: string;
+        field_type: 'text' | 'date' | 'single_select' | 'number';
+        value?: string;
+        option_id?: string;
+      }) => {
         checkReadOnlyMode();
         return await executeUpdateProjectItemField(octokit, {
           projectId: project_id,
@@ -403,6 +476,13 @@ export function setupTools(server: any) {
         });
       }
     },
+    /**
+     * @tool delete_project_item
+     * @description Supprime un élément (issue, PR, note) d'un projet GitHub.
+     * @param {string} project_id - L'ID du projet.
+     * @param {string} item_id - L'ID de l'élément à supprimer.
+     * @returns {Promise<object>} Une promesse qui résout avec l'ID de l'élément supprimé.
+     */
     {
       name: 'delete_project_item',
       description: 'Supprime un élément d\'un projet GitHub',
@@ -442,6 +522,12 @@ export function setupTools(server: any) {
         }
       }
     },
+    /**
+     * @tool delete_project
+     * @description Supprime un projet GitHub de manière permanente.
+     * @param {string} projectId - L'ID du projet à supprimer.
+     * @returns {Promise<object>} Une promesse qui résout avec le résultat de l'opération de suppression.
+     */
     {
       name: 'delete_project',
       description: 'Supprime un projet GitHub',
@@ -457,6 +543,15 @@ export function setupTools(server: any) {
         return await executeDeleteProject(octokit, { projectId });
       }
     },
+    /**
+     * @tool update_project
+     * @description Met à jour le titre, la description et/ou l'état d'un projet GitHub.
+     * @param {string} project_id - L'ID du projet à modifier.
+     * @param {string} [title] - Le nouveau titre du projet.
+     * @param {string} [description] - La nouvelle description courte du projet.
+     * @param {'OPEN' | 'CLOSED'} [state] - Le nouvel état du projet ('OPEN' ou 'CLOSED'). NOTE: Ce paramètre est actuellement ignoré par l'outil.
+     * @returns {Promise<object>} Une promesse qui résout avec l'ID du projet mis à jour.
+     */
     {
       name: 'update_project',
       description: "Modifie le titre, la description et l'état d'un projet.",
@@ -506,6 +601,15 @@ export function setupTools(server: any) {
         }
       }
     },
+    /**
+     * @tool create_issue
+     * @description Crée une nouvelle issue dans un dépôt GitHub et peut l'ajouter à un projet.
+     * @param {string} repositoryName - Le nom complet du dépôt (ex: 'owner/repo').
+     * @param {string} title - Le titre de l'issue.
+     * @param {string} [body] - Le corps de l'issue (optionnel).
+     * @param {string} [projectId] - L'ID du projet auquel ajouter l'issue (optionnel).
+     * @returns {Promise<object>} Une promesse qui résout avec les détails de l'issue créée.
+     */
     {
       name: 'create_issue',
       description: "Crée une issue dans un dépôt et l'ajoute optionnellement à un projet.",
@@ -535,6 +639,13 @@ export function setupTools(server: any) {
         }
       }
     },
+    /**
+     * @tool update_issue_state
+     * @description Modifie l'état d'une issue (ouvre ou ferme).
+     * @param {string} issueId - L'ID global de l'issue à modifier.
+     * @param {'OPEN' | 'CLOSED'} state - Le nouvel état de l'issue.
+     * @returns {Promise<object>} Une promesse qui résout avec le résultat de la mise à jour.
+     */
     {
       name: 'update_issue_state',
       description: "Modifie l'état d'une issue (ouverte ou fermée).",
@@ -551,6 +662,14 @@ export function setupTools(server: any) {
         return await executeUpdateIssueState(octokit, { issueId, state });
       }
     },
+    /**
+     * @tool create_project_field
+     * @description Crée un nouveau champ (colonne) dans un projet GitHub.
+     * @param {string} projectId - L'ID du projet où créer le champ.
+     * @param {string} name - Le nom du nouveau champ.
+     * @param {'TEXT' | 'NUMBER' | 'DATE' | 'SINGLE_SELECT'} dataType - Le type de données du champ.
+     * @returns {Promise<object>} Une promesse qui résout avec les détails du champ créé.
+     */
     {
       name: 'create_project_field',
       description: "Crée un nouveau champ (colonne) dans un projet GitHub.",
@@ -572,6 +691,14 @@ export function setupTools(server: any) {
         return await executeCreateProjectField(octokit, { projectId, name, dataType });
       }
     },
+    /**
+     * @tool update_project_field
+     * @description Met à jour un champ existant dans un projet (par exemple, renomme une colonne).
+     * @param {string} projectId - L'ID du projet.
+     * @param {string} fieldId - L'ID du champ à mettre à jour.
+     * @param {string} name - Le nouveau nom pour le champ.
+     * @returns {Promise<object>} Une promesse qui résout avec le résultat de la mise à jour.
+     */
     {
       name: 'update_project_field',
       description: 'Updates an existing field in a project (e.g., renames a column).',
@@ -589,6 +716,13 @@ export function setupTools(server: any) {
         return await executeUpdateProjectField(octokit, { projectId, fieldId, name });
       }
     },
+    /**
+     * @tool delete_project_field
+     * @description Supprime un champ d'un projet.
+     * @param {string} projectId - L'ID du projet.
+     * @param {string} fieldId - L'ID du champ à supprimer.
+     * @returns {Promise<object>} Une promesse qui résout avec le résultat de la suppression.
+     */
     {
       name: 'delete_project_field',
       description: 'Deletes a field from a project.',
@@ -605,6 +739,13 @@ export function setupTools(server: any) {
         return await executeDeleteProjectField(octokit, { projectId, fieldId });
       }
     },
+    /**
+     * @tool convert_draft_to_issue
+     * @description Convertit une note (draft issue) d'un projet en une véritable issue GitHub.
+     * @param {string} projectId - L'ID du projet contenant la note.
+     * @param {string} draftId - L'ID de la note à convertir.
+     * @returns {Promise<object>} Une promesse qui résout avec le résultat de la conversion.
+     */
     {
       name: 'convert_draft_to_issue',
       description: 'Converts a draft issue in a project into a standard GitHub issue.',
@@ -621,6 +762,12 @@ export function setupTools(server: any) {
         return await executeConvertDraftToIssue(octokit, { projectId, draftId });
       }
     },
+    /**
+     * @tool archive_project
+     * @description Archive un projet GitHub. Le projet ne sera plus visible dans la liste des projets actifs.
+     * @param {string} projectId - L'ID du projet à archiver.
+     * @returns {Promise<object>} Une promesse qui résout avec le résultat de l'archivage.
+     */
     {
       name: 'archive_project',
       description: 'Archive un projet GitHub.',
@@ -636,6 +783,12 @@ export function setupTools(server: any) {
         return await executeArchiveProject(octokit, { projectId });
       }
     },
+    /**
+     * @tool unarchive_project
+     * @description Ré-ouvre (désarchive) un projet GitHub précédemment archivé.
+     * @param {string} projectId - L'ID du projet à désarchiver.
+     * @returns {Promise<object>} Une promesse qui résout avec le résultat du désarchivage.
+     */
     {
       name: 'unarchive_project',
       description: 'Ré-ouvre (désarchive) un projet GitHub.',
@@ -651,6 +804,15 @@ export function setupTools(server: any) {
         return await executeUnarchiveProject(octokit, { projectId });
       }
     },
+    /**
+     * @tool analyze_task_complexity
+     * @description Analyse la complexité d'une tâche (item) dans un projet GitHub en se basant sur son titre et sa description.
+     * @param {string} owner - Le propriétaire du dépôt contenant le projet.
+     * @param {string} repo - Le nom du dépôt contenant le projet.
+     * @param {number} projectNumber - Le numéro du projet.
+     * @param {string} itemId - L'ID de l'item (tâche) à analyser.
+     * @returns {Promise<object>} Une promesse qui résout avec l'analyse de complexité.
+     */
     {
       name: 'analyze_task_complexity',
       description: "Analyse la complexité d'une tâche (item) dans un projet GitHub en se basant sur son titre et sa description.",

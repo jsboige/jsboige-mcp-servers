@@ -1,38 +1,14 @@
 import logger from './logger.js';
+import { checkReadOnlyMode, checkRepoPermissions } from './security.js';
 
 /**
- * Vérifie si le mode lecture seule est activé.
- * Lance une erreur si la variable d'environnement GITHUB_PROJECTS_READ_ONLY est définie sur 'true'.
+ * Récupère l'ID d'un dépôt GitHub à partir de son propriétaire et de son nom.
+ * @param {any} octokit - L'instance du client Octokit.
+ * @param {string} owner - Le nom du propriétaire du dépôt (utilisateur ou organisation).
+ * @param {string} repo - Le nom du dépôt.
+ * @returns {Promise<string>} Une promesse qui résout avec l'ID du dépôt.
+ * @throws {Error} Si le dépôt n'est pas trouvé.
  */
-export function checkReadOnlyMode(): void {
-  const isReadOnly = process.env.GITHUB_PROJECTS_READ_ONLY;
-  if (isReadOnly === 'true' || isReadOnly === '1') {
-    throw new Error('Read-only mode is enabled. Write operations are disabled.');
-  }
-}
-
-/**
- * Vérifie si le dépôt est dans la liste des dépôts autorisés définie par la variable d'environnement
- * GITHUB_PROJECTS_ALLOWED_REPOS.
- * @param owner - Le propriétaire du dépôt.
- * @param repo - Le nom du dépôt.
- * @throws {Error} Si le dépôt n'est pas autorisé.
- */
-export function checkRepoPermissions(owner: string, repo: string): void {
-  const allowedReposVar = process.env.GITHUB_PROJECTS_ALLOWED_REPOS;
-  if (!allowedReposVar) {
-    // Si la variable n'est pas définie, on autorise tout
-    return;
-  }
-
-  const allowedRepos = allowedReposVar.split(',').map(r => r.trim());
-  const repoFullName = `${owner}/${repo}`;
-
-  if (!allowedRepos.includes(repoFullName)) {
-    throw new Error(`Access denied: Repository '${repoFullName}' is not in the allowed list.`);
-  }
-}
-
 export async function getRepositoryId(octokit: any, owner: string, repo: string): Promise<string> {
   checkRepoPermissions(owner, repo);
   const query = `
@@ -42,13 +18,28 @@ export async function getRepositoryId(octokit: any, owner: string, repo: string)
       }
     }
   `;
-  const response = await octokit.graphql(query, { owner, repo }) as { repository: { id: string } };
-  if (!response.repository?.id) {
-    throw new Error(`Dépôt non trouvé : ${owner}/${repo}`);
+  try {
+    const response = await octokit.graphql(query, { owner, repo }) as { repository: { id: string } };
+    if (!response.repository?.id) {
+      throw new Error(`Dépôt non trouvé : ${owner}/${repo}`);
+    }
+    return response.repository.id;
+  } catch (e) {
+    console.error('GitHub API call failed:', e);
+    throw new Error(`GitHub API Error: ${(e as Error).message}`);
   }
-  return response.repository.id;
 }
 
+/**
+ * Crée une issue dans un dépôt et l'ajoute optionnellement à un projet.
+ * @param {any} octokit - L'instance du client Octokit.
+ * @param {object} params - Les paramètres pour la création de l'issue.
+ * @param {string} params.repositoryId - L'ID du dépôt où créer l'issue.
+ * @param {string} params.title - Le titre de l'issue.
+ * @param {string} [params.body] - Le corps de l'issue (optionnel).
+ * @param {string} [params.projectId] - L'ID du projet auquel ajouter l'issue (optionnel).
+ * @returns {Promise<object>} Une promesse qui résout avec les informations de l'issue créée et l'ID de l'item de projet si applicable.
+ */
 export async function executeCreateIssue(
   octokit: any,
   { repositoryId, title, body, projectId }: { repositoryId: string; title: string; body?: string, projectId?: string }
@@ -100,14 +91,21 @@ export async function executeCreateIssue(
 
     return { success: true, issue, projectItemId };
 
-  } catch (error: any) {
-    const graphqlErrors = error.response?.data?.errors;
-    const readableError = graphqlErrors ? graphqlErrors.map((e: any) => e.message).join(', ') : (error.message || 'Erreur inconnue.');
-    logger.error(`Erreur dans executeCreateIssue: ${readableError}`);
-    return { success: false, error: `Erreur GraphQL: ${readableError}` };
+  } catch (e) {
+    console.error('GitHub API call failed:', e);
+    throw new Error(`GitHub API Error: ${(e as Error).message}`);
   }
 }
 
+/**
+ * Met à jour un champ dans un projet GitHub (par exemple, le renomme).
+ * @param {any} octokit - L'instance du client Octokit.
+ * @param {object} params - Les paramètres pour la mise à jour du champ.
+ * @param {string} params.projectId - L'ID du projet.
+ * @param {string} params.fieldId - L'ID du champ à mettre à jour.
+ * @param {string} params.name - Le nouveau nom pour le champ.
+ * @returns {Promise<object>} Une promesse qui résout avec les informations du champ mis à jour.
+ */
 export async function executeUpdateProjectField(
   octokit: any,
   { projectId, fieldId, name }: { projectId: string; fieldId: string; name: string; }
@@ -142,14 +140,20 @@ export async function executeUpdateProjectField(
 
     return { success: true, field: { id: field.id, name: field.name } };
 
-  } catch (error: any) {
-    const graphqlErrors = error.response?.data?.errors;
-    const readableError = graphqlErrors ? graphqlErrors.map((e: any) => e.message).join(', ') : (error.message || 'Erreur inconnue.');
-    logger.error(`Erreur dans updateProjectV2Field: ${readableError}`);
-    return { success: false, error: `Erreur GraphQL: ${readableError}` };
+  } catch (e) {
+    console.error('GitHub API call failed:', e);
+    throw new Error(`GitHub API Error: ${(e as Error).message}`);
   }
 }
 
+/**
+ * Modifie l'état d'une issue GitHub (ouverte ou fermée).
+ * @param {any} octokit - L'instance du client Octokit.
+ * @param {object} params - Les paramètres pour la mise à jour de l'issue.
+ * @param {string} params.issueId - L'ID global de l'issue à modifier.
+ * @param {'OPEN' | 'CLOSED'} params.state - Le nouvel état de l'issue.
+ * @returns {Promise<object>} Une promesse qui résout avec les informations de l'issue mise à jour.
+ */
 export async function executeUpdateIssueState(
   octokit: any,
   { issueId, state }: { issueId: string, state: 'OPEN' | 'CLOSED' }
@@ -180,14 +184,19 @@ export async function executeUpdateIssueState(
     
     return { success: true, issue: { id: issue.id, number: issue.number, state: issue.state } };
 
-  } catch (error: any) {
-    const graphqlErrors = error.response?.data?.errors;
-    const readableError = graphqlErrors ? graphqlErrors.map((e: any) => e.message).join(', ') : (error.message || 'Erreur inconnue.');
-    logger.error(`Erreur dans update_issue_state: ${readableError}`);
-    return { success: false, error: `Erreur GraphQL: ${readableError}` };
+  } catch (e) {
+    console.error('GitHub API call failed:', e);
+    throw new Error(`GitHub API Error: ${(e as Error).message}`);
   }
 }
 
+/**
+ * Supprime un projet GitHub de manière permanente.
+ * @param {any} octokit - L'instance du client Octokit.
+ * @param {object} params - Les paramètres pour la suppression du projet.
+ * @param {string} params.projectId - L'ID du projet à supprimer.
+ * @returns {Promise<object>} Une promesse qui résout avec un objet de succès ou d'erreur.
+ */
 export async function executeDeleteProject(
   octokit: any,
   { projectId }: { projectId: string }
@@ -208,13 +217,20 @@ export async function executeDeleteProject(
 
     return { success: true };
 
-  } catch (error: any) {
-    const graphqlErrors = error.response?.data?.errors;
-    const readableError = graphqlErrors ? graphqlErrors.map((e: any) => e.message).join(', ') : (error.message || 'Erreur inconnue.');
-    logger.error(`Erreur dans delete_project: ${readableError}`);
-    return { success: false, message: `Erreur GraphQL: ${readableError}` };
+  } catch (e) {
+    console.error('GitHub API call failed:', e);
+    throw new Error(`GitHub API Error: ${(e as Error).message}`);
   }
 }
+/**
+ * Crée un nouveau champ (colonne) dans un projet GitHub.
+ * @param {any} octokit - L'instance du client Octokit.
+ * @param {object} params - Les paramètres pour la création du champ.
+ * @param {string} params.projectId - L'ID du projet où créer le champ.
+ * @param {string} params.name - Le nom du nouveau champ.
+ * @param {'TEXT' | 'NUMBER' | 'DATE' | 'SINGLE_SELECT'} params.dataType - Le type de données du champ.
+ * @returns {Promise<object>} Une promesse qui résout avec les informations du champ créé.
+ */
 export async function executeCreateProjectField(
   octokit: any,
   { projectId, name, dataType }: { projectId: string; name: string; dataType: 'TEXT' | 'NUMBER' | 'DATE' | 'SINGLE_SELECT' }
@@ -249,14 +265,24 @@ export async function executeCreateProjectField(
 
     return { success: true, field: { id: field.id, name: field.name } };
 
-  } catch (error: any) {
-    const graphqlErrors = error.response?.data?.errors;
-    const readableError = graphqlErrors ? graphqlErrors.map((e: any) => e.message).join(', ') : (error.message || 'Erreur inconnue.');
-    logger.error(`Erreur dans createProjectV2Field: ${readableError}`);
-    return { success: false, error: `Erreur GraphQL: ${readableError}` };
+  } catch (e) {
+    console.error('GitHub API call failed:', e);
+    throw new Error(`GitHub API Error: ${(e as Error).message}`);
   }
 }
 
+/**
+ * Met à jour la valeur d'un champ pour un élément spécifique dans un projet GitHub.
+ * @param {any} octokit - L'instance du client Octokit.
+ * @param {object} params - Les paramètres pour la mise à jour.
+ * @param {string} params.projectId - L'ID du projet.
+ * @param {string} params.itemId - L'ID de l'élément de projet.
+ * @param {string} params.fieldId - L'ID du champ à mettre à jour.
+ * @param {'text' | 'date' | 'single_select' | 'number'} params.fieldType - Le type du champ à mettre à jour.
+ * @param {string} [params.value] - La nouvelle valeur pour les champs 'text', 'date', ou 'number'.
+ * @param {string} [params.optionId] - L'ID de l'option pour les champs 'single_select'.
+ * @returns {Promise<object>} Une promesse qui résout avec l'ID de l'élément mis à jour.
+ */
 export async function executeUpdateProjectItemField(
   octokit: any,
   { projectId, itemId, fieldId, fieldType, value, optionId }:
@@ -319,14 +345,20 @@ export async function executeUpdateProjectItemField(
 
     return { success: true, item: { id: updatedItem.id } };
 
-  } catch (error: any) {
-    const graphqlErrors = error.response?.data?.errors;
-    const readableError = graphqlErrors ? graphqlErrors.map((e: any) => e.message).join(', ') : (error.message || 'Erreur inconnue.');
-    logger.error(`Erreur dans executeUpdateProjectItemField: ${readableError}`);
-    return { success: false, error: `Erreur GraphQL: ${readableError}` };
+  } catch (e) {
+    console.error('GitHub API call failed:', e);
+    throw new Error(`GitHub API Error: ${(e as Error).message}`);
   }
 }
 
+/**
+ * Supprime un champ d'un projet GitHub.
+ * @param {any} octokit - L'instance du client Octokit.
+ * @param {object} params - Les paramètres pour la suppression du champ.
+ * @param {string} params.projectId - L'ID du projet.
+ * @param {string} params.fieldId - L'ID du champ à supprimer.
+ * @returns {Promise<object>} Une promesse qui résout avec l'ID du champ supprimé.
+ */
 export async function executeDeleteProjectField(
   octokit: any,
   { projectId, fieldId }: { projectId: string; fieldId: string }
@@ -358,13 +390,19 @@ export async function executeDeleteProjectField(
 
     return { success: true, deletedFieldId: deletedField.id };
 
-  } catch (error: any) {
-    const graphqlErrors = error.response?.data?.errors;
-    const readableError = graphqlErrors ? graphqlErrors.map((e: any) => e.message).join(', ') : (error.message || 'Erreur inconnue.');
-    logger.error(`Erreur dans deleteProjectV2Field: ${readableError}`);
-    return { success: false, error: `Erreur GraphQL: ${readableError}` };
+  } catch (e) {
+    console.error('GitHub API call failed:', e);
+    throw new Error(`GitHub API Error: ${(e as Error).message}`);
   }
 }
+/**
+ * Convertit une note (draft issue) d'un projet en une issue GitHub standard.
+ * @param {any} octokit - L'instance du client Octokit.
+ * @param {object} params - Les paramètres pour la conversion.
+ * @param {string} params.projectId - L'ID du projet contenant la note.
+ * @param {string} params.draftId - L'ID de la note (draft issue) à convertir.
+ * @returns {Promise<object>} Une promesse qui résout avec les informations de l'issue nouvellement créée.
+ */
 export async function executeConvertDraftToIssue(
   octokit: any,
   { projectId, draftId }: { projectId: string; draftId: string }
@@ -398,14 +436,19 @@ export async function executeConvertDraftToIssue(
 
     return { success: true, issue: { id: issue.id, number: issue.number, url: issue.url } };
 
-  } catch (error: any) {
-    const graphqlErrors = error.response?.data?.errors;
-    const readableError = graphqlErrors ? graphqlErrors.map((e: any) => e.message).join(', ') : (error.message || 'Erreur inconnue.');
-    logger.error(`Erreur dans executeConvertDraftToIssue: ${readableError}`);
-    return { success: false, error: `Erreur GraphQL: ${readableError}` };
+  } catch (e) {
+    console.error('GitHub API call failed:', e);
+    throw new Error(`GitHub API Error: ${(e as Error).message}`);
   }
 }
 
+/**
+ * Archive un projet GitHub en le passant à l'état "CLOSED".
+ * @param {any} octokit - L'instance du client Octokit.
+ * @param {object} params - Les paramètres pour l'archivage.
+ * @param {string} params.projectId - L'ID du projet à archiver.
+ * @returns {Promise<object>} Une promesse qui résout avec les informations du projet mis à jour.
+ */
 export async function executeArchiveProject(
   octokit: any,
   { projectId }: { projectId: string }
@@ -437,14 +480,19 @@ export async function executeArchiveProject(
 
     return { success: true, project: { id: project.id, closed: project.closed } };
 
-  } catch (error: any) {
-    const graphqlErrors = error.response?.data?.errors;
-    const readableError = graphqlErrors ? graphqlErrors.map((e: any) => e.message).join(', ') : (error.message || 'Erreur inconnue.');
-    logger.error(`Erreur dans executeArchiveProject: ${readableError}`);
-    return { success: false, error: `Erreur GraphQL: ${readableError}` };
+  } catch (e) {
+    console.error('GitHub API call failed:', e);
+    throw new Error(`GitHub API Error: ${(e as Error).message}`);
   }
 }
 
+/**
+ * Désarchive un projet GitHub en le passant à l'état "OPEN".
+ * @param {any} octokit - L'instance du client Octokit.
+ * @param {object} params - Les paramètres pour le désarchivage.
+ * @param {string} params.projectId - L'ID du projet à désarchiver.
+ * @returns {Promise<object>} Une promesse qui résout avec les informations du projet mis à jour.
+ */
 export async function executeUnarchiveProject(
   octokit: any,
   { projectId }: { projectId: string }
@@ -476,14 +524,20 @@ export async function executeUnarchiveProject(
 
     return { success: true, project: { id: project.id, closed: project.closed } };
 
-  } catch (error: any) {
-    const graphqlErrors = error.response?.data?.errors;
-    const readableError = graphqlErrors ? graphqlErrors.map((e: any) => e.message).join(', ') : (error.message || 'Erreur inconnue.');
-    logger.error(`Erreur dans executeUnarchiveProject: ${readableError}`);
-    return { success: false, error: `Erreur GraphQL: ${readableError}` };
+  } catch (e) {
+    console.error('GitHub API call failed:', e);
+    throw new Error(`GitHub API Error: ${(e as Error).message}`);
   }
 }
 
+/**
+ * Récupère les éléments d'un projet GitHub, avec une option de filtrage côté client.
+ * @param {any} octokit - L'instance du client Octokit.
+ * @param {object} params - Les paramètres pour la récupération des éléments.
+ * @param {string} params.projectId - L'ID du projet.
+ * @param {any} [params.filterOptions] - Options pour filtrer les résultats côté client (ex: { state: 'Done' }).
+ * @returns {Promise<object>} Une promesse qui résout avec la liste des éléments du projet.
+ */
 export async function executeGetProjectItems(
   octokit: any,
   { projectId, filterOptions }: { projectId: string; filterOptions?: any }
@@ -582,13 +636,18 @@ export async function executeGetProjectItems(
     }
 
     return { success: true, items: allItems };
-  } catch (error: any) {
-    const graphqlErrors = error.response?.data?.errors;
-    const readableError = graphqlErrors ? graphqlErrors.map((e: any) => e.message).join(', ') : (error.message || 'Erreur inconnue.');
-    logger.error(`Erreur dans executeGetProjectItems: ${readableError}`);
-    return { success: false, error: `Erreur GraphQL: ${readableError}` };
+  } catch (e) {
+    console.error('GitHub API call failed:', e);
+    throw new Error(`GitHub API Error: ${(e as Error).message}`);
   }
 }
+/**
+ * Récupère les détails (titre et corps) d'un élément de projet spécifique (Issue, PR, ou DraftIssue).
+ * @param {any} octokit - L'instance du client Octokit.
+ * @param {object} params - Les paramètres pour la récupération des détails.
+ * @param {string} params.itemId - L'ID de l'élément de projet.
+ * @returns {Promise<{ success: boolean; item?: { title: string; body: string }; error?: string }>} Une promesse qui résout avec les détails de l'élément.
+ */
 export async function getProjectItemDetails(
   octokit: any,
   { itemId }: { itemId: string }
@@ -625,14 +684,22 @@ export async function getProjectItemDetails(
     }
 
     return { success: true, item: { title: content.title, body: content.body } };
-  } catch (error: any) {
-    const graphqlErrors = error.response?.data?.errors;
-    const readableError = graphqlErrors ? graphqlErrors.map((e: any) => e.message).join(', ') : (error.message || 'Erreur inconnue.');
-    logger.error(`Erreur dans getProjectItemDetails: ${readableError}`);
-    return { success: false, error: `Erreur GraphQL: ${readableError}` };
+  } catch (e) {
+    console.error('GitHub API call failed:', e);
+    throw new Error(`GitHub API Error: ${(e as Error).message}`);
   }
 }
 
+/**
+ * Analyse la complexité d'une tâche (item de projet) en se basant sur son titre et son corps.
+ * @param {any} octokit - L'instance du client Octokit.
+ * @param {object} params - Les paramètres pour l'analyse.
+ * @param {string} params.owner - Le propriétaire du dépôt.
+ * @param {string} params.repo - Le nom du dépôt.
+ * @param {number} params.projectNumber - Le numéro du projet (non utilisé directement dans la logique actuelle mais gardé pour le contexte).
+ * @param {string} params.itemId - L'ID de l'item à analyser.
+ * @returns {Promise<object>} Une promesse qui résout avec un objet indiquant la complexité ('faible', 'moyenne', 'élevée') et la raison.
+ */
 export async function analyze_task_complexity(
   octokit: any,
   { owner, repo, projectNumber, itemId }: { owner: string; repo: string; projectNumber: number; itemId: string; }
