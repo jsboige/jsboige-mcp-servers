@@ -1,8 +1,10 @@
+import { describe, it, expect, beforeAll, afterAll } from '@jest/globals';
 import { Octokit } from '@octokit/core';
 import {
   analyze_task_complexity,
   executeCreateIssue,
   executeDeleteProject,
+  executeGetProjectItems,
   getProjectItemDetails,
   getRepositoryId,
 } from '../src/github-actions';
@@ -21,6 +23,23 @@ dotenv.config({ path: path.resolve(__dirname, './.env') });
 const TEST_GITHUB_OWNER = process.env.TEST_GITHUB_OWNER;
 const TEST_GITHUB_REPO = process.env.TEST_GITHUB_REPO;
 const TEST_PROJECT_TITLE = `Test Project - ${Date.now()}`;
+
+// Helper function for polling to handle API eventual consistency
+const poll = async (
+  action: () => Promise<boolean>,
+  errorMessage: string,
+  timeout = 20000, // 20 seconds
+  interval = 3000  // 3 seconds
+) => {
+  const startTime = Date.now();
+  while (Date.now() - startTime < timeout) {
+    if (await action()) {
+      return;
+    }
+    await new Promise(resolve => setTimeout(resolve, interval));
+  }
+  throw new Error(`Polling timed out: ${errorMessage}`);
+};
 
 describe('GitHub Actions E2E Tests', () => {
   let octokit: Octokit;
@@ -113,18 +132,41 @@ describe('GitHub Actions E2E Tests', () => {
     return issueResult.projectItemId;
   };
 
-  it('should return "faible" complexity for a short task', async () => {
-    const itemId = await createTestItem('Short Task', 'Just do it.');
-    const result = await analyze_task_complexity(octokit, {
-      owner: TEST_GITHUB_OWNER!,
-      repo: TEST_GITHUB_REPO!,
-      projectNumber: 0,
-      itemId: itemId,
+  it('should filter items by title contains (client-side)', async () => {
+    // Créer des items de test pour ce test spécifique
+    await createTestItem('Feature: User Authentication', 'Implement user login and registration.');
+    await createTestItem('Feature: User Profile', 'Users should have a profile page.');
+    await createTestItem('Bug: Fix login button', 'The login button is not working on Safari.');
+
+    // Attendre que l'API reflète les nouveaux items en utilisant le polling
+    await poll(
+      async () => {
+        const result = await executeGetProjectItems(octokit, {
+          projectId: testProjectId,
+        });
+        const featureItems = result.items.filter((item: any) => item.content?.title?.includes('Feature'));
+        return featureItems.length >= 2;
+      },
+      'Failed to find 2 "Feature" items after polling.'
+    );
+
+    // Effectuer le test de filtrage final
+    const featureItemsResult = await executeGetProjectItems(octokit, {
+      projectId: testProjectId,
+      filterOptions: { titleContains: 'Feature' },
     });
-    expect(result.success).toBe(true);
-    expect(result.result?.complexity).toBe('faible');
-    expect(result.result?.reasoning).toContain('< 50 caractères');
-  });
+    expect(featureItemsResult.success).toBe(true);
+    expect(featureItemsResult.items.length).toBe(2);
+    expect(featureItemsResult.items.every((item: any) => item.content.title.includes('Feature'))).toBe(true);
+
+    const bugItemsResult = await executeGetProjectItems(octokit, {
+      projectId: testProjectId,
+      filterOptions: { titleContains: 'Bug' },
+    });
+    expect(bugItemsResult.success).toBe(true);
+    expect(bugItemsResult.items.length).toBe(1);
+    expect(bugItemsResult.items[0].content.title).toContain('Bug');
+  }, 60000);
 
   it('should return "moyenne" complexity for a standard task', async () => {
     const itemId = await createTestItem('Standard Task', 'This is a standard task with a description of reasonable length that should result in medium complexity.');

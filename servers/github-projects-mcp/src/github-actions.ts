@@ -497,11 +497,7 @@ export async function executeGetProjectItems(
     let queryDef = `query GetProjectWithItems($id: ID!, $first: Int!, $after: String`;
     let itemsArgs = `first: $first, after: $after`;
 
-    if (filterOptions) {
-      queryDef += `, $filterBy: ProjectV2ItemFilterBy`;
-      itemsArgs += `, filterBy: $filterBy`;
-      variables.filterBy = filterOptions;
-    }
+    // GraphQL ne supportant pas le filtrage direct, nous récupérons tout et filtrons côté client.
     
     queryDef += `)`;
 
@@ -562,7 +558,30 @@ export async function executeGetProjectItems(
     if (!project) {
       throw new Error(`Projet non trouvé pour l'ID : ${projectId}.`);
     }
-    return { success: true, items: project.items.nodes };
+    let allItems = project.items.nodes;
+
+    // Filtrage côté client
+    if (filterOptions && Object.keys(filterOptions).length > 0) {
+      allItems = allItems.filter((item: any) => {
+        if (filterOptions.state) {
+          const statusFieldValue = item.fieldValues.nodes.find(
+            (fv: any) => fv.field?.name === 'Status'
+          );
+          if (statusFieldValue?.name?.toUpperCase() !== filterOptions.state.toUpperCase()) {
+            return false;
+          }
+        }
+        if (filterOptions.titleContains) {
+          const title = item.content?.title?.toLowerCase() || '';
+          if (!title.includes(filterOptions.titleContains.toLowerCase())) {
+            return false;
+          }
+        }
+        return true;
+      });
+    }
+
+    return { success: true, items: allItems };
   } catch (error: any) {
     const graphqlErrors = error.response?.data?.errors;
     const readableError = graphqlErrors ? graphqlErrors.map((e: any) => e.message).join(', ') : (error.message || 'Erreur inconnue.');
