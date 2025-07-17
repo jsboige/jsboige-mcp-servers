@@ -1,7 +1,7 @@
 import winston from 'winston';
 
 const logger = winston.createLogger({
-  level: 'info',
+  level: 'debug',
   format: winston.format.combine(
     winston.format.timestamp({
       format: 'YYYY-MM-DD HH:mm:ss'
@@ -16,6 +16,8 @@ const logger = winston.createLogger({
     new winston.transports.File({ filename: 'github-projects-mcp-combined.log' }),
   ],
 });
+
+logger.debug("Winston logger a été initialisé.");
 
 //
 // Si nous ne sommes pas en production, alors logger aussi sur la console

@@ -741,3 +741,92 @@ export async function analyze_task_complexity(
     } 
   };
 }
+/**
+ * Archive un élément d'un projet GitHub.
+ * @param {any} octokit - L'instance du client Octokit.
+ * @param {object} params - Les paramètres pour l'archivage.
+ * @param {string} params.projectId - L'ID du projet.
+ * @param {string} params.itemId - L'ID de l'élément à archiver.
+ * @returns {Promise<object>} Une promesse qui résout avec l'ID de l'élément archivé.
+ */
+export async function archiveProjectItem(
+  octokit: any,
+  { projectId, itemId }: { projectId: string; itemId: string }
+) {
+  checkReadOnlyMode();
+  try {
+    const mutation = `
+      mutation($projectId: ID!, $itemId: ID!) {
+        archiveProjectV2Item(input: {
+          projectId: $projectId,
+          itemId: $itemId
+        }) {
+          item {
+            id
+          }
+        }
+      }
+    `;
+
+    const result = await octokit.graphql(mutation, {
+      projectId,
+      itemId,
+    });
+
+    const item = result.archiveProjectV2Item?.item;
+    if (!item) {
+      throw new Error("L'archivage de l'élément a échoué ou n'a pas retourné les informations attendues.");
+    }
+
+    return { success: true, item: { id: item.id } };
+
+  } catch (e) {
+    logger.error('GitHub API call failed in archiveProjectItem', { error: e });
+    throw new Error(`GitHub API Error: ${(e as Error).message}`);
+  }
+}
+
+/**
+ * Désarchive un élément d'un projet GitHub.
+ * @param {any} octokit - L'instance du client Octokit.
+ * @param {object} params - Les paramètres pour le désarchivage.
+ * @param {string} params.projectId - L'ID du projet.
+ * @param {string} params.itemId - L'ID de l'élément à désarchiver.
+ * @returns {Promise<object>} Une promesse qui résout avec l'ID de l'élément désarchivé.
+ */
+export async function unarchiveProjectItem(
+  octokit: any,
+  { projectId, itemId }: { projectId: string; itemId: string }
+) {
+  checkReadOnlyMode();
+  try {
+    const mutation = `
+      mutation($projectId: ID!, $itemId: ID!) {
+        unarchiveProjectV2Item(input: {
+          projectId: $projectId,
+          itemId: $itemId
+        }) {
+          item {
+            id
+          }
+        }
+      }
+    `;
+
+    const result = await octokit.graphql(mutation, {
+      projectId,
+      itemId,
+    });
+
+    const item = result.unarchiveProjectV2Item?.item;
+    if (!item) {
+      throw new Error("Le désarchivage de l'élément a échoué ou n'a pas retourné les informations attendues.");
+    }
+
+    return { success: true, item: { id: item.id } };
+
+  } catch (e) {
+    console.error('GitHub API call failed:', e);
+    throw new Error(`GitHub API Error: ${(e as Error).message}`);
+  }
+}

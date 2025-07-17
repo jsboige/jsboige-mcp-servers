@@ -1,7 +1,7 @@
 import { Tool } from '@modelcontextprotocol/sdk/types.js';
 import { CallToolRequestSchema, ListToolsRequestSchema, ErrorCode, McpError } from '@modelcontextprotocol/sdk/types.js';
 import { getGitHubClient } from './utils/github.js';
-import { analyze_task_complexity, executeGetProjectItems, executeArchiveProject, executeUnarchiveProject, executeConvertDraftToIssue, executeCreateProjectField, executeDeleteProject, executeDeleteProjectField, executeUpdateIssueState, getRepositoryId, executeCreateIssue, executeUpdateProjectField, executeUpdateProjectItemField } from './github-actions.js';
+import { analyze_task_complexity, executeGetProjectItems, executeArchiveProject, executeUnarchiveProject, executeConvertDraftToIssue, executeCreateProjectField, executeDeleteProject, executeDeleteProjectField, executeUpdateIssueState, getRepositoryId, executeCreateIssue, executeUpdateProjectField, executeUpdateProjectItemField, archiveProjectItem, unarchiveProjectItem } from './github-actions.js';
 import { checkReadOnlyMode, checkRepoPermissions } from './security.js';
 import logger from './logger.js';
 
@@ -805,6 +805,53 @@ export function setupTools(server: any) {
       }
     },
     /**
+     * @tool archive_project_item
+     * @description Archive un élément d'un projet GitHub.
+     * @param {string} projectId - L'ID du projet.
+     * @param {string} itemId - L'ID de l'élément à archiver.
+     * @returns {Promise<object>} Une promesse qui résout avec le résultat de l'archivage.
+     */
+    {
+      name: 'archive_project_item',
+      description: "Archive un élément d'un projet GitHub.",
+      inputSchema: {
+        type: 'object',
+        properties: {
+          projectId: { type: 'string', description: "L'ID du projet." },
+          itemId: { type: 'string', description: "L'ID de l'élément à archiver." },
+        },
+        required: ['projectId', 'itemId'],
+      },
+      execute: async ({ projectId, itemId }: { projectId: string, itemId: string }) => {
+        checkReadOnlyMode();
+        // La permission est vérifiée au niveau du projet, pas du repo individuel pour cette action
+        return await archiveProjectItem(octokit, { projectId, itemId });
+      }
+    },
+    /**
+     * @tool unarchive_project_item
+     * @description Désarchive un élément d'un projet GitHub.
+     * @param {string} projectId - L'ID du projet.
+     * @param {string} itemId - L'ID de l'élément à désarchiver.
+     * @returns {Promise<object>} Une promesse qui résout avec le résultat du désarchivage.
+     */
+    {
+      name: 'unarchive_project_item',
+      description: "Désarchive un élément d'un projet GitHub.",
+      inputSchema: {
+        type: 'object',
+        properties: {
+          projectId: { type: 'string', description: "L'ID du projet." },
+          itemId: { type: 'string', description: "L'ID de l'élément à désarchiver." },
+        },
+        required: ['projectId', 'itemId'],
+      },
+      execute: async ({ projectId, itemId }: { projectId: string, itemId: string }) => {
+        checkReadOnlyMode();
+        return await unarchiveProjectItem(octokit, { projectId, itemId });
+      }
+    },
+    /**
      * @tool analyze_task_complexity
      * @description Analyse la complexité d'une tâche (item) dans un projet GitHub en se basant sur son titre et sa description.
      * @param {string} owner - Le propriétaire du dépôt contenant le projet.
@@ -837,6 +884,7 @@ export function setupTools(server: any) {
   }));
 
   server.setRequestHandler(CallToolRequestSchema, async (request: any) => {
+try {
     const tool = allTools.find(t => t.name === request.params.name);
     if (!tool || typeof tool.execute !== 'function') {
         throw new McpError(
@@ -844,13 +892,12 @@ export function setupTools(server: any) {
             `Outil inconnu ou non exécutable: ${request.params.name}`
         );
     }
-    try {
-        const result = await tool.execute(request.params.arguments);
-        return {
-            content: [{ type: 'text', text: JSON.stringify(result, null, 2) }],
-            isError: !result.success
-        };
-    } catch (error: any) {
+    const result = await tool.execute(request.params.arguments);
+    return {
+        content: [{ type: 'text', text: JSON.stringify(result, null, 2) }],
+        isError: !result.success
+    };
+} catch (error: any) {
         const errorMessage = error.message || (typeof error === 'string' ? error : JSON.stringify(error));
         logger.error(`Erreur lors de l'exécution de l'outil ${request.params.name}`, {
             error: errorMessage,

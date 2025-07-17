@@ -2,11 +2,13 @@ import { describe, it, expect, beforeAll, afterAll, afterEach } from '@jest/glob
 import { Octokit } from '@octokit/core';
 import {
   analyze_task_complexity,
+  archiveProjectItem,
   executeCreateIssue,
   executeDeleteProject,
   executeGetProjectItems,
   getProjectItemDetails,
   getRepositoryId,
+  unarchiveProjectItem,
 } from '../src/github-actions';
 import { getGitHubClient } from '../src/utils/github';
 import { setupTools } from '../src/tools'; // Pour créer le projet
@@ -214,6 +216,36 @@ describe('GitHub Actions E2E Tests', () => {
     expect(result.success).toBe(true);
     expect(result.result?.complexity).toBe('élevée');
     expect(result.result?.reasoning).toContain('mot-clé');
+  });
+
+  describe('Project Item Archiving', () => {
+    it('should archive and unarchive a project item', async () => {
+      // 1. Create a draft issue to have a clean state
+      const draftIssueQuery = `mutation($projectId: ID!, $title: String!, $body: String) { addProjectV2DraftIssue(input: {projectId: $projectId, title: $title, body: $body}) { projectItem { id } } }`;
+      const draftIssueResult = await octokit.graphql<any>(draftIssueQuery, {
+        projectId: testProjectId,
+        title: 'Test Draft for Archiving',
+        body: 'This is a test draft.',
+      });
+      const itemId = draftIssueResult.addProjectV2DraftIssue?.projectItem?.id;
+      expect(itemId).toBeDefined();
+
+      // 2. Archive the item
+      await expect(
+        archiveProjectItem(octokit, {
+          projectId: testProjectId,
+          itemId: itemId,
+        })
+      ).resolves.not.toThrow();
+
+      // 3. Unarchive the item
+      await expect(
+        unarchiveProjectItem(octokit, {
+          projectId: testProjectId,
+          itemId: itemId,
+        })
+      ).resolves.not.toThrow();
+    }, 60000);
   });
 });
 
