@@ -126,159 +126,160 @@ class RooStateManagerServer {
               required: ['path'],
             },
           },
-          {
-            name: 'browse_task_tree',
-            description: 'Navigation hiérarchique dans l\'arborescence de tâches construite',
-            inputSchema: {
-              type: 'object',
-              properties: {
-                nodeId: {
-                  type: 'string',
-                  description: 'ID du nœud à explorer (optionnel, racine par défaut)',
-                },
-                depth: {
-                  type: 'number',
-                  description: 'Profondeur d\'exploration (défaut: 2)',
-                  default: 2,
-                },
-                includeMetrics: {
-                  type: 'boolean',
-                  description: 'Inclure les métriques détaillées',
-                  default: true,
-                },
-              },
-              required: [],
-            },
-          },
-          {
-            name: 'search_conversations',
-            description: 'Recherche contextuelle avec filtres avancés dans l\'arborescence',
-            inputSchema: {
-              type: 'object',
-              properties: {
-                query: {
-                  type: 'string',
-                  description: 'Terme de recherche',
-                },
-                filters: {
-                  type: 'object',
-                  properties: {
-                    workspace: {
-                      type: 'string',
-                      description: 'Filtrer par workspace',
-                    },
-                    project: {
-                      type: 'string',
-                      description: 'Filtrer par projet',
-                    },
-                    technology: {
-                      type: 'string',
-                      description: 'Filtrer par technologie',
-                    },
-                    dateRange: {
-                      type: 'object',
-                      properties: {
-                        start: { type: 'string' },
-                        end: { type: 'string' },
-                      },
-                    },
-                    minMessages: {
-                      type: 'number',
-                      description: 'Nombre minimum de messages',
-                    },
-                  },
-                },
-                limit: {
-                  type: 'number',
-                  description: 'Nombre maximum de résultats',
-                  default: 20,
-                },
-              },
-              required: [],
-            },
-          },
-          {
-            name: 'analyze_task_relationships',
-            description: 'Analyse des relations entre tâches et détection de patterns',
-            inputSchema: {
-              type: 'object',
-              properties: {
-                nodeId: {
-                  type: 'string',
-                  description: 'ID du nœud à analyser (optionnel)',
-                },
-                relationshipTypes: {
-                  type: 'array',
-                  items: {
-                    type: 'string',
-                    enum: ['parent_child', 'file_dependency', 'temporal', 'semantic', 'technology'],
-                  },
-                  description: 'Types de relations à analyser',
-                },
-                includeWeights: {
-                  type: 'boolean',
-                  description: 'Inclure les poids des relations',
-                  default: true,
-                },
-              },
-              required: [],
-            },
-          },
-          {
-            name: 'generate_task_summary',
-            description: 'Génération de résumés automatiques par niveau',
-            inputSchema: {
-              type: 'object',
-              properties: {
-                level: {
-                  type: 'string',
-                  enum: ['workspace', 'project', 'cluster', 'conversation', 'global'],
-                  description: 'Niveau de résumé à générer',
-                  default: 'global',
-                },
-                nodeId: {
-                  type: 'string',
-                  description: 'ID du nœud spécifique (optionnel)',
-                },
-                includeInsights: {
-                  type: 'boolean',
-                  description: 'Inclure les insights et recommandations',
-                  default: true,
-                },
-                includeMetrics: {
-                  type: 'boolean',
-                  description: 'Inclure les métriques détaillées',
-                  default: true,
-                },
-              },
-              required: [],
-            },
-          },
-          {
-            name: 'rebuild_task_tree',
-            description: 'Reconstruction de l\'arbre avec gestion du cache',
-            inputSchema: {
-              type: 'object',
-              properties: {
-                forceRebuild: {
-                  type: 'boolean',
-                  description: 'Forcer la reconstruction même si le cache est valide',
-                  default: false,
-                },
-                clearCache: {
-                  type: 'boolean',
-                  description: 'Vider le cache avant reconstruction',
-                  default: false,
-                },
-                includeStats: {
-                  type: 'boolean',
-                  description: 'Inclure les statistiques de construction',
-                  default: true,
-                },
-              },
-              required: [],
-            },
-          },
+          // {
+          //   name: 'browse_task_tree',
+          //   description: 'Navigation hiérarchique dans l\'arborescence de tâches construite',
+          //   inputSchema: {
+          //     type: 'object',
+          //     properties: {
+          //       nodeId: {
+          //         type: 'string',
+          //         description: 'ID du nœud à explorer (optionnel, racine par défaut)',
+          //       },
+          //       depth: {
+          //         type: 'number',
+          //         description: 'Profondeur d\'exploration (défaut: 2)',
+          //         default: 2,
+          //       },
+          //       includeMetrics: {
+          //         type: 'boolean',
+          //         description: 'Inclure les métriques détaillées',
+          //         default: true,
+          //       },
+          //     },
+          //     required: [],
+          //   },
+          // },
+          // {
+          //   name: 'search_conversations',
+          //   description: 'Recherche contextuelle avec filtres avancés dans l\'arborescence',
+          //   inputSchema: {
+          //     type: 'object',
+          //     properties: {
+          //       query: {
+          //         type: 'string',
+          //         description: 'Terme de recherche',
+          //       },
+          //       filters: {
+          //         type: 'object',
+          //         properties: {
+          //           workspace: {
+          //             type: 'string',
+          //             description: 'Filtrer par workspace',
+          //           },
+          //           project: {
+          //             type: 'string',
+          //             description: 'Filtrer par projet',
+          //           },
+          //           technology: {
+          //             type: 'string',
+          //             description: 'Filtrer par technologie',
+          //           },
+          //           dateRange: {
+          //             type: 'object',
+          //             properties: {
+          //               start: { type: 'string' },
+          //               end: { type: 'string' },
+          //             },
+          //           },
+          //           minMessages: {
+          //             type: 'number',
+          //             description: 'Nombre minimum de messages',
+          //           },
+          //         },
+          //       },
+          //       limit: {
+          //         type: 'number',
+          //         description: 'Nombre maximum de résultats',
+          //         default: 20,
+          //       },
+          //     },
+          //     required: [],
+          //   },
+          // },
+          // {
+          //   name: 'analyze_task_relationships',
+          //   description: 'Analyse des relations entre tâches et détection de patterns',
+          //   inputSchema: {
+          //     type: 'object',
+          //     properties: {
+          //       nodeId: {
+          //         type: 'string',
+          //         description: 'ID du nœud à analyser (optionnel)',
+          //       },
+          //       relationshipTypes: {
+          //         type: 'array',
+          //         items: {
+          //           type: 'string',
+          //           enum: ['parent_child', 'file_dependency', 'temporal', 'semantic', 'technology'],
+          //         },
+          //         description: 'Types de relations à analyser',
+          //       },
+          //       includeWeights: {
+          //         type: 'boolean',
+          //         description: 'Inclure les poids des relations',
+          //         default: true,
+          //       },
+          //     },
+          //     required: [],
+          //   },
+          // },
+          // {
+          //   name: 'generate_task_summary',
+          //   description: 'Génération de résumés automatiques par niveau',
+          //   inputSchema: {
+          //     type: 'object',
+          //     properties: {
+          //       level: {
+          //         type: 'string',
+          //         enum: ['workspace', 'project', 'cluster', 'conversation', 'global'],
+          //         description: 'Niveau de résumé à générer',
+          //         default: 'global',
+          //       },
+          //       nodeId: {
+          //         type: 'string',
+          //         description: 'ID du nœud spécifique (optionnel)',
+          //       },
+          //       includeInsights: {
+          //         type: 'boolean',
+          //         description: 'Inclure les insights et recommandations',
+          //         default: true,
+          //       },
+          //       includeMetrics: {
+          //         type: 'boolean',
+          //         description: 'Inclure les métriques détaillées',
+          //         default: true,
+          //       },
+          //     },
+          //     required: [],
+          //   },
+          // },
+          // {
+          //   name: 'rebuild_task_tree',
+          //   description: 'Reconstruction de l\'arbre avec gestion du cache',
+          //   inputSchema: {
+          //     type: 'object',
+          //     properties: {
+          //       forceRebuild: {
+          //         type: 'boolean',
+          //         description: 'Forcer la reconstruction même si le cache est valide',
+          //         default: false,
+          //       },
+  
+          //       clearCache: {
+          //         type: 'boolean',
+          //         description: 'Vider le cache avant reconstruction',
+          //         default: false,
+          //       },
+          //       includeStats: {
+          //         type: 'boolean',
+          //         description: 'Inclure les statistiques de construction',
+          //         default: true,
+          //       },
+          //     },
+          //     required: [],
+          //   },
+          // },
         ] as any[],
       };
     });
@@ -310,41 +311,41 @@ class RooStateManagerServer {
           case 'validate_custom_path':
             return await this.handleValidateCustomPath(args as { path: string });
 
-          case 'browse_task_tree':
-            return await this.handleBrowseTaskTree(args as {
-              nodeId?: string;
-              depth?: number;
-              includeMetrics?: boolean;
-            });
-
-          case 'search_conversations':
-            return await this.handleSearchConversations(args as {
-              query?: string;
-              filters?: any;
-              limit?: number;
-            });
-
-          case 'analyze_task_relationships':
-            return await this.handleAnalyzeTaskRelationships(args as {
-              nodeId?: string;
-              relationshipTypes?: string[];
-              includeWeights?: boolean;
-            });
-
-          case 'generate_task_summary':
-            return await this.handleGenerateTaskSummary(args as {
-              level?: string;
-              nodeId?: string;
-              includeInsights?: boolean;
-              includeMetrics?: boolean;
-            });
-
-          case 'rebuild_task_tree':
-            return await this.handleRebuildTaskTree(args as {
-              forceRebuild?: boolean;
-              clearCache?: boolean;
-              includeStats?: boolean;
-            });
+          // case 'browse_task_tree':
+          //   return await this.handleBrowseTaskTree(args as {
+          //     nodeId?: string;
+          //     depth?: number;
+          //     includeMetrics?: boolean;
+          //   });
+          //
+          // case 'search_conversations':
+          //   return await this.handleSearchConversations(args as {
+          //     query?: string;
+          //     filters?: any;
+          //     limit?: number;
+          //   });
+          //
+          // case 'analyze_task_relationships':
+          //   return await this.handleAnalyzeTaskRelationships(args as {
+          //     nodeId?: string;
+          //     relationshipTypes?: string[];
+          //     includeWeights?: boolean;
+          //   });
+          //
+          // case 'generate_task_summary':
+          //   return await this.handleGenerateTaskSummary(args as {
+          //     level?: string;
+          //     nodeId?: string;
+          //     includeInsights?: boolean;
+          //     includeMetrics?: boolean;
+          //   });
+          //
+          // case 'rebuild_task_tree':
+          //   return await this.handleRebuildTaskTree(args as {
+          //     forceRebuild?: boolean;
+          //     clearCache?: boolean;
+          //     includeStats?: boolean;
+          //   });
 
           default:
             throw new Error(`Outil inconnu: ${name}`);
