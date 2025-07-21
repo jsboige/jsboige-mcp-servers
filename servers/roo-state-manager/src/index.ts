@@ -1,4 +1,3 @@
-#!/usr/bin/env node
 
 /**
  * Serveur MCP Roo State Manager
@@ -9,9 +8,10 @@ import { Server } from '@modelcontextprotocol/sdk/server/index.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import {
   CallToolRequestSchema,
-  ListToolsRequestSchema,
-  Tool,
+  ListToolsRequestSchema
 } from '@modelcontextprotocol/sdk/types.js';
+import { fileURLToPath } from 'url';
+import { resolve } from 'path';
 
 import { RooStorageDetector } from './utils/roo-storage-detector.js';
 import { RooStorageDetectionResult, ConversationSummary } from './types/conversation.js';
@@ -279,7 +279,7 @@ class RooStateManagerServer {
               required: [],
             },
           },
-        ] as Tool[],
+        ] as any[],
       };
     });
 
@@ -907,16 +907,22 @@ class RooStateManagerServer {
     const transport = new StdioServerTransport();
     await this.server.connect(transport);
     console.error('Serveur MCP Roo State Manager démarré');
+    // Keep the process alive
+    setInterval(() => {}, 1 << 30);
   }
 }
 
 // Démarrage du serveur
-if (import.meta.url === `file://${process.argv[1]}`) {
+// La vérification du module principal est retirée pour forcer le démarrage inconditionnel
+try {
   const server = new RooStateManagerServer();
   server.run().catch((error) => {
-    console.error('Erreur fatale:', error);
+    console.error('Erreur fatale pendant l\'exécution:', error);
     process.exit(1);
   });
+} catch (error) {
+  console.error('Erreur fatale à l\'initialisation:', error);
+  process.exit(1);
 }
 
 export { RooStateManagerServer };

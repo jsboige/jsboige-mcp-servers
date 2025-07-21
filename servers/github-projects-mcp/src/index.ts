@@ -98,8 +98,20 @@ class GitHubProjectsServer {
       logger.error('Error starting MCP server:', { error });
       process.exit(1);
     }
+    // Keep the process alive
+    setInterval(() => {}, 1 << 30);
   }
 }
 
-const server = new GitHubProjectsServer();
-server.run();
+try {
+  const server = new GitHubProjectsServer();
+  server.run();
+} catch (error) {
+  const errorMessage = error instanceof Error ? error.message : String(error);
+  const stack = error instanceof Error ? error.stack : 'No stack trace';
+  console.error('CRITICAL: Failed to initialize and run GitHubProjectsServer:', errorMessage, stack);
+  logger.error('Failed to initialize and run GitHubProjectsServer:', { error });
+  process.exit(1);
+}
+
+// Le transport Stdio maintiendra le processus en vie en écoutant stdin.

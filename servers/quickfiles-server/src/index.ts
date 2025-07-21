@@ -1,4 +1,3 @@
-#!/usr/bin/env node
 import { Server } from '@modelcontextprotocol/sdk/server/index.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import {
@@ -611,6 +610,7 @@ class QuickFilesServer {
    * @constructor
    */
   constructor() {
+    console.log('[DEBUG] Initialisation de QuickFilesServer...');
     this.server = new Server(
       {
         name: 'quickfiles-server',
@@ -622,8 +622,10 @@ class QuickFilesServer {
         },
       }
     );
+    console.log('[DEBUG] Instance de Server créée.');
 
     this.setupToolHandlers();
+    console.log('[DEBUG] Gestionnaires d\'outils configurés.');
     
     // Gestion des erreurs
     this.server.onerror = (error) => console.error('[MCP Error]', error);
@@ -631,6 +633,7 @@ class QuickFilesServer {
       await this.server.close();
       process.exit(0);
     });
+    console.log('[DEBUG] Constructeur terminé.');
   }
 
   /**
@@ -3347,11 +3350,23 @@ class QuickFilesServer {
    * @returns {Promise<void>}
    */
   async run() {
-    const transport = new StdioServerTransport();
-    await this.server.connect(transport);
-    console.error('QuickFiles MCP server running on stdio');
+    try {
+      console.log('[DEBUG] Démarrage du serveur...');
+      const transport = new StdioServerTransport();
+      await this.server.connect(transport);
+      console.log('[DEBUG] Serveur en écoute.');
+
+      // La boucle de maintien en vie a été supprimée pour éviter le spam de log.
+      setInterval(() => {}, 1 << 30);
+    } catch (error) {
+      console.error('[FATAL ERROR] Erreur non capturée dans run():', error);
+      process.exit(1);
+    }
   }
 }
 
+console.log('[DEBUG] Démarrage de l\'application...');
 const server = new QuickFilesServer();
-server.run().catch(console.error);
+server.run();
+
+// Keep the process alive
