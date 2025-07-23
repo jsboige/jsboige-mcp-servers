@@ -1,2 +1,4 @@
 /node_modules/
 /build/
+large-files-audit.csv
+temp-storage/
