@@ -1,13 +1,10 @@
 {
   "extends": "../tsconfig.json",
   "compilerOptions": {
-    "outDir": "../build/tests",
-    "types": [
-      "mocha",
-      "node"
-    ]
+    "outDir": "../dist/tests",
+    "rootDir": "../",
+    "types": ["jest", "node"],
+    "isolatedModules": true
   },
-  "include": [
-    "**/*.ts"
-  ]
+  "include": ["./**/*.ts"]
 }

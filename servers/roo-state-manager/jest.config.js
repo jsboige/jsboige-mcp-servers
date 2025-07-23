@@ -7,10 +7,13 @@ export default {
   transform: {
     '^.+\\.ts$': ['ts-jest', {
       useESM: true,
+      tsconfig: '<rootDir>/tests/tsconfig.json'
     }],
   },
   testEnvironment: 'node',
   roots: ['<rootDir>/src', '<rootDir>/tests'],
+  globalSetup: '<rootDir>/tests/config/globalSetup.ts',
+  globalTeardown: '<rootDir>/tests/config/globalTeardown.ts',
   testMatch: [
     '**/__tests__/**/*.ts',
     '**/?(*.)+(spec|test).ts'
@@ -21,4 +24,5 @@ export default {
   ],
   coverageDirectory: 'coverage',
   coverageReporters: ['text', 'lcov', 'html'],
+  testTimeout: 30000,
 };
