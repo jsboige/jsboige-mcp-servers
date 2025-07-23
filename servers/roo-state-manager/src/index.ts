@@ -465,6 +465,7 @@ class RooStateManagerServer {
     await this.server.connect(transport);
     console.error('Serveur MCP Roo State Manager démarré');
     // Keep the process alive
+    setInterval(() => {}, 1000 * 60 * 60); // Keep alive for 1 hour
   }
 
   public async close(): Promise<void> {

@@ -4,14 +4,18 @@ module.exports = {
     transform: {
         '^.+\\.ts$': ['ts-jest', {
             useESM: true,
+            tsconfig: '<rootDir>/tests/tsconfig.json'
         }, ],
     },
     moduleNameMapper: {
-        '^(\\.{1,2}/.*)\\.js$': '$1',
     },
     testMatch: [
         '**/tests/suite/**/*.test.ts',
         '**/tests/*.test.ts',
+        '**/src/**/*.test.ts',
     ],
+    moduleNameMapper: {
+        '^\\./(.*)\\.js$': '<rootDir>/src/$1.ts',
+    },
     moduleFileExtensions: ['ts', 'js', 'json', 'node'],
 };
