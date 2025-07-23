@@ -35,3 +35,4 @@ export function run(): Promise<void> {
     });
   });
 }
+import './large-data.test.js';
