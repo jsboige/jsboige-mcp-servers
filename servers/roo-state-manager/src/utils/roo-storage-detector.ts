@@ -13,8 +13,10 @@ import {
   RooStorageDetectionResult,
   TaskMetadata,
   RooStorageError,
-  InvalidStoragePathError
+  InvalidStoragePathError,
+  StorageStats
 } from '../types/conversation.js';
+import { globalCacheManager } from './cache-manager.js';
 
 export class RooStorageDetector {
   private static readonly COMMON_ROO_PATHS = [
@@ -36,56 +38,149 @@ export class RooStorageDetector {
   ];
 
   /**
-   * Détecte automatiquement les emplacements de stockage Roo
+   * Détecte les chemins de stockage Roo et les met en cache.
+   * Ne retourne qu'une liste de chemins vers les répertoires 'tasks'.
+   * Rapide et léger.
    */
-  public static async detectRooStorage(): Promise<RooStorageDetectionResult> {
-    const result: RooStorageDetectionResult = {
-      found: false,
-      locations: [],
-      conversations: [],
-      totalConversations: 0,
-      totalSize: 0,
-      errors: []
-    };
-
-    try {
-      // 1. Recherche des emplacements potentiels
-      const potentialLocations = await this.findPotentialStorageLocations();
-      
-      // 2. Validation des emplacements trouvés
-      for (const location of potentialLocations) {
-        try {
-          const validatedLocation = await this.validateStorageLocation(location);
-          if (validatedLocation.exists) {
-            result.locations.push(validatedLocation);
-            result.found = true;
-          }
-        } catch (error) {
-          result.errors.push(`Erreur lors de la validation de ${location}: ${error instanceof Error ? error.message : String(error)}`);
-        }
-      }
-
-      // 3. Scan des conversations dans les emplacements valides
-      for (const location of result.locations) {
-        try {
-          const conversations = await this.scanConversations(location.tasksPath);
-          result.conversations.push(...conversations);
-        } catch (error) {
-          result.errors.push(`Erreur lors du scan de ${location.tasksPath}: ${error instanceof Error ? error.message : String(error)}`);
-        }
-      }
-
-      // 4. Calcul des statistiques
-      result.totalConversations = result.conversations.length;
-      result.totalSize = result.conversations.reduce((sum, conv) => sum + conv.size, 0);
-
-    } catch (error) {
-      result.errors.push(`Erreur générale de détection: ${error instanceof Error ? error.message : String(error)}`);
+  public static async detectStorageLocations(): Promise<string[]> {
+    const cacheKey = 'storage_locations';
+    const cachedLocations = await globalCacheManager.get<string[]>(cacheKey);
+    if (cachedLocations) {
+      return cachedLocations;
     }
 
-    return result;
+    const potentialLocations = await this.findPotentialStorageLocations();
+    const validatedPaths: string[] = [];
+
+    for (const location of potentialLocations) {
+      try {
+        const validatedLocation = await this.validateStorageLocation(location);
+        if (validatedLocation.exists) {
+          validatedPaths.push(validatedLocation.tasksPath);
+        }
+      } catch (error) {
+        // Ignorer les erreurs de validation pour un seul chemin
+      }
+    }
+    
+    // Garder en cache pendant 5 minutes
+    await globalCacheManager.set(cacheKey, validatedPaths);
+    
+    return validatedPaths;
   }
 
+  /**
+   * Scanne un répertoire de tâches pour en extraire des statistiques agrégées.
+   * Ne lit pas le contenu complet des fichiers, se base sur fs.stat.
+   */
+  public static async getStatsForPath(storagePath: string): Promise<StorageStats> {
+    let count = 0;
+    let totalSize = 0;
+    let lastActivity: Date | null = null;
+    
+    const entries = await fs.readdir(storagePath, { withFileTypes: true });
+
+    for (const entry of entries) {
+        if (entry.isDirectory()) {
+            const taskPath = path.join(storagePath, entry.name);
+            try {
+                const stats = await fs.stat(taskPath); // stat sur le répertoire
+                count++;
+                totalSize += stats.size; // Taille approximative
+                if (!lastActivity || stats.mtime > lastActivity) {
+                    lastActivity = stats.mtime;
+                }
+            } catch (e) {
+                // ignorer
+            }
+        }
+    }
+    return { count, totalSize, lastActivity: lastActivity || new Date(0) };
+  }
+  
+  /**
+   * Scanne un répertoire de tâches et retourne une liste paginée de métadonnées de conversation.
+   * Le scan du contenu est limité au strict nécessaire (ex: task_metadata.json).
+   */
+    public static async scanConversationsMetadata(
+        storagePath: string,
+        options: { limit: number; offset: number; sortBy: string; sortOrder: 'asc'|'desc' }
+    ): Promise<ConversationSummary[]> {
+        const conversations: ConversationSummary[] = [];
+        const taskDirs = await fs.readdir(storagePath);
+
+        // Cette implémentation reste basique, une future optimisation pourrait trier avant de lire.
+        for (const taskId of taskDirs) {
+            const taskPath = path.join(storagePath, taskId);
+            const stats = await fs.stat(taskPath);
+            if (!stats.isDirectory()) continue;
+
+            const conversation = await this.analyzeConversation(taskId, taskPath);
+            if (conversation) {
+                conversations.push(conversation);
+            }
+        }
+
+        // Tri
+        conversations.sort((a, b) => {
+            let comparison = 0;
+            switch (options.sortBy) {
+                case 'lastActivity':
+                comparison = new Date(b.lastActivity).getTime() - new Date(a.lastActivity).getTime();
+                break;
+                case 'messageCount':
+                comparison = b.messageCount - a.messageCount;
+                break;
+            }
+            return options.sortOrder === 'asc' ? -comparison : comparison;
+        });
+
+        return conversations.slice(options.offset, options.offset + options.limit);
+    }
+  
+  /**
+   * Trouve et analyse une seule conversation par son ID.
+   * C'est la méthode la plus efficace pour obtenir les détails d'une conversation.
+   */
+  public static async findConversationById(taskId: string): Promise<ConversationSummary | null> {
+      const storageLocations = await this.detectStorageLocations();
+      for (const storagePath of storageLocations) {
+          const taskPath = path.join(storagePath, taskId);
+          try {
+              const stats = await fs.stat(taskPath);
+              if (stats.isDirectory()) {
+                  return await this.analyzeConversation(taskId, taskPath);
+              }
+          } catch (e) {
+              // N'existe pas dans cet emplacement, on continue
+          }
+      }
+      return null;
+  }
+  
+  // Méthodes dépréciées ou internes
+  /**
+   * @deprecated Utiliser `detectStorageLocations` à la place.
+   */
+   public static async detectRooStorage(): Promise<RooStorageDetectionResult> {
+    const locations = await this.detectStorageLocations();
+    const result: RooStorageDetectionResult = {
+        found: locations.length > 0,
+        locations: locations.map(loc => ({
+            globalStoragePath: path.dirname(loc),
+            tasksPath: loc,
+            settingsPath: path.join(path.dirname(loc), 'settings'),
+            exists: true,
+        })),
+        conversations: [], // Laisser vide, la sémantique a changé
+        totalConversations: 0,
+        totalSize: 0,
+        errors: []
+    };
+    return result;
+}
+
+  
   /**
    * Recherche les emplacements potentiels de stockage Roo
    */
@@ -283,8 +378,7 @@ export class RooStorageDetector {
    * Recherche une conversation spécifique par ID
    */
   public static async findConversation(taskId: string): Promise<ConversationSummary | null> {
-    const detection = await this.detectRooStorage();
-    return detection.conversations.find(conv => conv.taskId === taskId) || null;
+    return this.findConversationById(taskId);
   }
 
   /**
@@ -294,36 +388,21 @@ export class RooStorageDetector {
     totalLocations: number;
     totalConversations: number;
     totalSize: number;
-    oldestConversation: string | null;
-    newestConversation: string | null;
   }> {
-    const detection = await this.detectRooStorage();
-    
-    let oldestDate: Date | null = null;
-    let newestDate: Date | null = null;
-    let oldestId: string | null = null;
-    let newestId: string | null = null;
+    const locations = await this.detectStorageLocations();
+    let totalConversations = 0;
+    let totalSize = 0;
 
-    for (const conv of detection.conversations) {
-      const date = new Date(conv.lastActivity);
-      
-      if (!oldestDate || date < oldestDate) {
-        oldestDate = date;
-        oldestId = conv.taskId;
-      }
-      
-      if (!newestDate || date > newestDate) {
-        newestDate = date;
-        newestId = conv.taskId;
-      }
+    for (const loc of locations) {
+        const stats = await this.getStatsForPath(loc);
+        totalConversations += stats.count;
+        totalSize += stats.totalSize;
     }
 
     return {
-      totalLocations: detection.locations.length,
-      totalConversations: detection.totalConversations,
-      totalSize: detection.totalSize,
-      oldestConversation: oldestId,
-      newestConversation: newestId
+      totalLocations: locations.length,
+      totalConversations,
+      totalSize,
     };
   }
 

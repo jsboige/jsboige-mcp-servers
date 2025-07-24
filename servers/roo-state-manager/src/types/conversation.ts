@@ -98,6 +98,17 @@ export interface ConversationSummary {
   size: number; // taille en octets
 }
 
+export interface StorageStats {
+  count: number;
+  totalSize: number;
+  lastActivity: Date;
+}
+
+export interface Conversation extends ConversationSummary {
+  apiHistory: ApiConversationHistory | null;
+  uiMessages: UiMessages | null;
+}
+
 export interface RooStorageDetectionResult {
   found: boolean;
   locations: RooStorageLocation[];

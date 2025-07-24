@@ -366,33 +366,45 @@ class RooStateManagerServer {
   }
 
   private async handleDetectRooStorage() {
-    const result = await RooStorageDetector.detectRooStorage();
+    const locations = await RooStorageDetector.detectStorageLocations();
     
     return {
       content: [
         {
           type: 'text',
-          text: JSON.stringify(result, null, 2),
+          text: JSON.stringify({ locations }, null, 2),
         },
       ],
     };
   }
 
   private async handleGetStorageStats() {
-    const stats = await RooStorageDetector.getStorageStats();
+    const locations = await RooStorageDetector.detectStorageLocations();
+    let totalConversations = 0;
+    let totalSize = 0;
+
+    for (const loc of locations) {
+        const stats = await RooStorageDetector.getStatsForPath(loc);
+        totalConversations += stats.count;
+        totalSize += stats.totalSize;
+    }
     
     return {
       content: [
         {
           type: 'text',
-          text: JSON.stringify(stats, null, 2),
+          text: JSON.stringify({
+            totalLocations: locations.length,
+            totalConversations,
+            totalSize,
+          }, null, 2),
         },
       ],
     };
   }
 
   private async handleFindConversation(args: { taskId: string }) {
-    const conversation = await RooStorageDetector.findConversation(args.taskId);
+    const conversation = await RooStorageDetector.findConversationById(args.taskId);
     
     return {
       content: [
@@ -411,51 +423,59 @@ class RooStateManagerServer {
     hasApiHistory?: boolean;
     hasUiMessages?: boolean;
   }) {
-    const detection = await RooStorageDetector.detectRooStorage();
-    let conversations = [...detection.conversations];
+    const locations = await RooStorageDetector.detectStorageLocations();
+    let allConversations: ConversationSummary[] = [];
 
+    const options = {
+        limit: args.limit || 50,
+        offset: 0, // Gérer la pagination complète serait plus complexe, on se limite à la première page
+        sortBy: args.sortBy || 'lastActivity',
+        sortOrder: args.sortOrder || 'desc'
+    };
+
+    for (const loc of locations) {
+        // Note: la pagination est appliquée par emplacement, pas globalement.
+        // C'est une simplification pour cette étape.
+        const conversations = await RooStorageDetector.scanConversationsMetadata(loc, options);
+        allConversations.push(...conversations);
+    }
+
+    // Le tri et le filtrage sont déjà appliqués dans scanConversationsMetadata
+    // mais on doit re-trier/limiter le résultat global
+    
     // Filtrage
     if (args.hasApiHistory !== undefined) {
-      conversations = conversations.filter(conv => conv.hasApiHistory === args.hasApiHistory);
+      allConversations = allConversations.filter(conv => conv.hasApiHistory === args.hasApiHistory);
     }
     if (args.hasUiMessages !== undefined) {
-      conversations = conversations.filter(conv => conv.hasUiMessages === args.hasUiMessages);
+      allConversations = allConversations.filter(conv => conv.hasUiMessages === args.hasUiMessages);
     }
 
-    // Tri
-    const sortBy = args.sortBy || 'lastActivity';
-    const sortOrder = args.sortOrder || 'desc';
-    
-    conversations.sort((a, b) => {
-      let comparison = 0;
-      
-      switch (sortBy) {
-        case 'lastActivity':
-          comparison = new Date(a.lastActivity).getTime() - new Date(b.lastActivity).getTime();
-          break;
-        case 'messageCount':
-          comparison = a.messageCount - b.messageCount;
-          break;
-        case 'size':
-          comparison = a.size - b.size;
-          break;
-      }
-      
-      return sortOrder === 'desc' ? -comparison : comparison;
+    // Tri global
+    allConversations.sort((a, b) => {
+       let comparison = 0;
+       switch(options.sortBy) {
+           case 'lastActivity':
+               comparison = new Date(b.lastActivity).getTime() - new Date(a.lastActivity).getTime();
+               break;
+            case 'messageCount':
+                comparison = b.messageCount - a.messageCount;
+                break;
+       }
+       return options.sortOrder === 'asc' ? -comparison : comparison;
     });
+    
+    const limitedConversations = allConversations.slice(0, options.limit);
 
-    // Limitation
-    const limit = args.limit || 50;
-    conversations = conversations.slice(0, limit);
 
     return {
       content: [
         {
           type: 'text',
           text: JSON.stringify({
-            total: detection.conversations.length,
-            filtered: conversations.length,
-            conversations,
+            total: allConversations.length, // Ce total est celui après scan, pas le total réel
+            filtered: limitedConversations.length,
+            conversations: limitedConversations,
           }, null, 2),
         },
       ],
