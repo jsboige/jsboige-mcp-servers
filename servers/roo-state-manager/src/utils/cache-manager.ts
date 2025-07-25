@@ -54,7 +54,9 @@ export class CacheManager {
       ...config
     };
 
-    this.startCleanupTimer();
+    if (process.env.NODE_ENV !== 'test') {
+      this.startCleanupTimer();
+    }
     this.loadFromDisk();
   }
 

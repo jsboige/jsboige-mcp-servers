@@ -4,6 +4,7 @@
  * Gestion unifiée des conversations et configurations Roo
  */
 
+import 'dotenv/config';
 import { Server } from '@modelcontextprotocol/sdk/server/index.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import {
@@ -19,8 +20,12 @@ import { TaskTreeBuilder } from './utils/task-tree-builder.js';
 import { SummaryGenerator, TaskTreeSummary } from './utils/summary-generator.js';
 import { globalCacheManager } from './utils/cache-manager.js';
 import { TaskTree, TaskType, TreeNode } from './types/task-tree.js';
-
-class RooStateManagerServer {
+import { indexTask } from './services/task-indexer.js';
+import { searchTasks } from './services/task-searcher.js';
+import { summarizeTask } from './services/task-summarizer.js';
+import { extractTaskDetails } from './services/task-details-extractor.js';
+ 
+ class RooStateManagerServer {
   private server: Server;
 
   constructor() {
@@ -124,6 +129,83 @@ class RooStateManagerServer {
                 },
               },
               required: ['path'],
+            },
+          },
+          {
+            name: 'index_task',
+            description: 'Déclenche l\'indexation sémantique d\'une tâche spécifique',
+            inputSchema: {
+              type: 'object',
+              properties: {
+                taskId: {
+                  type: 'string',
+                  description: 'ID de la tâche à indexer',
+                },
+              },
+              required: ['taskId'],
+            },
+          },
+          {
+            name: 'search_tasks_semantic',
+            description: 'Recherche sémantiquement dans les conversations des tâches passées.',
+            inputSchema: {
+              type: 'object',
+              properties: {
+                query: {
+                  type: 'string',
+                  description: 'La requête de recherche en langage naturel.',
+                },
+                date_range: {
+                  type: 'object',
+                  properties: {
+                    start_date: {
+                      type: 'string',
+                      format: 'date-time',
+                      description: 'Date de début (ISO 8601)',
+                    },
+                    end_date: {
+                      type: 'string',
+                      format: 'date-time',
+                      description: 'Date de fin (ISO 8601)',
+                    },
+                  },
+                  description: 'Filtre optionnel pour restreindre la recherche à une période.',
+                },
+                limit: {
+                  type: 'number',
+                  default: 10,
+                  description: 'Nombre maximum de résultats à retourner.',
+                },
+              },
+              required: ['query'],
+            },
+          },
+          {
+            name: 'get_task_summary',
+            description: 'Génère un résumé concis d\'une tâche spécifique en utilisant l\'IA.',
+            inputSchema: {
+              type: 'object',
+              properties: {
+                taskId: {
+                  type: 'string',
+                  description: 'ID de la tâche à résumer',
+                },
+              },
+              required: ['taskId'],
+            },
+          },
+          {
+            name: 'get_task_details',
+            description: 'Extrait des détails structurés d\'une tâche à partir de son historique de conversation.',
+            inputSchema: {
+              type: 'object',
+              properties: {
+                taskId: {
+                  type: 'string',
+                  description: 'ID de la tâche pour laquelle extraire les détails',
+                },
+              },
+              required: ['taskId'],
             },
           },
           // {
@@ -311,8 +393,24 @@ class RooStateManagerServer {
           case 'validate_custom_path':
             return await this.handleValidateCustomPath(args as { path: string });
 
-          // case 'browse_task_tree':
-          //   return await this.handleBrowseTaskTree(args as {
+          case 'index_task':
+            return await this.handleIndexTask(args as { taskId: string });
+
+          case 'search_tasks_semantic':
+           return await this.handleSearchTasksSemantic(args as {
+             query: string;
+             date_range?: { start_date?: string; end_date?: string };
+             limit?: number;
+           });
+
+        case 'get_task_summary':
+          return await this.handleGetTaskSummary(args as { taskId: string });
+
+        case 'get_task_details':
+          return await this.handleGetTaskDetails(args as { taskId: string });
+
+         // case 'browse_task_tree':
+         //   return await this.handleBrowseTaskTree(args as {
           //     nodeId?: string;
           //     depth?: number;
           //     includeMetrics?: boolean;
@@ -499,10 +597,111 @@ class RooStateManagerServer {
     };
   }
 
-  // Nouveaux gestionnaires pour les outils de la Phase 2
+  private async handleIndexTask(args: { taskId: string }) {
+    try {
+      const conversation = await RooStorageDetector.findConversationById(args.taskId);
+      if (!conversation) {
+        throw new Error(`Tâche avec ID ${args.taskId} non trouvée.`);
+      }
 
-  private async handleBrowseTaskTree(args: {
-    nodeId?: string;
+      await indexTask(args.taskId, conversation.path);
+
+      return {
+        content: [
+          {
+            type: 'text',
+            text: JSON.stringify({
+              success: true,
+              message: `Tâche ${args.taskId} indexée avec succès.`,
+            }, null, 2),
+          },
+        ],
+      };
+    } catch (error) {
+      throw new Error(`Erreur lors de l'indexation de la tâche ${args.taskId}: ${error instanceof Error ? error.message : String(error)}`);
+    }
+  }
+
+  private async handleSearchTasksSemantic(args: {
+   query: string;
+   date_range?: { start_date?: string; end_date?: string };
+   limit?: number;
+  }) {
+   try {
+     const results = await searchTasks(args.query, {
+       startDate: args.date_range?.start_date,
+       endDate: args.date_range?.end_date,
+       limit: args.limit,
+     });
+
+     return {
+       content: [
+         {
+           type: 'text',
+           text: JSON.stringify({
+             results,
+             count: results.length,
+           }, null, 2),
+         },
+       ],
+     };
+   } catch (error) {
+     throw new Error(`Erreur lors de la recherche sémantique: ${error instanceof Error ? error.message : String(error)}`);
+   }
+  }
+
+ private async handleGetTaskSummary(args: { taskId: string }) {
+   try {
+     const conversation = await RooStorageDetector.findConversationById(args.taskId);
+     if (!conversation) {
+       throw new Error(`Tâche avec ID ${args.taskId} non trouvée.`);
+     }
+
+     const summary = await summarizeTask(args.taskId, conversation.path);
+
+     return {
+       content: [
+         {
+           type: 'text',
+           text: JSON.stringify({ summary }, null, 2),
+         },
+       ],
+     };
+   } catch (error) {
+     throw new Error(`Erreur lors de la génération du résumé pour la tâche ${args.taskId}: ${error instanceof Error ? error.message : String(error)}`);
+   }
+ }
+
+ private async handleGetTaskDetails(args: { taskId: string }) {
+   try {
+     const conversation = await RooStorageDetector.findConversationById(args.taskId);
+     if (!conversation) {
+       throw new Error(`Tâche avec ID ${args.taskId} non trouvée.`);
+     }
+
+     const details = await extractTaskDetails(args.taskId, conversation.path);
+
+     if (!details) {
+       throw new Error(`Impossible d'extraire les détails pour la tâche ${args.taskId}.`);
+     }
+
+     return {
+       content: [
+         {
+           type: 'text',
+           text: JSON.stringify({ details }, null, 2),
+         },
+       ],
+     };
+   } catch (error) {
+     throw new Error(`Erreur lors de l'extraction des détails pour la tâche ${args.taskId}: ${error instanceof Error ? error.message : String(error)}`);
+   }
+ }
+
+ // Nouveaux gestionnaires pour les outils de la Phase 2
+
+ private async handleBrowseTaskTree(args: {
+   nodeId?: string;
     depth?: number;
     includeMetrics?: boolean;
   }) {

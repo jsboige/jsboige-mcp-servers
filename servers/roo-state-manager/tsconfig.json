@@ -4,10 +4,6 @@
     "module": "NodeNext",
     "moduleResolution": "NodeNext",
     "outDir": "./build",
-    "baseUrl": ".",
-    "paths": {
-      "@modelcontextprotocol/sdk/*": ["node_modules/@modelcontextprotocol/sdk/dist/esm/*"]
-    },
     "strict": true,
     "esModuleInterop": true,
     "skipLibCheck": true,

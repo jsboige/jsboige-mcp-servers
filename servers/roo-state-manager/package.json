@@ -2,7 +2,6 @@
   "name": "roo-state-manager",
   "version": "1.0.0",
   "description": "MCP server for unified Roo state management and conversation persistence",
-  "type": "module",
   "main": "build/index.js",
   "scripts": {
     "build": "tsc",
@@ -11,7 +10,8 @@
     "test": "jest",
     "test:coverage": "jest --coverage",
     "test:detector": "node tests/test-storage-detector.js",
-    "test:all": "npm run test && npm run test:detector"
+    "test:all": "npm run test && npm run test:detector",
+    "test:e2e": "jest --testPathPattern=tests/e2e"
   },
   "keywords": [
     "mcp",
@@ -23,15 +23,23 @@
   "license": "MIT",
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.16.0",
+    "@qdrant/js-client-rest": "^1.15.0",
+    "@types/http-proxy": "^1.17.16",
+    "dotenv": "^17.2.0",
     "glob": "^10.3.10",
-    "jsboige-mcp-servers": "file:../.."
+    "http-proxy": "^1.18.1",
+    "jest-environment-node": "^29.7.0",
+    "jsboige-mcp-servers": "file:../..",
+    "openai": "^5.10.2"
   },
   "devDependencies": {
-    "@types/jest": "^29.5.12",
+    "@types/jest": "^29.5.14",
     "@types/node": "^20.11.5",
+    "@types/node-fetch": "^2.6.12",
     "@types/vscode": "^1.102.0",
     "jest": "^29.7.0",
-    "ts-jest": "^29.1.2",
+    "node-fetch": "^2.7.0",
+    "ts-jest": "^29.4.0",
     "typescript": "^5.8.3"
   }
 }
