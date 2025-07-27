@@ -4,17 +4,22 @@
  */
 
 import * as fs from 'fs/promises';
+import { createReadStream, Stats } from 'fs';
 import * as path from 'path';
 import * as os from 'os';
+import * as readline from 'readline';
 import { glob } from 'glob';
 import {
-  RooStorageLocation,
-  ConversationSummary,
-  RooStorageDetectionResult,
-  TaskMetadata,
-  RooStorageError,
-  InvalidStoragePathError,
-  StorageStats
+    RooStorageLocation,
+    ConversationSummary,
+    RooStorageDetectionResult,
+    TaskMetadata,
+    RooStorageError,
+    InvalidStoragePathError,
+    StorageStats,
+    ConversationSkeleton,
+    MessageSkeleton,
+    ActionMetadata,
 } from '../types/conversation.js';
 import { globalCacheManager } from './cache-manager.js';
 
@@ -52,11 +57,11 @@ export class RooStorageDetector {
     const potentialLocations = await this.findPotentialStorageLocations();
     const validatedPaths: string[] = [];
 
-    for (const location of potentialLocations) {
+    for (const locationPath of potentialLocations) {
       try {
-        const validatedLocation = await this.validateStorageLocation(location);
-        if (validatedLocation.exists) {
-          validatedPaths.push(validatedLocation.tasksPath);
+        const isValid = await this.validateCustomPath(locationPath);
+        if (isValid) {
+          validatedPaths.push(path.join(locationPath, 'tasks'));
         }
       } catch (error) {
         // Ignorer les erreurs de validation pour un seul chemin
@@ -95,7 +100,7 @@ export class RooStorageDetector {
             }
         }
     }
-    return { count, totalSize, lastActivity: lastActivity || new Date(0) };
+    return { conversationCount: count, totalSize, fileTypes: {} };
   }
   
   /**
@@ -115,9 +120,27 @@ export class RooStorageDetector {
             const stats = await fs.stat(taskPath);
             if (!stats.isDirectory()) continue;
 
-            const conversation = await this.analyzeConversation(taskId, taskPath);
-            if (conversation) {
-                conversations.push(conversation);
+            // Note: analyzeConversation retourne maintenant un ConversationSkeleton,
+            // mais l'ancienne interface ConversationSummary est toujours utilisée ici.
+            // Ceci devra être adapté dans une tâche future.
+            const skeleton = await this.analyzeConversation(taskId, taskPath);
+            if (skeleton) {
+                // Conversion pour l'ancienne interface
+                const summary: ConversationSummary = {
+                    taskId: skeleton.taskId,
+                    path: taskPath, // Le path n'est pas dans le squelette
+                    metadata: { // On ne garde que les métadonnées de base
+                        title: skeleton.metadata.title,
+                        prompt: { task: '' } // Le prompt n'est plus directement dans les métadonnées de haut niveau
+                    },
+                    messageCount: skeleton.metadata.messageCount,
+                    lastActivity: skeleton.metadata.lastActivity,
+                    hasApiHistory: skeleton.metadata.totalSize > 0, // Approximation
+                    hasUiMessages: skeleton.metadata.totalSize > 0, // Approximation
+                    size: skeleton.metadata.totalSize,
+                    prompt: skeleton.metadata?.title || 'No prompt'
+                };
+                conversations.push(summary);
             }
         }
 
@@ -149,7 +172,24 @@ export class RooStorageDetector {
           try {
               const stats = await fs.stat(taskPath);
               if (stats.isDirectory()) {
-                  return await this.analyzeConversation(taskId, taskPath);
+                  const skeleton = await this.analyzeConversation(taskId, taskPath);
+                  if (!skeleton) return null;
+                  
+                  // Conversion pour l'ancienne interface
+                  return {
+                      taskId: skeleton.taskId,
+                      path: taskPath,
+                      metadata: {
+                          title: skeleton.metadata.title,
+                          prompt: { task: '' }
+                      },
+                      messageCount: skeleton.metadata.messageCount,
+                      lastActivity: skeleton.metadata.lastActivity,
+                      hasApiHistory: skeleton.metadata.totalSize > 0,
+                      hasUiMessages: skeleton.metadata.totalSize > 0,
+                      size: skeleton.metadata.totalSize,
+                      prompt: skeleton.metadata?.title || 'No prompt'
+                  };
               }
           } catch (e) {
               // N'existe pas dans cet emplacement, on continue
@@ -165,17 +205,10 @@ export class RooStorageDetector {
    public static async detectRooStorage(): Promise<RooStorageDetectionResult> {
     const locations = await this.detectStorageLocations();
     const result: RooStorageDetectionResult = {
-        found: locations.length > 0,
         locations: locations.map(loc => ({
-            globalStoragePath: path.dirname(loc),
-            tasksPath: loc,
-            settingsPath: path.join(path.dirname(loc), 'settings'),
-            exists: true,
+            path: loc,
+            type: 'local',
         })),
-        conversations: [], // Laisser vide, la sémantique a changé
-        totalConversations: 0,
-        totalSize: 0,
-        errors: []
     };
     return result;
 }
@@ -242,26 +275,7 @@ export class RooStorageDetector {
   /**
    * Valide un emplacement de stockage potentiel
    */
-  private static async validateStorageLocation(extensionPath: string): Promise<RooStorageLocation> {
-    const location: RooStorageLocation = {
-      globalStoragePath: extensionPath,
-      tasksPath: path.join(extensionPath, 'tasks'),
-      settingsPath: path.join(extensionPath, 'settings'),
-      exists: false
-    };
-
-    try {
-      // Vérification de l'existence du répertoire tasks
-      const tasksStats = await fs.stat(location.tasksPath);
-      if (tasksStats.isDirectory()) {
-        location.exists = true;
-      }
-    } catch (error) {
-      // Le répertoire tasks n'existe pas
-    }
-
-    return location;
-  }
+  // Cette fonction est devenue redondante avec validateCustomPath, on la supprime pour éviter la confusion.
 
   /**
    * Scanne les conversations dans un répertoire de tâches
@@ -279,9 +293,23 @@ export class RooStorageDetector {
           const stats = await fs.stat(taskPath);
           if (!stats.isDirectory()) continue;
 
-          const conversation = await this.analyzeConversation(taskId, taskPath);
-          if (conversation) {
-            conversations.push(conversation);
+          const skeleton = await this.analyzeConversation(taskId, taskPath);
+          if (skeleton) {
+               const summary: ConversationSummary = {
+                   taskId: skeleton.taskId,
+                   path: taskPath,
+                   metadata: {
+                       title: skeleton.metadata.title,
+                       prompt: { task: '' }
+                   },
+                   messageCount: skeleton.metadata.messageCount,
+                   lastActivity: skeleton.metadata.lastActivity,
+                   hasApiHistory: skeleton.metadata.totalSize > 0,
+                   hasUiMessages: skeleton.metadata.totalSize > 0,
+                   size: skeleton.metadata.totalSize,
+                   prompt: skeleton.metadata?.title || 'No prompt'
+               };
+               conversations.push(summary);
           }
         } catch (error) {
           // Ignore les erreurs pour des tâches individuelles
@@ -295,83 +323,141 @@ export class RooStorageDetector {
   }
 
   /**
-   * Analyse une conversation individuelle
+   * Analyse une conversation et la transforme en une structure "squelette" légère.
    */
-  private static async analyzeConversation(taskId: string, taskPath: string): Promise<ConversationSummary | null> {
+  public static async analyzeConversation(taskId: string, taskPath: string): Promise<ConversationSkeleton | null> {
+    const metadataPath = path.join(taskPath, 'task_metadata.json');
     const apiHistoryPath = path.join(taskPath, 'api_conversation_history.json');
     const uiMessagesPath = path.join(taskPath, 'ui_messages.json');
-    const metadataPath = path.join(taskPath, 'task_metadata.json');
-
-    let metadata: TaskMetadata | null = null;
-    let messageCount = 0;
-    let lastActivity = '';
-    let hasApiHistory = false;
-    let hasUiMessages = false;
-    let totalSize = 0;
 
     try {
-      // Lecture des métadonnées
-      try {
-        const metadataContent = await fs.readFile(metadataPath, 'utf-8');
-        metadata = JSON.parse(metadataContent);
-      } catch (error) {
-        // Pas de métadonnées, on continue
-      }
+        const [metadataStats, apiHistoryStats, uiMessagesStats] = await Promise.all([
+            fs.stat(metadataPath).catch(() => null),
+            fs.stat(apiHistoryPath).catch(() => null),
+            fs.stat(uiMessagesPath).catch(() => null)
+        ]);
 
-      // Vérification de l'historique API
-      try {
-        const apiStats = await fs.stat(apiHistoryPath);
-        hasApiHistory = true;
-        totalSize += apiStats.size;
-        lastActivity = apiStats.mtime.toISOString();
+        if (!apiHistoryStats && !uiMessagesStats) return null;
 
-        const apiContent = await fs.readFile(apiHistoryPath, 'utf-8');
-        const apiHistory = JSON.parse(apiContent);
-        if (apiHistory.messages) {
-          messageCount += apiHistory.messages.length;
-        }
-      } catch (error) {
-        // Pas d'historique API
-      }
+        const metadataContent = metadataStats ? await fs.readFile(metadataPath, 'utf-8') : '{}';
+        const rawMetadata = JSON.parse(metadataContent) as TaskMetadata;
 
-      // Vérification des messages UI
-      try {
-        const uiStats = await fs.stat(uiMessagesPath);
-        hasUiMessages = true;
-        totalSize += uiStats.size;
+        const sequence = await this.buildSequenceFromFiles(apiHistoryPath, uiMessagesPath);
         
-        if (!lastActivity || uiStats.mtime > new Date(lastActivity)) {
-          lastActivity = uiStats.mtime.toISOString();
-        }
+        const messageCount = sequence.filter(s => 'role' in s).length;
+        const actionCount = sequence.length - messageCount;
+        const totalSize = (metadataStats?.size || 0) + (apiHistoryStats?.size || 0) + (uiMessagesStats?.size || 0);
 
-        const uiContent = await fs.readFile(uiMessagesPath, 'utf-8');
-        const uiMessages = JSON.parse(uiContent);
-        if (uiMessages.messages) {
-          messageCount += uiMessages.messages.length;
-        }
-      } catch (error) {
-        // Pas de messages UI
-      }
+        const lastActivity = [metadataStats, apiHistoryStats, uiMessagesStats]
+            .filter((s): s is Stats => s !== null)
+            .reduce((latest, s) => (s.mtime > latest ? s.mtime : latest), new Date(0))
+            .toISOString();
 
-      // Si aucun fichier de conversation n'existe, on ignore cette tâche
-      if (!hasApiHistory && !hasUiMessages) {
-        return null;
-      }
+        const skeleton: ConversationSkeleton = {
+            taskId,
+            parentTaskId: rawMetadata.parentTaskId,
+            sequence,
+            metadata: {
+                title: rawMetadata.title,
+                createdAt: rawMetadata.createdAt || new Date(0).toISOString(),
+                lastActivity,
+                mode: rawMetadata.mode,
+                messageCount,
+                actionCount,
+                totalSize,
+            },
+        };
 
-      return {
-        taskId,
-        path: taskPath,
-        metadata,
-        messageCount,
-        lastActivity: lastActivity || new Date().toISOString(),
-        hasApiHistory,
-        hasUiMessages,
-        size: totalSize
-      };
+        await globalCacheManager.set(`conversation-skeleton:${taskId}`, skeleton);
+        return skeleton;
 
     } catch (error) {
-      throw new RooStorageError(`Erreur lors de l'analyse de la conversation ${taskId}: ${error instanceof Error ? error.message : String(error)}`, 'CONVERSATION_ANALYSIS_ERROR');
+        console.error(`[analyzeConversation] Erreur critique lors de l'analyse de ${taskId}:`, error);
+        return null;
     }
+  }
+
+  /**
+   * Construit une séquence triée de messages et d'actions à partir des fichiers d'historique.
+   * Lit les fichiers ligne par ligne pour minimiser l'utilisation de la mémoire.
+   */
+  private static async buildSequenceFromFiles(
+    apiHistoryPath: string,
+    uiMessagesPath: string
+  ): Promise<(MessageSkeleton | ActionMetadata)[]> {
+    let combinedItems: any[] = [];
+    const MAX_CONTENT_LENGTH = 400;
+
+    // Helper pour lire et parser un fichier JSON en toute sécurité
+    const readJsonFile = async (filePath: string): Promise<any[]> => {
+      try {
+        const content = await fs.readFile(filePath, 'utf-8');
+        const data = JSON.parse(content);
+        // Les fichiers peuvent avoir les messages dans une propriété "messages" ou être un tableau à la racine
+        return Array.isArray(data) ? data : (data?.messages || []);
+      } catch (e) {
+        return []; // Retourne un tableau vide en cas d'erreur
+      }
+    };
+
+    const apiItems = await readJsonFile(apiHistoryPath);
+    const uiItems = await readJsonFile(uiMessagesPath);
+    combinedItems = [...apiItems, ...uiItems];
+
+    let sequence: (MessageSkeleton | ActionMetadata)[] = [];
+
+    for (const item of combinedItems) {
+      const timestamp = item.timestamp || new Date(0).toISOString();
+      const role = item.role || (item.type === 'ask' ? 'user' : 'assistant');
+      const type = item.type;
+
+      // Traitement des messages (user/assistant/say)
+      if (['user', 'assistant'].includes(role) || type === 'say') {
+        let content = item.content || item.text || '';
+        if (Array.isArray(content)) {
+            content = content.find((c: any) => c.type === 'text')?.text || '[contenu non textuel]';
+        }
+        let isTruncated = false;
+        if (content.length > MAX_CONTENT_LENGTH) {
+            content = `${content.substring(0, MAX_CONTENT_LENGTH / 2)}...${content.substring(content.length - MAX_CONTENT_LENGTH / 2)}`;
+            isTruncated = true;
+        }
+        sequence.push({
+          role: role,
+          content,
+          isTruncated,
+          timestamp,
+        });
+      }
+      // Traitement des actions (tool/command/tool_use/tool_result)
+      else if (['tool', 'command', 'tool_use', 'tool_result'].includes(type)) {
+        const action: ActionMetadata = {
+            type: (type === 'tool_use' || type === 'tool_result') ? 'tool' : type,
+            name: item.tool || item.name || 'unknown_action',
+            status: item.isError ? 'failure' : (item.toolResult ? 'success' : 'in_progress'),
+            parameters: item.toolInput || item.parameters || {},
+            timestamp,
+        };
+
+        const input = item.toolInput || item.parameters || {};
+        const result = item.toolResult || {};
+
+        if (input.path) action.file_path = input.path;
+        
+        if (result.line_count) action.line_count = result.line_count;
+        else if (input.content) action.line_count = String(input.content).split('\n').length;
+
+        if (result.content_size) action.content_size = result.content_size;
+        else if (item.toolResult) action.content_size = JSON.stringify(item.toolResult).length;
+        else if (input.content) action.content_size = String(input.content).length;
+        
+        sequence.push(action);
+      }
+    }
+    
+    sequence.sort((a, b) => new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime());
+
+    return sequence;
   }
 
   /**
@@ -395,7 +481,7 @@ export class RooStorageDetector {
 
     for (const loc of locations) {
         const stats = await this.getStatsForPath(loc);
-        totalConversations += stats.count;
+        totalConversations += stats.conversationCount;
         totalSize += stats.totalSize;
     }
 

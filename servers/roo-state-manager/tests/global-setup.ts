@@ -53,7 +53,7 @@ const waitForQdrant = async (url: string): Promise<void> => {
  * Configuration globale pour Jest.
  * Charge les variables d'environnement et attend que Qdrant soit prêt.
  */
-import { startProxy } from './e2e/proxy';
+import { startProxy } from './e2e/proxy.js';
 
 const PROXY_PORT = 3001;
 

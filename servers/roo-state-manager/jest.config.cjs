@@ -19,5 +19,5 @@ module.exports = {
   transformIgnorePatterns: [
     '/node_modules/(?!(@qdrant/js-client-rest|glob|openai)/)',
   ],
-  testMatch: ['**/tests/e2e/**/*.test.ts'],
+  testMatch: ['**/tests/**/*.test.ts'],
 };

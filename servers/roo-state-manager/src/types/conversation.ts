@@ -1,170 +1,123 @@
 /**
  * Types pour la gestion des conversations et du stockage Roo
- * Basés sur les découvertes du stockage Roo existant
  */
 
-// Types pour les messages API (format Anthropic)
-export interface ApiMessage {
-  role: 'user' | 'assistant';
-  content: string | Array<{
-    type: 'text' | 'image';
-    text?: string;
-    source?: {
-      type: 'base64';
-      media_type: string;
-      data: string;
-    };
-  }>;
-  timestamp?: string;
-}
-
-export interface ApiConversationHistory {
-  messages: ApiMessage[];
-  model?: string;
-  max_tokens?: number;
-  temperature?: number;
-}
-
-// Types pour les messages UI (ClineMessage)
-export interface ClineMessage {
-  id: string;
-  type: 'ask' | 'say' | 'completion_result' | 'tool_use' | 'tool_result';
-  text?: string;
-  tool?: string;
-  toolInput?: any;
-  toolResult?: any;
-  timestamp: string;
-  isError?: boolean;
-}
-
-export interface UiMessages {
-  messages: ClineMessage[];
-}
-
-// Types pour les métadonnées de tâche
-export interface TaskMetadata {
-  taskId: string;
-  createdAt: string;
-  updatedAt: string;
-  title?: string;
-  description?: string;
-  mode?: string;
-  status: 'active' | 'completed' | 'archived';
-  totalMessages: number;
-  totalTokens?: number;
-  cost?: number;
-  files_in_context?: FileInContext[];
-}
-
-// Type pour les fichiers dans le contexte
 export interface FileInContext {
-  path: string;
-  record_state: 'active' | 'stale';
-  record_source: 'read_tool' | 'roo_edited' | 'user_edited';
-  lastRead?: string;
-  lastModified?: string;
-  size?: number;
+    path: string;
+    content: string;
+    lineCount: number;
 }
 
-// Types pour l'historique global des tâches
-export interface TaskHistoryEntry {
-  id: string;
+/**
+ * Représente une métadonnée d'action de taille fixe pour remplacer les sorties complètes.
+ */
+export interface ActionMetadata {
+  type: 'tool' | 'command';
   name: string;
-  createdAt: string;
-  isRunning: boolean;
-  totalCost: number;
+  parameters: Record<string, any>;
+  status: 'success' | 'failure' | 'in_progress';
+  timestamp: string;
+  line_count?: number;
+  content_size?: number;
+  file_path?: string;
 }
 
-export interface GlobalTaskHistory {
-  tasks: TaskHistoryEntry[];
+/**
+ * Représente un message tronqué dans le squelette de la conversation.
+ */
+export interface MessageSkeleton {
+  role: 'user' | 'assistant';
+  content: string;
+  timestamp: string;
+  isTruncated: boolean;
 }
 
-// Types pour la détection du stockage Roo
-export interface RooStorageLocation {
-  globalStoragePath: string;
-  tasksPath: string;
-  settingsPath: string;
-  exists: boolean;
-}
-
-export interface ConversationSummary {
+/**
+ * Nouvelle représentation "squelette" d'une conversation, optimisée pour la mémoire.
+ */
+export interface ConversationSkeleton {
   taskId: string;
-  path: string;
-  metadata: TaskMetadata | null;
-  messageCount: number;
-  lastActivity: string;
-  hasApiHistory: boolean;
-  hasUiMessages: boolean;
-  size: number; // taille en octets
+  parentTaskId?: string;
+  metadata: {
+    title?: string;
+    lastActivity: string;
+    createdAt: string;
+    mode?: string;
+    messageCount: number;
+    actionCount: number;
+    totalSize: number; // Taille totale de la conversation sur le disque
+  };
+  // Une séquence combinée et ordonnée de messages et d'actions.
+  sequence: (MessageSkeleton | ActionMetadata)[];
 }
 
-export interface StorageStats {
-  count: number;
-  totalSize: number;
-  lastActivity: Date;
+// Représente les métadonnées complètes d'une tâche.
+export interface TaskMetadata {
+    parentTaskId?: string;
+    rootTaskId?: string;
+    prompt?: {
+        task: string;
+    };
+    title?: string;
+    lastActivity?: string;
+    createdAt?: string;
+    mode?: string;
+    files_in_context?: FileInContext[];
 }
 
-export interface Conversation extends ConversationSummary {
-  apiHistory: ApiConversationHistory | null;
-  uiMessages: UiMessages | null;
+// Représente une conversation complète avec toutes les données pour l'analyse.
+/** @deprecated */
+export interface ConversationSummary {
+    // Fields from the old ConversationSkeleton to maintain compatibility during transition
+    taskId: string;
+    parentTaskId?: string;
+    prompt: string;
+    lastActivity: string;
+    messageCount: number;
+    size: number;
+    hasApiHistory: boolean;
+    hasUiMessages: boolean;
+    mode?: string;
+
+    // Fields specific to ConversationSummary
+    path: string;
+    metadata: TaskMetadata;
+}
+
+
+// Interfaces pour le stockage, non directement utilisées dans le cache principal
+export interface RooStorageLocation {
+    path: string;
+    type: 'local' | 'cloud';
 }
 
 export interface RooStorageDetectionResult {
-  found: boolean;
-  locations: RooStorageLocation[];
-  conversations: ConversationSummary[];
-  totalConversations: number;
-  totalSize: number;
-  errors: string[];
+    locations: RooStorageLocation[];
 }
 
-// Types pour les configurations Roo
-export interface RooSettings {
-  apiKey?: string;
-  model?: string;
-  maxTokens?: number;
-  temperature?: number;
-  customInstructions?: string;
-  [key: string]: any;
+export interface StorageStats {
+    conversationCount: number;
+    totalSize: number;
+    fileTypes: Record<string, number>;
 }
 
-export interface RooConfiguration {
-  settings: RooSettings;
-  modes?: any[];
-  servers?: any[];
-}
-
-// Types pour les opérations de sauvegarde/restauration
-export interface BackupMetadata {
-  version: string;
-  createdAt: string;
-  source: string;
-  conversationCount: number;
-  totalSize: number;
-}
-
-export interface ConversationBackup {
-  metadata: BackupMetadata;
-  conversations: ConversationSummary[];
-  configurations: RooConfiguration;
-}
 
 // Types d'erreur spécifiques
 export class RooStorageError extends Error {
-  constructor(message: string, public code: string) {
-    super(message);
-    this.name = 'RooStorageError';
-  }
+    constructor(message: string, public code: string) {
+        super(message);
+        this.name = 'RooStorageError';
+    }
 }
 
 export class ConversationNotFoundError extends RooStorageError {
-  constructor(taskId: string) {
-    super(`Conversation with taskId ${taskId} not found`, 'CONVERSATION_NOT_FOUND');
-  }
+    constructor(taskId: string) {
+        super(`Conversation with taskId ${taskId} not found`, 'CONVERSATION_NOT_FOUND');
+    }
 }
 
 export class InvalidStoragePathError extends RooStorageError {
-  constructor(path: string) {
-    super(`Invalid storage path: ${path}`, 'INVALID_STORAGE_PATH');
-  }
+    constructor(path: string) {
+        super(`Invalid storage path: ${path}`, 'INVALID_STORAGE_PATH');
+    }
 }
