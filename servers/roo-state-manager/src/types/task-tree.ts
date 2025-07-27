@@ -134,11 +134,8 @@ export interface ConversationMetadata extends NodeMetadata {
 // Types pour les références de fichiers
 export interface FileReference {
   path: string;
-  recordState: 'active' | 'stale';
-  recordSource: 'read_tool' | 'roo_edited' | 'user_edited';
-  lastRead?: string;
-  lastModified?: string;
-  size?: number;
+  lineCount: number;
+  content: string; // Contenu tronqué pour l'aperçu
 }
 
 // Types pour les relations entre tâches

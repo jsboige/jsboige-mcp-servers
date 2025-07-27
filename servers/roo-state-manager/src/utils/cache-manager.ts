@@ -48,14 +48,16 @@ export class CacheManager {
     this.config = {
       maxSize: 100 * 1024 * 1024, // 100MB par défaut
       maxAge: 30 * 60 * 1000, // 30 minutes par défaut
-      persistToDisk: true,
+      persistToDisk: false, // Désactivé pour le débogage
       cacheDir: join(process.cwd(), '.cache', 'roo-state-manager'),
       cleanupInterval: 5 * 60 * 1000, // 5 minutes
       ...config
     };
 
-    this.startCleanupTimer();
-    this.loadFromDisk();
+    if (process.env.NODE_ENV !== 'test') {
+      this.startCleanupTimer();
+    }
+    // this.loadFromDisk(); // Désactivé pour forcer un cache propre à chaque démarrage
   }
 
   /**
@@ -268,6 +270,14 @@ export class CacheManager {
     if (this.config.persistToDisk) {
       await this.saveToDisk();
     }
+  }
+
+  /**
+   * Retourne toutes les clés du cache.
+   * @returns Un tableau de toutes les clés actuellement dans le cache.
+   */
+  public getKeys(): string[] {
+    return Array.from(this.cache.keys());
   }
 
   // Méthodes privées

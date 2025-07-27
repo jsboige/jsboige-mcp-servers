@@ -1,4 +1,5 @@
-/node_modules/
-/build/
-large-files-audit.csv
-temp-storage/
+# Cache and temporary files
+.cache/
+
+# Reports and documentation
+*.md

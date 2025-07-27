@@ -635,15 +635,15 @@ export class TaskTreeBuilder {
     return ConversationOutcome.ABANDONED;
   }
 
-  private convertFileReferences(conversation: ConversationSummary) {
-    return conversation.metadata?.files_in_context?.map(file => ({
+  private convertFileReferences(conversation: ConversationSummary): import("../types/task-tree.js").FileReference[] {
+    if (!conversation.metadata?.files_in_context) {
+      return [];
+    }
+    return conversation.metadata.files_in_context.map(file => ({
       path: file.path,
-      recordState: file.record_state,
-      recordSource: file.record_source,
-      lastRead: file.lastRead,
-      lastModified: file.lastModified,
-      size: file.size
-    })) || [];
+      lineCount: file.lineCount || 0,
+      content: (file.content || '').substring(0, 200)
+    }));
   }
 
   private extractConversationTags(conversation: ConversationSummary): string[] {

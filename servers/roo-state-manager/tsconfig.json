@@ -3,6 +3,7 @@
     "target": "ES2022",
     "module": "NodeNext",
     "moduleResolution": "NodeNext",
+    "rootDir": "./src",
     "outDir": "./build",
     "strict": true,
     "esModuleInterop": true,
@@ -12,11 +13,14 @@
     "declarationMap": true,
     "sourceMap": true,
     "resolveJsonModule": true,
-    "allowSyntheticDefaultImports": true
+    "allowSyntheticDefaultImports": true,
+    "isolatedModules": true,
+    "types": ["jest", "node"]
   },
   "include": [
-    "src/**/*",
-    "tests/**/*"
+    "src/**/*"
+    // "tests/**/*",
+    // "test.ts"
   ],
   "exclude": [
     "node_modules",
