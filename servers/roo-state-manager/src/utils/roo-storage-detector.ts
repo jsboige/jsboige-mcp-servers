@@ -4,7 +4,7 @@
  */
 
 import * as fs from 'fs/promises';
-import { createReadStream, Stats } from 'fs';
+import { createReadStream, Stats, existsSync } from 'fs';
 import * as path from 'path';
 import * as os from 'os';
 import * as readline from 'readline';
@@ -224,15 +224,13 @@ export class RooStorageDetector {
     for (const basePath of this.COMMON_ROO_PATHS) {
       try {
         await fs.access(basePath);
-        
         // Recherche des extensions Roo/Claude
         for (const pattern of this.ROO_EXTENSION_PATTERNS) {
           try {
             const matches = await glob(pattern, {
               cwd: basePath,
-              absolute: true
+              absolute: true,
             });
-            
             // Filtrer pour ne garder que les répertoires
             for (const match of matches) {
               try {
@@ -241,21 +239,17 @@ export class RooStorageDetector {
                   locations.push(match);
                 }
               } catch (error) {
-                // Ignore les erreurs d'accès aux fichiers
+                // Ignore les erreurs d'accès aux fichiers individuels
               }
             }
+          } catch (error) {
+            // Ignore les erreurs de pattern glob
           }
         }
+      } catch (error) {
+        // Ignore les erreurs si le basePath n'existe pas
       }
-
-      const totalSize = summaries.reduce((acc, s) => acc + (s.size || 0), 0);
-      console.log(`[RooStorageDetector] ${summaries.length} résumés de conversation chargés. Taille totale: ${totalSize}`);
-      
-      const parentDir = path.dirname(currentDir);
-      if (parentDir === currentDir) break; // Racine atteinte
-      currentDir = parentDir;
     }
-
     return [...new Set(locations)]; // Supprime les doublons
   }
 
@@ -485,9 +479,9 @@ export class RooStorageDetector {
   public static async validateCustomPath(customPath: string): Promise<boolean> {
     try {
       const normalizedPath = path.resolve(customPath);
-      const conversationsFilePath = path.join(normalizedPath, '.roo', 'conversations.json');
+      const tasksPath = path.join(normalizedPath, 'tasks');
       
-      return fsSyncExists.existsSync(conversationsFilePath);
+      return existsSync(tasksPath);
     } catch (error) {
       return false;
     }

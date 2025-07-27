@@ -383,7 +383,13 @@ class RooStateManagerServer {
         if (this.conversationCache.size === 0) {
             return undefined;
         }
-        return Array.from(this.conversationCache.values()).reduce((latest, current) => {
+        const validTasks = Array.from(this.conversationCache.values()).filter(
+            s => s.metadata && s.metadata.lastActivity
+        );
+        if (validTasks.length === 0) {
+            return undefined;
+        }
+        return validTasks.reduce((latest, current) => {
             return new Date(latest.metadata.lastActivity) > new Date(current.metadata.lastActivity) ? latest : current;
         });
     }
