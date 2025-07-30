@@ -53,7 +53,8 @@ export interface ConversationSkeleton {
 
 // Représente les métadonnées complètes d'une tâche.
 export interface TaskMetadata {
-    parentTaskId?: string;
+    parentTaskId?: string; // camelCase est la nouvelle norme
+    parent_task_id?: string; // snake_case pour la rétrocompatibilité
     rootTaskId?: string;
     prompt?: {
         task: string;

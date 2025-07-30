@@ -320,9 +320,24 @@ export class RooStorageDetector {
 
         if (!apiHistoryStats && !uiMessagesStats) return null;
 
-        const metadataContent = metadataStats ? await fs.readFile(metadataPath, 'utf-8') : '{}';
-        const rawMetadata = JSON.parse(metadataContent) as TaskMetadata;
+        let metadataContent = metadataStats ? await fs.readFile(metadataPath, 'utf-8') : '{}';
+        // Nettoyage explicite du BOM (Byte Order Mark) qui peut faire planter JSON.parse
+        if (metadataContent.charCodeAt(0) === 0xFEFF) {
+            metadataContent = metadataContent.slice(1);
+        }
+        let rawMetadata: TaskMetadata;
+        try {
+            rawMetadata = JSON.parse(metadataContent) as TaskMetadata;
+        } catch (error) {
+            // Si le parsing échoue, on continue avec des métadonnées vides pour ne pas planter.
+            // On pourrait logguer l'erreur ici pour investigation.
+            console.error(`[analyzeConversation] Failed to parse metadata for task ${taskId}:`, error);
+            rawMetadata = {} as TaskMetadata; // Fallback to an empty object
+        }
 
+        if (!rawMetadata.parentTaskId) {
+            // console.error(`[analyzeConversation] Task ${taskId} has no parentTaskId.`);
+        }
         const sequence = await this.buildSequenceFromFiles(apiHistoryPath, uiMessagesPath);
         
         const messageCount = sequence.filter(s => 'role' in s).length;
@@ -336,7 +351,7 @@ export class RooStorageDetector {
 
         const skeleton: ConversationSkeleton = {
             taskId,
-            parentTaskId: rawMetadata.parentTaskId,
+            parentTaskId: rawMetadata.parentTaskId || rawMetadata.parent_task_id, // Support pour les anciens formats
             sequence,
             metadata: {
                 title: rawMetadata.title,
@@ -394,11 +409,22 @@ export class RooStorageDetector {
 
       // Traitement des messages (user/assistant/say)
       if (['user', 'assistant'].includes(role) || type === 'say') {
-        let content = item.content || item.text || '';
-        if (Array.isArray(content)) {
-            content = content.find((c: any) => c.type === 'text')?.text || '[contenu non textuel]';
-        }
+        let content = item.content ?? item.text ?? '';
         let isTruncated = false;
+
+        // Si le contenu est un tableau (par exemple, pour les messages complexes de Claude)
+        if (Array.isArray(content)) {
+          content = content.find((c: any) => c.type === 'text')?.text || '[contenu non textuel]';
+        }
+        
+        // Sécurité pour éviter la récursion : si le contenu ressemble à un squelette, on l'ignore.
+        if (typeof content === 'string' && (content.includes('"sequence"') || content.includes('"taskId"'))) {
+            content = '[Contenu suspect ignoré pour éviter une boucle]';
+        } else if (typeof content !== 'string') {
+            // Si le contenu n'est pas une chaîne, on le sérialise de manière sûre.
+            content = JSON.stringify(content);
+        }
+
         if (content.length > MAX_CONTENT_LENGTH) {
             content = `${content.substring(0, MAX_CONTENT_LENGTH / 2)}...${content.substring(content.length - MAX_CONTENT_LENGTH / 2)}`;
             isTruncated = true;

@@ -1,35 +1,36 @@
 #!/usr/bin/env node
 import * as path from 'path';
-import { fileURLToPath } from 'url';
-import RooStorageDetector from '../src/utils/roo-storage-detector.js';
+import * as fs from 'fs';
+import { fileURLToPath, pathToFileURL } from 'url';
 
+// Correction pour __dirname dans les modules ES
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
+const buildPath = path.resolve(__dirname, '..', 'build');
+const detectorPath = path.join(buildPath, 'utils', 'roo-storage-detector.js');
+
 async function runTest() {
-  console.log('🚀 Démarrage du test pour RooStorageDetector.analyzeConversation...');
-
+  console.log('🔬 Test 5: Analyse de la conversation de test manuelle...');
+  
   try {
-    const testStoragePath = path.resolve(__dirname, 'e2e', 'manual-test-storage');
-    console.log(`Utilisation du répertoire de stockage de test : ${testStoragePath}`);
+    // Importation dynamique car c'est un module JS compilé
+    const { RooStorageDetector } = await import(pathToFileURL(detectorPath).href);
     
-    // Initialisation du détecteur avec le chemin de test
-    const detector = new RooStorageDetector(testStoragePath);
+    const testTaskPath = path.resolve(__dirname, 'e2e', 'manual-test-storage', 'tasks', 'manual-test-task-456');
+    const taskId = 'manual-test-task-456';
 
-    const testTaskId = 'manual-test-task-456';
-    console.log(`Analyse de la tâche : ${testTaskId}`);
+    const skeleton = await RooStorageDetector.analyzeConversation(taskId, testTaskPath);
 
-    // Appel de la méthode à tester
-    const conversationData = await detector.analyzeConversation(testTaskId);
-
-    console.log('\n--- RÉSULTAT DE L\'ANALYSE ---');
-    console.log(JSON.stringify(conversationData, null, 2));
-    console.log('--- FIN DU RÉSULTAT ---');
-
-    if (conversationData && conversationData.sequence && conversationData.sequence.length > 0) {
-      console.log('\n✅ SUCCÈS : La séquence de la conversation a été générée et n\'est pas vide.');
+    if (skeleton && skeleton.sequence.length > 0) {
+      console.log('✅ Squelette de test généré avec succès !');
+      console.log(`   - Nombre de messages: ${skeleton.metadata.messageCount}`);
+      console.log(`   - Nombre d'actions: ${skeleton.metadata.actionCount}`);
+      console.log('   - Extrait de la séquence:');
+      console.log(JSON.stringify(skeleton.sequence.slice(0, 5), null, 2));
     } else {
-      console.error('\n❌ ÉCHEC : La séquence de la conversation est vide ou non définie.');
+      console.error('❌ Le squelette de test est vide ou invalide.');
+      console.log(skeleton);
     }
 
   } catch (error) {
@@ -37,4 +38,9 @@ async function runTest() {
   }
 }
 
-runTest();
+if (!fs.existsSync(buildPath)) {
+  console.log('⚠️  Le répertoire build n\'existe pas. Veuillez compiler avec `npm run build`');
+  process.exit(1);
+} else {
+  runTest();
+}

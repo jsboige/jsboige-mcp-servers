@@ -8,6 +8,9 @@ import { exec } from 'child_process';
 import { TaskNavigator } from './services/task-navigator.js';
 import { ConversationSkeleton } from './types/conversation.js';
 
+const MAX_OUTPUT_LENGTH = 10000; // 10k characters limit
+const SKELETON_CACHE_DIR_NAME = '.skeletons';
+
 class RooStateManagerServer {
     private server: Server;
     private conversationCache: Map<string, ConversationSkeleton> = new Map();
@@ -127,31 +130,54 @@ class RooStateManagerServer {
         this.server.setRequestHandler(CallToolRequestSchema, async (request): Promise<CallToolResult> => {
             const { name, arguments: args } = request.params;
 
+            let result: CallToolResult;
+
             switch (name) {
                 case 'minimal_test_tool':
-                    return { content: [{ type: 'text', text: 'Minimal tool executed successfully! Version 2' }] };
+                    result = { content: [{ type: 'text', text: 'Minimal tool executed successfully! Version 2' }] };
+                    break;
                case 'detect_roo_storage':
-                   return await this.handleDetectRooStorage();
-               case 'get_storage_stats':
-                    return await this.handleGetStorageStats();
+                   result = await this.handleDetectRooStorage();
+                   break;
+              case 'get_storage_stats':
+                    result = await this.handleGetStorageStats();
+                    break;
                 case 'list_conversations':
-                    return await this.handleListConversations(args as any);
+                    result = await this.handleListConversations(args as any);
+                    break;
                 case 'touch_mcp_settings':
-                    return await this.handleTouchMcpSettings();
+                    result = await this.handleTouchMcpSettings();
+                    break;
                 case 'build_skeleton_cache':
-                    return await this.handleBuildSkeletonCache();
+                    result = await this.handleBuildSkeletonCache();
+                    break;
                 case 'get_task_tree':
-                    return this.handleGetTaskTree(args as any);
+                    result = this.handleGetTaskTree(args as any);
+                    break;
                 case 'view_conversation_tree':
-                    return this.handleViewConversationTree(args as any);
+                    result = this.handleViewConversationTree(args as any);
+                    break;
                 case 'search_tasks_semantic':
-                    return await this.handleSearchTasksSemantic(args as any);
+                    result = await this.handleSearchTasksSemantic(args as any);
+                    break;
                case 'debug_analyze_conversation':
-                   return this.handleDebugAnalyzeConversation(args as any);
+                   result = await this.handleDebugAnalyzeConversation(args as any);
+                   break;
                 default:
                     throw new Error(`Tool not found: ${name}`);
             }
+
+            return this._truncateResult(result);
         });
+    }
+
+    private _truncateResult(result: CallToolResult): CallToolResult {
+        for (const item of result.content) {
+            if (item.type === 'text' && item.text.length > MAX_OUTPUT_LENGTH) {
+                item.text = item.text.substring(0, MAX_OUTPUT_LENGTH) + `\n\n[...]\n\n--- OUTPUT TRUNCATED AT ${MAX_OUTPUT_LENGTH} CHARACTERS ---`;
+            }
+        }
+        return result;
     }
 
     async handleDetectRooStorage(): Promise<CallToolResult> {
@@ -180,43 +206,51 @@ class RooStateManagerServer {
         return { content: [{ type: 'text', text: JSON.stringify({ stats }) }] };
     }
 
-    handleListConversations(args: { limit?: number, sortBy?: 'lastActivity' | 'messageCount' | 'totalSize', sortOrder?: 'asc' | 'desc', hasApiHistory?: boolean, hasUiMessages?: boolean }): CallToolResult {
-        let conversations = Array.from(this.conversationCache.values());
-
-        if (args.hasApiHistory !== undefined || args.hasUiMessages !== undefined) {
-            conversations = conversations.filter(skeleton => {
-                const hasApiHistory = skeleton.sequence.some(item => 'type' in item && item.type === 'tool');
-                const hasUiMessages = skeleton.sequence.some(item => 'role' in item);
-                return (args.hasApiHistory === undefined || args.hasApiHistory === hasApiHistory) &&
-                       (args.hasUiMessages === undefined || args.hasUiMessages === hasUiMessages);
-            });
-        }
+    async handleListConversations(args: { limit?: number, sortBy?: 'lastActivity' | 'messageCount' | 'totalSize', sortOrder?: 'asc' | 'desc' }): Promise<CallToolResult> {
         
-        if (args.sortBy) {
-            conversations.sort((a, b) => {
-                // Robust sorting
-                const aValue = a.metadata[args.sortBy!];
-                const bValue = b.metadata[args.sortBy!];
-
-                if (typeof aValue !== typeof bValue) {
-                    return 0;
-                }
-
-                if (aValue < bValue) {
-                    return args.sortOrder === 'desc' ? 1 : -1;
-                }
-                if (aValue > bValue) {
-                    return args.sortOrder === 'desc' ? -1 : 1;
-                }
-                return 0;
-            });
+        interface SkeletonNode extends ConversationSkeleton {
+            children: SkeletonNode[];
         }
+
+        const allSkeletons = Array.from(this.conversationCache.values());
+
+        // Tri
+        allSkeletons.sort((a, b) => {
+            let comparison = 0;
+            const sortBy = args.sortBy || 'lastActivity';
+            switch (sortBy) {
+                case 'lastActivity':
+                    comparison = new Date(b.metadata.lastActivity).getTime() - new Date(a.metadata.lastActivity).getTime();
+                    break;
+                case 'messageCount':
+                    comparison = b.metadata.messageCount - a.metadata.messageCount;
+                    break;
+                case 'totalSize':
+                    comparison = b.metadata.totalSize - a.metadata.totalSize;
+                    break;
+            }
+            return (args.sortOrder === 'asc') ? -comparison : comparison;
+        });
         
-        if (args.limit) {
-            conversations = conversations.slice(0, args.limit);
-        }
+        const skeletonMap = new Map<string, SkeletonNode>(allSkeletons.map(s => [s.taskId, { ...s, children: [] }]));
+        const forest: SkeletonNode[] = [];
 
-        return { content: [{ type: 'text', text: JSON.stringify({ conversations }) }] };
+        skeletonMap.forEach(node => {
+            if (node.parentTaskId && skeletonMap.has(node.parentTaskId)) {
+                skeletonMap.get(node.parentTaskId)!.children.push(node);
+            } else {
+                forest.push(node);
+            }
+        });
+
+        // Appliquer la limite à la forêt de premier niveau
+        const limitedForest = args.limit ? forest.slice(0, args.limit) : forest;
+        
+        // La sérialisation est correcte, le problème n'était pas là.
+        // La logique de construction de l'arbre est maintenue.
+        const result = JSON.stringify(limitedForest, null, 2);
+
+        return { content: [{ type: 'text', text: result }] };
     }
 
     async handleTouchMcpSettings(): Promise<CallToolResult> {
@@ -245,31 +279,46 @@ class RooStateManagerServer {
         }
 
         let skeletonsBuilt = 0;
+        let skeletonsSkipped = 0;
 
         for (const loc of locations) {
-            const skeletonDir = path.join(loc, '.skeletons');
-            await fs.rm(skeletonDir, { recursive: true, force: true });
+            const skeletonDir = path.join(loc, SKELETON_CACHE_DIR_NAME);
             await fs.mkdir(skeletonDir, { recursive: true });
 
             const conversationDirs = await fs.readdir(loc, { withFileTypes: true });
             for (const convDir of conversationDirs) {
-                if (convDir.isDirectory() && convDir.name !== '.skeletons') {
+                if (convDir.isDirectory() && convDir.name !== SKELETON_CACHE_DIR_NAME) {
                     const conversationId = convDir.name;
                     const taskPath = path.join(loc, conversationId);
-                    
-                    const skeleton = await RooStorageDetector.analyzeConversation(conversationId, taskPath);
+                    const metadataPath = path.join(taskPath, 'task_metadata.json');
+                    const skeletonPath = path.join(skeletonDir, `${conversationId}.json`);
 
-                    if (skeleton) {
-                        const skeletonPath = path.join(skeletonDir, `${conversationId}.json`);
-                        await fs.writeFile(skeletonPath, JSON.stringify(skeleton, null, 2));
-                        this.conversationCache.set(conversationId, skeleton);
-                        skeletonsBuilt++;
+                    try {
+                        const metadataStat = await fs.stat(metadataPath);
+                        try {
+                            const skeletonStat = await fs.stat(skeletonPath);
+                            if (skeletonStat.mtime >= metadataStat.mtime) {
+                                skeletonsSkipped++;
+                                continue; // Le squelette est à jour
+                            }
+                        } catch (e) {
+                            // Le squelette n'existe pas, il faut le créer
+                        }
+                        
+                        const skeleton = await RooStorageDetector.analyzeConversation(conversationId, taskPath);
+                        if (skeleton) {
+                            await fs.writeFile(skeletonPath, JSON.stringify(skeleton, null, 2));
+                            this.conversationCache.set(conversationId, skeleton);
+                            skeletonsBuilt++;
+                        }
+                    } catch (error) {
+                         console.error(`Could not process task ${conversationId}:`, error);
                     }
                 }
             }
         }
-
-        return { content: [{ type: 'text', text: `Skeleton cache built successfully. ${skeletonsBuilt} skeletons created.` }] };
+        await this._loadSkeletonsFromDisk(); // Recharger le cache complet après la construction
+        return { content: [{ type: 'text', text: `Skeleton cache build complete. Built: ${skeletonsBuilt}, Skipped: ${skeletonsSkipped}.` }] };
     }
 
     private async _loadSkeletonsFromDisk(): Promise<void> {
@@ -281,28 +330,38 @@ class RooStateManagerServer {
 
         this.conversationCache.clear();
         let loadedCount = 0;
+        let errorCount = 0;
 
         for (const loc of locations) {
-            const skeletonDir = path.join(loc, '.skeletons');
+            const skeletonDir = path.join(loc, SKELETON_CACHE_DIR_NAME);
             try {
                 await fs.access(skeletonDir);
                 const skeletonFiles = await fs.readdir(skeletonDir);
                 for (const file of skeletonFiles) {
                     if (file.endsWith('.json')) {
                         const filePath = path.join(skeletonDir, file);
-                        const fileContent = await fs.readFile(filePath, 'utf-8');
-                        const skeleton: ConversationSkeleton = JSON.parse(fileContent);
-                        this.conversationCache.set(skeleton.taskId, skeleton);
-                        loadedCount++;
+                        try {
+                            const fileContent = await fs.readFile(filePath, 'utf-8');
+                            const skeleton: ConversationSkeleton = JSON.parse(fileContent);
+                            if (skeleton && skeleton.taskId) { // Simple validation
+                                this.conversationCache.set(skeleton.taskId, skeleton);
+                                loadedCount++;
+                            } else {
+                                console.error(`Invalid skeleton file (missing taskId): ${filePath}`);
+                                errorCount++;
+                            }
+                        } catch (parseError) {
+                            console.error(`Corrupted skeleton file, skipping: ${filePath}`, parseError);
+                            errorCount++;
+                        }
                     }
                 }
-            } catch (error) {
-                // Directory doesn't exist or other error, which is fine on first run.
-                console.error(`Could not load skeletons from ${skeletonDir}. This may be normal on first run.`);
+            } catch (dirError) {
+                console.error(`Could not access skeleton directory ${skeletonDir}. This may be normal on first run.`);
             }
         }
-        if (loadedCount > 0) {
-             console.error(`Successfully loaded ${loadedCount} skeletons from disk.`);
+        if (loadedCount > 0 || errorCount > 0) {
+             console.error(`Skeleton loading complete. Loaded: ${loadedCount}, Errored: ${errorCount}.`);
         }
     }
 
@@ -497,12 +556,32 @@ class RooStateManagerServer {
     }
 
     async handleSearchTasksSemantic(args: { conversation_id: string, search_query: string, max_results?: number }): Promise<CallToolResult> {
-        // Dummy implementation for now
-        const dummyResults = [
-            { task: 'Found task 1 based on query', id: 'found-1', score: 0.98 },
-            { task: 'Found task 2 based on query', id: 'found-2', score: 0.87 },
-        ];
-        return { content: [{ type: 'text', text: JSON.stringify(dummyResults) }] };
+        const { conversation_id, search_query, max_results = 10 } = args;
+        const skeleton = this.conversationCache.get(conversation_id);
+
+        if (!skeleton) {
+            throw new Error(`Conversation with ID '${conversation_id}' not found in cache.`);
+        }
+
+        const query = search_query.toLowerCase();
+        const results: any[] = [];
+
+        for (const item of skeleton.sequence) {
+            if (results.length >= max_results) {
+                break;
+            }
+            // Check only message content for this basic implementation
+            if ('content' in item && typeof item.content === 'string' && item.content.toLowerCase().includes(query)) {
+                results.push({
+                    taskId: skeleton.taskId,
+                    // Simple score based on presence. A real implementation would be more complex.
+                    score: 1.0,
+                    match: `Found in role '${item.role}': ${this.truncateMessage(item.content, 2)}`
+                });
+            }
+        }
+
+        return { content: [{ type: 'text', text: JSON.stringify(results, null, 2) }] };
     }
 
 

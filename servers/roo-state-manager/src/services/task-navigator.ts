@@ -1,65 +1,39 @@
 import { ConversationSkeleton } from '../types/conversation.js';
-import { globalCacheManager, CacheManager } from '../utils/cache-manager.js';
-
 export interface TreeNode extends ConversationSkeleton {
   children: TreeNode[];
 }
 
 export class TaskNavigator {
-  private static instance: TaskNavigator;
-  private cacheManager: CacheManager;
+  private conversationCache: Map<string, ConversationSkeleton>;
 
-  private constructor() {
-    this.cacheManager = globalCacheManager;
+  public constructor(cache: Map<string, ConversationSkeleton>) {
+    this.conversationCache = cache;
+  }
+  
+  public getAllTasks(): ConversationSkeleton[] {
+    return Array.from(this.conversationCache.values());
   }
 
-  public static getInstance(): TaskNavigator {
-    if (!TaskNavigator.instance) {
-      TaskNavigator.instance = new TaskNavigator();
-    }
-    return TaskNavigator.instance;
-  }
-
-  /**
-   * Retrieves the parent of a given task.
-   * @param taskId The ID of the task to find the parent for.
-   * @returns The parent task's ConversationSkeleton, or null if not found.
-   */
-  public async getTaskParent(taskId: string): Promise<ConversationSkeleton | null> {
-    const childConversation = await this.cacheManager.get<ConversationSkeleton>(`conversation:${taskId}`);
+  public getTaskParent(taskId: string): ConversationSkeleton | null {
+    const childConversation = this.conversationCache.get(taskId);
     if (!childConversation?.parentTaskId) {
       return null;
     }
-
-    return await this.cacheManager.get<ConversationSkeleton>(`conversation:${childConversation.parentTaskId}`);
+    return this.conversationCache.get(childConversation.parentTaskId) || null;
   }
 
-  /**
-   * Retrieves the direct children of a given task.
-   * @param taskId The ID of the task to find children for.
-   * @returns An array of ConversationSkeleton for the children tasks.
-   */
-  public async getTaskChildren(taskId: string): Promise<ConversationSkeleton[]> {
-    const childrenIds = await this.cacheManager.get<string[]>(`children-index:${taskId}`);
-    if (!childrenIds) {
-      return [];
+  public getTaskChildren(taskId: string): ConversationSkeleton[] {
+    const children: ConversationSkeleton[] = [];
+    for (const skeleton of this.conversationCache.values()) {
+        if (skeleton.parentTaskId === taskId) {
+            children.push(skeleton);
+        }
     }
-
-    const childrenPromises = childrenIds.map(childId =>
-      this.cacheManager.get<ConversationSkeleton>(`conversation:${childId}`)
-    );
-
-    const children = await Promise.all(childrenPromises);
-    return children.filter((child): child is ConversationSkeleton => child !== null);
+    return children;
   }
 
-  /**
-   * Retrieves the full task tree starting from a given task.
-   * @param taskId The ID of the root task of the tree.
-   * @returns The TreeNode object representing the task tree.
-   */
-  public async getTaskTree(taskId: string): Promise<TreeNode | null> {
-    const rootSkeleton = await this.cacheManager.get<ConversationSkeleton>(`conversation:${taskId}`);
+  public getTaskTree(taskId: string): TreeNode | null {
+    const rootSkeleton = this.conversationCache.get(taskId);
     if (!rootSkeleton) {
       return null;
     }
@@ -69,19 +43,19 @@ export class TaskNavigator {
       children: []
     };
 
-    const buildTree = async (node: TreeNode) => {
-      const children = await this.getTaskChildren(node.taskId);
+    const buildTree = (node: TreeNode) => {
+      const children = this.getTaskChildren(node.taskId);
       for (const child of children) {
         const childNode: TreeNode = {
           ...child,
           children: []
         };
         node.children.push(childNode);
-        await buildTree(childNode);
+        buildTree(childNode);
       }
     };
 
-    await buildTree(rootNode);
+    buildTree(rootNode);
     return rootNode;
   }
 }
