@@ -1,5 +1,5 @@
 {
-  "name": "github-projects-mcp",
+  "name": "github-projects-mcp-v2",
   "version": "0.1.0",
   "type": "module",
   "description": "MCP Gestionnaire de Projet pour l'intégration de GitHub Projects avec VSCode Roo",
@@ -21,8 +21,7 @@
   "license": "MIT",
   "dependencies": {
     "@modelcontextprotocol/sdk": "latest",
-    "@octokit/rest": "^19.0.7",
-    "dotenv": "^16.0.3"
+    "@octokit/rest": "^19.0.7"
   },
   "devDependencies": {
     "@types/jest": "^29.5.0",

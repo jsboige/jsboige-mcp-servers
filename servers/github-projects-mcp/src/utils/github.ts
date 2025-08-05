@@ -4,15 +4,15 @@ import { Octokit } from '@octokit/rest';
  * @returns Instance Octokit authentifiée
  */
 export function getGitHubClient(): Octokit {
-  console.log('[DEBUG] Dans getGitHubClient() - Avant récupération de GITHUB_TOKEN.');
+  console.log('[GP-MCP][GITHUB] Appel de getGitHubClient().');
   const token = process.env.GITHUB_TOKEN;
-  console.log('[DEBUG] Dans getGitHubClient() - process.env.GITHUB_TOKEN:', token);
+  console.log(`[GP-MCP][GITHUB] Token lu depuis process.env: ${token ? `${token.substring(0, 4)}... (longueur: ${token.length})` : 'non défini'}`);
   
   if (!token) {
     console.warn('AVERTISSEMENT: Token GitHub non défini. Les requêtes seront limitées et certaines fonctionnalités ne seront pas disponibles.');
   }
   
-  console.log('[DEBUG] Dans getGitHubClient() - Avant initialisation Octokit.');
+  console.log('[GP-MCP][GITHUB] Avant initialisation Octokit.');
   return new Octokit({
     auth: token,
     userAgent: 'github-projects-mcp/0.1.0',
