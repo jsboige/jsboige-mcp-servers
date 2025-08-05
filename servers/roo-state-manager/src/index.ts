@@ -5,6 +5,8 @@
  * Gestion unifiée des conversations et configurations Roo
  */
 
+import * as fs from 'fs/promises';
+import { pathToFileURL } from 'url';
 import { Server } from '@modelcontextprotocol/sdk/server/index.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import {
@@ -279,6 +281,24 @@ class RooStateManagerServer {
               required: [],
             },
           },
+          {
+           name: 'update_mcp_status',
+           description: 'Active ou désactive un MCP dans le fichier de configuration.',
+           inputSchema: {
+               type: 'object',
+               properties: {
+                   name: {
+                       type: 'string',
+                       description: 'Le nom du serveur MCP à modifier.',
+                   },
+                   enabled: {
+                       type: 'boolean',
+                       description: 'Le nouvel état du serveur.',
+                   },
+               },
+               required: ['name', 'enabled'],
+           },
+          },
         ] as Tool[],
       };
     });
@@ -345,6 +365,9 @@ class RooStateManagerServer {
               clearCache?: boolean;
               includeStats?: boolean;
             });
+           
+          case 'update_mcp_status':
+           return await this.handleUpdateMcpStatus(args as { name: string, enabled: boolean });
 
           default:
             throw new Error(`Outil inconnu: ${name}`);
@@ -903,6 +926,40 @@ class RooStateManagerServer {
     });
   }
 
+ private async handleUpdateMcpStatus(args: { name: string, enabled: boolean }) {
+   const settingsPath = 'c:/Users/MYIA/AppData/Roaming/Code/User/globalStorage/rooveterinaryinc.roo-cline/settings/mcp_settings.json';
+   try {
+     const settings = JSON.parse(await fs.readFile(settingsPath, 'utf-8'));
+     
+     if (settings.servers && settings.servers[args.name]) {
+       settings.servers[args.name].enabled = args.enabled;
+       await fs.writeFile(settingsPath, JSON.stringify(settings, null, 2), 'utf-8');
+       
+       return {
+         content: [
+           {
+             type: 'text',
+             text: `Le statut de ${args.name} a été mis à jour à ${args.enabled}.`,
+           },
+         ],
+       };
+     } else {
+       throw new Error(`Serveur MCP '${args.name}' non trouvé dans la configuration.`);
+     }
+   } catch (error) {
+     const errorMessage = error instanceof Error ? error.message : String(error);
+     return {
+       content: [
+         {
+           type: 'text',
+           text: `Erreur lors de la mise à jour du statut MCP: ${errorMessage}`,
+         },
+       ],
+       isError: true,
+     };
+   }
+ }
+
   async run(): Promise<void> {
     const transport = new StdioServerTransport();
     await this.server.connect(transport);
@@ -911,7 +968,7 @@ class RooStateManagerServer {
 }
 
 // Démarrage du serveur
-if (import.meta.url === `file://${process.argv[1]}`) {
+if (import.meta.url === pathToFileURL(process.argv[1]).href) {
   const server = new RooStateManagerServer();
   server.run().catch((error) => {
     console.error('Erreur fatale:', error);
