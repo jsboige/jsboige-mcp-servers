@@ -1,5 +1,5 @@
 import { ListResourcesRequestSchema, ReadResourceRequestSchema, ErrorCode, McpError } from '@modelcontextprotocol/sdk/types.js';
-import { getGitHubClient } from './utils/github.js';
+import { getGitHubClient, GitHubAccount } from './utils/github.js';
 
 // Interfaces pour les réponses GraphQL
 interface GitHubProjectNode {
@@ -82,14 +82,11 @@ interface GraphQLProjectResponse {
 }
 
 
-// Initialiser le client GitHub
-const octokit = getGitHubClient();
-
 /**
  * Configure les ressources MCP pour accéder aux données de GitHub Projects
  * @param server Instance du serveur MCP
  */
-export function setupResources(server: any) {
+export function setupResources(server: any, accounts: GitHubAccount[]) {
   // Définir la liste des ressources disponibles
   server.setRequestHandler(ListResourcesRequestSchema, async () => ({
     resources: [
@@ -111,6 +108,7 @@ export function setupResources(server: any) {
         const owner = pathParts[0];
         const type = pathParts[1];
         const state = url.searchParams.get('state') || 'open';
+        const octokit = getGitHubClient(owner, accounts);
         
         if (!['user', 'org'].includes(type)) {
           throw new Error('Type invalide: doit être "user" ou "org"');
@@ -207,6 +205,7 @@ export function setupResources(server: any) {
         
         const owner = pathParts[0];
         const projectNumber = parseInt(pathParts[1], 10);
+        const octokit = getGitHubClient(owner, accounts);
         
         if (isNaN(projectNumber)) {
           throw new Error('Numéro de projet invalide: doit être un nombre');
@@ -435,6 +434,7 @@ export function setupResources(server: any) {
       const owner = pathParts[0];
       const type = pathParts[1];
       const state = url.searchParams.get('state') || 'open';
+      const octokit = getGitHubClient(owner, accounts);
       
       if (!['user', 'org'].includes(type)) {
         throw new Error('Type invalide: doit être "user" ou "org"');
@@ -524,6 +524,7 @@ export function setupResources(server: any) {
 
       const owner = pathParts[0];
       const projectNumber = parseInt(pathParts[1], 10);
+      const octokit = getGitHubClient(owner, accounts);
 
       if (isNaN(projectNumber)) {
         throw new Error('Numéro de projet invalide: doit être un nombre');

@@ -1,7 +1,6 @@
 import { Tool } from '@modelcontextprotocol/sdk/types.js';
 import { CallToolRequestSchema, ListToolsRequestSchema, ErrorCode, McpError } from '@modelcontextprotocol/sdk/types.js';
-// import { Octokit } from '@octokit/rest'; // Octokit est déjà initialisé via getGitHubClient
-import { getGitHubClient } from './utils/github.js';
+import { getGitHubClient, GitHubAccount } from './utils/github.js';
 
 // Interfaces pour les réponses GraphQL (similaires à resources.ts)
 interface GitHubProjectNode {
@@ -109,14 +108,12 @@ interface GraphQLUpdateProjectItemFieldResponse {
 }
 
 
-// Initialiser le client GitHub
-const octokit = getGitHubClient();
-
 /**
  * Configure les outils MCP pour interagir avec GitHub Projects
  * @param server Instance du serveur MCP
+ * @param accounts Liste des comptes GitHub configurés
  */
-export function setupTools(server: any) {
+export function setupTools(server: any, accounts: GitHubAccount[]) {
   const tools: Tool[] = [
     // Outil pour lister les projets d'un utilisateur ou d'une organisation
     {
@@ -127,7 +124,7 @@ export function setupTools(server: any) {
         properties: {
           owner: {
             type: 'string',
-            description: 'Nom d\'utilisateur ou d\'organisation'
+            description: 'Nom d\'utilisateur ou d\'organisation du compte à utiliser'
           },
           type: {
             type: 'string',
@@ -154,7 +151,7 @@ export function setupTools(server: any) {
         properties: {
           owner: {
             type: 'string',
-            description: 'Nom d\'utilisateur ou d\'organisation'
+            description: 'Nom d\'utilisateur ou d\'organisation du compte à utiliser'
           },
           title: {
             type: 'string',
@@ -183,7 +180,7 @@ export function setupTools(server: any) {
         properties: {
           owner: {
             type: 'string',
-            description: 'Nom d\'utilisateur ou d\'organisation'
+            description: 'Nom d\'utilisateur ou d\'organisation du compte à utiliser'
           },
           project_number: {
             type: 'number',
@@ -200,6 +197,7 @@ export function setupTools(server: any) {
       inputSchema: {
         type: 'object',
         properties: {
+          owner: { type: 'string', description: 'Nom d\'utilisateur ou d\'organisation du compte à utiliser (pour l\'authentification)' },
           project_id: { type: 'string', description: 'ID du projet' },
           content_id: { type: 'string', description: 'ID de l\'élément à ajouter (issue ou pull request)' },
           content_type: { type: 'string', enum: ['issue', 'pull_request', 'draft_issue'], default: 'issue' },
@@ -216,6 +214,7 @@ export function setupTools(server: any) {
       inputSchema: {
         type: 'object',
         properties: {
+          owner: { type: 'string', description: 'Nom d\'utilisateur ou d\'organisation du compte à utiliser (pour l\'authentification)' },
           project_id: { type: 'string', description: 'ID du projet' },
           item_id: { type: 'string', description: 'ID de l\'élément dans le projet' },
           field_id: { type: 'string', description: 'ID du champ à mettre à jour' },
@@ -240,19 +239,19 @@ export function setupTools(server: any) {
     try {
       switch (name) {
         case 'list_projects':
-          result = await handleListProjects(args);
+          result = await handleListProjects(args, accounts);
           break;
         case 'create_project':
-          result = await handleCreateProject(args);
+          result = await handleCreateProject(args, accounts);
           break;
         case 'get_project':
-          result = await handleGetProject(args);
+          result = await handleGetProject(args, accounts);
           break;
         case 'add_item_to_project':
-          result = await handleAddItemToProject(args);
+          result = await handleAddItemToProject(args, accounts);
           break;
         case 'update_project_item_field':
-          result = await handleUpdateProjectItemField(args);
+          result = await handleUpdateProjectItemField(args, accounts);
           break;
         default:
           throw new McpError(ErrorCode.MethodNotFound, `Outil inconnu: ${name}`);
@@ -270,7 +269,8 @@ export function setupTools(server: any) {
   });
 }
 
-async function handleListProjects({ owner, type = 'user', state = 'open' }: any) {
+async function handleListProjects({ owner, type = 'user', state = 'open' }: any, accounts: GitHubAccount[]) {
+  const octokit = getGitHubClient(owner, accounts);
   try {
     const query = `
       query($owner: String!) {
@@ -332,7 +332,8 @@ async function handleListProjects({ owner, type = 'user', state = 'open' }: any)
   }
 }
 
-async function handleCreateProject({ owner, title, description = '', type = 'user' }: any) {
+async function handleCreateProject({ owner, title, description = '', type = 'user' }: any, accounts: GitHubAccount[]) {
+    const octokit = getGitHubClient(owner, accounts);
   try {
     const ownerQuery = `
       query($login: String!) {
@@ -389,7 +390,8 @@ async function handleCreateProject({ owner, title, description = '', type = 'use
   }
 }
 
-async function handleGetProject({ owner, project_number }: any) {
+async function handleGetProject({ owner, project_number }: any, accounts: GitHubAccount[]) {
+    const octokit = getGitHubClient(owner, accounts);
     try {
       const query = `
         query($owner: String!, $number: Int!) {
@@ -477,7 +479,8 @@ async function handleGetProject({ owner, project_number }: any) {
       return { success: false, error: error.message || 'Erreur lors de la récupération du projet' };
     }
 }
-async function handleAddItemToProject({ project_id, content_id, content_type = 'issue', draft_title = '', draft_body = '' }: any) {
+async function handleAddItemToProject({ owner, project_id, content_id, content_type = 'issue', draft_title = '', draft_body = '' }: any, accounts: GitHubAccount[]) {
+    const octokit = getGitHubClient(owner, accounts);
     try {
       let query;
       let variables: any = { projectId: project_id };
@@ -511,7 +514,8 @@ async function handleAddItemToProject({ project_id, content_id, content_type = '
       return { success: false, error: error.message || 'Erreur lors de l\'ajout de l\'élément au projet' };
     }
 }
-async function handleUpdateProjectItemField({ project_id, item_id, field_id, field_type, value, option_id }: any) {
+async function handleUpdateProjectItemField({ owner, project_id, item_id, field_id, field_type, value, option_id }: any, accounts: GitHubAccount[]) {
+    const octokit = getGitHubClient(owner, accounts);
     try {
       let query;
       let variables: any = { projectId: project_id, itemId: item_id, fieldId: field_id };

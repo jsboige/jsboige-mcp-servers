@@ -1,23 +1,39 @@
 import { Octokit } from '@octokit/rest';
+
+// Structure partagée
+export interface GitHubAccount {
+  owner: string;
+  token: string;
+}
+
 /**
- * Obtient un client GitHub authentifié
- * @returns Instance Octokit authentifiée
+ * Obtient un client GitHub authentifié pour un propriétaire spécifique.
+ * @param owner Le nom du propriétaire du compte GitHub à utiliser.
+ * @param accounts La liste des comptes GitHub disponibles.
+ * @returns Une instance d'Octokit authentifiée.
  */
-export function getGitHubClient(): Octokit {
-  console.log('[GP-MCP][GITHUB] Appel de getGitHubClient().');
-  const token = process.env.GITHUB_TOKEN;
-  console.log(`[GP-MCP][GITHUB] Token lu depuis process.env: ${token ? `${token.substring(0, 4)}... (longueur: ${token.length})` : 'non défini'}`);
-  
-  if (!token) {
-    console.warn('AVERTISSEMENT: Token GitHub non défini. Les requêtes seront limitées et certaines fonctionnalités ne seront pas disponibles.');
+export function getGitHubClient(owner: string | undefined, accounts: GitHubAccount[]): Octokit {
+  console.log(`[GP-MCP][GITHUB] Appel de getGitHubClient pour le owner: ${owner || 'default'}.`);
+  let token: string | undefined;
+
+  if (owner) {
+    const account = accounts.find(acc => acc.owner.toLowerCase() === owner.toLowerCase());
+    token = account?.token;
+  } else if (accounts.length > 0) {
+    // Comportement par défaut : utiliser le premier compte de la liste
+    token = accounts[0].token;
+    console.log(`[GP-MCP][GITHUB] Aucun owner spécifié, utilisation du premier compte par défaut.`);
   }
-  
-  console.log('[GP-MCP][GITHUB] Avant initialisation Octokit.');
+
+  if (!token) {
+    console.warn(`AVERTISSEMENT: Token GitHub non trouvé pour le owner '${owner}'. Les requêtes seront limitées.`);
+  }
+
   return new Octokit({
     auth: token,
     userAgent: 'github-projects-mcp/0.1.0',
     timeZone: 'Europe/Paris',
-    baseUrl: 'https://api.github.com'
+    baseUrl: 'https://api.github.com',
   });
 }
 

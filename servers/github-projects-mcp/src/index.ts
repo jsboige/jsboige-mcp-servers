@@ -17,15 +17,26 @@ console.log('[INFO] Le serveur utilisera le GITHUB_TOKEN fourni par l\'environne
 /**
  * Classe principale du serveur GitHub Projects MCP
  */
+// Définition de la structure pour un compte GitHub
+interface GitHubAccount {
+    owner: string;
+    token: string;
+}
+
 class GitHubProjectsServer {
   /** Instance du serveur MCP */
   private server: Server;
+  private accounts: GitHubAccount[] = [];
 
   /**
    * Crée une instance du serveur GitHub Projects MCP
    */
   constructor() {
     console.log('[GP-MCP][INDEX] Entrée dans le constructeur de GitHubProjectsServer.');
+
+    // Charger les comptes GitHub
+    this.loadAccounts();
+
     this.server = new Server(
       {
         name: 'github-projects-mcp-v2',
@@ -39,9 +50,9 @@ class GitHubProjectsServer {
       }
     );
 
-    // Configurer les outils et les ressources
-    setupTools(this.server);
-    setupResources(this.server);
+    // Configurer les outils et les ressources, en passant les comptes
+    setupTools(this.server, this.accounts);
+    setupResources(this.server, this.accounts);
     
     // Configurer les gestionnaires d'erreurs
     setupErrorHandlers(this.server);
@@ -52,6 +63,25 @@ class GitHubProjectsServer {
       await this.server.close();
       process.exit(0);
     });
+  }
+
+  private loadAccounts() {
+    // Nouvelle méthode : lire une variable d'environnement contenant le JSON des comptes
+    const accountsJson = process.env.GITHUB_ACCOUNTS_JSON;
+    if (accountsJson) {
+      try {
+        this.accounts = JSON.parse(accountsJson);
+        console.log(`[GP-MCP][INDEX] ${this.accounts.length} compte(s) GitHub chargé(s) depuis GITHUB_ACCOUNTS_JSON.`);
+      } catch (e) {
+        console.error('[GP-MCP][INDEX] Erreur de parsing de GITHUB_ACCOUNTS_JSON', e);
+      }
+    } else if (process.env.GITHUB_TOKEN) {
+      // Rétrocompatibilité
+      console.log('[GP-MCP][INDEX] Utilisation du GITHUB_TOKEN legacy.');
+      this.accounts.push({ owner: 'default', token: process.env.GITHUB_TOKEN });
+    } else {
+      console.warn('[GP-MCP][INDEX] Aucun compte GitHub configuré. Le MCP fonctionnera en mode non authentifié.');
+    }
   }
 
   /**
