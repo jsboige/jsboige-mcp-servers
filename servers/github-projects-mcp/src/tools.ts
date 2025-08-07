@@ -1,6 +1,6 @@
 import { Tool } from '@modelcontextprotocol/sdk/types.js';
 import { CallToolRequestSchema, ListToolsRequestSchema, ErrorCode, McpError } from '@modelcontextprotocol/sdk/types.js';
-import { getGitHubClient } from './utils/github.js';
+import { getGitHubClient, GitHubAccount } from './utils/github.js';
 import { analyze_task_complexity, executeGetProjectItems, executeArchiveProject, executeUnarchiveProject, executeConvertDraftToIssue, executeCreateProjectField, executeDeleteProject, executeDeleteProjectField, executeUpdateIssueState, getRepositoryId, executeCreateIssue, executeUpdateProjectField, executeUpdateProjectItemField, archiveProjectItem, unarchiveProjectItem } from './github-actions.js';
 import { checkReadOnlyMode, checkRepoPermissions } from './security.js';
 import logger from './logger.js';
@@ -115,14 +115,12 @@ interface GraphQLDeleteProjectItemResponse {
   };
 }
 
-// Initialiser le client GitHub
-const octokit = getGitHubClient();
-
 /**
  * Configure les outils MCP pour interagir avec GitHub Projects
  * @param server Instance du serveur MCP
+ * @param accounts Liste des comptes GitHub configurés
  */
-export function setupTools(server: any) {
+export function setupTools(server: any, accounts: GitHubAccount[]) {
   const allTools: Tool[] = [
     /**
      * @tool list_projects
@@ -146,6 +144,7 @@ export function setupTools(server: any) {
       },
       execute: async ({ owner, type = 'user', state = 'open' }: { owner: string; type?: 'user' | 'org'; state?: 'open' | 'closed' | 'all' }) => {
         try {
+          const octokit = getGitHubClient(owner, accounts);
           const query = `
             query($owner: String!) {
               ${type === 'user' ? 'user' : 'organization'}(login: $owner) {
@@ -187,6 +186,7 @@ export function setupTools(server: any) {
       },
       execute: async ({ owner, type = 'user' }: { owner: string; type?: 'user' | 'org' }) => {
         try {
+          const octokit = getGitHubClient(owner, accounts);
           const query = `
             query($owner: String!) {
               ${type === 'user' ? 'user' : 'organization'}(login: $owner) {
@@ -234,15 +234,14 @@ export function setupTools(server: any) {
       },
       execute: async ({ owner, title, repository_id }: { owner: string, title: string, repository_id?: string }) => {
           try {
+              const octokit = getGitHubClient(owner, accounts);
               checkReadOnlyMode();
-              // Deviner le type de propriétaire (user/org) pour obtenir l'ID.
-              // Note: une approche plus robuste pourrait nécessiter un paramètre 'type' explicite.
               let ownerId: string | undefined;
               try {
                 const userQuery = await octokit.graphql<{ user: { id: string } }>(`query($login: String!) { user(login: $login) { id } }`, { login: owner });
                 ownerId = userQuery.user?.id;
               } catch (e) {
-                  // Ignorer l'erreur si l'utilisateur n'est pas trouvé
+                  // Ignorer
               }
 
               if (!ownerId) {
@@ -250,7 +249,7 @@ export function setupTools(server: any) {
                       const orgQuery = await octokit.graphql<{ organization: { id: string } }>(`query($login: String!) { organization(login: $login) { id } }`, { login: owner });
                       ownerId = orgQuery.organization?.id;
                   } catch (e) {
-                      // Ignorer l'erreur si l'organisation n'est pas trouvée
+                      // Ignorer
                   }
               }
 
@@ -281,19 +280,9 @@ export function setupTools(server: any) {
 
               return { success: true, project };
           } catch (error: any) {
-              // Log complet de l'erreur pour inspection
-              logger.error('Erreur détaillée dans create_project', {
-                  errorMessage: error.message,
-                  errorName: error.name,
-                  errorStack: error.stack,
-                  errorResponse: error.response,
-                  fullError: JSON.stringify(error, null, 2)
-              });
-
-              // Tentative d'extraire un message d'erreur plus précis de la réponse GraphQL
+              logger.error('Erreur détaillée dans create_project', { errorMessage: error.message, errorStack: error.stack });
               const graphqlErrors = error.response?.data?.errors;
               const readableError = graphqlErrors ? graphqlErrors.map((e: any) => e.message).join(', ') : (error.message || 'Erreur inconnue.');
-
               return { success: false, error: `Erreur GraphQL: ${readableError}` };
           }
       }
@@ -320,9 +309,8 @@ export function setupTools(server: any) {
       },
       execute: async ({ owner, project_number, type = 'user' }: { owner: string; project_number: number; type?: 'user' | 'org' }) => {
         try {
-          // On ne peut pas vérifier ici car on n'a pas le nom du repo
-          // La vérification se fera dans les fonctions qui utilisent le repo
-          checkRepoPermissions(owner, "any"); // TODO: Fix this by getting the repo name from the project
+          const octokit = getGitHubClient(owner, accounts);
+          checkRepoPermissions(owner, "any"); // TODO: Fix this
           const query = `
             query($owner: String!, $number: Int!) {
               ${type === 'user' ? 'user' : 'organization'}(login: $owner) {
@@ -342,7 +330,6 @@ export function setupTools(server: any) {
           const response = await octokit.graphql(query, { owner, number: project_number }) as any;
           const project = type === 'user' ? response.user?.projectV2 : response.organization?.projectV2;
           if (!project) throw new Error(`Projet non trouvé pour ${owner}/${project_number}.`);
-          // La vérification est déléguée aux appels utilisant les repos
           return { success: true, project };
         } catch (error: any) {
           logger.error('Erreur dans get_project', { error });
@@ -352,10 +339,11 @@ export function setupTools(server: any) {
     },
     /**
      * @tool get_project_items
-     * @description Récupère les éléments (issues, PRs, notes) d'un projet GitHub. Un filtrage optionnel peut être appliqué.
-     * @param {string} project_id - L'ID du projet dont les éléments doivent être récupérés.
-     * @param {object} [filterOptions] - Un objet de critères pour filtrer les éléments (par exemple, par statut).
-     * @returns {Promise<object>} Une promesse qui résout avec la liste des éléments du projet.
+     * @description Récupère les éléments (issues, PRs, notes) d'un projet GitHub.
+     * @param {string} owner - Le propriétaire du projet.
+     * @param {string} project_id - L'ID du projet.
+     * @param {object} [filterOptions] - Critères pour filtrer les éléments.
+     * @returns {Promise<object>} La liste des éléments du projet.
      */
     {
       name: 'get_project_items',
@@ -363,6 +351,7 @@ export function setupTools(server: any) {
       inputSchema: {
         type: 'object',
         properties: {
+          owner: { type: 'string', description: "Propriétaire du projet." },
           project_id: { type: 'string', description: "ID du projet." },
           filterOptions: {
             type: 'object',
@@ -371,21 +360,23 @@ export function setupTools(server: any) {
             additionalProperties: true
           }
         },
-        required: ['project_id']
+        required: ['owner', 'project_id']
       },
-      execute: async ({ project_id, filterOptions }: { project_id: string, filterOptions?: any }) => {
+      execute: async ({ owner, project_id, filterOptions }: { owner: string, project_id: string, filterOptions?: any }) => {
+        const octokit = getGitHubClient(owner, accounts);
         return await executeGetProjectItems(octokit, { projectId: project_id, filterOptions });
       }
     },
     /**
      * @tool add_item_to_project
-     * @description Ajoute un élément (issue, pull request, ou une note) à un projet GitHub.
-     * @param {string} project_id - L'ID du projet auquel ajouter l'élément.
-     * @param {string} [content_id] - L'ID de l'issue ou de la pull request à ajouter. Requis si 'content_type' n'est pas 'draft_issue'.
-     * @param {'issue' | 'pull_request' | 'draft_issue'} [content_type='issue'] - Le type de contenu à ajouter.
-     * @param {string} [draft_title] - Le titre de la note (draft issue). Requis pour 'draft_issue'.
-     * @param {string} [draft_body] - Le corps de la note (draft issue).
-     * @returns {Promise<object>} Une promesse qui résout avec l'ID du nouvel élément de projet créé.
+     * @description Ajoute un élément (issue, PR, ou note) à un projet.
+     * @param {string} owner - Le propriétaire du projet.
+     * @param {string} project_id - L'ID du projet.
+     * @param {string} [content_id] - L'ID de l'issue/PR.
+     * @param {'issue' | 'pull_request' | 'draft_issue'} [content_type='issue'] - Type de contenu.
+     * @param {string} [draft_title] - Titre pour une note.
+     * @param {string} [draft_body] - Corps pour une note.
+     * @returns {Promise<object>} L'ID du nouvel élément.
      */
     {
       name: 'add_item_to_project',
@@ -393,15 +384,17 @@ export function setupTools(server: any) {
       inputSchema: {
         type: 'object',
         properties: {
+          owner: { type: 'string', description: 'Propriétaire du projet' },
           project_id: { type: 'string', description: 'ID du projet' },
           content_id: { type: 'string', description: 'ID de l\'élément à ajouter' },
           content_type: { type: 'string', enum: ['issue', 'pull_request', 'draft_issue'], default: 'issue' },
           draft_title: { type: 'string', description: 'Titre de la note' },
           draft_body: { type: 'string', description: 'Corps de la note' }
         },
-        required: ['project_id']
+        required: ['owner', 'project_id']
       },
-      execute: async ({ project_id, content_id, content_type = 'issue', draft_title, draft_body }: {
+      execute: async ({ owner, project_id, content_id, content_type = 'issue', draft_title, draft_body }: {
+        owner: string;
         project_id: string;
         content_id?: string;
         content_type?: 'issue' | 'pull_request' | 'draft_issue';
@@ -409,6 +402,7 @@ export function setupTools(server: any) {
         draft_body?: string;
       }) => {
         try {
+          const octokit = getGitHubClient(owner, accounts);
           checkReadOnlyMode();
           let query;
           let variables: any = { projectId: project_id };
@@ -433,14 +427,15 @@ export function setupTools(server: any) {
     },
     /**
      * @tool update_project_item_field
-     * @description Met à jour la valeur d'un champ spécifique pour un élément dans un projet GitHub.
+     * @description Met à jour un champ pour un élément dans un projet.
+     * @param {string} owner - Le propriétaire du projet.
      * @param {string} project_id - L'ID du projet.
-     * @param {string} item_id - L'ID de l'élément à mettre à jour.
-     * @param {string} field_id - L'ID du champ à modifier.
-     * @param {'text' | 'date' | 'single_select' | 'number'} field_type - Le type de données du champ.
-     * @param {string} [value] - La nouvelle valeur pour les champs de type `text`, `date`, ou `number`.
-     * @param {string} [option_id] - L'ID de l'option sélectionnée pour un champ de type `single_select`.
-     * @returns {Promise<object>} Une promesse qui résout avec le résultat de l'opération de mise à jour.
+     * @param {string} item_id - L'ID de l'élément.
+     * @param {string} field_id - L'ID du champ.
+     * @param {'text' | 'date' | 'single_select' | 'number'} field_type - Le type du champ.
+     * @param {string} [value] - La nouvelle valeur.
+     * @param {string} [option_id] - L'ID de l'option pour un `single_select`.
+     * @returns {Promise<object>} Le résultat de l'opération.
      */
     {
       name: 'update_project_item_field',
@@ -448,6 +443,7 @@ export function setupTools(server: any) {
       inputSchema: {
         type: 'object',
         properties: {
+          owner: { type: 'string', description: 'Propriétaire du projet' },
           project_id: { type: 'string', description: 'ID du projet' },
           item_id: { type: 'string', description: 'ID de l\'élément' },
           field_id: { type: 'string', description: 'ID du champ' },
@@ -455,9 +451,10 @@ export function setupTools(server: any) {
           value: { type: 'string', description: 'Nouvelle valeur' },
           option_id: { type: 'string', description: 'ID de l\'option pour single_select' }
         },
-        required: ['project_id', 'item_id', 'field_id', 'field_type']
+        required: ['owner', 'project_id', 'item_id', 'field_id', 'field_type']
       },
-      execute: async ({ project_id, item_id, field_id, field_type, value, option_id }: {
+      execute: async ({ owner, project_id, item_id, field_id, field_type, value, option_id }: {
+        owner: string;
         project_id: string;
         item_id: string;
         field_id: string;
@@ -465,6 +462,7 @@ export function setupTools(server: any) {
         value?: string;
         option_id?: string;
       }) => {
+        const octokit = getGitHubClient(owner, accounts);
         checkReadOnlyMode();
         return await executeUpdateProjectItemField(octokit, {
           projectId: project_id,
@@ -478,10 +476,11 @@ export function setupTools(server: any) {
     },
     /**
      * @tool delete_project_item
-     * @description Supprime un élément (issue, PR, note) d'un projet GitHub.
+     * @description Supprime un élément d'un projet.
+     * @param {string} owner - Le propriétaire du projet.
      * @param {string} project_id - L'ID du projet.
      * @param {string} item_id - L'ID de l'élément à supprimer.
-     * @returns {Promise<object>} Une promesse qui résout avec l'ID de l'élément supprimé.
+     * @returns {Promise<object>} L'ID de l'élément supprimé.
      */
     {
       name: 'delete_project_item',
@@ -489,13 +488,15 @@ export function setupTools(server: any) {
       inputSchema: {
         type: 'object',
         properties: {
+          owner: { type: 'string', description: 'Propriétaire du projet' },
           project_id: { type: 'string', description: 'ID du projet' },
           item_id: { type: 'string', description: 'ID de l\'élément à supprimer' },
         },
-        required: ['project_id', 'item_id'],
+        required: ['owner', 'project_id', 'item_id'],
       },
-      execute: async ({ project_id, item_id }: { project_id: string, item_id: string }) => {
+      execute: async ({ owner, project_id, item_id }: { owner: string, project_id: string, item_id: string }) => {
         try {
+          const octokit = getGitHubClient(owner, accounts);
           checkReadOnlyMode();
           const mutation = `
             mutation($projectId: ID!, $itemId: ID!) {
@@ -510,11 +511,7 @@ export function setupTools(server: any) {
           });
 
           const deletedItemId = result.deleteProjectV2Item?.deletedItemId;
-
-          if (!deletedItemId) {
-            throw new Error('La réponse de l\'API n\'a pas retourné d\'ID d\'élément supprimé.');
-          }
-
+          if (!deletedItemId) throw new Error('La réponse de l\'API n\'a pas retourné d\'ID d\'élément supprimé.');
           return { success: true, deleted_item_id: deletedItemId };
         } catch (error: any) {
           logger.error('Erreur dans delete_project_item', { error });
@@ -524,9 +521,10 @@ export function setupTools(server: any) {
     },
     /**
      * @tool delete_project
-     * @description Supprime un projet GitHub de manière permanente.
+     * @description Supprime un projet.
+     * @param {string} owner - Le propriétaire du projet.
      * @param {string} projectId - L'ID du projet à supprimer.
-     * @returns {Promise<object>} Une promesse qui résout avec le résultat de l'opération de suppression.
+     * @returns {Promise<object>} Le résultat de la suppression.
      */
     {
       name: 'delete_project',
@@ -534,23 +532,25 @@ export function setupTools(server: any) {
       inputSchema: {
         type: 'object',
         properties: {
+          owner: { type: 'string', description: 'Propriétaire du projet' },
           projectId: { type: 'string', description: "L'ID du projet à supprimer." },
         },
-        required: ['projectId'],
+        required: ['owner', 'projectId'],
       },
-      execute: async ({ projectId }: { projectId: string }) => {
+      execute: async ({ owner, projectId }: { owner: string, projectId: string }) => {
+        const octokit = getGitHubClient(owner, accounts);
         checkReadOnlyMode();
         return await executeDeleteProject(octokit, { projectId });
       }
     },
     /**
      * @tool update_project
-     * @description Met à jour le titre, la description et/ou l'état d'un projet GitHub.
-     * @param {string} project_id - L'ID du projet à modifier.
-     * @param {string} [title] - Le nouveau titre du projet.
-     * @param {string} [description] - La nouvelle description courte du projet.
-     * @param {'OPEN' | 'CLOSED'} [state] - Le nouvel état du projet ('OPEN' ou 'CLOSED'). NOTE: Ce paramètre est actuellement ignoré par l'outil.
-     * @returns {Promise<object>} Une promesse qui résout avec l'ID du projet mis à jour.
+     * @description Met à jour un projet.
+     * @param {string} owner - Le propriétaire du projet.
+     * @param {string} project_id - L'ID du projet.
+     * @param {string} [title] - Le nouveau titre.
+     * @param {string} [description] - La nouvelle description.
+     * @returns {Promise<object>} Le résultat de la mise à jour.
      */
     {
       name: 'update_project',
@@ -558,57 +558,43 @@ export function setupTools(server: any) {
       inputSchema: {
         type: 'object',
         properties: {
+          owner: { type: 'string', description: 'Propriétaire du projet' },
           project_id: { type: 'string', description: 'L\'ID du projet à modifier.' },
           title: { type: 'string', description: 'Le nouveau titre du projet.' },
           description: { type: 'string', description: 'La nouvelle description courte du projet.' },
-          state: { type: 'string', enum: ['OPEN', 'CLOSED'], description: "Le nouvel état du projet ('OPEN' ou 'CLOSED'). NOTE: This parameter is currently ignored by the tool." }
+          state: { type: 'string', enum: ['OPEN', 'CLOSED'], description: "Le nouvel état du projet. NOTE: Ignoré actuellement." }
         },
-        required: ['project_id']
+        required: ['owner', 'project_id']
       },
-      execute: async ({ project_id, title, description, state }: { project_id: string, title?: string, description?: string, state?: 'OPEN' | 'CLOSED' }) => {
+      execute: async ({ owner, project_id, title, description }: { owner: string, project_id: string, title?: string, description?: string }) => {
+        const octokit = getGitHubClient(owner, accounts);
         checkReadOnlyMode();
-        let input: { projectId: string; title?: string; shortDescription?: string; state?: 'OPEN' | 'CLOSED' } | undefined;
         try {
           const mutation = `
             mutation UpdateProject($input: UpdateProjectV2Input!) {
-              updateProjectV2(input: $input) {
-                projectV2 {
-                  id
-                }
-              }
-            }
-          `;
-          
-          input = {
-            projectId: project_id,
-          };
-          
+              updateProjectV2(input: $input) { projectV2 { id } }
+            }`;
+          const input: any = { projectId: project_id };
           if (title !== undefined) input.title = title;
           if (description !== undefined) input.shortDescription = description;
-          // if (state) input.state = state; // This field is not accepted by the API
           
-          logger.info('[DEBUG] Calling updateProjectV2 with input:', { input });
           const response = await octokit.graphql<any>(mutation, { input });
-
-          if (!response?.updateProjectV2?.projectV2?.id) {
-            throw new Error("La mise à jour a échoué ou n'a pas retourné l'ID du projet.");
-          }
-
+          if (!response?.updateProjectV2?.projectV2?.id) throw new Error("La mise à jour a échoué.");
           return { success: true, projectId: response.updateProjectV2.projectV2.id };
         } catch (error: any) {
-          logger.error("Erreur dans update_project", { error, input });
-          return { success: false, error: error.message || "Une erreur est survenue lors de la mise à jour du projet." };
+          logger.error("Erreur dans update_project", { error });
+          return { success: false, error: error.message || "Erreur lors de la mise à jour." };
         }
       }
     },
     /**
      * @tool create_issue
-     * @description Crée une nouvelle issue dans un dépôt GitHub et peut l'ajouter à un projet.
-     * @param {string} repositoryName - Le nom complet du dépôt (ex: 'owner/repo').
+     * @description Crée une issue dans un dépôt.
+     * @param {string} repositoryName - Le nom complet du dépôt (owner/repo).
      * @param {string} title - Le titre de l'issue.
-     * @param {string} [body] - Le corps de l'issue (optionnel).
-     * @param {string} [projectId] - L'ID du projet auquel ajouter l'issue (optionnel).
-     * @returns {Promise<object>} Une promesse qui résout avec les détails de l'issue créée.
+     * @param {string} [body] - Le corps de l'issue.
+     * @param {string} [projectId] - L'ID du projet pour ajouter l'issue.
+     * @returns {Promise<object>} Les détails de l'issue créée.
      */
     {
       name: 'create_issue',
@@ -625,11 +611,10 @@ export function setupTools(server: any) {
       },
       execute: async ({ repositoryName, title, body, projectId }: { repositoryName: string, title: string, body?: string, projectId?: string }) => {
         try {
-          checkReadOnlyMode();
           const [owner, repo] = repositoryName.split('/');
-          if (!owner || !repo) {
-            throw new Error("Le format de 'repositoryName' doit être 'owner/repo'.");
-          }
+          if (!owner || !repo) throw new Error("Le format de 'repositoryName' doit être 'owner/repo'.");
+          const octokit = getGitHubClient(owner, accounts);
+          checkReadOnlyMode();
           checkRepoPermissions(owner, repo);
           const repositoryId = await getRepositoryId(octokit, owner, repo);
           return await executeCreateIssue(octokit, { repositoryId, title, body, projectId });
@@ -641,10 +626,11 @@ export function setupTools(server: any) {
     },
     /**
      * @tool update_issue_state
-     * @description Modifie l'état d'une issue (ouvre ou ferme).
-     * @param {string} issueId - L'ID global de l'issue à modifier.
-     * @param {'OPEN' | 'CLOSED'} state - Le nouvel état de l'issue.
-     * @returns {Promise<object>} Une promesse qui résout avec le résultat de la mise à jour.
+     * @description Modifie l'état d'une issue.
+     * @param {string} owner - Le propriétaire du dépôt où se trouve l'issue.
+     * @param {string} issueId - L'ID global de l'issue.
+     * @param {'OPEN' | 'CLOSED'} state - Le nouvel état.
+     * @returns {Promise<object>} Le résultat de la mise à jour.
      */
     {
       name: 'update_issue_state',
@@ -652,23 +638,26 @@ export function setupTools(server: any) {
       inputSchema: {
         type: 'object',
         properties: {
+          owner: { type: 'string', description: "Propriétaire du dépôt de l'issue." },
           issueId: { type: 'string', description: "L'ID global de l'issue à modifier." },
           state: { type: 'string', enum: ['OPEN', 'CLOSED'], description: "Le nouvel état de l'issue." }
         },
-        required: ['issueId', 'state']
+        required: ['owner', 'issueId', 'state']
       },
-      execute: async ({ issueId, state }: { issueId: string, state: 'OPEN' | 'CLOSED' }) => {
+      execute: async ({ owner, issueId, state }: { owner: string, issueId: string, state: 'OPEN' | 'CLOSED' }) => {
+        const octokit = getGitHubClient(owner, accounts);
         checkReadOnlyMode();
         return await executeUpdateIssueState(octokit, { issueId, state });
       }
     },
     /**
      * @tool create_project_field
-     * @description Crée un nouveau champ (colonne) dans un projet GitHub.
-     * @param {string} projectId - L'ID du projet où créer le champ.
-     * @param {string} name - Le nom du nouveau champ.
-     * @param {'TEXT' | 'NUMBER' | 'DATE' | 'SINGLE_SELECT'} dataType - Le type de données du champ.
-     * @returns {Promise<object>} Une promesse qui résout avec les détails du champ créé.
+     * @description Crée un champ dans un projet.
+     * @param {string} owner - Le propriétaire du projet.
+     * @param {string} projectId - L'ID du projet.
+     * @param {string} name - Le nom du champ.
+     * @param {'TEXT' | 'NUMBER' | 'DATE' | 'SINGLE_SELECT'} dataType - Le type de données.
+     * @returns {Promise<object>} Les détails du champ créé.
      */
     {
       name: 'create_project_field',
@@ -676,28 +665,27 @@ export function setupTools(server: any) {
       inputSchema: {
         type: 'object',
         properties: {
+          owner: { type: 'string', description: "Propriétaire du projet." },
           projectId: { type: 'string', description: "L'ID du projet." },
           name: { type: 'string', description: "Le nom du nouveau champ." },
-          dataType: {
-            type: 'string',
-            enum: ['TEXT', 'NUMBER', 'DATE', 'SINGLE_SELECT'],
-            description: "Le type de données du champ."
-          }
+          dataType: { type: 'string', enum: ['TEXT', 'NUMBER', 'DATE', 'SINGLE_SELECT'], description: "Le type de données du champ." }
         },
-        required: ['projectId', 'name', 'dataType']
+        required: ['owner', 'projectId', 'name', 'dataType']
       },
-      execute: async ({ projectId, name, dataType }: { projectId: string, name: string, dataType: 'TEXT' | 'NUMBER' | 'DATE' | 'SINGLE_SELECT' }) => {
+      execute: async ({ owner, projectId, name, dataType }: { owner: string, projectId: string, name: string, dataType: 'TEXT' | 'NUMBER' | 'DATE' | 'SINGLE_SELECT' }) => {
+        const octokit = getGitHubClient(owner, accounts);
         checkReadOnlyMode();
         return await executeCreateProjectField(octokit, { projectId, name, dataType });
       }
     },
     /**
      * @tool update_project_field
-     * @description Met à jour un champ existant dans un projet (par exemple, renomme une colonne).
+     * @description Met à jour un champ de projet.
+     * @param {string} owner - Le propriétaire du projet.
      * @param {string} projectId - L'ID du projet.
-     * @param {string} fieldId - L'ID du champ à mettre à jour.
-     * @param {string} name - Le nouveau nom pour le champ.
-     * @returns {Promise<object>} Une promesse qui résout avec le résultat de la mise à jour.
+     * @param {string} fieldId - L'ID du champ.
+     * @param {string} name - Le nouveau nom.
+     * @returns {Promise<object>} Le résultat de la mise à jour.
      */
     {
       name: 'update_project_field',
@@ -705,13 +693,15 @@ export function setupTools(server: any) {
       inputSchema: {
         type: 'object',
         properties: {
+          owner: { type: 'string', description: "Propriétaire du projet." },
           projectId: { type: 'string', description: "The ID of the project." },
           fieldId: { type: 'string', description: "The ID of the field to update." },
           name: { type: 'string', description: "The new name for the field." },
         },
-        required: ['projectId', 'fieldId', 'name']
+        required: ['owner', 'projectId', 'fieldId', 'name']
       },
-      execute: async ({ projectId, fieldId, name }: { projectId: string, fieldId: string, name: string }) => {
+      execute: async ({ owner, projectId, fieldId, name }: { owner: string, projectId: string, fieldId: string, name: string }) => {
+        const octokit = getGitHubClient(owner, accounts);
         checkReadOnlyMode();
         return await executeUpdateProjectField(octokit, { projectId, fieldId, name });
       }
@@ -719,9 +709,10 @@ export function setupTools(server: any) {
     /**
      * @tool delete_project_field
      * @description Supprime un champ d'un projet.
+     * @param {string} owner - Le propriétaire du projet.
      * @param {string} projectId - L'ID du projet.
      * @param {string} fieldId - L'ID du champ à supprimer.
-     * @returns {Promise<object>} Une promesse qui résout avec le résultat de la suppression.
+     * @returns {Promise<object>} Le résultat.
      */
     {
       name: 'delete_project_field',
@@ -729,22 +720,25 @@ export function setupTools(server: any) {
       inputSchema: {
         type: 'object',
         properties: {
+          owner: { type: 'string', description: "Propriétaire du projet." },
           projectId: { type: 'string', description: "The ID of the project." },
           fieldId: { type: 'string', description: "The ID of the field to delete." },
         },
-        required: ['projectId', 'fieldId']
+        required: ['owner', 'projectId', 'fieldId']
       },
-      execute: async ({ projectId, fieldId }: { projectId: string, fieldId: string }) => {
+      execute: async ({ owner, projectId, fieldId }: { owner: string, projectId: string, fieldId: string }) => {
+        const octokit = getGitHubClient(owner, accounts);
         checkReadOnlyMode();
         return await executeDeleteProjectField(octokit, { projectId, fieldId });
       }
     },
     /**
      * @tool convert_draft_to_issue
-     * @description Convertit une note (draft issue) d'un projet en une véritable issue GitHub.
-     * @param {string} projectId - L'ID du projet contenant la note.
-     * @param {string} draftId - L'ID de la note à convertir.
-     * @returns {Promise<object>} Une promesse qui résout avec le résultat de la conversion.
+     * @description Convertit une note en issue.
+     * @param {string} owner - Le propriétaire du projet.
+     * @param {string} projectId - L'ID du projet.
+     * @param {string} draftId - L'ID de la note.
+     * @returns {Promise<object>} Le résultat.
      */
     {
       name: 'convert_draft_to_issue',
@@ -752,21 +746,24 @@ export function setupTools(server: any) {
       inputSchema: {
         type: 'object',
         properties: {
+          owner: { type: 'string', description: "Propriétaire du projet." },
           projectId: { type: 'string', description: "The ID of the project." },
           draftId: { type: 'string', description: "The ID of the draft issue to convert." },
         },
-        required: ['projectId', 'draftId']
+        required: ['owner', 'projectId', 'draftId']
       },
-      execute: async ({ projectId, draftId }: { projectId: string, draftId: string }) => {
+      execute: async ({ owner, projectId, draftId }: { owner: string, projectId: string, draftId: string }) => {
+        const octokit = getGitHubClient(owner, accounts);
         checkReadOnlyMode();
         return await executeConvertDraftToIssue(octokit, { projectId, draftId });
       }
     },
     /**
      * @tool archive_project
-     * @description Archive un projet GitHub. Le projet ne sera plus visible dans la liste des projets actifs.
-     * @param {string} projectId - L'ID du projet à archiver.
-     * @returns {Promise<object>} Une promesse qui résout avec le résultat de l'archivage.
+     * @description Archive un projet.
+     * @param {string} owner - Le propriétaire du projet.
+     * @param {string} projectId - L'ID du projet.
+     * @returns {Promise<object>} Le résultat.
      */
     {
       name: 'archive_project',
@@ -774,20 +771,23 @@ export function setupTools(server: any) {
       inputSchema: {
         type: 'object',
         properties: {
+          owner: { type: 'string', description: "Propriétaire du projet." },
           projectId: { type: 'string', description: "L'ID du projet à archiver." },
         },
-        required: ['projectId'],
+        required: ['owner', 'projectId'],
       },
-      execute: async ({ projectId }: { projectId: string }) => {
+      execute: async ({ owner, projectId }: { owner: string, projectId: string }) => {
+        const octokit = getGitHubClient(owner, accounts);
         checkReadOnlyMode();
         return await executeArchiveProject(octokit, { projectId });
       }
     },
     /**
      * @tool unarchive_project
-     * @description Ré-ouvre (désarchive) un projet GitHub précédemment archivé.
-     * @param {string} projectId - L'ID du projet à désarchiver.
-     * @returns {Promise<object>} Une promesse qui résout avec le résultat du désarchivage.
+     * @description Désarchive un projet.
+     * @param {string} owner - Le propriétaire du projet.
+     * @param {string} projectId - L'ID du projet.
+     * @returns {Promise<object>} Le résultat.
      */
     {
       name: 'unarchive_project',
@@ -795,21 +795,24 @@ export function setupTools(server: any) {
       inputSchema: {
         type: 'object',
         properties: {
+          owner: { type: 'string', description: "Propriétaire du projet." },
           projectId: { type: 'string', description: "L'ID du projet à désarchiver." },
         },
-        required: ['projectId'],
+        required: ['owner', 'projectId'],
       },
-      execute: async ({ projectId }: { projectId: string }) => {
+      execute: async ({ owner, projectId }: { owner: string, projectId: string }) => {
+        const octokit = getGitHubClient(owner, accounts);
         checkReadOnlyMode();
         return await executeUnarchiveProject(octokit, { projectId });
       }
     },
     /**
      * @tool archive_project_item
-     * @description Archive un élément d'un projet GitHub.
+     * @description Archive un élément de projet.
+     * @param {string} owner - Le propriétaire du projet.
      * @param {string} projectId - L'ID du projet.
-     * @param {string} itemId - L'ID de l'élément à archiver.
-     * @returns {Promise<object>} Une promesse qui résout avec le résultat de l'archivage.
+     * @param {string} itemId - L'ID de l'élément.
+     * @returns {Promise<object>} Le résultat.
      */
     {
       name: 'archive_project_item',
@@ -817,23 +820,25 @@ export function setupTools(server: any) {
       inputSchema: {
         type: 'object',
         properties: {
-          projectId: { type: 'string', description: "L'ID du projet." },
-          itemId: { type: 'string', description: "L'ID de l'élément à archiver." },
+          owner: { type: 'string', description: "Propriétaire du projet." },
+          projectId: { type: 'string', description: "The ID of the project." },
+          itemId: { type: 'string', description: "The ID of the item to archive." },
         },
-        required: ['projectId', 'itemId'],
+        required: ['owner', 'projectId', 'itemId'],
       },
-      execute: async ({ projectId, itemId }: { projectId: string, itemId: string }) => {
+      execute: async ({ owner, projectId, itemId }: { owner: string, projectId: string, itemId: string }) => {
+        const octokit = getGitHubClient(owner, accounts);
         checkReadOnlyMode();
-        // La permission est vérifiée au niveau du projet, pas du repo individuel pour cette action
         return await archiveProjectItem(octokit, { projectId, itemId });
       }
     },
     /**
      * @tool unarchive_project_item
-     * @description Désarchive un élément d'un projet GitHub.
+     * @description Désarchive un élément de projet.
+     * @param {string} owner - Le propriétaire du projet.
      * @param {string} projectId - L'ID du projet.
-     * @param {string} itemId - L'ID de l'élément à désarchiver.
-     * @returns {Promise<object>} Une promesse qui résout avec le résultat du désarchivage.
+     * @param {string} itemId - L'ID de l'élément.
+     * @returns {Promise<object>} Le résultat.
      */
     {
       name: 'unarchive_project_item',
@@ -841,24 +846,26 @@ export function setupTools(server: any) {
       inputSchema: {
         type: 'object',
         properties: {
-          projectId: { type: 'string', description: "L'ID du projet." },
-          itemId: { type: 'string', description: "L'ID de l'élément à désarchiver." },
+          owner: { type: 'string', description: "Propriétaire du projet." },
+          projectId: { type: 'string', description: "The ID of the project." },
+          itemId: { type: 'string', description: "The ID of the item to unarchive." },
         },
-        required: ['projectId', 'itemId'],
+        required: ['owner', 'projectId', 'itemId'],
       },
-      execute: async ({ projectId, itemId }: { projectId: string, itemId: string }) => {
+      execute: async ({ owner, projectId, itemId }: { owner: string, projectId: string, itemId: string }) => {
+        const octokit = getGitHubClient(owner, accounts);
         checkReadOnlyMode();
         return await unarchiveProjectItem(octokit, { projectId, itemId });
       }
     },
     /**
      * @tool analyze_task_complexity
-     * @description Analyse la complexité d'une tâche (item) dans un projet GitHub en se basant sur son titre et sa description.
-     * @param {string} owner - Le propriétaire du dépôt contenant le projet.
-     * @param {string} repo - Le nom du dépôt contenant le projet.
+     * @description Analyse la complexité d'une tâche de projet.
+     * @param {string} owner - Le propriétaire du dépôt.
+     * @param {string} repo - Le nom du dépôt.
      * @param {number} projectNumber - Le numéro du projet.
-     * @param {string} itemId - L'ID de l'item (tâche) à analyser.
-     * @returns {Promise<object>} Une promesse qui résout avec l'analyse de complexité.
+     * @param {string} itemId - L'ID de l'item.
+     * @returns {Promise<object>} L'analyse de complexité.
      */
     {
       name: 'analyze_task_complexity',
@@ -874,6 +881,7 @@ export function setupTools(server: any) {
         required: ['owner', 'repo', 'projectNumber', 'itemId']
       },
       execute: async ({ owner, repo, projectNumber, itemId }: { owner: string; repo: string; projectNumber: number; itemId: string; }) => {
+        const octokit = getGitHubClient(owner, accounts);
         return await analyze_task_complexity(octokit, { owner, repo, projectNumber, itemId });
       }
     }
@@ -884,29 +892,23 @@ export function setupTools(server: any) {
   }));
 
   server.setRequestHandler(CallToolRequestSchema, async (request: any) => {
-try {
-    const tool = allTools.find(t => t.name === request.params.name);
-    if (!tool || typeof tool.execute !== 'function') {
-        throw new McpError(
-            ErrorCode.MethodNotFound,
-            `Outil inconnu ou non exécutable: ${request.params.name}`
-        );
-    }
-    const result = await tool.execute(request.params.arguments);
-    return {
+    try {
+      const tool = allTools.find(t => t.name === request.params.name);
+      if (!tool || typeof tool.execute !== 'function') {
+        throw new McpError(ErrorCode.MethodNotFound, `Outil inconnu: ${request.params.name}`);
+      }
+      const result = await tool.execute(request.params.arguments);
+      return {
         content: [{ type: 'text', text: JSON.stringify(result, null, 2) }],
         isError: !result.success
-    };
-} catch (error: any) {
-        const errorMessage = error.message || (typeof error === 'string' ? error : JSON.stringify(error));
-        logger.error(`Erreur lors de l'exécution de l'outil ${request.params.name}`, {
-            error: errorMessage,
-            stack: error.stack
-        });
-        return {
-            content: [{ type: 'text', text: JSON.stringify({ success: false, error: errorMessage }, null, 2) }],
-            isError: true
-        };
+      };
+    } catch (error: any) {
+      const errorMessage = error.message || (typeof error === 'string' ? error : JSON.stringify(error));
+      logger.error(`Erreur lors de l'exécution de l'outil ${request.params.name}`, { error: errorMessage, stack: error.stack });
+      return {
+        content: [{ type: 'text', text: JSON.stringify({ success: false, error: errorMessage }, null, 2) }],
+        isError: true
+      };
     }
   });
 }

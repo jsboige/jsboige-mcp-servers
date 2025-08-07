@@ -1,3 +1,9 @@
+# Dependencies
+/node_modules/
+
+# Build artifacts
+/build/
+
 # Cache and temporary files
 .cache/
 
