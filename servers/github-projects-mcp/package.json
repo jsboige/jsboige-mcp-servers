@@ -1,5 +1,5 @@
 {
-  "name": "github-projects-mcp-v2",
+  "name": "github-projects-mcp",
   "version": "0.1.0",
   "type": "module",
   "description": "MCP Gestionnaire de Projet pour l'intégration de GitHub Projects avec VSCode Roo",
