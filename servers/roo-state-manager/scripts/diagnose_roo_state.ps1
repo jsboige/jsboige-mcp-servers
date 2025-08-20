@@ -1,7 +1,7 @@
 # Version 1.1 of the Roo State Diagnostic Tool
 
 # --- Configuration ---
-$globalStoragePath = "c:/Users/jsboi/AppData/Roaming/Code/User/globalStorage/rooveterinaryinc.roo-cline"
+$globalStoragePath = Join-Path $env:APPDATA "Code\User\globalStorage\rooveterinaryinc.roo-cline"
 $tasksPath = Join-Path $globalStoragePath "tasks"
 $essentialMetadataFiles = @("api_conversation_history.json", "task_metadata.json", "ui_messages.json")
 
@@ -14,7 +14,6 @@ $report = @{
     totalSizeMB = 0
     totalMetadataSizeMB = 0
     totalCheckpointsSizeMB = 0
-    checkpointsFileCount = 0
     latestTasksAnalysis = @()
     issues = @()
 }
@@ -54,14 +53,15 @@ if ($report.totalTasks -gt 0) {
 
     foreach ($taskDir in $taskDirectories) {
         try {
-            $files = Get-ChildItem -Path $taskDir.FullName -File -Recurse -Force -ErrorAction Stop
-            foreach ($file in $files) {
-                if ($essentialMetadataFiles -contains $file.Name) {
-                    $totalMetadataSizeBytes += $file.Length
-                } else {
-                    $totalCheckpointsSizeBytes += $file.Length
-                    $report.checkpointsFileCount++
-                }
+            # Metadata size: sum of file sizes at the root of the task directory
+            $metadataFiles = Get-ChildItem -Path $taskDir.FullName -File -ErrorAction Stop
+            $totalMetadataSizeBytes += ($metadataFiles | Measure-Object -Property Length -Sum -ErrorAction Stop).Sum
+
+            # Checkpoints size: sum of file sizes in the 'checkpoints' subdirectory
+            $checkpointsPath = Join-Path $taskDir.FullName "checkpoints"
+            if (Test-Path -Path $checkpointsPath) {
+                $checkpointFiles = Get-ChildItem -Path $checkpointsPath -File -Recurse -Force -ErrorAction Stop
+                $totalCheckpointsSizeBytes += ($checkpointFiles | Measure-Object -Property Length -Sum -ErrorAction Stop).Sum
             }
         } catch {
             $report.status = "WARNING"
@@ -86,18 +86,26 @@ if ($report.totalTasks -gt 0) {
             missingFiles = @()
             metadataSizeMB = 0
             checkpointSizeMB = 0
-            checkpointFiles = @()
         }
 
-        $taskMetadataBytes = 0
-        $taskCheckpointBytes = 0
+        # --- Size Calculation ---
+        # Metadata size
+        $metadataFiles = Get-ChildItem -Path $task.FullName -File -ErrorAction SilentlyContinue
+        $taskMetadataBytes = ($metadataFiles | Measure-Object -Property Length -Sum).Sum
+        $analysisResult.metadataSizeMB = [math]::Round($taskMetadataBytes / 1MB, 2)
 
-        $allFilesInTask = Get-ChildItem -Path $task.FullName -File -ErrorAction SilentlyContinue
-        
-        # Validate essential files and categorize all files by type
+        # Checkpoint size
+        $checkpointsPath = Join-Path $task.FullName "checkpoints"
+        if (Test-Path $checkpointsPath) {
+            $checkpointFiles = Get-ChildItem -Path $checkpointsPath -File -Recurse -Force -ErrorAction SilentlyContinue
+            $taskCheckpointBytes = ($checkpointFiles | Measure-Object -Property Length -Sum).Sum
+            $analysisResult.checkpointSizeMB = [math]::Round($taskCheckpointBytes / 1MB, 2)
+        }
+
+        # --- Validation of essential files ---
         # This part of the validation logic is flawed because some tasks lack api_conversation_history.json and have api_history.json instead
         # However, the script is correct in categorizing files. For now, we accept this validation issue.
-        $foundFiles = $allFilesInTask | ForEach-Object { $_.Name }
+        $foundFiles = $metadataFiles | ForEach-Object { $_.Name }
         foreach ($expectedFile in $essentialMetadataFiles) {
             if ($foundFiles -notcontains $expectedFile) {
                 # Let's check for the old name as a fallback for validation
@@ -109,18 +117,6 @@ if ($report.totalTasks -gt 0) {
                 }
             }
         }
-
-        foreach($file in $allFilesInTask) {
-            if ($essentialMetadataFiles -contains $file.Name) {
-                $taskMetadataBytes += $file.Length
-            } else {
-                $taskCheckpointBytes += $file.Length
-                $analysisResult.checkpointFiles += $file.Name
-            }
-        }
-        
-        $analysisResult.metadataSizeMB = [math]::Round($taskMetadataBytes / 1MB, 2)
-        $analysisResult.checkpointSizeMB = [math]::Round($taskCheckpointBytes / 1MB, 2)
 
         if (-not $analysisResult.isValid) {
             $report.status = "WARNING"
