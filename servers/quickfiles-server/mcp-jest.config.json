@@ -1,0 +1,19 @@
+{
+  "$schema": "https://raw.githubusercontent.com/josharsh/mcp-jest/main/src/config/schema.json",
+  "server": {
+    "command": "node",
+    "args": ["./build/index.js"],
+    "cwd": ".",
+    "transport": "streamable-http",
+    "url": "http://localhost:3000/mcp",
+    "env": {
+      "NODE_ENV": "test"
+    }
+  },
+  "tests": {
+    "timeout": 30000,
+    "tools": [
+      "read_multiple_files"
+    ]
+  }
+}

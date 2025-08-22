@@ -1,0 +1,13 @@
+{
+  "$schema": "https://raw.githubusercontent.com/josharsh/mcp-jest/main/src/config/schema.json",
+  "server": {
+    "transport": "streamable-http",
+    "url": "http://localhost:3000/mcp"
+  },
+  "tests": {
+    "timeout": 30000,
+    "tools": [
+      "read_multiple_files"
+    ]
+  }
+}

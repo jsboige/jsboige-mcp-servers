@@ -1,0 +1,3 @@
+Ceci est un exemple de texte.
+Il contient plusieurs lignes.
+Certaines lignes contiennent le mot exemple.

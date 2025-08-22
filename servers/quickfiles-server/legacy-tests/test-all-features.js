@@ -19,7 +19,7 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
 // Chemin vers le serveur MCP Quickfiles
-const serverPath = path.join(__dirname, 'src', 'index.ts');
+const serverPath = path.join(__dirname, '..', 'src', 'index.ts');
 
 // Chemin vers le dossier de test
 const TEST_DIR = path.join(__dirname, 'test-integration');

@@ -5,7 +5,7 @@
  * en simulant des requêtes MCP.
  */
 
-import { QuickFilesServer } from './build/index.js';
+import { QuickFilesServer } from '../build/index.js';
 import * as fs from 'fs/promises';
 import * as path from 'path';
 import { fileURLToPath } from 'url';

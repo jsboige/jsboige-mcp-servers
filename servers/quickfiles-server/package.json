@@ -7,12 +7,13 @@
   "scripts": {
     "build": "tsc",
     "start": "node build/index.js",
+    "start:debug": "node --inspect build/index.js",
     "dev": "tsc -w",
-    "test": "jest",
-    "test:coverage": "jest --coverage",
-    "test:legacy": "node test-quickfiles.js",
-    "test:simple": "node test-quickfiles-simple.js",
-    "test:all": "npm run test && npm run test:legacy && npm run test:simple"
+    "test": "cross-env DEBUG=mcp-jest* npm run build && mcp-jest --config mcp-jest.config.json",
+    "test:legacy": "node legacy-tests/test-quickfiles.js",
+    "test:simple": "node legacy-tests/test-quickfiles-simple.js",
+    "test:legacy-suite": "cmd /c run-legacy-tests.bat",
+    "test:all": "npm run test && npm run test:legacy-suite"
   },
   "keywords": [
     "mcp",
@@ -21,15 +22,23 @@
   ],
   "license": "MIT",
   "dependencies": {
-    "@modelcontextprotocol/sdk": "latest",
+    "@modelcontextprotocol/sdk": "file:./sdk-vendored",
+    "cors": "^2.8.5",
+    "express": "^5.1.0",
     "glob": "^10.3.10",
-    "jsboige-mcp-servers": "file:../.."
+    "jsboige-mcp-servers": "file:../..",
+    "node-cache": "^5.1.2"
   },
   "devDependencies": {
+    "@types/cors": "^2.8.19",
+    "@types/express": "^5.0.3",
     "@types/jest": "^29.5.12",
     "@types/node": "^20.11.5",
+    "cross-env": "^10.0.0",
     "jest": "^29.7.0",
+    "mcp-jest": "^1.0.13",
     "mock-fs": "^5.2.0",
+    "node-fetch": "^2.7.0",
     "ts-jest": "^29.1.2",
     "typescript": "^5.8.3"
   }
