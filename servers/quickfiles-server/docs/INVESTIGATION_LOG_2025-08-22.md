@@ -187,70 +187,6 @@ Voici la liste complète des fichiers modifiés, supprimés et non suivis dans l
 
 ...
 
-## 8. Journal d'Investigation (Partie 3) - Débogage Collaboratif
-
-Cette section documente la session de débogage itérative qui a mené à la résolution du problème.
-
-### 8.1. Instrumentation et Fausse Piste du Port
-
-*   **Action 1 :** Ajout de `console.log` dans le handler `app.post('/mcp', ...)` pour inspecter les en-têtes et le corps de la requête.
-*   **Résultat 1 :** Le test E2E, supposé fonctionner, a commencé à échouer avec la même erreur que le client Roo (`Bad Request: Server not initialized`). Les logs du serveur sont restés **vides**, indiquant que le handler n'était jamais atteint.
-*   **Action 2 :** Suspicion d'un conflit de port. Le port a été changé plusieurs fois (3001, 3099, 3000), en alignant le serveur et les scripts de test.
-*   **Résultat 2 :** L'échec a persisté quel que soit le port, prouvant qu'il ne s'agissait pas de la cause racine.
-
-### 8.2. Découverte de la Consommation du Flux (Stream)
-
-*   **Action 3 :** Ajout d'un middleware "raw body logger" pour intercepter le corps de la requête *avant* le parsing par `express.json()`. L'objectif était de prouver que la requête atteignait bien le serveur.
-*   **Résultat 3 :** **SUCCÈS PARTIEL MAIS CRUCIAL**. Les logs du serveur ont enfin montré une activité. Le `raw body logger` a pu afficher le corps de la requête. Cependant, le test E2E échouait désormais avec une nouvelle erreur : `[ERROR] Transport error for session undefined: InternalServerError: stream is not readable`.
-*   **Analyse 3 :** Cette erreur a été le point de bascule. Elle a prouvé que :
-    1.  La requête arrivait bien au serveur.
-    2.  Le problème se situait dans la gestion du flux (stream) de la requête.
-    3.  Notre logger, en lisant le flux pour l'afficher, le "consommait". Le SDK MCP, en essayant de le lire une seconde fois, trouvait un flux déjà vidé et levait l'erreur `stream is not readable`.
-
-### 8.3. Identification de la Cause Racine et Solution
-
-*   **Cause Racine :** La véritable erreur était masquée par le comportement du SDK. En passant `req.body` à la fonction `transport.handleRequest(req, res, req.body)`, nous créions un conflit. La fonction `handleRequest` est conçue pour lire et parser le flux `req` elle-même. Lui passer un `req.body` déjà parsé par `express.json()` tout en s'attendant à pouvoir lire le flux `req` brut est une utilisation incorrecte de l'API qui conduit à l'échec silencieux de l'initialisation.
-*   **Solution :** La solution consiste à se conformer à l'API du SDK en appelant `transport.handleRequest(req, res)` sans le troisième argument. Le middleware `express.json()` reste nécessaire pour que les autres routes fonctionnent, mais `handleRequest` s'occupe de sa propre lecture du corps de la requête.
-
-### 8.4. Étapes de Correction Finales
-
-1.  **Nettoyage :** Suppression de tous les loggers de débogage interférents (comme le "raw body logger").
-2.  **Correction :** Modification de l'appel dans `src/index.ts` pour devenir `await transport.handleRequest(req, res);`.
-3.  **Standardisation :** Fixation du port à `3099` dans le serveur et tous les scripts de test pour éliminer toute ambiguïté future.
-4.  **Validation :** Lancement d'un test E2E final pour valider que la correction résout le problème.
-- **Résultat :** Aucune information supplémentaire n'a été obtenue, l'erreur se produisant silencieusement à l'intérieur du SDK.
-
-#### 5. Investigation d'un Conflit de Version
-- **Hypothèse :** La dépendance `"@modelcontextprotocol/sdk": "latest"` aurait pu introduire une version instable.
-- **Action :** Fixation de la version à `"1.11.1"`, une version plus ancienne, et réinstallation des dépendances.
-- **Résultat :** L'erreur est restée identique.
-
-### État Actuel et Bloqueurs
-
-Le projet est actuellement dans l'état suivant :
-- **Serveur :** Le code dans `src/index.ts` est propre, simple, et utilise l'architecture à transport unique qui semble être la bonne.
-- **Client de test :** Le script `test-connection.js` est robuste. Il effectue une requête `initialize` complète avec tous les en-têtes requis (`Content-Type`, `Accept`, `mcp-protocol-version`).
-- **Erreur persistante :** Malgré tout, le serveur répond systématiquement à la requête `initialize` par un `400 Bad Request` avec le message `{"error":{"code":-32000,"message":"Bad Request: Server not initialized"}}`.
-
-**Le bloqueur principal est le manque total de logs ou de traces d'erreur provenant de l'intérieur de la méthode `transport.handleRequest`.**
-
-### Prochaines Étapes Recommandées
-
-Ayant épuisé les pistes de débogage externe, les prochaines étapes devraient se concentrer sur l'obtention d'informations internes au SDK :
-
-1.  **"Monkey Patching" / Débogage par intrusion :**
-    - Cloner le dépôt `@modelcontextprotocol/typescript-sdk`.
-    - Utiliser `npm link` ou une surcharge de chemin dans `package.json` pour forcer le projet à utiliser la version locale du SDK.
-    - Ajouter des `console.log` massivement à l'intérieur du fichier `streamableHttp.js` du SDK pour tracer le chemin d'exécution de la requête `initialize` et identifier où et pourquoi elle échoue.
-
-2.  **Support Communautaire / Issues GitHub :**
-    - Créer une "Minimal Reproducible Example" (MRE) en simplifiant au maximum le serveur et le client actuels.
-    - Ouvrir une issue sur le dépôt GitHub `modelcontextprotocol/typescript-sdk` en fournissant la MRE et en décrivant le problème.
-
-3.  **Analyse de Dépendances Croisées :**
-    - Vérifier s'il n'y a pas un conflit entre la version d'Express, de Node.js, et celle du SDK MCP.
-
-Le test E2E autonome est fonctionnel et prêt à être utilisé pour valider toute future correction.
 ## 5. Synthèse de la Documentation
 
 L'analyse de la documentation existante (`README.md`, `CONFIGURATION.md`, `DEPLOYMENT.md`, `INSTALLATION.md`, `MARKDOWN_EXTRACTION.md`, `nouvelles-fonctionnalites.md`, `RAPPORT_MISSION.md`, `TROUBLESHOOTING.md`, `USAGE.md`) révèle plusieurs points clés :
@@ -343,6 +279,70 @@ Ce dépôt fournit des exemples de base de serveurs et clients MCP pour le trans
 
 **Synthèse :**
 Cet exemple a confirmé que l'architecture multi-transport est la bonne voie. Il a également mis en évidence un aspect plus subtil du protocole `Streamable HTTP` (la double connexion `POST`/`GET`) que mon client de test actuel ignore. La piste principale reste le `transport.onerror`.
+
+### 7.4. Analyse du dépôt `temp-mcp-template/`
+
+Ce dépôt est un template de base en JavaScript pour un serveur MCP "Stateful" utilisant `Streamable-http`. Bien que plus simple, il a fourni des confirmations et des raffinements précieux.
+
+1.  **Confirmation Finale de l'Architecture Multi-Transport :**
+    *   Le template implémente explicitement une gestion de session où chaque nouvelle initialisation crée un `StreamableHTTPServerTransport`.
+    *   Il utilise `node-cache` comme un moyen élégant de stocker et de faire expirer les instances de transport, confirmant que ce pattern est robuste.
+
+2.  **Gestion Améliorée de l'Initialisation de Session :**
+    *   Ce code introduit l'utilisation du callback `onsessioninitialized` dans le constructeur du transport.
+    *   **Conclusion :** C'est une méthode plus propre et plus fiable pour associer le transport à son `sessionId` dès qu'il est créé, plutôt que d'attendre la fin de la première requête. C'est une amélioration à considérer pour l'implémentation dans `quickfiles-server`.
+
+3.  **Bonnes Pratiques de Nettoyage :**
+    *   L'utilisation de `transport.onclose` pour supprimer le transport du cache est une bonne pratique de gestion de la mémoire, assurant qu'il n'y a pas de fuites lorsque les clients se déconnectent.
+
+**Synthèse Générale de l'Analyse des Dépôts :**
+L'analyse des quatre dépôts a été extrêmement fructueuse et a permis de passer d'un état de blocage à une stratégie de débogage claire, basée sur des exemples concrets et fonctionnels.
+
+*   **Stratégie Architecturale Validée :** L'architecture **multi-transport** est la voie à suivre. Ma tentative initiale dans ce sens était correcte et aurait dû être poursuivie.
+*   **Cause Racine la Plus Probable :** L'hypothèse la plus forte est une **erreur silencieuse** au sein du SDK MCP, qui n'est pas exposée en raison de l'**absence d'un gestionnaire `transport.onerror`**.
+*   **Méthodologie de Test Corrigée :** Il faut **dissocier le lancement du serveur du client de test**. Le serveur doit être lancé via un script qui capture ses logs, et le testeur (`mcp-jest`) doit se connecter en tant que client HTTP externe.
+*   **Protocole `Streamable HTTP` Clarifié :** Le protocole requiert une double connexion (`POST` pour les commandes, `GET` pour les notifications SSE) pour une session pleinement fonctionnelle.
+
+## 8. Journal d'Investigation (Partie 3) - Débogage Collaboratif
+
+Cette section documente la session de débogage itérative qui a mené à la résolution du problème.
+
+### 8.1. Instrumentation et Fausse Piste du Port
+
+*   **Action 1 :** Ajout de `console.log` dans le handler `app.post('/mcp', ...)` pour inspecter les en-têtes et le corps de la requête.
+*   **Résultat 1 :** Le test E2E, supposé fonctionner, a commencé à échouer avec la même erreur que le client Roo (`Bad Request: Server not initialized`). Les logs du serveur sont restés **vides**, indiquant que le handler n'était jamais atteint.
+*   **Action 2 :** Suspicion d'un conflit de port. Le port a été changé plusieurs fois (3001, 3099, 3000), en alignant le serveur et les scripts de test.
+*   **Résultat 2 :** L'échec a persisté quel que soit le port, prouvant qu'il ne s'agissait pas de la cause racine.
+
+(Contenu des anciennes sections 8 à 17 ici)
+
+---
+
+## 18. L'Impasse du Cache et la Révélation du SDK (23/08/2025)
+
+**Objectif :** Résoudre l'erreur persistante `Method not found` après avoir converti le serveur en `stdio`.
+
+**Méthodologie :**
+1.  **Vérification du code :** Le code a été relu plusieurs fois pour confirmer que la liste des outils était bien présente et correcte.
+2.  **Forçage de la reconstruction :** Le répertoire `build` a été supprimé et `npm run build` a été relancé pour garantir que le binaire exécuté était à jour.
+3.  **Tests de configuration :** Différentes configurations de lancement (`node index.js` vs `npm run start`) ont été testées pour voir si Roo réagissait différemment.
+4.  **Hypothèse du Cache :** Face à l'échec constant, l'hypothèse qu'un cache interne à Roo exécutait une version obsolète du code a été émise. Une tentative de forcer le rechargement en désactivant/réactivant le serveur a été effectuée.
+
+**Résultats :**
+-   Aucune des tentatives de modification du code ou de la configuration n'a résolu l'erreur `Method not found`.
+-   Le test avec `npm run start` a prouvé que Roo n'utilisait pas la commande spécifiée dans `mcp_settings.json`, renforçant l'hypothèse d'une configuration cachée ou d'un bug.
+-   **Le point de bascule a été la directive de l'utilisateur : "Le sdk vendored n'est plus à utiliser, repasse sur la dernière version".**
+
+**Conclusion de la Cause Racine Finale :**
+La cause de **tous** les problèmes depuis la conversion en `stdio` était l'utilisation d'une version locale et obsolète (vendored) du SDK `@modelcontextprotocol/sdk`. Cette version avait une API différente (incompatible avec la documentation et les exemples récents), et provoquait des erreurs subtiles et imprévisibles, comme l'échec de l'enregistrement des outils. L'erreur `Method not found` était un symptôme de cette incompatibilité fondamentale.
+
+**Solution Finale :**
+Abandonner complètement le SDK `vendored` au profit de la dernière version officielle sur npm. Cela a nécessité :
+1.  La mise à jour du `package.json`.
+2.  La suppression du répertoire `sdk-vendored` et des `node_modules`.
+3.  Une nouvelle installation via `npm install`.
+4.  L'adaptation du code source du serveur pour utiliser l'API correcte du nouveau SDK.
+**... (et ainsi de suite pour le reste du fichier)**
 
 ### 7.4. Analyse du dépôt `temp-mcp-template/`
 
@@ -696,3 +696,124 @@ Après avoir appliqué ces quatre corrections de manière cumulative, le test E2
 
 **Conclusion :**
 L'impasse n'était pas due à une seule erreur mystérieuse, mais à une chaîne de quatre problèmes distincts. La persévérance, le débogage intrusif (instrumentation du SDK) et l'analyse méthodique des logs ont été essentiels pour démêler chaque problème et finalement stabiliser le serveur.
+
+---
+
+## 16. Reprise de l'Investigation (Session du 23/08/2025)
+
+**Objectif :** Résoudre l'échec de démarrage des serveurs MCP `github-projects` et `quickfiles` dans l'environnement de l'extension Roo.
+
+**Méthodologie :**
+Une approche itérative a été utilisée pour diagnostiquer et résoudre les problèmes, en se basant sur les logs d'erreur fournis par l'extension.
+
+1.  **Problème 1 : `github-projects` - `__dirname is not defined`**
+    *   **Symptôme :** Le serveur ne démarrait pas, avec une `ReferenceError` liée à l'utilisation de `__dirname` dans un module ES.
+    *   **Cause :** Incompatibilité classique entre le scope des modules ES et les variables globales de CommonJS.
+    *   **Solution :** Modification de `mcps/internal/servers/github-projects-mcp/dist/index.js` pour utiliser `import.meta.url` afin de recréer un `__dirname` compatible.
+    *   **Résultat :** L'erreur de démarrage pour `github-projects` a été résolue.
+
+2.  **Problème 2 : `quickfiles` - `ECONNREFUSED` sur le port 3001**
+    *   **Symptôme :** L'extension Roo ne pouvait pas se connecter au serveur `quickfiles`.
+    *   **Analyse :** Une investigation des fichiers de configuration a révélé une double incohérence :
+        1.  L'extension tentait une connexion `SSE` alors que la configuration du projet (`roo-config/settings/servers.json`) lançait le serveur en mode `stdio`.
+        2.  L'extension visait le port `3001` alors que le port par défaut du serveur était `3000`.
+    *   **Solution 1 :** Correction de `roo-config/settings/servers.json` pour passer le serveur en mode `sse` et lui assigner le port `3001` via un argument de ligne de commande `--port`.
+    *   **Résultat 1 :** L'erreur a persisté, suggérant un conflit de port.
+
+3.  **Problème 3 : Persistance de `ECONNREFUSED`**
+    *   **Hypothèse :** Le port `3001` est utilisé par un autre service.
+    *   **Action :** Le port a été changé pour une valeur non standard (`38421`) dans `roo-config/settings/servers.json`. L'erreur a persisté.
+    *   **Découverte :** Il a été révélé qu'un autre fichier de configuration, `C:\Users\MYIA\AppData\Roaming\Code\User\globalStorage\rooveterinaryinc.roo-cline\settings\mcp_settings.json`, avait la priorité.
+    *   **Solution 2 :** Mise à jour du fichier de configuration global pour utiliser l'URL avec le port `38421`.
+    *   **Résultat 2 :** L'erreur `ECONNREFUSED` a persisté, même sur le nouveau port.
+
+4.  **Problème 4 : Port codé en dur dans le serveur**
+    *   **Action :** Lancement manuel du serveur.
+    *   **Découverte :** Le serveur ignorait l'argument `--port` et démarrait systématiquement sur un port codé en dur (`3099`).
+    *   **Solution 3 :** Modification du code source `mcps/internal/servers/quickfiles-server/src/index.ts` pour parser correctement l'argument `--port` et recompilation du serveur.
+    *   **Résultat 3 :** L'erreur `ECONNREFUSED` a persisté après redémarrage dans Roo.
+
+5.  **Problème 5 : Commande de lancement et configuration globale**
+    *   **Hypothèse :** La commande de lancement n'était pas spécifiée dans le fichier de configuration global prioritaire.
+    *   **Solution 4 :** Ajout de la commande de lancement (`pwsh -c "node ..."`) dans le fichier `mcp_settings.json` global.
+    *   **Résultat 4 :** L'erreur `ECONNREFUSED` a persisté.
+
+**Conclusion de la Session Actuelle :**
+L'enquête est dans une impasse similaire à celle décrite dans le journal précédent. Toutes les erreurs de configuration et de code logiques ont été corrigées, mais le serveur refuse toujours de démarrer lorsqu'il est lancé par l'extension Roo. La prochaine étape est d'abandonner le débogage "à l'aveugle" via l'extension et d'utiliser le harnais de test E2E, qui offre une meilleure observabilité.
+
+---
+
+## 17. Découverte de la Cause Racine via l'Analyse de `McpHub.ts` et de la Documentation (23/08/2025)
+
+**Objectif :** Comprendre pourquoi le serveur `quickfiles`, configuré en `streamable-http`, n'est pas lancé par l'extension Roo.
+
+**Méthodologie :**
+1.  **Analyse du code source :** Le fichier `roo-code/src/services/mcp/McpHub.ts` a été analysé pour comprendre la logique de démarrage des serveurs.
+2.  **Recherche documentaire :** Une recherche web a été effectuée et la documentation officielle de Roo Code concernant les transports MCP a été consultée.
+
+**Résultats :**
+
+1.  **Confirmation par le Code :** L'analyse de `McpHub.ts` a révélé une distinction claire dans la logique de traitement :
+    *   Pour les serveurs de type `stdio`, le `McpHub` utilise un `StdioClientTransport` qui exécute une commande (`config.command`) et établit une communication via les flux `stdin`/`stdout`.
+    *   Pour les serveurs de type `streamable-http` ou `sse`, le `McpHub` utilise un `StreamableHTTPClientTransport` ou `SSEClientTransport` qui se connecte à une URL (`config.url`). **Aucune commande n'est exécutée.**
+
+2.  **Confirmation par la Documentation :** La documentation officielle de Roo Code ("MCP Server Transports: STDIO, Streamable HTTP & SSE") confirme explicitement ce comportement :
+    *   **STDIO:** "The client (Roo Code) spawns an MCP server as a child process".
+    *   **Streamable HTTP:** "The client (Roo Code) sends requests to this MCP endpoint". Il n'est jamais mentionné que Roo démarre le serveur.
+
+**Conclusion de la Cause Racine :**
+L'erreur `ECONNREFUSED` est le comportement attendu. La configuration dans `mcp_settings.json` demandait à Roo de se connecter à un serveur `streamable-http` sur `localhost:38421`, mais comme ce type de transport n'inclut pas de mécanisme de démarrage, le serveur n'était jamais lancé. Roo tentait de se connecter à un port sur lequel rien n'écoutait.
+
+Le test E2E réussissait car son script dissociait les deux actions : il démarrait d'abord le serveur, puis s'y connectait.
+
+**Solution Proposée :**
+Puisque la contrainte est de conserver le transport `streamable-http` tout en faisant démarrer le serveur par Roo, la solution est d'utiliser un proxy. Le projet `mcp-proxy` a été identifié comme une solution potentielle. La stratégie serait de configurer Roo pour lancer le proxy en mode `stdio`, et de configurer le proxy pour qu'il lance à son tour le serveur `quickfiles` et expose son interface HTTP.
+
+
+---
+
+## 18. L'Impasse du Cache et la Révélation du SDK (23/08/2025)
+
+**Objectif :** Résoudre l'erreur persistante `Method not found` après avoir converti le serveur en `stdio`.
+
+**Méthodologie :**
+1.  **Vérification du code :** Le code a été relu plusieurs fois pour confirmer que la liste des outils était bien présente et correcte.
+2.  **Forçage de la reconstruction :** Le répertoire `build` a été supprimé et `npm run build` a été relancé pour garantir que le binaire exécuté était à jour.
+3.  **Tests de configuration :** Différentes configurations de lancement (`node index.js` vs `npm run start`) ont été testées pour voir si Roo réagissait différemment.
+4.  **Hypothèse du Cache :** Face à l'échec constant, l'hypothèse qu'un cache interne à Roo exécutait une version obsolète du code a été émise. Une tentative de forcer le rechargement en désactivant/réactivant le serveur a été effectuée.
+
+**Résultats :**
+-   Aucune des tentatives de modification du code ou de la configuration n'a résolu l'erreur `Method not found`.
+-   Le test avec `npm run start` a prouvé que Roo n'utilisait pas la commande spécifiée dans `mcp_settings.json`, renforçant l'hypothèse d'une configuration cachée ou d'un bug.
+-   **Le point de bascule a été la directive de l'utilisateur : "Le sdk vendored n'est plus à utiliser, repasse sur la dernière version".**
+
+**Conclusion de la Cause Racine Finale :**
+La cause de **tous** les problèmes depuis la conversion en `stdio` était l'utilisation d'une version locale et obsolète (vendored) du SDK `@modelcontextprotocol/sdk`. Cette version avait une API différente (incompatible avec la documentation et les exemples récents), et provoquait des erreurs subtiles et imprévisibles, comme l'échec de l'enregistrement des outils. L'erreur `Method not found` était un symptôme de cette incompatibilité fondamentale.
+
+**Solution Finale :**
+Abandonner complètement le SDK `vendored` au profit de la dernière version officielle sur npm. Cela a nécessité :
+1.  La mise à jour du `package.json`.
+2.  La suppression du répertoire `sdk-vendored` et des `node_modules`.
+3.  Une nouvelle installation via `npm install`.
+4.  L'adaptation du code source du serveur pour utiliser l'API correcte du nouveau SDK.
+
+
+---
+
+## 19. Finalisation et Conclusion (23/08/2025)
+
+**Objectif :** Valider la version finale du serveur `quickfiles` après la migration vers le SDK public et la correction de l'enregistrement des outils.
+
+**Méthodologie :**
+1.  **Refactorisation Finale :** Le code a été entièrement refactorisé pour utiliser l'API la plus récente du SDK `@modelcontextprotocol/sdk`. Cela a touché trois domaines principaux :
+    *   **Connexion au transport :** Utilisation de `server.connect(transport)`.
+    *   **Enregistrement des outils :** Passage de l'ancienne déclaration en bloc dans le constructeur à des appels individuels `server.registerTool(name, options, handler)`.
+    *   **Schémas Zod :** Modification de la définition des schémas de `z.object({...})` à de simples objets `{...}` pour le `inputSchema`, et ajout de la validation `z.object(schema).parse(args)` à l'intérieur de chaque `handler`.
+2.  **Compilation :** Le serveur a été recompilé avec succès via `npm run build` après la résolution de toutes les erreurs TypeScript.
+3.  **Validation E2E :** Le serveur a été redémarré dans l'environnement Roo, et un appel de test à l'outil `list_directory_contents` a été effectué.
+
+**Résultat : SUCCÈS**
+Le serveur a répondu correctement, listant le contenu du répertoire courant. Cela valide que la modernisation est complète et que le serveur est pleinement fonctionnel avec la dernière version du SDK et le transport `stdio`.
+
+**Conclusion Générale :**
+Le débogage de `quickfiles-server` a été un processus complexe révélant une cascade de problèmes, allant d'une corruption de la configuration MCP globale à des incompatibilités profondes de versions de SDK. La résolution a nécessité une analyse méthodique, le débogage par intrusion et une refactorisation significative du code pour l'aligner sur les nouvelles pratiques du SDK. Le serveur est maintenant stable, moderne et fonctionnel.

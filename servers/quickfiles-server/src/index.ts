@@ -1,198 +1,217 @@
 #!/usr/bin/env node
-import { Server as McpServer } from '@modelcontextprotocol/sdk/server/index.js';
-import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
+import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
+import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import { z } from 'zod';
 import * as fs from 'fs/promises';
 import * as path from 'path';
 import { glob } from 'glob';
-import express, { Request, Response } from 'express';
-import cors from 'cors';
-import { randomUUID } from 'crypto';
-import NodeCache from 'node-cache';
+
 // Schemas Zod (unchanged)
-const ReadMultipleFilesArgsSchema = z.object({
+const ReadMultipleFilesArgsSchema = {
   paths: z.array(z.union([z.string(), z.object({ path: z.string(), excerpts: z.array(z.object({ start: z.number(), end: z.number() })).optional() })])),
-  show_line_numbers: z.boolean().optional(),
-  max_lines_per_file: z.number().optional(),
-  max_total_lines: z.number().optional(),
-  max_chars_per_file: z.number().optional(),
-  max_total_chars: z.number().optional(),
-});
-const ListDirectoryContentsArgsSchema = z.object({
+  show_line_numbers: z.boolean().optional().default(true),
+  max_lines_per_file: z.number().optional().default(2000),
+  max_chars_per_file: z.number().optional().default(160000),
+  max_total_lines: z.number().optional().default(8000),
+  max_total_chars: z.number().optional().default(400000),
+};
+const ListDirectoryContentsArgsSchema = {
   paths: z.array(z.union([z.string(), z.object({
-    path: z.string(),
-    recursive: z.boolean().optional(),
-    max_depth: z.number().optional(),
-    file_pattern: z.string().optional(),
-    sort_by: z.enum(['name', 'size', 'modified', 'type']).optional(),
-    sort_order: z.enum(['asc', 'desc']).optional(),
+      path: z.string(),
+      recursive: z.boolean().optional(),
+      max_depth: z.number().optional(),
+      file_pattern: z.string().optional(),
+      sort_by: z.enum(['name', 'size', 'modified']).optional(),
+      sort_order: z.enum(['asc', 'desc']).optional()
   })])),
-  max_lines: z.number().optional(),
+  max_lines: z.number().optional().default(1000),
+  recursive: z.boolean().optional().default(false),
   max_depth: z.number().optional(),
   file_pattern: z.string().optional(),
-  sort_by: z.enum(['name', 'size', 'modified', 'type']).optional(),
-  sort_order: z.enum(['asc', 'desc']).optional(),
-});
-const DeleteFilesArgsSchema = z.object({
+  sort_by: z.enum(['name', 'size', 'modified']).optional().default('name'),
+  sort_order: z.enum(['asc', 'desc']).optional().default('asc')
+};
+const DeleteFilesArgsSchema = {
   paths: z.array(z.string()),
-});
-const EditMultipleFilesArgsSchema = z.object({
+};
+const EditMultipleFilesArgsSchema = {
   files: z.array(z.object({
-    path: z.string(),
-    diffs: z.array(z.object({
-      search: z.string(),
-      replace: z.string(),
-      start_line: z.number().optional(),
-    })),
-  })),
-});
-const ExtractMarkdownStructureArgsSchema = z.object({
+      path: z.string(),
+      diffs: z.array(z.object({
+          search: z.string(),
+          replace: z.string(),
+          start_line: z.number().optional()
+      }))
+  }))
+};
+const ExtractMarkdownStructureArgsSchema = {
   paths: z.array(z.string()),
-  max_depth: z.number().optional(),
-  include_context: z.boolean().optional(),
-  context_lines: z.number().optional(),
-});
-const FileCopyOperationSchema = z.object({
+  max_depth: z.number().optional().default(6),
+  include_context: z.boolean().optional().default(false),
+  context_lines: z.number().optional().default(2),
+};
+const FileCopyOperationSchema = {
   source: z.string(),
   destination: z.string(),
-  transform: z.object({ pattern: z.string(), replacement: z.string() }).optional(),
-  conflict_strategy: z.enum(['overwrite', 'ignore', 'rename']).optional(),
-});
-const CopyFilesArgsSchema = z.object({
-  operations: z.array(FileCopyOperationSchema),
-});
-const MoveFilesArgsSchema = z.object({
-  operations: z.array(FileCopyOperationSchema),
-});
-const SearchInFilesArgsSchema = z.object({
+  transform: z.object({
+      pattern: z.string(),
+      replacement: z.string()
+  }).optional(),
+  conflict_strategy: z.enum(['overwrite', 'ignore', 'rename']).optional().default('overwrite')
+};
+const CopyFilesArgsSchema = {
+  operations: z.array(z.object(FileCopyOperationSchema)),
+};
+const MoveFilesArgsSchema = {
+  operations: z.array(z.object(FileCopyOperationSchema)),
+};
+const SearchInFilesArgsSchema = {
   paths: z.array(z.string()),
   pattern: z.string(),
-  use_regex: z.boolean().optional(),
-  case_sensitive: z.boolean().optional(),
+  use_regex: z.boolean().optional().default(true),
+  case_sensitive: z.boolean().optional().default(false),
   file_pattern: z.string().optional(),
-  context_lines: z.number().optional(),
-  max_results_per_file: z.number().optional(),
-  max_total_results: z.number().optional(),
-  recursive: z.boolean().optional(),
-});
-const SearchAndReplaceBaseSchema = z.object({
+  context_lines: z.number().optional().default(2),
+  max_results_per_file: z.number().optional().default(100),
+  max_total_results: z.number().optional().default(1000),
+  recursive: z.boolean().optional().default(true),
+};
+const SearchAndReplaceArgsSchema = {
+    search: z.string(),
+    replace: z.string(),
+    use_regex: z.boolean().optional().default(true),
+    case_sensitive: z.boolean().optional().default(false),
+    preview: z.boolean().optional().default(false),
+    paths: z.array(z.string()).optional(),
     files: z.array(z.object({
         path: z.string(),
         search: z.string(),
         replace: z.string(),
-        use_regex: z.boolean().optional(),
-        case_sensitive: z.boolean().optional(),
-        preview: z.boolean().optional(),
     })).optional(),
-    paths: z.array(z.string()).optional(),
-    search: z.string().optional(),
-    replace: z.string().optional(),
-    use_regex: z.boolean().optional(),
-    case_sensitive: z.boolean().optional(),
     file_pattern: z.string().optional(),
-    recursive: z.boolean().optional(),
-    preview: z.boolean().optional(),
-});
-const SearchAndReplaceArgsSchema = SearchAndReplaceBaseSchema.refine(data => data.files || (data.paths && data.search && data.replace), {
-    message: "Soit 'files' soit 'paths', 'search' et 'replace' doivent être fournis",
-});
-const RestartMcpServersArgsSchema = z.object({
+    recursive: z.boolean().optional().default(true),
+};
+const RestartMcpServersArgsSchema = {
   servers: z.array(z.string()),
-});
+};
 // Interfaces specific to business logic from old file
 interface LineRange { start: number; end: number; }
 interface FileWithExcerpts { path: string; excerpts?: LineRange[]; }
-interface DirectoryToList { path: string; recursive?: boolean; max_depth?: number; file_pattern?: string; sort_by?: 'name' | 'size' | 'modified' | 'type'; sort_order?: 'asc' | 'desc'; }
+interface FileReadRequest { path: string; excerpts?: LineRange[]; content?: string; }
 interface FileDiff { search: string; replace: string; start_line?: number; }
 interface FileEdit { path: string; diffs: FileDiff[]; }
 interface MarkdownHeading { text: string; level: number; line: number; context?: string[]; }
 interface FileCopyOperation { source: string; destination: string; transform?: { pattern: string; replacement: string; }; conflict_strategy?: 'overwrite' | 'ignore' | 'rename'; }
 class QuickFilesServer {
   private server: McpServer;
- 
+
   constructor() {
     this.server = new McpServer({
-      name: 'quickfiles',
+      name: 'quickfiles-server',
       version: '1.0.0',
-      tools: [
-        {
-          name: "read_multiple_files",
-          description: "Lit plusieurs fichiers en une seule requête avec numérotation de lignes optionnelle et extraits de fichiers. Tronque automatiquement les contenus volumineux pour éviter les problèmes de mémoire et de performance.",
-          inputSchema: ReadMultipleFilesArgsSchema.shape,
-          handler: this.handleReadMultipleFiles.bind(this)
-        },
-        {
-          name: "list_directory_contents",
-          description: "Liste tous les fichiers et répertoires sous un chemin donné, avec la taille des fichiers et le nombre de lignes. Tronque automatiquement les résultats volumineux pour éviter les problèmes de performance.",
-          inputSchema: ListDirectoryContentsArgsSchema.shape,
-          handler: this.handleListDirectoryContents.bind(this)
-        },
-        {
-          name: "delete_files",
-          description: "Supprime une liste de fichiers en une seule opération",
-          inputSchema: DeleteFilesArgsSchema.shape,
-          handler: this.handleDeleteFiles.bind(this)
-        },
-        {
-          name: "edit_multiple_files",
-          description: "Édite plusieurs fichiers en une seule opération en appliquant des diffs",
-          inputSchema: EditMultipleFilesArgsSchema.shape,
-          handler: this.handleEditMultipleFiles.bind(this)
-        },
-        {
-            name: "extract_markdown_structure",
-            description: "Analyse les fichiers markdown et extrait les titres avec leurs numéros de ligne",
-            inputSchema: ExtractMarkdownStructureArgsSchema.shape,
-            handler: this.handleExtractMarkdownStructure.bind(this)
-        },
-        {
-            name: "copy_files",
-            description: "Copie une liste de fichiers ou de répertoires d'une source vers une destination. Supporte les motifs glob, la transformation des noms de fichiers et la gestion des conflits.",
-            inputSchema: CopyFilesArgsSchema.shape,
-            handler: this.handleCopyFiles.bind(this)
-        },
-        {
-            name: "move_files",
-            description: "Déplace une liste de fichiers ou de répertoires d'une source vers une destination. Supporte les motifs glob, la transformation des noms de fichiers et la gestion des conflits.",
-            inputSchema: MoveFilesArgsSchema.shape,
-            handler: this.handleMoveFiles.bind(this)
-        },
-        {
-            name: "search_in_files",
-            description: "Recherche des motifs dans plusieurs fichiers/répertoires avec support des expressions régulières et affichage du contexte autour des correspondances.",
-            inputSchema: SearchInFilesArgsSchema.shape,
-            handler: this.handleSearchInFiles.bind(this)
-        },
-        {
-            name: "search_and_replace",
-            description: "Recherche et remplace des motifs dans plusieurs fichiers avec support des expressions régulières et des captures de groupes.",
-            inputSchema: SearchAndReplaceBaseSchema.shape,
-            handler: this.handleSearchAndReplace.bind(this)
-        },
-        {
-            name: "restart_mcp_servers",
-            description: "Redémarre un ou plusieurs serveurs MCP en modifiant leur fichier de configuration.",
-            inputSchema: RestartMcpServersArgsSchema.shape,
-            handler: this.handleRestartMcpServers.bind(this)
-        }
-      ]
+      description: 'A server for quick file operations',
     });
- 
-    process.on('SIGINT', async () => {
-      await this.server.close();
-      process.exit(0);
-    });
+
+    this.server.registerTool(
+      'read_multiple_files',
+      {
+        description: 'Reads the content of multiple files with advanced options.',
+        inputSchema: ReadMultipleFilesArgsSchema,
+      },
+      this.handleReadMultipleFiles.bind(this)
+    );
+
+    this.server.registerTool(
+      'list_directory_contents',
+      {
+        description: 'Lists the contents of directories with sorting, filtering, and recursive options.',
+        inputSchema: ListDirectoryContentsArgsSchema,
+      },
+      this.handleListDirectoryContents.bind(this)
+    );
+
+    this.server.registerTool(
+      'delete_files',
+      {
+        description: 'Deletes a list of files.',
+        inputSchema: DeleteFilesArgsSchema,
+      },
+      this.handleDeleteFiles.bind(this)
+    );
+
+    this.server.registerTool(
+      'edit_multiple_files',
+      {
+        description: 'Edits multiple files based on provided diffs.',
+        inputSchema: EditMultipleFilesArgsSchema,
+      },
+      this.handleEditMultipleFiles.bind(this)
+    );
+
+    this.server.registerTool(
+      'extract_markdown_structure',
+      {
+        description: 'Extracts the heading structure from Markdown files.',
+        inputSchema: ExtractMarkdownStructureArgsSchema,
+      },
+      this.handleExtractMarkdownStructure.bind(this)
+    );
+
+    this.server.registerTool(
+      'copy_files',
+      {
+        description: 'Copies files from source to destination with transformation and conflict resolution.',
+        inputSchema: CopyFilesArgsSchema,
+      },
+      this.handleCopyFiles.bind(this)
+    );
+
+    this.server.registerTool(
+      'move_files',
+      {
+        description: 'Moves files from source to destination.',
+        inputSchema: MoveFilesArgsSchema,
+      },
+      this.handleMoveFiles.bind(this)
+    );
+
+    this.server.registerTool(
+      'search_in_files',
+      {
+        description: 'Searches for a pattern in files and returns matching lines with context.',
+        inputSchema: SearchInFilesArgsSchema,
+      },
+      this.handleSearchInFiles.bind(this)
+    );
+
+    this.server.registerTool(
+      'search_and_replace',
+      {
+        description: 'Performs search and replace operations on files.',
+        inputSchema: SearchAndReplaceArgsSchema,
+      },
+      this.handleSearchAndReplace.bind(this)
+    );
+
+    this.server.registerTool(
+      'restart_mcp_servers',
+      {
+        description: 'Restarts specified MCP servers by toggling their enabled state in settings.',
+        inputSchema: RestartMcpServersArgsSchema,
+      },
+      this.handleRestartMcpServers.bind(this)
+    );
   }
- 
-  private async handleReadMultipleFiles(args: z.infer<typeof ReadMultipleFilesArgsSchema>) {
+  private async handleReadMultipleFiles(args: unknown) {
+    const schema = z.object(ReadMultipleFilesArgsSchema);
     const {
         paths,
-        show_line_numbers = false,
-        max_lines_per_file = 2000,
-        max_total_lines = 5000,
-        max_chars_per_file = 160000,
-        max_total_chars = 400000,
-    } = args;
+        show_line_numbers,
+        max_lines_per_file,
+        max_total_lines,
+        max_chars_per_file,
+        max_total_chars,
+    } = schema.parse(args);
     try {
         let totalLines = 0;
         let totalChars = 0;
@@ -218,9 +237,7 @@ class QuickFilesServer {
                 if (excerpts) {
                     const extractedLines: string[] = [];
                     for (const excerpt of excerpts) {
-                        const start = Math.max(0, excerpt.start - 1);
-                        const end = Math.min(lines.length, excerpt.end);
-                        extractedLines.push(...lines.slice(start, end));
+                        extractedLines.push(...lines.slice(excerpt.start - 1, excerpt.end));
                     }
                     lines = extractedLines;
                 }
@@ -251,10 +268,10 @@ class QuickFilesServer {
             if (f.error) {
                 header += `ERROR: ${f.error}\n`;
             } else {
-                if (f.truncated) {
-                    header += `(contenu tronqué)\n`;
-                }
                 header += f.content;
+                if (f.truncated) {
+                    header += "\n... (contenu tronqué)\n";
+                }
             }
             return header;
         }).join('\n\n');
@@ -264,22 +281,24 @@ class QuickFilesServer {
     }
   }
    
-  private async handleListDirectoryContents(args: z.infer<typeof ListDirectoryContentsArgsSchema>) {
+  private async handleListDirectoryContents(args: unknown) {
+    const schema = z.object(ListDirectoryContentsArgsSchema);
     const {
         paths,
-        max_lines = 2000,
+        max_lines,
+        recursive: global_recursive,
         max_depth: global_max_depth,
         file_pattern: global_file_pattern,
-        sort_by: global_sort_by = 'name',
-        sort_order: global_sort_order = 'asc',
-    } = args;
+        sort_by: global_sort_by,
+        sort_order: global_sort_order,
+    } = schema.parse(args);
     try {
         let output = '';
         let lineCount = 0;
         for (const dir of paths) {
             const dirPath = typeof dir === 'string' ? dir : dir.path;
             const {
-                recursive = true,
+                recursive = global_recursive,
                 max_depth = global_max_depth,
                 file_pattern = global_file_pattern,
                 sort_by = global_sort_by,
@@ -306,14 +325,14 @@ class QuickFilesServer {
                     const type = file.isDirectory ? '📁' : '📄';
                     const size = file.size !== null ? `${(file.size / 1024).toFixed(2)} KB` : 'N/A';
                     const modified = file.modified ? new Date(file.modified).toISOString().split('T')[0] : 'N/A';
-                    const lines = file.lines || 'N/A';
+                    const lines = file.lines > 0 ? file.lines.toString() : '';
                     output += `| ${type} | ${file.name} | ${size} | ${modified} | ${lines} |\n`;
                     lineCount++;
                 }
                 output += "\n";
                 lineCount++;
             } catch (error) {
-                output += `Erreur lors du listage de ${dirPath}: ${(error as Error).message}\n\n`;
+                output += `Erreur lors du traitement de ${dirPath}: ${(error as Error).message}\n\n`;
                 lineCount += 2;
             }
         }
@@ -337,7 +356,6 @@ class QuickFilesServer {
           const stats = await fs.stat(fullPath);
           const fileData = {
               name: entry.name,
-              path: fullPath,
               isDirectory: entry.isDirectory(),
               size: stats.size,
               modified: stats.mtimeMs,
@@ -354,7 +372,7 @@ class QuickFilesServer {
       try {
           const content = await fs.readFile(filePath, 'utf-8');
           return content.split('\n').length;
-      } catch (error) {
+      } catch (e) {
           return 0;
       }
   }
@@ -364,17 +382,13 @@ class QuickFilesServer {
           if (sort_by === 'name') compare = a.name.localeCompare(b.name);
           else if (sort_by === 'size') compare = (a.size || 0) - (b.size || 0);
           else if (sort_by === 'modified') compare = (a.modified || 0) - (b.modified || 0);
-          else if (sort_by === 'type') {
-              if (a.isDirectory && !b.isDirectory) compare = -1;
-              else if (!a.isDirectory && b.isDirectory) compare = 1;
-              else compare = a.name.localeCompare(b.name);
-          }
           return sort_order === 'asc' ? compare : -compare;
       });
   }
    
-  private async handleDeleteFiles(args: z.infer<typeof DeleteFilesArgsSchema>) {
-    const { paths } = args;
+  private async handleDeleteFiles(args: unknown) {
+    const schema = z.object(DeleteFilesArgsSchema);
+    const { paths } = schema.parse(args);
     try {
         const results = await Promise.all(
             paths.map(async (filePath) => {
@@ -389,8 +403,8 @@ class QuickFilesServer {
         let report = "## Rapport de suppression de fichiers\n\n";
         results.forEach(r => {
             report += r.success
-                ? `- ✅ ${r.path}: Supprimé avec succès.\n`
-                : `- ❌ ${r.path}: Échec de la suppression - ${r.error}.\n`;
+                ? `- [SUCCES] ${r.path}\n`
+                : `- [ERREUR] ${r.path}: ${r.error}\n`;
         });
         return { content: [{ type: 'text' as const, text: report }] };
     } catch (error) {
@@ -398,12 +412,12 @@ class QuickFilesServer {
     }
   }
    
-  private async handleEditMultipleFiles(args: z.infer<typeof EditMultipleFilesArgsSchema>) {
-     const { files } = args;
+  private async handleEditMultipleFiles(args: unknown) {
+    const schema = z.object(EditMultipleFilesArgsSchema);
+    const { files } = schema.parse(args);
     try {
         const results = await Promise.all(
-            files.map(async (fileEdit) => {
-                const { path: filePath, diffs } = fileEdit;
+            files.map(async ({ path: filePath, diffs }) => {
                 try {
                     let content = await fs.readFile(filePath, 'utf-8');
                     let modificationsCount = 0;
@@ -421,7 +435,6 @@ class QuickFilesServer {
                            }
                         } else {
                             content = content.replace(new RegExp(search, 'g'), (match) => {
-                                modificationsCount++;
                                 found = true;
                                 return replace;
                             });
@@ -432,7 +445,7 @@ class QuickFilesServer {
                     if (modificationsCount > 0) {
                         await fs.writeFile(filePath, content, 'utf-8');
                     }
-                    return { path: filePath, success: errors.length === 0, modifications: modificationsCount, errors };
+                    return { path: filePath, success: true, modifications: modificationsCount, errors };
                 } catch (error) {
                     return { path: filePath, success: false, error: (error as Error).message };
                 }
@@ -441,10 +454,11 @@ class QuickFilesServer {
         let report = "## Rapport d'édition de fichiers\n\n";
         results.forEach(r => {
             if (r.success) {
-                report += `- ✅ ${r.path}: ${r.modifications} modification(s) appliquée(s).\n`;
+                report += `- [SUCCES] ${r.path}: ${r.modifications} modification(s) effectuée(s).`;
+                if (r.errors && r.errors.length > 0) report += ` Erreurs: ${r.errors.join(', ')}`;
+                report += `\n`;
             } else {
-                const errorMessage = r.error || (r.errors ? r.errors.join(', ') : 'Erreur inconnue');
-                report += `- ❌ ${r.path}: Échec de l'édition - ${errorMessage}.\n`;
+                report += `- [ERREUR] ${r.path}: ${r.error}\n`;
             }
         });
         return { content: [{ type: 'text' as const, text: report }] };
@@ -452,32 +466,30 @@ class QuickFilesServer {
         return { content: [{ type: 'text' as const, text: `Erreur lors de l'édition des fichiers: ${(error as Error).message}` }], isError: true };
     }
   }
-  private async handleExtractMarkdownStructure(args: z.infer<typeof ExtractMarkdownStructureArgsSchema>) {
-    const { paths: filePaths, max_depth = 6, include_context = false, context_lines = 2 } = args;
+  private async handleExtractMarkdownStructure(args: unknown) {
+    const schema = z.object(ExtractMarkdownStructureArgsSchema);
+    const { paths: filePaths, max_depth, include_context, context_lines } = schema.parse(args);
     try {
         const allFilesHeadings = await Promise.all(
             filePaths.map(async (filePath) => {
                 try {
                     const content = await fs.readFile(filePath, 'utf-8');
-                    const { headings, fileInfo } = this.parseMarkdown(content, max_depth, context_lines);
-                    return { path: filePath, success: true, headings, fileInfo };
+                    const { headings } = this.parseMarkdown(content, max_depth, context_lines);
+                    return { path: filePath, headings };
                 } catch (error) {
-                    return { path: filePath, success: false, error: (error as Error).message };
+                    return { path: filePath, error: (error as Error).message };
                 }
             })
         );
         let formattedResponse = "## Structure des fichiers Markdown\n\n";
         for (const fileResult of allFilesHeadings) {
             formattedResponse += `### Fichier: ${fileResult.path}\n\n`;
-            if (fileResult.success && fileResult.headings) {
-                if (fileResult.headings.length === 0) {
-                    formattedResponse += "Aucun titre trouvé.\n\n";
-                } else {
-                    for (const heading of fileResult.headings) {
-                        formattedResponse += `${'  '.repeat(heading.level - 1)}- [Ligne ${heading.line}] ${heading.text}\n`;
-                    }
-                }
-            } else {
+            if (fileResult.headings) {
+                fileResult.headings.forEach(h => {
+                    formattedResponse += `${' '.repeat((h.level - 1) * 2)}- [L${h.line}] ${h.text}\n`;
+                });
+                formattedResponse += '\n';
+            } else if (fileResult.error) {
                 formattedResponse += `Erreur: ${fileResult.error}\n\n`;
             }
         }
@@ -500,44 +512,40 @@ class QuickFilesServer {
         if (atxMatch) {
             const level = atxMatch[1].length;
             if (level <= maxDepth) {
-                heading = { text: atxMatch[2].trim(), level, line: i + 1, };
+                heading = { text: atxMatch[2].trim(), level, line: i + 1 };
             }
-        } else if (i > 0) {
-            if (setextH1Regex.test(line) && lines[i - 1].trim().length > 0 && 1 <= maxDepth) {
-                heading = { text: lines[i - 1].trim(), level: 1, line: i, };
-            } else if (setextH2Regex.test(line) && lines[i - 1].trim().length > 0 && 2 <= maxDepth) {
-                heading = { text: lines[i - 1].trim(), level: 2, line: i, };
+        } else if (i > 0 && lines[i-1].trim() !== '') {
+            if (setextH1Regex.test(line)) {
+                if (1 <= maxDepth) heading = { text: lines[i-1].trim(), level: 1, line: i };
+            } else if (setextH2Regex.test(line)) {
+                if (2 <= maxDepth) heading = { text: lines[i-1].trim(), level: 2, line: i };
             }
         }
-        if (heading) {
-            headings.push(heading);
-        }
+        if (heading) headings.push(heading);
     }
     return { headings, fileInfo: {} }; // Simplified
   }
-  private async handleCopyFiles(args: z.infer<typeof CopyFilesArgsSchema>) {
-    const { operations } = args;
+  private async handleCopyFiles(args: unknown) {
+    const schema = z.object(CopyFilesArgsSchema);
+    const { operations } = schema.parse(args);
     try {
-        const results = await Promise.all(
-            operations.map(op => this.processFileCopyOperation(op, 'copy'))
-        );
-        const formattedResponse = this.formatFileCopyResponse(results, 'copy');
-        return { content: [{ type: 'text' as const, text: formattedResponse }] };
+        const results = await Promise.all(operations.map(op => this.processFileCopyOperation(op, 'copy')));
+        const report = this.formatFileCopyResponse(results, 'copy');
+        return { content: [{ type: 'text' as const, text: report }] };
     } catch (error) {
         return { content: [{ type: 'text' as const, text: `Erreur lors de la copie des fichiers: ${(error as Error).message}` }], isError: true };
     }
   }
-  private async handleMoveFiles(args: z.infer<typeof MoveFilesArgsSchema>) {
-    const { operations } = args;
+  private async handleMoveFiles(args: unknown) {
+    const schema = z.object(MoveFilesArgsSchema);
+    const { operations } = schema.parse(args);
         try {
-        const results = await Promise.all(
-            operations.map(op => this.processFileCopyOperation(op, 'move'))
-        );
-        const formattedResponse = this.formatFileCopyResponse(results, 'move');
-        return { content: [{ type: 'text' as const, text: formattedResponse }] };
-    } catch (error) {
-        return { content: [{ type: 'text' as const, text: `Erreur lors du déplacement des fichiers: ${(error as Error).message}` }], isError: true };
-    }
+            const results = await Promise.all(operations.map(op => this.processFileCopyOperation(op, 'move')));
+            const report = this.formatFileCopyResponse(results, 'move');
+            return { content: [{ type: 'text' as const, text: report }] };
+        } catch (error) {
+            return { content: [{ type: 'text' as const, text: `Erreur lors du déplacement des fichiers: ${(error as Error).message}` }], isError: true };
+        }
   }
   // Helpers for copy/move
   private async processFileCopyOperation(operation: FileCopyOperation, mode: 'copy' | 'move') {
@@ -549,7 +557,7 @@ class QuickFilesServer {
       let isDestDir = false;
       try {
           isDestDir = (await fs.stat(destination)).isDirectory();
-      } catch (error) {
+      } catch (e) {
           isDestDir = destination.endsWith(path.sep) || destination.endsWith('/') || sourcePaths.length > 1;
           if (isDestDir) await fs.mkdir(destination, { recursive: true });
       }
@@ -567,7 +575,6 @@ class QuickFilesServer {
                   if (fileExists) {
                       if (conflict_strategy === 'ignore') return { source: sourcePath, destination: destPath, success: true, skipped: true, message: 'Fichier ignoré' };
                       if (conflict_strategy === 'rename') {
-                          // Simplified renaming logic
                           destPath = `${destPath}_${Date.now()}`;
                       }
                   }
@@ -584,16 +591,16 @@ class QuickFilesServer {
   private formatFileCopyResponse(results: any[], operationName: 'copy' | 'move') {
       let output = `## Opération: ${operationName}\n`;
       for (const result of results) {
-          output += `### ${result.source} → ${result.destination}\n`;
-          for (const file of result.files) {
-              if (file.success) output += `- ✅ ${file.source} → ${file.destination} (${file.message})\n`;
-              else output += `- ❌ ${file.source} → ${file.destination} (${file.error})\n`;
-          }
+          output += `### Source: ${result.source} -> Destination: ${result.destination}\n`;
+          result.files.forEach((f: any) => {
+             output += `- ${f.success ? '✓' : '✗'} ${f.source} -> ${f.destination} ${f.message || f.error}\n`;
+          });
       }
       return output;
   }
-  private async handleSearchInFiles(args: z.infer<typeof SearchInFilesArgsSchema>) {
-    const { paths, pattern, use_regex = true, case_sensitive = false, file_pattern, context_lines = 2, max_results_per_file = 100, max_total_results = 1000, recursive = true } = args;
+  private async handleSearchInFiles(args: unknown) {
+    const schema = z.object(SearchInFilesArgsSchema);
+    const { paths, pattern, use_regex, case_sensitive, file_pattern, context_lines, max_results_per_file, max_total_results, recursive } = schema.parse(args);
     try {
         const results: any[] = [];
         let totalMatches = 0;
@@ -606,12 +613,12 @@ class QuickFilesServer {
             for (let i = 0; i < lines.length; i++) {
                 const line = lines[i];
                 if (searchRegex.test(line)) {
-                     const contextStart = Math.max(0, i - context_lines);
-                     const contextEnd = Math.min(lines.length - 1, i + context_lines);
-                     const context = lines.slice(contextStart, contextEnd + 1);
-                     fileMatches.push({ lineNumber: i + 1, line, context });
-                     totalMatches++;
-                     if(fileMatches.length >= max_results_per_file || totalMatches >= max_total_results) break;
+                    if (fileMatches.length >= max_results_per_file || totalMatches >= max_total_results) break;
+                    const start = Math.max(0, i - context_lines);
+                    const end = Math.min(lines.length, i + context_lines + 1);
+                    const context = lines.slice(start, end);
+                    fileMatches.push({ lineNumber: i + 1, line, context });
+                    totalMatches++;
                 }
             }
             if (fileMatches.length > 0) results.push({ path: filePath, matches: fileMatches });
@@ -635,8 +642,11 @@ class QuickFilesServer {
         return { content: [{ type: 'text' as const, text: `Erreur lors de la recherche: ${(error as Error).message}` }], isError: true };
     }
   }
-  private async handleSearchAndReplace(args: z.infer<typeof SearchAndReplaceArgsSchema>) {
-    const { files, paths, search, replace, use_regex = true, case_sensitive = false, file_pattern, recursive = true, preview = false } = args;
+  private async handleSearchAndReplace(args: unknown) {
+    const schema = z.object(SearchAndReplaceArgsSchema).refine(data => data.paths || data.files, {
+      message: "Either 'paths' or 'files' must be provided",
+    });
+    const { files, paths, search, replace, use_regex, case_sensitive, file_pattern, recursive, preview } = schema.parse(args);
     try {
         let totalReplacements = 0;
         let diffs = '';
@@ -658,7 +668,7 @@ class QuickFilesServer {
             }
         } else if (paths && search && replace) {
             for (const searchPath of paths) {
-                // Simplified logic: doesn't handle directories or file_pattern
+                // Simplified logic
                 await replaceInFile(searchPath, search, replace);
             }
         }
@@ -675,8 +685,9 @@ class QuickFilesServer {
     // Simplified diff generation
     return `--- a/${filePath}\n+++ b/${filePath}\n...diff content...`;
   }
-  private async handleRestartMcpServers(args: z.infer<typeof RestartMcpServersArgsSchema>) {
-    const { servers } = args;
+  private async handleRestartMcpServers(args: unknown) {
+    const schema = z.object(RestartMcpServersArgsSchema);
+    const { servers } = schema.parse(args);
     const settingsPath = 'C:/Users/MYIA/AppData/Roaming/Code/User/globalStorage/rooveterinaryinc.roo-cline/settings/mcp_settings.json';
     const results = [];
     try {
@@ -688,14 +699,14 @@ class QuickFilesServer {
       for (const serverName of servers) {
         if (settings.mcpServers[serverName]) {
             const originalState = { ...settings.mcpServers[serverName] };
-            settings.mcpServers[serverName].description = (originalState.description || "") + " (restarting...)";
-            await fs.writeFile(settingsPath, JSON.stringify(settings, null, 2), 'utf-8');
-            await new Promise(resolve => setTimeout(resolve, 100));
-            settings.mcpServers[serverName] = originalState;
-            await fs.writeFile(settingsPath, JSON.stringify(settings, null, 2), 'utf-8');
-            results.push({ name: serverName, success: true, message: "Redémarrage déclenché." });
+            settings.mcpServers[serverName].enabled = false;
+            await fs.writeFile(settingsPath, JSON.stringify(settings, null, 2));
+            await new Promise(resolve => setTimeout(resolve, 1000)); // Wait 1s
+            settings.mcpServers[serverName].enabled = true;
+            await fs.writeFile(settingsPath, JSON.stringify(settings, null, 2));
+            results.push({ server: serverName, status: 'success' });
         } else {
-          results.push({ name: serverName, success: false, error: "Serveur non trouvé dans la configuration." });
+            results.push({ server: serverName, status: 'error', reason: 'Server not found in settings' });
         }
       }
     } catch (error) {
@@ -704,64 +715,27 @@ class QuickFilesServer {
     return { content: [{ type: 'text' as const, text: JSON.stringify(results) }] };
   }
  
-  public getServer(): McpServer {
-    return this.server;
+  public async run(): Promise<void> {
+    console.error('QuickFiles server starting on stdio...');
+    const transport = new StdioServerTransport();
+    await this.server.connect(transport);
+    console.error('QuickFiles server connected and listening.');
+
+    process.stdin.on("close", () => {
+      console.error("MCP Server stdin closed");
+      this.server.close();
+    });
   }
 }
+
 async function main() {
   try {
-    const app = express();
-    const quickFilesServer = new QuickFilesServer();
-    const mcpServer = quickFilesServer.getServer();
-    const transportCache = new NodeCache({ stdTTL: 3600, checkperiod: 600, useClones: false });
-    app.use(cors({
-        origin: '*',
-        exposedHeaders: ['mcp-session-id'],
-        allowedHeaders: ['Content-Type', 'mcp-session-id', 'mcp-protocol-version'],
-    }));
-
-    app.get('/health', (req, res) => {
-        res.status(200).json({ status: 'ok' });
-    });
-    const handleRequest = async (req: Request, res: Response) => {
-        const sessionId = req.headers['mcp-session-id'] as string | undefined;
-        let transport: StreamableHTTPServerTransport | undefined = sessionId ? transportCache.get(sessionId) : undefined;
-        if (!transport) {
-            transport = new StreamableHTTPServerTransport({
-                sessionIdGenerator: randomUUID,
-                onsessioninitialized: (newSessionId: string) => {
-                    transportCache.set(newSessionId, transport);
-                },
-            });
-            transport.onclose = () => {
-                const currentSessionId = transport?.sessionId;
-                if (currentSessionId) {
-                    transportCache.del(currentSessionId);
-                }
-            };
-            transport.onerror = (err: Error) => {
-                console.error(`[Server] Transport error for session ${transport?.sessionId}:`, err);
-            };
-            await mcpServer.connect(transport);
-        }
-        // Correction finale : Ne pas passer req.body ici
-        await transport.handleRequest(req, res);
-    };
-    app.post('/mcp', handleRequest);
-    app.get('/mcp', handleRequest);
-    app.delete('/mcp', handleRequest);
-    const PORT = process.env.PORT || 3099;
-    app.listen(PORT, () => {
-      console.log(`[INFO] QuickFiles server listening on port ${PORT}`);
-    });
-  } catch (error: any) {
-    console.error(`
-FATAL ERROR at ${new Date().toISOString()}
-Message: ${error.message}
-Stack: ${error.stack}
---------------------------------------------------
-`);
+    const server = new QuickFilesServer();
+    await server.run();
+  } catch (error) {
+    console.error('Failed to start QuickFiles server:', error);
     process.exit(1);
   }
 }
+
 main();

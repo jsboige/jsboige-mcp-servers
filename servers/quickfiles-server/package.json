@@ -22,12 +22,9 @@
   ],
   "license": "MIT",
   "dependencies": {
-    "@modelcontextprotocol/sdk": "file:./sdk-vendored",
-    "cors": "^2.8.5",
-    "express": "^5.1.0",
+    "@modelcontextprotocol/sdk": "latest",
     "glob": "^10.3.10",
-    "jsboige-mcp-servers": "file:../..",
-    "node-cache": "^5.1.2"
+    "jsboige-mcp-servers": "file:../.."
   },
   "devDependencies": {
     "@types/cors": "^2.8.19",
