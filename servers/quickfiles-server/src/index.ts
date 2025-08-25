@@ -1,10 +1,11 @@
-#!/usr/bin/env node
+#!/usr-bin/env node
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import { z } from 'zod';
 import * as fs from 'fs/promises';
 import * as path from 'path';
 import { glob } from 'glob';
+import { fileURLToPath } from 'url';
 
 // Schemas Zod (unchanged)
 const ReadMultipleFilesArgsSchema = {
@@ -104,8 +105,10 @@ interface MarkdownHeading { text: string; level: number; line: number; context?:
 interface FileCopyOperation { source: string; destination: string; transform?: { pattern: string; replacement: string; }; conflict_strategy?: 'overwrite' | 'ignore' | 'rename'; }
 class QuickFilesServer {
   private server: McpServer;
+  private workspaceRoot: string;
 
   constructor() {
+    this.workspaceRoot = process.cwd();
     this.server = new McpServer({
       name: 'quickfiles-server',
       version: '1.0.0',
@@ -202,6 +205,10 @@ class QuickFilesServer {
       this.handleRestartMcpServers.bind(this)
     );
   }
+
+  private resolvePath(filePath: string): string {
+    return path.resolve(this.workspaceRoot, filePath);
+  }
   private async handleReadMultipleFiles(args: unknown) {
     const schema = z.object(ReadMultipleFilesArgsSchema);
     const {
@@ -217,8 +224,10 @@ class QuickFilesServer {
         let totalChars = 0;
         const fileContents: { path: string; content: string; truncated: boolean, error?: string }[] = [];
         for (const file of paths) {
-            const filePath = typeof file === 'string' ? file : file.path;
+            const rawFilePath = typeof file === 'string' ? file : file.path;
+            const filePath = this.resolvePath(rawFilePath);
             const excerpts = typeof file === 'string' ? undefined : file.excerpts;
+
             try {
                 let content = await fs.readFile(filePath, 'utf-8');
                 let truncated = false;
@@ -255,12 +264,12 @@ class QuickFilesServer {
                 let formattedContent = (show_line_numbers
                     ? lines.map((line, index) => `${index + 1} | ${line}`).join('\n')
                     : lines.join('\n'));
-                fileContents.push({ path: filePath, content: formattedContent, truncated, });
+                fileContents.push({ path: rawFilePath, content: formattedContent, truncated, });
                 if (totalLines >= max_total_lines || totalChars >= max_total_chars) {
                     break;
                 }
             } catch (error) {
-                fileContents.push({ path: filePath, content: '', truncated: false, error: (error as Error).message, });
+                fileContents.push({ path: rawFilePath, content: '', truncated: false, error: (error as Error).message, });
             }
         }
         const formattedResponse = fileContents.map(f => {
@@ -296,7 +305,7 @@ class QuickFilesServer {
         let output = '';
         let lineCount = 0;
         for (const dir of paths) {
-            const dirPath = typeof dir === 'string' ? dir : dir.path;
+            const rawDirPath = typeof dir === 'string' ? dir : dir.path;
             const {
                 recursive = global_recursive,
                 max_depth = global_max_depth,
@@ -308,10 +317,11 @@ class QuickFilesServer {
                 output += "\n(limite de lignes atteinte, résultats tronqués)\n";
                 break;
             }
-            output += `## Contenu de: ${dirPath}\n\n`;
+            output += `## Contenu de: ${rawDirPath}\n\n`;
             lineCount += 2;
             try {
-                const files = await this.listDirectory(dirPath, recursive, max_depth, file_pattern);
+                const dirPath = this.resolvePath(rawDirPath);
+                const files = await this.listDirectory(dirPath, rawDirPath, recursive, max_depth, file_pattern);
                 this.sortFiles(files, sort_by, sort_order);
                 const tableHeader = "| Type | Nom | Taille | Modifié le | Lignes |\n|---|---|---|---|---|\n";
                 output += tableHeader;
@@ -332,7 +342,7 @@ class QuickFilesServer {
                 output += "\n";
                 lineCount++;
             } catch (error) {
-                output += `Erreur lors du traitement de ${dirPath}: ${(error as Error).message}\n\n`;
+                output += `Erreur lors du traitement de ${rawDirPath}: ${(error as Error).message}\n\n`;
                 lineCount += 2;
             }
         }
@@ -342,20 +352,21 @@ class QuickFilesServer {
     }
   }
   // Helper functions for listDirectoryContents
-  private async listDirectory(dirPath: string, recursive: boolean, max_depth?: number, file_pattern?: string, current_depth = 0) {
+  private async listDirectory(absolutePath: string, originalPath: string, recursive: boolean, max_depth?: number, file_pattern?: string, current_depth = 0) {
       if (max_depth !== undefined && current_depth >= max_depth) {
           return [];
       }
-      const entries = await fs.readdir(dirPath, { withFileTypes: true });
+      const entries = await fs.readdir(absolutePath, { withFileTypes: true });
       let files: any[] = [];
       for (const entry of entries) {
-          const fullPath = path.join(dirPath, entry.name);
-          if (file_pattern && entry.isFile() && !glob.sync(file_pattern, { cwd: dirPath }).includes(entry.name)) {
+          const fullPath = path.join(absolutePath, entry.name);
+          const relativeName = path.join(originalPath, entry.name);
+          if (file_pattern && entry.isFile() && !glob.sync(file_pattern, { cwd: absolutePath }).includes(entry.name)) {
               continue;
           }
           const stats = await fs.stat(fullPath);
           const fileData = {
-              name: entry.name,
+              name: relativeName,
               isDirectory: entry.isDirectory(),
               size: stats.size,
               modified: stats.mtimeMs,
@@ -363,7 +374,7 @@ class QuickFilesServer {
           };
           files.push(fileData);
           if (recursive && entry.isDirectory()) {
-              files.push(...(await this.listDirectory(fullPath, recursive, max_depth, file_pattern, current_depth + 1)).map(f => ({ ...f, name: path.join(entry.name, f.name) })));
+              files.push(...(await this.listDirectory(fullPath, relativeName, recursive, max_depth, file_pattern, current_depth + 1)));
           }
       }
       return files;
@@ -391,12 +402,13 @@ class QuickFilesServer {
     const { paths } = schema.parse(args);
     try {
         const results = await Promise.all(
-            paths.map(async (filePath) => {
+            paths.map(async (rawFilePath) => {
+                const filePath = this.resolvePath(rawFilePath);
                 try {
                     await fs.unlink(filePath);
-                    return { path: filePath, success: true };
+                    return { path: rawFilePath, success: true };
                 } catch (error) {
-                    return { path: filePath, success: false, error: (error as Error).message };
+                    return { path: rawFilePath, success: false, error: (error as Error).message };
                 }
             })
         );
@@ -417,7 +429,8 @@ class QuickFilesServer {
     const { files } = schema.parse(args);
     try {
         const results = await Promise.all(
-            files.map(async ({ path: filePath, diffs }) => {
+            files.map(async ({ path: rawFilePath, diffs }) => {
+                const filePath = this.resolvePath(rawFilePath);
                 try {
                     let content = await fs.readFile(filePath, 'utf-8');
                     let modificationsCount = 0;
@@ -445,9 +458,9 @@ class QuickFilesServer {
                     if (modificationsCount > 0) {
                         await fs.writeFile(filePath, content, 'utf-8');
                     }
-                    return { path: filePath, success: true, modifications: modificationsCount, errors };
+                    return { path: rawFilePath, success: true, modifications: modificationsCount, errors };
                 } catch (error) {
-                    return { path: filePath, success: false, error: (error as Error).message };
+                    return { path: rawFilePath, success: false, error: (error as Error).message };
                 }
             })
         );
@@ -471,13 +484,14 @@ class QuickFilesServer {
     const { paths: filePaths, max_depth, include_context, context_lines } = schema.parse(args);
     try {
         const allFilesHeadings = await Promise.all(
-            filePaths.map(async (filePath) => {
+            filePaths.map(async (rawFilePath) => {
+                const filePath = this.resolvePath(rawFilePath);
                 try {
                     const content = await fs.readFile(filePath, 'utf-8');
                     const { headings } = this.parseMarkdown(content, max_depth, context_lines);
-                    return { path: filePath, headings };
+                    return { path: rawFilePath, headings };
                 } catch (error) {
-                    return { path: filePath, error: (error as Error).message };
+                    return { path: rawFilePath, error: (error as Error).message };
                 }
             })
         );
@@ -549,7 +563,10 @@ class QuickFilesServer {
   }
   // Helpers for copy/move
   private async processFileCopyOperation(operation: FileCopyOperation, mode: 'copy' | 'move') {
-      const { source, destination, transform, conflict_strategy = 'overwrite' } = operation;
+      const { source: rawSource, destination: rawDestination, transform, conflict_strategy = 'overwrite' } = operation;
+      const source = this.resolvePath(rawSource);
+      const destination = this.resolvePath(rawDestination);
+
       const sourcePaths = await glob(source);
       if (sourcePaths.length === 0) {
           return { source, success: false, error: `Aucun fichier ne correspond au motif: ${source}`, files: [] };
@@ -565,7 +582,7 @@ class QuickFilesServer {
           sourcePaths.map(async (sourcePath) => {
               let fileName = path.basename(sourcePath);
               if (transform) {
-                  fileName = fileName.replace(new RegExp(transform.pattern), transform.replacement);
+              fileName = fileName.replace(new RegExp(transform.pattern), transform.replacement);
               }
               let destPath = isDestDir ? path.join(destination, fileName) : destination;
              
@@ -600,13 +617,14 @@ class QuickFilesServer {
   }
   private async handleSearchInFiles(args: unknown) {
     const schema = z.object(SearchInFilesArgsSchema);
-    const { paths, pattern, use_regex, case_sensitive, file_pattern, context_lines, max_results_per_file, max_total_results, recursive } = schema.parse(args);
+    const { paths: rawPaths, pattern, use_regex, case_sensitive, file_pattern, context_lines, max_results_per_file, max_total_results, recursive } = schema.parse(args);
     try {
         const results: any[] = [];
         let totalMatches = 0;
         const searchRegex = new RegExp(pattern, case_sensitive ? 'g' : 'gi');
-        const searchInFile = async (filePath: string) => {
+        const searchInFile = async (rawFilePath: string) => {
             if (totalMatches >= max_total_results) return;
+            const filePath = this.resolvePath(rawFilePath);
             const content = await fs.readFile(filePath, 'utf-8');
             const lines = content.split('\n');
             const fileMatches = [];
@@ -621,11 +639,13 @@ class QuickFilesServer {
                     totalMatches++;
                 }
             }
-            if (fileMatches.length > 0) results.push({ path: filePath, matches: fileMatches });
+            if (fileMatches.length > 0) results.push({ path: rawFilePath, matches: fileMatches });
         };
        
-        for (const searchPath of paths) {
-            // Simplified logic: doesn't handle directories recursively or file_pattern
+        for (const searchPath of rawPaths) {
+            // Simplified logic: currently doesn't handle directory recursion or glob patterns
+             // It will treat directory paths as files, leading to errors.
+             // This needs to be expanded to properly walk directories if recursive is true.
             await searchInFile(searchPath);
         }
        
@@ -650,7 +670,8 @@ class QuickFilesServer {
     try {
         let totalReplacements = 0;
         let diffs = '';
-        const replaceInFile = async (filePath: string, searchPattern: string, replacement: string) => {
+        const replaceInFile = async (rawFilePath: string, searchPattern: string, replacement: string) => {
+            const filePath = this.resolvePath(rawFilePath);
             let content = await fs.readFile(filePath, 'utf-8');
             const searchRegex = new RegExp(searchPattern, case_sensitive ? 'g' : 'gi');
             const newContent = content.replace(searchRegex, (match) => {
@@ -658,7 +679,7 @@ class QuickFilesServer {
                 return replacement;
             });
             if (content !== newContent) {
-                 diffs += this.generateDiff(content, newContent, filePath) + '\n';
+                 diffs += this.generateDiff(content, newContent, rawFilePath) + '\n';
                  if (!preview) await fs.writeFile(filePath, newContent, 'utf-8');
             }
         };
