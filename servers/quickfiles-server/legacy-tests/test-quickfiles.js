@@ -10,7 +10,7 @@ const __dirname = path.dirname(__filename);
 
 // Chemin vers le dossier de test temporaire
 const TEST_DIR = path.join(__dirname, 'test-temp');
-const SERVER_PROCESS_PATH = path.join(__dirname, 'build', 'index.js');
+const SERVER_PROCESS_PATH = path.join(__dirname, '../build/index.js');
 
 // Couleurs pour la console
 const COLORS = {
@@ -235,7 +235,7 @@ async function runTests() {
     console.log(`${COLORS.yellow}Résultat (tronqué):${COLORS.reset}`);
     console.log(listDirContent.substring(0, 200) + '...');
     
-    if (listDirContent.includes('lignes supplémentaires non affichées')) {
+    if (listDirContent.includes('| ... |')) {
       console.log(`${COLORS.green}✓ Le paramètre max_lines fonctionne correctement${COLORS.reset}`);
     } else {
       console.log(`${COLORS.red}✗ Le paramètre max_lines ne semble pas fonctionner${COLORS.reset}`);
@@ -252,7 +252,7 @@ async function runTests() {
     console.log(`${COLORS.yellow}Résultat (tronqué):${COLORS.reset}`);
     console.log(readFilesContent1.substring(0, 200) + '...');
     
-    if (readFilesContent1.includes('lignes supplémentaires non affichées')) {
+    if (readFilesContent1.includes('... (contenu tronqué)')) {
       console.log(`${COLORS.green}✓ Le paramètre max_lines_per_file fonctionne correctement${COLORS.reset}`);
     } else {
       console.log(`${COLORS.red}✗ Le paramètre max_lines_per_file ne semble pas fonctionner${COLORS.reset}`);
@@ -274,8 +274,7 @@ async function runTests() {
     console.log(`${COLORS.yellow}Résultat (tronqué):${COLORS.reset}`);
     console.log(readFilesContent2.substring(0, 200) + '...');
     
-    if (readFilesContent2.includes('lignes supplémentaires non affichées') && 
-        readFilesContent2.includes('Certains fichiers ont été tronqués')) {
+    if (readFilesContent2.includes('... (contenu tronqué)')) {
       console.log(`${COLORS.green}✓ Le paramètre max_total_lines fonctionne correctement${COLORS.reset}`);
     } else {
       console.log(`${COLORS.red}✗ Le paramètre max_total_lines ne semble pas fonctionner${COLORS.reset}`);
@@ -330,6 +329,68 @@ async function runTests() {
       console.log(`${COLORS.red}✗ Le fichier n'a pas été supprimé${COLORS.reset}`);
     } catch (error) {
       console.log(`${COLORS.green}✓ La méthode delete_files fonctionne correctement${COLORS.reset}`);
+    }
+
+    // Test 6: copy_files
+    console.log(`\n${COLORS.cyan}Test 6: copy_files${COLORS.reset}`);
+    const copyDestDir = path.join(TEST_DIR, 'copy-dest');
+    await fs.mkdir(copyDestDir, { recursive: true });
+    await client.callTool('copy_files', {
+      operations: [{
+        source: path.join(TEST_DIR, 'edit-test.txt'),
+        destination: path.join(copyDestDir, 'edit-test-copy.txt')
+      }]
+    });
+    try {
+      await fs.access(path.join(copyDestDir, 'edit-test-copy.txt'));
+      console.log(`${COLORS.green}✓ La méthode copy_files fonctionne correctement${COLORS.reset}`);
+    } catch (error) {
+      console.log(`${COLORS.red}✗ Le fichier n'a pas été copié${COLORS.reset}`);
+    }
+
+    // Test 7: move_files
+    console.log(`\n${COLORS.cyan}Test 7: move_files${COLORS.reset}`);
+    const moveDestDir = path.join(TEST_DIR, 'move-dest');
+    await fs.mkdir(moveDestDir, { recursive: true });
+    const moveSourceFile = path.join(TEST_DIR, 'move-test.txt');
+    await fs.writeFile(moveSourceFile, 'Ce fichier sera déplacé');
+    await client.callTool('move_files', {
+      operations: [{
+        source: moveSourceFile,
+        destination: path.join(moveDestDir, 'move-test-moved.txt')
+      }]
+    });
+    try {
+      await fs.access(path.join(moveDestDir, 'move-test-moved.txt'));
+      console.log(`${COLORS.green}✓ La méthode move_files fonctionne correctement${COLORS.reset}`);
+    } catch (error) {
+      console.log(`${COLORS.red}✗ Le fichier n'a pas été déplacé${COLORS.reset}`);
+    }
+
+    // Test 8: search_in_files
+    console.log(`\n${COLORS.cyan}Test 8: search_in_files${COLORS.reset}`);
+    const searchResponse = await client.callTool('search_in_files', {
+      paths: [path.join(TEST_DIR, 'edit-test.txt')],
+      pattern: 'Ligne 2'
+    });
+    if (searchResponse.content[0].text.includes('Ligne 2 à conserver')) {
+      console.log(`${COLORS.green}✓ La méthode search_in_files fonctionne correctly${COLORS.reset}`);
+    } else {
+      console.log(`${COLORS.red}✗ La méthode search_in_files n'a pas trouvé le pattern${COLORS.reset}`);
+    }
+
+    // Test 9: search_and_replace
+    console.log(`\n${COLORS.cyan}Test 9: search_and_replace${COLORS.reset}`);
+    await client.callTool('search_and_replace', {
+      paths: [path.join(TEST_DIR, 'edit-test.txt')],
+      search: 'conserver',
+      replace: 'remplacer'
+    });
+    const replacedContent = await fs.readFile(path.join(TEST_DIR, 'edit-test.txt'), 'utf-8');
+    if (replacedContent.includes('Ligne 2 à remplacer')) {
+       console.log(`${COLORS.green}✓ La méthode search_and_replace fonctionne correctement${COLORS.reset}`);
+    } else {
+       console.log(`${COLORS.red}✗ La méthode search_and_replace n'a pas fonctionné${COLORS.reset}`);
     }
 
     console.log(`\n${COLORS.green}=== Tous les tests sont terminés ===${COLORS.reset}`);

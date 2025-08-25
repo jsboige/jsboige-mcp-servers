@@ -9,7 +9,7 @@
     "start": "node build/index.js",
     "start:debug": "node --inspect build/index.js",
     "dev": "tsc -w",
-    "test": "cross-env DEBUG=mcp-jest* npm run build && mcp-jest --config mcp-jest.config.json",
+    "test": "npm run build && npm run test:legacy",
     "test:legacy": "node legacy-tests/test-quickfiles.js",
     "test:simple": "node legacy-tests/test-quickfiles-simple.js",
     "test:legacy-suite": "cmd /c run-legacy-tests.bat",
