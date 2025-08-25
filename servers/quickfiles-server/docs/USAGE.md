@@ -5,100 +5,27 @@ Ce document fournit des exemples détaillés d'utilisation et des bonnes pratiqu
 <!-- END_SECTION: introduction -->
 
 <!-- START_SECTION: getting_started -->
-## Démarrage du serveur
+## Intégration du serveur
 
-### Démarrage standard
+Le serveur MCP QuickFiles est désormais conçu pour être lancé via un transport `stdio`, ce qui signifie qu'il est démarré et géré par une application hôte (comme Roo). Il n'est plus nécessaire de le démarrer manuellement comme un service réseau.
 
-Pour démarrer le serveur QuickFiles avec la configuration par défaut :
+### Configuration dans Roo
 
-```bash
-cd servers/quickfiles-server
-npm start
-```
-
-### Démarrage avec options
-
-Pour démarrer le serveur avec des options spécifiques :
-
-```bash
-# Spécifier un port différent
-npm start -- --port 4000
-
-# Spécifier un fichier de configuration personnalisé
-npm start -- --config ./config/production.json
-
-# Spécifier des chemins autorisés
-npm start -- --allowed-paths /chemin/vers/repertoire1,/chemin/vers/repertoire2
-```
-
-### Démarrage en mode développement
-
-Pour démarrer le serveur en mode développement avec rechargement automatique :
-
-```bash
-npm run dev
-```
-
-### Vérification du fonctionnement
-
-Une fois le serveur démarré, vous pouvez vérifier qu'il fonctionne correctement en exécutant le script de test :
-
-```bash
-npm run test:simple
-```
-
-Vous devriez voir une sortie confirmant que le serveur est opérationnel et que les outils fonctionnent correctement.
-<!-- END_SECTION: getting_started -->
-
-<!-- START_SECTION: client_connection -->
-## Connexion d'un client MCP
-
-Pour utiliser le serveur QuickFiles, vous devez le connecter à un client MCP. Voici comment procéder avec différents clients :
-
-### Connexion avec le client MCP JavaScript
-
-```javascript
-const { MCPClient } = require('@modelcontextprotocol/client');
-
-async function connectToQuickFiles() {
-  const client = new MCPClient();
-  
-  // Connexion au serveur QuickFiles
-  await client.connect('http://localhost:3000');
-  
-  // Vérification des outils disponibles
-  const tools = await client.listTools();
-  console.log('Outils disponibles:', tools);
-  
-  return client;
-}
-
-// Utilisation
-connectToQuickFiles().then(client => {
-  // Utiliser le client pour appeler les outils QuickFiles
-});
-```
-
-### Connexion avec Roo
-
-Dans la configuration de Roo, ajoutez le serveur QuickFiles dans la section des serveurs MCP :
+Pour intégrer le serveur avec Roo, vous devez le déclarer dans votre fichier de configuration de serveurs (par exemple, `roo-config/settings/servers.json`). La configuration doit spécifier le type `stdio` et la commande pour exécuter le script du serveur.
 
 ```json
 {
-  "servers": [
-    {
-      "name": "quickfiles",
-      "url": "http://localhost:3000",
-      "type": "mcp"
-    }
-  ]
+  "name": "quickfiles",
+  "type": "stdio",
+  "command": "node ./mcps/internal/servers/quickfiles-server/build/index.js",
+  "enabled": true,
+  "autoStart": true,
+  "description": "Serveur MCP pour manipuler rapidement plusieurs fichiers"
 }
 ```
 
-### Connexion avec d'autres clients MCP
-
-Pour d'autres clients MCP, consultez la documentation spécifique du client. En général, vous devrez fournir l'URL du serveur QuickFiles (par défaut `http://localhost:3000`).
-<!-- END_SECTION: client_connection -->
+Une fois configuré, Roo lancera automatiquement le serveur `quickfiles` et communiquera avec lui via `stdio`, rendant ses outils disponibles pour l'assistant IA.
+<!-- END_SECTION: getting_started -->
 
 <!-- START_SECTION: tool_read_multiple_files -->
 ## Utilisation de l'outil `read_multiple_files`
@@ -108,7 +35,7 @@ L'outil `read_multiple_files` permet de lire le contenu de plusieurs fichiers en
 ### Lecture simple de fichiers multiples
 
 ```javascript
-const result = await client.callTool('quickfiles-server', 'read_multiple_files', {
+const result = await client.callTool('quickfiles', 'read_multiple_files', {
   paths: [
     'chemin/vers/fichier1.txt',
     'chemin/vers/fichier2.txt',
@@ -123,7 +50,7 @@ console.log(result.content[0].text);
 ### Lecture avec limitation du nombre de lignes
 
 ```javascript
-const result = await client.callTool('quickfiles-server', 'read_multiple_files', {
+const result = await client.callTool('quickfiles', 'read_multiple_files', {
   paths: [
     'chemin/vers/fichier1.txt',
     'chemin/vers/fichier2.txt'
@@ -139,7 +66,7 @@ console.log(result.content[0].text);
 ### Lecture d'extraits spécifiques de fichiers
 
 ```javascript
-const result = await client.callTool('quickfiles-server', 'read_multiple_files', {
+const result = await client.callTool('quickfiles', 'read_multiple_files', {
   paths: [
     {
       path: 'chemin/vers/fichier.txt',
@@ -158,7 +85,7 @@ console.log(result.content[0].text);
 ### Lecture mixte (fichiers complets et extraits)
 
 ```javascript
-const result = await client.callTool('quickfiles-server', 'read_multiple_files', {
+const result = await client.callTool('quickfiles', 'read_multiple_files', {
   paths: [
     'chemin/vers/fichier1.txt',  // Fichier complet
     {
@@ -190,7 +117,7 @@ L'outil `list_directory_contents` permet de lister le contenu des répertoires a
 ### Listage simple d'un répertoire
 
 ```javascript
-const result = await client.callTool('quickfiles-server', 'list_directory_contents', {
+const result = await client.callTool('quickfiles', 'list_directory_contents', {
   paths: ['chemin/vers/repertoire']
 });
 
@@ -200,7 +127,7 @@ console.log(result.content[0].text);
 ### Listage récursif
 
 ```javascript
-const result = await client.callTool('quickfiles-server', 'list_directory_contents', {
+const result = await client.callTool('quickfiles', 'list_directory_contents', {
   paths: [
     {
       path: 'chemin/vers/repertoire',
@@ -216,7 +143,7 @@ console.log(result.content[0].text);
 ### Listage avec filtrage par motif glob
 
 ```javascript
-const result = await client.callTool('quickfiles-server', 'list_directory_contents', {
+const result = await client.callTool('quickfiles', 'list_directory_contents', {
   paths: [
     {
       path: 'chemin/vers/repertoire',
@@ -233,7 +160,7 @@ console.log(result.content[0].text);
 ### Listage avec tri personnalisé
 
 ```javascript
-const result = await client.callTool('quickfiles-server', 'list_directory_contents', {
+const result = await client.callTool('quickfiles', 'list_directory_contents', {
   paths: [
     {
       path: 'chemin/vers/repertoire',
@@ -251,7 +178,7 @@ console.log(result.content[0].text);
 ### Listage de plusieurs répertoires avec options différentes
 
 ```javascript
-const result = await client.callTool('quickfiles-server', 'list_directory_contents', {
+const result = await client.callTool('quickfiles', 'list_directory_contents', {
   paths: [
     {
       path: 'chemin/vers/repertoire1',
@@ -290,7 +217,7 @@ L'outil `delete_files` permet de supprimer plusieurs fichiers en une seule opér
 ### Suppression de fichiers
 
 ```javascript
-const result = await client.callTool('quickfiles-server', 'delete_files', {
+const result = await client.callTool('quickfiles', 'delete_files', {
   paths: [
     'chemin/vers/fichier1.txt',
     'chemin/vers/fichier2.txt',
@@ -320,7 +247,7 @@ L'outil `edit_multiple_files` permet de modifier plusieurs fichiers en une seule
 ### Édition simple d'un fichier
 
 ```javascript
-const result = await client.callTool('quickfiles-server', 'edit_multiple_files', {
+const result = await client.callTool('quickfiles', 'edit_multiple_files', {
   files: [
     {
       path: 'chemin/vers/fichier.txt',
@@ -340,7 +267,7 @@ console.log(result.content[0].text);
 ### Édition avec plusieurs remplacements dans un fichier
 
 ```javascript
-const result = await client.callTool('quickfiles-server', 'edit_multiple_files', {
+const result = await client.callTool('quickfiles', 'edit_multiple_files', {
   files: [
     {
       path: 'chemin/vers/fichier.txt',
@@ -368,7 +295,7 @@ console.log(result.content[0].text);
 ### Édition de plusieurs fichiers
 
 ```javascript
-const result = await client.callTool('quickfiles-server', 'edit_multiple_files', {
+const result = await client.callTool('quickfiles', 'edit_multiple_files', {
   files: [
     {
       path: 'src/app.js',
@@ -401,7 +328,7 @@ console.log(result.content[0].text);
 ### Édition avec spécification de ligne de départ
 
 ```javascript
-const result = await client.callTool('quickfiles-server', 'edit_multiple_files', {
+const result = await client.callTool('quickfiles', 'edit_multiple_files', {
   files: [
     {
       path: 'chemin/vers/fichier.txt',
@@ -437,7 +364,7 @@ QuickFiles peut être utilisé pour analyser rapidement une base de code :
 
 ```javascript
 // Lister tous les fichiers JavaScript dans un projet
-const jsFiles = await client.callTool('quickfiles-server', 'list_directory_contents', {
+const jsFiles = await client.callTool('quickfiles', 'list_directory_contents', {
   paths: [
     {
       path: 'chemin/vers/projet',
@@ -452,7 +379,7 @@ const jsFiles = await client.callTool('quickfiles-server', 'list_directory_conte
 // Rechercher des motifs spécifiques dans le code
 const filesWithPattern = [];
 for (const file of jsFiles.result) {
-  const content = await client.callTool('quickfiles-server', 'read_multiple_files', {
+  const content = await client.callTool('quickfiles', 'read_multiple_files', {
     paths: [file.path]
   });
   
@@ -470,7 +397,7 @@ QuickFiles peut être utilisé pour effectuer des refactorings à grande échell
 
 ```javascript
 // Remplacer une API obsolète par une nouvelle API dans tous les fichiers JavaScript
-const jsFiles = await client.callTool('quickfiles-server', 'list_directory_contents', {
+const jsFiles = await client.callTool('quickfiles', 'list_directory_contents', {
   paths: [
     {
       path: 'chemin/vers/projet',
@@ -482,7 +409,7 @@ const jsFiles = await client.callTool('quickfiles-server', 'list_directory_conte
 
 const filesToEdit = [];
 for (const file of jsFiles.result) {
-  const content = await client.callTool('quickfiles-server', 'read_multiple_files', {
+  const content = await client.callTool('quickfiles', 'read_multiple_files', {
     paths: [file.path]
   });
   
@@ -492,7 +419,7 @@ for (const file of jsFiles.result) {
 }
 
 // Appliquer les modifications à tous les fichiers concernés
-await client.callTool('quickfiles-server', 'edit_multiple_files', {
+await client.callTool('quickfiles', 'edit_multiple_files', {
   files: filesToEdit.map(path => ({
     path,
     diffs: [
@@ -511,7 +438,7 @@ QuickFiles peut être utilisé pour générer des rapports sur la structure et l
 
 ```javascript
 // Générer un rapport sur la taille des fichiers dans un projet
-const allFiles = await client.callTool('quickfiles-server', 'list_directory_contents', {
+const allFiles = await client.callTool('quickfiles', 'list_directory_contents', {
   paths: [
     {
       path: 'chemin/vers/projet',
@@ -542,7 +469,7 @@ allFiles.result.forEach(file => {
 
 // Écrire le rapport dans un fichier
 const reportContent = JSON.stringify(report, null, 2);
-await client.callTool('quickfiles-server', 'edit_multiple_files', {
+await client.callTool('quickfiles', 'edit_multiple_files', {
   files: [
     {
       path: 'chemin/vers/projet/file-report.json',
@@ -558,27 +485,6 @@ await client.callTool('quickfiles-server', 'edit_multiple_files', {
 ```
 <!-- END_SECTION: advanced_usage -->
 
-<!-- START_SECTION: integration_with_roo -->
-## Intégration avec Roo
-
-QuickFiles s'intègre parfaitement avec Roo, permettant à l'assistant IA d'accéder et de manipuler des fichiers locaux.
-
-### Configuration de Roo pour utiliser QuickFiles
-
-1. Assurez-vous que le serveur QuickFiles est en cours d'exécution
-2. Dans la configuration de Roo, ajoutez le serveur QuickFiles dans la section des serveurs MCP
-
-```json
-{
-  "servers": [
-    {
-      "name": "quickfiles",
-      "url": "http://localhost:3000",
-      "type": "mcp"
-    }
-  ]
-}
-```
 
 ### Exemples d'utilisation avec Roo
 

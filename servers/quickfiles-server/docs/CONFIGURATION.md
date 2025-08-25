@@ -13,26 +13,18 @@ author: "Équipe MCP"
 # Configuration du serveur MCP QuickFiles
 
 <!-- START_SECTION: introduction -->
-Ce document détaille les options de configuration disponibles pour le serveur MCP QuickFiles. La configuration appropriée vous permettra d'optimiser les performances, de sécuriser l'accès aux fichiers et d'adapter le comportement du serveur à vos besoins spécifiques.
+Ce document détaille les options de configuration disponibles pour le serveur MCP QuickFiles. Depuis sa modernisation, le serveur utilise un transport `stdio`, ce qui signifie qu'il ne s'exécute plus comme un serveur réseau indépendant. Par conséquent, la configuration réseau (port, hôte, CORS, TLS) n'est plus nécessaire. La configuration se concentre désormais sur la sécurité, les performances et la journalisation, et peut être définie directement dans le code ou via un fichier `config.json` simple.
 <!-- END_SECTION: introduction -->
 
 <!-- START_SECTION: config_file -->
 ## Fichier de configuration
 
-Le serveur QuickFiles utilise un fichier de configuration au format JSON. Par défaut, ce fichier est nommé `config.json` et doit être placé dans le répertoire racine du serveur.
+Le serveur QuickFiles peut être configuré via un fichier `config.json` placé à la racine du serveur.
 
 ### Structure du fichier de configuration
 
 ```json
 {
-  "server": {
-    "port": 3000,
-    "host": "localhost",
-    "cors": {
-      "enabled": true,
-      "origins": ["*"]
-    }
-  },
   "security": {
     "allowedPaths": [
       "/chemin/vers/repertoire1",
@@ -58,55 +50,7 @@ Le serveur QuickFiles utilise un fichier de configuration au format JSON. Par d�
   }
 }
 ```
-
-### Emplacement du fichier de configuration
-
-Vous pouvez spécifier un emplacement personnalisé pour le fichier de configuration en utilisant l'option de ligne de commande `--config` :
-
-```bash
-node dist/index.js --config /chemin/vers/mon-config.json
-```
-
-Ou en définissant la variable d'environnement `QUICKFILES_CONFIG` :
-
-```bash
-export QUICKFILES_CONFIG=/chemin/vers/mon-config.json
-node dist/index.js
-```
 <!-- END_SECTION: config_file -->
-
-<!-- START_SECTION: server_options -->
-## Options du serveur
-
-### `server.port`
-
-- **Type** : Nombre
-- **Défaut** : `3000`
-- **Description** : Port sur lequel le serveur MCP QuickFiles écoutera les connexions.
-
-### `server.host`
-
-- **Type** : Chaîne
-- **Défaut** : `"localhost"`
-- **Description** : Adresse IP ou nom d'hôte sur lequel le serveur écoutera. Utilisez `"0.0.0.0"` pour écouter sur toutes les interfaces réseau.
-
-### `server.cors`
-
-- **Type** : Objet
-- **Description** : Configuration CORS (Cross-Origin Resource Sharing) pour permettre les requêtes depuis d'autres domaines.
-
-#### `server.cors.enabled`
-
-- **Type** : Booléen
-- **Défaut** : `true`
-- **Description** : Active ou désactive le support CORS.
-
-#### `server.cors.origins`
-
-- **Type** : Tableau de chaînes
-- **Défaut** : `["*"]`
-- **Description** : Liste des origines autorisées pour les requêtes CORS. Utilisez `["*"]` pour autoriser toutes les origines.
-<!-- END_SECTION: server_options -->
 
 <!-- START_SECTION: security_options -->
 ## Options de sécurité
@@ -230,49 +174,7 @@ Cette configuration active la journalisation au niveau de détail "debug", écri
 <!-- START_SECTION: environment_variables -->
 ## Variables d'environnement
 
-Vous pouvez également configurer le serveur QuickFiles en utilisant des variables d'environnement. Les variables d'environnement ont priorité sur les valeurs du fichier de configuration.
-
-| Variable d'environnement | Description |
-|--------------------------|-------------|
-| `QUICKFILES_PORT` | Port du serveur |
-| `QUICKFILES_HOST` | Hôte du serveur |
-| `QUICKFILES_ALLOWED_PATHS` | Chemins autorisés (séparés par des virgules) |
-| `QUICKFILES_MAX_FILE_SIZE` | Taille maximale de fichier en octets |
-| `QUICKFILES_LOG_LEVEL` | Niveau de journalisation |
-| `QUICKFILES_CONFIG` | Chemin vers le fichier de configuration |
-
-### Exemple d'utilisation des variables d'environnement
-
-```bash
-export QUICKFILES_PORT=4000
-export QUICKFILES_HOST=0.0.0.0
-export QUICKFILES_ALLOWED_PATHS=/home/user/projects,/var/data/shared
-export QUICKFILES_MAX_FILE_SIZE=20971520
-export QUICKFILES_LOG_LEVEL=debug
-node dist/index.js
-```
 <!-- END_SECTION: environment_variables -->
-
-<!-- START_SECTION: command_line_options -->
-## Options de ligne de commande
-
-Le serveur QuickFiles accepte également des options de ligne de commande qui ont priorité sur les variables d'environnement et les valeurs du fichier de configuration.
-
-| Option | Description |
-|--------|-------------|
-| `--port <port>` | Port du serveur |
-| `--host <host>` | Hôte du serveur |
-| `--config <path>` | Chemin vers le fichier de configuration |
-| `--log-level <level>` | Niveau de journalisation |
-| `--allowed-paths <paths>` | Chemins autorisés (séparés par des virgules) |
-| `--help` | Affiche l'aide |
-
-### Exemple d'utilisation des options de ligne de commande
-
-```bash
-node dist/index.js --port 4000 --host 0.0.0.0 --log-level debug --allowed-paths /home/user/projects,/var/data/shared
-```
-<!-- END_SECTION: command_line_options -->
 
 <!-- START_SECTION: advanced_configuration -->
 ## Configuration avancée
@@ -305,32 +207,6 @@ Vous pouvez configurer des paramètres spécifiques pour chaque outil MCP expos�
 }
 ```
 
-### Configuration du serveur HTTP
-
-Pour une configuration avancée du serveur HTTP sous-jacent :
-
-```json
-"http": {
-  "keepAliveTimeout": 5000,
-  "headersTimeout": 6000,
-  "maxHeaderSize": 8192,
-  "requestTimeout": 30000
-}
-```
-
-### Configuration TLS/SSL
-
-Pour activer HTTPS :
-
-```json
-"tls": {
-  "enabled": true,
-  "key": "/chemin/vers/key.pem",
-  "cert": "/chemin/vers/cert.pem",
-  "ca": "/chemin/vers/ca.pem",
-  "passphrase": "mot_de_passe_optionnel"
-}
-```
 <!-- END_SECTION: advanced_configuration -->
 
 <!-- START_SECTION: configuration_examples -->
@@ -339,26 +215,13 @@ Pour activer HTTPS :
 ### Configuration minimale
 
 ```json
-{
-  "server": {
-    "port": 3000,
-    "host": "localhost"
-  }
-}
+{}
 ```
 
 ### Configuration de développement
 
 ```json
 {
-  "server": {
-    "port": 3000,
-    "host": "localhost",
-    "cors": {
-      "enabled": true,
-      "origins": ["*"]
-    }
-  },
   "security": {
     "allowedPaths": [
       "/chemin/vers/projets"
@@ -375,14 +238,6 @@ Pour activer HTTPS :
 
 ```json
 {
-  "server": {
-    "port": 3000,
-    "host": "0.0.0.0",
-    "cors": {
-      "enabled": true,
-      "origins": ["https://votre-application.com"]
-    }
-  },
   "security": {
     "allowedPaths": [
       "/var/data/app"
@@ -406,11 +261,6 @@ Pour activer HTTPS :
     "file": "/var/log/quickfiles/server.log",
     "console": false
   },
-  "tls": {
-    "enabled": true,
-    "key": "/etc/ssl/private/server.key",
-    "cert": "/etc/ssl/certs/server.crt"
-  }
 }
 ```
 <!-- END_SECTION: configuration_examples -->
@@ -422,8 +272,6 @@ Pour activer HTTPS :
 
 - Limitez l'accès aux répertoires nécessaires uniquement en utilisant `security.allowedPaths`
 - Utilisez des expressions régulières précises dans `security.disallowedPatterns` pour bloquer l'accès aux fichiers sensibles
-- Activez TLS/SSL en production
-- Limitez les origines CORS aux domaines de confiance en production
 
 ### Performance
 
@@ -440,7 +288,7 @@ Pour activer HTTPS :
 ### Déploiement
 
 - Utilisez un gestionnaire de processus comme PM2 pour gérer le cycle de vie du serveur
-- Mettez en place un proxy inverse (comme Nginx) devant le serveur QuickFiles en production
+- Utilisez un gestionnaire de processus comme PM2 pour gérer le cycle de vie du processus si vous l'exécutez en dehors d'une application hôte.
 - Configurez des limites de ressources appropriées pour éviter les abus
 <!-- END_SECTION: best_practices -->
 

@@ -25,93 +25,37 @@ Avant d'installer le serveur MCP QuickFiles, assurez-vous que votre système ré
 <!-- END_SECTION: prerequisites -->
 
 <!-- START_SECTION: installation_steps -->
-## Étapes d'installation
+## Intégration du serveur
 
-### 1. Clonage du dépôt
+Le serveur MCP QuickFiles est conçu pour être utilisé au sein de l'écosystème Roo. En tant que tel, il n'y a pas d'étapes d'installation traditionnelles. Le serveur est inclus dans le projet et est activé via la configuration.
 
-Si vous n'avez pas encore cloné le dépôt principal, faites-le avec la commande suivante :
+### Activation du serveur
 
-```bash
-git clone https://github.com/jsboige/jsboige-mcp-servers.git
-cd jsboige-mcp-servers
+Pour activer le serveur, assurez-vous qu'il est correctement défini dans votre configuration de serveurs MCP avec le type `stdio`.
+
+```json
+{
+  "name": "quickfiles",
+  "type": "stdio",
+  "command": "node ./mcps/internal/servers/quickfiles-server/build/index.js",
+  "enabled": true,
+  "autoStart": true,
+  "description": "Serveur MCP pour manipuler rapidement plusieurs fichiers"
+}
 ```
 
-### 2. Installation des dépendances
+### Compilation
 
-Naviguez vers le répertoire du serveur QuickFiles et installez les dépendances :
+Si vous modifiez le code source du serveur (situé dans `mcps/internal/servers/quickfiles-server/src`), vous devrez le recompiler :
 
 ```bash
-cd servers/quickfiles-server
+cd mcps/internal/servers/quickfiles-server
 npm install
-```
-
-### 3. Compilation du projet
-
-Compilez le projet TypeScript en JavaScript :
-
-```bash
 npm run build
 ```
 
-Cette commande génère les fichiers JavaScript dans le répertoire `dist/`.
+Cela mettra à jour les fichiers JavaScript dans le répertoire `build/` qui sont exécutés par la commande de démarrage.
 <!-- END_SECTION: installation_steps -->
-
-<!-- START_SECTION: installation_methods -->
-## Méthodes d'installation alternatives
-
-### Installation via npm
-
-Vous pouvez également installer le serveur QuickFiles directement via npm :
-
-```bash
-npm install @modelcontextprotocol/server-quickfiles
-```
-
-### Installation avec Docker
-
-Une image Docker est disponible pour faciliter le déploiement :
-
-```bash
-# Construire l'image Docker
-docker build -t quickfiles-mcp-server .
-
-# Exécuter le conteneur
-docker run -p 3000:3000 -v /chemin/vers/fichiers:/data quickfiles-mcp-server
-```
-
-### Installation automatisée avec script
-
-Pour Windows, vous pouvez utiliser le script d'installation automatisée :
-
-```batch
-run-node-portable.bat
-```
-
-Ce script téléchargera Node.js si nécessaire, installera les dépendances et démarrera le serveur.
-<!-- END_SECTION: installation_methods -->
-
-<!-- START_SECTION: verification -->
-## Vérification de l'installation
-
-Pour vérifier que l'installation s'est déroulée correctement, exécutez le script de test :
-
-```bash
-npm run test:simple
-```
-
-Vous devriez voir une sortie similaire à celle-ci :
-
-```
-QuickFiles MCP Server - Test de connexion
-✓ Connexion au serveur MCP établie
-✓ Liste des outils disponibles récupérée
-✓ Lecture de fichiers multiples réussie
-✓ Listage de répertoire réussi
-Test terminé avec succès!
-```
-
-Si vous voyez cette sortie, le serveur QuickFiles est correctement installé et fonctionnel.
-<!-- END_SECTION: verification -->
 
 <!-- START_SECTION: post_installation -->
 ## Configuration post-installation
@@ -120,18 +64,7 @@ Si vous voyez cette sortie, le serveur QuickFiles est correctement installé et 
 
 Le serveur QuickFiles nécessite des autorisations de lecture et d'écriture sur les répertoires qu'il doit manipuler. Assurez-vous que l'utilisateur qui exécute le serveur dispose des permissions nécessaires.
 
-### Configuration du pare-feu
 
-Si vous prévoyez d'accéder au serveur QuickFiles depuis d'autres machines, assurez-vous que le port utilisé (par défaut 3000) est ouvert dans votre pare-feu.
-
-### Configuration de l'environnement de production
-
-Pour un environnement de production, il est recommandé de :
-
-1. Configurer un proxy inverse (comme Nginx ou Apache) devant le serveur QuickFiles
-2. Mettre en place HTTPS pour sécuriser les communications
-3. Configurer des limites de ressources appropriées
-4. Mettre en place une surveillance et des alertes
 <!-- END_SECTION: post_installation -->
 
 <!-- START_SECTION: troubleshooting -->
@@ -147,15 +80,6 @@ Pour un environnement de production, il est recommandé de :
 - Vérifiez que toutes les dépendances ont été installées avec `npm install`
 - Vérifiez que le projet a été compilé avec `npm run build`
 - Essayez de supprimer le répertoire `node_modules` et le fichier `package-lock.json`, puis réinstallez les dépendances
-
-#### Erreur de port déjà utilisé
-
-**Problème** : Le port 3000 est déjà utilisé par une autre application.
-
-**Solution** :
-- Modifiez le port utilisé par le serveur QuickFiles dans le fichier de configuration
-- Arrêtez l'application qui utilise déjà le port 3000
-- Utilisez la commande `netstat -ano | findstr :3000` (Windows) ou `lsof -i :3000` (Linux/macOS) pour identifier l'application qui utilise le port
 
 #### Erreur de permissions
 

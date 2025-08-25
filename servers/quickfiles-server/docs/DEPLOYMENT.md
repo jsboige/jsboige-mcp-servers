@@ -1,6 +1,6 @@
 # Guide de déploiement du MCP Quickfiles
 
-Ce document explique comment compiler et déployer les nouvelles fonctionnalités du serveur MCP Quickfiles.
+Ce document explique comment compiler et tester les modifications apportées au serveur MCP Quickfiles.
 
 ## Prérequis
 
@@ -19,67 +19,34 @@ Le projet MCP Quickfiles est organisé comme suit :
 - `tsconfig.json` : Configuration TypeScript
 - `package.json` : Configuration du projet et dépendances
 
-## Processus de compilation
+## Processus de développement
 
-Le processus de compilation convertit les fichiers TypeScript (`.ts`) en fichiers JavaScript (`.js`) qui peuvent être exécutés par Node.js. Ce processus est géré par le compilateur TypeScript (`tsc`).
+Lorsque vous modifiez le code source du serveur dans le répertoire `src/`, vous devez le recompiler pour que vos changements prennent effet.
 
-### Étapes de compilation manuelle
+### Compilation
 
-1. Nettoyer le répertoire de build existant
-2. Compiler les fichiers TypeScript avec `tsc`
-3. Vérifier que les fichiers ont été correctement générés
-4. Redémarrer le serveur MCP pour appliquer les changements
+Le processus de compilation convertit les fichiers TypeScript (`.ts`) en fichiers JavaScript (`.js`) exécutables par Node.js.
 
-## Scripts de déploiement
+Pour compiler le serveur, exécutez les commandes suivantes à la racine du serveur (`mcps/internal/servers/quickfiles-server`) :
 
-Deux scripts de déploiement sont fournis pour automatiser ce processus :
+```bash
+# S'assurer que les dépendances sont installées
+npm install
 
-### Script Batch (Windows)
-
-Le fichier `compile-deploy.bat` est un script batch Windows qui :
-
-1. Nettoie le répertoire de build
-2. Compile le code TypeScript
-3. Vérifie les fichiers générés
-4. Redémarre le serveur MCP
-
-Pour l'utiliser :
-
-```cmd
-compile-deploy.bat
+# Compiler le code
+npm run build
 ```
 
-### Script PowerShell (Windows)
+Cette commande va nettoyer le répertoire `build/` et y placer les fichiers JavaScript compilés. L'application hôte (Roo) redémarrera automatiquement le serveur si elle est en cours d'exécution.
 
-Le fichier `compile-deploy.ps1` est un script PowerShell plus avancé qui offre des options supplémentaires :
+## Vérification des modifications
 
-```powershell
-# Compilation standard avec redémarrage du serveur
-.\compile-deploy.ps1
+Pour vérifier que vos modifications fonctionnent comme prévu :
 
-# Compilation sans redémarrer le serveur
-.\compile-deploy.ps1 -NoRestart
-
-# Compilation en mode surveillance (recompile automatiquement à chaque modification)
-.\compile-deploy.ps1 -WatchMode
-
-# Compilation avec affichage détaillé
-.\compile-deploy.ps1 -Verbose
-```
-
-Options disponibles :
-- `-NoRestart` : Compile le code sans redémarrer le serveur MCP
-- `-WatchMode` : Active le mode surveillance qui recompile automatiquement à chaque modification
-- `-Verbose` : Affiche des informations supplémentaires pendant le processus de compilation
-
-## Vérification du déploiement
-
-Pour vérifier que les nouvelles fonctionnalités ont été correctement déployées :
-
-1. Exécutez l'un des scripts de déploiement
-2. Vérifiez qu'aucune erreur n'est signalée pendant la compilation
-3. Connectez-vous au serveur MCP depuis Roo
-4. Vérifiez que les nouveaux outils sont disponibles dans la liste des outils MCP
+1.  Compilez le code comme décrit ci-dessus.
+2.  Assurez-vous que Roo est en cours d'exécution et que le serveur `quickfiles` est activé.
+3.  Testez les outils que vous avez modifiés directement depuis l'interface de Roo.
+4.  Consultez les logs de Roo pour toute erreur provenant du serveur Quickfiles.
 
 ## Résolution des problèmes courants
 
@@ -97,7 +64,7 @@ Vérifiez les erreurs de syntaxe dans les fichiers source TypeScript et corrigez
 
 ### Le serveur MCP ne démarre pas
 
-Vérifiez que le port utilisé par le serveur MCP n'est pas déjà occupé par un autre processus.
+Vérifiez la console de Roo pour des messages d'erreur liés au démarrage du processus du serveur `quickfiles`. Assurez-vous que la commande dans votre configuration de serveur est correcte et que les fichiers compilés existent bien dans le répertoire `build/`.
 
 ## Maintenance continue
 
