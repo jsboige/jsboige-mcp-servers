@@ -122,6 +122,35 @@ class RooStateManagerServer {
                                 truncate: { type: 'number', default: 5, description: 'Nombre de lignes à conserver au début et à la fin de chaque message. 0 pour désactiver.' },
                             },
                         },
+                    },
+                    {
+                        name: 'diagnose_roo_state',
+                        description: 'Exécute le script d\'audit des tâches Roo (audit-roo-tasks.ps1) et retourne sa sortie JSON.',
+                        inputSchema: { type: 'object', properties: {}, required: [] },
+                    },
+                    {
+                        name: 'repair_workspace_paths',
+                        description: 'Exécute le script de réparation des chemins de workspace (repair-roo-tasks.ps1).',
+                        inputSchema: {
+                            type: 'object',
+                            properties: {
+                                path_pairs: {
+                                    type: 'array',
+                                    items: { type: 'string' },
+                                    description: 'Paires de chemins ancien/nouveau pour la réparation. Ex: "C:/old/path=D:/new/path"',
+                                },
+                                whatIf: {
+                                    type: 'boolean',
+                                    description: 'Exécute le script en mode simulation (-WhatIf).',
+                                    default: false,
+                                },
+                                non_interactive: {
+                                    type: 'boolean',
+                                    description: 'Exécute le script en mode non interactif.',
+                                    default: true,
+                                }
+                            },
+                        },
                     }
                 ] as any[],
             };
@@ -162,6 +191,12 @@ class RooStateManagerServer {
                     break;
                case 'debug_analyze_conversation':
                    result = await this.handleDebugAnalyzeConversation(args as any);
+                   break;
+               case 'diagnose_roo_state':
+                   result = await this.handleDiagnoseRooState();
+                   break;
+               case 'repair_workspace_paths':
+                   result = await this.handleRepairWorkspacePaths(args as any);
                    break;
                 default:
                     throw new Error(`Tool not found: ${name}`);
@@ -582,6 +617,61 @@ class RooStateManagerServer {
         }
 
         return { content: [{ type: 'text', text: JSON.stringify(results, null, 2) }] };
+    }
+
+
+    private async _executePowerShellScript(scriptPath: string, args: string[] = []): Promise<CallToolResult> {
+        const fullScriptPath = path.resolve(process.cwd(), scriptPath);
+        // Important: Quote the file path to handle spaces
+        const command = `powershell.exe -NoProfile -ExecutionPolicy Bypass -File "${fullScriptPath}" ${args.join(' ')}`;
+        
+        return new Promise((resolve, reject) => {
+            exec(command, { maxBuffer: 1024 * 1024 * 5 }, (error, stdout, stderr) => { // 5MB buffer
+                if (error) {
+                    const errorMessage = `ERROR: ${error.message}\nSTDOUT: ${stdout}\nSTDERR: ${stderr}`;
+                    reject(new Error(errorMessage));
+                    return;
+                }
+                
+                // On PowerShell scripts, informational messages can be written to stderr without it being an error.
+                // We'll combine stdout and stderr to provide the full picture to the user.
+                let combinedOutput = "";
+                if (stdout) {
+                    combinedOutput += `--- STDOUT ---\n${stdout.trim()}\n`;
+                }
+                if (stderr) {
+                    combinedOutput += `--- STDERR ---\n${stderr.trim()}\n`;
+                }
+
+                resolve({ content: [{ type: 'text', text: combinedOutput.trim() }] });
+            });
+        });
+    }
+
+    async handleDiagnoseRooState(): Promise<CallToolResult> {
+        const scriptPath = 'scripts/audit/audit-roo-tasks.ps1';
+        return this._executePowerShellScript(scriptPath, ['-AsJson']);
+    }
+
+    async handleRepairWorkspacePaths(args: { path_pairs?: string[], whatIf?: boolean, non_interactive?: boolean }): Promise<CallToolResult> {
+        const scriptPath = 'scripts/repair/repair-roo-tasks.ps1';
+        const scriptArgs: string[] = [];
+        
+        if (args.path_pairs && args.path_pairs.length > 0) {
+            const pairs = args.path_pairs.map(p => `'${p.replace(/'/g, "''")}'`).join(',');
+            scriptArgs.push(`-PathPairs @(${pairs})`);
+        }
+        
+        if (args.whatIf) {
+            scriptArgs.push('-WhatIf');
+        }
+        
+        // Default to non-interactive if not specified
+        if (args.non_interactive !== false) {
+            scriptArgs.push('-NonInteractive');
+        }
+
+        return this._executePowerShellScript(scriptPath, scriptArgs);
     }
 
 

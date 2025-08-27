@@ -252,19 +252,27 @@ Variables d'environnement:
         }
       }
       
-      // Initialiser les services Jupyter avec la configuration
-      await initializeJupyterServices({
-        baseUrl: baseUrl,
-        token: token,
-        skipConnectionCheck: skipConnectionCheck
-      });
-      console.log('Services Jupyter initialisés avec succès');
+      // Initialiser les services Jupyter et gérer les erreurs de connexion
+      try {
+        await initializeJupyterServices({
+          baseUrl: baseUrl,
+          token: token,
+          skipConnectionCheck: skipConnectionCheck
+        });
+        if (!skipConnectionCheck) {
+          console.log('Services Jupyter initialisés avec succès');
+        }
+      } catch (initError) {
+        console.warn('AVERTISSEMENT: Échec de l\'initialisation des services Jupyter. Le serveur démarre en mode dégradé.');
+        console.warn('Les outils nécessitant un serveur Jupyter ne fonctionneront pas.');
+        // Ne propagez pas l'erreur, permettez au serveur de démarrer
+      }
       
       const transport = new StdioServerTransport();
       await this.server.connect(transport);
       console.log('Serveur MCP Jupyter démarré avec succès sur stdio');
     } catch (error) {
-      console.error('Erreur lors du démarrage du serveur MCP Jupyter:', error);
+      console.error('Erreur fatale lors du démarrage du serveur MCP Jupyter:', error);
       process.exit(1);
     }
   }

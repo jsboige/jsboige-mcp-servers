@@ -27,19 +27,25 @@ export async function initializeJupyterServices(options?: JupyterServiceOptions)
       token: token,
     });
   }
-  // Un simple test de connexion
-  try {
-    const apiUrl = `${serverSettings.baseUrl}/api`;
-    const response = await axios.get(apiUrl, {
-        headers: { 'Authorization': `token ${serverSettings.token}` }
-    });
-    if (response.status !== 200) {
-        throw new Error('Failed to connect to Jupyter Server');
+  // Si le contrôle de connexion n'est pas sauté, on effectue un simple test.
+  if (!options?.skipConnectionCheck) {
+    try {
+      const apiUrl = `${serverSettings.baseUrl}/api`;
+      const response = await axios.get(apiUrl, {
+          headers: { 'Authorization': `token ${serverSettings.token}` }
+      });
+      if (response.status !== 200) {
+          throw new Error('Failed to connect to Jupyter Server');
+      }
+      console.log('Jupyter services initialized successfully.');
+    } catch (error) {
+      console.error('Error initializing Jupyter services:', error);
+      // On propage l'erreur pour que le processus appelant puisse la gérer.
+      throw error;
     }
-    console.log('Jupyter services initialized successfully.');
-  } catch (error) {
-    console.error('Error initializing Jupyter services:', error);
-    throw error;
+  } else {
+    // Si on saute le contrôle, on l'indique et on continue sans erreur.
+    console.log('Jupyter connection check skipped.');
   }
 }
 

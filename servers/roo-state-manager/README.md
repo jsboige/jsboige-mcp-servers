@@ -107,6 +107,38 @@ Paramètres :
 
 #### `validate_custom_path`
 Valide un chemin de stockage Roo personnalisé.
+|
+#### `diagnose_roo_state`
+Exécute le script d'audit des tâches Roo (`scripts/audit/audit-roo-tasks.ps1`) et retourne sa sortie JSON. Cet outil est essentiel pour obtenir un diagnostic complet de l'état des tâches, y compris les chemins de workspace invalides, les métadonnées manquantes ou les incohérences.
+|
+**Exemple d'utilisation avec `use_mcp_tool` :**
+```json
+{
+  "tool_name": "diagnose_roo_state",
+  "server_name": "roo-state-manager",
+  "arguments": {}
+}
+```
+|
+#### `repair_workspace_paths`
+Exécute le script de réparation des chemins de workspace (`scripts/repair/repair-roo-tasks.ps1`). Cet outil permet de corriger en masse les chemins de workspace invalides dans les métadonnées des tâches, ce qui est crucial après une migration de projet ou un changement de structure de répertoires.
+|
+**Paramètres :**
+- `path_pairs` (array[string]): Une liste de paires de chaînes de caractères, où chaque chaîne contient l'ancien chemin et le nouveau chemin séparés par un `=`. Par exemple : `["C:\\old\\path=D:\\new\\path", "/mnt/old_location=/home/user/new_location"]`.
+- `whatIf` (boolean, optionnel, défaut: `false`): Si `true`, le script s'exécute en mode simulation et affiche les changements qu'il aurait effectués sans les appliquer réellement.
+- `non_interactive` (boolean, optionnel, défaut: `true`): Si `true`, le script s'exécute sans demander de confirmation à l'utilisateur.
+|
+**Exemple d'utilisation avec `use_mcp_tool` (mode simulation) :**
+```json
+{
+  "tool_name": "repair_workspace_paths",
+  "server_name": "roo-state-manager",
+  "arguments": {
+    "path_pairs": ["d:\\Dev\\roo-v2-archive=d:\\Dev\\roo-extensions\\archive"],
+    "whatIf": true
+  }
+}
+```
 
 ## 📊 Format des Données Roo
 
