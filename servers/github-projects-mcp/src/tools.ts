@@ -403,6 +403,7 @@ export function setupTools(server: any, accounts: GitHubAccount[]) {
       }) => {
         try {
           const octokit = getGitHubClient(owner, accounts);
+          logger.info(`[add_item_to_project] Received project_id: ${project_id}`); // Ajout du log
           checkReadOnlyMode();
           let query;
           let variables: any = { projectId: project_id };

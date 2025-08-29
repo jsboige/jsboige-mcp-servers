@@ -390,20 +390,26 @@ export async function executeDeleteProjectField(
   checkReadOnlyMode();
   try {
     const mutation = `
-      mutation($projectId: ID!, $fieldId: ID!) {
+      mutation($fieldId: ID!) {
         deleteProjectV2Field(input: {
-          projectId: $projectId,
           fieldId: $fieldId
         }) {
           projectV2Field {
-            id
+            ... on ProjectV2Field {
+              id
+            }
+            ... on ProjectV2IterationField {
+              id
+            }
+            ... on ProjectV2SingleSelectField {
+              id
+            }
           }
         }
       }
     `;
 
     const result = await octokit.graphql(mutation, {
-      projectId,
       fieldId,
     });
 
