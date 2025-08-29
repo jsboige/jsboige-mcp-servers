@@ -205,17 +205,23 @@ export async function executeDeleteProject(
   try {
     const mutation = `
       mutation($projectId: ID!) {
-        deleteProject(input: {projectId: $projectId}) {
-          clientMutationId
+        deleteProjectV2(input: {projectId: $projectId}) {
+          projectV2 {
+            id
+          }
         }
       }
     `;
 
-    await octokit.graphql(mutation, {
+    const result = await octokit.graphql(mutation, {
       projectId,
     });
 
-    return { success: true };
+    if (!result.deleteProjectV2?.projectV2?.id) {
+        throw new Error("La suppression du projet a échoué ou n'a pas retourné les informations attendues.");
+    }
+
+    return { success: true, deletedProjectId: result.deleteProjectV2.projectV2.id };
 
   } catch (e) {
     console.error('GitHub API call failed:', e);

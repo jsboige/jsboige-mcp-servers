@@ -13,21 +13,40 @@ export interface GitHubAccount {
  * @returns Une instance d'Octokit authentifiée.
  */
 export function getGitHubClient(owner: string | undefined, accounts: GitHubAccount[]): Octokit {
-  console.log(`[GP-MCP][GITHUB] Appel de getGitHubClient pour le owner: ${owner || 'default'}.`);
+  console.log('[GP-MCP][GITHUB] Appel de getGitHubClient avec owner:', owner, 'et accounts:', JSON.stringify(accounts));
   let token: string | undefined;
 
+  let account: GitHubAccount | undefined;
   if (owner) {
-    const account = accounts.find(acc => acc.owner.toLowerCase() === owner.toLowerCase());
-    token = account?.token;
+    account = accounts.find(acc => acc.owner.toLowerCase() === owner.toLowerCase());
+    if (!account) {
+      throw new Error(`[GP-MCP][CONFIG_ERROR] Aucun compte trouvé pour le propriétaire '${owner}'.`);
+    }
   } else if (accounts.length > 0) {
-    // Comportement par défaut : utiliser le premier compte de la liste
-    token = accounts[0].token;
-    console.log(`[GP-MCP][GITHUB] Aucun owner spécifié, utilisation du premier compte par défaut.`);
+    account = accounts[0];
+  }
+
+  if (!account) {
+    throw new Error('[GP-MCP][CONFIG_ERROR] Aucun compte GitHub n\'est configuré.');
+  }
+
+  token = account.token;
+
+  // Tenter de résoudre la variable d'environnement si le token est sous la forme ${env:VAR}
+  const envVarMatch = token.match(/^\${env:(.*)}$/);
+  if (envVarMatch && envVarMatch[1]) {
+    const envVarName = envVarMatch[1];
+    token = process.env[envVarName];
+    if (!token) {
+      throw new Error(`[GP-MCP][CONFIG_ERROR] La variable d'environnement '${envVarName}' spécifiée dans la configuration n'est pas définie.`);
+    }
   }
 
   if (!token) {
-    console.warn(`AVERTISSEMENT: Token GitHub non trouvé pour le owner '${owner}'. Les requêtes seront limitées.`);
+    throw new Error('[GP-MCP][CONFIG_ERROR] Le token GitHub est vide ou non défini après résolution.');
   }
+
+  console.log(`[GP-MCP][GITHUB] Utilisation du token: ${token}`);
 
   return new Octokit({
     auth: token,

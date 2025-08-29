@@ -884,6 +884,36 @@ export function setupTools(server: any, accounts: GitHubAccount[]) {
         const octokit = getGitHubClient(owner, accounts);
         return await analyze_task_complexity(octokit, { owner, repo, projectNumber, itemId });
       }
+    },
+    /**
+     * @tool search_repositories
+     * @description Recherche des dépôts sur GitHub.
+     * @param {string} query - La requête de recherche.
+     * @returns {Promise<object>} Un objet contenant la liste des dépôts trouvés.
+     */
+    {
+      name: 'search_repositories',
+      description: 'Recherche des dépôts sur GitHub',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          query: { type: 'string', description: 'La requête de recherche.' }
+        },
+        required: ['query']
+      },
+      execute: async ({ query }: { query: string }) => {
+        try {
+          // Utilise le premier compte par défaut pour la recherche
+          const octokit = getGitHubClient(accounts[0].owner, accounts);
+          const response = await octokit.request('GET /search/repositories', {
+            q: query
+          });
+          return { success: true, repositories: response.data.items };
+        } catch (error: any) {
+          logger.error('Erreur dans search_repositories', { error });
+          return { success: false, error: error.message || 'Erreur lors de la recherche de dépôts' };
+        }
+      }
     }
   ];
 
