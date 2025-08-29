@@ -3,11 +3,14 @@
   "compilerOptions": {
     "rootDir": "..",
     "outDir": "../build/tests",
-    "moduleResolution": "NodeNext",
+    "noEmit": false,
     "types": [
       "jest",
       "node"
     ]
   },
-  "include": ["./**/*.ts"]
+  "include": [
+    "./**/*.ts",
+    "../src/**/*.ts"
+  ]
 }

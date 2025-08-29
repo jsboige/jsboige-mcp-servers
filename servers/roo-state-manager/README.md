@@ -224,6 +224,16 @@ Ce test :
       - API: ✅ | UI: ✅
 ```
 
+### Tests Unitaires
+
+La suite de tests unitaires peut être lancée pour valider les `handlers` des outils de manière isolée.
+
+```bash
+npm run test
+```
+
+Cette commande exécute tous les fichiers `*.test.ts` dans les répertoires `src/` et `tests/`. Les tests pour les outils qui dépendent de scripts externes (comme `diagnose_roo_state`) sont moqués pour assurer des tests rapides et indépendants de l'environnement.
+
 ## 🔧 Configuration
 
 ### Intégration MCP

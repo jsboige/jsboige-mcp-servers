@@ -8,11 +8,13 @@
     "build": "tsc",
     "start": "ts-node-esm src/index.ts",
     "dev": "tsc -w",
-    "test": "jest",
+    "test:setup": "ts-node-esm tests/jest.setup.ts",
+    "test": "npm run test:setup && cross-env NODE_OPTIONS=--experimental-vm-modules jest",
     "test:coverage": "jest --coverage",
     "test:detector": "node tests/test-storage-detector.js",
     "test:all": "npm run test && npm run test:detector",
-    "test:e2e": "jest --testPathPattern=tests/e2e"
+    "test:e2e": "npm run test:e2e:run",
+    "test:e2e:run": "ts-node-esm tests/e2e-runner.ts"
   },
   "keywords": [
     "mcp",
@@ -24,7 +26,6 @@
   "license": "MIT",
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.16.0",
-    "@types/http-proxy": "^1.17.16",
     "dotenv": "^17.2.0",
     "glob": "^10.3.10",
     "http-proxy": "^1.18.1",
@@ -32,14 +33,19 @@
     "jsboige-mcp-servers": "file:../.."
   },
   "devDependencies": {
+    "@types/http-proxy": "^1.17.16",
+    "@modelcontextprotocol/sdk": "^1.16.0",
     "@types/jest": "^29.5.14",
     "@types/node": "^20.11.5",
     "@types/node-fetch": "^2.6.12",
     "@types/uuid": "^9.0.8",
     "@types/vscode": "^1.102.0",
+    "cross-env": "^10.0.0",
+    "esbuild": "^0.25.9",
     "jest": "^29.7.0",
     "node-fetch": "^2.7.0",
     "ts-jest": "^29.4.0",
+    "ts-node": "^10.9.2",
     "typescript": "^5.8.3"
   }
 }

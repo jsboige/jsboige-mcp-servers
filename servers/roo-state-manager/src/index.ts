@@ -680,6 +680,12 @@ class RooStateManagerServer {
         await this.server.connect(transport);
         console.error('Roo State Manager Server started (new features re-added).');
     }
+
+    async stop() {
+        if (this.server && this.server.transport) {
+            this.server.transport.close();
+        }
+    }
 }
 
 try {

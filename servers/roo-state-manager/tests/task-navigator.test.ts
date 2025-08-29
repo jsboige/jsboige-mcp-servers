@@ -1,7 +1,7 @@
+import { jest, describe, it, expect, beforeEach } from '@jest/globals';
 import { TaskNavigator, TreeNode } from '../src/services/task-navigator.js';
 import { globalCacheManager } from '../src/utils/cache-manager.js';
-import { ConversationSummary, TaskMetadata } from '../src/types/conversation.js';
-import { TaskMetadataWithParent } from '../src/services/task-navigator.js';
+import { ConversationSkeleton } from '../src/types/conversation.js';
 
 // Mock du cache manager global
 jest.mock('../src/utils/cache-manager', () => ({
@@ -17,34 +17,28 @@ const createMockConversation = (
   taskId: string,
   parentTaskId?: string,
   title?: string
-): ConversationSummary => ({
+): ConversationSkeleton => ({
   taskId,
-  path: `/tasks/${taskId}`,
+  parentTaskId,
   metadata: {
-    taskId,
-    createdAt: new Date().toISOString(),
-    updatedAt: new Date().toISOString(),
-    status: 'active',
-    totalMessages: 10,
     title: title || `Task ${taskId}`,
-    parentTaskId,
-  } as TaskMetadataWithParent,
-  messageCount: 10,
-  lastActivity: new Date().toISOString(),
-  hasApiHistory: true,
-  hasUiMessages: true,
-  size: 1024,
+    lastActivity: new Date().toISOString(),
+    createdAt: new Date().toISOString(),
+    messageCount: 10,
+    actionCount: 5,
+    totalSize: 2048,
+  },
+  sequence: [], // Séquence vide pour les tests de navigation
 });
 
 describe('TaskNavigator', () => {
   let taskNavigator: TaskNavigator;
-  const mockedCacheGet = globalCacheManager.get as jest.Mock;
+  let cache: Map<string, ConversationSkeleton>;
 
   beforeEach(() => {
-    // Réinitialiser les mocks avant chaque test
-    mockedCacheGet.mockReset();
+    cache = new Map<string, ConversationSkeleton>();
+    taskNavigator = new TaskNavigator(cache);
     jest.clearAllMocks();
-    taskNavigator = TaskNavigator.getInstance();
   });
 
   // Données de test
@@ -55,19 +49,10 @@ describe('TaskNavigator', () => {
 
   // Configuration des mocks du cache
   const setupCacheMocks = () => {
-    // Mocks pour les conversations
-    mockedCacheGet.mockImplementation(async (key: string) => {
-      if (key === 'conversation:root') return rootTask;
-      if (key === 'conversation:child1') return child1Task;
-      if (key === 'conversation:child2') return child2Task;
-      if (key === 'conversation:grandchild1') return grandchild1Task;
-      
-      // Mocks pour l'index des enfants
-      if (key === 'children-index:root') return ['child1', 'child2'];
-      if (key === 'children-index:child1') return ['grandchild1'];
-
-      return null;
-    });
+    cache.set('root', rootTask);
+    cache.set('child1', child1Task);
+    cache.set('child2', child2Task);
+    cache.set('grandchild1', grandchild1Task);
   };
 
   describe('getTaskParent', () => {
@@ -76,29 +61,23 @@ describe('TaskNavigator', () => {
     it('should return the parent task when parentTaskId exists', async () => {
       const parent = await taskNavigator.getTaskParent('child1');
       expect(parent).toEqual(rootTask);
-      expect(mockedCacheGet).toHaveBeenCalledWith('conversation:child1');
-      expect(mockedCacheGet).toHaveBeenCalledWith('conversation:root');
     });
 
     it('should return null if the task has no parentTaskId', async () => {
       const parent = await taskNavigator.getTaskParent('root');
       expect(parent).toBeNull();
-      expect(mockedCacheGet).toHaveBeenCalledWith('conversation:root');
     });
 
     it('should return null if the task does not exist', async () => {
-      mockedCacheGet.mockResolvedValueOnce(null);
       const parent = await taskNavigator.getTaskParent('non-existent');
       expect(parent).toBeNull();
     });
 
     it('should return null if the parent task does not exist in cache', async () => {
         const orphanTask = createMockConversation('orphan', 'non-existent-parent');
-        mockedCacheGet.mockImplementation(async (key: string) => {
-            if (key === 'conversation:orphan') return orphanTask;
-            if (key === 'conversation:non-existent-parent') return null; // Parent non trouvé
-            return null;
-        });
+        // Le mock principal gère déjà ce cas s'il ne trouve pas la clé.
+        // On s'assure juste que 'non-existent-parent' n'est pas dans le mock
+        cache.set('orphan', orphanTask);
         
         const parent = await taskNavigator.getTaskParent('orphan');
         expect(parent).toBeNull();
@@ -113,20 +92,14 @@ describe('TaskNavigator', () => {
         expect(children).toHaveLength(2);
         expect(children).toContainEqual(child1Task);
         expect(children).toContainEqual(child2Task);
-        expect(mockedCacheGet).toHaveBeenCalledWith('children-index:root');
     });
 
     it('should return an empty array for a task with no children', async () => {
         const children = await taskNavigator.getTaskChildren('grandchild1');
         expect(children).toHaveLength(0);
-        expect(mockedCacheGet).toHaveBeenCalledWith('children-index:grandchild1');
     });
 
     it('should return an empty array if the children index is empty or null', async () => {
-        mockedCacheGet.mockImplementation(async (key: string) => {
-            if (key === 'children-index:task-with-empty-index') return [];
-            return null;
-        });
         const children = await taskNavigator.getTaskChildren('task-with-empty-index');
         expect(children).toHaveLength(0);
     });
@@ -163,7 +136,6 @@ describe('TaskNavigator', () => {
     });
 
     it('should return null if the root task is not found', async () => {
-        mockedCacheGet.mockResolvedValueOnce(null);
         const tree = await taskNavigator.getTaskTree('non-existent-root');
         expect(tree).toBeNull();
     });

@@ -54,12 +54,16 @@ const waitForQdrant = async (url: string): Promise<void> => {
  * Charge les variables d'environnement et attend que Qdrant soit prêt.
  */
 import { startProxy } from './e2e/proxy.js';
+import { fileURLToPath } from 'url';
+
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
 
 const PROXY_PORT = 3001;
 
 export default async () => {
-  // Charger les variables d'environnement à partir du fichier .env à la racine du serveur
-  dotenv.config({ path: path.resolve(__dirname, '..', '.env') });
+  // Charger les variables d'environnement à partir du fichier .env.test
+  dotenv.config({ path: path.resolve(__dirname, '..', '.env.test') });
 
   const qdrantUrl = process.env.QDRANT_URL;
 
