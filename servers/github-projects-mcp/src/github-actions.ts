@@ -860,3 +860,34 @@ export async function unarchiveProjectItem(
     throw new Error(`GitHub API Error: ${(e as Error).message}`);
   }
 }
+
+/**
+ * Récupère les détails d'un projet V2 par son Node ID.
+ * @param octokit Le client Octokit.
+ * @param projectId L'ID global du projet (node_id).
+ * @returns Les détails du projet, y compris son numéro.
+ */
+export async function getProjectDetails(octokit: any, projectId: string): Promise<{ id: string; number: number; title: string; }> {
+  try {
+    const query = `
+      query($id: ID!) {
+        node(id: $id) {
+          ... on ProjectV2 {
+            id
+            number
+            title
+          }
+        }
+      }
+    `;
+    const result = await octokit.graphql<any>(query, { id: projectId });
+
+    if (!result.node) {
+      throw new Error(`Aucun projet trouvé avec l'ID ${projectId}`);
+    }
+    return result.node;
+  } catch (error: any) {
+    logger.error(`Erreur lors de la récupération des détails du projet ${projectId}`, { error });
+    throw new Error(`Impossible de récupérer les détails du projet : ${error.message}`);
+  }
+}

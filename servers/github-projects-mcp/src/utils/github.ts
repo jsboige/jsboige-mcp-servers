@@ -12,25 +12,25 @@ export interface GitHubAccount {
  * @param accounts La liste des comptes GitHub disponibles.
  * @returns Une instance d'Octokit authentifiée.
  */
-export function getGitHubClient(owner: string | undefined, accounts: GitHubAccount[]): Octokit {
-  console.log('[GP-MCP][GITHUB] Appel de getGitHubClient avec owner:', owner, 'et accounts:', JSON.stringify(accounts));
-  let token: string | undefined;
+export function getGitHubClient(owner: string, accounts: GitHubAccount[]): Octokit {
+    console.log('[GP-MCP][GITHUB] Appel de getGitHubClient avec owner:', owner, 'et accounts:', JSON.stringify(accounts));
+    let token: string | undefined;
+    let account: GitHubAccount | undefined;
 
-  let account: GitHubAccount | undefined;
-  if (owner) {
-    account = accounts.find(acc => acc.owner.toLowerCase() === owner.toLowerCase());
-    if (!account) {
-      throw new Error(`[GP-MCP][CONFIG_ERROR] Aucun compte trouvé pour le propriétaire '${owner}'.`);
+    if (owner && accounts) {
+        account = accounts.find(acc => acc.owner.toLowerCase() === owner.toLowerCase());
     }
-  } else if (accounts.length > 0) {
-    account = accounts[0];
-  }
 
-  if (!account) {
-    throw new Error('[GP-MCP][CONFIG_ERROR] Aucun compte GitHub n\'est configuré.');
-  }
+    if (!account && accounts && accounts.length > 0) {
+        console.log(`[GP-MCP][GITHUB] Aucun compte trouvé pour '${owner}', utilisation du premier compte disponible.`);
+        account = accounts[0];
+    }
+    
+    if (!account) {
+        throw new Error('[GP-MCP][CONFIG_ERROR] Aucun compte GitHub n\'est configuré ou trouvé.');
+    }
 
-  token = account.token;
+    token = account.token;
 
   // Tenter de résoudre la variable d'environnement si le token est sous la forme ${env:VAR}
   const envVarMatch = token.match(/^\${env:(.*)}$/);
