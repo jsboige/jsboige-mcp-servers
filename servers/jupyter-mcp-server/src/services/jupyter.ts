@@ -54,7 +54,7 @@ export async function initializeJupyterServices(options?: JupyterServiceOptions)
     token = detectedServer.token;
   }
   
-  baseUrl = baseUrl.endsWith('/') ? baseUrl.slice(0, -1) : baseUrl;
+  baseUrl = baseUrl.replace(/\/+$/, '');
   
   serverSettings = ServerConnection.makeSettings({
     baseUrl: baseUrl,
