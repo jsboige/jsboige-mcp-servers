@@ -49,19 +49,8 @@ try {
     Pop-Location
 }
 
-# 3. Démarrage du serveur Jupyter Lab en arrière-plan
-Write-Host "[ETAPE 3/4] Démarrage du serveur Jupyter Lab..."
-if (-not (Test-Path $JupyterLabPath)) {
-    Write-Error "Le fichier jupyter-lab.exe n'a pas été trouvé à l'adresse '$JupyterLabPath'. Veuillez vérifier le chemin."
-    exit 1
-}
-$jupyterArgs = "--no-browser --ServerApp.token='' --ServerApp.password='' --ServerApp.disable_check_xsrf=True"
-Start-Process -FilePath $JupyterLabPath -ArgumentList $jupyterArgs -WindowStyle Minimized
-Write-Host "Serveur Jupyter Lab démarré en arrière-plan. Attente de 10 secondes pour l'initialisation..."
-Start-Sleep -Seconds 10
-
-# 4. Lancement du serveur MCP
-Write-Host "[ETAPE 4/4] Lancement du serveur MCP Jupyter..."
+# 3. Lancement du serveur MCP
+Write-Host "[ETAPE 3/3] Lancement du serveur MCP Jupyter..."
 $mcpScriptPath = Join-Path $McpDirectory "dist\index.js"
 try {
     & $NodePath $mcpScriptPath

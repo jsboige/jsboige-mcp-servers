@@ -121,49 +121,64 @@ export async function startKernel(kernelName: string = 'python3'): Promise<strin
     if (!kernelManager) {
         throw new Error("KernelManager not initialized.");
     }
-    console.log(`Starting kernel: ${kernelName}`);
+    console.log(`[KERNEL_LIFECYCLE] Attempting to start kernel: ${kernelName}`);
     const kernel = await kernelManager.startNew({ name: kernelName });
     activeKernels.set(kernel.id, kernel);
-    console.log(`Kernel started with ID: ${kernel.id}`);
+    console.log(`[KERNEL_LIFECYCLE] Kernel started with ID: ${kernel.id}`);
+    console.log(`[KERNEL_LIFECYCLE] Active kernels map updated. Size: ${activeKernels.size}`);
     return kernel.id;
 }
 
 export async function stopKernel(kernelId: string): Promise<boolean> {
+    console.log(`[KERNEL_LIFECYCLE] Attempting to stop kernel with ID: ${kernelId}`);
     const kernel = activeKernels.get(kernelId);
     if (kernel) {
-        console.log(`Stopping kernel: ${kernelId}`);
+        console.log(`[KERNEL_LIFECYCLE] Kernel found. Shutting down.`);
         await kernel.shutdown();
         activeKernels.delete(kernelId);
+        console.log(`[KERNEL_LIFECYCLE] Kernel shut down and removed from map. Remaining: ${activeKernels.size}`);
         return true;
     }
+    console.warn(`[KERNEL_LIFECYCLE] Attempted to stop a kernel with ID ${kernelId}, but it was not found in the active map.`);
     return false;
 }
 
 export async function executeCode(kernelId: string, code: string): Promise<any> {
+    console.log(`[EXECUTION] Attempting to execute code on kernel ID: ${kernelId}`);
+    console.log(`[EXECUTION] Current active kernel IDs: [${Array.from(activeKernels.keys()).join(', ')}]`);
     const kernel = activeKernels.get(kernelId);
     if (!kernel) {
+        console.error(`[EXECUTION_ERROR] Kernel with ID ${kernelId} not found in active map.`);
         throw new Error(`Kernel with ID ${kernelId} not found.`);
     }
 
+    console.log(`[EXECUTION] Kernel found. Sending execute request.`);
     const future = kernel.requestExecute({ code });
     let output = '';
 
     return new Promise((resolve, reject) => {
         future.onIOPub = (msg) => {
             const msgType = msg.header.msg_type;
+            console.log(`[EXECUTION_IO] Received IOPub message of type: ${msgType}`);
             if (msgType === 'stream' && 'text' in msg.content) {
+                console.log(`[EXECUTION_IO] Stream output: ${msg.content.text}`);
                 output += msg.content.text;
             } else if (msgType === 'error' && 'ename' in msg.content && 'evalue' in msg.content && 'traceback' in msg.content) {
                 const errorContent = msg.content as { ename: string; evalue: string; traceback: unknown };
+                console.error(`[EXECUTION_IO] Execution error: ${errorContent.ename}: ${errorContent.evalue}`);
                 if (Array.isArray(errorContent.traceback)) {
                     output += `${errorContent.ename}: ${errorContent.evalue}\n${errorContent.traceback.join('\n')}`;
                 }
+            } else if (msgType === 'status') {
+                console.log(`[EXECUTION_IO] Kernel status is now: ${(msg.content as any).execution_state}`);
             }
         };
 
         future.done.then((reply) => {
+            console.log('[EXECUTION] Future completed successfully.');
             resolve({ status: 'ok', output });
         }).catch((err) => {
+            console.error('[EXECUTION_ERROR] Future failed:', err);
             reject({ status: 'error', output: err.toString() });
         });
     });
