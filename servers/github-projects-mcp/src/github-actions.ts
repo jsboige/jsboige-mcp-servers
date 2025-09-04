@@ -113,22 +113,30 @@ export async function executeUpdateProjectField(
   checkReadOnlyMode();
   try {
     const mutation = `
-      mutation($projectId: ID!, $fieldId: ID!, $name: String!) {
+      mutation($fieldId: ID!, $name: String!) {
         updateProjectV2Field(input: {
-          projectId: $projectId,
           fieldId: $fieldId,
           name: $name
         }) {
           projectV2Field {
-            id
-            name
+            ... on ProjectV2Field {
+              id
+              name
+            }
+            ... on ProjectV2IterationField {
+              id
+              name
+            }
+            ... on ProjectV2SingleSelectField {
+              id
+              name
+            }
           }
         }
       }
     `;
 
     const result = await octokit.graphql(mutation, {
-      projectId,
       fieldId,
       name,
     });
@@ -244,15 +252,25 @@ export async function executeCreateProjectField(
   checkReadOnlyMode();
   try {
     const mutation = `
-      mutation($projectId: ID!, $dataType: ProjectV2FieldType!, $name: String!) {
+      mutation($projectId: ID!, $dataType: ProjectV2CustomFieldType!, $name: String!) {
         createProjectV2Field(input: {
           projectId: $projectId,
           dataType: $dataType,
           name: $name
         }) {
           projectV2Field {
-            id
-            name
+            ... on ProjectV2Field {
+              id
+              name
+            }
+            ... on ProjectV2IterationField {
+              id
+              name
+            }
+            ... on ProjectV2SingleSelectField {
+              id
+              name
+            }
           }
         }
       }
@@ -372,20 +390,26 @@ export async function executeDeleteProjectField(
   checkReadOnlyMode();
   try {
     const mutation = `
-      mutation($projectId: ID!, $fieldId: ID!) {
+      mutation($fieldId: ID!) {
         deleteProjectV2Field(input: {
-          projectId: $projectId,
           fieldId: $fieldId
         }) {
           projectV2Field {
-            id
+            ... on ProjectV2Field {
+              id
+            }
+            ... on ProjectV2IterationField {
+              id
+            }
+            ... on ProjectV2SingleSelectField {
+              id
+            }
           }
         }
       }
     `;
 
     const result = await octokit.graphql(mutation, {
-      projectId,
       fieldId,
     });
 
@@ -465,7 +489,7 @@ export async function executeArchiveProject(
       mutation($projectId: ID!) {
         updateProjectV2(input: {
           projectId: $projectId,
-          state: CLOSED
+          closed: true
         }) {
           projectV2 {
             id
@@ -509,7 +533,7 @@ export async function executeUnarchiveProject(
       mutation($projectId: ID!) {
         updateProjectV2(input: {
           projectId: $projectId,
-          state: OPEN
+          closed: false
         }) {
           projectV2 {
             id
@@ -834,5 +858,36 @@ export async function unarchiveProjectItem(
   } catch (e) {
     console.error('GitHub API call failed:', e);
     throw new Error(`GitHub API Error: ${(e as Error).message}`);
+  }
+}
+
+/**
+ * Récupère les détails d'un projet V2 par son Node ID.
+ * @param octokit Le client Octokit.
+ * @param projectId L'ID global du projet (node_id).
+ * @returns Les détails du projet, y compris son numéro.
+ */
+export async function getProjectDetails(octokit: any, projectId: string): Promise<{ id: string; number: number; title: string; }> {
+  try {
+    const query = `
+      query($id: ID!) {
+        node(id: $id) {
+          ... on ProjectV2 {
+            id
+            number
+            title
+          }
+        }
+      }
+    `;
+    const result = await octokit.graphql<any>(query, { id: projectId });
+
+    if (!result.node) {
+      throw new Error(`Aucun projet trouvé avec l'ID ${projectId}`);
+    }
+    return result.node;
+  } catch (error: any) {
+    logger.error(`Erreur lors de la récupération des détails du projet ${projectId}`, { error });
+    throw new Error(`Impossible de récupérer les détails du projet : ${error.message}`);
   }
 }

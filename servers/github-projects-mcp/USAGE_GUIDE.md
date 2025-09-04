@@ -375,3 +375,223 @@ Supprime un projet GitHub.
 ```
 
 ---
+### `archive_project`
+
+**Description:**
+Archive un projet GitHub.
+
+**Paramètres:**
+*   `owner` (string, obligatoire): Propriétaire du projet.
+*   `projectId` (string, obligatoire): L'ID du projet à archiver.
+
+**Exemple d'appel JSON:**
+```json
+{
+  "owner": "jsboige",
+  "projectId": "PVT_kwHOADA1Xc4BBscM"
+}
+```
+
+**Exemple de résultat réussi:**
+```json
+{
+  "success": true,
+  "archivedProjectId": "PVT_kwHOADA1Xc4BBscM"
+}
+```
+
+---
+### `unarchive_project`
+
+**Description:**
+Désarchive un projet GitHub.
+
+**Paramètres:**
+*   `owner` (string, obligatoire): Propriétaire du projet.
+*   `projectId` (string, obligatoire): L'ID du projet à désarchiver.
+
+**Exemple d'appel JSON:**
+```json
+{
+  "owner": "jsboige",
+  "projectId": "PVT_kwHOADA1Xc4BBscM"
+}
+```
+
+**Exemple de résultat réussi:**
+```json
+{
+  "success": true,
+  "unarchivedProjectId": "PVT_kwHOADA1Xc4BBscM"
+}
+```
+
+---
+### `create_project_field`
+
+**Description:**
+Crée un nouveau champ (colonne) dans un projet.
+
+**Paramètres:**
+*   `owner` (string, obligatoire): Propriétaire du projet.
+*   `projectId` (string, obligatoire): L'ID du projet.
+*   `name` (string, obligatoire): Le nom du nouveau champ.
+*   `dataType` (string, obligatoire): Le type de données du champ ('TEXT', 'NUMBER', 'DATE', 'SINGLE_SELECT').
+
+**Exemple d'appel JSON:**
+```json
+{
+  "owner": "jsboige",
+  "projectId": "PVT_kwHOADA1Xc4BBscM",
+  "name": "Priorité",
+  "dataType": "SINGLE_SELECT"
+}
+```
+
+**Exemple de résultat réussi:**
+```json
+{
+  "success": true,
+  "field": {
+    "id": "PVTSSF_lAHOADA1Xc4BBscMzg47j8c"
+  }
+}
+```
+
+---
+### `update_project_field`
+
+**Description:**
+Met à jour un champ existant dans un projet (par exemple, pour le renommer).
+
+**Paramètres:**
+*   `owner` (string, obligatoire): Propriétaire du projet.
+*   `projectId` (string, obligatoire): L'ID du projet.
+*   `fieldId` (string, obligatoire): L'ID du champ à mettre à jour.
+*   `name` (string, obligatoire): Le nouveau nom pour le champ.
+
+**Exemple d'appel JSON:**
+```json
+{
+  "owner": "jsboige",
+  "projectId": "PVT_kwHOADA1Xc4BBscM",
+  "fieldId": "PVTSSF_lAHOADA1Xc4BBscMzg47j8c",
+  "name": "Niveau de Priorité"
+}
+```
+
+**Exemple de résultat réussi:**
+```json
+{
+  "success": true,
+  "field": {
+    "id": "PVTSSF_lAHOADA1Xc4BBscMzg47j8c"
+  }
+}
+```
+
+---
+### `delete_project_field`
+
+**Description:**
+Supprime un champ d'un projet.
+
+**Paramètres:**
+*   `owner` (string, obligatoire): Propriétaire du projet.
+*   `projectId` (string, obligatoire): L'ID du projet.
+*   `fieldId` (string, obligatoire): L'ID du champ à supprimer.
+
+**Exemple d'appel JSON:**
+```json
+{
+  "owner": "jsboige",
+  "projectId": "PVT_kwHOADA1Xc4BBscM",
+  "fieldId": "PVTSSF_lAHOADA1Xc4BBscMzg47j8c"
+}
+```
+
+**Exemple de résultat réussi:**
+```json
+{
+  "success": true,
+  "deletedFieldId": "PVTSSF_lAHOADA1Xc4BBscMzg47j8c"
+}
+```
+
+---
+### `search_repositories`
+
+**Description:**
+Recherche des dépôts sur GitHub.
+
+**Paramètres:**
+*   `query` (string, obligatoire): La requête de recherche (utilise la syntaxe de recherche de GitHub).
+
+**Exemple d'appel JSON:**
+```json
+{
+  "query": "roo-extensions"
+}
+```
+
+**Exemple de résultat réussi:**
+```json
+{
+  "success": true,
+  "repositories": [
+    {
+      "id": 976909344,
+      "name": "roo-extensions",
+      "full_name": "jsboige/roo-extensions",
+      "private": false,
+      "owner": {
+        "login": "jsboige"
+      },
+      "html_url": "https://github.com/jsboige/roo-extensions"
+    }
+  ]
+}
+```
+
+---
+### `update_project`
+
+**Description:**
+Modifie le titre, la description et l'état d'un projet.
+
+**Paramètres:**
+*   `owner` (string, obligatoire): Propriétaire du projet.
+*   `project_id` (string, obligatoire): L'ID du projet à modifier.
+*   `title` (string, optionnel): Le nouveau titre du projet.
+*   `description` (string, optionnel): La nouvelle description courte du projet.
+*   `state` (string, optionnel): Le nouvel état du projet ('OPEN' ou 'CLOSED').
+
+**Exemple d'appel JSON:**
+```json
+{
+  "owner": "jsboige",
+  "project_id": "PVT_kwHOADA1Xc4BBscM",
+  "title": "Projet de Validation (Modifié)",
+  "description": "Ceci est un projet de test pour la validation complète du MCP."
+}
+```
+
+**Exemple de résultat réussi:**
+```json
+{
+  "success": true,
+  "project": {
+    "id": "PVT_kwHOADA1Xc4BBscM"
+  }
+}
+```
+
+**Exemple de gestion d'erreur (Projet non trouvé):**
+```json
+{
+  "success": false,
+  "error": "Erreur GraphQL: Could not resolve to a node with the global id of 'ID_INVALIDE'"
+}
+```
+
+---

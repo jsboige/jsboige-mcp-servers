@@ -120,7 +120,7 @@ interface GraphQLDeleteProjectItemResponse {
  * @param server Instance du serveur MCP
  * @param accounts Liste des comptes GitHub configurés
  */
-export function setupTools(server: any, accounts: GitHubAccount[]) {
+export function setupTools(server: any, accounts: GitHubAccount[]): Tool[] {
   const allTools: Tool[] = [
     /**
      * @tool list_projects
@@ -403,6 +403,7 @@ export function setupTools(server: any, accounts: GitHubAccount[]) {
       }) => {
         try {
           const octokit = getGitHubClient(owner, accounts);
+          logger.info(`[add_item_to_project] Received project_id: ${project_id}`); // Ajout du log
           checkReadOnlyMode();
           let query;
           let variables: any = { projectId: project_id };
@@ -917,28 +918,32 @@ export function setupTools(server: any, accounts: GitHubAccount[]) {
     }
   ];
 
-  server.setRequestHandler(ListToolsRequestSchema, async () => ({
-    tools: allTools
-  }));
+  if (server) {
+    server.setRequestHandler(ListToolsRequestSchema, async () => ({
+      tools: allTools
+    }));
 
-  server.setRequestHandler(CallToolRequestSchema, async (request: any) => {
-    try {
-      const tool = allTools.find(t => t.name === request.params.name);
-      if (!tool || typeof tool.execute !== 'function') {
-        throw new McpError(ErrorCode.MethodNotFound, `Outil inconnu: ${request.params.name}`);
+    server.setRequestHandler(CallToolRequestSchema, async (request: any) => {
+      try {
+        const tool = allTools.find(t => t.name === request.params.name);
+        if (!tool || typeof tool.execute !== 'function') {
+          throw new McpError(ErrorCode.MethodNotFound, `Outil inconnu: ${request.params.name}`);
+        }
+        const result = await tool.execute(request.params.arguments);
+        return {
+          content: [{ type: 'text', text: JSON.stringify(result, null, 2) }],
+          isError: !result.success
+        };
+      } catch (error: any) {
+        const errorMessage = error.message || (typeof error === 'string' ? error : JSON.stringify(error));
+        logger.error(`Erreur lors de l'exécution de l'outil ${request.params.name}`, { error: errorMessage, stack: error.stack });
+        return {
+          content: [{ type: 'text', text: JSON.stringify({ success: false, error: errorMessage }, null, 2) }],
+          isError: true
+        };
       }
-      const result = await tool.execute(request.params.arguments);
-      return {
-        content: [{ type: 'text', text: JSON.stringify(result, null, 2) }],
-        isError: !result.success
-      };
-    } catch (error: any) {
-      const errorMessage = error.message || (typeof error === 'string' ? error : JSON.stringify(error));
-      logger.error(`Erreur lors de l'exécution de l'outil ${request.params.name}`, { error: errorMessage, stack: error.stack });
-      return {
-        content: [{ type: 'text', text: JSON.stringify({ success: false, error: errorMessage }, null, 2) }],
-        isError: true
-      };
-    }
-  });
+    });
+  }
+
+  return allTools;
 }

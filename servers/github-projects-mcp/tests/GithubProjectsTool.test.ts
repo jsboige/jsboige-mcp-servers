@@ -1,5 +1,7 @@
 import { describe, it, expect, beforeAll, afterAll, afterEach } from '@jest/globals';
 import { Octokit } from '@octokit/core';
+import { Tool } from '@modelcontextprotocol/sdk/types.js';
+import { getGitHubClient, GitHubAccount } from '../src/utils/github';
 import {
   analyze_task_complexity,
   archiveProjectItem,
@@ -10,7 +12,6 @@ import {
   getRepositoryId,
   unarchiveProjectItem,
 } from '../src/github-actions';
-import { getGitHubClient } from '../src/utils/github';
 import { setupTools } from '../src/tools'; // Pour créer le projet
 import dotenv from 'dotenv';
 import path, { dirname } from 'path';
@@ -45,17 +46,21 @@ const poll = async (
 
 describe('GitHub Actions E2E Tests', () => {
   let octokit: Octokit;
+  let accounts: GitHubAccount[];
   let testProjectId: string;
   let testIssueNodeId: string;
   let testProjectItemId: string;
   let repositoryId: string;
+  let tools: Tool[];
 
   beforeAll(async () => {
     if (!TEST_GITHUB_OWNER || !TEST_GITHUB_REPO) {
       throw new Error('Les variables d\'environnement TEST_GITHUB_OWNER et TEST_GITHUB_REPO sont requises.');
     }
 
-    octokit = getGitHubClient();
+    accounts = [{ owner: TEST_GITHUB_OWNER!, token: process.env.GITHUB_TOKEN! }];
+    octokit = getGitHubClient(TEST_GITHUB_OWNER!, accounts);
+    tools = setupTools(null as any, accounts) as any;
 
     repositoryId = await getRepositoryId(octokit, TEST_GITHUB_OWNER, TEST_GITHUB_REPO);
 
@@ -170,6 +175,18 @@ describe('GitHub Actions E2E Tests', () => {
     expect(featureItemsResult.items.length).toBe(2);
     expect(featureItemsResult.items.every((item: any) => item.content.title.includes('Feature'))).toBe(true);
 
+    // Attendre que l'API reflète également l'item "Bug"
+    await poll(
+      async () => {
+        const result = await executeGetProjectItems(octokit, {
+          projectId: testProjectId,
+        });
+        const bugItems = result.items.filter((item: any) => item.content?.title?.includes('Bug'));
+        return bugItems.length >= 1;
+      },
+      'Failed to find 1 "Bug" item after polling.'
+    );
+
     const bugItemsResult = await executeGetProjectItems(octokit, {
       projectId: testProjectId,
       filterOptions: { titleContains: 'Bug' },
@@ -247,6 +264,86 @@ describe('GitHub Actions E2E Tests', () => {
       ).resolves.not.toThrow();
     }, 60000);
   });
+    describe('Project Management (CRUD)', () => {
+        it('should create, get, update, and delete a project', async () => {
+            const createTool = tools.find(t => t.name === 'create_project') as any;
+            const getTool = tools.find(t => t.name === 'get_project') as any;
+            const updateTool = tools.find(t => t.name === 'update_project') as any;
+            const deleteTool = tools.find(t => t.name === 'delete_project') as any;
+
+            const initialTitle = `CRUD Sub-Test - ${Date.now()}`;
+
+            const createResult = await createTool.execute({ owner: TEST_GITHUB_OWNER!, title: initialTitle });
+            expect(createResult.success).toBe(true);
+            const tempProjectId = createResult.project.id;
+            const tempProjectNumber = createResult.project.number;
+
+            const getResult = await getTool.execute({ owner: TEST_GITHUB_OWNER!, project_number: tempProjectNumber });
+            expect(getResult.project.title).toBe(initialTitle);
+
+            const updatedTitle = `CRUD Sub-Test - UPDATED`;
+            await updateTool.execute({ owner: TEST_GITHUB_OWNER!, project_id: tempProjectId, title: updatedTitle });
+            
+            await poll(async () => {
+                const getUpdatedResult = await getTool.execute({ owner: TEST_GITHUB_OWNER!, project_number: tempProjectNumber});
+                return getUpdatedResult.success && getUpdatedResult.project.title === updatedTitle;
+            }, 'Project title was not updated.');
+
+            await deleteTool.execute({ owner: TEST_GITHUB_OWNER!, projectId: tempProjectId });
+            
+            const getDeletedResult = await getTool.execute({ owner: TEST_GITHUB_OWNER!, project_number: tempProjectNumber });
+            expect(getDeletedResult.success).toBe(false);
+
+        }, 60000);
+    });
+    describe('Project Field Management', () => {
+        it('should create, update, and delete a project field', async () => {
+            const createFieldTool = tools.find(t => t.name === 'create_project_field') as any;
+            const updateFieldTool = tools.find(t => t.name === 'update_project_field') as any;
+            const deleteFieldTool = tools.find(t => t.name === 'delete_project_field') as any;
+            const getProjectTool = tools.find(t => t.name === 'get_project') as any;
+            
+            // On a besoin du numéro du projet principal pour retrouver les champs plus tard
+            let mainProject = await getProjectTool.execute({ owner: TEST_GITHUB_OWNER!, project_number: 0, project_id: testProjectId });
+            if (!mainProject.success) {
+                // Fallback si la recherche par ID n'est pas implémentée ou échoue, trouver via le titre
+                const listProjectsTool = tools.find(t => t.name === 'list_projects') as any;
+                const allProjects = await listProjectsTool.execute({ owner: TEST_GITHUB_OWNER!});
+                const projectInfo = allProjects.projects.find((p: any) => p.id === testProjectId);
+                mainProject = await getProjectTool.execute({ owner: TEST_GITHUB_OWNER!, project_number: projectInfo.number });
+            }
+            const testProjectNumber = mainProject.project.number;
+            
+            const initialFieldName = `Test Field - ${Date.now()}`;
+
+            // 1. Create Field
+            const createResult = await createFieldTool.execute({ owner: TEST_GITHUB_OWNER!, projectId: testProjectId, name: initialFieldName, dataType: 'TEXT' });
+            expect(createResult.success).toBe(true);
+            const createdFieldId = createResult.field.id;
+
+            // 2. Update Field
+            const updatedFieldName = `Test Field - UPDATED ${Date.now()}`;
+            await updateFieldTool.execute({ owner: TEST_GITHUB_OWNER!, projectId: testProjectId, fieldId: createdFieldId, name: updatedFieldName });
+
+            await poll(async () => {
+                const getResult = await getProjectTool.execute({ owner: TEST_GITHUB_OWNER!, project_number: testProjectNumber });
+                if (!getResult.success) return false;
+                const field = getResult.project.fields.nodes.find((f: any) => f.id === createdFieldId);
+                return field?.name === updatedFieldName;
+            }, `Field name was not updated to "${updatedFieldName}"`);
+
+            // 3. Delete Field
+            await deleteFieldTool.execute({ owner: TEST_GITHUB_OWNER!, projectId: testProjectId, fieldId: createdFieldId });
+            
+            await poll(async () => {
+                const getFinalResult = await getProjectTool.execute({ owner: TEST_GITHUB_OWNER!, project_number: testProjectNumber });
+                if (!getFinalResult.success) return false;
+                const fieldExists = getFinalResult.project.fields.nodes.some((f: any) => f.id === createdFieldId);
+                return !fieldExists;
+            }, `Field with ID ${createdFieldId} was not deleted.`);
+            
+        }, 60000);
+    });
 });
 
 import { checkReadOnlyMode, checkRepoPermissions } from '../src/security';
@@ -278,7 +375,6 @@ describe('Security Features', () => {
   });
 
   it('should allow all operations when no restrictions are set', () => {
-    // No env variables set
     expect(() => checkReadOnlyMode()).not.toThrow();
     expect(() => checkRepoPermissions('any', 'repo')).not.toThrow();
   });
