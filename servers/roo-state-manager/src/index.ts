@@ -626,31 +626,27 @@ class RooStateManagerServer {
         const command = `powershell.exe -NoProfile -ExecutionPolicy Bypass -File "${fullScriptPath}" ${args.join(' ')}`;
         
         return new Promise((resolve, reject) => {
-            exec(command, { maxBuffer: 1024 * 1024 * 5 }, (error, stdout, stderr) => { // 5MB buffer
+            exec(command, { maxBuffer: 1024 * 1024 * 50 }, (error, stdout, stderr) => { // 50MB buffer
                 if (error) {
                     const errorMessage = `ERROR: ${error.message}\nSTDOUT: ${stdout}\nSTDERR: ${stderr}`;
                     reject(new Error(errorMessage));
                     return;
                 }
                 
-                // On PowerShell scripts, informational messages can be written to stderr without it being an error.
-                // We'll combine stdout and stderr to provide the full picture to the user.
-                let combinedOutput = "";
-                if (stdout) {
-                    combinedOutput += `--- STDOUT ---\n${stdout.trim()}\n`;
-                }
-                if (stderr) {
-                    combinedOutput += `--- STDERR ---\n${stderr.trim()}\n`;
+                // When expecting JSON, only consider stdout if there's no error.
+                if (stderr && !stdout) {
+                     reject(new Error(`PowerShell script error:\n${stderr}`));
+                     return;
                 }
 
-                resolve({ content: [{ type: 'text', text: combinedOutput.trim() }] });
+                resolve({ content: [{ type: 'text', text: stdout.trim() }] });
             });
         });
     }
 
     async handleDiagnoseRooState(): Promise<CallToolResult> {
         const scriptPath = 'scripts/audit/audit-roo-tasks.ps1';
-        return this._executePowerShellScript(scriptPath, ['-AsJson']);
+        return this._executePowerShellScript(scriptPath, ['-AsJson', '-SampleCount 50']);
     }
 
     async handleRepairWorkspacePaths(args: { path_pairs?: string[], whatIf?: boolean, non_interactive?: boolean }): Promise<CallToolResult> {
