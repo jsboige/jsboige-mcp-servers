@@ -259,21 +259,22 @@ Variables d'environnement:
         }
       }
       
-      // Initialiser les services Jupyter et gérer les erreurs de connexion
-      try {
-        await initializeJupyterServices({
-          baseUrl: baseUrl,
-          token: token,
-          skipConnectionCheck: skipConnectionCheck
-        });
-        if (!skipConnectionCheck) {
-          console.log('Services Jupyter initialisés avec succès');
-        }
-      } catch (initError) {
-        console.warn('AVERTISSEMENT: Échec de l\'initialisation des services Jupyter. Le serveur démarre en mode dégradé.');
-        console.warn('Les outils nécessitant un serveur Jupyter ne fonctionneront pas.');
-        // Ne propagez pas l'erreur, permettez au serveur de démarrer
-      }
+      // L'initialisation des services Jupyter est maintenant gérée par l'outil start_jupyter_server
+      // pour éviter les erreurs de connexion au démarrage.
+      // try {
+      //   await initializeJupyterServices({
+      //     baseUrl: baseUrl,
+      //     token: token,
+      //     skipConnectionCheck: skipConnectionCheck
+      //   });
+      //   if (!skipConnectionCheck) {
+      //     console.log('Services Jupyter initialisés avec succès');
+      //   }
+      // } catch (initError) {
+      //   console.warn('AVERTISSEMENT: Échec de l\'initialisation des services Jupyter. Le serveur démarre en mode dégradé.');
+      //   console.warn('Les outils nécessitant un serveur Jupyter ne fonctionneront pas.');
+      //   // Ne propagez pas l'erreur, permettez au serveur de démarrer
+      // }
       
       const transport = new StdioServerTransport();
       await this.server.connect(transport);

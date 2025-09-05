@@ -249,6 +249,15 @@ Error: CORS error: No 'Access-Control-Allow-Origin' header is present
    jupyter lab --ServerApp.allow_origin='*' --no-browser
    ```
 <!-- END_SECTION: jupyter_connection_issues -->
+### Erreur "Impossible de récupérer le token de connexion" ou "Le serveur Jupyter ne s'arrête pas correctement"
+
+**Symptôme** : Le serveur MCP Jupyter ne parvient pas à se connecter au serveur Jupyter, ou le processus du serveur Jupyter reste actif après l'arrêt du MCP.
+
+**Causes possibles** :
+- Le serveur Jupyter est lancé en tant que processus détaché, ce qui empêche le MCP de capturer sa sortie (y compris le token de connexion) et de contrôler son cycle de vie.
+
+**Solutions** :
+- Assurez-vous que le code du MCP gère directement le processus enfant du serveur Jupyter. Le MCP doit démarrer le serveur Jupyter en tant que sous-processus et écouter sa sortie `stdout` et `stderr` pour récupérer les informations de connexion et surveiller son état.
 
 <!-- START_SECTION: offline_mode_issues -->
 ## Problèmes avec le mode hors ligne

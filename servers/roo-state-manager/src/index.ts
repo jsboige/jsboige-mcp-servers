@@ -126,7 +126,13 @@ class RooStateManagerServer {
                     {
                         name: 'diagnose_roo_state',
                         description: 'Exécute le script d\'audit des tâches Roo (audit-roo-tasks.ps1) et retourne sa sortie JSON.',
-                        inputSchema: { type: 'object', properties: {}, required: [] },
+                        inputSchema: {
+                            type: 'object',
+                            properties: {
+                                offset: { type: 'number', description: 'Offset pour la pagination.' },
+                                limit: { type: 'number', description: 'Limite pour la pagination.' },
+                            },
+                        },
                     },
                     {
                         name: 'repair_workspace_paths',
@@ -193,7 +199,7 @@ class RooStateManagerServer {
                    result = await this.handleDebugAnalyzeConversation(args as any);
                    break;
                case 'diagnose_roo_state':
-                   result = await this.handleDiagnoseRooState();
+                   result = await this.handleDiagnoseRooState(args as any);
                    break;
                case 'repair_workspace_paths':
                    result = await this.handleRepairWorkspacePaths(args as any);
@@ -644,9 +650,16 @@ class RooStateManagerServer {
         });
     }
 
-    async handleDiagnoseRooState(): Promise<CallToolResult> {
+    async handleDiagnoseRooState(args: { offset?: number, limit?: number }): Promise<CallToolResult> {
         const scriptPath = 'scripts/audit/audit-roo-tasks.ps1';
-        return this._executePowerShellScript(scriptPath, ['-AsJson', '-SampleCount 50']);
+        const scriptArgs: string[] = ['-AsJson'];
+        if (args.offset) {
+            scriptArgs.push(`-Offset ${args.offset}`);
+        }
+        if (args.limit) {
+            scriptArgs.push(`-Limit ${args.limit}`);
+        }
+        return this._executePowerShellScript(scriptPath, scriptArgs);
     }
 
     async handleRepairWorkspacePaths(args: { path_pairs?: string[], whatIf?: boolean, non_interactive?: boolean }): Promise<CallToolResult> {

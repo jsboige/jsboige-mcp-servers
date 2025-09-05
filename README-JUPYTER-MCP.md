@@ -23,6 +23,7 @@ Le MCP Jupyter est un serveur qui implémente le protocole Model Context Protoco
    - Implémente le protocole MCP pour communiquer avec Roo
    - Traduit les requêtes MCP en appels API Jupyter
    - Gère la connexion au serveur Jupyter
+   - Gère la connexion et le cycle de vie du serveur Jupyter en tant que sous-processus.
    - Supporte le mode hors ligne pour fonctionner sans serveur Jupyter
 
 2. **Services Jupyter** (`servers/jupyter-mcp-server/src/services/`)

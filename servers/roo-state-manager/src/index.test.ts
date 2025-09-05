@@ -28,7 +28,7 @@ describe('RooStateManagerServer', () => {
 
     describe('handleDiagnoseRooState', () => {
         it('should call _executePowerShellScript with correct parameters', async () => {
-            await server.handleDiagnoseRooState();
+            await server.handleDiagnoseRooState({});
             expect(executeScriptSpy).toHaveBeenCalledWith(
                 'scripts/audit/audit-roo-tasks.ps1',
                 ['-AsJson']
@@ -39,8 +39,17 @@ describe('RooStateManagerServer', () => {
             const mockResult: CallToolResult = { content: [{ type: 'text', text: JSON.stringify({ status: 'ok' }) }] };
             executeScriptSpy.mockResolvedValue(mockResult);
 
-            const response = await server.handleDiagnoseRooState();
+            const response = await server.handleDiagnoseRooState({});
             expect(response).toEqual(mockResult);
+        });
+
+        it('should handle pagination parameters correctly', async () => {
+            const args = { offset: 10, limit: 50 };
+            await server.handleDiagnoseRooState(args);
+            expect(executeScriptSpy).toHaveBeenCalledWith(
+                'scripts/audit/audit-roo-tasks.ps1',
+                ['-AsJson', '-Offset 10', '-Limit 50']
+            );
         });
     });
 

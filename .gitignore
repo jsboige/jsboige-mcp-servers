@@ -70,3 +70,5 @@ coverage/
 
 # Archives
 *.zip
+/servers/roo-state-manager/diag_results.json
+/servers/roo-state-manager/diag_results_full.json
