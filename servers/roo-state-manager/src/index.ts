@@ -1,12 +1,26 @@
+import dotenv from 'dotenv';
+import { fileURLToPath } from 'url';
+import { dirname } from 'path';
+import path from 'path';
+
+// Obtenir le répertoire du fichier actuel
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = dirname(__filename);
+
+// Charger les variables d'environnement AVANT tout autre import
+dotenv.config({ path: path.join(__dirname, '..', '.env') });
+
 import { Server } from '@modelcontextprotocol/sdk/server/index.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import { CallToolRequestSchema, ListToolsRequestSchema, CallToolResult } from '@modelcontextprotocol/sdk/types.js';
 import { RooStorageDetector } from './utils/roo-storage-detector.js';
 import fs from 'fs/promises';
-import path from 'path';
 import { exec } from 'child_process';
 import { TaskNavigator } from './services/task-navigator.js';
 import { ConversationSkeleton } from './types/conversation.js';
+import { readVscodeLogs, rebuildAndRestart, getMcpDevDocs } from './tools/index.js';
+import { searchTasks } from './services/task-searcher.js';
+import { indexTask } from './services/task-indexer.js';
 
 const MAX_OUTPUT_LENGTH = 10000; // 10k characters limit
 const SKELETON_CACHE_DIR_NAME = '.skeletons';
@@ -157,7 +171,33 @@ class RooStateManagerServer {
                                 }
                             },
                         },
-                    }
+                    },
+                    {
+                        name: readVscodeLogs.name,
+                        description: readVscodeLogs.description,
+                        inputSchema: readVscodeLogs.inputSchema,
+                    },
+                    {
+                        name: 'index_task_semantic',
+                        description: 'Indexe une tâche spécifique dans Qdrant pour la recherche sémantique.',
+                        inputSchema: {
+                            type: 'object',
+                            properties: {
+                                task_id: { type: 'string', description: 'ID de la tâche à indexer.' },
+                            },
+                            required: ['task_id'],
+                        },
+                    },
+                   {
+                       name: rebuildAndRestart.name,
+                       description: rebuildAndRestart.description,
+                       inputSchema: rebuildAndRestart.inputSchema,
+                   },
+                   {
+                       name: getMcpDevDocs.name,
+                       description: getMcpDevDocs.description,
+                       inputSchema: getMcpDevDocs.inputSchema,
+                   }
                 ] as any[],
             };
         });
@@ -204,9 +244,21 @@ class RooStateManagerServer {
                case 'repair_workspace_paths':
                    result = await this.handleRepairWorkspacePaths(args as any);
                    break;
-                default:
-                    throw new Error(`Tool not found: ${name}`);
-            }
+               case readVscodeLogs.name:
+                   result = await readVscodeLogs.execute(args as any);
+                   break;
+               case 'index_task_semantic':
+                   result = await this.handleIndexTaskSemantic(args as any);
+                   break;
+               case rebuildAndRestart.name:
+                   result = await rebuildAndRestart.execute(args as any);
+                   break;
+               case getMcpDevDocs.name:
+                   result = await getMcpDevDocs.execute();
+                   break;
+               default:
+                   throw new Error(`Tool not found: ${name}`);
+           }
 
             return this._truncateResult(result);
         });
@@ -253,7 +305,9 @@ class RooStateManagerServer {
             children: SkeletonNode[];
         }
 
-        const allSkeletons = Array.from(this.conversationCache.values());
+        const allSkeletons = Array.from(this.conversationCache.values()).filter(skeleton =>
+            skeleton.metadata && skeleton.metadata.lastActivity
+        );
 
         // Tri
         allSkeletons.sort((a, b) => {
@@ -261,13 +315,13 @@ class RooStateManagerServer {
             const sortBy = args.sortBy || 'lastActivity';
             switch (sortBy) {
                 case 'lastActivity':
-                    comparison = new Date(b.metadata.lastActivity).getTime() - new Date(a.metadata.lastActivity).getTime();
+                    comparison = new Date(b.metadata!.lastActivity).getTime() - new Date(a.metadata!.lastActivity).getTime();
                     break;
                 case 'messageCount':
-                    comparison = b.metadata.messageCount - a.metadata.messageCount;
+                    comparison = (b.metadata?.messageCount || 0) - (a.metadata?.messageCount || 0);
                     break;
                 case 'totalSize':
-                    comparison = b.metadata.totalSize - a.metadata.totalSize;
+                    comparison = (b.metadata?.totalSize || 0) - (a.metadata?.totalSize || 0);
                     break;
             }
             return (args.sortOrder === 'asc') ? -comparison : comparison;
@@ -382,7 +436,10 @@ class RooStateManagerServer {
                     if (file.endsWith('.json')) {
                         const filePath = path.join(skeletonDir, file);
                         try {
-                            const fileContent = await fs.readFile(filePath, 'utf-8');
+                            let fileContent = await fs.readFile(filePath, 'utf-8');
+                            if (fileContent.charCodeAt(0) === 0xFEFF) {
+                                fileContent = fileContent.slice(1);
+                            }
                             const skeleton: ConversationSkeleton = JSON.parse(fileContent);
                             if (skeleton && skeleton.taskId) { // Simple validation
                                 this.conversationCache.set(skeleton.taskId, skeleton);
@@ -597,6 +654,37 @@ class RooStateManagerServer {
     }
 
     async handleSearchTasksSemantic(args: { conversation_id: string, search_query: string, max_results?: number }): Promise<CallToolResult> {
+        const { search_query, max_results = 10 } = args;
+        
+        try {
+            // Utiliser la vraie recherche sémantique avec Qdrant
+            const contextWindows = await searchTasks(search_query, {
+                limit: max_results,
+                contextBeforeCount: 2,
+                contextAfterCount: 1,
+                scoreThreshold: 0.7, // Seuil de pertinence minimum
+            });
+
+            const results = contextWindows.map(window => ({
+                taskId: window.taskId,
+                score: window.relevanceScore,
+                mainContent: this.truncateMessage(window.mainChunk.content, 3),
+                contextBefore: window.contextBefore.map(c => this.truncateMessage(c.content, 1)),
+                contextAfter: window.contextAfter.map(c => this.truncateMessage(c.content, 1)),
+                timestamp: window.mainChunk.timestamp,
+                chunkType: window.mainChunk.chunk_type,
+            }));
+
+            return { content: [{ type: 'text', text: JSON.stringify(results, null, 2) }] };
+
+        } catch (error) {
+            console.error('Semantic search error:', error);
+            // Fallback sur la recherche simple en cas d'erreur
+            return this.handleSearchTasksSemanticFallback(args);
+        }
+    }
+
+    private async handleSearchTasksSemanticFallback(args: { conversation_id: string, search_query: string, max_results?: number }): Promise<CallToolResult> {
         const { conversation_id, search_query, max_results = 10 } = args;
         const skeleton = this.conversationCache.get(conversation_id);
 
@@ -611,11 +699,9 @@ class RooStateManagerServer {
             if (results.length >= max_results) {
                 break;
             }
-            // Check only message content for this basic implementation
             if ('content' in item && typeof item.content === 'string' && item.content.toLowerCase().includes(query)) {
                 results.push({
                     taskId: skeleton.taskId,
-                    // Simple score based on presence. A real implementation would be more complex.
                     score: 1.0,
                     match: `Found in role '${item.role}': ${this.truncateMessage(item.content, 2)}`
                 });
@@ -625,6 +711,50 @@ class RooStateManagerServer {
         return { content: [{ type: 'text', text: JSON.stringify(results, null, 2) }] };
     }
 
+    async handleIndexTaskSemantic(args: { task_id: string }): Promise<CallToolResult> {
+        try {
+            const { task_id } = args;
+            
+            const skeleton = this.conversationCache.get(task_id);
+            if (!skeleton) {
+                throw new Error(`Task with ID '${task_id}' not found in cache.`);
+            }
+            
+            const storageLocations = await RooStorageDetector.detectStorageLocations();
+            let taskPath: string | null = null;
+            
+            for (const storageLocation of storageLocations) {
+                const candidatePath = path.join(storageLocation, task_id);
+                try {
+                    await fs.access(candidatePath);
+                    taskPath = candidatePath;
+                    break;
+                } catch {}
+            }
+            
+            if (!taskPath) {
+                throw new Error(`Task directory for '${task_id}' not found in any storage location.`);
+            }
+            
+            const { indexTask } = await import('./services/task-indexer.js');
+            const indexedPoints = await indexTask(task_id, taskPath);
+            
+            return {
+                content: [{
+                    type: "text",
+                    text: `# Indexation sémantique terminée\n\n**Tâche:** ${task_id}\n**Chemin:** ${taskPath}\n**Chunks indexés:** ${indexedPoints.length}`
+                }]
+            };
+        } catch (error) {
+            console.error('Task indexing error:', error);
+            return {
+                content: [{
+                    type: "text",
+                    text: `# Erreur d'indexation\n\n**Tâche:** ${args.task_id}\n**Erreur:** ${error instanceof Error ? error.stack : String(error)}\n\nL'indexation de la tâche a échoué.`
+                }]
+            };
+        }
+    }
 
     private async _executePowerShellScript(scriptPath: string, args: string[] = []): Promise<CallToolResult> {
         const fullScriptPath = path.resolve(process.cwd(), scriptPath);
