@@ -242,19 +242,42 @@ Ajoutez le serveur à votre configuration MCP :
 
 ```json
 {
-  "mcpServers": {
-    "roo-state-manager": {
-      "command": "node",
-      "args": ["path/to/roo-state-manager/build/index.js"]
-    }
+  "roo-state-manager": {
+    "enabled": true,
+    "command": "node",
+    "args": [
+      "--import=./dist/dotenv-pre.js",
+      "./dist/index.js"
+    ],
+    "version": "1.0.2"
   }
 }
 ```
+
+**Note importante sur la configuration :**
+- **`--import=./dist/dotenv-pre.js`** : Cet argument est crucial pour précharger les variables d'environnement (`.env`) dans un contexte de module ESM (ECMAScript Modules) sous Node.js.
+- **`version`** : Ce champ est essentiel pour le mécanisme de rechargement à chaud (hot-reload). Assurez-vous de l'incrémenter dans `package.json` et de le refléter ici après chaque modification du code pour garantir que les changements sont bien pris en compte.
 
 ### Variables d'Environnement
 
 - `ROO_STORAGE_PATH` : Chemin personnalisé vers le stockage Roo
 - `ROO_DEBUG` : Active les logs de débogage
+
+## 🔧 Dépannage
+
+### Le serveur ne se met pas à jour après modification (Hot-Reload)
+
+**Symptôme** : Après avoir modifié le code source, recompilé (`npm run build`), et redémarré les MCPs, les modifications ne sont pas prises en compte.
+
+**Cause** : Le mécanisme de détection de changement se base sur le champ `version` dans la configuration. Si cette version n'est pas mise à jour, le gestionnaire de MCPs considère que le serveur n'a pas changé et ne recharge pas le nouveau code.
+
+**Solution** :
+1.  Après chaque modification du code, **incrémentez la version** dans le fichier `package.json`.
+2.  Assurez-vous que la nouvelle version est reportée dans le champ `version` de la configuration du serveur dans `mcp_settings.json` (voir l'exemple de configuration ci-dessus).
+3.  Recompilez le projet avec `npm run build`.
+4.  Redémarrez les serveurs MCPs.
+
+Cette pratique de versioning garantit un cycle de développement fiable.
 
 ## 🛠️ Développement
 
