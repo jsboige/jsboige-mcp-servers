@@ -1,22 +1,23 @@
 import { CallToolResult } from '@modelcontextprotocol/sdk/types.js';
 import * as fs from 'fs/promises';
+import { Dirent } from 'fs';
 import * as path from 'path';
 
 // Helper to recursively find files matching a filename
-async function findFilesRecursive(dir: string, fileName: string): Promise<string[]> {
+async function findLogFilesRecursive(dir: string): Promise<string[]> {
     let results: string[] = [];
     try {
         const dirents = await fs.readdir(dir, { withFileTypes: true });
         for (const dirent of dirents) {
             const res = path.resolve(dir, dirent.name);
             if (dirent.isDirectory()) {
-                results = results.concat(await findFilesRecursive(res, fileName));
-            } else if (dirent.name === fileName) {
+                results = results.concat(await findLogFilesRecursive(res));
+            } else if (dirent.name.endsWith('.log')) {
                 results.push(res);
             }
         }
     } catch (error) {
-        // Ignore errors like permission denied
+        // Ignore errors
     }
     return results;
 }
@@ -54,53 +55,122 @@ export const readVscodeLogs = {
     async execute(args: { lines?: number; filter?: string }): Promise<CallToolResult> {
         const lineCount = args.lines || 100;
         const { filter } = args;
-        const logsBasePath = path.join(process.env.APPDATA || '', 'Code', 'logs');
+        const rootLogsPath = path.join(process.env.APPDATA || '', 'Code', 'logs');
+        const debugLog: string[] = [`[DEBUG] Starting log search in: ${rootLogsPath}`];
 
         if (!process.env.APPDATA) {
             return { content: [{ type: 'text' as const, text: 'APPDATA environment variable not set. Cannot find logs directory.' }] };
         }
 
         try {
-            const allFiles = await findFilesRecursive(logsBasePath, '.log');
+            const dirents = await fs.readdir(rootLogsPath, { withFileTypes: true });
+            debugLog.push(`[DEBUG] Found ${dirents.length} entries in root log path.`);
+            const sessionDirs = dirents
+                .filter(d => d.isDirectory() && /^\d{8}T\d{6}$/.test(d.name))
+                .sort((a, b) => b.name.localeCompare(a.name));
 
-            const categorizedFiles: Record<string, string[]> = {
-                exthost: allFiles.filter(f => f.includes('exthost.log')),
-                renderer: allFiles.filter(f => f.includes('renderer.log')),
-                outputChannel: allFiles.filter(f => f.includes('output_logging') && f.includes('Roo-Code')),
-            };
+            if (sessionDirs.length === 0) {
+                debugLog.push('[DEBUG] No session directories found.');
+                return { content: [{ type: 'text' as const, text: `No session log directory found in ${rootLogsPath}.\n\n${debugLog.join('\n')}` }] };
+            }
 
-            const logResults: { category: string; path: string; content: string }[] = [];
+            // Find the first session directory that contains window subdirectories
+            debugLog.push(`[DEBUG] NEW LOGIC: Starting search through ${sessionDirs.length} session directories`);
+            let sessionPath: string | null = null;
+            let windowDirs: Dirent[] = [];
 
-            for (const category in categorizedFiles) {
-                const files = categorizedFiles[category];
-                if (files.length > 0) {
-                    const fileStats = await Promise.all(
-                        files.map(async (file) => ({
-                            path: file,
-                            mtime: (await fs.stat(file)).mtime,
-                        }))
-                    );
-                    fileStats.sort((a, b) => b.mtime.getTime() - a.mtime.getTime());
-                    const latestFile = fileStats[0];
+            for (const sessionDir of sessionDirs) {
+                const candidatePath = path.join(rootLogsPath, sessionDir.name);
+                debugLog.push(`[DEBUG] Checking session directory: ${candidatePath}`);
+                
+                try {
+                    const entries = await fs.readdir(candidatePath, { withFileTypes: true });
+                    debugLog.push(`[DEBUG] Found ${entries.length} entries in ${candidatePath}`);
                     
-                    logResults.push({
-                        category,
-                        path: latestFile.path,
-                        content: await readLastLines(latestFile.path, lineCount, filter),
-                    });
+                    const windowSubDirs = entries.filter(d => d.isDirectory() && d.name.startsWith('window'));
+                    debugLog.push(`[DEBUG] Found ${windowSubDirs.length} window directories in ${candidatePath}`);
+                    
+                    if (windowSubDirs.length > 0) {
+                        sessionPath = candidatePath;
+                        windowDirs = entries;
+                        debugLog.push(`[DEBUG] Selected session directory: ${sessionPath}`);
+                        break;
+                    }
+                } catch (err) {
+                    debugLog.push(`[DEBUG] Error reading ${candidatePath}: ${err}`);
+                    continue;
                 }
             }
 
-            if (logResults.length === 0) {
-                return { content: [{ type: 'text' as const, text: `No relevant log files found in ${logsBasePath}.` }] };
+            if (!sessionPath) {
+                debugLog.push('[DEBUG] No session directory with window subdirectories found.');
+                return { content: [{ type: 'text' as const, text: `No valid session directory found in ${rootLogsPath}.\n\n${debugLog.join('\n')}` }] };
+            }
+            
+            const latestWindow = windowDirs
+                .filter(d => d.isDirectory() && d.name.startsWith('window'))
+                .sort((a, b) => b.name.localeCompare(a.name))
+                [0];
+
+            if (!latestWindow) {
+                debugLog.push(`[DEBUG] No window directories found in ${sessionPath}.`);
+                return { content: [{ type: 'text' as const, text: `No window directory found in ${sessionPath}.\n\n${debugLog.join('\n')}` }] };
             }
 
-            const result = {
-                searchPath: logsBasePath,
-                logs: logResults,
-            };
+            const windowPath = path.join(sessionPath, latestWindow.name);
+            debugLog.push(`[DEBUG] Selected window directory: ${windowPath}`);
+            const logResults: { category: string; path: string; content: string }[] = [];
 
-            return { content: [{ type: 'text' as const, text: JSON.stringify(result, null, 2) }] };
+            // 1. Renderer Log
+            const rendererLogPath = path.join(windowPath, 'renderer.log');
+            try {
+                await fs.access(rendererLogPath);
+                logResults.push({
+                    category: 'renderer',
+                    path: rendererLogPath,
+                    content: await readLastLines(rendererLogPath, lineCount, filter),
+                });
+            } catch (e) { /* ignore */ }
+
+            // 2. Extension Host Log
+            const exthostPath = path.join(windowPath, 'exthost');
+            const exthostLogPath = path.join(exthostPath, 'exthost.log');
+             try {
+                await fs.access(exthostLogPath);
+                logResults.push({
+                    category: 'exthost',
+                    path: exthostLogPath,
+                    content: await readLastLines(exthostLogPath, lineCount, filter),
+                });
+            } catch (e) { /* ignore */ }
+
+            // 3. Roo-Code Output Channel Log
+            try {
+                const outputDirs = await fs.readdir(exthostPath, { withFileTypes: true });
+                const latestOutputDir = outputDirs
+                    .filter(d => d.isDirectory() && d.name.startsWith('output_logging_'))
+                    .sort((a, b) => b.name.localeCompare(a.name))
+                    [0];
+                
+                if (latestOutputDir) {
+                    const rooLogPath = path.join(exthostPath, latestOutputDir.name, '1-Roo-Code.log');
+                    await fs.access(rooLogPath);
+                    logResults.push({
+                        category: 'Roo-Code Output',
+                        path: rooLogPath,
+                        content: await readLastLines(rooLogPath, lineCount, filter),
+                    });
+                }
+            } catch (e) { /* ignore */ }
+
+            if (logResults.length === 0) {
+                debugLog.push('[DEBUG] Found 0 log files after checking all categories.');
+                return { content: [{ type: 'text' as const, text: `No relevant log files found in latest session ${sessionPath}.\n\n${debugLog.join('\n')}` }] };
+            }
+            
+            const resultText = logResults.map(r => `--- LOG: ${r.category} ---\nPath: ${r.path}\n\n${r.content}`).join('\n\n');
+            return { content: [{ type: 'text' as const, text: resultText }] };
+
         } catch (error) {
             const errorMessage = `Failed to read VS Code logs: ${(error as Error).stack}`;
             console.error(errorMessage);

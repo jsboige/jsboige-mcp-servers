@@ -344,10 +344,62 @@ export class RooStorageDetector {
         const actionCount = sequence.length - messageCount;
         const totalSize = (metadataStats?.size || 0) + (apiHistoryStats?.size || 0) + (uiMessagesStats?.size || 0);
 
-        const lastActivity = [metadataStats, apiHistoryStats, uiMessagesStats]
-            .filter((s): s is Stats => s !== null)
-            .reduce((latest, s) => (s.mtime > latest ? s.mtime : latest), new Date(0))
-            .toISOString();
+        // Extraire les vrais timestamps des fichiers JSON au lieu d'utiliser mtime
+        const timestamps: Date[] = [];
+
+        // 1. Lire les timestamps "ts" depuis api_conversation_history.json
+        if (apiHistoryStats) {
+            try {
+                const apiContent = await fs.readFile(apiHistoryPath, 'utf-8');
+                const apiData = JSON.parse(apiContent);
+                const messages = Array.isArray(apiData) ? apiData : (apiData?.messages || []);
+                
+                for (const message of messages) {
+                    if (message.ts && typeof message.ts === 'number') {
+                        timestamps.push(new Date(message.ts));
+                    }
+                }
+            } catch (error) {
+                console.error(`[analyzeConversation] Erreur lors de la lecture des timestamps dans ${apiHistoryPath}:`, error);
+            }
+        }
+
+        // 2. Lire les timestamps depuis task_metadata.json (files_in_context)
+        if (metadataStats && rawMetadata.files_in_context) {
+            try {
+                for (const file of rawMetadata.files_in_context) {
+                    const fileAny = file as any; // Type assertion pour accéder aux propriétés dynamiques
+                    if (fileAny.roo_read_date) {
+                        timestamps.push(new Date(fileAny.roo_read_date));
+                    }
+                    if (fileAny.roo_edit_date) {
+                        timestamps.push(new Date(fileAny.roo_edit_date));
+                    }
+                    if (fileAny.user_edit_date) {
+                        timestamps.push(new Date(fileAny.user_edit_date));
+                    }
+                }
+            } catch (error) {
+                console.error(`[analyzeConversation] Erreur lors de la lecture des timestamps dans task_metadata:`, error);
+            }
+        }
+
+        // Calculer lastActivity en utilisant le timestamp le plus récent
+        let lastActivity = new Date(0);
+        if (timestamps.length > 0) {
+            lastActivity = timestamps.reduce((latest, current) => current > latest ? current : latest, timestamps[0]);
+        } else {
+            // Fallback vers l'ancienne méthode si aucun timestamp trouvé
+            lastActivity = [metadataStats, apiHistoryStats, uiMessagesStats]
+                .filter((s): s is Stats => s !== null)
+                .reduce((latest, s) => (s.mtime > latest ? s.mtime : latest), new Date(0));
+        }
+
+        // Calculer createdAt en utilisant le timestamp le plus ancien
+        let createdAt = lastActivity;
+        if (timestamps.length > 0) {
+            createdAt = timestamps.reduce((earliest, current) => current < earliest ? current : earliest, timestamps[0]);
+        }
 
         const skeleton: ConversationSkeleton = {
             taskId,
@@ -355,8 +407,8 @@ export class RooStorageDetector {
             sequence,
             metadata: {
                 title: rawMetadata.title,
-                createdAt: rawMetadata.createdAt || new Date(0).toISOString(),
-                lastActivity,
+                createdAt: createdAt.toISOString(),
+                lastActivity: lastActivity.toISOString(),
                 mode: rawMetadata.mode,
                 messageCount,
                 actionCount,
@@ -388,11 +440,17 @@ export class RooStorageDetector {
     const readJsonFile = async (filePath: string): Promise<any[]> => {
       try {
         const content = await fs.readFile(filePath, 'utf-8');
+        // Le fichier peut être une seule ligne contenant un tableau JSON, ou un JSON avec une propriété "messages"
         const data = JSON.parse(content);
-        // Les fichiers peuvent avoir les messages dans une propriété "messages" ou être un tableau à la racine
         return Array.isArray(data) ? data : (data?.messages || []);
       } catch (e) {
-        return []; // Retourne un tableau vide en cas d'erreur
+        // Tenter de lire comme un JSONL (JSON par ligne) en cas d'échec du parsing global
+        try {
+          const content = await fs.readFile(filePath, 'utf-8');
+          return content.split('\\n').filter(line => line.trim() !== '').map(line => JSON.parse(line));
+        } catch (jsonlError) {
+          return []; // Retourne un tableau vide si les deux méthodes échouent
+        }
       }
     };
 

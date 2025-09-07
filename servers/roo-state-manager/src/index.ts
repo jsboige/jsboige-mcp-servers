@@ -18,11 +18,12 @@ import fs from 'fs/promises';
 import { exec } from 'child_process';
 import { TaskNavigator } from './services/task-navigator.js';
 import { ConversationSkeleton } from './types/conversation.js';
-import { readVscodeLogs, rebuildAndRestart, getMcpDevDocs } from './tools/index.js';
+import packageJson from '../package.json' with { type: 'json' };
+import { readVscodeLogs, rebuildAndRestart, getMcpDevDocs, manageMcpSettings } from './tools/index.js';
 import { searchTasks } from './services/task-searcher.js';
 import { indexTask } from './services/task-indexer.js';
 
-const MAX_OUTPUT_LENGTH = 10000; // 10k characters limit
+const MAX_OUTPUT_LENGTH = 100000; // Temporairement augmenté pour documentation complète
 const SKELETON_CACHE_DIR_NAME = '.skeletons';
 
 class RooStateManagerServer {
@@ -133,7 +134,8 @@ class RooStateManagerServer {
                             properties: {
                                 task_id: { type: 'string', description: 'L\'ID de la tâche de départ. Si non fourni, utilise la tâche la plus récente.' },
                                 view_mode: { type: 'string', enum: ['single', 'chain', 'cluster'], default: 'chain', description: 'Le mode d\'affichage.' },
-                                truncate: { type: 'number', default: 5, description: 'Nombre de lignes à conserver au début et à la fin de chaque message. 0 pour désactiver.' },
+                                truncate: { type: 'number', default: 0, description: 'Nombre de lignes à conserver au début et à la fin de chaque message. 0 pour vue complète (défaut intelligent).' },
+                                max_output_length: { type: 'number', default: 50000, description: 'Limite maximale de caractères en sortie. Au-delà, force la troncature.' },
                             },
                         },
                     },
@@ -178,6 +180,11 @@ class RooStateManagerServer {
                         inputSchema: readVscodeLogs.inputSchema,
                     },
                     {
+                        name: manageMcpSettings.name,
+                        description: manageMcpSettings.description,
+                        inputSchema: manageMcpSettings.inputSchema,
+                    },
+                    {
                         name: 'index_task_semantic',
                         description: 'Indexe une tâche spécifique dans Qdrant pour la recherche sémantique.',
                         inputSchema: {
@@ -197,6 +204,26 @@ class RooStateManagerServer {
                        name: getMcpDevDocs.name,
                        description: getMcpDevDocs.description,
                        inputSchema: getMcpDevDocs.inputSchema,
+                   },
+                   {
+                       name: 'diagnose_conversation_bom',
+                       description: 'Diagnostique les fichiers de conversation corrompus par un BOM UTF-8.',
+                       inputSchema: {
+                           type: 'object',
+                           properties: {
+                               fix_found: { type: 'boolean', description: 'Si true, répare automatiquement les fichiers trouvés.', default: false },
+                           },
+                       },
+                   },
+                   {
+                       name: 'repair_conversation_bom',
+                       description: 'Répare les fichiers de conversation corrompus par un BOM UTF-8.',
+                       inputSchema: {
+                           type: 'object',
+                           properties: {
+                               dry_run: { type: 'boolean', description: 'Si true, simule la réparation sans modifier les fichiers.', default: false },
+                           },
+                       },
                    }
                 ] as any[],
             };
@@ -247,6 +274,9 @@ class RooStateManagerServer {
                case readVscodeLogs.name:
                    result = await readVscodeLogs.execute(args as any);
                    break;
+               case manageMcpSettings.name:
+                   result = await manageMcpSettings.execute(args as any);
+                   break;
                case 'index_task_semantic':
                    result = await this.handleIndexTaskSemantic(args as any);
                    break;
@@ -255,6 +285,12 @@ class RooStateManagerServer {
                    break;
                case getMcpDevDocs.name:
                    result = await getMcpDevDocs.execute();
+                   break;
+               case 'diagnose_conversation_bom':
+                   result = await this.handleDiagnoseConversationBom(args as any);
+                   break;
+               case 'repair_conversation_bom':
+                   result = await this.handleRepairConversationBom(args as any);
                    break;
                default:
                    throw new Error(`Tool not found: ${name}`);
@@ -274,29 +310,13 @@ class RooStateManagerServer {
     }
 
     async handleDetectRooStorage(): Promise<CallToolResult> {
-        const locations = await RooStorageDetector.detectStorageLocations();
-        return { content: [{ type: 'text', text: JSON.stringify({ locations }) }] };
+        const result = await RooStorageDetector.detectRooStorage();
+        return { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }] };
     }
 
     async handleGetStorageStats(): Promise<CallToolResult> {
-        const locations = await RooStorageDetector.detectStorageLocations();
-        if (locations.length === 0) {
-            const stats = { conversationCount: 0, totalSize: 0 };
-            return { content: [{ type: 'text', text: JSON.stringify({ stats }) }] };
-        }
-        let totalSize = 0;
-        let conversationCount = 0;
-        for (const loc of locations) {
-            const files = await fs.readdir(loc);
-            conversationCount += files.length;
-            for (const file of files) {
-                const filePath = path.join(loc, file);
-                const stats = await fs.stat(filePath);
-                totalSize += stats.size;
-            }
-        }
-        const stats = { conversationCount, totalSize };
-        return { content: [{ type: 'text', text: JSON.stringify({ stats }) }] };
+        const stats = await RooStorageDetector.getStorageStats();
+        return { content: [{ type: 'text', text: JSON.stringify(stats, null, 2) }] };
     }
 
     async handleListConversations(args: { limit?: number, sortBy?: 'lastActivity' | 'messageCount' | 'totalSize', sortOrder?: 'asc' | 'desc' }): Promise<CallToolResult> {
@@ -368,7 +388,7 @@ class RooStateManagerServer {
 
     async handleBuildSkeletonCache(): Promise<CallToolResult> {
         this.conversationCache.clear();
-        const locations = await RooStorageDetector.detectStorageLocations();
+        const locations = await RooStorageDetector.detectStorageLocations(); // This returns task paths now
         if (locations.length === 0) {
             return { content: [{ type: 'text', text: 'Storage not found. Cache not built.' }] };
         }
@@ -377,7 +397,9 @@ class RooStateManagerServer {
         let skeletonsSkipped = 0;
 
         for (const loc of locations) {
-            const skeletonDir = path.join(loc, SKELETON_CACHE_DIR_NAME);
+            // loc is now the tasksPath, so we need to go up one level for the skeleton dir
+            const storageDir = path.dirname(loc);
+            const skeletonDir = path.join(storageDir, SKELETON_CACHE_DIR_NAME);
             await fs.mkdir(skeletonDir, { recursive: true });
 
             const conversationDirs = await fs.readdir(loc, { withFileTypes: true });
@@ -417,7 +439,7 @@ class RooStateManagerServer {
     }
 
     private async _loadSkeletonsFromDisk(): Promise<void> {
-        const locations = await RooStorageDetector.detectStorageLocations();
+        const locations = await RooStorageDetector.detectStorageLocations(); // returns task paths
         if (locations.length === 0) {
             console.error("No storage locations found, cannot load skeleton cache.");
             return;
@@ -428,7 +450,8 @@ class RooStateManagerServer {
         let errorCount = 0;
 
         for (const loc of locations) {
-            const skeletonDir = path.join(loc, SKELETON_CACHE_DIR_NAME);
+            const storageDir = path.dirname(loc);
+            const skeletonDir = path.join(storageDir, SKELETON_CACHE_DIR_NAME);
             try {
                 await fs.access(skeletonDir);
                 const skeletonFiles = await fs.readdir(skeletonDir);
@@ -509,16 +532,9 @@ class RooStateManagerServer {
 
    async handleDebugAnalyzeConversation(args: { taskId: string }): Promise<CallToolResult> {
        const { taskId } = args;
-       const locations = await RooStorageDetector.detectStorageLocations();
-       for (const loc of locations) {
-           const taskPath = path.join(loc, taskId);
-           try {
-               await fs.access(taskPath);
-               const summary = await RooStorageDetector.analyzeConversation(taskId, taskPath);
-               return { content: [{ type: 'text', text: JSON.stringify(summary, null, 2) }] };
-           } catch (e) {
-               // Not found in this location
-           }
+       const summary = await RooStorageDetector.findConversationById(taskId);
+       if (summary) {
+           return { content: [{ type: 'text', text: JSON.stringify(summary, null, 2) }] };
        }
        throw new Error(`Task with ID '${taskId}' not found in any storage location.`);
    }
@@ -551,8 +567,9 @@ class RooStateManagerServer {
         });
     }
 
-    handleViewConversationTree(args: { task_id?: string, view_mode?: 'single' | 'chain' | 'cluster', truncate?: number }): CallToolResult {
-        const { view_mode = 'chain', truncate = 5 } = args;
+    handleViewConversationTree(args: { task_id?: string, view_mode?: 'single' | 'chain' | 'cluster', truncate?: number, max_output_length?: number }): CallToolResult {
+        const { view_mode = 'chain', max_output_length = 50000 } = args;
+        let { truncate = 0 } = args;
         let { task_id } = args;
 
         if (!task_id) {
@@ -612,6 +629,22 @@ class RooStateManagerServer {
             return output;
         };
 
+        // Estimation intelligente de la taille de sortie
+        const estimateOutputSize = (skeletons: ConversationSkeleton[]): number => {
+            let totalSize = 0;
+            for (const skeleton of skeletons) {
+                totalSize += 200; // En-tête de tâche
+                for (const item of skeleton.sequence) {
+                    if ('role' in item) {
+                        totalSize += item.content.length + 100; // Message + formatage
+                    } else {
+                        totalSize += 150; // Action + formatage
+                    }
+                }
+            }
+            return totalSize;
+        };
+
         let tasksToDisplay: ConversationSkeleton[] = [];
         const mainTask = skeletonMap.get(task_id);
         if (!mainTask) {
@@ -644,7 +677,23 @@ class RooStateManagerServer {
                 break;
         }
         
+        // Logique intelligente de troncature
+        const estimatedSize = estimateOutputSize(tasksToDisplay);
+        
+        // Si pas de troncature spécifiée et taille raisonnable, affichage complet
+        if (truncate === 0 && estimatedSize <= max_output_length) {
+            // Vue complète - pas de troncature
+        } else if (truncate === 0 && estimatedSize > max_output_length) {
+            // Forcer une troncature intelligente basée sur la taille estimée
+            const totalMessages = tasksToDisplay.reduce((count, task) =>
+                count + task.sequence.filter(item => 'role' in item).length, 0);
+            truncate = Math.max(2, Math.floor(max_output_length / (estimatedSize / Math.max(1, totalMessages * 20))));
+        }
+        
         let formattedOutput = `Conversation Tree (Mode: ${view_mode})\n======================================\n`;
+        if (estimatedSize > max_output_length) {
+            formattedOutput += `⚠️  Sortie estimée: ${Math.round(estimatedSize/1000)}k chars, limite: ${Math.round(max_output_length/1000)}k chars, troncature: ${truncate} lignes\n\n`;
+        }
         tasksToDisplay.forEach((task, index) => {
             const indent = '  '.repeat(index);
             formattedOutput += formatTask(task, indent);
@@ -720,17 +769,8 @@ class RooStateManagerServer {
                 throw new Error(`Task with ID '${task_id}' not found in cache.`);
             }
             
-            const storageLocations = await RooStorageDetector.detectStorageLocations();
-            let taskPath: string | null = null;
-            
-            for (const storageLocation of storageLocations) {
-                const candidatePath = path.join(storageLocation, task_id);
-                try {
-                    await fs.access(candidatePath);
-                    taskPath = candidatePath;
-                    break;
-                } catch {}
-            }
+            const conversation = await RooStorageDetector.findConversationById(task_id);
+            const taskPath = conversation?.path;
             
             if (!taskPath) {
                 throw new Error(`Task directory for '${task_id}' not found in any storage location.`);
@@ -813,11 +853,202 @@ class RooStateManagerServer {
         return this._executePowerShellScript(scriptPath, scriptArgs);
     }
 
+    async handleDiagnoseConversationBom(args: { fix_found?: boolean }): Promise<CallToolResult> {
+        const { fix_found = false } = args;
+        
+        const locations = await RooStorageDetector.detectStorageLocations();
+        if (locations.length === 0) {
+            return { content: [{ type: 'text', text: 'Aucun emplacement de stockage Roo trouvé.' }] };
+        }
+
+        let totalFiles = 0;
+        let corruptedFiles = 0;
+        let repairedFiles = 0;
+        const corruptedList: string[] = [];
+        
+        for (const tasksPath of locations) {
+            try {
+                const conversationDirs = await fs.readdir(tasksPath, { withFileTypes: true });
+                
+                for (const convDir of conversationDirs) {
+                    if (convDir.isDirectory()) {
+                        const apiHistoryPath = path.join(tasksPath, convDir.name, 'api_conversation_history.json');
+                        
+                        try {
+                            await fs.access(apiHistoryPath);
+                            totalFiles++;
+                            
+                            const content = await fs.readFile(apiHistoryPath, 'utf-8');
+                            const hasBOM = content.charCodeAt(0) === 0xFEFF;
+                            
+                            if (hasBOM) {
+                                corruptedFiles++;
+                                corruptedList.push(apiHistoryPath);
+                                
+                                if (fix_found) {
+                                    // Réparer automatiquement
+                                    const cleanContent = content.slice(1);
+                                    try {
+                                        JSON.parse(cleanContent); // Vérifier que c'est du JSON valide
+                                        await fs.writeFile(apiHistoryPath, cleanContent, 'utf-8');
+                                        repairedFiles++;
+                                    } catch (jsonError) {
+                                        console.error(`Fichier ${apiHistoryPath} corrompu au-delà du BOM:`, jsonError);
+                                    }
+                                }
+                            }
+                        } catch (fileError) {
+                            // Fichier n'existe pas ou non accessible, on ignore
+                        }
+                    }
+                }
+            } catch (dirError) {
+                console.error(`Erreur lors du scan de ${tasksPath}:`, dirError);
+            }
+        }
+        
+        let report = `# Diagnostic BOM des conversations\n\n`;
+        report += `**Fichiers analysés:** ${totalFiles}\n`;
+        report += `**Fichiers corrompus (BOM):** ${corruptedFiles}\n`;
+        
+        if (fix_found && repairedFiles > 0) {
+            report += `**Fichiers réparés:** ${repairedFiles}\n\n`;
+            report += `✅ Réparation automatique effectuée.\n`;
+        } else if (corruptedFiles > 0) {
+            report += `\n⚠️  Des fichiers corrompus ont été trouvés. Utilisez 'repair_conversation_bom' pour les réparer.\n`;
+        }
+        
+        if (corruptedList.length > 0 && corruptedList.length <= 20) {
+            report += `\n## Fichiers corrompus détectés:\n`;
+            corruptedList.forEach(file => {
+                report += `- ${file}\n`;
+            });
+        } else if (corruptedList.length > 20) {
+            report += `\n## Fichiers corrompus détectés (20 premiers):\n`;
+            corruptedList.slice(0, 20).forEach(file => {
+                report += `- ${file}\n`;
+            });
+            report += `\n... et ${corruptedList.length - 20} autres fichiers.\n`;
+        }
+        
+        return { content: [{ type: 'text', text: report }] };
+    }
+
+    async handleRepairConversationBom(args: { dry_run?: boolean }): Promise<CallToolResult> {
+        const { dry_run = false } = args;
+        
+        const locations = await RooStorageDetector.detectStorageLocations();
+        if (locations.length === 0) {
+            return { content: [{ type: 'text', text: 'Aucun emplacement de stockage Roo trouvé.' }] };
+        }
+
+        let totalFiles = 0;
+        let corruptedFiles = 0;
+        let repairedFiles = 0;
+        let failedRepairs = 0;
+        const repairResults: { file: string, status: string, error?: string }[] = [];
+        
+        for (const tasksPath of locations) {
+            try {
+                const conversationDirs = await fs.readdir(tasksPath, { withFileTypes: true });
+                
+                for (const convDir of conversationDirs) {
+                    if (convDir.isDirectory()) {
+                        const apiHistoryPath = path.join(tasksPath, convDir.name, 'api_conversation_history.json');
+                        
+                        try {
+                            await fs.access(apiHistoryPath);
+                            totalFiles++;
+                            
+                            const content = await fs.readFile(apiHistoryPath, 'utf-8');
+                            const hasBOM = content.charCodeAt(0) === 0xFEFF;
+                            
+                            if (hasBOM) {
+                                corruptedFiles++;
+                                
+                                if (dry_run) {
+                                    repairResults.push({
+                                        file: apiHistoryPath,
+                                        status: 'SERAIT_REPARE'
+                                    });
+                                } else {
+                                    // Effectuer la réparation
+                                    try {
+                                        const cleanContent = content.slice(1);
+                                        JSON.parse(cleanContent); // Vérifier que c'est du JSON valide
+                                        await fs.writeFile(apiHistoryPath, cleanContent, 'utf-8');
+                                        repairedFiles++;
+                                        repairResults.push({
+                                            file: apiHistoryPath,
+                                            status: 'REPARE'
+                                        });
+                                    } catch (repairError) {
+                                        failedRepairs++;
+                                        repairResults.push({
+                                            file: apiHistoryPath,
+                                            status: 'ECHEC',
+                                            error: repairError instanceof Error ? repairError.message : String(repairError)
+                                        });
+                                    }
+                                }
+                            }
+                        } catch (fileError) {
+                            // Fichier n'existe pas ou non accessible, on ignore
+                        }
+                    }
+                }
+            } catch (dirError) {
+                console.error(`Erreur lors du scan de ${tasksPath}:`, dirError);
+            }
+        }
+        
+        let report = `# Réparation BOM des conversations\n\n`;
+        report += `**Mode:** ${dry_run ? 'Simulation (dry-run)' : 'Réparation réelle'}\n`;
+        report += `**Fichiers analysés:** ${totalFiles}\n`;
+        report += `**Fichiers corrompus (BOM):** ${corruptedFiles}\n`;
+        
+        if (!dry_run) {
+            report += `**Fichiers réparés:** ${repairedFiles}\n`;
+            report += `**Échecs de réparation:** ${failedRepairs}\n\n`;
+            
+            if (repairedFiles > 0) {
+                report += `✅ ${repairedFiles} fichier(s) réparé(s) avec succès.\n`;
+            }
+            if (failedRepairs > 0) {
+                report += `❌ ${failedRepairs} échec(s) de réparation (fichiers corrompus au-delà du BOM).\n`;
+            }
+        } else {
+            report += `\n🔍 Simulation terminée. ${corruptedFiles} fichier(s) seraient réparés.\n`;
+        }
+        
+        if (repairResults.length > 0 && repairResults.length <= 30) {
+            report += `\n## Détails des opérations:\n`;
+            repairResults.forEach(result => {
+                const statusIcon = result.status === 'REPARE' ? '✅' :
+                                 result.status === 'SERAIT_REPARE' ? '🔍' : '❌';
+                report += `${statusIcon} ${result.file}`;
+                if (result.error) {
+                    report += ` - Erreur: ${result.error}`;
+                }
+                report += `\n`;
+            });
+        } else if (repairResults.length > 30) {
+            report += `\n## Détails des opérations (30 premiers résultats):\n`;
+            repairResults.slice(0, 30).forEach(result => {
+                const statusIcon = result.status === 'REPARE' ? '✅' :
+                                 result.status === 'SERAIT_REPARE' ? '🔍' : '❌';
+                report += `${statusIcon} ${result.file}\n`;
+            });
+            report += `\n... et ${repairResults.length - 30} autres résultats.\n`;
+        }
+        
+        return { content: [{ type: 'text', text: report }] };
+    }
 
     async run() {
         const transport = new StdioServerTransport();
         await this.server.connect(transport);
-        console.error('Roo State Manager Server started (new features re-added).');
+        console.error(`Roo State Manager Server started - v${packageJson.version}`);
     }
 
     async stop() {
