@@ -6,7 +6,9 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
 async function buildTestHelpers() {
-  const proxyEntryPoint = path.resolve(__dirname, 'e2e', 'proxy.ts');
+  // Résoudre le chemin vers les sources depuis le répertoire build
+  const sourceDir = path.resolve(__dirname, '..', '..', 'tests');
+  const proxyEntryPoint = path.resolve(sourceDir, 'e2e', 'proxy.ts');
   const outfile = path.resolve(__dirname, 'e2e', 'proxy.js');
 
   console.log('Building test helpers...');

@@ -6,6 +6,9 @@ export default {
   // Utiliser un seul worker pour éviter les problèmes de mémoire
   maxWorkers: 1,
   
+  // Limite mémoire pour éviter heap overflow
+  workerIdleMemoryLimit: "1GB",
+  
   transform: {
     '^.+\\.tsx?$': ['ts-jest', {
       useESM: true
