@@ -19,7 +19,7 @@ import { exec } from 'child_process';
 import { TaskNavigator } from './services/task-navigator.js';
 import { ConversationSkeleton } from './types/conversation.js';
 import packageJson from '../package.json' with { type: 'json' };
-import { readVscodeLogs, rebuildAndRestart, getMcpDevDocs, manageMcpSettings } from './tools/index.js';
+import { readVscodeLogs, rebuildAndRestart, getMcpDevDocs, manageMcpSettings, analyzeVSCodeGlobalState, repairVSCodeTaskHistory } from './tools/index.js';
 import { searchTasks } from './services/task-searcher.js';
 import { indexTask } from './services/task-indexer.js';
 
@@ -224,6 +224,16 @@ class RooStateManagerServer {
                                dry_run: { type: 'boolean', description: 'Si true, simule la réparation sans modifier les fichiers.', default: false },
                            },
                        },
+                   },
+                   {
+                       name: analyzeVSCodeGlobalState.name,
+                       description: analyzeVSCodeGlobalState.description,
+                       inputSchema: analyzeVSCodeGlobalState.inputSchema,
+                   },
+                   {
+                       name: repairVSCodeTaskHistory.name,
+                       description: repairVSCodeTaskHistory.description,
+                       inputSchema: repairVSCodeTaskHistory.inputSchema,
                    }
                 ] as any[],
             };
@@ -291,6 +301,12 @@ class RooStateManagerServer {
                    break;
                case 'repair_conversation_bom':
                    result = await this.handleRepairConversationBom(args as any);
+                   break;
+               case analyzeVSCodeGlobalState.name:
+                   result = await analyzeVSCodeGlobalState.execute();
+                   break;
+               case repairVSCodeTaskHistory.name:
+                   result = await repairVSCodeTaskHistory.execute(args as any);
                    break;
                default:
                    throw new Error(`Tool not found: ${name}`);
@@ -821,7 +837,7 @@ class RooStateManagerServer {
     }
 
     async handleDiagnoseRooState(args: { offset?: number, limit?: number }): Promise<CallToolResult> {
-        const scriptPath = 'scripts/audit/audit-roo-tasks.ps1';
+        const scriptPath = '../roo-extensions/scripts/audit/audit-roo-tasks.ps1';
         const scriptArgs: string[] = ['-AsJson'];
         if (args.offset) {
             scriptArgs.push(`-Offset ${args.offset}`);
@@ -833,7 +849,7 @@ class RooStateManagerServer {
     }
 
     async handleRepairWorkspacePaths(args: { path_pairs?: string[], whatIf?: boolean, non_interactive?: boolean }): Promise<CallToolResult> {
-        const scriptPath = 'scripts/repair/repair-roo-tasks.ps1';
+        const scriptPath = '../roo-extensions/scripts/repair/repair-roo-tasks.ps1';
         const scriptArgs: string[] = [];
         
         if (args.path_pairs && args.path_pairs.length > 0) {
