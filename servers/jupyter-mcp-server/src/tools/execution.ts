@@ -6,6 +6,7 @@ type ToolSchema = {
   properties: Record<string, any>;
   required?: string[];
 };
+import { log } from '../utils/logger.js';
 import { executeCode, getKernel } from '../services/jupyter.js';
 import { readNotebookFile, writeNotebookFile } from './notebook.js';
 import * as nbformat from 'nbformat';
@@ -20,7 +21,7 @@ async function executeCellCode(kernelId: string, code: string): Promise<any> {
   try {
     return await executeCode(kernelId, code);
   } catch (error) {
-    console.error('Erreur lors de l\'exécution de la cellule:', error);
+    log(`Erreur dans executeCellCode: ${error}`);
     throw error;
   }
 }
@@ -58,7 +59,7 @@ async function executeNotebookCells(notebookPath: string, kernelId: string): Pro
     
     return notebook;
   } catch (error) {
-    console.error('Erreur lors de l\'exécution du notebook:', error);
+    log(`Erreur dans executeNotebookCells: ${error}`);
     throw error;
   }
 }
@@ -122,15 +123,17 @@ export const executionTools: Tool[] = [
     description: 'Exécute du code dans un kernel spécifique',
     schema: executeCellSchema,
     handler: async ({ kernel_id, code }) => {
+      log(`--- execute_cell handler called for kernel ID: ${kernel_id} ---`);
       try {
         const result = await executeCellCode(kernel_id, code);
-        
+        log(`--- execute_cell handler finished successfully ---`);
         return {
           execution_count: result.execution_count,
           status: result.status,
           outputs: result.outputs
         };
       } catch (error) {
+        log(`[EXECUTION_HANDLER_ERROR] Caught error in execute_cell handler: ${error}`);
         throw new Error(`Erreur lors de l'exécution du code: ${error}`);
       }
     }

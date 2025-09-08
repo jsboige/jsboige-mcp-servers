@@ -1,5 +1,6 @@
 import { spawn, ChildProcess, exec } from 'child_process';
 import { initializeJupyterServices } from '../services/jupyter.js';
+import { log } from '../utils/logger.js';
 
 type ToolSchema = {
   type: string;
@@ -40,9 +41,6 @@ export const serverTools = [
     description: "Démarre un serveur Jupyter Lab et le connecte au MCP.",
     schema: startJupyterServerSchema,
     handler: async ({ envPath }) => {
-      const logPath = 'D:/dev/CoursIA/jupyter-mcp-debug.log';
-      const log = (message) => require('fs').appendFileSync(logPath, `[${new Date().toISOString()}] ${message}\n`);
-
       log('--- start_jupyter_server handler called ---');
       log(`envPath: ${envPath}`);
       
@@ -50,6 +48,7 @@ export const serverTools = [
 
       return new Promise((resolve, reject) => {
         try {
+          const startTime = new Date();
           log('Spawning Jupyter process with token authentication disabled...');
           const jupyterProcess = spawn(
             envPath,
@@ -74,56 +73,64 @@ export const serverTools = [
           log(`os.homedir() resolved to: ${homeDir}`);
           log(`Polling for server file in directory: ${runtimeDir}`);
   
-          const checkServerFile = async () => {
+          const findAndConnectToServer = async () => {
+            const serverFileRegex = /^jpserver-(\d+)\.json$/;
+            
             try {
-              if (!fs.existsSync(runtimeDir)) {
-                  log(`Runtime directory does not exist: ${runtimeDir}`);
-                  return false;
-              }
-              const runtimeFiles = fs.readdirSync(runtimeDir);
-              log(`Files in runtime dir: [${runtimeFiles.join(', ')}]`);
-              const serverFileRegex = /^jpserver-(\d+)\.json$/;
-              const serverFile = runtimeFiles.find(f => serverFileRegex.test(f));
-              
-              if (serverFile) {
-                log(`Found server file: ${serverFile}`);
-                const serverInfo = JSON.parse(fs.readFileSync(path.join(runtimeDir, serverFile), 'utf-8'));
-                const baseUrl = serverInfo.url;
+                if (!fs.existsSync(runtimeDir)) {
+                    log(`Runtime directory does not exist: ${runtimeDir}`);
+                    return false; // Continue polling
+                }
 
-                const token = ''; // No token needed
-                log(`Initializing Jupyter services with baseUrl: ${baseUrl} and an empty token.`);
-                await initializeJupyterServices({ baseUrl, token });
-                log('Jupyter services initialized successfully.');
-                
-                resolve({
-                  status: 'started',
-                  pid: jupyterProcess.pid,
-                  baseUrl: baseUrl,
-                  token: token,
-                });
-                return true;
-              } else {
-                 log('Server file not found yet.');
-              }
+                const runtimeFiles = fs.readdirSync(runtimeDir);
+                log(`Files in runtime dir: [${runtimeFiles.join(', ')}]`);
+
+                const serverFileCandidates = runtimeFiles
+                    .map(f => ({ name: f, stats: fs.statSync(path.join(runtimeDir, f)) }))
+                    .filter(f => serverFileRegex.test(f.name) && f.stats.mtime > startTime)
+                    .sort((a, b) => b.stats.mtime.getTime() - a.stats.mtime.getTime());
+
+                if (serverFileCandidates.length > 0) {
+                    const serverFile = serverFileCandidates[0];
+                    log(`Found potential server file: ${serverFile.name}`);
+                    const serverInfo = JSON.parse(fs.readFileSync(path.join(runtimeDir, serverFile.name), 'utf-8'));
+                    const baseUrl = serverInfo.url;
+                    const token = '';
+
+                    log(`Attempting to initialize Jupyter services with baseUrl: ${baseUrl}`);
+                    await initializeJupyterServices({ baseUrl, token });
+
+                    log('Jupyter services initialized successfully.');
+                    resolve({
+                        status: 'started',
+                        pid: jupyterProcess.pid,
+                        baseUrl: baseUrl,
+                        token: token,
+                    });
+                    return true; // Stop polling
+                } else {
+                    log('No new server file found yet.');
+                    return false; // Continue polling
+                }
             } catch (err) {
-              log(`Error checking server file: ${err}`);
+                log(`Error in findAndConnectToServer: ${err}. Will continue polling.`);
+                return false; // Continue polling on connection error
             }
-            return false;
           };
- 
-         // Poll for the server file
-         const poll = setInterval(async () => {
-            log(`Polling attempt...`);
-           if (await checkServerFile()) {
-             clearInterval(poll);
-           }
-         }, 2000);
 
-         // Timeout for polling
-         setTimeout(() => {
-           clearInterval(poll);
-           reject(new Error('Timed out waiting for Jupyter server file.'));
-         }, 120000); // 2 minutes timeout
+          // Poll for the server file
+          const poll = setInterval(async () => {
+            log(`Polling attempt...`);
+            if (await findAndConnectToServer()) {
+                clearInterval(poll);
+            }
+          }, 2000);
+
+          // Timeout for polling
+          setTimeout(() => {
+            clearInterval(poll);
+            reject(new Error('Timed out waiting for Jupyter server connection.'));
+          }, 30000); // 30 seconds timeout
 
           jupyterProcess.on('error', (err) => {
             log(`Jupyter process error: ${err.message}`);
@@ -162,8 +169,6 @@ export const serverTools = [
       required: []
     },
     handler: async () => {
-      const logPath = 'D:/dev/CoursIA/jupyter-mcp-debug.log';
-      const log = (message) => require('fs').appendFileSync(logPath, `[${new Date().toISOString()}] ${message}\n`);
       log('--- stop_jupyter_server handler called ---');
       
       await cleanupOrphanedJupyterProcesses(log);
