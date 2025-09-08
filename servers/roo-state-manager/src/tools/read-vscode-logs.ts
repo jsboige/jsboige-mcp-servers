@@ -52,7 +52,7 @@ export const readVscodeLogs = {
             filter: { type: 'string', description: 'A keyword or regex to filter log lines.' },
         },
     },
-       async execute(args: { lines?: number; filter?: string }): Promise<CallToolResult> {
+       async handler(args: { lines?: number; filter?: string }): Promise<CallToolResult> {
            const lineCount = args.lines || 100;
            const { filter } = args;
            const rootLogsPath = path.join(process.env.APPDATA || '', 'Code', 'logs');

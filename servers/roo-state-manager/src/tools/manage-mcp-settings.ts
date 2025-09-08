@@ -61,7 +61,7 @@ export const manageMcpSettings = {
         },
         required: ['action'],
     },
-    async execute(args: { 
+    async handler(args: {
         action: string;
         server_name?: string;
         server_config?: McpServer;

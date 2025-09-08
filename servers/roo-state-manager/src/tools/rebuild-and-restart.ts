@@ -42,7 +42,7 @@ export const rebuildAndRestart = {
         },
         required: ['mcp_name'],
     },
-    async execute(args: { mcp_name: string }): Promise<CallToolResult> {
+    async handler(args: { mcp_name: string }): Promise<CallToolResult> {
         try {
             const { mcp_name } = args;
             const settingsPath = "c:/Users/jsboi/AppData/Roaming/Code/User/globalStorage/rooveterinaryinc.roo-cline/settings/mcp_settings.json";

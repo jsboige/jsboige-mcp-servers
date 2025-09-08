@@ -15,7 +15,7 @@ export const getMcpDevDocs = {
         properties: {},
         required: [],
     },
-    async execute(): Promise<CallToolResult> {
+    async handler(): Promise<CallToolResult> {
         try {
             const docsBasePath = path.resolve(__dirname, '..', '..', '..', '..', '..', '..', 'docs');
             const debugGuidePath = path.join(docsBasePath, 'mcp-debugging-guide.md');

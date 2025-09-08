@@ -331,7 +331,7 @@ export const analyzeVSCodeGlobalState = {
         properties: {},
         required: []
     },
-    async execute(): Promise<CallToolResult> {
+    async handler(): Promise<CallToolResult> {
         try {
             const analysis = await analyzeVSCodeGlobalStateInternal();
             
@@ -387,7 +387,7 @@ export const repairVSCodeTaskHistory = {
         },
         required: ['old_workspace', 'new_workspace']
     },
-    async execute(args: { old_workspace: string; new_workspace: string }): Promise<CallToolResult> {
+    async handler(args: { old_workspace: string; new_workspace: string }): Promise<CallToolResult> {
         try {
             const result = await repairVSCodeTaskHistoryInternal(args.old_workspace, args.new_workspace);
             
@@ -433,7 +433,7 @@ export const scanOrphanTasks = {
         properties: {},
         required: []
     },
-    async execute(): Promise<CallToolResult> {
+    async handler(): Promise<CallToolResult> {
         try {
             // Lire l'état VS Code pour obtenir les tâches indexées
             const state = await readVSCodeGlobalState();
@@ -585,7 +585,7 @@ export const testWorkspaceExtraction = {
         },
         required: ['task_id']
     },
-    async execute(args: { task_id: string }): Promise<CallToolResult> {
+    async handler(args: { task_id: string }): Promise<CallToolResult> {
         try {
             const tasksDir = path.join(os.homedir(), 'AppData', 'Roaming', 'Code', 'User', 'globalStorage', 'rooveterinaryinc.roo-cline', 'tasks');
             const taskPath = path.join(tasksDir, args.task_id);
@@ -730,7 +730,7 @@ export const rebuildTaskIndex = {
         },
         required: []
     },
-    async execute(args: { workspace_filter?: string, max_tasks?: number, dry_run?: boolean }): Promise<CallToolResult> {
+    async handler(args: { workspace_filter?: string, max_tasks?: number, dry_run?: boolean }): Promise<CallToolResult> {
         const { workspace_filter, max_tasks = 0, dry_run = false } = args;
         
         try {
@@ -969,7 +969,7 @@ export const diagnoseSQLite = {
         properties: {},
         required: []
     },
-    async execute(): Promise<CallToolResult> {
+    async handler(): Promise<CallToolResult> {
         try {
             const stateFile = await findVSCodeGlobalStateFile();
             const db = await openDatabase(stateFile);

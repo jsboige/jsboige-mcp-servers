@@ -19,7 +19,7 @@ import { exec } from 'child_process';
 import { TaskNavigator } from './services/task-navigator.js';
 import { ConversationSkeleton } from './types/conversation.js';
 import packageJson from '../package.json' with { type: 'json' };
-import { readVscodeLogs, rebuildAndRestart, getMcpDevDocs, manageMcpSettings, analyzeVSCodeGlobalState, repairVSCodeTaskHistory, scanOrphanTasks, testWorkspaceExtraction, rebuildTaskIndex, diagnoseSQLite } from './tools/index.js';
+import { readVscodeLogs, rebuildAndRestart, getMcpDevDocs, manageMcpSettings, analyzeVSCodeGlobalState, repairVSCodeTaskHistory, scanOrphanTasks, testWorkspaceExtraction, rebuildTaskIndex, diagnoseSQLite, examineRooGlobalStateTool, repairTaskHistoryTool } from './tools/index.js';
 import { searchTasks } from './services/task-searcher.js';
 import { indexTask } from './services/task-indexer.js';
 
@@ -60,7 +60,7 @@ class RooStateManagerServer {
                         description: 'Détecte automatiquement les emplacements de stockage Roo et scanne les conversations existantes',
                         inputSchema: { type: 'object', properties: {}, required: [] },
                     },
-                   {
+                    {
                        name: 'get_storage_stats',
                        description: 'Calcule des statistiques sur le stockage (nombre de conversations, taille totale).',
                        inputSchema: { type: 'object', properties: {}, required: [] },
@@ -115,7 +115,7 @@ class RooStateManagerServer {
                             required: ['conversation_id', 'search_query'],
                         },
                     },
-                   {
+                    {
                        name: 'debug_analyze_conversation',
                        description: 'Debug tool to analyze a single conversation and return raw data.',
                        inputSchema: {
@@ -125,7 +125,7 @@ class RooStateManagerServer {
                            },
                            required: ['taskId']
                        }
-                   },
+                    },
                     {
                         name: 'view_conversation_tree',
                         description: 'Fournit une vue arborescente et condensée des conversations pour une analyse rapide.',
@@ -139,41 +139,41 @@ class RooStateManagerServer {
                             },
                         },
                     },
-                    {
-                        name: 'diagnose_roo_state',
-                        description: 'Exécute le script d\'audit des tâches Roo (audit-roo-tasks.ps1) et retourne sa sortie JSON.',
-                        inputSchema: {
-                            type: 'object',
-                            properties: {
-                                offset: { type: 'number', description: 'Offset pour la pagination.' },
-                                limit: { type: 'number', description: 'Limite pour la pagination.' },
-                            },
-                        },
-                    },
-                    {
-                        name: 'repair_workspace_paths',
-                        description: 'Exécute le script de réparation des chemins de workspace (repair-roo-tasks.ps1).',
-                        inputSchema: {
-                            type: 'object',
-                            properties: {
-                                path_pairs: {
-                                    type: 'array',
-                                    items: { type: 'string' },
-                                    description: 'Paires de chemins ancien/nouveau pour la réparation. Ex: "C:/old/path=D:/new/path"',
-                                },
-                                whatIf: {
-                                    type: 'boolean',
-                                    description: 'Exécute le script en mode simulation (-WhatIf).',
-                                    default: false,
-                                },
-                                non_interactive: {
-                                    type: 'boolean',
-                                    description: 'Exécute le script en mode non interactif.',
-                                    default: true,
-                                }
-                            },
-                        },
-                    },
+                    // {
+                    //     name: 'diagnose_roo_state',
+                    //     description: 'Exécute le script d\'audit des tâches Roo (audit-roo-tasks.ps1) et retourne sa sortie JSON.',
+                    //     inputSchema: {
+                    //         type: 'object',
+                    //         properties: {
+                    //             offset: { type: 'number', description: 'Offset pour la pagination.' },
+                    //             limit: { type: 'number', description: 'Limite pour la pagination.' },
+                    //         },
+                    //     },
+                    // },
+                    // {
+                    //     name: 'repair_workspace_paths',
+                    //     description: 'Exécute le script de réparation des chemins de workspace (repair-roo-tasks.ps1).',
+                    //     inputSchema: {
+                    //         type: 'object',
+                    //         properties: {
+                    //             path_pairs: {
+                    //                 type: 'array',
+                    //                 items: { type: 'string' },
+                    //                 description: 'Paires de chemins ancien/nouveau pour la réparation. Ex: "C:/old/path=D:/new/path"',
+                    //             },
+                    //             whatIf: {
+                    //                 type: 'boolean',
+                    //                 description: 'Exécute le script en mode simulation (-WhatIf).',
+                    //                 default: false,
+                    //             },
+                    //             non_interactive: {
+                    //                 type: 'boolean',
+                    //                 description: 'Exécute le script en mode non interactif.',
+                    //                 default: true,
+                    //             }
+                    //         },
+                    //     },
+                    // },
                     {
                         name: readVscodeLogs.name,
                         description: readVscodeLogs.description,
@@ -195,17 +195,17 @@ class RooStateManagerServer {
                             required: ['task_id'],
                         },
                     },
-                   {
+                    {
                        name: rebuildAndRestart.name,
                        description: rebuildAndRestart.description,
                        inputSchema: rebuildAndRestart.inputSchema,
-                   },
-                   {
+                    },
+                    {
                        name: getMcpDevDocs.name,
                        description: getMcpDevDocs.description,
                        inputSchema: getMcpDevDocs.inputSchema,
-                   },
-                   {
+                    },
+                    {
                        name: 'diagnose_conversation_bom',
                        description: 'Diagnostique les fichiers de conversation corrompus par un BOM UTF-8.',
                        inputSchema: {
@@ -214,8 +214,8 @@ class RooStateManagerServer {
                                fix_found: { type: 'boolean', description: 'Si true, répare automatiquement les fichiers trouvés.', default: false },
                            },
                        },
-                   },
-                   {
+                    },
+                    {
                        name: 'repair_conversation_bom',
                        description: 'Répare les fichiers de conversation corrompus par un BOM UTF-8.',
                        inputSchema: {
@@ -224,37 +224,47 @@ class RooStateManagerServer {
                                dry_run: { type: 'boolean', description: 'Si true, simule la réparation sans modifier les fichiers.', default: false },
                            },
                        },
-                   },
-                   {
+                    },
+                    {
                        name: analyzeVSCodeGlobalState.name,
                        description: analyzeVSCodeGlobalState.description,
                        inputSchema: analyzeVSCodeGlobalState.inputSchema,
-                   },
-                   {
+                    },
+                    {
                        name: repairVSCodeTaskHistory.name,
                        description: repairVSCodeTaskHistory.description,
                        inputSchema: repairVSCodeTaskHistory.inputSchema,
-                   },
-                   {
+                    },
+                    {
                        name: scanOrphanTasks.name,
                        description: scanOrphanTasks.description,
                        inputSchema: scanOrphanTasks.inputSchema,
-                   },
-                   {
+                    },
+                    {
                        name: testWorkspaceExtraction.name,
                        description: testWorkspaceExtraction.description,
                        inputSchema: testWorkspaceExtraction.inputSchema,
-                   },
-                   {
+                    },
+                    {
                        name: rebuildTaskIndex.name,
                        description: rebuildTaskIndex.description,
                        inputSchema: rebuildTaskIndex.inputSchema,
-                   },
-                   {
+                    },
+                    {
                        name: diagnoseSQLite.name,
                        description: diagnoseSQLite.description,
                        inputSchema: diagnoseSQLite.inputSchema,
-                   }
+                    },
+                    {
+                       name: examineRooGlobalStateTool.name,
+                       description: examineRooGlobalStateTool.description,
+                       inputSchema: examineRooGlobalStateTool.inputSchema,
+                    },
+                    {
+                       name: repairTaskHistoryTool.name,
+                       description: repairTaskHistoryTool.description,
+                       inputSchema: repairTaskHistoryTool.inputSchema,
+                    }
                 ] as any[],
             };
         });
@@ -295,26 +305,26 @@ class RooStateManagerServer {
                case 'debug_analyze_conversation':
                    result = await this.handleDebugAnalyzeConversation(args as any);
                    break;
-               case 'diagnose_roo_state':
-                   result = await this.handleDiagnoseRooState(args as any);
-                   break;
-               case 'repair_workspace_paths':
-                   result = await this.handleRepairWorkspacePaths(args as any);
-                   break;
+            //    case 'diagnose_roo_state':
+            //        result = await this.handleDiagnoseRooState(args as any);
+            //        break;
+            //    case 'repair_workspace_paths':
+            //        result = await this.handleRepairWorkspacePaths(args as any);
+            //        break;
                case readVscodeLogs.name:
-                   result = await readVscodeLogs.execute(args as any);
+                   result = await readVscodeLogs.handler(args as any);
                    break;
                case manageMcpSettings.name:
-                   result = await manageMcpSettings.execute(args as any);
+                   result = await manageMcpSettings.handler(args as any);
                    break;
                case 'index_task_semantic':
                    result = await this.handleIndexTaskSemantic(args as any);
                    break;
                case rebuildAndRestart.name:
-                   result = await rebuildAndRestart.execute(args as any);
+                   result = await rebuildAndRestart.handler(args as any);
                    break;
                case getMcpDevDocs.name:
-                   result = await getMcpDevDocs.execute();
+                   result = await getMcpDevDocs.handler();
                    break;
                case 'diagnose_conversation_bom':
                    result = await this.handleDiagnoseConversationBom(args as any);
@@ -323,23 +333,29 @@ class RooStateManagerServer {
                    result = await this.handleRepairConversationBom(args as any);
                    break;
                case analyzeVSCodeGlobalState.name:
-                   result = await analyzeVSCodeGlobalState.execute();
+                   result = await analyzeVSCodeGlobalState.handler();
                    break;
                case repairVSCodeTaskHistory.name:
-                   result = await repairVSCodeTaskHistory.execute(args as any);
+                   result = await repairVSCodeTaskHistory.handler(args as any);
                    break;
                case scanOrphanTasks.name:
-                   result = await scanOrphanTasks.execute();
+                   result = await scanOrphanTasks.handler();
                    break;
                case testWorkspaceExtraction.name:
-                   result = await testWorkspaceExtraction.execute(args as any);
+                   result = await testWorkspaceExtraction.handler(args as any);
                    break;
                case rebuildTaskIndex.name:
-                   result = await rebuildTaskIndex.execute(args as any);
+                   result = await rebuildTaskIndex.handler(args as any);
                    break;
-               case diagnoseSQLite.name:
-                   result = await diagnoseSQLite.execute();
-                   break;
+                case diagnoseSQLite.name:
+                    result = await diagnoseSQLite.handler();
+                    break;
+                case examineRooGlobalStateTool.name:
+                    result = await examineRooGlobalStateTool.handler();
+                    break;
+                case repairTaskHistoryTool.name:
+                    result = await repairTaskHistoryTool.handler((args as any).target_workspace);
+                    break;
                default:
                    throw new Error(`Tool not found: ${name}`);
            }
