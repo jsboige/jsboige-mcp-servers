@@ -33,8 +33,8 @@ class RooStateManagerServer {
     constructor() {
         this.server = new Server(
             {
-                name: 'roo-state-manager', // Restoring original name
-                version: '0.1.0-new-features',
+                name: 'roo-state-manager',
+                version: packageJson.version,
             },
             {
                 capabilities: {

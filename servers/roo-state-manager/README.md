@@ -38,6 +38,12 @@ npm run build
 
 # Test du détecteur de stockage
 npm run test:detector
+
+# Lancer la suite de tests complète
+npm test
+
+# Tests avec coverage
+npm run test:coverage
 ```
 
 ## 🔍 Fonctionnalités
@@ -191,6 +197,158 @@ interface ClineMessage {
 npm run test:detector
 ```
 
+- Détecte automatiquement les emplacements de stockage Roo
+- Analyse la structure des dossiers de conversations
+- Valide l'intégrité des fichiers JSON
+- Affiche des statistiques sur les conversations trouvées
+
+### Suite de Tests Complète
+
+Le projet inclut une suite de tests robuste couvrant :
+
+#### Tests Unitaires
+- `manage-mcp-settings.test.ts` : Tests pour la gestion des paramètres MCP
+- `read-vscode-logs.test.ts` : Tests pour la lecture des logs VSCode
+- `view-conversation-tree.test.ts` : Tests pour l'affichage des conversations
+- `versioning.test.ts` : Tests pour la lecture de version depuis package.json
+- `timestamp-parsing.test.ts` : Tests pour le parsing des timestamps
+- `bom-handling.test.ts` : Tests pour la gestion des fichiers avec BOM UTF-8
+
+#### Tests E2E
+- `semantic-search.test.ts` : Tests de recherche sémantique
+- `task-navigation.test.ts` : Tests de navigation dans les tâches
+
+### Commandes de Test
+
+```bash
+# Lancer tous les tests
+npm test
+
+# Tests avec setup automatique
+npm run test:setup && npm test
+
+# Tests avec coverage
+npm run test:coverage
+
+# Test spécifique
+npx jest tests/specific-test.test.ts --verbose
+
+# Tests avec plus de mémoire (si problèmes de heap)
+NODE_OPTIONS="--max-old-space-size=4096" npm test
+```
+
+### Configuration Jest
+
+Le projet utilise Jest avec support ESM et TypeScript via `ts-jest`. Configuration optimisée pour :
+- Modules ES natives
+- Support TypeScript complet
+- Mocking sécurisé avec `jest.unstable_mockModule`
+- Gestion mémoire optimisée (un seul worker)
+- Isolation complète des tests
+
+## 🛠️ Troubleshooting
+
+### Problèmes Courants et Solutions
+
+#### 1. Crash du Serveur au Démarrage
+
+**Erreur :** `OpenAI API key is not configured...`
+
+**Cause :** Le serveur utilise une initialisation paresseuse (lazy loading) du client OpenAI pour éviter les crashes lors du démarrage.
+
+**Solution :**
+- Vérifiez que le fichier `.env` existe avec `OPENAI_API_KEY=your_key`
+- Le serveur ne crash plus au démarrage même sans clé API
+- La clé n'est requise que pour les fonctionnalités de recherche sémantique
+
+#### 2. Problèmes de Serveurs MCP
+
+**Erreur :** `Invalid configuration for MCP server "xxx"`
+
+**Solutions :**
+```bash
+# Désactiver un serveur problématique
+use_mcp_tool "roo-state-manager" "manage_mcp_settings" {"action": "toggle_server", "server_name": "problematic-server"}
+
+# Voir la configuration actuelle
+use_mcp_tool "roo-state-manager" "manage_mcp_settings" {"action": "read"}
+```
+
+#### 3. Erreurs de Tests Jest
+
+**Erreur :** `Cannot use import statement outside a module`
+
+**Solutions :**
+- Configuration Jest ESM correcte dans `jest.config.js`
+- Utilisation de `jest.unstable_mockModule` pour les modules ES
+- Variable `NODE_OPTIONS=--experimental-vm-modules`
+
+**Erreur :** `JavaScript heap out of memory`
+
+**Solutions :**
+```bash
+NODE_OPTIONS="--max-old-space-size=4096" npm test
+```
+
+#### 4. Problèmes de Fichiers Corrompus
+
+**Erreur :** Fichiers JSON avec BOM UTF-8
+
+**Solution :**
+```bash
+# Diagnostic
+use_mcp_tool "roo-state-manager" "diagnose_conversation_bom" {}
+
+# Réparation
+use_mcp_tool "roo-state-manager" "repair_conversation_bom" {}
+```
+
+### Outils de Diagnostic
+
+#### `diagnose_roo_state`
+```bash
+use_mcp_tool "roo-state-manager" "diagnose_roo_state" {}
+```
+
+#### `read_vscode_logs`
+```bash
+use_mcp_tool "roo-state-manager" "read_vscode_logs" {"lines": 100, "filter": "error"}
+```
+
+### Variables d'Environnement
+
+Créez un fichier `.env` dans le répertoire du serveur :
+
+```env
+# Requis pour la recherche sémantique
+OPENAI_API_KEY=your_openai_api_key_here
+
+# Configuration Qdrant (optionnel)
+QDRANT_URL=http://localhost:6333
+QDRANT_COLLECTION_NAME=roo_tasks_semantic_index
+
+# Mode debug (optionnel)
+DEBUG=roo-state-manager:*
+```
+
+### Structure des Tests
+
+```
+tests/
+├── setup-env.ts              # Configuration environnement test
+├── jest.setup.ts             # Setup Jest global
+├── manage-mcp-settings.test.ts    # Tests gestion MCP
+├── read-vscode-logs.test.ts       # Tests lecture logs
+├── view-conversation-tree.test.ts # Tests navigation conversations  
+├── versioning.test.ts             # Tests versioning
+├── timestamp-parsing.test.ts      # Tests timestamps
+├── bom-handling.test.ts           # Tests BOM UTF-8
+├── task-navigator.test.ts         # Tests navigation tâches
+└── e2e/
+    ├── semantic-search.test.ts    # Tests recherche sémantique
+    ├── task-navigation.test.ts    # Tests navigation E2E
+    └── placeholder.test.ts        # Tests placeholder
+```
 Ce test :
 1. Détecte automatiquement le stockage Roo
 2. Affiche les emplacements trouvés

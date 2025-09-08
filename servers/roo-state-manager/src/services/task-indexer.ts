@@ -2,7 +2,7 @@ import { promises as fs } from 'fs';
 import path from 'path';
 import crypto from 'crypto';
 import { v4 as uuidv4 } from 'uuid';
-import openai from './openai.js';
+import getOpenAIClient from './openai.js';
 import { getQdrantClient } from './qdrant.js';
 import { Schemas } from '@qdrant/js-client-rest';
 
@@ -174,7 +174,7 @@ export async function indexTask(taskId: string, taskPath: string): Promise<Point
         for (const chunk of chunks) {
             // Seuls les chunks marqués comme 'indexed' seront vectorisés
             if (chunk.indexed) {
-                const embeddingResponse = await openai.embeddings.create({
+                const embeddingResponse = await getOpenAIClient().embeddings.create({
                     model: EMBEDDING_MODEL,
                     input: chunk.content,
                 });
