@@ -20,13 +20,12 @@ interface VSCodeGlobalState {
  */
 async function findVSCodeGlobalStateFile(): Promise<string> {
     const userDataDir = path.join(os.homedir(), 'AppData', 'Roaming', 'Code', 'User', 'globalStorage');
-    const rooExtensionDir = path.join(userDataDir, 'rooveterinaryinc.roo-cline');
     
-    // Le state global est généralement dans un fichier state.vscdb ou similaire
+    // Le state global principal de VS Code est dans globalStorage/state.vscdb
     const possibleFiles = [
-        path.join(rooExtensionDir, 'state.vscdb'),
-        path.join(rooExtensionDir, 'storage.json'),
-        path.join(rooExtensionDir, 'global.json')
+        path.join(userDataDir, 'state.vscdb'),
+        path.join(userDataDir, 'storage.json'),
+        path.join(userDataDir, 'global.json')
     ];
 
     for (const file of possibleFiles) {
@@ -37,13 +36,12 @@ async function findVSCodeGlobalStateFile(): Promise<string> {
             continue;
         }
     }
-
     // Si aucun fichier trouvé, on recherche tous les fichiers dans le répertoire
     try {
-        const files = await fs.readdir(rooExtensionDir);
+        const files = await fs.readdir(userDataDir);
         for (const file of files) {
             if (file.endsWith('.vscdb') || file.endsWith('.json')) {
-                const fullPath = path.join(rooExtensionDir, file);
+                const fullPath = path.join(userDataDir, file);
                 const stats = await fs.stat(fullPath);
                 if (stats.isFile() && stats.size > 0) {
                     return fullPath;
@@ -51,7 +49,7 @@ async function findVSCodeGlobalStateFile(): Promise<string> {
             }
         }
     } catch (error) {
-        throw new Error(`Cannot find VS Code global storage directory: ${rooExtensionDir}`);
+        throw new Error(`Cannot find VS Code global storage directory: ${userDataDir}`);
     }
 
     throw new Error('No VS Code global state file found for Roo extension');
