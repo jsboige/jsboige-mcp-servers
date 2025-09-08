@@ -380,3 +380,527 @@ export const repairVSCodeTaskHistory = {
         }
     }
 };
+
+export const scanOrphanTasks = {
+    name: 'scan_orphan_tasks',
+    description: 'Scanne les tâches présentes sur le disque mais absentes de l\'index SQLite VS Code et analyse les mappings de workspace.',
+    inputSchema: {
+        type: 'object',
+        properties: {},
+        required: []
+    },
+    async execute(): Promise<CallToolResult> {
+        try {
+            // Lire l'état VS Code pour obtenir les tâches indexées
+            const state = await readVSCodeGlobalState();
+            const indexedTasks = new Set<string>();
+            
+            if (state.taskHistory && Array.isArray(state.taskHistory)) {
+                state.taskHistory.forEach(task => {
+                    if (task.id) {
+                        indexedTasks.add(task.id);
+                    }
+                });
+            }
+
+            // Scanner les répertoires de tâches sur le disque
+            const tasksDir = path.join(os.homedir(), 'AppData', 'Roaming', 'Code', 'User', 'globalStorage', 'rooveterinaryinc.roo-cline', 'tasks');
+            
+            let diskTasks: Array<{id: string, workspace?: string, lastActivity?: Date}> = [];
+            
+            try {
+                const taskFolders = await fs.readdir(tasksDir);
+                
+                for (const taskId of taskFolders) {
+                    const taskPath = path.join(tasksDir, taskId);
+                    const stats = await fs.stat(taskPath);
+                    
+                    if (stats.isDirectory()) {
+                        let workspace = undefined;
+                        let hasFiles = false;
+                        
+                        try {
+                            // Essayer plusieurs sources pour le workspace
+                            const historyFile = path.join(taskPath, 'api_conversation_history.json');
+                            const metadataFile = path.join(taskPath, 'task_metadata.json');
+                            
+                            // Vérifier s'il y a des fichiers dans ce répertoire
+                            const files = await fs.readdir(taskPath);
+                            hasFiles = files.length > 0;
+                            
+                            // Essayer api_conversation_history.json en premier
+                            try {
+                                let historyContent = await fs.readFile(historyFile, 'utf8');
+                                
+                                // Gérer le BOM UTF-8
+                                if (historyContent.charCodeAt(0) === 0xFEFF) {
+                                    historyContent = historyContent.slice(1);
+                                }
+                                
+                                // Recherche directe du pattern dans tout le contenu
+                                const match = historyContent.match(/Current Workspace Directory \(([^)]+)\)/);
+                                if (match && match[1]) {
+                                    workspace = match[1];
+                                }
+                            } catch (historyError) {
+                                // Essayer task_metadata.json si api_conversation_history.json n'existe pas
+                                try {
+                                    const metadataContent = await fs.readFile(metadataFile, 'utf8');
+                                    const metadataData = JSON.parse(metadataContent);
+                                    
+                                    if (metadataData.workspace) {
+                                        workspace = metadataData.workspace;
+                                    }
+                                } catch (metadataError) {
+                                    // Pas de workspace trouvé, mais on garde quand même la tâche
+                                    workspace = undefined;
+                                }
+                            }
+                        } catch (error) {
+                            // En cas d'erreur générale, on garde la tâche sans workspace
+                            console.warn(`Error reading task ${taskId}:`, error);
+                        }
+                        
+                        // Ajouter TOUTES les tâches qui ont des fichiers, même sans workspace
+                        if (hasFiles) {
+                            diskTasks.push({
+                                id: taskId,
+                                workspace: workspace,
+                                lastActivity: stats.mtime
+                            });
+                        }
+                    }
+                }
+            } catch (error) {
+                return {
+                    content: [{
+                        type: 'text',
+                        text: `Erreur lors de la lecture du répertoire des tâches: ${error}`
+                    }]
+                };
+            }
+
+            // Identifier les tâches orphelines (sur le disque mais pas dans l'index)
+            const orphanTasks = diskTasks.filter(task => !indexedTasks.has(task.id));
+            
+            // Analyser les workspaces des tâches orphelines
+            const workspaceStats: { [key: string]: number } = {};
+            orphanTasks.forEach(task => {
+                if (task.workspace) {
+                    workspaceStats[task.workspace] = (workspaceStats[task.workspace] || 0) + 1;
+                }
+            });
+
+            let report = `# Analyse des tâches orphelines\n\n`;
+            report += `**Tâches dans l'index SQLite:** ${indexedTasks.size}\n`;
+            report += `**Tâches sur le disque:** ${diskTasks.length}\n`;
+            report += `**Tâches orphelines:** ${orphanTasks.length}\n\n`;
+            
+            if (Object.keys(workspaceStats).length > 0) {
+                report += `## Distribution des workspaces des tâches orphelines:\n`;
+                Object.entries(workspaceStats)
+                    .sort(([,a], [,b]) => b - a)
+                    .forEach(([workspace, count]) => {
+                        report += `- **${workspace}**: ${count} tâche(s)\n`;
+                    });
+                report += `\n`;
+            }
+
+            if (orphanTasks.length > 0) {
+                report += `## Échantillon de tâches orphelines (5 premières):\n`;
+                orphanTasks.slice(0, 5).forEach((task, index) => {
+                    report += `${index + 1}. **ID:** ${task.id}\n`;
+                    report += `   - Workspace: ${task.workspace || 'Non défini'}\n`;
+                    report += `   - Dernière activité: ${task.lastActivity?.toLocaleString() || 'Inconnue'}\n`;
+                    report += `\n`;
+                });
+            }
+
+            return { content: [{ type: 'text', text: report }] };
+        } catch (error) {
+            return {
+                content: [{
+                    type: 'text',
+                    text: `Erreur lors du scan des tâches orphelines: ${error instanceof Error ? error.message : String(error)}`
+                }]
+            };
+        }
+    }
+};
+
+export const testWorkspaceExtraction = {
+    name: 'test_workspace_extraction',
+    description: 'Teste l\'extraction du workspace pour une tâche spécifique à des fins de débogage.',
+    inputSchema: {
+        type: 'object',
+        properties: {
+            task_id: {
+                type: 'string',
+                description: 'L\'ID de la tâche à tester'
+            }
+        },
+        required: ['task_id']
+    },
+    async execute(args: { task_id: string }): Promise<CallToolResult> {
+        try {
+            const tasksDir = path.join(os.homedir(), 'AppData', 'Roaming', 'Code', 'User', 'globalStorage', 'rooveterinaryinc.roo-cline', 'tasks');
+            const taskPath = path.join(tasksDir, args.task_id);
+            const historyFile = path.join(taskPath, 'api_conversation_history.json');
+            const metadataFile = path.join(taskPath, 'task_metadata.json');
+            
+            let report = `# Test d'extraction de workspace pour la tâche ${args.task_id}\n\n`;
+            
+            // Vérifier l'existence du répertoire
+            try {
+                const stats = await fs.stat(taskPath);
+                if (!stats.isDirectory()) {
+                    return {
+                        content: [{
+                            type: 'text',
+                            text: `❌ ${taskPath} n'est pas un répertoire`
+                        }]
+                    };
+                }
+                report += `✅ Répertoire de tâche trouvé: ${taskPath}\n\n`;
+            } catch {
+                return {
+                    content: [{
+                        type: 'text',
+                        text: `❌ Répertoire de tâche non trouvé: ${taskPath}`
+                    }]
+                };
+            }
+            
+            // Test avec api_conversation_history.json
+            try {
+                let historyContent = await fs.readFile(historyFile, 'utf8');
+                
+                report += `## Fichier api_conversation_history.json\n`;
+                report += `📁 **Chemin:** ${historyFile}\n`;
+                report += `📊 **Taille:** ${historyContent.length} caractères\n`;
+                
+                // Vérifier BOM
+                const hasBOM = historyContent.charCodeAt(0) === 0xFEFF;
+                report += `🔤 **BOM UTF-8:** ${hasBOM ? 'Présent' : 'Absent'}\n`;
+                
+                if (hasBOM) {
+                    historyContent = historyContent.slice(1);
+                    report += `🔧 **Après suppression BOM:** ${historyContent.length} caractères\n`;
+                }
+                
+                // Afficher un extrait du début
+                const preview = historyContent.substring(0, 500);
+                report += `\n### Extrait du début (500 caractères):\n\`\`\`\n${preview}${historyContent.length > 500 ? '...' : ''}\n\`\`\`\n\n`;
+                
+                // Test de la regex actuelle
+                const currentRegex = /Current Workspace Directory \(([^)]+)\)/;
+                const currentMatch = historyContent.match(currentRegex);
+                
+                report += `### Test regex actuelle: \`/Current Workspace Directory \\(([^)]+)\\)/\`\n`;
+                if (currentMatch) {
+                    report += `✅ **Match trouvé:** ${currentMatch[1]}\n`;
+                } else {
+                    report += `❌ **Aucun match trouvé**\n`;
+                    
+                    // Tests alternatifs
+                    const altTests = [
+                        { name: 'Current Workspace Directory:', regex: /Current Workspace Directory:\s*([^\n\r]+)/ },
+                        { name: 'workspace', regex: /"workspace":\s*"([^"]+)"/ },
+                        { name: 'Workspace Directory', regex: /Workspace Directory[:\s]*([^\n\r\)]+)/ },
+                        { name: 'Current Workspace', regex: /Current Workspace[:\s]*([^\n\r\)]+)/ }
+                    ];
+                    
+                    report += `\n#### Tests alternatifs:\n`;
+                    for (const test of altTests) {
+                        const match = historyContent.match(test.regex);
+                        if (match) {
+                            report += `✅ **${test.name}:** ${match[1]}\n`;
+                        } else {
+                            report += `❌ **${test.name}:** Aucun match\n`;
+                        }
+                    }
+                }
+                
+            } catch (historyError) {
+                report += `## Fichier api_conversation_history.json\n`;
+                report += `❌ **Erreur de lecture:** ${historyError}\n\n`;
+            }
+            
+            // Test avec task_metadata.json
+            try {
+                const metadataContent = await fs.readFile(metadataFile, 'utf8');
+                const metadataData = JSON.parse(metadataContent);
+                
+                report += `## Fichier task_metadata.json\n`;
+                report += `📁 **Chemin:** ${metadataFile}\n`;
+                report += `📊 **Taille:** ${metadataContent.length} caractères\n`;
+                
+                if (metadataData.workspace) {
+                    report += `✅ **Workspace trouvé:** ${metadataData.workspace}\n`;
+                } else {
+                    report += `❌ **Pas de propriété workspace trouvée**\n`;
+                    report += `🔍 **Propriétés disponibles:** ${Object.keys(metadataData).join(', ')}\n`;
+                }
+                
+                // Afficher le contenu JSON
+                report += `\n### Contenu JSON:\n\`\`\`json\n${JSON.stringify(metadataData, null, 2)}\n\`\`\`\n`;
+                
+            } catch (metadataError) {
+                report += `## Fichier task_metadata.json\n`;
+                report += `❌ **Erreur:** ${metadataError}\n\n`;
+            }
+            
+            return { content: [{ type: 'text', text: report }] };
+            
+        } catch (error) {
+            return {
+                content: [{
+                    type: 'text',
+                    text: `Erreur lors du test: ${error instanceof Error ? error.message : String(error)}`
+                }]
+            };
+        }
+    }
+};
+
+export const rebuildTaskIndex = {
+    name: 'rebuild_task_index',
+    description: 'Reconstruit l\'index SQLite VS Code en ajoutant les tâches orphelines détectées sur le disque.',
+    inputSchema: {
+        type: 'object',
+        properties: {
+            workspace_filter: {
+                type: 'string',
+                description: 'Filtre optionnel par workspace. Si spécifié, seules les tâches de ce workspace seront ajoutées.'
+            },
+            max_tasks: {
+                type: 'number',
+                description: 'Nombre maximum de tâches à ajouter (pour test). Par défaut, toutes les tâches.',
+                default: 0
+            },
+            dry_run: {
+                type: 'boolean',
+                description: 'Si true, simule l\'opération sans modifier l\'index SQLite.',
+                default: false
+            }
+        },
+        required: []
+    },
+    async execute(args: { workspace_filter?: string, max_tasks?: number, dry_run?: boolean }): Promise<CallToolResult> {
+        const { workspace_filter, max_tasks = 0, dry_run = false } = args;
+        
+        try {
+            // Lire l'état VS Code actuel pour obtenir les tâches indexées
+            const state = await readVSCodeGlobalState();
+            const indexedTasks = new Set<string>();
+            let currentTaskHistory: HistoryItem[] = [];
+            
+            if (state.taskHistory && Array.isArray(state.taskHistory)) {
+                currentTaskHistory = [...state.taskHistory];
+                state.taskHistory.forEach(task => {
+                    if (task.id) {
+                        indexedTasks.add(task.id);
+                    }
+                });
+            }
+
+            // Scanner les tâches sur le disque
+            const tasksDir = path.join(os.homedir(), 'AppData', 'Roaming', 'Code', 'User', 'globalStorage', 'rooveterinaryinc.roo-cline', 'tasks');
+            
+            let diskTasks: Array<{id: string, workspace?: string, lastActivity?: Date}> = [];
+            
+            try {
+                const taskFolders = await fs.readdir(tasksDir);
+                
+                for (const taskId of taskFolders) {
+                    const taskPath = path.join(tasksDir, taskId);
+                    const stats = await fs.stat(taskPath);
+                    
+                    if (stats.isDirectory() && taskId !== '.skeletons') {
+                        let workspace = undefined;
+                        let hasFiles = false;
+                        
+                        try {
+                            const historyFile = path.join(taskPath, 'api_conversation_history.json');
+                            const metadataFile = path.join(taskPath, 'task_metadata.json');
+                            
+                            // Vérifier s'il y a des fichiers dans ce répertoire
+                            const files = await fs.readdir(taskPath);
+                            hasFiles = files.length > 0;
+                            
+                            // Essayer d'extraire le workspace
+                            try {
+                                let historyContent = await fs.readFile(historyFile, 'utf8');
+                                
+                                // Gérer le BOM UTF-8
+                                if (historyContent.charCodeAt(0) === 0xFEFF) {
+                                    historyContent = historyContent.slice(1);
+                                }
+                                
+                                // Recherche du workspace
+                                const match = historyContent.match(/Current Workspace Directory \(([^)]+)\)/);
+                                if (match && match[1]) {
+                                    workspace = match[1];
+                                }
+                            } catch (historyError) {
+                                // Essayer task_metadata.json comme fallback
+                                try {
+                                    const metadataContent = await fs.readFile(metadataFile, 'utf8');
+                                    const metadataData = JSON.parse(metadataContent);
+                                    
+                                    if (metadataData.workspace) {
+                                        workspace = metadataData.workspace;
+                                    }
+                                } catch (metadataError) {
+                                    // Pas de workspace trouvé
+                                }
+                            }
+                        } catch (error) {
+                            // Erreur générale, on garde la tâche sans workspace
+                        }
+                        
+                        // Ajouter toutes les tâches qui ont des fichiers
+                        if (hasFiles) {
+                            diskTasks.push({
+                                id: taskId,
+                                workspace: workspace,
+                                lastActivity: stats.mtime
+                            });
+                        }
+                    }
+                }
+            } catch (error) {
+                return {
+                    content: [{
+                        type: 'text',
+                        text: `Erreur lors de la lecture du répertoire des tâches: ${error}`
+                    }]
+                };
+            }
+
+            // Identifier les tâches orphelines
+            let orphanTasks = diskTasks.filter(task => !indexedTasks.has(task.id));
+            
+            // Appliquer le filtre de workspace si spécifié
+            if (workspace_filter) {
+                orphanTasks = orphanTasks.filter(task =>
+                    task.workspace && task.workspace.includes(workspace_filter)
+                );
+            }
+            
+            // Appliquer la limite si spécifiée
+            if (max_tasks > 0) {
+                orphanTasks = orphanTasks.slice(0, max_tasks);
+            }
+
+            let report = `# Reconstruction de l'index des tâches\n\n`;
+            report += `**Mode:** ${dry_run ? 'Simulation (dry-run)' : 'Reconstruction réelle'}\n`;
+            report += `**Tâches dans l'index actuel:** ${indexedTasks.size}\n`;
+            report += `**Tâches sur le disque:** ${diskTasks.length}\n`;
+            report += `**Tâches orphelines totales:** ${diskTasks.filter(task => !indexedTasks.has(task.id)).length}\n`;
+            
+            if (workspace_filter) {
+                report += `**Filtre workspace:** ${workspace_filter}\n`;
+            }
+            if (max_tasks > 0) {
+                report += `**Limite:** ${max_tasks} tâches\n`;
+            }
+            
+            report += `**Tâches à traiter:** ${orphanTasks.length}\n\n`;
+
+            if (orphanTasks.length === 0) {
+                report += `ℹ️ Aucune tâche orpheline à ajouter.\n`;
+                return { content: [{ type: 'text', text: report }] };
+            }
+
+            // Préparer les nouvelles entrées pour taskHistory
+            const newHistoryItems: HistoryItem[] = [];
+            let addedTasks = 0;
+            let failedTasks = 0;
+            const failureDetails: string[] = [];
+            
+            for (const orphanTask of orphanTasks) {
+                try {
+                    const historyItem: HistoryItem = {
+                        ts: orphanTask.lastActivity ? orphanTask.lastActivity.getTime() : Date.now(),
+                        task: orphanTask.id,
+                        workspace: orphanTask.workspace || 'unknown',
+                        id: orphanTask.id
+                    };
+                    
+                    newHistoryItems.push(historyItem);
+                    addedTasks++;
+                } catch (error) {
+                    failedTasks++;
+                    failureDetails.push(`${orphanTask.id}: ${error}`);
+                }
+            }
+
+            // Trier toutes les tâches par timestamp (les plus récentes en premier)
+            const allTasks = [...currentTaskHistory, ...newHistoryItems].sort((a, b) => b.ts - a.ts);
+            
+            if (!dry_run && newHistoryItems.length > 0) {
+                // Mettre à jour l'état global
+                const updatedState = {
+                    ...state,
+                    taskHistory: allTasks
+                };
+                
+                await writeVSCodeGlobalState(updatedState);
+                
+                report += `✅ **Index mis à jour avec succès !**\n\n`;
+                report += `**Tâches ajoutées:** ${addedTasks}\n`;
+                report += `**Total après mise à jour:** ${allTasks.length}\n`;
+                
+                if (failedTasks > 0) {
+                    report += `**Échecs:** ${failedTasks}\n`;
+                }
+                
+                report += `\n**Prochaines étapes:**\n`;
+                report += `1. Redémarrer complètement VS Code\n`;
+                report += `2. Vérifier que les tâches réapparaissent dans le panneau Roo\n`;
+                report += `3. Valider que les tâches sont fonctionnelles\n`;
+                
+            } else {
+                report += `🔍 **Simulation terminée.**\n\n`;
+                report += `**Tâches qui seraient ajoutées:** ${addedTasks}\n`;
+                report += `**Nouveau total après ajout:** ${currentTaskHistory.length + addedTasks}\n`;
+                
+                if (failedTasks > 0) {
+                    report += `**Échecs potentiels:** ${failedTasks}\n`;
+                }
+            }
+            
+            // Afficher quelques exemples de tâches traitées
+            if (newHistoryItems.length > 0) {
+                report += `\n## Échantillon de tâches ${dry_run ? 'qui seraient ajoutées' : 'ajoutées'} (5 premières):\n`;
+                newHistoryItems.slice(0, 5).forEach((task, index) => {
+                    report += `${index + 1}. **${task.id}**\n`;
+                    report += `   - Workspace: ${task.workspace}\n`;
+                    report += `   - Timestamp: ${new Date(task.ts).toLocaleString()}\n\n`;
+                });
+            }
+            
+            // Afficher les détails des échecs si il y en a
+            if (failedTasks > 0 && failureDetails.length > 0) {
+                report += `\n## Détails des échecs:\n`;
+                failureDetails.slice(0, 10).forEach(detail => {
+                    report += `- ${detail}\n`;
+                });
+                if (failureDetails.length > 10) {
+                    report += `... et ${failureDetails.length - 10} autres échecs.\n`;
+                }
+            }
+
+            return { content: [{ type: 'text', text: report }] };
+            
+        } catch (error) {
+            return {
+                content: [{
+                    type: 'text',
+                    text: `Erreur lors de la reconstruction de l'index: ${error instanceof Error ? error.message : String(error)}`
+                }]
+            };
+        }
+    }
+};

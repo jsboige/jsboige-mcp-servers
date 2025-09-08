@@ -19,7 +19,7 @@ import { exec } from 'child_process';
 import { TaskNavigator } from './services/task-navigator.js';
 import { ConversationSkeleton } from './types/conversation.js';
 import packageJson from '../package.json' with { type: 'json' };
-import { readVscodeLogs, rebuildAndRestart, getMcpDevDocs, manageMcpSettings, analyzeVSCodeGlobalState, repairVSCodeTaskHistory } from './tools/index.js';
+import { readVscodeLogs, rebuildAndRestart, getMcpDevDocs, manageMcpSettings, analyzeVSCodeGlobalState, repairVSCodeTaskHistory, scanOrphanTasks, testWorkspaceExtraction, rebuildTaskIndex } from './tools/index.js';
 import { searchTasks } from './services/task-searcher.js';
 import { indexTask } from './services/task-indexer.js';
 
@@ -234,6 +234,21 @@ class RooStateManagerServer {
                        name: repairVSCodeTaskHistory.name,
                        description: repairVSCodeTaskHistory.description,
                        inputSchema: repairVSCodeTaskHistory.inputSchema,
+                   },
+                   {
+                       name: scanOrphanTasks.name,
+                       description: scanOrphanTasks.description,
+                       inputSchema: scanOrphanTasks.inputSchema,
+                   },
+                   {
+                       name: testWorkspaceExtraction.name,
+                       description: testWorkspaceExtraction.description,
+                       inputSchema: testWorkspaceExtraction.inputSchema,
+                   },
+                   {
+                       name: rebuildTaskIndex.name,
+                       description: rebuildTaskIndex.description,
+                       inputSchema: rebuildTaskIndex.inputSchema,
                    }
                 ] as any[],
             };
@@ -307,6 +322,15 @@ class RooStateManagerServer {
                    break;
                case repairVSCodeTaskHistory.name:
                    result = await repairVSCodeTaskHistory.execute(args as any);
+                   break;
+               case scanOrphanTasks.name:
+                   result = await scanOrphanTasks.execute();
+                   break;
+               case testWorkspaceExtraction.name:
+                   result = await testWorkspaceExtraction.execute(args as any);
+                   break;
+               case rebuildTaskIndex.name:
+                   result = await rebuildTaskIndex.execute(args as any);
                    break;
                default:
                    throw new Error(`Tool not found: ${name}`);
