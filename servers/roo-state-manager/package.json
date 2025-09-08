@@ -6,7 +6,7 @@
   "type": "module",
   "scripts": {
     "build": "tsc",
-    "start": "node --env-file=.env build/src/index.js",
+    "start": "npm run build && node --env-file=.env build/index.js",
     "dev": "tsc -w",
     "pretest": "npm run build",
     "test:setup": "node build/tests/jest.setup.js",
@@ -33,6 +33,7 @@
     "http-proxy": "^1.18.1",
     "jest-environment-node": "^29.7.0",
     "jsboige-mcp-servers": "file:../..",
+    "openai": "^5.20.0",
     "sqlite3": "^5.1.7"
   },
   "devDependencies": {
