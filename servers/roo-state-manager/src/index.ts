@@ -19,7 +19,7 @@ import { exec } from 'child_process';
 import { TaskNavigator } from './services/task-navigator.js';
 import { ConversationSkeleton } from './types/conversation.js';
 import packageJson from '../package.json' with { type: 'json' };
-import { readVscodeLogs, rebuildAndRestart, getMcpDevDocs, manageMcpSettings, analyzeVSCodeGlobalState, repairVSCodeTaskHistory, scanOrphanTasks, testWorkspaceExtraction, rebuildTaskIndex } from './tools/index.js';
+import { readVscodeLogs, rebuildAndRestart, getMcpDevDocs, manageMcpSettings, analyzeVSCodeGlobalState, repairVSCodeTaskHistory, scanOrphanTasks, testWorkspaceExtraction, rebuildTaskIndex, diagnoseSQLite } from './tools/index.js';
 import { searchTasks } from './services/task-searcher.js';
 import { indexTask } from './services/task-indexer.js';
 
@@ -249,6 +249,11 @@ class RooStateManagerServer {
                        name: rebuildTaskIndex.name,
                        description: rebuildTaskIndex.description,
                        inputSchema: rebuildTaskIndex.inputSchema,
+                   },
+                   {
+                       name: diagnoseSQLite.name,
+                       description: diagnoseSQLite.description,
+                       inputSchema: diagnoseSQLite.inputSchema,
                    }
                 ] as any[],
             };
@@ -331,6 +336,9 @@ class RooStateManagerServer {
                    break;
                case rebuildTaskIndex.name:
                    result = await rebuildTaskIndex.execute(args as any);
+                   break;
+               case diagnoseSQLite.name:
+                   result = await diagnoseSQLite.execute();
                    break;
                default:
                    throw new Error(`Tool not found: ${name}`);

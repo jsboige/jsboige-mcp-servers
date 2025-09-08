@@ -161,23 +161,67 @@ export async function writeVSCodeGlobalState(state: VSCodeGlobalState): Promise<
         
         try {
             const stateJson = JSON.stringify(state);
+            console.log(`Attempting to write state with ${state.taskHistory?.length || 0} tasks`);
             
-            // Wrapper promisifié pour db.run
-            await new Promise<void>((resolve, reject) => {
-                db.run(
-                    "UPDATE ItemTable SET value = ? WHERE key = 'RooVeterinaryInc.roo-cline'",
-                    [stateJson],
-                    function(err) {
-                        if (err) {
-                            reject(err);
-                        } else {
-                            resolve();
+            // D'abord lister les clés existantes pour diagnostic
+            const existingCheck = promisify(db.all.bind(db));
+            const allRooKeys = await existingCheck("SELECT key FROM ItemTable WHERE lower(key) LIKE '%roo%'") as { key: string }[];
+            console.log(`Found ${allRooKeys.length} Roo-related keys:`, allRooKeys.map(r => r.key));
+            
+            // Vérifier la clé exacte
+            const exactCheck = promisify(db.get.bind(db));
+            const existingRow = await exactCheck("SELECT key FROM ItemTable WHERE key = 'RooVeterinaryInc.roo-cline'") as { key: string } | undefined;
+            
+            if (existingRow) {
+                console.log('Key exists, performing UPDATE...');
+                // La clé existe, faire un UPDATE
+                await new Promise<void>((resolve, reject) => {
+                    db.run(
+                        "UPDATE ItemTable SET value = ? WHERE key = 'RooVeterinaryInc.roo-cline'",
+                        [stateJson],
+                        function(err) {
+                            if (err) {
+                                console.error('UPDATE failed:', err);
+                                reject(err);
+                            } else {
+                                console.log(`UPDATE successful: ${this.changes} rows affected`);
+                                if (this.changes === 0) {
+                                    console.warn('UPDATE affected 0 rows - this is unexpected!');
+                                }
+                                resolve();
+                            }
                         }
-                    }
-                );
-            });
+                    );
+                });
+            } else {
+                console.log('Key does not exist, performing INSERT...');
+                // La clé n'existe pas, faire un INSERT
+                await new Promise<void>((resolve, reject) => {
+                    db.run(
+                        "INSERT INTO ItemTable (key, value) VALUES ('RooVeterinaryInc.roo-cline', ?)",
+                        [stateJson],
+                        function(err) {
+                            if (err) {
+                                console.error('INSERT failed:', err);
+                                reject(err);
+                            } else {
+                                console.log(`INSERT successful: ${this.changes} rows affected`);
+                                resolve();
+                            }
+                        }
+                    );
+                });
+            }
             
-            console.log(`VS Code global state updated in SQLite: ${stateFile}`);
+            // Vérifier que les données ont été écrites
+            const verifyCheck = await exactCheck("SELECT LENGTH(value) as len FROM ItemTable WHERE key = 'RooVeterinaryInc.roo-cline'") as { len: number } | undefined;
+            if (verifyCheck) {
+                console.log(`Verification: State data length is ${verifyCheck.len} bytes`);
+            } else {
+                console.error('Verification failed: No data found after write!');
+            }
+            
+            console.log(`VS Code global state write operation completed: ${stateFile}`);
         } finally {
             await closeDatabase(db);
         }
@@ -821,10 +865,19 @@ export const rebuildTaskIndex = {
             
             for (const orphanTask of orphanTasks) {
                 try {
+                    // Normaliser le chemin de workspace pour éviter les problèmes forward/backslash
+                    let normalizedWorkspace = orphanTask.workspace || 'unknown';
+                    if (normalizedWorkspace !== 'unknown') {
+                        // Convertir en backslashes et supprimer les slashes de fin
+                        normalizedWorkspace = normalizedWorkspace
+                            .replace(/\//g, '\\')
+                            .replace(/\\+$/, '');
+                    }
+                    
                     const historyItem: HistoryItem = {
                         ts: orphanTask.lastActivity ? orphanTask.lastActivity.getTime() : Date.now(),
                         task: orphanTask.id,
-                        workspace: orphanTask.workspace || 'unknown',
+                        workspace: normalizedWorkspace,
                         id: orphanTask.id
                     };
                     
@@ -899,6 +952,86 @@ export const rebuildTaskIndex = {
                 content: [{
                     type: 'text',
                     text: `Erreur lors de la reconstruction de l'index: ${error instanceof Error ? error.message : String(error)}`
+                }]
+            };
+        }
+    }
+};
+
+/**
+ * Outil de diagnostic SQLite pour examiner la structure de la base
+ */
+export const diagnoseSQLite = {
+    name: 'diagnose_sqlite',
+    description: 'Diagnostique la structure de la base SQLite VS Code pour identifier les problèmes.',
+    inputSchema: {
+        type: 'object',
+        properties: {},
+        required: []
+    },
+    async execute(): Promise<CallToolResult> {
+        try {
+            const stateFile = await findVSCodeGlobalStateFile();
+            const db = await openDatabase(stateFile);
+            
+            let report = `# Diagnostic SQLite VS Code\n\n`;
+            report += `**Fichier:** ${stateFile}\n\n`;
+            
+            try {
+                // Lister tous les schémas de tables
+                const getTables = promisify(db.all.bind(db));
+                const tables = await getTables("SELECT name FROM sqlite_master WHERE type='table'") as { name: string }[];
+                
+                report += `## Tables disponibles:\n`;
+                tables.forEach(table => {
+                    report += `- ${table.name}\n`;
+                });
+                report += `\n`;
+                
+                // Examiner la structure de ItemTable
+                if (tables.some(t => t.name === 'ItemTable')) {
+                    const schema = await getTables("PRAGMA table_info(ItemTable)") as any[];
+                    report += `## Structure de ItemTable:\n`;
+                    schema.forEach(col => {
+                        report += `- ${col.name}: ${col.type}\n`;
+                    });
+                    report += `\n`;
+                    
+                    // Chercher toutes les clés contenant "roo" (case insensitive)
+                    const rooKeys = await getTables("SELECT key FROM ItemTable WHERE lower(key) LIKE '%roo%'") as { key: string }[];
+                    report += `## Clés contenant "roo":\n`;
+                    if (rooKeys.length > 0) {
+                        rooKeys.forEach(row => {
+                            report += `- \`${row.key}\`\n`;
+                        });
+                    } else {
+                        report += `*Aucune clé trouvée contenant "roo"*\n`;
+                    }
+                    report += `\n`;
+                    
+                    // Lister toutes les clés (premières 20)
+                    const allKeys = await getTables("SELECT key FROM ItemTable LIMIT 20") as { key: string }[];
+                    report += `## Échantillon des clés existantes (20 premières):\n`;
+                    allKeys.forEach(row => {
+                        report += `- \`${row.key}\`\n`;
+                    });
+                    
+                    // Compter le total
+                    const keyCount = await getTables("SELECT COUNT(*) as count FROM ItemTable") as { count: number }[];
+                    report += `\n**Total de clés:** ${keyCount[0].count}\n`;
+                }
+                
+            } finally {
+                await closeDatabase(db);
+            }
+            
+            return { content: [{ type: 'text', text: report }] };
+            
+        } catch (error) {
+            return {
+                content: [{
+                    type: 'text',
+                    text: `Erreur lors du diagnostic SQLite : ${error}`
                 }]
             };
         }
