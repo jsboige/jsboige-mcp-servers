@@ -6,15 +6,16 @@
   "type": "module",
   "scripts": {
     "build": "tsc",
-    "start": "node --env-file=.env build/index.js",
+    "start": "node --env-file=.env build/src/index.js",
     "dev": "tsc -w",
-    "test:setup": "ts-node-esm tests/jest.setup.ts",
+    "pretest": "npm run build",
+    "test:setup": "node build/tests/jest.setup.js",
     "test": "npm run test:setup && cross-env NODE_OPTIONS=--experimental-vm-modules jest",
-    "test:coverage": "jest --coverage",
-    "test:detector": "node tests/test-storage-detector.js",
-    "test:all": "npm run test && npm run test:detector",
-    "test:e2e": "npm run test:e2e:run",
-    "test:e2e:run": "ts-node-esm tests/e2e-runner.ts"
+    "test:coverage": "npm run pretest && jest --coverage",
+    "test:detector": "node build/tests/test-storage-detector.js",
+    "test:all": "npm run pretest && npm run test && npm run test:detector",
+    "test:e2e": "npm run pretest && npm run test:e2e:run",
+    "test:e2e:run": "node build/tests/e2e-runner.js"
   },
   "keywords": [
     "mcp",
