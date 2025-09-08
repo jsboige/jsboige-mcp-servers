@@ -2,6 +2,8 @@ import fs from 'fs/promises';
 import path from 'path';
 import os from 'os';
 import { CallToolResult } from '@modelcontextprotocol/sdk/types.js';
+import sqlite3 from 'sqlite3';
+import { promisify } from 'util';
 
 interface HistoryItem {
     ts: number;
@@ -56,30 +58,65 @@ async function findVSCodeGlobalStateFile(): Promise<string> {
 }
 
 /**
- * Lit l'état global VS Code (fichier binaire vscdb ou JSON)
+ * Ouvre une connexion SQLite de façon promisifiée
+ */
+async function openDatabase(dbPath: string): Promise<sqlite3.Database> {
+    return new Promise((resolve, reject) => {
+        const db = new sqlite3.Database(dbPath, (err) => {
+            if (err) {
+                reject(err);
+            } else {
+                resolve(db);
+            }
+        });
+    });
+}
+
+/**
+ * Ferme une connexion SQLite de façon promisifiée
+ */
+async function closeDatabase(db: sqlite3.Database): Promise<void> {
+    return new Promise((resolve, reject) => {
+        db.close((err) => {
+            if (err) {
+                reject(err);
+            } else {
+                resolve();
+            }
+        });
+    });
+}
+
+/**
+ * Lit l'état global VS Code depuis la base SQLite
  */
 export async function readVSCodeGlobalState(): Promise<VSCodeGlobalState> {
     try {
         const stateFile = await findVSCodeGlobalStateFile();
-        console.log(`Reading VS Code global state from: ${stateFile}`);
+        console.log(`Reading VS Code global state from SQLite: ${stateFile}`);
         
-        const content = await fs.readFile(stateFile, 'utf8');
-        
-        // Si c'est un fichier JSON direct
+        // Si c'est un fichier JSON direct (cas rare)
         if (stateFile.endsWith('.json')) {
+            const content = await fs.readFile(stateFile, 'utf8');
             return JSON.parse(content);
         }
         
-        // Si c'est un fichier .vscdb, il peut contenir du JSON ou être binaire
+        // Lecture depuis SQLite (.vscdb)
+        const db = await openDatabase(stateFile);
+        
         try {
-            return JSON.parse(content);
-        } catch {
-            // Le fichier vscdb peut être binaire, on essaie de trouver du JSON dedans
-            const jsonMatch = content.match(/\{.*"taskHistory".*\}/s);
-            if (jsonMatch) {
-                return JSON.parse(jsonMatch[0]);
+            const getRooData = promisify(db.get.bind(db));
+            const row = await getRooData("SELECT value FROM ItemTable WHERE key = 'RooVeterinaryInc.roo-cline'") as { value: string } | undefined;
+            
+            if (row && row.value) {
+                console.log('Found Roo data in VS Code global state');
+                return JSON.parse(row.value);
+            } else {
+                console.log('No Roo data found in VS Code global state');
+                return {};
             }
-            throw new Error('Cannot parse VS Code global state file');
+        } finally {
+            await closeDatabase(db);
         }
     } catch (error) {
         console.error('Error reading VS Code global state:', error);
@@ -88,25 +125,62 @@ export async function readVSCodeGlobalState(): Promise<VSCodeGlobalState> {
 }
 
 /**
- * Écrit l'état global VS Code
+ * Écrit l'état global VS Code dans la base SQLite
  */
 export async function writeVSCodeGlobalState(state: VSCodeGlobalState): Promise<void> {
     try {
         const stateFile = await findVSCodeGlobalStateFile();
-        const backup = `${stateFile}.backup.${Date.now()}`;
         
-        // Sauvegarde de sécurité
-        try {
-            await fs.copyFile(stateFile, backup);
-            console.log(`Backup created: ${backup}`);
-        } catch (error) {
-            console.warn('Could not create backup:', error);
+        // Si c'est un fichier JSON direct (cas rare)
+        if (stateFile.endsWith('.json')) {
+            const backup = `${stateFile}.backup.${Date.now()}`;
+            try {
+                await fs.copyFile(stateFile, backup);
+                console.log(`Backup created: ${backup}`);
+            } catch (error) {
+                console.warn('Could not create backup:', error);
+            }
+            
+            const content = JSON.stringify(state, null, 2);
+            await fs.writeFile(stateFile, content, 'utf8');
+            console.log(`VS Code global state updated: ${stateFile}`);
+            return;
         }
         
-        // Écriture du nouveau state
-        const content = JSON.stringify(state, null, 2);
-        await fs.writeFile(stateFile, content, 'utf8');
-        console.log(`VS Code global state updated: ${stateFile}`);
+        // Sauvegarde de sécurité du fichier SQLite
+        const backup = `${stateFile}.backup.${Date.now()}`;
+        try {
+            await fs.copyFile(stateFile, backup);
+            console.log(`SQLite backup created: ${backup}`);
+        } catch (error) {
+            console.warn('Could not create SQLite backup:', error);
+        }
+        
+        // Écriture dans SQLite
+        const db = await openDatabase(stateFile);
+        
+        try {
+            const stateJson = JSON.stringify(state);
+            
+            // Wrapper promisifié pour db.run
+            await new Promise<void>((resolve, reject) => {
+                db.run(
+                    "UPDATE ItemTable SET value = ? WHERE key = 'RooVeterinaryInc.roo-cline'",
+                    [stateJson],
+                    function(err) {
+                        if (err) {
+                            reject(err);
+                        } else {
+                            resolve();
+                        }
+                    }
+                );
+            });
+            
+            console.log(`VS Code global state updated in SQLite: ${stateFile}`);
+        } finally {
+            await closeDatabase(db);
+        }
     } catch (error) {
         console.error('Error writing VS Code global state:', error);
         throw error;

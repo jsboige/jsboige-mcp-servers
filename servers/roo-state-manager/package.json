@@ -26,17 +26,19 @@
   "license": "MIT",
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.16.0",
+    "@qdrant/js-client-rest": "^1.9.0",
     "dotenv": "^17.2.0",
     "glob": "^10.3.10",
     "http-proxy": "^1.18.1",
     "jest-environment-node": "^29.7.0",
     "jsboige-mcp-servers": "file:../..",
-    "@qdrant/js-client-rest": "^1.9.0"
+    "sqlite3": "^5.1.7"
   },
   "devDependencies": {
-    "@types/http-proxy": "^1.17.16",
     "@modelcontextprotocol/sdk": "^1.16.0",
+    "@types/http-proxy": "^1.17.16",
     "@types/jest": "^29.5.14",
+    "@types/mock-fs": "^4.13.4",
     "@types/node": "^20.11.5",
     "@types/node-fetch": "^2.6.12",
     "@types/uuid": "^9.0.8",
@@ -44,11 +46,10 @@
     "cross-env": "^10.0.0",
     "esbuild": "^0.25.9",
     "jest": "^29.7.0",
+    "mock-fs": "^5.2.0",
     "node-fetch": "^2.7.0",
     "ts-jest": "^29.4.0",
     "ts-node": "^10.9.2",
-    "typescript": "^5.8.3",
-    "mock-fs": "^5.2.0",
-    "@types/mock-fs": "^4.13.4"
+    "typescript": "^5.8.3"
   }
 }
