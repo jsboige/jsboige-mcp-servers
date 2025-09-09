@@ -312,7 +312,8 @@ export class RooStorageDetector {
     const uiMessagesPath = path.join(taskPath, 'ui_messages.json');
 
     try {
-        const [metadataStats, apiHistoryStats, uiMessagesStats] = await Promise.all([
+        const [taskDirStats, metadataStats, apiHistoryStats, uiMessagesStats] = await Promise.all([
+            fs.stat(taskPath).catch(() => null), //
             fs.stat(metadataPath).catch(() => null),
             fs.stat(apiHistoryPath).catch(() => null),
             fs.stat(uiMessagesPath).catch(() => null)
@@ -385,20 +386,22 @@ export class RooStorageDetector {
         }
 
         // Calculer lastActivity en utilisant le timestamp le plus récent
-        let lastActivity = new Date(0);
-        if (timestamps.length > 0) {
-            lastActivity = timestamps.reduce((latest, current) => current > latest ? current : latest, timestamps[0]);
-        } else {
-            // Fallback vers l'ancienne méthode si aucun timestamp trouvé
-            lastActivity = [metadataStats, apiHistoryStats, uiMessagesStats]
-                .filter((s): s is Stats => s !== null)
-                .reduce((latest, s) => (s.mtime > latest ? s.mtime : latest), new Date(0));
-        }
+        let lastActivity: Date;
+        let createdAt: Date;
 
-        // Calculer createdAt en utilisant le timestamp le plus ancien
-        let createdAt = lastActivity;
         if (timestamps.length > 0) {
-            createdAt = timestamps.reduce((earliest, current) => current < earliest ? current : earliest, timestamps[0]);
+            // Utiliser les timestamps extraits s'ils existent
+            timestamps.sort((a, b) => a.getTime() - b.getTime());
+            createdAt = timestamps[0];
+            lastActivity = timestamps[timestamps.length - 1];
+        } else if (taskDirStats) {
+            // Fallback robuste sur les dates du répertoire de la tâche
+            lastActivity = taskDirStats.mtime;
+            createdAt = taskDirStats.birthtime;
+        } else {
+            // Cas d'échec ultime, peu probable
+            lastActivity = new Date();
+            createdAt = new Date();
         }
 
         const skeleton: ConversationSkeleton = {

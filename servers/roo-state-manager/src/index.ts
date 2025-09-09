@@ -19,7 +19,7 @@ import { exec } from 'child_process';
 import { TaskNavigator } from './services/task-navigator.js';
 import { ConversationSkeleton } from './types/conversation.js';
 import packageJson from '../package.json' with { type: 'json' };
-import { readVscodeLogs, rebuildAndRestart, getMcpDevDocs, manageMcpSettings, analyzeVSCodeGlobalState, repairVSCodeTaskHistory, scanOrphanTasks, testWorkspaceExtraction, rebuildTaskIndex, diagnoseSQLite, examineRooGlobalStateTool, repairTaskHistoryTool } from './tools/index.js';
+import { readVscodeLogs, rebuildAndRestart, getMcpDevDocs, manageMcpSettings, analyzeVSCodeGlobalState, repairVSCodeTaskHistory, scanOrphanTasks, testWorkspaceExtraction, rebuildTaskIndex, diagnoseSQLite, examineRooGlobalStateTool, repairTaskHistoryTool, normalizeWorkspacePaths } from './tools/index.js';
 import { searchTasks } from './services/task-searcher.js';
 import { indexTask } from './services/task-indexer.js';
 
@@ -264,6 +264,11 @@ class RooStateManagerServer {
                        name: repairTaskHistoryTool.name,
                        description: repairTaskHistoryTool.description,
                        inputSchema: repairTaskHistoryTool.inputSchema,
+                    },
+                    {
+                       name: normalizeWorkspacePaths.name,
+                       description: normalizeWorkspacePaths.description,
+                       inputSchema: normalizeWorkspacePaths.inputSchema,
                     }
                 ] as any[],
             };
@@ -356,6 +361,9 @@ class RooStateManagerServer {
                 case repairTaskHistoryTool.name:
                     result = await repairTaskHistoryTool.handler((args as any).target_workspace);
                     break;
+               case normalizeWorkspacePaths.name:
+                   result = await normalizeWorkspacePaths.handler();
+                   break;
                default:
                    throw new Error(`Tool not found: ${name}`);
            }

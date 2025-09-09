@@ -5,3 +5,4 @@ export * from './manage-mcp-settings.js';
 export * from './vscode-global-state.js';
 export { examineRooGlobalStateTool } from './examine-roo-global-state.js';
 export { repairTaskHistoryTool } from './repair-task-history.js';
+export * from './normalize-workspace-paths.js';
