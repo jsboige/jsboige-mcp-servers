@@ -17,11 +17,14 @@ import { RooStorageDetector } from './utils/roo-storage-detector.js';
 import fs from 'fs/promises';
 import { exec } from 'child_process';
 import { TaskNavigator } from './services/task-navigator.js';
-import { ConversationSkeleton } from './types/conversation.js';
+import { ConversationSkeleton, ActionMetadata } from './types/conversation.js';
 import packageJson from '../package.json' with { type: 'json' };
-import { readVscodeLogs, rebuildAndRestart, getMcpDevDocs, manageMcpSettings, analyzeVSCodeGlobalState, repairVSCodeTaskHistory, scanOrphanTasks, testWorkspaceExtraction, rebuildTaskIndex, diagnoseSQLite, examineRooGlobalStateTool, repairTaskHistoryTool, normalizeWorkspacePaths } from './tools/index.js';
+import { readVscodeLogs, rebuildAndRestart, getMcpDevDocs, manageMcpSettings, analyzeVSCodeGlobalState, repairVSCodeTaskHistory, scanOrphanTasks, testWorkspaceExtraction, rebuildTaskIndex, diagnoseSQLite, examineRooGlobalStateTool, repairTaskHistoryTool, normalizeWorkspacePaths, generateTraceSummaryTool, handleGenerateTraceSummary } from './tools/index.js';
 import { searchTasks } from './services/task-searcher.js';
 import { indexTask } from './services/task-indexer.js';
+import { XmlExporterService } from './services/XmlExporterService.js';
+import { ExportConfigManager } from './services/ExportConfigManager.js';
+import { TraceSummaryService } from './services/TraceSummaryService.js';
 
 const MAX_OUTPUT_LENGTH = 100000; // Temporairement augmenté pour documentation complète
 const SKELETON_CACHE_DIR_NAME = '.skeletons';
@@ -29,8 +32,14 @@ const SKELETON_CACHE_DIR_NAME = '.skeletons';
 class RooStateManagerServer {
     private server: Server;
     private conversationCache: Map<string, ConversationSkeleton> = new Map();
+    private xmlExporterService: XmlExporterService;
+    private exportConfigManager: ExportConfigManager;
+    private traceSummaryService: TraceSummaryService;
 
     constructor() {
+        this.xmlExporterService = new XmlExporterService();
+        this.exportConfigManager = new ExportConfigManager();
+        this.traceSummaryService = new TraceSummaryService(this.exportConfigManager);
         this.server = new Server(
             {
                 name: 'roo-state-manager',
@@ -136,6 +145,7 @@ class RooStateManagerServer {
                                 view_mode: { type: 'string', enum: ['single', 'chain', 'cluster'], default: 'chain', description: 'Le mode d\'affichage.' },
                                 truncate: { type: 'number', default: 0, description: 'Nombre de lignes à conserver au début et à la fin de chaque message. 0 pour vue complète (défaut intelligent).' },
                                 max_output_length: { type: 'number', default: 50000, description: 'Limite maximale de caractères en sortie. Au-delà, force la troncature.' },
+                                full_content: { type: 'boolean', default: false, description: 'Si true, affiche le contenu complet des messages au lieu d\'un aperçu.' },
                             },
                         },
                     },
@@ -269,6 +279,97 @@ class RooStateManagerServer {
                        name: normalizeWorkspacePaths.name,
                        description: normalizeWorkspacePaths.description,
                        inputSchema: normalizeWorkspacePaths.inputSchema,
+                    },
+                    {
+                        name: 'export_tasks_xml',
+                        description: 'Exporte une tâche individuelle au format XML.',
+                        inputSchema: {
+                            type: 'object',
+                            properties: {
+                                taskId: { type: 'string', description: 'L\'identifiant unique de la tâche à exporter.' },
+                                filePath: { type: 'string', description: 'Chemin de sortie pour le fichier XML. Si non fourni, le contenu est retourné.' },
+                                includeContent: { type: 'boolean', description: 'Si true, inclut le contenu complet des messages (false par défaut).' },
+                                prettyPrint: { type: 'boolean', description: 'Si true, indente le XML pour une meilleure lisibilité (true par défaut).' }
+                            },
+                            required: ['taskId']
+                        }
+                    },
+                    {
+                        name: 'export_conversation_xml',
+                        description: 'Exporte une conversation complète (tâche racine + descendants) au format XML.',
+                        inputSchema: {
+                            type: 'object',
+                            properties: {
+                                conversationId: { type: 'string', description: 'L\'identifiant de la tâche racine de la conversation à exporter.' },
+                                filePath: { type: 'string', description: 'Chemin de sortie pour le fichier XML. Si non fourni, le contenu est retourné.' },
+                                maxDepth: { type: 'integer', description: 'Profondeur maximale de l\'arbre de tâches à inclure.' },
+                                includeContent: { type: 'boolean', description: 'Si true, inclut le contenu complet des messages (false par défaut).' },
+                                prettyPrint: { type: 'boolean', description: 'Si true, indente le XML pour une meilleure lisibilité (true par défaut).' }
+                            },
+                            required: ['conversationId']
+                        }
+                    },
+                    {
+                        name: 'export_project_xml',
+                        description: 'Exporte un aperçu de haut niveau d\'un projet entier au format XML.',
+                        inputSchema: {
+                            type: 'object',
+                            properties: {
+                                projectPath: { type: 'string', description: 'Le chemin du workspace/projet à analyser.' },
+                                filePath: { type: 'string', description: 'Chemin de sortie pour le fichier XML. Si non fourni, le contenu est retourné.' },
+                                startDate: { type: 'string', description: 'Date de début (ISO 8601) pour filtrer les conversations.' },
+                                endDate: { type: 'string', description: 'Date de fin (ISO 8601) pour filtrer les conversations.' },
+                                prettyPrint: { type: 'boolean', description: 'Si true, indente le XML pour une meilleure lisibilité (true par défaut).' }
+                            },
+                            required: ['projectPath']
+                        }
+                    },
+                    {
+                        name: 'configure_xml_export',
+                        description: 'Gère les paramètres de configuration des exports XML.',
+                        inputSchema: {
+                            type: 'object',
+                            properties: {
+                                action: {
+                                    type: 'string',
+                                    enum: ['get', 'set', 'reset'],
+                                    description: 'L\'opération à effectuer : get, set, reset.'
+                                },
+                                config: {
+                                    type: 'object',
+                                    description: 'L\'objet de configuration à appliquer pour l\'action set.'
+                                }
+                            },
+                            required: ['action']
+                        }
+                    },
+                    {
+                        name: generateTraceSummaryTool.name,
+                        description: generateTraceSummaryTool.description,
+                        inputSchema: generateTraceSummaryTool.inputSchema,
+                    },
+                    {
+                        name: 'view_task_details',
+                        description: 'Affiche les détails techniques complets (métadonnées des actions) pour une tâche spécifique',
+                        inputSchema: {
+                            type: 'object',
+                            properties: {
+                                task_id: {
+                                    type: 'string',
+                                    description: 'L\'ID de la tâche pour laquelle afficher les détails techniques.'
+                                },
+                                action_index: {
+                                    type: 'number',
+                                    description: 'Index optionnel d\'une action spécifique à examiner (commence à 0).'
+                                },
+                                truncate: {
+                                    type: 'number',
+                                    description: 'Nombre de lignes à conserver au début et à la fin des contenus longs (0 = complet).',
+                                    default: 0
+                                }
+                            },
+                            required: ['task_id']
+                        }
                     }
                 ] as any[],
             };
@@ -303,6 +404,9 @@ class RooStateManagerServer {
                     break;
                 case 'view_conversation_tree':
                     result = this.handleViewConversationTree(args as any);
+                    break;
+                case 'view_task_details':
+                    result = this.handleViewTaskDetails(args as any);
                     break;
                 case 'search_tasks_semantic':
                     result = await this.handleSearchTasksSemantic(args as any);
@@ -362,11 +466,26 @@ class RooStateManagerServer {
                     result = await repairTaskHistoryTool.handler((args as any).target_workspace);
                     break;
                case normalizeWorkspacePaths.name:
-                   result = await normalizeWorkspacePaths.handler();
+                  result = await normalizeWorkspacePaths.handler();
+                  break;
+               case generateTraceSummaryTool.name:
+                   result = await this.handleGenerateTraceSummary(args as any);
                    break;
-               default:
-                   throw new Error(`Tool not found: ${name}`);
-           }
+              case 'export_tasks_xml':
+                  result = await this.handleExportTaskXml(args as any);
+                  break;
+              case 'export_conversation_xml':
+                  result = await this.handleExportConversationXml(args as any);
+                  break;
+              case 'export_project_xml':
+                  result = await this.handleExportProjectXml(args as any);
+                  break;
+              case 'configure_xml_export':
+                  result = await this.handleConfigureXmlExport(args as any);
+                  break;
+              default:
+                  throw new Error(`Tool not found: ${name}`);
+          }
 
             return this._truncateResult(result);
         });
@@ -675,27 +794,14 @@ class RooStateManagerServer {
             output += `${indent}  Parent: ${skeleton.parentTaskId || 'None'}\n`;
             output += `${indent}  Messages: ${skeleton.metadata.messageCount}\n`;
             skeleton.sequence.forEach(item => {
-                if ('role' in item) { // C'est un message
+                if ('role' in item) { // Message user/assistant - contenu complet préservé
                     const role = item.role === 'user' ? '👤 User' : '🤖 Assistant';
                     const message = this.truncateMessage(item.content, truncate);
-                    output += `${indent}  [${role}]:\n${message.split('\n').map(l => `${indent}    | ${l}`).join('\n')}\n`;
-                } else { // C'est une action
+                    const messageLines = message.split('\n').map(l => `${indent}    | ${l}`).join('\n');
+                    output += `${indent}  [${role}]:\n${messageLines}\n`;
+                } else { // Action - format squelette simple
                     const icon = item.type === 'command' ? '⚙️' : '🛠️';
-                    output += `${indent}  [${icon} ${item.name} (${item.status})]`;
-                    const details = [];
-                    if (item.file_path) {
-                        details.push(`path: ${item.file_path}`);
-                    }
-                    if (item.line_count) {
-                        details.push(`lines: ${item.line_count}`);
-                    }
-                    if (item.content_size) {
-                        details.push(`size: ${item.content_size}b`);
-                    }
-                    if (details.length > 0) {
-                        output += ` { ${details.join(', ')} }`;
-                    }
-                    output += `\n`;
+                    output += `${indent}  [${icon} ${item.name}] → ${item.status}\n`;
                 }
             });
             return output;
@@ -774,6 +880,65 @@ class RooStateManagerServer {
         return { content: [{ type: 'text', text: formattedOutput }] };
     }
 
+    handleSimpleTest(): CallToolResult {
+        return {
+            content: [{ type: 'text', text: 'Test simple réussi!' }]
+        };
+    }
+
+    private formatActionDetails(action: any, index: number, truncate: number): string {
+        const icon = action.type === 'command' ? '⚙️' : '🛠️';
+        let output = `[${index}] ${icon} ${action.name} → ${action.status}\n`;
+        
+        // Type et timestamp
+        output += `    Type: ${action.type}\n`;
+        if (action.timestamp) {
+            output += `    Timestamp: ${action.timestamp}\n`;
+        }
+        
+        // Paramètres
+        if (action.parameters) {
+            const paramStr = JSON.stringify(action.parameters, null, 2);
+            output += `    Paramètres: ${truncate > 0 ? this.truncateContent(paramStr, truncate) : paramStr}\n`;
+        }
+        
+        // Résultat (si disponible)
+        if ('result' in action && action.result) {
+            const resultStr = typeof action.result === 'string' ? action.result : JSON.stringify(action.result, null, 2);
+            output += `    Résultat: ${truncate > 0 ? this.truncateContent(resultStr, truncate) : resultStr}\n`;
+        }
+        
+        // Erreur (si disponible)
+        if ('error' in action && action.error) {
+            output += `    ❌ Erreur: ${action.error}\n`;
+        }
+        
+        // Métadonnées additionnelles (si disponibles)
+        if (action.metadata) {
+            const metaStr = JSON.stringify(action.metadata, null, 2);
+            output += `    Métadonnées: ${truncate > 0 ? this.truncateContent(metaStr, truncate) : metaStr}\n`;
+        }
+        
+        return output;
+    }
+
+    private truncateContent(content: string, lines: number): string {
+        if (lines <= 0) return content;
+        
+        const contentLines = content.split('\n');
+        if (contentLines.length <= lines * 2) return content;
+        
+        const start = contentLines.slice(0, lines);
+        const end = contentLines.slice(-lines);
+        const omitted = contentLines.length - (lines * 2);
+        
+        return [
+            ...start,
+            `... [${omitted} lignes omises] ...`,
+            ...end
+        ].join('\n');
+    }
+
     async handleSearchTasksSemantic(args: { conversation_id: string, search_query: string, max_results?: number }): Promise<CallToolResult> {
         const { search_query, max_results = 10 } = args;
         
@@ -831,6 +996,7 @@ class RooStateManagerServer {
 
         return { content: [{ type: 'text', text: JSON.stringify(results, null, 2) }] };
     }
+
 
     async handleIndexTaskSemantic(args: { task_id: string }): Promise<CallToolResult> {
         try {
@@ -1116,6 +1282,376 @@ class RooStateManagerServer {
         
         return { content: [{ type: 'text', text: report }] };
     }
+
+    /**
+     * Gère l'export XML d'une tâche individuelle
+     */
+    async handleExportTaskXml(args: {
+        taskId: string,
+        filePath?: string,
+        includeContent?: boolean,
+        prettyPrint?: boolean
+    }): Promise<CallToolResult> {
+        try {
+            const { taskId, filePath, includeContent = false, prettyPrint = true } = args;
+            
+            const skeleton = this.conversationCache.get(taskId);
+            if (!skeleton) {
+                throw new Error(`Tâche avec l'ID '${taskId}' non trouvée dans le cache.`);
+            }
+
+            const xmlContent = this.xmlExporterService.generateTaskXml(skeleton, {
+                includeContent,
+                prettyPrint
+            });
+
+            if (filePath) {
+                await this.xmlExporterService.saveXmlToFile(xmlContent, filePath);
+                return {
+                    content: [{
+                        type: 'text',
+                        text: `Export XML de la tâche '${taskId}' sauvegardé dans '${filePath}'.`
+                    }]
+                };
+            } else {
+                return {
+                    content: [{
+                        type: 'text',
+                        text: xmlContent
+                    }]
+                };
+            }
+
+        } catch (error) {
+            const errorMessage = error instanceof Error ? error.message : String(error);
+            return {
+                content: [{
+                    type: 'text',
+                    text: `Erreur lors de l'export XML : ${errorMessage}`
+                }]
+            };
+        }
+    }
+
+    /**
+     * Gère l'export XML d'une conversation complète
+     */
+    async handleExportConversationXml(args: {
+        conversationId: string,
+        filePath?: string,
+        maxDepth?: number,
+        includeContent?: boolean,
+        prettyPrint?: boolean
+    }): Promise<CallToolResult> {
+        try {
+            const { conversationId, filePath, maxDepth, includeContent = false, prettyPrint = true } = args;
+            
+            const rootSkeleton = this.conversationCache.get(conversationId);
+            if (!rootSkeleton) {
+                throw new Error(`Conversation avec l'ID '${conversationId}' non trouvée dans le cache.`);
+            }
+
+            // Collecter tous les descendants de la conversation
+            const allSkeletons = Array.from(this.conversationCache.values());
+            const children: ConversationSkeleton[] = [];
+            
+            const collectChildren = (parentId: string) => {
+                const directChildren = allSkeletons.filter(s => s.parentTaskId === parentId);
+                children.push(...directChildren);
+                directChildren.forEach(child => collectChildren(child.taskId));
+            };
+            
+            collectChildren(conversationId);
+
+            const xmlContent = this.xmlExporterService.generateConversationXml(rootSkeleton, children, {
+                maxDepth,
+                includeContent,
+                prettyPrint
+            });
+
+            if (filePath) {
+                await this.xmlExporterService.saveXmlToFile(xmlContent, filePath);
+                return {
+                    content: [{
+                        type: 'text',
+                        text: `Export XML de la conversation '${conversationId}' (${children.length + 1} tâches) sauvegardé dans '${filePath}'.`
+                    }]
+                };
+            } else {
+                return {
+                    content: [{
+                        type: 'text',
+                        text: xmlContent
+                    }]
+                };
+            }
+
+        } catch (error) {
+            const errorMessage = error instanceof Error ? error.message : String(error);
+            return {
+                content: [{
+                    type: 'text',
+                    text: `Erreur lors de l'export XML de la conversation : ${errorMessage}`
+                }]
+            };
+        }
+    }
+
+    /**
+     * Gère l'export XML d'un projet complet
+     */
+    async handleExportProjectXml(args: {
+        projectPath: string,
+        filePath?: string,
+        startDate?: string,
+        endDate?: string,
+        prettyPrint?: boolean
+    }): Promise<CallToolResult> {
+        try {
+            const { projectPath, filePath, startDate, endDate, prettyPrint = true } = args;
+            
+            // Obtenir toutes les tâches du cache qui correspondent au projet
+            const allSkeletons = Array.from(this.conversationCache.values());
+            
+            // Pour l'instant, on utilise toutes les tâches du cache
+            // Dans une version plus avancée, on pourrait filtrer par projectPath
+            // en utilisant RooStorageDetector pour vérifier l'association
+            
+            const xmlContent = this.xmlExporterService.generateProjectXml(allSkeletons, projectPath, {
+                startDate,
+                endDate,
+                prettyPrint
+            });
+
+            if (filePath) {
+                await this.xmlExporterService.saveXmlToFile(xmlContent, filePath);
+                return {
+                    content: [{
+                        type: 'text',
+                        text: `Export XML du projet '${projectPath}' (${allSkeletons.length} tâches analysées) sauvegardé dans '${filePath}'.`
+                    }]
+                };
+            } else {
+                return {
+                    content: [{
+                        type: 'text',
+                        text: xmlContent
+                    }]
+                };
+            }
+
+        } catch (error) {
+            const errorMessage = error instanceof Error ? error.message : String(error);
+            return {
+                content: [{
+                    type: 'text',
+                    text: `Erreur lors de l'export XML du projet : ${errorMessage}`
+                }]
+            };
+        }
+    }
+
+    /**
+     * Gère la génération de résumé intelligent de trace de conversation
+     */
+    async handleGenerateTraceSummary(args: {
+        taskId: string;
+        detailLevel?: 'Full' | 'NoTools' | 'NoResults' | 'Messages' | 'Summary' | 'UserOnly';
+        outputFormat?: 'markdown' | 'html';
+        truncationChars?: number;
+        compactStats?: boolean;
+        includeCss?: boolean;
+        generateToc?: boolean;
+    }): Promise<CallToolResult> {
+        try {
+            const { taskId } = args;
+            
+            if (!taskId) {
+                throw new Error("taskId est requis");
+            }
+
+            // Récupérer le ConversationSkeleton depuis le cache
+            const conversation = this.conversationCache.get(taskId);
+            if (!conversation) {
+                throw new Error(`Conversation avec taskId ${taskId} introuvable`);
+            }
+
+            // Préparer les options de génération
+            const summaryOptions = {
+                detailLevel: args.detailLevel || 'Full' as const,
+                outputFormat: args.outputFormat || 'markdown' as const,
+                truncationChars: args.truncationChars || 0,
+                compactStats: args.compactStats || false,
+                includeCss: args.includeCss !== undefined ? args.includeCss : true,
+                generateToc: args.generateToc !== undefined ? args.generateToc : true
+            };
+
+            // Générer le résumé
+            const result = await this.traceSummaryService.generateSummary(conversation, summaryOptions);
+
+            if (!result.success) {
+                throw new Error(`Erreur lors de la génération du résumé: ${result.error}`);
+            }
+
+            // Préparer la réponse avec métadonnées
+            const response = [
+                `**Résumé généré avec succès pour la tâche ${taskId}**`,
+                ``,
+                `**Statistiques:**`,
+                `- Total sections: ${result.statistics.totalSections}`,
+                `- Messages utilisateur: ${result.statistics.userMessages}`,
+                `- Réponses assistant: ${result.statistics.assistantMessages}`,
+                `- Résultats d'outils: ${result.statistics.toolResults}`,
+                `- Taille totale: ${Math.round(result.statistics.totalContentSize / 1024 * 10) / 10} KB`,
+                result.statistics.compressionRatio ? `- Ratio de compression: ${result.statistics.compressionRatio}x` : '',
+                ``,
+                `**Mode de génération:** ${summaryOptions.detailLevel}`,
+                `**Format:** ${summaryOptions.outputFormat}`,
+                ``,
+                `---`,
+                ``,
+                result.content
+            ].filter(line => line !== '').join('\n');
+
+            return {
+                content: [{
+                    type: 'text',
+                    text: response
+                }]
+            };
+
+        } catch (error) {
+            const errorMessage = error instanceof Error ? error.message : String(error);
+            return {
+                content: [{
+                    type: 'text',
+                    text: `Erreur lors de la génération de résumé : ${errorMessage}`
+                }]
+            };
+        }
+    }
+
+    /**
+     * Gère la configuration des exports XML
+     */
+    async handleConfigureXmlExport(args: {
+        action: 'get' | 'set' | 'reset',
+        config?: any
+    }): Promise<CallToolResult> {
+        try {
+            const { action, config } = args;
+
+            switch (action) {
+                case 'get':
+                    const currentConfig = await this.exportConfigManager.getConfig();
+                    return {
+                        content: [{
+                            type: 'text',
+                            text: JSON.stringify(currentConfig, null, 2)
+                        }]
+                    };
+
+                case 'set':
+                    if (!config) {
+                        throw new Error('Configuration manquante pour l\'action \'set\'.');
+                    }
+                    await this.exportConfigManager.updateConfig(config);
+                    return {
+                        content: [{
+                            type: 'text',
+                            text: 'Configuration mise à jour avec succès.'
+                        }]
+                    };
+
+                case 'reset':
+                    await this.exportConfigManager.resetConfig();
+                    return {
+                        content: [{
+                            type: 'text',
+                            text: 'Configuration remise aux valeurs par défaut.'
+                        }]
+                    };
+
+                default:
+                    throw new Error(`Action non reconnue : ${action}`);
+            }
+
+        } catch (error) {
+            const errorMessage = error instanceof Error ? error.message : String(error);
+            return {
+                content: [{
+                    type: 'text',
+                    text: `Erreur lors de la configuration : ${errorMessage}`
+                }]
+            };
+        }
+    }
+    handleViewTaskDetails(args: { task_id: string, action_index?: number, truncate?: number }): CallToolResult {
+        try {
+            const skeleton = this.conversationCache.get(args.task_id);
+            
+            if (!skeleton) {
+                return {
+                    content: [{
+                        type: 'text',
+                        text: `❌ Aucune tâche trouvée avec l'ID: ${args.task_id}`
+                    }]
+                };
+            }
+
+            let output = `🔍 Détails techniques complets - Tâche: ${skeleton.metadata.title || skeleton.taskId}\n`;
+            output += `═══════════════════════════════════════════════════════════════════════════════════════════════════════\n`;
+            output += `ID: ${skeleton.taskId}\n`;
+            output += `Messages: ${skeleton.metadata.messageCount}\n`;
+            output += `Taille totale: ${skeleton.metadata.totalSize} octets\n`;
+            output += `Dernière activité: ${skeleton.metadata.lastActivity}\n\n`;
+
+            // Filtrer pour ne garder que les actions (pas les messages)
+            const actions = skeleton.sequence.filter((item: any) => !('role' in item));
+            
+            if (actions.length === 0) {
+                output += "ℹ️ Aucune action technique trouvée dans cette tâche.\n";
+            } else {
+                output += `🛠️ Actions techniques trouvées: ${actions.length}\n`;
+                output += "═══════════════════════════════════════════════════════════════════════════════════════════════════════\n\n";
+
+                // Si un index spécifique est demandé
+                if (args.action_index !== undefined) {
+                    if (args.action_index >= 0 && args.action_index < actions.length) {
+                        const action = actions[args.action_index];
+                        output += this.formatActionDetails(action, args.action_index, args.truncate || 0);
+                    } else {
+                        output += `❌ Index ${args.action_index} invalide. Indices disponibles: 0-${actions.length - 1}\n`;
+                    }
+                } else {
+                    // Afficher toutes les actions
+                    actions.forEach((action: any, index: number) => {
+                        output += this.formatActionDetails(action, index, args.truncate || 0);
+                        if (index < actions.length - 1) {
+                            output += "\n" + "─".repeat(80) + "\n\n";
+                        }
+                    });
+                }
+            }
+
+            return {
+                content: [{
+                    type: 'text',
+                    text: output
+                }]
+            };
+
+        } catch (error) {
+            console.error('Erreur dans handleViewTaskDetails:', error);
+            return {
+                content: [{
+                    type: 'text',
+                    text: `❌ Erreur lors de la récupération des détails: ${error instanceof Error ? error.message : String(error)}`
+                }]
+            };
+        }
+    }
+
 
     async run() {
         const transport = new StdioServerTransport();
