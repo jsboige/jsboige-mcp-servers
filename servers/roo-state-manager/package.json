@@ -34,7 +34,8 @@
     "jest-environment-node": "^29.7.0",
     "jsboige-mcp-servers": "file:../..",
     "openai": "^5.20.0",
-    "sqlite3": "^5.1.7"
+    "sqlite3": "^5.1.7",
+    "xmlbuilder2": "^3.1.1"
   },
   "devDependencies": {
     "@modelcontextprotocol/sdk": "^1.16.0",
