@@ -1,3 +1,1 @@
-"""
-Tests module for Papermill MCP Server.
-"""
+"""Tests package for Jupyter Papermill MCP Server."""
