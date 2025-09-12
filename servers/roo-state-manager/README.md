@@ -19,6 +19,9 @@ roo-state-manager/
 │   │   └── conversation.ts      # Interfaces TypeScript
 │   ├── utils/
 │   │   └── roo-storage-detector.ts  # Détecteur de stockage
+│   ├── services/
+│   │   ├── TraceSummaryService.ts   # Service de génération de résumés
+│   │   └── ConversationSkeleton.ts  # Squelette de conversation parsé
 │   └── index.ts                 # Serveur MCP principal
 ├── tests/
 │   └── test-storage-detector.js # Tests de validation
@@ -142,6 +145,150 @@ Exécute le script de réparation des chemins de workspace (`scripts/repair/repa
   "arguments": {
     "path_pairs": ["d:\\Dev\\roo-v2-archive=d:\\Dev\\roo-extensions\\archive"],
     "whatIf": true
+  }
+}
+```
+
+#### `generate_trace_summary`
+Génère un résumé intelligent et formaté d'une trace de conversation Roo avec contenu conversationnel complet.
+
+**Fonctionnalités principales :**
+- **Contenu conversationnel complet** : Rendu de tous les messages (user, assistant, tools)
+- **Progressive Disclosure Pattern** : Sections `<details>/<summary>` pour les environment_details et blocs techniques
+- **6 modes de détail** : Full, NoTools, NoResults, Messages, Summary, UserOnly
+- **CSS intégré** : Styling avancé avec classes pour chaque type de message
+- **Navigation interactive** : Table des matières et liens de retour
+- **Architecture modulaire** : Service TypeScript robuste et extensible
+
+**Paramètres :**
+- `taskId` (string) : ID de la tâche (ou "current" pour la tâche actuelle)
+- `detailLevel` (string, optionnel) : Mode de rendu ('Full', 'NoTools', 'NoResults', 'Messages', 'Summary', 'UserOnly')
+- `outputFormat` (string, optionnel) : Format de sortie ('markdown', 'html')
+- `truncationChars` (number, optionnel) : Limite de troncature (0 = pas de limite)
+- `compactStats` (boolean, optionnel) : Utiliser format compact pour statistiques
+- `includeCss` (boolean, optionnel) : Inclure CSS embarqué (défaut: true)
+- `generateToc` (boolean, optionnel) : Générer table des matières (défaut: true)
+
+**Exemple d'utilisation :**
+```json
+{
+  "tool_name": "generate_trace_summary",
+  "server_name": "roo-state-manager",
+  "arguments": {
+    "taskId": "current",
+    "detailLevel": "Full",
+    "outputFormat": "markdown",
+    "includeCss": true,
+    "generateToc": true
+  }
+}
+```
+
+**Modes de détail disponibles :**
+- `Full` : Tout le contenu avec Progressive Disclosure
+- `NoTools` : Masque les paramètres d'outils mais garde les résultats
+- `NoResults` : Masque les résultats d'outils mais garde les paramètres
+- `Messages` : Seulement les messages utilisateur/assistant (pas d'outils)
+- `Summary` : Seulement métadonnées et statistiques (pas de contenu)
+- `UserOnly` : Seulement les messages utilisateur
+
+**Sortie :**
+```json
+{
+  "success": true,
+  "content": "# RÉSUMÉ DE TRACE D'ORCHESTRATION ROO\n\n...",
+  "statistics": {
+    "totalSections": 25,
+    "userMessages": 8,
+    "assistantMessages": 12,
+    "toolResults": 5,
+    "totalContentSize": 45678,
+    "compressionRatio": 2.3
+  }
+}
+```
+
+#### `generate_cluster_summary`
+Génère un résumé intelligent et formaté d'une grappe (groupe) de tâches Roo liées, permettant d'analyser des workflows complexes avec tâches parent-enfant.
+
+**Fonctionnalités principales :**
+- **Analyse de grappe multi-tâches** : Traite une tâche racine et ses tâches enfantes comme une unité cohérente
+- **3 modes de clustering** : Aggregated, Detailed, Comparative pour différents besoins d'analyse
+- **Statistiques de grappe avancées** : Métriques spécialisées pour l'analyse de clusters (durée totale, distribution des tâches, patterns croisés)
+- **Timeline chronologique** : Vue temporelle de l'évolution de la grappe
+- **Relations parent-enfant** : Cartographie explicite des liens hiérarchiques entre tâches
+- **Analyse cross-task** : Détection de patterns et tendances communes entre tâches liées
+- **Formats multi-sorties** : Support markdown et HTML avec styling intégré
+
+**Paramètres :**
+- `rootTaskId` (string) : ID de la tâche racine (parent principal) de la grappe
+- `childTaskIds` (array[string], optionnel) : Liste des IDs des tâches enfantes (auto-détecté via parentTaskId si non fourni)
+- `detailLevel` (string, optionnel) : Mode de rendu ('Full', 'NoTools', 'NoResults', 'Messages', 'Summary', 'UserOnly')
+- `outputFormat` (string, optionnel) : Format de sortie ('markdown', 'html')
+- `truncationChars` (number, optionnel) : Limite de troncature globale (0 = pas de limite)
+- `compactStats` (boolean, optionnel) : Utiliser format compact pour statistiques
+- `includeCss` (boolean, optionnel) : Inclure CSS embarqué (défaut: true)
+- `generateToc` (boolean, optionnel) : Générer table des matières interactive (défaut: true)
+- `clusterMode` (string, optionnel) : Mode de génération de grappe ('aggregated', 'detailed', 'comparative')
+- `includeClusterStats` (boolean, optionnel) : Inclure statistiques spécifiques aux grappes (défaut: true)
+- `crossTaskAnalysis` (boolean, optionnel) : Activer analyse des patterns croisés entre tâches (défaut: false)
+- `maxClusterDepth` (number, optionnel) : Profondeur maximale de hiérarchie à analyser (défaut: 10)
+- `clusterSortBy` (string, optionnel) : Critère de tri ('chronological', 'size', 'activity', 'alphabetical')
+- `includeClusterTimeline` (boolean, optionnel) : Inclure timeline chronologique de la grappe (défaut: false)
+- `clusterTruncationChars` (number, optionnel) : Troncature spécifique pour contenu des tâches en mode agrégé
+- `showTaskRelationships` (boolean, optionnel) : Montrer relations parent-enfant explicitement (défaut: true)
+
+**Exemple d'utilisation :**
+```json
+{
+  "tool_name": "generate_cluster_summary",
+  "server_name": "roo-state-manager",
+  "arguments": {
+    "rootTaskId": "task-abc123-parent",
+    "childTaskIds": ["task-def456-child1", "task-ghi789-child2"],
+    "detailLevel": "Full",
+    "outputFormat": "markdown",
+    "clusterMode": "detailed",
+    "includeClusterStats": true,
+    "crossTaskAnalysis": true,
+    "includeClusterTimeline": true,
+    "showTaskRelationships": true
+  }
+}
+```
+
+**Modes de clustering disponibles :**
+- `aggregated` : Vue synthétique avec statistiques consolidées et contenu condensé
+- `detailed` : Vue exhaustive de chaque tâche avec contenu complet et analyse individuelle
+- `comparative` : Vue comparative mettant en évidence les différences et similitudes entre tâches
+
+**Spécificités par rapport à `generate_trace_summary` :**
+- **Scope multi-tâches** : Analyse plusieurs conversations liées vs. une conversation unique
+- **Métriques de grappe** : Statistiques spécialisées (durée totale de grappe, distribution des modes, patterns croisés)
+- **Relations hiérarchiques** : Cartographie explicite des liens parent-enfant
+- **Timeline consolidée** : Vue chronologique de l'évolution de toute la grappe
+- **Analyse comparative** : Identification des patterns communs entre tâches liées
+
+**Sortie :**
+```json
+{
+  "success": true,
+  "content": "# 🔗 Grappe de Tâches: Projet XYZ\n\n...",
+  "clusterStatistics": {
+    "totalTasks": 3,
+    "totalSections": 87,
+    "totalDuration": 245,
+    "averageTaskSize": 156.7,
+    "clusterComplexity": "High",
+    "taskModeDistribution": {
+      "code": 2,
+      "architect": 1
+    },
+    "crossTaskPatterns": ["file-editing", "testing", "documentation"]
+  },
+  "taskBreakdown": {
+    "rootTask": {...},
+    "childTasks": [...]
   }
 }
 ```
@@ -452,7 +599,43 @@ Cette pratique de versioning garantit un cycle de développement fiable.
 Le projet suit l'architecture MCP standard avec :
 - **Types** : Interfaces TypeScript pour la cohérence des données
 - **Utils** : Utilitaires de détection et manipulation du stockage
+- **Services** : Services métier pour traitement avancé des conversations
+  - `TraceSummaryService` : Génération de résumés avec Progressive Disclosure Pattern
+  - `ConversationSkeleton` : Structure de données optimisée pour l'analyse
 - **Server** : Serveur MCP principal avec gestion des outils
+
+#### TraceSummaryService - Architecture Technique
+
+Le `TraceSummaryService` implémente une architecture modulaire pour le rendu de conversations avec support étendu pour l'analyse de grappes de tâches :
+
+**Classes principales :**
+- `TraceSummaryService` : Service principal avec méthodes publiques étendues
+- `ConversationSkeleton` : Structure de données pré-parsée optimisée
+- `ClusterSummaryOptions` : Configuration spécialisée pour l'analyse de grappes
+- `ClusterSummaryResult` : Structure de résultat enrichie avec métadonnées de grappe
+
+**Méthodes de rendu modulaires (existantes) :**
+- `renderConversationContent()` : Point d'entrée principal pour le contenu
+- `renderUserMessage()` : Messages utilisateur avec Progressive Disclosure
+- `renderAssistantMessage()` : Messages assistant avec formatage Markdown
+- `renderToolResult()` : Résultats d'outils avec gestion des erreurs
+- `renderTechnicalBlocks()` : Blocs `<details>/<summary>` pour contenu technique
+
+**Nouvelles méthodes pour grappes de tâches :**
+- `generateClusterSummary()` : Génération de résumés multi-tâches
+- `analyzeClusterStatistics()` : Calcul de métriques spécialisées pour grappes
+- `buildClusterTimeline()` : Construction de timeline chronologique consolidée
+- `detectCrossTaskPatterns()` : Analyse des patterns transversaux
+- `renderClusterContent()` : Rendu spécialisé pour contenu de grappe
+
+**Fonctionnalités avancées :**
+- **Progressive Disclosure** : Masquage automatique des `environment_details` volumineux
+- **Modes de détail adaptatifs** : 6 modes pour différents cas d'usage
+- **CSS intégré** : Styling complet avec classes sémantiques
+- **Nettoyage intelligent** : Suppression des markers de début/fin automatiques
+- **🆕 Analyse de grappes** : Métriques spécialisées et relations hiérarchiques
+- **🆕 Timeline consolidée** : Vue chronologique multi-tâches
+- **🆕 Patterns croisés** : Détection automatique de tendances communes
 
 ## 📝 Roadmap
 

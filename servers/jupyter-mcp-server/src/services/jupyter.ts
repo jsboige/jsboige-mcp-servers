@@ -94,31 +94,22 @@ export async function initializeJupyterServices(options?: JupyterServiceOptions)
 }
 
 export async function listAvailableKernels(): Promise<any[]> {
-  if (!serverSettings) {
-    throw new Error('Services Jupyter non initialisés. Utilisez d\'abord l\'outil start_jupyter_server pour vous connecter à un serveur Jupyter.');
-  }
-  
   try {
-    const apiUrl = `${serverSettings.baseUrl}api/kernelspecs`;
-    log(`Fetching kernelspecs from: ${apiUrl}`);
-    const response = await axios.get(apiUrl, {
-        headers: {
-            'Authorization': `token ${serverSettings.token}`
-        }
-    });
-    return Object.values(response.data.kernelspecs);
-  } catch (error: any) {
-    log('[DEBUG] Detailed error fetching available kernels:');
-    if (error.response) {
-        log(`[DEBUG] Status: ${error.response.status}`);
-        log(`[DEBUG] Data: ${JSON.stringify(error.response.data)}`);
-    } else if (error.request) {
-        log('[DEBUG] No response received for kernel request.');
+    log('[LOCAL_KERNELS] Attempting to list local kernel specs...');
+    const { stdout } = await execAsync('jupyter kernelspec list --json');
+    const kernelSpecs = JSON.parse(stdout);
+    
+    if (kernelSpecs && kernelSpecs.kernelspecs) {
+      log(`[LOCAL_KERNELS] Found ${Object.keys(kernelSpecs.kernelspecs).length} local kernelspecs.`);
+      return Object.values(kernelSpecs.kernelspecs);
     } else {
-        log(`[DEBUG] Error message: ${error.message}`);
+      log('[LOCAL_KERNELS_WARN] `jupyter kernelspec list --json` did not return the expected format.');
+      return [];
     }
-    log(`Error fetching available kernels: ${error}`);
-    throw error;
+  } catch (error: any) {
+    log(`[LOCAL_KERNELS_ERROR] Failed to execute 'jupyter kernelspec list --json': ${error.message}`);
+    log('[LOCAL_KERNELS_ERROR] Please ensure Jupyter is installed and accessible in the system PATH.');
+    throw new Error(`Failed to list local Jupyter kernels. Is Jupyter installed and in your PATH? Error: ${error.message}`);
   }
 }
 

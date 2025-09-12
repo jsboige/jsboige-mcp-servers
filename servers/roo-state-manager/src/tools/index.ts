@@ -7,3 +7,4 @@ export { examineRooGlobalStateTool } from './examine-roo-global-state.js';
 export { repairTaskHistoryTool } from './repair-task-history.js';
 export * from './normalize-workspace-paths.js';
 export { generateTraceSummaryTool, handleGenerateTraceSummary } from './generate-trace-summary.js';
+export { generateClusterSummaryTool, handleGenerateClusterSummary } from './generate-cluster-summary.js';
