@@ -26,7 +26,7 @@ describe('read_vscode_logs Tool', () => {
         delete process.env.APPDATA;
     });
     it('should read the latest logs from all relevant files', async () => {
-        const result = await readVscodeLogs.execute({});
+        const result = await readVscodeLogs.handler({});
         const textContent = result.content[0].type === 'text' ? result.content[0].text : '';
         expect(textContent).toContain('--- LOG: renderer ---');
         expect(textContent).toContain('some renderer line 1\nsome renderer line 2');
@@ -37,7 +37,7 @@ describe('read_vscode_logs Tool', () => {
         expect(textContent).not.toContain('old log content');
     });
     it('should read a specific number of lines', async () => {
-        const result = await readVscodeLogs.execute({ lines: 1 });
+        const result = await readVscodeLogs.handler({ lines: 1 });
         const textContent = result.content[0].type === 'text' ? result.content[0].text : '';
         expect(textContent).toContain('some renderer line 2');
         expect(textContent).not.toContain('some renderer line 1');
@@ -47,7 +47,7 @@ describe('read_vscode_logs Tool', () => {
         expect(textContent).not.toContain('roo log line 1');
     });
     it('should filter logs by a keyword', async () => {
-        const result = await readVscodeLogs.execute({ filter: 'roo' });
+        const result = await readVscodeLogs.handler({ filter: 'roo' });
         const textContent = result.content[0].type === 'text' ? result.content[0].text : '';
         expect(textContent).not.toContain('some renderer line 1');
         expect(textContent).toContain('roo line 2');
@@ -56,13 +56,13 @@ describe('read_vscode_logs Tool', () => {
     it('should return a message if no session directory is found', async () => {
         mock.restore();
         mock({ [LOGS_PATH]: {} });
-        const result = await readVscodeLogs.execute({});
+        const result = await readVscodeLogs.handler({});
         const textContent = result.content[0].type === 'text' ? result.content[0].text : '';
         expect(textContent).toContain('No session log directory found');
     });
     it('should return a message if APPDATA is not set', async () => {
         delete process.env.APPDATA;
-        const result = await readVscodeLogs.execute({});
+        const result = await readVscodeLogs.handler({});
         const textContent = result.content[0].type === 'text' ? result.content[0].text : '';
         expect(textContent).toContain('APPDATA environment variable not set');
     });

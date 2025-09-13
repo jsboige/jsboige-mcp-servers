@@ -32,12 +32,12 @@ describe('manage_mcp_settings Tool', () => {
         jest.clearAllMocks();
     });
     it('should read the settings file', async () => {
-        await manageMcpSettings.execute({ action: 'read' });
+        await manageMcpSettings.handler({ action: 'read' });
         expect(mockReadFile).toHaveBeenCalledWith(MOCK_SETTINGS_PATH, 'utf-8');
     });
     it('should write new settings to the file', async () => {
         const newSettings = { mcpServers: { 'server-c': { enabled: true, command: 'node c.js' } } };
-        await manageMcpSettings.execute({ action: 'write', settings: newSettings });
+        await manageMcpSettings.handler({ action: 'write', settings: newSettings });
         expect(mockWriteFile).toHaveBeenCalledWith(MOCK_SETTINGS_PATH, JSON.stringify(newSettings, null, 2), 'utf-8');
     });
 });
