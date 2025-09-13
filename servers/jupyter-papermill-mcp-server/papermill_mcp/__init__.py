@@ -8,6 +8,7 @@ leveraging Papermill for notebook execution and jupyter_client for kernel manage
 __version__ = "1.0.0"
 __author__ = "CoursIA Team"
 
-from .main import main
+# Note: main module is accessed directly via "python -m papermill_mcp.main"
+# No need to import it here to avoid circular import issues
 
-__all__ = ["main"]
+__all__ = []

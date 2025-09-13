@@ -1,8 +1,8 @@
 {
   "name": "roo-state-manager",
-  "version": "1.0.2",
+  "version": "1.0.6",
   "description": "MCP server for unified Roo state management and conversation persistence",
-  "main": "build/index.js",
+  "main": "build/src/index.js",
   "type": "module",
   "scripts": {
     "build": "tsc",
@@ -10,7 +10,7 @@
     "dev": "tsc -w",
     "pretest": "npm run build",
     "test:setup": "node build/tests/jest.setup.js",
-    "test": "npm run test:setup && cross-env NODE_OPTIONS=--experimental-vm-modules jest",
+    "test": "npm run test:setup && cross-env NODE_OPTIONS=--experimental-vm-modules jest --runInBand",
     "test:coverage": "npm run pretest && jest --coverage",
     "test:detector": "node build/tests/test-storage-detector.js",
     "test:all": "npm run pretest && npm run test && npm run test:detector",

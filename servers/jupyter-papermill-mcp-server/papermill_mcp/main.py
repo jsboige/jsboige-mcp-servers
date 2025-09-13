@@ -10,9 +10,16 @@ import sys
 from pathlib import Path
 from typing import Optional
 
+# Import nest_asyncio at the top to handle nested event loops
+try:
+    import nest_asyncio
+    nest_asyncio.apply()
+except ImportError:
+    pass  # Will be handled in cli_main if needed
+
 from mcp.server.fastmcp import FastMCP
 
-from .config import ConfigManager, MCPConfig
+from .config import get_config, MCPConfig
 from .tools.notebook_tools import register_notebook_tools, initialize_notebook_tools
 from .tools.kernel_tools import register_kernel_tools, initialize_kernel_tools  
 from .tools.execution_tools import register_execution_tools, initialize_execution_tools
@@ -39,7 +46,7 @@ class JupyterPapermillMCPServer:
         Args:
             config: Optional configuration object. If None, will load from default sources.
         """
-        self.config = config or ConfigManager.load_config()
+        self.config = config or get_config()
         self.app = FastMCP("jupyter-papermill-mcp")
         self._initialized = False
     
@@ -117,8 +124,11 @@ class JupyterPapermillMCPServer:
             logger.info("Starting Jupyter Papermill MCP Server...")
             logger.info(f"Server ready on stdin/stdout")
             
-            # Run the FastMCP server
-            await self.app.run()
+            # Use STDIO transport directly to avoid asyncio.run() conflicts
+            from mcp.server.stdio import stdio_server
+            
+            async with stdio_server() as (read_stream, write_stream):
+                await self.app.run(read_stream, write_stream, self.app.create_initialization_options())
             
         except KeyboardInterrupt:
             logger.info("Server interrupted by user")
@@ -168,7 +178,7 @@ async def main() -> None:
     """Main entry point for the server."""
     try:
         # Load configuration
-        config = ConfigManager.load_config()
+        config = get_config()
         
         # Create and run server
         server = JupyterPapermillMCPServer(config)
@@ -182,6 +192,8 @@ async def main() -> None:
 def cli_main() -> None:
     """CLI entry point for the server."""
     try:
+        # With nest_asyncio applied, we can use asyncio.run() even in nested contexts
+        logger.info("Starting Jupyter Papermill MCP Server")
         asyncio.run(main())
     except KeyboardInterrupt:
         logger.info("Server stopped by user")

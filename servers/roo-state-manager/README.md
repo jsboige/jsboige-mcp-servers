@@ -584,6 +584,44 @@ Ajoutez le serveur à votre configuration MCP :
 
 Cette pratique de versioning garantit un cycle de développement fiable.
 
+### Instabilité de l'Extension Host VSCode - Diagnostic et Solution
+
+**Symptôme** : Le MCP exécute du code obsolète malgré la recompilation et le redémarrage, avec des erreurs mystérieuses lors du rechargement.
+
+**Cause racine** : L'Extension Host VSCode peut être dans un état instable qui empêche le chargement correct des nouveaux MCPs. Cette instabilité se manifeste par :
+- Erreurs au démarrage (`RangeError: path should be a path.relative()d string`)
+- État d'extension volumineux (>1MB) causant des ralentissements
+- Messages "Extension host is unresponsive" fréquents
+
+**Diagnostic** :
+1. **Vérifiez les logs de l'Extension Host VSCode** :
+   - Ouvrir la palette de commandes (`Ctrl+Shift+P`)
+   - Rechercher `Developer: Open Extension Host Log`
+   - Examiner les erreurs récentes, particulièrement :
+     ```
+     [error] [Fenêtre] [Extension Host] Error checking protection for [...]: RangeError: path should be a `path.relative()`d string
+     [warning] [Fenêtre] [mainThreadStorage] large extension state detected (extensionId: RooVeterinaryInc.roo-cline, global: true): >1000kb
+     [info] [Fenêtre] Extension host (LocalProcess pid: [...]) is unresponsive
+     ```
+
+2. **Utilisez l'outil de diagnostic intégré** :
+   ```bash
+   use_mcp_tool "roo-state-manager" "read_vscode_logs" {"lines": 50, "filter": "error"}
+   ```
+
+**Solutions** :
+1. **Redémarrage complet de l'Extension Host** :
+   - Palette de commandes → `Developer: Reload Extension Host`
+   - Si persistant : Redémarrer complètement VSCode
+
+2. **Nettoyage de l'état d'extension** :
+   - Vérifier la taille des fichiers dans `globalStorage/RooVeterinaryInc.roo-cline/`
+   - Sauvegarder et nettoyer les gros fichiers d'état si nécessaire
+
+3. **En dernier recours** : Réinstallation de l'extension Roo
+
+**Note importante** : Cette instabilité peut masquer complètement les problèmes de rechargement MCP normaux (versioning, build). Toujours diagnostiquer l'Extension Host en premier lieu avant d'investiguer d'autres causes.
+
 ## 🛠️ Développement
 
 ### Scripts Disponibles

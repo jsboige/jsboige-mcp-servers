@@ -416,6 +416,7 @@ export class RooStorageDetector {
                 messageCount,
                 actionCount,
                 totalSize,
+                workspace: rawMetadata.workspace,
             },
         };
 

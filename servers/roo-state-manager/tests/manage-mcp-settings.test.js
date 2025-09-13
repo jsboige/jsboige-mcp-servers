@@ -1,9 +1,7 @@
 import { jest, describe, it, expect, beforeEach, afterEach } from '@jest/globals';
-
 const mockReadFile = jest.fn();
 const mockWriteFile = jest.fn();
 const MOCK_SETTINGS_PATH = '/mock/mcp_settings.json';
-
 // Mock fs/promises et le chemin avant d'importer l'outil
 jest.unstable_mockModule('fs/promises', () => ({
     default: {
@@ -11,7 +9,6 @@ jest.unstable_mockModule('fs/promises', () => ({
         writeFile: mockWriteFile,
     },
 }));
-
 jest.unstable_mockModule('../src/tools/manage-mcp-settings.js', async () => {
     const originalModule = await import('../src/tools/manage-mcp-settings.js');
     return {
@@ -19,9 +16,7 @@ jest.unstable_mockModule('../src/tools/manage-mcp-settings.js', async () => {
         MCP_SETTINGS_PATH: MOCK_SETTINGS_PATH,
     };
 });
-
 const { manageMcpSettings } = await import('../src/tools/manage-mcp-settings.js');
-
 describe('manage_mcp_settings Tool', () => {
     const mockSettings = {
         mcpServers: {
@@ -29,24 +24,21 @@ describe('manage_mcp_settings Tool', () => {
             'server-b': { disabled: true, command: 'node b.js' },
         }
     };
-
     beforeEach(() => {
-        mockReadFile.mockResolvedValue(JSON.stringify(mockSettings) as never);
-        mockWriteFile.mockResolvedValue(undefined as never);
+        mockReadFile.mockResolvedValue(JSON.stringify(mockSettings));
+        mockWriteFile.mockResolvedValue(undefined);
     });
-
     afterEach(() => {
         jest.clearAllMocks();
     });
-
     it('should read the settings file', async () => {
-        await manageMcpSettings.handler({ action: 'read' });
+        await manageMcpSettings.execute({ action: 'read' });
         expect(mockReadFile).toHaveBeenCalledWith(MOCK_SETTINGS_PATH, 'utf-8');
     });
-
     it('should write new settings to the file', async () => {
         const newSettings = { mcpServers: { 'server-c': { enabled: true, command: 'node c.js' } } };
-        await manageMcpSettings.handler({ action: 'write', settings: newSettings });
+        await manageMcpSettings.execute({ action: 'write', settings: newSettings });
         expect(mockWriteFile).toHaveBeenCalledWith(MOCK_SETTINGS_PATH, JSON.stringify(newSettings, null, 2), 'utf-8');
     });
 });
+//# sourceMappingURL=manage-mcp-settings.test.js.map

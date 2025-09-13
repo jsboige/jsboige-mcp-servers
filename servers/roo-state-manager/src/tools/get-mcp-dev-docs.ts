@@ -18,11 +18,11 @@ export const getMcpDevDocs = {
     async handler(): Promise<CallToolResult> {
         try {
             const docsBasePath = path.resolve(__dirname, '..', '..', '..', '..', '..', '..', 'docs');
-            const debugGuidePath = path.join(docsBasePath, 'mcp-debugging-guide.md');
-            const troubleshootingPath = path.join(docsBasePath, 'troubleshooting', 'mcp-startup-issues.md');
+            const debugGuidePath = path.join(docsBasePath, 'guides', 'guide-utilisation-mcps.md');
+            // const troubleshootingPath = path.join(docsBasePath, 'troubleshooting', 'mcp-startup-issues.md');
 
             const debugGuideContent = await fs.readFile(debugGuidePath, 'utf-8');
-            const troubleshootingContent = await fs.readFile(troubleshootingPath, 'utf-8');
+            const troubleshootingContent = "Le guide de dépannage est actuellement indisponible.";
 
             const combinedContent = `
 # MCP Debugging Guide

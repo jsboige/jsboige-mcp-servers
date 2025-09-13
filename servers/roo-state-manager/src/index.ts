@@ -19,9 +19,11 @@ import { exec } from 'child_process';
 import { TaskNavigator } from './services/task-navigator.js';
 import { ConversationSkeleton, ActionMetadata, ClusterSummaryOptions, ClusterSummaryResult } from './types/conversation.js';
 import packageJson from '../package.json' with { type: 'json' };
-import { readVscodeLogs, rebuildAndRestart, getMcpDevDocs, manageMcpSettings, analyzeVSCodeGlobalState, repairVSCodeTaskHistory, scanOrphanTasks, testWorkspaceExtraction, rebuildTaskIndex, diagnoseSQLite, examineRooGlobalStateTool, repairTaskHistoryTool, normalizeWorkspacePaths, generateTraceSummaryTool, handleGenerateTraceSummary, generateClusterSummaryTool, handleGenerateClusterSummary } from './tools/index.js';
+import { readVscodeLogs, rebuildAndRestart, getMcpDevDocs, manageMcpSettings, analyzeVSCodeGlobalState, repairVSCodeTaskHistory, scanOrphanTasks, testWorkspaceExtraction, rebuildTaskIndex, diagnoseSQLite, examineRooGlobalStateTool, repairTaskHistoryTool, normalizeWorkspacePaths, generateTraceSummaryTool, handleGenerateTraceSummary, generateClusterSummaryTool, handleGenerateClusterSummary, viewConversationTree } from './tools/index.js';
 import { searchTasks } from './services/task-searcher.js';
 import { indexTask } from './services/task-indexer.js';
+import { getQdrantClient } from './services/qdrant.js';
+import getOpenAIClient from './services/openai.js';
 import { XmlExporterService } from './services/XmlExporterService.js';
 import { ExportConfigManager } from './services/ExportConfigManager.js';
 import { TraceSummaryService } from './services/TraceSummaryService.js';
@@ -85,6 +87,7 @@ class RooStateManagerServer {
                                 sortOrder: { type: 'string', enum: ['asc', 'desc'] },
                                 hasApiHistory: { type: 'boolean' },
                                 hasUiMessages: { type: 'boolean' },
+                                workspace: { type: 'string', description: 'Filtre les conversations par chemin de workspace.' },
                             },
                         },
                     },
@@ -107,6 +110,7 @@ class RooStateManagerServer {
                             properties: {
                                 conversation_id: { type: 'string', description: 'ID de la conversation pour laquelle récupérer l\'arbre des tâches.' },
                                 max_depth: { type: 'number', description: 'Profondeur maximale de l\'arbre à retourner.' },
+                                include_siblings: { type: 'boolean', description: 'Inclure les tâches sœurs (même parent) dans l\'arbre.' },
                             },
                             required: ['conversation_id'],
                         },
@@ -119,7 +123,8 @@ class RooStateManagerServer {
                             properties: {
                                 conversation_id: { type: 'string', description: 'ID de la conversation à fouiller.' },
                                 search_query: { type: 'string', description: 'La requête de recherche sémantique.' },
-                                 max_results: { type: 'number', description: 'Nombre maximum de résultats à retourner.' },
+                                max_results: { type: 'number', description: 'Nombre maximum de résultats à retourner.' },
+                                diagnose_index: { type: 'boolean', description: 'Mode diagnostic : retourne des informations sur l\'état de l\'indexation sémantique.' },
                             },
                             required: ['conversation_id', 'search_query'],
                         },
@@ -136,18 +141,9 @@ class RooStateManagerServer {
                        }
                     },
                     {
-                        name: 'view_conversation_tree',
-                        description: 'Fournit une vue arborescente et condensée des conversations pour une analyse rapide.',
-                        inputSchema: {
-                            type: 'object',
-                            properties: {
-                                task_id: { type: 'string', description: 'L\'ID de la tâche de départ. Si non fourni, utilise la tâche la plus récente.' },
-                                view_mode: { type: 'string', enum: ['single', 'chain', 'cluster'], default: 'chain', description: 'Le mode d\'affichage.' },
-                                truncate: { type: 'number', default: 0, description: 'Nombre de lignes à conserver au début et à la fin de chaque message. 0 pour vue complète (défaut intelligent).' },
-                                max_output_length: { type: 'number', default: 50000, description: 'Limite maximale de caractères en sortie. Au-delà, force la troncature.' },
-                                full_content: { type: 'boolean', default: false, description: 'Si true, affiche le contenu complet des messages au lieu d\'un aperçu.' },
-                            },
-                        },
+                        name: viewConversationTree.name,
+                        description: viewConversationTree.description,
+                        inputSchema: viewConversationTree.inputSchema,
                     },
                     // {
                     //     name: 'diagnose_roo_state',
@@ -375,7 +371,18 @@ class RooStateManagerServer {
                             },
                             required: ['task_id']
                         }
-                    }
+                    },
+                    {
+                        name: 'get_raw_conversation',
+                        description: 'Récupère le contenu brut d\'une conversation (fichiers JSON) sans condensation.',
+                        inputSchema: {
+                            type: 'object',
+                            properties: {
+                                taskId: { type: 'string', description: 'L\'identifiant de la tâche à récupérer.' },
+                            },
+                            required: ['taskId'],
+                        },
+                    },
                 ] as any[],
             };
         });
@@ -407,8 +414,8 @@ class RooStateManagerServer {
                 case 'get_task_tree':
                     result = this.handleGetTaskTree(args as any);
                     break;
-                case 'view_conversation_tree':
-                    result = this.handleViewConversationTree(args as any);
+                case viewConversationTree.name:
+                    result = viewConversationTree.handler(args as any, this.conversationCache);
                     break;
                 case 'view_task_details':
                     result = this.handleViewTaskDetails(args as any);
@@ -491,6 +498,9 @@ class RooStateManagerServer {
               case 'configure_xml_export':
                   result = await this.handleConfigureXmlExport(args as any);
                   break;
+              case 'get_raw_conversation':
+                  result = await this.handleGetRawConversation(args as any);
+                  break;
               default:
                   throw new Error(`Tool not found: ${name}`);
           }
@@ -518,15 +528,20 @@ class RooStateManagerServer {
         return { content: [{ type: 'text', text: JSON.stringify(stats, null, 2) }] };
     }
 
-    async handleListConversations(args: { limit?: number, sortBy?: 'lastActivity' | 'messageCount' | 'totalSize', sortOrder?: 'asc' | 'desc' }): Promise<CallToolResult> {
+    async handleListConversations(args: { limit?: number, sortBy?: 'lastActivity' | 'messageCount' | 'totalSize', sortOrder?: 'asc' | 'desc', workspace?: string }): Promise<CallToolResult> {
         
         interface SkeletonNode extends ConversationSkeleton {
             children: SkeletonNode[];
         }
 
-        const allSkeletons = Array.from(this.conversationCache.values()).filter(skeleton =>
+        let allSkeletons = Array.from(this.conversationCache.values()).filter(skeleton =>
             skeleton.metadata && skeleton.metadata.lastActivity
         );
+
+        // Filtrage par workspace
+        if (args.workspace) {
+            allSkeletons = allSkeletons.filter(skeleton => skeleton.metadata.workspace === args.workspace);
+        }
 
         // Tri
         allSkeletons.sort((a, b) => {
@@ -685,8 +700,8 @@ class RooStateManagerServer {
         }
     }
 
-    handleGetTaskTree(args: { conversation_id: string, max_depth?: number }): CallToolResult {
-        const { conversation_id, max_depth = Infinity } = args;
+    handleGetTaskTree(args: { conversation_id: string, max_depth?: number, include_siblings?: boolean }): CallToolResult {
+        const { conversation_id, max_depth = Infinity, include_siblings = false } = args;
 
         const skeletons = Array.from(this.conversationCache.values());
         const childrenMap = new Map<string, string[]>();
@@ -716,11 +731,38 @@ class RooStateManagerServer {
             return {
                 taskId: skeleton.taskId,
                 title: skeleton.metadata?.title,
+                parentTaskId: skeleton.parentTaskId,
                 children: children.length > 0 ? children : undefined,
             };
         };
         
-        const tree = buildTree(conversation_id, 1);
+        let tree;
+        
+        if (include_siblings) {
+            // Trouver la tâche demandée
+            const targetSkeleton = skeletons.find(s => s.taskId === conversation_id);
+            if (!targetSkeleton) {
+                throw new Error(`Could not find conversation ID '${conversation_id}'. Is the cache populated and the task ID valid?`);
+            }
+            
+            if (targetSkeleton.parentTaskId) {
+                // Si la tâche a un parent, construire l'arbre depuis le parent pour inclure les siblings
+                tree = buildTree(targetSkeleton.parentTaskId, 1);
+            } else {
+                // Si pas de parent, créer un arbre avec toutes les tâches racines comme siblings
+                const rootTasks = skeletons.filter(s => !s.parentTaskId);
+                const siblings = rootTasks.map(s => buildTree(s.taskId, 1)).filter(t => t !== null);
+                
+                tree = {
+                    taskId: 'ROOT',
+                    title: 'Tasks Root',
+                    children: siblings,
+                };
+            }
+        } else {
+            // Comportement original : construire l'arbre depuis la tâche demandée
+            tree = buildTree(conversation_id, 1);
+        }
 
         if (!tree) {
             throw new Error(`Could not build tree for conversation ID '${conversation_id}'. Is the cache populated and the task ID valid?`);
@@ -738,6 +780,7 @@ class RooStateManagerServer {
        throw new Error(`Task with ID '${taskId}' not found in any storage location.`);
    }
 
+
     private truncateMessage(message: string, truncate: number): string {
         if (truncate === 0) {
             return message;
@@ -749,143 +792,6 @@ class RooStateManagerServer {
         const start = lines.slice(0, truncate).join('\n');
         const end = lines.slice(-truncate).join('\n');
         return `${start}\n[...]\n${end}`;
-    }
-
-    private findLatestTask(): ConversationSkeleton | undefined {
-        if (this.conversationCache.size === 0) {
-            return undefined;
-        }
-        const validTasks = Array.from(this.conversationCache.values()).filter(
-            s => s.metadata && s.metadata.lastActivity
-        );
-        if (validTasks.length === 0) {
-            return undefined;
-        }
-        return validTasks.reduce((latest, current) => {
-            return new Date(latest.metadata.lastActivity) > new Date(current.metadata.lastActivity) ? latest : current;
-        });
-    }
-
-    handleViewConversationTree(args: { task_id?: string, view_mode?: 'single' | 'chain' | 'cluster', truncate?: number, max_output_length?: number }): CallToolResult {
-        const { view_mode = 'chain', max_output_length = 50000 } = args;
-        let { truncate = 0 } = args;
-        let { task_id } = args;
-
-        if (!task_id) {
-            const latestTask = this.findLatestTask();
-            if (!latestTask) {
-                throw new Error("Cache is empty and no task_id was provided. Cannot determine the latest task.");
-            }
-            task_id = latestTask.taskId;
-        }
-
-        const skeletons = Array.from(this.conversationCache.values());
-        const skeletonMap = new Map(skeletons.map(s => [s.taskId, s]));
-
-        const getTaskChain = (startTaskId: string): ConversationSkeleton[] => {
-            const chain: ConversationSkeleton[] = [];
-            let currentId: string | undefined = startTaskId;
-            while (currentId) {
-                const skeleton = skeletonMap.get(currentId);
-                if (skeleton) {
-                    chain.unshift(skeleton);
-                    currentId = skeleton.parentTaskId;
-                } else {
-                    break;
-                }
-            }
-            return chain;
-        };
-
-        const formatTask = (skeleton: ConversationSkeleton, indent: string): string => {
-            let output = `${indent}▶️ Task: ${skeleton.metadata.title || skeleton.taskId} (ID: ${skeleton.taskId})\n`;
-            output += `${indent}  Parent: ${skeleton.parentTaskId || 'None'}\n`;
-            output += `${indent}  Messages: ${skeleton.metadata.messageCount}\n`;
-            skeleton.sequence.forEach(item => {
-                if ('role' in item) { // Message user/assistant - contenu complet préservé
-                    const role = item.role === 'user' ? '👤 User' : '🤖 Assistant';
-                    const message = this.truncateMessage(item.content, truncate);
-                    const messageLines = message.split('\n').map(l => `${indent}    | ${l}`).join('\n');
-                    output += `${indent}  [${role}]:\n${messageLines}\n`;
-                } else { // Action - format squelette simple
-                    const icon = item.type === 'command' ? '⚙️' : '🛠️';
-                    output += `${indent}  [${icon} ${item.name}] → ${item.status}\n`;
-                }
-            });
-            return output;
-        };
-
-        // Estimation intelligente de la taille de sortie
-        const estimateOutputSize = (skeletons: ConversationSkeleton[]): number => {
-            let totalSize = 0;
-            for (const skeleton of skeletons) {
-                totalSize += 200; // En-tête de tâche
-                for (const item of skeleton.sequence) {
-                    if ('role' in item) {
-                        totalSize += item.content.length + 100; // Message + formatage
-                    } else {
-                        totalSize += 150; // Action + formatage
-                    }
-                }
-            }
-            return totalSize;
-        };
-
-        let tasksToDisplay: ConversationSkeleton[] = [];
-        const mainTask = skeletonMap.get(task_id);
-        if (!mainTask) {
-            throw new Error(`Task with ID '${task_id}' not found in cache.`);
-        }
-
-        switch (view_mode) {
-            case 'single':
-                tasksToDisplay.push(mainTask);
-                break;
-            case 'chain':
-                tasksToDisplay = getTaskChain(task_id);
-                break;
-            case 'cluster':
-                const chain = getTaskChain(task_id);
-                if (chain.length > 0) {
-                    const directParentId = chain[chain.length - 1].parentTaskId;
-                    if (directParentId) {
-                        const siblings = skeletons.filter(s => s.parentTaskId === directParentId);
-                        // Display parent, then all its children (siblings of the target + target itself)
-                        const parentTask = skeletonMap.get(directParentId);
-                        if(parentTask) tasksToDisplay.push(parentTask);
-                        tasksToDisplay.push(...siblings);
-                    } else {
-                         tasksToDisplay = chain; // It's a root task, show its chain
-                    }
-                } else {
-                     tasksToDisplay.push(mainTask);
-                }
-                break;
-        }
-        
-        // Logique intelligente de troncature
-        const estimatedSize = estimateOutputSize(tasksToDisplay);
-        
-        // Si pas de troncature spécifiée et taille raisonnable, affichage complet
-        if (truncate === 0 && estimatedSize <= max_output_length) {
-            // Vue complète - pas de troncature
-        } else if (truncate === 0 && estimatedSize > max_output_length) {
-            // Forcer une troncature intelligente basée sur la taille estimée
-            const totalMessages = tasksToDisplay.reduce((count, task) =>
-                count + task.sequence.filter(item => 'role' in item).length, 0);
-            truncate = Math.max(2, Math.floor(max_output_length / (estimatedSize / Math.max(1, totalMessages * 20))));
-        }
-        
-        let formattedOutput = `Conversation Tree (Mode: ${view_mode})\n======================================\n`;
-        if (estimatedSize > max_output_length) {
-            formattedOutput += `⚠️  Sortie estimée: ${Math.round(estimatedSize/1000)}k chars, limite: ${Math.round(max_output_length/1000)}k chars, troncature: ${truncate} lignes\n\n`;
-        }
-        tasksToDisplay.forEach((task, index) => {
-            const indent = '  '.repeat(index);
-            formattedOutput += formatTask(task, indent);
-        });
-
-        return { content: [{ type: 'text', text: formattedOutput }] };
     }
 
     handleSimpleTest(): CallToolResult {
@@ -947,8 +853,12 @@ class RooStateManagerServer {
         ].join('\n');
     }
 
-    async handleSearchTasksSemantic(args: { conversation_id: string, search_query: string, max_results?: number }): Promise<CallToolResult> {
-        const { search_query, max_results = 10 } = args;
+    async handleSearchTasksSemantic(args: { conversation_id: string, search_query: string, max_results?: number, diagnose_index?: boolean }): Promise<CallToolResult> {
+        const { search_query, max_results = 10, diagnose_index = false } = args;
+        
+        if (diagnose_index) {
+            return this.handleDiagnoseSemanticIndex();
+        }
         
         try {
             // Utiliser la vraie recherche sémantique avec Qdrant
@@ -1793,6 +1703,152 @@ class RooStateManagerServer {
         const transport = new StdioServerTransport();
         await this.server.connect(transport);
         console.error(`Roo State Manager Server started - v${packageJson.version}`);
+    }
+
+    private async handleDiagnoseSemanticIndex(): Promise<CallToolResult> {
+        const collectionName = process.env.QDRANT_COLLECTION_NAME || 'roo_tasks_semantic_index';
+        const diagnostics: any = {
+            timestamp: new Date().toISOString(),
+            collection_name: collectionName,
+            status: 'unknown',
+            errors: [],
+            details: {},
+        };
+
+        try {
+            // Test de connectivité à Qdrant
+            const qdrant = getQdrantClient();
+            diagnostics.details.qdrant_connection = 'success';
+
+            try {
+                // Vérifier si la collection existe
+                const collections = await qdrant.getCollections();
+                const collection = collections.collections.find(c => c.name === collectionName);
+                
+                if (collection) {
+                    diagnostics.details.collection_exists = true;
+                    
+                    // Obtenir des informations sur la collection
+                    const collectionInfo = await qdrant.getCollection(collectionName);
+                    diagnostics.details.collection_info = {
+                        vectors_count: collectionInfo.vectors_count,
+                        indexed_vectors_count: collectionInfo.indexed_vectors_count || 0,
+                        points_count: collectionInfo.points_count,
+                        config: {
+                            distance: collectionInfo.config?.params?.vectors?.distance || 'unknown',
+                            size: collectionInfo.config?.params?.vectors?.size || 'unknown',
+                        },
+                    };
+                    
+                    if (collectionInfo.points_count === 0) {
+                        diagnostics.status = 'empty_collection';
+                        diagnostics.errors.push('La collection existe mais ne contient aucun point indexé');
+                    } else {
+                        diagnostics.status = 'healthy';
+                    }
+                } else {
+                    diagnostics.details.collection_exists = false;
+                    diagnostics.status = 'missing_collection';
+                    diagnostics.errors.push(`La collection '${collectionName}' n'existe pas dans Qdrant`);
+                }
+            } catch (collectionError: any) {
+                diagnostics.errors.push(`Erreur lors de l'accès à la collection: ${collectionError.message}`);
+                diagnostics.status = 'collection_error';
+            }
+
+            // Test de connectivité à OpenAI
+            try {
+                const openai = getOpenAIClient();
+                const testEmbedding = await openai.embeddings.create({
+                    model: 'text-embedding-3-small',
+                    input: 'test connectivity',
+                });
+                diagnostics.details.openai_connection = testEmbedding.data[0].embedding.length > 0 ? 'success' : 'failed';
+            } catch (openaiError: any) {
+                diagnostics.errors.push(`Erreur OpenAI: ${openaiError.message}`);
+                diagnostics.details.openai_connection = 'failed';
+            }
+
+            // Vérifier les variables d'environnement nécessaires
+            const envVars = {
+                QDRANT_URL: !!process.env.QDRANT_URL,
+                QDRANT_API_KEY: !!process.env.QDRANT_API_KEY,
+                QDRANT_COLLECTION_NAME: !!process.env.QDRANT_COLLECTION_NAME,
+                OPENAI_API_KEY: !!process.env.OPENAI_API_KEY,
+            };
+            diagnostics.details.environment_variables = envVars;
+
+            const missingEnvVars = Object.entries(envVars)
+                .filter(([, exists]) => !exists)
+                .map(([varName]) => varName);
+            
+            if (missingEnvVars.length > 0) {
+                diagnostics.errors.push(`Variables d'environnement manquantes: ${missingEnvVars.join(', ')}`);
+            }
+
+        } catch (connectionError: any) {
+            diagnostics.status = 'connection_failed';
+            diagnostics.details.qdrant_connection = 'failed';
+            diagnostics.errors.push(`Impossible de se connecter à Qdrant: ${connectionError.message}`);
+        }
+
+        // Recommandations basées sur le diagnostic
+        const recommendations: string[] = [];
+        if (diagnostics.status === 'missing_collection') {
+            recommendations.push('Utilisez l\'outil rebuild_task_index pour créer et peupler la collection');
+        }
+        if (diagnostics.status === 'empty_collection') {
+            recommendations.push('La collection existe mais est vide. Lancez rebuild_task_index pour l\'indexer');
+        }
+        if (diagnostics.details.openai_connection === 'failed') {
+            recommendations.push('Vérifiez votre clé API OpenAI dans les variables d\'environnement');
+        }
+        if (diagnostics.details.qdrant_connection === 'failed') {
+            recommendations.push('Vérifiez la configuration Qdrant (URL, clé API, connectivité réseau)');
+        }
+
+        diagnostics.recommendations = recommendations;
+
+        return {
+            content: [{
+                type: 'text',
+                text: JSON.stringify(diagnostics, null, 2)
+            }]
+        };
+    }
+
+    async handleGetRawConversation(args: { taskId: string }): Promise<CallToolResult> {
+        const { taskId } = args;
+        if (!taskId) {
+            throw new Error("taskId is required.");
+        }
+
+        const locations = await RooStorageDetector.detectStorageLocations();
+        for (const loc of locations) {
+            const taskPath = path.join(loc, taskId);
+            try {
+                await fs.access(taskPath); // Vérifie si le répertoire de la tâche existe
+
+                const apiHistoryPath = path.join(taskPath, 'api_conversation_history.json');
+                const uiMessagesPath = path.join(taskPath, 'ui_messages.json');
+
+                const apiHistoryContent = await fs.readFile(apiHistoryPath, 'utf-8').catch(() => null);
+                const uiMessagesContent = await fs.readFile(uiMessagesPath, 'utf-8').catch(() => null);
+
+                const rawData = {
+                    taskId,
+                    location: taskPath,
+                    api_conversation_history: apiHistoryContent ? JSON.parse(apiHistoryContent) : null,
+                    ui_messages: uiMessagesContent ? JSON.parse(uiMessagesContent) : null,
+                };
+
+                return { content: [{ type: 'text', text: JSON.stringify(rawData, null, 2) }] };
+            } catch (e) {
+                // Tâche non trouvée dans cet emplacement, on continue
+            }
+        }
+
+        throw new Error(`Task with ID '${taskId}' not found in any storage location.`);
     }
 
     async stop() {

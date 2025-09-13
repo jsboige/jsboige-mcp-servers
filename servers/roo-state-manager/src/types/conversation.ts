@@ -46,7 +46,8 @@ export interface ConversationSkeleton {
     messageCount: number;
     actionCount: number;
     totalSize: number; // Taille totale de la conversation sur le disque
-  };
+     workspace?: string;
+   };
   // Une séquence combinée et ordonnée de messages et d'actions.
   sequence: (MessageSkeleton | ActionMetadata)[];
 }
@@ -64,6 +65,7 @@ export interface TaskMetadata {
     createdAt?: string;
     mode?: string;
     files_in_context?: FileInContext[];
+    workspace?: string;
 }
 
 // Représente une conversation complète avec toutes les données pour l'analyse.

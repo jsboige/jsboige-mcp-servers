@@ -31,7 +31,7 @@ describe('read_vscode_logs Tool', () => {
   });
 
   it('should read the latest logs from all relevant files', async () => {
-    const result = await readVscodeLogs.execute({});
+    const result = await readVscodeLogs.handler({});
     const textContent = result.content[0].type === 'text' ? result.content[0].text : '';
 
     expect(textContent).toContain('--- LOG: renderer ---');
@@ -44,7 +44,7 @@ describe('read_vscode_logs Tool', () => {
   });
 
   it('should read a specific number of lines', async () => {
-    const result = await readVscodeLogs.execute({ lines: 1 });
+    const result = await readVscodeLogs.handler({ lines: 1 });
     const textContent = result.content[0].type === 'text' ? result.content[0].text : '';
 
     expect(textContent).toContain('some renderer line 2');
@@ -56,7 +56,7 @@ describe('read_vscode_logs Tool', () => {
   });
 
   it('should filter logs by a keyword', async () => {
-    const result = await readVscodeLogs.execute({ filter: 'roo' });
+    const result = await readVscodeLogs.handler({ filter: 'roo' });
     const textContent = result.content[0].type === 'text' ? result.content[0].text : '';
 
     expect(textContent).not.toContain('some renderer line 1');
@@ -67,14 +67,14 @@ describe('read_vscode_logs Tool', () => {
   it('should return a message if no session directory is found', async () => {
     mock.restore();
     mock({ [LOGS_PATH]: {} });
-    const result = await readVscodeLogs.execute({});
+    const result = await readVscodeLogs.handler({});
     const textContent = result.content[0].type === 'text' ? result.content[0].text : '';
     expect(textContent).toContain('No session log directory found');
   });
 
   it('should return a message if APPDATA is not set', async () => {
     delete process.env.APPDATA;
-    const result = await readVscodeLogs.execute({});
+    const result = await readVscodeLogs.handler({});
     const textContent = result.content[0].type === 'text' ? result.content[0].text : '';
     expect(textContent).toContain('APPDATA environment variable not set');
   });
