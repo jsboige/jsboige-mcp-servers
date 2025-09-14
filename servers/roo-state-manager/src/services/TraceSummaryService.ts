@@ -140,8 +140,11 @@ export class TraceSummaryService {
         let index = 0;
 
         // Filtrer seulement les MessageSkeleton de la sequence
-        const messages = conversation.sequence.filter((item): item is MessageSkeleton => 
+        const messages = conversation.sequence.filter((item): item is MessageSkeleton =>
             'role' in item && 'content' in item);
+
+        console.log(`[DEBUG classifyConversationContent] Total sequence items: ${conversation.sequence.length}`);
+        console.log(`[DEBUG classifyConversationContent] Filtered messages: ${messages.length}`);
 
         for (const message of messages) {
             if (message.role === 'user') {

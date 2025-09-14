@@ -527,7 +527,14 @@ export class RooStorageDetector {
 
         // Si le contenu est un tableau (par exemple, pour les messages complexes de Claude)
         if (Array.isArray(content)) {
-          content = content.find((c: any) => c.type === 'text')?.text || '[contenu non textuel]';
+          // Récupérer TOUS les éléments de type 'text' et les concaténer
+          const textElements = content
+            .filter((c: any) => c.type === 'text' && c.text)
+            .map((c: any) => c.text);
+          
+          content = textElements.length > 0
+            ? textElements.join('\n\n') // Séparer par double saut de ligne
+            : '[contenu non textuel]';
         }
         
         // Sécurité pour éviter la récursion : si le contenu ressemble à un squelette, on l'ignore.

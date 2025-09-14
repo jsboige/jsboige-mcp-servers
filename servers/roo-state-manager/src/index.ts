@@ -36,7 +36,7 @@ import { RooStorageDetector } from './utils/roo-storage-detector.js';
 import fs from 'fs/promises';
 import { exec } from 'child_process';
 import { TaskNavigator } from './services/task-navigator.js';
-import { ConversationSkeleton, ActionMetadata, ClusterSummaryOptions, ClusterSummaryResult } from './types/conversation.js';
+import { ConversationSkeleton, ActionMetadata, MessageSkeleton, ClusterSummaryOptions, ClusterSummaryResult } from './types/conversation.js';
 import packageJson from '../package.json' with { type: 'json' };
 import { readVscodeLogs, rebuildAndRestart, getMcpDevDocs, manageMcpSettings, analyzeVSCodeGlobalState, repairVSCodeTaskHistory, scanOrphanTasks, testWorkspaceExtraction, rebuildTaskIndex, diagnoseSQLite, examineRooGlobalStateTool, repairTaskHistoryTool, normalizeWorkspacePaths, generateTraceSummaryTool, handleGenerateTraceSummary, generateClusterSummaryTool, handleGenerateClusterSummary, viewConversationTree } from './tools/index.js';
 import { searchTasks } from './services/task-searcher.js';
@@ -1702,8 +1702,57 @@ class RooStateManagerServer {
                 throw new Error("taskId est requis");
             }
 
-            // Récupérer le ConversationSkeleton depuis le cache
-            const conversation = this.conversationCache.get(taskId);
+            // FIX: Récupérer les données brutes COMPLÈTES au lieu du squelette condensé du cache
+            let conversation: ConversationSkeleton | null = null;
+            
+            const locations = await RooStorageDetector.detectStorageLocations();
+            for (const loc of locations) {
+                const taskPath = path.join(loc, taskId);
+                try {
+                    await fs.access(taskPath);
+                    
+                    const apiHistoryPath = path.join(taskPath, 'api_conversation_history.json');
+                    const apiHistoryContent = await fs.readFile(apiHistoryPath, 'utf-8').catch(() => null);
+                    
+                    if (apiHistoryContent) {
+                        const rawApiHistory = JSON.parse(apiHistoryContent);
+                        
+                        // Convertir les données brutes complètes en ConversationSkeleton
+                        const firstMsg = rawApiHistory[0];
+                        const lastMsg = rawApiHistory[rawApiHistory.length - 1];
+                        
+                        conversation = {
+                            taskId: taskId,
+                            parentTaskId: undefined,
+                            metadata: {
+                                title: firstMsg?.content?.[0]?.text?.substring(0, 100) || 'Conversation',
+                                lastActivity: new Date(lastMsg?.ts || Date.now()).toISOString(),
+                                createdAt: new Date(firstMsg?.ts || Date.now()).toISOString(),
+                                mode: 'code',
+                                messageCount: rawApiHistory.length,
+                                actionCount: 0,
+                                totalSize: JSON.stringify(rawApiHistory).length,
+                                workspace: taskPath
+                            },
+                            sequence: rawApiHistory.map((msg: any) => ({
+                                role: msg.role as 'user' | 'assistant',
+                                content: Array.isArray(msg.content)
+                                    ? msg.content
+                                        .filter((c: any) => c.type === 'text' && c.text)
+                                        .map((c: any) => c.text)
+                                        .join('\n\n')
+                                    : String(msg.content || ''),
+                                timestamp: new Date(msg.ts || Date.now()).toISOString(),
+                                isTruncated: false // Les données brutes ne sont PAS tronquées
+                            } as MessageSkeleton))
+                        };
+                        break;
+                    }
+                } catch (e) {
+                    // Continue vers la prochaine location
+                }
+            }
+            
             if (!conversation) {
                 throw new Error(`Conversation avec taskId ${taskId} introuvable`);
             }
