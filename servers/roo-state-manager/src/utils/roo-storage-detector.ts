@@ -321,7 +321,17 @@ export class RooStorageDetector {
             fs.stat(uiMessagesPath).catch(() => null)
         ]);
 
-        if (!apiHistoryStats && !uiMessagesStats) return null;
+        // DEBUG: Logging temporaire pour diagnostiquer le problème
+        console.error(`[DEBUG] Analyzing ${taskId}:`);
+        console.error(`  - metadata: ${metadataStats ? 'EXISTS' : 'MISSING'}`);
+        console.error(`  - apiHistory: ${apiHistoryStats ? 'EXISTS' : 'MISSING'}`);
+        console.error(`  - uiMessages: ${uiMessagesStats ? 'EXISTS' : 'MISSING'}`);
+
+        // TEMPORAIREMENT: Assouplir la condition pour accepter plus de conversations
+        if (!apiHistoryStats && !uiMessagesStats && !metadataStats) {
+            console.error(`❌ [analyzeConversation] Skipping ${taskId}: NO FILES FOUND AT ALL`);
+            return null;
+        }
 
         let metadataContent = metadataStats ? await fs.readFile(metadataPath, 'utf-8') : '{}';
         // Nettoyage explicite du BOM (Byte Order Mark) qui peut faire planter JSON.parse
@@ -433,7 +443,12 @@ export class RooStorageDetector {
         return skeleton;
 
     } catch (error) {
-        console.error(`[analyzeConversation] Erreur critique lors de l'analyse de ${taskId}:`, error);
+        console.error(`❌ [analyzeConversation] ERROR analyzing ${taskId}:`, error);
+        console.error(`   Error details:`, {
+            name: error instanceof Error ? error.name : 'Unknown',
+            message: error instanceof Error ? error.message : String(error),
+            stack: error instanceof Error ? error.stack?.split('\n').slice(0, 3).join('\n') : 'No stack'
+        });
         return null;
     }
   }

@@ -4,8 +4,10 @@ Serveur MCP pour Jupyter et Papermill utilisant FastMCP
 """
 
 import asyncio
+import datetime
 import json
 import os
+import platform
 import shutil
 import subprocess
 import sys
@@ -19,6 +21,18 @@ from pydantic import Field
 
 # Initialisation du serveur MCP avec FastMCP
 mcp = FastMCP("Jupyter-Papermill MCP Server")
+
+
+# FONCTION COMMENTÉE - CAUSAIT DES TIMEOUTS AVEC SES SUBPROCESS CALLS
+# def _collect_execution_diagnostic() -> Dict[str, Any]:
+#     """Collecte des informations de diagnostic pour le debug des problèmes .NET Interactive"""
+#     # Cette fonction utilisait des subprocess calls lourds :
+#     # - subprocess.run(['powershell', '-c', 'Get-Date ...'])
+#     # - subprocess.run(['dotnet', '--version'], ...)
+#     # - subprocess.run(['dotnet', 'tool', 'list', '-g'], ...)
+#     #
+#     # Ces appels cumulés causaient des timeouts de 60+ secondes
+#     # Remplacée par system_info() qui est optimisée et rapide
 
 
 @mcp.tool()
@@ -128,45 +142,69 @@ def execute_notebook(
     notebook_path: str = Field(description="Chemin du notebook à exécuter"),
     output_path: str = Field(default="", description="Chemin de sortie (optionnel)")
 ) -> Dict[str, Any]:
-    """Exécute un notebook Jupyter avec Papermill"""
+    """Exécute un notebook Jupyter avec Papermill via isolation conda"""
     try:
-        import papermill as pm
-        
         if not output_path:
             output_path = notebook_path.replace('.ipynb', '_executed.ipynb')
         
-        # Configurer l'environnement pour Papermill
-        # S'assurer que Papermill peut trouver les kernels
-        python_path = Path(sys.executable)
-        conda_env_path = python_path.parent
-        scripts_path = conda_env_path / "Scripts"
+        # SOLUTION VALIDÉE: Isolation conda pour préserver environnement .NET
+        # Cette approche évite les conflits d'environnement Python/MCP
+        cmd = [
+            'conda', 'run', '-n', 'mcp-jupyter',
+            'papermill', notebook_path, output_path,
+            '--progress-bar'
+        ]
         
-        # Mettre à jour temporairement le PATH pour cette exécution
-        current_env = os.environ.copy()
-        if scripts_path.exists():
-            current_env["PATH"] = str(scripts_path) + os.pathsep + current_env.get("PATH", "")
+        # DIAGNOSTIC: Capture de l'environnement pour debugging
+        diagnostic_info = {
+            "subprocess_cwd": os.getcwd(),
+            "subprocess_env_count": len(os.environ),
+            "key_env_vars": {
+                "USERPROFILE": os.environ.get("USERPROFILE", "NOT_SET"),
+                "APPDATA": os.environ.get("APPDATA", "NOT_SET"),
+                "LOCALAPPDATA": os.environ.get("LOCALAPPDATA", "NOT_SET"),
+                "TEMP": os.environ.get("TEMP", "NOT_SET"),
+                "TMP": os.environ.get("TMP", "NOT_SET"),
+                "PATH_length": len(os.environ.get("PATH", "")),
+                "CONDA_DEFAULT_ENV": os.environ.get("CONDA_DEFAULT_ENV", "NOT_SET"),
+                "NUGET_PACKAGES": os.environ.get("NUGET_PACKAGES", "NOT_SET")
+            }
+        }
         
-        # Utiliser un contexte temporaire avec l'environnement modifié
-        original_environ = os.environ.copy()
-        try:
-            os.environ.update(current_env)
+        # Exécution avec timeout et capture complète
+        result = subprocess.run(
+            cmd,
+            capture_output=True,
+            text=True,
+            timeout=600,  # 10 minutes max
+            cwd=os.getcwd(),
+            env=None  # Hériter de l'environnement parent complet
+        )
+        
+        if result.returncode == 0:
+            return {
+                "status": "success",
+                "input_path": notebook_path,
+                "output_path": output_path,
+                "message": "Notebook exécuté avec succès via isolation conda",
+                "execution_log": result.stdout,
+                "method": "conda_subprocess_isolation",
+                "diagnostic": diagnostic_info
+            }
+        else:
+            return {
+                "status": "error",
+                "error": result.stderr,
+                "stdout": result.stdout,
+                "return_code": result.returncode,
+                "method": "conda_subprocess_isolation",
+                "diagnostic": diagnostic_info
+            }
             
-            pm.execute_notebook(
-                notebook_path,
-                output_path,
-                progress_bar=False
-            )
-            
-        finally:
-            # Restaurer l'environnement original
-            os.environ.clear()
-            os.environ.update(original_environ)
-        
+    except subprocess.TimeoutExpired:
         return {
-            "status": "success",
-            "input_path": notebook_path,
-            "output_path": output_path,
-            "message": "Notebook exécuté avec succès"
+            "status": "error",
+            "error": "Timeout d'exécution (10 minutes) dépassé"
         }
     except Exception as e:
         return {"status": "error", "error": str(e)}
@@ -177,52 +215,72 @@ def parameterize_notebook(
     parameters: str = Field(description="Paramètres JSON pour le notebook"),
     output_path: str = Field(default="", description="Chemin de sortie (optionnel)")
 ) -> Dict[str, Any]:
-    """Exécute un notebook avec des paramètres via Papermill"""
+    """Exécute un notebook avec des paramètres via Papermill et isolation conda"""
     try:
-        import papermill as pm
-        
         # Parser les paramètres JSON
         params = json.loads(parameters)
         
         if not output_path:
             output_path = notebook_path.replace('.ipynb', '_parameterized.ipynb')
         
-        # Configurer l'environnement pour Papermill (même logique qu'execute_notebook)
-        python_path = Path(sys.executable)
-        conda_env_path = python_path.parent
-        scripts_path = conda_env_path / "Scripts"
+        # SOLUTION VALIDÉE: Isolation conda avec paramètres
+        # Construire les arguments de paramètres pour Papermill CLI
+        cmd = [
+            'conda', 'run', '-n', 'mcp-jupyter',
+            'papermill', notebook_path, output_path,
+            '--progress-bar'
+        ]
         
-        # Mettre à jour temporairement le PATH pour cette exécution
-        current_env = os.environ.copy()
-        if scripts_path.exists():
-            current_env["PATH"] = str(scripts_path) + os.pathsep + current_env.get("PATH", "")
+        # Ajouter les paramètres via -p flag
+        for key, value in params.items():
+            cmd.extend(['-p', key, str(value)])
         
-        # Utiliser un contexte temporaire avec l'environnement modifié
-        original_environ = os.environ.copy()
-        try:
-            os.environ.update(current_env)
+        # Exécution avec timeout et capture complète
+        result = subprocess.run(
+            cmd,
+            capture_output=True,
+            text=True,
+            timeout=600,  # 10 minutes max
+            cwd=os.getcwd()
+        )
+        
+        if result.returncode == 0:
+            return {
+                "status": "success",
+                "input_path": notebook_path,
+                "output_path": output_path,
+                "parameters": params,
+                "message": "Notebook paramétrisé et exécuté avec succès via isolation conda",
+                "execution_log": result.stdout,
+                "method": "conda_subprocess_isolation"
+            }
+        else:
+            return {
+                "status": "error",
+                "error": result.stderr,
+                "stdout": result.stdout,
+                "parameters": params,
+                "return_code": result.returncode,
+                "method": "conda_subprocess_isolation"
+            }
             
-            pm.execute_notebook(
-                notebook_path,
-                output_path,
-                parameters=params,
-                progress_bar=False
-            )
-            
-        finally:
-            # Restaurer l'environnement original
-            os.environ.clear()
-            os.environ.update(original_environ)
-        
+    except subprocess.TimeoutExpired:
         return {
-            "status": "success",
-            "input_path": notebook_path,
-            "output_path": output_path,
-            "parameters": params,
-            "message": "Notebook paramétrisé et exécuté avec succès"
+            "status": "error",
+            "error": "Timeout d'exécution (10 minutes) dépassé",
+            "parameters": json.loads(parameters) if parameters else {}
+        }
+    except json.JSONDecodeError as e:
+        return {
+            "status": "error",
+            "error": f"Erreur de format JSON dans les paramètres: {str(e)}"
         }
     except Exception as e:
-        return {"status": "error", "error": str(e)}
+        return {
+            "status": "error",
+            "error": str(e),
+            "parameters": json.loads(parameters) if parameters else {}
+        }
 
 
 @mcp.tool()
@@ -370,6 +428,56 @@ def validate_notebook(
         return {"status": "error", "error": f"JSON invalide: {str(e)}"}
     except Exception as e:
         return {"status": "error", "error": str(e)}
+
+
+# ANCIENNE FONCTION diagnose_environment COMMENTÉE - CAUSAIT DES TIMEOUTS
+# Elle utilisait des subprocess calls qui prenaient trop de temps
+
+@mcp.tool()
+def system_info() -> Dict[str, Any]:
+    """Informations système rapides et fiables"""
+    try:
+        # Informations de base (toujours rapides)
+        info = {
+            "status": "success",
+            "timestamp": datetime.datetime.now().isoformat(),
+            "python": {
+                "version": platform.python_version(),
+                "executable": sys.executable
+            },
+            "system": {
+                "os": os.name,
+                "platform": platform.system(),
+                "cwd": os.getcwd()
+            },
+            "environment": {
+                "conda_env": os.environ.get("CONDA_DEFAULT_ENV", "NOT_SET"),
+                "conda_prefix": os.environ.get("CONDA_PREFIX", "NOT_SET"),
+                "userprofile": os.environ.get("USERPROFILE", "NOT_SET"),
+                "total_env_vars": len(os.environ)
+            }
+        }
+        
+        # Kernels Jupyter (API directe rapide)
+        try:
+            from jupyter_client.kernelspec import KernelSpecManager
+            ksm = KernelSpecManager()
+            specs = ksm.get_all_specs()
+            info["jupyter"] = {
+                "kernels_available": list(specs.keys()),
+                "kernel_count": len(specs)
+            }
+        except Exception as e:
+            info["jupyter"] = {"error": str(e)}
+        
+        return info
+        
+    except Exception as e:
+        return {
+            "status": "error",
+            "error": str(e),
+            "timestamp": datetime.datetime.now().isoformat()
+        }
 
 
 def main():

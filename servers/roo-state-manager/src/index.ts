@@ -8,7 +8,26 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
 
 // Charger les variables d'environnement AVANT tout autre import
-dotenv.config({ path: path.join(__dirname, '..', '.env') });
+dotenv.config({ path: path.join(__dirname, '../..', '.env') });
+
+// VALIDATION STRICTE DES CONFIGURATIONS CRITIQUES AU STARTUP
+const REQUIRED_ENV_VARS = [
+    'QDRANT_URL',
+    'QDRANT_API_KEY',
+    'QDRANT_COLLECTION_NAME',
+    'OPENAI_API_KEY'
+];
+
+const missingVars = REQUIRED_ENV_VARS.filter(varName => !process.env[varName]);
+if (missingVars.length > 0) {
+    console.error('🚨 ERREUR CRITIQUE: Variables d\'environnement manquantes:');
+    missingVars.forEach(varName => console.error(`   ❌ ${varName}`));
+    console.error('📄 Vérifiez le fichier .env à la racine du projet roo-state-manager');
+    console.error('🔥 ARRÊT IMMÉDIAT DU SERVEUR POUR ÉVITER TOUTE PERTE DE TEMPS');
+    process.exit(1);
+}
+
+console.log('✅ Toutes les variables d\'environnement critiques sont présentes');
 
 import { Server } from '@modelcontextprotocol/sdk/server/index.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
@@ -116,7 +135,17 @@ class RooStateManagerServer {
                     {
                         name: 'build_skeleton_cache',
                         description: 'Force la reconstruction complète du cache de squelettes sur le disque. Opération potentiellement longue.',
-                        inputSchema: { type: 'object', properties: {}, required: [] },
+                        inputSchema: {
+                            type: 'object',
+                            properties: {
+                                force_rebuild: {
+                                    type: 'boolean',
+                                    description: 'Si true, reconstruit TOUS les squelettes (lent). Si false/omis, ne reconstruit que les squelettes obsolètes ou manquants (rapide).',
+                                    default: false
+                                }
+                            },
+                            required: []
+                        },
                     },
                     // New features being re-introduced
                     {
@@ -143,7 +172,7 @@ class RooStateManagerServer {
                                 max_results: { type: 'number', description: 'Nombre maximum de résultats à retourner.' },
                                 diagnose_index: { type: 'boolean', description: 'Mode diagnostic : retourne des informations sur l\'état de l\'indexation sémantique.' },
                             },
-                            required: ['conversation_id', 'search_query'],
+                            required: ['search_query'],
                         },
                     },
                     {
@@ -426,7 +455,7 @@ class RooStateManagerServer {
                     result = await this.handleTouchMcpSettings();
                     break;
                 case 'build_skeleton_cache':
-                    result = await this.handleBuildSkeletonCache();
+                    result = await this.handleBuildSkeletonCache(args as any);
                     break;
                 case 'get_task_tree':
                     result = this.handleGetTaskTree(args as any);
@@ -542,13 +571,82 @@ class RooStateManagerServer {
 
     async handleGetStorageStats(): Promise<CallToolResult> {
         const stats = await RooStorageDetector.getStorageStats();
-        return { content: [{ type: 'text', text: JSON.stringify(stats, null, 2) }] };
+        
+        // Agrégat des stats par workspace
+        const workspaceStats = new Map<string, {count: number, totalSize: number, lastActivity: string}>();
+        
+        Array.from(this.conversationCache.values()).forEach(skeleton => {
+            if (skeleton.metadata?.workspace) {
+                const workspace = skeleton.metadata.workspace;
+                const existing = workspaceStats.get(workspace) || {count: 0, totalSize: 0, lastActivity: ''};
+                
+                existing.count++;
+                existing.totalSize += skeleton.metadata.totalSize || 0;
+                
+                // Mettre à jour la dernière activité si plus récente
+                if (skeleton.metadata.lastActivity) {
+                    if (!existing.lastActivity || new Date(skeleton.metadata.lastActivity) > new Date(existing.lastActivity)) {
+                        existing.lastActivity = skeleton.metadata.lastActivity;
+                    }
+                }
+                
+                workspaceStats.set(workspace, existing);
+            }
+        });
+
+        // Convertir en objet pour affichage
+        const workspaceStatsObject = Object.fromEntries(
+            Array.from(workspaceStats.entries()).map(([workspace, stats]) => [workspace, stats])
+        );
+
+        const enhancedStats = {
+            ...stats,
+            workspaceBreakdown: workspaceStatsObject,
+            totalWorkspaces: workspaceStats.size
+        };
+
+        return { content: [{ type: 'text', text: JSON.stringify(enhancedStats, null, 2) }] };
     }
 
     async handleListConversations(args: { limit?: number, sortBy?: 'lastActivity' | 'messageCount' | 'totalSize', sortOrder?: 'asc' | 'desc', workspace?: string }): Promise<CallToolResult> {
-        
         interface SkeletonNode extends ConversationSkeleton {
+            firstUserMessage?: string; // Premier message utilisateur ajouté
+            isCompleted?: boolean; // Flag de terminaison
+            completionMessage?: string; // Message de terminaison
             children: SkeletonNode[];
+        }
+        
+        // Interface allégée pour list_conversations - AVEC informations essentielles
+        interface ConversationSummary {
+            taskId: string;
+            parentTaskId?: string;
+            firstUserMessage?: string; // Premier message utilisateur pour identifier la tâche
+            isCompleted?: boolean; // Flag de terminaison
+            completionMessage?: string; // Message de terminaison
+            metadata: {
+                title?: string;
+                lastActivity: string;
+                createdAt: string;
+                mode?: string;
+                messageCount: number;
+                actionCount: number;
+                totalSize: number;
+                workspace?: string;
+            };
+            children: ConversationSummary[];
+        }
+
+        // Fonction pour convertir SkeletonNode vers ConversationSummary (avec toutes les infos)
+        function toConversationSummary(node: SkeletonNode): ConversationSummary {
+            return {
+                taskId: node.taskId,
+                parentTaskId: node.parentTaskId,
+                firstUserMessage: node.firstUserMessage, // Déjà extrait dans skeletonMap
+                isCompleted: node.isCompleted, // Flag de terminaison
+                completionMessage: node.completionMessage, // Message de terminaison
+                metadata: node.metadata,
+                children: node.children.map((child: SkeletonNode) => toConversationSummary(child))
+            };
         }
 
         let allSkeletons = Array.from(this.conversationCache.values()).filter(skeleton =>
@@ -592,7 +690,58 @@ class RooStateManagerServer {
             return (args.sortOrder === 'asc') ? -comparison : comparison;
         });
         
-        const skeletonMap = new Map<string, SkeletonNode>(allSkeletons.map(s => [s.taskId, { ...s, children: [] }]));
+        // Créer les SkeletonNode SANS la propriété sequence MAIS avec toutes les infos importantes
+        const skeletonMap = new Map<string, SkeletonNode>(allSkeletons.map(s => {
+            const { sequence, ...skeletonWithoutSequence } = s as any;
+            
+            // Variables pour les informations à extraire
+            let firstUserMessage: string | undefined = undefined;
+            let isCompleted = false;
+            let completionMessage: string | undefined = undefined;
+            
+            // Extraire les informations de la sequence si elle existe
+            if (sequence && Array.isArray(sequence)) {
+                // 1. Premier message utilisateur
+                const firstUserMsg = sequence.find((msg: any) => msg.role === 'user');
+                if (firstUserMsg && firstUserMsg.content) {
+                    // Tronquer à 200 caractères pour éviter les messages trop longs
+                    firstUserMessage = firstUserMsg.content.length > 200
+                        ? firstUserMsg.content.substring(0, 200) + '...'
+                        : firstUserMsg.content;
+                }
+                
+                // 2. Détecter si la conversation est terminée (dernier message de type attempt_completion)
+                const lastAssistantMessages = sequence
+                    .filter((msg: any) => msg.role === 'assistant')
+                    .slice(-3); // Prendre les 3 derniers messages assistant pour chercher attempt_completion
+                
+                for (const msg of lastAssistantMessages.reverse()) {
+                    if (msg.content && Array.isArray(msg.content)) {
+                        for (const content of msg.content) {
+                            if (content.type === 'tool_use' && content.name === 'attempt_completion') {
+                                isCompleted = true;
+                                const result = content.input?.result;
+                                if (result) {
+                                    completionMessage = result.length > 150
+                                        ? result.substring(0, 150) + '...'
+                                        : result;
+                                }
+                                break;
+                            }
+                        }
+                        if (isCompleted) break;
+                    }
+                }
+            }
+            
+            return [s.taskId, {
+                ...skeletonWithoutSequence,
+                firstUserMessage,
+                isCompleted,
+                completionMessage,
+                children: []
+            }];
+        }));
         const forest: SkeletonNode[] = [];
 
         skeletonMap.forEach(node => {
@@ -606,9 +755,10 @@ class RooStateManagerServer {
         // Appliquer la limite à la forêt de premier niveau
         const limitedForest = args.limit ? forest.slice(0, args.limit) : forest;
         
-        // La sérialisation est correcte, le problème n'était pas là.
-        // La logique de construction de l'arbre est maintenue.
-        const result = JSON.stringify(limitedForest, null, 2);
+        // Convertir en ConversationSummary pour EXCLURE la propriété sequence qui contient tout le contenu
+        const summaries = limitedForest.map(node => toConversationSummary(node));
+        
+        const result = JSON.stringify(summaries, null, 2);
 
         return { content: [{ type: 'text', text: result }] };
     }
@@ -631,8 +781,10 @@ class RooStateManagerServer {
         });
     }
 
-    async handleBuildSkeletonCache(): Promise<CallToolResult> {
+    async handleBuildSkeletonCache(args: { force_rebuild?: boolean } = {}): Promise<CallToolResult> {
         this.conversationCache.clear();
+        const { force_rebuild = false } = args;
+        
         const locations = await RooStorageDetector.detectStorageLocations(); // This returns task paths now
         if (locations.length === 0) {
             return { content: [{ type: 'text', text: 'Storage not found. Cache not built.' }] };
@@ -640,6 +792,9 @@ class RooStateManagerServer {
 
         let skeletonsBuilt = 0;
         let skeletonsSkipped = 0;
+        const mode = force_rebuild ? "FORCE_REBUILD" : "SMART_REBUILD";
+
+        console.log(`Starting skeleton cache build in ${mode} mode...`);
 
         for (const loc of locations) {
             // loc is now the tasksPath, so we need to go up one level for the skeleton dir
@@ -656,31 +811,77 @@ class RooStateManagerServer {
                     const skeletonPath = path.join(skeletonDir, `${conversationId}.json`);
 
                     try {
+                        // Vérifier que le fichier metadata existe (indique une tâche valide)
                         const metadataStat = await fs.stat(metadataPath);
-                        try {
-                            const skeletonStat = await fs.stat(skeletonPath);
-                            if (skeletonStat.mtime >= metadataStat.mtime) {
-                                skeletonsSkipped++;
-                                continue; // Le squelette est à jour
+                        
+                        let shouldRebuild = force_rebuild;
+                        
+                        if (!force_rebuild) {
+                            // Mode intelligent : vérifier si le squelette est obsolète
+                            try {
+                                const skeletonStat = await fs.stat(skeletonPath);
+                                if (skeletonStat.mtime >= metadataStat.mtime) {
+                                    // Squelette à jour, le charger dans le cache
+                                    try {
+                                        let skeletonContent = await fs.readFile(skeletonPath, 'utf-8');
+                                        if (skeletonContent.charCodeAt(0) === 0xFEFF) {
+                                            skeletonContent = skeletonContent.slice(1);
+                                        }
+                                        const skeleton: ConversationSkeleton = JSON.parse(skeletonContent);
+                                        if (skeleton && skeleton.taskId) {
+                                            this.conversationCache.set(skeleton.taskId, skeleton);
+                                            skeletonsSkipped++;
+                                        } else {
+                                            shouldRebuild = true; // Squelette corrompu
+                                        }
+                                    } catch (loadError) {
+                                        console.error(`Corrupted skeleton file, will rebuild: ${skeletonPath}`, loadError);
+                                        shouldRebuild = true;
+                                    }
+                                } else {
+                                    shouldRebuild = true; // Squelette obsolète
+                                }
+                            } catch (statError) {
+                                shouldRebuild = true; // Squelette manquant
                             }
-                        } catch (e) {
-                            // Le squelette n'existe pas, il faut le créer
                         }
                         
-                        const skeleton = await RooStorageDetector.analyzeConversation(conversationId, taskPath);
-                        if (skeleton) {
-                            await fs.writeFile(skeletonPath, JSON.stringify(skeleton, null, 2));
-                            this.conversationCache.set(conversationId, skeleton);
-                            skeletonsBuilt++;
+                        // DEBUG: Toujours logger ce qui se passe
+                        console.log(`Processing ${conversationId}: shouldRebuild=${shouldRebuild}, force_rebuild=${force_rebuild}`);
+                        
+                        if (shouldRebuild) {
+                            console.log(`${force_rebuild ? 'Force rebuilding' : 'Rebuilding'} skeleton for task: ${conversationId}`);
+                            
+                            try {
+                                const skeleton = await RooStorageDetector.analyzeConversation(conversationId, taskPath);
+                                if (skeleton) {
+                                    await fs.writeFile(skeletonPath, JSON.stringify(skeleton, null, 2));
+                                    // BUG FIX: Utiliser skeleton.taskId et non conversationId
+                                    this.conversationCache.set(skeleton.taskId, skeleton);
+                                    skeletonsBuilt++;
+                                    console.log(`✅ Successfully built skeleton for ${skeleton.taskId} (metadata: ${skeleton.metadata ? 'yes' : 'no'})`);
+                                } else {
+                                    console.error(`❌ Failed to analyze conversation ${conversationId}: analyzeConversation returned null`);
+                                    skeletonsSkipped++;
+                                }
+                            } catch (analyzeError) {
+                                console.error(`❌ Error during analysis of ${conversationId}:`, analyzeError);
+                                skeletonsSkipped++;
+                            }
+                        } else {
+                            console.log(`⏭️ Skipping ${conversationId} (shouldRebuild=false)`);
                         }
+                        
                     } catch (error) {
-                         console.error(`Could not process task ${conversationId}:`, error);
+                        console.error(`Could not process task ${conversationId}:`, error);
+                        skeletonsSkipped++;
                     }
                 }
             }
         }
-        await this._loadSkeletonsFromDisk(); // Recharger le cache complet après la construction
-        return { content: [{ type: 'text', text: `Skeleton cache build complete. Built: ${skeletonsBuilt}, Skipped: ${skeletonsSkipped}.` }] };
+        
+        console.log(`Skeleton cache build complete. Mode: ${mode}, Cache size: ${this.conversationCache.size}`);
+        return { content: [{ type: 'text', text: `Skeleton cache build complete (${mode}). Built: ${skeletonsBuilt}, Skipped: ${skeletonsSkipped}. Cache size: ${this.conversationCache.size}` }] };
     }
 
     private async _loadSkeletonsFromDisk(): Promise<void> {
@@ -884,45 +1085,57 @@ class RooStateManagerServer {
         ].join('\n');
     }
 
-    async handleSearchTasksSemantic(args: { conversation_id: string, search_query: string, max_results?: number, diagnose_index?: boolean }): Promise<CallToolResult> {
+    async handleSearchTasksSemantic(args: { conversation_id?: string, search_query: string, max_results?: number, diagnose_index?: boolean }): Promise<CallToolResult> {
+        // Nettoyer conversation_id pour éviter les chaînes 'undefined'
+        const conversation_id = args.conversation_id === 'undefined' || !args.conversation_id ? undefined : args.conversation_id;
         const { search_query, max_results = 10, diagnose_index = false } = args;
         
         if (diagnose_index) {
             return this.handleDiagnoseSemanticIndex();
         }
         
-        try {
-            // Utiliser la vraie recherche sémantique avec Qdrant
-            const contextWindows = await searchTasks(search_query, {
-                limit: max_results,
-                contextBeforeCount: 2,
-                contextAfterCount: 1,
-                scoreThreshold: 0.7, // Seuil de pertinence minimum
-            });
-
-            const results = contextWindows.map(window => ({
-                taskId: window.taskId,
-                score: window.relevanceScore,
-                mainContent: this.truncateMessage(window.mainChunk.content, 3),
-                contextBefore: window.contextBefore.map(c => this.truncateMessage(c.content, 1)),
-                contextAfter: window.contextAfter.map(c => this.truncateMessage(c.content, 1)),
-                timestamp: window.mainChunk.timestamp,
-                chunkType: window.mainChunk.chunk_type,
-            }));
-
-            return { content: [{ type: 'text', text: JSON.stringify(results, null, 2) }] };
-
-        } catch (error) {
-            console.error('Semantic search error:', error);
-            // Fallback sur la recherche simple en cas d'erreur
-            return this.handleSearchTasksSemanticFallback(args);
-        }
+        // TEMPORAIRE: Forcer l'utilisation du fallback pour tester
+        console.log('[DEBUG] Forcing fallback mode for testing');
+        return this.handleSearchTasksSemanticFallback({ conversation_id, search_query, max_results });
     }
 
-    private async handleSearchTasksSemanticFallback(args: { conversation_id: string, search_query: string, max_results?: number }): Promise<CallToolResult> {
+    private async handleSearchTasksSemanticFallback(args: { conversation_id?: string, search_query: string, max_results?: number }): Promise<CallToolResult> {
+        console.log(`[DEBUG] Fallback called with args:`, JSON.stringify(args));
+        
         const { conversation_id, search_query, max_results = 10 } = args;
-        const skeleton = this.conversationCache.get(conversation_id);
+        console.log(`[DEBUG] Extracted conversation_id: "${conversation_id}" (type: ${typeof conversation_id})`);
 
+        // Si pas de conversation_id spécifique, rechercher dans tout le cache
+        console.log(`[DEBUG] Fallback search - conversation_id: "${conversation_id}" (type: ${typeof conversation_id})`);
+        const isUndefinedString = conversation_id === 'undefined';
+        const isEmptyOrFalsy = !conversation_id;
+        console.log(`[DEBUG] isUndefinedString: ${isUndefinedString}, isEmptyOrFalsy: ${isEmptyOrFalsy}`);
+        
+        if (!conversation_id || conversation_id === 'undefined') {
+            const query = search_query.toLowerCase();
+            const results: any[] = [];
+
+            for (const [taskId, skeleton] of this.conversationCache.entries()) {
+                if (results.length >= max_results) break;
+                
+                for (const item of skeleton.sequence) {
+                    if ('content' in item && typeof item.content === 'string' && item.content.toLowerCase().includes(query)) {
+                        results.push({
+                            taskId: taskId,
+                            score: 1.0,
+                            match: `Found in role '${item.role}': ${this.truncateMessage(item.content, 2)}`
+                        });
+                        break; // Une seule correspondance par tâche pour éviter la duplication
+                    }
+                }
+            }
+
+            return { content: [{ type: 'text', text: JSON.stringify(results, null, 2) }] };
+        }
+
+        // Recherche dans une conversation spécifique
+        console.log(`[DEBUG] Specific search - conversation_id: "${conversation_id}" (type: ${typeof conversation_id})`);
+        const skeleton = this.conversationCache.get(conversation_id);
         if (!skeleton) {
             throw new Error(`Conversation with ID '${conversation_id}' not found in cache.`);
         }
@@ -1801,6 +2014,12 @@ class RooStateManagerServer {
             }
 
             // Vérifier les variables d'environnement nécessaires
+            console.log('[DEBUG] Environment variables during diagnostic:');
+            console.log(`QDRANT_URL: ${process.env.QDRANT_URL ? 'SET' : 'NOT SET'}`);
+            console.log(`QDRANT_API_KEY: ${process.env.QDRANT_API_KEY ? 'SET' : 'NOT SET'}`);
+            console.log(`QDRANT_COLLECTION_NAME: ${process.env.QDRANT_COLLECTION_NAME ? 'SET' : 'NOT SET'}`);
+            console.log(`OPENAI_API_KEY: ${process.env.OPENAI_API_KEY ? 'SET' : 'NOT SET'}`);
+            
             const envVars = {
                 QDRANT_URL: !!process.env.QDRANT_URL,
                 QDRANT_API_KEY: !!process.env.QDRANT_API_KEY,
