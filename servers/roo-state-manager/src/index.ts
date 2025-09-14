@@ -31,6 +31,23 @@ import { TraceSummaryService } from './services/TraceSummaryService.js';
 const MAX_OUTPUT_LENGTH = 100000; // Temporairement augmenté pour documentation complète
 const SKELETON_CACHE_DIR_NAME = '.skeletons';
 
+/**
+ * Normalise un chemin pour la comparaison en gérant les différences de format
+ * entre les plateformes et les sources de données
+ */
+function normalizePath(inputPath: string): string {
+    if (!inputPath) return '';
+    
+    // Convertir les slashes en forward slashes pour une comparaison uniforme
+    const normalized = inputPath.replace(/\\/g, '/');
+    
+    // Supprimer les slashes de fin
+    const trimmed = normalized.endsWith('/') ? normalized.slice(0, -1) : normalized;
+    
+    // Convertir en minuscules pour éviter les problèmes de casse (principalement Windows)
+    return trimmed.toLowerCase();
+}
+
 class RooStateManagerServer {
     private server: Server;
     private conversationCache: Map<string, ConversationSkeleton> = new Map();
@@ -540,7 +557,21 @@ class RooStateManagerServer {
 
         // Filtrage par workspace
         if (args.workspace) {
-            allSkeletons = allSkeletons.filter(skeleton => skeleton.metadata.workspace === args.workspace);
+            const normalizedWorkspace = normalizePath(args.workspace);
+            console.log(`[DEBUG] Filtering by workspace: "${args.workspace}" -> normalized: "${normalizedWorkspace}"`);
+            
+            // Debug : afficher tous les workspaces disponibles
+            const workspaces = allSkeletons
+                .filter(s => s.metadata.workspace)
+                .map(s => `"${s.metadata.workspace!}" -> normalized: "${normalizePath(s.metadata.workspace!)}"`)
+                .slice(0, 5);
+            console.log(`[DEBUG] Available workspaces (first 5):`, workspaces);
+            
+            allSkeletons = allSkeletons.filter(skeleton =>
+                skeleton.metadata.workspace &&
+                normalizePath(skeleton.metadata.workspace) === normalizedWorkspace
+            );
+            console.log(`[DEBUG] Found ${allSkeletons.length} conversations matching workspace filter`);
         }
 
         // Tri

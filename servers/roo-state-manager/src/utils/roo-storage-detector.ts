@@ -131,7 +131,8 @@ export class RooStorageDetector {
                     path: taskPath, // Le path n'est pas dans le squelette
                     metadata: { // On ne garde que les métadonnées de base
                         title: skeleton.metadata.title,
-                        prompt: { task: '' } // Le prompt n'est plus directement dans les métadonnées de haut niveau
+                        prompt: { task: '' }, // Le prompt n'est plus directement dans les métadonnées de haut niveau
+                        workspace: skeleton.metadata.workspace
                     },
                     messageCount: skeleton.metadata.messageCount,
                     lastActivity: skeleton.metadata.lastActivity,
@@ -281,7 +282,8 @@ export class RooStorageDetector {
                    path: taskPath,
                    metadata: {
                        title: skeleton.metadata.title,
-                       prompt: { task: '' }
+                       prompt: { task: '' },
+                       workspace: skeleton.metadata.workspace
                    },
                    messageCount: skeleton.metadata.messageCount,
                    lastActivity: skeleton.metadata.lastActivity,
@@ -348,12 +350,19 @@ export class RooStorageDetector {
         // Extraire les vrais timestamps des fichiers JSON au lieu d'utiliser mtime
         const timestamps: Date[] = [];
 
-        // 1. Lire les timestamps "ts" depuis api_conversation_history.json
+        // 1. Lire les timestamps "ts" et extraire le workspace depuis api_conversation_history.json
+        let extractedWorkspace: string | undefined = undefined;
         if (apiHistoryStats) {
             try {
                 const apiContent = await fs.readFile(apiHistoryPath, 'utf-8');
                 const apiData = JSON.parse(apiContent);
                 const messages = Array.isArray(apiData) ? apiData : (apiData?.messages || []);
+                
+                // Extraire le workspace en utilisant le regex sur tout le contenu
+                const workspaceMatch = apiContent.match(/Current Workspace Directory \(([^)]+)\)/);
+                if (workspaceMatch && workspaceMatch[1]) {
+                    extractedWorkspace = workspaceMatch[1].trim();
+                }
                 
                 for (const message of messages) {
                     if (message.ts && typeof message.ts === 'number') {
@@ -416,7 +425,7 @@ export class RooStorageDetector {
                 messageCount,
                 actionCount,
                 totalSize,
-                workspace: rawMetadata.workspace,
+                workspace: extractedWorkspace || rawMetadata.workspace,
             },
         };
 
