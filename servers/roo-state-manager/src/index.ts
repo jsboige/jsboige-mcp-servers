@@ -552,7 +552,7 @@ class RooStateManagerServer {
         }
 
         let allSkeletons = Array.from(this.conversationCache.values()).filter(skeleton =>
-            skeleton.metadata && skeleton.metadata.lastActivity
+            skeleton.metadata
         );
 
         // Filtrage par workspace
