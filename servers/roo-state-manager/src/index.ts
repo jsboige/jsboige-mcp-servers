@@ -1086,17 +1086,21 @@ class RooStateManagerServer {
     }
 
     async handleSearchTasksSemantic(args: { conversation_id?: string, search_query: string, max_results?: number, diagnose_index?: boolean }): Promise<CallToolResult> {
-        // Nettoyer conversation_id pour éviter les chaînes 'undefined'
-        const conversation_id = args.conversation_id === 'undefined' || !args.conversation_id ? undefined : args.conversation_id;
-        const { search_query, max_results = 10, diagnose_index = false } = args;
+        // TEMPORAIRE: Debug info dans le résultat plutôt que dans les logs
+        const debugInfo = {
+            rawArgs: args,
+            conversationIdType: typeof args.conversation_id,
+            conversationIdValue: args.conversation_id,
+            isUndefinedString: args.conversation_id === 'undefined',
+            isEmptyOrFalsy: !args.conversation_id
+        };
         
-        if (diagnose_index) {
-            return this.handleDiagnoseSemanticIndex();
-        }
-        
-        // TEMPORAIRE: Forcer l'utilisation du fallback pour tester
-        console.log('[DEBUG] Forcing fallback mode for testing');
-        return this.handleSearchTasksSemanticFallback({ conversation_id, search_query, max_results });
+        return {
+            content: [{
+                type: 'text',
+                text: `DEBUG INFO:\n${JSON.stringify(debugInfo, null, 2)}\n\nThis is temporary debug output to understand the parameter issue.`
+            }]
+        };
     }
 
     private async handleSearchTasksSemanticFallback(args: { conversation_id?: string, search_query: string, max_results?: number }): Promise<CallToolResult> {
