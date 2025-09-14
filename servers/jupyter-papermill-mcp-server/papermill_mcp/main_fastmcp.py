@@ -14,6 +14,9 @@ import sys
 from pathlib import Path
 from typing import Dict, List, Optional, Any
 
+import papermill as pm
+from papermill.exceptions import PapermillException, PapermillExecutionError
+
 from mcp.server.fastmcp import FastMCP
 from mcp.types import Tool
 from pydantic import Field
@@ -138,76 +141,93 @@ def add_cell_to_notebook(
 
 
 @mcp.tool()
+def execute_notebook_solution_a(
+    notebook_path: str = Field(description="Chemin du notebook à exécuter"),
+    output_path: str = Field(default="", description="Chemin de sortie (optionnel)")
+) -> Dict[str, Any]:
+    """SOLUTION A - Nouveau nom pour éviter conflit avec ancienne version"""
+    
+    # Test avec nom de fonction différent pour vérifier si le serveur utilise bien ma version
+    return {
+        "status": "solution_a_test",
+        "message": "SOLUTION A - Fonction avec nouveau nom fonctionne",
+        "input_path": notebook_path,
+        "output_path": output_path if output_path else notebook_path.replace('.ipynb', '_executed.ipynb'),
+        "timestamp": datetime.datetime.now().isoformat()
+    }
+
+@mcp.tool()
 def execute_notebook(
     notebook_path: str = Field(description="Chemin du notebook à exécuter"),
     output_path: str = Field(default="", description="Chemin de sortie (optionnel)")
 ) -> Dict[str, Any]:
-    """Exécute un notebook Jupyter avec Papermill via isolation conda"""
+    """SOLUTION A - Exécute un notebook via l'API Papermill directe (remplace subprocess conda)"""
     try:
         if not output_path:
             output_path = notebook_path.replace('.ipynb', '_executed.ipynb')
         
-        # SOLUTION VALIDÉE: Isolation conda pour préserver environnement .NET
-        # Cette approche évite les conflits d'environnement Python/MCP
-        cmd = [
-            'conda', 'run', '-n', 'mcp-jupyter',
-            'papermill', notebook_path, output_path,
-            '--progress-bar'
-        ]
+        # SOLUTION A: Appel direct API Papermill (remplace subprocess conda)
+        # Avantages: Plus rapide, pas de subprocess timeout, gestion d'erreurs robuste
         
-        # DIAGNOSTIC: Capture de l'environnement pour debugging
+        # Diagnostic avant exécution
         diagnostic_info = {
-            "subprocess_cwd": os.getcwd(),
-            "subprocess_env_count": len(os.environ),
-            "key_env_vars": {
-                "USERPROFILE": os.environ.get("USERPROFILE", "NOT_SET"),
-                "APPDATA": os.environ.get("APPDATA", "NOT_SET"),
-                "LOCALAPPDATA": os.environ.get("LOCALAPPDATA", "NOT_SET"),
-                "TEMP": os.environ.get("TEMP", "NOT_SET"),
-                "TMP": os.environ.get("TMP", "NOT_SET"),
-                "PATH_length": len(os.environ.get("PATH", "")),
-                "CONDA_DEFAULT_ENV": os.environ.get("CONDA_DEFAULT_ENV", "NOT_SET"),
-                "NUGET_PACKAGES": os.environ.get("NUGET_PACKAGES", "NOT_SET")
-            }
+            "method": "papermill_direct_api",
+            "cwd": os.getcwd(),
+            "python_env": sys.executable,
+            "papermill_version": getattr(pm, '__version__', 'unknown')
         }
         
-        # Exécution avec timeout et capture complète
-        result = subprocess.run(
-            cmd,
-            capture_output=True,
-            text=True,
-            timeout=600,  # 10 minutes max
-            cwd=os.getcwd(),
-            env=None  # Hériter de l'environnement parent complet
+        # Exécution directe avec Papermill Python API
+        start_time = datetime.datetime.now()
+        
+        pm.execute_notebook(
+            input_path=notebook_path,
+            output_path=output_path,
+            parameters=None,     # Pas de paramètres pour execute_notebook simple
+            kernel_name=None,    # Auto-détection du kernel
+            progress_bar=True,
+            log_output=True,
+            cwd=None
         )
         
-        if result.returncode == 0:
-            return {
-                "status": "success",
-                "input_path": notebook_path,
-                "output_path": output_path,
-                "message": "Notebook exécuté avec succès via isolation conda",
-                "execution_log": result.stdout,
-                "method": "conda_subprocess_isolation",
-                "diagnostic": diagnostic_info
-            }
-        else:
-            return {
-                "status": "error",
-                "error": result.stderr,
-                "stdout": result.stdout,
-                "return_code": result.returncode,
-                "method": "conda_subprocess_isolation",
-                "diagnostic": diagnostic_info
-            }
-            
-    except subprocess.TimeoutExpired:
+        end_time = datetime.datetime.now()
+        execution_time = (end_time - start_time).total_seconds()
+        
+        return {
+            "status": "success",
+            "input_path": notebook_path,
+            "output_path": output_path,
+            "message": "Notebook exécuté avec succès via API Papermill directe",
+            "method": "papermill_direct_api",
+            "execution_time_seconds": execution_time,
+            "diagnostic": diagnostic_info,
+            "timestamp": end_time.isoformat()
+        }
+        
+    except PapermillExecutionError as e:
+        # Erreur spécifique d'exécution Papermill (kernel crash, erreur code, etc.)
         return {
             "status": "error",
-            "error": "Timeout d'exécution (10 minutes) dépassé"
+            "error": f"Erreur d'exécution Papermill: {str(e)}",
+            "error_type": "PapermillExecutionError",
+            "method": "papermill_direct_api"
+        }
+    except PapermillException as e:
+        # Autres erreurs Papermill (fichier non trouvé, format invalide, etc.)
+        return {
+            "status": "error",
+            "error": f"Erreur Papermill: {str(e)}",
+            "error_type": "PapermillException",
+            "method": "papermill_direct_api"
         }
     except Exception as e:
-        return {"status": "error", "error": str(e)}
+        # Erreur générique
+        return {
+            "status": "error",
+            "error": f"Erreur générique: {str(e)}",
+            "error_type": type(e).__name__,
+            "method": "papermill_direct_api"
+        }
 
 @mcp.tool()
 def parameterize_notebook(
@@ -215,7 +235,7 @@ def parameterize_notebook(
     parameters: str = Field(description="Paramètres JSON pour le notebook"),
     output_path: str = Field(default="", description="Chemin de sortie (optionnel)")
 ) -> Dict[str, Any]:
-    """Exécute un notebook avec des paramètres via Papermill et isolation conda"""
+    """Exécute un notebook avec des paramètres via Papermill API directe (SOLUTION A - Bypass Conda Subprocess)"""
     try:
         # Parser les paramètres JSON
         params = json.loads(parameters)
@@ -223,62 +243,87 @@ def parameterize_notebook(
         if not output_path:
             output_path = notebook_path.replace('.ipynb', '_parameterized.ipynb')
         
-        # SOLUTION VALIDÉE: Isolation conda avec paramètres
-        # Construire les arguments de paramètres pour Papermill CLI
-        cmd = [
-            'conda', 'run', '-n', 'mcp-jupyter',
-            'papermill', notebook_path, output_path,
-            '--progress-bar'
-        ]
+        # SOLUTION A: Appel direct API Papermill avec paramètres (remplace subprocess conda)
+        # Avantages: Plus rapide, injection native paramètres, gestion d'erreurs robuste
         
-        # Ajouter les paramètres via -p flag
-        for key, value in params.items():
-            cmd.extend(['-p', key, str(value)])
+        # Diagnostic avant exécution
+        diagnostic_info = {
+            "method": "papermill_direct_api_with_parameters",
+            "cwd": os.getcwd(),
+            "python_env": sys.executable,
+            "papermill_version": getattr(pm, '__version__', 'unknown'),
+            "parameters_count": len(params)
+        }
         
-        # Exécution avec timeout et capture complète
-        result = subprocess.run(
-            cmd,
-            capture_output=True,
-            text=True,
-            timeout=600,  # 10 minutes max
-            cwd=os.getcwd()
+        # Exécution directe avec Papermill Python API et injection paramètres
+        start_time = datetime.datetime.now()
+        
+        pm.execute_notebook(
+            input_path=notebook_path,
+            output_path=output_path,
+            parameters=params,  # Injection directe des paramètres Python
+            kernel_name=None,   # Auto-détection du kernel
+            progress_bar=True,
+            log_output=True,
+            cwd=None
         )
         
-        if result.returncode == 0:
-            return {
-                "status": "success",
-                "input_path": notebook_path,
-                "output_path": output_path,
-                "parameters": params,
-                "message": "Notebook paramétrisé et exécuté avec succès via isolation conda",
-                "execution_log": result.stdout,
-                "method": "conda_subprocess_isolation"
-            }
-        else:
-            return {
-                "status": "error",
-                "error": result.stderr,
-                "stdout": result.stdout,
-                "parameters": params,
-                "return_code": result.returncode,
-                "method": "conda_subprocess_isolation"
-            }
-            
-    except subprocess.TimeoutExpired:
+        end_time = datetime.datetime.now()
+        execution_time = (end_time - start_time).total_seconds()
+        
         return {
-            "status": "error",
-            "error": "Timeout d'exécution (10 minutes) dépassé",
-            "parameters": json.loads(parameters) if parameters else {}
+            "status": "success",
+            "input_path": notebook_path,
+            "output_path": output_path,
+            "parameters": params,
+            "message": "Notebook paramétrisé et exécuté avec succès via API Papermill directe",
+            "method": "papermill_direct_api_with_parameters",
+            "execution_time_seconds": execution_time,
+            "diagnostic": diagnostic_info,
+            "timestamp": end_time.isoformat()
         }
+        
     except json.JSONDecodeError as e:
+        # Erreur de parsing JSON des paramètres
         return {
             "status": "error",
-            "error": f"Erreur de format JSON dans les paramètres: {str(e)}"
+            "error": f"Erreur de format JSON dans les paramètres: {str(e)}",
+            "error_type": "JSONDecodeError",
+            "method": "papermill_direct_api_with_parameters"
+        }
+    except PapermillExecutionError as e:
+        # Erreur spécifique d'exécution Papermill (kernel crash, erreur code, etc.)
+        return {
+            "status": "error",
+            "error": f"Erreur d'exécution Papermill: {str(e)}",
+            "error_type": "PapermillExecutionError",
+            "method": "papermill_direct_api_with_parameters",
+            "parameters": json.loads(parameters) if parameters else {},
+            "diagnostic": diagnostic_info
+        }
+    except PapermillException as e:
+        # Autres erreurs Papermill (format notebook, paramètres invalides, etc.)
+        return {
+            "status": "error",
+            "error": f"Erreur Papermill: {str(e)}",
+            "error_type": "PapermillException",
+            "method": "papermill_direct_api_with_parameters",
+            "parameters": json.loads(parameters) if parameters else {},
+            "diagnostic": diagnostic_info
+        }
+    except FileNotFoundError as e:
+        return {
+            "status": "error",
+            "error": f"Fichier notebook non trouvé: {str(e)}",
+            "error_type": "FileNotFoundError",
+            "method": "papermill_direct_api_with_parameters"
         }
     except Exception as e:
         return {
             "status": "error",
-            "error": str(e),
+            "error": f"Erreur inattendue: {str(e)}",
+            "error_type": type(e).__name__,
+            "method": "papermill_direct_api_with_parameters",
             "parameters": json.loads(parameters) if parameters else {}
         }
 

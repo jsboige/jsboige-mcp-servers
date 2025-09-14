@@ -321,15 +321,9 @@ export class RooStorageDetector {
             fs.stat(uiMessagesPath).catch(() => null)
         ]);
 
-        // DEBUG: Logging temporaire pour diagnostiquer le problème
-        console.error(`[DEBUG] Analyzing ${taskId}:`);
-        console.error(`  - metadata: ${metadataStats ? 'EXISTS' : 'MISSING'}`);
-        console.error(`  - apiHistory: ${apiHistoryStats ? 'EXISTS' : 'MISSING'}`);
-        console.error(`  - uiMessages: ${uiMessagesStats ? 'EXISTS' : 'MISSING'}`);
-
-        // TEMPORAIREMENT: Assouplir la condition pour accepter plus de conversations
+        // Validation robuste : accepter la conversation si au moins UN fichier existe
         if (!apiHistoryStats && !uiMessagesStats && !metadataStats) {
-            console.error(`❌ [analyzeConversation] Skipping ${taskId}: NO FILES FOUND AT ALL`);
+            console.warn(`⚠️ [analyzeConversation] Skipping ${taskId}: NO FILES FOUND`);
             return null;
         }
 
@@ -443,12 +437,45 @@ export class RooStorageDetector {
         return skeleton;
 
     } catch (error) {
-        console.error(`❌ [analyzeConversation] ERROR analyzing ${taskId}:`, error);
-        console.error(`   Error details:`, {
-            name: error instanceof Error ? error.name : 'Unknown',
-            message: error instanceof Error ? error.message : String(error),
-            stack: error instanceof Error ? error.stack?.split('\n').slice(0, 3).join('\n') : 'No stack'
-        });
+        // Gestion d'erreur spécifique avec plus de contexte
+        const errorContext = {
+            taskId,
+            taskPath,
+            error: {
+                name: error instanceof Error ? error.name : 'Unknown',
+                message: error instanceof Error ? error.message : String(error),
+                code: (error as any)?.code || 'NO_CODE'
+            }
+        };
+
+        if (error instanceof Error) {
+            if (error.message.includes('ENOENT')) {
+                console.warn(`⚠️ [analyzeConversation] File not found for ${taskId}, skipping`);
+            } else if (error.message.includes('JSON')) {
+                console.warn(`⚠️ [analyzeConversation] JSON parse error for ${taskId}, creating minimal skeleton`);
+                // Retourner un squelette minimal plutôt que null
+                return {
+                    taskId,
+                    parentTaskId: undefined,
+                    sequence: [],
+                    metadata: {
+                        title: `Task ${taskId} (corrupted)`,
+                        createdAt: new Date().toISOString(),
+                        lastActivity: new Date().toISOString(),
+                        mode: 'unknown',
+                        messageCount: 0,
+                        actionCount: 0,
+                        totalSize: 0,
+                        workspace: 'unknown',
+                    },
+                };
+            } else {
+                console.error(`❌ [analyzeConversation] Unexpected error for ${taskId}:`, errorContext);
+            }
+        } else {
+            console.error(`❌ [analyzeConversation] Non-Error exception for ${taskId}:`, errorContext);
+        }
+        
         return null;
     }
   }

@@ -9,6 +9,8 @@ import { Tool } from '@modelcontextprotocol/sdk/types.js';
 import { TraceSummaryService, SummaryOptions } from '../services/TraceSummaryService.js';
 import { ExportConfigManager } from '../services/ExportConfigManager.js';
 import { ConversationSkeleton } from '../types/conversation.js';
+import fs from 'fs/promises';
+import path from 'path';
 
 /**
  * Arguments du tool generate_trace_summary
@@ -16,6 +18,8 @@ import { ConversationSkeleton } from '../types/conversation.js';
 interface GenerateTraceSummaryArgs {
     /** ID de la tâche pour laquelle générer le résumé */
     taskId: string;
+    /** Chemin de destination pour sauvegarder le fichier (optionnel) */
+    filePath?: string;
     /** Niveau de détail du résumé */
     detailLevel?: 'Full' | 'NoTools' | 'NoResults' | 'Messages' | 'Summary' | 'UserOnly';
     /** Format de sortie */
@@ -42,6 +46,10 @@ export const generateTraceSummaryTool: Tool = {
             taskId: {
                 type: "string",
                 description: "L'ID de la tâche pour laquelle générer le résumé"
+            },
+            filePath: {
+                type: "string",
+                description: "Chemin de destination pour sauvegarder le fichier (optionnel). Si non fourni, retourne le contenu."
             },
             detailLevel: {
                 type: "string",
@@ -113,17 +121,27 @@ export async function handleGenerateTraceSummary(
         // TODO: Intégrer avec le vrai ExportConfigManager du système
         const exportConfigManager = new ExportConfigManager();
         const summaryService = new TraceSummaryService(exportConfigManager);
+// Générer le résumé
+const result = await summaryService.generateSummary(conversation, summaryOptions);
 
-        // Générer le résumé
-        const result = await summaryService.generateSummary(conversation, summaryOptions);
+if (!result.success) {
+    throw new Error(`Erreur lors de la génération du résumé: ${result.error}`);
+}
 
-        if (!result.success) {
-            throw new Error(`Erreur lors de la génération du résumé: ${result.error}`);
-        }
-
-        // Préparer la réponse avec métadonnées
-        const response = [
+// Si filePath est fourni, sauvegarder le fichier
+if (args.filePath) {
+    try {
+        // Créer les répertoires parent si nécessaire
+        const dirPath = path.dirname(args.filePath);
+        await fs.mkdir(dirPath, { recursive: true });
+        
+        // Sauvegarder le contenu
+        await fs.writeFile(args.filePath, result.content, 'utf8');
+        
+        // Retourner une confirmation
+        return [
             `**Résumé généré avec succès pour la tâche ${args.taskId}**`,
+            `**Fichier sauvegardé:** ${args.filePath}`,
             ``,
             `**Statistiques:**`,
             `- Total sections: ${result.statistics.totalSections}`,
@@ -134,13 +152,35 @@ export async function handleGenerateTraceSummary(
             result.statistics.compressionRatio ? `- Ratio de compression: ${result.statistics.compressionRatio}x` : '',
             ``,
             `**Mode de génération:** ${summaryOptions.detailLevel}`,
-            `**Format:** ${summaryOptions.outputFormat}`,
-            ``,
-            `---`,
-            ``,
-            result.content
+            `**Format:** ${summaryOptions.outputFormat}`
         ].filter(line => line !== '').join('\n');
+        
+    } catch (writeError) {
+        throw new Error(`Erreur lors de l'écriture du fichier ${args.filePath}: ${writeError}`);
+    }
+}
 
+// Préparer la réponse avec métadonnées (cas où pas de filePath)
+const response = [
+    `**Résumé généré avec succès pour la tâche ${args.taskId}**`,
+    ``,
+    `**Statistiques:**`,
+    `- Total sections: ${result.statistics.totalSections}`,
+    `- Messages utilisateur: ${result.statistics.userMessages}`,
+    `- Réponses assistant: ${result.statistics.assistantMessages}`,
+    `- Résultats d'outils: ${result.statistics.toolResults}`,
+    `- Taille totale: ${Math.round(result.statistics.totalContentSize / 1024 * 10) / 10} KB`,
+    result.statistics.compressionRatio ? `- Ratio de compression: ${result.statistics.compressionRatio}x` : '',
+    ``,
+    `**Mode de génération:** ${summaryOptions.detailLevel}`,
+    `**Format:** ${summaryOptions.outputFormat}`,
+    ``,
+    `---`,
+    ``,
+    result.content
+].filter(line => line !== '').join('\n');
+
+return response;
         return response;
 
     } catch (error) {
