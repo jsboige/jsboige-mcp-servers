@@ -109,7 +109,7 @@ class RooStateManagerServer {
                     },
                     {
                        name: 'get_storage_stats',
-                       description: 'Calcule des statistiques sur le stockage (nombre de conversations, taille totale).',
+                       description: 'TEST MODIFICATION - Calcule des statistiques sur le stockage (nombre de conversations, taille totale).',
                        inputSchema: { type: 'object', properties: {}, required: [] },
                     },
                     {
@@ -467,7 +467,13 @@ class RooStateManagerServer {
                     result = this.handleViewTaskDetails(args as any);
                     break;
                 case 'search_tasks_semantic':
-                    result = await this.handleSearchTasksSemantic(args as any);
+                    // DEBUG: Test direct dans le switch
+                    result = {
+                        content: [{
+                            type: 'text',
+                            text: `SWITCH CASE DEBUG: search_tasks_semantic called with args: ${JSON.stringify(args)}`
+                        }]
+                    } as CallToolResult;
                     break;
                case 'debug_analyze_conversation':
                    result = await this.handleDebugAnalyzeConversation(args as any);
