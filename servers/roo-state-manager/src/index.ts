@@ -109,7 +109,7 @@ class RooStateManagerServer {
                     },
                     {
                        name: 'get_storage_stats',
-                       description: 'TEST MODIFICATION - Calcule des statistiques sur le stockage (nombre de conversations, taille totale).',
+                       description: 'Calcule des statistiques sur le stockage (nombre de conversations, taille totale).',
                        inputSchema: { type: 'object', properties: {}, required: [] },
                     },
                     {
@@ -467,13 +467,7 @@ class RooStateManagerServer {
                     result = this.handleViewTaskDetails(args as any);
                     break;
                 case 'search_tasks_semantic':
-                    // DEBUG: Test direct dans le switch
-                    result = {
-                        content: [{
-                            type: 'text',
-                            text: `SWITCH CASE DEBUG: search_tasks_semantic called with args: ${JSON.stringify(args)}`
-                        }]
-                    } as CallToolResult;
+                    result = await this.handleSearchTasksSemantic(args as any);
                     break;
                case 'debug_analyze_conversation':
                    result = await this.handleDebugAnalyzeConversation(args as any);
@@ -1092,21 +1086,87 @@ class RooStateManagerServer {
     }
 
     async handleSearchTasksSemantic(args: { conversation_id?: string, search_query: string, max_results?: number, diagnose_index?: boolean }): Promise<CallToolResult> {
-        // TEMPORAIRE: Debug info dans le résultat plutôt que dans les logs
-        const debugInfo = {
-            rawArgs: args,
-            conversationIdType: typeof args.conversation_id,
-            conversationIdValue: args.conversation_id,
-            isUndefinedString: args.conversation_id === 'undefined',
-            isEmptyOrFalsy: !args.conversation_id
-        };
+        const { conversation_id, search_query, max_results = 10, diagnose_index = false } = args;
         
-        return {
-            content: [{
-                type: 'text',
-                text: `DEBUG INFO:\n${JSON.stringify(debugInfo, null, 2)}\n\nThis is temporary debug output to understand the parameter issue.`
-            }]
-        };
+        // Mode diagnostic - retourne des informations sur l'état de l'indexation
+        if (diagnose_index) {
+            try {
+                const qdrant = getQdrantClient();
+                const collections = await qdrant.getCollections();
+                const collectionName = process.env.QDRANT_COLLECTION_NAME || 'roo_tasks_semantic_index';
+                const collection = collections.collections.find(c => c.name === collectionName);
+                
+                return {
+                    content: [{
+                        type: 'text',
+                        text: `Diagnostic de l'index sémantique:\n- Collection: ${collectionName}\n- Existe: ${collection ? 'Oui' : 'Non'}\n- Points: ${collection ? 'Vérification nécessaire' : 'N/A'}\n- Cache local: ${this.conversationCache.size} conversations`
+                    }]
+                };
+            } catch (error) {
+                return {
+                    content: [{
+                        type: 'text',
+                        text: `Erreur lors du diagnostic: ${error instanceof Error ? error.message : String(error)}`
+                    }]
+                };
+            }
+        }
+
+        // Tentative de recherche sémantique via Qdrant/OpenAI
+        try {
+            const qdrant = getQdrantClient();
+            const openai = getOpenAIClient();
+            
+            // Créer l'embedding de la requête
+            const embedding = await openai.embeddings.create({
+                model: 'text-embedding-3-small',
+                input: search_query
+            });
+            
+            const queryVector = embedding.data[0].embedding;
+            const collectionName = process.env.QDRANT_COLLECTION_NAME || 'roo_tasks_semantic_index';
+            
+            // Configuration de la recherche selon conversation_id
+            let filter;
+            if (conversation_id && conversation_id !== 'undefined') {
+                filter = {
+                    must: [
+                        {
+                            key: "task_id",
+                            match: {
+                                value: conversation_id
+                            }
+                        }
+                    ]
+                };
+            }
+            // Si pas de conversation_id, pas de filtre (recherche globale)
+            
+            const searchResults = await qdrant.search(collectionName, {
+                vector: queryVector,
+                limit: max_results,
+                filter: filter,
+                with_payload: true
+            });
+            
+            const results = searchResults.map(result => ({
+                taskId: result.payload?.task_id || 'unknown',
+                score: result.score || 0,
+                match: result.payload?.content || 'No content',
+                metadata: {
+                    chunk_id: result.payload?.chunk_id,
+                    message_type: result.payload?.message_type
+                }
+            }));
+            
+            return { content: [{ type: 'text', text: JSON.stringify(results, null, 2) }] };
+            
+        } catch (semanticError) {
+            console.log(`[INFO] Recherche sémantique échouée, utilisation du fallback textuel: ${semanticError instanceof Error ? semanticError.message : String(semanticError)}`);
+            
+            // Fallback vers la recherche textuelle simple
+            return await this.handleSearchTasksSemanticFallback(args);
+        }
     }
 
     private async handleSearchTasksSemanticFallback(args: { conversation_id?: string, search_query: string, max_results?: number }): Promise<CallToolResult> {
