@@ -10,6 +10,7 @@
 
 import { BaseReportingStrategy, FormattedMessage } from '../IReportingStrategy.js';
 import { ClassifiedContent, EnhancedSummaryOptions } from '../../../types/enhanced-conversation.js';
+import { MarkdownFormatterService } from '../../MarkdownFormatterService.js';
 
 export class SummaryReportingStrategy extends BaseReportingStrategy {
     readonly detailLevel = 'Summary';
@@ -27,8 +28,8 @@ export class SummaryReportingStrategy extends BaseReportingStrategy {
      * (sauf l'instruction initiale qui est gérée dans generateReport)
      */
     formatMessageContent(
-        content: ClassifiedContent, 
-        messageIndex: number, 
+        content: ClassifiedContent,
+        messageIndex: number,
         options: EnhancedSummaryOptions
     ): FormattedMessage {
         // En mode Summary, seule l'instruction initiale est affichée
@@ -36,7 +37,14 @@ export class SummaryReportingStrategy extends BaseReportingStrategy {
         
         return {
             content: '', // Pas de contenu individuel en mode Summary
+            cssClass: this.getCssClass(content),
+            shouldRender: false, // Les messages ne sont pas affichés individuellement
+            messageType: this.getMessageType(content),
+            anchor: this.generateAnchor(content, messageIndex),
             metadata: {
+                messageIndex,
+                contentLength: content.content.length,
+                hasToolDetails: false,
                 title: this.generateMessageTitle(content, messageIndex),
                 cssClass: this.getCssClass(content),
                 anchor: this.generateAnchor(content, messageIndex),
@@ -124,7 +132,10 @@ export class SummaryReportingStrategy extends BaseReportingStrategy {
         // En-tête avec CSS
         report.push('# RESUME DE TRACE D\'ORCHESTRATION ROO');
         report.push('');
-        report.push(this.generateCssStyles());
+        // Utiliser le CSS intégré du MarkdownFormatterService si Phase 4 activé
+        if (options.enhancementFlags?.enableAdvancedCSS) {
+            report.push(MarkdownFormatterService.generateCSS());
+        }
         report.push('');
         
         if (sourceFilePath) {
@@ -183,55 +194,6 @@ export class SummaryReportingStrategy extends BaseReportingStrategy {
         return this.cleanUserMessage(content);
     }
 
-    /**
-     * Génère le titre d'un message
-     */
-    private generateMessageTitle(content: ClassifiedContent, messageIndex: number): string {
-        if (content.subType === 'UserMessage') {
-            return messageIndex === 0 ? 'Instruction de tâche initiale' : `Message utilisateur #${messageIndex}`;
-        } else if (content.subType === 'ToolResult') {
-            return `Résultat outil #${messageIndex}`;
-        } else if (content.type === 'Assistant') {
-            return content.subType === 'Completion' ? 
-                `Réponse assistant #${messageIndex} (Terminaison)` :
-                `Réponse assistant #${messageIndex}`;
-        }
-        return `Message #${messageIndex}`;
-    }
-
-    /**
-     * Détermine la classe CSS selon le type de contenu
-     */
-    private getCssClass(content: ClassifiedContent): string {
-        if (content.subType === 'UserMessage') return 'user-message';
-        if (content.subType === 'ToolResult') return 'tool-message';
-        if (content.subType === 'Completion') return 'completion-message';
-        if (content.type === 'Assistant') return 'assistant-message';
-        return 'message';
-    }
-
-    /**
-     * Génère l'ancre pour un message
-     */
-    private generateAnchor(content: ClassifiedContent, messageIndex: number): string {
-        if (content.subType === 'UserMessage') {
-            return messageIndex === 0 ? 'instruction-de-tache-initiale' : `message-utilisateur-${messageIndex}`;
-        } else if (content.subType === 'ToolResult') {
-            return `outil-${messageIndex}`;
-        } else if (content.type === 'Assistant') {
-            return `reponse-assistant-${messageIndex}`;
-        }
-        return `message-${messageIndex}`;
-    }
-
-    /**
-     * Détermine le type de message pour les métadonnées
-     */
-    private getMessageType(content: ClassifiedContent): 'user' | 'assistant' | 'tool' | 'completion' {
-        if (content.subType === 'UserMessage') return 'user';
-        if (content.subType === 'ToolResult') return 'tool';
-        if (content.subType === 'Completion') return 'completion';
-        if (content.type === 'Assistant') return 'assistant';
-        return 'user';
-    }
+    // Les méthodes generateMessageTitle, getCssClass, generateAnchor et getMessageType
+    // sont maintenant héritées de BaseReportingStrategy
 }

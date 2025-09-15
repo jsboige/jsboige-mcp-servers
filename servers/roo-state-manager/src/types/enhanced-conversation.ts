@@ -115,6 +115,77 @@ export interface FilteringStatistics {
 }
 
 /**
+ * Configuration de troncature intelligente Phase 5
+ */
+export interface TruncationOptions {
+    enableTruncation: boolean;
+    maxParameterLength: number;
+    maxResultLength: number;
+    preserveStructure: boolean;
+    showPreview: boolean;
+    truncationThreshold: number;
+    previewLines: number;
+    expandButtonText: string;
+    collapseButtonText: string;
+}
+
+/**
+ * Configuration de la table des matières interactive Phase 5
+ */
+export interface InteractiveToCSOptions {
+    enableInteractiveToC: boolean;
+    showMessageCounters: boolean;
+    showProgressBars: boolean;
+    enableHierarchicalStructure: boolean;
+    enableSmoothScroll: boolean;
+    enableActiveHighlighting: boolean;
+    enableSearchFilter: boolean;
+    enableCopyToClipboard: boolean;
+    enableCollapsibleSections: boolean;
+    sectionIcons: boolean;
+}
+
+/**
+ * Compteurs visuels pour la table des matières Phase 5
+ */
+export interface MessageCounters {
+    User: number;
+    Assistant: number;
+    UserMessage: number;
+    ToolResult: number;
+    ToolCall: number;
+    Completion: number;
+    Thinking: number;
+    total: number;
+}
+
+/**
+ * Métadonnées d'ancre pour navigation Phase 5
+ */
+export interface NavigationAnchor {
+    id: string;
+    title: string;
+    messageType: string;
+    messageIndex: number;
+    hasToolContent: boolean;
+    isTruncated: boolean;
+    estimatedLineNumber: number;
+}
+
+/**
+ * Contenu tronqué avec metadata Phase 5
+ */
+export interface TruncatedContent {
+    content: string;
+    wasTruncated: boolean;
+    originalLength: number;
+    truncatedLength: number;
+    truncationReason: 'parameter_length' | 'result_size' | 'structure_preservation' | 'manual';
+    expandElementId: string;
+    previewContent?: string;
+}
+
+/**
  * Options étendues pour la génération de résumés
  */
 export interface EnhancedSummaryOptions {
@@ -127,16 +198,30 @@ export interface EnhancedSummaryOptions {
     generateToc?: boolean;
     includeMetadata?: boolean;
     includeTimestamps?: boolean;
+    
+    // Phase 5: Nouvelles options avancées
+    truncationOptions?: TruncationOptions;
+    interactiveToCSOptions?: InteractiveToCSOptions;
+    
     enhancementFlags?: {
         useEnhancedClassification?: boolean;
         useStrategyFiltering?: boolean;
         useSmartCleaning?: boolean;
         useAdvancedRendering?: boolean;
         preserveLegacyBehavior?: boolean;
+        
         // Phase 4: CSS Avancé et Couleurs Différenciées
         enableAdvancedCSS?: boolean;
         enableResponsiveDesign?: boolean;
         enableSyntaxHighlighting?: boolean;
         enableAnimations?: boolean;
+        
+        // Phase 5: Nouvelles fonctionnalités interactives
+        enableInteractiveToC?: boolean;
+        enableParameterTruncation?: boolean;
+        enableJavaScriptInteractions?: boolean;
+        enableAdvancedNavigation?: boolean;
+        enableCopyToClipboard?: boolean;
+        enableSearchAndFilter?: boolean;
     };
 }

@@ -26,14 +26,41 @@ export class MessagesReportingStrategy extends BaseReportingStrategy {
      * Formate le contenu d'un message en masquant les paramètres d'outils
      */
     formatMessageContent(
-        content: ClassifiedContent, 
-        messageIndex: number, 
+        content: ClassifiedContent,
+        messageIndex: number,
         options: EnhancedSummaryOptions
     ): FormattedMessage {
         const anchor = this.generateAnchor(content, messageIndex);
         const title = this.generateMessageTitle(content, messageIndex);
         const cssClass = this.getCssClass(content);
         
+        // Essayer le formatage avancé Phase 4 si activé
+        const advancedFormatted = this.formatWithAdvancedFormatterIfEnabled(
+            content, messageIndex, options
+        );
+        
+        if (advancedFormatted) {
+            return {
+                content: advancedFormatted,
+                cssClass: this.getCssClass(content),
+                shouldRender: true,
+                messageType: this.getMessageType(content),
+                anchor,
+                metadata: {
+                    messageIndex,
+                    contentLength: content.content.length,
+                    hasToolDetails: false,
+                    title,
+                    cssClass,
+                    anchor,
+                    shouldDisplay: true,
+                    messageType: this.getMessageType(content)
+                },
+                processingNotes: [`Mode Messages: paramètres outils masqués`, 'Phase 4 CSS avancé activé']
+            };
+        }
+        
+        // Formatage classique (fallback)
         let formattedContent: string[] = [];
         
         // En-tête du message avec ancre
@@ -66,7 +93,14 @@ export class MessagesReportingStrategy extends BaseReportingStrategy {
         
         return {
             content: formattedContent.join('\n'),
+            cssClass,
+            shouldRender: true,
+            messageType: this.getMessageType(content),
+            anchor,
             metadata: {
+                messageIndex,
+                contentLength: content.content.length,
+                hasToolDetails: false,
                 title,
                 cssClass,
                 anchor,
@@ -202,55 +236,6 @@ export class MessagesReportingStrategy extends BaseReportingStrategy {
         return 'résultat';
     }
 
-    /**
-     * Génère le titre d'un message
-     */
-    private generateMessageTitle(content: ClassifiedContent, messageIndex: number): string {
-        if (content.subType === 'UserMessage') {
-            return messageIndex === 0 ? 'INSTRUCTION DE TACHE INITIALE' : `MESSAGE UTILISATEUR #${messageIndex}`;
-        } else if (content.subType === 'ToolResult') {
-            return `RESULTAT OUTIL #${messageIndex}`;
-        } else if (content.type === 'Assistant') {
-            return content.subType === 'Completion' ? 
-                `REPONSE ASSISTANT #${messageIndex} (Terminaison)` :
-                `REPONSE ASSISTANT #${messageIndex}`;
-        }
-        return `MESSAGE #${messageIndex}`;
-    }
-
-    /**
-     * Détermine la classe CSS selon le type de contenu
-     */
-    private getCssClass(content: ClassifiedContent): string {
-        if (content.subType === 'UserMessage') return 'user-message';
-        if (content.subType === 'ToolResult') return 'tool-message';
-        if (content.subType === 'Completion') return 'completion-message';
-        if (content.type === 'Assistant') return 'assistant-message';
-        return 'message';
-    }
-
-    /**
-     * Génère l'ancre pour un message
-     */
-    private generateAnchor(content: ClassifiedContent, messageIndex: number): string {
-        if (content.subType === 'UserMessage') {
-            return messageIndex === 0 ? 'instruction-de-tache-initiale' : `message-utilisateur-${messageIndex}`;
-        } else if (content.subType === 'ToolResult') {
-            return `outil-${messageIndex}`;
-        } else if (content.type === 'Assistant') {
-            return `reponse-assistant-${messageIndex}`;
-        }
-        return `message-${messageIndex}`;
-    }
-
-    /**
-     * Détermine le type de message pour les métadonnées
-     */
-    private getMessageType(content: ClassifiedContent): 'user' | 'assistant' | 'tool' | 'completion' {
-        if (content.subType === 'UserMessage') return 'user';
-        if (content.subType === 'ToolResult') return 'tool';
-        if (content.subType === 'Completion') return 'completion';
-        if (content.type === 'Assistant') return 'assistant';
-        return 'user';
-    }
+    // Les méthodes generateMessageTitle, getCssClass, generateAnchor et getMessageType
+    // sont maintenant héritées de BaseReportingStrategy
 }

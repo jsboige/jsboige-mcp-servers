@@ -35,7 +35,13 @@ export class UserOnlyReportingStrategy extends BaseReportingStrategy {
         if (content.type !== 'User' || content.subType !== 'UserMessage') {
             return {
                 content: '',
+                cssClass: 'hidden-message',
+                shouldRender: false,
+                messageType: 'user',
                 metadata: {
+                    messageIndex,
+                    contentLength: content.content.length,
+                    hasToolDetails: false,
                     shouldDisplay: false,
                     messageType: 'user'
                 }
@@ -44,6 +50,33 @@ export class UserOnlyReportingStrategy extends BaseReportingStrategy {
 
         const messageContent = content.content || '';
 
+        // Essayer le formatage avancé Phase 4 si activé
+        const advancedFormatted = this.formatWithAdvancedFormatterIfEnabled(
+            content, messageIndex, options
+        );
+        
+        if (advancedFormatted) {
+            return {
+                content: advancedFormatted,
+                cssClass: this.getCssClass(content),
+                shouldRender: true,
+                messageType: this.getMessageType(content),
+                anchor: this.generateAnchor(content, messageIndex),
+                metadata: {
+                    messageIndex,
+                    contentLength: content.content.length,
+                    hasToolDetails: false,
+                    title: this.generateMessageTitle(content, messageIndex),
+                    cssClass: this.getCssClass(content),
+                    anchor: this.generateAnchor(content, messageIndex),
+                    shouldDisplay: true,
+                    messageType: this.getMessageType(content)
+                },
+                processingNotes: [`Mode UserOnly: messages utilisateur uniquement`, 'Phase 4 CSS avancé activé']
+            };
+        }
+
+        // Formatage classique (fallback)
         // En mode UserOnly, on affiche les messages utilisateur complets
         // mais on peut appliquer une troncature si nécessaire
         let processedContent = messageContent;
@@ -70,7 +103,14 @@ export class UserOnlyReportingStrategy extends BaseReportingStrategy {
 
         return {
             content: formattedContent,
+            cssClass: 'user-message',
+            shouldRender: true,
+            messageType: 'user',
+            anchor,
             metadata: {
+                messageIndex,
+                contentLength: content.content.length,
+                hasToolDetails: false,
                 title,
                 anchor,
                 shouldDisplay: true,
@@ -145,7 +185,7 @@ export class UserOnlyReportingStrategy extends BaseReportingStrategy {
 
         userMessages.forEach((content, index) => {
             const formatted = this.formatMessageContent(content, index, options);
-            if (formatted.metadata.shouldDisplay) {
+            if (formatted.metadata?.shouldDisplay) {
                 sections.push(formatted.content);
             }
         });

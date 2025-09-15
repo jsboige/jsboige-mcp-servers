@@ -12,7 +12,13 @@
  * - Erreurs/warnings : Rouge (#dc2626)
  */
 
-import { ClassifiedContent, EnhancedSummaryOptions } from '../types/enhanced-conversation.js';
+import {
+    ClassifiedContent,
+    EnhancedSummaryOptions,
+    TruncationOptions,
+    InteractiveToCSOptions,
+    MessageCounters
+} from '../types/enhanced-conversation.js';
 
 export interface AdvancedFormattingOptions {
     enableAdvancedCSS: boolean;
@@ -585,6 +591,294 @@ ${options.compactMode ? `
     outline-offset: 2px;
 }
 
+/* ===========================
+   PHASE 5: CSS INTERACTIF
+   =========================== */
+
+/* Table des matières */
+.toc-container {
+    background: linear-gradient(135deg, #f8fafc, #ffffff);
+    border: 2px solid var(--color-metadata);
+    border-radius: var(--radius-lg);
+    padding: 24px;
+    margin: 32px 0;
+    box-shadow: var(--shadow-medium);
+}
+
+.toc-title {
+    color: var(--color-primary);
+    margin: 0 0 20px 0;
+    font-size: 1.5rem;
+    font-weight: 700;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+}
+
+.toc-search {
+    margin-bottom: 20px;
+}
+
+.toc-search input {
+    width: 100%;
+    padding: 12px;
+    border: 2px solid var(--color-metadata);
+    border-radius: var(--radius-md);
+    font-size: 1rem;
+    transition: all var(--transition-base);
+}
+
+.toc-search input:focus {
+    outline: none;
+    border-color: var(--color-user);
+    box-shadow: 0 0 0 3px rgba(37, 99, 235, 0.1);
+}
+
+.toc-stats-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+    gap: 16px;
+    margin-bottom: 24px;
+}
+
+.toc-stat-card {
+    background: white;
+    border-radius: var(--radius-md);
+    padding: 16px;
+    box-shadow: var(--shadow-subtle);
+    transition: all var(--transition-base);
+}
+
+.toc-stat-card:hover {
+    transform: translateY(-2px);
+    box-shadow: var(--shadow-medium);
+}
+
+.toc-stat-header {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin-bottom: 8px;
+}
+
+.toc-icon {
+    font-size: 1.2rem;
+}
+
+.toc-label {
+    font-weight: 600;
+    color: var(--color-secondary);
+    font-size: 0.875rem;
+}
+
+.toc-count {
+    font-size: 2rem;
+    font-weight: 700;
+    color: var(--color-primary);
+    margin-bottom: 8px;
+}
+
+.toc-progress-bar {
+    width: 100%;
+    height: 4px;
+    background: #e5e7eb;
+    border-radius: 2px;
+    overflow: hidden;
+}
+
+.toc-progress-fill {
+    height: 100%;
+    transition: width var(--transition-base);
+}
+
+.toc-nav-title {
+    color: var(--color-secondary);
+    margin: 0 0 16px 0;
+    font-size: 1.125rem;
+    font-weight: 600;
+}
+
+.toc-links {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    max-height: 300px;
+    overflow-y: auto;
+}
+
+.toc-link-item {
+    padding: 8px 0;
+    border-bottom: 1px solid #f3f4f6;
+}
+
+.toc-link-item:last-child {
+    border-bottom: none;
+}
+
+.toc-link {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    text-decoration: none;
+    transition: all var(--transition-base);
+    padding: 8px 12px;
+    border-radius: var(--radius-md);
+}
+
+.toc-link:hover {
+    background: rgba(37, 99, 235, 0.1);
+    transform: translateX(4px);
+}
+
+.toc-link.active {
+    background: rgba(37, 99, 235, 0.15);
+    font-weight: 600;
+}
+
+.toc-link-icon {
+    font-size: 1rem;
+}
+
+.toc-link-text {
+    flex: 1;
+    font-weight: 500;
+}
+
+.toc-timestamp {
+    font-size: 0.75rem;
+    color: var(--color-metadata);
+    font-family: monospace;
+}
+
+/* Contenu tronqué */
+.truncation-container {
+    position: relative;
+}
+
+.truncated-content,
+.full-content {
+    transition: all var(--transition-base);
+}
+
+.hidden {
+    display: none;
+}
+
+.expand-button,
+.collapse-button {
+    background: var(--color-user);
+    color: white;
+    border: none;
+    padding: 8px 16px;
+    border-radius: var(--radius-md);
+    font-size: 0.875rem;
+    cursor: pointer;
+    transition: all var(--transition-base);
+    margin-top: 8px;
+}
+
+.expand-button:hover,
+.collapse-button:hover {
+    background: #1d4ed8;
+    transform: translateY(-1px);
+}
+
+/* Contenu expandable */
+.expandable-container {
+    border: 2px solid var(--color-metadata);
+    border-radius: var(--radius-md);
+    margin: 16px 0;
+}
+
+.content-summary {
+    padding: 16px;
+    background: var(--bg-metadata);
+    border-bottom: 1px solid var(--color-metadata);
+}
+
+.expand-toggle {
+    width: 100%;
+    padding: 12px;
+    background: none;
+    border: none;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    cursor: pointer;
+    transition: all var(--transition-base);
+}
+
+.expand-toggle:hover {
+    background: rgba(107, 114, 128, 0.1);
+}
+
+.expand-icon {
+    font-size: 0.875rem;
+    transition: transform var(--transition-base);
+}
+
+.expand-text {
+    font-weight: 500;
+}
+
+.expandable-content {
+    padding: 16px;
+    border-top: 1px solid var(--color-metadata);
+    animation: fadeIn 0.3s ease-out;
+}
+
+/* Copy button */
+.copy-button {
+    background: var(--color-metadata);
+    color: white;
+    border: none;
+    padding: 4px 8px;
+    border-radius: var(--radius-sm);
+    font-size: 0.75rem;
+    cursor: pointer;
+    transition: all var(--transition-base);
+    z-index: 10;
+}
+
+.copy-button:hover {
+    background: var(--color-secondary);
+}
+
+/* Highlight flash effect */
+.highlight-flash {
+    animation: highlightFlash 2s ease-out;
+}
+
+@keyframes highlightFlash {
+    0% { background-color: rgba(37, 99, 235, 0.3); }
+    100% { background-color: transparent; }
+}
+
+/* Ancres de navigation */
+[id^="message-"] {
+    scroll-margin-top: 20px;
+}
+
+/* Responsive pour les fonctionnalités Phase 5 */
+@media (max-width: 768px) {
+    .toc-stats-grid {
+        grid-template-columns: repeat(2, 1fr);
+        gap: 12px;
+    }
+    
+    .toc-container {
+        padding: 16px;
+    }
+    
+    .toc-links {
+        max-height: 200px;
+    }
+    
+    .toc-link {
+        font-size: 0.875rem;
+    }
+}
+
 </style>`;
     }
 
@@ -754,5 +1048,772 @@ ${options.compactMode ? `
         ${rows}
     </tbody>
 </table>`;
+    }
+
+    // ===========================
+    // PHASE 5: FONCTIONNALITÉS INTERACTIVES
+    // ===========================
+
+    /**
+     * Génère une table des matières interactive avec compteurs visuels
+     */
+    static generateTableOfContents(messages: ClassifiedContent[], options?: InteractiveToCSOptions): string {
+        const counters = this.generateMessageCounters(messages);
+        const enableCollapsible = options?.enableCollapsibleSections ?? true;
+        const showProgressBars = options?.showProgressBars ?? true;
+        const enableSearch = options?.enableSearchFilter ?? false;
+
+        let tocContent = `
+<div class="toc-container" id="table-of-contents">
+    <h2 class="toc-title">📋 Table des Matières</h2>
+    
+    ${enableSearch ? `
+    <div class="toc-search">
+        <input type="text" id="toc-search-input" placeholder="Rechercher dans la conversation..." />
+    </div>
+    ` : ''}
+    
+    <div class="toc-summary">
+        <div class="toc-stats-grid">`;
+
+        // Compteurs visuels
+        Object.entries(counters).forEach(([type, count]) => {
+            const icon = this.getTypeIcon(type);
+            const color = this.getTypeColor(type);
+            const percentage = (count / messages.length) * 100;
+            
+            tocContent += `
+            <div class="toc-stat-card" style="border-left: 4px solid ${color}">
+                <div class="toc-stat-header">
+                    <span class="toc-icon">${icon}</span>
+                    <span class="toc-label">${this.getTypeLabel(type)}</span>
+                </div>
+                <div class="toc-count">${count}</div>
+                ${showProgressBars ? `
+                <div class="toc-progress-bar">
+                    <div class="toc-progress-fill" style="width: ${percentage}%; background: ${color}"></div>
+                </div>
+                ` : ''}
+            </div>`;
+        });
+
+        tocContent += `
+        </div>
+    </div>
+    
+    <div class="toc-navigation">
+        <h3 class="toc-nav-title">Navigation</h3>
+        <div class="toc-links">`;
+
+        // Génération des liens de navigation
+        messages.forEach((message, index) => {
+            const anchor = this.generateNavigationAnchors(index, message.type);
+            const icon = this.getTypeIcon(message.type);
+            const color = this.getTypeColor(message.type);
+            const timestamp = ''; // Timestamp will be handled by the calling code if needed
+            
+            tocContent += `
+            <div class="toc-link-item">
+                <a href="#${anchor}" class="toc-link" data-type="${message.type}" style="color: ${color}">
+                    <span class="toc-link-icon">${icon}</span>
+                    <span class="toc-link-text">#${index + 1} ${this.getTypeLabel(message.type)}</span>
+                    ${timestamp ? `<span class="toc-timestamp">${timestamp}</span>` : ''}
+                </a>
+            </div>`;
+        });
+
+        tocContent += `
+        </div>
+    </div>
+</div>`;
+
+        return tocContent;
+    }
+
+    /**
+     * Génère les ancres de navigation pour un message
+     */
+    static generateNavigationAnchors(messageIndex: number, messageType: string): string {
+        return `message-${messageIndex}-${messageType.toLowerCase()}`;
+    }
+
+    /**
+     * Calcule les compteurs de messages par type
+     */
+    static generateMessageCounters(messages: ClassifiedContent[]): MessageCounters {
+        const counters: MessageCounters = {
+            User: 0,
+            Assistant: 0,
+            UserMessage: 0,
+            ToolResult: 0,
+            ToolCall: 0,
+            Completion: 0,
+            Thinking: 0,
+            total: messages.length
+        };
+
+        messages.forEach(message => {
+            // Compteur par type principal
+            switch (message.type) {
+                case 'User':
+                    counters.User++;
+                    break;
+                case 'Assistant':
+                    counters.Assistant++;
+                    break;
+            }
+            
+            // Compteur par sous-type
+            switch (message.subType) {
+                case 'UserMessage':
+                    counters.UserMessage++;
+                    break;
+                case 'ToolResult':
+                    counters.ToolResult++;
+                    break;
+                case 'ToolCall':
+                    counters.ToolCall++;
+                    break;
+                case 'Completion':
+                    counters.Completion++;
+                    break;
+                case 'Thinking':
+                    counters.Thinking++;
+                    break;
+            }
+        });
+
+        return counters;
+    }
+
+    /**
+     * Troncature intelligente des paramètres d'outils
+     */
+    static truncateToolParameters(params: any, options?: TruncationOptions): { content: string, wasTruncated: boolean } {
+        const maxLength = options?.maxParameterLength ?? 500;
+        const preserveStructure = options?.preserveStructure ?? true;
+        const showPreview = options?.showPreview ?? true;
+        
+        if (!params) {
+            return { content: 'N/A', wasTruncated: false };
+        }
+
+        let content = typeof params === 'string' ? params : JSON.stringify(params, null, 2);
+        
+        if (content.length <= maxLength) {
+            return { content, wasTruncated: false };
+        }
+
+        if (preserveStructure && typeof params === 'object') {
+            // Troncature intelligente pour JSON
+            const truncatedParams = this.truncateObjectIntelligently(params, maxLength);
+            content = JSON.stringify(truncatedParams, null, 2);
+        } else {
+            // Troncature simple
+            content = content.substring(0, maxLength) + '...';
+        }
+
+        return { content, wasTruncated: true };
+    }
+
+    /**
+     * Troncature intelligente des résultats d'outils
+     */
+    static truncateToolResult(result: any, options?: TruncationOptions): { content: string, wasTruncated: boolean } {
+        const maxLength = options?.maxResultLength ?? 1000;
+        
+        if (!result) {
+            return { content: 'N/A', wasTruncated: false };
+        }
+
+        let content = typeof result === 'string' ? result : JSON.stringify(result, null, 2);
+        
+        if (content.length <= maxLength) {
+            return { content, wasTruncated: false };
+        }
+
+        // Préservation des premières et dernières lignes pour le contexte
+        const lines = content.split('\n');
+        if (lines.length > 10) {
+            const firstLines = lines.slice(0, 5).join('\n');
+            const lastLines = lines.slice(-3).join('\n');
+            content = `${firstLines}\n\n[... ${lines.length - 8} lignes tronquées ...]\n\n${lastLines}`;
+        } else {
+            content = content.substring(0, maxLength) + '...';
+        }
+
+        return { content, wasTruncated: true };
+    }
+
+    /**
+     * Génère un bouton toggle pour le contenu tronqué
+     */
+    static generateTruncationToggle(fullContent: string, truncatedContent: string, elementId: string): string {
+        return `
+<div class="truncation-container">
+    <div class="truncated-content" id="truncated-${elementId}">
+        <pre><code>${truncatedContent}</code></pre>
+        <button class="expand-button" onclick="toggleTruncation('${elementId}')" data-action="expand">
+            📖 Voir le contenu complet
+        </button>
+    </div>
+    <div class="full-content hidden" id="full-${elementId}">
+        <pre><code>${fullContent}</code></pre>
+        <button class="collapse-button" onclick="toggleTruncation('${elementId}')" data-action="collapse">
+            📚 Réduire
+        </button>
+    </div>
+</div>`;
+    }
+
+    /**
+     * Génère le contenu expandable avec preview
+     */
+    static generateExpandableContent(content: string, summary: string, elementId: string): string {
+        return `
+<div class="expandable-container">
+    <div class="content-summary">${summary}</div>
+    <button class="expand-toggle" onclick="toggleExpandable('${elementId}')">
+        <span class="expand-icon">▶</span>
+        <span class="expand-text">Développer</span>
+    </button>
+    <div class="expandable-content hidden" id="expandable-${elementId}">
+        ${content}
+    </div>
+</div>`;
+    }
+
+    /**
+     * Génère le script JavaScript interactif Phase 5
+     */
+    static generateInteractiveScript(): string {
+        return `
+<script>
+// ===========================
+// PHASE 5: JAVASCRIPT INTERACTIF
+// ===========================
+
+// Smooth scroll vers les sections
+function smoothScrollToSection(targetId) {
+    const element = document.getElementById(targetId);
+    if (element) {
+        element.scrollIntoView({
+            behavior: 'smooth',
+            block: 'start'
+        });
+        
+        // Highlight temporaire
+        element.classList.add('highlight-flash');
+        setTimeout(() => element.classList.remove('highlight-flash'), 2000);
+    }
+}
+
+// Toggle pour contenu tronqué
+function toggleTruncation(elementId) {
+    const truncated = document.getElementById('truncated-' + elementId);
+    const full = document.getElementById('full-' + elementId);
+    
+    if (truncated && full) {
+        truncated.classList.toggle('hidden');
+        full.classList.toggle('hidden');
+    }
+}
+
+// Toggle pour contenu expandable
+function toggleExpandable(elementId) {
+    const content = document.getElementById('expandable-' + elementId);
+    const button = content?.previousElementSibling;
+    const icon = button?.querySelector('.expand-icon');
+    const text = button?.querySelector('.expand-text');
+    
+    if (content) {
+        content.classList.toggle('hidden');
+        if (icon) {
+            icon.textContent = content.classList.contains('hidden') ? '▶' : '▼';
+        }
+        if (text) {
+            text.textContent = content.classList.contains('hidden') ? 'Développer' : 'Réduire';
+        }
+    }
+}
+
+// Copy to clipboard pour les blocs de code
+function copyToClipboard(text, buttonId) {
+    navigator.clipboard.writeText(text).then(() => {
+        const button = document.getElementById(buttonId);
+        if (button) {
+            const originalText = button.textContent;
+            button.textContent = '✅ Copié !';
+            button.style.background = '#10b981';
+            
+            setTimeout(() => {
+                button.textContent = originalText;
+                button.style.background = '';
+            }, 2000);
+        }
+    });
+}
+
+// Recherche dans la table des matières
+function filterTableOfContents() {
+    const searchInput = document.getElementById('toc-search-input');
+    const tocLinks = document.querySelectorAll('.toc-link-item');
+    
+    if (!searchInput || !tocLinks) return;
+    
+    const query = searchInput.value.toLowerCase();
+    
+    tocLinks.forEach(item => {
+        const linkText = item.textContent.toLowerCase();
+        if (linkText.includes(query)) {
+            item.style.display = '';
+        } else {
+            item.style.display = 'none';
+        }
+    });
+}
+
+// Initialisation au chargement
+document.addEventListener('DOMContentLoaded', function() {
+    // Setup search filter
+    const searchInput = document.getElementById('toc-search-input');
+    if (searchInput) {
+        searchInput.addEventListener('input', filterTableOfContents);
+    }
+    
+    // Setup smooth scroll pour tous les liens ToC
+    document.querySelectorAll('.toc-link').forEach(link => {
+        link.addEventListener('click', function(e) {
+            e.preventDefault();
+            const targetId = this.getAttribute('href').substring(1);
+            smoothScrollToSection(targetId);
+        });
+    });
+    
+    // Setup copy buttons pour les blocs de code
+    document.querySelectorAll('pre code').forEach((block, index) => {
+        const copyButton = document.createElement('button');
+        copyButton.className = 'copy-button';
+        copyButton.id = 'copy-btn-' + index;
+        copyButton.innerHTML = '📋 Copier';
+        copyButton.onclick = () => copyToClipboard(block.textContent, copyButton.id);
+        
+        block.parentNode.style.position = 'relative';
+        copyButton.style.position = 'absolute';
+        copyButton.style.top = '8px';
+        copyButton.style.right = '8px';
+        
+        block.parentNode.appendChild(copyButton);
+    });
+});
+
+// Utilitaires pour le highlighting actif des liens
+function updateActiveNavigation() {
+    const sections = document.querySelectorAll('[id^="message-"]');
+    const navLinks = document.querySelectorAll('.toc-link');
+    
+    let currentActiveSection = null;
+    const scrollPosition = window.scrollY + window.innerHeight / 3;
+    
+    sections.forEach(section => {
+        const sectionTop = section.offsetTop;
+        const sectionBottom = sectionTop + section.offsetHeight;
+        
+        if (scrollPosition >= sectionTop && scrollPosition < sectionBottom) {
+            currentActiveSection = section;
+        }
+    });
+    
+    // Mise à jour des liens actifs
+    navLinks.forEach(link => {
+        link.classList.remove('active');
+        if (currentActiveSection) {
+            const targetId = currentActiveSection.id;
+            if (link.getAttribute('href') === '#' + targetId) {
+                link.classList.add('active');
+            }
+        }
+    });
+}
+
+// Scroll listener pour la navigation active
+let scrollTimeout;
+window.addEventListener('scroll', () => {
+    clearTimeout(scrollTimeout);
+    scrollTimeout = setTimeout(updateActiveNavigation, 100);
+});
+
+</script>`;
+    }
+
+    // ===========================
+    // MÉTHODES UTILITAIRES PHASE 5
+    // ===========================
+
+    /**
+     * Retourne l'icône appropriée pour un type de message
+     */
+    private static getTypeIcon(type: string): string {
+        switch (type) {
+            case 'user': return '🔵';
+            case 'assistant': return '🟢';
+            case 'tool_call': return '🟠';
+            case 'tool_result': return '🟣';
+            case 'metadata': return '⚫';
+            case 'error': return '🔴';
+            default: return '⚪';
+        }
+    }
+
+    /**
+     * Retourne la couleur appropriée pour un type de message
+     */
+    private static getTypeColor(type: string): string {
+        switch (type) {
+            case 'user': return this.CSS_THEME_COLORS.userMessage;
+            case 'assistant': return this.CSS_THEME_COLORS.assistantMessage;
+            case 'tool_call': return this.CSS_THEME_COLORS.toolCall;
+            case 'tool_result': return this.CSS_THEME_COLORS.toolResult;
+            case 'metadata': return this.CSS_THEME_COLORS.metadata;
+            case 'error': return this.CSS_THEME_COLORS.error;
+            default: return this.CSS_THEME_COLORS.secondary;
+        }
+    }
+
+    /**
+     * Retourne le label approprié pour un type de message
+     */
+    private static getTypeLabel(type: string): string {
+        switch (type) {
+            case 'user': return 'Utilisateur';
+            case 'assistant': return 'Assistant';
+            case 'tool_call': return 'Appel Outil';
+            case 'tool_result': return 'Résultat Outil';
+            case 'metadata': return 'Métadonnées';
+            case 'error': return 'Erreur';
+            default: return 'Inconnu';
+        }
+    }
+
+    /**
+     * Troncature intelligente d'objet JSON
+     */
+    private static truncateObjectIntelligently(obj: any, maxLength: number): any {
+        const jsonStr = JSON.stringify(obj, null, 2);
+        if (jsonStr.length <= maxLength) {
+            return obj;
+        }
+
+        // Stratégie de troncature intelligente
+        const truncated: any = {};
+        const entries = Object.entries(obj);
+        let currentLength = 2; // Pour {}
+
+        for (const [key, value] of entries) {
+            const entryStr = JSON.stringify({ [key]: value }, null, 2);
+            if (currentLength + entryStr.length > maxLength) {
+                truncated['...'] = `${entries.length - Object.keys(truncated).length} autres propriétés`;
+                break;
+            }
+            truncated[key] = value;
+            currentLength += entryStr.length;
+        }
+
+        return truncated;
+    }
+
+    /**
+     * Génère le CSS additionnel pour les fonctionnalités Phase 5
+     */
+    static generateInteractiveCSS(): string {
+        return `
+/* ===========================
+   PHASE 5: CSS INTERACTIF
+   =========================== */
+
+/* Table des matières */
+.toc-container {
+    background: linear-gradient(135deg, #f8fafc, #ffffff);
+    border: 2px solid var(--color-metadata);
+    border-radius: var(--radius-lg);
+    padding: 24px;
+    margin: 32px 0;
+    box-shadow: var(--shadow-medium);
+}
+
+.toc-title {
+    color: var(--color-primary);
+    margin: 0 0 20px 0;
+    font-size: 1.5rem;
+    font-weight: 700;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+}
+
+.toc-search {
+    margin-bottom: 20px;
+}
+
+.toc-search input {
+    width: 100%;
+    padding: 12px;
+    border: 2px solid var(--color-metadata);
+    border-radius: var(--radius-md);
+    font-size: 1rem;
+    transition: all var(--transition-base);
+}
+
+.toc-search input:focus {
+    outline: none;
+    border-color: var(--color-user);
+    box-shadow: 0 0 0 3px rgba(37, 99, 235, 0.1);
+}
+
+.toc-stats-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+    gap: 16px;
+    margin-bottom: 24px;
+}
+
+.toc-stat-card {
+    background: white;
+    border-radius: var(--radius-md);
+    padding: 16px;
+    box-shadow: var(--shadow-subtle);
+    transition: all var(--transition-base);
+}
+
+.toc-stat-card:hover {
+    transform: translateY(-2px);
+    box-shadow: var(--shadow-medium);
+}
+
+.toc-stat-header {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin-bottom: 8px;
+}
+
+.toc-icon {
+    font-size: 1.2rem;
+}
+
+.toc-label {
+    font-weight: 600;
+    color: var(--color-secondary);
+    font-size: 0.875rem;
+}
+
+.toc-count {
+    font-size: 2rem;
+    font-weight: 700;
+    color: var(--color-primary);
+    margin-bottom: 8px;
+}
+
+.toc-progress-bar {
+    width: 100%;
+    height: 4px;
+    background: #e5e7eb;
+    border-radius: 2px;
+    overflow: hidden;
+}
+
+.toc-progress-fill {
+    height: 100%;
+    transition: width var(--transition-base);
+}
+
+.toc-nav-title {
+    color: var(--color-secondary);
+    margin: 0 0 16px 0;
+    font-size: 1.125rem;
+    font-weight: 600;
+}
+
+.toc-links {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    max-height: 300px;
+    overflow-y: auto;
+}
+
+.toc-link-item {
+    padding: 8px 0;
+    border-bottom: 1px solid #f3f4f6;
+}
+
+.toc-link-item:last-child {
+    border-bottom: none;
+}
+
+.toc-link {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    text-decoration: none;
+    transition: all var(--transition-base);
+    padding: 8px 12px;
+    border-radius: var(--radius-md);
+}
+
+.toc-link:hover {
+    background: rgba(37, 99, 235, 0.1);
+    transform: translateX(4px);
+}
+
+.toc-link.active {
+    background: rgba(37, 99, 235, 0.15);
+    font-weight: 600;
+}
+
+.toc-link-icon {
+    font-size: 1rem;
+}
+
+.toc-link-text {
+    flex: 1;
+    font-weight: 500;
+}
+
+.toc-timestamp {
+    font-size: 0.75rem;
+    color: var(--color-metadata);
+    font-family: monospace;
+}
+
+/* Contenu tronqué */
+.truncation-container {
+    position: relative;
+}
+
+.truncated-content,
+.full-content {
+    transition: all var(--transition-base);
+}
+
+.hidden {
+    display: none;
+}
+
+.expand-button,
+.collapse-button {
+    background: var(--color-user);
+    color: white;
+    border: none;
+    padding: 8px 16px;
+    border-radius: var(--radius-md);
+    font-size: 0.875rem;
+    cursor: pointer;
+    transition: all var(--transition-base);
+    margin-top: 8px;
+}
+
+.expand-button:hover,
+.collapse-button:hover {
+    background: #1d4ed8;
+    transform: translateY(-1px);
+}
+
+/* Contenu expandable */
+.expandable-container {
+    border: 2px solid var(--color-metadata);
+    border-radius: var(--radius-md);
+    margin: 16px 0;
+}
+
+.content-summary {
+    padding: 16px;
+    background: var(--bg-metadata);
+    border-bottom: 1px solid var(--color-metadata);
+}
+
+.expand-toggle {
+    width: 100%;
+    padding: 12px;
+    background: none;
+    border: none;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    cursor: pointer;
+    transition: all var(--transition-base);
+}
+
+.expand-toggle:hover {
+    background: rgba(107, 114, 128, 0.1);
+}
+
+.expand-icon {
+    font-size: 0.875rem;
+    transition: transform var(--transition-base);
+}
+
+.expand-text {
+    font-weight: 500;
+}
+
+.expandable-content {
+    padding: 16px;
+    border-top: 1px solid var(--color-metadata);
+    animation: fadeIn 0.3s ease-out;
+}
+
+/* Copy button */
+.copy-button {
+    background: var(--color-metadata);
+    color: white;
+    border: none;
+    padding: 4px 8px;
+    border-radius: var(--radius-sm);
+    font-size: 0.75rem;
+    cursor: pointer;
+    transition: all var(--transition-base);
+    z-index: 10;
+}
+
+.copy-button:hover {
+    background: var(--color-secondary);
+}
+
+/* Highlight flash effect */
+.highlight-flash {
+    animation: highlightFlash 2s ease-out;
+}
+
+@keyframes highlightFlash {
+    0% { background-color: rgba(37, 99, 235, 0.3); }
+    100% { background-color: transparent; }
+}
+
+/* Ancres de navigation */
+[id^="message-"] {
+    scroll-margin-top: 20px;
+}
+
+/* Responsive pour les fonctionnalités Phase 5 */
+@media (max-width: 768px) {
+    .toc-stats-grid {
+        grid-template-columns: repeat(2, 1fr);
+        gap: 12px;
+    }
+    
+    .toc-container {
+        padding: 16px;
+    }
+    
+    .toc-links {
+        max-height: 200px;
+    }
+    
+    .toc-link {
+        font-size: 0.875rem;
+    }
+}
+`;
     }
 }
