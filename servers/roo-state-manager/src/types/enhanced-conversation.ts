@@ -122,6 +122,7 @@ export interface EnhancedSummaryOptions {
     outputFormat?: 'markdown' | 'html' | 'text';
     truncationChars?: number;
     compactStats?: boolean;
+    compactMode?: boolean;
     includeCss?: boolean;
     generateToc?: boolean;
     includeMetadata?: boolean;
@@ -132,5 +133,10 @@ export interface EnhancedSummaryOptions {
         useSmartCleaning?: boolean;
         useAdvancedRendering?: boolean;
         preserveLegacyBehavior?: boolean;
+        // Phase 4: CSS Avancé et Couleurs Différenciées
+        enableAdvancedCSS?: boolean;
+        enableResponsiveDesign?: boolean;
+        enableSyntaxHighlighting?: boolean;
+        enableAnimations?: boolean;
     };
 }

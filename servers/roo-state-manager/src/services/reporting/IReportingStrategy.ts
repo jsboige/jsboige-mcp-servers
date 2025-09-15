@@ -15,6 +15,7 @@
  */
 
 import { ClassifiedContent, EnhancedSummaryOptions } from '../../types/enhanced-conversation.js';
+import { MarkdownFormatterService, AdvancedFormattingOptions } from '../MarkdownFormatterService.js';
 
 /**
  * Interface principale pour les stratégies de reporting
@@ -51,172 +52,143 @@ export interface IReportingStrategy {
     
     /**
      * Formate le contenu d'un message selon la stratégie
-     * Tous les messages sont inclus, seul le formatage change
-     * @param content - Contenu à formater
-     * @param messageIndex - Index du message pour ancres/compteurs
-     * @param options - Options de configuration  
+     * @param content - Contenu classifié à formater
+     * @param messageIndex - Index du message dans la conversation
+     * @param options - Options de configuration
      * @returns Contenu formaté avec métadonnées
      */
     formatMessageContent(
-        content: ClassifiedContent, 
-        messageIndex: number,
-        options: EnhancedSummaryOptions
-    ): FormattedMessage;
-    
-    /**
-     * Génère le contenu complet selon cette stratégie
-     * @param contents - Tous les contenus classifiés
-     * @param options - Options de configuration
-     * @param sourceFilePath - Chemin du fichier source
-     * @returns Contenu Markdown complet
-     */
-    generateReport(
-        contents: ClassifiedContent[], 
-        options: EnhancedSummaryOptions,
-        sourceFilePath?: string
-    ): string;
-}
-
-/**
- * Résultat du formatage d'un message
- */
-export interface FormattedMessage {
-    /** Contenu principal formaté */
-    content: string;
-    /** Métadonnées pour l'affichage */
-    metadata: {
-        title?: string;
-        cssClass?: string;
-        anchor?: string;
-        shouldDisplay: boolean;
-        messageType: 'user' | 'assistant' | 'tool' | 'completion';
-    };
-    /** Notes de traitement pour debug */
-    processingNotes?: string[];
-}
-
-/**
- * Interface pour les options spécifiques aux stratégies  
- */
-export interface StrategyOptions {
-    /** Inclure les métadonnées dans le rendu */
-    includeMetadata?: boolean;
-    /** Niveau de troncature pour le contenu long */
-    truncationLevel?: 'none' | 'light' | 'moderate' | 'aggressive';
-    /** Inclure les timestamps */
-    includeTimestamps?: boolean;
-    /** Format de sortie préféré */
-    outputFormat?: 'markdown' | 'html' | 'text';
-    /** Inclure les statistiques dans la sortie */
-    includeStats?: boolean;
-}
-
-/**
- * Classe de base abstraite pour les stratégies de reporting
- * Fournit des utilitaires communs pour toutes les stratégies
- */
-export abstract class BaseReportingStrategy implements IReportingStrategy {
-    abstract readonly detailLevel: string;
-    abstract readonly description: string;
-    
-    abstract isTocOnlyMode(): boolean;
-    abstract formatMessageContent(
         content: ClassifiedContent, 
         messageIndex: number, 
         options: EnhancedSummaryOptions
     ): FormattedMessage;
     
     /**
-     * Implémentation par défaut de la génération de table des matières
+     * Génère la vue d'ensemble de la stratégie
+     * @param contents - Tous les contenus classifiés
+     * @param options - Options de configuration
+     * @returns Vue d'ensemble formatée
      */
-    generateTableOfContents(
+    generateOverview(contents: ClassifiedContent[], options: EnhancedSummaryOptions): string;
+    
+    /**
+     * Génère le rapport complet pour cette stratégie
+     * @param contents - Tous les contenus classifiés
+     * @param options - Options de configuration
+     * @returns Rapport complet formaté
+     */
+    generateReport(contents: ClassifiedContent[], options: EnhancedSummaryOptions): string;
+}
+
+/**
+ * Structure pour un message formaté
+ */
+export interface FormattedMessage {
+    content: string;
+    cssClass: string;
+    shouldRender: boolean;
+    messageType: string;
+    timestamp?: string;
+    anchor?: string;
+    processingNotes?: string[];
+    metadata?: {
+        messageIndex?: number;
+        contentLength?: number;
+        hasToolDetails?: boolean;
+        title?: string;
+        cssClass?: string;
+        anchor?: string;
+        shouldDisplay?: boolean;
+        messageType?: string;
+    };
+}
+
+/**
+ * Classe de base abstraite pour toutes les stratégies de reporting
+ * Implémente la logique commune et les méthodes utilitaires
+ */
+export abstract class BaseReportingStrategy implements IReportingStrategy {
+    public abstract readonly detailLevel: string;
+    public abstract readonly description: string;
+    
+    /**
+     * Par défaut, les stratégies ne sont pas en mode TOC uniquement
+     * (sauf SummaryReportingStrategy qui override cette méthode)
+     */
+    public isTocOnlyMode(): boolean {
+        return false;
+    }
+    
+    /**
+     * Génère la table des matières par défaut
+     */
+    public generateTableOfContents(
         contents: ClassifiedContent[], 
         options: EnhancedSummaryOptions,
         sourceFilePath?: string
     ): string {
         const toc: string[] = [];
-        let userMessageCounter = 1;
-        let assistantMessageCounter = 1;
-        let toolResultCounter = 1;
-        let isFirstUser = true;
-
-        toc.push('<div class="toc">');
-        toc.push('');
-        toc.push('### SOMMAIRE DES MESSAGES {#table-des-matieres}');
+        toc.push('## TABLE DES MATIÈRES');
         toc.push('');
 
+        let userMessageCounter = 0;
+        let toolResultCounter = 0;
+        let assistantMessageCounter = 0;
+        
         for (const content of contents) {
             const firstLine = this.getTruncatedFirstLine(content.content, 200);
             
             if (content.subType === 'UserMessage') {
-                if (isFirstUser) {
-                    if (this.isTocOnlyMode() && sourceFilePath) {
-                        toc.push(`- **Instruction de tâche initiale** -> ${sourceFilePath}#L1`);
-                    } else {
-                        toc.push(`- [Instruction de tâche initiale](#instruction-de-tache-initiale)`);
-                    }
-                    isFirstUser = false;
+                userMessageCounter++;
+                if (sourceFilePath && this.isTocOnlyMode()) {
+                    // Mode Summary avec liens externes vers le fichier source
+                    toc.push(`- <a href="${sourceFilePath}#L${this.estimateLineNumber(content)}" class="toc-user">**MESSAGE UTILISATEUR #${userMessageCounter}** - ${firstLine}</a>`);
                 } else {
-                    const anchor = `message-utilisateur-${userMessageCounter}`;
-                    if (this.isTocOnlyMode() && sourceFilePath) {
-                        toc.push(`- <a href="${sourceFilePath}#L${this.estimateLineNumber(content)}" class="toc-user">**MESSAGE UTILISATEUR #${userMessageCounter}** - ${firstLine}</a>`);
-                    } else {
-                        toc.push(`- <a href="#${anchor}" class="toc-user">MESSAGE UTILISATEUR #${userMessageCounter} - ${firstLine}</a>`);
-                    }
-                    userMessageCounter++;
+                    // Mode standard avec ancres internes
+                    toc.push(`- [**MESSAGE UTILISATEUR #${userMessageCounter}**](#${this.generateAnchor(content, userMessageCounter)}) - ${firstLine}`);
                 }
             } else if (content.subType === 'ToolResult') {
-                const anchor = `outil-${toolResultCounter}`;
-                if (this.isTocOnlyMode() && sourceFilePath) {
+                toolResultCounter++;
+                if (sourceFilePath && this.isTocOnlyMode()) {
                     toc.push(`- <a href="${sourceFilePath}#L${this.estimateLineNumber(content)}" class="toc-tool">**RESULTAT OUTIL #${toolResultCounter}** - ${firstLine}</a>`);
                 } else {
-                    toc.push(`- <a href="#${anchor}" class="toc-tool">RESULTAT OUTIL #${toolResultCounter} - ${firstLine}</a>`);
+                    toc.push(`- [**RÉSULTAT OUTIL #${toolResultCounter}**](#${this.generateAnchor(content, toolResultCounter)}) - ${firstLine}`);
                 }
-                toolResultCounter++;
             } else if (content.type === 'Assistant') {
-                const anchor = `reponse-assistant-${assistantMessageCounter}`;
-                const label = content.subType === 'Completion' ? 
-                    `REPONSE ASSISTANT #${assistantMessageCounter} (Terminaison)` :
-                    `REPONSE ASSISTANT #${assistantMessageCounter}`;
+                assistantMessageCounter++;
+                const hasTools = content.content.includes('<') || content.toolCallDetails;
+                const label = hasTools ? `MESSAGE ASSISTANT + OUTILS #${assistantMessageCounter}` : `MESSAGE ASSISTANT #${assistantMessageCounter}`;
                 
-                if (this.isTocOnlyMode() && sourceFilePath) {
+                if (sourceFilePath && this.isTocOnlyMode()) {
                     toc.push(`- <a href="${sourceFilePath}#L${this.estimateLineNumber(content)}" class="toc-assistant">**${label}** - ${firstLine}</a>`);
                 } else {
-                    toc.push(`- <a href="#${anchor}" class="toc-assistant">${label} - ${firstLine}</a>`);
+                    toc.push(`- [**${label}**](#${this.generateAnchor(content, assistantMessageCounter)}) - ${firstLine}`);
                 }
-                assistantMessageCounter++;
             }
         }
-
-        toc.push('');
-        toc.push('</div>');
-        toc.push('');
         
         return toc.join('\n');
     }
     
     /**
-     * Génère le rapport complet avec en-tête, TOC, contenu et footer
+     * Méthodes abstraites à implémenter par les classes concrètes
      */
-    generateReport(
-        contents: ClassifiedContent[], 
-        options: EnhancedSummaryOptions,
-        sourceFilePath?: string
-    ): string {
+    public abstract formatMessageContent(
+        content: ClassifiedContent, 
+        messageIndex: number, 
+        options: EnhancedSummaryOptions
+    ): FormattedMessage;
+    
+    /**
+     * Génère une vue d'ensemble par défaut
+     */
+    public generateOverview(contents: ClassifiedContent[], options: EnhancedSummaryOptions): string {
         const report: string[] = [];
         
-        // En-tête avec CSS
-        report.push('# RESUME DE TRACE D\'ORCHESTRATION ROO');
+        // Titre avec niveau de détail
+        report.push(`# RÉSUMÉ DE TRACE - ${this.detailLevel.toUpperCase()}`);
         report.push('');
-        report.push(this.generateCssStyles());
-        report.push('');
-        
-        if (sourceFilePath) {
-            const fileName = sourceFilePath.split('/').pop() || sourceFilePath;
-            report.push(`**Fichier source :** ${fileName}`);
-        }
-        report.push(`**Date de generation :** ${new Date().toLocaleDateString('fr-FR')} à ${new Date().toLocaleTimeString('fr-FR')}`);
-        report.push(`**Mode de détail :** ${this.detailLevel}`);
+        report.push(`**Stratégie:** ${this.description}`);
         report.push('');
         
         // Statistiques
@@ -224,99 +196,187 @@ export abstract class BaseReportingStrategy implements IReportingStrategy {
         report.push('');
         
         // Table des matières
-        report.push(this.generateTableOfContents(contents, options, sourceFilePath));
+        report.push(this.generateTableOfContents(contents, options));
+        report.push('');
         
-        // Contenu des messages (sauf pour Summary)
-        if (!this.isTocOnlyMode()) {
-            report.push('## ECHANGES DE CONVERSATION');
-            report.push('');
-            
-            let messageIndex = 0;
-            for (const content of contents) {
-                const formatted = this.formatMessageContent(content, messageIndex++, options);
-                if (formatted.metadata.shouldDisplay) {
-                    report.push(formatted.content);
-                    report.push('');
-                }
-            }
-        } else {
-            // Mode Summary : ajouter l'instruction initiale
+        // Pour le mode Summary, n'afficher que l'instruction initiale
+        if (this.isTocOnlyMode()) {
             const firstUserMessage = contents.find(c => c.subType === 'UserMessage');
             if (firstUserMessage) {
-                report.push('## INSTRUCTION DE TACHE INITIALE');
+                report.push('## INSTRUCTION INITIALE');
                 report.push('');
-                report.push('```markdown');
                 report.push(this.cleanUserMessage(firstUserMessage.content));
-                report.push('```');
                 report.push('');
             }
         }
         
-        // Footer
-        report.push('---');
-        report.push('');
-        report.push('**Résumé généré automatiquement par Enhanced Export MCP**');
-        report.push(`**Date :** ${new Date().toLocaleDateString('fr-FR')} à ${new Date().toLocaleTimeString('fr-FR')}`);
+        return report.join('\n');
+    }
+
+    /**
+     * Génère le rapport complet par défaut
+     */
+    public generateReport(contents: ClassifiedContent[], options: EnhancedSummaryOptions): string {
+        const report: string[] = [];
+        
+        // CSS avancé si activé
+        if (this.shouldUseAdvancedCSS(options)) {
+            report.push(MarkdownFormatterService.generateCSS());
+            report.push('');
+        }
+        
+        // Vue d'ensemble
+        report.push(this.generateOverview(contents, options));
+        
+        // Messages formatés (si pas en mode TOC uniquement)
+        if (!this.isTocOnlyMode()) {
+            report.push('---');
+            report.push('');
+            report.push('## MESSAGES');
+            report.push('');
+            
+            contents.forEach((content, index) => {
+                const formatted = this.formatMessageContent(content, index + 1, options);
+                if (formatted.shouldRender) {
+                    report.push(formatted.content);
+                    report.push('');
+                }
+            });
+        }
         
         return report.join('\n');
     }
     
     /**
-     * Génère les styles CSS pour le rendu
+     * Vérifie si le CSS avancé doit être utilisé
      */
-    protected generateCssStyles(): string {
-        return `<style>
-.user-message {
-    background-color: #FFEBEE;
-    border-left: 4px solid #F44336;
-    padding: 15px;
-    margin: 10px 0;
-    border-radius: 5px;
-}
-.assistant-message {
-    background-color: #E8F4FD;
-    border-left: 4px solid #2196F3;
-    padding: 15px;
-    margin: 10px 0;
-    border-radius: 5px;
-}
-.tool-message {
-    background-color: #FFF8E1;
-    border-left: 4px solid #FF9800;
-    padding: 15px;
-    margin: 10px 0;
-    border-radius: 5px;
-}
-.completion-message {
-    background-color: #E8F5E8;
-    border-left: 4px solid #4CAF50;
-    padding: 15px;
-    margin: 10px 0;
-    border-radius: 5px;
-    box-shadow: 0 2px 4px rgba(76,175,80,0.1);
-}
-.toc {
-    background-color: #f8f9fa;
-    border: 1px solid #dee2e6;
-    border-radius: 8px;
-    padding: 20px;
-    margin: 15px 0;
-}
-.toc h3 {
-    margin-top: 0;
-    color: #495057;
-    border-bottom: 2px solid #6c757d;
-    padding-bottom: 10px;
-}
-.toc-user { color: #F44336 !important; font-weight: bold; text-decoration: none; }
-.toc-user:hover { background-color: #FFEBEE; padding: 2px 4px; border-radius: 3px; }
-.toc-assistant { color: #2196F3 !important; font-weight: bold; text-decoration: none; }
-.toc-assistant:hover { background-color: #E8F4FD; padding: 2px 4px; border-radius: 3px; }
-.toc-tool { color: #FF9800 !important; font-weight: bold; text-decoration: none; }
-.toc-tool:hover { background-color: #FFF8E1; padding: 2px 4px; border-radius: 3px; }
-.toc-completion { color: #4CAF50 !important; font-weight: bold; text-decoration: none; }
-.toc-completion:hover { background-color: #E8F5E8; padding: 2px 4px; border-radius: 3px; }
-</style>`;
+    protected shouldUseAdvancedCSS(options: EnhancedSummaryOptions): boolean {
+        return options.enhancementFlags?.enableAdvancedCSS === true;
+    }
+    
+    /**
+     * Génère l'ancre pour les liens internes
+     */
+    protected generateAnchor(content: ClassifiedContent, counter: number): string {
+        const type = content.subType || content.type?.toLowerCase() || 'content';
+        return `${type}-${counter}`;
+    }
+    
+    /**
+     * Obtient la classe CSS appropriée pour un type de contenu
+     */
+    protected getCssClass(content: ClassifiedContent): string {
+        if (content.subType === 'UserMessage') return 'user-message';
+        if (content.subType === 'ToolResult') return 'tool-result';
+        if (content.subType === 'ToolCall') return 'tool-call';
+        if (content.type === 'Assistant') return 'assistant-message';
+        return 'default-message';
+    }
+    
+    /**
+     * Détermine le type de message pour l'affichage
+     */
+    protected getMessageType(content: ClassifiedContent): string {
+        if (content.subType === 'UserMessage') return 'MESSAGE UTILISATEUR';
+        if (content.subType === 'ToolResult') return 'RÉSULTAT OUTIL';
+        if (content.subType === 'ToolCall') return 'APPEL OUTIL';
+        if (content.type === 'Assistant') {
+            const hasTools = content.content.includes('<') || content.toolCallDetails;
+            return hasTools ? 'ASSISTANT + OUTILS' : 'ASSISTANT';
+        }
+        return 'MESSAGE';
+    }
+    
+    /**
+     * Extrait le type de résultat d'outil
+     */
+    protected getToolResultType(result: string): string {
+        if (result.includes('success":true') || result.includes('"operation":"created"')) {
+            return 'Succès';
+        } else if (result.includes('Error') || result.includes('error') || result.includes('failed')) {
+            return 'Erreur';
+        } else if (result.includes('<html>') || result.includes('<!DOCTYPE')) {
+            return 'HTML';
+        } else if (result.includes('"success"') || result.includes('"error"')) {
+            return 'Résultat JSON';
+        }
+        return 'Texte';
+    }
+
+    /**
+     * Formate le contenu avec le nouveau formateur Phase 4 si activé
+     */
+    protected formatWithAdvancedFormatterIfEnabled(
+        content: ClassifiedContent,
+        messageIndex: number,
+        options: EnhancedSummaryOptions
+    ): string | null {
+        if (!this.shouldUseAdvancedCSS(options)) {
+            return null; // Utiliser le formatage classique
+        }
+
+        // Utiliser le nouveau formateur Phase 4
+        const timestamp = new Date().toISOString();
+        
+        if (content.subType === 'UserMessage') {
+            const cleanedContent = this.cleanUserMessage(content.content);
+            return MarkdownFormatterService.formatUserMessage(cleanedContent, timestamp);
+        } else if (content.subType === 'ToolResult') {
+            // Extraire le nom de l'outil et le résultat
+            const toolResultMatch = content.content.match(/\[([^\]]+)\] Result:\s*(.*)/s);
+            if (toolResultMatch) {
+                const toolName = toolResultMatch[1];
+                const result = toolResultMatch[2].trim();
+                return MarkdownFormatterService.formatToolResult(toolName, result, timestamp);
+            } else {
+                return MarkdownFormatterService.formatToolResult('Outil', content.content, timestamp);
+            }
+        } else if (content.subType === 'ToolCall') {
+            // Extraire les détails de l'appel d'outil depuis toolCallDetails si disponible
+            if (content.toolCallDetails) {
+                return MarkdownFormatterService.formatToolCall(
+                    content.toolCallDetails.toolName,
+                    content.toolCallDetails.arguments,
+                    timestamp
+                );
+            } else {
+                // Fallback : essayer de parser depuis le contenu
+                const toolMatch = content.content.match(/<([a-zA-Z_][a-zA-Z0-9_\-:]+)(?:\s+[^>]*)?>.*?<\/\1>/s);
+                if (toolMatch) {
+                    const toolName = toolMatch[1];
+                    return MarkdownFormatterService.formatToolCall(toolName, {}, timestamp);
+                }
+                return MarkdownFormatterService.formatToolCall('Outil', {}, timestamp);
+            }
+        } else if (content.type === 'Assistant') {
+            const cleanedContent = this.cleanAssistantMessage(content.content);
+            return MarkdownFormatterService.formatAssistantMessage(cleanedContent, timestamp);
+        }
+
+        return null; // Utiliser le formatage classique pour les autres types
+    }
+
+    /**
+     * Nettoie le contenu d'un message assistant (supprime les balises techniques)
+     */
+    protected cleanAssistantMessage(content: string): string {
+        if (!content?.trim()) return '';
+        
+        let cleaned = content;
+        
+        // Supprimer les blocs <thinking>
+        cleaned = cleaned.replace(/<thinking>.*?<\/thinking>/gs, '');
+        
+        // Remplacer les blocs d'outils XML par des résumés
+        cleaned = cleaned.replace(/<([a-zA-Z_][a-zA-Z0-9_\-:]+)(?:\s+[^>]*)?>.*?<\/\1>/gs, (match, toolName) => {
+            return `\n**[Appel d'outil : ${toolName}]**\n`;
+        });
+        
+        // Nettoyer les espaces multiples
+        cleaned = cleaned.replace(/\n{3,}/g, '\n\n');
+        cleaned = cleaned.trim();
+        
+        return cleaned;
     }
     
     /**
@@ -429,8 +489,28 @@ export abstract class BaseReportingStrategy implements IReportingStrategy {
      * Vérifie si le contenu est considéré comme technique
      */
     protected isTechnicalContent(content: ClassifiedContent): boolean {
-        return content.subType === 'ToolCall' || 
+        return content.subType === 'ToolCall' ||
                content.subType === 'ToolResult' ||
                this.hasToolDetails(content);
+    }
+
+    /**
+     * Génère le titre d'un message
+     */
+    protected generateMessageTitle(content: ClassifiedContent, messageIndex: number): string {
+        const messageType = this.getMessageType(content);
+        
+        if (content.subType === 'UserMessage') {
+            return `### 👤 ${messageType} #${messageIndex}`;
+        } else if (content.subType === 'ToolResult') {
+            return `### 🔧 ${messageType} #${messageIndex}`;
+        } else if (content.subType === 'ToolCall') {
+            return `### ⚙️ ${messageType} #${messageIndex}`;
+        } else if (content.type === 'Assistant') {
+            const hasTools = content.content.includes('<') || content.toolCallDetails;
+            return hasTools ? `### 🤖⚙️ ${messageType} #${messageIndex}` : `### 🤖 ${messageType} #${messageIndex}`;
+        }
+        
+        return `### 💬 ${messageType} #${messageIndex}`;
     }
 }
