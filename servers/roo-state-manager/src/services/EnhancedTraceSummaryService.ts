@@ -118,7 +118,9 @@ export class EnhancedTraceSummaryService extends TraceSummaryService {
         // Étape 2 : Filtrage par stratégie selon le niveau de détail
         if (flags.useStrategyFiltering) {
             const strategy = DetailLevelStrategyFactory.createStrategy(options.detailLevel);
-            classifiedContent = strategy.apply(classifiedContent);
+            // TODO: Adapter à la nouvelle API IReportingStrategy.generateReport()
+            // classifiedContent = strategy.apply(classifiedContent); // Cette méthode n'existe plus
+            console.warn('Strategy filtering temporairement désactivé - nouvelle API en cours d\'intégration');
         }
 
         // Étape 3 : Nettoyage intelligent

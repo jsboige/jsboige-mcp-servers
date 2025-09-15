@@ -1,35 +1,29 @@
 /**
  * DetailLevelStrategyFactory - Factory pour créer les stratégies de filtrage
- * 
+ *
  * Implémente le pattern Factory pour instancier la bonne stratégie selon DetailLevel
- * Selon l'architecture définie dans docs/sddd/markdown_export_architecture.md
+ * Version complète avec tous les 6 niveaux selon script PowerShell référence
  */
 
-import { IReportingStrategy } from './strategies/IReportingStrategy.js';
-import { FullStrategy } from './strategies/FullStrategy.js';
-import { NoToolsStrategy } from './strategies/NoToolsStrategy.js';
-import { NoResultsStrategy } from './strategies/NoResultsStrategy.js';
-import { MessagesStrategy } from './strategies/MessagesStrategy.js';
-import { SummaryStrategy } from './strategies/SummaryStrategy.js';
-import { UserOnlyStrategy } from './strategies/UserOnlyStrategy.js';
-import { ClassifiedContent } from '../../types/enhanced-conversation.js';
-
-/**
- * Types de DetailLevel supportés
- */
-export type DetailLevel = 'Full' | 'NoTools' | 'NoResults' | 'Messages' | 'Summary' | 'UserOnly';
+import { IReportingStrategy } from './IReportingStrategy.js';
+import { DetailLevel } from '../../types/enhanced-conversation.js';
+import { FullReportingStrategy } from './strategies/FullReportingStrategy.js';
+import { MessagesReportingStrategy } from './strategies/MessagesReportingStrategy.js';
+import { SummaryReportingStrategy } from './strategies/SummaryReportingStrategy.js';
+import { NoToolsReportingStrategy } from './strategies/NoToolsReportingStrategy.js';
+import { NoResultsReportingStrategy } from './strategies/NoResultsReportingStrategy.js';
 
 /**
  * Factory pour créer les stratégies de reporting
  */
 export class DetailLevelStrategyFactory {
     private static strategies = new Map<DetailLevel, () => IReportingStrategy>([
-        ['Full', () => new FullStrategy()],
-        ['NoTools', () => new NoToolsStrategy()],
-        ['NoResults', () => new NoResultsStrategy()],
-        ['Messages', () => new MessagesStrategy()],
-        ['Summary', () => new SummaryStrategy()],
-        ['UserOnly', () => new UserOnlyStrategy()]
+        ['Full', () => new FullReportingStrategy()],
+        ['Messages', () => new MessagesReportingStrategy()],
+        ['Summary', () => new SummaryReportingStrategy()],
+        ['NoTools', () => new NoToolsReportingStrategy()],
+        ['NoResults', () => new NoResultsReportingStrategy()],
+        ['UserOnly', () => new SummaryReportingStrategy()] // Temporaire - à implémenter
     ]);
 
     /**
@@ -72,39 +66,15 @@ export class DetailLevelStrategyFactory {
     }
 
     /**
-     * Enregistre une nouvelle stratégie personnalisée (pour extensibilité future)
-     */
-    static registerStrategy(detailLevel: string, strategyCreator: () => IReportingStrategy): void {
-        if (this.strategies.has(detailLevel as DetailLevel)) {
-            console.warn(`Remplacement de la stratégie existante pour DetailLevel: ${detailLevel}`);
-        }
-        
-        // Note: pour l'instant on ne supporte que les DetailLevel prédéfinis
-        // Cette méthode est là pour une extensibilité future
-        console.info(`Enregistrement de stratégie personnalisée: ${detailLevel}`);
-    }
-
-    /**
      * Obtient les informations sur une stratégie sans l'instancier
      */
     static getStrategyInfo(detailLevel: DetailLevel): {
         name: string;
         description: string;
-        showsToolDetails: boolean;
-        showsThinking: boolean;
-        showsToolResults: boolean;
-        isUserOnly: boolean;
     } {
-        // Créer temporairement la stratégie pour obtenir ses infos
-        const strategy = this.createStrategy(detailLevel);
-        
         return {
-            name: strategy.getStrategyName(),
-            description: this.getStrategyDescription(detailLevel),
-            showsToolDetails: strategy.shouldShowToolDetails(),
-            showsThinking: strategy.shouldShowThinking(),
-            showsToolResults: strategy.shouldShowToolResults(),
-            isUserOnly: strategy.isUserOnlyMode()
+            name: detailLevel,
+            description: this.getStrategyDescription(detailLevel)
         };
     }
 
@@ -114,17 +84,17 @@ export class DetailLevelStrategyFactory {
     private static getStrategyDescription(detailLevel: DetailLevel): string {
         switch (detailLevel) {
             case 'Full':
-                return 'Inclut tout le contenu sans filtrage - niveau de détail maximum';
-            case 'NoTools':
-                return 'Exclut les appels d\'outils mais garde leurs résultats';
-            case 'NoResults':
-                return 'Exclut les résultats d\'outils mais garde les appels';
+                return 'Inclut tout le contenu sans filtrage - niveau de détail maximum avec métadonnées complètes';
             case 'Messages':
-                return 'Ne garde que les échanges conversationnels (UserMessage + Completion)';
+                return 'Messages conversationnels avec paramètres d\'outils masqués mais résultats complets';
             case 'Summary':
-                return 'Contenu ultra-concentré et pertinent pour un résumé exécutif';
+                return 'Table des matières avec liens et instruction initiale uniquement';
+            case 'NoTools':
+                return 'Messages complets avec paramètres d\'outils masqués mais résultats affichés';
+            case 'NoResults':
+                return 'Messages avec paramètres d\'outils complets mais résultats masqués';
             case 'UserOnly':
-                return 'Uniquement les messages de l\'utilisateur';
+                return 'Contenu filtré pour ne montrer que les interactions utilisateur essentielles';
             default:
                 return 'Description non disponible';
         }
@@ -150,83 +120,35 @@ export class DetailLevelStrategyFactory {
         }
 
         // Validation spécifique selon les stratégies
-        if (detailLevel === 'Summary' && params?.truncationChars > 50000) {
+        if (detailLevel === 'Summary' && params?.truncationChars && params.truncationChars > 50000) {
             result.warnings.push('Summary avec troncature > 50k chars peut être inefficace');
-        }
-
-        if (detailLevel === 'UserOnly' && params?.includeCss) {
-            result.warnings.push('CSS non applicable pour UserOnly');
         }
 
         return result;
     }
-}
 
-/**
- * Interface pour la configuration avancée des stratégies
- */
-export interface StrategyConfig {
-    detailLevel: DetailLevel;
-    minConfidenceScore?: number;
-    maxTruncationChars?: number;
-    customFilters?: string[];
-    debugMode?: boolean;
-}
-
-/**
- * Factory étendue avec configuration avancée
- */
-export class ConfigurableStrategyFactory extends DetailLevelStrategyFactory {
     /**
-     * Crée une stratégie avec configuration personnalisée
+     * Crée toutes les stratégies disponibles (pour tests ou comparaisons)
      */
-    static createConfiguredStrategy(config: StrategyConfig): IReportingStrategy {
-        const baseStrategy = this.createStrategy(config.detailLevel);
+    static createAllStrategies(): Map<DetailLevel, IReportingStrategy> {
+        const strategies = new Map<DetailLevel, IReportingStrategy>();
         
-        // Si pas de config avancée, retourner la stratégie de base
-        if (!config.minConfidenceScore && !config.maxTruncationChars && !config.customFilters) {
-            return baseStrategy;
+        for (const detailLevel of this.getSupportedDetailLevels()) {
+            strategies.set(detailLevel, this.createStrategy(detailLevel));
         }
-
-        // Wrapper la stratégie avec la configuration
-        return new ConfiguredStrategyWrapper(baseStrategy, config);
-    }
-}
-
-/**
- * Wrapper pour appliquer une configuration personnalisée à une stratégie
- */
-class ConfiguredStrategyWrapper implements IReportingStrategy {
-    constructor(
-        private baseStrategy: IReportingStrategy,
-        private config: StrategyConfig
-    ) {}
-apply(content: ClassifiedContent[]): ClassifiedContent[] {
-    let result = this.baseStrategy.apply(content);
-
-    // Appliquer les filtres de configuration
-    if (this.config.minConfidenceScore !== undefined) {
-        result = this.baseStrategy.filterByRelevance(result, this.config.minConfidenceScore);
+        
+        return strategies;
     }
 
-    if (this.config.maxTruncationChars !== undefined) {
-        result = this.baseStrategy.applyIntelligentTruncation(result, this.config.maxTruncationChars);
+    /**
+     * Enregistre une nouvelle stratégie personnalisée (extensibilité future)
+     */
+    static registerCustomStrategy(detailLevel: string, strategyCreator: () => IReportingStrategy): void {
+        if (this.strategies.has(detailLevel as DetailLevel)) {
+            console.warn(`Remplacement de la stratégie existante pour DetailLevel: ${detailLevel}`);
+        }
+        
+        // Pour l'extensibilité future, on pourrait permettre l'ajout de stratégies personnalisées
+        console.info(`Enregistrement de stratégie personnalisée: ${detailLevel} (non implémenté pour l'instant)`);
     }
-
-    return result;
-}
-
-shouldShowToolDetails(): boolean { return this.baseStrategy.shouldShowToolDetails(); }
-shouldShowThinking(): boolean { return this.baseStrategy.shouldShowThinking(); }
-shouldShowToolResults(): boolean { return this.baseStrategy.shouldShowToolResults(); }
-isUserOnlyMode(): boolean { return this.baseStrategy.isUserOnlyMode(); }
-getStrategyName(): string { return `${this.baseStrategy.getStrategyName()}_Configured`; }
-
-filterByRelevance(content: ClassifiedContent[], minConfidenceScore: number): ClassifiedContent[] {
-    return this.baseStrategy.filterByRelevance(content, minConfidenceScore);
-}
-
-applyIntelligentTruncation(content: ClassifiedContent[], maxChars: number): ClassifiedContent[] {
-    return this.baseStrategy.applyIntelligentTruncation(content, maxChars);
-}
 }

@@ -4,6 +4,11 @@
  */
 
 /**
+ * Niveaux de détail pour l'export Markdown selon script PowerShell référence
+ */
+export type DetailLevel = 'Full' | 'NoTools' | 'NoResults' | 'Messages' | 'Summary' | 'UserOnly';
+
+/**
  * Détails structurés d'un appel d'outil parsé depuis XML
  */
 export interface ToolCallDetails {
@@ -88,4 +93,44 @@ export interface IEnrichContentClassifier {
     classifyToolCall(content: string, index: number): Promise<ClassifiedContent>;
     classifyToolResult(content: string, index: number): Promise<ClassifiedContent>;
     calculateRelevanceScore(content: ClassifiedContent): number;
+}
+
+/**
+ * Résultat du filtrage par les stratégies de reporting
+ */
+export interface FilteringResult {
+    filteredContent: string[];
+    statistics: FilteringStatistics;
+    appliedRules: string[];
+}
+
+/**
+ * Statistiques de filtrage
+ */
+export interface FilteringStatistics {
+    included: number;
+    excluded: number;
+    inclusionRate: number;
+    strategy: string;
+}
+
+/**
+ * Options étendues pour la génération de résumés
+ */
+export interface EnhancedSummaryOptions {
+    detailLevel?: 'Full' | 'NoTools' | 'NoResults' | 'Messages' | 'Summary' | 'UserOnly';
+    outputFormat?: 'markdown' | 'html' | 'text';
+    truncationChars?: number;
+    compactStats?: boolean;
+    includeCss?: boolean;
+    generateToc?: boolean;
+    includeMetadata?: boolean;
+    includeTimestamps?: boolean;
+    enhancementFlags?: {
+        useEnhancedClassification?: boolean;
+        useStrategyFiltering?: boolean;
+        useSmartCleaning?: boolean;
+        useAdvancedRendering?: boolean;
+        preserveLegacyBehavior?: boolean;
+    };
 }

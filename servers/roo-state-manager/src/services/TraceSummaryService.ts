@@ -1,8 +1,10 @@
 /**
  * TraceSummaryService - Service de génération de résumés intelligents de traces Roo
- * 
+ *
  * Ce service porte la logique du script PowerShell Convert-TraceToSummary-Optimized.ps1
  * vers un service Node.js/TypeScript intégré dans l'écosystème roo-state-manager.
+ *
+ * SDDD Phase 3 : Intégration Strategy Pattern pour 6 niveaux de détail
  */
 
 import {
@@ -17,6 +19,10 @@ import {
     CrossTaskPattern
 } from '../types/conversation.js';
 import { ExportConfigManager } from './ExportConfigManager.js';
+import { DetailLevelStrategyFactory } from './reporting/DetailLevelStrategyFactory.js';
+import { IReportingStrategy } from './reporting/IReportingStrategy.js';
+import { DetailLevel, EnhancedSummaryOptions } from '../types/enhanced-conversation.js';
+import { ClassifiedContent as EnhancedClassifiedContent } from '../types/enhanced-conversation.js';
 
 /**
  * Options de configuration pour la génération de résumé
@@ -34,6 +40,8 @@ export interface SummaryOptions {
     outputFormat: ExportFormat;
     jsonVariant?: JsonVariant;
     csvVariant?: CsvVariant;
+    // SDDD Phase 3: Feature flag pour les strategies
+    enableDetailLevels?: boolean;
 }
 
 /**
@@ -375,7 +383,8 @@ export class TraceSummaryService {
 
         // 5. NOUVELLE SECTION : Contenu conversationnel
         if (options.detailLevel !== 'Summary') {
-            const conversationContent = await this.renderConversationContent(
+            // SDDD Phase 3: Utilisation des strategies si activées
+            const conversationContent = await this.renderConversationContentWithStrategies(
                 classifiedContent,
                 options
             );
@@ -386,6 +395,205 @@ export class TraceSummaryService {
         parts.push(this.generateFooter(options));
 
         return parts.join('\n\n');
+    }
+
+    // ============================================================================
+    // SDDD PHASE 3: INTÉGRATION STRATEGY PATTERN POUR 6 NIVEAUX DE DÉTAIL
+    // ============================================================================
+
+    /**
+     * Génère le contenu conversationnel en utilisant les strategies (SDDD Phase 3)
+     */
+    private async renderConversationContentWithStrategies(
+        classifiedContent: ClassifiedContent[],
+        options: SummaryOptions
+    ): Promise<string> {
+        // Feature flag pour activer/désactiver les strategies
+        if (!options.enableDetailLevels) {
+            return this.renderConversationContent(classifiedContent, options);
+        }
+
+        try {
+            // Convertir le format legacy vers le format enhanced
+            const enhancedContent = this.convertToEnhancedFormat(classifiedContent);
+            
+            // Créer la strategy appropriée
+            const strategy = DetailLevelStrategyFactory.createStrategy(options.detailLevel as DetailLevel);
+            
+            // Générer le contenu avec la strategy
+            const enhancedOptions: EnhancedSummaryOptions = {
+                detailLevel: options.detailLevel as DetailLevel,
+                outputFormat: options.outputFormat === 'markdown' ? 'markdown' : 'html',
+                truncationChars: options.truncationChars,
+                compactStats: options.compactStats,
+                includeCss: options.includeCss,
+                generateToc: options.generateToc
+            };
+
+            const strategicContent = strategy.generateReport(enhancedContent, enhancedOptions);
+            
+            return strategicContent;
+            
+        } catch (error) {
+            console.warn('Strategy rendering failed, falling back to legacy:', error);
+            return this.renderConversationContent(classifiedContent, options);
+        }
+    }
+
+    /**
+     * Convertit le format ClassifiedContent legacy vers EnhancedClassifiedContent
+     */
+    private convertToEnhancedFormat(legacyContent: ClassifiedContent[]): EnhancedClassifiedContent[] {
+        return legacyContent.map((item, index) => ({
+            ...item,
+            // Propriétés requises par le format enhanced
+            contentSize: item.content.length,
+            isRelevant: true, // Par défaut, considérer comme pertinent
+            confidenceScore: 0.8, // Score de confiance par défaut
+            // Parsing XML amélioré pour les outils
+            toolCallDetails: this.extractToolCallDetails(item),
+            toolResultDetails: this.extractToolResultDetails(item),
+            // Métadonnées supplémentaires
+            timestamp: new Date().toISOString(),
+            processingNotes: []
+        }));
+    }
+
+    /**
+     * Extrait les détails d'appel d'outil avec parsing XML amélioré (SDDD Phase 3)
+     */
+    private extractToolCallDetails(item: ClassifiedContent): any {
+        if (item.type !== 'Assistant' || item.subType !== 'ToolCall') {
+            return undefined;
+        }
+
+        // Parsing XML amélioré pour les outils
+        const toolXmlMatches = item.content.match(/<([a-zA-Z_][a-zA-Z0-9_\-:]+)(?:\s+[^>]*)?>[\s\S]*?<\/\1>/g);
+        
+        if (!toolXmlMatches) {
+            return undefined;
+        }
+
+        const toolCalls = toolXmlMatches.map(xmlBlock => {
+            const tagMatch = xmlBlock.match(/<([a-zA-Z_][a-zA-Z0-9_\-:]+)/);
+            const toolName = tagMatch ? tagMatch[1] : 'unknown_tool';
+            
+            // Extraction des paramètres avec parsing XML amélioré
+            const parameters = this.parseToolParameters(xmlBlock);
+            
+            return {
+                toolName,
+                parameters,
+                rawXml: xmlBlock,
+                parsedSuccessfully: parameters !== null
+            };
+        });
+
+        return {
+            toolCalls,
+            totalCalls: toolCalls.length,
+            hasParsingErrors: toolCalls.some(call => !call.parsedSuccessfully)
+        };
+    }
+
+    /**
+     * Parse sophistiqué des paramètres d'outils XML (SDDD Phase 3)
+     */
+    private parseToolParameters(xmlBlock: string): Record<string, any> | null {
+        try {
+            // Extraction basique des paramètres pour l'instant
+            // TODO: Implémenter un parsing XML plus sophistiqué si nécessaire
+            const paramMatches = xmlBlock.match(/<([a-zA-Z_][a-zA-Z0-9_\-:]+)>([\s\S]*?)<\/\1>/g);
+            
+            if (!paramMatches) {
+                return null;
+            }
+
+            const parameters: Record<string, any> = {};
+            
+            for (const paramMatch of paramMatches) {
+                const tagMatch = paramMatch.match(/<([a-zA-Z_][a-zA-Z0-9_\-:]+)>([\s\S]*?)<\/\1>/);
+                if (tagMatch) {
+                    const [, paramName, paramValue] = tagMatch;
+                    // Éviter de parser les balises racines d'outils
+                    if (!this.isRootToolTag(paramName)) {
+                        parameters[paramName] = paramValue.trim();
+                    }
+                }
+            }
+
+            return parameters;
+        } catch (error) {
+            console.warn('Failed to parse tool parameters:', error);
+            return null;
+        }
+    }
+
+    /**
+     * Vérifie si une balise est une balise racine d'outil
+     */
+    private isRootToolTag(tagName: string): boolean {
+        const rootToolTags = [
+            'read_file', 'write_to_file', 'apply_diff', 'execute_command',
+            'browser_action', 'search_files', 'codebase_search', 'list_files',
+            'new_task', 'ask_followup_question', 'attempt_completion',
+            'insert_content', 'search_and_replace', 'use_mcp_tool'
+        ];
+        return rootToolTags.includes(tagName);
+    }
+
+    /**
+     * Extrait les détails de résultats d'outils
+     */
+    private extractToolResultDetails(item: ClassifiedContent): any {
+        if (item.type !== 'User' || item.subType !== 'ToolResult') {
+            return undefined;
+        }
+
+        const resultMatch = item.content.match(/\[([^\]]+)\] Result:\s*(.*)/s);
+        if (!resultMatch) {
+            return undefined;
+        }
+
+        const [, toolName, result] = resultMatch;
+        
+        return {
+            toolName,
+            resultType: this.getResultType(result),
+            contentLength: result.length,
+            hasError: this.detectResultError(result),
+            parsedResult: this.parseStructuredResult(result)
+        };
+    }
+
+    /**
+     * Détecte si un résultat contient une erreur
+     */
+    private detectResultError(result: string): boolean {
+        return /error|failed|unable|exception|denied/i.test(result);
+    }
+
+    /**
+     * Parse les résultats structurés (JSON, XML, etc.)
+     */
+    private parseStructuredResult(result: string): any {
+        // Tentative de parsing JSON
+        try {
+            return JSON.parse(result);
+        } catch {
+            // Pas un JSON valide
+        }
+
+        // Détection de structures XML ou autres formats
+        if (result.includes('<files>') || result.includes('<file>')) {
+            return { type: 'file_structure', content: result };
+        }
+
+        if (result.includes('Command executed')) {
+            return { type: 'command_output', content: result };
+        }
+
+        return { type: 'text', content: result };
     }
 
     /**
