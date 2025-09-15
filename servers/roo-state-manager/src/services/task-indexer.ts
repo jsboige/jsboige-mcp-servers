@@ -110,18 +110,24 @@ async function extractChunksFromTask(taskId: string, taskPath: string): Promise<
             if (msg.content) {
                 messageIndex++;
                 
-                // Handle both string and array content (OpenAI format)
-                let contentText: string;
+                // Handle both string and array content (OpenAI format) with improved safety
+                let contentText: string = '';
                 if (typeof msg.content === 'string') {
                     contentText = msg.content;
                 } else if (Array.isArray(msg.content)) {
-                    // Extract text from array content (e.g., mixed content with images)
+                    // Safely extract text from complex array content
                     contentText = (msg.content as any[])
-                        .filter((c: any) => c && c.type === 'text')
-                        .map((c: any) => c.text || '')
-                        .join(' ');
-                } else {
-                    contentText = String(msg.content);
+                        .map((part: any) => {
+                            if (part && typeof part === 'object' && part.type === 'text' && typeof part.text === 'string') {
+                                return part.text;
+                            }
+                            return '';
+                        })
+                        .join(' ')
+                        .trim();
+                } else if (msg.content) {
+                    // Fallback for any other type, ensuring it becomes a string
+                    contentText = String(msg.content.toString());
                 }
 
                 if (contentText.trim()) {
@@ -135,7 +141,7 @@ async function extractChunksFromTask(taskId: string, taskPath: string): Promise<
                         timestamp: msg.timestamp || new Date().toISOString(),
                         indexed: true,
                         content: contentText,
-                        content_summary: contentText.substring(0, 200),
+                        content_summary: String(contentText || '').substring(0, 200),
                         participants: [msg.role],
                         tool_details: null,
                         // Nouvelles métadonnées enrichies
@@ -303,6 +309,15 @@ export async function indexTask(taskId: string, taskPath: string): Promise<Point
         // 4. Insertion par paquets dans Qdrant
         const qdrantProcessor = async (batch: PointStruct[]): Promise<PointStruct[]> => {
             const qdrant = getQdrantClient();
+            // --- AJOUT DE LOGS POUR LE DÉBOGAGE ---
+            if (batch.length > 0) {
+                const samplePoint = { ...batch[0] };
+                // @ts-ignore
+                delete samplePoint.vector; // Supprimer le vecteur pour la lisibilité
+                console.log(`[DEBUG QDRANT] Preparing to upsert batch of ${batch.length} points.`);
+                console.log(`[DEBUG QDRANT] Full sample point (minus vector): ${JSON.stringify(samplePoint, null, 2)}`);
+            }
+            // --- FIN DES LOGS DE DÉBOGAGE ---
             await qdrant.upsert(COLLECTION_NAME, {
                 wait: true,
                 points: batch,

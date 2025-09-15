@@ -141,9 +141,9 @@ async function getPackageInfo(mcpPath: string): Promise<string> {
     }
 }
 
-export const getMcpDevDocs = {
-    name: 'get_mcp_dev_docs',
-    description: '🔧 **OUTIL EXPERT DE DÉVELOPPEMENT MCP** - Guide complet de debugging MCP basé sur l\'expérience SDDD réelle. Fournit workflows systématiques, patterns éprouvés, et arborescence de développement pour agents externes.',
+export const getMcpBestPractices = {
+    name: 'get_mcp_best_practices',
+    description: '📚 **BONNES PRATIQUES MCP** - Guide de référence sur les patterns de configuration et de débogage pour les MCPs, basé sur l\'expérience de stabilisation. Inclut des recommandations essentielles pour la maintenabilité et la performance.',
     inputSchema: {
         type: 'object',
         properties: {
@@ -167,10 +167,6 @@ export const getMcpDevDocs = {
             combinedContent += `**Application:** Version ultra-minimale → ajout progressif → identification du point de blocage\n`;
             combinedContent += `**Exemple vécu:** timeout 60s même avec \`return {}\` immédiat = problème d'infrastructure\n\n`;
             
-            combinedContent += `### 🔄 2. Pattern "Force Reload Critical"\n`;
-            combinedContent += `**Problème:** Modifications MCP non prises en compte sans rechargement forcé\n`;
-            combinedContent += `**Solution:** \`touch_mcp_settings\` obligatoire après chaque modification\n`;
-            combinedContent += `**Fréquence:** 100% des cas de modification de code MCP\n\n`;
             
             combinedContent += `### 🛡️ 3. Pattern "Exception Wrapping"\n`;
             combinedContent += `**Technique:** Try/catch avec fallback gracieux et diagnostic détaillé\n`;
@@ -216,6 +212,19 @@ export const getMcpDevDocs = {
             combinedContent += `- **Timeout -32001:** Signature d'erreur MCP standard\n\n`;
             
             // === SECTION 5: BONNES PRATIQUES ===
+            combinedContent += `## ⚙️ CONFIGURATION MCP ESSENTIELLE\n\n`;
+            combinedContent += `### **\`watchPaths\` : Le Pilier du Hot-Reload**\n`;
+            combinedContent += `**Principe:** Déclare les fichiers/dossiers dont le changement doit déclencher un redémarrage automatique du MCP.\n`;
+            combinedContent += `**Où:** Dans \`mcp_settings.json\`, sous la configuration du serveur.\n`;
+            combinedContent += `**Exemple:** \`"watchPaths": ["d:/roo-extensions/mcps/internal/servers/roo-state-manager/build/index.js"]\`\n`;
+            combinedContent += `**IMPERATIF:** Sans cela, le MCP exécutera une version obsolète du code après une modification, même si la compilation a réussi. C'est la cause N°1 des bugs "fantômes".\n\n`;
+            
+            combinedContent += `### **\`cwd\` : Assurer des Chemins Relatifs Stables**\n`;
+            combinedContent += `**Principe:** Définit le répertoire de travail ("current working directory") du MCP.\n`;
+            combinedContent += `**Où:** Dans \`mcp_settings.json\`, sous \`options\` pour le serveur.\n`;
+            combinedContent += `**Exemple:** \`"options": { "cwd": "d:/roo-extensions/mcps/internal/servers/roo-state-manager" }\`\n`;
+            combinedContent += `**IMPERATIF:** Essentiel pour tous les MCPs qui utilisent des chemins relatifs pour accéder à des fichiers (logs, templates, etc.). Garantit que le MCP fonctionne quel que soit l'endroit d'où il est lancé.\n\n`;
+
             combinedContent += `## 💡 BONNES PRATIQUES VALIDÉES\n\n`;
             combinedContent += `### ✅ Toujours faire:\n`;
             combinedContent += `- Test avec outils de diagnostic d'abord\n`;

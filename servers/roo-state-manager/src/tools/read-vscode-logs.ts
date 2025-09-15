@@ -52,70 +52,103 @@ export const readVscodeLogs = {
             filter: { type: 'string', description: 'A keyword or regex to filter log lines.' },
         },
     },
-       async handler(args: { lines?: number; filter?: string }): Promise<CallToolResult> {
-           const lineCount = args.lines || 100;
-           const { filter } = args;
-           const rootLogsPath = path.join(process.env.APPDATA || '', 'Code', 'logs');
-           const debugLog: string[] = [`[DEBUG] Smart Log Search starting in: ${rootLogsPath}`];
-   
-           if (!process.env.APPDATA) {
-               return { content: [{ type: 'text' as const, text: 'APPDATA environment variable not set. Cannot find logs directory.' }] };
-           }
-   
-           try {
-               const sessionDirs = await fs.readdir(rootLogsPath, { withFileTypes: true });
-               let latestRooLog = { path: '', mtime: new Date(0) };
-               
-               debugLog.push(`[DEBUG] Found ${sessionDirs.length} total entries. Filtering for session directories...`);
-   
-               for (const sessionDir of sessionDirs) {
-                   if (sessionDir.isDirectory() && /^\d{8}T\d{6}$/.test(sessionDir.name)) {
-                       const sessionPath = path.join(rootLogsPath, sessionDir.name);
-                       //debugLog.push(`[DEBUG] Scanning session: ${sessionPath}`);
-                       const windowDirs = await fs.readdir(sessionPath, { withFileTypes: true }).catch(() => []);
-   
-                       for (const windowDir of windowDirs) {
-                           if (windowDir.isDirectory() && windowDir.name.startsWith('window')) {
-                               const exthostPath = path.join(sessionPath, windowDir.name, 'exthost');
-                               const outputDirs = await fs.readdir(exthostPath, { withFileTypes: true }).catch(() => []);
-   
-                               for (const outputDir of outputDirs) {
-                                   if (outputDir.isDirectory() && outputDir.name.startsWith('output_logging_')) {
-                                       const rooLogPath = path.join(exthostPath, outputDir.name, '1-Roo-Code.log');
-                                       try {
-                                           const stats = await fs.stat(rooLogPath);
-                                           if (stats.mtime > latestRooLog.mtime) {
-                                               latestRooLog = { path: rooLogPath, mtime: stats.mtime };
-                                               debugLog.push(`[DEBUG] Found newer Roo log: ${rooLogPath} (Modified: ${stats.mtime.toISOString()})`);
-                                           }
-                                       } catch (e) {
-                                           // File doesn't exist, ignore
-                                       }
-                                   }
-                               }
-                           }
-                       }
-                   }
-               }
-   
-               if (!latestRooLog.path) {
-                   debugLog.push('[DEBUG] No Roo-Code.log file found across all session directories.');
-                   return { content: [{ type: 'text' as const, text: `No Roo-Code.log found.\n\n${debugLog.join('\n')}` }] };
-               }
-   
-               debugLog.push(`[DEBUG] Final selection for latest log: ${latestRooLog.path}`);
-               const logContent = await readLastLines(latestRooLog.path, lineCount, filter);
-               const resultText = `--- LOG: Roo-Code (Latest) ---\nPath: ${latestRooLog.path}\n\n${logContent}`;
-               
-               // Append debug log if filter is not set, to aid in debugging the tool itself
-               const finalResult = filter ? resultText : `${resultText}\n\n--- DEBUG LOG ---\n${debugLog.join('\n')}`;
-   
-               return { content: [{ type: 'text' as const, text: finalResult }] };
-   
-           } catch (error) {
-               const errorMessage = `Failed to read VS Code logs: ${(error as Error).stack}\n\nDEBUG LOG:\n${debugLog.join('\n')}`;
-               console.error(errorMessage);
-               return { content: [{ type: 'text' as const, text: errorMessage }] };
-           }
+    async handler(args: { lines?: number; filter?: string }): Promise<CallToolResult> {
+        const lineCount = args.lines || 100;
+        const { filter } = args;
+        const rootLogsPath = path.join(process.env.APPDATA || '', 'Code', 'logs');
+        const debugLog: string[] = [`[DEBUG] Smart Log Search starting in: ${rootLogsPath}`];
+
+        if (!process.env.APPDATA) {
+            return { content: [{ type: 'text' as const, text: 'APPDATA environment variable not set. Cannot find logs directory.' }] };
+        }
+
+        try {
+            const sessionDirs = (await fs.readdir(rootLogsPath, { withFileTypes: true }))
+                .filter(d => d.isDirectory() && /^\d{8}T\d{6}$/.test(d.name))
+                .sort((a, b) => b.name.localeCompare(a.name)); // Sort descending to get latest first
+
+            debugLog.push(`[DEBUG] Found ${sessionDirs.length} session directories.`);
+
+            let allLogsContent: { title: string; path: string; content: string }[] = [];
+            let foundLogs = false;
+
+            // Find the most recent session that has window logs
+            for (const sessionDir of sessionDirs) {
+                const sessionPath = path.join(rootLogsPath, sessionDir.name);
+                const windowDirs = (await fs.readdir(sessionPath, { withFileTypes: true }).catch(() => []))
+                    .filter(d => d.isDirectory() && d.name.startsWith('window'))
+                    .sort((a, b) => b.name.localeCompare(a.name));
+
+                if (windowDirs.length > 0) {
+                    const latestWindowPath = path.join(sessionPath, windowDirs[0].name); // Most recent window in the session
+                    debugLog.push(`[DEBUG] Processing latest window: ${latestWindowPath}`);
+
+                    const logTargets = [
+                        { name: 'Renderer', file: 'renderer.log' },
+                        { name: 'Extension Host', file: 'exthost.log' },
+                        { name: 'Main', file: 'main.log' }
+                    ];
+
+                    // Standard Logs
+                    for (const target of logTargets) {
+                        const logPath = path.join(latestWindowPath, target.file);
+                        try {
+                            await fs.access(logPath); // Check if file exists
+                            const content = await readLastLines(logPath, lineCount, filter);
+                            allLogsContent.push({ title: target.name, path: logPath, content });
+                            foundLogs = true;
+                        } catch (e) { /* File doesn't exist, ignore */ }
+                    }
+
+                    // Roo-Code Output Log (special search)
+                    const exthostPath = path.join(latestWindowPath, 'exthost');
+                    const outputDirs = (await fs.readdir(exthostPath, { withFileTypes: true }).catch(() => []))
+                        .filter(d => d.isDirectory() && d.name.startsWith('output_logging_'));
+
+                    let latestRooLog = { path: '', mtime: new Date(0) };
+                    for (const outputDir of outputDirs) {
+                        const logFilesPath = path.join(exthostPath, outputDir.name);
+                        const logFiles = await fs.readdir(logFilesPath, { withFileTypes: true }).catch(() => []);
+                        for (const logFile of logFiles) {
+                            if (logFile.isFile() && /\d+-Roo-Code\.log$/.test(logFile.name)) {
+                                const rooLogPath = path.join(logFilesPath, logFile.name);
+                                const stats = await fs.stat(rooLogPath);
+
+                                if (stats.mtime > latestRooLog.mtime) {
+                                    latestRooLog = { path: rooLogPath, mtime: stats.mtime };
+                                }
+                            }
+                        }
+                    }
+
+                    if (latestRooLog.path) {
+                        const content = await readLastLines(latestRooLog.path, lineCount, filter);
+                        allLogsContent.push({ title: 'Roo-Code Output Channel', path: latestRooLog.path, content });
+                        foundLogs = true;
+                    }
+                    
+                    // Break after processing the first valid session
+                    if(foundLogs) break;
+                }
+            }
+            
+            if (!foundLogs) {
+                 return { content: [{ type: 'text' as const, text: `No relevant VS Code logs found.\n\n${debugLog.join('\n')}` }] };
+            }
+
+            let resultText = allLogsContent.map(log =>
+                `--- LOG: ${log.title} ---\nPath: ${log.path}\n\n${log.content}`
+            ).join('\n\n');
+
+            // Append debug log if filter is not set
+            const finalResult = filter ? resultText : `${resultText}\n\n--- DEBUG LOG ---\n${debugLog.join('\n')}`;
+
+            return { content: [{ type: 'text' as const, text: finalResult }] };
+
+        } catch (error) {
+            const errorMessage = `Failed to read VS Code logs: ${(error as Error).stack}\n\nDEBUG LOG:\n${debugLog.join('\n')}`;
+            console.error(errorMessage);
+            return { content: [{ type: 'text' as const, text: errorMessage }] };
+        }
     },
 };
