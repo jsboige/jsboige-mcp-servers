@@ -26,18 +26,6 @@ from pydantic import Field
 mcp = FastMCP("Jupyter-Papermill MCP Server")
 
 
-# FONCTION COMMENTÉE - CAUSAIT DES TIMEOUTS AVEC SES SUBPROCESS CALLS
-# def _collect_execution_diagnostic() -> Dict[str, Any]:
-#     """Collecte des informations de diagnostic pour le debug des problèmes .NET Interactive"""
-#     # Cette fonction utilisait des subprocess calls lourds :
-#     # - subprocess.run(['powershell', '-c', 'Get-Date ...'])
-#     # - subprocess.run(['dotnet', '--version'], ...)
-#     # - subprocess.run(['dotnet', 'tool', 'list', '-g'], ...)
-#     #
-#     # Ces appels cumulés causaient des timeouts de 60+ secondes
-#     # Remplacée par system_info() qui est optimisée et rapide
-
-
 @mcp.tool()
 def list_kernels() -> List[Dict[str, Any]]:
     """Liste tous les kernels Jupyter disponibles en utilisant l'API Python directe"""
@@ -145,29 +133,10 @@ def execute_notebook_solution_a(
     notebook_path: str = Field(description="Chemin du notebook à exécuter"),
     output_path: str = Field(default="", description="Chemin de sortie (optionnel)")
 ) -> Dict[str, Any]:
-    """SOLUTION A - Nouveau nom pour éviter conflit avec ancienne version"""
-    
-    # Test avec nom de fonction différent pour vérifier si le serveur utilise bien ma version
-    return {
-        "status": "solution_a_test",
-        "message": "SOLUTION A - Fonction avec nouveau nom fonctionne",
-        "input_path": notebook_path,
-        "output_path": output_path if output_path else notebook_path.replace('.ipynb', '_executed.ipynb'),
-        "timestamp": datetime.datetime.now().isoformat()
-    }
-
-@mcp.tool()
-def execute_notebook(
-    notebook_path: str = Field(description="Chemin du notebook à exécuter"),
-    output_path: str = Field(default="", description="Chemin de sortie (optionnel)")
-) -> Dict[str, Any]:
-    """SOLUTION A - Exécute un notebook via l'API Papermill directe (remplace subprocess conda)"""
+    """SOLUTION A - API Papermill directe (remplace subprocess conda run)"""
     try:
         if not output_path:
-            output_path = notebook_path.replace('.ipynb', '_executed.ipynb')
-        
-        # SOLUTION A: Appel direct API Papermill (remplace subprocess conda)
-        # Avantages: Plus rapide, pas de subprocess timeout, gestion d'erreurs robuste
+            output_path = notebook_path.replace('.ipynb', '_executed_solution_a.ipynb')
         
         # Diagnostic avant exécution
         diagnostic_info = {
@@ -177,14 +146,13 @@ def execute_notebook(
             "papermill_version": getattr(pm, '__version__', 'unknown')
         }
         
-        # Exécution directe avec Papermill Python API
+        # Exécution directe avec l'API Papermill (remplace subprocess conda run)
         start_time = datetime.datetime.now()
         
         pm.execute_notebook(
             input_path=notebook_path,
             output_path=output_path,
-            parameters=None,     # Pas de paramètres pour execute_notebook simple
-            kernel_name=None,    # Auto-détection du kernel
+            kernel_name=None,   # Auto-détection du kernel
             progress_bar=True,
             log_output=True,
             cwd=None
@@ -205,7 +173,6 @@ def execute_notebook(
         }
         
     except PapermillExecutionError as e:
-        # Erreur spécifique d'exécution Papermill (kernel crash, erreur code, etc.)
         return {
             "status": "error",
             "error": f"Erreur d'exécution Papermill: {str(e)}",
@@ -213,7 +180,6 @@ def execute_notebook(
             "method": "papermill_direct_api"
         }
     except PapermillException as e:
-        # Autres erreurs Papermill (fichier non trouvé, format invalide, etc.)
         return {
             "status": "error",
             "error": f"Erreur Papermill: {str(e)}",
@@ -221,10 +187,75 @@ def execute_notebook(
             "method": "papermill_direct_api"
         }
     except Exception as e:
-        # Erreur générique
         return {
             "status": "error",
-            "error": f"Erreur générique: {str(e)}",
+            "error": f"Erreur: {str(e)}",
+            "error_type": type(e).__name__,
+            "method": "papermill_direct_api"
+        }
+
+@mcp.tool()
+def execute_notebook(
+    notebook_path: str = Field(description="Chemin du notebook à exécuter"),
+    output_path: str = Field(default="", description="Chemin de sortie (optionnel)")
+) -> Dict[str, Any]:
+    """Exécute notebook via API Papermill directe (remplace subprocess conda run)"""
+    try:
+        if not output_path:
+            output_path = notebook_path.replace('.ipynb', '_executed.ipynb')
+        
+        # Diagnostic avant exécution
+        diagnostic_info = {
+            "method": "papermill_direct_api",
+            "cwd": os.getcwd(),
+            "python_env": sys.executable,
+            "papermill_version": getattr(pm, '__version__', 'unknown')
+        }
+        
+        # Exécution directe avec l'API Papermill (remplace subprocess conda run)
+        start_time = datetime.datetime.now()
+        
+        pm.execute_notebook(
+            input_path=notebook_path,
+            output_path=output_path,
+            kernel_name=None,   # Auto-détection du kernel
+            progress_bar=True,
+            log_output=True,
+            cwd=None
+        )
+        
+        end_time = datetime.datetime.now()
+        execution_time = (end_time - start_time).total_seconds()
+        
+        return {
+            "status": "success",
+            "input_path": notebook_path,
+            "output_path": output_path,
+            "message": "Notebook exécuté avec succès via API Papermill directe",
+            "method": "papermill_direct_api",
+            "execution_time_seconds": execution_time,
+            "diagnostic": diagnostic_info,
+            "timestamp": end_time.isoformat()
+        }
+        
+    except PapermillExecutionError as e:
+        return {
+            "status": "error",
+            "error": f"Erreur d'exécution Papermill: {str(e)}",
+            "error_type": "PapermillExecutionError",
+            "method": "papermill_direct_api"
+        }
+    except PapermillException as e:
+        return {
+            "status": "error",
+            "error": f"Erreur Papermill: {str(e)}",
+            "error_type": "PapermillException",
+            "method": "papermill_direct_api"
+        }
+    except Exception as e:
+        return {
+            "status": "error",
+            "error": f"Erreur: {str(e)}",
             "error_type": type(e).__name__,
             "method": "papermill_direct_api"
         }
@@ -474,9 +505,6 @@ def validate_notebook(
     except Exception as e:
         return {"status": "error", "error": str(e)}
 
-
-# ANCIENNE FONCTION diagnose_environment COMMENTÉE - CAUSAIT DES TIMEOUTS
-# Elle utilisait des subprocess calls qui prenaient trop de temps
 
 @mcp.tool()
 def system_info() -> Dict[str, Any]:

@@ -287,16 +287,23 @@ class PapermillExecutor:
                 errors=[error_msg]
             )
     
-    def _execute_papermill_sync(self, 
-                               input_path: str, 
+    def _execute_papermill_sync(self,
+                               input_path: str,
                                output_path: str,
                                parameters: Optional[Dict[str, Any]],
                                kernel: str,
                                timeout: int,
                                metrics: ExecutionMetrics) -> ExecutionResult:
-        """Synchronous Papermill execution with metrics collection."""
+        """Synchronous Papermill execution - SOLUTION SIMPLIFIEE sans isolation."""
         
         try:
+            # SOLUTION FINALE: Seulement Working Directory comme papermill-coursia
+            notebook_dir = os.path.dirname(os.path.abspath(input_path))
+            original_cwd = os.getcwd()
+            os.chdir(notebook_dir)
+            
+            self.logger.info(f"📁 Working directory: {notebook_dir}")
+            
             # Configure Papermill parameters
             pm_kwargs = {
                 'input_path': input_path,
@@ -308,9 +315,16 @@ class PapermillExecutor:
                 'request_timeout': timeout
             }
             
-            # Execute with timing
+            # Execute with timing - SANS MODIFICATION D'ENVIRONNEMENT
             start_exec = time.time()
-            result_nb = pm.execute_notebook(**pm_kwargs)
+            
+            try:
+                # .NET Interactive fonctionne normalement comme prouvé par papermill-coursia
+                result_nb = pm.execute_notebook(**pm_kwargs)
+            finally:
+                # Restauration working directory original
+                os.chdir(original_cwd)
+            
             end_exec = time.time()
             
             # Calculate metrics
