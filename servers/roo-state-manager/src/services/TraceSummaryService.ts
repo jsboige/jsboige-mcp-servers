@@ -819,9 +819,12 @@ export class TraceSummaryService {
             generateToc: options.generateToc !== undefined ? options.generateToc : true,
             outputFormat: options.outputFormat || 'markdown',
             jsonVariant: options.jsonVariant,
-            csvVariant: options.csvVariant
+            csvVariant: options.csvVariant,
+            // SDDD Phase 3: Feature flag pour les strategies (désactivé par défaut pour compatibilité)
+            enableDetailLevels: options.enableDetailLevels || false
         };
         console.log('🔍 DEBUG mergeWithDefaultOptions - result.jsonVariant:', result.jsonVariant);
+        console.log('🔍 DEBUG mergeWithDefaultOptions - result.enableDetailLevels:', result.enableDetailLevels);
         return result;
     }
 

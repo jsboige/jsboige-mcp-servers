@@ -12,6 +12,7 @@ import { MessagesReportingStrategy } from './strategies/MessagesReportingStrateg
 import { SummaryReportingStrategy } from './strategies/SummaryReportingStrategy.js';
 import { NoToolsReportingStrategy } from './strategies/NoToolsReportingStrategy.js';
 import { NoResultsReportingStrategy } from './strategies/NoResultsReportingStrategy.js';
+import { UserOnlyReportingStrategy } from './strategies/UserOnlyReportingStrategy.js';
 
 /**
  * Factory pour créer les stratégies de reporting
@@ -23,7 +24,7 @@ export class DetailLevelStrategyFactory {
         ['Summary', () => new SummaryReportingStrategy()],
         ['NoTools', () => new NoToolsReportingStrategy()],
         ['NoResults', () => new NoResultsReportingStrategy()],
-        ['UserOnly', () => new SummaryReportingStrategy()] // Temporaire - à implémenter
+        ['UserOnly', () => new UserOnlyReportingStrategy()]
     ]);
 
     /**

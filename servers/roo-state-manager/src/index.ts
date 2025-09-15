@@ -654,6 +654,11 @@ class RooStateManagerServer {
     }
 
     async handleListConversations(args: { limit?: number, sortBy?: 'lastActivity' | 'messageCount' | 'totalSize', sortOrder?: 'asc' | 'desc', workspace?: string }): Promise<CallToolResult> {
+        console.log('[TOOL] list_conversations called with:', JSON.stringify(args));
+        
+        // **FAILSAFE: Vérifier la fraîcheur du cache skeleton avant utilisation**
+        await this._ensureSkeletonCacheIsFresh();
+        
         interface SkeletonNode extends ConversationSkeleton {
             firstUserMessage?: string; // Premier message utilisateur ajouté
             isCompleted?: boolean; // Flag de terminaison
@@ -2300,6 +2305,148 @@ class RooStateManagerServer {
         }
 
         throw new Error(`Task with ID '${taskId}' not found in any storage location.`);
+    }
+
+    /**
+     * FAILSAFE: Ensure skeleton cache is fresh and up-to-date
+     * Vérifie si le cache des squelettes est à jour et déclenche une reconstruction différentielle si nécessaire
+     */
+    private async _ensureSkeletonCacheIsFresh(): Promise<boolean> {
+        try {
+            console.log('[FAILSAFE] Checking skeleton cache freshness...');
+            
+            // Vérifier si le cache est vide - reconstruction nécessaire
+            if (this.conversationCache.size === 0) {
+                console.log('[FAILSAFE] Cache empty, triggering differential rebuild...');
+                await this.handleBuildSkeletonCache({ force_rebuild: false });
+                return true;
+            }
+            
+            // Vérifier si des nouvelles conversations existent depuis la dernière mise à jour
+            const storageLocations = await RooStorageDetector.detectStorageLocations();
+            if (storageLocations.length === 0) {
+                console.log('[FAILSAFE] No storage locations found');
+                return false;
+            }
+            
+            let needsUpdate = false;
+            const now = Date.now();
+            const CACHE_VALIDITY_MS = 5 * 60 * 1000; // 5 minutes
+            
+            // Vérifier les modifications récentes dans chaque emplacement
+            for (const location of storageLocations) {
+                try {
+                    const conversationDirs = await fs.readdir(location, { withFileTypes: true });
+                    
+                    for (const convDir of conversationDirs.slice(0, 10)) { // Limite à 10 pour performance
+                        if (convDir.isDirectory() && convDir.name !== '.skeletons') {
+                            const taskPath = path.join(location, convDir.name);
+                            const metadataPath = path.join(taskPath, 'task_metadata.json');
+                            
+                            try {
+                                const metadataStat = await fs.stat(metadataPath);
+                                const ageMs = now - metadataStat.mtime.getTime();
+                                
+                                // Si metadata récent ET pas dans le cache
+                                if (ageMs < CACHE_VALIDITY_MS && !this.conversationCache.has(convDir.name)) {
+                                    console.log(`[FAILSAFE] New task detected: ${convDir.name}, age: ${Math.round(ageMs/1000)}s`);
+                                    needsUpdate = true;
+                                    break;
+                                }
+                            } catch (statError) {
+                                // Ignorer les erreurs de stat
+                            }
+                        }
+                    }
+                    
+                    if (needsUpdate) break;
+                } catch (readdirError) {
+                    console.warn(`[FAILSAFE] Could not read directory ${location}:`, readdirError);
+                }
+            }
+            
+            // Déclencher reconstruction différentielle si nécessaire
+            if (needsUpdate) {
+                console.log('[FAILSAFE] Cache outdated, triggering differential rebuild...');
+                await this.handleBuildSkeletonCache({ force_rebuild: false });
+                return true;
+            }
+            
+            console.log('[FAILSAFE] Skeleton cache is fresh');
+            return false;
+            
+        } catch (error) {
+            console.error('[FAILSAFE] Error checking skeleton cache freshness:', error);
+            return false;
+        }
+    }
+
+    /**
+     * FAILSAFE: Ensure Qdrant index is fresh and available
+     * Vérifie si l'index Qdrant est à jour et déclenche une réindexation si nécessaire
+     */
+    private async _ensureQdrantIndexIsFresh(): Promise<boolean> {
+        try {
+            console.log('[FAILSAFE] Checking Qdrant index freshness...');
+            
+            const collectionName = process.env.QDRANT_COLLECTION_NAME || 'roo_tasks_semantic_index';
+            
+            try {
+                const qdrant = getQdrantClient();
+                const collectionInfo = await qdrant.getCollection(collectionName);
+                console.log(`[FAILSAFE] Qdrant collection "${collectionName}" exists with ${collectionInfo.vectors_count} vectors`);
+                
+                // Vérifier si nous avons des squelettes non indexés
+                let unindexedCount = 0;
+                const now = Date.now();
+                const INDEX_VALIDITY_MS = 10 * 60 * 1000; // 10 minutes
+                
+                for (const [taskId, skeleton] of this.conversationCache.entries()) {
+                    const lastIndexed = skeleton.metadata?.qdrantIndexedAt;
+                    if (!lastIndexed) {
+                        unindexedCount++;
+                    } else {
+                        const indexAge = now - new Date(lastIndexed).getTime();
+                        if (indexAge > INDEX_VALIDITY_MS) {
+                            unindexedCount++;
+                        }
+                    }
+                    
+                    // Limite de vérification pour performance
+                    if (unindexedCount > 5) break;
+                }
+                
+                // Déclencher réindexation si nécessaire
+                if (unindexedCount > 0) {
+                    console.log(`[FAILSAFE] Found ${unindexedCount}+ tasks needing indexation, triggering background indexing...`);
+                    
+                    // Ajouter les tâches non indexées à la queue
+                    let tasksQueued = 0;
+                    for (const [taskId, skeleton] of this.conversationCache.entries()) {
+                        const lastIndexed = skeleton.metadata?.qdrantIndexedAt;
+                        if (!lastIndexed || (now - new Date(lastIndexed).getTime()) > INDEX_VALIDITY_MS) {
+                            this.qdrantIndexQueue.add(taskId);
+                            tasksQueued++;
+                            if (tasksQueued >= 10) break; // Limite pour éviter la surcharge
+                        }
+                    }
+                    
+                    console.log(`[FAILSAFE] Queued ${tasksQueued} tasks for indexation`);
+                    return true;
+                }
+                
+                console.log('[FAILSAFE] Qdrant index is fresh');
+                return false;
+                
+            } catch (collectionError) {
+                console.log(`[FAILSAFE] Qdrant collection "${collectionName}" not found or inaccessible:`, collectionError);
+                return false;
+            }
+            
+        } catch (error) {
+            console.error('[FAILSAFE] Error checking Qdrant index freshness:', error);
+            return false;
+        }
     }
 
     /**
