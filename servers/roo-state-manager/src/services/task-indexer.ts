@@ -166,7 +166,7 @@ async function extractChunksFromTask(taskId: string, taskPath: string): Promise<
                         chunk_type: 'tool_interaction',
                         sequence_order: sequenceOrder++,
                         timestamp: msg.timestamp || new Date().toISOString(),
-                        indexed: false,
+                        indexed: true,
                         content: `Tool call: ${toolCall.function.name} with args ${toolCall.function.arguments}`,
                         tool_details: {
                             tool_name: toolCall.function.name,
