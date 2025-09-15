@@ -61,7 +61,7 @@ export class RooStorageDetector {
       try {
         const isValid = await this.validateCustomPath(locationPath);
         if (isValid) {
-          validatedPaths.push(path.join(locationPath, 'tasks'));
+          validatedPaths.push(locationPath);
         }
       } catch (error) {
         // Ignorer les erreurs de validation pour un seul chemin
@@ -168,8 +168,8 @@ export class RooStorageDetector {
    */
   public static async findConversationById(taskId: string): Promise<ConversationSummary | null> {
       const storageLocations = await this.detectStorageLocations();
-      for (const storagePath of storageLocations) {
-          const taskPath = path.join(storagePath, taskId);
+      for (const locationPath of storageLocations) {
+          const taskPath = path.join(locationPath, 'tasks', taskId);
           try {
               const stats = await fs.stat(taskPath);
               if (stats.isDirectory()) {
@@ -358,7 +358,11 @@ export class RooStorageDetector {
         let extractedWorkspace: string | undefined = undefined;
         if (apiHistoryStats) {
             try {
-                const apiContent = await fs.readFile(apiHistoryPath, 'utf-8');
+                let apiContent = await fs.readFile(apiHistoryPath, 'utf-8');
+                // Nettoyage explicite du BOM (Byte Order Mark)
+                if (apiContent.charCodeAt(0) === 0xFEFF) {
+                    apiContent = apiContent.slice(1);
+                }
                 const apiData = JSON.parse(apiContent);
                 const messages = Array.isArray(apiData) ? apiData : (apiData?.messages || []);
                 
@@ -494,14 +498,22 @@ export class RooStorageDetector {
     // Helper pour lire et parser un fichier JSON en toute sécurité
     const readJsonFile = async (filePath: string): Promise<any[]> => {
       try {
-        const content = await fs.readFile(filePath, 'utf-8');
+        let content = await fs.readFile(filePath, 'utf-8');
+        // Nettoyage explicite du BOM (Byte Order Mark) qui peut faire planter JSON.parse
+        if (content.charCodeAt(0) === 0xFEFF) {
+            content = content.slice(1);
+        }
         // Le fichier peut être une seule ligne contenant un tableau JSON, ou un JSON avec une propriété "messages"
         const data = JSON.parse(content);
         return Array.isArray(data) ? data : (data?.messages || []);
       } catch (e) {
         // Tenter de lire comme un JSONL (JSON par ligne) en cas d'échec du parsing global
         try {
-          const content = await fs.readFile(filePath, 'utf-8');
+          let content = await fs.readFile(filePath, 'utf-8');
+          // Nettoyage du BOM aussi pour le mode JSONL
+          if (content.charCodeAt(0) === 0xFEFF) {
+              content = content.slice(1);
+          }
           return content.split('\\n').filter(line => line.trim() !== '').map(line => JSON.parse(line));
         } catch (jsonlError) {
           return []; // Retourne un tableau vide si les deux méthodes échouent
@@ -607,7 +619,9 @@ export class RooStorageDetector {
     let totalSize = 0;
 
     for (const loc of locations) {
-        const stats = await this.getStatsForPath(loc);
+        // loc est le chemin de base du stockage, il faut ajouter 'tasks'
+        const tasksPath = path.join(loc, 'tasks');
+        const stats = await this.getStatsForPath(tasksPath);
         totalConversations += stats.conversationCount;
         totalSize += stats.totalSize;
     }

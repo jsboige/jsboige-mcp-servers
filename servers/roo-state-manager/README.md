@@ -10,6 +10,39 @@ Le Roo State Manager résout les problèmes de perte de conversations Roo en fou
 - Sauvegarde et restauration des données
 - Interface MCP pour l'intégration avec d'autres outils
 
+## 🆕 Architecture SDDD Enhanced Export
+
+**✅ NOUVELLE FONCTIONNALITÉ - DOCUMENTATION COMPLÈTE DISPONIBLE**
+
+Le Roo State Manager intègre maintenant l'architecture SDDD (Semantic-Driven Development and Documentation) qui transforme le système de génération de rapports en une plateforme flexible et extensible.
+
+### 📖 Documentation SDDD Complète
+
+Une documentation technique complète est maintenant disponible dans [`docs/`](./docs/) :
+
+- **[📋 Guide Principal](./docs/README.md)** - Index complet de la documentation SDDD
+- **[🎯 Document de Référence](./docs/SDDD_Master_Document.md)** - Vue d'ensemble consolidée de l'architecture
+- **[🏗️ Architecture](./docs/architecture/)** - Principes et spécifications techniques
+- **[👥 Utilisation](./docs/usage/)** - Guides d'utilisation et déploiement
+- **[🔧 Maintenance](./docs/maintenance/)** - Maintenance et résolution de problèmes
+- **[📊 Rapports](./docs/reports/)** - Rapports exécutifs et validation
+
+### 🚀 Nouvelles Capacités SDDD
+
+- **6 niveaux de détail** avec ratios de compression jusqu'à 23.7x
+- **Formats HTML et Markdown** avec CSS avancé et navigation interactive
+- **Architecture modulaire extensible** basée sur le Strategy Pattern
+- **Génération de grappes de tâches** pour l'analyse de workflows complexes
+- **Performance optimisée** : <305ms pour tous les scénarios
+- **Rétrocompatibilité totale** préservée
+
+### 🎯 Exemples de Démarrage Rapide
+
+Voir [`examples/`](./examples/) pour les scripts de démonstration :
+- **[demo-sddd-complete.js](./examples/demo-sddd-complete.js)** - Démonstration complète des fonctionnalités
+- **[performance-benchmark.js](./examples/performance-benchmark.js)** - Benchmarks de performance
+- **[Rapport de validation](./examples/validation/SDDD-Checkpoint1-Validation-Report.md)** - Validation technique complète
+
 ## 📁 Structure du Projet
 
 ```

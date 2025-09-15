@@ -48,6 +48,7 @@ export interface ConversationSkeleton {
     totalSize: number; // Taille totale de la conversation sur le disque
      workspace?: string;
      qdrantIndexedAt?: string; // Timestamp de la dernière indexation Qdrant réussie
+     dataSource?: string; // Source des données pour le debug
    };
   // Une séquence combinée et ordonnée de messages et d'actions.
   sequence: (MessageSkeleton | ActionMetadata)[];

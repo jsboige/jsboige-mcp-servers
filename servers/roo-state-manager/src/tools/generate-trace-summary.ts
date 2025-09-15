@@ -131,17 +131,33 @@ if (!result.success) {
 // Si filePath est fourni, sauvegarder le fichier
 if (args.filePath) {
     try {
+        // Résoudre le chemin absolu
+        const absolutePath = path.resolve(args.filePath);
+        console.log(`[DEBUG] Chemin de fichier demandé: ${args.filePath}`);
+        console.log(`[DEBUG] Chemin absolu résolu: ${absolutePath}`);
+        
         // Créer les répertoires parent si nécessaire
-        const dirPath = path.dirname(args.filePath);
+        const dirPath = path.dirname(absolutePath);
+        console.log(`[DEBUG] Répertoire parent: ${dirPath}`);
+        
         await fs.mkdir(dirPath, { recursive: true });
+        console.log(`[DEBUG] Répertoire créé ou existe: ${dirPath}`);
         
         // Sauvegarder le contenu
-        await fs.writeFile(args.filePath, result.content, 'utf8');
+        await fs.writeFile(absolutePath, result.content, 'utf8');
+        console.log(`[DEBUG] Fichier écrit avec succès: ${absolutePath}`);
+        
+        // Vérifier que le fichier existe
+        const fileExists = await fs.access(absolutePath).then(() => true).catch(() => false);
+        console.log(`[DEBUG] Vérification existence fichier: ${fileExists}`);
         
         // Retourner une confirmation
         return [
             `**Résumé généré avec succès pour la tâche ${args.taskId}**`,
-            `**Fichier sauvegardé:** ${args.filePath}`,
+            `**Source des données:** ${conversation.metadata.dataSource || 'Cache des squelettes (tâche orpheline)'}`,
+            `**Chemin de fichier demandé:** ${args.filePath}`,
+            `**Chemin absolu résolu:** ${absolutePath}`,
+            `**Fichier sauvegardé:** ${fileExists ? '✅ OUI' : '❌ NON'}`,
             ``,
             `**Statistiques:**`,
             `- Total sections: ${result.statistics.totalSections}`,

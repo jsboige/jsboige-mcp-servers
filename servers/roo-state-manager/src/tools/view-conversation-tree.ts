@@ -18,34 +18,41 @@ function truncateMessage(message: string, truncate: number): string {
 }
 
 /**
- * Trouve la tâche la plus récente dans le cache
- */
-function findLatestTask(conversationCache: Map<string, ConversationSkeleton>): ConversationSkeleton | undefined {
-    if (conversationCache.size === 0) {
-        return undefined;
-    }
-    const validTasks = Array.from(conversationCache.values()).filter(
-        s => s.metadata && s.metadata.lastActivity
-    );
-    if (validTasks.length === 0) {
-        return undefined;
-    }
-    return validTasks.reduce((latest, current) => {
-        return new Date(latest.metadata.lastActivity) > new Date(current.metadata.lastActivity) ? latest : current;
-    });
-}
-
+ /**
+  * Trouve la tâche la plus récente dans le cache, optionnellement filtrée par workspace
+  */
+ function findLatestTask(conversationCache: Map<string, ConversationSkeleton>, workspace?: string): ConversationSkeleton | undefined {
+     if (conversationCache.size === 0) {
+         return undefined;
+     }
+     let validTasks = Array.from(conversationCache.values()).filter(
+         s => s.metadata && s.metadata.lastActivity
+     );
+     
+     // Filtrer par workspace si spécifié
+     if (workspace) {
+         validTasks = validTasks.filter(s => s.metadata.workspace === workspace);
+     }
+     
+     if (validTasks.length === 0) {
+         return undefined;
+     }
+     return validTasks.reduce((latest, current) => {
+         return new Date(latest.metadata.lastActivity) > new Date(current.metadata.lastActivity) ? latest : current;
+     });
+ }
 /**
  * Logique principale pour view_conversation_tree
  */
 function handleViewConversationTreeExecution(
-    args: { 
-        task_id?: string, 
-        view_mode?: 'single' | 'chain' | 'cluster', 
-        detail_level?: 'skeleton' | 'summary' | 'full', 
-        truncate?: number, 
-        max_output_length?: number 
-    }, 
+    args: {
+        task_id?: string,
+        workspace?: string,
+        view_mode?: 'single' | 'chain' | 'cluster',
+        detail_level?: 'skeleton' | 'summary' | 'full',
+        truncate?: number,
+        max_output_length?: number
+    },
     conversationCache: Map<string, ConversationSkeleton>
 ): CallToolResult {
     const { view_mode = 'chain', detail_level = 'skeleton', max_output_length = 150000 } = args;
@@ -65,12 +72,15 @@ function handleViewConversationTreeExecution(
                 break;
         }
     }
-    let { task_id } = args;
+    let { task_id, workspace } = args;
 
     if (!task_id) {
-        const latestTask = findLatestTask(conversationCache);
+        if (!workspace) {
+            throw new Error("Either task_id or workspace must be provided. Cannot determine target task without context.");
+        }
+        const latestTask = findLatestTask(conversationCache, workspace);
         if (!latestTask) {
-            throw new Error("Cache is empty and no task_id was provided. Cannot determine the latest task.");
+            throw new Error(`No tasks found for workspace '${workspace}'. Please verify the workspace path or provide a specific task_id.`);
         }
         task_id = latestTask.taskId;
     }
@@ -224,7 +234,8 @@ export const viewConversationTree = {
     inputSchema: {
         type: 'object',
         properties: {
-            task_id: { type: 'string', description: 'L\'ID de la tâche de départ. Si non fourni, utilise la tâche la plus récente.' },
+            task_id: { type: 'string', description: 'L\'ID de la tâche de départ. Si non fourni, workspace devient obligatoire.' },
+            workspace: { type: 'string', description: 'Chemin du workspace pour trouver la tâche la plus récente. Obligatoire si task_id non fourni.' },
             view_mode: { type: 'string', enum: ['single', 'chain', 'cluster'], default: 'chain', description: 'Le mode d\'affichage.' },
             detail_level: { type: 'string', enum: ['skeleton', 'summary', 'full'], default: 'skeleton', description: 'Niveau de détail: skeleton (métadonnées seulement), summary (résumé), full (complet).' },
             truncate: { type: 'number', default: 0, description: 'Nombre de lignes à conserver au début et à la fin de chaque message. 0 pour vue complète (défaut intelligent).' },

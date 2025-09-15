@@ -47,7 +47,7 @@ import { XmlExporterService } from './services/XmlExporterService.js';
 import { ExportConfigManager } from './services/ExportConfigManager.js';
 import { TraceSummaryService } from './services/TraceSummaryService.js';
 
-const MAX_OUTPUT_LENGTH = 100000; // Temporairement augmenté pour documentation complète
+const MAX_OUTPUT_LENGTH = 150000; // Harmonisé avec view-conversation-tree.ts pour consistance (audit 2025-09-15)
 const SKELETON_CACHE_DIR_NAME = '.skeletons';
 
 /**
@@ -169,13 +169,14 @@ class RooStateManagerServer {
                     },
                     {
                         name: 'search_tasks_semantic',
-                        description: 'Recherche des tâches de manière sémantique dans une conversation.',
+                        description: 'Recherche des tâches de manière sémantique avec filtrage par workspace et métadonnées enrichies.',
                          inputSchema: {
                             type: 'object',
                             properties: {
                                 conversation_id: { type: 'string', description: 'ID de la conversation à fouiller.' },
                                 search_query: { type: 'string', description: 'La requête de recherche sémantique.' },
                                 max_results: { type: 'number', description: 'Nombre maximum de résultats à retourner.' },
+                                workspace: { type: 'string', description: 'Filtre les résultats par workspace spécifique.' },
                                 diagnose_index: { type: 'boolean', description: 'Mode diagnostic : retourne des informations sur l\'état de l\'indexation sémantique.' },
                             },
                             required: ['search_query'],
@@ -835,7 +836,7 @@ class RooStateManagerServer {
         this.conversationCache.clear();
         const { force_rebuild = false } = args;
         
-        const locations = await RooStorageDetector.detectStorageLocations(); // This returns task paths now
+        const locations = await RooStorageDetector.detectStorageLocations(); // This returns base storage paths
         if (locations.length === 0) {
             return { content: [{ type: 'text', text: 'Storage not found. Cache not built.' }] };
         }
@@ -846,17 +847,23 @@ class RooStateManagerServer {
 
         console.log(`Starting skeleton cache build in ${mode} mode...`);
 
-        for (const loc of locations) {
-            // loc is now the tasksPath, so we need to go up one level for the skeleton dir
-            const storageDir = path.dirname(loc);
+        for (const storageDir of locations) {
+            // storageDir is the base storage path, we need to add 'tasks' to get to the tasks directory
+            const tasksDir = path.join(storageDir, 'tasks');
             const skeletonDir = path.join(storageDir, SKELETON_CACHE_DIR_NAME);
             await fs.mkdir(skeletonDir, { recursive: true });
 
-            const conversationDirs = await fs.readdir(loc, { withFileTypes: true });
+            let conversationDirs;
+            try {
+                conversationDirs = await fs.readdir(tasksDir, { withFileTypes: true });
+            } catch (error) {
+                console.warn(`Could not read tasks directory: ${tasksDir}`, error);
+                continue;
+            }
             for (const convDir of conversationDirs) {
                 if (convDir.isDirectory() && convDir.name !== SKELETON_CACHE_DIR_NAME) {
                     const conversationId = convDir.name;
-                    const taskPath = path.join(loc, conversationId);
+                    const taskPath = path.join(tasksDir, conversationId);
                     const metadataPath = path.join(taskPath, 'task_metadata.json');
                     const skeletonPath = path.join(skeletonDir, `${conversationId}.json`);
 
@@ -1088,8 +1095,8 @@ class RooStateManagerServer {
         ].join('\n');
     }
 
-    async handleSearchTasksSemantic(args: { conversation_id?: string, search_query: string, max_results?: number, diagnose_index?: boolean }): Promise<CallToolResult> {
-        const { conversation_id, search_query, max_results = 10, diagnose_index = false } = args;
+    async handleSearchTasksSemantic(args: { conversation_id?: string, search_query: string, max_results?: number, diagnose_index?: boolean, workspace?: string }): Promise<CallToolResult> {
+        const { conversation_id, search_query, max_results = 10, diagnose_index = false, workspace } = args;
         
         // Mode diagnostic - retourne des informations sur l'état de l'indexation
         if (diagnose_index) {
@@ -1129,21 +1136,34 @@ class RooStateManagerServer {
             const queryVector = embedding.data[0].embedding;
             const collectionName = process.env.QDRANT_COLLECTION_NAME || 'roo_tasks_semantic_index';
             
-            // Configuration de la recherche selon conversation_id
+            // Configuration de la recherche selon conversation_id et workspace
             let filter;
+            const filterConditions = [];
+            
             if (conversation_id && conversation_id !== 'undefined') {
+                filterConditions.push({
+                    key: "task_id",
+                    match: {
+                        value: conversation_id
+                    }
+                });
+            }
+            
+            if (workspace) {
+                filterConditions.push({
+                    key: "workspace",
+                    match: {
+                        value: workspace
+                    }
+                });
+            }
+            
+            if (filterConditions.length > 0) {
                 filter = {
-                    must: [
-                        {
-                            key: "task_id",
-                            match: {
-                                value: conversation_id
-                            }
-                        }
-                    ]
+                    must: filterConditions
                 };
             }
-            // Si pas de conversation_id, pas de filtre (recherche globale)
+            // Si pas de filtres, recherche globale
             
             const searchResults = await qdrant.search(collectionName, {
                 vector: queryVector,
@@ -1152,17 +1172,51 @@ class RooStateManagerServer {
                 with_payload: true
             });
             
+            // Obtenir l'identifiant de la machine actuelle pour l'en-tête
+            const { TaskIndexer } = await import('./services/task-indexer.js');
+            const taskIndexer = new TaskIndexer();
+            const currentHostId = taskIndexer.getCurrentHostIdentifier();
+            
             const results = searchResults.map(result => ({
                 taskId: result.payload?.task_id || 'unknown',
                 score: result.score || 0,
-                match: result.payload?.content || 'No content',
+                match: this.truncateMessage(String(result.payload?.content || 'No content'), 2),
                 metadata: {
                     chunk_id: result.payload?.chunk_id,
-                    message_type: result.payload?.message_type
+                    chunk_type: result.payload?.chunk_type,
+                    workspace: result.payload?.workspace,
+                    task_title: result.payload?.task_title || `Task ${result.payload?.task_id}`,
+                    message_index: result.payload?.message_index,
+                    total_messages: result.payload?.total_messages,
+                    role: result.payload?.role,
+                    timestamp: result.payload?.timestamp,
+                    message_position: result.payload?.message_index && result.payload?.total_messages
+                        ? `${result.payload.message_index}/${result.payload.total_messages}`
+                        : undefined,
+                    host_os: result.payload?.host_os || 'unknown'
                 }
             }));
             
-            return { content: [{ type: 'text', text: JSON.stringify(results, null, 2) }] };
+            // Créer un rapport enrichi avec contexte multi-machine
+            const searchReport = {
+                current_machine: {
+                    host_id: currentHostId,
+                    search_timestamp: new Date().toISOString(),
+                    query: search_query,
+                    results_count: results.length
+                },
+                cross_machine_analysis: {
+                    machines_found: [...new Set(results.map(r => r.metadata.host_os))],
+                    results_by_machine: results.reduce((acc: { [key: string]: number }, r: any) => {
+                        const host = r.metadata.host_os || 'unknown';
+                        acc[host] = (acc[host] || 0) + 1;
+                        return acc;
+                    }, {})
+                },
+                results: results
+            };
+            
+            return { content: [{ type: 'text', text: JSON.stringify(searchReport, null, 2) }] };
             
         } catch (semanticError) {
             console.log(`[INFO] Recherche sémantique échouée, utilisation du fallback textuel: ${semanticError instanceof Error ? semanticError.message : String(semanticError)}`);
@@ -1237,6 +1291,20 @@ class RooStateManagerServer {
         try {
             const { task_id } = args;
             
+            // Vérification des variables d'environnement
+            const openaiKey = process.env.OPENAI_API_KEY;
+            const qdrantUrl = process.env.QDRANT_URL;
+            const qdrantCollection = process.env.QDRANT_COLLECTION_NAME;
+            
+            console.log(`[DEBUG] Environment check:`);
+            console.log(`[DEBUG] OPENAI_API_KEY: ${openaiKey ? 'SET' : 'MISSING'}`);
+            console.log(`[DEBUG] QDRANT_URL: ${qdrantUrl || 'MISSING'}`);
+            console.log(`[DEBUG] QDRANT_COLLECTION_NAME: ${qdrantCollection || 'MISSING'}`);
+            
+            if (!openaiKey) {
+                throw new Error('OPENAI_API_KEY environment variable is required');
+            }
+            
             const skeleton = this.conversationCache.get(task_id);
             if (!skeleton) {
                 throw new Error(`Task with ID '${task_id}' not found in cache.`);
@@ -1249,13 +1317,16 @@ class RooStateManagerServer {
                 throw new Error(`Task directory for '${task_id}' not found in any storage location.`);
             }
             
+            console.log(`[DEBUG] Attempting to import indexTask from task-indexer.js`);
             const { indexTask } = await import('./services/task-indexer.js');
+            console.log(`[DEBUG] Import successful, calling indexTask with taskId=${task_id}, taskPath=${taskPath}`);
             const indexedPoints = await indexTask(task_id, taskPath);
+            console.log(`[DEBUG] indexTask completed, returned ${indexedPoints.length} points`);
             
             return {
                 content: [{
                     type: "text",
-                    text: `# Indexation sémantique terminée\n\n**Tâche:** ${task_id}\n**Chemin:** ${taskPath}\n**Chunks indexés:** ${indexedPoints.length}`
+                    text: `# Indexation sémantique terminée\n\n**Tâche:** ${task_id}\n**Chemin:** ${taskPath}\n**Chunks indexés:** ${indexedPoints.length}\n\n**Variables d'env:**\n- OPENAI_API_KEY: ${openaiKey ? 'SET' : 'MISSING'}\n- QDRANT_URL: ${qdrantUrl || 'MISSING'}\n- QDRANT_COLLECTION: ${qdrantCollection || 'MISSING'}`
                 }]
             };
         } catch (error) {
@@ -1688,6 +1759,7 @@ class RooStateManagerServer {
 
     /**
      * Gère la génération de résumé intelligent de trace de conversation
+     * FIX COMPLET : Utilise les données complètes en combinant ui_messages.json et api_conversation_history.json
      */
     async handleGenerateTraceSummary(args: {
         taskId: string;
@@ -1705,59 +1777,11 @@ class RooStateManagerServer {
                 throw new Error("taskId est requis");
             }
 
-            // FIX: Récupérer les données brutes COMPLÈTES au lieu du squelette condensé du cache
-            let conversation: ConversationSkeleton | null = null;
-            
-            const locations = await RooStorageDetector.detectStorageLocations();
-            for (const loc of locations) {
-                const taskPath = path.join(loc, taskId);
-                try {
-                    await fs.access(taskPath);
-                    
-                    const apiHistoryPath = path.join(taskPath, 'api_conversation_history.json');
-                    const apiHistoryContent = await fs.readFile(apiHistoryPath, 'utf-8').catch(() => null);
-                    
-                    if (apiHistoryContent) {
-                        const rawApiHistory = JSON.parse(apiHistoryContent);
-                        
-                        // Convertir les données brutes complètes en ConversationSkeleton
-                        const firstMsg = rawApiHistory[0];
-                        const lastMsg = rawApiHistory[rawApiHistory.length - 1];
-                        
-                        conversation = {
-                            taskId: taskId,
-                            parentTaskId: undefined,
-                            metadata: {
-                                title: firstMsg?.content?.[0]?.text?.substring(0, 100) || 'Conversation',
-                                lastActivity: new Date(lastMsg?.ts || Date.now()).toISOString(),
-                                createdAt: new Date(firstMsg?.ts || Date.now()).toISOString(),
-                                mode: 'code',
-                                messageCount: rawApiHistory.length,
-                                actionCount: 0,
-                                totalSize: JSON.stringify(rawApiHistory).length,
-                                workspace: taskPath
-                            },
-                            sequence: rawApiHistory.map((msg: any) => ({
-                                role: msg.role as 'user' | 'assistant',
-                                content: Array.isArray(msg.content)
-                                    ? msg.content
-                                        .filter((c: any) => c.type === 'text' && c.text)
-                                        .map((c: any) => c.text)
-                                        .join('\n\n')
-                                    : String(msg.content || ''),
-                                timestamp: new Date(msg.ts || Date.now()).toISOString(),
-                                isTruncated: false // Les données brutes ne sont PAS tronquées
-                            } as MessageSkeleton))
-                        };
-                        break;
-                    }
-                } catch (e) {
-                    // Continue vers la prochaine location
-                }
-            }
+            // NOUVELLE MÉTHODE : Récupérer la conversation complète avec fallback vers le cache
+            const conversation = await this.getCompleteConversation(taskId);
             
             if (!conversation) {
-                throw new Error(`Conversation avec taskId ${taskId} introuvable`);
+                throw new Error(`Conversation avec taskId ${taskId} introuvable dans les emplacements de stockage et le cache des squelettes`);
             }
 
             // Préparer les options de génération
@@ -1780,6 +1804,8 @@ class RooStateManagerServer {
             // Préparer la réponse avec métadonnées
             const response = [
                 `**Résumé généré avec succès pour la tâche ${taskId}**`,
+                ``,
+                `**Source des données:** ${conversation.metadata.dataSource || 'Cache des squelettes'}`,
                 ``,
                 `**Statistiques:**`,
                 `- Total sections: ${result.statistics.totalSections}`,
@@ -1813,6 +1839,227 @@ class RooStateManagerServer {
                 }]
             };
         }
+    }
+
+    /**
+     * NOUVELLE MÉTHODE : Récupère une conversation complète en combinant toutes les sources de données
+     * avec fallback vers le cache des squelettes pour les tâches orphelines
+     */
+    private async getCompleteConversation(taskId: string): Promise<ConversationSkeleton | null> {
+        // Étape 1 : Essayer de trouver la conversation dans les emplacements de stockage détectés
+        const locations = await RooStorageDetector.detectStorageLocations();
+        for (const loc of locations) {
+            const taskPath = path.join(loc, taskId);
+            try {
+                await fs.access(taskPath);
+                // Conversation trouvée ! Utiliser la méthode améliorée pour la reconstruire
+                const conversation = await this.buildCompleteConversationFromFiles(taskId, taskPath);
+                if (conversation) {
+                    conversation.metadata.dataSource = `Fichiers sur disque: ${taskPath}`;
+                    return conversation;
+                }
+            } catch (e) {
+                // Continue vers la prochaine location
+            }
+        }
+
+        // Étape 2 : Fallback vers le cache des squelettes (pour les tâches orphelines)
+        const skeletonConversation = this.conversationCache.get(taskId);
+        if (skeletonConversation) {
+            console.log(`[FIX] Conversation ${taskId} trouvée dans le cache des squelettes (tâche orpheline)`);
+            // Pour les conversations du cache, on doit reconstruire les données complètes si possible
+            // en cherchant directement dans tous les workspaces connus
+            const enhancedConversation = await this.enhanceSkeletonWithFullData(skeletonConversation);
+            enhancedConversation.metadata.dataSource = "Cache des squelettes (tâche orpheline)";
+            return enhancedConversation;
+        }
+
+        return null;
+    }
+
+    /**
+     * NOUVELLE MÉTHODE : Construit une conversation complète en combinant ui_messages.json (priorité) et api_conversation_history.json
+     * SANS limite de 400 caractères
+     */
+    private async buildCompleteConversationFromFiles(taskId: string, taskPath: string): Promise<ConversationSkeleton | null> {
+        const metadataPath = path.join(taskPath, 'task_metadata.json');
+        const apiHistoryPath = path.join(taskPath, 'api_conversation_history.json');
+        const uiMessagesPath = path.join(taskPath, 'ui_messages.json');
+
+        try {
+            // Lire les métadonnées
+            let rawMetadata: any = {};
+            try {
+                const metadataContent = await fs.readFile(metadataPath, 'utf-8');
+                const cleanContent = metadataContent.charCodeAt(0) === 0xFEFF ? metadataContent.slice(1) : metadataContent;
+                rawMetadata = JSON.parse(cleanContent);
+            } catch (e) {
+                console.warn(`Métadonnées manquantes ou corrompues pour ${taskId}, utilisation de valeurs par défaut`);
+            }
+
+            // Lire ui_messages.json (version complète)
+            let uiMessages: any[] = [];
+            try {
+                const uiContent = await fs.readFile(uiMessagesPath, 'utf-8');
+                const cleanContent = uiContent.charCodeAt(0) === 0xFEFF ? uiContent.slice(1) : uiContent;
+                const uiData = JSON.parse(cleanContent);
+                uiMessages = Array.isArray(uiData) ? uiData : (uiData?.messages || []);
+            } catch (e) {
+                console.warn(`ui_messages.json manquant pour ${taskId}`);
+            }
+
+            // Lire api_conversation_history.json (version API avec résultats d'outils)
+            let apiMessages: any[] = [];
+            try {
+                const apiContent = await fs.readFile(apiHistoryPath, 'utf-8');
+                const cleanContent = apiContent.charCodeAt(0) === 0xFEFF ? apiContent.slice(1) : apiContent;
+                const apiData = JSON.parse(cleanContent);
+                apiMessages = Array.isArray(apiData) ? apiData : (apiData?.messages || []);
+            } catch (e) {
+                console.warn(`api_conversation_history.json manquant pour ${taskId}`);
+            }
+
+            // Combiner les données intelligemment
+            const sequence = this.buildEnhancedSequence(uiMessages, apiMessages);
+            
+            // Calculer les statistiques
+            const messageCount = sequence.filter(s => 'role' in s).length;
+            const actionCount = sequence.length - messageCount;
+            
+            const conversation: ConversationSkeleton = {
+                taskId,
+                parentTaskId: rawMetadata.parentTaskId || rawMetadata.parent_task_id,
+                sequence,
+                metadata: {
+                    title: rawMetadata.title || `Conversation ${taskId}`,
+                    createdAt: rawMetadata.createdAt || new Date().toISOString(),
+                    lastActivity: rawMetadata.lastActivity || new Date().toISOString(),
+                    mode: rawMetadata.mode || 'code',
+                    messageCount,
+                    actionCount,
+                    totalSize: JSON.stringify(sequence).length,
+                    workspace: rawMetadata.workspace || taskPath
+                }
+            };
+
+            return conversation;
+
+        } catch (error) {
+            console.error(`Erreur lors de la reconstruction complète de ${taskId}:`, error);
+            return null;
+        }
+    }
+
+    /**
+     * NOUVELLE MÉTHODE : Combine ui_messages (contenu complet) et api_messages (résultats d'outils)
+     * SANS TRONCATURE
+     */
+    private buildEnhancedSequence(uiMessages: any[], apiMessages: any[]): (MessageSkeleton | ActionMetadata)[] {
+        const sequence: (MessageSkeleton | ActionMetadata)[] = [];
+        
+        // Créer un index par timestamp pour optimiser la recherche
+        const apiMessagesByTs = new Map<number, any>();
+        apiMessages.forEach(msg => {
+            if (msg.ts) {
+                apiMessagesByTs.set(msg.ts, msg);
+            }
+        });
+
+        // Traiter les messages UI (version complète)
+        for (const uiMsg of uiMessages) {
+            const timestamp = uiMsg.ts || uiMsg.timestamp || Date.now();
+            const role = uiMsg.role || (uiMsg.type === 'ask' ? 'user' : 'assistant');
+
+            if (['user', 'assistant'].includes(role) || uiMsg.type === 'say') {
+                let content = uiMsg.content ?? uiMsg.text ?? '';
+
+                // Gérer le contenu en tableau (messages complexes)
+                if (Array.isArray(content)) {
+                    const textElements = content
+                        .filter((c: any) => c.type === 'text' && c.text)
+                        .map((c: any) => c.text);
+                    content = textElements.length > 0 ? textElements.join('\n\n') : '[contenu non textuel]';
+                }
+
+                // PAS DE TRONCATURE - c'est le point clé !
+                sequence.push({
+                    role: role as 'user' | 'assistant',
+                    content: String(content),
+                    isTruncated: false, // TOUJOURS false pour les données complètes
+                    timestamp: new Date(timestamp).toISOString()
+                } as MessageSkeleton);
+            }
+        }
+
+        // Ajouter les données d'outils/actions depuis les messages API
+        for (const apiMsg of apiMessages) {
+            const timestamp = apiMsg.ts || Date.now();
+            
+            // Traiter les résultats d'outils uniquement disponibles dans api_conversation_history
+            if (apiMsg.content && Array.isArray(apiMsg.content)) {
+                for (const contentItem of apiMsg.content) {
+                    if (contentItem.type === 'tool_use' || contentItem.type === 'tool_result') {
+                        const action: ActionMetadata = {
+                            type: 'tool',
+                            name: contentItem.name || contentItem.tool || 'unknown_tool',
+                            status: contentItem.isError ? 'failure' : 'success',
+                            parameters: contentItem.input || contentItem.parameters || {},
+                            timestamp: new Date(timestamp).toISOString()
+                        };
+
+                        if (contentItem.input?.path) action.file_path = contentItem.input.path;
+                        if (contentItem.content) action.content_size = String(contentItem.content).length;
+
+                        sequence.push(action);
+                    }
+                }
+            }
+        }
+
+        // Trier par timestamp
+        sequence.sort((a, b) => new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime());
+
+        return sequence;
+    }
+
+    /**
+     * NOUVELLE MÉTHODE : Améliore un squelette du cache avec les données complètes si trouvées sur disque
+     */
+    private async enhanceSkeletonWithFullData(skeleton: ConversationSkeleton): Promise<ConversationSkeleton> {
+        // Essayer de trouver les fichiers dans tous les workspaces connus
+        const allSkeletons = Array.from(this.conversationCache.values());
+        const workspaces = [...new Set(allSkeletons.map(s => s.metadata.workspace).filter(w => w && w.trim() !== ''))];
+
+        for (const workspace of workspaces) {
+            if (!workspace) continue; // Double vérification de sécurité
+            const taskPath = path.join(workspace, skeleton.taskId);
+            try {
+                await fs.access(taskPath);
+                // Trouvé ! Reconstruire avec les données complètes
+                const enhanced = await this.buildCompleteConversationFromFiles(skeleton.taskId, taskPath);
+                if (enhanced) {
+                    return enhanced;
+                }
+            } catch (e) {
+                // Continue vers le workspace suivant
+            }
+        }
+
+        // Si aucun fichier trouvé, retourner le squelette original mais enlever la troncature
+        const enhancedSequence = skeleton.sequence.map(item => {
+            if ('content' in item) {
+                return {
+                    ...item,
+                    isTruncated: false // Marquer comme non tronqué même si c'est peut-être faux
+                } as MessageSkeleton;
+            }
+            return item;
+        });
+
+        return {
+            ...skeleton,
+            sequence: enhancedSequence
+        };
     }
 
     /**
@@ -2520,6 +2767,9 @@ class RooStateManagerServer {
         try {
             console.log('🔍 Initialisation du service d\'indexation Qdrant...');
             
+            // Vérifier la cohérence entre squelettes et index Qdrant (filtré par machine)
+            await this._verifyQdrantConsistency();
+            
             // Vérifier les squelettes qui nécessitent une réindexation
             await this._scanForOutdatedQdrantIndex();
             
@@ -2554,6 +2804,64 @@ class RooStateManagerServer {
         }
         
         console.log(`📊 Scan terminé: ${outdatedCount} squelettes nécessitent une réindexation Qdrant`);
+    }
+
+    /**
+     * Vérifie la cohérence entre les squelettes locaux et l'index Qdrant (filtré par machine)
+     */
+    private async _verifyQdrantConsistency(): Promise<void> {
+        try {
+            console.log('🔍 Vérification de la cohérence Qdrant vs Squelettes...');
+            
+            const { TaskIndexer } = await import('./services/task-indexer.js');
+            const taskIndexer = new TaskIndexer();
+            
+            // Obtenir l'identifiant de la machine actuelle
+            const currentHostId = taskIndexer.getCurrentHostIdentifier();
+            console.log(`🖥️  Machine actuelle: ${currentHostId}`);
+            
+            // Compter les squelettes locaux marqués comme indexés
+            let localIndexedCount = 0;
+            for (const [taskId, skeleton] of this.conversationCache.entries()) {
+                if (skeleton.metadata?.qdrantIndexedAt) {
+                    localIndexedCount++;
+                }
+            }
+            
+            // Compter les points dans Qdrant pour cette machine
+            const qdrantCount = await taskIndexer.countPointsByHostOs(currentHostId);
+            
+            console.log(`📊 Cohérence Qdrant:`);
+            console.log(`   - Squelettes locaux indexés: ${localIndexedCount}`);
+            console.log(`   - Points Qdrant (machine ${currentHostId}): ${qdrantCount}`);
+            
+            // Détecter les incohérences
+            const discrepancy = Math.abs(localIndexedCount - qdrantCount);
+            const threshold = Math.max(5, Math.floor(localIndexedCount * 0.1)); // 10% ou min 5
+            
+            if (discrepancy > threshold) {
+                console.warn(`⚠️  Incohérence détectée: écart de ${discrepancy} entre squelettes et Qdrant`);
+                console.log(`🔄 Lancement d'une réindexation de réparation...`);
+                
+                // Forcer une réindexation partielle des tâches supposément indexées
+                let reindexCount = 0;
+                for (const [taskId, skeleton] of this.conversationCache.entries()) {
+                    if (skeleton.metadata?.qdrantIndexedAt) {
+                        this.qdrantIndexQueue.add(taskId);
+                        reindexCount++;
+                        if (reindexCount >= 20) break; // Limite pour ne pas surcharger
+                    }
+                }
+                
+                console.log(`📝 ${reindexCount} tâches ajoutées à la queue de réindexation`);
+            } else {
+                console.log(`✅ Cohérence Qdrant-Squelettes validée (écart acceptable: ${discrepancy})`);
+            }
+            
+        } catch (error) {
+            console.error('❌ Erreur lors de la vérification de cohérence Qdrant:', error);
+            // Non-bloquant, on continue
+        }
     }
 
     /**

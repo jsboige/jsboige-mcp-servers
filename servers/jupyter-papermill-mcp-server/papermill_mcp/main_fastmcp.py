@@ -146,17 +146,28 @@ def execute_notebook_solution_a(
             "papermill_version": getattr(pm, '__version__', 'unknown')
         }
         
-        # Exécution directe avec l'API Papermill (remplace subprocess conda run)
-        start_time = datetime.datetime.now()
+        # CORRECTION WORKING DIRECTORY - Solution basée sur papermill_executor.py
+        notebook_dir = os.path.dirname(os.path.abspath(notebook_path))
+        original_cwd = os.getcwd()
         
-        pm.execute_notebook(
-            input_path=notebook_path,
-            output_path=output_path,
-            kernel_name=None,   # Auto-détection du kernel
-            progress_bar=True,
-            log_output=True,
-            cwd=None
-        )
+        try:
+            # Changer vers le répertoire du notebook pour résoudre les chemins relatifs NuGet
+            os.chdir(notebook_dir)
+            
+            # Exécution directe avec l'API Papermill
+            start_time = datetime.datetime.now()
+            
+            pm.execute_notebook(
+                input_path=notebook_path,
+                output_path=output_path,
+                kernel_name=None,   # Auto-détection du kernel
+                progress_bar=True,
+                log_output=True,
+                cwd=None
+            )
+        finally:
+            # Restaurer le working directory original
+            os.chdir(original_cwd)
         
         end_time = datetime.datetime.now()
         execution_time = (end_time - start_time).total_seconds()
@@ -212,17 +223,28 @@ def execute_notebook(
             "papermill_version": getattr(pm, '__version__', 'unknown')
         }
         
-        # Exécution directe avec l'API Papermill (remplace subprocess conda run)
-        start_time = datetime.datetime.now()
+        # CORRECTION WORKING DIRECTORY - Solution basée sur papermill_executor.py
+        notebook_dir = os.path.dirname(os.path.abspath(notebook_path))
+        original_cwd = os.getcwd()
         
-        pm.execute_notebook(
-            input_path=notebook_path,
-            output_path=output_path,
-            kernel_name=None,   # Auto-détection du kernel
-            progress_bar=True,
-            log_output=True,
-            cwd=None
-        )
+        try:
+            # Changer vers le répertoire du notebook pour résoudre les chemins relatifs NuGet
+            os.chdir(notebook_dir)
+            
+            # Exécution directe avec l'API Papermill
+            start_time = datetime.datetime.now()
+            
+            pm.execute_notebook(
+                input_path=notebook_path,
+                output_path=output_path,
+                kernel_name=None,   # Auto-détection du kernel
+                progress_bar=True,
+                log_output=True,
+                cwd=None
+            )
+        finally:
+            # Restaurer le working directory original
+            os.chdir(original_cwd)
         
         end_time = datetime.datetime.now()
         execution_time = (end_time - start_time).total_seconds()
@@ -286,18 +308,29 @@ def parameterize_notebook(
             "parameters_count": len(params)
         }
         
-        # Exécution directe avec Papermill Python API et injection paramètres
-        start_time = datetime.datetime.now()
+        # CORRECTION WORKING DIRECTORY - Solution basée sur papermill_executor.py
+        notebook_dir = os.path.dirname(os.path.abspath(notebook_path))
+        original_cwd = os.getcwd()
         
-        pm.execute_notebook(
-            input_path=notebook_path,
-            output_path=output_path,
-            parameters=params,  # Injection directe des paramètres Python
-            kernel_name=None,   # Auto-détection du kernel
-            progress_bar=True,
-            log_output=True,
-            cwd=None
-        )
+        try:
+            # Changer vers le répertoire du notebook pour résoudre les chemins relatifs NuGet
+            os.chdir(notebook_dir)
+            
+            # Exécution directe avec Papermill Python API et injection paramètres
+            start_time = datetime.datetime.now()
+            
+            pm.execute_notebook(
+                input_path=notebook_path,
+                output_path=output_path,
+                parameters=params,  # Injection directe des paramètres Python
+                kernel_name=None,   # Auto-détection du kernel
+                progress_bar=True,
+                log_output=True,
+                cwd=None
+            )
+        finally:
+            # Restaurer le working directory original
+            os.chdir(original_cwd)
         
         end_time = datetime.datetime.now()
         execution_time = (end_time - start_time).total_seconds()
