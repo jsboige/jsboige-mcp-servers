@@ -5,7 +5,8 @@
  * Selon l'architecture définie dans docs/sddd/markdown_export_architecture.md
  */
 
-import { ClassifiedContent } from '../../../types/enhanced-conversation.js';
+import { ClassifiedContent, EnhancedSummaryOptions } from '../../../types/enhanced-conversation.js';
+import { MarkdownFormatterService } from '../../MarkdownFormatterService.js';
 
 /**
  * Interface principale du pattern Strategy pour le filtrage de rapports
@@ -148,5 +149,185 @@ export abstract class BaseReportingStrategy implements IReportingStrategy {
      */
     protected excludeSubTypes(content: ClassifiedContent[], excludedSubTypes: string[]): ClassifiedContent[] {
         return content.filter(item => !excludedSubTypes.includes(item.subType));
+    }
+
+    // ===========================
+    // PHASE 5: NOUVELLES FONCTIONNALITÉS INTERACTIVES
+    // ===========================
+
+    /**
+     * Génère la table des matières interactive Phase 5
+     */
+    protected generateInteractiveTableOfContents(
+        messages: ClassifiedContent[],
+        options: EnhancedSummaryOptions
+    ): string {
+        const interactiveTocOptions = options.interactiveToCSOptions;
+        
+        if (!interactiveTocOptions?.enableInteractiveToC) {
+            return '';
+        }
+
+        return MarkdownFormatterService.generateTableOfContents(messages, interactiveTocOptions);
+    }
+
+    /**
+     * Applique la troncature intelligente aux paramètres d'outils Phase 5
+     */
+    protected applyParameterTruncation(
+        content: string,
+        isToolParameter: boolean,
+        options: EnhancedSummaryOptions,
+        elementId: string
+    ): string {
+        const truncationOptions = options.truncationOptions;
+        
+        if (!truncationOptions?.enableTruncation) {
+            return content;
+        }
+
+        const result = isToolParameter
+            ? MarkdownFormatterService.truncateToolParameters(content, truncationOptions)
+            : MarkdownFormatterService.truncateToolResult(content, truncationOptions);
+            
+        if (result.wasTruncated) {
+            return MarkdownFormatterService.generateTruncationToggle(content, result.content, elementId);
+        }
+
+        return result.content;
+    }
+
+    /**
+     * Génère les ancres de navigation Phase 5 pour un message
+     */
+    protected generateNavigationAnchor(messageIndex: number, messageType: string): string {
+        return MarkdownFormatterService.generateNavigationAnchors(messageIndex, messageType);
+    }
+
+    /**
+     * Ajoute les ancres de navigation aux messages formatés
+     */
+    protected addNavigationAnchors(
+        formattedContent: string,
+        messageIndex: number,
+        messageType: string,
+        options: EnhancedSummaryOptions
+    ): string {
+        if (!options.enhancementFlags?.enableInteractiveToC) {
+            return formattedContent;
+        }
+
+        const anchor = this.generateNavigationAnchor(messageIndex, messageType);
+        
+        // Injecter l'ancre au début du contenu
+        return `<div id="${anchor}">\n${formattedContent}\n</div>`;
+    }
+
+    /**
+     * Génère le script JavaScript interactif si activé
+     */
+    protected getInteractiveScript(options: EnhancedSummaryOptions): string {
+        if (!options.enhancementFlags?.enableJavaScriptInteractions) {
+            return '';
+        }
+
+        return MarkdownFormatterService.generateInteractiveScript();
+    }
+
+    /**
+     * Formate un appel d'outil avec troncature optionnelle Phase 5
+     */
+    protected formatToolCallWithTruncation(
+        toolName: string,
+        parameters: any,
+        messageIndex: number,
+        options: EnhancedSummaryOptions
+    ): string {
+        const elementId = `tool-call-${messageIndex}`;
+        
+        // Appliquer la troncature si activée
+        let formattedParams = MarkdownFormatterService.formatToolParametersTable(parameters);
+        
+        if (options.truncationOptions?.enableTruncation) {
+            const paramStr = typeof parameters === 'string' ? parameters : JSON.stringify(parameters, null, 2);
+            formattedParams = this.applyParameterTruncation(paramStr, true, options, elementId);
+        }
+
+        return `
+<div class="conversation-section tool-call">
+    <div class="section-header">
+        <span class="message-badge tool-call">Appel d'Outil: ${toolName}</span>
+    </div>
+    <div class="message-content">
+        ${formattedParams}
+    </div>
+</div>`;
+    }
+
+    /**
+     * Formate un résultat d'outil avec troncature optionnelle Phase 5
+     */
+    protected formatToolResultWithTruncation(
+        toolName: string,
+        result: any,
+        messageIndex: number,
+        options: EnhancedSummaryOptions
+    ): string {
+        const elementId = `tool-result-${messageIndex}`;
+        
+        // Appliquer la troncature si activée
+        let formattedResult = typeof result === 'string' ? result : JSON.stringify(result, null, 2);
+        
+        if (options.truncationOptions?.enableTruncation) {
+            formattedResult = this.applyParameterTruncation(formattedResult, false, options, elementId);
+        }
+
+        return `
+<div class="conversation-section tool-result">
+    <div class="section-header">
+        <span class="message-badge tool-result">Résultat: ${toolName}</span>
+    </div>
+    <div class="message-content">
+        <pre><code>${formattedResult}</code></pre>
+    </div>
+</div>`;
+    }
+
+    /**
+     * Construit le HTML final avec toutes les fonctionnalités Phase 5
+     */
+    protected buildFinalHtmlWithPhase5Features(
+        cssContent: string,
+        bodyContent: string,
+        tableOfContents: string,
+        options: EnhancedSummaryOptions
+    ): string {
+        const interactiveScript = this.getInteractiveScript(options);
+        
+        return `<!DOCTYPE html>
+<html lang="fr">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Résumé de Conversation Roo - Phase 5</title>
+    ${cssContent}
+</head>
+<body>
+    ${tableOfContents}
+    ${bodyContent}
+    ${interactiveScript}
+</body>
+</html>`;
+    }
+
+    /**
+     * Méthode utilitaire pour déterminer si les fonctionnalités Phase 5 sont activées
+     */
+    protected isPhase5Enabled(options: EnhancedSummaryOptions): boolean {
+        return !!(
+            options.enhancementFlags?.enableInteractiveToC ||
+            options.enhancementFlags?.enableParameterTruncation ||
+            options.enhancementFlags?.enableJavaScriptInteractions
+        );
     }
 }
