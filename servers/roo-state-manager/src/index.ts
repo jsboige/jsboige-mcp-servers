@@ -38,9 +38,9 @@ import { exec } from 'child_process';
 import { TaskNavigator } from './services/task-navigator.js';
 import { ConversationSkeleton, ActionMetadata, MessageSkeleton, ClusterSummaryOptions, ClusterSummaryResult } from './types/conversation.js';
 import packageJson from '../package.json' with { type: 'json' };
-import { readVscodeLogs, rebuildAndRestart, getMcpDevDocs, manageMcpSettings, analyzeVSCodeGlobalState, repairVSCodeTaskHistory, scanOrphanTasks, testWorkspaceExtraction, rebuildTaskIndex, diagnoseSQLite, examineRooGlobalStateTool, repairTaskHistoryTool, normalizeWorkspacePaths, generateTraceSummaryTool, handleGenerateTraceSummary, generateClusterSummaryTool, handleGenerateClusterSummary, viewConversationTree } from './tools/index.js';
+import { readVscodeLogs, rebuildAndRestart, getMcpDevDocs, manageMcpSettings, analyzeVSCodeGlobalState, repairVSCodeTaskHistory, scanOrphanTasks, testWorkspaceExtraction, rebuildTaskIndex, diagnoseSQLite, examineRooGlobalStateTool, repairTaskHistoryTool, normalizeWorkspacePaths, generateTraceSummaryTool, handleGenerateTraceSummary, generateClusterSummaryTool, handleGenerateClusterSummary, exportConversationJsonTool, handleExportConversationJson, exportConversationCsvTool, handleExportConversationCsv, viewConversationTree } from './tools/index.js';
 import { searchTasks } from './services/task-searcher.js';
-import { indexTask } from './services/task-indexer.js';
+import { indexTask, TaskIndexer } from './services/task-indexer.js';
 import { getQdrantClient } from './services/qdrant.js';
 import getOpenAIClient from './services/openai.js';
 import { XmlExporterService } from './services/XmlExporterService.js';
@@ -73,6 +73,11 @@ class RooStateManagerServer {
     private xmlExporterService: XmlExporterService;
     private exportConfigManager: ExportConfigManager;
     private traceSummaryService: TraceSummaryService;
+    
+    // Services de background pour l'architecture à 2 niveaux
+    private qdrantIndexQueue: Set<string> = new Set(); // File d'attente des tâches à indexer
+    private qdrantIndexInterval: NodeJS.Timeout | null = null;
+    private isQdrantIndexingEnabled = true;
 
     constructor() {
         this.xmlExporterService = new XmlExporterService();
@@ -90,8 +95,9 @@ class RooStateManagerServer {
             }
         );
         
-        this._loadSkeletonsFromDisk().catch(error => {
-            console.error("Error during initial skeleton load:", error);
+        // Initialisation des services background
+        this._initializeBackgroundServices().catch((error: Error) => {
+            console.error("Error during background services initialization:", error);
         });
 
         this.server.setRequestHandler(ListToolsRequestSchema, async () => {
@@ -248,6 +254,17 @@ class RooStateManagerServer {
                         },
                     },
                     {
+                        name: 'reset_qdrant_collection',
+                        description: 'Supprime et recrée la collection Qdrant pour corriger les données corrompues.',
+                        inputSchema: {
+                            type: 'object',
+                            properties: {
+                                confirm: { type: 'boolean', description: 'Confirmation obligatoire pour supprimer la collection.', default: false },
+                            },
+                            required: ['confirm'],
+                        },
+                    },
+                    {
                        name: rebuildAndRestart.name,
                        description: rebuildAndRestart.description,
                        inputSchema: rebuildAndRestart.inputSchema,
@@ -396,6 +413,16 @@ class RooStateManagerServer {
                         inputSchema: generateClusterSummaryTool.inputSchema,
                     },
                     {
+                        name: exportConversationJsonTool.name,
+                        description: exportConversationJsonTool.description,
+                        inputSchema: exportConversationJsonTool.inputSchema,
+                    },
+                    {
+                        name: exportConversationCsvTool.name,
+                        description: exportConversationCsvTool.description,
+                        inputSchema: exportConversationCsvTool.inputSchema,
+                    },
+                    {
                         name: 'view_task_details',
                         description: 'Affiche les détails techniques complets (métadonnées des actions) pour une tâche spécifique',
                         inputSchema: {
@@ -417,6 +444,15 @@ class RooStateManagerServer {
                             },
                             required: ['task_id']
                         }
+                    },
+                    {
+                        name: 'reset_qdrant_collection',
+                        description: 'Réinitialise complètement la collection Qdrant et supprime tous les timestamps d\'indexation des squelettes pour forcer une réindexation complète.',
+                        inputSchema: {
+                            type: 'object',
+                            properties: {},
+                            required: [],
+                        },
                     },
                     {
                         name: 'get_raw_conversation',
@@ -487,6 +523,9 @@ class RooStateManagerServer {
                case 'index_task_semantic':
                    result = await this.handleIndexTaskSemantic(args as any);
                    break;
+               case 'reset_qdrant_collection':
+                   result = await this.handleResetQdrantCollection(args as any);
+                   break;
                case rebuildAndRestart.name:
                    result = await rebuildAndRestart.handler(args as any);
                    break;
@@ -530,8 +569,14 @@ class RooStateManagerServer {
                    result = await this.handleGenerateTraceSummary(args as any);
                    break;
                case generateClusterSummaryTool.name:
-                   result = await this.handleGenerateClusterSummary(args as any);
-                   break;
+                  result = await this.handleGenerateClusterSummary(args as any);
+                  break;
+               case exportConversationJsonTool.name:
+                  result = await this.handleExportConversationJson(args as any);
+                  break;
+               case exportConversationCsvTool.name:
+                  result = await this.handleExportConversationCsv(args as any);
+                  break;
               case 'export_tasks_xml':
                   result = await this.handleExportTaskXml(args as any);
                   break;
@@ -884,53 +929,6 @@ class RooStateManagerServer {
         return { content: [{ type: 'text', text: `Skeleton cache build complete (${mode}). Built: ${skeletonsBuilt}, Skipped: ${skeletonsSkipped}. Cache size: ${this.conversationCache.size}` }] };
     }
 
-    private async _loadSkeletonsFromDisk(): Promise<void> {
-        const locations = await RooStorageDetector.detectStorageLocations(); // returns task paths
-        if (locations.length === 0) {
-            console.error("No storage locations found, cannot load skeleton cache.");
-            return;
-        }
-
-        this.conversationCache.clear();
-        let loadedCount = 0;
-        let errorCount = 0;
-
-        for (const loc of locations) {
-            const storageDir = path.dirname(loc);
-            const skeletonDir = path.join(storageDir, SKELETON_CACHE_DIR_NAME);
-            try {
-                await fs.access(skeletonDir);
-                const skeletonFiles = await fs.readdir(skeletonDir);
-                for (const file of skeletonFiles) {
-                    if (file.endsWith('.json')) {
-                        const filePath = path.join(skeletonDir, file);
-                        try {
-                            let fileContent = await fs.readFile(filePath, 'utf-8');
-                            if (fileContent.charCodeAt(0) === 0xFEFF) {
-                                fileContent = fileContent.slice(1);
-                            }
-                            const skeleton: ConversationSkeleton = JSON.parse(fileContent);
-                            if (skeleton && skeleton.taskId) { // Simple validation
-                                this.conversationCache.set(skeleton.taskId, skeleton);
-                                loadedCount++;
-                            } else {
-                                console.error(`Invalid skeleton file (missing taskId): ${filePath}`);
-                                errorCount++;
-                            }
-                        } catch (parseError) {
-                            console.error(`Corrupted skeleton file, skipping: ${filePath}`, parseError);
-                            errorCount++;
-                        }
-                    }
-                }
-            } catch (dirError) {
-                console.error(`Could not access skeleton directory ${skeletonDir}. This may be normal on first run.`);
-            }
-        }
-        if (loadedCount > 0 || errorCount > 0) {
-             console.error(`Skeleton loading complete. Loaded: ${loadedCount}, Errored: ${errorCount}.`);
-        }
-    }
 
     handleGetTaskTree(args: { conversation_id: string, max_depth?: number, include_siblings?: boolean }): CallToolResult {
         const { conversation_id, max_depth = Infinity, include_siblings = false } = args;
@@ -1941,6 +1939,90 @@ class RooStateManagerServer {
     }
 
     /**
+     * Gère l'export de conversations au format JSON
+     */
+    async handleExportConversationJson(args: {
+        taskId: string;
+        filePath?: string;
+        jsonVariant?: 'light' | 'full';
+        truncationChars?: number;
+    }): Promise<CallToolResult> {
+        try {
+            const { taskId } = args;
+            
+            if (!taskId) {
+                throw new Error("taskId est requis");
+            }
+
+            // Récupérer le ConversationSkeleton depuis le cache
+            const conversation = this.conversationCache.get(taskId);
+            if (!conversation) {
+                throw new Error(`Conversation avec taskId ${taskId} introuvable`);
+            }
+
+            // Utiliser le handler de tool externe
+            const getConversationSkeleton = async (id: string) => {
+                return this.conversationCache.get(id) || null;
+            };
+
+            const result = await handleExportConversationJson(args, getConversationSkeleton);
+
+            return {
+                content: [{ type: 'text', text: result }]
+            };
+
+        } catch (error) {
+            const errorMessage = error instanceof Error ? error.message : 'Erreur inconnue';
+            return {
+                content: [{ type: 'text', text: `❌ Erreur lors de l'export JSON: ${errorMessage}` }],
+                isError: true
+            };
+        }
+    }
+
+    /**
+     * Gère l'export de conversations au format CSV
+     */
+    async handleExportConversationCsv(args: {
+        taskId: string;
+        filePath?: string;
+        csvVariant?: 'conversations' | 'messages' | 'tools';
+        truncationChars?: number;
+    }): Promise<CallToolResult> {
+        try {
+            const { taskId } = args;
+            
+            if (!taskId) {
+                throw new Error("taskId est requis");
+            }
+
+            // Récupérer le ConversationSkeleton depuis le cache
+            const conversation = this.conversationCache.get(taskId);
+            if (!conversation) {
+                throw new Error(`Conversation avec taskId ${taskId} introuvable`);
+            }
+
+            // Utiliser le handler de tool externe
+            const getConversationSkeleton = async (id: string) => {
+                return this.conversationCache.get(id) || null;
+            };
+
+            const result = await handleExportConversationCsv(args, getConversationSkeleton);
+
+            return {
+                content: [{ type: 'text', text: result }]
+            };
+
+        } catch (error) {
+            const errorMessage = error instanceof Error ? error.message : 'Erreur inconnue';
+            return {
+                content: [{ type: 'text', text: `❌ Erreur lors de l'export CSV: ${errorMessage}` }],
+                isError: true
+            };
+        }
+    }
+
+    /**
      * Gère la configuration des exports XML
      */
     async handleConfigureXmlExport(args: {
@@ -2220,7 +2302,265 @@ class RooStateManagerServer {
         throw new Error(`Task with ID '${taskId}' not found in any storage location.`);
     }
 
+    /**
+     * Load existing skeletons from disk at startup
+     */
+    private async _loadSkeletonsFromDisk(): Promise<void> {
+        try {
+            console.log('Loading existing skeletons from disk...');
+            const storageLocations = await RooStorageDetector.detectStorageLocations();
+            
+            if (storageLocations.length === 0) {
+                console.warn('Aucun emplacement de stockage Roo trouvé');
+                return;
+            }
+
+            const skeletonsCacheDir = path.join(storageLocations[0], '.skeletons');
+            
+            try {
+                const skeletonFiles = await fs.readdir(skeletonsCacheDir);
+                const jsonFiles = skeletonFiles.filter(file => file.endsWith('.json'));
+                
+                console.log(`Found ${jsonFiles.length} skeleton files to load`);
+                
+                for (const file of jsonFiles) {
+                    try {
+                        const filePath = path.join(skeletonsCacheDir, file);
+                        const content = await fs.readFile(filePath, 'utf8');
+                        const skeleton: ConversationSkeleton = JSON.parse(content);
+                        this.conversationCache.set(skeleton.taskId, skeleton);
+                    } catch (error) {
+                        console.warn(`Failed to load skeleton ${file}:`, error);
+                    }
+                }
+                
+                console.log(`Loaded ${this.conversationCache.size} skeletons from disk`);
+            } catch (error) {
+                console.warn('Skeleton cache directory not found, will be created when needed');
+            }
+        } catch (error) {
+            console.error('Failed to load skeletons from disk:', error);
+        }
+    }
+
+    /**
+     * Initialise les services de background pour l'architecture à 2 niveaux
+     * Niveau 1: Reconstruction temps réel des squelettes
+     * Niveau 2: Indexation Qdrant asynchrone non-bloquante
+     */
+    private async _initializeBackgroundServices(): Promise<void> {
+        try {
+            console.log('🚀 Initialisation des services background à 2 niveaux...');
+            
+            // Niveau 1: Chargement initial des squelettes depuis le disque
+            await this._loadSkeletonsFromDisk();
+            
+            // Niveau 2: Initialisation du service d'indexation Qdrant asynchrone
+            await this._initializeQdrantIndexingService();
+            
+            console.log('✅ Services background initialisés avec succès');
+        } catch (error: any) {
+            console.error('❌ Erreur lors de l\'initialisation des services background:', error);
+            throw error;
+        }
+    }
+
+    /**
+     * Initialise le service d'indexation Qdrant asynchrone (Niveau 2)
+     * Vérifie les squelettes non-indexés et lance le processus de fond
+     */
+    private async _initializeQdrantIndexingService(): Promise<void> {
+        try {
+            console.log('🔍 Initialisation du service d\'indexation Qdrant...');
+            
+            // Vérifier les squelettes qui nécessitent une réindexation
+            await this._scanForOutdatedQdrantIndex();
+            
+            // Démarrer le service d'indexation en arrière-plan (non-bloquant)
+            this._startQdrantIndexingBackgroundProcess();
+            
+            console.log('✅ Service d\'indexation Qdrant initialisé');
+        } catch (error: any) {
+            console.error('⚠️  Erreur lors de l\'initialisation de l\'indexation Qdrant (non-bloquant):', error);
+            // Ne pas rethrow - l'échec de Qdrant ne doit pas bloquer le serveur
+            this.isQdrantIndexingEnabled = false;
+        }
+    }
+
+    /**
+     * Scanner pour identifier les squelettes ayant besoin d'une réindexation
+     */
+    private async _scanForOutdatedQdrantIndex(): Promise<void> {
+        let outdatedCount = 0;
+        
+        for (const [taskId, skeleton] of this.conversationCache.entries()) {
+            const lastActivity = new Date(skeleton.metadata.lastActivity).getTime();
+            const qdrantIndexed = skeleton.metadata.qdrantIndexedAt
+                ? new Date(skeleton.metadata.qdrantIndexedAt).getTime()
+                : 0;
+            
+            // Si le squelette a été modifié après la dernière indexation Qdrant
+            if (lastActivity > qdrantIndexed) {
+                this.qdrantIndexQueue.add(taskId);
+                outdatedCount++;
+            }
+        }
+        
+        console.log(`📊 Scan terminé: ${outdatedCount} squelettes nécessitent une réindexation Qdrant`);
+    }
+
+    /**
+     * Démarre le processus d'indexation Qdrant en arrière-plan
+     */
+    private _startQdrantIndexingBackgroundProcess(): void {
+        if (this.qdrantIndexInterval) {
+            clearInterval(this.qdrantIndexInterval);
+        }
+        
+        // Traitement des éléments de la queue toutes les 30 secondes
+        this.qdrantIndexInterval = setInterval(async () => {
+            if (!this.isQdrantIndexingEnabled || this.qdrantIndexQueue.size === 0) {
+                return;
+            }
+            
+            // Prendre le premier élément de la queue
+            const taskId = this.qdrantIndexQueue.values().next().value;
+            if (taskId) {
+                this.qdrantIndexQueue.delete(taskId);
+                await this._indexTaskInQdrant(taskId);
+            }
+        }, 30000); // 30 secondes
+        
+        console.log('🔄 Service d\'indexation Qdrant en arrière-plan démarré');
+    }
+
+    /**
+     * Indexe une tâche spécifique dans Qdrant et met à jour son timestamp
+     */
+    private async _indexTaskInQdrant(taskId: string): Promise<void> {
+        try {
+            const skeleton = this.conversationCache.get(taskId);
+            if (!skeleton) {
+                console.warn(`⚠️  Impossible de trouver le squelette pour la tâche ${taskId}`);
+                return;
+            }
+            
+            // Utiliser le service existant pour l'indexation
+            const taskIndexer = new TaskIndexer();
+            await taskIndexer.indexTask(taskId);
+            
+            // Mettre à jour le timestamp d'indexation Qdrant dans le squelette
+            skeleton.metadata.qdrantIndexedAt = new Date().toISOString();
+            
+            // Sauvegarder le squelette mis à jour sur le disque
+            await this._saveSkeletonToDisk(skeleton);
+            
+            console.log(`✅ Tâche ${taskId} indexée avec succès dans Qdrant`);
+        } catch (error: any) {
+            console.error(`❌ Erreur lors de l'indexation Qdrant pour la tâche ${taskId}:`, error);
+            
+            // Si Qdrant est indisponible, désactiver temporairement le service
+            if (error.message?.includes('Qdrant') || error.code === 'ECONNREFUSED') {
+                console.warn('⚠️  Qdrant semble indisponible, désactivation temporaire du service');
+                this.isQdrantIndexingEnabled = false;
+                
+                // Réessayer dans 5 minutes
+                setTimeout(() => {
+                    console.log('🔄 Tentative de réactivation du service Qdrant...');
+                    this.isQdrantIndexingEnabled = true;
+                }, 5 * 60 * 1000);
+            }
+        }
+    }
+
+    /**
+     * Sauvegarde un squelette sur le disque
+     */
+    private async _saveSkeletonToDisk(skeleton: ConversationSkeleton): Promise<void> {
+        try {
+            const storageLocations = await RooStorageDetector.detectStorageLocations();
+            if (storageLocations.length === 0) {
+                throw new Error('Aucun emplacement de stockage Roo trouvé');
+            }
+
+            const skeletonsCacheDir = path.join(storageLocations[0], '.skeletons');
+            await fs.mkdir(skeletonsCacheDir, { recursive: true });
+
+            const filePath = path.join(skeletonsCacheDir, `${skeleton.taskId}.json`);
+            await fs.writeFile(filePath, JSON.stringify(skeleton, null, 2), 'utf8');
+        } catch (error: any) {
+            console.error(`Erreur lors de la sauvegarde du squelette ${skeleton.taskId}:`, error);
+        }
+    }
+
+    /**
+     * Ajoute une tâche à la queue d'indexation Qdrant (appelé quand un squelette est mis à jour)
+     */
+    private _queueForQdrantIndexing(taskId: string): void {
+        if (this.isQdrantIndexingEnabled) {
+            this.qdrantIndexQueue.add(taskId);
+        }
+    }
+
+    /**
+     * Réinitialise complètement la collection Qdrant (outil de réparation)
+     */
+    private async handleResetQdrantCollection(args: any): Promise<CallToolResult> {
+        try {
+            console.log('🧹 Réinitialisation de la collection Qdrant...');
+            
+            const taskIndexer = new TaskIndexer();
+            
+            // Supprimer et recréer la collection Qdrant
+            await taskIndexer.resetCollection();
+            
+            // Marquer tous les squelettes comme non-indexés
+            let skeletonsReset = 0;
+            for (const [taskId, skeleton] of this.conversationCache.entries()) {
+                if (skeleton.metadata.qdrantIndexedAt) {
+                    delete skeleton.metadata.qdrantIndexedAt;
+                    await this._saveSkeletonToDisk(skeleton);
+                    skeletonsReset++;
+                }
+                // Ajouter à la queue pour réindexation
+                this.qdrantIndexQueue.add(taskId);
+            }
+            
+            // Réactiver le service s'il était désactivé
+            this.isQdrantIndexingEnabled = true;
+            
+            return {
+                content: [{
+                    type: "text",
+                    text: JSON.stringify({
+                        success: true,
+                        message: `Collection Qdrant réinitialisée avec succès`,
+                        skeletonsReset,
+                        queuedForReindexing: this.qdrantIndexQueue.size
+                    }, null, 2)
+                }]
+            };
+        } catch (error: any) {
+            console.error('Erreur lors de la réinitialisation de Qdrant:', error);
+            return {
+                content: [{
+                    type: "text",
+                    text: JSON.stringify({
+                        success: false,
+                        message: `Erreur lors de la réinitialisation: ${error.message}`
+                    }, null, 2)
+                }]
+            };
+        }
+    }
+
     async stop() {
+        // Arrêter le service d'indexation Qdrant
+        if (this.qdrantIndexInterval) {
+            clearInterval(this.qdrantIndexInterval);
+            this.qdrantIndexInterval = null;
+        }
+        
         if (this.server && this.server.transport) {
             this.server.transport.close();
         }

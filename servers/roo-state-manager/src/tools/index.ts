@@ -8,4 +8,6 @@ export { repairTaskHistoryTool } from './repair-task-history.js';
 export * from './normalize-workspace-paths.js';
 export { generateTraceSummaryTool, handleGenerateTraceSummary } from './generate-trace-summary.js';
 export { generateClusterSummaryTool, handleGenerateClusterSummary } from './generate-cluster-summary.js';
+export { exportConversationJsonTool, handleExportConversationJson } from './export-conversation-json.js';
+export { exportConversationCsvTool, handleExportConversationCsv } from './export-conversation-csv.js';
 export { viewConversationTree } from './view-conversation-tree.js';

@@ -47,6 +47,7 @@ export interface ConversationSkeleton {
     actionCount: number;
     totalSize: number; // Taille totale de la conversation sur le disque
      workspace?: string;
+     qdrantIndexedAt?: string; // Timestamp de la dernière indexation Qdrant réussie
    };
   // Une séquence combinée et ordonnée de messages et d'actions.
   sequence: (MessageSkeleton | ActionMetadata)[];

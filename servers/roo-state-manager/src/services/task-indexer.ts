@@ -207,3 +207,89 @@ export async function indexTask(taskId: string, taskPath: string): Promise<Point
         throw error;
     }
 }
+
+/**
+ * Classe TaskIndexer pour l'architecture à 2 niveaux
+ */
+export class TaskIndexer {
+    /**
+     * Indexe une tâche à partir de son ID (trouve automatiquement le chemin)
+     */
+    async indexTask(taskId: string): Promise<PointStruct[]> {
+        try {
+            // Détection automatique du chemin de la tâche
+            const { RooStorageDetector } = await import('../utils/roo-storage-detector.js');
+            const locations = await RooStorageDetector.detectStorageLocations();
+            
+            for (const location of locations) {
+                const taskPath = path.join(location, taskId);
+                try {
+                    await fs.access(taskPath);
+                    // Tâche trouvée, on l'indexe
+                    return await indexTask(taskId, taskPath);
+                } catch {
+                    // Tâche pas dans ce location, on continue
+                }
+            }
+            
+            throw new Error(`Task ${taskId} not found in any storage location`);
+        } catch (error) {
+            console.error(`Error indexing task ${taskId}:`, error);
+            throw error;
+        }
+    }
+
+    /**
+     * Réinitialise complètement la collection Qdrant
+     */
+    async resetCollection(): Promise<void> {
+        try {
+            const qdrant = getQdrantClient();
+            
+            // Supprimer la collection si elle existe
+            try {
+                await qdrant.deleteCollection(COLLECTION_NAME);
+                console.log(`Collection ${COLLECTION_NAME} supprimée`);
+            } catch (error) {
+                console.log(`Collection ${COLLECTION_NAME} n'existait pas, continuer...`);
+            }
+            
+            // Recréer la collection
+            await qdrant.createCollection(COLLECTION_NAME, {
+                vectors: {
+                    size: 1536,
+                    distance: 'Cosine',
+                },
+            });
+            
+            console.log(`Collection ${COLLECTION_NAME} recréée avec succès`);
+        } catch (error) {
+            console.error('Erreur lors de la réinitialisation de la collection Qdrant:', error);
+            throw error;
+        }
+    }
+
+    /**
+     * Vérifie l'état de la collection Qdrant
+     */
+    async getCollectionStatus(): Promise<{ exists: boolean; count: number }> {
+        try {
+            const qdrant = getQdrantClient();
+            const result = await qdrant.getCollections();
+            const collectionExists = result.collections.some((collection) => collection.name === COLLECTION_NAME);
+            
+            if (collectionExists) {
+                const info = await qdrant.getCollection(COLLECTION_NAME);
+                return {
+                    exists: true,
+                    count: info.points_count || 0
+                };
+            } else {
+                return { exists: false, count: 0 };
+            }
+        } catch (error) {
+            console.error('Erreur lors de la vérification de l\'état de la collection:', error);
+            throw error;
+        }
+    }
+}

@@ -181,7 +181,6 @@ const response = [
 ].filter(line => line !== '').join('\n');
 
 return response;
-        return response;
 
     } catch (error) {
         const errorMessage = error instanceof Error ? error.message : 'Erreur inconnue';
