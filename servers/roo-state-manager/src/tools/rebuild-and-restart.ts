@@ -19,22 +19,21 @@ async function runNpmBuild(mcpPath: string): Promise<string> {
     });
 }
 
-async function touchMcpSettings(): Promise<string> {
-    const settingsPath = "c:/Users/jsboi/AppData/Roaming/Code/User/globalStorage/rooveterinaryinc.roo-cline/settings/mcp_settings.json";
-    const command = `(Get-Item "${settingsPath}").LastWriteTime = Get-Date`;
+async function touchFile(filePath: string): Promise<string> {
+    const command = `(Get-Item -LiteralPath "${filePath}").LastWriteTime = Get-Date`;
     return new Promise((resolve, reject) => {
         exec(`powershell.exe -Command "${command}"`, (error, stdout, stderr) => {
             if (error) {
-                return reject(new Error(`Touch failed: ${error.message}\n${stderr}`));
+                return reject(new Error(`Touch failed for ${filePath}: ${error.message}\n${stderr}`));
             }
-            resolve(stdout.trim());
+            resolve(`Touched: ${filePath}`);
         });
     });
 }
 
 export const rebuildAndRestart = {
     name: 'rebuild_and_restart_mcp',
-    description: 'Rebuilds a specific MCP and then restarts all MCPs by touching the global settings file.',
+    description: 'Rebuilds a specific MCP and triggers a restart. Prefers a targeted restart by touching the first file in `watchPaths` if available, ensuring reliability. Falls back to a global restart by touching the settings file. Warns the user if `watchPaths` is not configured.',
     inputSchema: {
         type: 'object',
         properties: {
@@ -45,7 +44,7 @@ export const rebuildAndRestart = {
     async handler(args: { mcp_name: string }): Promise<CallToolResult> {
         try {
             const { mcp_name } = args;
-            const settingsPath = "c:/Users/jsboi/AppData/Roaming/Code/User/globalStorage/rooveterinaryinc.roo-cline/settings/mcp_settings.json";
+            const settingsPath = path.join(process.env.APPDATA || '', 'Code', 'User', 'globalStorage', 'rooveterinaryinc.roo-cline', 'settings', 'mcp_settings.json');
             
             const settingsContent = await fs.readFile(settingsPath, 'utf-8');
             const settings = JSON.parse(settingsContent);
@@ -56,19 +55,36 @@ export const rebuildAndRestart = {
             }
 
             let mcpPath: string;
-            if (mcpConfig.options?.cwd) {
+            // Updated cwd logic to check root property first
+            if (mcpConfig.cwd) {
+                mcpPath = mcpConfig.cwd;
+            } else if (mcpConfig.options?.cwd) {
                 mcpPath = mcpConfig.options.cwd;
-            } else if (mcpConfig.args?.[0]) {
-                // Infer path from the first argument, assuming it's a path to the main script
+            } else if (mcpConfig.args?.[0] && (mcpConfig.args[0].includes('/') || mcpConfig.args[0].includes('\\'))) {
                 mcpPath = path.dirname(path.dirname(mcpConfig.args[0]));
             } else {
                 throw new Error(`Could not determine the working directory for MCP "${mcp_name}". Please add a "cwd" property to its configuration.`);
             }
 
-            const buildResult = await runNpmBuild(mcpPath);
-            const touchResult = await touchMcpSettings();
+            let warningMessage = '';
+            if (!mcpConfig.watchPaths || mcpConfig.watchPaths.length === 0) {
+                warningMessage = `\n\n[WARNING] MCP "${mcp_name}" has no 'watchPaths' configured. The restart is triggered globally, which is less reliable. For best results, add a 'watchPaths' property to its configuration pointing to the build output file.`;
+            }
 
-            const resultText = `Build for "${mcp_name}" successful:\n${buildResult}\n\nAll MCPs restart triggered:\n${touchResult}`;
+            const buildResult = await runNpmBuild(mcpPath);
+            
+            let touchResult: string;
+            if (mcpConfig.watchPaths && mcpConfig.watchPaths.length > 0) {
+                const fileToTouch = mcpConfig.watchPaths[0];
+                touchResult = await touchFile(fileToTouch);
+                touchResult += ` (targeted restart via watchPaths)`;
+            } else {
+                touchResult = await touchFile(settingsPath);
+                touchResult = await touchFile(settingsPath);
+                touchResult += ` (global restart as fallback)`;
+            }
+
+            const resultText = `Build for "${mcp_name}" successful:\n${buildResult}\n\nRestart triggered:\n${touchResult}${warningMessage}`;
             
             return { content: [{ type: 'text' as const, text: resultText }] };
         } catch (error) {

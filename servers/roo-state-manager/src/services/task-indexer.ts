@@ -35,12 +35,18 @@ interface Chunk {
   participants?: ('user' | 'assistant')[];
   tool_details?: ToolDetails | null;
   custom_tags?: string[];
+  workspace?: string;
+  task_title?: string;
+  message_index?: number;
+  total_messages?: number;
+  role?: 'user' | 'assistant' | 'system';
+  host_os?: string;
 }
 
 // Fichiers de conversation bruts
 interface ApiMessage {
     role: 'user' | 'assistant' | 'system';
-    content: string | null;
+    content: any; // Can be string or array
     tool_calls?: any[];
     timestamp?: string;
 }
@@ -76,6 +82,8 @@ async function ensureCollectionExists() {
     }
 }
 
+function getHostIdentifier() { return "Unknown" }
+
 /**
  * Extrait et structure les chunks d'une tâche selon la stratégie granulaire.
  * @param taskId L'ID de la tâche.
@@ -86,6 +94,13 @@ async function extractChunksFromTask(taskId: string, taskPath: string): Promise<
     const chunks: Chunk[] = [];
     const apiHistoryPath = path.join(taskPath, 'api_conversation_history.json');
     let sequenceOrder = 0;
+    
+    // Placeholder values
+    let messageIndex = 0;
+    let parentTaskId : string | undefined;
+    let workspace : string | undefined;
+    let taskTitle : string | undefined;
+    let totalMessages : number | undefined;
 
     try {
         await fs.access(apiHistoryPath);
@@ -95,20 +110,51 @@ async function extractChunksFromTask(taskId: string, taskPath: string): Promise<
         for (const msg of apiMessages) {
             if (msg.role === 'system') continue;
             if (msg.content) {
-                chunks.push({
-                    chunk_id: uuidv4(),
-                    task_id: taskId,
-                    parent_task_id: null,
-                    root_task_id: null,
-                    chunk_type: 'message_exchange',
-                    sequence_order: sequenceOrder++,
-                    timestamp: msg.timestamp || new Date().toISOString(),
-                    indexed: true,
-                    content: msg.content,
-                    content_summary: (msg.content || '').substring(0, 200),
-                    participants: [msg.role],
-                    tool_details: null,
-                });
+                messageIndex++;
+                
+                // Handle both string and array content (OpenAI format) with improved safety
+                let contentText: string = '';
+                if (typeof msg.content === 'string') {
+                    contentText = msg.content;
+                } else if (Array.isArray(msg.content)) {
+                    // Safely extract text from complex array content
+                    contentText = (msg.content as any[])
+                        .map((part: any) => {
+                            if (part && typeof part === 'object' && part.type === 'text' && typeof part.text === 'string') {
+                                return part.text;
+                            }
+                            return '';
+                        })
+                        .join(' ')
+                        .trim();
+                } else if (msg.content) {
+                    // Fallback for any other type, ensuring it becomes a string
+                    contentText = String(msg.content);
+                }
+
+                if (contentText.trim()) {
+                    chunks.push({
+                        chunk_id: uuidv4(),
+                        task_id: taskId,
+                        parent_task_id: parentTaskId || null,
+                        root_task_id: null, // TODO: calculer la racine si nécessaire
+                        chunk_type: 'message_exchange',
+                        sequence_order: sequenceOrder++,
+                        timestamp: msg.timestamp || new Date().toISOString(),
+                        indexed: true,
+                        content: contentText,
+                        content_summary: String(contentText || '').substring(0, 200),
+                        participants: [msg.role],
+                        tool_details: null,
+                        // Nouvelles métadonnées enrichies
+                        workspace: workspace,
+                        task_title: taskTitle,
+                        message_index: messageIndex,
+                        total_messages: totalMessages,
+                        role: msg.role,
+                        host_os: getHostIdentifier(),
+                    });
+                }
             }
             if (msg.tool_calls) {
                 for (const toolCall of msg.tool_calls) {
@@ -332,6 +378,32 @@ export class TaskIndexer {
         } catch (error) {
             console.error('Erreur lors de la vérification de l\'état de la collection:', error);
             throw error;
+        }
+    }
+
+    /**
+     * Compte les points dans Qdrant pour un host_os spécifique
+     */
+    async countPointsByHostOs(hostOs: string): Promise<number> {
+        try {
+            const qdrant = getQdrantClient();
+            const result = await qdrant.count(COLLECTION_NAME, {
+                filter: {
+                    must: [
+                        {
+                            key: 'host_os',
+                            match: {
+                                value: hostOs
+                            }
+                        }
+                    ]
+                },
+                exact: true
+            });
+            return result.count;
+        } catch (error) {
+            console.error(`Could not count points for host_os=${hostOs}:`, error);
+            return 0; // Retourner 0 en cas d'erreur
         }
     }
 }

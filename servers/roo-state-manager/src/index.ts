@@ -38,7 +38,7 @@ import { exec } from 'child_process';
 import { TaskNavigator } from './services/task-navigator.js';
 import { ConversationSkeleton, ActionMetadata, MessageSkeleton, ClusterSummaryOptions, ClusterSummaryResult } from './types/conversation.js';
 import packageJson from '../package.json' with { type: 'json' };
-import { readVscodeLogs, rebuildAndRestart, getMcpDevDocs, manageMcpSettings, analyzeVSCodeGlobalState, repairVSCodeTaskHistory, scanOrphanTasks, testWorkspaceExtraction, rebuildTaskIndex, diagnoseSQLite, examineRooGlobalStateTool, repairTaskHistoryTool, normalizeWorkspacePaths, generateTraceSummaryTool, handleGenerateTraceSummary, generateClusterSummaryTool, handleGenerateClusterSummary, exportConversationJsonTool, handleExportConversationJson, exportConversationCsvTool, handleExportConversationCsv, viewConversationTree } from './tools/index.js';
+import { readVscodeLogs, rebuildAndRestart, getMcpBestPractices, manageMcpSettings, analyzeVSCodeGlobalState, repairVSCodeTaskHistory, scanOrphanTasks, testWorkspaceExtraction, rebuildTaskIndex, diagnoseSQLite, examineRooGlobalStateTool, repairTaskHistoryTool, normalizeWorkspacePaths, generateTraceSummaryTool, handleGenerateTraceSummary, generateClusterSummaryTool, handleGenerateClusterSummary, exportConversationJsonTool, handleExportConversationJson, exportConversationCsvTool, handleExportConversationCsv, viewConversationTree } from './tools/index.js';
 import { searchTasks } from './services/task-searcher.js';
 import { indexTask, TaskIndexer } from './services/task-indexer.js';
 import { getQdrantClient } from './services/qdrant.js';
@@ -271,9 +271,9 @@ class RooStateManagerServer {
                        inputSchema: rebuildAndRestart.inputSchema,
                     },
                     {
-                       name: getMcpDevDocs.name,
-                       description: getMcpDevDocs.description,
-                       inputSchema: getMcpDevDocs.inputSchema,
+                       name: getMcpBestPractices.name,
+                       description: getMcpBestPractices.description,
+                       inputSchema: getMcpBestPractices.inputSchema,
                     },
                     {
                        name: 'diagnose_conversation_bom',
@@ -530,8 +530,8 @@ class RooStateManagerServer {
                case rebuildAndRestart.name:
                    result = await rebuildAndRestart.handler(args as any);
                    break;
-               case getMcpDevDocs.name:
-                   result = await getMcpDevDocs.handler();
+               case getMcpBestPractices.name:
+                   result = await getMcpBestPractices.handler();
                    break;
                case 'diagnose_conversation_bom':
                    result = await this.handleDiagnoseConversationBom(args as any);
