@@ -32,6 +32,10 @@ interface GenerateTraceSummaryArgs {
     includeCss?: boolean;
     /** Générer la table des matières */
     generateToc?: boolean;
+    /** Index de début (1-based) pour traiter seulement une plage de messages */
+    startIndex?: number;
+    /** Index de fin (1-based) pour traiter seulement une plage de messages */
+    endIndex?: number;
 }
 
 /**
@@ -82,6 +86,16 @@ export const generateTraceSummaryTool: Tool = {
                 type: "boolean",
                 description: "Générer la table des matières interactive",
                 default: true
+            },
+            startIndex: {
+                type: "number",
+                description: "Index de début (1-based) pour traiter seulement une plage de messages (optionnel)",
+                minimum: 1
+            },
+            endIndex: {
+                type: "number",
+                description: "Index de fin (1-based) pour traiter seulement une plage de messages (optionnel)",
+                minimum: 1
             }
         },
         required: ["taskId"]
@@ -114,7 +128,9 @@ export async function handleGenerateTraceSummary(
             truncationChars: args.truncationChars || 0,
             compactStats: args.compactStats || false,
             includeCss: args.includeCss !== undefined ? args.includeCss : true,
-            generateToc: args.generateToc !== undefined ? args.generateToc : true
+            generateToc: args.generateToc !== undefined ? args.generateToc : true,
+            startIndex: args.startIndex,
+            endIndex: args.endIndex
         };
 
         // Initialiser le service avec un ExportConfigManager basic

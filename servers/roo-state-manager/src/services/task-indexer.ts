@@ -1,6 +1,7 @@
 import { promises as fs } from 'fs';
 import path from 'path';
 import crypto from 'crypto';
+import os from 'os';
 import { v4 as uuidv4 } from 'uuid';
 import getOpenAIClient from './openai.js';
 import { getQdrantClient } from './qdrant.js';
@@ -41,6 +42,9 @@ interface Chunk {
   total_messages?: number;
   role?: 'user' | 'assistant' | 'system';
   host_os?: string;
+  // Nouveaux champs pour la traçabilité du chunking
+  chunk_index?: number;  // Index de ce chunk (commence à 1)
+  total_chunks?: number; // Nombre total de chunks pour ce message
 }
 
 // Fichiers de conversation bruts
@@ -82,7 +86,13 @@ async function ensureCollectionExists() {
     }
 }
 
-function getHostIdentifier() { return "Unknown" }
+export function getHostIdentifier() {
+    // Crée un identifiant unique basé sur les informations système
+    const hostname = os.hostname();
+    const platform = os.platform();
+    const arch = os.arch();
+    return `${hostname}-${platform}-${arch}`;
+}
 
 /**
  * Extrait et structure les chunks d'une tâche selon la stratégie granulaire.
@@ -211,16 +221,23 @@ async function extractChunksFromTask(taskId: string, taskPath: string): Promise<
 }
 
 
-const MAX_CHUNK_SIZE = 8000; // Approx. 2000 tokens, safely below the 8192 limit
+const MAX_CHUNK_SIZE = 800; // Approx. 200-400 tokens, ultra-conservative safety margin below 8192 limit for text-embedding-3-small
 
 function splitChunk(chunk: Chunk, maxSize: number): Chunk[] {
     if (!chunk.content || chunk.content.length <= maxSize) {
-        return [chunk];
+        // Chunk unique, on ajoute les métadonnées de traçabilité
+        return [{
+            ...chunk,
+            chunk_index: 1,
+            total_chunks: 1
+        }];
     }
 
+    // Calcul du nombre total de chunks nécessaires
+    const totalChunks = Math.ceil(chunk.content.length / maxSize);
     const subChunks: Chunk[] = [];
     let content = chunk.content;
-    let sequence = 0;
+    let chunkIndex = 1;
 
     while (content.length > 0) {
         const contentPart = content.substring(0, maxSize);
@@ -228,12 +245,17 @@ function splitChunk(chunk: Chunk, maxSize: number): Chunk[] {
 
         subChunks.push({
             ...chunk,
-            chunk_id: `${chunk.chunk_id}_part_${sequence}`,
+            chunk_id: `${chunk.chunk_id}_part_${chunkIndex}`,
             content: contentPart,
-            content_summary: `Part ${sequence + 1}: ${contentPart.substring(0, 100)}...`,
+            content_summary: `Chunk ${chunkIndex}/${totalChunks}: ${contentPart.substring(0, 100)}...`,
+            // Nouveaux champs de traçabilité
+            chunk_index: chunkIndex,
+            total_chunks: totalChunks
         });
-        sequence++;
+        chunkIndex++;
     }
+    
+    console.log(`🔪 Split large chunk into ${totalChunks} parts (original size: ${chunk.content.length} chars)`);
     return subChunks;
 }
 
@@ -262,10 +284,13 @@ export async function indexTask(taskId: string, taskPath: string): Promise<Point
         for (const chunk of chunks) {
             if (chunk.indexed) {
                 const subChunks = splitChunk(chunk, MAX_CHUNK_SIZE);
+                console.log(`📊 Original chunk size: ${chunk.content?.length || 0} chars, split into ${subChunks.length} subchunks`);
 
                 for (const subChunk of subChunks) {
                     if(!subChunk.content || subChunk.content.trim() === '') continue;
 
+                    console.log(`📝 Processing subchunk: ${subChunk.content.length} characters (estimated ~${Math.ceil(subChunk.content.length / 4)} tokens)`);
+                    
                     const embeddingResponse = await getOpenAIClient().embeddings.create({
                         model: EMBEDDING_MODEL,
                         input: subChunk.content,

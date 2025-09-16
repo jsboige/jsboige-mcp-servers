@@ -46,6 +46,10 @@ interface GenerateClusterSummaryArgs {
     clusterTruncationChars?: number;
     /** Montrer les relations entre tâches */
     showTaskRelationships?: boolean;
+    /** Index de début (1-based) pour traiter seulement une plage de messages */
+    startIndex?: number;
+    /** Index de fin (1-based) pour traiter seulement une plage de messages */
+    endIndex?: number;
 }
 
 /**
@@ -139,6 +143,16 @@ export const generateClusterSummaryTool: Tool = {
                 type: "boolean",
                 description: "Montrer explicitement les relations parent-enfant entre tâches",
                 default: true
+            },
+            startIndex: {
+                type: "number",
+                description: "Index de début (1-based) pour traiter seulement une plage de messages (optionnel)",
+                minimum: 1
+            },
+            endIndex: {
+                type: "number",
+                description: "Index de fin (1-based) pour traiter seulement une plage de messages (optionnel)",
+                minimum: 1
             }
         },
         required: ["rootTaskId"]
@@ -201,7 +215,9 @@ export async function handleGenerateClusterSummary(
             clusterSortBy: args.clusterSortBy || 'chronological',
             includeClusterTimeline: args.includeClusterTimeline || false,
             clusterTruncationChars: args.clusterTruncationChars || 0,
-            showTaskRelationships: args.showTaskRelationships !== undefined ? args.showTaskRelationships : true
+            showTaskRelationships: args.showTaskRelationships !== undefined ? args.showTaskRelationships : true,
+            startIndex: args.startIndex,
+            endIndex: args.endIndex
         };
 
         // Initialiser le service

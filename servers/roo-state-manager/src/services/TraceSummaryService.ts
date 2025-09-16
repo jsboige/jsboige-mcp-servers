@@ -42,6 +42,9 @@ export interface SummaryOptions {
     csvVariant?: CsvVariant;
     // SDDD Phase 3: Feature flag pour les strategies
     enableDetailLevels?: boolean;
+    // Range processing: optional start and end indices for message filtering
+    startIndex?: number;
+    endIndex?: number;
 }
 
 /**
@@ -234,7 +237,7 @@ export class TraceSummaryService {
                 case 'html':
                 default:
                     // Logique existante pour markdown/html
-                    const classifiedContent = this.classifyConversationContent(conversation);
+                    const classifiedContent = this.classifyConversationContent(conversation, fullOptions);
                     statistics = this.calculateStatistics(classifiedContent);
                     
                     content = await this.renderSummary(
@@ -270,14 +273,28 @@ export class TraceSummaryService {
     /**
      * Classifie le contenu de la conversation en sections typées
      */
-    private classifyConversationContent(conversation: ConversationSkeleton): ClassifiedContent[] {
+    private classifyConversationContent(conversation: ConversationSkeleton, options?: SummaryOptions): ClassifiedContent[] {
         const classified: ClassifiedContent[] = [];
         let index = 0;
 
         // Filtrer seulement les MessageSkeleton de la sequence
-        const messages = conversation.sequence.filter((item): item is MessageSkeleton =>
+        let messages = conversation.sequence.filter((item): item is MessageSkeleton =>
             'role' in item && 'content' in item);
 
+        // Appliquer le filtrage par plage si spécifié
+        if (options && (options.startIndex !== undefined || options.endIndex !== undefined)) {
+            const startIdx = options.startIndex ? Math.max(1, options.startIndex) - 1 : 0; // Convert to 0-based
+            const endIdx = options.endIndex ? Math.min(messages.length, options.endIndex) : messages.length; // Convert to 0-based + 1
+            
+            // Valider les indices
+            if (startIdx < messages.length && endIdx > startIdx) {
+                messages = messages.slice(startIdx, endIdx);
+                // Log pour debugging
+                console.log(`[Range Filter] Processing messages ${startIdx + 1} to ${endIdx} (${messages.length} messages)`);
+            } else {
+                console.warn(`[Range Filter] Invalid range: start=${options.startIndex}, end=${options.endIndex}, total=${conversation.sequence.length}`);
+            }
+        }
 
         for (const message of messages) {
             if (message.role === 'user') {
@@ -1358,7 +1375,7 @@ export class TraceSummaryService {
             const organizedTasks = this.organizeClusterTasks(rootTask, childTasks, finalOptions);
             
             // 4. Classification du contenu agrégé
-            const classifiedContent = this.classifyClusterContent(organizedTasks);
+            const classifiedContent = this.classifyClusterContent(organizedTasks, finalOptions);
             
             // 5. Calcul des statistiques de grappe
             const clusterStats = this.calculateClusterStatistics(organizedTasks, classifiedContent);
@@ -1519,13 +1536,25 @@ export class TraceSummaryService {
     /**
      * Classifie le contenu agrégé de toutes les tâches de la grappe
      */
-    private classifyClusterContent(organizedTasks: OrganizedClusterTasks): ClassifiedClusterContent {
+    private classifyClusterContent(organizedTasks: OrganizedClusterTasks, options?: ClusterSummaryOptions): ClassifiedClusterContent {
         const allClassifiedContent: ClassifiedContent[] = [];
         const perTaskContent = new Map<string, ClassifiedContent[]>();
         
         // Classification par tâche individuelle
         for (const task of organizedTasks.allTasks) {
-            const taskContent = this.classifyConversationContent(task);
+            // Adapter les ClusterSummaryOptions vers SummaryOptions si nécessaire
+            const summaryOptions: SummaryOptions | undefined = options ? {
+                detailLevel: options.detailLevel || 'Full',
+                truncationChars: options.truncationChars || 0,
+                compactStats: options.compactStats || false,
+                includeCss: options.includeCss || false,
+                generateToc: options.generateToc || false,
+                outputFormat: options.outputFormat || 'markdown',
+                startIndex: options.startIndex,
+                endIndex: options.endIndex
+            } : undefined;
+            
+            const taskContent = this.classifyConversationContent(task, summaryOptions);
             perTaskContent.set(task.taskId, taskContent);
             allClassifiedContent.push(...taskContent);
         }

@@ -1173,9 +1173,9 @@ class RooStateManagerServer {
             });
             
             // Obtenir l'identifiant de la machine actuelle pour l'en-tête
-            const { TaskIndexer } = await import('./services/task-indexer.js');
+            const { TaskIndexer, getHostIdentifier } = await import('./services/task-indexer.js');
             const taskIndexer = new TaskIndexer();
-            const currentHostId = taskIndexer.getCurrentHostIdentifier();
+            const currentHostId = getHostIdentifier();
             
             const results = searchResults.map(result => ({
                 taskId: result.payload?.task_id || 'unknown',
@@ -2813,11 +2813,11 @@ class RooStateManagerServer {
         try {
             console.log('🔍 Vérification de la cohérence Qdrant vs Squelettes...');
             
-            const { TaskIndexer } = await import('./services/task-indexer.js');
+            const { TaskIndexer, getHostIdentifier } = await import('./services/task-indexer.js');
             const taskIndexer = new TaskIndexer();
             
             // Obtenir l'identifiant de la machine actuelle
-            const currentHostId = taskIndexer.getCurrentHostIdentifier();
+            const currentHostId = getHostIdentifier();
             console.log(`🖥️  Machine actuelle: ${currentHostId}`);
             
             // Compter les squelettes locaux marqués comme indexés

@@ -24,6 +24,10 @@ interface ExportConversationCsvArgs {
     csvVariant?: 'conversations' | 'messages' | 'tools';
     /** Nombre max de caractères avant troncature (0 = pas de troncature) */
     truncationChars?: number;
+    /** Index de début (1-based) pour traiter seulement une plage de messages */
+    startIndex?: number;
+    /** Index de fin (1-based) pour traiter seulement une plage de messages */
+    endIndex?: number;
 }
 
 /**
@@ -53,6 +57,16 @@ export const exportConversationCsvTool: Tool = {
                 type: "number",
                 description: "Nombre max de caractères avant troncature (0 = pas de troncature)",
                 default: 0
+            },
+            startIndex: {
+                type: "number",
+                description: "Index de début (1-based) pour traiter seulement une plage de messages (optionnel)",
+                minimum: 1
+            },
+            endIndex: {
+                type: "number",
+                description: "Index de fin (1-based) pour traiter seulement une plage de messages (optionnel)",
+                minimum: 1
             }
         },
         required: ["taskId"]
@@ -86,7 +100,9 @@ export async function handleExportConversationCsv(
             truncationChars: args.truncationChars || 0,
             compactStats: false,
             includeCss: false,
-            generateToc: false
+            generateToc: false,
+            startIndex: args.startIndex,
+            endIndex: args.endIndex
         };
 
         // Initialiser le service

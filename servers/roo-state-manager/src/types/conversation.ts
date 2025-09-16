@@ -141,6 +141,10 @@ export interface ClusterSummaryOptions {
     
     // Affichage des relations inter-tâches
     showTaskRelationships?: boolean;
+    
+    // Range processing: optional start and end indices for message filtering
+    startIndex?: number;
+    endIndex?: number;
 }
 
 /**
