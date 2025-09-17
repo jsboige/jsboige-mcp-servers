@@ -880,7 +880,7 @@ export async function getProjectDetails(octokit: any, projectId: string): Promis
         }
       }
     `;
-    const result = await octokit.graphql<any>(query, { id: projectId });
+    const result = await (octokit.graphql as any)(query, { id: projectId });
 
     if (!result.node) {
       throw new Error(`Aucun projet trouvé avec l'ID ${projectId}`);

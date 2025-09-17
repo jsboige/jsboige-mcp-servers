@@ -11,3 +11,4 @@ export { generateClusterSummaryTool, handleGenerateClusterSummary } from './gene
 export { exportConversationJsonTool, handleExportConversationJson } from './export-conversation-json.js';
 export { exportConversationCsvTool, handleExportConversationCsv } from './export-conversation-csv.js';
 export { viewConversationTree } from './view-conversation-tree.js';
+export { getConversationSynthesisTool, handleGetConversationSynthesis } from './synthesis/get-conversation-synthesis.js';
