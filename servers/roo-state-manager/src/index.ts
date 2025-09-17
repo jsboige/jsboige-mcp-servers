@@ -128,7 +128,7 @@ class RooStateManagerServer {
         };
 
         this.llmService = new LLMService(defaultLLMOptions);
-        this.narrativeContextBuilderService = new NarrativeContextBuilderService(defaultContextOptions);
+        this.narrativeContextBuilderService = new NarrativeContextBuilderService(defaultContextOptions, this.conversationCache);
         this.synthesisOrchestratorService = new SynthesisOrchestratorService(
             this.narrativeContextBuilderService,
             this.llmService,

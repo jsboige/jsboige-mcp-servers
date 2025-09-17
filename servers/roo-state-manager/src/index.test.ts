@@ -26,6 +26,9 @@ describe('RooStateManagerServer', () => {
         }
     });
 
+    // TESTS OBSOLÈTES COMMENTÉS TEMPORAIREMENT - PHASE 3 SYNTHÈSE
+    // Ces méthodes n'existent plus dans RooStateManagerServer
+    /*
     describe('handleDiagnoseRooState', () => {
         it('should call _executePowerShellScript with correct parameters', async () => {
             await server.handleDiagnoseRooState({});
@@ -117,4 +120,5 @@ describe('RooStateManagerServer', () => {
             expect(response).toEqual(mockResult);
         });
     });
+    */
 });

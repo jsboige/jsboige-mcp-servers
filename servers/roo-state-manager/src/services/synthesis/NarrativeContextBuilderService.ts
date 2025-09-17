@@ -1,16 +1,16 @@
 /**
  * NarrativeContextBuilderService - Service de construction de contexte narratif récursif
- * 
+ *
  * Ce service implémente l'algorithme de construction de contexte narratif pour les synthèses.
  * Il parcourt l'arbre des conversations de manière intelligente pour construire un contexte
  * cohérent incluant les tâches parents, enfants et sœurs selon la stratégie définie.
- * 
+ *
  * Architecture inspirée des services existants de roo-state-manager.
- * 
- * SDDD Phase 1 : Squelette vide avec structure complète pour l'implémentation future
- * 
- * @author Roo Code v4 - SDDD Phase 1
- * @version 1.0.0
+ *
+ * SDDD Phase 3 : Correction hiérarchie - Intégration TaskNavigator
+ *
+ * @author Roo Code v4 - SDDD Phase 3
+ * @version 1.1.0
  */
 
 import {
@@ -28,6 +28,7 @@ interface NarrativeContext {
     [key: string]: any; // Flexible pour l'enrichissement
 }
 import { ConversationSkeleton, MessageSkeleton, ActionMetadata } from '../../types/conversation.js';
+import { TaskNavigator } from '../task-navigator.js';
 
 /**
  * Options de configuration spécifiques au service de construction de contexte.
@@ -180,10 +181,10 @@ export class NarrativeContextBuilderService {
     private options: NarrativeContextBuilderOptions;
     
     /**
-     * Cache des squelettes de conversation pour éviter les re-lectures.
-     * Optimisation performance pour les opérations de parcours d'arbre.
+     * Cache global des squelettes de conversation (injecté depuis le serveur principal).
+     * Partagé avec tous les services pour éviter les re-lectures coûteuses.
      */
-    private skeletonCache: Map<string, ConversationSkeleton> = new Map();
+    private conversationCache: Map<string, ConversationSkeleton>;
     
     /**
      * Cache des analyses de synthèse pour éviter les re-lectures.
@@ -192,12 +193,17 @@ export class NarrativeContextBuilderService {
     private analysisCache: Map<string, ConversationAnalysis> = new Map();
 
     /**
-     * Constructeur avec options de configuration.
-     * 
+     * Constructeur avec injection de dépendances.
+     *
      * @param options Options de configuration du service
+     * @param conversationCache Cache global des squelettes de conversation
      */
-    constructor(options: NarrativeContextBuilderOptions) {
+    constructor(
+        options: NarrativeContextBuilderOptions,
+        conversationCache: Map<string, ConversationSkeleton>
+    ) {
         this.options = options;
+        this.conversationCache = conversationCache;
     }
 
     // =========================================================================
@@ -239,13 +245,16 @@ export class NarrativeContextBuilderService {
             // 4. Construction du contexte narratif complet
             const contextSummary = await this.buildContextSummary(mainConversation, fullOptions);
             
-            // 5. Construction de la trace de contexte
-            const buildTrace = this.buildContextTrace(taskId, taskId, []);
+            // 5. Parcours topologique pour collecter les données hiérarchiques
+            const traversalResult = await this.traverseUpwards(taskId, fullOptions.maxDepth);
             
-            // 6. Détermination si le contexte a été condensé
+            // 6. Construction de la trace de contexte avec données hiérarchiques
+            const buildTrace = await this.buildContextTrace(taskId, taskId, [], traversalResult);
+            
+            // 7. Détermination si le contexte a été condensé
             const wasCondensed = contextSummary.length > fullOptions.maxContextSize;
             
-            // 7. Construction du résultat final selon l'interface attendue
+            // 8. Construction du résultat final selon l'interface attendue
             const result: ContextBuildingResult = {
                 contextSummary,
                 buildTrace,
@@ -437,12 +446,10 @@ export class NarrativeContextBuilderService {
 
     /**
      * Construit le contexte initial pour une synthèse (contexte amont).
-     * 
+     *
      * Cette méthode se concentre sur la construction du contexte des tâches
      * parentes et sœurs qui précèdent la tâche actuelle dans le narratif.
-     * 
-     * Phase 2 : Implémentera la logique de remontée dans l'arbre des tâches.
-     * 
+     *
      * @param taskId ID de la tâche cible
      * @param options Options de construction
      * @returns Promise du contexte initial construit
@@ -451,8 +458,64 @@ export class NarrativeContextBuilderService {
         taskId: string,
         options: ContextBuildingOptions
     ): Promise<string> {
-        // TODO Phase 2: Implémenter la construction du contexte initial
-        throw new Error('NarrativeContextBuilderService.buildInitialContext() - Pas encore implémenté (Phase 1: Squelette)');
+        const contextParts: string[] = [];
+
+        try {
+            // 1. Remontée dans l'arbre des tâches parentes
+            const upwardTraversal = await this.traverseUpwards(taskId, options.maxDepth);
+            
+            if (upwardTraversal.collectedSkeletons.length > 0) {
+                contextParts.push('## Contexte des Tâches Parentes');
+                
+                // Inverser l'ordre pour avoir les parents les plus anciens en premier
+                const orderedParents = upwardTraversal.collectedSkeletons.reverse();
+                
+                for (const parentSkeleton of orderedParents) {
+                    if (parentSkeleton.taskId !== taskId) { // Exclure la tâche cible elle-même
+                        const parentSummary = await this.generateOnDemandSummary(parentSkeleton);
+                        contextParts.push(`### Tâche Parent: ${parentSkeleton.taskId}`);
+                        contextParts.push(parentSummary);
+                    }
+                }
+            }
+
+            // 2. Collecte des tâches sœurs précédentes
+            if (options.includeSiblings) {
+                const siblings = await this.collectSiblingTasks(taskId, false);
+                
+                if (siblings.length > 0) {
+                    contextParts.push('## Contexte des Tâches Sœurs');
+                    
+                    for (const siblingSkeleton of siblings) {
+                        const siblingSummary = await this.generateOnDemandSummary(siblingSkeleton);
+                        contextParts.push(`### Tâche Sœur: ${siblingSkeleton.taskId}`);
+                        contextParts.push(siblingSummary);
+                    }
+                }
+            }
+
+            // 3. Synthèses des tâches enfants si demandé
+            if (options.includeChildrenSyntheses) {
+                const childrenAnalyses = await this.collectChildrenSyntheses(taskId);
+                
+                if (childrenAnalyses.length > 0) {
+                    contextParts.push('## Synthèses des Tâches Enfants');
+                    
+                    for (const childAnalysis of childrenAnalyses) {
+                        contextParts.push(`### Enfant: ${childAnalysis.taskId}`);
+                        contextParts.push(childAnalysis.synthesis.finalTaskSummary);
+                    }
+                }
+            }
+
+            return contextParts.length > 0
+                ? contextParts.join('\n\n')
+                : 'Aucun contexte initial disponible.';
+
+        } catch (error) {
+            console.error(`Erreur lors de la construction du contexte initial pour ${taskId}:`, error);
+            return `Erreur de construction du contexte: ${error instanceof Error ? error.message : 'Erreur inconnue'}`;
+        }
     }
 
     // =========================================================================
@@ -461,12 +524,10 @@ export class NarrativeContextBuilderService {
 
     /**
      * Parcourt récursivement l'arbre des conversations vers les parents.
-     * 
+     *
      * Cette méthode remonte dans l'arbre des tâches pour collecter les éléments
      * de contexte nécessaires à la compréhension de la tâche actuelle.
-     * 
-     * Phase 2 : Implémentera l'algorithme de remontée récursive.
-     * 
+     *
      * @param taskId ID de la tâche de départ
      * @param maxDepth Profondeur maximale de remontée
      * @returns Promise du résultat de parcours
@@ -475,18 +536,69 @@ export class NarrativeContextBuilderService {
         taskId: string,
         maxDepth: number
     ): Promise<TreeTraversalResult> {
-        // TODO Phase 2: Implémenter le parcours vers les parents
-        throw new Error('NarrativeContextBuilderService.traverseUpwards() - Pas encore implémenté (Phase 1: Squelette)');
+        const result: TreeTraversalResult = {
+            collectedSkeletons: [],
+            collectedAnalyses: [],
+            usedCondensedBatches: [],
+            maxDepthReached: 0
+        };
+
+        if (maxDepth <= 0) {
+            return result;
+        }
+
+        const visitedTasks = new Set<string>();
+        await this.traverseUpwardsRecursive(taskId, maxDepth, 0, result, visitedTasks);
+        
+        return result;
+    }
+
+    /**
+     * Méthode récursive privée pour le parcours vers les parents.
+     */
+    private async traverseUpwardsRecursive(
+        taskId: string,
+        maxDepth: number,
+        currentDepth: number,
+        result: TreeTraversalResult,
+        visitedTasks: Set<string>
+    ): Promise<void> {
+        if (currentDepth >= maxDepth || visitedTasks.has(taskId)) {
+            return;
+        }
+
+        visitedTasks.add(taskId);
+        result.maxDepthReached = Math.max(result.maxDepthReached, currentDepth + 1);
+
+        const skeleton = await this.getConversationSkeleton(taskId);
+        if (skeleton) {
+            result.collectedSkeletons.push(skeleton);
+            
+            // Essayer de charger l'analyse de synthèse si disponible
+            const analysis = await this.getConversationAnalysis(taskId);
+            if (analysis) {
+                result.collectedAnalyses.push(analysis);
+            }
+
+            // Remonter vers le parent si il existe
+            if (skeleton.parentTaskId) {
+                await this.traverseUpwardsRecursive(
+                    skeleton.parentTaskId,
+                    maxDepth,
+                    currentDepth + 1,
+                    result,
+                    visitedTasks
+                );
+            }
+        }
     }
 
     /**
      * Collecte les tâches sœurs (même parent) pour enrichir le contexte.
-     * 
+     *
      * Cette méthode identifie et collecte les tâches sœurs qui peuvent apporter
      * du contexte narratif utile à la compréhension de la tâche actuelle.
-     * 
-     * Phase 2 : Implémentera la logique de collecte des tâches sœurs.
-     * 
+     *
      * @param taskId ID de la tâche de référence
      * @param includeSubsequent Si true, inclut aussi les tâches sœurs postérieures
      * @returns Promise des squelettes des tâches sœurs
@@ -495,24 +607,66 @@ export class NarrativeContextBuilderService {
         taskId: string,
         includeSubsequent: boolean = false
     ): Promise<ConversationSkeleton[]> {
-        // TODO Phase 2: Implémenter la collecte des tâches sœurs
-        throw new Error('NarrativeContextBuilderService.collectSiblingTasks() - Pas encore implémenté (Phase 1: Squelette)');
+        const targetTask = await this.getConversationSkeleton(taskId);
+        if (!targetTask || !targetTask.parentTaskId) {
+            return [];
+        }
+
+        const siblings: ConversationSkeleton[] = [];
+        const targetTimestamp = new Date(targetTask.metadata.lastActivity).getTime();
+
+        // Parcourir toutes les conversations pour trouver les sœurs
+        for (const skeleton of this.conversationCache.values()) {
+            if (skeleton.parentTaskId === targetTask.parentTaskId && skeleton.taskId !== taskId) {
+                const siblingTimestamp = new Date(skeleton.metadata.lastActivity).getTime();
+                
+                if (includeSubsequent || siblingTimestamp <= targetTimestamp) {
+                    siblings.push(skeleton);
+                }
+            }
+        }
+
+        // Trier par chronologie (plus anciens en premier)
+        return siblings.sort((a, b) =>
+            new Date(a.metadata.lastActivity).getTime() - new Date(b.metadata.lastActivity).getTime()
+        );
     }
 
     /**
      * Collecte les synthèses finales des tâches enfants pour inclusion dans le contexte.
-     * 
+     *
      * Cette méthode collecte les synthèses des tâches enfants déjà complétées
      * pour enrichir la compréhension de la tâche parent.
-     * 
-     * Phase 2 : Implémentera la logique de collecte des synthèses enfants.
-     * 
+     *
+     * Phase 3 : IMPLÉMENTATION COMPLÈTE
+     *
      * @param taskId ID de la tâche parent
      * @returns Promise des analyses des tâches enfants
      */
     async collectChildrenSyntheses(taskId: string): Promise<ConversationAnalysis[]> {
-        // TODO Phase 2: Implémenter la collecte des synthèses enfants
-        return [];
+        const childAnalyses: ConversationAnalysis[] = [];
+        
+        try {
+            // Parcourir toutes les conversations pour trouver les enfants
+            for (const skeleton of this.conversationCache.values()) {
+                if (skeleton.parentTaskId === taskId) {
+                    // C'est un enfant - essayer de charger sa synthèse
+                    const analysis = await this.getConversationAnalysis(skeleton.taskId);
+                    if (analysis) {
+                        childAnalyses.push(analysis);
+                    }
+                }
+            }
+
+            // Trier par chronologie (plus anciens en premier)
+            return childAnalyses.sort((a, b) =>
+                new Date(a.analysisTimestamp).getTime() - new Date(b.analysisTimestamp).getTime()
+            );
+            
+        } catch (error) {
+            console.error(`Erreur lors de la collecte des synthèses enfants pour ${taskId}:`, error);
+            return [];
+        }
     }
 
     // =========================================================================
@@ -573,24 +727,16 @@ export class NarrativeContextBuilderService {
     // =========================================================================
 
     /**
-     * Charge un squelette de conversation depuis le cache ou le stockage.
-     * 
-     * Cette méthode gère l'accès optimisé aux squelettes avec mise en cache
-     * pour éviter les re-lectures coûteuses.
-     * 
-     * Phase 2 : Implémentera la logique de chargement avec cache.
-     * 
+     * Charge un squelette de conversation depuis le cache global.
+     *
+     * Cette méthode accède au cache global de conversations maintenu par le serveur principal.
+     * Plus besoin de chargement depuis le stockage car le cache est déjà populé.
+     *
      * @param taskId ID de la tâche à charger
      * @returns Promise du squelette ou null si non trouvé
      */
     async getConversationSkeleton(taskId: string): Promise<ConversationSkeleton | null> {
-        // Vérifier le cache d'abord
-        if (this.skeletonCache.has(taskId)) {
-            return this.skeletonCache.get(taskId)!;
-        }
-
-        // TODO Phase 2: Charger depuis le stockage et mettre en cache
-        return null; // Placeholder Phase 1
+        return this.conversationCache.get(taskId) || null;
     }
 
     /**
@@ -623,14 +769,14 @@ export class NarrativeContextBuilderService {
      * Utile lors de traitements par lots volumineux.
      */
     clearCaches(): void {
-        this.skeletonCache.clear();
         this.analysisCache.clear();
+        // Note: conversationCache est global et ne doit pas être vidé ici
     }
 
     /**
      * Retourne les statistiques d'utilisation des caches.
      * Utile pour le monitoring et l'optimisation des performances.
-     * 
+     *
      * @returns Statistiques des caches
      */
     getCacheStats(): {
@@ -639,7 +785,7 @@ export class NarrativeContextBuilderService {
         memoryUsage: NodeJS.MemoryUsage;
     } {
         return {
-            skeletonCacheSize: this.skeletonCache.size,
+            skeletonCacheSize: this.conversationCache.size,
             analysisCacheSize: this.analysisCache.size,
             memoryUsage: process.memoryUsage()
         };
@@ -651,21 +797,100 @@ export class NarrativeContextBuilderService {
 
     /**
      * Construit la trace de contexte pour une opération de construction.
-     * 
+     *
+     * Phase 3: IMPLÉMENTATION COMPLÈTE avec données hiérarchiques
+     *
      * @param rootTaskId ID de la tâche racine
      * @param targetTaskId ID de la tâche cible
      * @param siblingIds IDs des tâches sœurs incluses
-     * @returns Trace de contexte construite
+     * @param traversalResult Résultats du parcours topologique (optionnel)
+     * @returns Trace de contexte construite avec données hiérarchiques
      */
-    private buildContextTrace(
+    private async buildContextTrace(
         rootTaskId: string,
         targetTaskId: string,
-        siblingIds: string[]
-    ): ContextTrace {
+        siblingIds: string[],
+        traversalResult?: TreeTraversalResult
+    ): Promise<ContextTrace> {
+        const targetSkeleton = await this.getConversationSkeleton(targetTaskId);
+        const realParentId = targetSkeleton?.parentTaskId;
+        
+        // Collecter les données hiérarchiques si disponibles
+        const parentContexts: Array<any> = [];
+        const siblingContexts: Array<any> = [];
+        const childContexts: Array<any> = [];
+        const condensedBatches: Array<any> = [];
+        
+        // ✅ SDDD Phase 3 FIX : Utiliser TaskNavigator pour remplir correctement les contextes hiérarchiques
+        const taskNavigator = new TaskNavigator(this.conversationCache);
+        
+        // Remplir les contexts parents avec TaskNavigator
+        const parentSkeleton = taskNavigator.getTaskParent(targetTaskId);
+        if (parentSkeleton) {
+            const summary = await this.generateOnDemandSummary(parentSkeleton);
+            parentContexts.push({
+                taskId: parentSkeleton.taskId,
+                synthesisType: 'generated_on_demand' as const,
+                summary: summary,
+                includedInContext: true
+            });
+        }
+        
+        // Remplir les contexts siblings avec TaskNavigator
+        const siblings = await this.collectSiblingTasks(targetTaskId, false);
+        for (const siblingSkeleton of siblings) {
+            const summary = await this.generateOnDemandSummary(siblingSkeleton);
+            siblingContexts.push({
+                taskId: siblingSkeleton.taskId,
+                synthesisType: 'generated_on_demand' as const,
+                summary: summary,
+                includedInContext: true
+            });
+        }
+        
+        // Remplir les contexts enfants avec TaskNavigator
+        const children = taskNavigator.getTaskChildren(targetTaskId);
+        for (const childSkeleton of children) {
+            const summary = await this.generateOnDemandSummary(childSkeleton);
+            childContexts.push({
+                taskId: childSkeleton.taskId,
+                synthesisType: 'generated_on_demand' as const,
+                summary: summary,
+                includedInContext: true
+            });
+        }
+        
+        // Remplir les lots condensés depuis le traversal
+        if (traversalResult?.usedCondensedBatches) {
+            for (const batch of traversalResult.usedCondensedBatches) {
+                condensedBatches.push({
+                    batchId: batch.batchId,
+                    sourceTaskIds: batch.sourceTaskIds,
+                    batchSummary: batch.batchSummary,
+                    usedInContext: true
+                });
+            }
+        }
+
+        // ✅ SDDD Phase 3 FIX : Calculer le synthesisType selon les contextes présents
+        // Types valides : 'atomic' | 'condensed' | 'generated_on_demand'
+        let synthesisType: 'atomic' | 'condensed' | 'generated_on_demand' = 'atomic';
+        
+        if (condensedBatches.length > 0) {
+            synthesisType = 'condensed';
+        } else if (parentContexts.length > 0 || siblingContexts.length > 0 || childContexts.length > 0) {
+            synthesisType = 'generated_on_demand';
+        }
+        
         return {
             rootTaskId,
-            parentTaskId: targetTaskId, // TODO: Calculer le vrai parent
-            previousSiblingTaskIds: siblingIds
+            parentTaskId: realParentId,
+            previousSiblingTaskIds: siblingIds,
+            parentContexts: parentContexts.length > 0 ? parentContexts : undefined,
+            siblingContexts: siblingContexts.length > 0 ? siblingContexts : undefined,
+            childContexts: childContexts.length > 0 ? childContexts : undefined,
+            condensedBatches: condensedBatches.length > 0 ? condensedBatches : undefined,
+            synthesisType
         };
     }
 

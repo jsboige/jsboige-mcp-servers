@@ -50,6 +50,8 @@ export interface SynthesisMetadata {
 /**
  * Trace la provenance du contexte utilisé pour une synthèse.
  * Permet la traçabilité et le debug des contextes narratifs.
+ *
+ * ARCHITECTURE V3 : Étendu pour supporter le parcours topologique complet
  */
 export interface ContextTrace {
   /** ID de la tâche racine de la conversation */
@@ -60,6 +62,41 @@ export interface ContextTrace {
   
   /** Liste des tâches sœurs précédentes incluses dans le contexte initial */
   previousSiblingTaskIds: string[];
+  
+  /** Contextes des tâches parentes collectées dans l'ordre topologique */
+  parentContexts?: Array<{
+    taskId: string;
+    synthesisType: 'atomic' | 'condensed' | 'generated_on_demand';
+    summary: string;
+    includedInContext: boolean;
+  }>;
+  
+  /** Contextes des tâches sœurs collectées dans l'ordre chronologique */
+  siblingContexts?: Array<{
+    taskId: string;
+    synthesisType: 'atomic' | 'condensed' | 'generated_on_demand';
+    summary: string;
+    includedInContext: boolean;
+  }>;
+  
+  /** Contextes des tâches enfants collectées (synthèses finales) */
+  childContexts?: Array<{
+    taskId: string;
+    synthesisType: 'atomic' | 'condensed' | 'generated_on_demand';
+    summary: string;
+    includedInContext: boolean;
+  }>;
+  
+  /** Lots de synthèse condensée utilisés pendant la construction */
+  condensedBatches?: Array<{
+    batchId: string;
+    sourceTaskIds: string[];
+    batchSummary: string;
+    usedInContext: boolean;
+  }>;
+  
+  /** Type de synthèse générée pour cette tâche */
+  synthesisType?: 'atomic' | 'condensed' | 'generated_on_demand';
 }
 
 /**

@@ -43,8 +43,7 @@ describe('Synthesis Services - Phase 1 Structure Validation', () => {
             costPerInputToken: 0.03,
             costPerOutputToken: 0.06,
             parameters: {
-                temperature: 0.7,
-                topP: 1.0
+                temperature: 0.7
             }
         }],
         defaultModelId: 'test-gpt-4',
@@ -81,7 +80,7 @@ describe('Synthesis Services - Phase 1 Structure Validation', () => {
     describe('Service Instantiation', () => {
         it('should instantiate NarrativeContextBuilderService correctly', () => {
             expect(() => {
-                const service = new NarrativeContextBuilderService(narrativeOptions);
+                const service = new NarrativeContextBuilderService(narrativeOptions, new Map());
                 expect(service).toBeInstanceOf(NarrativeContextBuilderService);
             }).not.toThrow();
         });
@@ -95,7 +94,7 @@ describe('Synthesis Services - Phase 1 Structure Validation', () => {
 
         it('should instantiate SynthesisOrchestratorService correctly', () => {
             expect(() => {
-                const contextBuilder = new NarrativeContextBuilderService(narrativeOptions);
+                const contextBuilder = new NarrativeContextBuilderService(narrativeOptions, new Map());
                 const llmService = new LLMService(llmOptions);
                 const orchestrator = new SynthesisOrchestratorService(
                     contextBuilder,
@@ -109,7 +108,7 @@ describe('Synthesis Services - Phase 1 Structure Validation', () => {
 
     describe('Phase 1 Mock Behavior', () => {
         it('should throw Phase 1 not implemented errors for batch methods', async () => {
-            const contextBuilder = new NarrativeContextBuilderService(narrativeOptions);
+            const contextBuilder = new NarrativeContextBuilderService(narrativeOptions, new Map());
             const llmService = new LLMService(llmOptions);
             const orchestrator = new SynthesisOrchestratorService(
                 contextBuilder,
@@ -131,7 +130,7 @@ describe('Synthesis Services - Phase 1 Structure Validation', () => {
 
     describe('Dependency Injection', () => {
         it('should accept dependencies correctly', () => {
-            const contextBuilder = new NarrativeContextBuilderService(narrativeOptions);
+            const contextBuilder = new NarrativeContextBuilderService(narrativeOptions, new Map());
             const llmService = new LLMService(llmOptions);
             
             const orchestrator = new SynthesisOrchestratorService(
@@ -147,7 +146,7 @@ describe('Synthesis Services - Phase 1 Structure Validation', () => {
 
         it('should be configurable with options', () => {
             expect(() => {
-                new NarrativeContextBuilderService({ baseDirectory: '/custom/path' } as any);
+                new NarrativeContextBuilderService({ baseDirectory: '/custom/path' } as any, new Map());
                 const customConfig = createValidLLMConfig();
                 customConfig.defaultModelId = 'custom-model';
                 customConfig.models[0].modelId = 'custom-model';
@@ -158,7 +157,7 @@ describe('Synthesis Services - Phase 1 Structure Validation', () => {
 
     describe('TypeScript Compilation', () => {
         it('should compile correctly with proper types', () => {
-            const contextBuilder = new NarrativeContextBuilderService(narrativeOptions);
+            const contextBuilder = new NarrativeContextBuilderService(narrativeOptions, new Map());
             const llmService = new LLMService(llmOptions);
             const orchestrator = new SynthesisOrchestratorService(
                 contextBuilder, 
@@ -172,7 +171,7 @@ describe('Synthesis Services - Phase 1 Structure Validation', () => {
         });
 
         it('should maintain correct instance types', () => {
-            const contextBuilder = new NarrativeContextBuilderService(narrativeOptions);
+            const contextBuilder = new NarrativeContextBuilderService(narrativeOptions, new Map());
             const llmService = new LLMService(llmOptions);
             const orchestrator = new SynthesisOrchestratorService(
                 contextBuilder, 
@@ -188,7 +187,7 @@ describe('Synthesis Services - Phase 1 Structure Validation', () => {
 
     describe('Integration Readiness', () => {
         it('should be ready for Phase 2 implementation', () => {
-            const contextBuilder = new NarrativeContextBuilderService(narrativeOptions);
+            const contextBuilder = new NarrativeContextBuilderService(narrativeOptions, new Map());
             const llmService = new LLMService(llmOptions);
             const orchestrator = new SynthesisOrchestratorService(
                 contextBuilder, 
@@ -204,7 +203,7 @@ describe('Synthesis Services - Phase 1 Structure Validation', () => {
         });
 
         it('should support method calls (Phase 2: functional methods)', async () => {
-            const contextBuilder = new NarrativeContextBuilderService(narrativeOptions);
+            const contextBuilder = new NarrativeContextBuilderService(narrativeOptions, new Map());
             const llmService = new LLMService(llmOptions);
             const orchestrator = new SynthesisOrchestratorService(
                 contextBuilder,
@@ -225,7 +224,7 @@ describe('Synthesis Services - Phase 1 Structure Validation', () => {
             // Validation que la méthode fonctionne et retourne une ConversationAnalysis
             expect(result).toBeDefined();
             expect(result.taskId).toBe('test-task-id');
-            expect(result.analysisEngineVersion).toBe('2.0.0-phase2');
+            expect(result.analysisEngineVersion).toBe('3.0.0-phase3');
         });
     });
 
@@ -279,7 +278,7 @@ describe('Synthesis Services - Phase 1 Structure Validation', () => {
                 defaultMaxDepth: 5
             };
             
-            contextBuilder = new NarrativeContextBuilderService(contextOptions);
+            contextBuilder = new NarrativeContextBuilderService(contextOptions, new Map());
             llmService = new LLMService(llmOptions);
             orchestrator = new SynthesisOrchestratorService(
                 contextBuilder,
@@ -307,7 +306,7 @@ describe('Synthesis Services - Phase 1 Structure Validation', () => {
                 // Vérifications de base
                 expect(result).toBeDefined();
                 expect(result.taskId).toBe('test-task-id');
-                expect(result.analysisEngineVersion).toBe('2.0.0-phase2');
+                expect(result.analysisEngineVersion).toBe('3.0.0-phase3');
                 
                 // Vérification que le contexte builder a bien été appelé
                 expect(mockBuildNarrativeContext).toHaveBeenCalledWith('test-task-id', undefined);
@@ -352,7 +351,7 @@ describe('Synthesis Services - Phase 1 Structure Validation', () => {
                 // Vérification que l'erreur est gérée et une analyse d'erreur est retournée
                 expect(result).toBeDefined();
                 expect(result.taskId).toBe('test-task-id');
-                expect(result.analysisEngineVersion).toBe('2.0.0-phase2-error');
+                expect(result.analysisEngineVersion).toBe('3.0.0-phase3-error');
                 expect(result.metrics.error).toContain('Mock context builder error');
                 
                 mockBuildNarrativeContext.mockRestore();
@@ -443,6 +442,282 @@ describe('Synthesis Services - Phase 1 Structure Validation', () => {
 
                 mockBuildNarrativeContext.mockRestore();
             });
+        
+            // =========================================================================
+            // TESTS PHASE 3 - INTÉGRATION LLM RÉELLE ET TRAÇABILITÉ CONTEXTE
+            // =========================================================================
+            
+            describe('Phase 3 - Real LLM Integration and Context Tree Traceability', () => {
+                let contextBuilder: NarrativeContextBuilderService;
+                let llmService: LLMService;
+                let orchestrator: SynthesisOrchestratorService;
+        
+                beforeEach(() => {
+                    const contextOptions = {
+                        synthesisBaseDir: '/test/synthesis',
+                        condensedBatchesDir: '/test/batches',
+                        maxContextSizeBeforeCondensation: 50000,
+                        defaultMaxDepth: 5
+                    };
+                    
+                    contextBuilder = new NarrativeContextBuilderService(contextOptions, new Map());
+                    llmService = new LLMService(llmOptions);
+                    orchestrator = new SynthesisOrchestratorService(
+                        contextBuilder,
+                        llmService,
+                        orchestratorOptions
+                    );
+                });
+        
+                describe('Context Tree Traceability', () => {
+                    it('should include contextTree with skeleton status in metrics', async () => {
+                        // Mock du contexte pour éviter les appels réels
+                        jest.spyOn(contextBuilder, 'buildNarrativeContext').mockResolvedValue({
+                            contextSummary: 'Mock context for contextTree test',
+                            buildTrace: { rootTaskId: 'test-task-id', previousSiblingTaskIds: [] },
+                            wasCondensed: false
+                        });
+        
+                        const result = await orchestrator.synthesizeConversation('test-task-id');
+        
+                        // Vérification de la présence du contextTree
+                        expect(result.metrics.contextTree).toBeDefined();
+                        expect(result.metrics.contextTree.currentTask).toEqual({
+                            taskId: 'test-task-id',
+                            synthesisType: 'atomic',
+                            includedInContext: true
+                        });
+                        
+                        // Vérification du statut squelette
+                        expect(result.metrics.contextTree.debugInfo.contextBuilderStatus).toBe('skeleton_phase1');
+                        expect(result.metrics.contextTree.debugInfo.missingMethods).toContain('traverseUpwards');
+                        expect(result.metrics.contextTree.debugInfo.missingMethods).toContain('collectSiblingTasks');
+                        expect(result.metrics.contextTree.debugInfo.missingMethods).toContain('buildInitialContext');
+                        
+                        // Vérification que les tableaux sont vides (statut squelette)
+                        expect(result.metrics.contextTree.parentTasks).toEqual([]);
+                        expect(result.metrics.contextTree.siblingTasks).toEqual([]);
+                        expect(result.metrics.contextTree.childTasks).toEqual([]);
+                        expect(result.metrics.contextTree.condensedBatches).toEqual([]);
+                    });
+        
+                    it('should include contextTree in error scenarios', async () => {
+                        // Mock d'erreur dans le context builder
+                        jest.spyOn(contextBuilder, 'buildNarrativeContext').mockRejectedValue(
+                            new Error('Mock context builder error for contextTree test')
+                        );
+        
+                        const result = await orchestrator.synthesizeConversation('test-task-id');
+        
+                        // Vérification que contextTree est présent même en cas d'erreur
+                        expect(result.metrics.contextTree).toBeDefined();
+                        expect(result.metrics.contextTree.debugInfo.contextBuilderStatus).toBe('error_during_context_building');
+                        expect(result.metrics.contextTree.currentTask.includedInContext).toBe(false);
+                    });
+                });
+        
+                describe('LLM Integration Metrics', () => {
+                    it('should include OpenAI usage metrics when using real LLM', async () => {
+                        // Mock du contexte
+                        jest.spyOn(contextBuilder, 'buildNarrativeContext').mockResolvedValue({
+                            contextSummary: 'Context for LLM metrics test',
+                            buildTrace: { rootTaskId: 'test-task-id', previousSiblingTaskIds: [] },
+                            wasCondensed: false
+                        });
+        
+                        // Mock du LLM avec structure LLMCallResult complète
+                        const mockAnalysis = {
+                            taskId: 'test-task-id',
+                            analysisEngineVersion: '3.0.0-phase3',
+                            analysisTimestamp: new Date().toISOString(),
+                            llmModelId: 'gpt-4o',
+                            contextTrace: { rootTaskId: 'test-task-id', previousSiblingTaskIds: [] },
+                            objectives: {
+                                primary_goal: 'Test LLM metrics',
+                                secondary_goals: ['Goal 2'],
+                                success_criteria: ['Criteria 1']
+                            },
+                            strategy: {
+                                approach: 'Test approach',
+                                tools_used: ['Tool 1'],
+                                methodology: 'Test methodology'
+                            },
+                            quality: {
+                                completeness_score: 0.9,
+                                clarity_score: 0.8,
+                                effectiveness_rating: 'High',
+                                issues_found: []
+                            },
+                            metrics: {
+                                contextLength: 100,
+                                wasCondensed: false,
+                                processing_time_ms: 2000,
+                                complexity_score: 3
+                            },
+                            synthesis: {
+                                initialContextSummary: 'Test initial context',
+                                finalTaskSummary: 'Test final summary'
+                            }
+                        };
+        
+                        const mockLLMResult = {
+                            context: {
+                                callId: 'test-call-id',
+                                modelId: 'gpt-4o',
+                                startTime: new Date().toISOString(),
+                                prompt: 'Test prompt',
+                                parameters: {},
+                                metadata: {}
+                            },
+                            response: JSON.stringify(mockAnalysis), // L'orchestrateur parse cette réponse JSON
+                            endTime: new Date().toISOString(),
+                            duration: 3500,
+                            usage: {
+                                promptTokens: 1000,
+                                completionTokens: 500,
+                                totalTokens: 1500,
+                                estimatedCost: 0.045
+                            },
+                            fromCache: false
+                        };
+        
+                        jest.spyOn(llmService, 'generateSynthesis').mockResolvedValue(mockLLMResult);
+        
+                        const result = await orchestrator.synthesizeConversation('test-task-id');
+        
+                        // Vérification des métriques LLM
+                        expect(result.metrics.llmTokens).toBe(1500);
+                        expect(result.metrics.llmCost).toBe(0.045);
+                        expect(result.metrics.llmDuration).toBe(3500);
+                        expect(result.llmModelId).toBe('gpt-4o');
+                    });
+        
+                    it('should handle LLM errors gracefully with contextTree intact', async () => {
+                        // Mock du contexte réussi
+                        jest.spyOn(contextBuilder, 'buildNarrativeContext').mockResolvedValue({
+                            contextSummary: 'Context for LLM error test',
+                            buildTrace: { rootTaskId: 'test-task-id', previousSiblingTaskIds: [] },
+                            wasCondensed: false
+                        });
+        
+                        // Mock d'erreur LLM
+                        jest.spyOn(llmService, 'generateSynthesis').mockRejectedValue(
+                            new Error('Mock OpenAI API error')
+                        );
+        
+                        const result = await orchestrator.synthesizeConversation('test-task-id');
+        
+                        // Vérification que l'erreur LLM est gérée
+                        expect(result.analysisEngineVersion).toBe('3.0.0-phase3-error');
+                        expect(result.metrics.llmError).toContain('Mock OpenAI API error');
+                        
+                        // Vérification que contextTree est toujours présent
+                        expect(result.metrics.contextTree).toBeDefined();
+                        expect(result.metrics.contextTree.debugInfo.explanation).toContain('squelette');
+                        
+                        // Vérification que le contexte réel est utilisé même en cas d'erreur LLM
+                        expect(result.synthesis.initialContextSummary).toBe('Context for LLM error test');
+                    });
+                });
+        
+                describe('Phase 3 Pipeline Validation', () => {
+                    it('should execute complete Phase 3 pipeline: Context -> LLM -> Response with contextTree', async () => {
+                        // Mock complet du pipeline
+                        jest.spyOn(contextBuilder, 'buildNarrativeContext').mockResolvedValue({
+                            contextSummary: 'Complete Phase 3 context',
+                            buildTrace: {
+                                rootTaskId: 'test-task-id',
+                                parentTaskId: 'parent-id',
+                                previousSiblingTaskIds: ['sibling-1', 'sibling-2']
+                            },
+                            wasCondensed: true,
+                            condensedBatchPath: '/test/condensed.json'
+                        });
+        
+                        const mockAnalysis = {
+                            taskId: 'test-task-id',
+                            analysisEngineVersion: '3.0.0-phase3',
+                            analysisTimestamp: new Date().toISOString(),
+                            llmModelId: 'gpt-4o',
+                            contextTrace: {
+                                rootTaskId: 'test-task-id',
+                                parentTaskId: 'parent-id',
+                                previousSiblingTaskIds: ['sibling-1', 'sibling-2']
+                            },
+                            objectives: {
+                                primary_goal: 'Complete pipeline test',
+                                secondary_goals: ['Secondary goal'],
+                                success_criteria: ['Success criteria']
+                            },
+                            strategy: {
+                                approach: 'End-to-end validation',
+                                tools_used: ['Test tools'],
+                                methodology: 'Test methodology'
+                            },
+                            quality: {
+                                completeness_score: 0.95,
+                                clarity_score: 0.9,
+                                effectiveness_rating: 'Excellent',
+                                issues_found: []
+                            },
+                            metrics: {
+                                contextLength: 200,
+                                wasCondensed: true,
+                                processing_time_ms: 1800,
+                                complexity_score: 4
+                            },
+                            synthesis: {
+                                initialContextSummary: 'LLM received context',
+                                finalTaskSummary: 'LLM generated summary'
+                            }
+                        };
+        
+                        const mockLLMResult = {
+                            context: {
+                                callId: 'test-pipeline-call-id',
+                                modelId: 'gpt-4o',
+                                startTime: new Date().toISOString(),
+                                prompt: 'Complete pipeline prompt',
+                                parameters: {},
+                                metadata: {}
+                            },
+                            response: JSON.stringify(mockAnalysis),
+                            endTime: new Date().toISOString(),
+                            duration: 4200,
+                            usage: {
+                                promptTokens: 1200,
+                                completionTokens: 800,
+                                totalTokens: 2000,
+                                estimatedCost: 0.06
+                            },
+                            fromCache: false
+                        };
+        
+                        jest.spyOn(llmService, 'generateSynthesis').mockResolvedValue(mockLLMResult);
+        
+                        const result = await orchestrator.synthesizeConversation('test-task-id');
+        
+                        // Vérifications pipeline complet
+                        expect(result.taskId).toBe('test-task-id');
+                        expect(result.analysisEngineVersion).toBe('3.0.0-phase3');
+                        expect(result.contextTrace.parentTaskId).toBe('parent-id');
+                        expect(result.contextTrace.previousSiblingTaskIds).toEqual(['sibling-1', 'sibling-2']);
+                        
+                        // Vérifications métriques enrichies
+                        expect(result.metrics.wasCondensed).toBe(true);
+                        expect(result.metrics.condensedBatchPath).toBe('/test/condensed.json');
+                        expect(result.metrics.llmTokens).toBe(2000);
+                        expect(result.metrics.llmCost).toBe(0.06);
+                        
+                        // Vérifications contextTree avec debug info
+                        expect(result.metrics.contextTree.currentTask.synthesisType).toBe('atomic');
+                        expect(result.metrics.contextTree.debugInfo.implementedMethods).toContain('buildContextForTask (minimal)');
+                        
+                        // Vérification que le contexte réel remplace celui du LLM
+                        expect(result.synthesis.initialContextSummary).toBe('Complete Phase 3 context');
+                    });
+                });
+            });
         });
     });
 });
@@ -473,8 +748,7 @@ describe('E2E Tests with Real Environment', () => {
             costPerInputToken: 0.00015,
             costPerOutputToken: 0.0006,
             parameters: {
-                temperature: 0.1,
-                topP: 0.9
+                temperature: 0.1
             }
         }],
         defaultModelId: process.env.OPENAI_CHAT_MODEL_ID || 'gpt-4o-mini',
@@ -504,9 +778,9 @@ describe('E2E Tests with Real Environment', () => {
             expect(() => {
                 const contextBuilder = new NarrativeContextBuilderService({
                     baseDirectory: process.cwd(),
-                    maxContextSize: 50000,
+                    maxContextSize: 200000,
                     enableCondensation: true
-                } as any);
+                } as any, new Map());
                 
                 const llmService = new LLMService(createE2ELLMConfig());
                 
@@ -550,7 +824,7 @@ describe('E2E Tests with Real Environment', () => {
             const contextBuilder = new NarrativeContextBuilderService({
                 baseDirectory: process.cwd(),
                 maxContextSize: 10000
-            } as any);
+            } as any, new Map());
             
             const llmService = new LLMService(createE2ELLMConfig());
             

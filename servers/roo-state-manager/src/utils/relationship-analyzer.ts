@@ -28,7 +28,11 @@ export class RelationshipAnalyzer {
     const relationships: TaskRelationship[] = [];
     
     try {
-      // 1. Relations de dépendance de fichiers
+      // 1. Relations parent-enfant (prioritaires)
+      const parentChildRelations = this.analyzeParentChildRelationships(conversations);
+      relationships.push(...parentChildRelations);
+      
+      // 2. Relations de dépendance de fichiers
       const fileDependencies = this.analyzeFileDependencies(conversations);
       relationships.push(...fileDependencies);
       
@@ -53,6 +57,55 @@ export class RelationshipAnalyzer {
         'RELATIONSHIP_ANALYSIS_ERROR'
       );
     }
+  }
+
+  /**
+   * Analyse les relations parent-enfant explicites via le champ children
+   */
+  private static analyzeParentChildRelationships(conversations: ConversationSummary[]): TaskRelationship[] {
+    const relationships: TaskRelationship[] = [];
+    
+    try {
+      // Index des conversations par taskId pour recherche rapide
+      const conversationMap = new Map<string, ConversationSummary>();
+      for (const conversation of conversations) {
+        conversationMap.set(conversation.taskId, conversation);
+      }
+      
+      // Analyse chaque conversation pour détecter les relations parent-enfant via parentTaskId
+      for (const childConversation of conversations) {
+        // Vérifie si la conversation a un parentTaskId
+        const parentTaskId = childConversation.parentTaskId || childConversation.metadata?.parentTaskId || childConversation.metadata?.parent_task_id;
+        
+        if (parentTaskId && conversationMap.has(parentTaskId)) {
+          // Crée la relation parent-enfant
+          relationships.push({
+            id: `parent_child_${parentTaskId}_${childConversation.taskId}`,
+            type: RelationshipType.PARENT_CHILD,
+            source: parentTaskId, // Parent
+            target: childConversation.taskId, // Enfant
+            weight: 1.0, // Relation explicite = poids maximum
+            metadata: {
+              description: `Relation parent-enfant explicite via parentTaskId`,
+              confidence: 1.0, // Confiance maximale car relation explicite
+              evidence: [
+                `Champ parentTaskId dans ${childConversation.taskId}`,
+                `Parent: ${parentTaskId}`,
+                `Relation explicite stockée dans les métadonnées`
+              ]
+            },
+            createdAt: new Date().toISOString()
+          });
+        }
+      }
+      
+      console.error(`[RelationshipAnalyzer] Détecté ${relationships.length} relations parent-enfant`);
+      
+    } catch (error) {
+      console.error('[RelationshipAnalyzer] Erreur lors de l\'analyse des relations parent-enfant:', error);
+    }
+    
+    return relationships;
   }
 
   /**

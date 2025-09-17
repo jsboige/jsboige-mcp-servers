@@ -3,18 +3,22 @@
  * 
  * Ce tool expose l'accès aux résultats de synthèse via l'interface MCP,
  * permettant la récupération des analyses formatées à partir du SynthesisOrchestratorService.
- * 
- * SDDD Phase 1 : Version MOCK avec données de test pour valider l'infrastructure MCP
- * 
- * @author Roo Code v4 - SDDD Phase 1
- * @version 1.0.0-mock
+ *
+ * SDDD Phase 3 : Intégration LLM réelle avec pipeline complet de synthèse
+ *
+ * @author Roo Code v4 - SDDD Phase 3
+ * @version 3.0.0
  */
 
 import { Tool } from '@modelcontextprotocol/sdk/types.js';
 import { ConversationAnalysis } from '../../models/synthesis/SynthesisModels.js';
 import { ConversationSkeleton } from '../../types/conversation.js';
+import { SynthesisOrchestratorService } from '../../services/synthesis/SynthesisOrchestratorService.js';
+import { NarrativeContextBuilderService } from '../../services/synthesis/NarrativeContextBuilderService.js';
+import { LLMService } from '../../services/synthesis/LLMService.js';
 import fs from 'fs/promises';
 import path from 'path';
+import { RooStorageDetector } from '../../utils/roo-storage-detector.js';
 
 /**
  * Arguments du tool get_conversation_synthesis
@@ -35,7 +39,7 @@ export interface GetConversationSynthesisArgs {
  */
 export const getConversationSynthesisTool: Tool = {
     name: "get_conversation_synthesis",
-    description: "Récupère ou exporte le résultat de la synthèse pour une seule conversation. Version MOCK Phase 1 avec données de test.",
+    description: "Récupère ou exporte le résultat de la synthèse pour une seule conversation via LLM réel OpenAI (Phase 3).",
     inputSchema: {
         type: "object",
         properties: {
@@ -61,8 +65,7 @@ export const getConversationSynthesisTool: Tool = {
 /**
  * Implémentation du handler pour le tool get_conversation_synthesis
  * 
- * Phase 1 : Version MOCK qui génère des données de test cohérentes
- * Phase 3 : Intégrera l'appel au SynthesisOrchestratorService réel
+ * Phase 3 : Intégration LLM réelle avec SynthesisOrchestratorService
  */
 export async function handleGetConversationSynthesis(
     args: GetConversationSynthesisArgs,
@@ -76,20 +79,20 @@ export async function handleGetConversationSynthesis(
 
         const outputFormat = args.outputFormat || 'json';
         
-        // Phase 1 : Générer des données MOCK cohérentes avec les modèles
-        const mockAnalysis = await generateMockAnalysis(args.taskId);
+        // Phase 3 : Appel au pipeline LLM réel via SynthesisOrchestratorService
+        const realAnalysis = await generateRealSynthesis(args.taskId, getConversationSkeleton);
         
         // Si un chemin de fichier est spécifié, écrire dans le fichier
         if (args.filePath) {
-            await writeAnalysisToFile(mockAnalysis, args.filePath, outputFormat);
-            return `✅ Synthèse de la tâche '${args.taskId}' exportée vers '${args.filePath}' au format ${outputFormat}`;
+            await writeAnalysisToFile(realAnalysis, args.filePath, outputFormat);
+            return `✅ Synthèse LLM réelle de la tâche '${args.taskId}' exportée vers '${args.filePath}' au format ${outputFormat}`;
         }
         
         // Sinon retourner le contenu selon le format demandé
         if (outputFormat === 'markdown') {
-            return mockAnalysis.synthesis.finalTaskSummary;
+            return realAnalysis.synthesis.finalTaskSummary;
         } else {
-            return mockAnalysis;
+            return realAnalysis;
         }
         
     } catch (error) {
@@ -99,11 +102,87 @@ export async function handleGetConversationSynthesis(
 }
 
 /**
- * Génère une analyse MOCK cohérente avec les modèles de données
- * Phase 1 : Données de test réalistes pour valider l'infrastructure
- * 
+ * Génère une synthèse réelle via le pipeline LLM complet
+ * Phase 3 : Intégration LLM avec SynthesisOrchestratorService
+ *
  * @param taskId ID de la tâche pour laquelle générer l'analyse
- * @returns Promise de l'analyse générée
+ * @param getConversationSkeleton Fonction pour récupérer le skeleton de conversation
+ * @returns Promise de l'analyse générée par LLM
+ */
+async function generateRealSynthesis(
+    taskId: string,
+    getConversationSkeleton: (taskId: string) => Promise<ConversationSkeleton | null>
+): Promise<ConversationAnalysis> {
+    // Vérifier que la conversation existe
+    const skeleton = await getConversationSkeleton(taskId);
+    if (!skeleton) {
+        throw new Error(`Conversation non trouvée: ${taskId}`);
+    }
+
+    // Instancier les services avec configuration par défaut
+    const llmService = new LLMService();
+    
+    // ✅ SDDD FIX: Créer et peupler le cache avec les vraies conversations
+    const conversationCache = new Map<string, ConversationSkeleton>();
+    await populateConversationCache(conversationCache);
+    
+    const contextBuilder = new NarrativeContextBuilderService({
+        synthesisBaseDir: '.skeletons/synthesis',
+        condensedBatchesDir: '.skeletons/synthesis/batches',
+        maxContextSizeBeforeCondensation: 50000,
+        defaultMaxDepth: 10
+    }, conversationCache);
+    
+    // Injecter la fonction de récupération des conversations dans le context builder
+    // Note: En production, cette fonction sera fournie par le serveur principal
+    (contextBuilder as any).getConversationSkeleton = getConversationSkeleton;
+    
+    const orchestrator = new SynthesisOrchestratorService(contextBuilder, llmService, {
+        synthesisOutputDir: '.skeletons/synthesis',
+        maxContextSize: 50000,
+        maxConcurrency: 3,
+        defaultLlmModel: 'gpt-4-turbo-synthesis'
+    });
+
+    try {
+        // Appel du pipeline complet : contexte + LLM
+        console.log(`🚀 [MCP Tool] Démarrage synthèse LLM pour ${taskId}...`);
+        const analysis = await orchestrator.synthesizeConversation(taskId);
+        console.log(`✅ [MCP Tool] Synthèse LLM terminée pour ${taskId}`);
+        
+        return analysis;
+        
+    } catch (error) {
+        console.error(`❌ [MCP Tool] Erreur synthèse ${taskId}:`, error);
+        
+        // Fallback : retourner une analyse d'erreur cohérente
+        const fallbackAnalysis: ConversationAnalysis = {
+            taskId,
+            analysisEngineVersion: "3.0.0-error",
+            analysisTimestamp: new Date().toISOString(),
+            llmModelId: "error-fallback",
+            contextTrace: {
+                rootTaskId: taskId,
+                parentTaskId: undefined,
+                previousSiblingTaskIds: []
+            },
+            objectives: { error: true, message: error instanceof Error ? error.message : 'Unknown error' },
+            strategy: { error: true },
+            quality: { error: true },
+            metrics: { error: error instanceof Error ? error.message : 'Unknown error' },
+            synthesis: {
+                initialContextSummary: "Erreur lors de la construction du contexte narratif",
+                finalTaskSummary: `Erreur lors de la synthèse LLM: ${error instanceof Error ? error.message : 'Unknown error'}`
+            }
+        };
+        
+        return fallbackAnalysis;
+    }
+}
+
+/**
+ * DEPRECATED: Génère une analyse MOCK (conservée pour référence)
+ * Remplacée par generateRealSynthesis() en Phase 3
  */
 async function generateMockAnalysis(taskId: string): Promise<ConversationAnalysis> {
     const timestamp = new Date().toISOString();
@@ -311,4 +390,62 @@ function generateMockSiblingIds(taskId: string, count: number): string[] {
         siblings.push(`sibling_${taskId.substring(0, 6)}_${i + 1}`);
     }
     return siblings;
+}
+
+/**
+ * SDDD Phase 3 FIX: Popule le cache de conversations avec la même logique que le serveur principal
+ * Basé sur handleBuildSkeletonCache() du serveur principal (index.ts:894)
+ *
+ * @param conversationCache Cache à peupler
+ */
+async function populateConversationCache(conversationCache: Map<string, ConversationSkeleton>): Promise<void> {
+    console.log('🔄 [SDDD FIX] Chargement du cache des conversations...');
+    
+    try {
+        const locations = await RooStorageDetector.detectStorageLocations();
+        if (locations.length === 0) {
+            console.warn('⚠️ Aucun emplacement de stockage Roo détecté');
+            return;
+        }
+
+        let totalLoaded = 0;
+        const SKELETON_CACHE_DIR_NAME = '.skeletons';
+        
+        for (const location of locations) {
+            const skeletonsCacheDir = path.join(location, SKELETON_CACHE_DIR_NAME);
+            
+            try {
+                const skeletonFiles = await fs.readdir(skeletonsCacheDir);
+                const jsonFiles = skeletonFiles.filter(file => file.endsWith('.json'));
+                
+                for (const fileName of jsonFiles) {
+                    const skeletonPath = path.join(skeletonsCacheDir, fileName);
+                    
+                    try {
+                        let skeletonContent = await fs.readFile(skeletonPath, 'utf-8');
+                        
+                        // Supprimer le BOM UTF-8 si présent (même logique que le serveur)
+                        if (skeletonContent.charCodeAt(0) === 0xFEFF) {
+                            skeletonContent = skeletonContent.slice(1);
+                        }
+                        
+                        const skeleton: ConversationSkeleton = JSON.parse(skeletonContent);
+                        if (skeleton && skeleton.taskId) {
+                            conversationCache.set(skeleton.taskId, skeleton);
+                            totalLoaded++;
+                        }
+                    } catch (parseError) {
+                        console.warn(`⚠️ Erreur parsing skeleton ${fileName}:`, parseError);
+                    }
+                }
+            } catch (readError) {
+                console.warn(`⚠️ Impossible de lire le dossier ${skeletonsCacheDir}:`, readError);
+            }
+        }
+        
+        console.log(`✅ [SDDD FIX] Cache chargé avec ${totalLoaded} conversations (trouvées dans ${locations.length} emplacements)`);
+        
+    } catch (error) {
+        console.error('❌ [SDDD FIX] Erreur lors du chargement du cache:', error);
+    }
 }
