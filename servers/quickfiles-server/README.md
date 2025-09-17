@@ -40,18 +40,72 @@ node test-quickfiles-simple.js
 
 ## 🛠️ Outils Disponibles
 
-Voici la liste des outils exposés par le serveur, avec leur description.
+Voici la liste détaillée des outils exposés par le serveur :
 
-1.  **`read_multiple_files`** : Lit plusieurs fichiers en une seule requête avec numérotation de lignes optionnelle et extraits de fichiers. Tronque automatiquement les contenus volumineux.
-2.  **`list_directory_contents`** : Liste tous les fichiers et répertoires sous un chemin donné, avec la taille, le nombre de lignes, et des options de filtrage et de tri. Tronque automatiquement les résultats volumineux.
-3.  **`delete_files`** : Supprime une liste de fichiers en une seule opération.
-4.  **`edit_multiple_files`** : Édite plusieurs fichiers en une seule opération en appliquant des diffs.
-5.  **`extract_markdown_structure`** : Analyse les fichiers markdown et extrait les titres avec leurs numéros de ligne.
-6.  **`copy_files`** : Copie une liste de fichiers ou de répertoires. Supporte les motifs glob, la transformation des noms de fichiers et la gestion des conflits.
-7.  **`move_files`** : Déplace une liste de fichiers ou de répertoires. Supporte les motifs glob, la transformation des noms de fichiers et la gestion des conflits.
-8.  **`search_in_files`** : Recherche des motifs dans plusieurs fichiers/répertoires avec support des expressions régulières et affichage du contexte.
-9.  **`search_and_replace`** : Recherche et remplace des motifs dans plusieurs fichiers avec support des expressions régulières.
-10. **`restart_mcp_servers`** : Redémarre un ou plusieurs serveurs MCP en modifiant leur fichier de configuration.
+### 📄 `read_multiple_files`
+
+Lit le contenu de plusieurs fichiers en une seule requête avec numérotation de lignes optionnelle et extraits de fichiers. Tronque automatiquement les contenus volumineux.
+
+*   **Paramètres :**
+    *   `paths` (string[] | FileWithExcerpts[]): Chemins des fichiers ou objets avec extraits
+    *   `show_line_numbers` (boolean, optionnel): Affiche les numéros de ligne
+    *   `max_lines_per_file`, `max_total_lines`, `max_chars_per_file`, `max_total_chars` : Limites de troncature
+
+### 🗂️ `list_directory_contents`
+
+Liste tous les fichiers et répertoires sous un chemin donné, avec la taille, le nombre de lignes, et des options de filtrage et de tri. Tronque automatiquement les résultats volumineux.
+
+*   **Paramètres :**
+    *   `paths` (string[] | DirectoryToList[]): Chemins ou objets avec options
+    *   `recursive`, `max_depth`, `file_pattern`, `sort_by`, `sort_order` : Options de filtrage et tri
+
+### 🗑️ `delete_files`
+
+Supprime une liste de fichiers en une seule opération.
+
+*   **Paramètres :**
+    *   `paths` (string[]): Tableau des chemins des fichiers à supprimer
+
+### ✍️ `edit_multiple_files`
+
+Édite plusieurs fichiers en une seule opération en appliquant des diffs.
+
+*   **Paramètres :**
+    *   `files` (FileEdit[]): Objets avec `path` et `diffs` (search/replace operations)
+
+### 📑 `extract_markdown_structure`
+
+Analyse les fichiers markdown et extrait les titres avec leurs numéros de ligne.
+
+*   **Paramètres :**
+    *   `paths` (string[]): Fichiers Markdown à analyser
+    *   `max_depth`, `include_context` : Options d'extraction
+
+### 📁 `copy_files`
+
+Copie une liste de fichiers ou de répertoires. Supporte les motifs glob, la transformation des noms de fichiers et la gestion des conflits.
+
+### 📂 `move_files`
+
+Déplace une liste de fichiers ou de répertoires. Supporte les motifs glob, la transformation des noms de fichiers et la gestion des conflits.
+
+### 🔍 `search_in_files`
+
+Recherche des motifs dans plusieurs fichiers/répertoires avec support des expressions régulières et affichage du contexte.
+
+*   **Paramètres :**
+    *   `paths`, `pattern`, `use_regex`, `case_sensitive`, `file_pattern`, `context_lines`, `recursive`
+
+### 🔁 `search_and_replace`
+
+Recherche et remplace des motifs dans plusieurs fichiers avec support des expressions régulières.
+
+*   **Paramètres :**
+    *   `search`, `replace`, `paths` ou `files`, `preview` : Options de remplacement
+
+### 🔄 `restart_mcp_servers`
+
+Redémarre un ou plusieurs serveurs MCP en modifiant leur fichier de configuration.
 
 ---
 
@@ -105,3 +159,12 @@ const result = await client.tools.list_directory_contents({
   ],
   max_lines: 1000
 });
+```
+
+## 🔧 Configuration
+
+Le serveur nécessite un environnement Node.js moderne et utilise les dernières normes ESM. Assurez-vous que votre configuration `package.json` et `tsconfig.json` est compatible avec les modules ES.
+
+## 📚 Documentation API Complète
+
+Pour une documentation complète de chaque outil avec tous les paramètres et exemples d'utilisation, consultez le code source dans `src/index.ts` où chaque outil est documenté avec des schémas Zod détaillés.
