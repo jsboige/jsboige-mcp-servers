@@ -147,10 +147,30 @@ if (!result.success) {
 // Si filePath est fourni, sauvegarder le fichier
 if (args.filePath) {
     try {
-        // Résoudre le chemin absolu
-        const absolutePath = path.resolve(args.filePath);
-        console.log(`[DEBUG] Chemin de fichier demandé: ${args.filePath}`);
-        console.log(`[DEBUG] Chemin absolu résolu: ${absolutePath}`);
+        // **CORRECTION CRITIQUE - Résolution intelligente des chemins**
+        let absolutePath: string;
+        
+        if (path.isAbsolute(args.filePath)) {
+            // Cas 1: Chemin absolu → utiliser tel quel
+            absolutePath = args.filePath;
+            console.log(`[DEBUG] Chemin absolu fourni: ${absolutePath}`);
+        } else {
+            // Cas 2: Chemin relatif → résoudre depuis le workspace de la conversation
+            const workspaceDirectory = conversation.metadata?.workspace;
+            
+            if (workspaceDirectory && workspaceDirectory.trim() !== '') {
+                // Résoudre depuis le workspace de la conversation
+                absolutePath = path.resolve(workspaceDirectory, args.filePath);
+                console.log(`[DEBUG] Chemin relatif résolu depuis workspace:`);
+                console.log(`[DEBUG]   - Chemin demandé: ${args.filePath}`);
+                console.log(`[DEBUG]   - Workspace: ${workspaceDirectory}`);
+                console.log(`[DEBUG]   - Chemin absolu résolu: ${absolutePath}`);
+            } else {
+                // Cas 3: Chemin relatif mais pas de workspace → utiliser fallback avec message d'avertissement
+                absolutePath = path.resolve(args.filePath);
+                console.log(`[WARNING] Cette conversation n'a pas de workspace défini. Fichier créé dans: ${absolutePath}`);
+            }
+        }
         
         // Créer les répertoires parent si nécessaire
         const dirPath = path.dirname(absolutePath);

@@ -20,6 +20,7 @@ import papermill as pm
 from papermill.exceptions import PapermillExecutionError
 
 from ..config import get_config, MCPConfig
+from ..utils.dotnet_environment import inject_dotnet_environment
 
 
 @dataclass
@@ -294,10 +295,15 @@ class PapermillExecutor:
                                kernel: str,
                                timeout: int,
                                metrics: ExecutionMetrics) -> ExecutionResult:
-        """Synchronous Papermill execution - SOLUTION SIMPLIFIEE sans isolation."""
+        """
+        Synchronous Papermill execution avec injection d'environnement .NET.
+        
+        SOLUTION DÉFINITIVE SDDD : Résolution du problème héritage d'environnement
+        insuffisant du processus MCP parent vers le kernel .NET enfant.
+        """
         
         try:
-            # SOLUTION FINALE: Seulement Working Directory comme papermill-coursia
+            # Working Directory comme papermill-coursia
             notebook_dir = os.path.dirname(os.path.abspath(input_path))
             original_cwd = os.getcwd()
             os.chdir(notebook_dir)
@@ -315,12 +321,25 @@ class PapermillExecutor:
                 'request_timeout': timeout
             }
             
-            # Execute with timing - SANS MODIFICATION D'ENVIRONNEMENT
+            # Execute with timing + INJECTION D'ENVIRONNEMENT .NET
             start_exec = time.time()
             
             try:
-                # .NET Interactive fonctionne normalement comme prouvé par papermill-coursia
-                result_nb = pm.execute_notebook(**pm_kwargs)
+                # SOLUTION DÉFINITIVE : Injection d'environnement .NET pour kernel
+                # Résout l'erreur "Value cannot be null. (Parameter 'path1')"
+                with inject_dotnet_environment() as injected_vars:
+                    if injected_vars:
+                        self.logger.info(f"🔧 .NET environment injected: {len(injected_vars)} variables")
+                        # Log des variables critiques pour debug
+                        critical_vars = ['DOTNET_ROOT', 'MSBuildSDKsPath', 'NUGET_PACKAGES']
+                        for var in critical_vars:
+                            if var in injected_vars:
+                                self.logger.debug(f"  ✅ {var}={injected_vars[var]}")
+                    else:
+                        self.logger.warning("⚠️  No .NET environment variables injected")
+                    
+                    # Exécution Papermill avec environnement .NET enrichi
+                    result_nb = pm.execute_notebook(**pm_kwargs)
             finally:
                 # Restauration working directory original
                 os.chdir(original_cwd)
@@ -434,4 +453,4 @@ def close_papermill_executor():
     global _papermill_executor
     if _papermill_executor is not None:
         _papermill_executor.close()
-        _papermill_executor = None
+        _papermill_executor = None # Force reload

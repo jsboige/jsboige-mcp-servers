@@ -129,21 +129,39 @@ export class SummaryReportingStrategy extends BaseReportingStrategy {
     ): string {
         const report: string[] = [];
         
-        // En-tête avec CSS
-        report.push('# RESUME DE TRACE D\'ORCHESTRATION ROO');
-        report.push('');
-        // Utiliser le CSS intégré du MarkdownFormatterService si Phase 4 activé
-        if (options.enhancementFlags?.enableAdvancedCSS) {
-            report.push(MarkdownFormatterService.generateCSS());
-        }
+        // En-tête riche avec métadonnées comme dans le bon exemple
+        report.push('# 📋 TRACE DE CONVERSATION ROO');
         report.push('');
         
+        // CSS complet intégré
+        report.push('<style>');
+        report.push('.toc { background-color: #f8f9fa; border: 1px solid #dee2e6; border-radius: 8px; padding: 20px; margin: 20px 0; box-shadow: 0 2px 4px rgba(0,0,0,0.1); }');
+        report.push('.toc h3 { margin-top: 0; color: #495057; border-bottom: 2px solid #dee2e6; padding-bottom: 10px; }');
+        report.push('.toc ul { list-style-type: none; padding-left: 0; }');
+        report.push('.toc li { margin: 8px 0; padding: 5px 0; border-bottom: 1px solid #e9ecef; }');
+        report.push('.toc li:last-child { border-bottom: none; }');
+        report.push('.toc a { text-decoration: none; color: inherit; display: block; padding: 5px; border-radius: 4px; transition: background-color 0.2s; }');
+        report.push('.toc a:hover { background-color: #e9ecef; text-decoration: underline; }');
+        report.push('.toc-user { color: #0066cc; font-weight: bold; }');
+        report.push('.toc-assistant { color: #28a745; font-weight: bold; }');
+        report.push('.toc-tool { color: #fd7e14; font-weight: bold; }');
+        report.push('.toc .line-number { float: right; color: #6c757d; font-size: 0.9em; font-weight: normal; }');
+        report.push('</style>');
+        report.push('');
+
+        // Métadonnées détaillées
         if (sourceFilePath) {
             const fileName = sourceFilePath.split('/').pop() || sourceFilePath;
-            report.push(`**Fichier source :** ${fileName}`);
+            report.push(`**📁 Fichier source :** \`${fileName}\``);
         }
-        report.push(`**Date de generation :** ${new Date().toLocaleDateString('fr-FR')} à ${new Date().toLocaleTimeString('fr-FR')}`);
-        report.push(`**Mode de détail :** ${this.detailLevel}`);
+        
+        // Calcul de la taille approximative
+        const totalContent = contents.reduce((acc, c) => acc + c.content.length, 0);
+        const sizeInKB = Math.round(totalContent / 1024);
+        report.push(`**📏 Taille approximative :** ${sizeInKB} KB`);
+        report.push(`**📊 Nombre total de messages :** ${contents.length}`);
+        report.push(`**🕐 Date de generation :** ${new Date().toLocaleDateString('fr-FR')} à ${new Date().toLocaleTimeString('fr-FR')}`);
+        report.push(`**🔧 Mode de détail :** ${this.detailLevel}`);
         report.push('');
         
         // Statistiques

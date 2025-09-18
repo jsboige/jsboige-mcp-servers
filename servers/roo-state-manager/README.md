@@ -43,6 +43,18 @@ Voir [`examples/`](./examples/) pour les scripts de démonstration :
 - **[performance-benchmark.js](./examples/performance-benchmark.js)** - Benchmarks de performance
 - **[Rapport de validation](./examples/validation/SDDD-Checkpoint1-Validation-Report.md)** - Validation technique complète
 
+## 🧠 Système de Synthèse de Conversations
+
+**✅ NOUVELLE FONCTIONNALITÉ - PHASE 3 LLM OPÉRATIONNELLE**
+
+Le Roo State Manager intègre un système avancé de synthèse automatique de conversations utilisant l'IA pour analyser et résumer intelligemment les traces d'interactions Roo.
+
+**Documentation technique complète :** [`docs/architecture/conversation-synthesis/`](./docs/architecture/conversation-synthesis/)
+
+**API disponible :** `get_conversation_synthesis` - Synthèse LLM réelle avec OpenAI structured outputs
+
+---
+
 ## 📁 Structure du Projet
 
 ```

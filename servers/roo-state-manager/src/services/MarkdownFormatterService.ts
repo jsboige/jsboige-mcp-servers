@@ -967,7 +967,7 @@ ${options.compactMode ? `
     }): string {
         return `
 <div class="conversation-header">
-    <h1>${metadata.title || 'Trace de Conversation Roo'}</h1>
+    <h1>${metadata.title || 'RESUME DE TRACE D\'ORCHESTRATION ROO'}</h1>
     
     <div class="stats-grid">
         <div class="stat-card">

@@ -129,42 +129,49 @@ def add_cell_to_notebook(
 
 
 @mcp.tool()
+@mcp.tool()
 def execute_notebook_solution_a(
     notebook_path: str = Field(description="Chemin du notebook à exécuter"),
     output_path: str = Field(default="", description="Chemin de sortie (optionnel)")
 ) -> Dict[str, Any]:
-    """SOLUTION A - API Papermill directe (remplace subprocess conda run)"""
+    """SOLUTION A - Subprocess isolation conda run avec environnement mcp-jupyter-py310"""
     try:
         if not output_path:
             output_path = notebook_path.replace('.ipynb', '_executed_solution_a.ipynb')
         
         # Diagnostic avant exécution
         diagnostic_info = {
-            "method": "papermill_direct_api",
+            "method": "conda_subprocess_isolation",
+            "conda_env": "mcp-jupyter-py310",
             "cwd": os.getcwd(),
-            "python_env": sys.executable,
-            "papermill_version": getattr(pm, '__version__', 'unknown')
+            "python_env": sys.executable
         }
         
-        # CORRECTION WORKING DIRECTORY - Solution basée sur papermill_executor.py
+        # Changement vers le répertoire du notebook pour résoudre les chemins relatifs NuGet
         notebook_dir = os.path.dirname(os.path.abspath(notebook_path))
         original_cwd = os.getcwd()
         
         try:
-            # Changer vers le répertoire du notebook pour résoudre les chemins relatifs NuGet
             os.chdir(notebook_dir)
             
-            # Exécution directe avec l'API Papermill
+            # Subprocess isolation avec conda run et environnement mcp-jupyter-py310
             start_time = datetime.datetime.now()
             
-            pm.execute_notebook(
-                input_path=notebook_path,
-                output_path=output_path,
-                kernel_name=None,   # Auto-détection du kernel
-                progress_bar=True,
-                log_output=True,
-                cwd=None
+            cmd = [
+                "conda", "run", "-n", "mcp-jupyter-py310",
+                "python", "-m", "papermill",
+                notebook_path,
+                output_path,
+                "--progress-bar"
+            ]
+            
+            result = subprocess.run(
+                cmd,
+                capture_output=True,
+                text=True,
+                check=False
             )
+            
         finally:
             # Restaurer le working directory original
             os.chdir(original_cwd)
@@ -172,76 +179,81 @@ def execute_notebook_solution_a(
         end_time = datetime.datetime.now()
         execution_time = (end_time - start_time).total_seconds()
         
-        return {
-            "status": "success",
-            "input_path": notebook_path,
-            "output_path": output_path,
-            "message": "Notebook exécuté avec succès via API Papermill directe",
-            "method": "papermill_direct_api",
-            "execution_time_seconds": execution_time,
-            "diagnostic": diagnostic_info,
-            "timestamp": end_time.isoformat()
-        }
+        if result.returncode == 0:
+            return {
+                "status": "success",
+                "input_path": notebook_path,
+                "output_path": output_path,
+                "message": "Notebook exécuté avec succès via subprocess isolation conda",
+                "method": "conda_subprocess_isolation",
+                "execution_time_seconds": execution_time,
+                "diagnostic": diagnostic_info,
+                "timestamp": end_time.isoformat(),
+                "stdout": result.stdout,
+                "conda_env": "mcp-jupyter-py310"
+            }
+        else:
+            return {
+                "status": "error",
+                "error": f"Erreur subprocess conda: {result.stderr}",
+                "error_type": "SubprocessError",
+                "method": "conda_subprocess_isolation",
+                "conda_env": "mcp-jupyter-py310",
+                "stdout": result.stdout,
+                "stderr": result.stderr,
+                "returncode": result.returncode
+            }
         
-    except PapermillExecutionError as e:
-        return {
-            "status": "error",
-            "error": f"Erreur d'exécution Papermill: {str(e)}",
-            "error_type": "PapermillExecutionError",
-            "method": "papermill_direct_api"
-        }
-    except PapermillException as e:
-        return {
-            "status": "error",
-            "error": f"Erreur Papermill: {str(e)}",
-            "error_type": "PapermillException",
-            "method": "papermill_direct_api"
-        }
     except Exception as e:
         return {
             "status": "error",
             "error": f"Erreur: {str(e)}",
             "error_type": type(e).__name__,
-            "method": "papermill_direct_api"
+            "method": "conda_subprocess_isolation"
         }
-
 @mcp.tool()
 def execute_notebook(
     notebook_path: str = Field(description="Chemin du notebook à exécuter"),
     output_path: str = Field(default="", description="Chemin de sortie (optionnel)")
 ) -> Dict[str, Any]:
-    """Exécute notebook via API Papermill directe (remplace subprocess conda run)"""
+    """Exécute notebook via subprocess isolation conda avec environnement mcp-jupyter-py310"""
     try:
         if not output_path:
             output_path = notebook_path.replace('.ipynb', '_executed.ipynb')
         
         # Diagnostic avant exécution
         diagnostic_info = {
-            "method": "papermill_direct_api",
+            "method": "conda_subprocess_isolation",
+            "conda_env": "mcp-jupyter-py310",
             "cwd": os.getcwd(),
-            "python_env": sys.executable,
-            "papermill_version": getattr(pm, '__version__', 'unknown')
+            "python_env": sys.executable
         }
         
-        # CORRECTION WORKING DIRECTORY - Solution basée sur papermill_executor.py
+        # Changement vers le répertoire du notebook pour résoudre les chemins relatifs NuGet
         notebook_dir = os.path.dirname(os.path.abspath(notebook_path))
         original_cwd = os.getcwd()
         
         try:
-            # Changer vers le répertoire du notebook pour résoudre les chemins relatifs NuGet
             os.chdir(notebook_dir)
             
-            # Exécution directe avec l'API Papermill
+            # Subprocess isolation avec conda run et environnement mcp-jupyter-py310
             start_time = datetime.datetime.now()
             
-            pm.execute_notebook(
-                input_path=notebook_path,
-                output_path=output_path,
-                kernel_name=None,   # Auto-détection du kernel
-                progress_bar=True,
-                log_output=True,
-                cwd=None
+            cmd = [
+                "conda", "run", "-n", "mcp-jupyter-py310",
+                "python", "-m", "papermill",
+                notebook_path,
+                output_path,
+                "--progress-bar"
+            ]
+            
+            result = subprocess.run(
+                cmd,
+                capture_output=True,
+                text=True,
+                check=False
             )
+            
         finally:
             # Restaurer le working directory original
             os.chdir(original_cwd)
@@ -249,37 +261,37 @@ def execute_notebook(
         end_time = datetime.datetime.now()
         execution_time = (end_time - start_time).total_seconds()
         
-        return {
-            "status": "success",
-            "input_path": notebook_path,
-            "output_path": output_path,
-            "message": "Notebook exécuté avec succès via API Papermill directe",
-            "method": "papermill_direct_api",
-            "execution_time_seconds": execution_time,
-            "diagnostic": diagnostic_info,
-            "timestamp": end_time.isoformat()
-        }
+        if result.returncode == 0:
+            return {
+                "status": "success",
+                "input_path": notebook_path,
+                "output_path": output_path,
+                "message": "Notebook exécuté avec succès via subprocess isolation conda",
+                "method": "conda_subprocess_isolation",
+                "execution_time_seconds": execution_time,
+                "diagnostic": diagnostic_info,
+                "timestamp": end_time.isoformat(),
+                "stdout": result.stdout,
+                "conda_env": "mcp-jupyter-py310"
+            }
+        else:
+            return {
+                "status": "error",
+                "error": f"Erreur subprocess conda: {result.stderr}",
+                "error_type": "SubprocessError",
+                "method": "conda_subprocess_isolation",
+                "conda_env": "mcp-jupyter-py310",
+                "stdout": result.stdout,
+                "stderr": result.stderr,
+                "returncode": result.returncode
+            }
         
-    except PapermillExecutionError as e:
-        return {
-            "status": "error",
-            "error": f"Erreur d'exécution Papermill: {str(e)}",
-            "error_type": "PapermillExecutionError",
-            "method": "papermill_direct_api"
-        }
-    except PapermillException as e:
-        return {
-            "status": "error",
-            "error": f"Erreur Papermill: {str(e)}",
-            "error_type": "PapermillException",
-            "method": "papermill_direct_api"
-        }
     except Exception as e:
         return {
             "status": "error",
             "error": f"Erreur: {str(e)}",
             "error_type": type(e).__name__,
-            "method": "papermill_direct_api"
+            "method": "conda_subprocess_isolation"
         }
 
 @mcp.tool()
@@ -288,7 +300,7 @@ def parameterize_notebook(
     parameters: str = Field(description="Paramètres JSON pour le notebook"),
     output_path: str = Field(default="", description="Chemin de sortie (optionnel)")
 ) -> Dict[str, Any]:
-    """Exécute un notebook avec des paramètres via Papermill API directe (SOLUTION A - Bypass Conda Subprocess)"""
+    """Exécute un notebook avec des paramètres via subprocess isolation conda avec environnement mcp-jupyter-py310"""
     try:
         # Parser les paramètres JSON
         params = json.loads(parameters)
@@ -296,38 +308,45 @@ def parameterize_notebook(
         if not output_path:
             output_path = notebook_path.replace('.ipynb', '_parameterized.ipynb')
         
-        # SOLUTION A: Appel direct API Papermill avec paramètres (remplace subprocess conda)
-        # Avantages: Plus rapide, injection native paramètres, gestion d'erreurs robuste
-        
         # Diagnostic avant exécution
         diagnostic_info = {
-            "method": "papermill_direct_api_with_parameters",
+            "method": "conda_subprocess_isolation_with_parameters",
+            "conda_env": "mcp-jupyter-py310",
             "cwd": os.getcwd(),
             "python_env": sys.executable,
-            "papermill_version": getattr(pm, '__version__', 'unknown'),
             "parameters_count": len(params)
         }
         
-        # CORRECTION WORKING DIRECTORY - Solution basée sur papermill_executor.py
+        # Changement vers le répertoire du notebook pour résoudre les chemins relatifs NuGet
         notebook_dir = os.path.dirname(os.path.abspath(notebook_path))
         original_cwd = os.getcwd()
         
         try:
-            # Changer vers le répertoire du notebook pour résoudre les chemins relatifs NuGet
             os.chdir(notebook_dir)
             
-            # Exécution directe avec Papermill Python API et injection paramètres
+            # Subprocess isolation avec conda run et environnement mcp-jupyter-py310
             start_time = datetime.datetime.now()
             
-            pm.execute_notebook(
-                input_path=notebook_path,
-                output_path=output_path,
-                parameters=params,  # Injection directe des paramètres Python
-                kernel_name=None,   # Auto-détection du kernel
-                progress_bar=True,
-                log_output=True,
-                cwd=None
+            # Construire la commande avec paramètres
+            cmd = [
+                "conda", "run", "-n", "mcp-jupyter-py310",
+                "python", "-m", "papermill",
+                notebook_path,
+                output_path,
+                "--progress-bar"
+            ]
+            
+            # Ajouter les paramètres en ligne de commande
+            for key, value in params.items():
+                cmd.extend(["-p", key, str(value)])
+            
+            result = subprocess.run(
+                cmd,
+                capture_output=True,
+                text=True,
+                check=False
             )
+            
         finally:
             # Restaurer le working directory original
             os.chdir(original_cwd)
@@ -335,17 +354,32 @@ def parameterize_notebook(
         end_time = datetime.datetime.now()
         execution_time = (end_time - start_time).total_seconds()
         
-        return {
-            "status": "success",
-            "input_path": notebook_path,
-            "output_path": output_path,
-            "parameters": params,
-            "message": "Notebook paramétrisé et exécuté avec succès via API Papermill directe",
-            "method": "papermill_direct_api_with_parameters",
-            "execution_time_seconds": execution_time,
-            "diagnostic": diagnostic_info,
-            "timestamp": end_time.isoformat()
-        }
+        if result.returncode == 0:
+            return {
+                "status": "success",
+                "input_path": notebook_path,
+                "output_path": output_path,
+                "parameters": params,
+                "message": "Notebook paramétrisé et exécuté avec succès via subprocess isolation conda",
+                "method": "conda_subprocess_isolation_with_parameters",
+                "execution_time_seconds": execution_time,
+                "diagnostic": diagnostic_info,
+                "timestamp": end_time.isoformat(),
+                "stdout": result.stdout,
+                "conda_env": "mcp-jupyter-py310"
+            }
+        else:
+            return {
+                "status": "error",
+                "error": f"Erreur subprocess conda: {result.stderr}",
+                "error_type": "SubprocessError",
+                "method": "conda_subprocess_isolation_with_parameters",
+                "conda_env": "mcp-jupyter-py310",
+                "parameters": params,
+                "stdout": result.stdout,
+                "stderr": result.stderr,
+                "returncode": result.returncode
+            }
         
     except json.JSONDecodeError as e:
         # Erreur de parsing JSON des paramètres
@@ -353,42 +387,14 @@ def parameterize_notebook(
             "status": "error",
             "error": f"Erreur de format JSON dans les paramètres: {str(e)}",
             "error_type": "JSONDecodeError",
-            "method": "papermill_direct_api_with_parameters"
-        }
-    except PapermillExecutionError as e:
-        # Erreur spécifique d'exécution Papermill (kernel crash, erreur code, etc.)
-        return {
-            "status": "error",
-            "error": f"Erreur d'exécution Papermill: {str(e)}",
-            "error_type": "PapermillExecutionError",
-            "method": "papermill_direct_api_with_parameters",
-            "parameters": json.loads(parameters) if parameters else {},
-            "diagnostic": diagnostic_info
-        }
-    except PapermillException as e:
-        # Autres erreurs Papermill (format notebook, paramètres invalides, etc.)
-        return {
-            "status": "error",
-            "error": f"Erreur Papermill: {str(e)}",
-            "error_type": "PapermillException",
-            "method": "papermill_direct_api_with_parameters",
-            "parameters": json.loads(parameters) if parameters else {},
-            "diagnostic": diagnostic_info
-        }
-    except FileNotFoundError as e:
-        return {
-            "status": "error",
-            "error": f"Fichier notebook non trouvé: {str(e)}",
-            "error_type": "FileNotFoundError",
-            "method": "papermill_direct_api_with_parameters"
+            "method": "conda_subprocess_isolation_with_parameters"
         }
     except Exception as e:
         return {
             "status": "error",
-            "error": f"Erreur inattendue: {str(e)}",
+            "error": f"Erreur: {str(e)}",
             "error_type": type(e).__name__,
-            "method": "papermill_direct_api_with_parameters",
-            "parameters": json.loads(parameters) if parameters else {}
+            "method": "conda_subprocess_isolation_with_parameters"
         }
 
 

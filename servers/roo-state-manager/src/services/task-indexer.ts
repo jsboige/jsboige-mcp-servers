@@ -1,7 +1,7 @@
 import { promises as fs } from 'fs';
-import path from 'path';
-import crypto from 'crypto';
-import os from 'os';
+import * as path from 'path';
+import * as crypto from 'crypto';
+import * as os from 'os';
 import { v4 as uuidv4 } from 'uuid';
 import getOpenAIClient from './openai.js';
 import { getQdrantClient } from './qdrant.js';
@@ -103,14 +103,51 @@ export function getHostIdentifier() {
 async function extractChunksFromTask(taskId: string, taskPath: string): Promise<Chunk[]> {
     const chunks: Chunk[] = [];
     const apiHistoryPath = path.join(taskPath, 'api_conversation_history.json');
+    const metadataPath = path.join(taskPath, 'task_metadata.json');
     let sequenceOrder = 0;
     
-    // Placeholder values
+    // Variables pour les métadonnées extraites
     let messageIndex = 0;
     let parentTaskId : string | undefined;
     let workspace : string | undefined;
     let taskTitle : string | undefined;
     let totalMessages : number | undefined;
+
+    // 🎯 CORRECTION CRITIQUE - Extraction des métadonnées hiérarchiques
+    // Utilisation de la même logique que roo-storage-detector.ts pour cohérence
+    try {
+        const metadataContent = await fs.readFile(metadataPath, 'utf-8');
+        // Nettoyage explicite du BOM (Byte Order Mark)
+        const cleanMetadata = metadataContent.charCodeAt(0) === 0xFEFF
+            ? metadataContent.slice(1)
+            : metadataContent;
+        const rawMetadata = JSON.parse(cleanMetadata);
+        
+        // ✅ LOGIQUE UNIFIÉE : Même extraction que roo-storage-detector.ts:426
+        parentTaskId = rawMetadata.parentTaskId || rawMetadata.parent_task_id;
+        
+        // ✅ INFÉRENCE : Si parentTaskId manque, essayer de l'inférer du contenu
+        if (!parentTaskId) {
+            console.warn(`[extractChunksFromTask] Task ${taskId} missing parentTaskId, attempting inference...`);
+            parentTaskId = await inferParentTaskIdFromContent(
+                path.join(taskPath, 'api_conversation_history.json'),
+                path.join(taskPath, 'ui_messages.json'),
+                rawMetadata
+            );
+            
+            if (parentTaskId) {
+                console.log(`[extractChunksFromTask] ✅ Parent inféré pour ${taskId}: ${parentTaskId}`);
+            }
+        }
+        
+        workspace = rawMetadata.workspace;
+        taskTitle = rawMetadata.title;
+        
+        console.log(`📊 [extractChunksFromTask] Extracted metadata for ${taskId}: parentTaskId=${parentTaskId}, workspace=${workspace}`);
+    } catch (error) {
+        console.warn(`⚠️ [extractChunksFromTask] Could not read metadata for ${taskId}:`, error);
+        // Continuer sans métadonnées - ne pas faire planter l'indexation
+    }
 
     try {
         await fs.access(apiHistoryPath);
@@ -146,7 +183,7 @@ async function extractChunksFromTask(taskId: string, taskPath: string): Promise<
                     chunks.push({
                         chunk_id: uuidv4(),
                         task_id: taskId,
-                        parent_task_id: parentTaskId || null,
+                        parent_task_id: parentTaskId || null, // ✅ FIX: Maintenant correctement assigné
                         root_task_id: null, // TODO: calculer la racine si nécessaire
                         chunk_type: 'message_exchange',
                         sequence_order: sequenceOrder++,
@@ -156,7 +193,7 @@ async function extractChunksFromTask(taskId: string, taskPath: string): Promise<
                         content_summary: String(contentText || '').substring(0, 200),
                         participants: [msg.role],
                         tool_details: null,
-                        // Nouvelles métadonnées enrichies
+                        // ✅ FIX: Métadonnées enrichies maintenant correctement assignées
                         workspace: workspace,
                         task_title: taskTitle,
                         message_index: messageIndex,
@@ -171,7 +208,7 @@ async function extractChunksFromTask(taskId: string, taskPath: string): Promise<
                     chunks.push({
                         chunk_id: uuidv4(),
                         task_id: taskId,
-                        parent_task_id: null,
+                        parent_task_id: parentTaskId || null, // ✅ FIX: Utilisation cohérente de parentTaskId
                         root_task_id: null,
                         chunk_type: 'tool_interaction',
                         sequence_order: sequenceOrder++,
@@ -183,6 +220,10 @@ async function extractChunksFromTask(taskId: string, taskPath: string): Promise<
                             parameters: JSON.parse(toolCall.function.arguments || '{}'),
                             status: 'success',
                         },
+                        // ✅ FIX: Ajout des métadonnées contextuelles pour les tool_calls
+                        workspace: workspace,
+                        task_title: taskTitle,
+                        host_os: getHostIdentifier(),
                     });
                 }
             }
@@ -201,7 +242,7 @@ async function extractChunksFromTask(taskId: string, taskPath: string): Promise<
             chunks.push({
                 chunk_id: uuidv4(),
                 task_id: taskId,
-                parent_task_id: null,
+                parent_task_id: parentTaskId || null, // ✅ FIX: Cohérence avec l'extraction de métadonnées
                 root_task_id: null,
                 chunk_type: 'message_exchange',
                 sequence_order: sequenceOrder++,
@@ -211,6 +252,10 @@ async function extractChunksFromTask(taskId: string, taskPath: string): Promise<
                 content_summary: (msg.text || '').substring(0, 200),
                 participants: [msg.author === 'agent' ? 'assistant' : 'user'],
                 tool_details: null,
+                // ✅ FIX: Ajout des métadonnées contextuelles pour ui_messages
+                workspace: workspace,
+                task_title: taskTitle,
+                host_os: getHostIdentifier(),
             });
         }
     } catch (error) {
@@ -326,6 +371,95 @@ export async function indexTask(taskId: string, taskPath: string): Promise<Point
 }
 
 /**
+ * Tente d'inférer le parentTaskId à partir du contenu de la conversation
+ * (même logique que roo-storage-detector.ts)
+ */
+async function inferParentTaskIdFromContent(
+    apiHistoryPath: string,
+    uiMessagesPath: string,
+    rawMetadata: any
+): Promise<string | undefined> {
+    try {
+        // 1. Analyser le premier message utilisateur dans api_conversation_history.json
+        let parentId = await extractParentFromApiHistory(apiHistoryPath);
+        if (parentId) return parentId;
+
+        // 2. Analyser ui_messages.json pour des références
+        parentId = await extractParentFromUiMessages(uiMessagesPath);
+        if (parentId) return parentId;
+
+        return undefined;
+    } catch (error) {
+        console.error(`[inferParentTaskIdFromContent] Erreur:`, error);
+        return undefined;
+    }
+}
+
+async function extractParentFromApiHistory(apiHistoryPath: string): Promise<string | undefined> {
+    try {
+        const content = await fs.readFile(apiHistoryPath, 'utf-8');
+        const data = JSON.parse(content);
+        const messages = Array.isArray(data) ? data : (data?.messages || []);
+        
+        const firstUserMessage = messages.find((msg: any) => msg.role === 'user');
+        if (!firstUserMessage?.content) return undefined;
+
+        const messageText = Array.isArray(firstUserMessage.content)
+            ? firstUserMessage.content.find((c: any) => c.type === 'text')?.text || ''
+            : firstUserMessage.content;
+
+        return extractTaskIdFromText(messageText);
+    } catch (error) {
+        return undefined;
+    }
+}
+
+async function extractParentFromUiMessages(uiMessagesPath: string): Promise<string | undefined> {
+    try {
+        const content = await fs.readFile(uiMessagesPath, 'utf-8');
+        const data = JSON.parse(content);
+        const messages = Array.isArray(data) ? data : [];
+        
+        const firstMessage = messages.find((msg: any) => msg.type === 'user');
+        if (!firstMessage?.content) return undefined;
+
+        return extractTaskIdFromText(firstMessage.content);
+    } catch (error) {
+        return undefined;
+    }
+}
+
+function extractTaskIdFromText(text: string): string | undefined {
+    if (!text) return undefined;
+
+    // Pattern 1: UUIDs v4 explicites
+    const uuidPattern = /[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}/gi;
+    const uuids = text.match(uuidPattern);
+    
+    if (uuids && uuids.length > 0) {
+        console.log(`[extractTaskIdFromText] UUID trouvé: ${uuids[0]}`);
+        return uuids[0];
+    }
+
+    // Pattern 2: Références contextuelles
+    const contextPatterns = [
+        /CONTEXTE HÉRITÉ.*?([0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12})/i,
+        /ORCHESTRATEUR.*?([0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12})/i,
+        /tâche parent.*?([0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12})/i
+    ];
+
+    for (const pattern of contextPatterns) {
+        const match = text.match(pattern);
+        if (match && match[1]) {
+            console.log(`[extractTaskIdFromText] Parent trouvé via pattern: ${match[1]}`);
+            return match[1];
+        }
+    }
+
+    return undefined;
+}
+
+/**
  * Classe TaskIndexer pour l'architecture à 2 niveaux
  */
 export class TaskIndexer {
@@ -338,7 +472,7 @@ export class TaskIndexer {
             const locations = await RooStorageDetector.detectStorageLocations();
             
             for (const location of locations) {
-                const taskPath = path.join(location, taskId);
+                const taskPath = path.join(location, 'tasks', taskId);
                 try {
                     await fs.access(taskPath);
                     return await indexTask(taskId, taskPath);
@@ -431,4 +565,5 @@ export class TaskIndexer {
             return 0; // Retourner 0 en cas d'erreur
         }
     }
+
 }

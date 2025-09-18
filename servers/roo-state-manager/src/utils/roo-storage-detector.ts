@@ -20,8 +20,10 @@ import {
     ConversationSkeleton,
     MessageSkeleton,
     ActionMetadata,
+    NewTaskInstruction,
 } from '../types/conversation.js';
 import { globalCacheManager } from './cache-manager.js';
+import { globalTaskInstructionIndex } from './task-instruction-index.js';
 
 export class RooStorageDetector {
   private static readonly COMMON_ROO_PATHS = [
@@ -307,8 +309,13 @@ export class RooStorageDetector {
 
   /**
    * Analyse une conversation et la transforme en une structure "squelette" légère.
+   * Version production avec architecture en deux passes pour reconstruction hiérarchies
    */
-  public static async analyzeConversation(taskId: string, taskPath: string): Promise<ConversationSkeleton | null> {
+  public static async analyzeConversation(
+    taskId: string,
+    taskPath: string,
+    useProductionHierarchy: boolean = true
+  ): Promise<ConversationSkeleton | null> {
     const metadataPath = path.join(taskPath, 'task_metadata.json');
     const apiHistoryPath = path.join(taskPath, 'api_conversation_history.json');
     const uiMessagesPath = path.join(taskPath, 'ui_messages.json');
@@ -342,15 +349,78 @@ export class RooStorageDetector {
             rawMetadata = {} as TaskMetadata; // Fallback to an empty object
         }
 
-        if (!rawMetadata.parentTaskId) {
-            // console.error(`[analyzeConversation] Task ${taskId} has no parentTaskId.`);
+        // 🚀 PRODUCTION : Logique de reconstruction hiérarchique en deux passes
+        let parentTaskId = rawMetadata.parentTaskId || rawMetadata.parent_task_id;
+        let childTaskInstructionPrefixes: string[] = [];
+        
+        if (useProductionHierarchy) {
+            // Phase 1: Extraire les préfixes d'instructions de cette tâche
+            if (uiMessagesStats) {
+                const instructions = await this.extractNewTaskInstructionsFromUI(uiMessagesPath, 0); // Pas de limite
+                childTaskInstructionPrefixes = instructions.map(inst =>
+                    `${inst.mode}|${inst.message}`.substring(0, 200)
+                ).filter(prefix => prefix.length > 10); // Filtrer les préfixes trop courts
+            }
+            
+            // Phase 2: Si pas de parent trouvé, chercher via l'index radix-tree
+            if (!parentTaskId && rawMetadata.workspace) {
+                const childText = `${rawMetadata.title || ''} ${rawMetadata.mode || ''}`.trim();
+                if (childText.length > 5) {
+                    parentTaskId = globalTaskInstructionIndex.findPotentialParent(childText);
+                    if (parentTaskId) {
+                        console.log(`[analyzeConversation] 🎯 Parent trouvé via radix-tree pour ${taskId}: ${parentTaskId}`);
+                    }
+                }
+            }
+        } else {
+            // Logique héritée pour compatibilité temporaire
+            if (!parentTaskId) {
+                console.warn(`[analyzeConversation] Task ${taskId} missing parentTaskId, attempting inference...`);
+                parentTaskId = await this.inferParentTaskIdFromContent(apiHistoryPath, uiMessagesPath, rawMetadata, taskId);
+                
+                if (parentTaskId) {
+                    console.log(`[analyzeConversation] ✅ Parent inféré pour ${taskId}: ${parentTaskId}`);
+                } else {
+                    console.log(`[analyzeConversation] ❌ Impossible d'inférer le parent pour ${taskId}`);
+                }
+            }
         }
+        
         const sequence = await this.buildSequenceFromFiles(apiHistoryPath, uiMessagesPath);
         
         const messageCount = sequence.filter(s => 'role' in s).length;
         const actionCount = sequence.length - messageCount;
         const totalSize = (metadataStats?.size || 0) + (apiHistoryStats?.size || 0) + (uiMessagesStats?.size || 0);
 
+        // 🚀 NOUVEAU : Détection de la complétion de la tâche
+        let isCompleted = false;
+        const assistantMessages = sequence.filter(s => 'role' in s && s.role === 'assistant') as MessageSkeleton[];
+        if (assistantMessages.length > 0) {
+            const lastAssistantMessage = assistantMessages[assistantMessages.length - 1];
+            // Recherche de l'outil attempt_completion dans le dernier message assistant
+            isCompleted = lastAssistantMessage.content.toLowerCase().includes('attempt_completion');
+        }
+
+        // 🚀 NOUVEAU : Extraction de l'instruction depuis le premier message utilisateur
+        let truncatedInstruction: string | undefined;
+        const userMessages = sequence.filter(s => 'role' in s && s.role === 'user') as MessageSkeleton[];
+        if (userMessages.length > 0) {
+            const firstUserMessage = userMessages[0];
+            let instruction = firstUserMessage.content.trim();
+            
+            // Extraction de l'instruction depuis une balise <task> si présente
+            const taskMatch = instruction.match(/<task>([\s\S]*?)<\/task>/i);
+            if (taskMatch) {
+                instruction = taskMatch[1].trim();
+            }
+            
+            // Troncature à 200 caractères maximum
+            if (instruction.length > 200) {
+                instruction = instruction.substring(0, 197) + '...';
+            }
+            
+            truncatedInstruction = instruction.length > 0 ? instruction : undefined;
+        }
         // Extraire les vrais timestamps des fichiers JSON au lieu d'utiliser mtime
         const timestamps: Date[] = [];
 
@@ -423,7 +493,7 @@ export class RooStorageDetector {
 
         const skeleton: ConversationSkeleton = {
             taskId,
-            parentTaskId: rawMetadata.parentTaskId || rawMetadata.parent_task_id, // Support pour les anciens formats
+            parentTaskId: parentTaskId, // Utilise la valeur inférée si disponible
             sequence,
             metadata: {
                 title: rawMetadata.title,
@@ -435,7 +505,18 @@ export class RooStorageDetector {
                 totalSize,
                 workspace: extractedWorkspace || rawMetadata.workspace,
             },
+            childTaskInstructionPrefixes: childTaskInstructionPrefixes.length > 0 ? childTaskInstructionPrefixes : undefined,
+            // 🚀 NOUVEAUX CHAMPS : Ajout des fonctionnalités demandées
+            isCompleted,
+            truncatedInstruction,
         };
+
+        // 🚀 PRODUCTION : Alimenter l'index radix-tree avec les instructions trouvées
+        if (useProductionHierarchy && childTaskInstructionPrefixes.length > 0) {
+            for (const prefix of childTaskInstructionPrefixes) {
+                globalTaskInstructionIndex.addInstruction(prefix, taskId);
+            }
+        }
 
         await globalCacheManager.set(`conversation-skeleton:${taskId}`, skeleton);
         return skeleton;
@@ -482,6 +563,577 @@ export class RooStorageDetector {
         
         return null;
     }
+  }
+
+  /**
+   * Tente d'inférer le parentTaskId à partir du contenu de la conversation
+   * quand il n'est pas disponible dans les métadonnées
+   */
+  private static inferParentTaskIdFromContent(
+    apiHistoryPath: string,
+    uiMessagesPath: string,
+    rawMetadata: TaskMetadata,
+    currentTaskId: string
+  ): Promise<string | undefined> {
+    return new Promise(async (resolve) => {
+      try {
+        console.log(`[inferParentTaskIdFromContent] 🔍 Nouvelle approche: analyse des instructions new_task pour ${currentTaskId}`);
+        
+        // 🚀 NOUVELLE LOGIQUE : Analyse des conversations parents pour instructions new_task
+        const parentId = await this.findParentByNewTaskInstructions(currentTaskId, rawMetadata);
+        if (parentId && parentId !== currentTaskId) {
+          console.log(`[inferParentTaskIdFromContent] ✅ Parent trouvé via analyse new_task: ${parentId}`);
+          return resolve(parentId);
+        }
+
+        // 💾 FALLBACK : Méthode héritée pour compatibilité temporaire
+        console.log(`[inferParentTaskIdFromContent] 🔄 Fallback: analyse des conversations enfants`);
+        const fallbackParentId = await this.legacyInferParentFromChildContent(apiHistoryPath, uiMessagesPath);
+        if (fallbackParentId && fallbackParentId !== currentTaskId) {
+          console.log(`[inferParentTaskIdFromContent] ⚡ Parent trouvé via fallback: ${fallbackParentId}`);
+          return resolve(fallbackParentId);
+        }
+
+        // 3. Si aucune référence trouvée, retourner undefined
+        console.log(`[inferParentTaskIdFromContent] Aucun parent inféré`);
+        resolve(undefined);
+      } catch (error) {
+        console.error(`[inferParentTaskIdFromContent] Erreur:`, error);
+        resolve(undefined);
+      }
+    });
+  }
+
+  /**
+   * Utilitaire pour traiter des éléments par batches en parallèle
+   */
+  private static async processBatch<T, R>(
+    items: T[],
+    processor: (item: T) => Promise<R>,
+    batchSize: number = 20,
+    onProgress?: (processed: number, total: number) => void
+  ): Promise<R[]> {
+    const results: R[] = [];
+    
+    for (let i = 0; i < items.length; i += batchSize) {
+      const batch = items.slice(i, i + batchSize);
+      const batchPromises = batch.map(item => processor(item).catch(error => {
+        console.warn(`[processBatch] Erreur traitement item:`, error);
+        return null;
+      }));
+      
+      const batchResults = await Promise.all(batchPromises);
+      results.push(...batchResults.filter(r => r !== null) as R[]);
+      
+      if (onProgress) {
+        onProgress(Math.min(i + batchSize, items.length), items.length);
+      }
+    }
+    
+    return results;
+  }
+
+  /**
+   * 🚀 PRODUCTION : Reconstruction complète des hiérarchies par workspace
+   * Architecture en deux passes avec index radix-tree intégré
+   * @param workspacePath - Chemin du workspace à analyser
+   * @param useFullVolume - Traiter toutes les tâches (défaut: true)
+   * @returns Promise<ConversationSkeleton[]> - Liste des squelettes avec hiérarchies
+   */
+  public static async buildHierarchicalSkeletons(
+    workspacePath?: string,
+    useFullVolume: boolean = true
+  ): Promise<ConversationSkeleton[]> {
+    console.log(`[buildHierarchicalSkeletons] 🏗️ DÉMARRAGE reconstruction hiérarchique ${workspacePath || 'TOUS WORKSPACES'}`);
+    
+    const conversations: ConversationSkeleton[] = [];
+    const storageLocations = await this.detectStorageLocations();
+    
+    // PHASE 1: Reconstruction de l'index à partir des squelettes existants
+    console.log(`[buildHierarchicalSkeletons] 📋 PHASE 1: Reconstruction index radix-tree`);
+    await this.rebuildIndexFromExistingSkeletons();
+
+    // PHASE 2: Scan et génération des squelettes (PARALLÉLISÉE)
+    console.log(`[buildHierarchicalSkeletons] 🔄 PHASE 2: Génération squelettes avec hiérarchies en parallèle`);
+    const maxTasks = useFullVolume ? Number.MAX_SAFE_INTEGER : 100;
+
+    // Collecter toutes les tâches à traiter
+    const allTaskEntries: Array<{taskId: string, taskPath: string, locationPath: string}> = [];
+
+    for (const locationPath of storageLocations) {
+      const tasksPath = path.join(locationPath, 'tasks');
+      
+      try {
+        const taskDirs = await fs.readdir(tasksPath, { withFileTypes: true });
+        console.log(`[buildHierarchicalSkeletons] 📁 Collecte ${taskDirs.length} tâches dans ${locationPath}`);
+        
+        for (const entry of taskDirs) {
+          if (allTaskEntries.length >= maxTasks) break;
+          if (!entry.isDirectory()) continue;
+
+          const taskPath = path.join(tasksPath, entry.name);
+          allTaskEntries.push({
+            taskId: entry.name,
+            taskPath: taskPath,
+            locationPath: locationPath
+          });
+        }
+      } catch (error) {
+        console.warn(`[buildHierarchicalSkeletons] ⚠️ Impossible de scanner ${tasksPath}:`, error);
+      }
+    }
+
+    // Traitement parallèle par batches de 20
+    console.log(`[buildHierarchicalSkeletons] 🚀 Traitement parallèle de ${allTaskEntries.length} tâches (batches de 20)`);
+    
+    const processedSkeletons = await this.processBatch(
+      allTaskEntries,
+      async (taskEntry) => {
+        try {
+          const skeleton = await this.analyzeConversation(taskEntry.taskId, taskEntry.taskPath, false);
+          if (skeleton && (workspacePath === undefined || skeleton.metadata.workspace === workspacePath)) {
+            return skeleton;
+          }
+          return null;
+        } catch (error) {
+          console.warn(`[buildHierarchicalSkeletons] ⚠️ Erreur sur tâche ${taskEntry.taskId}:`, error);
+          return null;
+        }
+      },
+      20, // Batch size
+      (processed, total) => {
+        if (processed % 200 === 0) {
+          console.log(`[buildHierarchicalSkeletons] 📊 Progression: ${processed}/${total} tâches traitées`);
+        }
+      }
+    );
+
+    conversations.push(...processedSkeletons.filter(s => s !== null) as ConversationSkeleton[]);
+
+    // PHASE 3: Résolution finale des relations manquantes
+    console.log(`[buildHierarchicalSkeletons] 🔗 PHASE 3: Résolution finale des relations parent-enfant`);
+    const orphanTasks = conversations.filter(c => !c.parentTaskId);
+    let resolvedCount = 0;
+
+    for (const orphan of orphanTasks) {
+      const childText = `${orphan.metadata.title || ''} ${orphan.metadata.mode || ''}`.trim();
+      if (childText.length > 5) {
+        const potentialParent = globalTaskInstructionIndex.findPotentialParent(childText);
+        if (potentialParent && potentialParent !== orphan.taskId) {
+          orphan.parentTaskId = potentialParent;
+          resolvedCount++;
+        }
+      }
+    }
+
+    const indexStats = globalTaskInstructionIndex.getStats();
+    console.log(`[buildHierarchicalSkeletons] ✅ TERMINÉ:`);
+    console.log(`   📊 ${conversations.length} squelettes générés`);
+    console.log(`   🔗 ${resolvedCount} relations résolues en phase 3`);
+    console.log(`   📈 Index: ${indexStats.totalInstructions} instructions, ${indexStats.totalNodes} noeuds`);
+
+    return conversations;
+  }
+
+  /**
+   * Reconstruction PARALLÉLISÉE de l'index radix-tree à partir des squelettes existants
+   */
+  private static async rebuildIndexFromExistingSkeletons(): Promise<void> {
+    const skeletonPrefixes = new Map<string, string[]>();
+    const storageLocations = await this.detectStorageLocations();
+
+    // Collecter tous les chemins de squelettes
+    const allSkeletonPaths: string[] = [];
+
+    for (const locationPath of storageLocations) {
+      const tasksPath = path.join(locationPath, 'tasks');
+      
+      try {
+        const taskDirs = await fs.readdir(tasksPath, { withFileTypes: true });
+        
+        for (const entry of taskDirs) {
+          if (!entry.isDirectory()) continue;
+          
+          const skeletonPath = path.join(tasksPath, entry.name, '.skeleton');
+          if (existsSync(skeletonPath)) {
+            allSkeletonPaths.push(skeletonPath);
+          }
+        }
+      } catch (error) {
+        console.warn(`[rebuildIndexFromExistingSkeletons] ⚠️ Erreur scan ${tasksPath}:`, error);
+      }
+    }
+
+    console.log(`[rebuildIndexFromExistingSkeletons] 📦 Lecture parallèle de ${allSkeletonPaths.length} squelettes existants`);
+
+    // Traitement parallèle des squelettes
+    const skeletonData = await this.processBatch(
+      allSkeletonPaths,
+      async (skeletonPath) => {
+        try {
+          const skeletonContent = await fs.readFile(skeletonPath, 'utf-8');
+          const skeleton: ConversationSkeleton = JSON.parse(skeletonContent);
+          
+          if (skeleton.childTaskInstructionPrefixes && skeleton.childTaskInstructionPrefixes.length > 0) {
+            return { taskId: skeleton.taskId, prefixes: skeleton.childTaskInstructionPrefixes };
+          }
+          return null;
+        } catch (error) {
+          // Continue si le squelette est corrompu
+          return null;
+        }
+      },
+      30, // Batch size plus élevé pour la lecture pure
+      (processed, total) => {
+        if (processed % 300 === 0) {
+          console.log(`[rebuildIndexFromExistingSkeletons] 📊 ${processed}/${total} squelettes lus`);
+        }
+      }
+    );
+
+    // Construire la map finale
+    for (const data of skeletonData) {
+      if (data) {
+        skeletonPrefixes.set(data.taskId, data.prefixes);
+      }
+    }
+
+    console.log(`[rebuildIndexFromExistingSkeletons] 🏗️ Reconstruction index avec ${skeletonPrefixes.size} squelettes`);
+    globalTaskInstructionIndex.rebuildFromSkeletons(skeletonPrefixes);
+  }
+
+  /**
+   * 🔄 MÉTHODE HÉRITÉE : Compatibilité avec l'ancien système
+   */
+  private static async getAllConversationsInWorkspace(
+    workspacePath: string,
+    maxTasks: number = 100
+  ): Promise<ConversationSkeleton[]> {
+    // Rediriger vers la nouvelle méthode de production
+    return this.buildHierarchicalSkeletons(workspacePath, maxTasks < 1000);
+  }
+
+  /**
+   * 🚀 PRODUCTION : Extrait les instructions new_task d'un fichier ui_messages.json
+   * @param uiMessagesPath - Chemin vers le fichier ui_messages.json
+   * @param maxLines - Limite de lignes (0 = pas de limite pour production)
+   * @returns Promise<NewTaskInstruction[]> - Instructions new_task trouvées
+   */
+  private static async extractNewTaskInstructionsFromUI(
+    uiMessagesPath: string,
+    maxLines: number = 0
+  ): Promise<NewTaskInstruction[]> {
+    const instructions: NewTaskInstruction[] = [];
+    
+    try {
+      if (!existsSync(uiMessagesPath)) {
+        return instructions;
+      }
+
+      let content = await fs.readFile(uiMessagesPath, 'utf-8');
+      
+      // Nettoyage BOM
+      if (content.charCodeAt(0) === 0xFEFF) {
+        content = content.slice(1);
+      }
+
+      // ✅ PRODUCTION : Traitement complet du fichier
+      let processedContent = content;
+      if (maxLines > 0) {
+        // Mode test uniquement
+        const lines = content.split('\n');
+        processedContent = lines.slice(0, maxLines).join('\n');
+      }
+      
+      let uiMessages: any[] = [];
+      try {
+        const data = JSON.parse(processedContent);
+        uiMessages = Array.isArray(data) ? data : [];
+      } catch (error) {
+        console.warn(`[extractNewTaskInstructionsFromUI] ⚠️ Parsing JSON échoué pour ${uiMessagesPath}`);
+        return instructions;
+      }
+
+      for (const message of uiMessages) {
+        if (message.type === 'tool_call' && message.content?.tool === 'new_task') {
+          const instruction: NewTaskInstruction = {
+            timestamp: new Date(message.timestamp || 0).getTime(),
+            mode: message.content.mode || 'unknown',
+            message: message.content.message || '',
+          };
+          instructions.push(instruction);
+        }
+        
+        // Format alternatif: messages avec ask tool et newTask
+        if (message.type === 'ask' && message.ask === 'tool' &&
+            typeof message.text === 'string' && message.text.includes('"tool":"newTask"')) {
+          try {
+            const toolData = JSON.parse(message.text);
+            if (toolData.tool === 'newTask') {
+              const instruction: NewTaskInstruction = {
+                timestamp: new Date(message.timestamp || 0).getTime(),
+                mode: toolData.mode || 'unknown',
+                message: toolData.message || '',
+              };
+              instructions.push(instruction);
+            }
+          } catch (e) {
+            // Ignore les erreurs de parsing de ce message spécifique
+          }
+        }
+      }
+
+      console.log(`[extractNewTaskInstructionsFromUI] ✅ ${instructions.length} instructions new_task trouvées`);
+      return instructions;
+      
+    } catch (error) {
+      console.error(`[extractNewTaskInstructionsFromUI] ❌ Erreur:`, error);
+      return instructions;
+    }
+  }
+
+  /**
+   * 🚀 NOUVELLE MÉTHODE : Analyse si une tâche parent correspond à une tâche enfant
+   * @param parentTask - Squelette de la tâche parent candidate
+   * @param childTask - Squelette de la tâche enfant
+   * @returns Promise<boolean> - true si correspondance trouvée
+   */
+  private static async analyzeParentForNewTaskInstructions(
+    parentTask: ConversationSkeleton,
+    childTask: ConversationSkeleton
+  ): Promise<boolean> {
+    const parentTaskPath = await this.getTaskPathById(parentTask.taskId);
+    if (!parentTaskPath) return false;
+
+    const uiMessagesPath = path.join(parentTaskPath, 'ui_messages.json');
+    const instructions = await this.extractNewTaskInstructionsFromUI(uiMessagesPath);
+
+    if (instructions.length === 0) return false;
+
+    // Calcul de la fenêtre temporelle (±1 heure autour de la création de l'enfant)
+    const childCreatedAt = new Date(childTask.metadata.createdAt).getTime();
+    const timeWindow = 60 * 60 * 1000; // 1 heure en ms
+
+    for (const instruction of instructions) {
+      const instructionTime = instruction.timestamp;
+      
+      // Vérification temporelle
+      if (Math.abs(instructionTime - childCreatedAt) > timeWindow) continue;
+
+      // Correspondance du mode
+      if (instruction.mode !== childTask.metadata.mode) continue;
+
+      // Correspondance partielle du message/titre
+      if (childTask.metadata.title && instruction.message) {
+        const childTitle = childTask.metadata.title.toLowerCase();
+        const instructionMessage = instruction.message.toLowerCase();
+        
+        // Vérification de similarité basique (mots communs)
+        const childWords = childTitle.split(/\s+/).filter(w => w.length > 3);
+        const instructionWords = instructionMessage.split(/\s+/).filter(w => w.length > 3);
+        
+        const commonWords = childWords.filter(word =>
+          instructionWords.some(iWord => iWord.includes(word) || word.includes(iWord))
+        );
+
+        if (commonWords.length > 0) {
+          console.log(`[analyzeParentForNewTaskInstructions] ✅ Correspondance trouvée:
+            Parent: ${parentTask.taskId}
+            Child: ${childTask.taskId}
+            Mode: ${instruction.mode}
+            Mots communs: ${commonWords.join(', ')}`);
+          return true;
+        }
+      }
+    }
+
+    return false;
+  }
+
+  /**
+   * 🚀 NOUVELLE MÉTHODE PRINCIPALE : Trouve le parent d'une tâche via l'analyse des instructions new_task
+   * @param childTaskId - ID de la tâche enfant
+   * @param childMetadata - Métadonnées de la tâche enfant
+   * @returns Promise<string | undefined> - ID du parent ou undefined
+   */
+  private static async findParentByNewTaskInstructions(
+    childTaskId: string,
+    childMetadata: TaskMetadata
+  ): Promise<string | undefined> {
+    console.log(`[findParentByNewTaskInstructions] 🔍 Recherche parent pour ${childTaskId}`);
+
+    if (!childMetadata.workspace) {
+      console.log(`[findParentByNewTaskInstructions] ⚠️ Pas de workspace défini pour ${childTaskId}`);
+      return undefined;
+    }
+
+    try {
+      // Étape 1: Obtenir toutes les conversations du workspace
+      const allConversations = await this.getAllConversationsInWorkspace(childMetadata.workspace);
+      
+      if (allConversations.length === 0) {
+        console.log(`[findParentByNewTaskInstructions] ⚠️ Aucune conversation trouvée dans ${childMetadata.workspace}`);
+        return undefined;
+      }
+
+      // Étape 2: Trouver la tâche enfant dans la liste
+      const childTask = allConversations.find(conv => conv.taskId === childTaskId);
+      if (!childTask) {
+        console.log(`[findParentByNewTaskInstructions] ⚠️ Tâche enfant ${childTaskId} non trouvée`);
+        return undefined;
+      }
+
+      // Étape 3: Chercher parmi les tâches créées AVANT l'enfant
+      const childCreatedAt = new Date(childTask.metadata.createdAt).getTime();
+      const potentialParents = allConversations.filter(conv =>
+        conv.taskId !== childTaskId &&
+        new Date(conv.metadata.createdAt).getTime() < childCreatedAt
+      );
+
+      // Étape 4: Trier par proximité temporelle (plus récentes d'abord)
+      potentialParents.sort((a, b) =>
+        new Date(b.metadata.createdAt).getTime() - new Date(a.metadata.createdAt).getTime()
+      );
+
+      console.log(`[findParentByNewTaskInstructions] 📊 ${potentialParents.length} parents candidats à analyser`);
+
+      // Étape 5: Analyser chaque parent candidat
+      for (const parentCandidate of potentialParents) {
+        const isMatch = await this.analyzeParentForNewTaskInstructions(parentCandidate, childTask);
+        if (isMatch) {
+          return parentCandidate.taskId;
+        }
+      }
+
+      console.log(`[findParentByNewTaskInstructions] ❌ Aucun parent trouvé pour ${childTaskId}`);
+      return undefined;
+      
+    } catch (error) {
+      console.error(`[findParentByNewTaskInstructions] ❌ Erreur:`, error);
+      return undefined;
+    }
+  }
+
+  /**
+   * Helper: Obtient le chemin d'une tâche par son ID
+   */
+  private static async getTaskPathById(taskId: string): Promise<string | null> {
+    const storageLocations = await this.detectStorageLocations();
+    
+    for (const locationPath of storageLocations) {
+      const taskPath = path.join(locationPath, 'tasks', taskId);
+      try {
+        const stats = await fs.stat(taskPath);
+        if (stats.isDirectory()) {
+          return taskPath;
+        }
+      } catch (e) {
+        // Continue avec l'emplacement suivant
+      }
+    }
+    return null;
+  }
+
+  /**
+   * 💾 MÉTHODE HÉRITÉE : Ancienne logique d'inférence pour fallback
+   * Renommée pour clarifier son rôle de fallback
+   */
+  private static async legacyInferParentFromChildContent(
+    apiHistoryPath: string,
+    uiMessagesPath: string
+  ): Promise<string | undefined> {
+    // 1. Essayer d'extraire depuis api_conversation_history.json
+    if (existsSync(apiHistoryPath)) {
+      const parentFromApi = await this.extractParentFromApiHistory(apiHistoryPath);
+      if (parentFromApi) return parentFromApi;
+    }
+
+    // 2. Essayer d'extraire depuis ui_messages.json
+    if (existsSync(uiMessagesPath)) {
+      const parentFromUi = await this.extractParentFromUiMessages(uiMessagesPath);
+      if (parentFromUi) return parentFromUi;
+    }
+
+    return undefined;
+  }
+
+  /**
+   * Extrait le parentTaskId à partir du premier message dans api_conversation_history.json
+   */
+  private static async extractParentFromApiHistory(apiHistoryPath: string): Promise<string | undefined> {
+    try {
+      const content = await fs.readFile(apiHistoryPath, 'utf-8');
+      const data = JSON.parse(content);
+      const messages = Array.isArray(data) ? data : (data?.messages || []);
+      
+      // Chercher le premier message utilisateur
+      const firstUserMessage = messages.find((msg: any) => msg.role === 'user');
+      if (!firstUserMessage?.content) return undefined;
+
+      const messageText = Array.isArray(firstUserMessage.content)
+        ? firstUserMessage.content.find((c: any) => c.type === 'text')?.text || ''
+        : firstUserMessage.content;
+
+      return this.extractTaskIdFromText(messageText);
+    } catch (error) {
+      console.error(`[extractParentFromApiHistory] Erreur:`, error);
+      return undefined;
+    }
+  }
+
+  /**
+   * Extrait le parentTaskId à partir des messages UI
+   */
+  private static async extractParentFromUiMessages(uiMessagesPath: string): Promise<string | undefined> {
+    try {
+      const content = await fs.readFile(uiMessagesPath, 'utf-8');
+      const data = JSON.parse(content);
+      const messages = Array.isArray(data) ? data : [];
+      
+      // Chercher le premier message utilisateur
+      const firstMessage = messages.find((msg: any) => msg.type === 'user');
+      if (!firstMessage?.content) return undefined;
+
+      return this.extractTaskIdFromText(firstMessage.content);
+    } catch (error) {
+      console.error(`[extractParentFromUiMessages] Erreur:`, error);
+      return undefined;
+    }
+  }
+
+  /**
+   * Extrait un taskId à partir d'un texte en utilisant des patterns
+   */
+  private static extractTaskIdFromText(text: string): string | undefined {
+    if (!text) return undefined;
+
+    // Pattern 1: Rechercher des UUIDs v4 explicites
+    const uuidPattern = /[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}/gi;
+    const uuids = text.match(uuidPattern);
+    
+    if (uuids && uuids.length > 0) {
+      // Prendre le premier UUID trouvé comme potentiel parent
+      console.log(`[extractTaskIdFromText] UUID trouvé: ${uuids[0]}`);
+      return uuids[0];
+    }
+
+    // Pattern 2: Rechercher des références explicites à des tâches parentes
+    // dans les mots-clés comme "CONTEXTE HÉRITÉ", "ORCHESTRATEUR", etc.
+    const contextPatterns = [
+      /CONTEXTE HÉRITÉ.*?([0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12})/i,
+      /ORCHESTRATEUR.*?([0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12})/i,
+      /tâche parent.*?([0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12})/i
+    ];
+
+    for (const pattern of contextPatterns) {
+      const match = text.match(pattern);
+      if (match && match[1]) {
+        console.log(`[extractTaskIdFromText] Parent trouvé via pattern: ${match[1]}`);
+        return match[1];
+      }
+    }
+
+    return undefined;
   }
 
   /**

@@ -145,14 +145,14 @@ export abstract class BaseReportingStrategy implements IReportingStrategy {
                     toc.push(`- <a href="${sourceFilePath}#L${this.estimateLineNumber(content)}" class="toc-user">**MESSAGE UTILISATEUR #${userMessageCounter}** - ${firstLine}</a>`);
                 } else {
                     // Mode standard avec ancres internes
-                    toc.push(`- [**MESSAGE UTILISATEUR #${userMessageCounter}**](#${this.generateAnchor(content, userMessageCounter)}) - ${firstLine}`);
+                    toc.push(`- <a href="#${this.generateAnchor(content, userMessageCounter)}" class="toc-user">**MESSAGE UTILISATEUR #${userMessageCounter}** - ${firstLine}</a>`);
                 }
             } else if (content.subType === 'ToolResult') {
                 toolResultCounter++;
                 if (sourceFilePath && this.isTocOnlyMode()) {
                     toc.push(`- <a href="${sourceFilePath}#L${this.estimateLineNumber(content)}" class="toc-tool">**RESULTAT OUTIL #${toolResultCounter}** - ${firstLine}</a>`);
                 } else {
-                    toc.push(`- [**RÉSULTAT OUTIL #${toolResultCounter}**](#${this.generateAnchor(content, toolResultCounter)}) - ${firstLine}`);
+                    toc.push(`- <a href="#${this.generateAnchor(content, toolResultCounter)}" class="toc-tool">**RÉSULTAT OUTIL #${toolResultCounter}** - ${firstLine}</a>`);
                 }
             } else if (content.type === 'Assistant') {
                 assistantMessageCounter++;
@@ -162,7 +162,7 @@ export abstract class BaseReportingStrategy implements IReportingStrategy {
                 if (sourceFilePath && this.isTocOnlyMode()) {
                     toc.push(`- <a href="${sourceFilePath}#L${this.estimateLineNumber(content)}" class="toc-assistant">**${label}** - ${firstLine}</a>`);
                 } else {
-                    toc.push(`- [**${label}**](#${this.generateAnchor(content, assistantMessageCounter)}) - ${firstLine}`);
+                    toc.push(`- <a href="#${this.generateAnchor(content, assistantMessageCounter)}" class="toc-assistant">**${label}** - ${firstLine}</a>`);
                 }
             }
         }
