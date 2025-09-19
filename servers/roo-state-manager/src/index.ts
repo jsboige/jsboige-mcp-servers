@@ -87,6 +87,13 @@ class RooStateManagerServer {
     private qdrantIndexQueue: Set<string> = new Set(); // File d'attente des tâches à indexer
     private qdrantIndexInterval: NodeJS.Timeout | null = null;
     private isQdrantIndexingEnabled = true;
+    
+    // 🛡️ CACHE ANTI-FUITE - Protection contre 220GB de trafic réseau
+    private qdrantIndexCache: Map<string, number> = new Map(); // taskId -> timestamp dernière indexation
+    private lastQdrantConsistencyCheck: number = 0;
+    private readonly CONSISTENCY_CHECK_INTERVAL = 24 * 60 * 60 * 1000; // 24h au lieu du démarrage
+    private readonly MIN_REINDEX_INTERVAL = 4 * 60 * 60 * 1000; // 4h minimum entre indexations
+    private readonly MAX_BACKGROUND_INTERVAL = 5 * 60 * 1000; // 5min au lieu de 30s
 
     constructor() {
         this.xmlExporterService = new XmlExporterService();
@@ -1020,41 +1027,80 @@ class RooStateManagerServer {
         console.log(`🔗 PHASE 3: Recalculating parent-child relationships...`);
         
         const skeletonsToUpdate: Array<{ taskId: string; newParentId: string }> = [];
+        const orphanSkeletons = Array.from(this.conversationCache.values()).filter(s =>
+            !s.parentTaskId && s.metadata?.workspace
+        );
         
-        for (const skeleton of this.conversationCache.values()) {
-            // Ne traiter que les tâches sans parent explicit
-            if (!skeleton.parentTaskId && skeleton.metadata?.workspace) {
+        console.log(`🔍 Found ${orphanSkeletons.length} orphan tasks to process...`);
+        
+        // OPTIMISATION: Traiter par lots de 50 pour éviter les timeouts
+        const BATCH_SIZE = 50;
+        const MAX_PROCESSING_TIME = 45000; // 45 secondes max pour cette phase
+        const startTime = Date.now();
+        
+        for (let i = 0; i < orphanSkeletons.length; i += BATCH_SIZE) {
+            // Vérifier le timeout
+            if (Date.now() - startTime > MAX_PROCESSING_TIME) {
+                console.log(`⏰ Phase 3 timeout reached, processed ${i}/${orphanSkeletons.length} tasks`);
+                break;
+            }
+            
+            const batch = orphanSkeletons.slice(i, i + BATCH_SIZE);
+            console.log(`📦 Processing batch ${Math.floor(i / BATCH_SIZE) + 1}/${Math.ceil(orphanSkeletons.length / BATCH_SIZE)}: ${batch.length} tasks`);
+            
+            for (const skeleton of batch) {
                 const childText = `${skeleton.metadata?.title || ''} ${skeleton.metadata?.mode || ''}`.trim();
                 if (childText.length > 5) {
-                    const foundParentId = globalTaskInstructionIndex.findPotentialParent(childText);
-                    if (foundParentId && foundParentId !== skeleton.taskId) {
-                        skeletonsToUpdate.push({ taskId: skeleton.taskId, newParentId: foundParentId });
-                        console.log(`🎯 HIERARCHY FOUND: ${skeleton.taskId.substring(0, 8)} -> parent: ${foundParentId.substring(0, 8)}`);
-                        hierarchyRelationsFound++;
+                    try {
+                        const foundParentId = globalTaskInstructionIndex.findPotentialParent(childText);
+                        if (foundParentId && foundParentId !== skeleton.taskId) {
+                            skeletonsToUpdate.push({ taskId: skeleton.taskId, newParentId: foundParentId });
+                            console.log(`🎯 HIERARCHY FOUND: ${skeleton.taskId.substring(0, 8)} -> parent: ${foundParentId.substring(0, 8)}`);
+                            hierarchyRelationsFound++;
+                        }
+                    } catch (searchError) {
+                        console.error(`Error finding parent for ${skeleton.taskId.substring(0, 8)}:`, searchError);
                     }
                 }
             }
         }
         
-        // Appliquer les mises à jour de hiérarchie
+        console.log(`🔗 Found ${skeletonsToUpdate.length} parent-child relationships to apply...`);
+        
+        // Appliquer les mises à jour de hiérarchie (sans sauvegarde immédiate pour éviter timeout)
         for (const update of skeletonsToUpdate) {
             const skeleton = this.conversationCache.get(update.taskId);
             if (skeleton) {
                 skeleton.parentTaskId = update.newParentId;
-                // Sauvegarder le squelette mis à jour
-                try {
-                    for (const storageDir of locations) {
-                        const skeletonDir = path.join(storageDir, SKELETON_CACHE_DIR_NAME);
-                        const skeletonPath = path.join(skeletonDir, `${update.taskId}.json`);
-                        if (existsSync(skeletonPath)) {
-                            await fs.writeFile(skeletonPath, JSON.stringify(skeleton, null, 2));
-                            break;
-                        }
-                    }
-                } catch (saveError) {
-                    console.error(`Failed to save updated skeleton for ${update.taskId}:`, saveError);
-                }
+                // OPTIMISATION: Reporter la sauvegarde sur disque en arrière-plan
+                // La sauvegarde sera faite lors du prochain rebuild ou sur demande
             }
+        }
+        
+        // Sauvegarder seulement les premiers squelettes modifiés (limite pour éviter timeout)
+        const MAX_SAVES = 10;
+        let savedCount = 0;
+        for (const update of skeletonsToUpdate.slice(0, MAX_SAVES)) {
+            try {
+                for (const storageDir of locations) {
+                    const skeletonDir = path.join(storageDir, SKELETON_CACHE_DIR_NAME);
+                    const skeletonPath = path.join(skeletonDir, `${update.taskId}.json`);
+                    if (existsSync(skeletonPath)) {
+                        const skeleton = this.conversationCache.get(update.taskId);
+                        if (skeleton) {
+                            await fs.writeFile(skeletonPath, JSON.stringify(skeleton, null, 2));
+                            savedCount++;
+                        }
+                        break;
+                    }
+                }
+            } catch (saveError) {
+                console.error(`Failed to save updated skeleton for ${update.taskId}:`, saveError);
+            }
+        }
+        
+        if (skeletonsToUpdate.length > MAX_SAVES) {
+            console.log(`📝 Saved ${savedCount}/${skeletonsToUpdate.length} updated skeletons to disk (others updated in memory only)`);
         }
         
         console.log(`✅ Skeleton cache build complete. Mode: ${mode}, Cache size: ${this.conversationCache.size}, New relations: ${hierarchyRelationsFound}`);
@@ -3050,9 +3096,17 @@ class RooStateManagerServer {
 
     /**
      * Vérifie la cohérence entre les squelettes locaux et l'index Qdrant (filtré par machine)
+     * 🛡️ PROTECTION ANTI-FUITE: Limitée à 1x/24h au lieu de chaque démarrage
      */
     private async _verifyQdrantConsistency(): Promise<void> {
         try {
+            // 🛡️ ANTI-FUITE: Vérifier si la dernière vérification est trop récente
+            const now = Date.now();
+            if (now - this.lastQdrantConsistencyCheck < this.CONSISTENCY_CHECK_INTERVAL) {
+                console.log('⏳ Vérification Qdrant ignorée (dernière < 24h) - Protection anti-fuite');
+                return;
+            }
+            
             console.log('🔍 Vérification de la cohérence Qdrant vs Squelettes...');
             
             const { TaskIndexer, getHostIdentifier } = await import('./services/task-indexer.js');
@@ -3070,8 +3124,11 @@ class RooStateManagerServer {
                 }
             }
             
-            // Compter les points dans Qdrant pour cette machine
+            // 🛡️ APPEL RÉSEAU QDRANT (maintenant limité à 1x/24h)
             const qdrantCount = await taskIndexer.countPointsByHostOs(currentHostId);
+            
+            // Marquer la dernière vérification
+            this.lastQdrantConsistencyCheck = now;
             
             console.log(`📊 Cohérence Qdrant:`);
             console.log(`   - Squelettes locaux indexés: ${localIndexedCount}`);
@@ -3114,7 +3171,7 @@ class RooStateManagerServer {
             clearInterval(this.qdrantIndexInterval);
         }
         
-        // Traitement des éléments de la queue toutes les 30 secondes
+        // 🛡️ ANTI-FUITE: 5 minutes au lieu de 30 secondes (10× moins fréquent)
         this.qdrantIndexInterval = setInterval(async () => {
             if (!this.isQdrantIndexingEnabled || this.qdrantIndexQueue.size === 0) {
                 return;
@@ -3126,7 +3183,7 @@ class RooStateManagerServer {
                 this.qdrantIndexQueue.delete(taskId);
                 await this._indexTaskInQdrant(taskId);
             }
-        }, 30000); // 30 secondes
+        }, this.MAX_BACKGROUND_INTERVAL); // 5 minutes au lieu de 30 secondes
         
         console.log('🔄 Service d\'indexation Qdrant en arrière-plan démarré');
     }
@@ -3141,12 +3198,39 @@ class RooStateManagerServer {
                 console.warn(`[WARN] Skeleton for task ${taskId} not found in cache. Skipping indexing.`);
                 return;
             }
+            
+            // 🛡️ ANTI-FUITE: Vérifier le cache avant tout appel réseau
+            const now = Date.now();
+            const lastIndexed = this.qdrantIndexCache.get(taskId) || 0;
+            const timeSinceIndexed = now - lastIndexed;
+            
+            // Si déjà indexé récemment (< 4h), ignorer
+            if (timeSinceIndexed < this.MIN_REINDEX_INTERVAL) {
+                console.log(`[CACHE] Task ${taskId} ignoré (dernière indexation < 4h) - Protection anti-fuite`);
+                return;
+            }
+            
+            // Vérifier si vraiment nécessaire via timestamp de métadonnées
+            if (skeleton.metadata.qdrantIndexedAt) {
+                const lastActivity = new Date(skeleton.metadata.lastActivity).getTime();
+                const qdrantIndexed = new Date(skeleton.metadata.qdrantIndexedAt).getTime();
+                
+                if (lastActivity <= qdrantIndexed) {
+                    console.log(`[CACHE] Task ${taskId} déjà à jour selon métadonnées - Protection anti-fuite`);
+                    this.qdrantIndexCache.set(taskId, now); // Marquer comme vérifié
+                    return;
+                }
+            }
     
+            // 🌐 APPEL RÉSEAU - Maintenant seulement si nécessaire
             const taskIndexer = new TaskIndexer();
             await taskIndexer.indexTask(taskId);
     
             skeleton.metadata.qdrantIndexedAt = new Date().toISOString();
             await this._saveSkeletonToDisk(skeleton);
+            
+            // Marquer dans le cache pour éviter réindexations répétées
+            this.qdrantIndexCache.set(taskId, now);
     
             console.log(`[INFO] Task ${taskId} successfully indexed in Qdrant.`);
     

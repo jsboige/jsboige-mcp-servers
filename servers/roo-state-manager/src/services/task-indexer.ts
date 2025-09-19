@@ -20,6 +20,77 @@ let circuitBreakerState = 'CLOSED'; // CLOSED | OPEN | HALF_OPEN
 let failureCount = 0;
 let lastFailureTime = 0;
 
+// 🛡️ CACHE ANTI-FUITE POUR ÉVITER EMBEDDINGS RÉPÉTÉS
+const embeddingCache = new Map<string, { vector: number[], timestamp: number }>();
+const EMBEDDING_CACHE_TTL = 24 * 60 * 60 * 1000; // 24h cache pour embeddings
+const RATE_LIMIT_WINDOW = 60 * 1000; // 1 minute
+const MAX_OPERATIONS_PER_WINDOW = 10; // Max 10 operations/minute
+let operationTimestamps: number[] = [];
+
+// 📊 MÉTRIQUES DE MONITORING BANDE PASSANTE
+interface NetworkMetrics {
+    qdrantCalls: number;
+    openaiCalls: number;
+    cacheHits: number;
+    cacheMisses: number;
+    bytesTransferred: number;
+    lastReset: number;
+}
+
+const networkMetrics: NetworkMetrics = {
+    qdrantCalls: 0,
+    openaiCalls: 0,
+    cacheHits: 0,
+    cacheMisses: 0,
+    bytesTransferred: 0,
+    lastReset: Date.now()
+};
+
+// 🛡️ FONCTION DE RETRY AVEC BACKOFF EXPONENTIEL
+async function retryWithBackoff<T>(
+    operation: () => Promise<T>,
+    operationName: string,
+    maxRetries: number = MAX_RETRY_ATTEMPTS
+): Promise<T> {
+    let lastError: Error = new Error('Aucune tentative effectuée');
+    
+    for (let attempt = 1; attempt <= maxRetries; attempt++) {
+        try {
+            const result = await operation();
+            if (attempt > 1) {
+                console.log(`✅ ${operationName} réussi après ${attempt} tentatives`);
+            }
+            return result;
+        } catch (error: any) {
+            lastError = error;
+            console.warn(`⚠️ ${operationName} échoué (tentative ${attempt}/${maxRetries}):`, error.message);
+            
+            if (attempt < maxRetries) {
+                const delay = RETRY_DELAY_MS * Math.pow(2, attempt - 1); // Backoff exponentiel
+                console.log(`🔄 Retry dans ${delay}ms...`);
+                await new Promise(resolve => setTimeout(resolve, delay));
+            }
+        }
+    }
+    
+    console.error(`❌ ${operationName} échoué définitivement après ${maxRetries} tentatives`);
+    throw lastError;
+}
+
+// 📊 FONCTION DE LOGGING DES MÉTRIQUES
+function logNetworkMetrics(): void {
+    const now = Date.now();
+    const elapsedHours = (now - networkMetrics.lastReset) / (1000 * 60 * 60);
+    
+    console.log(`📊 [METRICS] Utilisation réseau (dernières ${elapsedHours.toFixed(1)}h):`);
+    console.log(`   - Appels Qdrant: ${networkMetrics.qdrantCalls}`);
+    console.log(`   - Appels OpenAI: ${networkMetrics.openaiCalls}`);
+    console.log(`   - Cache hits: ${networkMetrics.cacheHits}`);
+    console.log(`   - Cache misses: ${networkMetrics.cacheMisses}`);
+    console.log(`   - Ratio cache: ${((networkMetrics.cacheHits / (networkMetrics.cacheHits + networkMetrics.cacheMisses || 1)) * 100).toFixed(1)}%`);
+    console.log(`   - Bytes approximatifs: ${(networkMetrics.bytesTransferred / 1024 / 1024).toFixed(2)}MB`);
+}
+
 // --- Nouvelles Interfaces conformes au SDDD ---
 
 interface ToolDetails {
@@ -520,11 +591,36 @@ export async function indexTask(taskId: string, taskPath: string): Promise<Point
 
                     console.log(`📝 Processing subchunk: ${subChunk.content.length} characters (estimated ~${Math.ceil(subChunk.content.length / 4)} tokens)`);
                     
-                    const embeddingResponse = await getOpenAIClient().embeddings.create({
-                        model: EMBEDDING_MODEL,
-                        input: subChunk.content,
-                    });
-                    const vector = embeddingResponse.data[0].embedding;
+                    // 🛡️ PROTECTION ANTI-FUITE: Rate limiting
+                    const now = Date.now();
+                    operationTimestamps = operationTimestamps.filter(ts => now - ts < RATE_LIMIT_WINDOW);
+                    if (operationTimestamps.length >= MAX_OPERATIONS_PER_WINDOW) {
+                        console.warn(`[RATE-LIMIT] Trop d'opérations récentes (${operationTimestamps.length}/${MAX_OPERATIONS_PER_WINDOW}). Attente...`);
+                        await new Promise(resolve => setTimeout(resolve, RATE_LIMIT_WINDOW));
+                        operationTimestamps = []; // Reset after wait
+                    }
+
+                    // 🛡️ CACHE EMBEDDINGS pour éviter appels OpenAI répétés
+                    const contentHash = crypto.createHash('sha256').update(subChunk.content).digest('hex');
+                    let vector: number[];
+                    
+                    const cached = embeddingCache.get(contentHash);
+                    if (cached && (now - cached.timestamp < EMBEDDING_CACHE_TTL)) {
+                        console.log(`[CACHE] Embedding trouvé en cache pour subchunk ${subChunk.chunk_id}`);
+                        vector = cached.vector;
+                    } else {
+                        // 🌐 APPEL RÉSEAU OpenAI - Maintenant seulement si nécessaire
+                        const embeddingResponse = await getOpenAIClient().embeddings.create({
+                            model: EMBEDDING_MODEL,
+                            input: subChunk.content,
+                        });
+                        vector = embeddingResponse.data[0].embedding;
+                        
+                        // Stocker en cache
+                        embeddingCache.set(contentHash, { vector, timestamp: now });
+                        operationTimestamps.push(now);
+                        console.log(`[CACHE] Embedding mis en cache pour subchunk ${subChunk.chunk_id}`);
+                    }
 
                     const point: PointStruct = {
                         id: subChunk.chunk_id,
@@ -741,20 +837,25 @@ export class TaskIndexer {
      */
     async countPointsByHostOs(hostOs: string): Promise<number> {
         try {
-            const qdrant = getQdrantClient();
-            const result = await qdrant.count(COLLECTION_NAME, {
-                filter: {
-                    must: [
-                        {
-                            key: 'host_os',
-                            match: {
-                                value: hostOs
+            const result = await retryWithBackoff(async () => {
+                const qdrant = getQdrantClient();
+                return await qdrant.count(COLLECTION_NAME, {
+                    filter: {
+                        must: [
+                            {
+                                key: 'host_os',
+                                match: {
+                                    value: hostOs
+                                }
                             }
-                        }
-                    ]
-                },
-                exact: true
-            });
+                        ]
+                    },
+                    exact: true
+                });
+            }, `Qdrant count pour host_os=${hostOs}`);
+            
+            networkMetrics.qdrantCalls++;
+            networkMetrics.bytesTransferred += 1024; // Approximation pour l'appel count
             return result.count;
         } catch (error) {
             console.error(`Could not count points for host_os=${hostOs}:`, error);
