@@ -12,6 +12,14 @@ type PointStruct = Schemas['PointStruct'];
 const COLLECTION_NAME = process.env.QDRANT_COLLECTION_NAME || 'roo_tasks_semantic_index';
 const EMBEDDING_MODEL = 'text-embedding-3-small';
 
+// --- Circuit Breaker Configuration ---
+const MAX_RETRY_ATTEMPTS = 3;
+const RETRY_DELAY_MS = 2000; // 2 seconds
+const CIRCUIT_BREAKER_TIMEOUT_MS = 30000; // 30 seconds
+let circuitBreakerState = 'CLOSED'; // CLOSED | OPEN | HALF_OPEN
+let failureCount = 0;
+let lastFailureTime = 0;
+
 // --- Nouvelles Interfaces conformes au SDDD ---
 
 interface ToolDetails {
@@ -84,6 +92,182 @@ async function ensureCollectionExists() {
         console.error('Error ensuring Qdrant collection exists:', error);
         throw error;
     }
+}
+
+/**
+ * Circuit Breaker pour protéger les appels à Qdrant
+ */
+function canMakeRequest(): boolean {
+    if (circuitBreakerState === 'CLOSED') {
+        return true;
+    }
+    
+    if (circuitBreakerState === 'OPEN') {
+        const timeSinceLastFailure = Date.now() - lastFailureTime;
+        if (timeSinceLastFailure > CIRCUIT_BREAKER_TIMEOUT_MS) {
+            circuitBreakerState = 'HALF_OPEN';
+            console.log('🟡 Circuit breaker: HALF_OPEN - tentative de reconnexion');
+            return true;
+        }
+        return false;
+    }
+    
+    // HALF_OPEN: permettre une tentative
+    return circuitBreakerState === 'HALF_OPEN';
+}
+
+function recordSuccess(): void {
+    failureCount = 0;
+    circuitBreakerState = 'CLOSED';
+    console.log('✅ Circuit breaker: SUCCESS - retour à l\'état CLOSED');
+}
+
+function recordFailure(): void {
+    failureCount++;
+    lastFailureTime = Date.now();
+    
+    if (failureCount >= MAX_RETRY_ATTEMPTS) {
+        circuitBreakerState = 'OPEN';
+        console.error(`🔴 Circuit breaker: OPEN - trop d'échecs (${failureCount}), arrêt pendant ${CIRCUIT_BREAKER_TIMEOUT_MS}ms`);
+    }
+}
+
+/**
+ * Validation et nettoyage des payloads avant envoi à Qdrant
+ */
+function sanitizePayload(payload: any): any {
+    const cleaned = { ...payload };
+    
+    // Nettoyer les valeurs problématiques
+    Object.keys(cleaned).forEach(key => {
+        if (cleaned[key] === undefined) {
+            delete cleaned[key];
+        }
+        if (cleaned[key] === null && key !== 'parent_task_id' && key !== 'root_task_id') {
+            delete cleaned[key];
+        }
+        // S'assurer que les strings ne sont pas vides
+        if (typeof cleaned[key] === 'string' && cleaned[key].trim() === '') {
+            delete cleaned[key];
+        }
+    });
+    
+    return cleaned;
+}
+
+/**
+ * Appel sécurisé à Qdrant avec circuit breaker et retry
+ */
+async function safeQdrantUpsert(points: PointStruct[]): Promise<boolean> {
+    const startTime = Date.now();
+    
+    // 📊 LOGGING DÉTAILLÉ - État initial
+    console.log(`🔍 [safeQdrantUpsert] DÉBUT - Circuit: ${circuitBreakerState}, Échecs: ${failureCount}, Points: ${points.length}`);
+    console.log(`📈 [safeQdrantUpsert] Métadonnées: Endpoint=${process.env.QDRANT_URL}, Collection=${COLLECTION_NAME}`);
+    
+    if (!canMakeRequest()) {
+        console.warn(`🚫 [safeQdrantUpsert] Circuit breaker: Requête bloquée - état ${circuitBreakerState}`);
+        console.warn(`🚫 [safeQdrantUpsert] Dernière erreur il y a ${Date.now() - lastFailureTime}ms`);
+        return false;
+    }
+    
+    let attempt = 0;
+    
+    while (attempt < MAX_RETRY_ATTEMPTS) {
+        const attemptStartTime = Date.now();
+        
+        try {
+            // 🔍 LOGGING DÉTAILLÉ - Validation des payloads
+            console.log(`🔍 [safeQdrantUpsert] Tentative ${attempt + 1}/${MAX_RETRY_ATTEMPTS} - Validation de ${points.length} points`);
+            
+            // Valider et nettoyer tous les payloads
+            const sanitizedPoints = points.map((point, index) => {
+                const originalPayload = point.payload;
+                const sanitizedPayload = sanitizePayload(originalPayload);
+                
+                // Log des transformations critiques
+                const payloadChanges = Object.keys(originalPayload || {}).length - Object.keys(sanitizedPayload).length;
+                if (payloadChanges > 0) {
+                    console.log(`🧹 [safeQdrantUpsert] Point ${index}: ${payloadChanges} champs nettoyés`);
+                }
+                
+                return {
+                    ...point,
+                    payload: sanitizedPayload
+                };
+            });
+            
+            // 🔍 LOGGING DÉTAILLÉ - Informations sur la requête
+            const payloadSample = sanitizedPoints[0]?.payload || {};
+            console.log(`📤 [safeQdrantUpsert] Échantillon payload:`, {
+                task_id: payloadSample.task_id,
+                parent_task_id: payloadSample.parent_task_id,
+                workspace: payloadSample.workspace,
+                chunk_type: payloadSample.chunk_type,
+                content_length: payloadSample.content?.length || 0,
+                host_os: payloadSample.host_os
+            });
+            
+            console.log(`🔄 [safeQdrantUpsert] Tentative ${attempt + 1}/${MAX_RETRY_ATTEMPTS} d'upsert vers Qdrant (${sanitizedPoints.length} points)`);
+            
+            await getQdrantClient().upsert(COLLECTION_NAME, {
+                wait: true,
+                points: sanitizedPoints,
+            });
+            
+            const attemptDuration = Date.now() - attemptStartTime;
+            const totalDuration = Date.now() - startTime;
+            
+            recordSuccess();
+            
+            // 📊 LOGGING DÉTAILLÉ - Succès
+            console.log(`✅ [safeQdrantUpsert] Upsert Qdrant réussi - ${sanitizedPoints.length} points indexés`);
+            console.log(`⏱️ [safeQdrantUpsert] Durée tentative: ${attemptDuration}ms, Total: ${totalDuration}ms`);
+            console.log(`🔄 [safeQdrantUpsert] Circuit breaker réinitialisé - État: CLOSED`);
+            
+            return true;
+            
+        } catch (error: any) {
+            attempt++;
+            const attemptDuration = Date.now() - attemptStartTime;
+            
+            // 📊 LOGGING CRITIQUE - Erreurs détaillées
+            console.error(`❌ [safeQdrantUpsert] ÉCHEC tentative ${attempt}/${MAX_RETRY_ATTEMPTS} après ${attemptDuration}ms`);
+            console.error(`🔍 [safeQdrantUpsert] Type erreur: ${error?.constructor?.name || 'Unknown'}`);
+            console.error(`🔍 [safeQdrantUpsert] Message erreur: ${error?.message || 'No message'}`);
+            console.error(`🔍 [safeQdrantUpsert] Code erreur: ${error?.code || error?.status || 'No code'}`);
+            
+            // Logging des détails de requête pour reproduction
+            if (error?.response) {
+                console.error(`🔍 [safeQdrantUpsert] Réponse HTTP: ${error.response.status} - ${error.response.statusText}`);
+                console.error(`🔍 [safeQdrantUpsert] Headers réponse:`, JSON.stringify(error.response.headers, null, 2));
+            }
+            
+            // Logging de l'état système au moment de l'erreur
+            console.error(`🔍 [safeQdrantUpsert] État système: Circuit=${circuitBreakerState}, Échecs cumulés=${failureCount + 1}`);
+            console.error(`🔍 [safeQdrantUpsert] Points concernés: ${points.length}, Tentative: ${attempt}`);
+            console.error(`🔍 [safeQdrantUpsert] Stack trace:`, error?.stack?.split('\n').slice(0, 5).join('\n'));
+            
+            if (attempt >= MAX_RETRY_ATTEMPTS) {
+                recordFailure();
+                const totalDuration = Date.now() - startTime;
+                
+                // 📊 LOGGING CRITIQUE - Échec définitif
+                console.error(`🔴 [safeQdrantUpsert] ÉCHEC DÉFINITIF après ${MAX_RETRY_ATTEMPTS} tentatives (${totalDuration}ms total)`);
+                console.error(`🔴 [safeQdrantUpsert] Circuit breaker activé - État: ${circuitBreakerState}`);
+                console.error(`🔴 [safeQdrantUpsert] Prochaine tentative dans ${CIRCUIT_BREAKER_TIMEOUT_MS}ms`);
+                
+                return false;
+            }
+            
+            // Délai exponentiel : 2s, 4s, 8s
+            const delay = RETRY_DELAY_MS * Math.pow(2, attempt - 1);
+            console.log(`⏳ [safeQdrantUpsert] Attente ${delay}ms avant tentative ${attempt + 1}...`);
+            await new Promise(resolve => setTimeout(resolve, delay));
+        }
+    }
+    
+    return false;
 }
 
 export function getHostIdentifier() {
@@ -353,11 +537,18 @@ export async function indexTask(taskId: string, taskPath: string): Promise<Point
         }
 
         if (pointsToIndex.length > 0) {
-            await getQdrantClient().upsert(COLLECTION_NAME, {
-                wait: true,
-                points: pointsToIndex,
-            });
-            console.log(`Successfully indexed ${pointsToIndex.length} points (from ${chunks.length} original chunks) for task ${taskId}.`);
+            console.log(`📤 Préparation upsert Qdrant: ${pointsToIndex.length} points (de ${chunks.length} chunks originaux) pour tâche ${taskId}`);
+            
+            const success = await safeQdrantUpsert(pointsToIndex);
+            
+            if (success) {
+                console.log(`✅ Indexation réussie: ${pointsToIndex.length} points pour tâche ${taskId}`);
+            } else {
+                console.error(`❌ Échec indexation pour tâche ${taskId} - Circuit breaker activé ou erreurs répétées`);
+                // Ne pas throw l'erreur pour éviter la boucle infernale
+                // Retourner un tableau vide pour indiquer l'échec sans crasher
+                return [];
+            }
         } else {
             console.log(`No indexable chunks found for task ${taskId}.`);
         }
@@ -366,7 +557,12 @@ export async function indexTask(taskId: string, taskPath: string): Promise<Point
 
     } catch (error) {
         console.error(`Failed to index task ${taskId}:`, error);
-        throw error;
+        
+        // 🚨 CORRECTION CRITIQUE: Ne plus re-throw l'erreur qui cause la boucle infernale
+        // À la place, log l'erreur et retourner un résultat vide
+        console.error(`🔴 ERREUR CRITIQUE INTERCEPTÉE pour tâche ${taskId}: Circuit breaker activé`);
+        recordFailure();
+        return [];
     }
 }
 

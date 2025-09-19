@@ -895,10 +895,14 @@ class RooStateManagerServer {
 
         let skeletonsBuilt = 0;
         let skeletonsSkipped = 0;
+        let hierarchyRelationsFound = 0;
         const mode = force_rebuild ? "FORCE_REBUILD" : "SMART_REBUILD";
 
-        console.log(`Starting skeleton cache build in ${mode} mode...`);
+        console.log(`🔄 Starting PROCESSUS DESCENDANT skeleton cache build in ${mode} mode...`);
 
+        // 🚀 PROCESSUS DESCENDANT - PHASE 1: Construire tous les squelettes ET alimenter l'index RadixTree
+        const skeletonsWithPrefixes: Array<{ skeleton: ConversationSkeleton; prefixes: string[] }> = [];
+        
         for (const storageDir of locations) {
             // storageDir is the base storage path, we need to add 'tasks' to get to the tasks directory
             const tasksDir = path.join(storageDir, 'tasks');
@@ -939,6 +943,10 @@ class RooStateManagerServer {
                                         const skeleton: ConversationSkeleton = JSON.parse(skeletonContent);
                                         if (skeleton && skeleton.taskId) {
                                             this.conversationCache.set(skeleton.taskId, skeleton);
+                                            // 🚀 PHASE 1: Alimenter l'index avec les préfixes de ce squelette existant
+                                            if (skeleton.childTaskInstructionPrefixes && skeleton.childTaskInstructionPrefixes.length > 0) {
+                                                skeletonsWithPrefixes.push({ skeleton, prefixes: skeleton.childTaskInstructionPrefixes });
+                                            }
                                             skeletonsSkipped++;
                                         } else {
                                             shouldRebuild = true; // Squelette corrompu
@@ -956,10 +964,10 @@ class RooStateManagerServer {
                         }
                         
                         // DEBUG: Toujours logger ce qui se passe
-                        console.log(`Processing ${conversationId}: shouldRebuild=${shouldRebuild}, force_rebuild=${force_rebuild}`);
+                        console.log(`📋 Processing ${conversationId}: shouldRebuild=${shouldRebuild}, force_rebuild=${force_rebuild}`);
                         
                         if (shouldRebuild) {
-                            console.log(`${force_rebuild ? 'Force rebuilding' : 'Rebuilding'} skeleton for task: ${conversationId}`);
+                            console.log(`🔨 ${force_rebuild ? 'Force rebuilding' : 'Rebuilding'} skeleton for task: ${conversationId}`);
                             
                             try {
                                 const skeleton = await RooStorageDetector.analyzeConversation(conversationId, taskPath);
@@ -967,8 +975,12 @@ class RooStateManagerServer {
                                     await fs.writeFile(skeletonPath, JSON.stringify(skeleton, null, 2));
                                     // BUG FIX: Utiliser skeleton.taskId et non conversationId
                                     this.conversationCache.set(skeleton.taskId, skeleton);
+                                    // 🚀 PHASE 1: Collecter les préfixes pour l'index RadixTree
+                                    if (skeleton.childTaskInstructionPrefixes && skeleton.childTaskInstructionPrefixes.length > 0) {
+                                        skeletonsWithPrefixes.push({ skeleton, prefixes: skeleton.childTaskInstructionPrefixes });
+                                    }
                                     skeletonsBuilt++;
-                                    console.log(`✅ Successfully built skeleton for ${skeleton.taskId} (metadata: ${skeleton.metadata ? 'yes' : 'no'})`);
+                                    console.log(`✅ Successfully built skeleton for ${skeleton.taskId} (prefixes: ${skeleton.childTaskInstructionPrefixes?.length || 0})`);
                                 } else {
                                     console.error(`❌ Failed to analyze conversation ${conversationId}: analyzeConversation returned null`);
                                     skeletonsSkipped++;
@@ -989,8 +1001,64 @@ class RooStateManagerServer {
             }
         }
         
-        console.log(`Skeleton cache build complete. Mode: ${mode}, Cache size: ${this.conversationCache.size}`);
-        return { content: [{ type: 'text', text: `Skeleton cache build complete (${mode}). Built: ${skeletonsBuilt}, Skipped: ${skeletonsSkipped}. Cache size: ${this.conversationCache.size}` }] };
+        // 🚀 PROCESSUS DESCENDANT - PHASE 2: Alimenter le globalTaskInstructionIndex avec tous les préfixes
+        console.log(`🔍 PHASE 2: Alimenting RadixTree with ${skeletonsWithPrefixes.length} tasks with prefixes...`);
+        
+        // Importer globalTaskInstructionIndex
+        const { globalTaskInstructionIndex } = await import('./utils/task-instruction-index.js');
+        
+        for (const { skeleton, prefixes } of skeletonsWithPrefixes) {
+            for (const prefix of prefixes) {
+                globalTaskInstructionIndex.addInstruction(prefix, skeleton.taskId);
+            }
+        }
+        
+        const indexStats = globalTaskInstructionIndex.getStats();
+        console.log(`🎯 RadixTree populated: ${indexStats.totalInstructions} instructions, ${indexStats.totalNodes} nodes`);
+        
+        // 🚀 PROCESSUS DESCENDANT - PHASE 3: Recalculer les relations parent-enfant avec l'index maintenant populé
+        console.log(`🔗 PHASE 3: Recalculating parent-child relationships...`);
+        
+        const skeletonsToUpdate: Array<{ taskId: string; newParentId: string }> = [];
+        
+        for (const skeleton of this.conversationCache.values()) {
+            // Ne traiter que les tâches sans parent explicit
+            if (!skeleton.parentTaskId && skeleton.metadata?.workspace) {
+                const childText = `${skeleton.metadata?.title || ''} ${skeleton.metadata?.mode || ''}`.trim();
+                if (childText.length > 5) {
+                    const foundParentId = globalTaskInstructionIndex.findPotentialParent(childText);
+                    if (foundParentId && foundParentId !== skeleton.taskId) {
+                        skeletonsToUpdate.push({ taskId: skeleton.taskId, newParentId: foundParentId });
+                        console.log(`🎯 HIERARCHY FOUND: ${skeleton.taskId.substring(0, 8)} -> parent: ${foundParentId.substring(0, 8)}`);
+                        hierarchyRelationsFound++;
+                    }
+                }
+            }
+        }
+        
+        // Appliquer les mises à jour de hiérarchie
+        for (const update of skeletonsToUpdate) {
+            const skeleton = this.conversationCache.get(update.taskId);
+            if (skeleton) {
+                skeleton.parentTaskId = update.newParentId;
+                // Sauvegarder le squelette mis à jour
+                try {
+                    for (const storageDir of locations) {
+                        const skeletonDir = path.join(storageDir, SKELETON_CACHE_DIR_NAME);
+                        const skeletonPath = path.join(skeletonDir, `${update.taskId}.json`);
+                        if (existsSync(skeletonPath)) {
+                            await fs.writeFile(skeletonPath, JSON.stringify(skeleton, null, 2));
+                            break;
+                        }
+                    }
+                } catch (saveError) {
+                    console.error(`Failed to save updated skeleton for ${update.taskId}:`, saveError);
+                }
+            }
+        }
+        
+        console.log(`✅ Skeleton cache build complete. Mode: ${mode}, Cache size: ${this.conversationCache.size}, New relations: ${hierarchyRelationsFound}`);
+        return { content: [{ type: 'text', text: `Skeleton cache build complete (${mode}). Built: ${skeletonsBuilt}, Skipped: ${skeletonsSkipped}, Cache size: ${this.conversationCache.size}, Hierarchy relations found: ${hierarchyRelationsFound}` }] };
     }
 
 

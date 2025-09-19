@@ -866,12 +866,24 @@ export class TraceSummaryService {
     text-decoration: none;
 }
 .toc-tool:hover { background-color: #FFF8E1; padding: 2px 4px; border-radius: 3px; }
+.toc-instruction {
+    color: #9C27B0 !important;
+    font-weight: bold;
+}
+.toc-instruction:hover { background-color: #F3E5F5; padding: 2px 4px; border-radius: 3px; }
 .toc-completion {
     color: #4CAF50 !important;
     font-weight: bold;
     text-decoration: none;
 }
 .toc-completion:hover { background-color: #E8F5E8; padding: 2px 4px; border-radius: 3px; }
+.toc-instruction {
+    color: #9C27B0 !important;
+    font-weight: bold;
+    text-decoration: none;
+    font-style: italic;
+}
+.toc-instruction:hover { background-color: #F3E5F5; padding: 2px 4px; border-radius: 3px; }
 </style>
 
 **Fichier source :** roo_task_sep-8-2025_11-11-29-pm.md
@@ -977,7 +989,7 @@ export class TraceSummaryService {
             ''
         ];
 
-        let userMessageCounterToc = 1;
+        let userMessageCounterToc = 2;
         let assistantMessageCounterToc = 1;
         let toolResultCounterToc = 1;
         let isFirstUser = true;
@@ -988,7 +1000,7 @@ export class TraceSummaryService {
             if (item.subType === 'UserMessage') {
                 if (isFirstUser) {
                     const anchor = `instruction-de-tache-initiale`;
-                    const entry = `- <a href="#${anchor}" class="toc-user">MESSAGE UTILISATEUR #1 - ${firstLine}</a>`;
+                    const entry = `- <a href="#${anchor}" class="toc-instruction">INSTRUCTION DE TÂCHE INITIALE - ${firstLine}</a>`;
                     parts.push(entry);
                     isFirstUser = false;
                 } else {
@@ -1184,7 +1196,7 @@ export class TraceSummaryService {
         const parts: string[] = [];
         
         if (isFirst) {
-            parts.push("### INSTRUCTION DE TÂCHE INITIALE");
+            parts.push('<h3 id="instruction-de-tache-initiale">INSTRUCTION DE TÂCHE INITIALE</h3>');
             parts.push("");
             
             // Traitement spécial pour la première tâche (avec environment_details)

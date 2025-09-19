@@ -373,17 +373,9 @@ export class RooStorageDetector {
                 }
             }
         } else {
-            // Logique héritée pour compatibilité temporaire
-            if (!parentTaskId) {
-                console.warn(`[analyzeConversation] Task ${taskId} missing parentTaskId, attempting inference...`);
-                parentTaskId = await this.inferParentTaskIdFromContent(apiHistoryPath, uiMessagesPath, rawMetadata, taskId);
-                
-                if (parentTaskId) {
-                    console.log(`[analyzeConversation] ✅ Parent inféré pour ${taskId}: ${parentTaskId}`);
-                } else {
-                    console.log(`[analyzeConversation] ❌ Impossible d'inférer le parent pour ${taskId}`);
-                }
-            }
+            // 🚨 FIX RÉCURSION : Quand useProductionHierarchy = false, pas d'inférence de parent
+            // pour éviter la récursion infinie avec findParentByNewTaskInstructions
+            console.log(`[analyzeConversation] 🛡️ useProductionHierarchy=false pour ${taskId}, pas d'inférence de parent (évite récursion)`);
         }
         
         const sequence = await this.buildSequenceFromFiles(apiHistoryPath, uiMessagesPath);
@@ -968,36 +960,58 @@ export class RooStorageDetector {
     }
 
     try {
-      // Étape 1: Obtenir toutes les conversations du workspace
-      const allConversations = await this.getAllConversationsInWorkspace(childMetadata.workspace);
+      // 🔧 FIX RÉCURSION : Scan direct du disque sans passer par getAllConversationsInWorkspace
+      const storageLocations = await this.detectStorageLocations();
+      const potentialParents: ConversationSkeleton[] = [];
       
-      if (allConversations.length === 0) {
-        console.log(`[findParentByNewTaskInstructions] ⚠️ Aucune conversation trouvée dans ${childMetadata.workspace}`);
+      // Créer un squelette temporaire pour la tâche enfant
+      const childTaskPath = await this.getTaskPathById(childTaskId);
+      if (!childTaskPath) {
+        console.log(`[findParentByNewTaskInstructions] ⚠️ Impossible de trouver le chemin de ${childTaskId}`);
         return undefined;
       }
-
-      // Étape 2: Trouver la tâche enfant dans la liste
-      const childTask = allConversations.find(conv => conv.taskId === childTaskId);
+      
+      const childTask = await this.analyzeConversation(childTaskId, childTaskPath, false);
       if (!childTask) {
-        console.log(`[findParentByNewTaskInstructions] ⚠️ Tâche enfant ${childTaskId} non trouvée`);
+        console.log(`[findParentByNewTaskInstructions] ⚠️ Impossible d'analyser ${childTaskId}`);
         return undefined;
       }
 
-      // Étape 3: Chercher parmi les tâches créées AVANT l'enfant
-      const childCreatedAt = new Date(childTask.metadata.createdAt).getTime();
-      const potentialParents = allConversations.filter(conv =>
-        conv.taskId !== childTaskId &&
-        new Date(conv.metadata.createdAt).getTime() < childCreatedAt
-      );
+      // Scan direct des tâches sur disque
+      for (const locationPath of storageLocations) {
+        const tasksPath = path.join(locationPath, 'tasks');
+        
+        try {
+          const taskDirs = await fs.readdir(tasksPath, { withFileTypes: true });
+          
+          for (const entry of taskDirs) {
+            if (!entry.isDirectory() || entry.name === childTaskId) continue;
+            
+            const taskPath = path.join(tasksPath, entry.name);
+            const candidate = await this.analyzeConversation(entry.name, taskPath, false);
+            
+            if (candidate &&
+                candidate.metadata.workspace === childMetadata.workspace &&
+                new Date(candidate.metadata.createdAt).getTime() < new Date(childTask.metadata.createdAt).getTime()) {
+              potentialParents.push(candidate);
+            }
+          }
+        } catch (error) {
+          console.warn(`[findParentByNewTaskInstructions] ⚠️ Erreur scan ${tasksPath}:`, error);
+        }
+      }
 
-      // Étape 4: Trier par proximité temporelle (plus récentes d'abord)
+      // Obtenir la liste filtrée au lieu des conversations complètes
+      const allConversations = potentialParents;
+      
+      // Trier par proximité temporelle (plus récentes d'abord)
       potentialParents.sort((a, b) =>
         new Date(b.metadata.createdAt).getTime() - new Date(a.metadata.createdAt).getTime()
       );
 
       console.log(`[findParentByNewTaskInstructions] 📊 ${potentialParents.length} parents candidats à analyser`);
 
-      // Étape 5: Analyser chaque parent candidat
+      // Analyser chaque parent candidat
       for (const parentCandidate of potentialParents) {
         const isMatch = await this.analyzeParentForNewTaskInstructions(parentCandidate, childTask);
         if (isMatch) {
