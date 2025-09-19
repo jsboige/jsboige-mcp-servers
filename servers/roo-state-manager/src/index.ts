@@ -1014,6 +1014,9 @@ class RooStateManagerServer {
         // Importer globalTaskInstructionIndex
         const { globalTaskInstructionIndex } = await import('./utils/task-instruction-index.js');
         
+        // CORRECTION: Toujours vider l'index avant de le repeupler
+        globalTaskInstructionIndex.clear();
+        
         for (const { skeleton, prefixes } of skeletonsWithPrefixes) {
             for (const prefix of prefixes) {
                 globalTaskInstructionIndex.addInstruction(prefix, skeleton.taskId);
@@ -1022,6 +1025,10 @@ class RooStateManagerServer {
         
         const indexStats = globalTaskInstructionIndex.getStats();
         console.log(`🎯 RadixTree populated: ${indexStats.totalInstructions} instructions, ${indexStats.totalNodes} nodes`);
+        
+        // CORRECTION: Exécuter les Phases 2-3 même en mode intelligent si l'index était vide
+        const shouldRunHierarchyPhase = indexStats.totalInstructions > 0;
+        console.log(`🔍 Should run hierarchy phase: ${shouldRunHierarchyPhase} (index has ${indexStats.totalInstructions} instructions)`);
         
         // 🚀 PROCESSUS DESCENDANT - PHASE 3: Recalculer les relations parent-enfant avec l'index maintenant populé
         console.log(`🔗 PHASE 3: Recalculating parent-child relationships...`);

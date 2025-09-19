@@ -117,6 +117,17 @@ export class TaskInstructionIndex {
         };
     }
 
+    /**
+     * Vide complètement l'index
+     */
+    clear(): void {
+        this.root = {
+            prefix: '',
+            isEndOfKey: false,
+            children: new Map()
+        };
+    }
+
     // Méthodes privées
 
     private normalizePrefix(text: string): string {
