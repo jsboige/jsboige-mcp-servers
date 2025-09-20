@@ -129,7 +129,6 @@ def add_cell_to_notebook(
 
 
 @mcp.tool()
-@mcp.tool()
 def execute_notebook_solution_a(
     notebook_path: str = Field(description="Chemin du notebook à exécuter"),
     output_path: str = Field(default="", description="Chemin de sortie (optionnel)")
