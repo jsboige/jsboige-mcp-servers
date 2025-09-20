@@ -34,12 +34,12 @@ import { Server } from '@modelcontextprotocol/sdk/server/index.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import { CallToolRequestSchema, ListToolsRequestSchema, CallToolResult } from '@modelcontextprotocol/sdk/types.js';
 import { RooStorageDetector } from './utils/roo-storage-detector.js';
-import fs from 'fs/promises';
+import { promises as fs, existsSync } from 'fs';
 import { exec } from 'child_process';
 import { TaskNavigator } from './services/task-navigator.js';
 import { ConversationSkeleton, ActionMetadata, MessageSkeleton, ClusterSummaryOptions, ClusterSummaryResult } from './types/conversation.js';
 import packageJson from '../package.json' with { type: 'json' };
-import { readVscodeLogs, rebuildAndRestart, getMcpBestPractices, manageMcpSettings, analyzeVSCodeGlobalState, repairVSCodeTaskHistory, scanOrphanTasks, testWorkspaceExtraction, rebuildTaskIndex, diagnoseSQLite, examineRooGlobalStateTool, repairTaskHistoryTool, normalizeWorkspacePaths, generateTraceSummaryTool, handleGenerateTraceSummary, generateClusterSummaryTool, handleGenerateClusterSummary, exportConversationJsonTool, handleExportConversationJson, exportConversationCsvTool, handleExportConversationCsv, viewConversationTree, getConversationSynthesisTool, handleGetConversationSynthesis } from './tools/index.js';
+import { readVscodeLogs, rebuildAndRestart, getMcpBestPractices, manageMcpSettings, rebuildTaskIndexFixed, generateTraceSummaryTool, handleGenerateTraceSummary, generateClusterSummaryTool, handleGenerateClusterSummary, exportConversationJsonTool, handleExportConversationJson, exportConversationCsvTool, handleExportConversationCsv, viewConversationTree, getConversationSynthesisTool, handleGetConversationSynthesis } from './tools/index.js';
 import { searchTasks } from './services/task-searcher.js';
 import { indexTask, TaskIndexer } from './services/task-indexer.js';
 import { getQdrantClient } from './services/qdrant.js';
@@ -60,13 +60,13 @@ const SKELETON_CACHE_DIR_NAME = '.skeletons';
  */
 function normalizePath(inputPath: string): string {
     if (!inputPath) return '';
-
+    
     // Convertir les slashes en forward slashes pour une comparaison uniforme
     const normalized = inputPath.replace(/\\/g, '/');
-
+    
     // Supprimer les slashes de fin
     const trimmed = normalized.endsWith('/') ? normalized.slice(0, -1) : normalized;
-
+    
     // Convertir en minuscules pour éviter les problèmes de casse (principalement Windows)
     return trimmed.toLowerCase();
 }
@@ -77,22 +77,29 @@ class RooStateManagerServer {
     private xmlExporterService: XmlExporterService;
     private exportConfigManager: ExportConfigManager;
     private traceSummaryService: TraceSummaryService;
-
+    
     // Services de synthèse de conversations (Phase 1 - Squelette)
     private llmService: LLMService;
     private narrativeContextBuilderService: NarrativeContextBuilderService;
     private synthesisOrchestratorService: SynthesisOrchestratorService;
-
+    
     // Services de background pour l'architecture à 2 niveaux
     private qdrantIndexQueue: Set<string> = new Set(); // File d'attente des tâches à indexer
     private qdrantIndexInterval: NodeJS.Timeout | null = null;
     private isQdrantIndexingEnabled = true;
+    
+    // 🛡️ CACHE ANTI-FUITE - Protection contre 220GB de trafic réseau
+    private qdrantIndexCache: Map<string, number> = new Map(); // taskId -> timestamp dernière indexation
+    private lastQdrantConsistencyCheck: number = 0;
+    private readonly CONSISTENCY_CHECK_INTERVAL = 24 * 60 * 60 * 1000; // 24h au lieu du démarrage
+    private readonly MIN_REINDEX_INTERVAL = 4 * 60 * 60 * 1000; // 4h minimum entre indexations
+    private readonly MAX_BACKGROUND_INTERVAL = 5 * 60 * 1000; // 5min au lieu de 30s
 
     constructor() {
         this.xmlExporterService = new XmlExporterService();
         this.exportConfigManager = new ExportConfigManager();
         this.traceSummaryService = new TraceSummaryService(this.exportConfigManager);
-
+        
         // Instanciation des services de synthèse selon le pattern de dependency injection
         // Phase 1 : Configuration par défaut simplifiée pour validation de structure
         const defaultLLMOptions = {
@@ -145,7 +152,7 @@ class RooStateManagerServer {
                 },
             }
         );
-
+        
         // Initialisation des services background
         this._initializeBackgroundServices().catch((error: Error) => {
             console.error("Error during background services initialization:", error);
@@ -182,18 +189,6 @@ class RooStateManagerServer {
                                 hasUiMessages: { type: 'boolean' },
                                 workspace: { type: 'string', description: 'Filtre les conversations par chemin de workspace.' },
                             },
-                        },
-                    },
-                    {
-                        name: 'export_conversations_to_file',
-                        description: 'Exporte TOUTES les conversations avec métadonnées complètes vers un fichier avec chemin absolu.',
-                        inputSchema: {
-                            type: 'object',
-                            properties: {
-                                file_path: { type: 'string', description: 'Chemin absolu du fichier où exporter les données (format JSON).' },
-                                workspace_filter: { type: 'string', description: 'Filtre optionnel par chemin de workspace.' },
-                            },
-                            required: ['file_path']
                         },
                     },
                     {
@@ -339,6 +334,11 @@ class RooStateManagerServer {
                        inputSchema: getMcpBestPractices.inputSchema,
                     },
                     {
+                       name: rebuildTaskIndexFixed.name,
+                       description: rebuildTaskIndexFixed.description,
+                       inputSchema: rebuildTaskIndexFixed.inputSchema,
+                    },
+                    {
                        name: 'diagnose_conversation_bom',
                        description: 'Diagnostique les fichiers de conversation corrompus par un BOM UTF-8.',
                        inputSchema: {
@@ -357,51 +357,6 @@ class RooStateManagerServer {
                                dry_run: { type: 'boolean', description: 'Si true, simule la réparation sans modifier les fichiers.', default: false },
                            },
                        },
-                    },
-                    {
-                       name: analyzeVSCodeGlobalState.name,
-                       description: analyzeVSCodeGlobalState.description,
-                       inputSchema: analyzeVSCodeGlobalState.inputSchema,
-                    },
-                    {
-                       name: repairVSCodeTaskHistory.name,
-                       description: repairVSCodeTaskHistory.description,
-                       inputSchema: repairVSCodeTaskHistory.inputSchema,
-                    },
-                    {
-                       name: scanOrphanTasks.name,
-                       description: scanOrphanTasks.description,
-                       inputSchema: scanOrphanTasks.inputSchema,
-                    },
-                    {
-                       name: testWorkspaceExtraction.name,
-                       description: testWorkspaceExtraction.description,
-                       inputSchema: testWorkspaceExtraction.inputSchema,
-                    },
-                    {
-                       name: rebuildTaskIndex.name,
-                       description: rebuildTaskIndex.description,
-                       inputSchema: rebuildTaskIndex.inputSchema,
-                    },
-                    {
-                       name: diagnoseSQLite.name,
-                       description: diagnoseSQLite.description,
-                       inputSchema: diagnoseSQLite.inputSchema,
-                    },
-                    {
-                       name: examineRooGlobalStateTool.name,
-                       description: examineRooGlobalStateTool.description,
-                       inputSchema: examineRooGlobalStateTool.inputSchema,
-                    },
-                    {
-                       name: repairTaskHistoryTool.name,
-                       description: repairTaskHistoryTool.description,
-                       inputSchema: repairTaskHistoryTool.inputSchema,
-                    },
-                    {
-                       name: normalizeWorkspacePaths.name,
-                       description: normalizeWorkspacePaths.description,
-                       inputSchema: normalizeWorkspacePaths.inputSchema,
                     },
                     {
                         name: 'export_tasks_xml',
@@ -534,6 +489,33 @@ class RooStateManagerServer {
                         description: getConversationSynthesisTool.description,
                         inputSchema: getConversationSynthesisTool.inputSchema,
                     },
+                    {
+                        name: 'export_task_tree_markdown',
+                        description: 'Exporte un arbre de tâches au format Markdown hiérarchique avec statuts de complétion et instructions.',
+                        inputSchema: {
+                            type: 'object',
+                            properties: {
+                                conversation_id: {
+                                    type: 'string',
+                                    description: 'ID de la conversation pour laquelle exporter l\'arbre des tâches.'
+                                },
+                                filePath: {
+                                    type: 'string',
+                                    description: 'Chemin optionnel pour sauvegarder le fichier Markdown. Si omis, le contenu est retourné.'
+                                },
+                                max_depth: {
+                                    type: 'number',
+                                    description: 'Profondeur maximale de l\'arbre à inclure dans l\'export.'
+                                },
+                                include_siblings: {
+                                    type: 'boolean',
+                                    description: 'Inclure les tâches sœurs (même parent) dans l\'arbre.',
+                                    default: true
+                                }
+                            },
+                            required: ['conversation_id']
+                        }
+                    },
                 ] as any[],
             };
         });
@@ -555,9 +537,6 @@ class RooStateManagerServer {
                     break;
                 case 'list_conversations':
                     result = await this.handleListConversations(args as any);
-                    break;
-                case 'export_conversations_to_file':
-                    result = await this.handleExportConversationsToFile(args as any);
                     break;
                 case 'touch_mcp_settings':
                     result = await this.handleTouchMcpSettings();
@@ -604,38 +583,41 @@ class RooStateManagerServer {
                case getMcpBestPractices.name:
                    result = await getMcpBestPractices.handler();
                    break;
+               case rebuildTaskIndexFixed.name:
+                   result = await rebuildTaskIndexFixed.handler(args as any);
+                   break;
                case 'diagnose_conversation_bom':
                    result = await this.handleDiagnoseConversationBom(args as any);
                    break;
                case 'repair_conversation_bom':
                    result = await this.handleRepairConversationBom(args as any);
-                   break;
-               case analyzeVSCodeGlobalState.name:
-                   result = await analyzeVSCodeGlobalState.handler();
-                   break;
-               case repairVSCodeTaskHistory.name:
-                   result = await repairVSCodeTaskHistory.handler(args as any);
-                   break;
-               case scanOrphanTasks.name:
-                   result = await scanOrphanTasks.handler();
-                   break;
-               case testWorkspaceExtraction.name:
-                   result = await testWorkspaceExtraction.handler(args as any);
-                   break;
-               case rebuildTaskIndex.name:
-                   result = await rebuildTaskIndex.handler(args as any);
-                   break;
-                case diagnoseSQLite.name:
-                    result = await diagnoseSQLite.handler();
-                    break;
-                case examineRooGlobalStateTool.name:
-                    result = await examineRooGlobalStateTool.handler();
-                    break;
-                case repairTaskHistoryTool.name:
-                    result = await repairTaskHistoryTool.handler((args as any).target_workspace);
-                    break;
-               case normalizeWorkspacePaths.name:
-                  result = await normalizeWorkspacePaths.handler();
+                   /*case analyzeVSCodeGlobalState.name:
+                       result = await analyzeVSCodeGlobalState.handler();
+                       break;
+                   case repairVSCodeTaskHistory.name:
+                       result = await repairVSCodeTaskHistory.handler(args as any);
+                       break;
+                   case scanOrphanTasks.name:
+                       result = await scanOrphanTasks.handler();
+                       break;
+                   case testWorkspaceExtraction.name:
+                       result = await testWorkspaceExtraction.handler(args as any);
+                       break;
+                   case rebuildTaskIndex.name:
+                       result = await rebuildTaskIndex.handler(args as any);
+                       break;
+                    case diagnoseSQLite.name:
+                        result = await diagnoseSQLite.handler();
+                        break;
+                    case examineRooGlobalStateTool.name:
+                        result = await examineRooGlobalStateTool.handler();
+                        break;
+                    case repairTaskHistoryTool.name:
+                        result = await repairTaskHistoryTool.handler((args as any).target_workspace);
+                        break;
+                   case normalizeWorkspacePaths.name:
+                      result = await normalizeWorkspacePaths.handler();
+                      break;*/
                   break;
                case generateTraceSummaryTool.name:
                    result = await this.handleGenerateTraceSummary(args as any);
@@ -667,6 +649,9 @@ class RooStateManagerServer {
               case getConversationSynthesisTool.name:
                   result = await this.handleGetConversationSynthesis(args as any);
                   break;
+              case 'export_task_tree_markdown':
+                  result = await this.handleExportTaskTreeMarkdown(args as any);
+                  break;
               default:
                   throw new Error(`Tool not found: ${name}`);
           }
@@ -691,25 +676,25 @@ class RooStateManagerServer {
 
     async handleGetStorageStats(): Promise<CallToolResult> {
         const stats = await RooStorageDetector.getStorageStats();
-
+        
         // Agrégat des stats par workspace
         const workspaceStats = new Map<string, {count: number, totalSize: number, lastActivity: string}>();
-
+        
         Array.from(this.conversationCache.values()).forEach(skeleton => {
             if (skeleton.metadata?.workspace) {
                 const workspace = skeleton.metadata.workspace;
                 const existing = workspaceStats.get(workspace) || {count: 0, totalSize: 0, lastActivity: ''};
-
+                
                 existing.count++;
                 existing.totalSize += skeleton.metadata.totalSize || 0;
-
+                
                 // Mettre à jour la dernière activité si plus récente
                 if (skeleton.metadata.lastActivity) {
                     if (!existing.lastActivity || new Date(skeleton.metadata.lastActivity) > new Date(existing.lastActivity)) {
                         existing.lastActivity = skeleton.metadata.lastActivity;
                     }
                 }
-
+                
                 workspaceStats.set(workspace, existing);
             }
         });
@@ -730,17 +715,17 @@ class RooStateManagerServer {
 
     async handleListConversations(args: { limit?: number, sortBy?: 'lastActivity' | 'messageCount' | 'totalSize', sortOrder?: 'asc' | 'desc', workspace?: string }): Promise<CallToolResult> {
         console.log('[TOOL] list_conversations called with:', JSON.stringify(args));
-
+        
         // **FAILSAFE: Vérifier la fraîcheur du cache skeleton avant utilisation**
         await this._ensureSkeletonCacheIsFresh();
-
+        
         interface SkeletonNode extends ConversationSkeleton {
             firstUserMessage?: string; // Premier message utilisateur ajouté
             isCompleted?: boolean; // Flag de terminaison
             completionMessage?: string; // Message de terminaison
             children: SkeletonNode[];
         }
-
+        
         // Interface allégée pour list_conversations - AVEC informations essentielles
         interface ConversationSummary {
             taskId: string;
@@ -782,14 +767,14 @@ class RooStateManagerServer {
         if (args.workspace) {
             const normalizedWorkspace = normalizePath(args.workspace);
             console.log(`[DEBUG] Filtering by workspace: "${args.workspace}" -> normalized: "${normalizedWorkspace}"`);
-
+            
             // Debug : afficher tous les workspaces disponibles
             const workspaces = allSkeletons
                 .filter(s => s.metadata.workspace)
                 .map(s => `"${s.metadata.workspace!}" -> normalized: "${normalizePath(s.metadata.workspace!)}"`)
                 .slice(0, 5);
             console.log(`[DEBUG] Available workspaces (first 5):`, workspaces);
-
+            
             allSkeletons = allSkeletons.filter(skeleton =>
                 skeleton.metadata.workspace &&
                 normalizePath(skeleton.metadata.workspace) === normalizedWorkspace
@@ -814,16 +799,16 @@ class RooStateManagerServer {
             }
             return (args.sortOrder === 'asc') ? -comparison : comparison;
         });
-
+        
         // Créer les SkeletonNode SANS la propriété sequence MAIS avec toutes les infos importantes
         const skeletonMap = new Map<string, SkeletonNode>(allSkeletons.map(s => {
             const { sequence, ...skeletonWithoutSequence } = s as any;
-
+            
             // Variables pour les informations à extraire
             let firstUserMessage: string | undefined = undefined;
             let isCompleted = false;
             let completionMessage: string | undefined = undefined;
-
+            
             // Extraire les informations de la sequence si elle existe
             if (sequence && Array.isArray(sequence)) {
                 // 1. Premier message utilisateur
@@ -834,12 +819,12 @@ class RooStateManagerServer {
                         ? firstUserMsg.content.substring(0, 200) + '...'
                         : firstUserMsg.content;
                 }
-
+                
                 // 2. Détecter si la conversation est terminée (dernier message de type attempt_completion)
                 const lastAssistantMessages = sequence
                     .filter((msg: any) => msg.role === 'assistant')
                     .slice(-3); // Prendre les 3 derniers messages assistant pour chercher attempt_completion
-
+                
                 for (const msg of lastAssistantMessages.reverse()) {
                     if (msg.content && Array.isArray(msg.content)) {
                         for (const content of msg.content) {
@@ -858,7 +843,7 @@ class RooStateManagerServer {
                     }
                 }
             }
-
+            
             return [s.taskId, {
                 ...skeletonWithoutSequence,
                 firstUserMessage,
@@ -879,202 +864,19 @@ class RooStateManagerServer {
 
         // Appliquer la limite à la forêt de premier niveau
         const limitedForest = args.limit ? forest.slice(0, args.limit) : forest;
-
+        
         // Convertir en ConversationSummary pour EXCLURE la propriété sequence qui contient tout le contenu
         const summaries = limitedForest.map(node => toConversationSummary(node));
-
+        
         const result = JSON.stringify(summaries, null, 2);
 
         return { content: [{ type: 'text', text: result }] };
     }
 
-    /**
-     * NOUVELLE FONCTION : Export des conversations vers un fichier avec chemin absolu
-     * Utilise la même logique que handleListConversations mais exporte vers un fichier
-     */
-    async handleExportConversationsToFile(args: {
-        file_path: string,
-        workspace_filter?: string
-    }): Promise<CallToolResult> {
-        console.log('[TOOL] export_conversations_to_file called with:', JSON.stringify(args));
-
-        try {
-            // Validation du chemin de fichier
-            if (!args.file_path) {
-                throw new Error('Le paramètre file_path est requis');
-            }
-
-            // Vérifier la fraîcheur du cache skeleton avant utilisation
-            await this._ensureSkeletonCacheIsFresh();
-
-            // Interface pour les données d'export avec toutes les métadonnées importantes
-            interface ExportConversationData {
-                taskId: string;
-                parentTaskId?: string;
-                firstUserMessage?: string;
-                isCompleted?: boolean;
-                completionMessage?: string;
-                metadata: {
-                    title?: string;
-                    lastActivity: string;
-                    createdAt: string;
-                    mode?: string;
-                    messageCount: number;
-                    actionCount: number;
-                    totalSize: number;
-                    workspace?: string;
-                };
-                children: ExportConversationData[];
-            }
-
-            // Fonction pour convertir SkeletonNode vers ExportConversationData
-            function toExportData(skeleton: ConversationSkeleton, firstUserMessage?: string, isCompleted?: boolean, completionMessage?: string): ExportConversationData {
-                return {
-                    taskId: skeleton.taskId,
-                    parentTaskId: skeleton.parentTaskId,
-                    firstUserMessage,
-                    isCompleted,
-                    completionMessage,
-                    metadata: skeleton.metadata,
-                    children: [] // Sera rempli plus tard par la logique de construction de l'arbre
-                };
-            }
-
-            // Récupérer toutes les conversations depuis le cache
-            let allSkeletons = Array.from(this.conversationCache.values()).filter(skeleton =>
-                skeleton.metadata
-            );
-
-            // Filtrage par workspace si spécifié
-            if (args.workspace_filter) {
-                const normalizedWorkspace = normalizePath(args.workspace_filter);
-                console.log(`[DEBUG] Filtering by workspace: "${args.workspace_filter}" -> normalized: "${normalizedWorkspace}"`);
-
-                allSkeletons = allSkeletons.filter(skeleton =>
-                    skeleton.metadata.workspace &&
-                    normalizePath(skeleton.metadata.workspace) === normalizedWorkspace
-                );
-                console.log(`[DEBUG] Found ${allSkeletons.length} conversations matching workspace filter`);
-            }
-
-            // Tri par lastActivity (plus récent en premier)
-            allSkeletons.sort((a, b) => {
-                return new Date(b.metadata!.lastActivity).getTime() - new Date(a.metadata!.lastActivity).getTime();
-            });
-
-            // Créer la map avec extraction des informations importantes
-            const skeletonMap = new Map<string, ExportConversationData>();
-
-            for (const skeleton of allSkeletons) {
-                let firstUserMessage: string | undefined = undefined;
-                let isCompleted = false;
-                let completionMessage: string | undefined = undefined;
-
-                // Extraire les informations de la sequence si elle existe
-                if ((skeleton as any).sequence && Array.isArray((skeleton as any).sequence)) {
-                    const sequence = (skeleton as any).sequence;
-
-                    // 1. Premier message utilisateur
-                    const firstUserMsg = sequence.find((msg: any) => msg.role === 'user');
-                    if (firstUserMsg && firstUserMsg.content) {
-                        firstUserMessage = firstUserMsg.content.length > 200
-                            ? firstUserMsg.content.substring(0, 200) + '...'
-                            : firstUserMsg.content;
-                    }
-
-                    // 2. Détecter si la conversation est terminée
-                    const lastAssistantMessages = sequence
-                        .filter((msg: any) => msg.role === 'assistant')
-                        .slice(-3);
-
-                    for (const msg of lastAssistantMessages.reverse()) {
-                        if (msg.content && Array.isArray(msg.content)) {
-                            for (const content of msg.content) {
-                                if (content.type === 'tool_use' && content.name === 'attempt_completion') {
-                                    isCompleted = true;
-                                    const result = content.input?.result;
-                                    if (result) {
-                                        completionMessage = result.length > 150
-                                            ? result.substring(0, 150) + '...'
-                                            : result;
-                                    }
-                                    break;
-                                }
-                            }
-                            if (isCompleted) break;
-                        }
-                    }
-                }
-
-                skeletonMap.set(skeleton.taskId, toExportData(skeleton, firstUserMessage, isCompleted, completionMessage));
-            }
-
-            // Construire l'arbre hiérarchique
-            const forest: ExportConversationData[] = [];
-            skeletonMap.forEach(node => {
-                if (node.parentTaskId && skeletonMap.has(node.parentTaskId)) {
-                    skeletonMap.get(node.parentTaskId)!.children.push(node);
-                } else {
-                    forest.push(node);
-                }
-            });
-
-            // Préparer les données d'export avec statistiques
-            const exportData = {
-                exportInfo: {
-                    timestamp: new Date().toISOString(),
-                    source: "roo-state-manager MCP",
-                    version: packageJson.version,
-                    workspaceFilter: args.workspace_filter || null,
-                    totalConversations: allSkeletons.length,
-                    totalTopLevelConversations: forest.length
-                },
-                conversations: forest
-            };
-
-            // Écrire les données dans le fichier spécifié
-            await fs.writeFile(args.file_path, JSON.stringify(exportData, null, 2), 'utf8');
-
-            // Calculer des statistiques pour le retour
-            const stats = {
-                success: true,
-                message: 'Export terminé avec succès',
-                filePath: args.file_path,
-                totalConversations: allSkeletons.length,
-                topLevelConversations: forest.length,
-                workspaceFilter: args.workspace_filter || null,
-                exportTimestamp: exportData.exportInfo.timestamp,
-                fileSizeKB: Math.round((JSON.stringify(exportData).length) / 1024)
-            };
-
-            console.log(`✅ Export réussi: ${allSkeletons.length} conversations exportées vers ${args.file_path}`);
-
-            return {
-                content: [{
-                    type: "text",
-                    text: JSON.stringify(stats, null, 2)
-                }]
-            };
-
-        } catch (error: any) {
-            console.error('❌ Erreur lors de l\'export des conversations:', error);
-            return {
-                content: [{
-                    type: "text",
-                    text: JSON.stringify({
-                        success: false,
-                        error: error.message,
-                        message: 'Échec de l\'export des conversations'
-                    }, null, 2)
-                }]
-            };
-        }
-    }
-
     async handleTouchMcpSettings(): Promise<CallToolResult> {
         const settingsPath = "c:/Users/jsboi/AppData/Roaming/Code/User/globalStorage/rooveterinaryinc.roo-cline/settings/mcp_settings.json";
         const command = `(Get-Item "${settingsPath}").LastWriteTime = Get-Date`;
-
+        
         return new Promise((resolve, reject) => {
             exec(`powershell.exe -Command "${command}"`, (error, stdout, stderr) => {
                 if (error) {
@@ -1092,7 +894,7 @@ class RooStateManagerServer {
     async handleBuildSkeletonCache(args: { force_rebuild?: boolean } = {}): Promise<CallToolResult> {
         this.conversationCache.clear();
         const { force_rebuild = false } = args;
-
+        
         const locations = await RooStorageDetector.detectStorageLocations(); // This returns base storage paths
         if (locations.length === 0) {
             return { content: [{ type: 'text', text: 'Storage not found. Cache not built.' }] };
@@ -1100,10 +902,14 @@ class RooStateManagerServer {
 
         let skeletonsBuilt = 0;
         let skeletonsSkipped = 0;
+        let hierarchyRelationsFound = 0;
         const mode = force_rebuild ? "FORCE_REBUILD" : "SMART_REBUILD";
 
-        console.log(`Starting skeleton cache build in ${mode} mode...`);
+        console.log(`🔄 Starting PROCESSUS DESCENDANT skeleton cache build in ${mode} mode...`);
 
+        // 🚀 PROCESSUS DESCENDANT - PHASE 1: Construire tous les squelettes ET alimenter l'index RadixTree
+        const skeletonsWithPrefixes: Array<{ skeleton: ConversationSkeleton; prefixes: string[] }> = [];
+        
         for (const storageDir of locations) {
             // storageDir is the base storage path, we need to add 'tasks' to get to the tasks directory
             const tasksDir = path.join(storageDir, 'tasks');
@@ -1127,9 +933,9 @@ class RooStateManagerServer {
                     try {
                         // Vérifier que le fichier metadata existe (indique une tâche valide)
                         const metadataStat = await fs.stat(metadataPath);
-
+                        
                         let shouldRebuild = force_rebuild;
-
+                        
                         if (!force_rebuild) {
                             // Mode intelligent : vérifier si le squelette est obsolète
                             try {
@@ -1144,6 +950,10 @@ class RooStateManagerServer {
                                         const skeleton: ConversationSkeleton = JSON.parse(skeletonContent);
                                         if (skeleton && skeleton.taskId) {
                                             this.conversationCache.set(skeleton.taskId, skeleton);
+                                            // 🚀 PHASE 1: Alimenter l'index avec les préfixes de ce squelette existant
+                                            if (skeleton.childTaskInstructionPrefixes && skeleton.childTaskInstructionPrefixes.length > 0) {
+                                                skeletonsWithPrefixes.push({ skeleton, prefixes: skeleton.childTaskInstructionPrefixes });
+                                            }
                                             skeletonsSkipped++;
                                         } else {
                                             shouldRebuild = true; // Squelette corrompu
@@ -1159,21 +969,25 @@ class RooStateManagerServer {
                                 shouldRebuild = true; // Squelette manquant
                             }
                         }
-
+                        
                         // DEBUG: Toujours logger ce qui se passe
-                        console.log(`Processing ${conversationId}: shouldRebuild=${shouldRebuild}, force_rebuild=${force_rebuild}`);
-
+                        console.log(`📋 Processing ${conversationId}: shouldRebuild=${shouldRebuild}, force_rebuild=${force_rebuild}`);
+                        
                         if (shouldRebuild) {
-                            console.log(`${force_rebuild ? 'Force rebuilding' : 'Rebuilding'} skeleton for task: ${conversationId}`);
-
+                            console.log(`🔨 ${force_rebuild ? 'Force rebuilding' : 'Rebuilding'} skeleton for task: ${conversationId}`);
+                            
                             try {
                                 const skeleton = await RooStorageDetector.analyzeConversation(conversationId, taskPath);
                                 if (skeleton) {
                                     await fs.writeFile(skeletonPath, JSON.stringify(skeleton, null, 2));
                                     // BUG FIX: Utiliser skeleton.taskId et non conversationId
                                     this.conversationCache.set(skeleton.taskId, skeleton);
+                                    // 🚀 PHASE 1: Collecter les préfixes pour l'index RadixTree
+                                    if (skeleton.childTaskInstructionPrefixes && skeleton.childTaskInstructionPrefixes.length > 0) {
+                                        skeletonsWithPrefixes.push({ skeleton, prefixes: skeleton.childTaskInstructionPrefixes });
+                                    }
                                     skeletonsBuilt++;
-                                    console.log(`✅ Successfully built skeleton for ${skeleton.taskId} (metadata: ${skeleton.metadata ? 'yes' : 'no'})`);
+                                    console.log(`✅ Successfully built skeleton for ${skeleton.taskId} (prefixes: ${skeleton.childTaskInstructionPrefixes?.length || 0})`);
                                 } else {
                                     console.error(`❌ Failed to analyze conversation ${conversationId}: analyzeConversation returned null`);
                                     skeletonsSkipped++;
@@ -1185,7 +999,7 @@ class RooStateManagerServer {
                         } else {
                             console.log(`⏭️ Skipping ${conversationId} (shouldRebuild=false)`);
                         }
-
+                        
                     } catch (error) {
                         console.error(`Could not process task ${conversationId}:`, error);
                         skeletonsSkipped++;
@@ -1193,16 +1007,152 @@ class RooStateManagerServer {
                 }
             }
         }
-
-        console.log(`Skeleton cache build complete. Mode: ${mode}, Cache size: ${this.conversationCache.size}`);
-        return { content: [{ type: 'text', text: `Skeleton cache build complete (${mode}). Built: ${skeletonsBuilt}, Skipped: ${skeletonsSkipped}. Cache size: ${this.conversationCache.size}` }] };
+        
+        // 🚀 PROCESSUS DESCENDANT - PHASE 2: Alimenter le globalTaskInstructionIndex avec tous les préfixes
+        console.log(`🔍 PHASE 2: Alimenting RadixTree with ${skeletonsWithPrefixes.length} tasks with prefixes...`);
+        
+        // Importer globalTaskInstructionIndex
+        const { globalTaskInstructionIndex } = await import('./utils/task-instruction-index.js');
+        
+        // CORRECTION: Toujours vider l'index avant de le repeupler
+        globalTaskInstructionIndex.clear();
+        
+        for (const { skeleton, prefixes } of skeletonsWithPrefixes) {
+            for (const prefix of prefixes) {
+                globalTaskInstructionIndex.addInstruction(prefix, skeleton.taskId);
+            }
+        }
+        
+        const indexStats = globalTaskInstructionIndex.getStats();
+        console.log(`🎯 RadixTree populated: ${indexStats.totalInstructions} instructions, ${indexStats.totalNodes} nodes`);
+        
+        // CORRECTION: Exécuter les Phases 2-3 même en mode intelligent si l'index était vide
+        const shouldRunHierarchyPhase = indexStats.totalInstructions > 0;
+        console.log(`🔍 Should run hierarchy phase: ${shouldRunHierarchyPhase} (index has ${indexStats.totalInstructions} instructions)`);
+        
+        // 🚀 PROCESSUS DESCENDANT - PHASE 3: Recalculer les relations parent-enfant avec l'index maintenant populé
+        console.log(`🔗 PHASE 3: Recalculating parent-child relationships...`);
+        
+        const skeletonsToUpdate: Array<{ taskId: string; newParentId: string }> = [];
+        const orphanSkeletons = Array.from(this.conversationCache.values()).filter(s =>
+            !s.parentTaskId && s.metadata?.workspace
+        );
+        
+        console.log(`🔍 Found ${orphanSkeletons.length} orphan tasks to process...`);
+        
+        // OPTIMISATION: Traiter par lots de 50 pour éviter les timeouts
+        const BATCH_SIZE = 50;
+        const MAX_PROCESSING_TIME = 45000; // 45 secondes max pour cette phase
+        const startTime = Date.now();
+        
+        for (let i = 0; i < orphanSkeletons.length; i += BATCH_SIZE) {
+            // Vérifier le timeout
+            if (Date.now() - startTime > MAX_PROCESSING_TIME) {
+                console.log(`⏰ Phase 3 timeout reached, processed ${i}/${orphanSkeletons.length} tasks`);
+                break;
+            }
+            
+            const batch = orphanSkeletons.slice(i, i + BATCH_SIZE);
+            console.log(`📦 Processing batch ${Math.floor(i / BATCH_SIZE) + 1}/${Math.ceil(orphanSkeletons.length / BATCH_SIZE)}: ${batch.length} tasks`);
+            
+            for (const skeleton of batch) {
+                const childText = `${skeleton.metadata?.title || ''} ${skeleton.metadata?.mode || ''}`.trim();
+                if (childText.length > 5) {
+                    try {
+                        const foundParentId = globalTaskInstructionIndex.findPotentialParent(childText);
+                        if (foundParentId && foundParentId !== skeleton.taskId) {
+                            skeletonsToUpdate.push({ taskId: skeleton.taskId, newParentId: foundParentId });
+                            console.log(`🎯 HIERARCHY FOUND: ${skeleton.taskId.substring(0, 8)} -> parent: ${foundParentId.substring(0, 8)}`);
+                            hierarchyRelationsFound++;
+                        }
+                    } catch (searchError) {
+                        console.error(`Error finding parent for ${skeleton.taskId.substring(0, 8)}:`, searchError);
+                    }
+                }
+            }
+        }
+        
+        console.log(`🔗 Found ${skeletonsToUpdate.length} parent-child relationships to apply...`);
+        
+        // Appliquer les mises à jour de hiérarchie (sans sauvegarde immédiate pour éviter timeout)
+        for (const update of skeletonsToUpdate) {
+            const skeleton = this.conversationCache.get(update.taskId);
+            if (skeleton) {
+                skeleton.parentTaskId = update.newParentId;
+                // OPTIMISATION: Reporter la sauvegarde sur disque en arrière-plan
+                // La sauvegarde sera faite lors du prochain rebuild ou sur demande
+            }
+        }
+        
+        // Sauvegarder seulement les premiers squelettes modifiés (limite pour éviter timeout)
+        const MAX_SAVES = 10;
+        let savedCount = 0;
+        for (const update of skeletonsToUpdate.slice(0, MAX_SAVES)) {
+            try {
+                for (const storageDir of locations) {
+                    const skeletonDir = path.join(storageDir, SKELETON_CACHE_DIR_NAME);
+                    const skeletonPath = path.join(skeletonDir, `${update.taskId}.json`);
+                    if (existsSync(skeletonPath)) {
+                        const skeleton = this.conversationCache.get(update.taskId);
+                        if (skeleton) {
+                            await fs.writeFile(skeletonPath, JSON.stringify(skeleton, null, 2));
+                            savedCount++;
+                        }
+                        break;
+                    }
+                }
+            } catch (saveError) {
+                console.error(`Failed to save updated skeleton for ${update.taskId}:`, saveError);
+            }
+        }
+        
+        if (skeletonsToUpdate.length > MAX_SAVES) {
+            console.log(`📝 Saved ${savedCount}/${skeletonsToUpdate.length} updated skeletons to disk (others updated in memory only)`);
+        }
+        
+        console.log(`✅ Skeleton cache build complete. Mode: ${mode}, Cache size: ${this.conversationCache.size}, New relations: ${hierarchyRelationsFound}`);
+        return { content: [{ type: 'text', text: `Skeleton cache build complete (${mode}). Built: ${skeletonsBuilt}, Skipped: ${skeletonsSkipped}, Cache size: ${this.conversationCache.size}, Hierarchy relations found: ${hierarchyRelationsFound}` }] };
     }
 
 
-    handleGetTaskTree(args: { conversation_id: string, max_depth?: number, include_siblings?: boolean }): CallToolResult {
-        const { conversation_id, max_depth = Infinity, include_siblings = false } = args;
+    handleGetTaskTree(args: { conversation_id: string, max_depth?: number, include_siblings?: boolean, output_format?: 'json' | 'markdown' }): CallToolResult {
+        const { conversation_id, max_depth = Infinity, include_siblings = false, output_format = 'json' } = args;
+
+        // Ensure cache is populated
+        if (this.conversationCache.size === 0) {
+            throw new Error(`Task cache is empty. Please run 'build_skeleton_cache' first to populate the cache.`);
+        }
 
         const skeletons = Array.from(this.conversationCache.values());
+        
+        // Enhanced ID matching: support both exact match and prefix match
+        const findTaskById = (id: string) => {
+            // Try exact match first
+            const exactMatch = skeletons.find(s => s.taskId === id);
+            if (exactMatch) {
+                return exactMatch;
+            }
+            
+            // Try prefix match
+            const prefixMatches = skeletons.filter(s => s.taskId.startsWith(id));
+            if (prefixMatches.length === 0) {
+                return null;
+            }
+            if (prefixMatches.length === 1) {
+                return prefixMatches[0];
+            }
+            
+            // Multiple matches - throw error with suggestions
+            const suggestions = prefixMatches.slice(0, 5).map(s => s.taskId).join(', ');
+            throw new Error(`Ambiguous task ID '${id}'. Multiple matches found: ${suggestions}. Please provide a more specific ID.`);
+        };
+        
+        const targetSkeleton = findTaskById(conversation_id);
+        if (!targetSkeleton) {
+            const availableIds = skeletons.slice(0, 10).map(s => `${s.taskId.substring(0, 8)} (${s.metadata?.title || 'No title'})`).join(', ');
+            throw new Error(`Task ID '${conversation_id}' not found. Available tasks (first 10): ${availableIds}`);
+        }
+
         const childrenMap = new Map<string, string[]>();
         skeletons.forEach(s => {
             if (s.parentTaskId) {
@@ -1226,48 +1176,79 @@ class RooStateManagerServer {
             const children = childrenIds
                 .map(childId => buildTree(childId, depth + 1))
                 .filter(child => child !== null);
-
-            return {
+            
+            // Enhanced node with rich metadata
+            const node = {
                 taskId: skeleton.taskId,
-                title: skeleton.metadata?.title,
+                taskIdShort: skeleton.taskId.substring(0, 8),
+                title: skeleton.metadata?.title || `Task ${skeleton.taskId.substring(0, 8)}`,
+                metadata: {
+                    messageCount: skeleton.metadata?.messageCount || 0,
+                    actionCount: skeleton.metadata?.actionCount || 0,
+                    totalSizeKB: skeleton.metadata?.totalSize ? Math.round(skeleton.metadata.totalSize / 1024 * 10) / 10 : 0,
+                    lastActivity: skeleton.metadata?.lastActivity || skeleton.metadata?.createdAt || 'Unknown',
+                    createdAt: skeleton.metadata?.createdAt || 'Unknown',
+                    mode: skeleton.metadata?.mode || 'Unknown',
+                    workspace: skeleton.metadata?.workspace || 'Unknown',
+                    hasParent: !!skeleton.parentTaskId,
+                    childrenCount: childrenIds.length,
+                    depth: depth,
+                    // 🚀 NOUVEAUX CHAMPS : Ajout des fonctionnalités demandées
+                    isCompleted: skeleton.isCompleted || false,
+                    truncatedInstruction: skeleton.truncatedInstruction || undefined
+                },
                 parentTaskId: skeleton.parentTaskId,
                 children: children.length > 0 ? children : undefined,
             };
+            
+            return node;
         };
-
+        
         let tree;
-
-        if (include_siblings) {
-            // Trouver la tâche demandée
-            const targetSkeleton = skeletons.find(s => s.taskId === conversation_id);
-            if (!targetSkeleton) {
-                throw new Error(`Could not find conversation ID '${conversation_id}'. Is the cache populated and the task ID valid?`);
-            }
-
-            if (targetSkeleton.parentTaskId) {
-                // Si la tâche a un parent, construire l'arbre depuis le parent pour inclure les siblings
-                tree = buildTree(targetSkeleton.parentTaskId, 1);
-            } else {
-                // Si pas de parent, créer un arbre avec toutes les tâches racines comme siblings
-                const rootTasks = skeletons.filter(s => !s.parentTaskId);
-                const siblings = rootTasks.map(s => buildTree(s.taskId, 1)).filter(t => t !== null);
-
-                tree = {
-                    taskId: 'ROOT',
-                    title: 'Tasks Root',
-                    children: siblings,
-                };
-            }
+        
+        if (include_siblings && targetSkeleton.parentTaskId) {
+            // Si la tâche a un parent et que les siblings sont demandés,
+            // construire l'arbre depuis le parent pour inclure les frères et sœurs.
+            tree = buildTree(targetSkeleton.parentTaskId, 0);
         } else {
-            // Comportement original : construire l'arbre depuis la tâche demandée
-            tree = buildTree(conversation_id, 1);
+            // Sinon (pas de parent ou siblings non demandés),
+            // construire l'arbre depuis la tâche cible elle-même.
+            tree = buildTree(targetSkeleton.taskId, 0);
         }
 
         if (!tree) {
-            throw new Error(`Could not build tree for conversation ID '${conversation_id}'. Is the cache populated and the task ID valid?`);
+            throw new Error(`Could not build tree for conversation ID '${conversation_id}'. Task exists but tree construction failed.`);
         }
 
-        return { content: [{ type: 'text', text: JSON.stringify(tree, null, 2) }] };
+        // Format output based on output_format parameter
+        if (output_format === 'markdown') {
+            const formatTreeMarkdown = (node: any, prefix: string = '', isLast: boolean = true): string => {
+                const connector = prefix === '' ? '' : (isLast ? '└── ' : '├── ');
+                const nextPrefix = prefix === '' ? '' : prefix + (isLast ? '    ' : '│   ');
+                
+                let line = `${prefix}${connector}**${node.taskIdShort}** ${node.title}`;
+                if (node.metadata) {
+                    line += ` _(${node.metadata.messageCount} msgs, ${node.metadata.totalSizeKB}KB, ${node.metadata.mode})_`;
+                }
+                line += '\n';
+                
+                if (node.children && node.children.length > 0) {
+                    node.children.forEach((child: any, index: number) => {
+                        const childIsLast = index === node.children.length - 1;
+                        line += formatTreeMarkdown(child, nextPrefix, childIsLast);
+                    });
+                }
+                
+                return line;
+            };
+            
+            const markdownTree = formatTreeMarkdown(tree);
+            const metadata = `**Arbre des tâches:** ${conversation_id}\n**Profondeur max:** ${max_depth === Infinity ? '∞' : max_depth}\n**Inclure siblings:** ${include_siblings ? 'Oui' : 'Non'}\n**Racine:** ${tree.taskIdShort} - ${tree.title}\n\n`;
+            
+            return { content: [{ type: 'text', text: metadata + markdownTree }] };
+        } else {
+            return { content: [{ type: 'text', text: JSON.stringify(tree, null, 2) }] };
+        }
     }
 
    async handleDebugAnalyzeConversation(args: { taskId: string }): Promise<CallToolResult> {
@@ -1302,49 +1283,49 @@ class RooStateManagerServer {
     private formatActionDetails(action: any, index: number, truncate: number): string {
         const icon = action.type === 'command' ? '⚙️' : '🛠️';
         let output = `[${index}] ${icon} ${action.name} → ${action.status}\n`;
-
+        
         // Type et timestamp
         output += `    Type: ${action.type}\n`;
         if (action.timestamp) {
             output += `    Timestamp: ${action.timestamp}\n`;
         }
-
+        
         // Paramètres
         if (action.parameters) {
             const paramStr = JSON.stringify(action.parameters, null, 2);
             output += `    Paramètres: ${truncate > 0 ? this.truncateContent(paramStr, truncate) : paramStr}\n`;
         }
-
+        
         // Résultat (si disponible)
         if ('result' in action && action.result) {
             const resultStr = typeof action.result === 'string' ? action.result : JSON.stringify(action.result, null, 2);
             output += `    Résultat: ${truncate > 0 ? this.truncateContent(resultStr, truncate) : resultStr}\n`;
         }
-
+        
         // Erreur (si disponible)
         if ('error' in action && action.error) {
             output += `    ❌ Erreur: ${action.error}\n`;
         }
-
+        
         // Métadonnées additionnelles (si disponibles)
         if (action.metadata) {
             const metaStr = JSON.stringify(action.metadata, null, 2);
             output += `    Métadonnées: ${truncate > 0 ? this.truncateContent(metaStr, truncate) : metaStr}\n`;
         }
-
+        
         return output;
     }
 
     private truncateContent(content: string, lines: number): string {
         if (lines <= 0) return content;
-
+        
         const contentLines = content.split('\n');
         if (contentLines.length <= lines * 2) return content;
-
+        
         const start = contentLines.slice(0, lines);
         const end = contentLines.slice(-lines);
         const omitted = contentLines.length - (lines * 2);
-
+        
         return [
             ...start,
             `... [${omitted} lignes omises] ...`,
@@ -1354,7 +1335,7 @@ class RooStateManagerServer {
 
     async handleSearchTasksSemantic(args: { conversation_id?: string, search_query: string, max_results?: number, diagnose_index?: boolean, workspace?: string }): Promise<CallToolResult> {
         const { conversation_id, search_query, max_results = 10, diagnose_index = false, workspace } = args;
-
+        
         // Mode diagnostic - retourne des informations sur l'état de l'indexation
         if (diagnose_index) {
             try {
@@ -1362,7 +1343,7 @@ class RooStateManagerServer {
                 const collections = await qdrant.getCollections();
                 const collectionName = process.env.QDRANT_COLLECTION_NAME || 'roo_tasks_semantic_index';
                 const collection = collections.collections.find(c => c.name === collectionName);
-
+                
                 return {
                     content: [{
                         type: 'text',
@@ -1383,20 +1364,20 @@ class RooStateManagerServer {
         try {
             const qdrant = getQdrantClient();
             const openai = getOpenAIClient();
-
+            
             // Créer l'embedding de la requête
             const embedding = await openai.embeddings.create({
                 model: 'text-embedding-3-small',
                 input: search_query
             });
-
+            
             const queryVector = embedding.data[0].embedding;
             const collectionName = process.env.QDRANT_COLLECTION_NAME || 'roo_tasks_semantic_index';
-
+            
             // Configuration de la recherche selon conversation_id et workspace
             let filter;
             const filterConditions = [];
-
+            
             if (conversation_id && conversation_id !== 'undefined') {
                 filterConditions.push({
                     key: "task_id",
@@ -1405,7 +1386,7 @@ class RooStateManagerServer {
                     }
                 });
             }
-
+            
             if (workspace) {
                 filterConditions.push({
                     key: "workspace",
@@ -1414,26 +1395,26 @@ class RooStateManagerServer {
                     }
                 });
             }
-
+            
             if (filterConditions.length > 0) {
                 filter = {
                     must: filterConditions
                 };
             }
             // Si pas de filtres, recherche globale
-
+            
             const searchResults = await qdrant.search(collectionName, {
                 vector: queryVector,
                 limit: max_results,
                 filter: filter,
                 with_payload: true
             });
-
+            
             // Obtenir l'identifiant de la machine actuelle pour l'en-tête
             const { TaskIndexer, getHostIdentifier } = await import('./services/task-indexer.js');
             const taskIndexer = new TaskIndexer();
             const currentHostId = getHostIdentifier();
-
+            
             const results = searchResults.map(result => ({
                 taskId: result.payload?.task_id || 'unknown',
                 score: result.score || 0,
@@ -1453,7 +1434,7 @@ class RooStateManagerServer {
                     host_os: result.payload?.host_os || 'unknown'
                 }
             }));
-
+            
             // Créer un rapport enrichi avec contexte multi-machine
             const searchReport = {
                 current_machine: {
@@ -1472,12 +1453,12 @@ class RooStateManagerServer {
                 },
                 results: results
             };
-
+            
             return { content: [{ type: 'text', text: JSON.stringify(searchReport, null, 2) }] };
-
+            
         } catch (semanticError) {
             console.log(`[INFO] Recherche sémantique échouée, utilisation du fallback textuel: ${semanticError instanceof Error ? semanticError.message : String(semanticError)}`);
-
+            
             // Fallback vers la recherche textuelle simple
             return await this.handleSearchTasksSemanticFallback(args);
         }
@@ -1485,7 +1466,7 @@ class RooStateManagerServer {
 
     private async handleSearchTasksSemanticFallback(args: { conversation_id?: string, search_query: string, max_results?: number }): Promise<CallToolResult> {
         console.log(`[DEBUG] Fallback called with args:`, JSON.stringify(args));
-
+        
         const { conversation_id, search_query, max_results = 10 } = args;
         console.log(`[DEBUG] Extracted conversation_id: "${conversation_id}" (type: ${typeof conversation_id})`);
 
@@ -1494,14 +1475,14 @@ class RooStateManagerServer {
         const isUndefinedString = conversation_id === 'undefined';
         const isEmptyOrFalsy = !conversation_id;
         console.log(`[DEBUG] isUndefinedString: ${isUndefinedString}, isEmptyOrFalsy: ${isEmptyOrFalsy}`);
-
+        
         if (!conversation_id || conversation_id === 'undefined') {
             const query = search_query.toLowerCase();
             const results: any[] = [];
 
             for (const [taskId, skeleton] of this.conversationCache.entries()) {
                 if (results.length >= max_results) break;
-
+                
                 for (const item of skeleton.sequence) {
                     if ('content' in item && typeof item.content === 'string' && item.content.toLowerCase().includes(query)) {
                         results.push({
@@ -1547,39 +1528,39 @@ class RooStateManagerServer {
     async handleIndexTaskSemantic(args: { task_id: string }): Promise<CallToolResult> {
         try {
             const { task_id } = args;
-
+            
             // Vérification des variables d'environnement
             const openaiKey = process.env.OPENAI_API_KEY;
             const qdrantUrl = process.env.QDRANT_URL;
             const qdrantCollection = process.env.QDRANT_COLLECTION_NAME;
-
+            
             console.log(`[DEBUG] Environment check:`);
             console.log(`[DEBUG] OPENAI_API_KEY: ${openaiKey ? 'SET' : 'MISSING'}`);
             console.log(`[DEBUG] QDRANT_URL: ${qdrantUrl || 'MISSING'}`);
             console.log(`[DEBUG] QDRANT_COLLECTION_NAME: ${qdrantCollection || 'MISSING'}`);
-
+            
             if (!openaiKey) {
                 throw new Error('OPENAI_API_KEY environment variable is required');
             }
-
+            
             const skeleton = this.conversationCache.get(task_id);
             if (!skeleton) {
                 throw new Error(`Task with ID '${task_id}' not found in cache.`);
             }
-
+            
             const conversation = await RooStorageDetector.findConversationById(task_id);
             const taskPath = conversation?.path;
-
+            
             if (!taskPath) {
                 throw new Error(`Task directory for '${task_id}' not found in any storage location.`);
             }
-
+            
             console.log(`[DEBUG] Attempting to import indexTask from task-indexer.js`);
             const { indexTask } = await import('./services/task-indexer.js');
             console.log(`[DEBUG] Import successful, calling indexTask with taskId=${task_id}, taskPath=${taskPath}`);
             const indexedPoints = await indexTask(task_id, taskPath);
             console.log(`[DEBUG] indexTask completed, returned ${indexedPoints.length} points`);
-
+            
             return {
                 content: [{
                     type: "text",
@@ -1599,7 +1580,7 @@ class RooStateManagerServer {
 
     async handleDiagnoseConversationBom(args: { fix_found?: boolean }): Promise<CallToolResult> {
         const { fix_found = false } = args;
-
+        
         const locations = await RooStorageDetector.detectStorageLocations();
         if (locations.length === 0) {
             return { content: [{ type: 'text', text: 'Aucun emplacement de stockage Roo trouvé.' }] };
@@ -1609,26 +1590,27 @@ class RooStateManagerServer {
         let corruptedFiles = 0;
         let repairedFiles = 0;
         const corruptedList: string[] = [];
-
-        for (const tasksPath of locations) {
+        
+        for (const location of locations) {
             try {
+                const tasksPath = path.join(location, 'tasks');
                 const conversationDirs = await fs.readdir(tasksPath, { withFileTypes: true });
-
+                
                 for (const convDir of conversationDirs) {
                     if (convDir.isDirectory()) {
                         const apiHistoryPath = path.join(tasksPath, convDir.name, 'api_conversation_history.json');
-
+                        
                         try {
                             await fs.access(apiHistoryPath);
                             totalFiles++;
-
+                            
                             const content = await fs.readFile(apiHistoryPath, 'utf-8');
                             const hasBOM = content.charCodeAt(0) === 0xFEFF;
-
+                            
                             if (hasBOM) {
                                 corruptedFiles++;
                                 corruptedList.push(apiHistoryPath);
-
+                                
                                 if (fix_found) {
                                     // Réparer automatiquement
                                     const cleanContent = content.slice(1);
@@ -1647,21 +1629,21 @@ class RooStateManagerServer {
                     }
                 }
             } catch (dirError) {
-                console.error(`Erreur lors du scan de ${tasksPath}:`, dirError);
+                console.error(`Erreur lors du scan de ${location}/tasks:`, dirError);
             }
         }
-
+        
         let report = `# Diagnostic BOM des conversations\n\n`;
         report += `**Fichiers analysés:** ${totalFiles}\n`;
         report += `**Fichiers corrompus (BOM):** ${corruptedFiles}\n`;
-
+        
         if (fix_found && repairedFiles > 0) {
             report += `**Fichiers réparés:** ${repairedFiles}\n\n`;
             report += `✅ Réparation automatique effectuée.\n`;
         } else if (corruptedFiles > 0) {
             report += `\n⚠️  Des fichiers corrompus ont été trouvés. Utilisez 'repair_conversation_bom' pour les réparer.\n`;
         }
-
+        
         if (corruptedList.length > 0 && corruptedList.length <= 20) {
             report += `\n## Fichiers corrompus détectés:\n`;
             corruptedList.forEach(file => {
@@ -1674,13 +1656,13 @@ class RooStateManagerServer {
             });
             report += `\n... et ${corruptedList.length - 20} autres fichiers.\n`;
         }
-
+        
         return { content: [{ type: 'text', text: report }] };
     }
 
     async handleRepairConversationBom(args: { dry_run?: boolean }): Promise<CallToolResult> {
         const { dry_run = false } = args;
-
+        
         const locations = await RooStorageDetector.detectStorageLocations();
         if (locations.length === 0) {
             return { content: [{ type: 'text', text: 'Aucun emplacement de stockage Roo trouvé.' }] };
@@ -1691,25 +1673,26 @@ class RooStateManagerServer {
         let repairedFiles = 0;
         let failedRepairs = 0;
         const repairResults: { file: string, status: string, error?: string }[] = [];
-
-        for (const tasksPath of locations) {
+        
+        for (const location of locations) {
             try {
+                const tasksPath = path.join(location, 'tasks');
                 const conversationDirs = await fs.readdir(tasksPath, { withFileTypes: true });
-
+                
                 for (const convDir of conversationDirs) {
                     if (convDir.isDirectory()) {
                         const apiHistoryPath = path.join(tasksPath, convDir.name, 'api_conversation_history.json');
-
+                        
                         try {
                             await fs.access(apiHistoryPath);
                             totalFiles++;
-
+                            
                             const content = await fs.readFile(apiHistoryPath, 'utf-8');
                             const hasBOM = content.charCodeAt(0) === 0xFEFF;
-
+                            
                             if (hasBOM) {
                                 corruptedFiles++;
-
+                                
                                 if (dry_run) {
                                     repairResults.push({
                                         file: apiHistoryPath,
@@ -1742,19 +1725,19 @@ class RooStateManagerServer {
                     }
                 }
             } catch (dirError) {
-                console.error(`Erreur lors du scan de ${tasksPath}:`, dirError);
+                console.error(`Erreur lors du scan de ${location}/tasks:`, dirError);
             }
         }
-
+        
         let report = `# Réparation BOM des conversations\n\n`;
         report += `**Mode:** ${dry_run ? 'Simulation (dry-run)' : 'Réparation réelle'}\n`;
         report += `**Fichiers analysés:** ${totalFiles}\n`;
         report += `**Fichiers corrompus (BOM):** ${corruptedFiles}\n`;
-
+        
         if (!dry_run) {
             report += `**Fichiers réparés:** ${repairedFiles}\n`;
             report += `**Échecs de réparation:** ${failedRepairs}\n\n`;
-
+            
             if (repairedFiles > 0) {
                 report += `✅ ${repairedFiles} fichier(s) réparé(s) avec succès.\n`;
             }
@@ -1764,7 +1747,7 @@ class RooStateManagerServer {
         } else {
             report += `\n🔍 Simulation terminée. ${corruptedFiles} fichier(s) seraient réparés.\n`;
         }
-
+        
         if (repairResults.length > 0 && repairResults.length <= 30) {
             report += `\n## Détails des opérations:\n`;
             repairResults.forEach(result => {
@@ -1785,7 +1768,7 @@ class RooStateManagerServer {
             });
             report += `\n... et ${repairResults.length - 30} autres résultats.\n`;
         }
-
+        
         return { content: [{ type: 'text', text: report }] };
     }
 
@@ -1800,7 +1783,7 @@ class RooStateManagerServer {
     }): Promise<CallToolResult> {
         try {
             const { taskId, filePath, includeContent = false, prettyPrint = true } = args;
-
+            
             const skeleton = this.conversationCache.get(taskId);
             if (!skeleton) {
                 throw new Error(`Tâche avec l'ID '${taskId}' non trouvée dans le cache.`);
@@ -1851,7 +1834,7 @@ class RooStateManagerServer {
     }): Promise<CallToolResult> {
         try {
             const { conversationId, filePath, maxDepth, includeContent = false, prettyPrint = true } = args;
-
+            
             const rootSkeleton = this.conversationCache.get(conversationId);
             if (!rootSkeleton) {
                 throw new Error(`Conversation racine avec l'ID '${conversationId}' non trouvée dans le cache.`);
@@ -1862,26 +1845,26 @@ class RooStateManagerServer {
                 if (maxDepth && currentDepth >= maxDepth) {
                     return [];
                 }
-
+                
                 const task = this.conversationCache.get(taskId);
                 if (!task) {
                     return [];
                 }
 
                 const tasks = [task];
-
+                
                 // Rechercher les enfants
                 for (const [childTaskId, childTask] of this.conversationCache.entries()) {
                     if (childTask.parentTaskId === taskId) {
                         tasks.push(...collectTasks(childTaskId, currentDepth + 1));
                     }
                 }
-
+                
                 return tasks;
             };
 
             const allTasks = collectTasks(conversationId);
-
+            
             // TODO: Correction temporaire - adapter l'interface du service
             const xmlContent = (this.xmlExporterService as any).generateConversationXml(allTasks, {
                 includeContent,
@@ -1928,32 +1911,32 @@ class RooStateManagerServer {
     }): Promise<CallToolResult> {
         try {
             const { projectPath, filePath, startDate, endDate, prettyPrint = true } = args;
-
+            
             // Filtrer les conversations par workspace et date
             const relevantTasks = Array.from(this.conversationCache.values()).filter(skeleton => {
                 if (skeleton.metadata?.workspace) {
                     const normalizedWorkspace = normalizePath(skeleton.metadata.workspace);
                     const normalizedProject = normalizePath(projectPath);
-
+                    
                     if (normalizedWorkspace !== normalizedProject) {
                         return false;
                     }
                 }
-
+                
                 if (startDate) {
                     const taskDate = new Date(skeleton.metadata?.lastActivity || skeleton.metadata?.createdAt || '');
                     if (taskDate < new Date(startDate)) {
                         return false;
                     }
                 }
-
+                
                 if (endDate) {
                     const taskDate = new Date(skeleton.metadata?.lastActivity || skeleton.metadata?.createdAt || '');
                     if (taskDate > new Date(endDate)) {
                         return false;
                     }
                 }
-
+                
                 return true;
             });
 
@@ -1998,15 +1981,15 @@ class RooStateManagerServer {
      */
     private extractActionSequence(sequence: any[]): ActionMetadata[] {
         const actions: ActionMetadata[] = [];
-
+        
         for (const item of sequence) {
             // Extraire les actions des messages assistant
             if (item.role === 'assistant' && item.content) {
                 const timestamp = item.timestamp || new Date().toISOString();
-
+                
                 // Support pour les deux formats : content array et content direct
                 let contentArray = Array.isArray(item.content) ? item.content : [item.content];
-
+                
                 for (const contentItem of contentArray) {
                     if (contentItem.type === 'tool_use' || contentItem.type === 'tool_result') {
                         const action: ActionMetadata = {
@@ -2095,7 +2078,7 @@ class RooStateManagerServer {
     }): Promise<CallToolResult> {
         try {
             const { rootTaskId } = args;
-
+            
             if (!rootTaskId) {
                 throw new Error("rootTaskId est requis");
             }
@@ -2108,7 +2091,7 @@ class RooStateManagerServer {
 
             // Collecter les tâches enfantes (soit fournies, soit auto-détectées)
             let childConversations: any[] = [];
-
+            
             if (args.childTaskIds && args.childTaskIds.length > 0) {
                 // Utiliser les IDs fournis
                 for (const childId of args.childTaskIds) {
@@ -2211,7 +2194,7 @@ class RooStateManagerServer {
     }): Promise<CallToolResult> {
         try {
             const { taskId } = args;
-
+            
             if (!taskId) {
                 throw new Error("taskId est requis");
             }
@@ -2253,7 +2236,7 @@ class RooStateManagerServer {
     }): Promise<CallToolResult> {
         try {
             const { taskId } = args;
-
+            
             if (!taskId) {
                 throw new Error("taskId est requis");
             }
@@ -2339,11 +2322,11 @@ class RooStateManagerServer {
             };
         }
     }
-
+    
     handleViewTaskDetails(args: { task_id: string, action_index?: number, truncate?: number }): CallToolResult {
         try {
             const skeleton = this.conversationCache.get(args.task_id);
-
+            
             if (!skeleton) {
                 return {
                     content: [{
@@ -2362,7 +2345,7 @@ class RooStateManagerServer {
 
             // Filtrer pour ne garder que les actions (pas les messages)
             const actions = skeleton.sequence.filter((item: any) => !('role' in item));
-
+            
             if (actions.length === 0) {
                 output += "ℹ️ Aucune action technique trouvée dans cette tâche.\n";
             } else {
@@ -2421,7 +2404,7 @@ class RooStateManagerServer {
     }): Promise<CallToolResult> {
         try {
             const { taskId } = args;
-
+            
             if (!taskId) {
                 throw new Error("taskId est requis");
             }
@@ -2496,7 +2479,7 @@ class RooStateManagerServer {
     }): Promise<CallToolResult> {
         try {
             const { taskId } = args;
-
+            
             if (!taskId) {
                 throw new Error("taskId est requis");
             }
@@ -2527,6 +2510,128 @@ class RooStateManagerServer {
         }
     }
 
+    /**
+     * 🚀 NOUVEAU : Exporte un arbre de tâches au format Markdown hiérarchique
+     */
+    async handleExportTaskTreeMarkdown(args: {
+        conversation_id: string;
+        filePath?: string;
+        max_depth?: number;
+        include_siblings?: boolean;
+    }): Promise<CallToolResult> {
+        try {
+            const { conversation_id, filePath, max_depth, include_siblings = true } = args;
+
+            if (!conversation_id) {
+                throw new Error("conversation_id est requis");
+            }
+
+            // Utiliser get_task_tree pour récupérer l'arbre avec les nouveaux champs
+            const treeResult = await this.handleGetTaskTree({
+                conversation_id,
+                max_depth,
+                include_siblings
+            });
+
+            if (!treeResult || !treeResult.content || !treeResult.content[0]) {
+                throw new Error("Impossible de récupérer l'arbre des tâches");
+            }
+
+            const textContent = treeResult.content[0].text;
+            if (typeof textContent !== 'string') {
+                throw new Error("Format de données invalide retourné par get_task_tree");
+            }
+            const treeData = JSON.parse(textContent);
+
+            // Fonction récursive pour formatter l'arbre en Markdown
+            const formatNodeToMarkdown = (node: any, depth: number = 0): string => {
+                let markdown = '';
+                const indent = '#'.repeat(Math.max(2, depth + 2)); // Commence par ## au minimum
+                const shortId = node.taskIdShort || node.taskId?.substring(0, 8) || 'unknown';
+                const status = node.metadata?.isCompleted ? 'Completed' : 'In Progress';
+                const instruction = node.metadata?.truncatedInstruction || 'No instruction available';
+                
+                // Titre principal avec ID court et statut
+                markdown += `${indent} ${node.title || 'Task'} (${shortId})\n`;
+                markdown += `**Status:** ${status}\n`;
+                markdown += `**Instruction:** ${instruction}\n`;
+                
+                // Statistiques si disponibles
+                if (node.metadata?.stats) {
+                    const stats = node.metadata.stats;
+                    const messageCount = stats.messageCount || 0;
+                    const sizeKB = Math.round((stats.totalSize || 0) / 1024);
+                    markdown += `**Stats:** ${messageCount} messages | ${sizeKB} KB\n`;
+                }
+                
+                // Workspace si disponible
+                if (node.metadata?.workspace) {
+                    markdown += `**Workspace:** ${node.metadata.workspace}\n`;
+                }
+                
+                markdown += '\n';
+
+                // Enfants si présents
+                if (node.children && node.children.length > 0) {
+                    if (depth === 0) {
+                        markdown += `### Child Tasks\n\n`;
+                    }
+                    
+                    for (const child of node.children) {
+                        markdown += formatNodeToMarkdown(child, depth + 1);
+                    }
+                }
+
+                return markdown;
+            };
+
+            // En-tête du document
+            const currentDate = new Date().toISOString().split('T')[0];
+            let markdown = `# Task Tree - ${currentDate}\n\n`;
+
+            // Traiter le nœud racine ou les nœuds multiples
+            if (Array.isArray(treeData)) {
+                for (const rootNode of treeData) {
+                    markdown += formatNodeToMarkdown(rootNode, 0);
+                    markdown += '\n---\n\n';
+                }
+            } else {
+                markdown += formatNodeToMarkdown(treeData, 0);
+            }
+
+            // Sauvegarder dans un fichier si spécifié
+            if (filePath) {
+                const fs = await import('fs');
+                const path = await import('path');
+                
+                // Créer le répertoire parent si nécessaire
+                const dir = path.dirname(filePath);
+                fs.mkdirSync(dir, { recursive: true });
+                
+                // Écrire le fichier
+                fs.writeFileSync(filePath, markdown, 'utf8');
+                
+                return {
+                    content: [{
+                        type: 'text',
+                        text: `✅ Arbre des tâches exporté avec succès vers: ${filePath}\n\nContenu:\n\n${markdown}`
+                    }]
+                };
+            }
+
+            return {
+                content: [{ type: 'text', text: markdown }]
+            };
+
+        } catch (error) {
+            const errorMessage = error instanceof Error ? error.message : 'Erreur inconnue';
+            return {
+                content: [{ type: 'text', text: `❌ Erreur lors de l'export Markdown: ${errorMessage}` }],
+                isError: true
+            };
+        }
+    }
+
     async run() {
         const transport = new StdioServerTransport();
         await this.server.connect(transport);
@@ -2552,10 +2657,10 @@ class RooStateManagerServer {
                 // Vérifier si la collection existe
                 const collections = await qdrant.getCollections();
                 const collection = collections.collections.find(c => c.name === collectionName);
-
+                
                 if (collection) {
                     diagnostics.details.collection_exists = true;
-
+                    
                     // Obtenir des informations sur la collection
                     const collectionInfo = await qdrant.getCollection(collectionName);
                     diagnostics.details.collection_info = {
@@ -2567,7 +2672,7 @@ class RooStateManagerServer {
                             size: collectionInfo.config?.params?.vectors?.size || 'unknown',
                         },
                     };
-
+                    
                     if (collectionInfo.points_count === 0) {
                         diagnostics.status = 'empty_collection';
                         diagnostics.errors.push('La collection existe mais ne contient aucun point indexé');
@@ -2603,7 +2708,7 @@ class RooStateManagerServer {
             console.log(`QDRANT_API_KEY: ${process.env.QDRANT_API_KEY ? 'SET' : 'NOT SET'}`);
             console.log(`QDRANT_COLLECTION_NAME: ${process.env.QDRANT_COLLECTION_NAME ? 'SET' : 'NOT SET'}`);
             console.log(`OPENAI_API_KEY: ${process.env.OPENAI_API_KEY ? 'SET' : 'NOT SET'}`);
-
+            
             const envVars = {
                 QDRANT_URL: !!process.env.QDRANT_URL,
                 QDRANT_API_KEY: !!process.env.QDRANT_API_KEY,
@@ -2615,7 +2720,7 @@ class RooStateManagerServer {
             const missingEnvVars = Object.entries(envVars)
                 .filter(([, exists]) => !exists)
                 .map(([varName]) => varName);
-
+            
             if (missingEnvVars.length > 0) {
                 diagnostics.errors.push(`Variables d'environnement manquantes: ${missingEnvVars.join(', ')}`);
             }
@@ -2658,39 +2763,39 @@ class RooStateManagerServer {
     private async _ensureSkeletonCacheIsFresh(): Promise<boolean> {
         try {
             console.log('[FAILSAFE] Checking skeleton cache freshness...');
-
+            
             // Vérifier si le cache est vide - reconstruction nécessaire
             if (this.conversationCache.size === 0) {
                 console.log('[FAILSAFE] Cache empty, triggering differential rebuild...');
                 await this.handleBuildSkeletonCache({ force_rebuild: false });
                 return true;
             }
-
+            
             // Vérifier si des nouvelles conversations existent depuis la dernière mise à jour
             const storageLocations = await RooStorageDetector.detectStorageLocations();
             if (storageLocations.length === 0) {
                 console.log('[FAILSAFE] No storage locations found');
                 return false;
             }
-
+            
             let needsUpdate = false;
             const now = Date.now();
             const CACHE_VALIDITY_MS = 5 * 60 * 1000; // 5 minutes
-
+            
             // Vérifier les modifications récentes dans chaque emplacement
             for (const location of storageLocations) {
                 try {
                     const conversationDirs = await fs.readdir(location, { withFileTypes: true });
-
+                    
                     for (const convDir of conversationDirs.slice(0, 10)) { // Limite à 10 pour performance
                         if (convDir.isDirectory() && convDir.name !== '.skeletons') {
                             const taskPath = path.join(location, convDir.name);
                             const metadataPath = path.join(taskPath, 'task_metadata.json');
-
+                            
                             try {
                                 const metadataStat = await fs.stat(metadataPath);
                                 const ageMs = now - metadataStat.mtime.getTime();
-
+                                
                                 // Si metadata récent ET pas dans le cache
                                 if (ageMs < CACHE_VALIDITY_MS && !this.conversationCache.has(convDir.name)) {
                                     console.log(`[FAILSAFE] New task detected: ${convDir.name}, age: ${Math.round(ageMs/1000)}s`);
@@ -2702,23 +2807,23 @@ class RooStateManagerServer {
                             }
                         }
                     }
-
+                    
                     if (needsUpdate) break;
                 } catch (readdirError) {
                     console.warn(`[FAILSAFE] Could not read directory ${location}:`, readdirError);
                 }
             }
-
+            
             // Déclencher reconstruction différentielle si nécessaire
             if (needsUpdate) {
                 console.log('[FAILSAFE] Cache outdated, triggering differential rebuild...');
                 await this.handleBuildSkeletonCache({ force_rebuild: false });
                 return true;
             }
-
+            
             console.log('[FAILSAFE] Skeleton cache is fresh');
             return false;
-
+            
         } catch (error) {
             console.error('[FAILSAFE] Error checking skeleton cache freshness:', error);
             return false;
@@ -2732,19 +2837,19 @@ class RooStateManagerServer {
     private async _ensureQdrantIndexIsFresh(): Promise<boolean> {
         try {
             console.log('[FAILSAFE] Checking Qdrant index freshness...');
-
+            
             const collectionName = process.env.QDRANT_COLLECTION_NAME || 'roo_tasks_semantic_index';
-
+            
             try {
                 const qdrant = getQdrantClient();
                 const collectionInfo = await qdrant.getCollection(collectionName);
                 console.log(`[FAILSAFE] Qdrant collection "${collectionName}" exists with ${collectionInfo.vectors_count} vectors`);
-
+                
                 // Vérifier si nous avons des squelettes non indexés
                 let unindexedCount = 0;
                 const now = Date.now();
                 const INDEX_VALIDITY_MS = 10 * 60 * 1000; // 10 minutes
-
+                
                 for (const [taskId, skeleton] of this.conversationCache.entries()) {
                     const lastIndexed = skeleton.metadata?.qdrantIndexedAt;
                     if (!lastIndexed) {
@@ -2755,15 +2860,15 @@ class RooStateManagerServer {
                             unindexedCount++;
                         }
                     }
-
+                    
                     // Limite de vérification pour performance
                     if (unindexedCount > 5) break;
                 }
-
+                
                 // Déclencher réindexation si nécessaire
                 if (unindexedCount > 0) {
                     console.log(`[FAILSAFE] Found ${unindexedCount}+ tasks needing indexation, triggering background indexing...`);
-
+                    
                     // Ajouter les tâches non indexées à la queue
                     let tasksQueued = 0;
                     for (const [taskId, skeleton] of this.conversationCache.entries()) {
@@ -2774,19 +2879,19 @@ class RooStateManagerServer {
                             if (tasksQueued >= 10) break; // Limite pour éviter la surcharge
                         }
                     }
-
+                    
                     console.log(`[FAILSAFE] Queued ${tasksQueued} tasks for indexation`);
                     return true;
                 }
-
+                
                 console.log('[FAILSAFE] Qdrant index is fresh');
                 return false;
-
+                
             } catch (collectionError) {
                 console.log(`[FAILSAFE] Qdrant collection "${collectionName}" not found or inaccessible:`, collectionError);
                 return false;
             }
-
+            
         } catch (error) {
             console.error('[FAILSAFE] Error checking Qdrant index freshness:', error);
             return false;
@@ -2800,20 +2905,20 @@ class RooStateManagerServer {
         try {
             console.log('Loading existing skeletons from disk...');
             const storageLocations = await RooStorageDetector.detectStorageLocations();
-
+            
             if (storageLocations.length === 0) {
                 console.warn('Aucun emplacement de stockage Roo trouvé');
                 return;
             }
 
             const skeletonsCacheDir = path.join(storageLocations[0], '.skeletons');
-
+            
             try {
                 const skeletonFiles = await fs.readdir(skeletonsCacheDir);
                 const jsonFiles = skeletonFiles.filter(file => file.endsWith('.json'));
-
+                
                 console.log(`Found ${jsonFiles.length} skeleton files to load`);
-
+                
                 for (const file of jsonFiles) {
                     try {
                         const filePath = path.join(skeletonsCacheDir, file);
@@ -2824,13 +2929,103 @@ class RooStateManagerServer {
                         console.warn(`Failed to load skeleton ${file}:`, error);
                     }
                 }
-
+                
                 console.log(`Loaded ${this.conversationCache.size} skeletons from disk`);
             } catch (error) {
                 console.warn('Skeleton cache directory not found, will be created when needed');
             }
         } catch (error) {
             console.error('Failed to load skeletons from disk:', error);
+        }
+    }
+
+    /**
+     * Auto-réparation proactive des métadonnées manquantes au démarrage
+     * Détecte et génère les fichiers task_metadata.json manquants pour les conversations existantes
+     */
+    private async _startProactiveMetadataRepair(): Promise<void> {
+        console.log('[Auto-Repair] 🔧 Démarrage du scan proactif de réparation des métadonnées...');
+        
+        try {
+            const locations = await RooStorageDetector.detectStorageLocations();
+            if (locations.length === 0) {
+                console.log('[Auto-Repair] ℹ️ Aucun emplacement de stockage trouvé. Scan terminé.');
+                return;
+            }
+
+            let repairedCount = 0;
+            const tasksToRepair: { taskId: string, taskPath: string }[] = [];
+
+            // 1. Détecter toutes les tâches nécessitant une réparation
+            for (const loc of locations) {
+                const tasksPath = path.join(loc, 'tasks');
+                try {
+                    const taskIds = await fs.readdir(tasksPath);
+
+                    for (const taskId of taskIds) {
+                        if (taskId === '.skeletons') continue; // Ignorer le répertoire de cache
+                        
+                        const taskPath = path.join(tasksPath, taskId);
+                        const metadataPath = path.join(taskPath, 'task_metadata.json');
+                        
+                        try {
+                            // Vérifier si le répertoire est valide et contient des fichiers
+                            const stats = await fs.stat(taskPath);
+                            if (!stats.isDirectory()) continue;
+                            
+                            const files = await fs.readdir(taskPath);
+                            if (files.length === 0) continue; // Ignorer les répertoires vides
+                            
+                            // Vérifier si task_metadata.json existe
+                            try {
+                                await fs.access(metadataPath);
+                            } catch {
+                                // Le fichier n'existe pas, il faut le réparer
+                                tasksToRepair.push({ taskId, taskPath });
+                            }
+                        } catch (error) {
+                            // Ignorer les erreurs individuelles de tâches
+                            console.debug(`[Auto-Repair] Erreur lors de l'analyse de ${taskId}:`, error);
+                        }
+                    }
+                } catch (error) {
+                    console.warn(`[Auto-Repair] ⚠️ Erreur lors de la lecture de ${tasksPath}:`, error);
+                }
+            }
+            
+            if (tasksToRepair.length === 0) {
+                console.log('[Auto-Repair] ✅ Tous les squelettes sont cohérents. Scan terminé.');
+                return;
+            }
+
+            console.log(`[Auto-Repair] 📋 Trouvé ${tasksToRepair.length} tâches nécessitant une réparation de métadonnées.`);
+
+            // 2. Traiter la réparation en parallèle (avec une limite)
+            const concurrencyLimit = 5; // Évite de surcharger le disque
+            for (let i = 0; i < tasksToRepair.length; i += concurrencyLimit) {
+                const batch = tasksToRepair.slice(i, i + concurrencyLimit);
+                await Promise.all(batch.map(async (task) => {
+                    try {
+                        const skeleton = await RooStorageDetector.analyzeConversation(task.taskId, task.taskPath);
+                        if (skeleton && skeleton.metadata) {
+                            const metadataFilePath = path.join(task.taskPath, 'task_metadata.json');
+                            await fs.writeFile(metadataFilePath, JSON.stringify(skeleton.metadata, null, 2), 'utf-8');
+                            repairedCount++;
+                        } else {
+                            console.debug(`[Auto-Repair] ⚠️ Impossible de générer le squelette pour ${task.taskId}`);
+                        }
+                    } catch (e) {
+                         console.debug(`[Auto-Repair] ❌ Échec de réparation pour ${task.taskId}:`, e);
+                    }
+                }));
+                console.log(`[Auto-Repair] 📊 Lot traité, ${repairedCount}/${tasksToRepair.length} réparées jusqu'à présent...`);
+            }
+
+            console.log(`[Auto-Repair] ✅ Scan terminé. ${repairedCount} métadonnées réparées avec succès.`);
+
+        } catch (error) {
+            console.error('[Auto-Repair] ❌ Erreur critique lors du scan:', error);
+            // Ne pas rethrow pour éviter de bloquer le démarrage du serveur
         }
     }
 
@@ -2842,13 +3037,16 @@ class RooStateManagerServer {
     private async _initializeBackgroundServices(): Promise<void> {
         try {
             console.log('🚀 Initialisation des services background à 2 niveaux...');
-
+            
             // Niveau 1: Chargement initial des squelettes depuis le disque
             await this._loadSkeletonsFromDisk();
-
+            
+            // Auto-réparation proactive: Génération des métadonnées manquantes
+            await this._startProactiveMetadataRepair();
+            
             // Niveau 2: Initialisation du service d'indexation Qdrant asynchrone
             await this._initializeQdrantIndexingService();
-
+            
             console.log('✅ Services background initialisés avec succès');
         } catch (error: any) {
             console.error('❌ Erreur lors de l\'initialisation des services background:', error);
@@ -2863,16 +3061,16 @@ class RooStateManagerServer {
     private async _initializeQdrantIndexingService(): Promise<void> {
         try {
             console.log('🔍 Initialisation du service d\'indexation Qdrant...');
-
+            
             // Vérifier la cohérence entre squelettes et index Qdrant (filtré par machine)
             await this._verifyQdrantConsistency();
-
+            
             // Vérifier les squelettes qui nécessitent une réindexation
             await this._scanForOutdatedQdrantIndex();
-
+            
             // Démarrer le service d'indexation en arrière-plan (non-bloquant)
             this._startQdrantIndexingBackgroundProcess();
-
+            
             console.log('✅ Service d\'indexation Qdrant initialisé');
         } catch (error: any) {
             console.error('⚠️  Erreur lors de l\'initialisation de l\'indexation Qdrant (non-bloquant):', error);
@@ -2886,37 +3084,45 @@ class RooStateManagerServer {
      */
     private async _scanForOutdatedQdrantIndex(): Promise<void> {
         let outdatedCount = 0;
-
+        
         for (const [taskId, skeleton] of this.conversationCache.entries()) {
             const lastActivity = new Date(skeleton.metadata.lastActivity).getTime();
             const qdrantIndexed = skeleton.metadata.qdrantIndexedAt
                 ? new Date(skeleton.metadata.qdrantIndexedAt).getTime()
                 : 0;
-
+            
             // Si le squelette a été modifié après la dernière indexation Qdrant
             if (lastActivity > qdrantIndexed) {
                 this.qdrantIndexQueue.add(taskId);
                 outdatedCount++;
             }
         }
-
+        
         console.log(`📊 Scan terminé: ${outdatedCount} squelettes nécessitent une réindexation Qdrant`);
     }
 
     /**
      * Vérifie la cohérence entre les squelettes locaux et l'index Qdrant (filtré par machine)
+     * 🛡️ PROTECTION ANTI-FUITE: Limitée à 1x/24h au lieu de chaque démarrage
      */
     private async _verifyQdrantConsistency(): Promise<void> {
         try {
+            // 🛡️ ANTI-FUITE: Vérifier si la dernière vérification est trop récente
+            const now = Date.now();
+            if (now - this.lastQdrantConsistencyCheck < this.CONSISTENCY_CHECK_INTERVAL) {
+                console.log('⏳ Vérification Qdrant ignorée (dernière < 24h) - Protection anti-fuite');
+                return;
+            }
+            
             console.log('🔍 Vérification de la cohérence Qdrant vs Squelettes...');
-
+            
             const { TaskIndexer, getHostIdentifier } = await import('./services/task-indexer.js');
             const taskIndexer = new TaskIndexer();
-
+            
             // Obtenir l'identifiant de la machine actuelle
             const currentHostId = getHostIdentifier();
             console.log(`🖥️  Machine actuelle: ${currentHostId}`);
-
+            
             // Compter les squelettes locaux marqués comme indexés
             let localIndexedCount = 0;
             for (const [taskId, skeleton] of this.conversationCache.entries()) {
@@ -2924,22 +3130,25 @@ class RooStateManagerServer {
                     localIndexedCount++;
                 }
             }
-
-            // Compter les points dans Qdrant pour cette machine
+            
+            // 🛡️ APPEL RÉSEAU QDRANT (maintenant limité à 1x/24h)
             const qdrantCount = await taskIndexer.countPointsByHostOs(currentHostId);
-
+            
+            // Marquer la dernière vérification
+            this.lastQdrantConsistencyCheck = now;
+            
             console.log(`📊 Cohérence Qdrant:`);
             console.log(`   - Squelettes locaux indexés: ${localIndexedCount}`);
             console.log(`   - Points Qdrant (machine ${currentHostId}): ${qdrantCount}`);
-
+            
             // Détecter les incohérences
             const discrepancy = Math.abs(localIndexedCount - qdrantCount);
             const threshold = Math.max(5, Math.floor(localIndexedCount * 0.1)); // 10% ou min 5
-
+            
             if (discrepancy > threshold) {
                 console.warn(`⚠️  Incohérence détectée: écart de ${discrepancy} entre squelettes et Qdrant`);
                 console.log(`🔄 Lancement d'une réindexation de réparation...`);
-
+                
                 // Forcer une réindexation partielle des tâches supposément indexées
                 let reindexCount = 0;
                 for (const [taskId, skeleton] of this.conversationCache.entries()) {
@@ -2949,12 +3158,12 @@ class RooStateManagerServer {
                         if (reindexCount >= 20) break; // Limite pour ne pas surcharger
                     }
                 }
-
+                
                 console.log(`📝 ${reindexCount} tâches ajoutées à la queue de réindexation`);
             } else {
                 console.log(`✅ Cohérence Qdrant-Squelettes validée (écart acceptable: ${discrepancy})`);
             }
-
+            
         } catch (error) {
             console.error('❌ Erreur lors de la vérification de cohérence Qdrant:', error);
             // Non-bloquant, on continue
@@ -2968,21 +3177,21 @@ class RooStateManagerServer {
         if (this.qdrantIndexInterval) {
             clearInterval(this.qdrantIndexInterval);
         }
-
-        // Traitement des éléments de la queue toutes les 30 secondes
+        
+        // 🛡️ ANTI-FUITE: 5 minutes au lieu de 30 secondes (10× moins fréquent)
         this.qdrantIndexInterval = setInterval(async () => {
             if (!this.isQdrantIndexingEnabled || this.qdrantIndexQueue.size === 0) {
                 return;
             }
-
+            
             // Prendre le premier élément de la queue
             const taskId = this.qdrantIndexQueue.values().next().value;
             if (taskId) {
                 this.qdrantIndexQueue.delete(taskId);
                 await this._indexTaskInQdrant(taskId);
             }
-        }, 30000); // 30 secondes
-
+        }, this.MAX_BACKGROUND_INTERVAL); // 5 minutes au lieu de 30 secondes
+        
         console.log('🔄 Service d\'indexation Qdrant en arrière-plan démarré');
     }
 
@@ -2993,34 +3202,50 @@ class RooStateManagerServer {
         try {
             const skeleton = this.conversationCache.get(taskId);
             if (!skeleton) {
-                console.warn(`⚠️  Impossible de trouver le squelette pour la tâche ${taskId}`);
+                console.warn(`[WARN] Skeleton for task ${taskId} not found in cache. Skipping indexing.`);
                 return;
             }
-
-            // Utiliser le service existant pour l'indexation
+            
+            // 🛡️ ANTI-FUITE: Vérifier le cache avant tout appel réseau
+            const now = Date.now();
+            const lastIndexed = this.qdrantIndexCache.get(taskId) || 0;
+            const timeSinceIndexed = now - lastIndexed;
+            
+            // Si déjà indexé récemment (< 4h), ignorer
+            if (timeSinceIndexed < this.MIN_REINDEX_INTERVAL) {
+                console.log(`[CACHE] Task ${taskId} ignoré (dernière indexation < 4h) - Protection anti-fuite`);
+                return;
+            }
+            
+            // Vérifier si vraiment nécessaire via timestamp de métadonnées
+            if (skeleton.metadata.qdrantIndexedAt) {
+                const lastActivity = new Date(skeleton.metadata.lastActivity).getTime();
+                const qdrantIndexed = new Date(skeleton.metadata.qdrantIndexedAt).getTime();
+                
+                if (lastActivity <= qdrantIndexed) {
+                    console.log(`[CACHE] Task ${taskId} déjà à jour selon métadonnées - Protection anti-fuite`);
+                    this.qdrantIndexCache.set(taskId, now); // Marquer comme vérifié
+                    return;
+                }
+            }
+    
+            // 🌐 APPEL RÉSEAU - Maintenant seulement si nécessaire
             const taskIndexer = new TaskIndexer();
             await taskIndexer.indexTask(taskId);
-
-            // Mettre à jour le timestamp d'indexation Qdrant dans le squelette
+    
             skeleton.metadata.qdrantIndexedAt = new Date().toISOString();
-
-            // Sauvegarder le squelette mis à jour sur le disque
             await this._saveSkeletonToDisk(skeleton);
-
-            console.log(`✅ Tâche ${taskId} indexée avec succès dans Qdrant`);
+            
+            // Marquer dans le cache pour éviter réindexations répétées
+            this.qdrantIndexCache.set(taskId, now);
+    
+            console.log(`[INFO] Task ${taskId} successfully indexed in Qdrant.`);
+    
         } catch (error: any) {
-            console.error(`❌ Erreur lors de l'indexation Qdrant pour la tâche ${taskId}:`, error);
-
-            // Si Qdrant est indisponible, désactiver temporairement le service
-            if (error.message?.includes('Qdrant') || error.code === 'ECONNREFUSED') {
-                console.warn('⚠️  Qdrant semble indisponible, désactivation temporaire du service');
-                this.isQdrantIndexingEnabled = false;
-
-                // Réessayer dans 5 minutes
-                setTimeout(() => {
-                    console.log('🔄 Tentative de réactivation du service Qdrant...');
-                    this.isQdrantIndexingEnabled = true;
-                }, 5 * 60 * 1000);
+            if (error.message && error.message.includes('not found in any storage location')) {
+                console.warn(`[WARN] Task ${taskId} is in cache but not on disk. Skipping indexing.`);
+            } else {
+                console.error(`[ERROR] Failed to index task ${taskId} in Qdrant:`, error);
             }
         }
     }
@@ -3060,12 +3285,12 @@ class RooStateManagerServer {
     private async handleResetQdrantCollection(args: any): Promise<CallToolResult> {
         try {
             console.log('🧹 Réinitialisation de la collection Qdrant...');
-
+            
             const taskIndexer = new TaskIndexer();
-
+            
             // Supprimer et recréer la collection Qdrant
             await taskIndexer.resetCollection();
-
+            
             // Marquer tous les squelettes comme non-indexés
             let skeletonsReset = 0;
             for (const [taskId, skeleton] of this.conversationCache.entries()) {
@@ -3077,10 +3302,10 @@ class RooStateManagerServer {
                 // Ajouter à la queue pour réindexation
                 this.qdrantIndexQueue.add(taskId);
             }
-
+            
             // Réactiver le service s'il était désactivé
             this.isQdrantIndexingEnabled = true;
-
+            
             return {
                 content: [{
                     type: "text",
@@ -3124,7 +3349,7 @@ class RooStateManagerServer {
             clearInterval(this.qdrantIndexInterval);
             this.qdrantIndexInterval = null;
         }
-
+        
         if (this.server && this.server.transport) {
             this.server.transport.close();
         }

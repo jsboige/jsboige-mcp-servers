@@ -1,7 +1,7 @@
 import { promises as fs } from 'fs';
-import path from 'path';
-import crypto from 'crypto';
-import os from 'os';
+import * as path from 'path';
+import * as crypto from 'crypto';
+import * as os from 'os';
 import { v4 as uuidv4 } from 'uuid';
 import getOpenAIClient from './openai.js';
 import { getQdrantClient } from './qdrant.js';
@@ -11,6 +11,85 @@ type PointStruct = Schemas['PointStruct'];
 
 const COLLECTION_NAME = process.env.QDRANT_COLLECTION_NAME || 'roo_tasks_semantic_index';
 const EMBEDDING_MODEL = 'text-embedding-3-small';
+
+// --- Circuit Breaker Configuration ---
+const MAX_RETRY_ATTEMPTS = 3;
+const RETRY_DELAY_MS = 2000; // 2 seconds
+const CIRCUIT_BREAKER_TIMEOUT_MS = 30000; // 30 seconds
+let circuitBreakerState = 'CLOSED'; // CLOSED | OPEN | HALF_OPEN
+let failureCount = 0;
+let lastFailureTime = 0;
+
+// 🛡️ CACHE ANTI-FUITE POUR ÉVITER EMBEDDINGS RÉPÉTÉS
+const embeddingCache = new Map<string, { vector: number[], timestamp: number }>();
+const EMBEDDING_CACHE_TTL = 24 * 60 * 60 * 1000; // 24h cache pour embeddings
+const RATE_LIMIT_WINDOW = 60 * 1000; // 1 minute
+const MAX_OPERATIONS_PER_WINDOW = 10; // Max 10 operations/minute
+let operationTimestamps: number[] = [];
+
+// 📊 MÉTRIQUES DE MONITORING BANDE PASSANTE
+interface NetworkMetrics {
+    qdrantCalls: number;
+    openaiCalls: number;
+    cacheHits: number;
+    cacheMisses: number;
+    bytesTransferred: number;
+    lastReset: number;
+}
+
+const networkMetrics: NetworkMetrics = {
+    qdrantCalls: 0,
+    openaiCalls: 0,
+    cacheHits: 0,
+    cacheMisses: 0,
+    bytesTransferred: 0,
+    lastReset: Date.now()
+};
+
+// 🛡️ FONCTION DE RETRY AVEC BACKOFF EXPONENTIEL
+async function retryWithBackoff<T>(
+    operation: () => Promise<T>,
+    operationName: string,
+    maxRetries: number = MAX_RETRY_ATTEMPTS
+): Promise<T> {
+    let lastError: Error = new Error('Aucune tentative effectuée');
+    
+    for (let attempt = 1; attempt <= maxRetries; attempt++) {
+        try {
+            const result = await operation();
+            if (attempt > 1) {
+                console.log(`✅ ${operationName} réussi après ${attempt} tentatives`);
+            }
+            return result;
+        } catch (error: any) {
+            lastError = error;
+            console.warn(`⚠️ ${operationName} échoué (tentative ${attempt}/${maxRetries}):`, error.message);
+            
+            if (attempt < maxRetries) {
+                const delay = RETRY_DELAY_MS * Math.pow(2, attempt - 1); // Backoff exponentiel
+                console.log(`🔄 Retry dans ${delay}ms...`);
+                await new Promise(resolve => setTimeout(resolve, delay));
+            }
+        }
+    }
+    
+    console.error(`❌ ${operationName} échoué définitivement après ${maxRetries} tentatives`);
+    throw lastError;
+}
+
+// 📊 FONCTION DE LOGGING DES MÉTRIQUES
+function logNetworkMetrics(): void {
+    const now = Date.now();
+    const elapsedHours = (now - networkMetrics.lastReset) / (1000 * 60 * 60);
+    
+    console.log(`📊 [METRICS] Utilisation réseau (dernières ${elapsedHours.toFixed(1)}h):`);
+    console.log(`   - Appels Qdrant: ${networkMetrics.qdrantCalls}`);
+    console.log(`   - Appels OpenAI: ${networkMetrics.openaiCalls}`);
+    console.log(`   - Cache hits: ${networkMetrics.cacheHits}`);
+    console.log(`   - Cache misses: ${networkMetrics.cacheMisses}`);
+    console.log(`   - Ratio cache: ${((networkMetrics.cacheHits / (networkMetrics.cacheHits + networkMetrics.cacheMisses || 1)) * 100).toFixed(1)}%`);
+    console.log(`   - Bytes approximatifs: ${(networkMetrics.bytesTransferred / 1024 / 1024).toFixed(2)}MB`);
+}
 
 // --- Nouvelles Interfaces conformes au SDDD ---
 
@@ -86,6 +165,182 @@ async function ensureCollectionExists() {
     }
 }
 
+/**
+ * Circuit Breaker pour protéger les appels à Qdrant
+ */
+function canMakeRequest(): boolean {
+    if (circuitBreakerState === 'CLOSED') {
+        return true;
+    }
+    
+    if (circuitBreakerState === 'OPEN') {
+        const timeSinceLastFailure = Date.now() - lastFailureTime;
+        if (timeSinceLastFailure > CIRCUIT_BREAKER_TIMEOUT_MS) {
+            circuitBreakerState = 'HALF_OPEN';
+            console.log('🟡 Circuit breaker: HALF_OPEN - tentative de reconnexion');
+            return true;
+        }
+        return false;
+    }
+    
+    // HALF_OPEN: permettre une tentative
+    return circuitBreakerState === 'HALF_OPEN';
+}
+
+function recordSuccess(): void {
+    failureCount = 0;
+    circuitBreakerState = 'CLOSED';
+    console.log('✅ Circuit breaker: SUCCESS - retour à l\'état CLOSED');
+}
+
+function recordFailure(): void {
+    failureCount++;
+    lastFailureTime = Date.now();
+    
+    if (failureCount >= MAX_RETRY_ATTEMPTS) {
+        circuitBreakerState = 'OPEN';
+        console.error(`🔴 Circuit breaker: OPEN - trop d'échecs (${failureCount}), arrêt pendant ${CIRCUIT_BREAKER_TIMEOUT_MS}ms`);
+    }
+}
+
+/**
+ * Validation et nettoyage des payloads avant envoi à Qdrant
+ */
+function sanitizePayload(payload: any): any {
+    const cleaned = { ...payload };
+    
+    // Nettoyer les valeurs problématiques
+    Object.keys(cleaned).forEach(key => {
+        if (cleaned[key] === undefined) {
+            delete cleaned[key];
+        }
+        if (cleaned[key] === null && key !== 'parent_task_id' && key !== 'root_task_id') {
+            delete cleaned[key];
+        }
+        // S'assurer que les strings ne sont pas vides
+        if (typeof cleaned[key] === 'string' && cleaned[key].trim() === '') {
+            delete cleaned[key];
+        }
+    });
+    
+    return cleaned;
+}
+
+/**
+ * Appel sécurisé à Qdrant avec circuit breaker et retry
+ */
+async function safeQdrantUpsert(points: PointStruct[]): Promise<boolean> {
+    const startTime = Date.now();
+    
+    // 📊 LOGGING DÉTAILLÉ - État initial
+    console.log(`🔍 [safeQdrantUpsert] DÉBUT - Circuit: ${circuitBreakerState}, Échecs: ${failureCount}, Points: ${points.length}`);
+    console.log(`📈 [safeQdrantUpsert] Métadonnées: Endpoint=${process.env.QDRANT_URL}, Collection=${COLLECTION_NAME}`);
+    
+    if (!canMakeRequest()) {
+        console.warn(`🚫 [safeQdrantUpsert] Circuit breaker: Requête bloquée - état ${circuitBreakerState}`);
+        console.warn(`🚫 [safeQdrantUpsert] Dernière erreur il y a ${Date.now() - lastFailureTime}ms`);
+        return false;
+    }
+    
+    let attempt = 0;
+    
+    while (attempt < MAX_RETRY_ATTEMPTS) {
+        const attemptStartTime = Date.now();
+        
+        try {
+            // 🔍 LOGGING DÉTAILLÉ - Validation des payloads
+            console.log(`🔍 [safeQdrantUpsert] Tentative ${attempt + 1}/${MAX_RETRY_ATTEMPTS} - Validation de ${points.length} points`);
+            
+            // Valider et nettoyer tous les payloads
+            const sanitizedPoints = points.map((point, index) => {
+                const originalPayload = point.payload;
+                const sanitizedPayload = sanitizePayload(originalPayload);
+                
+                // Log des transformations critiques
+                const payloadChanges = Object.keys(originalPayload || {}).length - Object.keys(sanitizedPayload).length;
+                if (payloadChanges > 0) {
+                    console.log(`🧹 [safeQdrantUpsert] Point ${index}: ${payloadChanges} champs nettoyés`);
+                }
+                
+                return {
+                    ...point,
+                    payload: sanitizedPayload
+                };
+            });
+            
+            // 🔍 LOGGING DÉTAILLÉ - Informations sur la requête
+            const payloadSample = sanitizedPoints[0]?.payload || {};
+            console.log(`📤 [safeQdrantUpsert] Échantillon payload:`, {
+                task_id: payloadSample.task_id,
+                parent_task_id: payloadSample.parent_task_id,
+                workspace: payloadSample.workspace,
+                chunk_type: payloadSample.chunk_type,
+                content_length: payloadSample.content?.length || 0,
+                host_os: payloadSample.host_os
+            });
+            
+            console.log(`🔄 [safeQdrantUpsert] Tentative ${attempt + 1}/${MAX_RETRY_ATTEMPTS} d'upsert vers Qdrant (${sanitizedPoints.length} points)`);
+            
+            await getQdrantClient().upsert(COLLECTION_NAME, {
+                wait: true,
+                points: sanitizedPoints,
+            });
+            
+            const attemptDuration = Date.now() - attemptStartTime;
+            const totalDuration = Date.now() - startTime;
+            
+            recordSuccess();
+            
+            // 📊 LOGGING DÉTAILLÉ - Succès
+            console.log(`✅ [safeQdrantUpsert] Upsert Qdrant réussi - ${sanitizedPoints.length} points indexés`);
+            console.log(`⏱️ [safeQdrantUpsert] Durée tentative: ${attemptDuration}ms, Total: ${totalDuration}ms`);
+            console.log(`🔄 [safeQdrantUpsert] Circuit breaker réinitialisé - État: CLOSED`);
+            
+            return true;
+            
+        } catch (error: any) {
+            attempt++;
+            const attemptDuration = Date.now() - attemptStartTime;
+            
+            // 📊 LOGGING CRITIQUE - Erreurs détaillées
+            console.error(`❌ [safeQdrantUpsert] ÉCHEC tentative ${attempt}/${MAX_RETRY_ATTEMPTS} après ${attemptDuration}ms`);
+            console.error(`🔍 [safeQdrantUpsert] Type erreur: ${error?.constructor?.name || 'Unknown'}`);
+            console.error(`🔍 [safeQdrantUpsert] Message erreur: ${error?.message || 'No message'}`);
+            console.error(`🔍 [safeQdrantUpsert] Code erreur: ${error?.code || error?.status || 'No code'}`);
+            
+            // Logging des détails de requête pour reproduction
+            if (error?.response) {
+                console.error(`🔍 [safeQdrantUpsert] Réponse HTTP: ${error.response.status} - ${error.response.statusText}`);
+                console.error(`🔍 [safeQdrantUpsert] Headers réponse:`, JSON.stringify(error.response.headers, null, 2));
+            }
+            
+            // Logging de l'état système au moment de l'erreur
+            console.error(`🔍 [safeQdrantUpsert] État système: Circuit=${circuitBreakerState}, Échecs cumulés=${failureCount + 1}`);
+            console.error(`🔍 [safeQdrantUpsert] Points concernés: ${points.length}, Tentative: ${attempt}`);
+            console.error(`🔍 [safeQdrantUpsert] Stack trace:`, error?.stack?.split('\n').slice(0, 5).join('\n'));
+            
+            if (attempt >= MAX_RETRY_ATTEMPTS) {
+                recordFailure();
+                const totalDuration = Date.now() - startTime;
+                
+                // 📊 LOGGING CRITIQUE - Échec définitif
+                console.error(`🔴 [safeQdrantUpsert] ÉCHEC DÉFINITIF après ${MAX_RETRY_ATTEMPTS} tentatives (${totalDuration}ms total)`);
+                console.error(`🔴 [safeQdrantUpsert] Circuit breaker activé - État: ${circuitBreakerState}`);
+                console.error(`🔴 [safeQdrantUpsert] Prochaine tentative dans ${CIRCUIT_BREAKER_TIMEOUT_MS}ms`);
+                
+                return false;
+            }
+            
+            // Délai exponentiel : 2s, 4s, 8s
+            const delay = RETRY_DELAY_MS * Math.pow(2, attempt - 1);
+            console.log(`⏳ [safeQdrantUpsert] Attente ${delay}ms avant tentative ${attempt + 1}...`);
+            await new Promise(resolve => setTimeout(resolve, delay));
+        }
+    }
+    
+    return false;
+}
+
 export function getHostIdentifier() {
     // Crée un identifiant unique basé sur les informations système
     const hostname = os.hostname();
@@ -103,14 +358,51 @@ export function getHostIdentifier() {
 async function extractChunksFromTask(taskId: string, taskPath: string): Promise<Chunk[]> {
     const chunks: Chunk[] = [];
     const apiHistoryPath = path.join(taskPath, 'api_conversation_history.json');
+    const metadataPath = path.join(taskPath, 'task_metadata.json');
     let sequenceOrder = 0;
     
-    // Placeholder values
+    // Variables pour les métadonnées extraites
     let messageIndex = 0;
     let parentTaskId : string | undefined;
     let workspace : string | undefined;
     let taskTitle : string | undefined;
     let totalMessages : number | undefined;
+
+    // 🎯 CORRECTION CRITIQUE - Extraction des métadonnées hiérarchiques
+    // Utilisation de la même logique que roo-storage-detector.ts pour cohérence
+    try {
+        const metadataContent = await fs.readFile(metadataPath, 'utf-8');
+        // Nettoyage explicite du BOM (Byte Order Mark)
+        const cleanMetadata = metadataContent.charCodeAt(0) === 0xFEFF
+            ? metadataContent.slice(1)
+            : metadataContent;
+        const rawMetadata = JSON.parse(cleanMetadata);
+        
+        // ✅ LOGIQUE UNIFIÉE : Même extraction que roo-storage-detector.ts:426
+        parentTaskId = rawMetadata.parentTaskId || rawMetadata.parent_task_id;
+        
+        // ✅ INFÉRENCE : Si parentTaskId manque, essayer de l'inférer du contenu
+        if (!parentTaskId) {
+            console.warn(`[extractChunksFromTask] Task ${taskId} missing parentTaskId, attempting inference...`);
+            parentTaskId = await inferParentTaskIdFromContent(
+                path.join(taskPath, 'api_conversation_history.json'),
+                path.join(taskPath, 'ui_messages.json'),
+                rawMetadata
+            );
+            
+            if (parentTaskId) {
+                console.log(`[extractChunksFromTask] ✅ Parent inféré pour ${taskId}: ${parentTaskId}`);
+            }
+        }
+        
+        workspace = rawMetadata.workspace;
+        taskTitle = rawMetadata.title;
+        
+        console.log(`📊 [extractChunksFromTask] Extracted metadata for ${taskId}: parentTaskId=${parentTaskId}, workspace=${workspace}`);
+    } catch (error) {
+        console.warn(`⚠️ [extractChunksFromTask] Could not read metadata for ${taskId}:`, error);
+        // Continuer sans métadonnées - ne pas faire planter l'indexation
+    }
 
     try {
         await fs.access(apiHistoryPath);
@@ -146,7 +438,7 @@ async function extractChunksFromTask(taskId: string, taskPath: string): Promise<
                     chunks.push({
                         chunk_id: uuidv4(),
                         task_id: taskId,
-                        parent_task_id: parentTaskId || null,
+                        parent_task_id: parentTaskId || null, // ✅ FIX: Maintenant correctement assigné
                         root_task_id: null, // TODO: calculer la racine si nécessaire
                         chunk_type: 'message_exchange',
                         sequence_order: sequenceOrder++,
@@ -156,7 +448,7 @@ async function extractChunksFromTask(taskId: string, taskPath: string): Promise<
                         content_summary: String(contentText || '').substring(0, 200),
                         participants: [msg.role],
                         tool_details: null,
-                        // Nouvelles métadonnées enrichies
+                        // ✅ FIX: Métadonnées enrichies maintenant correctement assignées
                         workspace: workspace,
                         task_title: taskTitle,
                         message_index: messageIndex,
@@ -171,7 +463,7 @@ async function extractChunksFromTask(taskId: string, taskPath: string): Promise<
                     chunks.push({
                         chunk_id: uuidv4(),
                         task_id: taskId,
-                        parent_task_id: null,
+                        parent_task_id: parentTaskId || null, // ✅ FIX: Utilisation cohérente de parentTaskId
                         root_task_id: null,
                         chunk_type: 'tool_interaction',
                         sequence_order: sequenceOrder++,
@@ -183,6 +475,10 @@ async function extractChunksFromTask(taskId: string, taskPath: string): Promise<
                             parameters: JSON.parse(toolCall.function.arguments || '{}'),
                             status: 'success',
                         },
+                        // ✅ FIX: Ajout des métadonnées contextuelles pour les tool_calls
+                        workspace: workspace,
+                        task_title: taskTitle,
+                        host_os: getHostIdentifier(),
                     });
                 }
             }
@@ -201,7 +497,7 @@ async function extractChunksFromTask(taskId: string, taskPath: string): Promise<
             chunks.push({
                 chunk_id: uuidv4(),
                 task_id: taskId,
-                parent_task_id: null,
+                parent_task_id: parentTaskId || null, // ✅ FIX: Cohérence avec l'extraction de métadonnées
                 root_task_id: null,
                 chunk_type: 'message_exchange',
                 sequence_order: sequenceOrder++,
@@ -211,6 +507,10 @@ async function extractChunksFromTask(taskId: string, taskPath: string): Promise<
                 content_summary: (msg.text || '').substring(0, 200),
                 participants: [msg.author === 'agent' ? 'assistant' : 'user'],
                 tool_details: null,
+                // ✅ FIX: Ajout des métadonnées contextuelles pour ui_messages
+                workspace: workspace,
+                task_title: taskTitle,
+                host_os: getHostIdentifier(),
             });
         }
     } catch (error) {
@@ -291,11 +591,36 @@ export async function indexTask(taskId: string, taskPath: string): Promise<Point
 
                     console.log(`📝 Processing subchunk: ${subChunk.content.length} characters (estimated ~${Math.ceil(subChunk.content.length / 4)} tokens)`);
                     
-                    const embeddingResponse = await getOpenAIClient().embeddings.create({
-                        model: EMBEDDING_MODEL,
-                        input: subChunk.content,
-                    });
-                    const vector = embeddingResponse.data[0].embedding;
+                    // 🛡️ PROTECTION ANTI-FUITE: Rate limiting
+                    const now = Date.now();
+                    operationTimestamps = operationTimestamps.filter(ts => now - ts < RATE_LIMIT_WINDOW);
+                    if (operationTimestamps.length >= MAX_OPERATIONS_PER_WINDOW) {
+                        console.warn(`[RATE-LIMIT] Trop d'opérations récentes (${operationTimestamps.length}/${MAX_OPERATIONS_PER_WINDOW}). Attente...`);
+                        await new Promise(resolve => setTimeout(resolve, RATE_LIMIT_WINDOW));
+                        operationTimestamps = []; // Reset after wait
+                    }
+
+                    // 🛡️ CACHE EMBEDDINGS pour éviter appels OpenAI répétés
+                    const contentHash = crypto.createHash('sha256').update(subChunk.content).digest('hex');
+                    let vector: number[];
+                    
+                    const cached = embeddingCache.get(contentHash);
+                    if (cached && (now - cached.timestamp < EMBEDDING_CACHE_TTL)) {
+                        console.log(`[CACHE] Embedding trouvé en cache pour subchunk ${subChunk.chunk_id}`);
+                        vector = cached.vector;
+                    } else {
+                        // 🌐 APPEL RÉSEAU OpenAI - Maintenant seulement si nécessaire
+                        const embeddingResponse = await getOpenAIClient().embeddings.create({
+                            model: EMBEDDING_MODEL,
+                            input: subChunk.content,
+                        });
+                        vector = embeddingResponse.data[0].embedding;
+                        
+                        // Stocker en cache
+                        embeddingCache.set(contentHash, { vector, timestamp: now });
+                        operationTimestamps.push(now);
+                        console.log(`[CACHE] Embedding mis en cache pour subchunk ${subChunk.chunk_id}`);
+                    }
 
                     const point: PointStruct = {
                         id: subChunk.chunk_id,
@@ -308,11 +633,18 @@ export async function indexTask(taskId: string, taskPath: string): Promise<Point
         }
 
         if (pointsToIndex.length > 0) {
-            await getQdrantClient().upsert(COLLECTION_NAME, {
-                wait: true,
-                points: pointsToIndex,
-            });
-            console.log(`Successfully indexed ${pointsToIndex.length} points (from ${chunks.length} original chunks) for task ${taskId}.`);
+            console.log(`📤 Préparation upsert Qdrant: ${pointsToIndex.length} points (de ${chunks.length} chunks originaux) pour tâche ${taskId}`);
+            
+            const success = await safeQdrantUpsert(pointsToIndex);
+            
+            if (success) {
+                console.log(`✅ Indexation réussie: ${pointsToIndex.length} points pour tâche ${taskId}`);
+            } else {
+                console.error(`❌ Échec indexation pour tâche ${taskId} - Circuit breaker activé ou erreurs répétées`);
+                // Ne pas throw l'erreur pour éviter la boucle infernale
+                // Retourner un tableau vide pour indiquer l'échec sans crasher
+                return [];
+            }
         } else {
             console.log(`No indexable chunks found for task ${taskId}.`);
         }
@@ -321,8 +653,102 @@ export async function indexTask(taskId: string, taskPath: string): Promise<Point
 
     } catch (error) {
         console.error(`Failed to index task ${taskId}:`, error);
-        throw error;
+        
+        // 🚨 CORRECTION CRITIQUE: Ne plus re-throw l'erreur qui cause la boucle infernale
+        // À la place, log l'erreur et retourner un résultat vide
+        console.error(`🔴 ERREUR CRITIQUE INTERCEPTÉE pour tâche ${taskId}: Circuit breaker activé`);
+        recordFailure();
+        return [];
     }
+}
+
+/**
+ * Tente d'inférer le parentTaskId à partir du contenu de la conversation
+ * (même logique que roo-storage-detector.ts)
+ */
+async function inferParentTaskIdFromContent(
+    apiHistoryPath: string,
+    uiMessagesPath: string,
+    rawMetadata: any
+): Promise<string | undefined> {
+    try {
+        // 1. Analyser le premier message utilisateur dans api_conversation_history.json
+        let parentId = await extractParentFromApiHistory(apiHistoryPath);
+        if (parentId) return parentId;
+
+        // 2. Analyser ui_messages.json pour des références
+        parentId = await extractParentFromUiMessages(uiMessagesPath);
+        if (parentId) return parentId;
+
+        return undefined;
+    } catch (error) {
+        console.error(`[inferParentTaskIdFromContent] Erreur:`, error);
+        return undefined;
+    }
+}
+
+async function extractParentFromApiHistory(apiHistoryPath: string): Promise<string | undefined> {
+    try {
+        const content = await fs.readFile(apiHistoryPath, 'utf-8');
+        const data = JSON.parse(content);
+        const messages = Array.isArray(data) ? data : (data?.messages || []);
+        
+        const firstUserMessage = messages.find((msg: any) => msg.role === 'user');
+        if (!firstUserMessage?.content) return undefined;
+
+        const messageText = Array.isArray(firstUserMessage.content)
+            ? firstUserMessage.content.find((c: any) => c.type === 'text')?.text || ''
+            : firstUserMessage.content;
+
+        return extractTaskIdFromText(messageText);
+    } catch (error) {
+        return undefined;
+    }
+}
+
+async function extractParentFromUiMessages(uiMessagesPath: string): Promise<string | undefined> {
+    try {
+        const content = await fs.readFile(uiMessagesPath, 'utf-8');
+        const data = JSON.parse(content);
+        const messages = Array.isArray(data) ? data : [];
+        
+        const firstMessage = messages.find((msg: any) => msg.type === 'user');
+        if (!firstMessage?.content) return undefined;
+
+        return extractTaskIdFromText(firstMessage.content);
+    } catch (error) {
+        return undefined;
+    }
+}
+
+function extractTaskIdFromText(text: string): string | undefined {
+    if (!text) return undefined;
+
+    // Pattern 1: UUIDs v4 explicites
+    const uuidPattern = /[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}/gi;
+    const uuids = text.match(uuidPattern);
+    
+    if (uuids && uuids.length > 0) {
+        console.log(`[extractTaskIdFromText] UUID trouvé: ${uuids[0]}`);
+        return uuids[0];
+    }
+
+    // Pattern 2: Références contextuelles
+    const contextPatterns = [
+        /CONTEXTE HÉRITÉ.*?([0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12})/i,
+        /ORCHESTRATEUR.*?([0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12})/i,
+        /tâche parent.*?([0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12})/i
+    ];
+
+    for (const pattern of contextPatterns) {
+        const match = text.match(pattern);
+        if (match && match[1]) {
+            console.log(`[extractTaskIdFromText] Parent trouvé via pattern: ${match[1]}`);
+            return match[1];
+        }
+    }
+
+    return undefined;
 }
 
 /**
@@ -338,7 +764,7 @@ export class TaskIndexer {
             const locations = await RooStorageDetector.detectStorageLocations();
             
             for (const location of locations) {
-                const taskPath = path.join(location, taskId);
+                const taskPath = path.join(location, 'tasks', taskId);
                 try {
                     await fs.access(taskPath);
                     return await indexTask(taskId, taskPath);
@@ -411,24 +837,30 @@ export class TaskIndexer {
      */
     async countPointsByHostOs(hostOs: string): Promise<number> {
         try {
-            const qdrant = getQdrantClient();
-            const result = await qdrant.count(COLLECTION_NAME, {
-                filter: {
-                    must: [
-                        {
-                            key: 'host_os',
-                            match: {
-                                value: hostOs
+            const result = await retryWithBackoff(async () => {
+                const qdrant = getQdrantClient();
+                return await qdrant.count(COLLECTION_NAME, {
+                    filter: {
+                        must: [
+                            {
+                                key: 'host_os',
+                                match: {
+                                    value: hostOs
+                                }
                             }
-                        }
-                    ]
-                },
-                exact: true
-            });
+                        ]
+                    },
+                    exact: true
+                });
+            }, `Qdrant count pour host_os=${hostOs}`);
+            
+            networkMetrics.qdrantCalls++;
+            networkMetrics.bytesTransferred += 1024; // Approximation pour l'appel count
             return result.count;
         } catch (error) {
             console.error(`Could not count points for host_os=${hostOs}:`, error);
             return 0; // Retourner 0 en cas d'erreur
         }
     }
+
 }

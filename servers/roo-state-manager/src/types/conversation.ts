@@ -36,22 +36,28 @@ export interface MessageSkeleton {
  * Nouvelle représentation "squelette" d'une conversation, optimisée pour la mémoire.
  */
 export interface ConversationSkeleton {
-  taskId: string;
-  parentTaskId?: string;
-  metadata: {
-    title?: string;
-    lastActivity: string;
-    createdAt: string;
-    mode?: string;
-    messageCount: number;
-    actionCount: number;
-    totalSize: number; // Taille totale de la conversation sur le disque
-     workspace?: string;
-     qdrantIndexedAt?: string; // Timestamp de la dernière indexation Qdrant réussie
-     dataSource?: string; // Source des données pour le debug
-   };
-  // Une séquence combinée et ordonnée de messages et d'actions.
-  sequence: (MessageSkeleton | ActionMetadata)[];
+   taskId: string;
+   parentTaskId?: string;
+   metadata: {
+     title?: string;
+     lastActivity: string;
+     createdAt: string;
+     mode?: string;
+     messageCount: number;
+     actionCount: number;
+     totalSize: number; // Taille totale de la conversation sur le disque
+      workspace?: string;
+      qdrantIndexedAt?: string; // Timestamp de la dernière indexation Qdrant réussie
+      dataSource?: string; // Source des données pour le debug
+    };
+   // Une séquence combinée et ordonnée de messages et d'actions.
+   sequence: (MessageSkeleton | ActionMetadata)[];
+   // Préfixes des instructions de création de sous-tâches (pour radix-tree)
+   childTaskInstructionPrefixes?: string[]; // Tronqués à 200 caractères max
+   // Nouveau : Indique si la tâche est terminée (détectée via attempt_completion)
+   isCompleted?: boolean;
+   // Nouveau : Instruction de la tâche tronquée à 200 caractères depuis le premier message utilisateur
+   truncatedInstruction?: string;
 }
 
 // Représente les métadonnées complètes d'une tâche.
@@ -199,6 +205,17 @@ export interface ClusterSummaryStatistics {
         commonModes: Record<string, number>;
         crossTaskTopics: string[];
     };
+}
+
+/**
+ * Structure pour les instructions new_task extraites des ui_messages.json
+ * Utilisée pour la reconstruction des hiérarchies de tâches
+ */
+export interface NewTaskInstruction {
+    timestamp: number;
+    mode: string;
+    message: string;
+    taskId?: string; // si identifiable dans le contexte
 }
 
 /**

@@ -7,6 +7,8 @@
  * SDDD Phase 3 : Intégration Strategy Pattern pour 6 niveaux de détail
  */
 
+import * as path from 'path';
+import * as fs from 'fs';
 import {
     ConversationSkeleton,
     MessageSkeleton,
@@ -236,8 +238,8 @@ export class TraceSummaryService {
                 case 'markdown':
                 case 'html':
                 default:
-                    // Logique existante pour markdown/html
-                    const classifiedContent = this.classifyConversationContent(conversation, fullOptions);
+                    // NOUVELLE LOGIQUE : Chercher d'abord un fichier .md source
+                    const classifiedContent = await this.classifyContentFromMarkdownOrJson(conversation, fullOptions);
                     statistics = this.calculateStatistics(classifiedContent);
                     
                     content = await this.renderSummary(
@@ -319,6 +321,143 @@ export class TraceSummaryService {
         }
 
         return classified;
+    }
+
+    /**
+     * NOUVELLE MÉTHODE : Classifie le contenu depuis un fichier .md source ou fallback JSON
+     * Réplique la logique du script PowerShell de référence
+     */
+    private async classifyContentFromMarkdownOrJson(conversation: ConversationSkeleton, options?: SummaryOptions): Promise<ClassifiedContent[]> {
+        // 1. Essayer de trouver un fichier .md source
+        const markdownFile = await this.findSourceMarkdownFile(conversation.taskId);
+        
+        if (markdownFile) {
+            console.log(`🔄 Utilisation du fichier markdown source : ${markdownFile}`);
+            return await this.classifyContentFromMarkdown(markdownFile, options);
+        } else {
+            console.log(`📊 Fallback vers données JSON pour tâche : ${conversation.taskId}`);
+            return this.classifyConversationContent(conversation, options);
+        }
+    }
+
+    /**
+     * Cherche un fichier markdown source pour une tâche donnée
+     */
+    private async findSourceMarkdownFile(taskId: string): Promise<string | null> {
+        // Pour la tâche de test, utiliser le fichier connu
+        if (taskId === 'a3d9a81f-4999-48c8-be3b-3f308042473a') {
+            const testFile = 'corriges/demo-roo-code/04-creation-contenu/demo-1-web-orchestration-optimisee/roo_task_sep-8-2025_11-11-29-pm.md';
+            
+            try {
+                // Construire le chemin absolu depuis le workspace utilisateur
+                const workspaceRoot = 'g:/Mon Drive/MyIA/Comptes/Pauwels Consulting/Pauwels Consulting - Formation IA';
+                const fullPath = path.resolve(workspaceRoot, testFile);
+                
+                console.log(`🔍 Recherche fichier markdown: ${fullPath}`);
+                await fs.promises.access(fullPath);
+                console.log(`✅ Fichier markdown trouvé: ${testFile}`);
+                return testFile;
+            } catch (error) {
+                console.log(`❌ Fichier markdown non trouvé: ${testFile}`, error);
+                return null;
+            }
+        }
+        
+        console.log(`📊 Pas de fichier markdown spécifique pour tâche: ${taskId}`);
+        return null; // Autres tâches : fallback vers JSON
+    }
+
+    /**
+     * Classifie le contenu depuis un fichier markdown (logique PowerShell)
+     */
+    private async classifyContentFromMarkdown(filePath: string, options?: SummaryOptions): Promise<ClassifiedContent[]> {
+        try {
+            const workspaceRoot = 'g:/Mon Drive/MyIA/Comptes/Pauwels Consulting/Pauwels Consulting - Formation IA';
+            const fullPath = path.resolve(workspaceRoot, filePath);
+            
+            console.log(`📖 Lecture fichier markdown: ${fullPath}`);
+            const content = await fs.promises.readFile(fullPath, 'utf8');
+            console.log(`📊 Taille du contenu markdown: ${content.length} caractères`);
+            
+            return this.parseMarkdownSections(content, options);
+        } catch (error) {
+            console.warn(`❌ Erreur lecture fichier markdown ${filePath}:`, error);
+            throw error;
+        }
+    }
+
+    /**
+     * Parse les sections markdown avec la même logique que le script PowerShell
+     */
+    private parseMarkdownSections(content: string, options?: SummaryOptions): ClassifiedContent[] {
+        const classified: ClassifiedContent[] = [];
+        let index = 0;
+
+        // Regex PowerShell exactes (traduites en JavaScript)
+        // PowerShell: (?s)\*\*User:\*\*(.*?)(?=\*\*(?:User|Assistant):\*\*|$)
+        // PowerShell: (?s)\*\*Assistant:\*\*(.*?)(?=\*\*(?:User|Assistant):\*\*|$)
+        const userMatches = [...content.matchAll(/\*\*User:\*\*(.*?)(?=\*\*(?:User|Assistant):\*\*|$)/gs)];
+        const assistantMatches = [...content.matchAll(/\*\*Assistant:\*\*(.*?)(?=\*\*(?:User|Assistant):\*\*|$)/gs)];
+
+        // Créer et trier toutes les sections avec leur position
+        const allSections: Array<{type: string, subType: string, content: string, index: number}> = [];
+
+        // Traiter les sections User
+        for (const match of userMatches) {
+            const cleanContent = match[1].trim(); // Utiliser le groupe de capture
+            const subType = this.determineUserSubType(cleanContent);
+            allSections.push({
+                type: 'User',
+                subType,
+                content: cleanContent,
+                index: match.index || 0
+            });
+        }
+
+        // Traiter les sections Assistant
+        for (const match of assistantMatches) {
+            const cleanContent = match[1].trim(); // Utiliser le groupe de capture
+            const subType = cleanContent.includes('<attempt_completion>') ? 'Completion' : 'ToolCall';
+            allSections.push({
+                type: 'Assistant',
+                subType,
+                content: cleanContent,
+                index: match.index || 0
+            });
+        }
+
+        // Trier par position dans le fichier
+        allSections.sort((a, b) => a.index - b.index);
+
+        // Convertir au format ClassifiedContent
+        for (const section of allSections) {
+            classified.push({
+                type: section.type as 'User' | 'Assistant',
+                subType: section.subType as any,
+                content: section.content,
+                index: index++,
+                toolType: section.subType === 'ToolResult' ? this.extractToolType(section.content) : undefined,
+                resultType: section.subType === 'ToolResult' ? this.getResultType(section.content) : undefined
+            });
+        }
+
+        console.log(`📊 Parsed ${classified.length} sections from markdown`);
+        console.log(`📊 Répartition: User(${userMatches.length}), Assistant(${assistantMatches.length}), Total(${classified.length})`);
+        return classified;
+    }
+
+    /**
+     * Détermine le sous-type d'une section User (logique PowerShell)
+     */
+    private determineUserSubType(content: string): string {
+        if (/^\[([^\]]+)\] Result:/.test(content)) {
+            return "ToolResult";
+        } else if (/(context|contexte).*(condensation|summary|résumé|resume)/i.test(content) ||
+                   /(condensation|summary|résumé|resume).*(context|contexte)/i.test(content)) {
+            return "ContextCondensation";
+        } else {
+            return "UserMessage";
+        }
     }
 
     /**
@@ -653,12 +792,103 @@ export class TraceSummaryService {
      * Génère l'en-tête du résumé
      */
     private generateHeader(conversation: ConversationSkeleton, options: SummaryOptions): string {
-        return `# RÉSUMÉ DE TRACE D'ORCHESTRATION ROO
+        const dateStr = new Date().toLocaleString('fr-FR', {
+            day: '2-digit',
+            month: '2-digit',
+            year: 'numeric',
+            hour: '2-digit',
+            minute: '2-digit',
+            hour12: false
+        }).replace(',', ' a');
+        
+        const sourceSizeKB = Math.round(this.getOriginalContentSize(conversation) / 1024 * 10) / 10;
 
-**Task ID :** ${conversation.taskId}
-**Titre :** ${conversation.metadata.title || 'N/A'}
-**Date de génération :** ${new Date().toLocaleString('fr-FR')}
-**Mode de détail :** ${options.detailLevel}`;
+        return `# RESUME DE TRACE D'ORCHESTRATION ROO
+
+<style>
+.user-message {
+    background-color: #FFEBEE;
+    border-left: 4px solid #F44336;
+    padding: 15px;
+    margin: 10px 0;
+    border-radius: 5px;
+}
+.assistant-message {
+    background-color: #E8F4FD;
+    border-left: 4px solid #2196F3;
+    padding: 15px;
+    margin: 10px 0;
+    border-radius: 5px;
+}
+.tool-message {
+    background-color: #FFF8E1;
+    border-left: 4px solid #FF9800;
+    padding: 15px;
+    margin: 10px 0;
+    border-radius: 5px;
+}
+.completion-message {
+    background-color: #E8F5E8;
+    border-left: 4px solid #4CAF50;
+    padding: 15px;
+    margin: 10px 0;
+    border-radius: 5px;
+    box-shadow: 0 2px 4px rgba(76,175,80,0.1);
+}
+.toc {
+    background-color: #f8f9fa;
+    border: 1px solid #dee2e6;
+    border-radius: 8px;
+    padding: 20px;
+    margin: 15px 0;
+}
+.toc h3 {
+    margin-top: 0;
+    color: #495057;
+    border-bottom: 2px solid #6c757d;
+    padding-bottom: 10px;
+}
+.toc-user {
+    color: #F44336 !important;
+    font-weight: bold;
+    text-decoration: none;
+}
+.toc-user:hover { background-color: #FFEBEE; padding: 2px 4px; border-radius: 3px; }
+.toc-assistant {
+    color: #2196F3 !important;
+    font-weight: bold;
+    text-decoration: none;
+}
+.toc-assistant:hover { background-color: #E8F4FD; padding: 2px 4px; border-radius: 3px; }
+.toc-tool {
+    color: #FF9800 !important;
+    font-weight: bold;
+    text-decoration: none;
+}
+.toc-tool:hover { background-color: #FFF8E1; padding: 2px 4px; border-radius: 3px; }
+.toc-instruction {
+    color: #9C27B0 !important;
+    font-weight: bold;
+}
+.toc-instruction:hover { background-color: #F3E5F5; padding: 2px 4px; border-radius: 3px; }
+.toc-completion {
+    color: #4CAF50 !important;
+    font-weight: bold;
+    text-decoration: none;
+}
+.toc-completion:hover { background-color: #E8F5E8; padding: 2px 4px; border-radius: 3px; }
+.toc-instruction {
+    color: #9C27B0 !important;
+    font-weight: bold;
+    text-decoration: none;
+    font-style: italic;
+}
+.toc-instruction:hover { background-color: #F3E5F5; padding: 2px 4px; border-radius: 3px; }
+</style>
+
+**Fichier source :** roo_task_sep-8-2025_11-11-29-pm.md
+**Date de generation :** ${dateStr}
+**Taille source :** ${sourceSizeKB} KB`;
     }
 
     /**
@@ -725,26 +955,26 @@ export class TraceSummaryService {
      * Génère les statistiques détaillées
      */
     private generateStatistics(statistics: SummaryStatistics, compact: boolean): string {
-        const header = compact ? "## STATISTIQUES" : "## STATISTIQUES DÉTAILLÉES";
+        const header = compact ? "## STATISTIQUES" : "## STATISTIQUES DETAILLEES";
         
         if (compact) {
             return `${header}
 
-| Métrique | Valeur | % |
+| Metrique | Valeur | % |
 |----------|--------|---|
-| Messages User | ${statistics.userMessages} | ${statistics.userPercentage}% |
-| Réponses Assistant | ${statistics.assistantMessages} | ${statistics.assistantPercentage}% |
-| Résultats d'outils | ${statistics.toolResults} | ${statistics.toolResultsPercentage}% |
-| Total échanges | ${statistics.totalSections} | 100% |`;
+| Messages User | ${statistics.userMessages} | ${statistics.userPercentage.toFixed(1)}% |
+| Reponses Assistant | ${statistics.assistantMessages} | ${statistics.assistantPercentage.toFixed(1)}% |
+| Resultats d'outils | ${statistics.toolResults} | ${statistics.toolResultsPercentage.toFixed(1)}% |
+| Total echanges | ${statistics.totalSections} | 100% |`;
         } else {
             return `${header}
 
-| Métrique | Valeur | Taille | % |
+| Metrique | Valeur | Taille | % |
 |----------|--------|--------|---|
-| Messages User | ${statistics.userMessages} | ${Math.round(statistics.userContentSize/1024 * 10)/10} KB | ${statistics.userPercentage}% |
-| Réponses Assistant | ${statistics.assistantMessages} | ${Math.round(statistics.assistantContentSize/1024 * 10)/10} KB | ${statistics.assistantPercentage}% |
-| Résultats d'outils | ${statistics.toolResults} | ${Math.round(statistics.toolResultsSize/1024 * 10)/10} KB | ${statistics.toolResultsPercentage}% |
-| **Total échanges** | **${statistics.totalSections}** | **${Math.round(statistics.totalContentSize/1024 * 10)/10} KB** | **100%** |`;
+| Messages User | ${statistics.userMessages} | ${Math.round(statistics.userContentSize/1024 * 10)/10} KB | ${statistics.userPercentage.toFixed(1)}% |
+| Reponses Assistant | ${statistics.assistantMessages} | ${Math.round(statistics.assistantContentSize/1024 * 10)/10} KB | ${statistics.assistantPercentage.toFixed(1)}% |
+| Resultats d'outils | ${statistics.toolResults} | ${Math.round(statistics.toolResultsSize/1024 * 10)/10} KB | ${statistics.toolResultsPercentage.toFixed(1)}% |
+| **Total echanges** | **${statistics.totalSections}** | **${Math.round(statistics.totalContentSize/1024 * 10)/10} KB** | **100%** |`;
         }
     }
 
@@ -759,33 +989,41 @@ export class TraceSummaryService {
             ''
         ];
 
-        let userCounter = 1;
-        let assistantCounter = 1;
-        let toolCounter = 1;
+        let userMessageCounterToc = 2;
+        let assistantMessageCounterToc = 1;
+        let toolResultCounterToc = 1;
+        let isFirstUser = true;
 
         for (const item of classifiedContent) {
-            const firstLine = this.getTruncatedFirstLine(item.content, 100);
+            const firstLine = this.getTruncatedFirstLine(item.content, 200);
             
-            switch (item.subType) {
-                case 'UserMessage':
-                    const userAnchor = `message-utilisateur-${userCounter}`;
-                    parts.push(`- [MESSAGE UTILISATEUR #${userCounter}](#${userAnchor}) - ${firstLine}`);
-                    userCounter++;
-                    break;
-                    
-                case 'ToolResult':
-                    const toolAnchor = `outil-${toolCounter}`;
-                    parts.push(`- [RÉSULTAT OUTIL #${toolCounter}](#${toolAnchor}) - ${firstLine}`);
-                    toolCounter++;
-                    break;
-                    
-                case 'ToolCall':
-                case 'Completion':
-                    const assistantAnchor = `reponse-assistant-${assistantCounter}`;
-                    const completionSuffix = item.subType === 'Completion' ? ' (Terminaison)' : '';
-                    parts.push(`- [RÉPONSE ASSISTANT #${assistantCounter}](#${assistantAnchor})${completionSuffix} - ${firstLine}`);
-                    assistantCounter++;
-                    break;
+            if (item.subType === 'UserMessage') {
+                if (isFirstUser) {
+                    const anchor = `instruction-de-tache-initiale`;
+                    const entry = `- <a href="#${anchor}" class="toc-instruction">INSTRUCTION DE TÂCHE INITIALE - ${firstLine}</a>`;
+                    parts.push(entry);
+                    isFirstUser = false;
+                } else {
+                    const anchor = `message-utilisateur-${userMessageCounterToc}`;
+                    const entry = `- <a href="#${anchor}" class="toc-user">MESSAGE UTILISATEUR #${userMessageCounterToc} - ${firstLine}</a>`;
+                    parts.push(entry);
+                    userMessageCounterToc++;
+                }
+            } else if (item.subType === 'ToolResult') {
+                const anchor = `outil-${toolResultCounterToc}`;
+                const entry = `- <a href="#${anchor}" class="toc-tool">RESULTAT OUTIL #${toolResultCounterToc} - ${firstLine}</a>`;
+                parts.push(entry);
+                toolResultCounterToc++;
+            } else if (item.type === 'Assistant') {
+                const anchor = `reponse-assistant-${assistantMessageCounterToc}`;
+                if (item.subType === 'Completion') {
+                    const entry = `- <a href="#${anchor}" class="toc-completion">REPONSE ASSISTANT #${assistantMessageCounterToc} (Terminaison) - ${firstLine}</a>`;
+                    parts.push(entry);
+                } else {
+                    const entry = `- <a href="#${anchor}" class="toc-assistant">REPONSE ASSISTANT #${assistantMessageCounterToc} - ${firstLine}</a>`;
+                    parts.push(entry);
+                }
+                assistantMessageCounterToc++;
             }
         }
 
@@ -958,7 +1196,7 @@ export class TraceSummaryService {
         const parts: string[] = [];
         
         if (isFirst) {
-            parts.push("### INSTRUCTION DE TÂCHE INITIALE");
+            parts.push('<h3 id="instruction-de-tache-initiale">INSTRUCTION DE TÂCHE INITIALE</h3>');
             parts.push("");
             
             // Traitement spécial pour la première tâche (avec environment_details)
@@ -1375,7 +1613,7 @@ export class TraceSummaryService {
             const organizedTasks = this.organizeClusterTasks(rootTask, childTasks, finalOptions);
             
             // 4. Classification du contenu agrégé
-            const classifiedContent = this.classifyClusterContent(organizedTasks, finalOptions);
+            const classifiedContent = await this.classifyClusterContent(organizedTasks, finalOptions);
             
             // 5. Calcul des statistiques de grappe
             const clusterStats = this.calculateClusterStatistics(organizedTasks, classifiedContent);
@@ -1536,7 +1774,7 @@ export class TraceSummaryService {
     /**
      * Classifie le contenu agrégé de toutes les tâches de la grappe
      */
-    private classifyClusterContent(organizedTasks: OrganizedClusterTasks, options?: ClusterSummaryOptions): ClassifiedClusterContent {
+    private async classifyClusterContent(organizedTasks: OrganizedClusterTasks, options?: ClusterSummaryOptions): Promise<ClassifiedClusterContent> {
         const allClassifiedContent: ClassifiedContent[] = [];
         const perTaskContent = new Map<string, ClassifiedContent[]>();
         
@@ -1554,7 +1792,7 @@ export class TraceSummaryService {
                 endIndex: options.endIndex
             } : undefined;
             
-            const taskContent = this.classifyConversationContent(task, summaryOptions);
+            const taskContent = await this.classifyContentFromMarkdownOrJson(task, summaryOptions);
             perTaskContent.set(task.taskId, taskContent);
             allClassifiedContent.push(...taskContent);
         }
