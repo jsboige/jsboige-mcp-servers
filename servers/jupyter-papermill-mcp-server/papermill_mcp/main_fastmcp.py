@@ -357,23 +357,33 @@ def parameterize_notebook(
         }
     except PapermillExecutionError as e:
         # Erreur spécifique d'exécution Papermill (kernel crash, erreur code, etc.)
+        try:
+            safe_params = json.loads(parameters) if parameters else {}
+        except:
+            safe_params = {"error": "parameters_not_parseable", "raw": parameters}
+        
         return {
             "status": "error",
             "error": f"Erreur d'exécution Papermill: {str(e)}",
             "error_type": "PapermillExecutionError",
             "method": "papermill_direct_api_with_parameters",
-            "parameters": json.loads(parameters) if parameters else {},
-            "diagnostic": diagnostic_info
+            "parameters": safe_params,
+            "diagnostic": locals().get('diagnostic_info', {"error": "diagnostic_info not available"})
         }
     except PapermillException as e:
         # Autres erreurs Papermill (format notebook, paramètres invalides, etc.)
+        try:
+            safe_params = json.loads(parameters) if parameters else {}
+        except:
+            safe_params = {"error": "parameters_not_parseable", "raw": parameters}
+        
         return {
             "status": "error",
             "error": f"Erreur Papermill: {str(e)}",
             "error_type": "PapermillException",
             "method": "papermill_direct_api_with_parameters",
-            "parameters": json.loads(parameters) if parameters else {},
-            "diagnostic": diagnostic_info
+            "parameters": safe_params,
+            "diagnostic": locals().get('diagnostic_info', {"error": "diagnostic_info not available"})
         }
     except FileNotFoundError as e:
         return {
@@ -383,12 +393,18 @@ def parameterize_notebook(
             "method": "papermill_direct_api_with_parameters"
         }
     except Exception as e:
+        # Gestion sécurisée pour éviter double exception
+        try:
+            safe_params = json.loads(parameters) if parameters else {}
+        except:
+            safe_params = {"error": "parameters_not_parseable", "raw": parameters}
+        
         return {
             "status": "error",
             "error": f"Erreur inattendue: {str(e)}",
             "error_type": type(e).__name__,
             "method": "papermill_direct_api_with_parameters",
-            "parameters": json.loads(parameters) if parameters else {}
+            "parameters": safe_params
         }
 
 
