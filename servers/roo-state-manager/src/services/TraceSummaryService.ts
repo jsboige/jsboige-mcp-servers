@@ -884,6 +884,12 @@ export class TraceSummaryService {
     font-style: italic;
 }
 .toc-instruction:hover { background-color: #F3E5F5; padding: 2px 4px; border-radius: 3px; }
+.toc-anchor {
+    display: none;
+    visibility: hidden;
+    position: absolute;
+    top: -10px;
+}
 </style>
 
 **Fichier source :** roo_task_sep-8-2025_11-11-29-pm.md
@@ -1000,27 +1006,27 @@ export class TraceSummaryService {
             if (item.subType === 'UserMessage') {
                 if (isFirstUser) {
                     const anchor = `instruction-de-tache-initiale`;
-                    const entry = `- <a href="#${anchor}" class="toc-instruction">INSTRUCTION DE TÂCHE INITIALE - ${firstLine}</a>`;
+                    const entry = `- <a name="${anchor}" class="toc-anchor"></a><a href="#${anchor}" class="toc-instruction">INSTRUCTION DE TÂCHE INITIALE - ${firstLine}</a>`;
                     parts.push(entry);
                     isFirstUser = false;
                 } else {
                     const anchor = `message-utilisateur-${userMessageCounterToc}`;
-                    const entry = `- <a href="#${anchor}" class="toc-user">MESSAGE UTILISATEUR #${userMessageCounterToc} - ${firstLine}</a>`;
+                    const entry = `- <a name="${anchor}" class="toc-anchor"></a><a href="#${anchor}" class="toc-user">MESSAGE UTILISATEUR #${userMessageCounterToc} - ${firstLine}</a>`;
                     parts.push(entry);
                     userMessageCounterToc++;
                 }
             } else if (item.subType === 'ToolResult') {
                 const anchor = `outil-${toolResultCounterToc}`;
-                const entry = `- <a href="#${anchor}" class="toc-tool">RESULTAT OUTIL #${toolResultCounterToc} - ${firstLine}</a>`;
+                const entry = `- <a name="${anchor}" class="toc-anchor"></a><a href="#${anchor}" class="toc-tool">RESULTAT OUTIL #${toolResultCounterToc} - ${firstLine}</a>`;
                 parts.push(entry);
                 toolResultCounterToc++;
             } else if (item.type === 'Assistant') {
                 const anchor = `reponse-assistant-${assistantMessageCounterToc}`;
                 if (item.subType === 'Completion') {
-                    const entry = `- <a href="#${anchor}" class="toc-completion">REPONSE ASSISTANT #${assistantMessageCounterToc} (Terminaison) - ${firstLine}</a>`;
+                    const entry = `- <a name="${anchor}" class="toc-anchor"></a><a href="#${anchor}" class="toc-completion">REPONSE ASSISTANT #${assistantMessageCounterToc} (Terminaison) - ${firstLine}</a>`;
                     parts.push(entry);
                 } else {
-                    const entry = `- <a href="#${anchor}" class="toc-assistant">REPONSE ASSISTANT #${assistantMessageCounterToc} - ${firstLine}</a>`;
+                    const entry = `- <a name="${anchor}" class="toc-anchor"></a><a href="#${anchor}" class="toc-assistant">REPONSE ASSISTANT #${assistantMessageCounterToc} - ${firstLine}</a>`;
                     parts.push(entry);
                 }
                 assistantMessageCounterToc++;
@@ -1215,7 +1221,7 @@ export class TraceSummaryService {
             parts.push(cleanedContent);
             parts.push('</div>');
             parts.push("");
-            parts.push(this.generateBackToTocLink());
+            parts.push(this.generateBackToTocLink(`message-utilisateur-${counter}`));
         }
         
         return parts.join('\n');
@@ -1259,7 +1265,7 @@ export class TraceSummaryService {
         
         parts.push('</div>');
         parts.push("");
-        parts.push(this.generateBackToTocLink());
+        parts.push(this.generateBackToTocLink(`outil-${counter}`));
         
         return parts.join('\n');
     }
@@ -1302,7 +1308,7 @@ export class TraceSummaryService {
         
         parts.push('</div>');
         parts.push("");
-        parts.push(this.generateBackToTocLink());
+        parts.push(this.generateBackToTocLink(`reponse-assistant-${counter}`));
         
         return parts.join('\n');
     }
@@ -1579,10 +1585,12 @@ export class TraceSummaryService {
 
     /**
      * Génère un lien de retour vers la table des matières
+     * @param contextAnchor - Ancre spécifique dans la TOC vers laquelle revenir (optionnel)
      */
-    private generateBackToTocLink(): string {
+    private generateBackToTocLink(contextAnchor?: string): string {
+        const targetAnchor = contextAnchor || 'table-des-matieres';
         return '<div style="text-align: right; font-size: 0.9em; color: #666;">' +
-               '<a href="#table-des-matieres">^ Table des matières</a></div>';
+               `<a href="#${targetAnchor}">^ Table des matières</a></div>`;
     }
 
     // ============================================================================
