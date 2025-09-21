@@ -285,13 +285,13 @@ def execute_notebook(
 @mcp.tool()
 def parameterize_notebook(
     notebook_path: str = Field(description="Chemin du notebook"),
-    parameters: str = Field(description="Paramètres JSON pour le notebook"),
+    parameters: Dict[str, Any] = Field(description="Paramètres pour le notebook"),
     output_path: str = Field(default="", description="Chemin de sortie (optionnel)")
 ) -> Dict[str, Any]:
     """Exécute un notebook avec des paramètres via Papermill API directe (SOLUTION A - Bypass Conda Subprocess)"""
     try:
-        # Parser les paramètres JSON
-        params = json.loads(parameters)
+        # Roo transforme automatiquement les strings JSON en dict
+        params = parameters if parameters else {}
         
         if not output_path:
             output_path = notebook_path.replace('.ipynb', '_parameterized.ipynb')
