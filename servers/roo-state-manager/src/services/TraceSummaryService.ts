@@ -755,8 +755,22 @@ export class TraceSummaryService {
     /**
      * Détecte si un message est un résultat d'outil
      */
-    private isToolResult(content: string): boolean {
-        return /\[[^\]]+\] Result:/i.test(content);
+    private isToolResult(content: string | any): boolean {
+        // Gérer les contenus structurés (array d'objets)
+        if (Array.isArray(content)) {
+            const textContent = content
+                .filter(item => item.type === 'text')
+                .map(item => item.text)
+                .join(' ');
+            return /^\[([^\]]+?)(?:\s+for\s+[^\]]*)?]\s+Result:/i.test(textContent.trim());
+        }
+        
+        // Gérer les contenus string simples
+        if (typeof content === 'string') {
+            return /^\[([^\]]+?)(?:\s+for\s+[^\]]*)?]\s+Result:/i.test(content.trim());
+        }
+        
+        return false;
     }
 
     /**
@@ -769,23 +783,43 @@ export class TraceSummaryService {
     /**
      * Extrait le type d'outil d'un message
      */
-    private extractToolType(content: string): string {
-        const match = content.match(/\[([^\]]+)\] Result:/);
+    private extractToolType(content: string | any): string {
+        const textContent = this.extractTextContent(content);
+        const match = textContent.match(/^\[([^\]]+?)(?:\s+for\s+[^\]]*)?]\s+Result:/i);
         return match ? match[1] : 'outil';
     }
 
     /**
      * Détermine le type de résultat d'un outil
      */
-    private getResultType(content: string): string {
-        if (/<files>/i.test(content)) return 'files';
-        if (/<file_write_result>/i.test(content)) return 'écriture fichier';
-        if (/Command executed/i.test(content)) return 'exécution commande';
-        if (/Browser launched|Browser.*action/i.test(content)) return 'navigation web';
-        if (/<environment_details>/i.test(content)) return 'détails environnement';
-        if (/Result:.*Error|Unable to apply diff/i.test(content)) return 'erreur';
-        if (/Todo list updated/i.test(content)) return 'mise à jour todo';
+    private getResultType(content: string | any): string {
+        const textContent = this.extractTextContent(content);
+        if (/<files>/i.test(textContent)) return 'files';
+        if (/<file_write_result>/i.test(textContent)) return 'écriture fichier';
+        if (/Command executed/i.test(textContent)) return 'exécution commande';
+        if (/Browser launched|Browser.*action/i.test(textContent)) return 'navigation web';
+        if (/<environment_details>/i.test(textContent)) return 'détails environnement';
+        if (/Result:.*Error|Unable to apply diff/i.test(textContent)) return 'erreur';
+        if (/Todo list updated/i.test(textContent)) return 'mise à jour todo';
         return 'résultat';
+    }
+
+    /**
+     * Extrait le contenu texte d'un message (string ou array structuré)
+     */
+    private extractTextContent(content: string | any): string {
+        if (Array.isArray(content)) {
+            return content
+                .filter(item => item.type === 'text')
+                .map(item => item.text)
+                .join(' ');
+        }
+        
+        if (typeof content === 'string') {
+            return content;
+        }
+        
+        return '';
     }
 
     /**
@@ -1005,28 +1039,32 @@ export class TraceSummaryService {
             
             if (item.subType === 'UserMessage') {
                 if (isFirstUser) {
-                    const anchor = `instruction-de-tache-initiale`;
-                    const entry = `- <a name="${anchor}" class="toc-anchor"></a><a href="#${anchor}" class="toc-instruction">INSTRUCTION DE TÂCHE INITIALE - ${firstLine}</a>`;
+                    const sectionAnchor = `instruction-de-tache-initiale`;
+                    const tocAnchor = `toc-${sectionAnchor}`;
+                    const entry = `- <a id="${tocAnchor}" class="toc-anchor"></a><a href="#${sectionAnchor}" class="toc-instruction">INSTRUCTION DE TÂCHE INITIALE - ${firstLine}</a>`;
                     parts.push(entry);
                     isFirstUser = false;
                 } else {
-                    const anchor = `message-utilisateur-${userMessageCounterToc}`;
-                    const entry = `- <a name="${anchor}" class="toc-anchor"></a><a href="#${anchor}" class="toc-user">MESSAGE UTILISATEUR #${userMessageCounterToc} - ${firstLine}</a>`;
+                    const sectionAnchor = `message-utilisateur-${userMessageCounterToc}`;
+                    const tocAnchor = `toc-${sectionAnchor}`;
+                    const entry = `- <a id="${tocAnchor}" class="toc-anchor"></a><a href="#${sectionAnchor}" class="toc-user">MESSAGE UTILISATEUR #${userMessageCounterToc} - ${firstLine}</a>`;
                     parts.push(entry);
                     userMessageCounterToc++;
                 }
             } else if (item.subType === 'ToolResult') {
-                const anchor = `outil-${toolResultCounterToc}`;
-                const entry = `- <a name="${anchor}" class="toc-anchor"></a><a href="#${anchor}" class="toc-tool">RESULTAT OUTIL #${toolResultCounterToc} - ${firstLine}</a>`;
+                const sectionAnchor = `outil-${toolResultCounterToc}`;
+                const tocAnchor = `toc-${sectionAnchor}`;
+                const entry = `- <a id="${tocAnchor}" class="toc-anchor"></a><a href="#${sectionAnchor}" class="toc-tool">RESULTAT OUTIL #${toolResultCounterToc} - ${firstLine}</a>`;
                 parts.push(entry);
                 toolResultCounterToc++;
             } else if (item.type === 'Assistant') {
-                const anchor = `reponse-assistant-${assistantMessageCounterToc}`;
+                const sectionAnchor = `reponse-assistant-${assistantMessageCounterToc}`;
+                const tocAnchor = `toc-${sectionAnchor}`;
                 if (item.subType === 'Completion') {
-                    const entry = `- <a name="${anchor}" class="toc-anchor"></a><a href="#${anchor}" class="toc-completion">REPONSE ASSISTANT #${assistantMessageCounterToc} (Terminaison) - ${firstLine}</a>`;
+                    const entry = `- <a id="${tocAnchor}" class="toc-anchor"></a><a href="#${sectionAnchor}" class="toc-completion">REPONSE ASSISTANT #${assistantMessageCounterToc} (Terminaison) - ${firstLine}</a>`;
                     parts.push(entry);
                 } else {
-                    const entry = `- <a name="${anchor}" class="toc-anchor"></a><a href="#${anchor}" class="toc-assistant">REPONSE ASSISTANT #${assistantMessageCounterToc} - ${firstLine}</a>`;
+                    const entry = `- <a id="${tocAnchor}" class="toc-anchor"></a><a href="#${sectionAnchor}" class="toc-assistant">REPONSE ASSISTANT #${assistantMessageCounterToc} - ${firstLine}</a>`;
                     parts.push(entry);
                 }
                 assistantMessageCounterToc++;
@@ -1213,7 +1251,9 @@ export class TraceSummaryService {
             parts.push("---");
         } else {
             const anchor = `message-utilisateur-${counter}`;
-            parts.push(`### MESSAGE UTILISATEUR #${counter} - ${firstLine} {#${anchor}}`);
+            // ChatGPT-5: Une seule ancre HTML avant le titre (pas de doublon)
+            parts.push(`<a id="${anchor}"></a>`);
+            parts.push(`### MESSAGE UTILISATEUR #${counter} - ${firstLine}`);
             parts.push("");
             
             parts.push('<div class="user-message">');
@@ -1240,7 +1280,9 @@ export class TraceSummaryService {
         const firstLine = this.getTruncatedFirstLine(toolName, 200);
         const anchor = `outil-${counter}`;
         
-        parts.push(`### RÉSULTAT OUTIL #${counter} - ${firstLine} {#${anchor}}`);
+        // ChatGPT-5: Une seule ancre HTML avant le titre (pas de doublon)
+        parts.push(`<a id="${anchor}"></a>`);
+        parts.push(`### RÉSULTAT OUTIL #${counter} - ${firstLine}`);
         parts.push("");
         
         parts.push('<div class="tool-message">');
@@ -1283,9 +1325,11 @@ export class TraceSummaryService {
         const anchor = `reponse-assistant-${counter}`;
         const isCompletion = item.subType === 'Completion';
         
+        // ChatGPT-5: Une seule ancre HTML avant le titre (pas de doublon)
+        parts.push(`<a id="${anchor}"></a>`);
         const title = isCompletion
-            ? `### RÉPONSE ASSISTANT #${counter} (Terminaison) - ${firstLine} {#${anchor}}`
-            : `### RÉPONSE ASSISTANT #${counter} - ${firstLine} {#${anchor}}`;
+            ? `### RÉPONSE ASSISTANT #${counter} (Terminaison) - ${firstLine}`
+            : `### RÉPONSE ASSISTANT #${counter} - ${firstLine}`;
         
         parts.push(title);
         parts.push("");
@@ -1588,9 +1632,10 @@ export class TraceSummaryService {
      * @param contextAnchor - Ancre spécifique dans la TOC vers laquelle revenir (optionnel)
      */
     private generateBackToTocLink(contextAnchor?: string): string {
-        const targetAnchor = contextAnchor || 'table-des-matieres';
+        // ChatGPT-5: Pointer vers l'entrée TOC spécifique (toc-xxx) au lieu de la section
+        const targetAnchor = contextAnchor ? `toc-${contextAnchor}` : 'table-des-matieres';
         return '<div style="text-align: right; font-size: 0.9em; color: #666;">' +
-               `<a href="#${targetAnchor}">^ Table des matières</a></div>`;
+               `<a href="#${targetAnchor}" title="Retour à l'entrée correspondante dans la table des matières">^ TOC</a></div>`;
     }
 
     // ============================================================================

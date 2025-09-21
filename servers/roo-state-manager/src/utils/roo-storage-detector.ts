@@ -817,12 +817,29 @@ export class RooStorageDetector {
   ): Promise<NewTaskInstruction[]> {
     const instructions: NewTaskInstruction[] = [];
     
+    // 🔧 CORRECTION POST-RÉGRESSION: Lire aussi api_conversation_history.json
+    const taskDir = path.dirname(uiMessagesPath);
+    const apiHistoryPath = path.join(taskDir, 'api_conversation_history.json');
+    
+    await this.extractFromMessageFile(uiMessagesPath, instructions, maxLines);
+    await this.extractFromMessageFile(apiHistoryPath, instructions, maxLines);
+    
+    console.log(`[extractNewTaskInstructionsFromUI] ✅ ${instructions.length} instructions new_task trouvées (ui_messages + api_history)`);
+    return instructions;
+  }
+
+  private static async extractFromMessageFile(
+    filePath: string,
+    instructions: NewTaskInstruction[],
+    maxLines: number = 0
+  ): Promise<void> {
     try {
-      if (!existsSync(uiMessagesPath)) {
-        return instructions;
+      if (!existsSync(filePath)) {
+        console.log(`[extractFromMessageFile] ⚠️ Fichier non trouvé: ${filePath}`);
+        return;
       }
 
-      let content = await fs.readFile(uiMessagesPath, 'utf-8');
+      let content = await fs.readFile(filePath, 'utf-8');
       
       // Nettoyage BOM
       if (content.charCodeAt(0) === 0xFEFF) {
@@ -837,16 +854,17 @@ export class RooStorageDetector {
         processedContent = lines.slice(0, maxLines).join('\n');
       }
       
-      let uiMessages: any[] = [];
+      let messages: any[] = [];
       try {
         const data = JSON.parse(processedContent);
-        uiMessages = Array.isArray(data) ? data : [];
+        messages = Array.isArray(data) ? data : [];
       } catch (error) {
-        console.warn(`[extractNewTaskInstructionsFromUI] ⚠️ Parsing JSON échoué pour ${uiMessagesPath}`);
-        return instructions;
+        console.warn(`[extractFromMessageFile] ⚠️ Parsing JSON échoué pour ${filePath}`);
+        return;
       }
 
-      for (const message of uiMessages) {
+      for (const message of messages) {
+        // Format legacy: tool_call avec new_task
         if (message.type === 'tool_call' && message.content?.tool === 'new_task') {
           const instruction: NewTaskInstruction = {
             timestamp: new Date(message.timestamp || 0).getTime(),
@@ -854,9 +872,10 @@ export class RooStorageDetector {
             message: message.content.message || '',
           };
           instructions.push(instruction);
+          console.log(`[extractFromMessageFile] 🎯 Trouvé tool_call new_task dans ${path.basename(filePath)}`);
         }
         
-        // Format alternatif: messages avec ask tool et newTask
+        // Format alternatif: messages avec ask tool et newTask JSON
         if (message.type === 'ask' && message.ask === 'tool' &&
             typeof message.text === 'string' && message.text.includes('"tool":"newTask"')) {
           try {
@@ -865,22 +884,34 @@ export class RooStorageDetector {
               const instruction: NewTaskInstruction = {
                 timestamp: new Date(message.timestamp || 0).getTime(),
                 mode: toolData.mode || 'unknown',
-                message: toolData.message || '',
+                message: toolData.content || toolData.message || '',
               };
               instructions.push(instruction);
+              console.log(`[extractFromMessageFile] 🎯 Trouvé newTask JSON dans ${path.basename(filePath)}: ${toolData.mode}`);
             }
           } catch (e) {
             // Ignore les erreurs de parsing de ce message spécifique
           }
         }
-      }
 
-      console.log(`[extractNewTaskInstructionsFromUI] ✅ ${instructions.length} instructions new_task trouvées`);
-      return instructions;
+        // 🔧 NOUVEAU FORMAT ROO : Messages User avec patterns [new_task completed]
+        if (message.role === 'user' && typeof message.content === 'string') {
+          const newTaskPattern = /\[new_task completed\] Result:\s*(.+?)(?=\n\n|\n$|$)/s;
+          const match = message.content.match(newTaskPattern);
+          if (match) {
+            const instruction: NewTaskInstruction = {
+              timestamp: new Date(message.timestamp || 0).getTime(),
+              mode: 'detected',
+              message: match[1].trim(),
+            };
+            instructions.push(instruction);
+            console.log(`[extractFromMessageFile] 🎯 Trouvé new_task completed pattern dans ${path.basename(filePath)}`);
+          }
+        }
+      }
       
     } catch (error) {
-      console.error(`[extractNewTaskInstructionsFromUI] ❌ Erreur:`, error);
-      return instructions;
+      console.error(`[extractFromMessageFile] ❌ Erreur pour ${filePath}:`, error);
     }
   }
 
