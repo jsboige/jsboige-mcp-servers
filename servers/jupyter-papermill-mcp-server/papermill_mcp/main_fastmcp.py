@@ -14,6 +14,14 @@ import sys
 from pathlib import Path
 from typing import Dict, List, Optional, Any
 
+# Import nest_asyncio at the top to handle nested event loops
+try:
+    import nest_asyncio
+    nest_asyncio.apply()
+    print("nest_asyncio applied successfully - AsyncIO conflict resolution")
+except ImportError:
+    print("nest_asyncio not available - Potential asyncio conflict")
+
 import papermill as pm
 from papermill.exceptions import PapermillException, PapermillExecutionError
 
@@ -140,10 +148,10 @@ def execute_notebook_solution_a(
         
         # Diagnostic avant exécution
         diagnostic_info = {
-            "method": "papermill_direct_api",
+            "method": "conda_subprocess_isolation",
+            "conda_env": "mcp-jupyter-py310",
             "cwd": os.getcwd(),
-            "python_env": sys.executable,
-            "papermill_version": getattr(pm, '__version__', 'unknown')
+            "python_env": sys.executable
         }
         
         # CORRECTION WORKING DIRECTORY - Solution basée sur papermill_executor.py
@@ -210,69 +218,53 @@ def execute_notebook(
     notebook_path: str = Field(description="Chemin du notebook à exécuter"),
     output_path: str = Field(default="", description="Chemin de sortie (optionnel)")
 ) -> Dict[str, Any]:
-    """Exécute notebook via API Papermill directe (remplace subprocess conda run)"""
+    """Exécute notebook via subprocess isolation conda avec environnement mcp-jupyter-py310"""
     try:
+        if not os.path.exists(notebook_path):
+            return {"error": f"Le notebook {notebook_path} n'existe pas"}
+            
         if not output_path:
             output_path = notebook_path.replace('.ipynb', '_executed.ipynb')
         
-        # Diagnostic avant exécution
-        diagnostic_info = {
-            "method": "papermill_direct_api",
-            "cwd": os.getcwd(),
-            "python_env": sys.executable,
-            "papermill_version": getattr(pm, '__version__', 'unknown')
-        }
-        
-        # CORRECTION WORKING DIRECTORY - Solution basée sur papermill_executor.py
+        # Changement du répertoire de travail vers le répertoire du notebook
         notebook_dir = os.path.dirname(os.path.abspath(notebook_path))
         original_cwd = os.getcwd()
         
         try:
-            # Changer vers le répertoire du notebook pour résoudre les chemins relatifs NuGet
             os.chdir(notebook_dir)
             
-            # Exécution directe avec l'API Papermill
-            start_time = datetime.datetime.now()
+            cmd = [
+                "conda", "run", "-n", "mcp-jupyter-py310",
+                "python", "-m", "papermill",
+                notebook_path,
+                output_path,
+                "--progress-bar"
+            ]
             
-            pm.execute_notebook(
-                input_path=notebook_path,
-                output_path=output_path,
-                kernel_name=None,   # Auto-détection du kernel
-                progress_bar=True,
-                log_output=True,
-                cwd=None
+            result = subprocess.run(
+                cmd,
+                capture_output=True,
+                text=True,
+                check=False
             )
         finally:
-            # Restaurer le working directory original
             os.chdir(original_cwd)
-        
-        end_time = datetime.datetime.now()
-        execution_time = (end_time - start_time).total_seconds()
-        
+            
+        # Traitement du résultat...
         return {
-            "status": "success",
+            "success": True,
             "input_path": notebook_path,
             "output_path": output_path,
-            "message": "Notebook exécuté avec succès via API Papermill directe",
-            "method": "papermill_direct_api",
-            "execution_time_seconds": execution_time,
-            "diagnostic": diagnostic_info,
-            "timestamp": end_time.isoformat()
+            "stdout": result.stdout,
+            "stderr": result.stderr if result.stderr else None,
+            "return_code": result.returncode,
+            "method": "papermill_direct_api"
         }
         
-    except PapermillExecutionError as e:
+    except Exception as e:
         return {
-            "status": "error",
-            "error": f"Erreur d'exécution Papermill: {str(e)}",
-            "error_type": "PapermillExecutionError",
-            "method": "papermill_direct_api"
-        }
-    except PapermillException as e:
-        return {
-            "status": "error",
-            "error": f"Erreur Papermill: {str(e)}",
-            "error_type": "PapermillException",
-            "method": "papermill_direct_api"
+            "error": f"Erreur lors de l'exécution : {str(e)}",
+            "success": False
         }
     except Exception as e:
         return {

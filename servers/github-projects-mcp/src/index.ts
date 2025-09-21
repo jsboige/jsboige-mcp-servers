@@ -1,8 +1,3 @@
-import dotenv from 'dotenv';
-dotenv.config();
-
-import logger from './logger.js';
-
 import { Server } from '@modelcontextprotocol/sdk/server/index.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import {
@@ -11,9 +6,18 @@ import {
   ErrorCode,
   McpError,
 } from '@modelcontextprotocol/sdk/types.js';
+import dotenv from 'dotenv';
+import path from 'path'; // Ajout de l'import pour path
 import { setupTools } from './tools.js';
 import { setupResources } from './resources.js';
 import { setupErrorHandlers } from './utils/errorHandlers.js';
+
+// Charger les variables d'environnement
+const envPath = path.resolve(__dirname, '../.env'); // Chemin corrigé vers .env
+console.log('[DEBUG] Avant dotenv.config(). Chemin .env cible:', envPath);
+dotenv.config({ path: envPath });
+
+import logger from './logger.js';
 
 // Définition de la structure pour un compte GitHub
 interface GitHubAccount {
