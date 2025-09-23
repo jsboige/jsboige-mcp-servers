@@ -381,18 +381,10 @@ async function extractChunksFromTask(taskId: string, taskPath: string): Promise<
         // ✅ LOGIQUE UNIFIÉE : Même extraction que roo-storage-detector.ts:426
         parentTaskId = rawMetadata.parentTaskId || rawMetadata.parent_task_id;
         
-        // ✅ INFÉRENCE : Si parentTaskId manque, essayer de l'inférer du contenu
+        // 🚫 SUPPRIMÉ : inferParentTaskIdFromContent - impasse remontante
+        // Le parentId doit être enregistré de façon descendante au moment de la création
         if (!parentTaskId) {
-            console.warn(`[extractChunksFromTask] Task ${taskId} missing parentTaskId, attempting inference...`);
-            parentTaskId = await inferParentTaskIdFromContent(
-                path.join(taskPath, 'api_conversation_history.json'),
-                path.join(taskPath, 'ui_messages.json'),
-                rawMetadata
-            );
-            
-            if (parentTaskId) {
-                console.log(`[extractChunksFromTask] ✅ Parent inféré pour ${taskId}: ${parentTaskId}`);
-            }
+            console.log(`[extractChunksFromTask] Task ${taskId} sans parentTaskId - normal pour tâche racine ou parentId non encore enregistré`);
         }
         
         workspace = rawMetadata.workspace;
@@ -666,90 +658,9 @@ export async function indexTask(taskId: string, taskPath: string): Promise<Point
  * Tente d'inférer le parentTaskId à partir du contenu de la conversation
  * (même logique que roo-storage-detector.ts)
  */
-async function inferParentTaskIdFromContent(
-    apiHistoryPath: string,
-    uiMessagesPath: string,
-    rawMetadata: any
-): Promise<string | undefined> {
-    try {
-        // 1. Analyser le premier message utilisateur dans api_conversation_history.json
-        let parentId = await extractParentFromApiHistory(apiHistoryPath);
-        if (parentId) return parentId;
-
-        // 2. Analyser ui_messages.json pour des références
-        parentId = await extractParentFromUiMessages(uiMessagesPath);
-        if (parentId) return parentId;
-
-        return undefined;
-    } catch (error) {
-        console.error(`[inferParentTaskIdFromContent] Erreur:`, error);
-        return undefined;
-    }
-}
-
-async function extractParentFromApiHistory(apiHistoryPath: string): Promise<string | undefined> {
-    try {
-        const content = await fs.readFile(apiHistoryPath, 'utf-8');
-        const data = JSON.parse(content);
-        const messages = Array.isArray(data) ? data : (data?.messages || []);
-        
-        const firstUserMessage = messages.find((msg: any) => msg.role === 'user');
-        if (!firstUserMessage?.content) return undefined;
-
-        const messageText = Array.isArray(firstUserMessage.content)
-            ? firstUserMessage.content.find((c: any) => c.type === 'text')?.text || ''
-            : firstUserMessage.content;
-
-        return extractTaskIdFromText(messageText);
-    } catch (error) {
-        return undefined;
-    }
-}
-
-async function extractParentFromUiMessages(uiMessagesPath: string): Promise<string | undefined> {
-    try {
-        const content = await fs.readFile(uiMessagesPath, 'utf-8');
-        const data = JSON.parse(content);
-        const messages = Array.isArray(data) ? data : [];
-        
-        const firstMessage = messages.find((msg: any) => msg.type === 'user');
-        if (!firstMessage?.content) return undefined;
-
-        return extractTaskIdFromText(firstMessage.content);
-    } catch (error) {
-        return undefined;
-    }
-}
-
-function extractTaskIdFromText(text: string): string | undefined {
-    if (!text) return undefined;
-
-    // Pattern 1: UUIDs v4 explicites
-    const uuidPattern = /[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}/gi;
-    const uuids = text.match(uuidPattern);
-    
-    if (uuids && uuids.length > 0) {
-        console.log(`[extractTaskIdFromText] UUID trouvé: ${uuids[0]}`);
-        return uuids[0];
-    }
-
-    // Pattern 2: Références contextuelles
-    const contextPatterns = [
-        /CONTEXTE HÉRITÉ.*?([0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12})/i,
-        /ORCHESTRATEUR.*?([0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12})/i,
-        /tâche parent.*?([0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12})/i
-    ];
-
-    for (const pattern of contextPatterns) {
-        const match = text.match(pattern);
-        if (match && match[1]) {
-            console.log(`[extractTaskIdFromText] Parent trouvé via pattern: ${match[1]}`);
-            return match[1];
-        }
-    }
-
-    return undefined;
-}
+// 🚫 SUPPRIMÉ : Toutes les fonctions de remontée parent/enfant
+// Le système doit fonctionner en mode descendant : détecter création de sous-tâches XML
+// et enregistrer le parentId au moment de la création
 
 /**
  * Classe TaskIndexer pour l'architecture à 2 niveaux

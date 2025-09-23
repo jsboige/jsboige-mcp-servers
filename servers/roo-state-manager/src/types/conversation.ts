@@ -284,7 +284,7 @@ export interface CrossTaskPattern {
  */
 export interface ClusterClassifiedContent {
     type: 'User' | 'Assistant';
-    subType: 'UserMessage' | 'ToolResult' | 'ToolCall' | 'Completion';
+    subType: 'UserMessage' | 'ToolResult' | 'ToolCall' | 'Completion' | 'ErrorMessage' | 'ContextCondensation' | 'NewInstructions';
     content: string;
     index: number;
     toolType?: string;

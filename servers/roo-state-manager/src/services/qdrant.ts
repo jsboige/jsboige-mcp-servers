@@ -9,9 +9,6 @@ async function testQdrantConnection(): Promise<void> {
   const url = `${process.env.QDRANT_URL}/collections`;
   const apiKey = process.env.QDRANT_API_KEY;
   
-  console.log(`DEBUG: Testing direct connection to: ${url}`);
-  console.log(`DEBUG: API Key present: ${!!apiKey}`);
-  
   try {
     const response = await fetch(url, {
       method: 'GET',
@@ -21,9 +18,7 @@ async function testQdrantConnection(): Promise<void> {
       },
     });
     
-    console.log(`DEBUG: Direct fetch response status: ${response.status}`);
     const data = await response.json();
-    console.log(`DEBUG: Direct fetch response data:`, JSON.stringify(data, null, 2));
   } catch (error) {
     console.error(`DEBUG: Direct fetch failed:`, error);
   }
@@ -38,9 +33,7 @@ async function testQdrantConnection(): Promise<void> {
  */
 export function getQdrantClient(): QdrantClient {
   if (!client) {
-    console.log(`DEBUG: Creating Qdrant client with URL: ${process.env.QDRANT_URL}`);
-    console.log(`DEBUG: QDRANT_API_KEY present: ${!!process.env.QDRANT_API_KEY}`);
-    
+
     // Test direct avec fetch avant d'initialiser le client Qdrant
     testQdrantConnection();
     
@@ -51,12 +44,9 @@ export function getQdrantClient(): QdrantClient {
       checkCompatibility: false,
     };
     
-    console.log(`DEBUG: Qdrant config:`, JSON.stringify(qdrantConfig, null, 2));
-    
     client = new QdrantClient(qdrantConfig);
     console.log(`Qdrant client initialized with URL: ${process.env.QDRANT_URL}`);
   } else {
-    console.log(`DEBUG: Reusing existing Qdrant client`);
   }
   return client;
 }

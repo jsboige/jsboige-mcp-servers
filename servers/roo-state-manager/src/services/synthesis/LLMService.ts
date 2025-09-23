@@ -473,9 +473,6 @@ export class LLMService {
                 ...(parameters?.response_format ? { response_format: parameters.response_format } : {})
             };
 
-            // DEBUG: Logs pour diagnostiquer le problème de modèle
-            console.log(`🔍 [LLMService] DEBUG - Configuration OpenAI:`);
-            console.log(`   - modelConfig.modelName: ${modelConfig.modelName}`);
             console.log(`   - process.env.OPENAI_CHAT_MODEL_ID: ${process.env.OPENAI_CHAT_MODEL_ID}`);
             console.log(`   - openaiParams.model: ${openaiParams.model}`);
             console.log(`   - activeModelId: ${activeModelId}`);

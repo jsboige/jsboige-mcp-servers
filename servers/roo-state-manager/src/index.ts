@@ -206,6 +206,10 @@ class RooStateManagerServer {
                                     type: 'boolean',
                                     description: 'Si true, reconstruit TOUS les squelettes (lent). Si false/omis, ne reconstruit que les squelettes obsolètes ou manquants (rapide).',
                                     default: false
+                                },
+                                workspace_filter: {
+                                    type: 'string',
+                                    description: 'Filtre optionnel par workspace. Si spécifié, ne traite que les conversations de ce workspace.'
                                 }
                             },
                             required: []
@@ -224,6 +228,17 @@ class RooStateManagerServer {
                             },
                             required: ['conversation_id'],
                         },
+                    },
+                    {
+                        name: 'debug_task_parsing',
+                        description: 'Analyse en détail le parsing d\'une tâche spécifique pour diagnostiquer les problèmes hiérarchiques.',
+                        inputSchema: {
+                            type: 'object',
+                            properties: {
+                                task_id: { type: 'string', description: 'ID de la tâche à analyser en détail.' }
+                            },
+                            required: ['task_id']
+                        }
                     },
                     {
                         name: 'search_tasks_semantic',
@@ -527,7 +542,20 @@ class RooStateManagerServer {
 
             switch (name) {
                 case 'minimal_test_tool':
-                    result = { content: [{ type: 'text', text: 'Minimal tool executed successfully! Version 2' }] };
+                    // TESTS COMPLETS POUR TRAQUER OÙ VONT LES LOGS
+                    const timestamp = new Date().toISOString();
+                    console.log('🔍 [STDOUT-SEARCH] console.log test - Heure:', timestamp);
+                    console.error('🔍 [STDERR-CONFIRMED] console.error test - Heure:', timestamp);
+                    
+                    // Tests de tous les canaux possibles
+                    process.stdout.write(`🔍 [STDOUT-SEARCH] process.stdout.write test - ${timestamp}\n`);
+                    process.stderr.write(`🔍 [STDERR-CONFIRMED] process.stderr.write test - ${timestamp}\n`);
+                    
+                    // Test avec console.info et console.warn
+                    console.info('🔍 [INFO-SEARCH] console.info test - Heure:', timestamp);
+                    console.warn('🔍 [WARN-SEARCH] console.warn test - Heure:', timestamp);
+                    
+                    result = { content: [{ type: 'text', text: `INVESTIGATION DES CANAUX DE LOGS - ${timestamp} - Vérifiez tous les logs maintenant!` }] };
                     break;
                case 'detect_roo_storage':
                    result = await this.handleDetectRooStorage();
@@ -558,6 +586,9 @@ class RooStateManagerServer {
                     break;
                case 'debug_analyze_conversation':
                    result = await this.handleDebugAnalyzeConversation(args as any);
+                   break;
+               case 'debug_task_parsing':
+                   result = await this.handleDebugTaskParsing(args as any);
                    break;
             //    case 'diagnose_roo_state':
             //        result = await this.handleDiagnoseRooState(args as any);
@@ -891,12 +922,24 @@ class RooStateManagerServer {
         });
     }
 
-    async handleBuildSkeletonCache(args: { force_rebuild?: boolean } = {}): Promise<CallToolResult> {
+    async handleBuildSkeletonCache(args: { force_rebuild?: boolean; workspace_filter?: string } = {}): Promise<CallToolResult> {
         this.conversationCache.clear();
-        const { force_rebuild = false } = args;
+        const { force_rebuild = false, workspace_filter } = args;
+        
+        // 🔍 Capturer les logs de debug
+        const debugLogs: string[] = [];
+        const originalConsoleLog = console.log;
+        console.log = (...args: any[]) => {
+            const message = args.join(' ');
+            if (message.includes('DEBUG') || message.includes('🎯') || message.includes('🔍') || message.includes('BALISE')) {
+                debugLogs.push(`[${new Date().toISOString().split('T')[1].split('.')[0]}] ${message}`);
+            }
+            originalConsoleLog(...args);
+        };
         
         const locations = await RooStorageDetector.detectStorageLocations(); // This returns base storage paths
         if (locations.length === 0) {
+            console.log = originalConsoleLog; // Restaurer
             return { content: [{ type: 'text', text: 'Storage not found. Cache not built.' }] };
         }
 
@@ -904,8 +947,9 @@ class RooStateManagerServer {
         let skeletonsSkipped = 0;
         let hierarchyRelationsFound = 0;
         const mode = force_rebuild ? "FORCE_REBUILD" : "SMART_REBUILD";
+        const filterMode = workspace_filter ? `WORKSPACE_FILTERED(${workspace_filter})` : "ALL_WORKSPACES";
 
-        console.log(`🔄 Starting PROCESSUS DESCENDANT skeleton cache build in ${mode} mode...`);
+        console.log(`🔄 Starting PROCESSUS DESCENDANT skeleton cache build in ${mode} mode, ${filterMode}...`);
 
         // 🚀 PROCESSUS DESCENDANT - PHASE 1: Construire tous les squelettes ET alimenter l'index RadixTree
         const skeletonsWithPrefixes: Array<{ skeleton: ConversationSkeleton; prefixes: string[] }> = [];
@@ -933,6 +977,26 @@ class RooStateManagerServer {
                     try {
                         // Vérifier que le fichier metadata existe (indique une tâche valide)
                         const metadataStat = await fs.stat(metadataPath);
+                        
+                        // 🎯 FILTRE WORKSPACE: Vérifier si la tâche correspond au workspace demandé
+                        if (workspace_filter) {
+                            try {
+                                const metadataContent = await fs.readFile(metadataPath, 'utf-8');
+                                const metadata = JSON.parse(metadataContent);
+                                const taskWorkspace = metadata.workspace || metadata.cwd || '';
+                                
+                                // Normalisation des chemins pour la comparaison
+                                const normalizedFilter = path.normalize(workspace_filter).toLowerCase();
+                                const normalizedWorkspace = path.normalize(taskWorkspace).toLowerCase();
+                                
+                                if (!normalizedWorkspace.includes(normalizedFilter)) {
+                                    continue; // Skip cette conversation si elle ne correspond pas au filtre
+                                }
+                            } catch (metadataError) {
+                                console.warn(`Could not read metadata for workspace filtering: ${metadataPath}`, metadataError);
+                                continue; // Skip si on ne peut pas lire les metadata
+                            }
+                        }
                         
                         let shouldRebuild = force_rebuild;
                         
@@ -1026,6 +1090,23 @@ class RooStateManagerServer {
         const indexStats = globalTaskInstructionIndex.getStats();
         console.log(`🎯 RadixTree populated: ${indexStats.totalInstructions} instructions, ${indexStats.totalNodes} nodes`);
         
+        // 🚨 DEBUG: Afficher les premières instructions de l'index avec détails COMPLETS
+        if (indexStats.totalInstructions > 0) {
+            console.log(`🔍 DEBUG - Premières instructions dans l'index (DÉTAILS COMPLETS) :`);
+            for (const { skeleton, prefixes } of skeletonsWithPrefixes.slice(0, 3)) {
+                console.log(`  Task ${skeleton.taskId.substring(0, 8)} has ${prefixes.length} prefixes:`);
+                prefixes.slice(0, 2).forEach((p, i) => {
+                    console.log(`    [${i}] INDEXÉ: "${p}" (${p.length} chars)`);
+                    console.log(`    [${i}] HEX: ${Buffer.from(p.substring(0, 50)).toString('hex')}`);
+                });
+            }
+        } else {
+            console.log(`🚨 DEBUG - Aucune instruction dans l'index ! Détails des squelettes:`);
+            for (const { skeleton, prefixes } of skeletonsWithPrefixes.slice(0, 3)) {
+                console.log(`  Task ${skeleton.taskId.substring(0, 8)}: ${prefixes.length} prefixes, truncated="${skeleton.truncatedInstruction?.substring(0, 50)}"`);
+            }
+        }
+        
         // CORRECTION: Exécuter les Phases 2-3 même en mode intelligent si l'index était vide
         const shouldRunHierarchyPhase = indexStats.totalInstructions > 0;
         console.log(`🔍 Should run hierarchy phase: ${shouldRunHierarchyPhase} (index has ${indexStats.totalInstructions} instructions)`);
@@ -1056,10 +1137,78 @@ class RooStateManagerServer {
             console.log(`📦 Processing batch ${Math.floor(i / BATCH_SIZE) + 1}/${Math.ceil(orphanSkeletons.length / BATCH_SIZE)}: ${batch.length} tasks`);
             
             for (const skeleton of batch) {
-                const childText = `${skeleton.metadata?.title || ''} ${skeleton.metadata?.mode || ''}`.trim();
-                if (childText.length > 5) {
+                // Utiliser truncatedInstruction qui contient le début du premier message utilisateur
+                let rawChildText = skeleton.truncatedInstruction || skeleton.metadata?.title || '';
+                const originalText = rawChildText;
+                
+                // 🎯 CORRECTION FINALE: Appliquer EXACTEMENT le même traitement que l'indexation
+                
+                // 1. TOUJOURS nettoyer les balises task simples d'abord (Pattern de base dans l'indexation)
+                const taskMatch = rawChildText.match(/<task>([\s\S]*?)<\/task>/i);
+                if (taskMatch) {
+                    rawChildText = taskMatch[1].trim();
+                } else {
+                    // Si pas de balise task, nettoyer quand même les balises orphelines
+                    rawChildText = rawChildText.replace(/<\/?task>/gi, '').trim();
+                }
+                
+                // 2. Pattern extraction délégation avancée (optionnel, après nettoyage task)
+                const delegationPattern = /<(\w+_\w+)>\s*<mode>([^<]+)<\/mode>\s*<message>([^<]+)<\/message>\s*<\/\1>/g;
+                const delegationMatch = delegationPattern.exec(rawChildText);
+                if (delegationMatch) {
+                    const taskMessage = delegationMatch[3].trim();
+                    if (taskMessage.length > 0) {
+                        rawChildText = taskMessage; // Extraction précise du message de délégation
+                    }
+                }
+                
+                // 3. Troncature identique à l'indexation (200 chars AVANT normalisation)
+                rawChildText = rawChildText.substring(0, 200);
+                
+                // 4. Puis normalisation via normalizePrefix() comme l'index
+                rawChildText = rawChildText.toLowerCase().replace(/\s+/g, ' ').trim().substring(0, 200);
+        
+                console.log(`🔍 DEBUG - Processing ${skeleton.taskId.substring(0, 8)}: AVANT="${originalText?.substring(0, 50)}..."`);
+                console.log(`🔍 DEBUG - Processing ${skeleton.taskId.substring(0, 8)}: APRÈS="${rawChildText?.substring(0, 50)}..." (${rawChildText?.length} chars)`);
+                console.log(`🎯 RECHERCHÉ COMPLET: "${rawChildText}" (${rawChildText.length} chars)`);
+                console.log(`🎯 RECHERCHÉ HEX: ${Buffer.from(rawChildText.substring(0, 50)).toString('hex')}`);
+                
+                console.log(`[PASS 2 - PRE-CHECK] Orphan Task: ${skeleton.taskId.substring(0, 8)} | Text length: ${rawChildText.length} | Text: "${rawChildText}"`);
+                if (rawChildText.length > 5) {
                     try {
-                        const foundParentId = globalTaskInstructionIndex.findPotentialParent(childText);
+                        // 🎯 CORRECTION FINALE: L'index ne contient plus de préfixes de mode, recherche directe avec le texte brut
+                        console.log(`[PASS 2 - SEARCHING] Orphan Task: ${skeleton.taskId.substring(0, 8)} | RAW TEXT FOR SEARCH: "${rawChildText}"`);
+                        let foundParentId = globalTaskInstructionIndex.findPotentialParent(rawChildText);
+                        console.log(`🔍 DEBUG - Direct search for ${skeleton.taskId.substring(0, 8)}: ${foundParentId ? foundParentId.substring(0, 8) : 'null'}`);
+                        
+                        if (!foundParentId) {
+                            console.log(`🔍 COMPARAISON DEBUG for ${skeleton.taskId.substring(0, 8)}:`);
+                            const stats = globalTaskInstructionIndex.getStats();
+                            console.log(`  Index has ${stats.totalInstructions} instructions, ${stats.totalNodes} nodes`);
+                            
+                            // Test de recherche détaillé
+                            console.log(`🧪 TESTS RECHERCHE DÉTAILLÉS:`);
+                            const rawText = rawChildText;
+                            const normalizedText = rawText.toLowerCase().replace(/\s+/g, ' ').trim();
+                            console.log(`  RAW: "${rawText.substring(0, 60)}..."`);
+                            console.log(`  NORMALIZED: "${normalizedText.substring(0, 60)}..."`);
+                            
+                            // Test avec différentes variantes
+                            const testSearches = [
+                                rawText,
+                                normalizedText,
+                                rawText.substring(0, 50),
+                                rawText.substring(0, 100),
+                                rawText.substring(0, 150)
+                            ];
+                            
+                            for (let i = 0; i < testSearches.length; i++) {
+                                const testText = testSearches[i];
+                                const result = globalTaskInstructionIndex.findPotentialParent(testText);
+                                console.log(`    Test[${i}]: "${testText.substring(0, 30)}..." → ${result ? result.substring(0, 8) : 'null'}`);
+                            }
+                        }
+                        
                         if (foundParentId && foundParentId !== skeleton.taskId) {
                             skeletonsToUpdate.push({ taskId: skeleton.taskId, newParentId: foundParentId });
                             console.log(`🎯 HIERARCHY FOUND: ${skeleton.taskId.substring(0, 8)} -> parent: ${foundParentId.substring(0, 8)}`);
@@ -1068,6 +1217,8 @@ class RooStateManagerServer {
                     } catch (searchError) {
                         console.error(`Error finding parent for ${skeleton.taskId.substring(0, 8)}:`, searchError);
                     }
+                } else {
+                    console.log(`🚨 DEBUG - Skipped ${skeleton.taskId.substring(0, 8)} (childText too short: ${rawChildText.length} chars)`);
                 }
             }
         }
@@ -1111,9 +1262,134 @@ class RooStateManagerServer {
         }
         
         console.log(`✅ Skeleton cache build complete. Mode: ${mode}, Cache size: ${this.conversationCache.size}, New relations: ${hierarchyRelationsFound}`);
-        return { content: [{ type: 'text', text: `Skeleton cache build complete (${mode}). Built: ${skeletonsBuilt}, Skipped: ${skeletonsSkipped}, Cache size: ${this.conversationCache.size}, Hierarchy relations found: ${hierarchyRelationsFound}` }] };
+        
+        // 🔍 Restaurer console.log original
+        console.log = originalConsoleLog;
+        
+        // 🔍 Inclure les logs de debug dans la réponse
+        let response = `Skeleton cache build complete (${mode}). Built: ${skeletonsBuilt}, Skipped: ${skeletonsSkipped}, Cache size: ${this.conversationCache.size}, Hierarchy relations found: ${hierarchyRelationsFound}`;
+        
+        if (debugLogs.length > 0) {
+            response += `\n\n🔍 DEBUG LOGS (${debugLogs.length} entries):\n${debugLogs.join('\n')}`;
+        } else {
+            response += `\n\n🔍 No debug logs captured (expected: DEBUG, 🎯, 🔍, BALISE keywords)`;
+        }
+        
+        return { content: [{ type: 'text', text: response }] };
     }
 
+    async handleDebugTaskParsing(args: { task_id: string }): Promise<CallToolResult> {
+        const { task_id } = args;
+        
+        console.log(`🔍 DEBUG: Starting detailed analysis of task ${task_id}`);
+        const debugInfo: string[] = [];
+        
+        try {
+            // Trouver le chemin de la tâche
+            const locations = await RooStorageDetector.detectStorageLocations();
+            let taskPath = null;
+            
+            for (const baseDir of locations) {
+                const tasksDir = path.join(baseDir, 'tasks');
+                const potentialPath = path.join(tasksDir, task_id);
+                if (existsSync(potentialPath)) {
+                    taskPath = potentialPath;
+                    break;
+                }
+            }
+            
+            if (!taskPath) {
+                return { content: [{ type: 'text', text: `Task ${task_id} not found in any storage location` }] };
+            }
+            
+            debugInfo.push(`📁 Task path: ${taskPath}`);
+            
+            // Analyser les fichiers
+            const uiMessagesPath = path.join(taskPath, 'ui_messages.json');
+            const apiHistoryPath = path.join(taskPath, 'api_conversation_history.json');
+            
+            debugInfo.push(`📄 UI Messages: ${existsSync(uiMessagesPath) ? '✅ EXISTS' : '❌ MISSING'}`);
+            debugInfo.push(`📄 API History: ${existsSync(apiHistoryPath) ? '✅ EXISTS' : '❌ MISSING'}`);
+            
+            // Analyser le contenu pour les balises <task>
+            if (existsSync(uiMessagesPath)) {
+                let content = await fs.readFile(uiMessagesPath, 'utf-8');
+                if (content.charCodeAt(0) === 0xFEFF) {
+                    content = content.slice(1);
+                }
+                
+                const messages = JSON.parse(content);
+                debugInfo.push(`📊 UI Messages count: ${messages.length}`);
+                
+                let taskTagCount = 0;
+                let newTaskTagCount = 0;
+                
+                for (let i = 0; i < messages.length; i++) {
+                    const message = messages[i];
+                    let contentText = '';
+                    
+                    if (typeof message.content === 'string') {
+                        contentText = message.content;
+                    } else if (Array.isArray(message.content)) {
+                        for (const item of message.content) {
+                            if (item.type === 'text' && typeof item.text === 'string') {
+                                contentText += item.text + '\n';
+                            }
+                        }
+                    }
+                    
+                    const taskMatches = contentText.match(/<task>/g);
+                    const newTaskMatches = contentText.match(/<new_task>/g);
+                    
+                    if (taskMatches) {
+                        taskTagCount += taskMatches.length;
+                        debugInfo.push(`🎯 Message ${i} (${message.role}): Found ${taskMatches.length} <task> tags`);
+                        
+                        // Extraire le contenu de la première balise <task>
+                        const taskPattern = /<task>([\s\S]*?)<\/task>/gi;
+                        const match = taskPattern.exec(contentText);
+                        if (match) {
+                            debugInfo.push(`   Content preview: "${match[1].trim().substring(0, 100)}..."`);
+                        }
+                    }
+                    
+                    if (newTaskMatches) {
+                        newTaskTagCount += newTaskMatches.length;
+                        debugInfo.push(`🎯 Message ${i} (${message.role}): Found ${newTaskMatches.length} <new_task> tags`);
+                    }
+                }
+                
+                debugInfo.push(`📈 Total <task> tags found: ${taskTagCount}`);
+                debugInfo.push(`📈 Total <new_task> tags found: ${newTaskTagCount}`);
+            }
+            
+            // Test du parsing avec RooStorageDetector
+            debugInfo.push(`\n🧪 TESTING RooStorageDetector.analyzeConversation...`);
+            const skeleton = await RooStorageDetector.analyzeConversation(task_id, taskPath);
+            
+            if (skeleton) {
+                debugInfo.push(`✅ Analysis complete:`);
+                debugInfo.push(`   - TaskId: ${skeleton.taskId}`);
+                debugInfo.push(`   - ParentTaskId: ${skeleton.parentTaskId || 'NONE'}`);
+                debugInfo.push(`   - TruncatedInstruction: ${skeleton.truncatedInstruction ? `"${skeleton.truncatedInstruction.substring(0, 100)}..."` : 'NONE'}`);
+                debugInfo.push(`   - ChildTaskInstructionPrefixes: ${skeleton.childTaskInstructionPrefixes?.length || 0} prefixes`);
+                
+                if (skeleton.childTaskInstructionPrefixes && skeleton.childTaskInstructionPrefixes.length > 0) {
+                    debugInfo.push(`   - Prefixes preview:`);
+                    skeleton.childTaskInstructionPrefixes.slice(0, 3).forEach((prefix, i) => {
+                        debugInfo.push(`     ${i+1}. "${prefix.substring(0, 80)}..."`);
+                    });
+                }
+            } else {
+                debugInfo.push(`❌ Analysis returned null`);
+            }
+            
+        } catch (error: any) {
+            debugInfo.push(`❌ ERROR: ${error?.message || 'Unknown error'}`);
+        }
+        
+        return { content: [{ type: 'text', text: debugInfo.join('\n') }] };
+    }
 
     handleGetTaskTree(args: { conversation_id: string, max_depth?: number, include_siblings?: boolean, output_format?: 'json' | 'markdown' }): CallToolResult {
         const { conversation_id, max_depth = Infinity, include_siblings = false, output_format = 'json' } = args;

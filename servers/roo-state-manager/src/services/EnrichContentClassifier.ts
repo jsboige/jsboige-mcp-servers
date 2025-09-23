@@ -42,7 +42,7 @@ export class EnrichContentClassifier {
     async classifyMessage(content: string, role: 'user' | 'assistant', index: number): Promise<ClassifiedContent> {
         const contentSize = content.length;
         let type: 'User' | 'Assistant';
-        let subType: 'UserMessage' | 'ToolResult' | 'ToolCall' | 'Completion' | 'Thinking';
+        let subType: 'UserMessage' | 'ToolResult' | 'ToolCall' | 'Completion' | 'Thinking' | 'ErrorMessage' | 'ContextCondensation' | 'NewInstructions';
         let toolCallDetails: ToolCallDetails | undefined;
         let toolResultDetails: ToolResultDetails | undefined;
         let isRelevant = true;

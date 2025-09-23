@@ -50,11 +50,13 @@ export const readVscodeLogs = {
         properties: {
             lines: { type: 'number', description: 'Number of lines to read from the end of each log file.', default: 100 },
             filter: { type: 'string', description: 'A keyword or regex to filter log lines.' },
+            maxSessions: { type: 'number', description: 'Maximum number of recent sessions to search. Default: 1, use 3-5 for MCP startup errors.', default: 1 },
         },
     },
-    async handler(args: { lines?: number; filter?: string }): Promise<CallToolResult> {
+    async handler(args: { lines?: number; filter?: string; maxSessions?: number }): Promise<CallToolResult> {
         const lineCount = args.lines || 100;
         const { filter } = args;
+        const maxSessions = args.maxSessions || 1;
         const rootLogsPath = path.join(process.env.APPDATA || '', 'Code', 'logs');
         const debugLog: string[] = [`[DEBUG] Smart Log Search starting in: ${rootLogsPath}`];
 
@@ -71,9 +73,11 @@ export const readVscodeLogs = {
 
             let allLogsContent: { title: string; path: string; content: string }[] = [];
             let foundLogs = false;
+            let sessionsProcessed = 0;
 
-            // Find the most recent session that has window logs
+            // Find the most recent sessions that have window logs (up to maxSessions)
             for (const sessionDir of sessionDirs) {
+                if (sessionsProcessed >= maxSessions) break;
                 const sessionPath = path.join(rootLogsPath, sessionDir.name);
                 const windowDirs = (await fs.readdir(sessionPath, { withFileTypes: true }).catch(() => []))
                     .filter(d => d.isDirectory() && d.name.startsWith('window'))
@@ -81,7 +85,8 @@ export const readVscodeLogs = {
 
                 if (windowDirs.length > 0) {
                     const latestWindowPath = path.join(sessionPath, windowDirs[0].name); // Most recent window in the session
-                    debugLog.push(`[DEBUG] Processing latest window: ${latestWindowPath}`);
+                    debugLog.push(`[DEBUG] Processing session ${sessionsProcessed + 1}/${maxSessions}: ${latestWindowPath}`);
+                    sessionsProcessed++;
 
                     const logTargets = [
                         { name: 'Renderer', file: 'renderer.log' },
@@ -127,8 +132,7 @@ export const readVscodeLogs = {
                         foundLogs = true;
                     }
                     
-                    // Break after processing the first valid session
-                    if(foundLogs) break;
+                    // Continue to next session (removed break for multi-session search)
                 }
             }
             

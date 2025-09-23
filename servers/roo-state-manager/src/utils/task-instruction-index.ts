@@ -41,6 +41,7 @@ export class TaskInstructionIndex {
         
         // Normaliser le préfixe : minuscules + espaces normalisés
         const normalizedPrefix = this.normalizePrefix(instructionPrefix);
+        console.log(`[PASS 1 - INDEXING] Task: ${parentTaskId.substring(0,8)} | NORMALIZED PREFIX: "${normalizedPrefix}"`);
         this.insertIntoTree(this.root, normalizedPrefix, parentTaskId, instruction);
     }
 
@@ -53,6 +54,7 @@ export class TaskInstructionIndex {
         if (!childText) return undefined;
 
         const normalizedText = this.normalizePrefix(childText);
+        console.log(`[PASS 2 - SEARCHING] NORMALIZED TEXT FOR SEARCH: "${normalizedText}"`);
         const matches = this.searchInTree(this.root, normalizedText);
         
         if (matches.length === 0) return undefined;
@@ -128,14 +130,62 @@ export class TaskInstructionIndex {
         };
     }
 
+    /**
+     * 🧪 TEST UNITAIRE SDDD - Validation de l'algorithme de similarité
+     * Test les cas critiques identifiés dans la mission
+     */
+    testSimilarityAlgorithm(): void {
+        console.log('\n🧪 === TEST ALGORITHME SIMILARITÉ SDDD ===');
+        
+        // Test case 1: Cas réel de la mission
+        const text1 = "**mission debug critique : réparation du système hiérarchique...";
+        const text2 = "**mission corrective finale : validation et documentation...";
+        const similarity1 = this.calculateSimilarity(text1, text2);
+        
+        console.log(`🎯 TEST 1 (Cas réel mission):`);
+        console.log(`   Text1: "${text1.substring(0, 50)}..."`);
+        console.log(`   Text2: "${text2.substring(0, 50)}..."`);
+        console.log(`   Similarité: ${similarity1.toFixed(3)} (seuil: 0.2)`);
+        console.log(`   Résultat: ${similarity1 > 0.2 ? '✅ MATCH' : '❌ NO MATCH'}`);
+        
+        // Test case 2: Match évident
+        const text3 = "**mission debug critique système réparation";
+        const text4 = "**mission debug critique réparation système";
+        const similarity2 = this.calculateSimilarity(text3, text4);
+        
+        console.log(`\n🎯 TEST 2 (Match évident):`);
+        console.log(`   Text3: "${text3}"`);
+        console.log(`   Text4: "${text4}"`);
+        console.log(`   Similarité: ${similarity2.toFixed(3)} (seuil: 0.2)`);
+        console.log(`   Résultat: ${similarity2 > 0.2 ? '✅ MATCH' : '❌ NO MATCH'}`);
+        
+        // Test case 3: Pas de match
+        const text5 = "bonjour analyse git projet";
+        const text6 = "mission powerpoint génération slides";
+        const similarity3 = this.calculateSimilarity(text5, text6);
+        
+        console.log(`\n🎯 TEST 3 (Pas de match):`);
+        console.log(`   Text5: "${text5}"`);
+        console.log(`   Text6: "${text6}"`);
+        console.log(`   Similarité: ${similarity3.toFixed(3)} (seuil: 0.2)`);
+        console.log(`   Résultat: ${similarity3 > 0.2 ? '✅ MATCH' : '❌ NO MATCH'}`);
+        
+        console.log('\n🧪 === FIN TESTS SIMILARITÉ ===\n');
+        
+        // Validation SDDD
+        if (similarity1 > 0.2 && similarity2 > 0.2 && similarity3 <= 0.2) {
+            console.log('✅ 🎯 VALIDATION SDDD RÉUSSIE : Algorithme de similarité fonctionnel !');
+        } else {
+            console.log('❌ 🚨 ÉCHEC VALIDATION SDDD : Algorithme nécessite ajustement !');
+        }
+    }
+
     // Méthodes privées
 
     private normalizePrefix(text: string): string {
-        return text
-            .toLowerCase()
-            .replace(/\s+/g, ' ')
-            .trim()
-            .substring(0, 200); // Limiter à 200 caractères
+        // 🎯 CORRECTION CRITIQUE SDDD : Normalisation cohérente pour matching RadixTree
+        // Applique exactement la même transformation pour indexation ET recherche
+        return text.toLowerCase().trim().substring(0, 192);
     }
 
     private insertIntoTree(node: RadixTreeNode, key: string, parentTaskId: string, instruction?: NewTaskInstruction): void {
@@ -205,8 +255,10 @@ export class TaskInstructionIndex {
     }
 
     private searchRecursive(node: RadixTreeNode, text: string, currentPrefix: string, results: Array<{prefix: string, parentTaskId: string}>): void {
-        // Si ce noeud termine une clé et que le texte contient le préfixe actuel
-        if (node.isEndOfKey && node.parentTaskId && text.includes(currentPrefix)) {
+        // Si ce noeud termine une clé et que le texte est similaire au préfixe actuel
+        if (node.isEndOfKey && node.parentTaskId && this.calculateSimilarity(text, currentPrefix) > 0.2) {
+            const similarity = this.calculateSimilarity(text, currentPrefix);
+            console.log(`[SIMILARITY MATCH] Prefix: "${currentPrefix.substring(0, 50)}..." | Similarity: ${similarity.toFixed(3)} | TaskId: ${node.parentTaskId.substring(0, 8)}`);
             results.push({
                 prefix: currentPrefix,
                 parentTaskId: node.parentTaskId
@@ -218,6 +270,55 @@ export class TaskInstructionIndex {
             const newPrefix = currentPrefix + childKey;
             this.searchRecursive(childNode, text, newPrefix, results);
         }
+    }
+
+    /**
+     * 🎯 CORRECTIF ALGORITHMIQUE SDDD : Algorithme de similarité robuste
+     * Remplace le text.includes() défaillant par un système de mots communs pondérés
+     * @param text1 - Premier texte (recherché)
+     * @param text2 - Deuxième texte (indexé)
+     * @returns Score de similarité [0-1]
+     */
+    private calculateSimilarity(text1: string, text2: string): number {
+        if (!text1 || !text2) return 0;
+        if (text1 === text2) return 1;
+
+        // Normalisation identique pour les deux textes
+        const words1 = this.extractSignificantWords(text1.toLowerCase());
+        const words2 = this.extractSignificantWords(text2.toLowerCase());
+
+        if (words1.length === 0 || words2.length === 0) return 0;
+
+        // Algorithme de mots communs avec pondération par longueur
+        const commonWords = words1.filter(w => words2.includes(w));
+        const totalUniqueWords = new Set([...words1, ...words2]).size;
+
+        // Score basé sur mots communs pondérés par importance
+        const commonWordsScore = commonWords.length / Math.max(words1.length, words2.length);
+        
+        // Bonus pour mots significatifs longs (>4 caractères)
+        const significantCommonWords = commonWords.filter(w => w.length > 4);
+        const significantBonus = significantCommonWords.length * 0.1;
+
+        // Score final avec bonus
+        const finalScore = Math.min(1.0, commonWordsScore + significantBonus);
+        
+        return finalScore;
+    }
+
+    /**
+     * Extrait les mots significatifs d'un texte (>3 caractères, filtre les mots vides)
+     * @param text - Texte à analyser
+     * @returns Array des mots significatifs
+     */
+    private extractSignificantWords(text: string): string[] {
+        const stopWords = new Set(['les', 'des', 'une', 'est', 'sont', 'avec', 'dans', 'pour', 'que', 'qui', 'sur', 'par', 'and', 'the', 'for', 'are', 'that', 'this', 'with']);
+        
+        return text
+            .replace(/[^\w\s]/g, ' ') // Remplacer ponctuation par espaces
+            .split(/\s+/)
+            .filter(word => word.length > 3 && !stopWords.has(word))
+            .filter((word, index, arr) => arr.indexOf(word) === index); // Supprimer doublons
     }
 
     private getCommonPrefix(str1: string, str2: string): string {

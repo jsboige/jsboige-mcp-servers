@@ -193,7 +193,7 @@ export interface CsvToolRecord {
  */
 export interface ClassifiedContent {
     type: 'User' | 'Assistant';
-    subType: 'UserMessage' | 'ToolResult' | 'ToolCall' | 'Completion';
+    subType: 'UserMessage' | 'ToolResult' | 'ToolCall' | 'Completion' | 'ErrorMessage' | 'ContextCondensation' | 'NewInstructions';
     content: string;
     index: number;
     lineNumber?: number;
@@ -206,15 +206,41 @@ export interface ClassifiedContent {
  */
 export class TraceSummaryService {
     private readonly MCP_TOOLS = [
-        'read_file', 'list_files', 'write_to_file', 'apply_diff', 
+        'read_file', 'list_files', 'write_to_file', 'apply_diff',
         'execute_command', 'browser_action', 'search_files', 'codebase_search',
-        'new_task', 'ask_followup_question', 'attempt_completion', 
+        'new_task', 'ask_followup_question', 'attempt_completion',
         'insert_content', 'search_and_replace', 'use_mcp_tool'
     ];
+    
+    private usedIds: Set<string> = new Set(); // ChatGPT-5: Tracking pour éviter doublons d'IDs
 
     constructor(
         private readonly exportConfigManager: ExportConfigManager
     ) {}
+
+    /**
+     * ChatGPT-5: Génère un ID unique avec système anti-collision
+     */
+    private generateUniqueId(baseId: string): string {
+        let uniqueId = baseId;
+        let counter = 1;
+        
+        // Si collision, ajouter suffixe --n
+        while (this.usedIds.has(uniqueId)) {
+            uniqueId = `${baseId}--${counter}`;
+            counter++;
+        }
+        
+        this.usedIds.add(uniqueId);
+        return uniqueId;
+    }
+
+    /**
+     * ChatGPT-5: Reset le tracking d'IDs au début de chaque génération
+     */
+    private resetIdTracking(): void {
+        this.usedIds.clear();
+    }
 
     /**
      * Génère un résumé intelligent à partir d'un ConversationSkeleton
@@ -224,6 +250,9 @@ export class TraceSummaryService {
         options: Partial<SummaryOptions> = {}
     ): Promise<SummaryResult> {
         try {
+            // ChatGPT-5: Reset tracking d'IDs pour éviter doublons
+            this.resetIdTracking();
+            
             const fullOptions = this.mergeWithDefaultOptions(options);
             
             // Dispatcher selon le format de sortie
@@ -300,20 +329,23 @@ export class TraceSummaryService {
 
         for (const message of messages) {
             if (message.role === 'user') {
-                const isToolResult = this.isToolResult(message.content);
+                const contentStr = this.extractTextContent(message.content);
+                const subType = this.determineUserSubType(contentStr);
+                const isToolResult = subType === 'ToolResult';
                 classified.push({
                     type: 'User',
-                    subType: isToolResult ? 'ToolResult' : 'UserMessage',
+                    subType: subType as any, // Utilise la logique complète de classification
                     content: message.content,
                     index: index++,
                     toolType: isToolResult ? this.extractToolType(message.content) : undefined,
                     resultType: isToolResult ? this.getResultType(message.content) : undefined
                 });
             } else if (message.role === 'assistant') {
-                const isCompletion = this.isCompletionMessage(message.content);
+                const contentStr = this.extractTextContent(message.content);
+                const subType = this.determineAssistantSubType(contentStr);
                 classified.push({
                     type: 'Assistant',
-                    subType: isCompletion ? 'Completion' : 'ToolCall',
+                    subType: subType as any, // Utilise la logique complète de classification
                     content: message.content,
                     index: index++
                 });
@@ -417,7 +449,7 @@ export class TraceSummaryService {
         // Traiter les sections Assistant
         for (const match of assistantMatches) {
             const cleanContent = match[1].trim(); // Utiliser le groupe de capture
-            const subType = cleanContent.includes('<attempt_completion>') ? 'Completion' : 'ToolCall';
+            const subType = this.determineAssistantSubType(cleanContent);
             allSections.push({
                 type: 'Assistant',
                 subType,
@@ -450,14 +482,75 @@ export class TraceSummaryService {
      * Détermine le sous-type d'une section User (logique PowerShell)
      */
     private determineUserSubType(content: string): string {
-        if (/^\[([^\]]+)\] Result:/.test(content)) {
+        const trimmed = content.trim();
+        
+        // 1. Résultats d'outils (priorité haute) - CORRECTION RÉGRESSION
+        // Format classique : [tool_name] Result:
+        if (/^\[([^\]]+)\] Result:/.test(trimmed)) {
             return "ToolResult";
-        } else if (/(context|contexte).*(condensation|summary|résumé|resume)/i.test(content) ||
-                   /(condensation|summary|résumé|resume).*(context|contexte)/i.test(content)) {
-            return "ContextCondensation";
-        } else {
-            return "UserMessage";
         }
+        
+        // Format JSON Roo : {"tool":"...", "type":"use_mcp_tool", etc.
+        if (/^{\s*"(tool|type)"\s*:/.test(trimmed)) {
+            return "ToolResult";
+        }
+        
+        // 2. Messages d'erreur système (SDDD: restent rouges)
+        if (/^\[ERROR\]/i.test(trimmed)) {
+            return "ErrorMessage";
+        }
+        
+        // 3. Messages de condensation contexte (SDDD: nouvelle détection spécifique)
+        if (/^1\.\s*\*\*Previous Conversation:\*\*/i.test(trimmed) ||
+            /^1\.\s*Previous Conversation:/i.test(trimmed) ||
+            trimmed.startsWith("1. **Previous Conversation:**")) {
+            return "ContextCondensation";
+        }
+        
+        // 4. Messages d'instructions continuation (SDDD: extraire contenu qui suit)
+        if (/^New instructions for task continuation:/i.test(trimmed)) {
+            return "NewInstructions";
+        }
+        
+        // 5. Messages utilisateur normaux (SDDD: couleur violette)
+        return "UserMessage";
+    }
+
+    /**
+     * SDDD Phase 9: Améliore la détection des messages assistant avec nom d'outil
+     */
+    private determineAssistantSubType(content: string): string {
+        const trimmed = content.trim();
+
+        // 1. Messages de completion (priorité haute)
+        if (content.includes('<attempt_completion>')) {
+            console.log(`✅ Matched: Completion`);
+            return 'Completion';
+        }
+        
+        // 2. Messages d'erreur système (SDDD: peuvent venir des assistants aussi)
+        if (/^\[ERROR\]/i.test(trimmed)) {
+            console.log(`✅ Matched: ErrorMessage`);
+            return 'ErrorMessage';
+        }
+        
+        // 3. Messages de condensation contexte (SDDD: souvent générés par assistant)
+        if (/^1\.\s*\*\*Previous Conversation:\*\*/i.test(trimmed) ||
+            /^1\.\s*Previous Conversation:/i.test(trimmed) ||
+            trimmed.startsWith("1. **Previous Conversation:**")) {
+            console.log(`🎯 Matched: ContextCondensation!`);
+            return 'ContextCondensation';
+        }
+        
+        // 4. Messages d'instructions continuation (SDDD: peuvent venir des assistants)
+        if (/^New instructions for task continuation:/i.test(trimmed)) {
+            console.log(`✅ Matched: NewInstructions`);
+            return 'NewInstructions';
+        }
+        
+        // 5. Messages d'outils normaux
+        console.log(`❌ No special match, defaulting to ToolCall`);
+        return 'ToolCall';
     }
 
     /**
@@ -476,6 +569,13 @@ export class TraceSummaryService {
 
             switch (item.subType) {
                 case 'UserMessage':
+                    userMessages++;
+                    userContentSize += contentSize;
+                    break;
+                case 'ErrorMessage':
+                case 'ContextCondensation':
+                case 'NewInstructions':
+                    // SDDD: Nouveaux types comptés comme messages utilisateur
                     userMessages++;
                     userContentSize += contentSize;
                     break;
@@ -841,11 +941,27 @@ export class TraceSummaryService {
 
 <style>
 .user-message {
+    background-color: #F3E5F5;
+    border-left: 4px solid #9C27B0;
+    padding: 15px;
+    margin: 10px 0;
+    border-radius: 5px;
+}
+.error-message {
     background-color: #FFEBEE;
     border-left: 4px solid #F44336;
     padding: 15px;
     margin: 10px 0;
     border-radius: 5px;
+}
+.context-condensation-message {
+    background-color: #FFF3E0;
+    border-left: 4px solid #FF9500;
+    padding: 15px;
+    margin: 10px 0;
+    border-radius: 5px;
+    font-style: italic;
+    box-shadow: 0 2px 4px rgba(255,149,0,0.1);
 }
 .assistant-message {
     background-color: #E8F4FD;
@@ -883,11 +999,11 @@ export class TraceSummaryService {
     padding-bottom: 10px;
 }
 .toc-user {
-    color: #F44336 !important;
+    color: #9C27B0 !important;
     font-weight: bold;
     text-decoration: none;
 }
-.toc-user:hover { background-color: #FFEBEE; padding: 2px 4px; border-radius: 3px; }
+.toc-user:hover { background-color: #F3E5F5; padding: 2px 4px; border-radius: 3px; }
 .toc-assistant {
     color: #2196F3 !important;
     font-weight: bold;
@@ -948,11 +1064,27 @@ export class TraceSummaryService {
     private generateEmbeddedCss(): string {
         return `<style>
 .user-message {
+    background-color: #F3E5F5;
+    border-left: 4px solid #9C27B0;
+    padding: 15px;
+    margin: 10px 0;
+    border-radius: 5px;
+}
+.error-message {
     background-color: #FFEBEE;
     border-left: 4px solid #F44336;
     padding: 15px;
     margin: 10px 0;
     border-radius: 5px;
+}
+.context-condensation-message {
+    background-color: #FFF3E0;
+    border-left: 4px solid #FF9500;
+    padding: 15px;
+    margin: 10px 0;
+    border-radius: 5px;
+    font-style: italic;
+    box-shadow: 0 2px 4px rgba(255,149,0,0.1);
 }
 .assistant-message {
     background-color: #E8F4FD;
@@ -1026,7 +1158,8 @@ export class TraceSummaryService {
             '<div class="toc">',
             '',
             '### SOMMAIRE DES MESSAGES {#table-des-matieres}',
-            ''
+            '',
+            '<ol class="toc-list">'
         ];
 
         let userMessageCounterToc = 2;
@@ -1037,41 +1170,71 @@ export class TraceSummaryService {
         for (const item of classifiedContent) {
             const firstLine = this.getTruncatedFirstLine(item.content, 200);
             
-            if (item.subType === 'UserMessage') {
-                if (isFirstUser) {
+            if (item.subType === 'UserMessage' || item.subType === 'ErrorMessage' ||
+                item.subType === 'ContextCondensation' || item.subType === 'NewInstructions') {
+                if (isFirstUser && item.subType === 'UserMessage') {
                     const sectionAnchor = `instruction-de-tache-initiale`;
                     const tocAnchor = `toc-${sectionAnchor}`;
-                    const entry = `- <a id="${tocAnchor}" class="toc-anchor"></a><a href="#${sectionAnchor}" class="toc-instruction">INSTRUCTION DE TÂCHE INITIALE - ${firstLine}</a>`;
+                    const entry = `  <li id="${tocAnchor}"><a href="#${sectionAnchor}" class="toc-instruction">INSTRUCTION DE TÂCHE INITIALE - ${firstLine}</a></li>`;
                     parts.push(entry);
                     isFirstUser = false;
                 } else {
                     const sectionAnchor = `message-utilisateur-${userMessageCounterToc}`;
                     const tocAnchor = `toc-${sectionAnchor}`;
-                    const entry = `- <a id="${tocAnchor}" class="toc-anchor"></a><a href="#${sectionAnchor}" class="toc-user">MESSAGE UTILISATEUR #${userMessageCounterToc} - ${firstLine}</a>`;
+                    
+                    let tocLabel = `MESSAGE UTILISATEUR #${userMessageCounterToc}`;
+                    let tocClass = 'toc-user';
+                    
+                    // SDDD Phase 9: Gestion spécifique des nouveaux types dans la TOC
+                    if (item.subType === 'ErrorMessage') {
+                        tocLabel = `ERREUR SYSTÈME #${userMessageCounterToc}`;
+                        tocClass = 'toc-error';
+                    } else if (item.subType === 'ContextCondensation') {
+                        tocLabel = `CONDENSATION CONTEXTE #${userMessageCounterToc}`;
+                        tocClass = 'toc-context-condensation';
+                    } else if (item.subType === 'NewInstructions') {
+                        // Extraire le contenu après "New instructions for task continuation:"
+                        const instructionMatch = item.content.match(/^New instructions for task continuation:\s*(.*)/i);
+                        const actualInstruction = instructionMatch ? instructionMatch[1] : firstLine;
+                        tocLabel = `NOUVELLES INSTRUCTIONS #${userMessageCounterToc}`;
+                        tocClass = 'toc-new-instructions';
+                        
+                        const entry = `  <li id="${tocAnchor}"><a href="#${sectionAnchor}" class="${tocClass}">${tocLabel} - ${actualInstruction}</a></li>`;
+                        parts.push(entry);
+                        userMessageCounterToc++;
+                        continue;
+                    }
+                    
+                    const entry = `  <li id="${tocAnchor}"><a href="#${sectionAnchor}" class="${tocClass}">${tocLabel} - ${firstLine}</a></li>`;
                     parts.push(entry);
                     userMessageCounterToc++;
                 }
             } else if (item.subType === 'ToolResult') {
                 const sectionAnchor = `outil-${toolResultCounterToc}`;
                 const tocAnchor = `toc-${sectionAnchor}`;
-                const entry = `- <a id="${tocAnchor}" class="toc-anchor"></a><a href="#${sectionAnchor}" class="toc-tool">RESULTAT OUTIL #${toolResultCounterToc} - ${firstLine}</a>`;
+                const entry = `  <li id="${tocAnchor}"><a href="#${sectionAnchor}" class="toc-tool">RESULTAT OUTIL #${toolResultCounterToc} - ${firstLine}</a></li>`;
                 parts.push(entry);
                 toolResultCounterToc++;
             } else if (item.type === 'Assistant') {
                 const sectionAnchor = `reponse-assistant-${assistantMessageCounterToc}`;
                 const tocAnchor = `toc-${sectionAnchor}`;
+                
+                // PHASE 9: Extraction du nom d'outil pour l'affichage dans la TOC
+                const toolName = this.extractFirstToolName(item.content);
+                const toolSuffix = toolName ? ` (${toolName})` : '';
+                
                 if (item.subType === 'Completion') {
-                    const entry = `- <a id="${tocAnchor}" class="toc-anchor"></a><a href="#${sectionAnchor}" class="toc-completion">REPONSE ASSISTANT #${assistantMessageCounterToc} (Terminaison) - ${firstLine}</a>`;
+                    const entry = `  <li id="${tocAnchor}"><a href="#${sectionAnchor}" class="toc-completion">REPONSE ASSISTANT #${assistantMessageCounterToc} (Terminaison)${toolSuffix} - ${firstLine}</a></li>`;
                     parts.push(entry);
                 } else {
-                    const entry = `- <a id="${tocAnchor}" class="toc-anchor"></a><a href="#${sectionAnchor}" class="toc-assistant">REPONSE ASSISTANT #${assistantMessageCounterToc} - ${firstLine}</a>`;
+                    const entry = `  <li id="${tocAnchor}"><a href="#${sectionAnchor}" class="toc-assistant">REPONSE ASSISTANT #${assistantMessageCounterToc}${toolSuffix} - ${firstLine}</a></li>`;
                     parts.push(entry);
                 }
                 assistantMessageCounterToc++;
             }
         }
 
-        parts.push('', '</div>');
+        parts.push('</ol>', '', '</div>');
         return parts.join('\n');
     }
 
@@ -1095,6 +1258,38 @@ export class TraceSummaryService {
     }
 
     /**
+     * Extrait le nom du premier outil utilisé dans le message pour l'affichage dans le titre
+     * PHASE 9: Amélioration des titres des messages assistant
+     */
+    private extractFirstToolName(content: string): string | null {
+        if (!content) return null;
+
+        // Liste des outils communs à détecter
+        const commonTools = [
+            'read_file', 'write_to_file', 'apply_diff', 'execute_command',
+            'codebase_search', 'search_files', 'list_files', 'browser_action',
+            'use_mcp_tool', 'list_code_definition_names', 'insert_content',
+            'search_and_replace', 'ask_followup_question', 'attempt_completion'
+        ];
+
+        // Cherche le premier outil XML trouvé dans le contenu
+        for (const toolName of commonTools) {
+            const toolRegex = new RegExp(`<${toolName}[^>]*>`, 'i');
+            if (toolRegex.test(content)) {
+                return toolName;
+            }
+        }
+
+        // Cherche également les balises use_mcp_tool avec server_name
+        const mcpToolMatch = content.match(/<use_mcp_tool>[\s\S]*?<server_name>([^<]+)<\/server_name>/);
+        if (mcpToolMatch) {
+            return `use_mcp_tool:${mcpToolMatch[1].trim()}`;
+        }
+
+        return null;
+    }
+
+    /**
      * Génère le footer du résumé
      */
     private generateFooter(options: SummaryOptions): string {
@@ -1109,7 +1304,6 @@ export class TraceSummaryService {
      * Fusionne les options avec les valeurs par défaut
      */
     private mergeWithDefaultOptions(options: Partial<SummaryOptions>): SummaryOptions {
-        console.log('🔍 DEBUG mergeWithDefaultOptions - input options.jsonVariant:', options.jsonVariant);
         const result = {
             detailLevel: options.detailLevel || 'Full',
             truncationChars: options.truncationChars || 0,
@@ -1122,8 +1316,6 @@ export class TraceSummaryService {
             // SDDD Phase 3: Feature flag pour les strategies (désactivé par défaut pour compatibilité)
             enableDetailLevels: options.enableDetailLevels || false
         };
-        console.log('🔍 DEBUG mergeWithDefaultOptions - result.jsonVariant:', result.jsonVariant);
-        console.log('🔍 DEBUG mergeWithDefaultOptions - result.enableDetailLevels:', result.enableDetailLevels);
         return result;
     }
 
@@ -1251,12 +1443,29 @@ export class TraceSummaryService {
             parts.push("---");
         } else {
             const anchor = `message-utilisateur-${counter}`;
-            // ChatGPT-5: Une seule ancre HTML avant le titre (pas de doublon)
-            parts.push(`<a id="${anchor}"></a>`);
-            parts.push(`### MESSAGE UTILISATEUR #${counter} - ${firstLine}`);
+            let title = `MESSAGE UTILISATEUR #${counter} - ${firstLine}`;
+            let cssClass = 'user-message';
+            
+            // SDDD Phase 9: Gestion spécifique des nouveaux types
+            if (item.subType === 'ErrorMessage') {
+                title = `ERREUR SYSTÈME #${counter} - ${firstLine}`;
+                cssClass = 'error-message';
+            } else if (item.subType === 'ContextCondensation') {
+                title = `CONDENSATION CONTEXTE #${counter} - ${firstLine}`;
+                cssClass = 'context-condensation-message';
+            } else if (item.subType === 'NewInstructions') {
+                // Extraire le contenu après "New instructions for task continuation:"
+                const instructionMatch = item.content.match(/^New instructions for task continuation:\s*(.*)/i);
+                const actualInstruction = instructionMatch ? instructionMatch[1] : firstLine;
+                title = `NOUVELLES INSTRUCTIONS #${counter} - ${actualInstruction}`;
+                cssClass = 'user-message'; // Même couleur que les messages utilisateur normaux
+            }
+            
+            // ChatGPT-5: ID directement sur le <h3> (stratégie robuste)
+            parts.push(`<h3 id="${anchor}">${title}</h3>`);
             parts.push("");
             
-            parts.push('<div class="user-message">');
+            parts.push(`<div class="${cssClass}">`);
             const cleanedContent = this.cleanUserMessage(item.content);
             parts.push(cleanedContent);
             parts.push('</div>');
@@ -1280,9 +1489,8 @@ export class TraceSummaryService {
         const firstLine = this.getTruncatedFirstLine(toolName, 200);
         const anchor = `outil-${counter}`;
         
-        // ChatGPT-5: Une seule ancre HTML avant le titre (pas de doublon)
-        parts.push(`<a id="${anchor}"></a>`);
-        parts.push(`### RÉSULTAT OUTIL #${counter} - ${firstLine}`);
+        // ChatGPT-5: ID directement sur le <h3> (stratégie robuste)
+        parts.push(`<h3 id="${anchor}">RÉSULTAT OUTIL #${counter} - ${firstLine}</h3>`);
         parts.push("");
         
         parts.push('<div class="tool-message">');
@@ -1325,16 +1533,27 @@ export class TraceSummaryService {
         const anchor = `reponse-assistant-${counter}`;
         const isCompletion = item.subType === 'Completion';
         
-        // ChatGPT-5: Une seule ancre HTML avant le titre (pas de doublon)
-        parts.push(`<a id="${anchor}"></a>`);
+        // PHASE 9: Détection du premier outil utilisé pour l'afficher dans le titre
+        const toolName = this.extractFirstToolName(item.content);
+        const toolSuffix = toolName ? ` (${toolName})` : '';
+        
+        // ChatGPT-5: ID directement sur le <h3> (stratégie robuste)
         const title = isCompletion
-            ? `### RÉPONSE ASSISTANT #${counter} (Terminaison) - ${firstLine}`
-            : `### RÉPONSE ASSISTANT #${counter} - ${firstLine}`;
+            ? `<h3 id="${anchor}">RÉPONSE ASSISTANT #${counter} (Terminaison)${toolSuffix} - ${firstLine}</h3>`
+            : `<h3 id="${anchor}">RÉPONSE ASSISTANT #${counter}${toolSuffix} - ${firstLine}</h3>`;
         
         parts.push(title);
         parts.push("");
         
-        const cssClass = isCompletion ? 'completion-message' : 'assistant-message';
+        // SDDD: Mapping des subtypes vers les classes CSS appropriées
+        let cssClass = 'assistant-message'; // Classe par défaut
+        if (item.subType === 'Completion') {
+            cssClass = 'completion-message';
+        } else if (item.subType === 'ContextCondensation') {
+            cssClass = 'context-condensation-message';
+        } else if (item.subType === 'ErrorMessage') {
+            cssClass = 'error-message';
+        }
         parts.push(`<div class="${cssClass}">`);
         
         // Extraction et traitement du contenu

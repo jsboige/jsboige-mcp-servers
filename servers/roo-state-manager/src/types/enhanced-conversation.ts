@@ -36,7 +36,7 @@ export interface ToolResultDetails {
  */
 export interface ClassifiedContent {
     type: 'User' | 'Assistant';
-    subType: 'UserMessage' | 'ToolResult' | 'ToolCall' | 'Completion' | 'Thinking';
+    subType: 'UserMessage' | 'ToolResult' | 'ToolCall' | 'Completion' | 'Thinking' | 'ErrorMessage' | 'ContextCondensation' | 'NewInstructions';
     content: string;
     index: number;
     
