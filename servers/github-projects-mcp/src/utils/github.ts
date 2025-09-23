@@ -17,8 +17,8 @@ export function getGitHubClient(owner: string, accounts: GitHubAccount[]): Octok
     let token: string | undefined;
     let account: GitHubAccount | undefined;
 
-    if (owner && accounts) {
-        account = accounts.find(acc => acc.owner.toLowerCase() === owner.toLowerCase());
+    if (owner && typeof owner === 'string' && accounts) {
+        account = accounts.find(acc => acc.owner && acc.owner.toLowerCase() === owner.toLowerCase());
     }
 
     if (!account && accounts && accounts.length > 0) {
