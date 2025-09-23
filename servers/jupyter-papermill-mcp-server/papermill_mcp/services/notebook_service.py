@@ -783,7 +783,9 @@ class NotebookService:
             
             input_path = Path(input_path)
             if output_path is None:
-                output_path = input_path.parent / f"{input_path.stem}_executed_solution_a.ipynb"
+                # CORRECTION BUG INSTABILITÉ : Éviter conflits de fichiers avec timestamps
+                timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+                output_path = input_path.parent / f"{input_path.stem}_executed_{timestamp}.ipynb"
             else:
                 output_path = Path(output_path)
             
@@ -847,7 +849,7 @@ class NotebookService:
         
         Args:
             input_path: Path to input notebook
-            parameters: Parameters to inject
+            parameters: Parameters to inject (Dict or JSON string from Roo)
             output_path: Optional path to output notebook
             
         Returns:
@@ -856,6 +858,21 @@ class NotebookService:
         try:
             import datetime
             import os
+            import json
+            
+            # CORRECTION BUG PYDANTIC : Gérer sérialisation JSON via Roo
+            if isinstance(parameters, str):
+                # Roo peut envoyer les paramètres comme string JSON
+                try:
+                    parameters = json.loads(parameters) if parameters else {}
+                except json.JSONDecodeError:
+                    # Si ce n'est pas du JSON valide, retourner erreur explicite
+                    return {
+                        "status": "error",
+                        "error": f"Paramètres invalides - JSON attendu: {parameters}",
+                        "error_type": "InvalidParametersFormat",
+                        "method": "parameterize_notebook_fastmcp"
+                    }
             
             input_path = Path(input_path)
             if output_path is None:

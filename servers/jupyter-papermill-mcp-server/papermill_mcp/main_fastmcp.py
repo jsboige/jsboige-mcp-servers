@@ -1,6 +1,22 @@
 #!/usr/bin/env python3
 """
-Serveur MCP pour Jupyter et Papermill utilisant FastMCP
+⚠️  API OBSOLÈTE - UTILISER main.py POUR LA NOUVELLE ARCHITECTURE ⚠️
+
+Serveur MCP pour Jupyter et Papermill utilisant FastMCP (OBSOLÈTE)
+
+🔄 MIGRATION REQUISE :
+- Ancienne API: main_fastmcp.py (FastMCP simple) - OBSOLÈTE
+- Nouvelle API: main.py (FastMCP consolidé) - Architecture layered 31 outils
+
+📍 CORRECTIONS SDDD DÉJÀ INTÉGRÉES dans main.py :
+- parameterize_notebook: Support JSON parsing automatique
+- execute_notebook_solution_a: Timestamps uniques anti-conflits
+
+🚀 UTILISER : python -m papermill_mcp.main (architecture consolidée)
+❌ ÉVITER : python -m papermill_mcp.main_fastmcp (obsolète)
+
+Date d'obsolescence : 23 septembre 2025
+Agent : Debug - Reconsolidation SDDD sur architecture FastMCP consolidée
 """
 
 import asyncio

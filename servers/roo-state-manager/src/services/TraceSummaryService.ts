@@ -202,6 +202,24 @@ export interface ClassifiedContent {
 }
 
 /**
+ * ChatGPT-5: Type de message pour la bijection TOC ↔ Corps
+ */
+export type MsgType = 'assistant' | 'outil' | 'user' | 'erreur' | 'condensation' | 'new-instructions' | 'completion';
+
+/**
+ * ChatGPT-5: Item unifié pour la source unique TOC + Corps
+ */
+export interface RenderItem {
+    type: MsgType;
+    n: number;
+    title: string;
+    html: string;
+    originalIndex?: number;
+    toolType?: string;
+    resultType?: string;
+}
+
+/**
  * Service principal de génération de résumés intelligents
  */
 export class TraceSummaryService {
@@ -240,6 +258,315 @@ export class TraceSummaryService {
      */
     private resetIdTracking(): void {
         this.usedIds.clear();
+    }
+
+    /**
+     * ChatGPT-5: Génère l'ID de section selon le contrat strict
+     */
+    private generateSectionId(item: RenderItem): string {
+        const baseId = (() => {
+            switch (item.type) {
+                case 'assistant': return `reponse-assistant-${item.n}`;
+                case 'outil': return `outil-${item.n}`;
+                case 'user': return `message-utilisateur-${item.n}`;
+                case 'erreur': return `erreur-${item.n}`;
+                case 'condensation': return `condensation-${item.n}`;
+                case 'new-instructions': return `nouvelles-instructions-${item.n}`;
+                case 'completion': return `completion-${item.n}`;
+                default: return `unknown-${item.n}`;
+            }
+        })();
+        
+        return this.generateUniqueId(baseId);
+    }
+
+    /**
+     * ChatGPT-5: Génère l'ID de TOC selon le contrat strict
+     */
+    private generateTocId(item: RenderItem): string {
+        return this.generateUniqueId(`toc-${this.generateSectionId(item).replace(/--\d+$/, '')}`);
+    }
+
+    /**
+     * ChatGPT-5: Détermine la classe CSS TOC selon le type
+     */
+    private getTocClass(type: MsgType): string {
+        const tocClassMap: Record<MsgType, string> = {
+            assistant: 'toc-assistant',
+            outil: 'toc-tool',
+            user: 'toc-user',
+            erreur: 'toc-error',
+            condensation: 'toc-context-condensation',
+            'new-instructions': 'toc-new-instructions',
+            completion: 'toc-completion'
+        };
+        return tocClassMap[type];
+    }
+
+    /**
+     * ChatGPT-5: Détermine la classe CSS de contenu selon le type
+     */
+    private getBoxClass(type: MsgType): string {
+        const boxClassMap: Record<MsgType, string> = {
+            assistant: 'assistant-message',
+            outil: 'tool-message',
+            user: 'user-message',
+            erreur: 'error-message',
+            condensation: 'context-condensation-message',
+            'new-instructions': 'user-message',
+            completion: 'completion-message'
+        };
+        return boxClassMap[type];
+    }
+
+    /**
+     * ChatGPT-5: Hygiène du contenu HTML (encapsulation sandbox anti-poupées russes)
+     */
+    private sanitizeSectionHtml(html: string): string {
+        if (!html) return '';
+
+        let sanitized = html;
+
+        // 1) Dé-duplication: si la 1ère ligne == 2ème ligne (trim), supprimer la 2ème
+        sanitized = sanitized.replace(/^([^\n]+)\n\1(\n|$)/m, '$1$2');
+
+        // 2) ChatGPT-5: Balance les fences ``` DANS LA SECTION : si impair, ajouter fermeture
+        const fenceCount = (sanitized.match(/^```/gm) || []).length;
+        if (fenceCount % 2 === 1) {
+            console.log(`🔧 Sandbox: Fermeture fence manquante détectée, ajout automatique`);
+            sanitized += '\n```\n';
+        }
+
+        // 3) ChatGPT-5: Balance les <details> DANS LA SECTION : compter et compléter
+        const openDetailsCount = (sanitized.match(/<details(\s|>)/g) || []).length;
+        const closeDetailsCount = (sanitized.match(/<\/details>/g) || []).length;
+        const missingDetails = openDetailsCount - closeDetailsCount;
+        if (missingDetails > 0) {
+            console.log(`🔧 Sandbox: ${missingDetails} balise(s) </details> manquante(s), ajout automatique`);
+            for (let i = 0; i < missingDetails; i++) {
+                sanitized += '\n</details>\n';
+            }
+        }
+
+        // 4) ChatGPT-5: Supprimer les ancres vides en tête de section
+        sanitized = sanitized.replace(/^(?:\s*\n)*<a id="[^"]+"><\/a>\s*\n/m, '');
+
+        // 5) Normaliser les lignes vides : max 1 ligne vide consécutive
+        sanitized = sanitized.replace(/\n{3,}/g, '\n\n');
+
+        // 6) ChatGPT-5: Neutraliser balises égarées (fermetures sans ouverture dans la section)
+        sanitized = sanitized.replace(/(^|\n)(<\/div>)(?=\s*\n|$)/gm, '$1&lt;/div&gt;');
+
+        // 7) ChatGPT-5: Échapper les balises XML orphelines qui pourraient corrompre le HTML
+        sanitized = sanitized.replace(/(<[^>]+>)(?![^<]*<\/[^>]+>)/g, (match) => {
+            // Si c'est une balise d'ouverture sans fermeture correspondante visible
+            if (!match.includes('</') && !match.endsWith('/>')) {
+                return match.replace(/</g, '&lt;').replace(/>/g, '&gt;');
+            }
+            return match;
+        });
+
+        return sanitized.trim();
+    }
+
+    /**
+     * ChatGPT-5: Convertit ClassifiedContent vers RenderItem (source unique)
+     */
+    private convertToRenderItems(classifiedContent: ClassifiedContent[]): RenderItem[] {
+        const items: RenderItem[] = [];
+        let userCounter = 1;
+        let assistantCounter = 1;
+        let toolCounter = 1;
+        let errorCounter = 1;
+        let condensationCounter = 1;
+        let instructionCounter = 1;
+        let completionCounter = 1;
+        let isFirstUser = true;
+
+        for (const item of classifiedContent) {
+            let renderItem: RenderItem | null = null;
+
+            switch (item.subType) {
+                case 'UserMessage':
+                    if (isFirstUser) {
+                        renderItem = {
+                            type: 'user',
+                            n: 1,
+                            title: 'INSTRUCTION DE TÂCHE INITIALE',
+                            html: item.content,
+                            originalIndex: item.index
+                        };
+                        isFirstUser = false;
+                    } else {
+                        const firstLine = this.getTruncatedFirstLine(item.content, 200);
+                        renderItem = {
+                            type: 'user',
+                            n: userCounter++,
+                            title: `UTILISATEUR #${userCounter - 1} - ${firstLine}`,
+                            html: item.content,
+                            originalIndex: item.index
+                        };
+                    }
+                    break;
+
+                case 'ErrorMessage':
+                    const errorFirstLine = this.getTruncatedFirstLine(item.content, 200);
+                    renderItem = {
+                        type: 'erreur',
+                        n: errorCounter++,
+                        title: `ERREUR SYSTÈME #${errorCounter - 1} - ${errorFirstLine}`,
+                        html: item.content,
+                        originalIndex: item.index
+                    };
+                    break;
+
+                case 'ContextCondensation':
+                    const condensationFirstLine = this.getTruncatedFirstLine(item.content, 200);
+                    renderItem = {
+                        type: 'condensation',
+                        n: condensationCounter++,
+                        title: `CONDENSATION CONTEXTE #${condensationCounter - 1} - ${condensationFirstLine}`,
+                        html: item.content,
+                        originalIndex: item.index
+                    };
+                    break;
+
+                case 'NewInstructions':
+                    const instructionMatch = item.content.match(/^New instructions for task continuation:\s*(.*)/i);
+                    const actualInstruction = instructionMatch ? instructionMatch[1] : this.getTruncatedFirstLine(item.content, 200);
+                    renderItem = {
+                        type: 'new-instructions',
+                        n: instructionCounter++,
+                        title: `NOUVELLES INSTRUCTIONS #${instructionCounter - 1} - ${this.getTruncatedFirstLine(actualInstruction, 200)}`,
+                        html: item.content,
+                        originalIndex: item.index
+                    };
+                    break;
+
+                case 'ToolResult':
+                    const toolName = item.toolType || 'outil';
+                    const toolFirstLine = this.getTruncatedFirstLine(toolName, 200);
+                    renderItem = {
+                        type: 'outil',
+                        n: toolCounter++,
+                        title: `OUTIL #${toolCounter - 1} - ${toolFirstLine}`,
+                        html: item.content,
+                        originalIndex: item.index,
+                        toolType: item.toolType,
+                        resultType: item.resultType
+                    };
+                    break;
+
+                case 'ToolCall':
+                    const assistantFirstLine = this.getTruncatedFirstLine(item.content, 200);
+                    const toolNameInTitle = this.extractFirstToolName(item.content);
+                    const toolSuffix = toolNameInTitle ? ` (${toolNameInTitle})` : '';
+                    renderItem = {
+                        type: 'assistant',
+                        n: assistantCounter++,
+                        title: `ASSISTANT #${assistantCounter - 1}${toolSuffix} - ${assistantFirstLine}`,
+                        html: item.content,
+                        originalIndex: item.index
+                    };
+                    break;
+
+                case 'Completion':
+                    const completionFirstLine = this.getTruncatedFirstLine(item.content, 200);
+                    const completionToolName = this.extractFirstToolName(item.content);
+                    const completionToolSuffix = completionToolName ? ` (${completionToolName})` : '';
+                    renderItem = {
+                        type: 'completion',
+                        n: completionCounter++,
+                        title: `ASSISTANT #${assistantCounter} (Terminaison)${completionToolSuffix} - ${completionFirstLine}`,
+                        html: item.content,
+                        originalIndex: item.index
+                    };
+                    assistantCounter++; // Increment for next assistant
+                    break;
+            }
+
+            if (renderItem) {
+                items.push(renderItem);
+            }
+        }
+
+        return items;
+    }
+
+    /**
+     * ChatGPT-5: Rend la TOC selon la spécification stricte
+     */
+    private renderTocFromItems(items: RenderItem[]): string {
+        const parts: string[] = [
+            '<div class="toc">',
+            '',
+            '### SOMMAIRE DES MESSAGES {#table-des-matieres}',
+            '',
+            '<ol class="toc-list">'
+        ];
+
+        for (const item of items) {
+            const sectionId = this.generateSectionId(item);
+            const tocId = this.generateTocId(item);
+            const tocClass = this.getTocClass(item.type);
+            
+            const entry = `  <li id="${tocId}"><a class="${tocClass}" href="#${sectionId}">${item.title}</a></li>`;
+            parts.push(entry);
+        }
+
+        parts.push('</ol>', '', '</div>');
+        return parts.join('\n');
+    }
+
+    /**
+     * ChatGPT-5: Rend une section selon la spécification stricte
+     */
+    private renderSectionFromItem(item: RenderItem, options: SummaryOptions): string {
+        const sectionId = this.generateSectionId(item);
+        const boxClass = this.getBoxClass(item.type);
+        const sanitizedHtml = this.sanitizeSectionHtml(item.html);
+        
+        const parts: string[] = [];
+        
+        // Heading avec ID
+        parts.push(`<h3 id="${sectionId}">${item.title}</h3>`);
+        parts.push('');
+        
+        // Conteneur typé avec contenu sanitisé
+        parts.push(`<div class="${boxClass}">`);
+        
+        // Traitement spécial pour le premier message utilisateur (instruction de tâche)
+        if (item.type === 'user' && item.n === 1) {
+            const processedContent = this.processInitialTaskContent(sanitizedHtml);
+            parts.push(processedContent);
+        } else if (item.type === 'outil' && this.shouldShowDetailedResults(options.detailLevel)) {
+            // Traitement spécial pour les outils avec détails
+            parts.push(`**Résultat d'outil :** \`${item.toolType || 'outil'}\``);
+            parts.push('');
+            
+            const resultContent = this.extractToolResultContent(sanitizedHtml);
+            const resultType = item.resultType || 'résultat';
+            
+            parts.push('<details>');
+            parts.push(`<summary>**${resultType} :** Cliquez pour afficher</summary>`);
+            parts.push('');
+            parts.push('```');
+            parts.push(resultContent);
+            parts.push('```');
+            parts.push('</details>');
+        } else {
+            // Contenu normal
+            parts.push(sanitizedHtml);
+        }
+        
+        parts.push('</div>');
+        parts.push('');
+        
+        // Lien de retour TOC (toujours vers l'entrée TOC)
+        const tocId = this.generateTocId(item);
+        parts.push(`<div class="back"><a href="#${tocId}" title="Retour à l'entrée correspondante dans la table des matières">^ TOC</a></div>`);
+        
+        return parts.join('\n');
     }
 
     /**
@@ -1120,6 +1447,56 @@ export class TraceSummaryService {
     border-bottom: 2px solid #6c757d;
     padding-bottom: 10px;
 }
+.toc-user {
+    color: #9C27B0 !important;
+    font-weight: bold;
+    text-decoration: none;
+}
+.toc-user:hover { background-color: #F3E5F5; padding: 2px 4px; border-radius: 3px; }
+.toc-assistant {
+    color: #2196F3 !important;
+    font-weight: bold;
+    text-decoration: none;
+}
+.toc-assistant:hover { background-color: #E8F4FD; padding: 2px 4px; border-radius: 3px; }
+.toc-tool {
+    color: #FF9800 !important;
+    font-weight: bold;
+    text-decoration: none;
+}
+.toc-tool:hover { background-color: #FFF8E1; padding: 2px 4px; border-radius: 3px; }
+.toc-context-condensation {
+    color: #FF9500 !important;
+    font-weight: bold;
+    text-decoration: none;
+}
+.toc-context-condensation:hover { background-color: #FFF3E0; padding: 2px 4px; border-radius: 3px; }
+.toc-error {
+    color: #F44336 !important;
+    font-weight: bold;
+    text-decoration: none;
+}
+.toc-error:hover { background-color: #FFEBEE; padding: 2px 4px; border-radius: 3px; }
+.toc-new-instructions {
+    color: #9C27B0 !important;
+    font-weight: bold;
+    text-decoration: none;
+    font-style: italic;
+}
+.toc-new-instructions:hover { background-color: #F3E5F5; padding: 2px 4px; border-radius: 3px; }
+.toc-completion {
+    color: #4CAF50 !important;
+    font-weight: bold;
+    text-decoration: none;
+}
+.toc-completion:hover { background-color: #E8F5E8; padding: 2px 4px; border-radius: 3px; }
+.toc-instruction {
+    color: #9C27B0 !important;
+    font-weight: bold;
+    text-decoration: none;
+    font-style: italic;
+}
+.toc-instruction:hover { background-color: #F3E5F5; padding: 2px 4px; border-radius: 3px; }
 </style>`;
     }
 
@@ -1154,6 +1531,9 @@ export class TraceSummaryService {
      * Génère la table des matières
      */
     private generateTableOfContents(classifiedContent: ClassifiedContent[], options: SummaryOptions): string {
+        // ChatGPT-5: Reset ID tracking pour garantir l'unicité
+        this.resetIdTracking();
+        
         const parts: string[] = [
             '<div class="toc">',
             '',
@@ -1173,19 +1553,19 @@ export class TraceSummaryService {
             if (item.subType === 'UserMessage' || item.subType === 'ErrorMessage' ||
                 item.subType === 'ContextCondensation' || item.subType === 'NewInstructions') {
                 if (isFirstUser && item.subType === 'UserMessage') {
-                    const sectionAnchor = `instruction-de-tache-initiale`;
-                    const tocAnchor = `toc-${sectionAnchor}`;
+                    const sectionAnchor = this.generateUniqueId('instruction-de-tache-initiale');
+                    const tocAnchor = this.generateUniqueId(`toc-${sectionAnchor}`);
                     const entry = `  <li id="${tocAnchor}"><a href="#${sectionAnchor}" class="toc-instruction">INSTRUCTION DE TÂCHE INITIALE - ${firstLine}</a></li>`;
                     parts.push(entry);
                     isFirstUser = false;
                 } else {
-                    const sectionAnchor = `message-utilisateur-${userMessageCounterToc}`;
-                    const tocAnchor = `toc-${sectionAnchor}`;
+                    const sectionAnchor = this.generateUniqueId(`message-utilisateur-${userMessageCounterToc}`);
+                    const tocAnchor = this.generateUniqueId(`toc-${sectionAnchor.replace(/--\d+$/, '')}-${userMessageCounterToc}`);
                     
                     let tocLabel = `UTILISATEUR #${userMessageCounterToc}`;
                     let tocClass = 'toc-user';
                     
-                    // SDDD Phase 9: Gestion spécifique des nouveaux types dans la TOC
+                    // ChatGPT-5: Gestion spécifique des nouveaux types dans la TOC avec classes CSS correctes
                     if (item.subType === 'ErrorMessage') {
                         tocLabel = `ERREUR SYSTÈME #${userMessageCounterToc}`;
                         tocClass = 'toc-error';
@@ -1196,10 +1576,10 @@ export class TraceSummaryService {
                         // Extraire le contenu après "New instructions for task continuation:"
                         const instructionMatch = item.content.match(/^New instructions for task continuation:\s*(.*)/i);
                         const actualInstruction = instructionMatch ? instructionMatch[1] : firstLine;
-                        tocLabel = `UTILISATEUR #${userMessageCounterToc}`;
+                        tocLabel = `NOUVELLES INSTRUCTIONS #${userMessageCounterToc}`;
                         tocClass = 'toc-new-instructions';
                         
-                        const entry = `  <li id="${tocAnchor}"><a href="#${sectionAnchor}" class="${tocClass}">${tocLabel} - ${actualInstruction}</a></li>`;
+                        const entry = `  <li id="${tocAnchor}"><a href="#${sectionAnchor}" class="${tocClass}">${tocLabel} - ${this.getTruncatedFirstLine(actualInstruction, 200)}</a></li>`;
                         parts.push(entry);
                         userMessageCounterToc++;
                         continue;
@@ -1210,16 +1590,16 @@ export class TraceSummaryService {
                     userMessageCounterToc++;
                 }
             } else if (item.subType === 'ToolResult') {
-                const sectionAnchor = `outil-${toolResultCounterToc}`;
-                const tocAnchor = `toc-${sectionAnchor}`;
+                const sectionAnchor = this.generateUniqueId(`outil-${toolResultCounterToc}`);
+                const tocAnchor = this.generateUniqueId(`toc-${sectionAnchor.replace(/--\d+$/, '')}-${toolResultCounterToc}`);
                 const entry = `  <li id="${tocAnchor}"><a href="#${sectionAnchor}" class="toc-tool">OUTIL #${toolResultCounterToc} - ${firstLine}</a></li>`;
                 parts.push(entry);
                 toolResultCounterToc++;
             } else if (item.type === 'Assistant') {
-                const sectionAnchor = `reponse-assistant-${assistantMessageCounterToc}`;
-                const tocAnchor = `toc-${sectionAnchor}`;
+                const sectionAnchor = this.generateUniqueId(`reponse-assistant-${assistantMessageCounterToc}`);
+                const tocAnchor = this.generateUniqueId(`toc-${sectionAnchor.replace(/--\d+$/, '')}-${assistantMessageCounterToc}`);
                 
-                // PHASE 9: Extraction du nom d'outil pour l'affichage dans la TOC
+                // ChatGPT-5: Extraction du nom d'outil pour l'affichage dans la TOC
                 const toolName = this.extractFirstToolName(item.content);
                 const toolSuffix = toolName ? ` (${toolName})` : '';
                 
@@ -1432,7 +1812,8 @@ export class TraceSummaryService {
         const parts: string[] = [];
         
         if (isFirst) {
-            parts.push('<h3 id="instruction-de-tache-initiale">INSTRUCTION DE TÂCHE INITIALE</h3>');
+            const anchor = this.generateUniqueId('instruction-de-tache-initiale');
+            parts.push(`<h3 id="${anchor}">INSTRUCTION DE TÂCHE INITIALE</h3>`);
             parts.push("");
             
             // Traitement spécial pour la première tâche (avec environment_details)
@@ -1442,11 +1823,11 @@ export class TraceSummaryService {
             parts.push("");
             parts.push("---");
         } else {
-            const anchor = `message-utilisateur-${counter}`;
+            const anchor = this.generateUniqueId(`message-utilisateur-${counter}`);
             let title = `UTILISATEUR #${counter} - ${firstLine}`;
             let cssClass = 'user-message';
             
-            // SDDD Phase 9: Gestion spécifique des nouveaux types
+            // ChatGPT-5: Gestion spécifique des nouveaux types avec titres et classes CSS corrects
             if (item.subType === 'ErrorMessage') {
                 title = `ERREUR SYSTÈME #${counter} - ${firstLine}`;
                 cssClass = 'error-message';
@@ -1457,7 +1838,7 @@ export class TraceSummaryService {
                 // Extraire le contenu après "New instructions for task continuation:"
                 const instructionMatch = item.content.match(/^New instructions for task continuation:\s*(.*)/i);
                 const actualInstruction = instructionMatch ? instructionMatch[1] : firstLine;
-                title = `UTILISATEUR #${counter} - ${actualInstruction}`;
+                title = `NOUVELLES INSTRUCTIONS #${counter} - ${this.getTruncatedFirstLine(actualInstruction, 200)}`;
                 cssClass = 'user-message'; // Même couleur que les messages utilisateur normaux
             }
             
@@ -1470,7 +1851,7 @@ export class TraceSummaryService {
             parts.push(cleanedContent);
             parts.push('</div>');
             parts.push("");
-            parts.push(this.generateBackToTocLink(`message-utilisateur-${counter}`));
+            parts.push(this.generateBackToTocLink(anchor));
         }
         
         return parts.join('\n');
@@ -1487,7 +1868,7 @@ export class TraceSummaryService {
         const parts: string[] = [];
         const toolName = item.toolType || 'outil';
         const firstLine = this.getTruncatedFirstLine(toolName, 200);
-        const anchor = `outil-${counter}`;
+        const anchor = this.generateUniqueId(`outil-${counter}`);
         
         // ChatGPT-5: ID directement sur le <h3> (stratégie robuste)
         parts.push(`<h3 id="${anchor}">OUTIL #${counter} - ${firstLine}</h3>`);
@@ -1515,7 +1896,7 @@ export class TraceSummaryService {
         
         parts.push('</div>');
         parts.push("");
-        parts.push(this.generateBackToTocLink(`outil-${counter}`));
+        parts.push(this.generateBackToTocLink(anchor));
         
         return parts.join('\n');
     }
@@ -1530,10 +1911,10 @@ export class TraceSummaryService {
     ): Promise<string> {
         const parts: string[] = [];
         const firstLine = this.getTruncatedFirstLine(item.content, 200);
-        const anchor = `reponse-assistant-${counter}`;
+        const anchor = this.generateUniqueId(`reponse-assistant-${counter}`);
         const isCompletion = item.subType === 'Completion';
         
-        // PHASE 9: Détection du premier outil utilisé pour l'afficher dans le titre
+        // ChatGPT-5: Détection du premier outil utilisé pour l'afficher dans le titre
         const toolName = this.extractFirstToolName(item.content);
         const toolSuffix = toolName ? ` (${toolName})` : '';
         
@@ -1545,7 +1926,7 @@ export class TraceSummaryService {
         parts.push(title);
         parts.push("");
         
-        // SDDD: Mapping des subtypes vers les classes CSS appropriées
+        // ChatGPT-5: Mapping des subtypes vers les classes CSS appropriées
         let cssClass = 'assistant-message'; // Classe par défaut
         if (item.subType === 'Completion') {
             cssClass = 'completion-message';
@@ -1571,7 +1952,7 @@ export class TraceSummaryService {
         
         parts.push('</div>');
         parts.push("");
-        parts.push(this.generateBackToTocLink(`reponse-assistant-${counter}`));
+        parts.push(this.generateBackToTocLink(anchor));
         
         return parts.join('\n');
     }
@@ -1847,14 +2228,25 @@ export class TraceSummaryService {
     }
 
     /**
-     * Génère un lien de retour vers la table des matières
-     * @param contextAnchor - Ancre spécifique dans la TOC vers laquelle revenir (optionnel)
+     * ChatGPT-5: Génère un lien de retour vers la table des matières (correction toc-toc-XXX)
+     * @param sectionId - ID de la SECTION (ex: "reponse-assistant-86") - PAS l'ID TOC
      */
-    private generateBackToTocLink(contextAnchor?: string): string {
-        // ChatGPT-5: Pointer vers l'entrée TOC spécifique (toc-xxx) au lieu de la section
-        const targetAnchor = contextAnchor ? `toc-${contextAnchor}` : 'table-des-matieres';
-        return '<div style="text-align: right; font-size: 0.9em; color: #666;">' +
-               `<a href="#${targetAnchor}" title="Retour à l'entrée correspondante dans la table des matières">^ TOC</a></div>`;
+    private generateBackToTocLink(sectionId?: string): string {
+        // ChatGPT-5: Construire l'ID TOC à partir de l'ID de section (évite toc-toc-XXX)
+        let targetAnchor = 'table-des-matieres';
+        
+        if (sectionId) {
+            // Si sectionId commence déjà par "toc-", on ne re-préfixe pas
+            if (sectionId.startsWith('toc-')) {
+                targetAnchor = sectionId;
+            } else {
+                targetAnchor = `toc-${sectionId}`;
+            }
+        }
+        
+        return '<div class="back">' +
+               `<a href="#${targetAnchor}" title="Retour à l'entrée correspondante dans la table des matières">↑ Retour à la TOC</a>` +
+               '</div>';
     }
 
     // ============================================================================

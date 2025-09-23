@@ -177,12 +177,13 @@ class JupyterPapermillMCPServer:
             logger.info("🧹 Cleaning up server resources...")
             
             # Import here to avoid circular imports
-            from .tools.kernel_tools import get_kernel_service
-            
             try:
+                from .tools.kernel_tools import get_kernel_service
                 kernel_service = get_kernel_service()
                 await kernel_service.cleanup_kernels()
                 logger.info("🔧 Cleaned up all kernels")
+            except Exception as cleanup_error:
+                logger.warning(f"⚠️ Kernel cleanup error (non-critical): {cleanup_error}")
             except Exception as e:
                 logger.warning(f"⚠️ Error during kernel cleanup: {e}")
             
