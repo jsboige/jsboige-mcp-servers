@@ -1182,7 +1182,7 @@ export class TraceSummaryService {
                     const sectionAnchor = `message-utilisateur-${userMessageCounterToc}`;
                     const tocAnchor = `toc-${sectionAnchor}`;
                     
-                    let tocLabel = `MESSAGE UTILISATEUR #${userMessageCounterToc}`;
+                    let tocLabel = `UTILISATEUR #${userMessageCounterToc}`;
                     let tocClass = 'toc-user';
                     
                     // SDDD Phase 9: Gestion spécifique des nouveaux types dans la TOC
@@ -1196,7 +1196,7 @@ export class TraceSummaryService {
                         // Extraire le contenu après "New instructions for task continuation:"
                         const instructionMatch = item.content.match(/^New instructions for task continuation:\s*(.*)/i);
                         const actualInstruction = instructionMatch ? instructionMatch[1] : firstLine;
-                        tocLabel = `NOUVELLES INSTRUCTIONS #${userMessageCounterToc}`;
+                        tocLabel = `UTILISATEUR #${userMessageCounterToc}`;
                         tocClass = 'toc-new-instructions';
                         
                         const entry = `  <li id="${tocAnchor}"><a href="#${sectionAnchor}" class="${tocClass}">${tocLabel} - ${actualInstruction}</a></li>`;
@@ -1212,7 +1212,7 @@ export class TraceSummaryService {
             } else if (item.subType === 'ToolResult') {
                 const sectionAnchor = `outil-${toolResultCounterToc}`;
                 const tocAnchor = `toc-${sectionAnchor}`;
-                const entry = `  <li id="${tocAnchor}"><a href="#${sectionAnchor}" class="toc-tool">RESULTAT OUTIL #${toolResultCounterToc} - ${firstLine}</a></li>`;
+                const entry = `  <li id="${tocAnchor}"><a href="#${sectionAnchor}" class="toc-tool">OUTIL #${toolResultCounterToc} - ${firstLine}</a></li>`;
                 parts.push(entry);
                 toolResultCounterToc++;
             } else if (item.type === 'Assistant') {
@@ -1224,10 +1224,10 @@ export class TraceSummaryService {
                 const toolSuffix = toolName ? ` (${toolName})` : '';
                 
                 if (item.subType === 'Completion') {
-                    const entry = `  <li id="${tocAnchor}"><a href="#${sectionAnchor}" class="toc-completion">REPONSE ASSISTANT #${assistantMessageCounterToc} (Terminaison)${toolSuffix} - ${firstLine}</a></li>`;
+                    const entry = `  <li id="${tocAnchor}"><a href="#${sectionAnchor}" class="toc-completion">ASSISTANT #${assistantMessageCounterToc} (Terminaison)${toolSuffix} - ${firstLine}</a></li>`;
                     parts.push(entry);
                 } else {
-                    const entry = `  <li id="${tocAnchor}"><a href="#${sectionAnchor}" class="toc-assistant">REPONSE ASSISTANT #${assistantMessageCounterToc}${toolSuffix} - ${firstLine}</a></li>`;
+                    const entry = `  <li id="${tocAnchor}"><a href="#${sectionAnchor}" class="toc-assistant">ASSISTANT #${assistantMessageCounterToc}${toolSuffix} - ${firstLine}</a></li>`;
                     parts.push(entry);
                 }
                 assistantMessageCounterToc++;
@@ -1443,7 +1443,7 @@ export class TraceSummaryService {
             parts.push("---");
         } else {
             const anchor = `message-utilisateur-${counter}`;
-            let title = `MESSAGE UTILISATEUR #${counter} - ${firstLine}`;
+            let title = `UTILISATEUR #${counter} - ${firstLine}`;
             let cssClass = 'user-message';
             
             // SDDD Phase 9: Gestion spécifique des nouveaux types
@@ -1457,7 +1457,7 @@ export class TraceSummaryService {
                 // Extraire le contenu après "New instructions for task continuation:"
                 const instructionMatch = item.content.match(/^New instructions for task continuation:\s*(.*)/i);
                 const actualInstruction = instructionMatch ? instructionMatch[1] : firstLine;
-                title = `NOUVELLES INSTRUCTIONS #${counter} - ${actualInstruction}`;
+                title = `UTILISATEUR #${counter} - ${actualInstruction}`;
                 cssClass = 'user-message'; // Même couleur que les messages utilisateur normaux
             }
             
@@ -1490,7 +1490,7 @@ export class TraceSummaryService {
         const anchor = `outil-${counter}`;
         
         // ChatGPT-5: ID directement sur le <h3> (stratégie robuste)
-        parts.push(`<h3 id="${anchor}">RÉSULTAT OUTIL #${counter} - ${firstLine}</h3>`);
+        parts.push(`<h3 id="${anchor}">OUTIL #${counter} - ${firstLine}</h3>`);
         parts.push("");
         
         parts.push('<div class="tool-message">');
@@ -1539,8 +1539,8 @@ export class TraceSummaryService {
         
         // ChatGPT-5: ID directement sur le <h3> (stratégie robuste)
         const title = isCompletion
-            ? `<h3 id="${anchor}">RÉPONSE ASSISTANT #${counter} (Terminaison)${toolSuffix} - ${firstLine}</h3>`
-            : `<h3 id="${anchor}">RÉPONSE ASSISTANT #${counter}${toolSuffix} - ${firstLine}</h3>`;
+            ? `<h3 id="${anchor}">ASSISTANT #${counter} (Terminaison)${toolSuffix} - ${firstLine}</h3>`
+            : `<h3 id="${anchor}">ASSISTANT #${counter}${toolSuffix} - ${firstLine}</h3>`;
         
         parts.push(title);
         parts.push("");

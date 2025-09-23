@@ -362,7 +362,7 @@ export class RooStorageDetector {
                 
                 childTaskInstructionPrefixes = instructions.map(inst => {
                     // 🎯 CORRECTION CRITIQUE: Stocker seulement le message sans préfixe de mode pour un matching simple
-                    const prefix = inst.message.substring(0, 200);
+                    const prefix = inst.message.substring(0, 192);
                     console.log(`[analyzeConversation] 🔍 DEBUG PHASE 1 - Created prefix for ${taskId.substring(0, 8)}: "${prefix.substring(0, 60)}..." (mode: ${inst.mode})`);
                     return prefix;
                 }).filter(prefix => prefix.length > 10); // Filtrer les préfixes trop courts
@@ -440,7 +440,7 @@ export class RooStorageDetector {
             if (!parentTaskId && rawMetadata.workspace && truncatedInstruction) {
                 const childText = truncatedInstruction;
                 if (childText.length > 5) {
-                    parentTaskId = globalTaskInstructionIndex.findPotentialParent(childText);
+                    parentTaskId = globalTaskInstructionIndex.findPotentialParent(childText, taskId);
                     if (parentTaskId) {
                         console.log(`[analyzeConversation] 🎯 Parent trouvé via radix-tree pour ${taskId}: ${parentTaskId}`);
                     }
@@ -745,8 +745,8 @@ export class RooStorageDetector {
     for (const orphan of orphanTasks) {
       const childText = `${orphan.metadata.title || ''} ${orphan.metadata.mode || ''}`.trim();
       if (childText.length > 5) {
-        const potentialParent = globalTaskInstructionIndex.findPotentialParent(childText);
-        if (potentialParent && potentialParent !== orphan.taskId) {
+        const potentialParent = globalTaskInstructionIndex.findPotentialParent(childText, orphan.taskId);
+        if (potentialParent) {
           orphan.parentTaskId = potentialParent;
           resolvedCount++;
         }
@@ -939,7 +939,7 @@ export class RooStorageDetector {
               const instruction: NewTaskInstruction = {
                 timestamp: new Date(message.timestamp || message.ts || 0).getTime(),
                 mode: mode,
-                message: taskMessage.substring(0, 200), // Troncature sécurisée
+                message: taskMessage.substring(0, 192), // Troncature sécurisée
               };
               instructions.push(instruction);
               console.log(`[extractFromMessageFile] 🎯 DÉLÉGATION XML ${mode} dans ${path.basename(filePath)}: ${taskMessage.substring(0, 50)}...`);
@@ -957,7 +957,7 @@ export class RooStorageDetector {
               const instruction: NewTaskInstruction = {
                 timestamp: new Date(message.timestamp || message.ts || 0).getTime(),
                 mode: 'task', // Mode générique pour balises task simples
-                message: taskContent.substring(0, 200), // Troncature sécurisée
+                message: taskContent.substring(0, 192), // Troncature sécurisée
               };
               instructions.push(instruction);
               console.log(`[extractFromMessageFile] 🎯 BALISE TASK SIMPLE AJOUTÉE dans ${path.basename(filePath)}: ${taskContent.substring(0, 50)}...`);

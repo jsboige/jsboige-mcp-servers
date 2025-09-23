@@ -8,6 +8,7 @@ core modules and utilities for notebook management.
 import asyncio
 import json
 import logging
+import sys
 from pathlib import Path
 from typing import Dict, List, Optional, Any, Union
 
@@ -410,4 +411,505 @@ class NotebookService:
             
         except Exception as e:
             logger.error(f"Error getting metadata for notebook {path}: {e}")
+    
+    async def read_cell(self, path: Union[str, Path], index: int) -> Dict[str, Any]:
+        """
+        Read a specific cell from a notebook.
+        
+        Args:
+            path: Path to notebook file
+            index: Index of the cell to read (0-based)
+            
+        Returns:
+            Dictionary with cell information
+            
+        Raises:
+            IndexError: If cell index is out of range
+        """
+        try:
+            path = Path(path)
+            logger.info(f"Reading cell {index} from notebook: {path}")
+            
+            # Read notebook
+            notebook = FileUtils.read_notebook(path)
+            
+            # Check if index is valid
+            if index < 0 or index >= len(notebook.cells):
+                raise IndexError(f"Cell index {index} out of range (0 to {len(notebook.cells) - 1})")
+            
+            cell = notebook.cells[index]
+            
+            # Convert cell to dictionary format
+            cell_data = {
+                "index": index,
+                "cell_type": cell.cell_type,
+                "source": cell.source,
+                "metadata": cell.metadata,
+                "has_outputs": hasattr(cell, 'outputs') and bool(cell.outputs)
+            }
+            
+            # Add execution info for code cells
+            if cell.cell_type == "code":
+                cell_data["execution_count"] = getattr(cell, 'execution_count', None)
+                if hasattr(cell, 'outputs') and cell.outputs:
+                    cell_data["outputs"] = cell.outputs
+                    cell_data["output_count"] = len(cell.outputs)
+            
+            result = {
+                "path": str(path),
+                "cell": cell_data,
+                "total_cells": len(notebook.cells),
+                "success": True
+            }
+            
+            logger.info(f"Successfully read cell {index}")
+            return result
+            
+        except Exception as e:
+            logger.error(f"Error reading cell {index} from notebook {path}: {e}")
+            raise
+            
+    
+    async def read_cells_range(self, path: Union[str, Path], start_index: int, end_index: Optional[int] = None) -> Dict[str, Any]:
+        """
+        Read a range of cells from a notebook.
+        
+        Args:
+            path: Path to notebook file
+            start_index: Starting index (0-based, inclusive)
+            end_index: Ending index (0-based, inclusive). If None, reads from start_index to end
+            
+        Returns:
+            Dictionary with cells information
+        """
+        try:
+            path = Path(path)
+            logger.info(f"Reading cells {start_index} to {end_index} from notebook: {path}")
+            
+            # Read notebook
+            notebook = FileUtils.read_notebook(path)
+            
+            total_cells = len(notebook.cells)
+            
+            # Handle end_index
+            if end_index is None:
+                end_index = total_cells - 1
+            
+            # Validate indices
+            if start_index < 0 or start_index >= total_cells:
+                raise IndexError(f"Start index {start_index} out of range (0 to {total_cells - 1})")
+            if end_index < 0 or end_index >= total_cells:
+                raise IndexError(f"End index {end_index} out of range (0 to {total_cells - 1})")
+            if start_index > end_index:
+                raise ValueError(f"Start index {start_index} must be <= end index {end_index}")
+            
+            # Extract cells in range
+            cells_data = []
+            for i in range(start_index, end_index + 1):
+                cell = notebook.cells[i]
+                cell_data = {
+                    "index": i,
+                    "cell_type": cell.cell_type,
+                    "source": cell.source,
+                    "metadata": cell.metadata,
+                    "has_outputs": hasattr(cell, 'outputs') and bool(cell.outputs)
+                }
+                
+                # Add execution info for code cells
+                if cell.cell_type == "code":
+                    cell_data["execution_count"] = getattr(cell, 'execution_count', None)
+                    if hasattr(cell, 'outputs') and cell.outputs:
+                        cell_data["outputs"] = cell.outputs
+                        cell_data["output_count"] = len(cell.outputs)
+                
+                cells_data.append(cell_data)
+            
+            result = {
+                "path": str(path),
+                "start_index": start_index,
+                "end_index": end_index,
+                "cells": cells_data,
+                "cells_count": len(cells_data),
+                "total_cells": total_cells,
+                "success": True
+            }
+            
+            logger.info(f"Successfully read {len(cells_data)} cells")
+            return result
+            
+        except Exception as e:
+            logger.error(f"Error reading cells range from notebook {path}: {e}")
+            raise
+    
+    async def list_notebook_cells(self, path: Union[str, Path]) -> Dict[str, Any]:
+        """
+        Liste les cellules d'un notebook avec aperçu du contenu.
+        
+        Args:
+            path: Path to notebook file
+            
+        Returns:
+            Dictionary with cells information and preview
+        """
+        try:
+            path = Path(path)
+            logger.info(f"Listing cells from notebook: {path}")
+            
+            # Read notebook
+            notebook = FileUtils.read_notebook(path)
+            
+            cells_info = []
+            for i, cell in enumerate(notebook.cells):
+                # Get source preview (first 100 characters)
+                source_text = ''.join(cell.source) if isinstance(cell.source, list) else cell.source
+                source_preview = source_text[:100] + "..." if len(source_text) > 100 else source_text
+                
+                cell_info = {
+                    "index": i,
+                    "cell_type": cell.cell_type,
+                    "source_preview": source_preview
+                }
+                
+                if cell.cell_type == "code":
+                    cell_info["execution_count"] = getattr(cell, 'execution_count', None)
+                    cell_info["has_outputs"] = hasattr(cell, 'outputs') and bool(cell.outputs)
+                
+                cells_info.append(cell_info)
+            
+            result = {
+                "path": str(path),
+                "total_cells": len(cells_info),
+                "cells": cells_info,
+                "success": True
+            }
+            
+            logger.info(f"Successfully listed {len(cells_info)} cells")
+            return result
+            
+        except Exception as e:
+            logger.error(f"Error listing cells from notebook {path}: {e}")
+            raise
+    
+    async def inspect_notebook_outputs(self, path: Union[str, Path]) -> Dict[str, Any]:
+        """
+        Inspecte les sorties des cellules d'un notebook.
+        
+        Args:
+            path: Path to notebook file
+            
+        Returns:
+            Dictionary with detailed outputs information
+        """
+        try:
+            path = Path(path)
+            logger.info(f"Inspecting outputs from notebook: {path}")
+            
+            # Read notebook
+            notebook = FileUtils.read_notebook(path)
+            
+            outputs_info = []
+            for i, cell in enumerate(notebook.cells):
+                if cell.cell_type == "code":
+                    outputs = getattr(cell, 'outputs', [])
+                    if outputs:
+                        cell_outputs = {
+                            "cell_index": i,
+                            "execution_count": getattr(cell, 'execution_count', None),
+                            "output_count": len(outputs),
+                            "output_types": [out.get("output_type") for out in outputs]
+                        }
+                        
+                        # Preview output data
+                        for j, output in enumerate(outputs):
+                            if output.get("output_type") == "execute_result":
+                                data = output.get("data", {})
+                                cell_outputs[f"output_{j}_data_keys"] = list(data.keys())
+                            elif output.get("output_type") == "stream":
+                                text = ''.join(output.get("text", []))
+                                preview = text[:200] + "..." if len(text) > 200 else text
+                                cell_outputs[f"output_{j}_text_preview"] = preview
+                        
+                        outputs_info.append(cell_outputs)
+            
+            result = {
+                "path": str(path),
+                "cells_with_outputs": len(outputs_info),
+                "outputs": outputs_info,
+                "success": True
+            }
+            
+            logger.info(f"Successfully inspected outputs from {len(outputs_info)} cells")
+            return result
+            
+        except Exception as e:
+            logger.error(f"Error inspecting outputs from notebook {path}: {e}")
+            raise
+    
+    async def validate_notebook(self, path: Union[str, Path]) -> Dict[str, Any]:
+        """
+        Valide la structure d'un notebook Jupyter.
+        
+        Args:
+            path: Path to notebook file
+            
+        Returns:
+            Dictionary with validation results
+        """
+        try:
+            path = Path(path)
+            logger.info(f"Validating notebook: {path}")
+            
+            # Read raw JSON content
+            with open(path, 'r', encoding='utf-8') as f:
+                notebook_data = json.load(f)
+            
+            issues = []
+            
+            # Basic structure validation
+            if "nbformat" not in notebook_data:
+                issues.append("Missing 'nbformat' field")
+            elif notebook_data.get("nbformat") < 4:
+                issues.append(f"Old nbformat version: {notebook_data.get('nbformat')}")
+            
+            if "cells" not in notebook_data:
+                issues.append("Missing 'cells' field")
+            elif not isinstance(notebook_data["cells"], list):
+                issues.append("'cells' field is not a list")
+            
+            # Cell validation
+            cell_issues = []
+            for i, cell in enumerate(notebook_data.get("cells", [])):
+                cell_problems = []
+                
+                if "cell_type" not in cell:
+                    cell_problems.append("Missing cell_type")
+                elif cell["cell_type"] not in ["code", "markdown", "raw"]:
+                    cell_problems.append(f"Invalid cell_type: {cell['cell_type']}")
+                
+                if "source" not in cell:
+                    cell_problems.append("Missing source")
+                
+                if cell_problems:
+                    cell_issues.append({"cell_index": i, "issues": cell_problems})
+            
+            result = {
+                "path": str(path),
+                "is_valid": len(issues) == 0 and len(cell_issues) == 0,
+                "notebook_issues": issues,
+                "cell_issues": cell_issues,
+                "success": True
+            }
+            
+            logger.info(f"Notebook validation completed, valid: {result['is_valid']}")
+            return result
+            
+        except Exception as e:
+            logger.error(f"Error validating notebook {path}: {e}")
+            raise
+    
+    async def system_info(self) -> Dict[str, Any]:
+        """
+        Informations système rapides et fiables.
+        
+        Returns:
+            Dictionary with system information
+        """
+        try:
+            import datetime
+            import os
+            import platform
+            import sys
+            
+            logger.info("Getting system information")
+            
+            # Basic system info
+            info = {
+                "timestamp": datetime.datetime.now().isoformat(),
+                "python": {
+                    "version": platform.python_version(),
+                    "executable": sys.executable
+                },
+                "system": {
+                    "os": os.name,
+                    "platform": platform.system(),
+                    "cwd": os.getcwd()
+                },
+                "environment": {
+                    "conda_env": os.environ.get("CONDA_DEFAULT_ENV", "NOT_SET"),
+                    "conda_prefix": os.environ.get("CONDA_PREFIX", "NOT_SET"),
+                    "userprofile": os.environ.get("USERPROFILE", "NOT_SET"),
+                    "total_env_vars": len(os.environ)
+                },
+                "success": True
+            }
+            
+            # Jupyter kernels info (safe attempt)
+            try:
+                from jupyter_client.kernelspec import KernelSpecManager
+                ksm = KernelSpecManager()
+                specs = ksm.get_all_specs()
+                info["jupyter"] = {
+                    "kernels_available": list(specs.keys()),
+                    "kernel_count": len(specs)
+                }
+            except Exception as e:
+                info["jupyter"] = {"error": str(e)}
+            
+            logger.info("Successfully retrieved system information")
+            return info
+            
+        except Exception as e:
+            logger.error(f"Error getting system information: {e}")
+            raise
+    
+    async def execute_notebook_solution_a(
+        self,
+        input_path: Union[str, Path],
+        output_path: Optional[Union[str, Path]] = None
+    ) -> Dict[str, Any]:
+        """
+        SOLUTION A - API Papermill directe avec correction working directory.
+        
+        Args:
+            input_path: Path to input notebook
+            output_path: Optional path to output notebook
+            
+        Returns:
+            Dictionary with execution result and diagnostics
+        """
+        try:
+            import datetime
+            import os
+            
+            input_path = Path(input_path)
+            if output_path is None:
+                output_path = input_path.parent / f"{input_path.stem}_executed_solution_a.ipynb"
+            else:
+                output_path = Path(output_path)
+            
+            logger.info(f"Executing notebook (Solution A): {input_path}")
+            
+            # Diagnostic info
+            diagnostic_info = {
+                "method": "papermill_direct_api_with_cwd_fix",
+                "cwd": os.getcwd(),
+                "python_env": sys.executable
+            }
+            
+            # Working directory fix for .NET NuGet packages
+            notebook_dir = input_path.parent.absolute()
+            original_cwd = os.getcwd()
+            
+            try:
+                # Change to notebook directory
+                os.chdir(notebook_dir)
+                
+                start_time = datetime.datetime.now()
+                
+                # Execute with PapermillExecutor (which handles the API call)
+                result = await self.papermill_executor.execute_notebook(
+                    input_path=input_path,
+                    output_path=output_path,
+                    parameters={},
+                    kernel_name=None
+                )
+                
+                end_time = datetime.datetime.now()
+                execution_time = (end_time - start_time).total_seconds()
+                
+                # Enhance result with Solution A specific info
+                result.update({
+                    "method": "execute_notebook_solution_a",
+                    "execution_time_seconds": execution_time,
+                    "diagnostic": diagnostic_info,
+                    "timestamp": end_time.isoformat()
+                })
+                
+            finally:
+                # Always restore original directory
+                os.chdir(original_cwd)
+            
+            logger.info(f"Successfully executed notebook (Solution A): {result.get('output_path')}")
+            return result
+            
+        except Exception as e:
+            logger.error(f"Error executing notebook (Solution A) {input_path}: {e}")
+            raise
+    
+    async def parameterize_notebook(
+        self,
+        input_path: Union[str, Path],
+        parameters: Dict[str, Any],
+        output_path: Optional[Union[str, Path]] = None
+    ) -> Dict[str, Any]:
+        """
+        Exécute un notebook avec des paramètres via Papermill API directe.
+        
+        Args:
+            input_path: Path to input notebook
+            parameters: Parameters to inject
+            output_path: Optional path to output notebook
+            
+        Returns:
+            Dictionary with execution result
+        """
+        try:
+            import datetime
+            import os
+            
+            input_path = Path(input_path)
+            if output_path is None:
+                output_path = input_path.parent / f"{input_path.stem}_parameterized.ipynb"
+            else:
+                output_path = Path(output_path)
+            
+            logger.info(f"Executing parameterized notebook: {input_path}")
+            
+            # Diagnostic info
+            diagnostic_info = {
+                "method": "papermill_direct_api_with_parameters",
+                "cwd": os.getcwd(),
+                "python_env": sys.executable,
+                "parameters_count": len(parameters)
+            }
+            
+            # Working directory fix for .NET NuGet packages
+            notebook_dir = input_path.parent.absolute()
+            original_cwd = os.getcwd()
+            
+            try:
+                # Change to notebook directory
+                os.chdir(notebook_dir)
+                
+                start_time = datetime.datetime.now()
+                
+                # Execute with PapermillExecutor
+                result = await self.papermill_executor.execute_notebook(
+                    input_path=input_path,
+                    output_path=output_path,
+                    parameters=parameters,
+                    kernel_name=None
+                )
+                
+                end_time = datetime.datetime.now()
+                execution_time = (end_time - start_time).total_seconds()
+                
+                # Enhance result
+                result.update({
+                    "parameters": parameters,
+                    "method": "parameterize_notebook",
+                    "execution_time_seconds": execution_time,
+                    "diagnostic": diagnostic_info,
+                    "timestamp": end_time.isoformat()
+                })
+                
+            finally:
+                # Always restore original directory
+                os.chdir(original_cwd)
+            
+            logger.info(f"Successfully executed parameterized notebook: {result.get('output_path')}")
+            return result
+            
+        except Exception as e:
+            logger.error(f"Error executing parameterized notebook {input_path}: {e}")
             raise

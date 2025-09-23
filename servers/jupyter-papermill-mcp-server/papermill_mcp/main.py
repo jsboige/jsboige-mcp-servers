@@ -1,7 +1,13 @@
 """
-Main entry point for the Jupyter Papermill MCP Server.
+CONSOLIDATED Jupyter Papermill MCP Server - Main Entry Point
 
-This module initializes and runs the FastMCP server with all tools registered.
+Unified implementation combining:
+- Architecture modulaire (services → tools)
+- Fonctionnalités du monolithique optimisées
+- Gestion d'erreurs avancée
+- Configuration consolidée
+
+Version finale avec 32 outils unifiés
 """
 
 import asyncio
@@ -14,17 +20,19 @@ from typing import Optional
 try:
     import nest_asyncio
     nest_asyncio.apply()
+    # Silent success - stdout reserved for MCP protocol
 except ImportError:
-    pass  # Will be handled in cli_main if needed
+    # Silent failure - stdout reserved for MCP protocol
+    pass
 
 from mcp.server.fastmcp import FastMCP
 
 from .config import get_config, MCPConfig
 from .tools.notebook_tools import register_notebook_tools, initialize_notebook_tools
-from .tools.kernel_tools import register_kernel_tools, initialize_kernel_tools  
+from .tools.kernel_tools import register_kernel_tools, initialize_kernel_tools
 from .tools.execution_tools import register_execution_tools, initialize_execution_tools
 
-# Configure logging
+# Configure logging with enhanced format
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
@@ -37,111 +45,136 @@ logger = logging.getLogger(__name__)
 
 
 class JupyterPapermillMCPServer:
-    """Main MCP Server class for Jupyter Papermill operations."""
+    """
+    Consolidated MCP Server for Jupyter Papermill operations.
+    
+    Combines modular architecture with monolithic optimizations:
+    - 32 unified tools across 3 modules
+    - Enhanced error handling and diagnostics
+    - Nest asyncio compatibility
+    - Working directory fixes for .NET
+    """
     
     def __init__(self, config: Optional[MCPConfig] = None):
         """
-        Initialize the MCP server.
+        Initialize the consolidated MCP server.
         
         Args:
-            config: Optional configuration object. If None, will load from default sources.
+            config: Optional configuration object. If None, loads from default sources.
         """
         self.config = config or get_config()
-        self.app = FastMCP("jupyter-papermill-mcp")
+        self.app = FastMCP("Jupyter-Papermill MCP Server Consolidated")
         self._initialized = False
+        
+        logger.info("Initializing Consolidated Jupyter Papermill MCP Server")
+        logger.info(f"Server name: {self.app.name}")
     
     def initialize(self) -> None:
-        """Initialize all services and register tools."""
+        """Initialize all services and register consolidated tools."""
         if self._initialized:
             logger.warning("Server already initialized")
             return
         
         try:
-            logger.info("Initializing Jupyter Papermill MCP Server")
+            logger.info("🚀 Starting Consolidated Server Initialization...")
             logger.info(f"Configuration: {self.config}")
             
-            # Initialize all tool services
-            logger.info("Initializing notebook tools...")
+            # Phase 1: Initialize all tool services
+            logger.info("📚 Initializing notebook tools...")
             initialize_notebook_tools(self.config)
             
-            logger.info("Initializing kernel tools...")
+            logger.info("🔧 Initializing kernel tools...")
             initialize_kernel_tools(self.config)
             
-            logger.info("Initializing execution tools...")
+            logger.info("⚡ Initializing execution tools...")
             initialize_execution_tools(self.config)
             
-            # Register all tools with the FastMCP app
-            logger.info("Registering notebook tools...")
+            # Phase 2: Register all tools with the FastMCP app
+            logger.info("📝 Registering notebook tools (13 tools)...")
             register_notebook_tools(self.app)
             
-            logger.info("Registering kernel tools...")
+            logger.info("🔌 Registering kernel tools (6 tools)...")
             register_kernel_tools(self.app)
             
-            logger.info("Registering execution tools...")
+            logger.info("🚀 Registering execution tools (13 tools)...")
             register_execution_tools(self.app)
             
             self._initialized = True
-            logger.info("Server initialization completed successfully")
+            logger.info("✅ Server initialization completed successfully")
             
-            # Log available tools
-            self._log_available_tools()
+            # Log consolidated tool summary
+            self._log_consolidated_tools()
             
         except Exception as e:
-            logger.error(f"Failed to initialize server: {e}")
+            logger.error(f"❌ Failed to initialize server: {e}")
             raise
     
-    def _log_available_tools(self) -> None:
-        """Log all available tools for debugging."""
+    def _log_consolidated_tools(self) -> None:
+        """Log all consolidated tools with enhanced organization."""
         try:
-            # This is a simplified version - in practice you'd access the FastMCP registry
-            tools = [
-                # Notebook tools
-                "read_notebook", "write_notebook", "create_notebook", 
-                "add_cell", "remove_cell", "update_cell",
-                
-                # Kernel tools  
-                "list_kernels", "start_kernel", "stop_kernel", 
-                "interrupt_kernel", "restart_kernel", "execute_cell",
-                "execute_notebook", "execute_notebook_cell",
-                
-                # Execution tools
-                "execute_notebook_papermill", "list_notebook_files", 
-                "get_notebook_info", "get_kernel_status", "cleanup_all_kernels",
-                "start_jupyter_server", "stop_jupyter_server", "debug_list_runtime_dir"
+            notebook_tools = [
+                "read_notebook", "write_notebook", "create_notebook",
+                "add_cell", "remove_cell", "update_cell", "read_cell", "read_cells_range",
+                "list_notebook_cells", "get_notebook_metadata", "inspect_notebook_outputs",
+                "validate_notebook", "system_info"
             ]
             
-            logger.info(f"Available tools ({len(tools)}): {', '.join(tools)}")
+            kernel_tools = [
+                "list_kernels", "start_kernel", "stop_kernel",
+                "interrupt_kernel", "restart_kernel", "execute_cell"
+            ]
+            
+            execution_tools = [
+                "execute_notebook_papermill", "list_notebook_files", "get_notebook_info",
+                "get_kernel_status", "cleanup_all_kernels", "start_jupyter_server",
+                "stop_jupyter_server", "debug_list_runtime_dir", "execute_notebook_solution_a",
+                "parameterize_notebook", "execute_notebook_cell", "get_execution_status"
+            ]
+            
+            total_tools = len(notebook_tools) + len(kernel_tools) + len(execution_tools)
+            
+            logger.info("=" * 60)
+            logger.info("🎯 CONSOLIDATED TOOLS SUMMARY")
+            logger.info("=" * 60)
+            logger.info(f"📚 Notebook Tools ({len(notebook_tools)}): {', '.join(notebook_tools)}")
+            logger.info(f"🔧 Kernel Tools ({len(kernel_tools)}): {', '.join(kernel_tools)}")
+            logger.info(f"⚡ Execution Tools ({len(execution_tools)}): {', '.join(execution_tools)}")
+            logger.info("=" * 60)
+            logger.info(f"🏆 TOTAL CONSOLIDATED TOOLS: {total_tools}")
+            logger.info("=" * 60)
             
         except Exception as e:
-            logger.warning(f"Could not log available tools: {e}")
+            logger.warning(f"Could not log consolidated tools: {e}")
     
     async def run(self) -> None:
-        """Run the MCP server."""
+        """Run the consolidated MCP server with enhanced error handling."""
         if not self._initialized:
             self.initialize()
         
         try:
-            logger.info("Starting Jupyter Papermill MCP Server...")
-            logger.info(f"Server ready on stdin/stdout")
+            logger.info("🌟 Starting Consolidated Jupyter Papermill MCP Server...")
+            logger.info("📡 Server ready on stdin/stdout")
+            logger.info("🔗 Waiting for MCP client connection...")
             
-            # Use STDIO transport directly to avoid asyncio.run() conflicts
+            # Use STDIO transport with enhanced error handling
             from mcp.server.stdio import stdio_server
             
             async with stdio_server() as (read_stream, write_stream):
-                await self.app.run(read_stream, write_stream, self.app.create_initialization_options())
+                await self.app.run(read_stream, write_stream)
             
         except KeyboardInterrupt:
-            logger.info("Server interrupted by user")
+            logger.info("⏹️ Server interrupted by user")
         except Exception as e:
-            logger.error(f"Server error: {e}")
+            logger.error(f"💥 Server error: {e}")
+            logger.error(f"Error type: {type(e).__name__}")
             raise
         finally:
             await self.cleanup()
     
     async def cleanup(self) -> None:
-        """Clean up server resources."""
+        """Clean up server resources with enhanced logging."""
         try:
-            logger.info("Cleaning up server resources...")
+            logger.info("🧹 Cleaning up server resources...")
             
             # Import here to avoid circular imports
             from .tools.kernel_tools import get_kernel_service
@@ -149,25 +182,25 @@ class JupyterPapermillMCPServer:
             try:
                 kernel_service = get_kernel_service()
                 await kernel_service.cleanup_kernels()
-                logger.info("Cleaned up all kernels")
+                logger.info("🔧 Cleaned up all kernels")
             except Exception as e:
-                logger.warning(f"Error during kernel cleanup: {e}")
+                logger.warning(f"⚠️ Error during kernel cleanup: {e}")
             
-            logger.info("Server cleanup completed")
+            logger.info("✅ Server cleanup completed")
             
         except Exception as e:
-            logger.error(f"Error during cleanup: {e}")
+            logger.error(f"❌ Error during cleanup: {e}")
 
 
 def create_app(config: Optional[MCPConfig] = None) -> JupyterPapermillMCPServer:
     """
-    Create and initialize the MCP server application.
+    Create and initialize the consolidated MCP server application.
     
     Args:
         config: Optional configuration object
         
     Returns:
-        Initialized MCP server instance
+        Initialized consolidated MCP server instance
     """
     server = JupyterPapermillMCPServer(config)
     server.initialize()
@@ -175,31 +208,47 @@ def create_app(config: Optional[MCPConfig] = None) -> JupyterPapermillMCPServer:
 
 
 async def main() -> None:
-    """Main entry point for the server."""
+    """Main entry point for the consolidated server."""
     try:
-        # Load configuration
+        logger.info("🎯 Loading configuration...")
         config = get_config()
         
-        # Create and run server
+        logger.info("🏗️ Creating consolidated server...")
         server = JupyterPapermillMCPServer(config)
+        
+        logger.info("🚀 Starting server execution...")
         await server.run()
         
     except Exception as e:
-        logger.error(f"Failed to start server: {e}")
+        logger.error(f"💥 Failed to start server: {e}")
+        logger.error(f"Error type: {type(e).__name__}")
         sys.exit(1)
 
 
 def cli_main() -> None:
-    """CLI entry point for the server."""
+    """
+    CLI entry point for the consolidated server.
+    Enhanced with better error reporting and nest_asyncio support.
+    """
     try:
+        logger.info("=" * 60)
+        logger.info("🌟 CONSOLIDATED JUPYTER PAPERMILL MCP SERVER")
+        logger.info("📊 Architecture: Modular + Monolithic Optimizations")
+        logger.info("🔧 Tools: 32 Unified Tools")
+        logger.info("🚀 Framework: FastMCP")
+        logger.info("=" * 60)
+        
         # With nest_asyncio applied, we can use asyncio.run() even in nested contexts
-        logger.info("Starting Jupyter Papermill MCP Server")
         asyncio.run(main())
+        
     except KeyboardInterrupt:
-        logger.info("Server stopped by user")
+        logger.info("⏹️ Server stopped by user")
         sys.exit(0)
     except Exception as e:
-        logger.error(f"Server failed: {e}")
+        logger.error(f"💥 Server failed: {e}")
+        logger.error(f"Error type: {type(e).__name__}")
+        import traceback
+        logger.error(f"Traceback:\n{traceback.format_exc()}")
         sys.exit(1)
 
 

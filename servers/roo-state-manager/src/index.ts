@@ -1178,7 +1178,7 @@ class RooStateManagerServer {
                     try {
                         // 🎯 CORRECTION FINALE: L'index ne contient plus de préfixes de mode, recherche directe avec le texte brut
                         console.log(`[PASS 2 - SEARCHING] Orphan Task: ${skeleton.taskId.substring(0, 8)} | RAW TEXT FOR SEARCH: "${rawChildText}"`);
-                        let foundParentId = globalTaskInstructionIndex.findPotentialParent(rawChildText);
+                        let foundParentId = globalTaskInstructionIndex.findPotentialParent(rawChildText, skeleton.taskId);
                         console.log(`🔍 DEBUG - Direct search for ${skeleton.taskId.substring(0, 8)}: ${foundParentId ? foundParentId.substring(0, 8) : 'null'}`);
                         
                         if (!foundParentId) {
@@ -1204,7 +1204,7 @@ class RooStateManagerServer {
                             
                             for (let i = 0; i < testSearches.length; i++) {
                                 const testText = testSearches[i];
-                                const result = globalTaskInstructionIndex.findPotentialParent(testText);
+                                const result = globalTaskInstructionIndex.findPotentialParent(testText, skeleton.taskId);
                                 console.log(`    Test[${i}]: "${testText.substring(0, 30)}..." → ${result ? result.substring(0, 8) : 'null'}`);
                             }
                         }

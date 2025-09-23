@@ -239,4 +239,181 @@ def register_notebook_tools(app: FastMCP) -> None:
                 "success": False
             }
     
-    logger.info("Registered notebook tools")
+    @app.tool()
+    async def read_cell(path: str, index: int) -> Dict[str, Any]:
+        """
+        Lit une cellule spécifique d'un notebook
+        
+        Args:
+            path: Chemin du fichier notebook (.ipynb)
+            index: Index de la cellule à lire (0-based)
+            
+        Returns:
+            Informations détaillées sur la cellule
+        """
+        try:
+            logger.info(f"Reading cell {index} from notebook: {path}")
+            service = get_notebook_service()
+            result = await service.read_cell(path, index)
+            logger.info(f"Successfully read cell {index} from notebook: {path}")
+            return result
+        except Exception as e:
+            logger.error(f"Error reading cell {index} from notebook {path}: {e}")
+            return {
+                "error": str(e),
+                "path": path,
+                "index": index,
+                "success": False
+            }
+    
+    @app.tool()
+    async def read_cells_range(path: str, start_index: int, end_index: Optional[int] = None) -> Dict[str, Any]:
+        """
+        Lit une plage de cellules d'un notebook
+        
+        Args:
+            path: Chemin du fichier notebook (.ipynb)
+            start_index: Index de début (0-based, inclus)
+            end_index: Index de fin (0-based, inclus). Si None, lit jusqu'à la fin
+            
+        Returns:
+            Informations sur les cellules dans la plage
+        """
+        try:
+            logger.info(f"Reading cells range {start_index}-{end_index} from notebook: {path}")
+            service = get_notebook_service()
+            result = await service.read_cells_range(path, start_index, end_index)
+            logger.info(f"Successfully read cells range from notebook: {path}")
+            return result
+        except Exception as e:
+            logger.error(f"Error reading cells range from notebook {path}: {e}")
+            return {
+                "error": str(e),
+                "path": path,
+                "start_index": start_index,
+                "end_index": end_index,
+                "success": False
+            }
+    
+    @app.tool()
+    async def list_notebook_cells(path: str) -> Dict[str, Any]:
+        """
+        Liste les cellules d'un notebook avec aperçu du contenu
+        
+        Args:
+            path: Chemin du fichier notebook (.ipynb)
+            
+        Returns:
+            Liste détaillée des cellules avec preview
+        """
+        try:
+            logger.info(f"Listing cells from notebook: {path}")
+            service = get_notebook_service()
+            result = await service.list_notebook_cells(path)
+            logger.info(f"Successfully listed cells from notebook: {path}")
+            return result
+        except Exception as e:
+            logger.error(f"Error listing cells from notebook {path}: {e}")
+            return {
+                "error": str(e),
+                "path": path,
+                "success": False
+            }
+    
+    @app.tool()
+    async def get_notebook_metadata(path: str) -> Dict[str, Any]:
+        """
+        Récupère les métadonnées complètes d'un notebook
+        
+        Args:
+            path: Chemin du fichier notebook (.ipynb)
+            
+        Returns:
+            Métadonnées complètes du notebook
+        """
+        try:
+            logger.info(f"Getting metadata from notebook: {path}")
+            service = get_notebook_service()
+            result = await service.get_notebook_metadata(path)
+            logger.info(f"Successfully got metadata from notebook: {path}")
+            return result
+        except Exception as e:
+            logger.error(f"Error getting metadata from notebook {path}: {e}")
+            return {
+                "error": str(e),
+                "path": path,
+                "success": False
+            }
+    
+    @app.tool()
+    async def inspect_notebook_outputs(path: str) -> Dict[str, Any]:
+        """
+        Inspecte les sorties des cellules d'un notebook
+        
+        Args:
+            path: Chemin du fichier notebook (.ipynb)
+            
+        Returns:
+            Inspection détaillée des outputs de chaque cellule
+        """
+        try:
+            logger.info(f"Inspecting outputs from notebook: {path}")
+            service = get_notebook_service()
+            result = await service.inspect_notebook_outputs(path)
+            logger.info(f"Successfully inspected outputs from notebook: {path}")
+            return result
+        except Exception as e:
+            logger.error(f"Error inspecting outputs from notebook {path}: {e}")
+            return {
+                "error": str(e),
+                "path": path,
+                "success": False
+            }
+    
+    @app.tool()
+    async def validate_notebook(path: str) -> Dict[str, Any]:
+        """
+        Valide la structure d'un notebook Jupyter
+        
+        Args:
+            path: Chemin du fichier notebook (.ipynb)
+            
+        Returns:
+            Résultat de la validation avec problèmes détectés
+        """
+        try:
+            logger.info(f"Validating notebook: {path}")
+            service = get_notebook_service()
+            result = await service.validate_notebook(path)
+            logger.info(f"Successfully validated notebook: {path}")
+            return result
+        except Exception as e:
+            logger.error(f"Error validating notebook {path}: {e}")
+            return {
+                "error": str(e),
+                "path": path,
+                "success": False
+            }
+    
+    @app.tool()
+    async def system_info() -> Dict[str, Any]:
+        """
+        Informations système rapides et fiables
+        
+        Returns:
+            Informations détaillées sur le système, Python, et Jupyter
+        """
+        try:
+            logger.info("Getting system information")
+            service = get_notebook_service()
+            result = await service.system_info()
+            logger.info("Successfully got system information")
+            return result
+        except Exception as e:
+            logger.error(f"Error getting system information: {e}")
+            return {
+                "error": str(e),
+                "success": False
+            }
+    
+    logger.info("Registered notebook tools (13 total)")

@@ -18,9 +18,10 @@ from typing import Dict, List, Optional, Any
 try:
     import nest_asyncio
     nest_asyncio.apply()
-    print("nest_asyncio applied successfully - AsyncIO conflict resolution")
+    # Silent success - stdout reserved for MCP protocol
 except ImportError:
-    print("nest_asyncio not available - Potential asyncio conflict")
+    # Silent failure - stdout reserved for MCP protocol
+    pass
 
 import papermill as pm
 from papermill.exceptions import PapermillException, PapermillExecutionError
@@ -592,6 +593,175 @@ def system_info() -> Dict[str, Any]:
             "error": str(e),
             "timestamp": datetime.datetime.now().isoformat()
         }
+
+@mcp.tool()
+def read_cell(
+    notebook_path: str = Field(description="Chemin du notebook"),
+    index: int = Field(description="Index de la cellule à lire (0-based)")
+) -> Dict[str, Any]:
+    """Lit une cellule spécifique d'un notebook"""
+    try:
+        with open(notebook_path, 'r', encoding='utf-8') as f:
+            notebook = json.load(f)
+        
+        cells = notebook.get("cells", [])
+        
+        # Vérifier l'index
+        if index < 0 or index >= len(cells):
+            return {
+                "status": "error",
+                "error": f"Index {index} hors limites (0 à {len(cells) - 1})"
+            }
+        
+        cell = cells[index]
+        
+        # Extraire les informations de la cellule
+        cell_info = {
+            "index": index,
+            "cell_type": cell.get("cell_type", "unknown"),
+            "source": ''.join(cell.get("source", [])),
+            "metadata": cell.get("metadata", {}),
+            "has_outputs": bool(cell.get("outputs", []))
+        }
+        
+        # Ajouter les informations d'exécution pour les cellules de code
+        if cell.get("cell_type") == "code":
+            cell_info["execution_count"] = cell.get("execution_count")
+            if cell.get("outputs"):
+                cell_info["outputs"] = cell.get("outputs", [])
+                cell_info["output_count"] = len(cell.get("outputs", []))
+        
+        return {
+            "status": "success",
+            "notebook_path": notebook_path,
+            "cell": cell_info,
+            "total_cells": len(cells)
+        }
+        
+    except Exception as e:
+        return {"status": "error", "error": str(e)}
+
+
+@mcp.tool()
+def read_cells_range(
+    notebook_path: str = Field(description="Chemin du notebook"),
+    start_index: int = Field(description="Index de début (0-based, inclus)"),
+    end_index: Optional[int] = Field(default=None, description="Index de fin (0-based, inclus). Si None, lit jusqu'à la fin")
+) -> Dict[str, Any]:
+    """Lit une plage de cellules d'un notebook"""
+    try:
+        with open(notebook_path, 'r', encoding='utf-8') as f:
+            notebook = json.load(f)
+        
+        cells = notebook.get("cells", [])
+        total_cells = len(cells)
+        
+        # Gérer end_index
+        if end_index is None:
+            end_index = total_cells - 1
+        
+        # Vérifier les indices
+        if start_index < 0 or start_index >= total_cells:
+            return {
+                "status": "error",
+                "error": f"Index de début {start_index} hors limites (0 à {total_cells - 1})"
+            }
+        if end_index < 0 or end_index >= total_cells:
+            return {
+                "status": "error", 
+                "error": f"Index de fin {end_index} hors limites (0 à {total_cells - 1})"
+            }
+        if start_index > end_index:
+            return {
+                "status": "error",
+                "error": f"Index de début {start_index} doit être <= index de fin {end_index}"
+            }
+        
+        # Extraire les cellules dans la plage
+        cells_data = []
+        for i in range(start_index, end_index + 1):
+            cell = cells[i]
+            cell_info = {
+                "index": i,
+                "cell_type": cell.get("cell_type", "unknown"),
+                "source": ''.join(cell.get("source", [])),
+                "metadata": cell.get("metadata", {}),
+                "has_outputs": bool(cell.get("outputs", []))
+            }
+            
+            # Ajouter les informations d'exécution pour les cellules de code
+            if cell.get("cell_type") == "code":
+                cell_info["execution_count"] = cell.get("execution_count")
+                if cell.get("outputs"):
+                    cell_info["outputs"] = cell.get("outputs", [])
+                    cell_info["output_count"] = len(cell.get("outputs", []))
+            
+            cells_data.append(cell_info)
+        
+        return {
+            "status": "success",
+            "notebook_path": notebook_path,
+            "start_index": start_index,
+            "end_index": end_index,
+            "cells": cells_data,
+            "cells_count": len(cells_data),
+            "total_cells": total_cells
+        }
+        
+    except Exception as e:
+        return {"status": "error", "error": str(e)}
+
+
+@mcp.tool()
+def update_cell(
+    notebook_path: str = Field(description="Chemin du notebook"),
+    index: int = Field(description="Index de la cellule à modifier (0-based)"),
+    source: str = Field(description="Nouveau contenu de la cellule")
+) -> Dict[str, Any]:
+    """Modifie le contenu d'une cellule spécifique"""
+    try:
+        with open(notebook_path, 'r', encoding='utf-8') as f:
+            notebook = json.load(f)
+        
+        cells = notebook.get("cells", [])
+        
+        # Vérifier l'index
+        if index < 0 or index >= len(cells):
+            return {
+                "status": "error",
+                "error": f"Index {index} hors limites (0 à {len(cells) - 1})"
+            }
+        
+        # Mettre à jour le contenu de la cellule
+        lines = source.split('\n')
+        formatted_lines = []
+        for i, line in enumerate(lines):
+            if i == len(lines) - 1:  # Dernière ligne - pas de \n
+                formatted_lines.append(line)
+            else:  # Toutes les autres lignes - avec \n
+                formatted_lines.append(line + '\n')
+        
+        notebook["cells"][index]["source"] = formatted_lines
+        
+        # Réinitialiser execution_count et outputs pour les cellules de code
+        if notebook["cells"][index].get("cell_type") == "code":
+            notebook["cells"][index]["execution_count"] = None
+            notebook["cells"][index]["outputs"] = []
+        
+        # Sauvegarder le notebook
+        with open(notebook_path, 'w', encoding='utf-8') as f:
+            json.dump(notebook, f, indent=2)
+        
+        return {
+            "status": "success",
+            "notebook_path": notebook_path,
+            "updated_index": index,
+            "cell_count": len(cells),
+            "message": "Cellule mise à jour avec succès"
+        }
+        
+    except Exception as e:
+        return {"status": "error", "error": str(e)}
 
 
 def main():

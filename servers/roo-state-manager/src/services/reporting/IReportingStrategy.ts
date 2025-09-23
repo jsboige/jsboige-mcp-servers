@@ -150,7 +150,7 @@ export abstract class BaseReportingStrategy implements IReportingStrategy {
             } else if (content.subType === 'ToolResult') {
                 toolResultCounter++;
                 if (sourceFilePath && this.isTocOnlyMode()) {
-                    toc.push(`- <a href="${sourceFilePath}#L${this.estimateLineNumber(content)}" class="toc-tool">**RESULTAT OUTIL #${toolResultCounter}** - ${firstLine}</a>`);
+                    toc.push(`- <a href="${sourceFilePath}#L${this.estimateLineNumber(content)}" class="toc-tool">**OUTIL #${toolResultCounter}** - ${firstLine}</a>`);
                 } else {
                     toc.push(`- <a href="#${this.generateAnchor(content, toolResultCounter)}" class="toc-tool">**RÉSULTAT OUTIL #${toolResultCounter}** - ${firstLine}</a>`);
                 }

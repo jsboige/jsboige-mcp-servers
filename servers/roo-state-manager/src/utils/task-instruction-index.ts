@@ -50,7 +50,7 @@ export class TaskInstructionIndex {
      * @param childText - Texte de la tâche enfant (titre + description)
      * @returns ID de la tâche parente ou undefined
      */
-    findPotentialParent(childText: string): string | undefined {
+    findPotentialParent(childText: string, excludeTaskId?: string): string | undefined {
         if (!childText) return undefined;
 
         const normalizedText = this.normalizePrefix(childText);
@@ -61,7 +61,17 @@ export class TaskInstructionIndex {
 
         // Retourner le match avec le préfixe le plus long (plus spécifique)
         matches.sort((a, b) => b.prefix.length - a.prefix.length);
-        return matches[0].parentTaskId;
+        
+        // 🛡️ CRITICAL FIX: Prevent self-referencing cycles
+        for (const match of matches) {
+            if (match.parentTaskId && match.parentTaskId !== excludeTaskId) {
+                console.log(`[CYCLE PREVENTION] Found parent ${match.parentTaskId} (excluding ${excludeTaskId})`);
+                return match.parentTaskId;
+            }
+        }
+        
+        console.log(`[CYCLE PREVENTION] No valid parent found (excluded self-reference)`);
+        return undefined;
     }
 
     /**

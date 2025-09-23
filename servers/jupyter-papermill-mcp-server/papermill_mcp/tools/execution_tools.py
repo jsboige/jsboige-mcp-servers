@@ -6,6 +6,7 @@ Jupyter server management, and debugging utilities.
 """
 
 import logging
+import time
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
@@ -394,4 +395,152 @@ def register_execution_tools(app: FastMCP) -> None:
                 "success": False
             }
     
-    logger.info("Registered execution tools")
+    @app.tool()
+    async def execute_notebook_solution_a(
+        input_path: str,
+        output_path: Optional[str] = None
+    ) -> Dict[str, Any]:
+        """
+        SOLUTION A - API Papermill directe avec correction working directory
+        
+        Args:
+            input_path: Chemin du notebook d'entrée
+            output_path: Chemin du notebook de sortie (optionnel)
+            
+        Returns:
+            Résultat de l'exécution avec timing et diagnostic
+        """
+        try:
+            logger.info(f"Executing notebook with Solution A: {input_path}")
+            notebook_service, _ = get_services()
+            
+            result = await notebook_service.execute_notebook_solution_a(
+                input_path=input_path,
+                output_path=output_path
+            )
+            
+            logger.info(f"Successfully executed notebook with Solution A: {input_path}")
+            return result
+            
+        except Exception as e:
+            logger.error(f"Error executing notebook with Solution A {input_path}: {e}")
+            return {
+                "error": str(e),
+                "input_path": input_path,
+                "method": "execute_notebook_solution_a",
+                "success": False
+            }
+    
+    @app.tool()
+    async def parameterize_notebook(
+        input_path: str,
+        parameters: Dict[str, Any],
+        output_path: Optional[str] = None
+    ) -> Dict[str, Any]:
+        """
+        Exécute un notebook avec des paramètres via Papermill API directe
+        
+        Args:
+            input_path: Chemin du notebook d'entrée
+            parameters: Paramètres à injecter dans le notebook
+            output_path: Chemin du notebook de sortie (optionnel)
+            
+        Returns:
+            Résultat de l'exécution paramétrée
+        """
+        try:
+            logger.info(f"Executing parameterized notebook: {input_path}")
+            notebook_service, _ = get_services()
+            
+            result = await notebook_service.parameterize_notebook(
+                input_path=input_path,
+                parameters=parameters,
+                output_path=output_path
+            )
+            
+            logger.info(f"Successfully executed parameterized notebook: {input_path}")
+            return result
+            
+        except Exception as e:
+            logger.error(f"Error executing parameterized notebook {input_path}: {e}")
+            return {
+                "error": str(e),
+                "input_path": input_path,
+                "parameters": parameters,
+                "method": "parameterize_notebook",
+                "success": False
+            }
+    
+    @app.tool()
+    async def execute_notebook_cell(
+        path: str,
+        cell_index: int,
+        kernel_id: str
+    ) -> Dict[str, Any]:
+        """
+        Exécute une cellule spécifique d'un notebook sur un kernel
+        
+        Args:
+            path: Chemin du fichier notebook (.ipynb)
+            cell_index: Index de la cellule à exécuter
+            kernel_id: ID du kernel sur lequel exécuter la cellule
+            
+        Returns:
+            Résultat de l'exécution de la cellule
+        """
+        try:
+            logger.info(f"Executing cell {cell_index} from notebook: {path}")
+            _, kernel_service = get_services()
+            
+            result = await kernel_service.execute_notebook_cell(
+                path=path,
+                cell_index=cell_index,
+                kernel_id=kernel_id
+            )
+            
+            logger.info(f"Successfully executed cell {cell_index} from notebook: {path}")
+            return result
+            
+        except Exception as e:
+            logger.error(f"Error executing cell {cell_index} from notebook {path}: {e}")
+            return {
+                "error": str(e),
+                "path": path,
+                "cell_index": cell_index,
+                "kernel_id": kernel_id,
+                "success": False
+            }
+    
+    @app.tool()
+    async def get_execution_status() -> Dict[str, Any]:
+        """
+        Récupère le statut d'exécution global du serveur
+        
+        Returns:
+            Statut global du serveur et des kernels actifs
+        """
+        try:
+            logger.info("Getting global execution status")
+            _, kernel_service = get_services()
+            
+            kernel_status = await kernel_service.list_kernels()
+            
+            result = {
+                "status": "active",
+                "timestamp": time.time(),
+                "kernel_count": len(kernel_status.get("active_kernels", [])),
+                "kernels": kernel_status,
+                "success": True
+            }
+            
+            logger.info("Successfully retrieved global execution status")
+            return result
+            
+        except Exception as e:
+            logger.error(f"Error getting execution status: {e}")
+            return {
+                "error": str(e),
+                "success": False
+            }
+    
+    logger.info("Registered execution tools (13 total)")

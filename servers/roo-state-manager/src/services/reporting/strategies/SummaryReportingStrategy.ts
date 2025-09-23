@@ -93,15 +93,15 @@ export class SummaryReportingStrategy extends BaseReportingStrategy {
                 }
             } else if (content.subType === 'ToolResult') {
                 if (sourceFilePath) {
-                    toc.push(`- <a href="${sourceFilePath}#L${lineNumber}" class="toc-tool">**RESULTAT OUTIL #${toolResultCounter}** - ${firstLine}</a> [L${lineNumber}]`);
+                    toc.push(`- <a href="${sourceFilePath}#L${lineNumber}" class="toc-tool">**OUTIL #${toolResultCounter}** - ${firstLine}</a> [L${lineNumber}]`);
                 } else {
-                    toc.push(`- <a href="#L${lineNumber}" class="toc-tool">**RESULTAT OUTIL #${toolResultCounter}** - ${firstLine}</a>`);
+                    toc.push(`- <a href="#L${lineNumber}" class="toc-tool">**OUTIL #${toolResultCounter}** - ${firstLine}</a>`);
                 }
                 toolResultCounter++;
             } else if (content.type === 'Assistant') {
-                const label = content.subType === 'Completion' ? 
-                    `REPONSE ASSISTANT #${assistantMessageCounter} (Terminaison)` :
-                    `REPONSE ASSISTANT #${assistantMessageCounter}`;
+                const label = content.subType === 'Completion' ?
+                    `ASSISTANT #${assistantMessageCounter} (Terminaison)` :
+                    `ASSISTANT #${assistantMessageCounter}`;
                 
                 if (sourceFilePath) {
                     toc.push(`- <a href="${sourceFilePath}#L${lineNumber}" class="toc-assistant">**${label}** - ${firstLine}</a> [L${lineNumber}]`);

@@ -103,7 +103,7 @@ all = [
 ]
 
 [project.scripts]
-# Main entry point
+# Main entry point - Consolidated Architecture
 jupyter-papermill-mcp = "papermill_mcp.main:cli_main"
 
 [project.urls]

@@ -9,6 +9,7 @@ import json
 import logging
 import os
 import subprocess
+import sys
 import time
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
@@ -125,7 +126,7 @@ class PapermillExecutor:
             
         try:
             result = subprocess.run([
-                'jupyter', 'kernelspec', 'list', '--json'
+                sys.executable, '-m', 'jupyter', 'kernelspec', 'list', '--json'
             ], capture_output=True, text=True, timeout=15)
             
             if result.returncode == 0:
