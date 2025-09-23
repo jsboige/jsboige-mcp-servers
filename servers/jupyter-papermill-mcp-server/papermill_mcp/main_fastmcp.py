@@ -144,8 +144,10 @@ def execute_notebook_solution_a(
 ) -> Dict[str, Any]:
     """SOLUTION A - API Papermill directe (remplace subprocess conda run)"""
     try:
+        # CORRECTION BUG INSTABILITÉ : Éviter conflits de fichiers avec timestamps
         if not output_path:
-            output_path = notebook_path.replace('.ipynb', '_executed_solution_a.ipynb')
+            timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+            output_path = notebook_path.replace('.ipynb', f'_executed_{timestamp}.ipynb')
         
         # Diagnostic avant exécution
         diagnostic_info = {
@@ -283,8 +285,22 @@ def parameterize_notebook(
 ) -> Dict[str, Any]:
     """Exécute un notebook avec des paramètres via Papermill API directe (SOLUTION A - Bypass Conda Subprocess)"""
     try:
-        # Roo transforme automatiquement les strings JSON en dict
-        params = parameters if parameters else {}
+        # CORRECTION BUG PYDANTIC : Gérer sérialisation JSON via Roo
+        if isinstance(parameters, str):
+            # Roo peut envoyer les paramètres comme string JSON
+            try:
+                params = json.loads(parameters) if parameters else {}
+            except json.JSONDecodeError:
+                # Si ce n'est pas du JSON valide, retourner erreur explicite
+                return {
+                    "status": "error",
+                    "error": f"Paramètres invalides - JSON attendu: {parameters}",
+                    "error_type": "InvalidParametersFormat",
+                    "method": "papermill_direct_api_with_parameters"
+                }
+        else:
+            # Paramètres déjà sous forme de dictionnaire (cas normal)
+            params = parameters if parameters else {}
         
         if not output_path:
             output_path = notebook_path.replace('.ipynb', '_parameterized.ipynb')
@@ -352,8 +368,8 @@ def parameterize_notebook(
         # Erreur spécifique d'exécution Papermill (kernel crash, erreur code, etc.)
         try:
             safe_params = json.loads(parameters) if parameters else {}
-        except:
-            safe_params = {"error": "parameters_not_parseable", "raw": parameters}
+        except Exception:
+            safe_params = {"error": "parameters_not_parseable", "raw_type": type(parameters).__name__}
         
         return {
             "status": "error",
@@ -366,9 +382,9 @@ def parameterize_notebook(
     except PapermillException as e:
         # Autres erreurs Papermill (format notebook, paramètres invalides, etc.)
         try:
-            safe_params = json.loads(parameters) if parameters else {}
-        except:
-            safe_params = {"error": "parameters_not_parseable", "raw": parameters}
+            safe_params = params if 'params' in locals() else {"error": "params_not_initialized"}
+        except Exception:
+            safe_params = {"error": "parameters_not_accessible", "raw_type": type(parameters).__name__}
         
         return {
             "status": "error",
@@ -388,9 +404,9 @@ def parameterize_notebook(
     except Exception as e:
         # Gestion sécurisée pour éviter double exception
         try:
-            safe_params = json.loads(parameters) if parameters else {}
-        except:
-            safe_params = {"error": "parameters_not_parseable", "raw": parameters}
+            safe_params = params if 'params' in locals() else {"error": "params_not_initialized"}
+        except Exception:
+            safe_params = {"error": "parameters_not_accessible", "raw_type": type(parameters).__name__}
         
         return {
             "status": "error",
