@@ -9,14 +9,14 @@ import {
 import dotenv from 'dotenv';
 import path from 'path';
 import { fileURLToPath } from 'url';
-import { dirname } from 'path';
+
+// Définition de __dirname en ES Module
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
+
 import { setupTools } from './tools.js';
 import { setupResources } from './resources.js';
 import { setupErrorHandlers } from './utils/errorHandlers.js';
-
-// Correction pour __dirname en ES Module
-const __filename = fileURLToPath(import.meta.url);
-const __dirname = dirname(__filename);
 
 // Charger les variables d'environnement
 const envPath = path.resolve(__dirname, '../.env');
@@ -40,76 +40,64 @@ class GitHubProjectsServer {
     // Charger les comptes GitHub
     this.loadAccounts();
 
-    this.server = new Server(
-      {
-        name: 'github-projects-mcp',
-        version: '0.1.0',
+    this.server = new Server({
+      name: 'github-projects-mcp',
+      version: '0.1.0',
+    }, {
+      capabilities: {
+        tools: {},
+        resources: {},
       },
-      {
-        capabilities: {
-          tools: {},
-          resources: {},
-        },
-      }
-    );
-
-    // Configurer les outils et les ressources, en passant les comptes
+    });
+    setupErrorHandlers(this.server);
     setupTools(this.server, this.accounts);
     setupResources(this.server, this.accounts);
-    setupErrorHandlers(this.server);
-    
-    this.server.onerror = (error) => logger.error('[MCP Error]', { error });
-    process.on('SIGINT', async () => {
-      logger.info('SIGINT received, closing server.');
-      await this.server.close();
-      process.exit(0);
-    });
+
+    console.log('[GP-MCP][INDEX] Serveur configuré avec succès.');
   }
 
   private loadAccounts() {
-    // Nouvelle méthode : lire une variable d'environnement contenant le JSON des comptes
-    const accountsJson = process.env.GITHUB_ACCOUNTS_JSON;
-    if (accountsJson) {
-      logger.info(`[GP-MCP][INDEX] Contenu brut de GITHUB_ACCOUNTS_JSON: ${accountsJson}`);
-      try {
-        this.accounts = JSON.parse(accountsJson);
-        logger.info(`[GP-MCP][INDEX] ${this.accounts.length} compte(s) GitHub chargé(s) depuis GITHUB_ACCOUNTS_JSON.`);
-      } catch (e) {
-        logger.error('[GP-MCP][INDEX] Erreur de parsing de GITHUB_ACCOUNTS_JSON', {error: e});
+    const accounts: GitHubAccount[] = [];
+    let index = 1;
+
+    while (true) {
+      const owner = process.env[`GITHUB_OWNER_${index}`];
+      const token = process.env[`GITHUB_TOKEN_${index}`];
+
+      if (!owner || !token) {
+        break;
       }
-    } else if (process.env.GITHUB_TOKEN) {
-      // Rétrocompatibilité
-      logger.info('[GP-MCP][INDEX] Utilisation du GITHUB_TOKEN legacy.');
-      this.accounts.push({ owner: 'default', token: process.env.GITHUB_TOKEN });
-    } else {
-      logger.warn('[GP-MCP][INDEX] Aucun compte GitHub configuré. Le MCP fonctionnera en mode non authentifié.');
+
+      accounts.push({ owner, token });
+      console.log(`[GP-MCP][ACCOUNTS] Compte ${index} chargé: ${owner}`);
+      index++;
     }
+
+    if (accounts.length === 0) {
+      // Fallback: essayer sans index
+      const owner = process.env.GITHUB_OWNER;
+      const token = process.env.GITHUB_TOKEN;
+
+      if (owner && token) {
+        accounts.push({ owner, token });
+        console.log(`[GP-MCP][ACCOUNTS] Compte unique chargé: ${owner}`);
+      }
+    }
+
+    this.accounts = accounts;
+    console.log(`[GP-MCP][ACCOUNTS] ${accounts.length} compte(s) chargé(s).`);
   }
 
   async run() {
-    try {
-      const transport = new StdioServerTransport();
-      await this.server.connect(transport);
-      logger.info('MCP server connected to stdio');
-    } catch (error) {
-      const errorMessage = error instanceof Error ? error.message : String(error);
-      const stack = error instanceof Error ? error.stack : 'No stack trace';
-      console.error('CRITICAL: Error starting MCP server:', errorMessage, stack);
-      logger.error('Error starting MCP server:', { error });
-      process.exit(1);
-    }
+    console.log('[GP-MCP][INDEX] Démarrage du serveur...');
+    const transport = new StdioServerTransport();
+    await this.server.connect(transport);
+    console.log('[GP-MCP][INDEX] Serveur démarré et connecté.');
   }
 }
 
-try {
-  const server = new GitHubProjectsServer();
-  server.run();
-} catch (error) {
-  const errorMessage = error instanceof Error ? error.message : String(error);
-  const stack = error instanceof Error ? error.stack : 'No stack trace';
-  console.error('CRITICAL: Failed to initialize and run GitHubProjectsServer:', errorMessage, stack);
-  logger.error('Failed to initialize and run GitHubProjectsServer:', { error });
+const server = new GitHubProjectsServer();
+server.run().catch((error) => {
+  console.error('[GP-MCP][INDEX] Erreur fatale:', error);
   process.exit(1);
-}
-
-// Le transport Stdio maintiendra le processus en vie en écoutant stdin.
+});
