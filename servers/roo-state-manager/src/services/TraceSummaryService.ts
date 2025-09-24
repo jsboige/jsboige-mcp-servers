@@ -382,62 +382,14 @@ export class TraceSummaryService {
         'insert_content', 'search_and_replace', 'use_mcp_tool'
     ];
     
-    private usedIds: Set<string> = new Set(); // ChatGPT-5: Tracking pour éviter doublons d'IDs
 
     constructor(
         private readonly exportConfigManager: ExportConfigManager
     ) {}
 
-    /**
-     * ChatGPT-5: Génère un ID unique avec système anti-collision
-     */
-    private generateUniqueId(baseId: string): string {
-        let uniqueId = baseId;
-        let counter = 1;
-        
-        // Si collision, ajouter suffixe --n
-        while (this.usedIds.has(uniqueId)) {
-            uniqueId = `${baseId}--${counter}`;
-            counter++;
-        }
-        
-        this.usedIds.add(uniqueId);
-        return uniqueId;
-    }
 
-    /**
-     * ChatGPT-5: Reset le tracking d'IDs au début de chaque génération
-     */
-    private resetIdTracking(): void {
-        this.usedIds.clear();
-    }
 
-    /**
-     * ChatGPT-5: Génère l'ID de section selon le contrat strict
-     */
-    private generateSectionId(item: RenderItem): string {
-        const baseId = (() => {
-            switch (item.type) {
-                case 'assistant': return `reponse-assistant-${item.n}`;
-                case 'outil': return `outil-${item.n}`;
-                case 'user': return `message-utilisateur-${item.n}`;
-                case 'erreur': return `erreur-${item.n}`;
-                case 'condensation': return `condensation-${item.n}`;
-                case 'new-instructions': return `nouvelles-instructions-${item.n}`;
-                case 'completion': return `completion-${item.n}`;
-                default: return `unknown-${item.n}`;
-            }
-        })();
-        
-        return this.generateUniqueId(baseId);
-    }
 
-    /**
-     * ChatGPT-5: Génère l'ID de TOC selon le contrat strict
-     */
-    private generateTocId(item: RenderItem): string {
-        return this.generateUniqueId(`toc-${this.generateSectionId(item).replace(/--\d+$/, '')}`);
-    }
 
     /**
      * ChatGPT-5: Détermine la classe CSS TOC selon le type
@@ -645,81 +597,7 @@ export class TraceSummaryService {
         return items;
     }
 
-    /**
-     * ChatGPT-5: Rend la TOC selon la spécification stricte
-     */
-    private renderTocFromItems(items: RenderItem[]): string {
-        const parts: string[] = [
-            '<div class="toc">',
-            '',
-            '### SOMMAIRE DES MESSAGES {#table-des-matieres}',
-            '',
-            '<ol class="toc-list">'
-        ];
 
-        for (const item of items) {
-            const sectionId = this.generateSectionId(item);
-            const tocId = this.generateTocId(item);
-            const tocClass = this.getTocClass(item.type);
-            
-            const entry = `  <li id="${tocId}"><a class="${tocClass}" href="#${sectionId}">${item.title}</a></li>`;
-            parts.push(entry);
-        }
-
-        parts.push('</ol>', '', '</div>');
-        return parts.join('\n');
-    }
-
-    /**
-     * ChatGPT-5: Rend une section selon la spécification stricte
-     */
-    private renderSectionFromItem(item: RenderItem, options: SummaryOptions): string {
-        const sectionId = this.generateSectionId(item);
-        const boxClass = this.getBoxClass(item.type);
-        const sanitizedHtml = this.sanitizeSectionHtml(item.html);
-        
-        const parts: string[] = [];
-        
-        // Heading avec ID
-        parts.push(`<h3 id="${sectionId}">${item.title}</h3>`);
-        parts.push('');
-        
-        // Conteneur typé avec contenu sanitisé
-        parts.push(`<div class="${boxClass}">`);
-        
-        // Traitement spécial pour le premier message utilisateur (instruction de tâche)
-        if (item.type === 'user' && item.n === 1) {
-            const processedContent = this.processInitialTaskContent(sanitizedHtml);
-            parts.push(processedContent);
-        } else if (item.type === 'outil' && this.shouldShowDetailedResults(options.detailLevel)) {
-            // Traitement spécial pour les outils avec détails
-            parts.push(`**Résultat d'outil :** \`${item.toolType || 'outil'}\``);
-            parts.push('');
-            
-            const resultContent = this.extractToolResultContent(sanitizedHtml);
-            const resultType = item.resultType || 'résultat';
-            
-            parts.push('<details>');
-            parts.push(`<summary>**${resultType} :** Cliquez pour afficher</summary>`);
-            parts.push('');
-            parts.push('```');
-            parts.push(resultContent);
-            parts.push('```');
-            parts.push('</details>');
-        } else {
-            // Contenu normal
-            parts.push(sanitizedHtml);
-        }
-        
-        parts.push('</div>');
-        parts.push('');
-        
-        // Lien de retour TOC (toujours vers l'entrée TOC)
-        const tocId = this.generateTocId(item);
-        parts.push(`<div class="back"><a href="#${tocId}" title="Retour à l'entrée correspondante dans la table des matières">^ TOC</a></div>`);
-        
-        return parts.join('\n');
-    }
 
     /**
      * Génère un résumé intelligent à partir d'un ConversationSkeleton
@@ -730,7 +608,7 @@ export class TraceSummaryService {
     ): Promise<SummaryResult> {
         try {
             // ChatGPT-5: Reset tracking d'IDs pour éviter doublons
-            this.resetIdTracking();
+            // this.resetIdTracking(); // Obsolète, remplacé par assignStableIds
             
             const fullOptions = this.mergeWithDefaultOptions(options);
             
@@ -1092,6 +970,7 @@ export class TraceSummaryService {
 
         // 4. Table des matières maintenant générée dans renderConversationContent via ChatGPT-5
         // (supprimé pour éviter les doublons - la TOC est maintenant dans le contenu conversationnel)
+        // Le rendu de la TOC est géré par renderTOCChatGPT5 qui utilise les IDs pré-calculés.
 
         // 5. NOUVELLE SECTION : Contenu conversationnel
         if (options.detailLevel !== 'Summary') {
@@ -1660,91 +1539,9 @@ export class TraceSummaryService {
      * Génère la table des matières
      */
     private generateTableOfContents(classifiedContent: ClassifiedContent[], options: SummaryOptions): string {
-        // ChatGPT-5: Reset ID tracking pour garantir l'unicité
-        this.resetIdTracking();
-        
-        const parts: string[] = [
-            '<div class="toc">',
-            '',
-            '### SOMMAIRE DES MESSAGES {#table-des-matieres}',
-            '',
-            '<ol class="toc-list">'
-        ];
-
-        let userMessageCounterToc = 2;
-        let assistantMessageCounterToc = 1;
-        let toolResultCounterToc = 1;
-        let isFirstUser = true;
-
-        for (const item of classifiedContent) {
-            const firstLine = this.getTruncatedFirstLine(item.content, 200);
-            
-            if (item.subType === 'UserMessage' || item.subType === 'ErrorMessage' ||
-                item.subType === 'ContextCondensation' || item.subType === 'NewInstructions') {
-                if (isFirstUser && item.subType === 'UserMessage') {
-                    const sectionAnchor = this.generateUniqueId('instruction-de-tache-initiale');
-                    const tocAnchor = this.generateUniqueId(`toc-${sectionAnchor}`);
-                    const entry = `  <li id="${tocAnchor}"><a href="#${sectionAnchor}" class="toc-instruction">INSTRUCTION DE TÂCHE INITIALE - ${firstLine}</a></li>`;
-                    parts.push(entry);
-                    isFirstUser = false;
-                } else {
-                    const sectionAnchor = this.generateUniqueId(`message-utilisateur-${userMessageCounterToc}`);
-                    const tocAnchor = this.generateUniqueId(`toc-${sectionAnchor.replace(/--\d+$/, '')}-${userMessageCounterToc}`);
-                    
-                    let tocLabel = `UTILISATEUR #${userMessageCounterToc}`;
-                    let tocClass = 'toc-user';
-                    
-                    // ChatGPT-5: Gestion spécifique des nouveaux types dans la TOC avec classes CSS correctes
-                    if (item.subType === 'ErrorMessage') {
-                        tocLabel = `ERREUR SYSTÈME #${userMessageCounterToc}`;
-                        tocClass = 'toc-error';
-                    } else if (item.subType === 'ContextCondensation') {
-                        tocLabel = `CONDENSATION CONTEXTE #${userMessageCounterToc}`;
-                        tocClass = 'toc-context-condensation';
-                    } else if (item.subType === 'NewInstructions') {
-                        // Extraire le contenu après "New instructions for task continuation:"
-                        const instructionMatch = item.content.match(/^New instructions for task continuation:\s*(.*)/i);
-                        const actualInstruction = instructionMatch ? instructionMatch[1] : firstLine;
-                        tocLabel = `NOUVELLES INSTRUCTIONS #${userMessageCounterToc}`;
-                        tocClass = 'toc-new-instructions';
-                        
-                        const entry = `  <li id="${tocAnchor}"><a href="#${sectionAnchor}" class="${tocClass}">${tocLabel} - ${this.getTruncatedFirstLine(actualInstruction, 200)}</a></li>`;
-                        parts.push(entry);
-                        userMessageCounterToc++;
-                        continue;
-                    }
-                    
-                    const entry = `  <li id="${tocAnchor}"><a href="#${sectionAnchor}" class="${tocClass}">${tocLabel} - ${firstLine}</a></li>`;
-                    parts.push(entry);
-                    userMessageCounterToc++;
-                }
-            } else if (item.subType === 'ToolResult') {
-                const sectionAnchor = this.generateUniqueId(`outil-${toolResultCounterToc}`);
-                const tocAnchor = this.generateUniqueId(`toc-${sectionAnchor.replace(/--\d+$/, '')}-${toolResultCounterToc}`);
-                const entry = `  <li id="${tocAnchor}"><a href="#${sectionAnchor}" class="toc-tool">OUTIL #${toolResultCounterToc} - ${firstLine}</a></li>`;
-                parts.push(entry);
-                toolResultCounterToc++;
-            } else if (item.type === 'Assistant') {
-                const sectionAnchor = this.generateUniqueId(`reponse-assistant-${assistantMessageCounterToc}`);
-                const tocAnchor = this.generateUniqueId(`toc-${sectionAnchor.replace(/--\d+$/, '')}-${assistantMessageCounterToc}`);
-                
-                // ChatGPT-5: Extraction du nom d'outil pour l'affichage dans la TOC
-                const toolName = this.extractFirstToolName(item.content);
-                const toolSuffix = toolName ? ` (${toolName})` : '';
-                
-                if (item.subType === 'Completion') {
-                    const entry = `  <li id="${tocAnchor}"><a href="#${sectionAnchor}" class="toc-completion">ASSISTANT #${assistantMessageCounterToc} (Terminaison)${toolSuffix} - ${firstLine}</a></li>`;
-                    parts.push(entry);
-                } else {
-                    const entry = `  <li id="${tocAnchor}"><a href="#${sectionAnchor}" class="toc-assistant">ASSISTANT #${assistantMessageCounterToc}${toolSuffix} - ${firstLine}</a></li>`;
-                    parts.push(entry);
-                }
-                assistantMessageCounterToc++;
-            }
-        }
-
-        parts.push('</ol>', '', '</div>');
-        return parts.join('\n');
+        // Cette méthode est obsolète. La TOC est maintenant générée par renderConversationContent
+        // en utilisant le pipeline unifié avec assignStableIds et renderTOCChatGPT5.
+        return '';
     }
 
     /**
@@ -2029,53 +1826,9 @@ export class TraceSummaryService {
         isFirst: boolean,
         options: SummaryOptions
     ): Promise<string> {
-        const firstLine = this.getTruncatedFirstLine(item.content, 200);
-        const parts: string[] = [];
-        
-        if (isFirst) {
-            const anchor = this.generateUniqueId('instruction-de-tache-initiale');
-            parts.push(`<h3 id="${anchor}">INSTRUCTION DE TÂCHE INITIALE</h3>`);
-            parts.push("");
-            
-            // Traitement spécial pour la première tâche (avec environment_details)
-            const processedContent = this.processInitialTaskContent(item.content);
-            parts.push(processedContent);
-            
-            parts.push("");
-            parts.push("---");
-        } else {
-            const anchor = this.generateUniqueId(`message-utilisateur-${counter}`);
-            let title = `UTILISATEUR #${counter} - ${firstLine}`;
-            let cssClass = 'user-message';
-            
-            // ChatGPT-5: Gestion spécifique des nouveaux types avec titres et classes CSS corrects
-            if (item.subType === 'ErrorMessage') {
-                title = `ERREUR SYSTÈME #${counter} - ${firstLine}`;
-                cssClass = 'error-message';
-            } else if (item.subType === 'ContextCondensation') {
-                title = `CONDENSATION CONTEXTE #${counter} - ${firstLine}`;
-                cssClass = 'context-condensation-message';
-            } else if (item.subType === 'NewInstructions') {
-                // Extraire le contenu après "New instructions for task continuation:"
-                const instructionMatch = item.content.match(/^New instructions for task continuation:\s*(.*)/i);
-                const actualInstruction = instructionMatch ? instructionMatch[1] : firstLine;
-                title = `NOUVELLES INSTRUCTIONS #${counter} - ${this.getTruncatedFirstLine(actualInstruction, 200)}`;
-                cssClass = 'user-message'; // Même couleur que les messages utilisateur normaux
-            }
-            
-            // ChatGPT-5: ID directement sur le <h3> (stratégie robuste)
-            parts.push(`<h3 id="${anchor}">${title}</h3>`);
-            parts.push("");
-            
-            parts.push(`<div class="${cssClass}">`);
-            const cleanedContent = this.cleanUserMessage(item.content);
-            parts.push(cleanedContent);
-            parts.push('</div>');
-            parts.push("");
-            parts.push(this.generateBackToTocLink(anchor));
-        }
-        
-        return parts.join('\n');
+        // Cette méthode est obsolète. Le rendu est maintenant géré par renderConversationContent
+        // en utilisant le pipeline unifié avec assignStableIds et renderSectionChatGPT5.
+        return '';
     }
 
     /**
@@ -2086,40 +1839,9 @@ export class TraceSummaryService {
         counter: number,
         options: SummaryOptions
     ): Promise<string> {
-        const parts: string[] = [];
-        const toolName = item.toolType || 'outil';
-        const firstLine = this.getTruncatedFirstLine(toolName, 200);
-        const anchor = this.generateUniqueId(`outil-${counter}`);
-        
-        // ChatGPT-5: ID directement sur le <h3> (stratégie robuste)
-        parts.push(`<h3 id="${anchor}">OUTIL #${counter} - ${firstLine}</h3>`);
-        parts.push("");
-        
-        parts.push('<div class="tool-message">');
-        parts.push(`**Résultat d'outil :** \`${toolName}\``);
-        
-        if (this.shouldShowDetailedResults(options.detailLevel)) {
-            const resultContent = this.extractToolResultContent(item.content);
-            const resultType = item.resultType || 'résultat';
-            
-            parts.push("");
-            parts.push("<details>");
-            parts.push(`<summary>**${resultType} :** Cliquez pour afficher</summary>`);
-            parts.push("");
-            parts.push('```');
-            parts.push(resultContent);
-            parts.push('```');
-            parts.push("</details>");
-        } else {
-            parts.push("");
-            parts.push(`*Contenu des résultats masqué - utilisez -DetailLevel Full pour afficher*`);
-        }
-        
-        parts.push('</div>');
-        parts.push("");
-        parts.push(this.generateBackToTocLink(anchor));
-        
-        return parts.join('\n');
+        // Cette méthode est obsolète. Le rendu est maintenant géré par renderConversationContent
+        // en utilisant le pipeline unifié avec assignStableIds et renderSectionChatGPT5.
+        return '';
     }
 
     /**
@@ -2130,52 +1852,9 @@ export class TraceSummaryService {
         counter: number,
         options: SummaryOptions
     ): Promise<string> {
-        const parts: string[] = [];
-        const firstLine = this.getTruncatedFirstLine(item.content, 200);
-        const anchor = this.generateUniqueId(`reponse-assistant-${counter}`);
-        const isCompletion = item.subType === 'Completion';
-        
-        // ChatGPT-5: Détection du premier outil utilisé pour l'afficher dans le titre
-        const toolName = this.extractFirstToolName(item.content);
-        const toolSuffix = toolName ? ` (${toolName})` : '';
-        
-        // ChatGPT-5: ID directement sur le <h3> (stratégie robuste)
-        const title = isCompletion
-            ? `<h3 id="${anchor}">ASSISTANT #${counter} (Terminaison)${toolSuffix} - ${firstLine}</h3>`
-            : `<h3 id="${anchor}">ASSISTANT #${counter}${toolSuffix} - ${firstLine}</h3>`;
-        
-        parts.push(title);
-        parts.push("");
-        
-        // ChatGPT-5: Mapping des subtypes vers les classes CSS appropriées
-        let cssClass = 'assistant-message'; // Classe par défaut
-        if (item.subType === 'Completion') {
-            cssClass = 'completion-message';
-        } else if (item.subType === 'ContextCondensation') {
-            cssClass = 'context-condensation-message';
-        } else if (item.subType === 'ErrorMessage') {
-            cssClass = 'error-message';
-        }
-        parts.push(`<div class="${cssClass}">`);
-        
-        // Extraction et traitement du contenu
-        const processedContent = await this.processAssistantContent(item.content, options);
-        parts.push(processedContent.textContent);
-        
-        // Ajout des blocs techniques selon le niveau de détail
-        if (processedContent.technicalBlocks.length > 0) {
-            const technicalSections = await this.renderTechnicalBlocks(
-                processedContent.technicalBlocks,
-                options
-            );
-            parts.push(technicalSections);
-        }
-        
-        parts.push('</div>');
-        parts.push("");
-        parts.push(this.generateBackToTocLink(anchor));
-        
-        return parts.join('\n');
+        // Cette méthode est obsolète. Le rendu est maintenant géré par renderConversationContent
+        // en utilisant le pipeline unifié avec assignStableIds et renderSectionChatGPT5.
+        return '';
     }
 
     /**
@@ -2453,21 +2132,9 @@ export class TraceSummaryService {
      * @param sectionId - ID de la SECTION (ex: "reponse-assistant-86") - PAS l'ID TOC
      */
     private generateBackToTocLink(sectionId?: string): string {
-        // ChatGPT-5: Construire l'ID TOC à partir de l'ID de section (évite toc-toc-XXX)
-        let targetAnchor = 'table-des-matieres';
-        
-        if (sectionId) {
-            // Si sectionId commence déjà par "toc-", on ne re-préfixe pas
-            if (sectionId.startsWith('toc-')) {
-                targetAnchor = sectionId;
-            } else {
-                targetAnchor = `toc-${sectionId}`;
-            }
-        }
-        
-        return '<div class="back">' +
-               `<a href="#${targetAnchor}" title="Retour à l'entrée correspondante dans la table des matières">↑ Retour à la TOC</a>` +
-               '</div>';
+        // Cette méthode est obsolète. Le lien de retour est maintenant géré par renderSectionChatGPT5
+        // en utilisant l'ID TOC pré-calculé (item.tid).
+        return '';
     }
 
     // ============================================================================
