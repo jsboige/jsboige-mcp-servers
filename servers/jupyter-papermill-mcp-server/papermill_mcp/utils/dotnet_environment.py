@@ -129,7 +129,7 @@ class DotNetEnvironmentInjector:
         dotnet_vars = self._detect_dotnet_paths()
         
         if not dotnet_vars:
-            logger.warning("⚠️  No .NET environment variables detected - injection skipped")
+            logger.warning("WARNING: No .NET environment variables detected - injection skipped")
             yield {}
             return
         
@@ -148,7 +148,7 @@ class DotNetEnvironmentInjector:
                 os.environ[key] = value
                 injected_vars[key] = value
             
-            logger.info(f"🔧 Injected {len(injected_vars)} .NET environment variables")
+            logger.info(f"Injected {len(injected_vars)} .NET environment variables")
             
             yield injected_vars
             

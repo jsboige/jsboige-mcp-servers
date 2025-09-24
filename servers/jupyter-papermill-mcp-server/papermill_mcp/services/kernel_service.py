@@ -422,7 +422,7 @@ class KernelService:
             logger.info("Cleaning up all kernels")
             
             # Get list of active kernels
-            active_kernels = await self.jupyter_manager.list_active_kernels()
+            active_kernels = self.jupyter_manager.list_active_kernels()
             
             cleanup_results = []
             for kernel in active_kernels:

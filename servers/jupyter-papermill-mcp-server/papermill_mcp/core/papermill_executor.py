@@ -330,14 +330,14 @@ class PapermillExecutor:
                 # Résout l'erreur "Value cannot be null. (Parameter 'path1')"
                 with inject_dotnet_environment() as injected_vars:
                     if injected_vars:
-                        self.logger.info(f"🔧 .NET environment injected: {len(injected_vars)} variables")
+                        self.logger.info(f".NET environment injected: {len(injected_vars)} variables")
                         # Log des variables critiques pour debug
                         critical_vars = ['DOTNET_ROOT', 'MSBuildSDKsPath', 'NUGET_PACKAGES']
                         for var in critical_vars:
                             if var in injected_vars:
                                 self.logger.debug(f"  ✅ {var}={injected_vars[var]}")
                     else:
-                        self.logger.warning("⚠️  No .NET environment variables injected")
+                        self.logger.warning("WARNING: No .NET environment variables injected")
                     
                     # Exécution Papermill avec environnement .NET enrichi
                     result_nb = pm.execute_notebook(**pm_kwargs)
