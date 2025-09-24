@@ -907,8 +907,8 @@ export class TraceSummaryService {
         // Regex PowerShell exactes (traduites en JavaScript)
         // PowerShell: (?s)\*\*User:\*\*(.*?)(?=\*\*(?:User|Assistant):\*\*|$)
         // PowerShell: (?s)\*\*Assistant:\*\*(.*?)(?=\*\*(?:User|Assistant):\*\*|$)
-        const userMatches = [...content.matchAll(/\*\*User:\*\*(.*?)(?=\*\*(?:User|Assistant):\*\*|$)/gs)];
-        const assistantMatches = [...content.matchAll(/\*\*Assistant:\*\*(.*?)(?=\*\*(?:User|Assistant):\*\*|$)/gs)];
+        const userMatches = [...content.matchAll(/\*\*User:\*\*([\s\S]*?)(?=\*\*(?:User|Assistant):\*\*|$)/gs)];
+        const assistantMatches = [...content.matchAll(/\*\*Assistant:\*\*([\s\S]*?)(?=\*\*(?:User|Assistant):\*\*|$)/gs)];
 
         // Créer et trier toutes les sections avec leur position
         const allSections: Array<{type: string, subType: string, content: string, index: number}> = [];
@@ -1996,7 +1996,9 @@ export class TraceSummaryService {
         
         // 3) PLAN BÉTON : Assignation UNIQUE des IDs (une seule fois)
         assignStableIds(filteredItems);
-
+        
+        // 4) Incrémenter globalCounter pour chaque élément ajouté
+        // (déplacé ici pour s'assurer que tous les éléments sont comptés)
         const parts: string[] = [];
         
         // Section d'introduction
