@@ -238,6 +238,8 @@ def cli_main() -> None:
         
         # Initialize and run server synchronously via FastMCP
         server = JupyterPapermillMCPServer()
+        # CRITICAL: Initialize tools BEFORE running!
+        server.initialize()
         server.app.run("stdio")
         
     except KeyboardInterrupt:

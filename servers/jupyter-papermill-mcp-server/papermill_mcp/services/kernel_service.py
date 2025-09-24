@@ -38,11 +38,11 @@ class KernelService:
         try:
             logger.info("Listing kernels")
             
-            # Get available kernelspecs
-            available_kernels = await self.jupyter_manager.list_available_kernels()
+            # Get available kernelspecs - NO await needed, these are sync methods!
+            available_kernels = self.jupyter_manager.list_available_kernels()
             
-            # Get active kernels
-            active_kernels = await self.jupyter_manager.list_active_kernels()
+            # Get active kernels - NO await needed, these are sync methods!
+            active_kernels = self.jupyter_manager.list_active_kernels()
             
             result = {
                 "available_kernels": available_kernels,
@@ -192,13 +192,30 @@ class KernelService:
             result = await self.jupyter_manager.execute_code(kernel_id, code, timeout)
             
             # Convert ExecutionResult to dictionary
+            # Important: Convert ExecutionOutput objects to dictionaries for JSON serialization
+            outputs_dict = []
+            for output in result.outputs:
+                if hasattr(output, '__dict__'):
+                    # Convert dataclass to dict
+                    output_dict = {
+                        'output_type': output.output_type,
+                        'content': output.content
+                    }
+                    if hasattr(output, 'metadata') and output.metadata:
+                        output_dict['metadata'] = output.metadata
+                    if hasattr(output, 'execution_count') and output.execution_count is not None:
+                        output_dict['execution_count'] = output.execution_count
+                    outputs_dict.append(output_dict)
+                else:
+                    outputs_dict.append(output)
+            
             execution_dict = {
                 "kernel_id": kernel_id,
                 "execution_count": result.execution_count,
                 "status": result.status,
-                "outputs": result.outputs,
-                "error": result.error,
-                "execution_time": result.execution_time,
+                "outputs": outputs_dict,
+                "error": result.error_name or result.error_value if (result.error_name or result.error_value) else None,
+                "execution_time": getattr(result, 'execution_time', None),
                 "success": result.status == "ok"
             }
             
@@ -249,8 +266,8 @@ class KernelService:
                             "execution_count": cell_result.execution_count,
                             "status": cell_result.status,
                             "outputs": cell_result.outputs,
-                            "error": cell_result.error,
-                            "execution_time": cell_result.execution_time
+                            "error": cell_result.error_name or cell_result.error_value if (cell_result.error_name or cell_result.error_value) else None,
+                            "execution_time": getattr(cell_result, 'execution_time', None)
                         }
                         
                         total_execution_time += cell_result.execution_time
@@ -354,8 +371,8 @@ class KernelService:
                 "execution_count": cell_result.execution_count,
                 "status": cell_result.status,
                 "outputs": cell_result.outputs,
-                "error": cell_result.error,
-                "execution_time": cell_result.execution_time,
+                "error": cell_result.error_name or cell_result.error_value if (cell_result.error_name or cell_result.error_value) else None,
+                "execution_time": getattr(cell_result, 'execution_time', None),
                 "success": cell_result.status == "ok"
             }
             
@@ -379,8 +396,8 @@ class KernelService:
         try:
             logger.info(f"Getting status for kernel: {kernel_id}")
             
-            # Check if kernel exists in active kernels
-            active_kernels = await self.jupyter_manager.list_active_kernels()
+            # Check if kernel exists in active kernels - NO await needed, this is a sync method!
+            active_kernels = self.jupyter_manager.list_active_kernels()
             
             kernel_info = None
             for kernel in active_kernels:

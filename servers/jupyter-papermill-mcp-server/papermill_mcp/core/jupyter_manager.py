@@ -151,17 +151,25 @@ class JupyterManager:
             
             result = {}
             for name, spec in kernel_specs.items():
-                result[name] = {
-                    'name': name,
-                    'spec': {
-                        'display_name': spec.display_name,
-                        'language': spec.language,
-                        'argv': spec.argv,
-                        'env': spec.env,
-                        'resource_dir': spec.resource_dir
-                    },
-                    'resources': {}
-                }
+                # spec peut être un dict ou un objet, gérons les deux cas
+                if isinstance(spec, dict):
+                    result[name] = {
+                        'name': name,
+                        'spec': spec,
+                        'resources': {}
+                    }
+                else:
+                    result[name] = {
+                        'name': name,
+                        'spec': {
+                            'display_name': getattr(spec, 'display_name', name),
+                            'language': getattr(spec, 'language', 'unknown'),
+                            'argv': getattr(spec, 'argv', []),
+                            'env': getattr(spec, 'env', {}),
+                            'resource_dir': getattr(spec, 'resource_dir', None)
+                        },
+                        'resources': {}
+                    }
             
             self.logger.info(f"Found {len(result)} available kernels: {list(result.keys())}")
             return result
