@@ -25,7 +25,8 @@ class JupyterServerConfig(BaseModel):
 class PapermillConfig(BaseModel):
     """Configuration for Papermill execution."""
     output_dir: str = Field(default="./outputs", description="Directory for output notebooks")
-    timeout: int = Field(default=300, description="Execution timeout in seconds")
+    timeout: int = Field(default=900, description="Execution timeout in seconds (15 minutes for complex notebooks)")
+    kernel_detection_timeout: int = Field(default=60, description="Kernel detection timeout in seconds")
     kernel_name: Optional[str] = Field(default=None, description="Default kernel name")
     
     class Config:

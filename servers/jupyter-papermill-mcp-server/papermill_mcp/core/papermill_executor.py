@@ -125,9 +125,11 @@ class PapermillExecutor:
             return self._available_kernels
             
         try:
+            # Utiliser le timeout configurable pour la détection des kernels
+            kernel_timeout = getattr(self.config.papermill, 'kernel_detection_timeout', 60)
             result = subprocess.run([
                 sys.executable, '-m', 'jupyter', 'kernelspec', 'list', '--json'
-            ], capture_output=True, text=True, timeout=15)
+            ], capture_output=True, text=True, timeout=kernel_timeout)
             
             if result.returncode == 0:
                 kernel_data = json.loads(result.stdout)
@@ -198,21 +200,21 @@ class PapermillExecutor:
         output_name = f"{path_obj.stem}{suffix}_{timestamp}{path_obj.suffix}"
         return str(Path(self.config.papermill.output_dir) / output_name)
     
-    async def execute_notebook(self, 
+    async def execute_notebook(self,
                              input_path: str,
                              output_path: Optional[str] = None,
                              parameters: Optional[Dict[str, Any]] = None,
                              kernel: Optional[str] = None,
                              timeout: Optional[int] = None) -> ExecutionResult:
         """
-        Execute notebook with robust error handling.
+        Execute notebook with robust error handling and extended timeout support.
         
         Args:
             input_path: Path to input notebook
             output_path: Path for output notebook (auto-generated if None)
             parameters: Parameters to inject into notebook
             kernel: Specific kernel to use (auto-detected if None)
-            timeout: Execution timeout (uses config default if None)
+            timeout: Execution timeout in seconds (uses config default if None, auto-extends for SemanticKernel notebooks)
         
         Returns:
             ExecutionResult with metrics and error details
@@ -253,8 +255,23 @@ class PapermillExecutor:
                 
         metrics.kernel_used = kernel
         
-        # Configure timeout
-        timeout = timeout or self.config.papermill.timeout
+        # Configure timeout avec extension automatique pour notebooks complexes
+        if timeout is None:
+            timeout = self.config.papermill.timeout
+            
+            # Extension automatique pour notebooks SemanticKernel
+            notebook_name = Path(input_path).name.lower()
+            if 'semantickernel' in notebook_name:
+                # Extend timeout pour notebooks SemanticKernel (installation packages, API calls)
+                if '04' in notebook_name or 'clr' in notebook_name:
+                    timeout = max(timeout, 1200)  # 20 minutes pour notebook 04 (pythonnet installation)
+                    self.logger.info(f"🔧 Extended timeout for .NET CLR notebook: {timeout}s")
+                elif '05' in notebook_name or 'notebookmaker' in notebook_name:
+                    timeout = max(timeout, 900)   # 15 minutes pour notebook 05 (widgets + API)
+                    self.logger.info(f"🎛️ Extended timeout for widgets notebook: {timeout}s")
+                else:
+                    timeout = max(timeout, 720)   # 12 minutes pour autres notebooks SemanticKernel
+                    self.logger.info(f"🧠 Extended timeout for SemanticKernel notebook: {timeout}s")
         
         self.logger.info(f"Starting notebook execution: {Path(input_path).name}")
         self.logger.info(f"  Kernel: {kernel}")
@@ -414,7 +431,10 @@ class PapermillExecutor:
         elif 'filenotfounderror' in error_str:
             context.append("Suggestion: Verify file paths in the notebook")
         elif 'timeout' in error_str:
-            context.append("Suggestion: Increase timeout or optimize slow code")
+            context.append("Suggestion: Notebook execution exceeded timeout. Consider:")
+            context.append("  - Increasing timeout with timeout parameter")
+            context.append("  - For SemanticKernel notebooks, timeout is auto-extended")
+            context.append("  - Optimizing slow operations in notebook cells")
         elif 'kernel' in error_str:
             context.append("Suggestion: Check kernel configuration and availability")
         elif 'memory' in error_str:
