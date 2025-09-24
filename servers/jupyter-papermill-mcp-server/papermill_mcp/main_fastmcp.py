@@ -190,7 +190,8 @@ def execute_notebook_solution_a(
                 kernel_name=None,   # Auto-detection du kernel
                 progress_bar=True,
                 log_output=True,
-                cwd=None
+                cwd=None,
+                store_widget_state=True  # Support ipywidgets for interactive notebooks
             )
         finally:
             # Restaurer le working directory original
@@ -351,7 +352,8 @@ def parameterize_notebook(
                 kernel_name=None,   # Auto-detection du kernel
                 progress_bar=True,
                 log_output=True,
-                cwd=None
+                cwd=None,
+                store_widget_state=True  # Support ipywidgets for interactive notebooks
             )
         finally:
             # Restaurer le working directory original

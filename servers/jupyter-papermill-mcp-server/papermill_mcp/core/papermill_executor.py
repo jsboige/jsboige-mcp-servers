@@ -319,7 +319,8 @@ class PapermillExecutor:
                 'kernel_name': kernel,
                 'progress_bar': False,  # Disable for MCP server
                 'log_output': True,
-                'request_timeout': timeout
+                'request_timeout': timeout,
+                'store_widget_state': True  # Support ipywidgets for notebook 05
             }
             
             # Execute with timing + INJECTION D'ENVIRONNEMENT .NET
