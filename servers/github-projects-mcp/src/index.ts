@@ -7,13 +7,19 @@ import {
   McpError,
 } from '@modelcontextprotocol/sdk/types.js';
 import dotenv from 'dotenv';
-import path from 'path'; // Ajout de l'import pour path
+import path from 'path';
+import { fileURLToPath } from 'url';
+
+// Définition de __dirname en ES Module
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
+
 import { setupTools } from './tools.js';
 import { setupResources } from './resources.js';
 import { setupErrorHandlers } from './utils/errorHandlers.js';
 
 // Charger les variables d'environnement
-const envPath = path.resolve(__dirname, '../.env'); // Chemin corrigé vers .env
+const envPath = path.resolve(__dirname, '../.env');
 console.log('[DEBUG] Avant dotenv.config(). Chemin .env cible:', envPath);
 dotenv.config({ path: envPath });
 
