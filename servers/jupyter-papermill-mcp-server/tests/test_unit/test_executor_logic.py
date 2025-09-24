@@ -1,6 +1,6 @@
 """
 Tests unitaires pour papermill_executor.py
-Niveau 1 SDDD : Tests avec mocks, sans dépendances externes
+Niveau 1 SDDD : Tests avec mocks, sans dependances externes
 """
 
 import json
@@ -25,7 +25,7 @@ class TestExecutionMetrics:
     """Tests unitaires pour la classe ExecutionMetrics"""
     
     def test_metrics_initialization(self):
-        """Test l'initialisation des métriques"""
+        """Test l'initialisation des metriques"""
         metrics = ExecutionMetrics()
         assert metrics.total_cells == 0
         assert metrics.executed_cells == 0
@@ -35,7 +35,7 @@ class TestExecutionMetrics:
         assert not metrics.is_complete
         
     def test_metrics_completion(self):
-        """Test la détection de completion"""
+        """Test la detection de completion"""
         metrics = ExecutionMetrics()
         assert not metrics.is_complete
         
@@ -43,18 +43,18 @@ class TestExecutionMetrics:
         assert metrics.is_complete
         
     def test_success_rate_calculation(self):
-        """Test le calcul du taux de succès"""
+        """Test le calcul du taux de succes"""
         metrics = ExecutionMetrics()
         
-        # Cas de base - aucune cellule exécutée
+        # Cas de base - aucune cellule executee
         assert metrics.success_rate == 0.0
         
-        # Cas normal - 10 cellules, 2 échecs
+        # Cas normal - 10 cellules, 2 echecs
         metrics.executed_cells = 10
         metrics.failed_cells = 2
         assert metrics.success_rate == 80.0
         
-        # Cas parfait - aucun échec
+        # Cas parfait - aucun echec
         metrics.failed_cells = 0
         assert metrics.success_rate == 100.0
 
@@ -63,7 +63,7 @@ class TestExecutionResult:
     """Tests unitaires pour la classe ExecutionResult"""
     
     def test_result_to_dict(self):
-        """Test la sérialisation en dictionnaire"""
+        """Test la serialisation en dictionnaire"""
         metrics = ExecutionMetrics()
         metrics.execution_time_seconds = 5.5
         metrics.cells_per_second = 2.0
@@ -101,7 +101,7 @@ class TestPapermillExecutor:
     @patch('pathlib.Path.mkdir')
     def test_executor_initialization(self, mock_mkdir, mock_get_config):
         """Test l'initialisation du PapermillExecutor"""
-        # Créer des mocks appropriés pour les sous-objets Pydantic
+        # Creer des mocks appropries pour les sous-objets Pydantic
         mock_papermill = Mock()
         mock_papermill.output_dir = "/test/output"
         mock_papermill.timeout = 300
@@ -119,7 +119,7 @@ class TestPapermillExecutor:
     @pytest.mark.unit
     @patch('subprocess.run')
     def test_get_available_kernels_success(self, mock_subprocess):
-        """Test la détection des kernels disponibles"""
+        """Test la detection des kernels disponibles"""
         mock_result = Mock()
         mock_result.returncode = 0
         mock_result.stdout = '{"kernelspecs": {"python3": {"spec": {"display_name": "Python 3"}}, "dotnet": {"spec": {"display_name": ".NET"}}}}'
@@ -142,7 +142,7 @@ class TestPapermillExecutor:
     @pytest.mark.unit
     @patch('subprocess.run')
     def test_get_available_kernels_failure(self, mock_subprocess):
-        """Test la gestion d'échec de détection des kernels"""
+        """Test la gestion d'echec de detection des kernels"""
         mock_result = Mock()
         mock_result.returncode = 1
         mock_result.stderr = "Command failed"
@@ -163,7 +163,7 @@ class TestPapermillExecutor:
     @pytest.mark.unit
     @patch('builtins.open', new_callable=mock_open, read_data='{"metadata": {"kernelspec": {"name": "python3"}}}')
     def test_auto_detect_kernel_from_metadata(self, mock_file):
-        """Test la détection automatique de kernel depuis les métadonnées"""
+        """Test la detection automatique de kernel depuis les metadonnees"""
         with patch('papermill_mcp.core.papermill_executor.get_config') as mock_get_config:
             mock_papermill = Mock()
             mock_papermill.output_dir = "/test"
@@ -179,7 +179,7 @@ class TestPapermillExecutor:
     
     @pytest.mark.unit
     def test_generate_output_path(self):
-        """Test la génération de chemin de sortie"""
+        """Test la generation de chemin de sortie"""
         with patch('papermill_mcp.core.papermill_executor.get_config') as mock_get_config:
             mock_papermill = Mock()
             mock_papermill.output_dir = "/test/output"
@@ -200,7 +200,7 @@ class TestPapermillExecutor:
     @patch('os.path.exists')
     @pytest.mark.asyncio
     async def test_execute_notebook_file_not_found(self, mock_exists):
-        """Test l'exécution avec fichier introuvable"""
+        """Test l'execution avec fichier introuvable"""
         mock_exists.return_value = False
         
         with patch('papermill_mcp.core.papermill_executor.get_config') as mock_get_config:
@@ -271,7 +271,7 @@ class TestSingletonFunctions:
     """Tests pour les fonctions singleton du module"""
     
     def teardown_method(self):
-        """Nettoyage après chaque test"""
+        """Nettoyage apres chaque test"""
         close_papermill_executor()
     
     @pytest.mark.unit
@@ -281,16 +281,16 @@ class TestSingletonFunctions:
         mock_instance = Mock()
         mock_executor_class.return_value = mock_instance
         
-        # Premier appel - crée l'instance
+        # Premier appel - cree l'instance
         executor1 = get_papermill_executor()
         assert executor1 == mock_instance
         
-        # Deuxième appel - retourne la même instance
+        # Deuxieme appel - retourne la meme instance
         executor2 = get_papermill_executor()
         assert executor2 == mock_instance
         assert executor1 is executor2
         
-        # Vérifier qu'une seule instance a été créée
+        # Verifier qu'une seule instance a ete creee
         mock_executor_class.assert_called_once()
     
     @pytest.mark.unit
@@ -300,7 +300,7 @@ class TestSingletonFunctions:
             mock_instance = Mock()
             mock_executor_class.return_value = mock_instance
             
-            # Créer l'instance
+            # Creer l'instance
             executor = get_papermill_executor()
             assert executor == mock_instance
             
@@ -308,7 +308,7 @@ class TestSingletonFunctions:
             close_papermill_executor()
             mock_instance.close.assert_called_once()
             
-            # Vérifier qu'une nouvelle instance sera créée
+            # Verifier qu'une nouvelle instance sera creee
             new_executor = get_papermill_executor()
             assert mock_executor_class.call_count == 2
 
@@ -326,13 +326,13 @@ def mock_config():
 
 @pytest.fixture
 def executor(mock_config):
-    """Fixture pour PapermillExecutor mocké"""
+    """Fixture pour PapermillExecutor mocke"""
     with patch('papermill_mcp.core.papermill_executor.get_config', return_value=mock_config):
         return PapermillExecutor(mock_config)
 
 
 class TestIntegrationScenarios:
-    """Tests d'intégration des scénarios complets avec mocks"""
+    """Tests d'integration des scenarios complets avec mocks"""
     
     @pytest.mark.unit
     @pytest.mark.asyncio
@@ -342,7 +342,7 @@ class TestIntegrationScenarios:
     @patch('os.getcwd')
     async def test_successful_execution_flow(self, mock_getcwd, mock_chdir,
                                            mock_exists, mock_pm_execute, executor):
-        """Test d'un flux d'exécution complet réussi"""
+        """Test d'un flux d'execution complet reussi"""
         # Configuration des mocks
         mock_exists.return_value = True
         mock_getcwd.return_value = "/original/dir"
@@ -357,22 +357,22 @@ class TestIntegrationScenarios:
         
         executor._available_kernels = {"python3": {}}
         
-        # Mocker le fichier pour qu'il soit détecté comme existant
+        # Mocker le fichier pour qu'il soit detecte comme existant
         with patch('builtins.open', mock_open(read_data='{"metadata": {"kernelspec": {"name": "python3"}}}')):
-            # Exécution
+            # Execution
             result = await executor.execute_notebook(
                 input_path="/test/input.ipynb",
                 parameters={"param1": "value1"}
             )
         
-        # Vérifications
+        # Verifications
         assert result.success is True
         assert result.input_path == "/test/input.ipynb"
         assert result.metrics.total_cells == 3
         assert result.metrics.executed_cells == 2
         mock_pm_execute.assert_called_once()
         
-        # Vérifier que les paramètres ont été passés
+        # Verifier que les parametres ont ete passes
         call_args = mock_pm_execute.call_args
         assert call_args[1]['parameters'] == {"param1": "value1"}
         assert call_args[1]['kernel_name'] == "python3"

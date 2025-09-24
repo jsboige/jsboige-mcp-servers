@@ -24,12 +24,12 @@ class MCPTestClient:
         self.request_id = 0
     
     def _next_request_id(self) -> int:
-        """Génère un ID de requête unique"""
+        """Genere un ID de requete unique"""
         self.request_id += 1
         return self.request_id
     
     async def send_request(self, method: str, params: Dict[str, Any] = None) -> Dict[str, Any]:
-        """Envoie une requête JSON-RPC au serveur"""
+        """Envoie une requete JSON-RPC au serveur"""
         request = {
             "jsonrpc": "2.0",
             "id": self._next_request_id(),
@@ -39,21 +39,21 @@ class MCPTestClient:
         if params:
             request["params"] = params
         
-        # Envoyer la requête
+        # Envoyer la requete
         request_json = json.dumps(request) + '\n'
         self.process.stdin.write(request_json.encode())
         self.process.stdin.flush()
         
-        # Lire la réponse
+        # Lire la reponse
         response_line = self.process.stdout.readline()
         if not response_line:
-            raise Exception("Pas de réponse du serveur")
+            raise Exception("Pas de reponse du serveur")
         
         try:
             response = json.loads(response_line.decode().strip())
             return response
         except json.JSONDecodeError as e:
-            raise Exception(f"Réponse JSON invalide: {e}, ligne: {response_line}")
+            raise Exception(f"Reponse JSON invalide: {e}, ligne: {response_line}")
     
     def close(self):
         """Ferme la connexion avec le serveur"""
@@ -64,7 +64,7 @@ class MCPTestClient:
                 try:
                     self.process.wait(timeout=5)
                 except subprocess.TimeoutExpired:
-                    # Force kill si nécessaire
+                    # Force kill si necessaire
                     self.process.kill()
                     self.process.wait()
             except:
@@ -73,14 +73,14 @@ class MCPTestClient:
 
 @pytest_asyncio.fixture
 async def mcp_server_process() -> AsyncGenerator[subprocess.Popen, None]:
-    """Fixture pour démarrer/arrêter le serveur MCP"""
+    """Fixture pour demarrer/arreter le serveur MCP"""
     server_dir = Path(__file__).parent.parent.parent
     server_script = server_dir / "papermill_mcp" / "main_fastmcp.py"
     
     if not server_script.exists():
-        pytest.skip(f"Script serveur non trouvé: {server_script}")
+        pytest.skip(f"Script serveur non trouve: {server_script}")
     
-    # Démarrer le serveur en mode stdio
+    # Demarrer le serveur en mode stdio
     env = os.environ.copy()
     env['PYTHONPATH'] = str(server_dir)
     
@@ -93,15 +93,15 @@ async def mcp_server_process() -> AsyncGenerator[subprocess.Popen, None]:
         stderr=subprocess.PIPE,
         env=env,
         cwd=str(server_dir),
-        text=False  # Mode binaire pour contrôler l'encodage
+        text=False  # Mode binaire pour controler l'encodage
     )
     
-    # Attendre que le serveur soit prêt
+    # Attendre que le serveur soit pret
     await asyncio.sleep(1)
     
     if process.poll() is not None:
         stderr_output = process.stderr.read().decode()
-        pytest.skip(f"Le serveur a échoué au démarrage: {stderr_output}")
+        pytest.skip(f"Le serveur a echoue au demarrage: {stderr_output}")
     
     try:
         yield process
@@ -134,7 +134,7 @@ def test_notebooks_dir() -> Path:
 
 @pytest.fixture
 def temp_output_dir():
-    """Répertoire temporaire pour les sorties de test"""
+    """Repertoire temporaire pour les sorties de test"""
     with tempfile.TemporaryDirectory() as temp_dir:
         yield temp_dir
 
@@ -169,7 +169,7 @@ def sample_notebook_content() -> Dict[str, Any]:
 
 @pytest_asyncio.fixture
 async def create_temp_notebook(temp_output_dir, sample_notebook_content):
-    """Crée un notebook temporaire pour les tests"""
+    """Cree un notebook temporaire pour les tests"""
     def _create_notebook(filename: str, content: Dict[str, Any] = None) -> Path:
         notebook_content = content or sample_notebook_content
         notebook_path = Path(temp_output_dir) / filename
@@ -187,7 +187,7 @@ def pytest_configure(config):
     """Configuration des marqueurs pytest"""
     config.addinivalue_line(
         "markers", 
-        "e2e: marque les tests end-to-end (nécessitent le serveur complet)"
+        "e2e: marque les tests end-to-end (necessitent le serveur complet)"
     )
     config.addinivalue_line(
         "markers",

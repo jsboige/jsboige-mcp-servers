@@ -2,12 +2,12 @@
 CONSOLIDATED Jupyter Papermill MCP Server - Main Entry Point
 
 Unified implementation combining:
-- Architecture modulaire (services → tools)
-- Fonctionnalités du monolithique optimisées
-- Gestion d'erreurs avancée
-- Configuration consolidée
+- Architecture modulaire (services ? tools)
+- Fonctionnalites du monolithique optimisees
+- Gestion d'erreurs avancee
+- Configuration consolidee
 
-Version finale avec 32 outils unifiés
+Version finale avec 32 outils unifies
 """
 
 import asyncio
@@ -90,23 +90,23 @@ class JupyterPapermillMCPServer:
             initialize_execution_tools(self.config)
             
             # Phase 2: Register all tools with the FastMCP app
-            logger.info("📝 Registering notebook tools (13 tools)...")
+            logger.info("[NOTE] Registering notebook tools (13 tools)...")
             register_notebook_tools(self.app)
             
-            logger.info("🔌 Registering kernel tools (6 tools)...")
+            logger.info("[PLUGIN] Registering kernel tools (6 tools)...")
             register_kernel_tools(self.app)
             
             logger.info("Registering execution tools (13 tools)...")
             register_execution_tools(self.app)
             
             self._initialized = True
-            logger.info("✅ Server initialization completed successfully")
+            logger.info("[OK] Server initialization completed successfully")
             
             # Log consolidated tool summary
             self._log_consolidated_tools()
             
         except Exception as e:
-            logger.error(f"❌ Failed to initialize server: {e}")
+            logger.error(f"[ERROR] Failed to initialize server: {e}")
             raise
     
     def _log_consolidated_tools(self) -> None:
@@ -156,11 +156,8 @@ class JupyterPapermillMCPServer:
             logger.info("Server ready on stdin/stdout")
             logger.info("Waiting for MCP client connection...")
             
-            # Use STDIO transport with enhanced error handling
-            from mcp.server.stdio import stdio_server
-            
-            async with stdio_server() as (read_stream, write_stream):
-                await self.app.run(read_stream, write_stream)
+            # Use FastMCP's async STDIO method directly
+            await self.app.run_stdio_async()
             
         except KeyboardInterrupt:
             logger.info("Server interrupted by user")
@@ -187,10 +184,10 @@ class JupyterPapermillMCPServer:
             except Exception as e:
                 logger.warning(f"Error during kernel cleanup: {e}")
             
-            logger.info("✅ Server cleanup completed")
+            logger.info("[OK] Server cleanup completed")
             
         except Exception as e:
-            logger.error(f"❌ Error during cleanup: {e}")
+            logger.error(f"[ERROR] Error during cleanup: {e}")
 
 
 def create_app(config: Optional[MCPConfig] = None) -> JupyterPapermillMCPServer:
@@ -239,11 +236,12 @@ def cli_main() -> None:
         logger.info("Framework: FastMCP")
         logger.info("=" * 60)
         
-        # With nest_asyncio applied, we can use asyncio.run() even in nested contexts
-        asyncio.run(main())
+        # Initialize and run server synchronously via FastMCP
+        server = JupyterPapermillMCPServer()
+        server.app.run("stdio")
         
     except KeyboardInterrupt:
-        logger.info("⏹️ Server stopped by user")
+        logger.info("[STOP] Server stopped by user")
         sys.exit(0)
     except Exception as e:
         logger.error(f"Server failed: {e}")

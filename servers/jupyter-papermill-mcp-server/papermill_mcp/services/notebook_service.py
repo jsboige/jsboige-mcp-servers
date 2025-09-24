@@ -543,7 +543,7 @@ class NotebookService:
     
     async def list_notebook_cells(self, path: Union[str, Path]) -> Dict[str, Any]:
         """
-        Liste les cellules d'un notebook avec aperçu du contenu.
+        Liste les cellules d'un notebook avec apercu du contenu.
         
         Args:
             path: Path to notebook file
@@ -709,7 +709,7 @@ class NotebookService:
     
     async def system_info(self) -> Dict[str, Any]:
         """
-        Informations système rapides et fiables.
+        Informations systeme rapides et fiables.
         
         Returns:
             Dictionary with system information
@@ -783,7 +783,7 @@ class NotebookService:
             
             input_path = Path(input_path)
             if output_path is None:
-                # CORRECTION BUG INSTABILITÉ : Éviter conflits de fichiers avec timestamps
+                # CORRECTION BUG INSTABILIT? : ?viter conflits de fichiers avec timestamps
                 timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
                 output_path = input_path.parent / f"{input_path.stem}_executed_{timestamp}.ipynb"
             else:
@@ -845,7 +845,7 @@ class NotebookService:
         output_path: Optional[Union[str, Path]] = None
     ) -> Dict[str, Any]:
         """
-        Exécute un notebook avec des paramètres via Papermill API directe.
+        Execute un notebook avec des parametres via Papermill API directe.
         
         Args:
             input_path: Path to input notebook
@@ -860,16 +860,16 @@ class NotebookService:
             import os
             import json
             
-            # CORRECTION BUG PYDANTIC : Gérer sérialisation JSON via Roo
+            # CORRECTION BUG PYDANTIC : Gerer serialisation JSON via Roo
             if isinstance(parameters, str):
-                # Roo peut envoyer les paramètres comme string JSON
+                # Roo peut envoyer les parametres comme string JSON
                 try:
                     parameters = json.loads(parameters) if parameters else {}
                 except json.JSONDecodeError:
                     # Si ce n'est pas du JSON valide, retourner erreur explicite
                     return {
                         "status": "error",
-                        "error": f"Paramètres invalides - JSON attendu: {parameters}",
+                        "error": f"Parametres invalides - JSON attendu: {parameters}",
                         "error_type": "InvalidParametersFormat",
                         "method": "parameterize_notebook_fastmcp"
                     }

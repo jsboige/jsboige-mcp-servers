@@ -36,41 +36,41 @@ def get_kernel_service() -> KernelService:
 # Input models for tools
 class StartKernelInput(BaseModel):
     """Input model for start_kernel tool."""
-    kernel_name: str = Field(default="python3", description="Nom du kernel à démarrer (ex: python3)")
+    kernel_name: str = Field(default="python3", description="Nom du kernel a demarrer (ex: python3)")
 
 
 class StopKernelInput(BaseModel):
     """Input model for stop_kernel tool."""
-    kernel_id: str = Field(description="ID du kernel à arrêter")
+    kernel_id: str = Field(description="ID du kernel a arreter")
 
 
 class InterruptKernelInput(BaseModel):
     """Input model for interrupt_kernel tool."""
-    kernel_id: str = Field(description="ID du kernel à interrompre")
+    kernel_id: str = Field(description="ID du kernel a interrompre")
 
 
 class RestartKernelInput(BaseModel):
     """Input model for restart_kernel tool."""
-    kernel_id: str = Field(description="ID du kernel à redémarrer")
+    kernel_id: str = Field(description="ID du kernel a redemarrer")
 
 
 class ExecuteCellInput(BaseModel):
     """Input model for execute_cell tool."""
-    kernel_id: str = Field(description="ID du kernel sur lequel exécuter le code")
-    code: str = Field(description="Code à exécuter")
+    kernel_id: str = Field(description="ID du kernel sur lequel executer le code")
+    code: str = Field(description="Code a executer")
 
 
 class ExecuteNotebookInput(BaseModel):
     """Input model for execute_notebook tool."""
     path: str = Field(description="Chemin du fichier notebook (.ipynb)")
-    kernel_id: str = Field(description="ID du kernel sur lequel exécuter le notebook")
+    kernel_id: str = Field(description="ID du kernel sur lequel executer le notebook")
 
 
 class ExecuteNotebookCellInput(BaseModel):
     """Input model for execute_notebook_cell tool."""
     path: str = Field(description="Chemin du fichier notebook (.ipynb)")
-    cell_index: int = Field(description="Index de la cellule à exécuter")
-    kernel_id: str = Field(description="ID du kernel sur lequel exécuter la cellule")
+    cell_index: int = Field(description="Index de la cellule a executer")
+    kernel_id: str = Field(description="ID du kernel sur lequel executer la cellule")
 
 
 def register_kernel_tools(app: FastMCP) -> None:
@@ -100,13 +100,13 @@ def register_kernel_tools(app: FastMCP) -> None:
     @app.tool()
     async def start_kernel(kernel_name: str = "python3") -> Dict[str, Any]:
         """
-        Démarre un nouveau kernel
+        Demarre un nouveau kernel
         
         Args:
-            kernel_name: Nom du kernel à démarrer (ex: python3)
+            kernel_name: Nom du kernel a demarrer (ex: python3)
             
         Returns:
-            Information sur le kernel démarré
+            Information sur le kernel demarre
         """
         try:
             logger.info(f"Starting kernel: {kernel_name}")
@@ -125,13 +125,13 @@ def register_kernel_tools(app: FastMCP) -> None:
     @app.tool()
     async def stop_kernel(kernel_id: str) -> Dict[str, Any]:
         """
-        Arrête un kernel actif
+        Arrete un kernel actif
         
         Args:
-            kernel_id: ID du kernel à arrêter
+            kernel_id: ID du kernel a arreter
             
         Returns:
-            Résultat de l'arrêt du kernel
+            Resultat de l'arret du kernel
         """
         try:
             logger.info(f"Stopping kernel: {kernel_id}")
@@ -150,13 +150,13 @@ def register_kernel_tools(app: FastMCP) -> None:
     @app.tool()
     async def interrupt_kernel(kernel_id: str) -> Dict[str, Any]:
         """
-        Interrompt l'exécution d'un kernel
+        Interrompt l'execution d'un kernel
         
         Args:
-            kernel_id: ID du kernel à interrompre
+            kernel_id: ID du kernel a interrompre
             
         Returns:
-            Résultat de l'interruption
+            Resultat de l'interruption
         """
         try:
             logger.info(f"Interrupting kernel: {kernel_id}")
@@ -175,13 +175,13 @@ def register_kernel_tools(app: FastMCP) -> None:
     @app.tool()
     async def restart_kernel(kernel_id: str) -> Dict[str, Any]:
         """
-        Redémarre un kernel
+        Redemarre un kernel
         
         Args:
-            kernel_id: ID du kernel à redémarrer
+            kernel_id: ID du kernel a redemarrer
             
         Returns:
-            Information sur le kernel redémarré
+            Information sur le kernel redemarre
         """
         try:
             logger.info(f"Restarting kernel: {kernel_id}")
@@ -200,14 +200,14 @@ def register_kernel_tools(app: FastMCP) -> None:
     @app.tool()
     async def execute_cell(kernel_id: str, code: str) -> Dict[str, Any]:
         """
-        Exécute du code dans un kernel spécifique
+        Execute du code dans un kernel specifique
         
         Args:
-            kernel_id: ID du kernel sur lequel exécuter le code
-            code: Code à exécuter
+            kernel_id: ID du kernel sur lequel executer le code
+            code: Code a executer
             
         Returns:
-            Résultat de l'exécution du code
+            Resultat de l'execution du code
         """
         try:
             logger.info(f"Executing code in kernel: {kernel_id}")
@@ -226,14 +226,14 @@ def register_kernel_tools(app: FastMCP) -> None:
     @app.tool()
     async def execute_notebook(path: str, kernel_id: str) -> Dict[str, Any]:
         """
-        Exécute toutes les cellules de code d'un notebook
+        Execute toutes les cellules de code d'un notebook
         
         Args:
             path: Chemin du fichier notebook (.ipynb)
-            kernel_id: ID du kernel sur lequel exécuter le notebook
+            kernel_id: ID du kernel sur lequel executer le notebook
             
         Returns:
-            Résultat de l'exécution du notebook
+            Resultat de l'execution du notebook
         """
         try:
             logger.info(f"Executing notebook {path} in kernel: {kernel_id}")
@@ -253,15 +253,15 @@ def register_kernel_tools(app: FastMCP) -> None:
     @app.tool()
     async def execute_notebook_cell(path: str, cell_index: int, kernel_id: str) -> Dict[str, Any]:
         """
-        Exécute une cellule spécifique d'un notebook
+        Execute une cellule specifique d'un notebook
         
         Args:
             path: Chemin du fichier notebook (.ipynb)
-            cell_index: Index de la cellule à exécuter
-            kernel_id: ID du kernel sur lequel exécuter la cellule
+            cell_index: Index de la cellule a executer
+            kernel_id: ID du kernel sur lequel executer la cellule
             
         Returns:
-            Résultat de l'exécution de la cellule
+            Resultat de l'execution de la cellule
         """
         try:
             logger.info(f"Executing cell {cell_index} from notebook {path} in kernel: {kernel_id}")

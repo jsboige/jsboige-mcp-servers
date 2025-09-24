@@ -1,6 +1,6 @@
 """
-Tests d'intégration avec l'API Papermill réelle
-Niveau 2 SDDD : Tests avec Papermill réel sur notebooks de test
+Tests d'integration avec l'API Papermill reelle
+Niveau 2 SDDD : Tests avec Papermill reel sur notebooks de test
 """
 
 import os
@@ -16,7 +16,7 @@ from papermill_mcp.core.papermill_executor import PapermillExecutor, get_papermi
 
 
 class TestPapermillIntegration:
-    """Tests d'intégration avec l'API Papermill réelle"""
+    """Tests d'integration avec l'API Papermill reelle"""
     
     @pytest.fixture
     def test_notebooks_dir(self):
@@ -25,43 +25,43 @@ class TestPapermillIntegration:
     
     @pytest.fixture
     def temp_output_dir(self):
-        """Répertoire temporaire pour les sorties"""
+        """Repertoire temporaire pour les sorties"""
         with tempfile.TemporaryDirectory() as temp_dir:
             yield temp_dir
     
     @pytest.mark.integration
     def test_python_success_notebook_direct_papermill(self, test_notebooks_dir, temp_output_dir):
-        """Test d'exécution directe Papermill sur notebook Python réussi"""
+        """Test d'execution directe Papermill sur notebook Python reussi"""
         input_path = test_notebooks_dir / "test_python_success.ipynb"
         output_path = Path(temp_output_dir) / "output_python_success.ipynb"
         
-        # Vérifier que le notebook d'entrée existe
+        # Verifier que le notebook d'entree existe
         assert input_path.exists(), f"Notebook de test manquant: {input_path}"
         
-        # Exécution directe avec Papermill
+        # Execution directe avec Papermill
         result_nb = pm.execute_notebook(
             input_path=str(input_path),
             output_path=str(output_path),
             kernel_name='python3'
         )
         
-        # Vérifications
+        # Verifications
         assert output_path.exists()
         assert result_nb is not None
         
-        # Lire et vérifier le contenu de sortie
+        # Lire et verifier le contenu de sortie
         with open(output_path, 'r', encoding='utf-8') as f:
             output_nb = json.load(f)
         
-        # Vérifier qu'il y a des sorties dans la cellule
+        # Verifier qu'il y a des sorties dans la cellule
         code_cells = [cell for cell in output_nb['cells'] if cell['cell_type'] == 'code']
         assert len(code_cells) > 0
         
-        # Vérifier qu'au moins une cellule a été exécutée
+        # Verifier qu'au moins une cellule a ete executee
         executed_cells = [cell for cell in code_cells if cell.get('execution_count') is not None]
         assert len(executed_cells) > 0
         
-        # Vérifier la présence du message de sortie attendu
+        # Verifier la presence du message de sortie attendu
         has_expected_output = False
         for cell in code_cells:
             outputs = cell.get('outputs', [])
@@ -72,17 +72,17 @@ class TestPapermillIntegration:
                         has_expected_output = True
                         break
         
-        assert has_expected_output, "Sortie attendue 'Hello from Python test!' non trouvée"
+        assert has_expected_output, "Sortie attendue 'Hello from Python test!' non trouvee"
     
     @pytest.mark.integration
     def test_python_failure_notebook_direct_papermill(self, test_notebooks_dir, temp_output_dir):
-        """Test d'exécution directe Papermill sur notebook Python en échec"""
+        """Test d'execution directe Papermill sur notebook Python en echec"""
         input_path = test_notebooks_dir / "test_python_failure.ipynb"
         output_path = Path(temp_output_dir) / "output_python_failure.ipynb"
         
         assert input_path.exists(), f"Notebook de test manquant: {input_path}"
         
-        # L'exécution doit échouer avec PapermillExecutionError
+        # L'execution doit echouer avec PapermillExecutionError
         with pytest.raises(PapermillExecutionError) as exc_info:
             pm.execute_notebook(
                 input_path=str(input_path),
@@ -90,16 +90,16 @@ class TestPapermillIntegration:
                 kernel_name='python3'
             )
         
-        # Vérifier que l'erreur contient notre ValueError
+        # Verifier que l'erreur contient notre ValueError
         error_message = str(exc_info.value)
         assert "ValueError" in error_message or "Test error" in error_message
         
-        # Le fichier de sortie peut exister même en cas d'erreur
+        # Le fichier de sortie peut exister meme en cas d'erreur
         if output_path.exists():
             with open(output_path, 'r', encoding='utf-8') as f:
                 output_nb = json.load(f)
             
-            # Vérifier qu'il y a une erreur dans les sorties
+            # Verifier qu'il y a une erreur dans les sorties
             has_error_output = False
             for cell in output_nb['cells']:
                 if cell['cell_type'] == 'code':
@@ -109,13 +109,13 @@ class TestPapermillIntegration:
                             has_error_output = True
                             break
             
-            assert has_error_output, "Sortie d'erreur attendue non trouvée"
+            assert has_error_output, "Sortie d'erreur attendue non trouvee"
     
     @pytest.mark.integration
     @pytest.mark.skipif(not os.system("jupyter kernelspec list | grep -q '.net-csharp'") == 0,
                        reason="Kernel .NET non disponible")
     def test_dotnet_success_notebook_direct_papermill(self, test_notebooks_dir, temp_output_dir):
-        """Test d'exécution directe Papermill sur notebook .NET réussi"""
+        """Test d'execution directe Papermill sur notebook .NET reussi"""
         input_path = test_notebooks_dir / "test_dotnet_success.ipynb"
         output_path = Path(temp_output_dir) / "output_dotnet_success.ipynb"
         
@@ -131,7 +131,7 @@ class TestPapermillIntegration:
             assert output_path.exists()
             assert result_nb is not None
             
-            # Vérifier la sortie attendue
+            # Verifier la sortie attendue
             with open(output_path, 'r', encoding='utf-8') as f:
                 output_nb = json.load(f)
             
@@ -146,7 +146,7 @@ class TestPapermillIntegration:
                                 has_expected_output = True
                                 break
             
-            assert has_expected_output, "Sortie attendue 'Hello from .NET!' non trouvée"
+            assert has_expected_output, "Sortie attendue 'Hello from .NET!' non trouvee"
             
         except Exception as e:
             pytest.skip(f"Kernel .NET non fonctionnel: {e}")
@@ -155,22 +155,22 @@ class TestPapermillIntegration:
     @pytest.mark.skipif(not os.system("jupyter kernelspec list | grep -q '.net-csharp'") == 0,
                        reason="Kernel .NET non disponible")
     def test_dotnet_failure_nuget_notebook_direct_papermill(self, test_notebooks_dir, temp_output_dir):
-        """Test d'exécution directe Papermill sur notebook .NET avec problème NuGet"""
+        """Test d'execution directe Papermill sur notebook .NET avec probleme NuGet"""
         input_path = test_notebooks_dir / "test_dotnet_failure_nuget.ipynb"
         output_path = Path(temp_output_dir) / "output_dotnet_failure.ipynb"
         
         assert input_path.exists(), f"Notebook de test manquant: {input_path}"
         
         try:
-            # Ce test peut soit échouer (attendu) soit réussir (si NuGet fonctionne)
-            # L'objectif est de tester la reproductibilité du problème identifié
+            # Ce test peut soit echouer (attendu) soit reussir (si NuGet fonctionne)
+            # L'objectif est de tester la reproductibilite du probleme identifie
             result_nb = pm.execute_notebook(
                 input_path=str(input_path),
                 output_path=str(output_path),
                 kernel_name='.net-csharp'
             )
             
-            # Si ça réussit, vérifier qu'il n'y a pas d'erreur
+            # Si ca reussit, verifier qu'il n'y a pas d'erreur
             if output_path.exists():
                 with open(output_path, 'r', encoding='utf-8') as f:
                     output_nb = json.load(f)
@@ -184,21 +184,21 @@ class TestPapermillIntegration:
                             if output.get('output_type') == 'error':
                                 error_count += 1
                 
-                # Le test documenterait le comportement observé
+                # Le test documenterait le comportement observe
                 print(f"Notebook .NET NuGet - Erreurs: {error_count}")
             
         except PapermillExecutionError as e:
-            # Erreur attendue - documenter le problème
+            # Erreur attendue - documenter le probleme
             error_message = str(e)
             print(f"Erreur NuGet reproduite: {error_message}")
-            # Ne pas faire échouer le test, c'est le comportement documenté
+            # Ne pas faire echouer le test, c'est le comportement documente
             
         except Exception as e:
             pytest.skip(f"Kernel .NET non fonctionnel: {e}")
 
 
 class TestPapermillExecutorIntegration:
-    """Tests d'intégration avec PapermillExecutor"""
+    """Tests d'integration avec PapermillExecutor"""
     
     @pytest.fixture
     def test_notebooks_dir(self):
@@ -207,14 +207,14 @@ class TestPapermillExecutorIntegration:
     
     @pytest.fixture
     def temp_output_dir(self):
-        """Répertoire temporaire pour les sorties"""
+        """Repertoire temporaire pour les sorties"""
         with tempfile.TemporaryDirectory() as temp_dir:
             yield temp_dir
     
     @pytest.mark.integration
     @pytest.mark.asyncio
     async def test_executor_python_success(self, test_notebooks_dir, temp_output_dir):
-        """Test PapermillExecutor sur notebook Python réussi"""
+        """Test PapermillExecutor sur notebook Python reussi"""
         input_path = test_notebooks_dir / "test_python_success.ipynb"
         output_path = Path(temp_output_dir) / "executor_python_success.ipynb"
         
@@ -226,7 +226,7 @@ class TestPapermillExecutorIntegration:
             output_path=str(output_path)
         )
         
-        # Vérifications du résultat
+        # Verifications du resultat
         assert result.success is True
         assert result.input_path == str(input_path)
         assert result.output_path == str(output_path)
@@ -235,13 +235,13 @@ class TestPapermillExecutorIntegration:
         assert result.metrics.executed_cells > 0
         assert len(result.errors) == 0
         
-        # Vérifier que le fichier de sortie existe
+        # Verifier que le fichier de sortie existe
         assert output_path.exists()
     
     @pytest.mark.integration
     @pytest.mark.asyncio
     async def test_executor_python_failure(self, test_notebooks_dir, temp_output_dir):
-        """Test PapermillExecutor sur notebook Python en échec"""
+        """Test PapermillExecutor sur notebook Python en echec"""
         input_path = test_notebooks_dir / "test_python_failure.ipynb"
         output_path = Path(temp_output_dir) / "executor_python_failure.ipynb"
         
@@ -253,19 +253,19 @@ class TestPapermillExecutorIntegration:
             output_path=str(output_path)
         )
         
-        # Vérifications du résultat d'échec
+        # Verifications du resultat d'echec
         assert result.success is False
         assert result.input_path == str(input_path)
         assert len(result.errors) > 0
         
-        # Vérifier la présence de contexte d'erreur
+        # Verifier la presence de contexte d'erreur
         error_msg = ' '.join(result.errors).lower()
         assert any(keyword in error_msg for keyword in ['error', 'exception', 'failed'])
     
     @pytest.mark.integration
     @pytest.mark.asyncio
     async def test_executor_with_parameters(self, test_notebooks_dir, temp_output_dir):
-        """Test PapermillExecutor avec paramètres"""
+        """Test PapermillExecutor avec parametres"""
         input_path = test_notebooks_dir / "test_python_success.ipynb"
         output_path = Path(temp_output_dir) / "executor_with_params.ipynb"
         
@@ -283,7 +283,7 @@ class TestPapermillExecutorIntegration:
             parameters=parameters
         )
         
-        # Le notebook simple peut ne pas utiliser les paramètres mais ne doit pas échouer
+        # Le notebook simple peut ne pas utiliser les parametres mais ne doit pas echouer
         assert result.success is True
         assert result.metrics.execution_time_seconds > 0
         assert output_path.exists()
@@ -291,7 +291,7 @@ class TestPapermillExecutorIntegration:
     @pytest.mark.integration
     @pytest.mark.asyncio
     async def test_executor_kernel_auto_detection(self, test_notebooks_dir, temp_output_dir):
-        """Test de la détection automatique de kernel"""
+        """Test de la detection automatique de kernel"""
         input_path = test_notebooks_dir / "test_python_success.ipynb"
         output_path = Path(temp_output_dir) / "executor_auto_kernel.ipynb"
         
@@ -299,7 +299,7 @@ class TestPapermillExecutorIntegration:
         
         executor = get_papermill_executor()
         
-        # Test sans spécifier de kernel (auto-détection)
+        # Test sans specifier de kernel (auto-detection)
         result = await executor.execute_notebook(
             input_path=str(input_path),
             output_path=str(output_path)
@@ -329,7 +329,7 @@ class TestPapermillExecutorIntegration:
 
 @pytest.mark.integration
 class TestKernelAvailability:
-    """Tests pour vérifier la disponibilité des kernels"""
+    """Tests pour verifier la disponibilite des kernels"""
     
     @pytest.mark.asyncio
     async def test_list_available_kernels(self):
@@ -338,20 +338,20 @@ class TestKernelAvailability:
         kernels = await executor.list_available_kernels()
         
         assert isinstance(kernels, dict)
-        # Au minimum Python devrait être disponible
+        # Au minimum Python devrait etre disponible
         assert len(kernels) > 0
         
-        # Vérifier qu'au moins un kernel Python existe
+        # Verifier qu'au moins un kernel Python existe
         python_kernels = [k for k in kernels.keys() if 'python' in k.lower()]
         assert len(python_kernels) > 0
     
     def test_kernel_detection_subprocess(self):
-        """Test direct de détection des kernels via subprocess"""
+        """Test direct de detection des kernels via subprocess"""
         executor = get_papermill_executor()
         kernels = executor._get_available_kernels()
         
         assert isinstance(kernels, dict)
-        if kernels:  # Si la détection réussit
+        if kernels:  # Si la detection reussit
             assert len(kernels) > 0
             # Chaque kernel doit avoir une structure de base
             for kernel_name, kernel_info in kernels.items():

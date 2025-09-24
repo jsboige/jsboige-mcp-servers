@@ -57,19 +57,19 @@ class AddCellInput(BaseModel):
     path: str = Field(description="Chemin du fichier notebook (.ipynb)")
     cell_type: str = Field(description="Type de cellule", enum=["code", "markdown", "raw"])
     source: str = Field(description="Contenu de la cellule")
-    metadata: Optional[Dict[str, Any]] = Field(default=None, description="Métadonnées de la cellule (optionnel)")
+    metadata: Optional[Dict[str, Any]] = Field(default=None, description="Metadonnees de la cellule (optionnel)")
 
 
 class RemoveCellInput(BaseModel):
     """Input model for remove_cell tool."""
     path: str = Field(description="Chemin du fichier notebook (.ipynb)")
-    index: int = Field(description="Index de la cellule à supprimer")
+    index: int = Field(description="Index de la cellule a supprimer")
 
 
 class UpdateCellInput(BaseModel):
     """Input model for update_cell tool."""
     path: str = Field(description="Chemin du fichier notebook (.ipynb)")
-    index: int = Field(description="Index de la cellule à modifier")
+    index: int = Field(description="Index de la cellule a modifier")
     source: str = Field(description="Nouveau contenu de la cellule")
 
 
@@ -79,13 +79,13 @@ def register_notebook_tools(app: FastMCP) -> None:
     @app.tool()
     async def read_notebook(path: str) -> Dict[str, Any]:
         """
-        Lit un notebook Jupyter à partir d'un fichier
+        Lit un notebook Jupyter a partir d'un fichier
         
         Args:
             path: Chemin du fichier notebook (.ipynb)
             
         Returns:
-            Contenu complet du notebook avec métadonnées
+            Contenu complet du notebook avec metadonnees
         """
         try:
             logger.info(f"Reading notebook: {path}")
@@ -104,14 +104,14 @@ def register_notebook_tools(app: FastMCP) -> None:
     @app.tool()
     async def write_notebook(path: str, content: Dict[str, Any]) -> Dict[str, Any]:
         """
-        Écrit un notebook Jupyter dans un fichier
+        ?crit un notebook Jupyter dans un fichier
         
         Args:
             path: Chemin du fichier notebook (.ipynb)
             content: Contenu du notebook au format nbformat
             
         Returns:
-            Résultat de l'opération d'écriture
+            Resultat de l'operation d'ecriture
         """
         try:
             logger.info(f"Writing notebook: {path}")
@@ -130,14 +130,14 @@ def register_notebook_tools(app: FastMCP) -> None:
     @app.tool()
     async def create_notebook(path: str, kernel: str = "python3") -> Dict[str, Any]:
         """
-        Crée un nouveau notebook vide
+        Cree un nouveau notebook vide
         
         Args:
             path: Chemin du fichier notebook (.ipynb)
             kernel: Nom du kernel (ex: python3)
             
         Returns:
-            Résultat de la création du notebook
+            Resultat de la creation du notebook
         """
         try:
             logger.info(f"Creating notebook: {path} with kernel: {kernel}")
@@ -158,16 +158,16 @@ def register_notebook_tools(app: FastMCP) -> None:
     async def add_cell(path: str, cell_type: str, source: str, 
                        metadata: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
         """
-        Ajoute une cellule à un notebook
+        Ajoute une cellule a un notebook
         
         Args:
             path: Chemin du fichier notebook (.ipynb)
             cell_type: Type de cellule
             source: Contenu de la cellule
-            metadata: Métadonnées de la cellule (optionnel)
+            metadata: Metadonnees de la cellule (optionnel)
             
         Returns:
-            Résultat de l'ajout de cellule
+            Resultat de l'ajout de cellule
         """
         try:
             logger.info(f"Adding {cell_type} cell to notebook: {path}")
@@ -191,10 +191,10 @@ def register_notebook_tools(app: FastMCP) -> None:
         
         Args:
             path: Chemin du fichier notebook (.ipynb)
-            index: Index de la cellule à supprimer
+            index: Index de la cellule a supprimer
             
         Returns:
-            Résultat de la suppression
+            Resultat de la suppression
         """
         try:
             logger.info(f"Removing cell {index} from notebook: {path}")
@@ -218,11 +218,11 @@ def register_notebook_tools(app: FastMCP) -> None:
         
         Args:
             path: Chemin du fichier notebook (.ipynb)
-            index: Index de la cellule à modifier
+            index: Index de la cellule a modifier
             source: Nouveau contenu de la cellule
             
         Returns:
-            Résultat de la modification
+            Resultat de la modification
         """
         try:
             logger.info(f"Updating cell {index} in notebook: {path}")
@@ -242,14 +242,14 @@ def register_notebook_tools(app: FastMCP) -> None:
     @app.tool()
     async def read_cell(path: str, index: int) -> Dict[str, Any]:
         """
-        Lit une cellule spécifique d'un notebook
+        Lit une cellule specifique d'un notebook
         
         Args:
             path: Chemin du fichier notebook (.ipynb)
-            index: Index de la cellule à lire (0-based)
+            index: Index de la cellule a lire (0-based)
             
         Returns:
-            Informations détaillées sur la cellule
+            Informations detaillees sur la cellule
         """
         try:
             logger.info(f"Reading cell {index} from notebook: {path}")
@@ -273,8 +273,8 @@ def register_notebook_tools(app: FastMCP) -> None:
         
         Args:
             path: Chemin du fichier notebook (.ipynb)
-            start_index: Index de début (0-based, inclus)
-            end_index: Index de fin (0-based, inclus). Si None, lit jusqu'à la fin
+            start_index: Index de debut (0-based, inclus)
+            end_index: Index de fin (0-based, inclus). Si None, lit jusqu'a la fin
             
         Returns:
             Informations sur les cellules dans la plage
@@ -298,13 +298,13 @@ def register_notebook_tools(app: FastMCP) -> None:
     @app.tool()
     async def list_notebook_cells(path: str) -> Dict[str, Any]:
         """
-        Liste les cellules d'un notebook avec aperçu du contenu
+        Liste les cellules d'un notebook avec apercu du contenu
         
         Args:
             path: Chemin du fichier notebook (.ipynb)
             
         Returns:
-            Liste détaillée des cellules avec preview
+            Liste detaillee des cellules avec preview
         """
         try:
             logger.info(f"Listing cells from notebook: {path}")
@@ -323,13 +323,13 @@ def register_notebook_tools(app: FastMCP) -> None:
     @app.tool()
     async def get_notebook_metadata(path: str) -> Dict[str, Any]:
         """
-        Récupère les métadonnées complètes d'un notebook
+        Recupere les metadonnees completes d'un notebook
         
         Args:
             path: Chemin du fichier notebook (.ipynb)
             
         Returns:
-            Métadonnées complètes du notebook
+            Metadonnees completes du notebook
         """
         try:
             logger.info(f"Getting metadata from notebook: {path}")
@@ -354,7 +354,7 @@ def register_notebook_tools(app: FastMCP) -> None:
             path: Chemin du fichier notebook (.ipynb)
             
         Returns:
-            Inspection détaillée des outputs de chaque cellule
+            Inspection detaillee des outputs de chaque cellule
         """
         try:
             logger.info(f"Inspecting outputs from notebook: {path}")
@@ -379,7 +379,7 @@ def register_notebook_tools(app: FastMCP) -> None:
             path: Chemin du fichier notebook (.ipynb)
             
         Returns:
-            Résultat de la validation avec problèmes détectés
+            Resultat de la validation avec problemes detectes
         """
         try:
             logger.info(f"Validating notebook: {path}")
@@ -398,10 +398,10 @@ def register_notebook_tools(app: FastMCP) -> None:
     @app.tool()
     async def system_info() -> Dict[str, Any]:
         """
-        Informations système rapides et fiables
+        Informations systeme rapides et fiables
         
         Returns:
-            Informations détaillées sur le système, Python, et Jupyter
+            Informations detaillees sur le systeme, Python, et Jupyter
         """
         try:
             logger.info("Getting system information")

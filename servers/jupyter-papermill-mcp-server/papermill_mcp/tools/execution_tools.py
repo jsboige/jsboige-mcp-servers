@@ -42,15 +42,15 @@ def get_services() -> tuple[NotebookService, KernelService]:
 # Input models for tools
 class ExecuteNotebookPapermillInput(BaseModel):
     """Input model for execute_notebook_papermill tool."""
-    input_path: str = Field(description="Chemin du notebook d'entrée")
+    input_path: str = Field(description="Chemin du notebook d'entree")
     output_path: Optional[str] = Field(default=None, description="Chemin du notebook de sortie (optionnel)")
-    parameters: Optional[Dict[str, Any]] = Field(default=None, description="Paramètres à injecter")
-    kernel_name: Optional[str] = Field(default=None, description="Nom du kernel à utiliser")
+    parameters: Optional[Dict[str, Any]] = Field(default=None, description="Parametres a injecter")
+    kernel_name: Optional[str] = Field(default=None, description="Nom du kernel a utiliser")
 
 
 class StartJupyterServerInput(BaseModel):
     """Input model for start_jupyter_server tool."""
-    env_path: str = Field(description="Chemin vers l'exécutable jupyter-lab.exe dans l'environnement Conda (ou autre).")
+    env_path: str = Field(description="Chemin vers l'executable jupyter-lab.exe dans l'environnement Conda (ou autre).")
 
 
 class DebugListRuntimeDirInput(BaseModel):
@@ -69,16 +69,16 @@ def register_execution_tools(app: FastMCP) -> None:
         kernel_name: Optional[str] = None
     ) -> Dict[str, Any]:
         """
-        Exécute un notebook avec Papermill (exécution complète avec paramètres)
+        Execute un notebook avec Papermill (execution complete avec parametres)
         
         Args:
-            input_path: Chemin du notebook d'entrée
+            input_path: Chemin du notebook d'entree
             output_path: Chemin du notebook de sortie (optionnel)
-            parameters: Paramètres à injecter (optionnel)
-            kernel_name: Nom du kernel à utiliser (optionnel)
+            parameters: Parametres a injecter (optionnel)
+            kernel_name: Nom du kernel a utiliser (optionnel)
             
         Returns:
-            Résultat de l'exécution Papermill
+            Resultat de l'execution Papermill
         """
         try:
             logger.info(f"Executing notebook with Papermill: {input_path}")
@@ -106,14 +106,14 @@ def register_execution_tools(app: FastMCP) -> None:
     @app.tool()
     async def list_notebook_files(directory: str = ".", recursive: bool = False) -> Dict[str, Any]:
         """
-        Liste les fichiers notebook dans un répertoire
+        Liste les fichiers notebook dans un repertoire
         
         Args:
-            directory: Répertoire à explorer (défaut: répertoire courant)
-            recursive: Recherche récursive (défaut: False)
+            directory: Repertoire a explorer (defaut: repertoire courant)
+            recursive: Recherche recursive (defaut: False)
             
         Returns:
-            Liste des notebooks trouvés avec leurs métadonnées
+            Liste des notebooks trouves avec leurs metadonnees
         """
         try:
             logger.info(f"Listing notebooks in: {directory} (recursive={recursive})")
@@ -143,13 +143,13 @@ def register_execution_tools(app: FastMCP) -> None:
     @app.tool()
     async def get_notebook_info(path: str) -> Dict[str, Any]:
         """
-        Récupère les métadonnées détaillées d'un notebook
+        Recupere les metadonnees detaillees d'un notebook
         
         Args:
             path: Chemin du notebook
             
         Returns:
-            Métadonnées complètes du notebook
+            Metadonnees completes du notebook
         """
         try:
             logger.info(f"Getting notebook info: {path}")
@@ -189,13 +189,13 @@ def register_execution_tools(app: FastMCP) -> None:
     @app.tool()
     async def get_kernel_status(kernel_id: str) -> Dict[str, Any]:
         """
-        Récupère le statut détaillé d'un kernel
+        Recupere le statut detaille d'un kernel
         
         Args:
-            kernel_id: ID du kernel à vérifier
+            kernel_id: ID du kernel a verifier
             
         Returns:
-            Statut détaillé du kernel
+            Statut detaille du kernel
         """
         try:
             logger.info(f"Getting kernel status: {kernel_id}")
@@ -217,10 +217,10 @@ def register_execution_tools(app: FastMCP) -> None:
     @app.tool()
     async def cleanup_all_kernels() -> Dict[str, Any]:
         """
-        Nettoie tous les kernels actifs (arrêt propre)
+        Nettoie tous les kernels actifs (arret propre)
         
         Returns:
-            Résultat du nettoyage de tous les kernels
+            Resultat du nettoyage de tous les kernels
         """
         try:
             logger.info("Cleaning up all kernels")
@@ -241,13 +241,13 @@ def register_execution_tools(app: FastMCP) -> None:
     @app.tool()
     async def start_jupyter_server(env_path: str) -> Dict[str, Any]:
         """
-        Démarre un serveur Jupyter Lab et le connecte au MCP.
+        Demarre un serveur Jupyter Lab et le connecte au MCP.
         
         Args:
-            env_path: Chemin vers l'exécutable jupyter-lab.exe dans l'environnement Conda (ou autre).
+            env_path: Chemin vers l'executable jupyter-lab.exe dans l'environnement Conda (ou autre).
             
         Returns:
-            Information sur le serveur démarré
+            Information sur le serveur demarre
         """
         try:
             logger.info(f"Starting Jupyter server with env: {env_path}")
@@ -306,10 +306,10 @@ def register_execution_tools(app: FastMCP) -> None:
     @app.tool()
     async def stop_jupyter_server() -> Dict[str, Any]:
         """
-        Arrête le serveur Jupyter géré par le MCP.
+        Arrete le serveur Jupyter gere par le MCP.
         
         Returns:
-            Résultat de l'arrêt du serveur
+            Resultat de l'arret du serveur
         """
         try:
             logger.info("Stopping Jupyter server")
@@ -404,11 +404,11 @@ def register_execution_tools(app: FastMCP) -> None:
         SOLUTION A - API Papermill directe avec correction working directory
         
         Args:
-            input_path: Chemin du notebook d'entrée
+            input_path: Chemin du notebook d'entree
             output_path: Chemin du notebook de sortie (optionnel)
             
         Returns:
-            Résultat de l'exécution avec timing et diagnostic
+            Resultat de l'execution avec timing et diagnostic
         """
         try:
             logger.info(f"Executing notebook with Solution A: {input_path}")
@@ -438,15 +438,15 @@ def register_execution_tools(app: FastMCP) -> None:
         output_path: Optional[str] = None
     ) -> Dict[str, Any]:
         """
-        Exécute un notebook avec des paramètres via Papermill API directe
+        Execute un notebook avec des parametres via Papermill API directe
         
         Args:
-            input_path: Chemin du notebook d'entrée
-            parameters: Paramètres à injecter dans le notebook
+            input_path: Chemin du notebook d'entree
+            parameters: Parametres a injecter dans le notebook
             output_path: Chemin du notebook de sortie (optionnel)
             
         Returns:
-            Résultat de l'exécution paramétrée
+            Resultat de l'execution parametree
         """
         try:
             logger.info(f"Executing parameterized notebook: {input_path}")
@@ -478,15 +478,15 @@ def register_execution_tools(app: FastMCP) -> None:
         kernel_id: str
     ) -> Dict[str, Any]:
         """
-        Exécute une cellule spécifique d'un notebook sur un kernel
+        Execute une cellule specifique d'un notebook sur un kernel
         
         Args:
             path: Chemin du fichier notebook (.ipynb)
-            cell_index: Index de la cellule à exécuter
-            kernel_id: ID du kernel sur lequel exécuter la cellule
+            cell_index: Index de la cellule a executer
+            kernel_id: ID du kernel sur lequel executer la cellule
             
         Returns:
-            Résultat de l'exécution de la cellule
+            Resultat de l'execution de la cellule
         """
         try:
             logger.info(f"Executing cell {cell_index} from notebook: {path}")
@@ -514,7 +514,7 @@ def register_execution_tools(app: FastMCP) -> None:
     @app.tool()
     async def get_execution_status() -> Dict[str, Any]:
         """
-        Récupère le statut d'exécution global du serveur
+        Recupere le statut d'execution global du serveur
         
         Returns:
             Statut global du serveur et des kernels actifs

@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """
-Test simplifié de l'intégration Papermill pour le serveur MCP.
+Test simplifie de l'integration Papermill pour le serveur MCP.
 
-Ce test valide les fonctionnalités Papermill de base avec les méthodes disponibles.
+Ce test valide les fonctionnalites Papermill de base avec les methodes disponibles.
 """
 
 import asyncio
@@ -25,29 +25,29 @@ logger = logging.getLogger(__name__)
 
 
 class SimplePapermillTester:
-    """Classe de test simplifié pour Papermill."""
+    """Classe de test simplifie pour Papermill."""
     
     def __init__(self):
         self.config = get_config()
         self.server = JupyterPapermillMCPServer(self.config)
         self.temp_dir = Path(tempfile.mkdtemp())
         self.papermill_executor = None
-        logger.info(f"Répertoire temporaire de test: {self.temp_dir}")
+        logger.info(f"Repertoire temporaire de test: {self.temp_dir}")
         
     async def setup(self) -> bool:
-        """Initialise le serveur et l'exécuteur Papermill."""
+        """Initialise le serveur et l'executeur Papermill."""
         logger.info("=== INITIALISATION TEST PAPERMILL ===")
         try:
             self.server.initialize()
             self.papermill_executor = PapermillExecutor(self.config)
-            logger.info("✅ Serveur et exécuteur Papermill initialisés")
+            logger.info("[OK] Serveur et executeur Papermill initialises")
             return True
         except Exception as e:
-            logger.error(f"❌ Échec de l'initialisation: {e}")
+            logger.error(f"[ERROR] ?chec de l'initialisation: {e}")
             return False
     
     def create_test_notebook(self, filename: str) -> Path:
-        """Crée un notebook de test simple."""
+        """Cree un notebook de test simple."""
         notebook_content = {
             "cells": [
                 {
@@ -56,7 +56,7 @@ class SimplePapermillTester:
                     "metadata": {"tags": ["parameters"]},
                     "outputs": [],
                     "source": [
-                        "# Paramètres par défaut\n",
+                        "# Parametres par defaut\n",
                         "name = 'Test'\n",
                         "value = 42\n"
                     ]
@@ -87,12 +87,12 @@ class SimplePapermillTester:
         with open(notebook_path, 'w', encoding='utf-8') as f:
             json.dump(notebook_content, f, indent=2)
             
-        logger.info(f"✅ Notebook test créé: {notebook_path}")
+        logger.info(f"[OK] Notebook test cree: {notebook_path}")
         return notebook_path
     
     async def test_papermill_executor_methods(self) -> bool:
-        """Test des méthodes disponibles dans PapermillExecutor."""
-        logger.info("=== TEST MÉTHODES PAPERMILL EXECUTOR ===")
+        """Test des methodes disponibles dans PapermillExecutor."""
+        logger.info("=== TEST M?THODES PAPERMILL EXECUTOR ===")
         
         try:
             executor = self.papermill_executor
@@ -100,71 +100,71 @@ class SimplePapermillTester:
             # Test 1: Configuration accessible
             logger.info("Test 1: Configuration...")
             if hasattr(executor, 'config'):
-                logger.info(f"✅ Configuration accessible: {executor.config.papermill.output_dir}")
+                logger.info(f"[OK] Configuration accessible: {executor.config.papermill.output_dir}")
             
-            # Test 2: Détection des kernels
-            logger.info("Test 2: Détection des kernels...")
+            # Test 2: Detection des kernels
+            logger.info("Test 2: Detection des kernels...")
             try:
                 kernels = executor._get_available_kernels()
                 kernel_names = list(kernels.keys())
-                logger.info(f"✅ Kernels détectés: {kernel_names}")
+                logger.info(f"[OK] Kernels detectes: {kernel_names}")
             except Exception as e:
-                logger.info(f"⚠️ Détection kernels échouée (normal en mode test): {e}")
+                logger.info(f"[WARNING] Detection kernels echouee (normal en mode test): {e}")
             
-            # Test 3: Auto-détection depuis notebook
-            logger.info("Test 3: Auto-détection de kernel depuis notebook...")
+            # Test 3: Auto-detection depuis notebook
+            logger.info("Test 3: Auto-detection de kernel depuis notebook...")
             test_notebook = self.create_test_notebook("test_kernel_detection.ipynb")
             try:
                 detected_kernel = executor._auto_detect_kernel(str(test_notebook))
-                logger.info(f"✅ Kernel auto-détecté: {detected_kernel}")
+                logger.info(f"[OK] Kernel auto-detecte: {detected_kernel}")
             except Exception as e:
-                logger.info(f"⚠️ Auto-détection échouée (normal sans kernels): {e}")
+                logger.info(f"[WARNING] Auto-detection echouee (normal sans kernels): {e}")
             
-            # Test 4: Génération de chemin de sortie
-            logger.info("Test 4: Génération de chemin de sortie...")
+            # Test 4: Generation de chemin de sortie
+            logger.info("Test 4: Generation de chemin de sortie...")
             output_path = executor._generate_output_path(str(test_notebook))
-            logger.info(f"✅ Chemin généré: {output_path}")
+            logger.info(f"[OK] Chemin genere: {output_path}")
             
             return True
             
         except Exception as e:
-            logger.error(f"❌ Erreur dans test des méthodes: {e}")
+            logger.error(f"[ERROR] Erreur dans test des methodes: {e}")
             return False
     
     async def test_papermill_execution_structure(self) -> bool:
-        """Test de la structure d'exécution Papermill."""
-        logger.info("=== TEST STRUCTURE EXÉCUTION ===")
+        """Test de la structure d'execution Papermill."""
+        logger.info("=== TEST STRUCTURE EX?CUTION ===")
         
         try:
-            # Créer notebook de test
+            # Creer notebook de test
             test_notebook = self.create_test_notebook("execution_test.ipynb")
             
-            # Test des paramètres d'exécution (sans exécution réelle)
+            # Test des parametres d'execution (sans execution reelle)
             test_parameters = {
                 "name": "Papermill MCP Test",
                 "value": 100
             }
             
-            logger.info(f"Paramètres de test: {test_parameters}")
+            logger.info(f"Parametres de test: {test_parameters}")
             
-            # Test de validation des paramètres d'entrée
+            # Test de validation des parametres d'entree
             executor = self.papermill_executor
             
-            # Validation du fichier d'entrée
+            # Validation du fichier d'entree
             if test_notebook.exists():
-                logger.info("✅ Fichier notebook d'entrée validé")
+                logger.info("[OK] Fichier notebook d'entree valide")
             
-            # Test de génération de chemin de sortie personnalisé
+            # Test de generation de chemin de sortie personnalise
             custom_output = executor._generate_output_path(str(test_notebook), suffix="-custom")
-            logger.info(f"✅ Chemin personnalisé généré: {custom_output}")
+            logger.info(f"[OK] Chemin personnalise genere: {custom_output}")
             
-            # Simulation de préparation d'exécution
-            logger.info("✅ Structure d'exécution Papermill validée")
+            # Simulation de preparation d'execution
+            logger.info("[OK] Structure d'execution Papermill validee")
             
             return True
             
         except Exception as e:
-            logger.error(f"❌ Erreur dans test de structure: {e}")
+            logger.error(f"[ERROR] Erreur dans test de structure: {e}")
             return False
     
     async def test_papermill_configuration(self) -> bool:
@@ -177,24 +177,24 @@ class SimplePapermillTester:
             # Test de configuration de base
             logger.info(f"Output directory: {config.output_dir}")
             logger.info(f"Timeout: {config.timeout}")
-            logger.info(f"Kernel par défaut: {config.kernel_name}")
+            logger.info(f"Kernel par defaut: {config.kernel_name}")
             
-            # Vérifier que le répertoire de sortie est créé
+            # Verifier que le repertoire de sortie est cree
             output_dir = Path(config.output_dir)
             if output_dir.exists():
-                logger.info("✅ Répertoire de sortie existe")
+                logger.info("[OK] Repertoire de sortie existe")
             else:
-                logger.info("ℹ️ Répertoire de sortie sera créé automatiquement")
+                logger.info("?? Repertoire de sortie sera cree automatiquement")
             
             return True
             
         except Exception as e:
-            logger.error(f"❌ Erreur dans test de configuration: {e}")
+            logger.error(f"[ERROR] Erreur dans test de configuration: {e}")
             return False
     
     async def run_simplified_tests(self) -> Dict[str, bool]:
-        """Exécute les tests Papermill simplifiés."""
-        logger.info("🚀 DÉBUT DES TESTS PAPERMILL SIMPLIFIÉS")
+        """Execute les tests Papermill simplifies."""
+        logger.info("[START] D?BUT DES TESTS PAPERMILL SIMPLIFI?S")
         
         results = {}
         
@@ -202,43 +202,43 @@ class SimplePapermillTester:
         results["setup"] = await self.setup()
         
         if results["setup"]:
-            # Tests des fonctionnalités disponibles
+            # Tests des fonctionnalites disponibles
             results["executor_methods"] = await self.test_papermill_executor_methods()
             results["execution_structure"] = await self.test_papermill_execution_structure()
             results["configuration"] = await self.test_papermill_configuration()
         else:
-            logger.error("❌ Échec de l'initialisation - tests interrompus")
+            logger.error("[ERROR] ?chec de l'initialisation - tests interrompus")
             return results
         
-        # Résumé des résultats
+        # Resume des resultats
         logger.info("=" * 50)
-        logger.info("RÉSULTATS DES TESTS PAPERMILL SIMPLIFIÉS:")
+        logger.info("R?SULTATS DES TESTS PAPERMILL SIMPLIFI?S:")
         logger.info("=" * 50)
         
         all_passed = True
         for test_name, result in results.items():
-            status = "✅ SUCCÈS" if result else "❌ ÉCHEC"
+            status = "[OK] SUCC?S" if result else "[ERROR] ?CHEC"
             logger.info(f"{test_name.upper()}: {status}")
             if not result:
                 all_passed = False
         
         logger.info("=" * 50)
-        final_status = "✅ TOUS LES TESTS RÉUSSIS" if all_passed else "❌ CERTAINS TESTS ONT ÉCHOUÉ"
-        logger.info(f"RÉSULTAT GLOBAL: {final_status}")
+        final_status = "[OK] TOUS LES TESTS R?USSIS" if all_passed else "[ERROR] CERTAINS TESTS ONT ?CHOU?"
+        logger.info(f"R?SULTAT GLOBAL: {final_status}")
         logger.info("=" * 50)
         
         return results
 
 
 async def main():
-    """Point d'entrée principal des tests simplifiés."""
+    """Point d'entree principal des tests simplifies."""
     tester = SimplePapermillTester()
     results = await tester.run_simplified_tests()
     
     # Nettoyage
     import shutil
     shutil.rmtree(tester.temp_dir)
-    logger.info(f"Répertoire temporaire nettoyé: {tester.temp_dir}")
+    logger.info(f"Repertoire temporaire nettoye: {tester.temp_dir}")
     
     # Code de sortie
     exit_code = 0 if all(results.values()) else 1

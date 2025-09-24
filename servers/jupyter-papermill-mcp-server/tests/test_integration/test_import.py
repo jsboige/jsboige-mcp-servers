@@ -3,23 +3,23 @@
 
 try:
     import papermill_mcp.main_working as main
-    print("✅ Module papermill_mcp.main_working importé avec succès")
+    print("[OK] Module papermill_mcp.main_working importe avec succes")
     
-    # Test de création du serveur
-    print(f"✅ Serveur créé: {main.app.name}")
+    # Test de creation du serveur
+    print(f"[OK] Serveur cree: {main.app.name}")
     
-    # Test des outils (sans les exécuter)
+    # Test des outils (sans les executer)
     import asyncio
     async def test_list_tools():
         tools = await main.list_tools()
-        print(f"✅ {len(tools)} outils disponibles:")
+        print(f"[OK] {len(tools)} outils disponibles:")
         for tool in tools:
             print(f"  - {tool.name}: {tool.description}")
     
     asyncio.run(test_list_tools())
-    print("✅ Tests de base réussis")
+    print("[OK] Tests de base reussis")
     
 except Exception as e:
-    print(f"❌ Erreur: {e}")
+    print(f"[ERROR] Erreur: {e}")
     import traceback
     traceback.print_exc()

@@ -102,14 +102,14 @@ class ConfigManager:
         if config_file_path and Path(config_file_path).exists():
             try:
                 config_dict = self._load_config_file(config_file_path)
-                print(f"Configuration chargée depuis {config_file_path}")
+                print(f"Configuration chargee depuis {config_file_path}")
                 self._config_file_path = config_file_path
             except Exception as e:
                 print(f"Erreur lors du chargement du fichier de configuration {config_file_path}: {e}")
-                print("Utilisation des valeurs par défaut")
+                print("Utilisation des valeurs par defaut")
         else:
             if config_file_path:
-                print(f"Fichier de configuration {config_file_path} non trouvé, utilisation des valeurs par défaut")
+                print(f"Fichier de configuration {config_file_path} non trouve, utilisation des valeurs par defaut")
         
         # Apply environment variables
         self._apply_environment_variables(config_dict)
@@ -235,12 +235,12 @@ Usage: python -m papermill_mcp.main [options]
 Options:
   --url <url>               URL du serveur Jupyter (ex: http://localhost:8888)
   --token <token>           Token d'authentification du serveur Jupyter  
-  --offline                 Démarrer en mode hors ligne (sans tentatives de connexion)
-  --skip-connection-check   Ne pas vérifier la connexion au serveur Jupyter
-  --config <path>           Chemin vers un fichier de configuration personnalisé
+  --offline                 Demarrer en mode hors ligne (sans tentatives de connexion)
+  --skip-connection-check   Ne pas verifier la connexion au serveur Jupyter
+  --config <path>           Chemin vers un fichier de configuration personnalise
   --log-level <level>       Niveau de logging (DEBUG, INFO, WARNING, ERROR, CRITICAL)
-  --output-dir <path>       Répertoire pour les notebooks de sortie Papermill
-  --timeout <seconds>       Timeout d'exécution pour Papermill (en secondes)
+  --output-dir <path>       Repertoire pour les notebooks de sortie Papermill
+  --timeout <seconds>       Timeout d'execution pour Papermill (en secondes)
   --help                    Afficher cette aide
 
 Exemples:
@@ -251,12 +251,12 @@ Exemples:
 Variables d'environnement:
   JUPYTER_SERVER_URL          URL du serveur Jupyter
   JUPYTER_SERVER_TOKEN        Token d'authentification du serveur Jupyter
-  JUPYTER_MCP_OFFLINE         Définir à 'true' pour le mode hors ligne
-  JUPYTER_SKIP_CONNECTION_CHECK  Définir à 'true' pour éviter les vérifications de connexion
-  JUPYTER_MCP_CONFIG          Chemin vers un fichier de configuration personnalisé
+  JUPYTER_MCP_OFFLINE         Definir a 'true' pour le mode hors ligne
+  JUPYTER_SKIP_CONNECTION_CHECK  Definir a 'true' pour eviter les verifications de connexion
+  JUPYTER_MCP_CONFIG          Chemin vers un fichier de configuration personnalise
   JUPYTER_MCP_LOG_LEVEL       Niveau de logging
-  JUPYTER_MCP_OUTPUT_DIR      Répertoire de sortie pour Papermill
-  JUPYTER_MCP_TIMEOUT         Timeout d'exécution pour Papermill (en secondes)
+  JUPYTER_MCP_OUTPUT_DIR      Repertoire de sortie pour Papermill
+  JUPYTER_MCP_TIMEOUT         Timeout d'execution pour Papermill (en secondes)
 """
         print(help_message)
         sys.exit(0)

@@ -2,20 +2,20 @@
 
 try:
     import papermill_mcp.main_fastmcp
-    print("✅ Import du module FastMCP OK")
+    print("[OK] Import du module FastMCP OK")
     
-    # Test accès au serveur MCP
+    # Test acces au serveur MCP
     from papermill_mcp.main_fastmcp import mcp
-    print(f"✅ Serveur MCP créé: {mcp.name}")
+    print(f"[OK] Serveur MCP cree: {mcp.name}")
     
-    # Lister les outils enregistrés
+    # Lister les outils enregistres
     tools = [func.__name__ for func in mcp._tools]
-    print(f"✅ Nombre d'outils enregistrés: {len(tools)}")
+    print(f"[OK] Nombre d'outils enregistres: {len(tools)}")
     print("Outils disponibles:")
     for tool in tools:
         print(f"  - {tool}")
         
 except ImportError as e:
-    print(f"❌ Erreur d'import: {e}")
+    print(f"[ERROR] Erreur d'import: {e}")
 except Exception as e:
-    print(f"❌ Erreur: {e}")
+    print(f"[ERROR] Erreur: {e}")

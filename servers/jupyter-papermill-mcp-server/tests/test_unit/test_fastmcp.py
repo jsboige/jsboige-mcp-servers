@@ -2,18 +2,18 @@
 
 try:
     from mcp.server.fastmcp import FastMCP
-    print("✅ FastMCP disponible")
+    print("[OK] FastMCP disponible")
     
-    # Test création d'une instance
+    # Test creation d'une instance
     mcp = FastMCP("test")
-    print("✅ Création d'instance FastMCP OK")
+    print("[OK] Creation d'instance FastMCP OK")
     
 except ImportError as e:
-    print(f"❌ FastMCP non disponible: {e}")
+    print(f"[ERROR] FastMCP non disponible: {e}")
     
     # Essayer avec le SDK de bas niveau 
     try:
         from mcp.server import Server
-        print("✅ SDK de bas niveau disponible")
+        print("[OK] SDK de bas niveau disponible")
     except ImportError as e2:
-        print(f"❌ SDK MCP complètement absent: {e2}")
+        print(f"[ERROR] SDK MCP completement absent: {e2}")

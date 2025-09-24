@@ -19,7 +19,7 @@ try:
     
     print("="*50)
     print("CONSOLIDATION REUSSIE!")
-    print("31 outils unifiés disponibles")
+    print("31 outils unifies disponibles")
     print("Architecture: Modulaire + Optimisations Monolithiques")
     print("="*50)
     

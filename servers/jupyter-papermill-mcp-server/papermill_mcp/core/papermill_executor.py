@@ -299,7 +299,7 @@ class PapermillExecutor:
         """
         Synchronous Papermill execution avec injection d'environnement .NET.
         
-        SOLUTION DÉFINITIVE SDDD : Résolution du problème héritage d'environnement
+        SOLUTION D?FINITIVE SDDD : Resolution du probleme heritage d'environnement
         insuffisant du processus MCP parent vers le kernel .NET enfant.
         """
         
@@ -309,7 +309,7 @@ class PapermillExecutor:
             original_cwd = os.getcwd()
             os.chdir(notebook_dir)
             
-            self.logger.info(f"📁 Working directory: {notebook_dir}")
+            self.logger.info(f"? Working directory: {notebook_dir}")
             
             # Configure Papermill parameters
             pm_kwargs = {
@@ -326,8 +326,8 @@ class PapermillExecutor:
             start_exec = time.time()
             
             try:
-                # SOLUTION DÉFINITIVE : Injection d'environnement .NET pour kernel
-                # Résout l'erreur "Value cannot be null. (Parameter 'path1')"
+                # SOLUTION D?FINITIVE : Injection d'environnement .NET pour kernel
+                # Resout l'erreur "Value cannot be null. (Parameter 'path1')"
                 with inject_dotnet_environment() as injected_vars:
                     if injected_vars:
                         self.logger.info(f".NET environment injected: {len(injected_vars)} variables")
@@ -335,11 +335,11 @@ class PapermillExecutor:
                         critical_vars = ['DOTNET_ROOT', 'MSBuildSDKsPath', 'NUGET_PACKAGES']
                         for var in critical_vars:
                             if var in injected_vars:
-                                self.logger.debug(f"  ✅ {var}={injected_vars[var]}")
+                                self.logger.debug(f"  [OK] {var}={injected_vars[var]}")
                     else:
                         self.logger.warning("WARNING: No .NET environment variables injected")
                     
-                    # Exécution Papermill avec environnement .NET enrichi
+                    # Execution Papermill avec environnement .NET enrichi
                     result_nb = pm.execute_notebook(**pm_kwargs)
             finally:
                 # Restauration working directory original

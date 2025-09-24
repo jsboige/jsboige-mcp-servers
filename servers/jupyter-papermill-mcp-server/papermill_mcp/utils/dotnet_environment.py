@@ -1,7 +1,7 @@
 """
-Injection des variables d'environnement .NET pour résolution définitive Microsoft.ML MCP.
+Injection des variables d'environnement .NET pour resolution definitive Microsoft.ML MCP.
 
-Solution technique SDDD basée sur l'analyse des documents 20-SYNTHESE et 21-ANALYSE-ARCHITECTURE.
+Solution technique SDDD basee sur l'analyse des documents 20-SYNTHESE et 21-ANALYSE-ARCHITECTURE.
 """
 
 import os
@@ -17,9 +17,9 @@ logger = logging.getLogger(__name__)
 
 class DotNetEnvironmentInjector:
     """
-    Injecteur d'environnement .NET pour résoudre les problèmes NuGet via MCP.
+    Injecteur d'environnement .NET pour resoudre les problemes NuGet via MCP.
     
-    Cause racine identifiée : Héritage d'environnement insuffisant du processus MCP 
+    Cause racine identifiee : Heritage d'environnement insuffisant du processus MCP 
     parent vers le kernel .NET enfant via papermill.execute_notebook().
     """
     
@@ -28,10 +28,10 @@ class DotNetEnvironmentInjector:
     
     def _detect_dotnet_paths(self) -> Dict[str, str]:
         """
-        Auto-détection des chemins .NET critiques pour l'injection d'environnement.
+        Auto-detection des chemins .NET critiques pour l'injection d'environnement.
         
         Returns:
-            Dict des variables d'environnement .NET détectées
+            Dict des variables d'environnement .NET detectees
         """
         if self._detected_paths is not None:
             return self._detected_paths
@@ -45,7 +45,7 @@ class DotNetEnvironmentInjector:
                 if dotnet_root.exists():
                     paths["DOTNET_ROOT"] = str(dotnet_root)
                 else:
-                    # Fallback: essayer de détecter via 'dotnet --info'
+                    # Fallback: essayer de detecter via 'dotnet --info'
                     result = subprocess.run(['dotnet', '--info'], 
                                           capture_output=True, text=True, timeout=10)
                     if result.returncode == 0:
@@ -57,7 +57,7 @@ class DotNetEnvironmentInjector:
                                 paths["DOTNET_ROOT"] = str(dotnet_root)
                                 break
             
-            # 2. Détecter la version SDK actuelle
+            # 2. Detecter la version SDK actuelle
             sdk_version = self._detect_current_sdk_version()
             if sdk_version and paths.get("DOTNET_ROOT"):
                 dotnet_root = Path(paths["DOTNET_ROOT"])
@@ -88,7 +88,7 @@ class DotNetEnvironmentInjector:
             paths["DOTNET_INTERACTIVE_CLI_TELEMETRY_OPTOUT"] = "1"
             paths["DOTNET_NOLOGO"] = "1"
             
-            logger.info(f"✅ Detected .NET environment paths: {len(paths)} variables")
+            logger.info(f"[OK] Detected .NET environment paths: {len(paths)} variables")
             for key, value in paths.items():
                 logger.debug(f"  {key}={value}")
                 
@@ -99,7 +99,7 @@ class DotNetEnvironmentInjector:
         return paths
     
     def _detect_current_sdk_version(self) -> Optional[str]:
-        """Détecte la version SDK .NET actuellement active."""
+        """Detecte la version SDK .NET actuellement active."""
         try:
             result = subprocess.run(['dotnet', '--version'], 
                                   capture_output=True, text=True, timeout=5)
@@ -119,12 +119,12 @@ class DotNetEnvironmentInjector:
         
         Usage:
             with injector.inject_dotnet_environment() as env_vars:
-                # Les variables .NET sont injectées dans os.environ
+                # Les variables .NET sont injectees dans os.environ
                 pm.execute_notebook(...)
-                # Les variables sont automatiquement restaurées après
+                # Les variables sont automatiquement restaurees apres
         
         Yields:
-            Dict des variables injectées pour logging/debug
+            Dict des variables injectees pour logging/debug
         """
         dotnet_vars = self._detect_dotnet_paths()
         
@@ -163,11 +163,11 @@ class DotNetEnvironmentInjector:
                     # Restaurer la valeur originale
                     os.environ[key] = original_value
             
-            logger.debug("🔄 .NET environment variables restored")
+            logger.debug("? .NET environment variables restored")
     
     def validate_environment(self) -> Dict[str, bool]:
         """
-        Valide que l'environnement .NET est correctement configuré.
+        Valide que l'environnement .NET est correctement configure.
         
         Returns:
             Dict[variable_name, is_valid] pour chaque variable critique
@@ -177,7 +177,7 @@ class DotNetEnvironmentInjector:
         
         for key, value in dotnet_vars.items():
             if key in ["DOTNET_INTERACTIVE_CLI_TELEMETRY_OPTOUT", "DOTNET_NOLOGO"]:
-                # Variables de configuration - toujours valides si détectées
+                # Variables de configuration - toujours valides si detectees
                 validation_results[key] = True
             else:
                 # Variables de chemin - valider que le chemin existe

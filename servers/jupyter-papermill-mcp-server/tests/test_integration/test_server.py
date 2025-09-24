@@ -7,7 +7,7 @@ import sys
 import traceback
 from pathlib import Path
 
-# Ajout du répertoire du package au PYTHONPATH
+# Ajout du repertoire du package au PYTHONPATH
 project_root = Path(__file__).parent
 sys.path.insert(0, str(project_root))
 
@@ -21,28 +21,28 @@ try:
     print("1. Test d'importation des modules...")
     from papermill_mcp.main import create_app, JupyterPapermillMCPServer
     from papermill_mcp.config import get_config, MCPConfig
-    print("   ✓ Importation réussie")
+    print("   ? Importation reussie")
 
     # Test de chargement de la configuration
     print("2. Test de chargement de la configuration...")
     try:
         config = get_config()
-        print(f"   ✓ Configuration chargée: {config}")
+        print(f"   ? Configuration chargee: {config}")
     except Exception as e:
-        print(f"   ⚠ Erreur de configuration (non critique): {e}")
+        print(f"   ? Erreur de configuration (non critique): {e}")
         config = None
 
-    # Test de création du serveur
-    print("3. Test de création du serveur...")
+    # Test de creation du serveur
+    print("3. Test de creation du serveur...")
     server = JupyterPapermillMCPServer(config)
-    print("   ✓ Serveur créé")
+    print("   ? Serveur cree")
 
     # Test d'initialisation
     print("4. Test d'initialisation du serveur...")
     server.initialize()
-    print("   ✓ Serveur initialisé avec succès")
+    print("   ? Serveur initialise avec succes")
 
-    # Liste des outils théoriquement disponibles
+    # Liste des outils theoriquement disponibles
     expected_tools = [
         # Notebook tools
         "read_notebook", "write_notebook", "create_notebook", 
@@ -59,16 +59,16 @@ try:
         "start_jupyter_server", "stop_jupyter_server", "debug_list_runtime_dir"
     ]
     
-    print(f"\n5. Outils théoriquement disponibles ({len(expected_tools)}):")
+    print(f"\n5. Outils theoriquement disponibles ({len(expected_tools)}):")
     for i, tool in enumerate(expected_tools, 1):
         print(f"   {i:2}. {tool}")
 
-    print("\n=== RÉSULTAT: SUCCESS ===")
+    print("\n=== R?SULTAT: SUCCESS ===")
     print("Le serveur MCP Python s'initialise correctement !")
     
 except Exception as e:
-    print(f"\n=== RÉSULTAT: ERROR ===")
+    print(f"\n=== R?SULTAT: ERROR ===")
     print(f"Erreur lors de l'initialisation: {e}")
-    print("\nStack trace complète:")
+    print("\nStack trace complete:")
     traceback.print_exc()
     sys.exit(1)

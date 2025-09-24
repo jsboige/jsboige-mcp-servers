@@ -23,7 +23,7 @@ def test_corrections_sddd():
         from papermill_mcp.main import JupyterPapermillMCPServer
         from papermill_mcp.config import get_config
         from papermill_mcp.services.notebook_service import NotebookService
-        print("SUCCES - Imports modules consolidés")
+        print("SUCCES - Imports modules consolides")
         results.append(True)
     except Exception as e:
         print(f"ECHEC - Imports: {e}")
@@ -82,7 +82,7 @@ def test_corrections_sddd():
         print(f"ECHEC - Marquage: {e}")
         results.append(False)
     
-    # Résumé
+    # Resume
     print("\n" + "=" * 60)
     print("RESUME")
     print("=" * 60)

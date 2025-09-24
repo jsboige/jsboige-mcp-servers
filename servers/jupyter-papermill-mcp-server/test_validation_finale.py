@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
-Script de validation finale du serveur jupyter-papermill consolidé
-Teste l'importation, l'initialisation et la fonctionnalité après corrections
+Script de validation finale du serveur jupyter-papermill consolide
+Teste l'importation, l'initialisation et la fonctionnalite apres corrections
 """
 
 import sys
@@ -13,10 +13,10 @@ def test_imports():
     print("PHASE 1: Tests d'importation")
     
     try:
-        # Import du point d'entrée principal
+        # Import du point d'entree principal
         sys.path.insert(0, '.')
         from papermill_mcp.main import JupyterPapermillMCPServer
-        print("Import JupyterPapermillMCPServer réussi")
+        print("Import JupyterPapermillMCPServer reussi")
         
         # Import des services critiques
         from papermill_mcp.services.notebook_service import NotebookService
@@ -25,7 +25,7 @@ def test_imports():
         from papermill_mcp.utils.dotnet_environment import DotNetEnvironmentInjector
         from papermill_mcp.config import get_config, MCPConfig
         
-        print("Import de tous les services réussi")
+        print("Import de tous les services reussi")
         return True
         
     except Exception as e:
@@ -44,15 +44,15 @@ def test_services_initialization():
         
         # Get config
         config = get_config()
-        print("Configuration chargée")
+        print("Configuration chargee")
         
         # Test NotebookService avec config
         notebook_service = NotebookService(config)
-        print("NotebookService initialisé")
+        print("NotebookService initialise")
         
         # Test KernelService avec config
         kernel_service = KernelService(config)
-        print("KernelService initialisé")
+        print("KernelService initialise")
         
         return True
         
@@ -69,16 +69,16 @@ def test_main_app():
         from papermill_mcp.main import JupyterPapermillMCPServer
         from papermill_mcp.config import get_config
         
-        # Créer le serveur
+        # Creer le serveur
         config = get_config()
         server = JupyterPapermillMCPServer(config)
         
-        # Vérifier que l'app est créée
+        # Verifier que l'app est creee
         if server.app is None:
-            print("App FastMCP non initialisée")
+            print("App FastMCP non initialisee")
             return False
             
-        print("Application FastMCP créée")
+        print("Application FastMCP creee")
         
         return True
         
@@ -95,7 +95,7 @@ def test_tools_registration():
         from papermill_mcp.main import JupyterPapermillMCPServer
         from papermill_mcp.config import get_config
         
-        # Créer et initialiser le serveur
+        # Creer et initialiser le serveur
         config = get_config()
         server = JupyterPapermillMCPServer(config)
         server.initialize()  # Enregistre les outils
@@ -103,7 +103,7 @@ def test_tools_registration():
         # FastMCP list_tools() retourne directement une liste des noms
         try:
             import inspect
-            tools = server.app._tools  # Accès direct au dictionnaire des outils
+            tools = server.app._tools  # Acces direct au dictionnaire des outils
             tool_names = list(tools.keys())
         except:
             # Fallback: compter depuis les logs qui montrent 31 outils
@@ -114,16 +114,16 @@ def test_tools_registration():
             'execute_notebook_papermill', 'read_notebook'
         ]
         
-        print(f"Outils trouvés: {len(tool_names)}")
+        print(f"Outils trouves: {len(tool_names)}")
         
-        # Vérifier quelques outils critiques
+        # Verifier quelques outils critiques
         critical_found = []
         for expected in expected_tools:
             found = any(expected in tool for tool in tool_names)
             if found:
                 critical_found.append(expected)
                 
-        print(f"Outils critiques trouvés: {len(critical_found)}/{len(expected_tools)}")
+        print(f"Outils critiques trouves: {len(critical_found)}/{len(expected_tools)}")
         
         # Le serveur montre 31 outils dans les logs, c'est excellent
         return len(tool_names) >= 25  # Au moins 25 outils sur les 31 attendus
@@ -134,8 +134,8 @@ def test_tools_registration():
         return False
 
 def main():
-    """Exécute tous les tests de validation"""
-    print("VALIDATION FINALE DU SERVEUR JUPYTER-PAPERMILL CONSOLIDÉ")
+    """Execute tous les tests de validation"""
+    print("VALIDATION FINALE DU SERVEUR JUPYTER-PAPERMILL CONSOLID?")
     print("=" * 60)
     
     results = []
@@ -152,9 +152,9 @@ def main():
     # Phase 4: Outils MCP
     results.append(test_tools_registration())
     
-    # Résumé final
+    # Resume final
     print("\n" + "=" * 60)
-    print("RÉSULTATS DE VALIDATION:")
+    print("R?SULTATS DE VALIDATION:")
     
     passed = sum(results)
     total = len(results)
@@ -170,16 +170,16 @@ def main():
         status = "PASS" if result else "FAIL"
         print(f"  {i+1}. {phase}: {status}")
     
-    print(f"\nSCORE FINAL: {passed}/{total} tests réussis")
+    print(f"\nSCORE FINAL: {passed}/{total} tests reussis")
     
     if passed == total:
-        print("VALIDATION COMPLÈTE RÉUSSIE - SERVEUR CONSOLIDÉ OPÉRATIONNEL")
+        print("VALIDATION COMPL?TE R?USSIE - SERVEUR CONSOLID? OP?RATIONNEL")
         return 0
     elif passed >= 2:
-        print("VALIDATION PARTIELLE - QUELQUES CORRECTIONS NÉCESSAIRES")
+        print("VALIDATION PARTIELLE - QUELQUES CORRECTIONS N?CESSAIRES")
         return 1
     else:
-        print("VALIDATION ÉCHOUÉE - CORRECTIONS CRITIQUES REQUISES")
+        print("VALIDATION ?CHOU?E - CORRECTIONS CRITIQUES REQUISES")
         return 2
 
 if __name__ == "__main__":

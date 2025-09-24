@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 Test rapide du protocole JSON-RPC MCP
-Vérifie que le serveur répond correctement aux requêtes MCP
+Verifie que le serveur repond correctement aux requetes MCP
 """
 
 import asyncio
@@ -50,12 +50,12 @@ async def test_mcp_protocol():
             }
         }
         
-        # Envoyer la requête d'initialisation
-        print("Envoi requête d'initialisation...")
+        # Envoyer la requete d'initialisation
+        print("Envoi requete d'initialisation...")
         process.stdin.write(json.dumps(init_request) + "\n")
         process.stdin.flush()
         
-        # Attendre la réponse (timeout 10s)
+        # Attendre la reponse (timeout 10s)
         try:
             stdout, stderr = process.communicate(timeout=10)
             
@@ -65,19 +65,19 @@ async def test_mcp_protocol():
                 return False
                 
             if process.returncode == 0:
-                print("SUCCÈS - Serveur a répondu")
+                print("SUCC?S - Serveur a repondu")
                 if stdout:
-                    print("Réponse:", stdout[:200] + "..." if len(stdout) > 200 else stdout)
+                    print("Reponse:", stdout[:200] + "..." if len(stdout) > 200 else stdout)
                 return True
             else:
-                print(f"ÉCHEC - Code de retour: {process.returncode}")
+                print(f"?CHEC - Code de retour: {process.returncode}")
                 if stderr:
                     print("Erreur:", stderr[:200] + "..." if len(stderr) > 200 else stderr)
                 return False
                 
         except subprocess.TimeoutExpired:
             process.kill()
-            print("TIMEOUT - Serveur bloqué")
+            print("TIMEOUT - Serveur bloque")
             return False
             
     except Exception as e:
@@ -92,12 +92,12 @@ def main():
     result = asyncio.run(test_mcp_protocol())
     
     if result:
-        print("\n✅ VALIDATION MCP RÉUSSIE")
-        print("Le serveur répond correctement au protocole JSON-RPC")
+        print("\n[OK] VALIDATION MCP R?USSIE")
+        print("Le serveur repond correctement au protocole JSON-RPC")
         return 0
     else:
-        print("\n❌ VALIDATION MCP ÉCHOUÉE") 
-        print("Le serveur ne répond pas correctement")
+        print("\n[ERROR] VALIDATION MCP ?CHOU?E") 
+        print("Le serveur ne repond pas correctement")
         return 1
 
 if __name__ == "__main__":

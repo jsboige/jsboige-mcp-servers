@@ -2,10 +2,10 @@
 """
 Script de test fonctionnel pour le serveur Jupyter Papermill MCP.
 
-Tests les fonctionnalités de base :
+Tests les fonctionnalites de base :
 - Gestion des kernels
-- Opérations sur les notebooks  
-- Exécution de code
+- Operations sur les notebooks  
+- Execution de code
 """
 
 import asyncio
@@ -33,30 +33,30 @@ class FunctionalTester:
         self.config = get_config()
         self.server = JupyterPapermillMCPServer(self.config)
         self.temp_dir = Path(tempfile.mkdtemp())
-        logger.info(f"Répertoire temporaire de test: {self.temp_dir}")
+        logger.info(f"Repertoire temporaire de test: {self.temp_dir}")
         
     async def setup(self):
         """Initialise le serveur pour les tests."""
         logger.info("=== INITIALISATION DU SERVEUR ===")
         try:
             self.server.initialize()
-            logger.info("✅ Serveur initialisé avec succès")
+            logger.info("[OK] Serveur initialise avec succes")
             return True
         except Exception as e:
-            logger.error(f"❌ Échec de l'initialisation: {e}")
+            logger.error(f"[ERROR] ?chec de l'initialisation: {e}")
             return False
     
     async def test_notebook_operations(self) -> bool:
-        """Test des opérations de base sur les notebooks."""
-        logger.info("=== TEST OPÉRATIONS NOTEBOOKS ===")
+        """Test des operations de base sur les notebooks."""
+        logger.info("=== TEST OP?RATIONS NOTEBOOKS ===")
         
         test_notebook_path = self.temp_dir / "test_notebook.ipynb"
         
         try:
-            # Test 1: Créer un notebook vide
-            logger.info("Test 1: Création d'un notebook vide...")
+            # Test 1: Creer un notebook vide
+            logger.info("Test 1: Creation d'un notebook vide...")
             
-            # Simuler la création d'un notebook
+            # Simuler la creation d'un notebook
             notebook_content = {
                 "cells": [],
                 "metadata": {
@@ -74,11 +74,11 @@ class FunctionalTester:
                 "nbformat_minor": 5
             }
             
-            # Écrire le fichier manuellement pour tester la lecture
+            # ?crire le fichier manuellement pour tester la lecture
             with open(test_notebook_path, 'w', encoding='utf-8') as f:
                 json.dump(notebook_content, f, indent=2)
             
-            logger.info("✅ Notebook créé avec succès")
+            logger.info("[OK] Notebook cree avec succes")
             
             # Test 2: Lire le notebook
             logger.info("Test 2: Lecture du notebook...")
@@ -86,12 +86,12 @@ class FunctionalTester:
                 with open(test_notebook_path, 'r', encoding='utf-8') as f:
                     loaded_content = json.load(f)
                     if loaded_content.get('nbformat') == 4:
-                        logger.info("✅ Notebook lu avec succès")
+                        logger.info("[OK] Notebook lu avec succes")
                     else:
-                        logger.error("❌ Format de notebook invalide")
+                        logger.error("[ERROR] Format de notebook invalide")
                         return False
             else:
-                logger.error("❌ Fichier notebook introuvable")
+                logger.error("[ERROR] Fichier notebook introuvable")
                 return False
             
             # Test 3: Ajouter une cellule
@@ -108,51 +108,51 @@ class FunctionalTester:
             with open(test_notebook_path, 'w', encoding='utf-8') as f:
                 json.dump(notebook_content, f, indent=2)
             
-            logger.info("✅ Cellule ajoutée avec succès")
+            logger.info("[OK] Cellule ajoutee avec succes")
             
             return True
             
         except Exception as e:
-            logger.error(f"❌ Erreur dans les tests notebooks: {e}")
+            logger.error(f"[ERROR] Erreur dans les tests notebooks: {e}")
             return False
     
     async def test_kernel_operations(self) -> bool:
-        """Test des opérations de base sur les kernels."""
-        logger.info("=== TEST OPÉRATIONS KERNELS ===")
+        """Test des operations de base sur les kernels."""
+        logger.info("=== TEST OP?RATIONS KERNELS ===")
         
         try:
-            # Pour ce test initial, nous simulons les opérations kernels
+            # Pour ce test initial, nous simulons les operations kernels
             # car nous n'avons pas encore de serveur Jupyter actif
             
             logger.info("Test 1: Simulation de liste des kernels...")
-            # En conditions réelles, ceci ferait appel au service kernel
+            # En conditions reelles, ceci ferait appel au service kernel
             available_kernels = ["python3", "python3.10"]
             active_kernels = []
-            logger.info(f"✅ Kernels disponibles simulés: {available_kernels}")
-            logger.info(f"✅ Kernels actifs simulés: {active_kernels}")
+            logger.info(f"[OK] Kernels disponibles simules: {available_kernels}")
+            logger.info(f"[OK] Kernels actifs simules: {active_kernels}")
             
-            logger.info("Test 2: Simulation de démarrage d'un kernel...")
+            logger.info("Test 2: Simulation de demarrage d'un kernel...")
             simulated_kernel_id = "kernel-12345-python3"
-            logger.info(f"✅ Kernel simulé démarré: {simulated_kernel_id}")
+            logger.info(f"[OK] Kernel simule demarre: {simulated_kernel_id}")
             
-            logger.info("Test 3: Simulation d'arrêt du kernel...")
-            logger.info(f"✅ Kernel simulé arrêté: {simulated_kernel_id}")
+            logger.info("Test 3: Simulation d'arret du kernel...")
+            logger.info(f"[OK] Kernel simule arrete: {simulated_kernel_id}")
             
             return True
             
         except Exception as e:
-            logger.error(f"❌ Erreur dans les tests kernels: {e}")
+            logger.error(f"[ERROR] Erreur dans les tests kernels: {e}")
             return False
     
     async def test_execution_operations(self) -> bool:
-        """Test des opérations d'exécution de code."""
-        logger.info("=== TEST OPÉRATIONS EXÉCUTION ===")
+        """Test des operations d'execution de code."""
+        logger.info("=== TEST OP?RATIONS EX?CUTION ===")
         
         try:
-            logger.info("Test 1: Simulation d'exécution de code simple...")
-            test_code = "result = 2 + 2\nprint(f'Résultat: {result}')"
+            logger.info("Test 1: Simulation d'execution de code simple...")
+            test_code = "result = 2 + 2\nprint(f'Resultat: {result}')"
             
-            # Simulation d'une exécution réussie
+            # Simulation d'une execution reussie
             execution_result = {
                 "execution_count": 1,
                 "status": "ok",
@@ -160,27 +160,27 @@ class FunctionalTester:
                     {
                         "output_type": "stream",
                         "name": "stdout",
-                        "text": ["Résultat: 4\n"]
+                        "text": ["Resultat: 4\n"]
                     }
                 ]
             }
             
-            logger.info(f"✅ Code exécuté avec succès: {test_code}")
-            logger.info(f"✅ Résultat: {execution_result}")
+            logger.info(f"[OK] Code execute avec succes: {test_code}")
+            logger.info(f"[OK] Resultat: {execution_result}")
             
             return True
             
         except Exception as e:
-            logger.error(f"❌ Erreur dans les tests d'exécution: {e}")
+            logger.error(f"[ERROR] Erreur dans les tests d'execution: {e}")
             return False
     
     async def test_papermill_integration(self) -> bool:
-        """Test préliminaire de l'intégration Papermill."""
-        logger.info("=== TEST INTÉGRATION PAPERMILL ===")
+        """Test preliminaire de l'integration Papermill."""
+        logger.info("=== TEST INT?GRATION PAPERMILL ===")
         
         try:
-            # Test de création d'un notebook paramétré
-            logger.info("Test 1: Création d'un notebook paramétré...")
+            # Test de creation d'un notebook parametre
+            logger.info("Test 1: Creation d'un notebook parametre...")
             
             parameterized_notebook = {
                 "cells": [
@@ -190,7 +190,7 @@ class FunctionalTester:
                         "metadata": {"tags": ["parameters"]},
                         "outputs": [],
                         "source": [
-                            "# Paramètres par défaut\n",
+                            "# Parametres par defaut\n",
                             "input_value = 10\n",
                             "multiplier = 2"
                         ]
@@ -201,9 +201,9 @@ class FunctionalTester:
                         "metadata": {},
                         "outputs": [],
                         "source": [
-                            "# Calcul avec paramètres\n",
+                            "# Calcul avec parametres\n",
                             "result = input_value * multiplier\n",
-                            "print(f'Résultat: {input_value} × {multiplier} = {result}')"
+                            "print(f'Resultat: {input_value} ? {multiplier} = {result}')"
                         ]
                     }
                 ],
@@ -222,21 +222,21 @@ class FunctionalTester:
             with open(param_notebook_path, 'w', encoding='utf-8') as f:
                 json.dump(parameterized_notebook, f, indent=2)
             
-            logger.info("✅ Notebook paramétré créé")
+            logger.info("[OK] Notebook parametre cree")
             
-            logger.info("Test 2: Simulation d'injection de paramètres...")
+            logger.info("Test 2: Simulation d'injection de parametres...")
             new_parameters = {"input_value": 20, "multiplier": 3}
-            logger.info(f"✅ Paramètres simulés: {new_parameters}")
+            logger.info(f"[OK] Parametres simules: {new_parameters}")
             
             return True
             
         except Exception as e:
-            logger.error(f"❌ Erreur dans les tests Papermill: {e}")
+            logger.error(f"[ERROR] Erreur dans les tests Papermill: {e}")
             return False
     
     async def run_all_tests(self) -> Dict[str, bool]:
-        """Exécute tous les tests fonctionnels."""
-        logger.info("🚀 DÉBUT DES TESTS FONCTIONNELS")
+        """Execute tous les tests fonctionnels."""
+        logger.info("[START] D?BUT DES TESTS FONCTIONNELS")
         
         results = {}
         
@@ -244,44 +244,44 @@ class FunctionalTester:
         results["setup"] = await self.setup()
         
         if results["setup"]:
-            # Tests des fonctionnalités de base
+            # Tests des fonctionnalites de base
             results["notebooks"] = await self.test_notebook_operations()
             results["kernels"] = await self.test_kernel_operations()
             results["execution"] = await self.test_execution_operations()
             results["papermill"] = await self.test_papermill_integration()
         else:
-            logger.error("❌ Échec de l'initialisation - tests interrompus")
+            logger.error("[ERROR] ?chec de l'initialisation - tests interrompus")
             return results
         
-        # Résumé des résultats
+        # Resume des resultats
         logger.info("=" * 50)
-        logger.info("RÉSULTATS DES TESTS FONCTIONNELS:")
+        logger.info("R?SULTATS DES TESTS FONCTIONNELS:")
         logger.info("=" * 50)
         
         all_passed = True
         for test_name, result in results.items():
-            status = "✅ SUCCÈS" if result else "❌ ÉCHEC"
+            status = "[OK] SUCC?S" if result else "[ERROR] ?CHEC"
             logger.info(f"{test_name.upper()}: {status}")
             if not result:
                 all_passed = False
         
         logger.info("=" * 50)
-        final_status = "✅ TOUS LES TESTS RÉUSSIS" if all_passed else "❌ CERTAINS TESTS ONT ÉCHOUÉ"
-        logger.info(f"RÉSULTAT GLOBAL: {final_status}")
+        final_status = "[OK] TOUS LES TESTS R?USSIS" if all_passed else "[ERROR] CERTAINS TESTS ONT ?CHOU?"
+        logger.info(f"R?SULTAT GLOBAL: {final_status}")
         logger.info("=" * 50)
         
         return results
 
 
 async def main():
-    """Point d'entrée principal des tests."""
+    """Point d'entree principal des tests."""
     tester = FunctionalTester()
     results = await tester.run_all_tests()
     
     # Nettoyage
     import shutil
     shutil.rmtree(tester.temp_dir)
-    logger.info(f"Répertoire temporaire nettoyé: {tester.temp_dir}")
+    logger.info(f"Repertoire temporaire nettoye: {tester.temp_dir}")
     
     # Code de sortie
     exit_code = 0 if all(results.values()) else 1
