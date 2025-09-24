@@ -217,6 +217,158 @@ export interface RenderItem {
     originalIndex?: number;
     toolType?: string;
     resultType?: string;
+    sid?: string;      // ID de section stable (assigné une fois)
+    tid?: string;      // ID TOC stable = 'toc-' + sid (assigné une fois)
+}
+
+// ---- ChatGPT-5 Drop-in Helper Functions ------------------------------------------------
+
+function escapeHtml(s: string): string {
+    return (s ?? '')
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;').replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;');
+}
+
+function baseSectionId(i: RenderItem): string {
+    switch (i.type) {
+        case 'assistant': return `reponse-assistant-${i.n}`;
+        case 'outil': return `outil-${i.n}`;
+        case 'user': return `message-utilisateur-${i.n}`;
+        case 'erreur': return `erreur-${i.n}`;
+        case 'condensation': return `condensation-${i.n}`;
+        case 'new-instructions': return `nouvelles-instructions-${i.n}`;
+        case 'completion': return `completion-${i.n}`;
+    }
+}
+
+/**
+ * PLAN BÉTON ChatGPT-5 : Assignation UNIQUE et STABLE des IDs
+ * On appelle cette fonction UNE SEULE FOIS avant tout rendu
+ */
+function assignStableIds(items: RenderItem[]): void {
+    const used = new Set<string>();
+    for (const it of items) {
+        let sid = baseSectionId(it);
+        // Dédup si collision exceptionnelle
+        if (used.has(sid)) {
+            let k = 2;
+            while (used.has(`${sid}--${k}`)) k++;
+            sid = `${sid}--${k}`;
+        }
+        used.add(sid);
+        it.sid = sid;
+        it.tid = `toc-${sid}`;
+    }
+}
+
+function tocClass(t: MsgType): string {
+    const map = {
+        assistant: 'toc-assistant',
+        outil: 'toc-tool',
+        user: 'toc-user',
+        erreur: 'toc-error',
+        condensation: 'toc-context-condensation',
+        'new-instructions': 'toc-new-instructions',
+        completion: 'toc-completion',
+    };
+    return map[t];
+}
+
+function boxClass(t: MsgType): string {
+    const map = {
+        assistant: 'assistant-message',
+        outil: 'tool-message',
+        user: 'user-message',
+        erreur: 'error-message',
+        condensation: 'context-condensation-message',
+        'new-instructions': 'user-message',
+        completion: 'completion-message',
+    };
+    return map[t];
+}
+
+// ---- Sanitizer étanche par section (PLAN BÉTON - équilibrage sans destruction) -----------
+
+function sanitizeSectionHtml(raw: string): string {
+    let html = raw ?? '';
+
+    // 1) Dédup de la 1ère/2e ligne (symptôme titres/lead répétés)
+    const lines = html.split('\n');
+    if (lines.length >= 2 && lines[0].trim() && lines[0].trim() === lines[1].trim()) {
+        lines.splice(1, 1);
+        html = lines.join('\n');
+    }
+
+    // 2) Equilibrage des fences ``` (sans détruire le contenu)
+    const fenceCount = (html.match(/^```/gm) || []).length;
+    if (fenceCount % 2 === 1) {
+        html = html.replace(/\s*$/, '\n```\n');
+    }
+
+    // 3) Equilibrage <details> ... </details> (sans détruire le contenu)
+    const openDetails = (html.match(/<details(\s|>)/g) || []).length;
+    const closeDetails = (html.match(/<\/details>/g) || []).length;
+    for (let i = 0; i < openDetails - closeDetails; i++) {
+        html += '\n</details>';
+    }
+
+    // 4) Limiter les blancs successifs
+    html = html.replace(/\n{3,}/g, '\n\n');
+
+    // SUPPRIMÉ : N'échappe plus les </div> (erreur destructrice)
+    // Pas de modification du HTML, seulement équilibrage
+
+    return html;
+}
+
+/**
+ * PLAN BÉTON ChatGPT-5 : Filtre strict du bruit (environment_details, etc.)
+ */
+function isEnvironmentNoise(item: RenderItem): boolean {
+    const s = item.html || '';
+    return /<environment_details>/i.test(s)
+        || /VSCode Visible Files/i.test(s)
+        || /Current Time in ISO 8601/i.test(s)
+        || /Current Mode/i.test(s)
+        || /Current Workspace Directory/i.test(s)
+        || /\[attempt_completion\] Result:/i.test(s)
+        || /# VSCode Open Tabs/i.test(s);
+}
+
+// ---- Rendu TOC & sections PLAN BÉTON (sans génération d'ID) -------------------------------
+
+function renderTOCChatGPT5(items: RenderItem[]): string {
+    // PLAN BÉTON : Les IDs ont déjà été assignés dans items[].sid et items[].tid
+    const lines: string[] = [];
+    lines.push('<ol class="toc-list">');
+    for (const it of items) {
+        // Utilise directement les IDs pré-assignés
+        lines.push(
+            `<li id="${it.tid}"><a class="${tocClass(it.type)}" href="#${it.sid}">${escapeHtml(it.title)}</a></li>`
+        );
+    }
+    lines.push('</ol>');
+    return lines.join('\n');
+}
+
+function renderSectionChatGPT5(it: RenderItem): string {
+    // PLAN BÉTON : Les IDs ont déjà été assignés dans it.sid et it.tid
+    const content = sanitizeSectionHtml(it.html);
+    
+    // S'assurer que l'ID de section et l'ID TOC sont bien définis
+    if (!it.sid || !it.tid) {
+        console.error(`[renderSectionChatGPT5] IDs manquants pour l'item type=${it.type} n=${it.n}`);
+    }
+    
+    return [
+        `<h3 id="${it.sid}">${escapeHtml(it.title)}</h3>`,
+        `<div class="${boxClass(it.type)}">`,
+        content,
+        `</div>`,
+        `<div class="back"><a href="#${it.tid}" title="Retour à l'entrée correspondante dans la table des matières">↑ Retour à la TOC</a></div>`,
+        ''
+    ].join('\n');
 }
 
 /**
@@ -855,27 +1007,7 @@ export class TraceSummaryService {
             return 'Completion';
         }
         
-        // 2. Messages d'erreur système (SDDD: peuvent venir des assistants aussi)
-        if (/^\[ERROR\]/i.test(trimmed)) {
-            console.log(`✅ Matched: ErrorMessage`);
-            return 'ErrorMessage';
-        }
-        
-        // 3. Messages de condensation contexte (SDDD: souvent générés par assistant)
-        if (/^1\.\s*\*\*Previous Conversation:\*\*/i.test(trimmed) ||
-            /^1\.\s*Previous Conversation:/i.test(trimmed) ||
-            trimmed.startsWith("1. **Previous Conversation:**")) {
-            console.log(`🎯 Matched: ContextCondensation!`);
-            return 'ContextCondensation';
-        }
-        
-        // 4. Messages d'instructions continuation (SDDD: peuvent venir des assistants)
-        if (/^New instructions for task continuation:/i.test(trimmed)) {
-            console.log(`✅ Matched: NewInstructions`);
-            return 'NewInstructions';
-        }
-        
-        // 5. Messages d'outils normaux
+        // 2. Messages d'outils normaux
         console.log(`❌ No special match, defaulting to ToolCall`);
         return 'ToolCall';
     }
@@ -958,11 +1090,8 @@ export class TraceSummaryService {
         // 3. Statistiques
         parts.push(this.generateStatistics(statistics, options.compactStats));
 
-        // 4. Table des matières (si demandée et pas en mode Summary)
-        if (options.generateToc && options.detailLevel !== 'Summary') {
-            const toc = this.generateTableOfContents(classifiedContent, options);
-            parts.push(toc);
-        }
+        // 4. Table des matières maintenant générée dans renderConversationContent via ChatGPT-5
+        // (supprimé pour éviter les doublons - la TOC est maintenant dans le contenu conversationnel)
 
         // 5. NOUVELLE SECTION : Contenu conversationnel
         if (options.detailLevel !== 'Summary') {
@@ -1742,58 +1871,148 @@ export class TraceSummaryService {
         classifiedContent: ClassifiedContent[],
         options: SummaryOptions
     ): Promise<string> {
-        const parts: string[] = [];
+        // ALGORITHME OBLIGATOIRE ChatGPT-5 : Source unique items[]
         
-        // Section d'introduction
-        parts.push("## ÉCHANGES DE CONVERSATION");
-        parts.push("");
-
-        let userCounter = 1;
-        let assistantCounter = 1;
-        let toolCounter = 1;
+        // 1) Construis d'abord items[] (filtré, numéroté). NE RENDS PAS encore le MD.
+        const items: RenderItem[] = [];
+        let globalCounter = 1;
         let isFirstUser = true;
 
         for (const item of classifiedContent) {
+            let renderItem: RenderItem | null = null;
+
             switch (item.subType) {
                 case 'UserMessage':
                     if (this.shouldIncludeMessageType('user', options.detailLevel)) {
-                        const userSection = await this.renderUserMessage(
-                            item,
-                            userCounter,
-                            isFirstUser,
-                            options
-                        );
-                        parts.push(userSection);
-                        userCounter++;
-                        isFirstUser = false;
+                        if (isFirstUser) {
+                            renderItem = {
+                                type: 'user',
+                                n: globalCounter,
+                                title: `INSTRUCTION DE TÂCHE INITIALE`,
+                                html: this.processInitialTaskContent(item.content)
+                            };
+                            isFirstUser = false;
+                        } else {
+                            const firstLine = this.getTruncatedFirstLine(item.content, 200);
+                            renderItem = {
+                                type: 'user',
+                                n: globalCounter,
+                                title: `UTILISATEUR #${globalCounter} - ${firstLine}`,
+                                html: this.cleanUserMessage(item.content)
+                            };
+                        }
+                    }
+                    break;
+
+                case 'ErrorMessage':
+                    if (this.shouldIncludeMessageType('user', options.detailLevel)) {
+                        const firstLine = this.getTruncatedFirstLine(item.content, 200);
+                        renderItem = {
+                            type: 'erreur',
+                            n: globalCounter,
+                            title: `ERREUR SYSTÈME #${globalCounter} - ${firstLine}`,
+                            html: this.cleanUserMessage(item.content)
+                        };
+                    }
+                    break;
+
+                case 'ContextCondensation':
+                    if (this.shouldIncludeMessageType('user', options.detailLevel)) {
+                        const firstLine = this.getTruncatedFirstLine(item.content, 200);
+                        renderItem = {
+                            type: 'condensation',
+                            n: globalCounter,
+                            title: `CONDENSATION CONTEXTE #${globalCounter} - ${firstLine}`,
+                            html: this.cleanUserMessage(item.content)
+                        };
+                    }
+                    break;
+
+                case 'NewInstructions':
+                    if (this.shouldIncludeMessageType('user', options.detailLevel)) {
+                        // Extraire le contenu après "New instructions for task continuation:"
+                        const instructionMatch = item.content.match(/^New instructions for task continuation:\s*(.*)/i);
+                        const actualInstruction = instructionMatch ? instructionMatch[1] : item.content;
+                        const firstLine = this.getTruncatedFirstLine(actualInstruction, 200);
+                        renderItem = {
+                            type: 'new-instructions',
+                            n: globalCounter,
+                            title: `NOUVELLES INSTRUCTIONS #${globalCounter} - ${firstLine}`,
+                            html: this.cleanUserMessage(actualInstruction)
+                        };
                     }
                     break;
 
                 case 'ToolResult':
                     if (this.shouldIncludeMessageType('tool', options.detailLevel)) {
-                        const toolSection = await this.renderToolResult(
-                            item,
-                            toolCounter,
-                            options
-                        );
-                        parts.push(toolSection);
-                        toolCounter++;
+                        const toolName = this.extractToolType(item.content);
+                        const firstLine = this.getTruncatedFirstLine(toolName || item.content, 200);
+                        // Appliquer la troncature si nécessaire
+                        let content = item.content;
+                        if (options.truncationChars > 0 && content.length > options.truncationChars) {
+                            content = content.substring(0, options.truncationChars) + '...';
+                        }
+                        renderItem = {
+                            type: 'outil',
+                            n: globalCounter,
+                            title: `OUTIL #${globalCounter} - ${firstLine}`,
+                            html: content,
+                            toolType: item.toolType,
+                            resultType: item.resultType
+                        };
                     }
                     break;
 
                 case 'ToolCall':
                 case 'Completion':
                     if (this.shouldIncludeMessageType('assistant', options.detailLevel)) {
-                        const assistantSection = await this.renderAssistantMessage(
-                            item,
-                            assistantCounter,
-                            options
-                        );
-                        parts.push(assistantSection);
-                        assistantCounter++;
+                        const firstLine = this.getTruncatedFirstLine(item.content, 200);
+                        const isCompletion = item.subType === 'Completion';
+                        // Appliquer la troncature si nécessaire
+                        let content = item.content;
+                        if (options.truncationChars > 0 && content.length > options.truncationChars) {
+                            content = content.substring(0, options.truncationChars) + '...';
+                        }
+                        renderItem = {
+                            type: 'assistant',
+                            n: globalCounter,
+                            title: isCompletion
+                                ? `ASSISTANT #${globalCounter} (Terminaison) - ${firstLine}`
+                                : `ASSISTANT #${globalCounter} - ${firstLine}`,
+                            html: content
+                        };
                     }
                     break;
             }
+
+            if (renderItem) {
+                items.push(renderItem);
+                globalCounter++;
+            }
+        }
+
+        // 2) PLAN BÉTON : Filtrage du bruit AVANT rendu
+        const filteredItems = items.filter(it => !isEnvironmentNoise(it));
+        
+        // 3) PLAN BÉTON : Assignation UNIQUE des IDs (une seule fois)
+        assignStableIds(filteredItems);
+
+        const parts: string[] = [];
+        
+        // Section d'introduction
+        parts.push("## ÉCHANGES DE CONVERSATION");
+        parts.push("");
+
+        // 4) Génération TOC (sans générer d'IDs - utilise les IDs pré-assignés)
+        if (options.generateToc && options.detailLevel !== 'Summary') {
+            parts.push(renderTOCChatGPT5(filteredItems));
+            parts.push("");
+        }
+
+        // 5) Génération sections (sans générer d'IDs - utilise les IDs pré-assignés)
+        for (const item of filteredItems) {
+            parts.push(renderSectionChatGPT5(item));
+            parts.push("");
         }
 
         return parts.join('\n\n');

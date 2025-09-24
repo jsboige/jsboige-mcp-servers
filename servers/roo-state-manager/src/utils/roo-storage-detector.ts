@@ -436,16 +436,10 @@ export class RooStorageDetector {
                 console.log(`[analyzeConversation] ✅ Instruction extraite (${instructionSource}) pour ${taskId}: "${truncatedInstruction}"`);
             }
             
-            // 🎯 Phase 2: Si pas de parent trouvé, chercher via l'index radix-tree avec truncatedInstruction
-            if (!parentTaskId && rawMetadata.workspace && truncatedInstruction) {
-                const childText = truncatedInstruction;
-                if (childText.length > 5) {
-                    parentTaskId = globalTaskInstructionIndex.findPotentialParent(childText, taskId);
-                    if (parentTaskId) {
-                        console.log(`[analyzeConversation] 🎯 Parent trouvé via radix-tree pour ${taskId}: ${parentTaskId}`);
-                    }
-                }
-            }
+            // 🎯 CORRECTION ARCHITECTURE : Le parentId doit venir UNIQUEMENT des métadonnées
+            // Plus AUCUNE tentative d'inférence inverse depuis l'enfant
+            // Le radix tree est alimenté par les parents qui déclarent leurs enfants
+            // mais on ne l'utilise PAS pour deviner des parents
         }
         // Extraire les vrais timestamps des fichiers JSON au lieu d'utiliser mtime
         const timestamps: Date[] = [];
@@ -593,8 +587,8 @@ export class RooStorageDetector {
   }
 
   /**
-   * Tente d'inférer le parentTaskId à partir du contenu de la conversation
-   * quand il n'est pas disponible dans les métadonnées
+   * @deprecated MÉTHODE CORROMPUE - Violait le principe architectural
+   * Les parents doivent être définis par les parents eux-mêmes, pas inférés depuis les enfants
    */
   private static inferParentTaskIdFromContent(
     apiHistoryPath: string,
@@ -602,33 +596,9 @@ export class RooStorageDetector {
     rawMetadata: TaskMetadata,
     currentTaskId: string
   ): Promise<string | undefined> {
-    return new Promise(async (resolve) => {
-      try {
-        console.log(`[inferParentTaskIdFromContent] 🔍 Nouvelle approche: analyse des instructions new_task pour ${currentTaskId}`);
-        
-        // 🚀 NOUVELLE LOGIQUE : Analyse des conversations parents pour instructions new_task
-        const parentId = await this.findParentByNewTaskInstructions(currentTaskId, rawMetadata);
-        if (parentId && parentId !== currentTaskId) {
-          console.log(`[inferParentTaskIdFromContent] ✅ Parent trouvé via analyse new_task: ${parentId}`);
-          return resolve(parentId);
-        }
-
-        // 💾 FALLBACK : Méthode héritée pour compatibilité temporaire
-        console.log(`[inferParentTaskIdFromContent] 🔄 Fallback: analyse des conversations enfants`);
-        const fallbackParentId = await this.legacyInferParentFromChildContent(apiHistoryPath, uiMessagesPath);
-        if (fallbackParentId && fallbackParentId !== currentTaskId) {
-          console.log(`[inferParentTaskIdFromContent] ⚡ Parent trouvé via fallback: ${fallbackParentId}`);
-          return resolve(fallbackParentId);
-        }
-
-        // 3. Si aucune référence trouvée, retourner undefined
-        console.log(`[inferParentTaskIdFromContent] Aucun parent inféré`);
-        resolve(undefined);
-      } catch (error) {
-        console.error(`[inferParentTaskIdFromContent] Erreur:`, error);
-        resolve(undefined);
-      }
-    });
+    // 🛡️ CORRECTION ARCHITECTURE : Retourner toujours undefined
+    // Plus aucune tentative d'inférence inverse
+    return Promise.resolve(undefined);
   }
 
   /**
@@ -737,21 +707,13 @@ export class RooStorageDetector {
 
     conversations.push(...processedSkeletons.filter(s => s !== null) as ConversationSkeleton[]);
 
-    // PHASE 3: Résolution finale des relations manquantes
-    console.log(`[buildHierarchicalSkeletons] 🔗 PHASE 3: Résolution finale des relations parent-enfant`);
+    // 🛡️ CORRECTION ARCHITECTURE : PHASE 3 DÉSACTIVÉE
+    // Plus aucune tentative de résolution inverse des parents depuis les enfants
+    // Les parents sont définis uniquement dans les métadonnées
+    console.log(`[buildHierarchicalSkeletons] 🔗 PHASE 3: DÉSACTIVÉE - Architecture corrigée`);
     const orphanTasks = conversations.filter(c => !c.parentTaskId);
     let resolvedCount = 0;
-
-    for (const orphan of orphanTasks) {
-      const childText = `${orphan.metadata.title || ''} ${orphan.metadata.mode || ''}`.trim();
-      if (childText.length > 5) {
-        const potentialParent = globalTaskInstructionIndex.findPotentialParent(childText, orphan.taskId);
-        if (potentialParent) {
-          orphan.parentTaskId = potentialParent;
-          resolvedCount++;
-        }
-      }
-    }
+    console.log(`[buildHierarchicalSkeletons] ℹ️ ${orphanTasks.length} tâches orphelines conservées sans parent`);
 
     const indexStats = globalTaskInstructionIndex.getStats();
     console.log(`[buildHierarchicalSkeletons] ✅ TERMINÉ:`);
@@ -995,147 +957,28 @@ export class RooStorageDetector {
   }
 
   /**
-   * 🚀 NOUVELLE MÉTHODE : Analyse si une tâche parent correspond à une tâche enfant
-   * @param parentTask - Squelette de la tâche parent candidate
-   * @param childTask - Squelette de la tâche enfant
-   * @returns Promise<boolean> - true si correspondance trouvée
+   * @deprecated MÉTHODE CORROMPUE - Violait le principe architectural
+   * Les relations parent-enfant sont définies par les parents, pas devinées
    */
   private static async analyzeParentForNewTaskInstructions(
     parentTask: ConversationSkeleton,
     childTask: ConversationSkeleton
   ): Promise<boolean> {
-    const parentTaskPath = await this.getTaskPathById(parentTask.taskId);
-    if (!parentTaskPath) return false;
-
-    const uiMessagesPath = path.join(parentTaskPath, 'ui_messages.json');
-    const instructions = await this.extractNewTaskInstructionsFromUI(uiMessagesPath);
-
-    if (instructions.length === 0) return false;
-
-    // Calcul de la fenêtre temporelle (±1 heure autour de la création de l'enfant)
-    const childCreatedAt = new Date(childTask.metadata.createdAt).getTime();
-    const timeWindow = 60 * 60 * 1000; // 1 heure en ms
-
-    for (const instruction of instructions) {
-      const instructionTime = instruction.timestamp;
-      
-      // Vérification temporelle
-      if (Math.abs(instructionTime - childCreatedAt) > timeWindow) continue;
-
-      // Correspondance du mode
-      if (instruction.mode !== childTask.metadata.mode) continue;
-
-      // Correspondance partielle du message/titre
-      if (childTask.metadata.title && instruction.message) {
-        const childTitle = childTask.metadata.title.toLowerCase();
-        const instructionMessage = instruction.message.toLowerCase();
-        
-        // Vérification de similarité basique (mots communs)
-        const childWords = childTitle.split(/\s+/).filter(w => w.length > 3);
-        const instructionWords = instructionMessage.split(/\s+/).filter(w => w.length > 3);
-        
-        const commonWords = childWords.filter(word =>
-          instructionWords.some(iWord => iWord.includes(word) || word.includes(iWord))
-        );
-
-        if (commonWords.length > 0) {
-          console.log(`[analyzeParentForNewTaskInstructions] ✅ Correspondance trouvée:
-            Parent: ${parentTask.taskId}
-            Child: ${childTask.taskId}
-            Mode: ${instruction.mode}
-            Mots communs: ${commonWords.join(', ')}`);
-          return true;
-        }
-      }
-    }
-
+    // 🛡️ CORRECTION ARCHITECTURE : Toujours retourner false
     return false;
   }
 
   /**
-   * 🚀 NOUVELLE MÉTHODE PRINCIPALE : Trouve le parent d'une tâche via l'analyse des instructions new_task
-   * @param childTaskId - ID de la tâche enfant
-   * @param childMetadata - Métadonnées de la tâche enfant
-   * @returns Promise<string | undefined> - ID du parent ou undefined
+   * @deprecated MÉTHODE CORROMPUE - Violait le principe architectural
+   * Tentait de retrouver les parents en scannant tout le disque
    */
   private static async findParentByNewTaskInstructions(
     childTaskId: string,
     childMetadata: TaskMetadata
   ): Promise<string | undefined> {
-    console.log(`[findParentByNewTaskInstructions] 🔍 Recherche parent pour ${childTaskId}`);
-
-    if (!childMetadata.workspace) {
-      console.log(`[findParentByNewTaskInstructions] ⚠️ Pas de workspace défini pour ${childTaskId}`);
-      return undefined;
-    }
-
-    try {
-      // 🔧 FIX RÉCURSION : Scan direct du disque sans passer par getAllConversationsInWorkspace
-      const storageLocations = await this.detectStorageLocations();
-      const potentialParents: ConversationSkeleton[] = [];
-      
-      // Créer un squelette temporaire pour la tâche enfant
-      const childTaskPath = await this.getTaskPathById(childTaskId);
-      if (!childTaskPath) {
-        console.log(`[findParentByNewTaskInstructions] ⚠️ Impossible de trouver le chemin de ${childTaskId}`);
-        return undefined;
-      }
-      
-      const childTask = await this.analyzeConversation(childTaskId, childTaskPath, false);
-      if (!childTask) {
-        console.log(`[findParentByNewTaskInstructions] ⚠️ Impossible d'analyser ${childTaskId}`);
-        return undefined;
-      }
-
-      // Scan direct des tâches sur disque
-      for (const locationPath of storageLocations) {
-        const tasksPath = path.join(locationPath, 'tasks');
-        
-        try {
-          const taskDirs = await fs.readdir(tasksPath, { withFileTypes: true });
-          
-          for (const entry of taskDirs) {
-            if (!entry.isDirectory() || entry.name === childTaskId) continue;
-            
-            const taskPath = path.join(tasksPath, entry.name);
-            const candidate = await this.analyzeConversation(entry.name, taskPath, false);
-            
-            if (candidate &&
-                candidate.metadata.workspace === childMetadata.workspace &&
-                new Date(candidate.metadata.createdAt).getTime() < new Date(childTask.metadata.createdAt).getTime()) {
-              potentialParents.push(candidate);
-            }
-          }
-        } catch (error) {
-          console.warn(`[findParentByNewTaskInstructions] ⚠️ Erreur scan ${tasksPath}:`, error);
-        }
-      }
-
-      // Obtenir la liste filtrée au lieu des conversations complètes
-      const allConversations = potentialParents;
-      
-      // Trier par proximité temporelle (plus récentes d'abord)
-      potentialParents.sort((a, b) =>
-        new Date(b.metadata.createdAt).getTime() - new Date(a.metadata.createdAt).getTime()
-      );
-
-      console.log(`[findParentByNewTaskInstructions] 📊 ${potentialParents.length} parents candidats à analyser`);
-
-      // Analyser chaque parent candidat
-      for (const parentCandidate of potentialParents) {
-        const isMatch = await this.analyzeParentForNewTaskInstructions(parentCandidate, childTask);
-        if (isMatch) {
-          return parentCandidate.taskId;
-        }
-      }
-
-      console.log(`[findParentByNewTaskInstructions] ❌ Aucun parent trouvé pour ${childTaskId}`);
-      return undefined;
-      
-    } catch (error) {
-      console.error(`[findParentByNewTaskInstructions] ❌ Erreur:`, error);
-      return undefined;
-    }
+    // 🛡️ CORRECTION ARCHITECTURE : Retourner toujours undefined
+    // Les parents sont définis dans les métadonnées ou pas du tout
+    return undefined;
   }
 
   /**
@@ -1159,25 +1002,13 @@ export class RooStorageDetector {
   }
 
   /**
-   * 💾 MÉTHODE HÉRITÉE : Ancienne logique d'inférence pour fallback
-   * Renommée pour clarifier son rôle de fallback
+   * @deprecated MÉTHODE CORROMPUE - Violait le principe architectural
    */
   private static async legacyInferParentFromChildContent(
     apiHistoryPath: string,
     uiMessagesPath: string
   ): Promise<string | undefined> {
-    // 1. Essayer d'extraire depuis api_conversation_history.json
-    if (existsSync(apiHistoryPath)) {
-      const parentFromApi = await this.extractParentFromApiHistory(apiHistoryPath);
-      if (parentFromApi) return parentFromApi;
-    }
-
-    // 2. Essayer d'extraire depuis ui_messages.json
-    if (existsSync(uiMessagesPath)) {
-      const parentFromUi = await this.extractParentFromUiMessages(uiMessagesPath);
-      if (parentFromUi) return parentFromUi;
-    }
-
+    // 🛡️ CORRECTION ARCHITECTURE : Retourner toujours undefined
     return undefined;
   }
 

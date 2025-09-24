@@ -1177,9 +1177,10 @@ class RooStateManagerServer {
                 if (rawChildText.length > 5) {
                     try {
                         // 🎯 CORRECTION FINALE: L'index ne contient plus de préfixes de mode, recherche directe avec le texte brut
-                        console.log(`[PASS 2 - SEARCHING] Orphan Task: ${skeleton.taskId.substring(0, 8)} | RAW TEXT FOR SEARCH: "${rawChildText}"`);
-                        let foundParentId = globalTaskInstructionIndex.findPotentialParent(rawChildText, skeleton.taskId);
-                        console.log(`🔍 DEBUG - Direct search for ${skeleton.taskId.substring(0, 8)}: ${foundParentId ? foundParentId.substring(0, 8) : 'null'}`);
+                        // 🛡️ CORRECTION ARCHITECTURE : Plus aucune recherche de parent depuis l'enfant
+                        console.log(`[PASS 2 - DÉSACTIVÉ] Orphan Task: ${skeleton.taskId.substring(0, 8)} - Recherche de parent désactivée (architecture corrigée)`);
+                        let foundParentId: string | undefined = undefined;
+                        // Le parentId doit venir des métadonnées ou rester undefined
                         
                         if (!foundParentId) {
                             console.log(`🔍 COMPARAISON DEBUG for ${skeleton.taskId.substring(0, 8)}:`);
@@ -1204,16 +1205,15 @@ class RooStateManagerServer {
                             
                             for (let i = 0; i < testSearches.length; i++) {
                                 const testText = testSearches[i];
-                                const result = globalTaskInstructionIndex.findPotentialParent(testText, skeleton.taskId);
-                                console.log(`    Test[${i}]: "${testText.substring(0, 30)}..." → ${result ? result.substring(0, 8) : 'null'}`);
+                                // 🛡️ CORRECTION ARCHITECTURE : Tests désactivés - pas de recherche inverse
+                                const result = undefined;
+                                console.log(`    Test[${i}]: DÉSACTIVÉ - Architecture corrigée`);
                             }
                         }
                         
-                        if (foundParentId && foundParentId !== skeleton.taskId) {
-                            skeletonsToUpdate.push({ taskId: skeleton.taskId, newParentId: foundParentId });
-                            console.log(`🎯 HIERARCHY FOUND: ${skeleton.taskId.substring(0, 8)} -> parent: ${foundParentId.substring(0, 8)}`);
-                            hierarchyRelationsFound++;
-                        }
+                        // 🛡️ CORRECTION ARCHITECTURE : Plus aucune mise à jour de parent depuis la recherche inverse
+                        // Les parents sont définis uniquement dans les métadonnées
+                        // Code de mise à jour supprimé car foundParentId est toujours undefined maintenant
                     } catch (searchError) {
                         console.error(`Error finding parent for ${skeleton.taskId.substring(0, 8)}:`, searchError);
                     }

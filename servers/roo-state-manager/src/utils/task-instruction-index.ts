@@ -46,57 +46,37 @@ export class TaskInstructionIndex {
     }
 
     /**
-     * Recherche le parent potentiel d'une tâche basé sur son titre/description
+     * @deprecated MÉTHODE CORROMPUE - Violait le principe architectural
+     *
+     * 🛡️ PRINCIPE ARCHITECTURAL CORRECT :
+     * - Les parents déclarent leurs enfants via les instructions new_task
+     * - Le radix tree stocke ces déclarations (préfixes → parents)
+     * - On NE DOIT JAMAIS utiliser ce tree pour "deviner" un parent depuis un enfant
+     * - Le parentId vient UNIQUEMENT des métadonnées ou reste undefined
+     *
      * @param childText - Texte de la tâche enfant (titre + description)
-     * @returns ID de la tâche parente ou undefined
+     * @returns TOUJOURS undefined pour respecter l'architecture
      */
     findPotentialParent(childText: string, excludeTaskId?: string): string | undefined {
-        if (!childText) return undefined;
-
-        const normalizedText = this.normalizePrefix(childText);
-        console.log(`[PASS 2 - SEARCHING] NORMALIZED TEXT FOR SEARCH: "${normalizedText}"`);
-        const matches = this.searchInTree(this.root, normalizedText);
-        
-        if (matches.length === 0) return undefined;
-
-        // Retourner le match avec le préfixe le plus long (plus spécifique)
-        matches.sort((a, b) => b.prefix.length - a.prefix.length);
-        
-        // 🛡️ CRITICAL FIX: Prevent self-referencing cycles
-        for (const match of matches) {
-            if (match.parentTaskId && match.parentTaskId !== excludeTaskId) {
-                console.log(`[CYCLE PREVENTION] Found parent ${match.parentTaskId} (excluding ${excludeTaskId})`);
-                return match.parentTaskId;
-            }
-        }
-        
-        console.log(`[CYCLE PREVENTION] No valid parent found (excluded self-reference)`);
+        // 🛡️ CORRECTION ARCHITECTURE : Retourner toujours undefined
+        // Plus aucune tentative de recherche inverse dans le radix tree
+        // Le radix tree reste alimenté par les parents mais n'est plus utilisé pour l'inférence
+        console.log(`[findPotentialParent] ⚠️ MÉTHODE DÉSACTIVÉE - Architecture corrigée`);
         return undefined;
     }
 
     /**
-     * Recherche multiple - trouve tous les parents potentiels
-     * @param childText - Texte de la tâche enfant
-     * @returns Array des IDs de tâches parentes potentielles, triées par pertinence
+     * @deprecated MÉTHODE CORROMPUE - Violait le principe architectural
+     *
+     * Cette méthode tentait de retrouver des parents depuis les enfants,
+     * ce qui viole le principe de déclaration descendante.
+     *
+     * @returns TOUJOURS un tableau vide pour respecter l'architecture
      */
     findAllPotentialParents(childText: string): string[] {
-        if (!childText) return [];
-
-        const normalizedText = this.normalizePrefix(childText);
-        const matches = this.searchInTree(this.root, normalizedText);
-        
-        // Supprimer les doublons et trier par pertinence (longueur du préfixe)
-        const uniqueParents = Array.from(new Set(matches.map(m => m.parentTaskId!)));
-        const parentScores = uniqueParents.map(parentId => {
-            const maxPrefixLength = Math.max(...matches
-                .filter(m => m.parentTaskId === parentId)
-                .map(m => m.prefix.length));
-            return { parentId, score: maxPrefixLength };
-        });
-
-        return parentScores
-            .sort((a, b) => b.score - a.score)
-            .map(ps => ps.parentId);
+        // 🛡️ CORRECTION ARCHITECTURE : Retourner toujours un tableau vide
+        console.log(`[findAllPotentialParents] ⚠️ MÉTHODE DÉSACTIVÉE - Architecture corrigée`);
+        return [];
     }
 
     /**
