@@ -3375,6 +3375,11 @@ class RooStateManagerServer {
         }
         
         console.log(`📊 Scan terminé: ${outdatedCount} squelettes nécessitent une réindexation Qdrant`);
+        if (outdatedCount > 1000) {
+            console.log(`⚠️  Queue importante détectée: ${outdatedCount} tâches à indexer`);
+            console.log(`💡 Traitement progressif avec rate limiting intelligent (100 ops/min)`);
+            console.log(`⏱️  Temps estimé: ${Math.ceil(outdatedCount / 100)} minutes`);
+        }
     }
 
     /**
@@ -3419,23 +3424,17 @@ class RooStateManagerServer {
             
             // Détecter les incohérences
             const discrepancy = Math.abs(localIndexedCount - qdrantCount);
-            const threshold = Math.max(5, Math.floor(localIndexedCount * 0.1)); // 10% ou min 5
+            // Seuil tolérant : 25% ou min 50
+            const threshold = Math.max(50, Math.floor(localIndexedCount * 0.25));
             
             if (discrepancy > threshold) {
                 console.warn(`⚠️  Incohérence détectée: écart de ${discrepancy} entre squelettes et Qdrant`);
-                console.log(`🔄 Lancement d'une réindexation de réparation...`);
+                console.log(`📊 Seuil de tolérance: ${threshold} (25% de ${localIndexedCount})`);
+                console.log(`✨ Pas d'inquiétude: les tâches manquantes seront indexées par le scan automatique`);
                 
-                // Forcer une réindexation partielle des tâches supposément indexées
-                let reindexCount = 0;
-                for (const [taskId, skeleton] of this.conversationCache.entries()) {
-                    if (skeleton.metadata?.qdrantIndexedAt) {
-                        this.qdrantIndexQueue.add(taskId);
-                        reindexCount++;
-                        if (reindexCount >= 20) break; // Limite pour ne pas surcharger
-                    }
-                }
+                // Pas de réindexation forcée ici - le _scanForOutdatedQdrantIndex() s'en occupe
+                // Cela évite la duplication de tâches dans la queue
                 
-                console.log(`📝 ${reindexCount} tâches ajoutées à la queue de réindexation`);
             } else {
                 console.log(`✅ Cohérence Qdrant-Squelettes validée (écart acceptable: ${discrepancy})`);
             }

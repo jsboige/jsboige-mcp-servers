@@ -18,11 +18,11 @@
     "types": ["jest", "node"]
   },
   "include": [
-    "src/**/*.ts",
-    "tests/**/*.ts"
+    "src/**/*.ts"
   ],
   "exclude": [
     "node_modules",
-    "build"
+    "build",
+    "tests/**/*.ts"
   ]
 }

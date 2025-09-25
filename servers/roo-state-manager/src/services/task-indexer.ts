@@ -22,10 +22,15 @@ let lastFailureTime = 0;
 
 // 🛡️ CACHE ANTI-FUITE POUR ÉVITER EMBEDDINGS RÉPÉTÉS
 const embeddingCache = new Map<string, { vector: number[], timestamp: number }>();
-const EMBEDDING_CACHE_TTL = 24 * 60 * 60 * 1000; // 24h cache pour embeddings
+const EMBEDDING_CACHE_TTL = 7 * 24 * 60 * 60 * 1000; // 7 jours cache pour embeddings (FIX: augmenté de 24h)
 const RATE_LIMIT_WINDOW = 60 * 1000; // 1 minute
-const MAX_OPERATIONS_PER_WINDOW = 10; // Max 10 operations/minute
+const MAX_OPERATIONS_PER_WINDOW = 100; // Max 100 operations/minute (FIX: augmenté de 10 pour éviter boucle)
 let operationTimestamps: number[] = [];
+
+// FIX SDDD: Configuration batch pour réindexation massive
+const BATCH_MODE_ENABLED = true;
+const BATCH_SIZE = 50;
+const BATCH_DELAY = 5000; // 5 secondes entre lots
 
 // 📊 MÉTRIQUES DE MONITORING BANDE PASSANTE
 interface NetworkMetrics {
@@ -678,7 +683,12 @@ export class TaskIndexer {
                 const taskPath = path.join(location, 'tasks', taskId);
                 try {
                     await fs.access(taskPath);
-                    return await indexTask(taskId, taskPath);
+                    const points = await indexTask(taskId, taskPath);
+                    
+                    // FIX ARCHITECTURAL: Mettre à jour le squelette ICI, pas dans index.ts
+                    await this.updateSkeletonIndexTimestamp(taskId, location);
+                    
+                    return points;
                 } catch {
                     // Tâche pas dans ce location, on continue
                 }
@@ -688,6 +698,32 @@ export class TaskIndexer {
         } catch (error) {
             console.error(`Error indexing task ${taskId}:`, error);
             throw error;
+        }
+    }
+
+    /**
+     * FIX ARCHITECTURAL: Met à jour le timestamp d'indexation dans le squelette
+     * Cette responsabilité devrait être ICI, pas dans index.ts
+     */
+    async updateSkeletonIndexTimestamp(taskId: string, storageLocation: string): Promise<void> {
+        try {
+            const skeletonPath = path.join(storageLocation, '.skeletons', `${taskId}.json`);
+            
+            // Lire le squelette existant
+            const skeletonContent = await fs.readFile(skeletonPath, 'utf8');
+            const skeleton = JSON.parse(skeletonContent);
+            
+            // Mettre à jour le timestamp
+            skeleton.metadata = skeleton.metadata || {};
+            skeleton.metadata.qdrantIndexedAt = new Date().toISOString();
+            
+            // Sauvegarder le squelette mis à jour
+            await fs.writeFile(skeletonPath, JSON.stringify(skeleton, null, 2), 'utf8');
+            
+            console.log(`✅ Squelette ${taskId} mis à jour avec timestamp d'indexation`);
+        } catch (error) {
+            console.warn(`⚠️ Impossible de mettre à jour le squelette ${taskId}:`, error);
+            // Ne pas throw - l'indexation a réussi même si la mise à jour du squelette échoue
         }
     }
 

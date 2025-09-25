@@ -352,10 +352,10 @@ class NotebookService:
             
             # Use PapermillExecutor to run the notebook
             result = await self.papermill_executor.execute_notebook(
-                input_path=path,
+                input_path=str(path),
                 output_path=output_path,
                 parameters=parameters or {},
-                kernel_name=kernel_name
+                kernel=kernel_name
             )
             
             logger.info(f"Successfully executed notebook: {result['output_path']}")
@@ -813,7 +813,7 @@ class NotebookService:
                     input_path=input_path,
                     output_path=output_path,
                     parameters={},
-                    kernel_name=None
+                    kernel=None
                 )
                 
                 end_time = datetime.datetime.now()
@@ -905,7 +905,7 @@ class NotebookService:
                     input_path=input_path,
                     output_path=output_path,
                     parameters=parameters,
-                    kernel_name=None
+                    kernel=None
                 )
                 
                 end_time = datetime.datetime.now()
