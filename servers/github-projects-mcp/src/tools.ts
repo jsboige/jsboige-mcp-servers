@@ -4,6 +4,14 @@ import { getGitHubClient, GitHubAccount } from './utils/github.js';
 import { analyze_task_complexity, executeGetProjectItems, executeArchiveProject, executeUnarchiveProject, executeConvertDraftToIssue, executeCreateProjectField, executeDeleteProject, executeDeleteProjectField, executeUpdateIssueState, getRepositoryId, executeCreateIssue, executeUpdateProjectField, executeUpdateProjectItemField, archiveProjectItem, unarchiveProjectItem } from './github-actions.js';
 import { checkReadOnlyMode, checkRepoPermissions } from './security.js';
 import logger from './logger.js';
+import {
+  ListRepositoryWorkflowsParams,
+  ListRepositoryWorkflowsResult,
+  GetWorkflowRunsParams,
+  GetWorkflowRunsResult,
+  GetWorkflowRunStatusParams,
+  GetWorkflowRunStatusResult
+} from './types/workflows.js';
 
 interface GitHubProjectNode {
   id: string;
@@ -884,6 +892,129 @@ export function setupTools(server: any, accounts: GitHubAccount[]): Tool[] {
       execute: async ({ owner, repo, projectNumber, itemId }: { owner: string; repo: string; projectNumber: number; itemId: string; }) => {
         const octokit = getGitHubClient(owner, accounts);
         return await analyze_task_complexity(octokit, { owner, repo, projectNumber, itemId });
+      }
+    },
+    /**
+     * @tool list_repository_workflows
+     * @description Liste tous les workflows d'un dépôt GitHub.
+     * @param {string} owner - Nom d'utilisateur ou d'organisation propriétaire du dépôt.
+     * @param {string} repo - Nom du dépôt.
+     * @returns {Promise<object>} Un objet contenant la liste des workflows.
+     */
+    {
+      name: 'list_repository_workflows',
+      description: 'Liste tous les workflows d\'un dépôt GitHub',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          owner: { type: 'string', description: 'Nom d\'utilisateur ou d\'organisation propriétaire du dépôt' },
+          repo: { type: 'string', description: 'Nom du dépôt' }
+        },
+        required: ['owner', 'repo']
+      },
+      execute: async ({ owner, repo }: ListRepositoryWorkflowsParams): Promise<ListRepositoryWorkflowsResult> => {
+        try {
+          const octokit = getGitHubClient(owner, accounts);
+          const response = await octokit.rest.actions.listRepoWorkflows({
+            owner,
+            repo
+          });
+          
+          return {
+            success: true,
+            workflows: response.data.workflows
+          };
+        } catch (error: any) {
+          logger.error('Erreur dans list_repository_workflows', { error });
+          return {
+            success: false,
+            error: error.message || 'Erreur lors de la récupération des workflows'
+          };
+        }
+      }
+    },
+    /**
+     * @tool get_workflow_runs
+     * @description Récupère les exécutions (runs) d'un workflow spécifique.
+     * @param {string} owner - Nom d'utilisateur ou d'organisation propriétaire du dépôt.
+     * @param {string} repo - Nom du dépôt.
+     * @param {number} workflow_id - ID du workflow (ou string pour le nom du fichier .yml).
+     * @returns {Promise<object>} Un objet contenant la liste des exécutions du workflow.
+     */
+    {
+      name: 'get_workflow_runs',
+      description: 'Récupère les exécutions (runs) d\'un workflow spécifique',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          owner: { type: 'string', description: 'Nom d\'utilisateur ou d\'organisation propriétaire du dépôt' },
+          repo: { type: 'string', description: 'Nom du dépôt' },
+          workflow_id: { type: 'number', description: 'ID du workflow (ou string pour le nom du fichier .yml)' }
+        },
+        required: ['owner', 'repo', 'workflow_id']
+      },
+      execute: async ({ owner, repo, workflow_id }: GetWorkflowRunsParams): Promise<GetWorkflowRunsResult> => {
+        try {
+          const octokit = getGitHubClient(owner, accounts);
+          const response = await octokit.rest.actions.listWorkflowRuns({
+            owner,
+            repo,
+            workflow_id
+          });
+          
+          return {
+            success: true,
+            workflow_runs: response.data.workflow_runs
+          };
+        } catch (error: any) {
+          logger.error('Erreur dans get_workflow_runs', { error });
+          return {
+            success: false,
+            error: error.message || 'Erreur lors de la récupération des exécutions de workflow'
+          };
+        }
+      }
+    },
+    /**
+     * @tool get_workflow_run_status
+     * @description Obtient le statut d'une exécution de workflow spécifique.
+     * @param {string} owner - Nom d'utilisateur ou d'organisation propriétaire du dépôt.
+     * @param {string} repo - Nom du dépôt.
+     * @param {number} run_id - ID de l'exécution du workflow.
+     * @returns {Promise<object>} Un objet contenant le statut de l'exécution du workflow.
+     */
+    {
+      name: 'get_workflow_run_status',
+      description: 'Obtient le statut d\'une exécution de workflow spécifique',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          owner: { type: 'string', description: 'Nom d\'utilisateur ou d\'organisation propriétaire du dépôt' },
+          repo: { type: 'string', description: 'Nom du dépôt' },
+          run_id: { type: 'number', description: 'ID de l\'exécution du workflow' }
+        },
+        required: ['owner', 'repo', 'run_id']
+      },
+      execute: async ({ owner, repo, run_id }: GetWorkflowRunStatusParams): Promise<GetWorkflowRunStatusResult> => {
+        try {
+          const octokit = getGitHubClient(owner, accounts);
+          const response = await octokit.rest.actions.getWorkflowRun({
+            owner,
+            repo,
+            run_id
+          });
+          
+          return {
+            success: true,
+            workflow_run: response.data
+          };
+        } catch (error: any) {
+          logger.error('Erreur dans get_workflow_run_status', { error });
+          return {
+            success: false,
+            error: error.message || 'Erreur lors de la récupération du statut de l\'exécution'
+          };
+        }
       }
     },
     /**
