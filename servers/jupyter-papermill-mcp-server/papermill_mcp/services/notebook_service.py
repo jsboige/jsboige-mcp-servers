@@ -333,7 +333,8 @@ class NotebookService:
     async def execute_notebook(self, path: Union[str, Path],
                                output_path: Optional[Union[str, Path]] = None,
                                parameters: Optional[Dict[str, Any]] = None,
-                               kernel_name: Optional[str] = None) -> Dict[str, Any]:
+                               kernel_name: Optional[str] = None,
+                               timeout: Optional[int] = None) -> Dict[str, Any]:
         """
         Execute a notebook using Papermill.
         
@@ -355,7 +356,8 @@ class NotebookService:
                 input_path=str(path),
                 output_path=output_path,
                 parameters=parameters or {},
-                kernel=kernel_name
+                kernel=kernel_name,
+                timeout=timeout
             )
             
             # Convert ExecutionResult object to dictionary
@@ -767,7 +769,8 @@ class NotebookService:
     async def execute_notebook_solution_a(
         self,
         input_path: Union[str, Path],
-        output_path: Optional[Union[str, Path]] = None
+        output_path: Optional[Union[str, Path]] = None,
+        timeout: Optional[int] = None
     ) -> Dict[str, Any]:
         """
         SOLUTION A - API Papermill directe avec correction working directory.
@@ -815,7 +818,8 @@ class NotebookService:
                     input_path=input_path,
                     output_path=output_path,
                     parameters={},
-                    kernel=None
+                    kernel=None,
+                    timeout=timeout
                 )
                 
                 end_time = datetime.datetime.now()

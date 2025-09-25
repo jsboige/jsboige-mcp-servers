@@ -1,0 +1,15 @@
+﻿=== RAPPORT DE COPIE HIERARCHIE TEST ===
+Date: 09/25/2025 20:10:23
+Copies reussies: 8
+Copies echouees: 0
+Taille totale: 1603.9 KB
+
+REPERTOIRES COPIES AVEC SUCCES:
+  âœ… e73ea764-4971-4adb-9197-52c2f8ede8ef
+  âœ… d6a6a99a-b7fd-41fc-86ce-2f17c9520437
+  âœ… 8c06d62c-1ee2-4c3a-991e-c9483e90c8aa
+  âœ… 38948ef0-4a8b-40a2-ae29-b38d2aa9d5a7
+  âœ… 03deadab-a06d-4b29-976d-3cc142add1d9
+  âœ… b423bff7-6fec-40fe-a00e-bb2a0ebb52f4
+  âœ… 305b3f90-e0e1-4870-8cf4-4fd33a08cfa4
+  âœ… 91e837de-a4b2-4c18-ab9b-6fcd36596e38

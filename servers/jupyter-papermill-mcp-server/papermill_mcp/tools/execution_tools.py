@@ -63,10 +63,11 @@ def register_execution_tools(app: FastMCP) -> None:
     
     @app.tool()
     async def execute_notebook_papermill(
-        input_path: str, 
+        input_path: str,
         output_path: Optional[str] = None,
         parameters: Optional[Dict[str, Any]] = None,
-        kernel_name: Optional[str] = None
+        kernel_name: Optional[str] = None,
+        timeout: Optional[int] = 900
     ) -> Dict[str, Any]:
         """
         Execute un notebook avec Papermill (execution complete avec parametres)
@@ -88,7 +89,8 @@ def register_execution_tools(app: FastMCP) -> None:
                 path=input_path,
                 output_path=output_path,
                 parameters=parameters or {},
-                kernel_name=kernel_name
+                kernel_name=kernel_name,
+                timeout=timeout
             )
             
             logger.info(f"Successfully executed notebook with Papermill: {input_path}")
@@ -399,7 +401,8 @@ def register_execution_tools(app: FastMCP) -> None:
     @app.tool()
     async def execute_notebook_solution_a(
         input_path: str,
-        output_path: Optional[str] = None
+        output_path: Optional[str] = None,
+        timeout: Optional[int] = 900
     ) -> Dict[str, Any]:
         """
         SOLUTION A - API Papermill directe avec correction working directory
@@ -417,7 +420,8 @@ def register_execution_tools(app: FastMCP) -> None:
             
             result = await notebook_service.execute_notebook_solution_a(
                 input_path=input_path,
-                output_path=output_path
+                output_path=output_path,
+                timeout=timeout
             )
             
             logger.info(f"Successfully executed notebook with Solution A: {input_path}")
