@@ -256,9 +256,9 @@ class KernelService:
                     try:
                         # Execute the cell
                         cell_result = await self.jupyter_manager.execute_code(
-                            kernel_id, 
+                            kernel_id,
                             cell.source,
-                            timeout=self.config.execution_timeout
+                            timeout=self.config.papermill.timeout
                         )
                         
                         cell_dict = {
@@ -361,7 +361,7 @@ class KernelService:
             cell_result = await self.jupyter_manager.execute_code(
                 kernel_id,
                 cell.source,
-                timeout=self.config.execution_timeout
+                timeout=self.config.papermill.timeout
             )
             
             result = {
