@@ -330,7 +330,7 @@ class NotebookService:
             logger.error(f"Error updating cell in notebook {path}: {e}")
             raise
     
-    async def execute_notebook(self, path: Union[str, Path], 
+    async def execute_notebook(self, path: Union[str, Path],
                                output_path: Optional[Union[str, Path]] = None,
                                parameters: Optional[Dict[str, Any]] = None,
                                kernel_name: Optional[str] = None) -> Dict[str, Any]:
@@ -358,8 +358,10 @@ class NotebookService:
                 kernel=kernel_name
             )
             
-            logger.info(f"Successfully executed notebook: {result['output_path']}")
-            return result
+            # Convert ExecutionResult object to dictionary
+            result_dict = result.to_dict()
+            logger.info(f"Successfully executed notebook: {result.output_path}")
+            return result_dict
             
         except Exception as e:
             logger.error(f"Error executing notebook {path}: {e}")
@@ -819,8 +821,9 @@ class NotebookService:
                 end_time = datetime.datetime.now()
                 execution_time = (end_time - start_time).total_seconds()
                 
-                # Enhance result with Solution A specific info
-                result.update({
+                # Convert ExecutionResult to dictionary and enhance with Solution A specific info
+                result_dict = result.to_dict()
+                result_dict.update({
                     "method": "execute_notebook_solution_a",
                     "execution_time_seconds": execution_time,
                     "diagnostic": diagnostic_info,
@@ -831,8 +834,8 @@ class NotebookService:
                 # Always restore original directory
                 os.chdir(original_cwd)
             
-            logger.info(f"Successfully executed notebook (Solution A): {result.get('output_path')}")
-            return result
+            logger.info(f"Successfully executed notebook (Solution A): {result_dict.get('output_path')}")
+            return result_dict
             
         except Exception as e:
             logger.error(f"Error executing notebook (Solution A) {input_path}: {e}")

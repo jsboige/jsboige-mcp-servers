@@ -92,6 +92,7 @@ def register_execution_tools(app: FastMCP) -> None:
             )
             
             logger.info(f"Successfully executed notebook with Papermill: {input_path}")
+            # Result is already converted to dict in notebook_service
             return result
             
         except Exception as e:
