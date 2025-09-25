@@ -58,10 +58,21 @@ export class TaskInstructionIndex {
      * @returns TOUJOURS undefined pour respecter l'architecture
      */
     findPotentialParent(childText: string, excludeTaskId?: string): string | undefined {
-        // 🛡️ CORRECTION ARCHITECTURE : Retourner toujours undefined
-        // Plus aucune tentative de recherche inverse dans le radix tree
-        // Le radix tree reste alimenté par les parents mais n'est plus utilisé pour l'inférence
-        console.log(`[findPotentialParent] ⚠️ MÉTHODE DÉSACTIVÉE - Architecture corrigée`);
+        if (!childText || childText.length === 0) return undefined;
+        
+        // Normaliser le préfixe comme lors de l'indexation
+        const normalizedChild = this.normalizePrefix(childText.substring(0, 200));
+        const matches = this.searchInTree(this.root, normalizedChild);
+        
+        for (const match of matches) {
+            // GARDE-FOU : Éviter l'auto-référencement
+            if (match.parentTaskId && match.parentTaskId !== excludeTaskId) {
+                console.log(`[findPotentialParent] ✅ Parent trouvé: ${match.parentTaskId.substring(0, 8)} pour enfant: ${excludeTaskId?.substring(0, 8)}`);
+                return match.parentTaskId;
+            }
+        }
+        
+        console.log(`[findPotentialParent] ❌ Aucun parent trouvé pour: ${excludeTaskId?.substring(0, 8)}`);
         return undefined;
     }
 
@@ -74,9 +85,14 @@ export class TaskInstructionIndex {
      * @returns TOUJOURS un tableau vide pour respecter l'architecture
      */
     findAllPotentialParents(childText: string): string[] {
-        // 🛡️ CORRECTION ARCHITECTURE : Retourner toujours un tableau vide
-        console.log(`[findAllPotentialParents] ⚠️ MÉTHODE DÉSACTIVÉE - Architecture corrigée`);
-        return [];
+        if (!childText || childText.length === 0) return [];
+        
+        const normalizedChild = this.normalizePrefix(childText.substring(0, 200));
+        const matches = this.searchInTree(this.root, normalizedChild);
+        
+        return matches
+            .filter(match => match.parentTaskId)
+            .map(match => match.parentTaskId as string);
     }
 
     /**
@@ -328,6 +344,72 @@ export class TaskInstructionIndex {
 
         for (const childNode of node.children.values()) {
             this.traverseForStats(childNode, depth + 1, stats);
+        }
+    }
+
+    /**
+     * Obtient la taille de l'index (nombre d'instructions stockées)
+     */
+    async getSize(): Promise<number> {
+        const stats = this.getStats();
+        return stats.totalInstructions;
+    }
+
+    /**
+     * Recherche similaire dans l'index avec seuil de similarité
+     * @param searchText - Texte à rechercher
+     * @param threshold - Seuil de similarité (0-1)
+     * @returns Array des résultats avec leurs scores
+     */
+    async searchSimilar(searchText: string, threshold: number = 0.2): Promise<Array<{taskId: string, similarity: number, prefix: string}>> {
+        if (!searchText || searchText.length === 0) return [];
+        
+        const normalizedSearch = this.normalizePrefix(searchText);
+        const matches = this.searchInTree(this.root, normalizedSearch);
+        
+        return matches
+            .filter(match => match.parentTaskId)
+            .map(match => ({
+                taskId: match.parentTaskId as string,
+                similarity: this.calculateSimilarity(normalizedSearch, match.prefix),
+                prefix: match.prefix
+            }))
+            .filter(result => result.similarity >= threshold)
+            .sort((a, b) => b.similarity - a.similarity);
+    }
+
+    /**
+     * Obtient les instructions par parent
+     * @param parentId - ID du parent
+     * @returns Array des instructions du parent
+     */
+    getInstructionsByParent(parentId: string): string[] {
+        const instructions: string[] = [];
+        this.collectInstructionsByParent(this.root, parentId, '', instructions);
+        return instructions;
+    }
+
+    /**
+     * Valide une relation parent-enfant
+     * @param childText - Texte de l'enfant
+     * @param parentId - ID du parent
+     * @returns true si la relation est valide
+     */
+    validateParentChildRelation(childText: string, parentId: string): boolean {
+        if (!childText || !parentId) return false;
+        
+        const potentialParent = this.findPotentialParent(childText, parentId);
+        return potentialParent === parentId;
+    }
+
+    // Méthode privée pour collectInstructionsByParent
+    private collectInstructionsByParent(node: RadixTreeNode, parentId: string, currentPrefix: string, instructions: string[]): void {
+        if (node.isEndOfKey && node.parentTaskId === parentId) {
+            instructions.push(currentPrefix);
+        }
+
+        for (const [childKey, childNode] of node.children) {
+            this.collectInstructionsByParent(childNode, parentId, currentPrefix + childKey, instructions);
         }
     }
 }
