@@ -19,8 +19,7 @@ async function testHierarchyLimited() {
         console.log('🔧 Utilisation de buildHierarchicalSkeletons avec reconstruction...');
         const reconstructedSkeletons = await RooStorageDetector.buildHierarchicalSkeletons(
             targetWorkspace,
-            false,  // Pas full volume (limite à 100 tâches)
-            true    // Force rebuild
+            false  // Pas full volume (limite à 100 tâches)
         );
         
         console.log(`✅ ${reconstructedSkeletons.length} skeletons traités`);

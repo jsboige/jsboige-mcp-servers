@@ -12,7 +12,7 @@ async function testHierarchyReconstruction() {
     try {
         // 1. Charger tous les skeletons disponibles
         console.log('\n📋 ÉTAPE 1: Chargement des skeletons...');
-        const allSkeletons = await RooStorageDetector.loadAllSkeletons();
+        const allSkeletons = await RooStorageDetector.buildHierarchicalSkeletons();
         console.log(`✅ ${allSkeletons.length} skeletons chargés`);
         
         // 2. Identifier les tâches orphelines (avant reconstruction)

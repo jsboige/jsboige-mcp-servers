@@ -57,7 +57,7 @@ export class HierarchyReconstructionEngine {
 
         // Récupérer les skeletons depuis le storage
         const { RooStorageDetector } = await import('./roo-storage-detector.js');
-        const skeletons = await RooStorageDetector.loadAllSkeletons(workspacePath);
+        const skeletons = await RooStorageDetector.buildHierarchicalSkeletons(workspacePath);
         
         // Exécuter la reconstruction
         const enhancedSkeletons = await engine.doReconstruction(skeletons);
@@ -311,7 +311,7 @@ export class HierarchyReconstructionEngine {
                 const bestMatch = searchResult[0];
                 return {
                     parentId: bestMatch.taskId,
-                    confidence: bestMatch.similarityScore,
+                    confidence: bestMatch.similarity,
                     method: 'radix_tree'
                 };
             }
