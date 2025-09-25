@@ -8,6 +8,7 @@ core modules and utilities for notebook management.
 import asyncio
 import json
 import logging
+import os
 import sys
 from pathlib import Path
 from typing import Dict, List, Optional, Any, Union
@@ -33,6 +34,34 @@ class NotebookService:
         """
         self.config = config
         self.papermill_executor = PapermillExecutor(config)
+        
+        # Get the workspace directory from environment
+        # This should be set by the MCP client (Roo)
+        self.workspace_dir = os.getenv('ROO_WORKSPACE_DIR', 'd:/dev/CoursIA')
+        logger.info(f"NotebookService initialized with workspace: {self.workspace_dir}")
+    
+    def resolve_path(self, path: Union[str, Path]) -> str:
+        """
+        Resolve path to absolute path, handling workspace-relative paths.
+        
+        Args:
+            path: Input path (relative or absolute)
+            
+        Returns:
+            Absolute path string
+        """
+        path_str = str(path)
+        
+        # If already absolute, return as-is
+        if os.path.isabs(path_str):
+            return path_str
+        
+        # If relative, resolve against workspace directory
+        workspace_path = os.path.join(self.workspace_dir, path_str)
+        absolute_path = os.path.abspath(workspace_path)
+        
+        logger.debug(f"Path resolution: {path_str} -> {absolute_path}")
+        return absolute_path
     
     async def read_notebook(self, path: Union[str, Path]) -> Dict[str, Any]:
         """
@@ -49,14 +78,15 @@ class NotebookService:
             ValueError: If notebook format is invalid
         """
         try:
-            path = Path(path)
-            logger.info(f"Reading notebook: {path}")
+            # Resolve path against workspace
+            resolved_path = Path(self.resolve_path(path))
+            logger.info(f"Reading notebook: {path} -> {resolved_path}")
             
             # Read notebook using FileUtils
-            notebook = FileUtils.read_notebook(path)
+            notebook = FileUtils.read_notebook(resolved_path)
             
             # Get file stats
-            stat = path.stat()
+            stat = resolved_path.stat()
             
             # Convert notebook to dictionary format
             result = {
@@ -83,7 +113,7 @@ class NotebookService:
             
             # Add file information
             result["file_info"] = {
-                "path": str(path),
+                "path": str(resolved_path),
                 "size": stat.st_size,
                 "modified": stat.st_mtime,
                 "cell_count": len(notebook.cells)
@@ -348,12 +378,13 @@ class NotebookService:
             Dictionary with execution result
         """
         try:
-            path = Path(path)
-            logger.info(f"Executing notebook: {path}")
+            # Resolve path against workspace
+            resolved_path = self.resolve_path(path)
+            logger.info(f"Executing notebook: {path} -> {resolved_path}")
             
             # Use PapermillExecutor to run the notebook
             result = await self.papermill_executor.execute_notebook(
-                input_path=str(path),
+                input_path=resolved_path,
                 output_path=output_path,
                 parameters=parameters or {},
                 kernel=kernel_name,

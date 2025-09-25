@@ -16,9 +16,7 @@ import { TaskInstructionIndex } from '../src/utils/task-instruction-index.js';
 import type { ConversationSkeleton } from '../src/types/conversation.js';
 import type { EnhancedConversationSkeleton } from '../src/types/enhanced-hierarchy.js';
 
-// Mock du fs pour les tests
-jest.mock('fs');
-const mockedFs = jest.mocked(fs);
+// Pas de mock fs pour ce test - nous voulons lire les vraies données
 
 // Constantes des UUIDs réels de notre hiérarchie de test
 const TEST_HIERARCHY_IDS = {
@@ -52,18 +50,15 @@ describe('Controlled Hierarchy Reconstruction - TEST-HIERARCHY Dataset', () => {
         // Charger les données réelles de test
         realControlledSkeletons = await loadControlledTestData();
         
-        jest.clearAllMocks();
+        // Plus de mocks à nettoyer
     });
 
     afterEach(() => {
-        jest.restoreAllMocks();
+        // Plus de mocks à restaurer
     });
 
     describe('Phase 1 - Extraction des instructions new_task descendantes', () => {
         it('should extract new_task instructions from all 7 parent tasks', async () => {
-            // Mock du système de fichiers avec les vraies données
-            setupRealDataMocks();
-
             const enhancedSkeletons = realControlledSkeletons.map(enhanceSkeleton);
             const result = await engine.executePhase1(enhancedSkeletons);
 
@@ -99,8 +94,6 @@ describe('Controlled Hierarchy Reconstruction - TEST-HIERARCHY Dataset', () => {
         });
 
         it('should populate RadixTree with parent → child declarations', async () => {
-            setupRealDataMocks();
-
             const enhancedSkeletons = realControlledSkeletons.map(enhanceSkeleton);
             const result = await engine.executePhase1(enhancedSkeletons);
 
@@ -128,8 +121,6 @@ describe('Controlled Hierarchy Reconstruction - TEST-HIERARCHY Dataset', () => {
 
     describe('Phase 2 - Reconstruction hiérarchique descendante', () => {
         it('should reconstruct 100% of parent-child relationships', async () => {
-            setupRealDataMocks();
-
             const enhancedSkeletons = realControlledSkeletons.map(enhanceSkeleton);
             
             // Exécuter Phase 1 d'abord
@@ -187,8 +178,6 @@ describe('Controlled Hierarchy Reconstruction - TEST-HIERARCHY Dataset', () => {
         });
 
         it('should build correct depth levels', async () => {
-            setupRealDataMocks();
-
             const enhancedSkeletons = realControlledSkeletons.map(enhanceSkeleton);
             await engine.executePhase1(enhancedSkeletons);
 
@@ -217,8 +206,6 @@ describe('Controlled Hierarchy Reconstruction - TEST-HIERARCHY Dataset', () => {
         });
 
         it('should use descendant methodology (parents declare children)', async () => {
-            setupRealDataMocks();
-
             const enhancedSkeletons = realControlledSkeletons.map(enhanceSkeleton);
             await engine.executePhase1(enhancedSkeletons);
 
@@ -244,8 +231,6 @@ describe('Controlled Hierarchy Reconstruction - TEST-HIERARCHY Dataset', () => {
 
     describe('Integration and Validation', () => {
         it('should export correct hierarchical tree (not flat)', async () => {
-            setupRealDataMocks();
-
             const enhancedSkeletons = realControlledSkeletons.map(enhanceSkeleton);
             await engine.executePhase1(enhancedSkeletons);
             await engine.executePhase2(enhancedSkeletons);
@@ -273,8 +258,6 @@ describe('Controlled Hierarchy Reconstruction - TEST-HIERARCHY Dataset', () => {
         });
 
         it('should validate against expected structure 100%', async () => {
-            setupRealDataMocks();
-
             const enhancedSkeletons = realControlledSkeletons.map(enhanceSkeleton);
             await engine.doReconstruction(enhancedSkeletons);
 
@@ -354,47 +337,7 @@ async function loadControlledTestData(): Promise<ConversationSkeleton[]> {
     return skeletons;
 }
 
-function setupRealDataMocks(): void {
-    // Mock pour vérifier l'existence des fichiers
-    mockedFs.existsSync.mockImplementation((filePath: any) => {
-        const pathStr = filePath.toString();
-        return pathStr.includes('ui_messages.json') || 
-               pathStr.includes('api_conversation_history.json') || 
-               pathStr.includes('task_metadata.json');
-    });
-
-    // Mock pour lire les vrais fichiers
-    mockedFs.readFileSync.mockImplementation((filePath: any) => {
-        const pathStr = filePath.toString();
-        
-        try {
-            // Si le fichier existe vraiment, le lire
-            if (fs.existsSync(pathStr)) {
-                return fs.readFileSync(pathStr, 'utf-8') as any;
-            }
-        } catch (error) {
-            // Fallback sur des données par défaut
-        }
-
-        // Données par défaut si fichier non trouvé
-        if (pathStr.includes('ui_messages.json')) {
-            return JSON.stringify([
-                {
-                    role: 'assistant',
-                    content: '<new_task><mode>orchestrator</mode><message>Créer une sous-tâche de test</message></new_task>',
-                    timestamp: Date.now()
-                }
-            ]) as any;
-        }
-        
-        return JSON.stringify([]) as any;
-    });
-
-    mockedFs.statSync.mockReturnValue({
-        size: 1000,
-        mtime: new Date('2025-01-15T10:00:00Z')
-    } as any);
-}
+// Pas de mocks nécessaires - les vrais fichiers sont lus directement
 
 function enhanceSkeleton(skeleton: ConversationSkeleton): EnhancedConversationSkeleton {
     return {
