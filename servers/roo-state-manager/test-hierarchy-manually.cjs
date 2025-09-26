@@ -78,10 +78,11 @@ async function testHierarchyReconstruction() {
         
         // Convertir nos données en format ConversationSkeleton
         const skeletons = conversations.map(conv => {
-            // Extraire le premier message utilisateur pour truncatedInstruction
+            // Extraire la VRAIE instruction qui a créé cette tâche (premier message "say")
             let firstUserMessage = '';
             for (const msg of conv.messages || []) {
-                if (msg.type === 'ask' && msg.text) {
+                if (msg.type === 'say' && msg.text) {
+                    // C'est l'instruction originale qui a créé cette tâche
                     firstUserMessage = msg.text.substring(0, 200);
                     break;
                 }
@@ -107,6 +108,15 @@ async function testHierarchyReconstruction() {
         });
         
         console.log('🔧 Lancement de la reconstruction...');
+        
+        // Debug : afficher les squelettes avant reconstruction
+        console.log('\n🔍 DEBUG - SQUELETTES AVANT RECONSTRUCTION:');
+        for (const skeleton of skeletons) {
+            const name = getTaskName(skeleton.taskId);
+            console.log(`${name} (${skeleton.taskId.substring(0, 8)}): ${skeleton.truncatedInstruction?.substring(0, 50)}...`);
+        }
+        console.log('\n');
+        
         const enhancedResult = await engine.doReconstruction(skeletons);
         
         console.log('\n📈 RÉSULTATS DE LA RECONSTRUCTION:');
