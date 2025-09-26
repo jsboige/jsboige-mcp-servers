@@ -10,7 +10,9 @@ import {
   GetWorkflowRunsParams,
   GetWorkflowRunsResult,
   GetWorkflowRunStatusParams,
-  GetWorkflowRunStatusResult
+  GetWorkflowRunStatusResult,
+  Workflow,
+  WorkflowRun
 } from './types/workflows.js';
 
 interface GitHubProjectNode {
@@ -140,11 +142,11 @@ export function setupTools(server: any, accounts: GitHubAccount[]): Tool[] {
      */
     {
       name: 'list_projects',
-      description: 'Liste les projets GitHub d\'un utilisateur ou d\'une organisation',
+      description: "Liste les projets GitHub d'un utilisateur ou d'une organisation",
       inputSchema: {
         type: 'object',
         properties: {
-          owner: { type: 'string', description: 'Nom d\'utilisateur ou d\'organisation' },
+          owner: { type: 'string', description: "Nom d'utilisateur ou d'organisation" },
           type: { type: 'string', enum: ['user', 'org'], description: 'Type de propriétaire (utilisateur ou organisation)', default: 'user' },
           state: { type: 'string', enum: ['open', 'closed', 'all'], description: 'État des projets à récupérer', default: 'open' }
         },
@@ -187,7 +189,7 @@ export function setupTools(server: any, accounts: GitHubAccount[]): Tool[] {
       inputSchema: {
         type: 'object',
         properties: {
-          owner: { type: 'string', description: "Nom d_utilisateur ou d_organisation" },
+          owner: { type: 'string', description: "Nom d'utilisateur ou d'organisation" },
           type: { type: 'string', enum: ['user', 'org'], description: 'Type de propriétaire (utilisateur ou organisation)', default: 'user' }
         },
         required: ['owner']
@@ -283,7 +285,7 @@ export function setupTools(server: any, accounts: GitHubAccount[]): Tool[] {
               const project = result.createProjectV2?.projectV2;
 
               if (!project) {
-                  throw new Error('La réponse de l\'API n\'a pas retourné de projet.');
+                  throw new Error("La réponse de l'API n'a pas retourné de projet.");
               }
 
               return { success: true, project };
@@ -305,11 +307,11 @@ export function setupTools(server: any, accounts: GitHubAccount[]): Tool[] {
      */
     {
       name: 'get_project',
-      description: 'Récupère les détails d\'un projet GitHub',
+      description: "Récupère les détails d'un projet GitHub",
       inputSchema: {
         type: 'object',
         properties: {
-          owner: { type: 'string', description: 'Nom d\'utilisateur ou d\'organisation' },
+          owner: { type: 'string', description: "Nom d'utilisateur ou d'organisation" },
           project_number: { type: 'number', description: 'Numéro du projet' },
           type: { type: 'string', enum: ['user', 'org'], default: 'user', description: 'Type de propriétaire (utilisateur ou organisation)' }
         },
@@ -394,7 +396,7 @@ export function setupTools(server: any, accounts: GitHubAccount[]): Tool[] {
         properties: {
           owner: { type: 'string', description: 'Propriétaire du projet' },
           project_id: { type: 'string', description: 'ID du projet' },
-          content_id: { type: 'string', description: 'ID de l\'élément à ajouter' },
+          content_id: { type: 'string', description: "ID de l'élément à ajouter" },
           content_type: { type: 'string', enum: ['issue', 'pull_request', 'draft_issue'], default: 'issue' },
           draft_title: { type: 'string', description: 'Titre de la note' },
           draft_body: { type: 'string', description: 'Corps de la note' }
@@ -430,7 +432,7 @@ export function setupTools(server: any, accounts: GitHubAccount[]): Tool[] {
           return { success: true, item_id: itemId };
         } catch (error: any) {
           logger.error('Erreur dans add_item_to_project', { error });
-          return { success: false, error: error.message || 'Erreur lors de l\'ajout de l\'élément' };
+          return { success: false, error: error.message || "Erreur lors de l'ajout de l'élément" };
         }
       }
     },
@@ -448,17 +450,17 @@ export function setupTools(server: any, accounts: GitHubAccount[]): Tool[] {
      */
     {
       name: 'update_project_item_field',
-      description: 'Met à jour la valeur d\'un champ pour un élément dans un projet GitHub',
+      description: "Met à jour la valeur d'un champ pour un élément dans un projet GitHub",
       inputSchema: {
         type: 'object',
         properties: {
           owner: { type: 'string', description: 'Propriétaire du projet' },
           project_id: { type: 'string', description: 'ID du projet' },
-          item_id: { type: 'string', description: 'ID de l\'élément' },
+          item_id: { type: 'string', description: "ID de l'élément" },
           field_id: { type: 'string', description: 'ID du champ' },
           field_type: { type: 'string', enum: ['text', 'date', 'single_select', 'number'], default: 'text' },
           value: { type: 'string', description: 'Nouvelle valeur' },
-          option_id: { type: 'string', description: 'ID de l\'option pour single_select' }
+          option_id: { type: 'string', description: "ID de l'option pour single_select" }
         },
         required: ['owner', 'project_id', 'item_id', 'field_id', 'field_type']
       },
@@ -493,13 +495,13 @@ export function setupTools(server: any, accounts: GitHubAccount[]): Tool[] {
      */
     {
       name: 'delete_project_item',
-      description: 'Supprime un élément d\'un projet GitHub',
+      description: "Supprime un élément d'un projet GitHub",
       inputSchema: {
         type: 'object',
         properties: {
           owner: { type: 'string', description: 'Propriétaire du projet' },
           project_id: { type: 'string', description: 'ID du projet' },
-          item_id: { type: 'string', description: 'ID de l\'élément à supprimer' },
+          item_id: { type: 'string', description: "ID de l'élément à supprimer" },
         },
         required: ['owner', 'project_id', 'item_id'],
       },
@@ -520,11 +522,11 @@ export function setupTools(server: any, accounts: GitHubAccount[]): Tool[] {
           });
 
           const deletedItemId = result.deleteProjectV2Item?.deletedItemId;
-          if (!deletedItemId) throw new Error('La réponse de l\'API n\'a pas retourné d\'ID d\'élément supprimé.');
+          if (!deletedItemId) throw new Error("La réponse de l'API n'a pas retourné d'ID d'élément supprimé.");
           return { success: true, deleted_item_id: deletedItemId };
         } catch (error: any) {
           logger.error('Erreur dans delete_project_item', { error });
-          return { success: false, error: error.message || 'Une erreur est survenue lors de la suppression de l\'élément.' };
+          return { success: false, error: error.message || "Une erreur est survenue lors de la suppression de l'élément." };
         }
       }
     },
@@ -568,7 +570,7 @@ export function setupTools(server: any, accounts: GitHubAccount[]): Tool[] {
         type: 'object',
         properties: {
           owner: { type: 'string', description: 'Propriétaire du projet' },
-          project_id: { type: 'string', description: 'L\'ID du projet à modifier.' },
+          project_id: { type: 'string', description: "L'ID du projet à modifier." },
           title: { type: 'string', description: 'Le nouveau titre du projet.' },
           description: { type: 'string', description: 'La nouvelle description courte du projet.' },
           state: { type: 'string', enum: ['OPEN', 'CLOSED'], description: "Le nouvel état du projet. NOTE: Ignoré actuellement." }
@@ -903,11 +905,11 @@ export function setupTools(server: any, accounts: GitHubAccount[]): Tool[] {
      */
     {
       name: 'list_repository_workflows',
-      description: 'Liste tous les workflows d\'un dépôt GitHub',
+      description: "Liste tous les workflows d'un dépôt GitHub",
       inputSchema: {
         type: 'object',
         properties: {
-          owner: { type: 'string', description: 'Nom d\'utilisateur ou d\'organisation propriétaire du dépôt' },
+          owner: { type: 'string', description: "Nom d'utilisateur ou d'organisation propriétaire du dépôt" },
           repo: { type: 'string', description: 'Nom du dépôt' }
         },
         required: ['owner', 'repo']
@@ -943,11 +945,11 @@ export function setupTools(server: any, accounts: GitHubAccount[]): Tool[] {
      */
     {
       name: 'get_workflow_runs',
-      description: 'Récupère les exécutions (runs) d\'un workflow spécifique',
+      description: "Récupère les exécutions (runs) d'un workflow spécifique",
       inputSchema: {
         type: 'object',
         properties: {
-          owner: { type: 'string', description: 'Nom d\'utilisateur ou d\'organisation propriétaire du dépôt' },
+          owner: { type: 'string', description: "Nom d'utilisateur ou d'organisation propriétaire du dépôt" },
           repo: { type: 'string', description: 'Nom du dépôt' },
           workflow_id: { type: 'number', description: 'ID du workflow (ou string pour le nom du fichier .yml)' }
         },
@@ -985,13 +987,13 @@ export function setupTools(server: any, accounts: GitHubAccount[]): Tool[] {
      */
     {
       name: 'get_workflow_run_status',
-      description: 'Obtient le statut d\'une exécution de workflow spécifique',
+      description: "Obtient le statut d'une exécution de workflow spécifique",
       inputSchema: {
         type: 'object',
         properties: {
-          owner: { type: 'string', description: 'Nom d\'utilisateur ou d\'organisation propriétaire du dépôt' },
+          owner: { type: 'string', description: "Nom d'utilisateur ou d'organisation propriétaire du dépôt" },
           repo: { type: 'string', description: 'Nom du dépôt' },
-          run_id: { type: 'number', description: 'ID de l\'exécution du workflow' }
+          run_id: { type: 'number', description: "ID de l'exécution du workflow" }
         },
         required: ['owner', 'repo', 'run_id']
       },
@@ -1012,7 +1014,7 @@ export function setupTools(server: any, accounts: GitHubAccount[]): Tool[] {
           logger.error('Erreur dans get_workflow_run_status', { error });
           return {
             success: false,
-            error: error.message || 'Erreur lors de la récupération du statut de l\'exécution'
+            error: error.message || "Erreur lors de la récupération du statut de l'exécution"
           };
         }
       }
