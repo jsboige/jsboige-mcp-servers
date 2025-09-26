@@ -119,7 +119,19 @@ async function testHierarchyReconstruction() {
         
         const enhancedResult = await engine.doReconstruction(skeletons);
         
-        console.log('\n📈 RÉSULTATS DE LA RECONSTRUCTION:');
+        // Debug spécifique pour comprendre les assignments
+        console.log('\n🔍 DEBUG - ASSIGNMENTS DÉTAILLÉS:');
+        for (const task of enhancedResult) {
+            if (task.reconstructedParentId) {
+                const childName = getTaskName(task.taskId);
+                const parentName = getTaskName(task.reconstructedParentId);
+                const confidence = task.parentConfidenceScore || 'N/A';
+                const method = task.parentResolutionMethod || 'N/A';
+                console.log(`${childName} → ${parentName} (score: ${confidence}, méthode: ${method})`);
+            }
+        }
+        
+        console.log('\n RÉSULTATS DE LA RECONSTRUCTION:');
         console.log(`- Tâches traitées: ${enhancedResult.length}`);
         
         const reconstructedCount = enhancedResult.filter(s => s.reconstructedParentId).length;
