@@ -67,7 +67,7 @@ def register_execution_tools(app: FastMCP) -> None:
         output_path: Optional[str] = None,
         parameters: Optional[Dict[str, Any]] = None,
         kernel_name: Optional[str] = None,
-        timeout: Optional[int] = 900
+        timeout: Optional[int] = 60
     ) -> Dict[str, Any]:
         """
         Execute un notebook avec Papermill (execution complete avec parametres)
@@ -402,7 +402,7 @@ def register_execution_tools(app: FastMCP) -> None:
     async def execute_notebook_solution_a(
         input_path: str,
         output_path: Optional[str] = None,
-        timeout: Optional[int] = 900
+        timeout: Optional[int] = 60
     ) -> Dict[str, Any]:
         """
         SOLUTION A - API Papermill directe avec correction working directory

@@ -436,10 +436,11 @@ class NotebookService:
             Dictionary with notebook metadata
         """
         try:
-            path = Path(path)
-            logger.info(f"Getting metadata for notebook: {path}")
+            # Resolve path against workspace
+            resolved_path = self.resolve_path(path)
+            logger.info(f"Getting metadata for notebook: {path} -> {resolved_path}")
             
-            metadata = FileUtils.get_notebook_metadata(path)
+            metadata = FileUtils.get_notebook_metadata(resolved_path)
             
             logger.info("Successfully retrieved notebook metadata")
             return metadata
@@ -462,11 +463,12 @@ class NotebookService:
             IndexError: If cell index is out of range
         """
         try:
-            path = Path(path)
-            logger.info(f"Reading cell {index} from notebook: {path}")
+            # Resolve path against workspace
+            resolved_path = Path(self.resolve_path(path))
+            logger.info(f"Reading cell {index} from notebook: {path} -> {resolved_path}")
             
             # Read notebook
-            notebook = FileUtils.read_notebook(path)
+            notebook = FileUtils.read_notebook(resolved_path)
             
             # Check if index is valid
             if index < 0 or index >= len(notebook.cells):
@@ -518,11 +520,12 @@ class NotebookService:
             Dictionary with cells information
         """
         try:
-            path = Path(path)
-            logger.info(f"Reading cells {start_index} to {end_index} from notebook: {path}")
+            # Resolve path against workspace
+            resolved_path = Path(self.resolve_path(path))
+            logger.info(f"Reading cells {start_index} to {end_index} from notebook: {path} -> {resolved_path}")
             
             # Read notebook
-            notebook = FileUtils.read_notebook(path)
+            notebook = FileUtils.read_notebook(resolved_path)
             
             total_cells = len(notebook.cells)
             
@@ -587,11 +590,12 @@ class NotebookService:
             Dictionary with cells information and preview
         """
         try:
-            path = Path(path)
-            logger.info(f"Listing cells from notebook: {path}")
+            # Resolve path against workspace
+            resolved_path = Path(self.resolve_path(path))
+            logger.info(f"Listing cells from notebook: {path} -> {resolved_path}")
             
             # Read notebook
-            notebook = FileUtils.read_notebook(path)
+            notebook = FileUtils.read_notebook(resolved_path)
             
             cells_info = []
             for i, cell in enumerate(notebook.cells):
@@ -636,11 +640,12 @@ class NotebookService:
             Dictionary with detailed outputs information
         """
         try:
-            path = Path(path)
-            logger.info(f"Inspecting outputs from notebook: {path}")
+            # Resolve path against workspace
+            resolved_path = Path(self.resolve_path(path))
+            logger.info(f"Inspecting outputs from notebook: {path} -> {resolved_path}")
             
             # Read notebook
-            notebook = FileUtils.read_notebook(path)
+            notebook = FileUtils.read_notebook(resolved_path)
             
             outputs_info = []
             for i, cell in enumerate(notebook.cells):
@@ -691,11 +696,12 @@ class NotebookService:
             Dictionary with validation results
         """
         try:
-            path = Path(path)
-            logger.info(f"Validating notebook: {path}")
+            # Resolve path against workspace
+            resolved_path = Path(self.resolve_path(path))
+            logger.info(f"Validating notebook: {path} -> {resolved_path}")
             
             # Read raw JSON content
-            with open(path, 'r', encoding='utf-8') as f:
+            with open(resolved_path, 'r', encoding='utf-8') as f:
                 notebook_data = json.load(f)
             
             issues = []
@@ -817,15 +823,17 @@ class NotebookService:
             import datetime
             import os
             
-            input_path = Path(input_path)
-            if output_path is None:
-                # CORRECTION BUG INSTABILIT? : ?viter conflits de fichiers avec timestamps
-                timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
-                output_path = input_path.parent / f"{input_path.stem}_executed_{timestamp}.ipynb"
-            else:
-                output_path = Path(output_path)
+            # Resolve input path against workspace
+            resolved_input_path = Path(self.resolve_path(input_path))
             
-            logger.info(f"Executing notebook (Solution A): {input_path}")
+            if output_path is None:
+                # CORRECTION BUG INSTABILITÉ : éviter conflits de fichiers avec timestamps
+                timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+                output_path = resolved_input_path.parent / f"{resolved_input_path.stem}_executed_{timestamp}.ipynb"
+            else:
+                output_path = Path(self.resolve_path(output_path))
+            
+            logger.info(f"Executing notebook (Solution A): {input_path} -> {resolved_input_path}")
             
             # Diagnostic info
             diagnostic_info = {
@@ -835,7 +843,7 @@ class NotebookService:
             }
             
             # Working directory fix for .NET NuGet packages
-            notebook_dir = input_path.parent.absolute()
+            notebook_dir = resolved_input_path.parent.absolute()
             original_cwd = os.getcwd()
             
             try:
@@ -846,8 +854,8 @@ class NotebookService:
                 
                 # Execute with PapermillExecutor (which handles the API call)
                 result = await self.papermill_executor.execute_notebook(
-                    input_path=input_path,
-                    output_path=output_path,
+                    input_path=str(resolved_input_path),
+                    output_path=str(output_path),
                     parameters={},
                     kernel=None,
                     timeout=timeout

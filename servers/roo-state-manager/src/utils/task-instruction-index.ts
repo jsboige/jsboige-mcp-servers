@@ -36,7 +36,7 @@ export class TaskInstructionIndex {
      * @param parentTaskId - ID de la tâche parente qui contient cette instruction
      * @param instruction - Instruction complète (optionnelle)
      */
-    addInstruction(instructionPrefix: string, parentTaskId: string, instruction?: NewTaskInstruction): void {
+    addInstruction(parentTaskId: string, instructionPrefix: string, instruction?: NewTaskInstruction): void {
         if (!instructionPrefix || instructionPrefix.length === 0) return;
         
         // Normaliser le préfixe : minuscules + espaces normalisés
@@ -104,7 +104,7 @@ export class TaskInstructionIndex {
         
         for (const [taskId, prefixes] of skeletonPrefixes) {
             for (const prefix of prefixes) {
-                this.addInstruction(prefix, taskId);
+                this.addInstruction(taskId, prefix);
             }
         }
         
