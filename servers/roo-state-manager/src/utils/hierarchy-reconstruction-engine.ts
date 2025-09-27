@@ -380,7 +380,7 @@ export class HierarchyReconstructionEngine {
                 };
             }
         } else if (config.strictMode) {
-            this.log(`STRICT MODE: fallback metadata disabled for ${skeleton.taskId}`);
+            this.log(`STRICT MODE: fallback disabled - metadata search skipped for ${skeleton.taskId}`);
         }
 
         // 3. Essayer via la proximité temporelle (désactivé en mode strict)
@@ -394,7 +394,7 @@ export class HierarchyReconstructionEngine {
                 };
             }
         } else {
-            this.log(`STRICT MODE: fallback temporal_proximity disabled for ${skeleton.taskId}`);
+            this.log(`STRICT MODE: fallback disabled - temporal proximity search skipped for ${skeleton.taskId}`);
         }
 
         return null;

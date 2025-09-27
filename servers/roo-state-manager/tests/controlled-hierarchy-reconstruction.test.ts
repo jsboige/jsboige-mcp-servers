@@ -321,6 +321,64 @@ describe('Controlled Hierarchy Reconstruction - TEST-HIERARCHY Dataset', () => {
 
             expect(validationRate).toBe(100);
         });
+
+        it('should export non-flat markdown with correct hierarchy depths', async () => {
+            console.log('📋 Test export Markdown non-plat - Phase de Validation Finale SDDD');
+
+            // 1. Charger et reconstruire la hiérarchie
+            const testSkeletons = await loadControlledTestData();
+            const engine = new HierarchyReconstructionEngine({ debugMode: true, strictMode: true });
+            const enhancedSkeletons = await engine.doReconstruction(testSkeletons);
+
+            // 2. Calculer les profondeurs attendues
+            const depths = calculateDepths(enhancedSkeletons);
+
+            // 3. Simuler l'export Markdown via la fonction interne
+            const hierarchicalTree = buildHierarchicalTree(enhancedSkeletons);
+            
+            // 4. Construire le markdown similaire à handleExportTaskTreeMarkdown
+            let markdownContent = '# Test Hierarchy Tree\n\n';
+            let depthCounts: Record<number, number> = {};
+
+            for (const node of hierarchicalTree) {
+                const skeleton = enhancedSkeletons.find(s => s.taskId === node.taskId);
+                if (skeleton) {
+                    const indent = '#'.repeat(Math.max(2, node.depth + 2));
+                    const shortId = node.taskId.substring(0, 8);
+                    const instruction = skeleton.truncatedInstruction || 'No instruction';
+                    
+                    markdownContent += `${indent} Task ${shortId} (Depth: ${node.depth})\n`;
+                    markdownContent += `**Instruction:** ${instruction}\n\n`;
+
+                    // Compter les profondeurs
+                    depthCounts[node.depth] = (depthCounts[node.depth] || 0) + 1;
+                }
+            }
+
+            // 5. Validation : Vérifier que le Markdown contient des profondeurs hiérarchiques correctes
+            console.log('📊 Distribution des profondeurs dans le markdown:');
+            Object.entries(depthCounts).forEach(([depth, count]) => {
+                console.log(`   Profondeur ${depth}: ${count} tâches`);
+            });
+
+            // Assertions spécifiques à la hiérarchie contrôlée
+            expect(depthCounts[0]).toBe(1); // Une seule racine (ROOT)
+            expect(depthCounts[1]).toBe(2); // Deux nœuds de niveau 1 (NODE-A, NODE-B)
+            expect(depthCounts[2]).toBe(2); // Deux nœuds de niveau 2 (NODE-A1, NODE-B1)
+            expect(depthCounts[3]).toBe(4); // Quatre feuilles de niveau 3 (LEAF-A1A, LEAF-A1B, LEAF-B1A, LEAF-B1B)
+
+            // 6. Validation contenu: Le markdown ne doit pas être "plat" (toutes profondeurs 0)
+            const flatStructureDetected = Object.keys(depthCounts).length === 1 && depthCounts[0] === enhancedSkeletons.length;
+            expect(flatStructureDetected).toBe(false);
+
+            // 7. Validation contenu: Le markdown doit contenir différents niveaux d'indentation
+            const headerLevels = markdownContent.match(/^#{2,}/gm) || [];
+            const uniqueHeaderLevels = new Set(headerLevels.map(h => h.length));
+            expect(uniqueHeaderLevels.size).toBeGreaterThan(1); // Au moins 2 niveaux d'en-têtes différents
+
+            console.log(`✅ Export Markdown validation: ${uniqueHeaderLevels.size} niveaux d'en-têtes distincts détectés`);
+            console.log(`✅ Structure hiérarchique confirmée: profondeurs 0-3 avec distribution correcte`);
+        });
     });
 });
 
