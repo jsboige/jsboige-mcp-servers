@@ -38,11 +38,10 @@ describe('Controlled Hierarchy Reconstruction - TEST-HIERARCHY Dataset', () => {
     let realControlledSkeletons: ConversationSkeleton[];
 
     beforeEach(async () => {
-        // Réinitialiser l'engine avec mode debug
+        // Réinitialiser l'engine avec mode strict activé
         engine = new HierarchyReconstructionEngine({
             batchSize: 10,
-            similarityThreshold: 0.2,
-            minConfidenceScore: 0.3,
+            strictMode: true,
             debugMode: true,
             forceRebuild: true
         });
@@ -205,11 +204,11 @@ describe('Controlled Hierarchy Reconstruction - TEST-HIERARCHY Dataset', () => {
             console.log('🏗️ Profondeurs calculées:', depths);
         });
 
-        it('should use descendant methodology (parents declare children)', async () => {
+        it('should use strict exact matching only (radix_tree_exact)', async () => {
             const enhancedSkeletons = realControlledSkeletons.map(enhanceSkeleton);
             await engine.executePhase1(enhancedSkeletons);
 
-            // Supprimer les parentIds pour forcer la méthode descendante
+            // Supprimer les parentIds pour forcer la résolution en mode strict
             enhancedSkeletons.forEach(s => {
                 if (s.taskId !== TEST_HIERARCHY_IDS.ROOT) {
                     s.parentTaskId = undefined;
@@ -218,14 +217,44 @@ describe('Controlled Hierarchy Reconstruction - TEST-HIERARCHY Dataset', () => {
 
             const result = await engine.executePhase2(enhancedSkeletons);
 
-            // Vérifier que la méthode "radix_tree" (descendante) a été utilisée
-            expect(result.resolutionMethods['radix_tree']).toBeGreaterThan(0);
+            // Vérifier que seule la méthode "radix_tree_exact" a été utilisée
+            expect(result.resolutionMethods['radix_tree_exact']).toBeGreaterThan(0);
             
-            // Vérifier qu'AUCUNE méthode ascendante n'a été utilisée
-            expect(result.resolutionMethods['child_inference']).toBeUndefined();
-            expect(result.resolutionMethods['backward_search']).toBeUndefined();
+            // Vérifier qu'AUCUNE méthode de fallback n'a été utilisée en mode strict
+            expect(result.resolutionMethods['metadata']).toBeUndefined();
+            expect(result.resolutionMethods['temporal_proximity']).toBeUndefined();
+            expect(result.resolutionMethods['radix_tree']).toBeUndefined(); // Ancienne méthode de similarité
 
-            console.log('🔄 Méthodes de résolution utilisées:', result.resolutionMethods);
+            // Vérifier que chaque tâche résolue utilise radix_tree_exact
+            const resolvedTasks = enhancedSkeletons.filter(s => s.reconstructedParentId && s.parentResolutionMethod);
+            for (const task of resolvedTasks) {
+                expect(task.parentResolutionMethod).toBe('radix_tree_exact');
+            }
+
+            console.log('🔄 Méthodes de résolution utilisées (mode strict):', result.resolutionMethods);
+            console.log('📊 Tâches résolues avec radix_tree_exact:', resolvedTasks.length);
+        });
+
+        it('should have zero ambiguous exact matches in controlled dataset', async () => {
+            const enhancedSkeletons = realControlledSkeletons.map(enhanceSkeleton);
+            await engine.executePhase1(enhancedSkeletons);
+
+            // Supprimer les parentIds pour tester la résolution
+            enhancedSkeletons.forEach(s => {
+                if (s.taskId !== TEST_HIERARCHY_IDS.ROOT) {
+                    s.parentTaskId = undefined;
+                }
+            });
+
+            const result = await engine.executePhase2(enhancedSkeletons);
+
+            // En mode strict, on ne doit avoir aucune ambiguïté sur le dataset contrôlé
+            // Toutes les relations parent-enfant doivent être résolues de manière unique
+            const expectedRelationsCount = 6; // 7 tâches - 1 racine
+            expect(result.resolvedCount).toBe(expectedRelationsCount);
+            expect(result.unresolvedCount).toBe(0);
+
+            console.log('✅ Mode strict - ambiguïtés: 0, résolutions: ' + result.resolvedCount);
         });
     });
 

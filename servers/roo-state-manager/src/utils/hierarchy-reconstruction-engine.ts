@@ -301,6 +301,44 @@ export class HierarchyReconstructionEngine {
         skeletonMap: Map<string, EnhancedConversationSkeleton>,
         config: ReconstructionConfig
     ): Promise<{ parentId: string; confidence: number; method: any } | null> {
+        // MODE STRICT : Utilise uniquement le matching exact de préfixe
+        if (config.strictMode === true) {
+            if (skeleton.truncatedInstruction) {
+                // Utiliser searchExactPrefix avec l'instruction tronquée (K=192 via computeInstructionPrefix)
+                const exactResults = await this.instructionIndex.searchExactPrefix(skeleton.truncatedInstruction);
+                
+                if (!exactResults || exactResults.length === 0) {
+                    this.log(`STRICT MODE: no exact parent match for ${skeleton.taskId}`);
+                    return null;
+                }
+                
+                if (exactResults.length === 1) {
+                    const candidate = exactResults[0];
+                    // Validation basique pour éviter l'auto-référence
+                    if (candidate.taskId !== skeleton.taskId) {
+                        this.log(`STRICT MODE: exact match found for ${skeleton.taskId} → ${candidate.taskId}`);
+                        return {
+                            parentId: candidate.taskId,
+                            confidence: 1,
+                            method: 'radix_tree_exact'
+                        };
+                    } else {
+                        this.log(`STRICT MODE: no exact parent match for ${skeleton.taskId} (self-reference)`);
+                        return null;
+                    }
+                }
+                
+                if (exactResults.length > 1) {
+                    this.log(`STRICT MODE: ambiguous exact matches (${exactResults.length}) for ${skeleton.taskId}`);
+                    return null;
+                }
+            }
+            
+            this.log(`STRICT MODE: no truncatedInstruction for ${skeleton.taskId}`);
+            return null;
+        }
+
+        // MODE LEGACY : Comportement original avec similarité et fallbacks
         // 1. Essayer via le radix tree (recherche par similarité d'instruction)
         if (skeleton.truncatedInstruction) {
             const searchResult = await this.instructionIndex.searchSimilar(
@@ -331,8 +369,8 @@ export class HierarchyReconstructionEngine {
             }
         }
 
-        // 2. Essayer via les métadonnées
-        if (skeleton.metadata?.workspace) {
+        // 2. Essayer via les métadonnées (désactivé en mode strict)
+        if (!config.strictMode && skeleton.metadata?.workspace) {
             const metadataCandidate = await this.findParentByMetadata(skeleton, skeletonMap);
             if (metadataCandidate) {
                 return {
@@ -341,16 +379,22 @@ export class HierarchyReconstructionEngine {
                     method: 'metadata'
                 };
             }
+        } else if (config.strictMode) {
+            this.log(`STRICT MODE: fallback metadata disabled for ${skeleton.taskId}`);
         }
 
-        // 3. Essayer via la proximité temporelle
-        const temporalCandidate = await this.findParentByTemporalProximity(skeleton, skeletonMap);
-        if (temporalCandidate) {
-            return {
-                parentId: temporalCandidate,
-                confidence: 0.4,
-                method: 'temporal_proximity'
-            };
+        // 3. Essayer via la proximité temporelle (désactivé en mode strict)
+        if (!config.strictMode) {
+            const temporalCandidate = await this.findParentByTemporalProximity(skeleton, skeletonMap);
+            if (temporalCandidate) {
+                return {
+                    parentId: temporalCandidate,
+                    confidence: 0.4,
+                    method: 'temporal_proximity'
+                };
+            }
+        } else {
+            this.log(`STRICT MODE: fallback temporal_proximity disabled for ${skeleton.taskId}`);
         }
 
         return null;
