@@ -29,7 +29,8 @@ export class HierarchyReconstructionEngine {
         minConfidenceScore: 0.3,
         debugMode: false,
         operationTimeout: 30000,
-        forceRebuild: false
+        forceRebuild: false,
+        strictMode: true
     };
 
     private config: ReconstructionConfig;

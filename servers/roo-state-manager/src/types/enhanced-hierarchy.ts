@@ -102,7 +102,7 @@ export interface EnhancedConversationSkeleton extends ConversationSkeleton {
      * Méthode utilisée pour reconstruire le parentId
      * Pour le debug et l'analyse de qualité
      */
-    parentResolutionMethod?: 'radix_tree' | 'metadata' | 'temporal_proximity' | 'manual' | 'root_detected';
+    parentResolutionMethod?: 'radix_tree' | 'radix_tree_exact' | 'metadata' | 'temporal_proximity' | 'manual' | 'root_detected';
     
     /**
      * Instructions de création de cette tâche (depuis le parent)
@@ -172,6 +172,9 @@ export interface ReconstructionConfig {
     
     /** Timeout en ms pour chaque opération */
     operationTimeout?: number;
+    
+    /** Mode strict : utilise uniquement le matching exact, pas de fallbacks (défaut: true) */
+    strictMode?: boolean;
 }
 
 /**
