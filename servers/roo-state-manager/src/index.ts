@@ -50,6 +50,8 @@ import { TraceSummaryService } from './services/TraceSummaryService.js';
 import { SynthesisOrchestratorService } from './services/synthesis/SynthesisOrchestratorService.js';
 import { NarrativeContextBuilderService } from './services/synthesis/NarrativeContextBuilderService.js';
 import { LLMService } from './services/synthesis/LLMService.js';
+import { IndexingDecisionService } from './services/indexing-decision.js';
+import { IndexingMetrics } from './types/indexing.js';
 
 const MAX_OUTPUT_LENGTH = 150000; // Harmonisé avec view-conversation-tree.ts pour consistance (audit 2025-09-15)
 const SKELETON_CACHE_DIR_NAME = '.skeletons';
@@ -88,7 +90,18 @@ class RooStateManagerServer {
     private qdrantIndexInterval: NodeJS.Timeout | null = null;
     private isQdrantIndexingEnabled = true;
     
-    // 🛡️ CACHE ANTI-FUITE - Protection contre 220GB de trafic réseau
+    // NOUVEAU : Service de décision d'indexation avec mécanisme d'idempotence
+    private indexingDecisionService: IndexingDecisionService;
+    private indexingMetrics: IndexingMetrics = {
+        totalTasks: 0,
+        skippedTasks: 0,
+        indexedTasks: 0,
+        failedTasks: 0,
+        retryTasks: 0,
+        bandwidthSaved: 0
+    };
+    
+    // 🛡️ CACHE ANTI-FUITE - Protection contre 220GB de trafic réseau (LEGACY)
     private qdrantIndexCache: Map<string, number> = new Map(); // taskId -> timestamp dernière indexation
     private lastQdrantConsistencyCheck: number = 0;
     private readonly CONSISTENCY_CHECK_INTERVAL = 24 * 60 * 60 * 1000; // 24h au lieu du démarrage
@@ -99,6 +112,9 @@ class RooStateManagerServer {
         this.xmlExporterService = new XmlExporterService();
         this.exportConfigManager = new ExportConfigManager();
         this.traceSummaryService = new TraceSummaryService(this.exportConfigManager);
+        
+        // NOUVEAU : Initialisation du service de décision d'indexation avec idempotence
+        this.indexingDecisionService = new IndexingDecisionService();
         
         // Instanciation des services de synthèse selon le pattern de dependency injection
         // Phase 1 : Configuration par défaut simplifiée pour validation de structure
@@ -3357,28 +3373,73 @@ class RooStateManagerServer {
 
     /**
      * Scanner pour identifier les squelettes ayant besoin d'une réindexation
+     * NOUVEAU : Utilise le service de décision d'indexation avec mécanisme d'idempotence
      */
     private async _scanForOutdatedQdrantIndex(): Promise<void> {
-        let outdatedCount = 0;
+        let indexCount = 0;
+        let skipCount = 0;
+        let retryCount = 0;
+        let failedCount = 0;
+        let migratedCount = 0;
+        
+        console.log(`🔍 Début du scan d'indexation avec mécanisme d'idempotence...`);
         
         for (const [taskId, skeleton] of this.conversationCache.entries()) {
-            const lastActivity = new Date(skeleton.metadata.lastActivity).getTime();
-            const qdrantIndexed = skeleton.metadata.qdrantIndexedAt
-                ? new Date(skeleton.metadata.qdrantIndexedAt).getTime()
-                : 0;
+            this.indexingMetrics.totalTasks++;
             
-            // Si le squelette a été modifié après la dernière indexation Qdrant
-            if (lastActivity > qdrantIndexed) {
+            // Migration automatique des anciens formats
+            if (this.indexingDecisionService.migrateLegacyIndexingState(skeleton)) {
+                migratedCount++;
+                await this._saveSkeletonToDisk(skeleton);
+            }
+            
+            // Décision d'indexation avec nouvelle logique
+            const decision = this.indexingDecisionService.shouldIndex(skeleton);
+            
+            if (decision.shouldIndex) {
                 this.qdrantIndexQueue.add(taskId);
-                outdatedCount++;
+                if (decision.action === 'retry') {
+                    retryCount++;
+                    this.indexingMetrics.retryTasks++;
+                } else {
+                    indexCount++;
+                }
+            } else {
+                skipCount++;
+                this.indexingMetrics.skippedTasks++;
+                // Journalisation explicite des skips pour validation anti-fuite
+                console.log(`[SKIP] ${taskId}: ${decision.reason}`);
+                
+                if (skeleton.metadata.indexingState?.indexStatus === 'failed') {
+                    failedCount++;
+                    this.indexingMetrics.failedTasks++;
+                }
             }
         }
         
-        console.log(`📊 Scan terminé: ${outdatedCount} squelettes nécessitent une réindexation Qdrant`);
-        if (outdatedCount > 1000) {
-            console.log(`⚠️  Queue importante détectée: ${outdatedCount} tâches à indexer`);
+        // Rapport de scan détaillé
+        console.log(`📊 Scan terminé avec mécanisme d'idempotence:`);
+        console.log(`   ✅ À indexer: ${indexCount} tâches`);
+        console.log(`   🔄 À retenter: ${retryCount} tâches`);
+        console.log(`   ⏭️  Skippées: ${skipCount} tâches (anti-fuite)`);
+        console.log(`   ❌ Échecs permanents: ${failedCount} tâches`);
+        console.log(`   🔄 Migrations legacy: ${migratedCount} tâches`);
+        
+        const totalToProcess = indexCount + retryCount;
+        if (totalToProcess > 1000) {
+            console.log(`⚠️  Queue importante détectée: ${totalToProcess} tâches à traiter`);
             console.log(`💡 Traitement progressif avec rate limiting intelligent (100 ops/min)`);
-            console.log(`⏱️  Temps estimé: ${Math.ceil(outdatedCount / 100)} minutes`);
+            console.log(`⏱️  Temps estimé: ${Math.ceil(totalToProcess / 100)} minutes`);
+        }
+        
+        // Estimation de la bande passante économisée
+        const estimatedSavings = skipCount * 50000; // ~50KB par tâche skippée
+        this.indexingMetrics.bandwidthSaved += estimatedSavings;
+        console.log(`💰 Bande passante économisée: ~${Math.round(estimatedSavings / 1024 / 1024)}MB grâce aux skips`);
+        
+        // Log de mode force si actif
+        if (process.env.ROO_INDEX_FORCE === '1' || process.env.ROO_INDEX_FORCE === 'true') {
+            console.log(`🚨 MODE FORCE ACTIF: Tous les skips ont été ignorés (ROO_INDEX_FORCE=${process.env.ROO_INDEX_FORCE})`);
         }
     }
 
@@ -3471,7 +3532,8 @@ class RooStateManagerServer {
     }
 
     /**
-     * Indexe une tâche spécifique dans Qdrant et met à jour son timestamp
+     * Indexe une tâche spécifique dans Qdrant et met à jour son état d'indexation
+     * NOUVEAU : Utilise le service de décision d'indexation avec gestion complète des états
      */
     private async _indexTaskInQdrant(taskId: string): Promise<void> {
         try {
@@ -3481,48 +3543,97 @@ class RooStateManagerServer {
                 return;
             }
             
-            // 🛡️ ANTI-FUITE: Vérifier le cache avant tout appel réseau
-            const now = Date.now();
-            const lastIndexed = this.qdrantIndexCache.get(taskId) || 0;
-            const timeSinceIndexed = now - lastIndexed;
-            
-            // Si déjà indexé récemment (< 4h), ignorer
-            if (timeSinceIndexed < this.MIN_REINDEX_INTERVAL) {
-                console.log(`[CACHE] Task ${taskId} ignoré (dernière indexation < 4h) - Protection anti-fuite`);
+            // NOUVELLE LOGIQUE : Vérifier la décision d'indexation en temps réel
+            const decision = this.indexingDecisionService.shouldIndex(skeleton);
+            if (!decision.shouldIndex) {
+                console.log(`[SKIP] Task ${taskId}: ${decision.reason} - Protection anti-fuite`);
                 return;
             }
             
-            // Vérifier si vraiment nécessaire via timestamp de métadonnées
-            if (skeleton.metadata.qdrantIndexedAt) {
-                const lastActivity = new Date(skeleton.metadata.lastActivity).getTime();
-                const qdrantIndexed = new Date(skeleton.metadata.qdrantIndexedAt).getTime();
-                
-                if (lastActivity <= qdrantIndexed) {
-                    console.log(`[CACHE] Task ${taskId} déjà à jour selon métadonnées - Protection anti-fuite`);
-                    this.qdrantIndexCache.set(taskId, now); // Marquer comme vérifié
-                    return;
-                }
-            }
+            console.log(`[INDEX] Task ${taskId}: ${decision.reason}`);
     
-            // 🌐 APPEL RÉSEAU - Maintenant seulement si nécessaire
+            // 🌐 APPEL RÉSEAU - Indexation Qdrant
             const taskIndexer = new TaskIndexer();
             await taskIndexer.indexTask(taskId);
     
-            skeleton.metadata.qdrantIndexedAt = new Date().toISOString();
+            // NOUVEAU : Marquer le succès avec état complet
+            this.indexingDecisionService.markIndexingSuccess(skeleton);
             await this._saveSkeletonToDisk(skeleton);
             
-            // Marquer dans le cache pour éviter réindexations répétées
-            this.qdrantIndexCache.set(taskId, now);
+            // Maintenir la compatibilité avec l'ancien cache (LEGACY)
+            this.qdrantIndexCache.set(taskId, Date.now());
     
-            console.log(`[INFO] Task ${taskId} successfully indexed in Qdrant.`);
+            // Mettre à jour les métriques
+            this.indexingMetrics.indexedTasks++;
+    
+            console.log(`[SUCCESS] Task ${taskId} successfully indexed in Qdrant.`);
     
         } catch (error: any) {
             if (error.message && error.message.includes('not found in any storage location')) {
                 console.warn(`[WARN] Task ${taskId} is in cache but not on disk. Skipping indexing.`);
             } else {
+                // NOUVEAU : Gestion intelligente des échecs avec classification
+                const skeleton = this.conversationCache.get(taskId);
+                if (skeleton) {
+                    const isPermanentError = this._classifyIndexingError(error);
+                    this.indexingDecisionService.markIndexingFailure(skeleton, error.message, isPermanentError);
+                    await this._saveSkeletonToDisk(skeleton);
+                    
+                    this.indexingMetrics.failedTasks++;
+                    
+                    if (isPermanentError) {
+                        console.error(`[PERMANENT_FAIL] Task ${taskId}: ${error.message} - Marqué pour skip définitif`);
+                    } else {
+                        console.error(`[RETRY_FAIL] Task ${taskId}: ${error.message} - Programmé pour retry avec backoff`);
+                    }
+                }
+                
                 console.error(`[ERROR] Failed to index task ${taskId} in Qdrant:`, error);
             }
         }
+    }
+
+    /**
+     * Classifie les erreurs d'indexation pour déterminer si elles sont permanentes
+     * NOUVEAU : Logique de classification des erreurs pour éviter les retry infinis
+     */
+    private _classifyIndexingError(error: any): boolean {
+        const errorMessage = error.message ? error.message.toLowerCase() : '';
+        
+        // Erreurs permanentes (ne pas retry)
+        const permanentErrors = [
+            'file not found',
+            'access denied',
+            'permission denied',
+            'invalid format',
+            'corrupted data',
+            'authentication failed',
+            'quota exceeded permanently'
+        ];
+        
+        // Erreurs temporaires (retry autorisé)
+        const temporaryErrors = [
+            'network error',
+            'connection timeout',
+            'rate limit',
+            'service unavailable',
+            'timeout',
+            'econnreset',
+            'enotfound'
+        ];
+        
+        // Vérifier les erreurs permanentes
+        if (permanentErrors.some(perm => errorMessage.includes(perm))) {
+            return true; // Échec permanent
+        }
+        
+        // Vérifier les erreurs temporaires
+        if (temporaryErrors.some(temp => errorMessage.includes(temp))) {
+            return false; // Échec temporaire, retry autorisé
+        }
+        
+        // Par défaut, considérer comme temporaire mais avec limite de retry
+        return false;
     }
 
     /**

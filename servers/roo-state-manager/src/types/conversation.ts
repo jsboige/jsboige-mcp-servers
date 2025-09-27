@@ -2,6 +2,8 @@
  * Types pour la gestion des conversations et du stockage Roo
  */
 
+import { IndexingState } from './indexing.js';
+
 export interface FileInContext {
     path: string;
     content: string;
@@ -47,8 +49,10 @@ export interface ConversationSkeleton {
      actionCount: number;
      totalSize: number; // Taille totale de la conversation sur le disque
       workspace?: string;
-      qdrantIndexedAt?: string; // Timestamp de la dernière indexation Qdrant réussie
+      qdrantIndexedAt?: string; // DEPRECATED - utiliser indexingState.lastIndexedAt
       dataSource?: string; // Source des données pour le debug
+      // NOUVEAU : État complet d'indexation avec mécanisme d'idempotence
+      indexingState?: IndexingState;
     };
    // Une séquence combinée et ordonnée de messages et d'actions.
    sequence: (MessageSkeleton | ActionMetadata)[];
