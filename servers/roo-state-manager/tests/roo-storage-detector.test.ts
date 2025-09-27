@@ -75,7 +75,7 @@ describe('Storage Detector — Exact Prefix normalization (K=192)', () => {
         // Vérifications des propriétés SDDD Phase 2
         expect(childPrefix.length).toBeLessThanOrEqual(192);
         expect(childPrefix).not.toContain('...');
-        expect(childPrefix).toMatch(/^[a-z]/); // Commence par une minuscule (sauf caractères spéciaux)
+        expect(childPrefix).toBe(childPrefix.toLowerCase()); // Tout en lowercase
         expect(childPrefix).not.toMatch(/\s{2,}/); // Pas d'espaces multiples
     });
     
