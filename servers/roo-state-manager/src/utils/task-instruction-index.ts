@@ -39,10 +39,29 @@ export class TaskInstructionIndex {
     addInstruction(parentTaskId: string, instructionPrefix: string, instruction?: NewTaskInstruction): void {
         if (!instructionPrefix || instructionPrefix.length === 0) return;
         
-        // Normaliser le préfixe : minuscules + espaces normalisés
-        const normalizedPrefix = this.normalizePrefix(instructionPrefix);
+        // Utiliser la nouvelle fonction unifiée computeInstructionPrefix
+        const normalizedPrefix = computeInstructionPrefix(instructionPrefix, 192);
         console.log(`[PASS 1 - INDEXING] Task: ${parentTaskId.substring(0,8)} | NORMALIZED PREFIX: "${normalizedPrefix}"`);
         this.insertIntoTree(this.root, normalizedPrefix, parentTaskId, instruction);
+    }
+
+    /**
+     * Recherche exacte sur préfixe dans l'index (SDDD Phase 2 - strict prefix only)
+     * @param childText - Texte de la tâche enfant pour générer le préfixe de recherche
+     * @param K - Longueur de préfixe (défaut: 192)
+     * @returns Array des tâches avec préfixe exactement égal
+     */
+    searchExactPrefix(childText: string, K: number = 192): Array<{ taskId: string, prefix: string }> {
+        if (!childText || childText.length === 0) return [];
+        
+        const searchPrefix = computeInstructionPrefix(childText, K);
+        console.log(`[EXACT PREFIX SEARCH] Searching for: "${searchPrefix}"`);
+        
+        const results: Array<{ taskId: string, prefix: string }> = [];
+        this.searchExactInTree(this.root, searchPrefix, '', results);
+        
+        console.log(`[EXACT PREFIX SEARCH] Found ${results.length} exact matches`);
+        return results;
     }
 
     /**
@@ -188,10 +207,39 @@ export class TaskInstructionIndex {
 
     // Méthodes privées
 
+    /**
+     * @deprecated Use computeInstructionPrefix() instead for consistency
+     */
     private normalizePrefix(text: string): string {
-        // 🎯 CORRECTION CRITIQUE SDDD : Normalisation cohérente pour matching RadixTree
-        // Applique exactement la même transformation pour indexation ET recherche
-        return text.toLowerCase().trim().substring(0, 192);
+        // Délègue à computeInstructionPrefix pour cohérence
+        return computeInstructionPrefix(text, 192);
+    }
+
+    /**
+     * Recherche exacte dans l'arbre RadixTree
+     * @param node - Noeud courant
+     * @param targetPrefix - Préfixe exact recherché
+     * @param currentPrefix - Préfixe construit jusqu'ici
+     * @param results - Array des résultats accumulés
+     */
+    private searchExactInTree(node: RadixTreeNode, targetPrefix: string, currentPrefix: string, results: Array<{ taskId: string, prefix: string }>): void {
+        // Si on a trouvé exactement le préfixe recherché ET que ce noeud termine une clé
+        if (node.isEndOfKey && node.parentTaskId && currentPrefix === targetPrefix) {
+            console.log(`[EXACT MATCH] Found exact prefix: "${currentPrefix}" -> Task: ${node.parentTaskId.substring(0, 8)}`);
+            results.push({
+                taskId: node.parentTaskId,
+                prefix: currentPrefix
+            });
+        }
+
+        // Continuer la recherche dans les enfants seulement si le préfixe cible commence par le préfixe courant
+        for (const [childKey, childNode] of node.children) {
+            const newPrefix = currentPrefix + childKey;
+            // Optimisation: ne continuer que si le préfixe cible commence par newPrefix OU si newPrefix commence par le préfixe cible
+            if (targetPrefix.startsWith(newPrefix) || newPrefix.startsWith(targetPrefix)) {
+                this.searchExactInTree(childNode, targetPrefix, newPrefix, results);
+            }
+        }
     }
 
     private insertIntoTree(node: RadixTreeNode, key: string, parentTaskId: string, instruction?: NewTaskInstruction): void {
@@ -412,6 +460,23 @@ export class TaskInstructionIndex {
             this.collectInstructionsByParent(childNode, parentId, currentPrefix + childKey, instructions);
         }
     }
+}
+
+/**
+ * SDDD Phase 2 - API de préfixe unifiée
+ * Fonction utilitaire unifiée pour la normalisation des préfixes d'instructions
+ * @param raw - Texte brut de l'instruction
+ * @param K - Longueur maximale du préfixe (défaut: 192)
+ * @returns Préfixe normalisé et tronqué
+ */
+export function computeInstructionPrefix(raw: string, K: number = 192): string {
+    if (!raw) return '';
+    
+    return raw
+        .toLowerCase()                    // Conversion en minuscules
+        .replace(/\s+/g, ' ')            // Normalisation d'espaces: remplacer séquences d'espaces par un espace simple
+        .trim()                          // Supprimer espaces début/fin
+        .substring(0, K);                // Tronquer à K caractères (sans ajouter "...")
 }
 
 /**

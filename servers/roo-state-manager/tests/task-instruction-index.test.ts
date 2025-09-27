@@ -4,7 +4,7 @@
  */
 
 import { describe, it, expect, beforeEach, afterEach } from '@jest/globals';
-import { TaskInstructionIndex } from '../src/utils/task-instruction-index.js';
+import { TaskInstructionIndex, computeInstructionPrefix } from '../src/utils/task-instruction-index.js';
 import type { NewTaskInstruction } from '../src/types/conversation.js';
 
 describe('TaskInstructionIndex', () => {
@@ -74,6 +74,165 @@ describe('TaskInstructionIndex', () => {
             return index.getSize().then(size => {
                 expect(size).toBeGreaterThan(0);
             });
+        });
+    });
+
+    describe('Exact Prefix', () => {
+        beforeEach(() => {
+            // Ajouter des instructions via addInstruction (qui utilise computeInstructionPrefix)
+            index.addInstruction('task-001', 'Implémenter la fonctionnalité de recherche exacte');
+            index.addInstruction('task-002', 'Optimiser les performances du radix tree');
+            index.addInstruction('task-003', 'Implémenter la fonctionnalité de recherche similaire');
+            index.addInstruction('task-004', 'Créer une architecture modulaire pour tests');
+        });
+
+        it('should find exact prefix matches only', () => {
+            const childText = 'Implémenter la fonctionnalité de recherche exacte';
+            const results = index.searchExactPrefix(childText, 192);
+            
+            expect(results).toHaveLength(1);
+            expect(results[0].taskId).toBe('task-001');
+            expect(results[0].prefix).toBe(computeInstructionPrefix(childText, 192));
+        });
+
+        it('should not find similar but non-exact matches', () => {
+            const childText = 'Implémenter la fonctionnalité de recherche différente';
+            const results = index.searchExactPrefix(childText, 192);
+            
+            // Ne devrait rien trouver car pas de match exact
+            expect(results).toHaveLength(0);
+        });
+
+        it('should handle multiple exact matches', () => {
+            // Ajouter un deuxième parent avec le même préfixe
+            index.addInstruction('task-005', 'Implémenter la fonctionnalité de recherche exacte');
+            
+            const childText = 'Implémenter la fonctionnalité de recherche exacte';
+            const results = index.searchExactPrefix(childText, 192);
+            
+            expect(results).toHaveLength(2);
+            const taskIds = results.map(r => r.taskId).sort();
+            expect(taskIds).toEqual(['task-001', 'task-005']);
+        });
+
+        it('should respect K parameter for prefix length', () => {
+            const shortK = 20;
+            const childText = 'Implémenter la fonctionnalité de recherche exacte avec texte long';
+            
+            // Ajouter avec le même préfixe tronqué
+            index.addInstruction('task-006', childText);
+            
+            const results = index.searchExactPrefix(childText, shortK);
+            
+            expect(results).toHaveLength(1);
+            expect(results[0].taskId).toBe('task-006');
+            expect(results[0].prefix.length).toBeLessThanOrEqual(shortK);
+        });
+
+        it('should normalize spaces and case consistently', () => {
+            const normalText = 'créer une nouvelle fonctionnalité';
+            const unnormalizedText = '  CRÉER   UNE    NOUVELLE   FONCTIONNALITÉ  ';
+            
+            index.addInstruction('task-007', normalText);
+            
+            const results = index.searchExactPrefix(unnormalizedText, 192);
+            
+            expect(results).toHaveLength(1);
+            expect(results[0].taskId).toBe('task-007');
+        });
+
+        it('should return empty array for empty input', () => {
+            const results = index.searchExactPrefix('', 192);
+            expect(results).toHaveLength(0);
+        });
+
+        it('should return empty array for no matches', () => {
+            const childText = 'texte complètement différent qui ne devrait matcher aucun préfixe';
+            const results = index.searchExactPrefix(childText, 192);
+            
+            expect(results).toHaveLength(0);
+        });
+
+        it('should not return any score or threshold information', () => {
+            const childText = 'Implémenter la fonctionnalité de recherche exacte';
+            const results = index.searchExactPrefix(childText, 192);
+            
+            if (results.length > 0) {
+                const result = results[0];
+                expect(result).toHaveProperty('taskId');
+                expect(result).toHaveProperty('prefix');
+                // Ne devrait PAS avoir de propriétés de score/similarité
+                expect(result).not.toHaveProperty('similarity');
+                expect(result).not.toHaveProperty('score');
+                expect(result).not.toHaveProperty('threshold');
+            }
+        });
+
+        it('should ensure prefix length is exactly 192 characters max', () => {
+            const veryLongText = 'A'.repeat(500);
+            
+            index.addInstruction('task-008', veryLongText);
+            
+            const results = index.searchExactPrefix(veryLongText, 192);
+            
+            expect(results).toHaveLength(1);
+            expect(results[0].prefix.length).toBe(192);
+            expect(results[0].prefix).not.toContain('...'); // Pas de "..." ajouté
+        });
+
+        it('should work with different K values', () => {
+            const text = 'Test avec différentes longueurs de préfixes pour validation';
+            
+            index.addInstruction('task-009', text);
+            
+            // Test avec K=50
+            const results50 = index.searchExactPrefix(text, 50);
+            expect(results50).toHaveLength(1);
+            expect(results50[0].prefix.length).toBeLessThanOrEqual(50);
+            
+            // Test avec K=100
+            const results100 = index.searchExactPrefix(text, 100);
+            expect(results100).toHaveLength(1);
+            expect(results100[0].prefix.length).toBeLessThanOrEqual(100);
+        });
+    });
+
+    describe('computeInstructionPrefix', () => {
+        it('should normalize text correctly', () => {
+            const result = computeInstructionPrefix('  HELLO   WORLD  ', 50);
+            expect(result).toBe('hello world');
+        });
+
+        it('should handle default K=192', () => {
+            const text = 'A'.repeat(300);
+            const result = computeInstructionPrefix(text);
+            expect(result.length).toBe(192);
+        });
+
+        it('should respect custom K values', () => {
+            const text = 'Test avec longueur custom';
+            const result = computeInstructionPrefix(text, 10);
+            expect(result.length).toBe(10);
+            expect(result).toBe('test avec ');
+        });
+
+        it('should be deterministic', () => {
+            const text = '  **MISSION   DEBUG   CRITIQUE  ';
+            const result1 = computeInstructionPrefix(text, 192);
+            const result2 = computeInstructionPrefix(text, 192);
+            expect(result1).toBe(result2);
+        });
+
+        it('should handle empty input', () => {
+            const result = computeInstructionPrefix('', 192);
+            expect(result).toBe('');
+        });
+
+        it('should not add ellipsis', () => {
+            const longText = 'A'.repeat(300);
+            const result = computeInstructionPrefix(longText, 50);
+            expect(result).not.toContain('...');
+            expect(result.length).toBe(50);
         });
     });
 
