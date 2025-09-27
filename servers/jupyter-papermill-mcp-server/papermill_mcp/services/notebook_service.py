@@ -10,8 +10,16 @@ import json
 import logging
 import os
 import sys
+import threading
+import uuid
+import subprocess
+import time
 from pathlib import Path
 from typing import Dict, List, Optional, Any, Union
+from datetime import datetime, timedelta
+from concurrent.futures import ThreadPoolExecutor
+from dataclasses import dataclass, field
+from enum import Enum
 
 from nbformat import NotebookNode
 
@@ -20,6 +28,620 @@ from ..utils.file_utils import FileUtils
 from ..config import MCPConfig
 
 logger = logging.getLogger(__name__)
+
+
+class JobStatus(Enum):
+    """États possibles des jobs d'exécution asynchrone."""
+    PENDING = "PENDING"
+    RUNNING = "RUNNING"
+    SUCCEEDED = "SUCCEEDED"
+    FAILED = "FAILED"
+    CANCELED = "CANCELED"
+    TIMEOUT = "TIMEOUT"
+
+
+@dataclass
+class ExecutionJob:
+    """Représente un job d'exécution de notebook asynchrone."""
+    job_id: str
+    input_path: str
+    output_path: str
+    parameters: Dict[str, Any] = field(default_factory=dict)
+    status: JobStatus = JobStatus.PENDING
+    started_at: Optional[datetime] = None
+    updated_at: Optional[datetime] = None
+    ended_at: Optional[datetime] = None
+    return_code: Optional[int] = None
+    error_message: Optional[str] = None
+    process: Optional[subprocess.Popen] = None
+    stdout_buffer: List[str] = field(default_factory=list)
+    stderr_buffer: List[str] = field(default_factory=list)
+    timeout_seconds: Optional[int] = None
+    
+    @property
+    def duration_seconds(self) -> Optional[float]:
+        """Calcule la durée d'exécution en secondes."""
+        if not self.started_at:
+            return None
+        end_time = self.ended_at or datetime.now()
+        return (end_time - self.started_at).total_seconds()
+
+
+class ExecutionManager:
+    """
+    Gestionnaire d'exécution asynchrone pour notebooks.
+    
+    Implémente une architecture job-based qui permet d'exécuter des notebooks
+    de longue durée (>60s) sans heurter les timeouts MCP côté client.
+    
+    Utilise subprocess.Popen pour capture stdout/stderr non bloquante et
+    ThreadPoolExecutor pour gestion thread-safe des jobs multiples.
+    """
+    
+    def __init__(self, max_concurrent_jobs: int = 5):
+        """
+        Initialise le gestionnaire d'exécution.
+        
+        Args:
+            max_concurrent_jobs: Nombre maximum de jobs simultanés
+        """
+        self.jobs: Dict[str, ExecutionJob] = {}
+        self.lock = threading.RLock()
+        self.executor = ThreadPoolExecutor(max_workers=max_concurrent_jobs)
+        self.max_concurrent_jobs = max_concurrent_jobs
+        logger.info(f"ExecutionManager initialized with max {max_concurrent_jobs} concurrent jobs")
+    
+    def _generate_job_id(self) -> str:
+        """Génère un ID unique pour un job."""
+        return str(uuid.uuid4())[:8]
+    
+    def _count_running_jobs(self) -> int:
+        """Compte les jobs actuellement en cours d'exécution."""
+        with self.lock:
+            return sum(1 for job in self.jobs.values()
+                      if job.status in [JobStatus.RUNNING, JobStatus.PENDING])
+    
+    def start_notebook_async(
+        self,
+        input_path: str,
+        output_path: Optional[str] = None,
+        parameters: Optional[Dict[str, Any]] = None,
+        working_dir_override: Optional[str] = None,
+        env_overrides: Optional[Dict[str, str]] = None,
+        timeout_seconds: Optional[int] = None,
+        wait_seconds: float = 0
+    ) -> Dict[str, Any]:
+        """
+        Démarre l'exécution asynchrone d'un notebook.
+        
+        Args:
+            input_path: Chemin du notebook d'entrée
+            output_path: Chemin du notebook de sortie (optionnel)
+            parameters: Paramètres à injecter (optionnel)
+            working_dir_override: Répertoire de travail personnalisé
+            env_overrides: Variables d'environnement supplémentaires
+            timeout_seconds: Timeout personnalisé (auto-calculé si None)
+            wait_seconds: Attendre la confirmation de démarrage (0 = immédiat)
+            
+        Returns:
+            Dictionary avec job_id, status, started_at, etc.
+        """
+        with self.lock:
+            # Vérifier la limite de jobs concurrent
+            if self._count_running_jobs() >= self.max_concurrent_jobs:
+                return {
+                    "success": False,
+                    "error": f"Too many concurrent jobs ({self.max_concurrent_jobs} max)",
+                    "running_jobs": self._count_running_jobs()
+                }
+            
+            # Créer le job
+            job_id = self._generate_job_id()
+            resolved_input_path = str(Path(input_path).resolve())
+            
+            if output_path is None:
+                timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+                output_path = str(Path(input_path).parent / f"{Path(input_path).stem}_executed_{timestamp}.ipynb")
+            
+            # Calculer timeout optimal si non spécifié
+            if timeout_seconds is None:
+                timeout_seconds = self._calculate_optimal_timeout(Path(resolved_input_path))
+            
+            job = ExecutionJob(
+                job_id=job_id,
+                input_path=resolved_input_path,
+                output_path=str(Path(output_path).resolve()),
+                parameters=parameters or {},
+                timeout_seconds=timeout_seconds
+            )
+            
+            self.jobs[job_id] = job
+            logger.info(f"Created job {job_id} for notebook: {input_path}")
+            
+            # Lancer l'exécution en arrière-plan
+            future = self.executor.submit(
+                self._execute_job,
+                job,
+                working_dir_override,
+                env_overrides
+            )
+            
+            # Attendre le démarrage si demandé
+            if wait_seconds > 0:
+                time.sleep(wait_seconds)
+                with self.lock:
+                    job = self.jobs[job_id]  # Refresh status
+            
+            return {
+                "success": True,
+                "job_id": job_id,
+                "status": job.status.value,
+                "started_at": job.started_at.isoformat() if job.started_at else None,
+                "notebook": job.input_path,
+                "output_path": job.output_path,
+                "timeout_seconds": job.timeout_seconds
+            }
+    
+    def _execute_job(
+        self,
+        job: ExecutionJob,
+        working_dir_override: Optional[str],
+        env_overrides: Optional[Dict[str, str]]
+    ) -> None:
+        """
+        Exécute un job en arrière-plan avec subprocess.Popen.
+        
+        Cette méthode s'exécute dans un thread séparé via ThreadPoolExecutor.
+        """
+        try:
+            with self.lock:
+                job.status = JobStatus.RUNNING
+                job.started_at = datetime.now()
+                job.updated_at = job.started_at
+            
+            logger.info(f"Starting job {job.job_id}: {job.input_path}")
+            
+            # Déterminer le répertoire de travail
+            if working_dir_override:
+                work_dir = Path(working_dir_override)
+            else:
+                work_dir = Path(job.input_path).parent
+            
+            # Construire l'environnement complet
+            env = self._build_complete_environment()
+            if env_overrides:
+                env.update(env_overrides)
+            
+            # Construire la commande conda run
+            conda_python = "C:/Users/jsboi/.conda/envs/mcp-jupyter-py310/python.exe"
+            cmd = [
+                conda_python, "-m", "papermill",
+                Path(job.input_path).name,  # Nom relatif dans le répertoire de travail
+                Path(job.output_path).name if Path(job.output_path).parent == work_dir else job.output_path,
+                "--progress-bar"
+            ]
+            
+            # Ajouter les paramètres si spécifiés
+            for key, value in job.parameters.items():
+                cmd.extend(["-p", key, str(value)])
+            
+            logger.info(f"Job {job.job_id} command: {' '.join(cmd)}")
+            logger.info(f"Job {job.job_id} working directory: {work_dir}")
+            
+            # Démarrer le processus avec subprocess.Popen pour capture non-bloquante
+            process = subprocess.Popen(
+                cmd,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                cwd=str(work_dir),
+                env=env
+            )
+            
+            with self.lock:
+                job.process = process
+            
+            # Capturer stdout/stderr en continu
+            self._capture_output_streams(job)
+            
+            # Attendre la fin ou timeout
+            try:
+                return_code = process.wait(timeout=job.timeout_seconds)
+                
+                with self.lock:
+                    job.return_code = return_code
+                    job.ended_at = datetime.now()
+                    job.updated_at = job.ended_at
+                    
+                    if return_code == 0 and Path(job.output_path).exists():
+                        job.status = JobStatus.SUCCEEDED
+                        logger.info(f"Job {job.job_id} completed successfully in {job.duration_seconds:.2f}s")
+                    else:
+                        job.status = JobStatus.FAILED
+                        job.error_message = f"Process failed with return code {return_code}"
+                        logger.error(f"Job {job.job_id} failed with return code {return_code}")
+                        
+            except subprocess.TimeoutExpired:
+                logger.warning(f"Job {job.job_id} timed out after {job.timeout_seconds}s")
+                self._terminate_job(job, JobStatus.TIMEOUT, f"Execution timed out after {job.timeout_seconds}s")
+                
+        except Exception as e:
+            logger.error(f"Job {job.job_id} failed with exception: {e}")
+            with self.lock:
+                job.status = JobStatus.FAILED
+                job.error_message = str(e)
+                job.ended_at = datetime.now()
+                job.updated_at = job.ended_at
+    
+    def _capture_output_streams(self, job: ExecutionJob) -> None:
+        """
+        Capture stdout/stderr en continu dans des threads séparés.
+        
+        Args:
+            job: Job dont capturer les sorties
+        """
+        def capture_stdout():
+            try:
+                for line in iter(job.process.stdout.readline, ''):
+                    if line:
+                        with self.lock:
+                            job.stdout_buffer.append(f"[{datetime.now().isoformat()}] {line.rstrip()}")
+                            job.updated_at = datetime.now()
+            except Exception as e:
+                logger.warning(f"Error capturing stdout for job {job.job_id}: {e}")
+        
+        def capture_stderr():
+            try:
+                for line in iter(job.process.stderr.readline, ''):
+                    if line:
+                        with self.lock:
+                            job.stderr_buffer.append(f"[{datetime.now().isoformat()}] {line.rstrip()}")
+                            job.updated_at = datetime.now()
+            except Exception as e:
+                logger.warning(f"Error capturing stderr for job {job.job_id}: {e}")
+        
+        # Démarrer les threads de capture
+        threading.Thread(target=capture_stdout, daemon=True).start()
+        threading.Thread(target=capture_stderr, daemon=True).start()
+    
+    def _terminate_job(self, job: ExecutionJob, status: JobStatus, error_message: str) -> None:
+        """
+        Termine un job avec gestion Windows appropriée.
+        
+        Args:
+            job: Job à terminer
+            status: Nouveau statut
+            error_message: Message d'erreur
+        """
+        try:
+            if job.process and job.process.poll() is None:
+                # Tentative de terminaison gracieuse
+                job.process.terminate()
+                try:
+                    job.process.wait(timeout=5)
+                    logger.info(f"Job {job.job_id} terminated gracefully")
+                except subprocess.TimeoutExpired:
+                    # Force kill si nécessaire (Windows)
+                    job.process.kill()
+                    job.process.wait()
+                    logger.warning(f"Job {job.job_id} force-killed")
+            
+            with self.lock:
+                job.status = status
+                job.error_message = error_message
+                job.ended_at = datetime.now()
+                job.updated_at = job.ended_at
+                
+        except Exception as e:
+            logger.error(f"Error terminating job {job.job_id}: {e}")
+    
+    def get_execution_status(self, job_id: str) -> Dict[str, Any]:
+        """
+        Récupère le statut d'exécution d'un job.
+        
+        Args:
+            job_id: ID du job
+            
+        Returns:
+            Dictionary avec statut complet du job
+        """
+        with self.lock:
+            if job_id not in self.jobs:
+                return {
+                    "success": False,
+                    "error": f"Job {job_id} not found",
+                    "job_id": job_id
+                }
+            
+            job = self.jobs[job_id]
+            
+            return {
+                "success": True,
+                "job_id": job_id,
+                "status": job.status.value,
+                "started_at": job.started_at.isoformat() if job.started_at else None,
+                "updated_at": job.updated_at.isoformat() if job.updated_at else None,
+                "ended_at": job.ended_at.isoformat() if job.ended_at else None,
+                "duration_seconds": job.duration_seconds,
+                "return_code": job.return_code,
+                "output_path": job.output_path,
+                "error_summary": job.error_message,
+                "timeout_seconds": job.timeout_seconds,
+                "progress_hint": self._get_progress_hint(job)
+            }
+    
+    def get_job_logs(self, job_id: str, since_line: int = 0) -> Dict[str, Any]:
+        """
+        Récupère les logs d'un job avec pagination.
+        
+        Args:
+            job_id: ID du job
+            since_line: Ligne de départ pour la pagination
+            
+        Returns:
+            Dictionary avec chunks de logs
+        """
+        with self.lock:
+            if job_id not in self.jobs:
+                return {
+                    "success": False,
+                    "error": f"Job {job_id} not found",
+                    "job_id": job_id
+                }
+            
+            job = self.jobs[job_id]
+            
+            stdout_chunk = job.stdout_buffer[since_line:] if since_line < len(job.stdout_buffer) else []
+            stderr_chunk = job.stderr_buffer[since_line:] if since_line < len(job.stderr_buffer) else []
+            
+            return {
+                "success": True,
+                "job_id": job_id,
+                "stdout_chunk": stdout_chunk,
+                "stderr_chunk": stderr_chunk,
+                "next_line": max(len(job.stdout_buffer), len(job.stderr_buffer)),
+                "stdout_eof": job.status in [JobStatus.SUCCEEDED, JobStatus.FAILED, JobStatus.CANCELED, JobStatus.TIMEOUT],
+                "stderr_eof": job.status in [JobStatus.SUCCEEDED, JobStatus.FAILED, JobStatus.CANCELED, JobStatus.TIMEOUT],
+                "job_status": job.status.value
+            }
+    
+    def cancel_job(self, job_id: str) -> Dict[str, Any]:
+        """
+        Annule un job en cours d'exécution.
+        
+        Args:
+            job_id: ID du job à annuler
+            
+        Returns:
+            Dictionary avec résultat de l'annulation
+        """
+        with self.lock:
+            if job_id not in self.jobs:
+                return {
+                    "success": False,
+                    "error": f"Job {job_id} not found",
+                    "job_id": job_id
+                }
+            
+            job = self.jobs[job_id]
+            
+            if job.status not in [JobStatus.PENDING, JobStatus.RUNNING]:
+                return {
+                    "success": False,
+                    "error": f"Job {job_id} is not cancelable (status: {job.status.value})",
+                    "job_id": job_id,
+                    "status": job.status.value
+                }
+            
+            # Terminer le job
+            self._terminate_job(job, JobStatus.CANCELED, "Job canceled by user request")
+            
+            return {
+                "success": True,
+                "job_id": job_id,
+                "canceled": True,
+                "status_after": job.status.value,
+                "canceled_at": job.ended_at.isoformat() if job.ended_at else None
+            }
+    
+    def list_jobs(self) -> Dict[str, Any]:
+        """
+        Liste tous les jobs avec statuts raccourcis.
+        
+        Returns:
+            Dictionary avec liste des jobs
+        """
+        with self.lock:
+            jobs_list = []
+            for job in self.jobs.values():
+                jobs_list.append({
+                    "job_id": job.job_id,
+                    "status": job.status.value,
+                    "input_path": job.input_path,
+                    "started_at": job.started_at.isoformat() if job.started_at else None,
+                    "duration_seconds": job.duration_seconds,
+                    "timeout_seconds": job.timeout_seconds
+                })
+            
+            return {
+                "success": True,
+                "total_jobs": len(jobs_list),
+                "running_jobs": self._count_running_jobs(),
+                "jobs": jobs_list
+            }
+    
+    def _get_progress_hint(self, job: ExecutionJob) -> Optional[str]:
+        """
+        Génère un indice de progression basé sur les logs récents.
+        
+        Args:
+            job: Job pour lequel générer l'indice
+            
+        Returns:
+            Indice de progression ou None
+        """
+        if not job.stdout_buffer:
+            return None
+        
+        # Rechercher les patterns de progression dans les logs récents
+        recent_logs = job.stdout_buffer[-5:]  # 5 dernières lignes
+        
+        for log_line in reversed(recent_logs):
+            if "%" in log_line and any(word in log_line.lower() for word in ["executing", "progress", "cell"]):
+                return log_line.split("]", 1)[-1].strip() if "]" in log_line else log_line
+        
+        # Fallback: dernière ligne non vide
+        for log_line in reversed(recent_logs):
+            if log_line.strip():
+                return log_line.split("]", 1)[-1].strip() if "]" in log_line else log_line[:100]
+        
+        return None
+    
+    def _calculate_optimal_timeout(self, notebook_path: Path) -> int:
+        """
+        Calcule le timeout optimal (réutilise la logique existante).
+        """
+        try:
+            notebook_name = notebook_path.name.lower()
+            
+            # Analyse du contenu pour déterminer la complexité
+            with open(notebook_path, 'r', encoding='utf-8') as f:
+                content = f.read().lower()
+            
+            # Timeout de base
+            base_timeout = 120  # 2 minutes base pour job async
+            
+            # Extensions basées sur les patterns détectés
+            if 'semantickernel' in notebook_name or 'semantic_kernel' in content:
+                if any(pattern in notebook_name for pattern in ['04', 'clr', 'building']):
+                    return max(base_timeout, 1200)  # 20 minutes pour CLR/building notebooks
+                elif any(pattern in notebook_name for pattern in ['05', 'notebookmaker', 'widget']):
+                    return max(base_timeout, 600)   # 10 minutes pour widget notebooks
+                else:
+                    return max(base_timeout, 300)   # 5 minutes pour autres SemanticKernel
+            
+            # .NET notebooks avec NuGet packages
+            if any(pattern in content for pattern in ['.net', 'nuget', 'microsoft.ml', 'dotnet']):
+                return max(base_timeout, 300)  # 5 minutes pour .NET
+            
+            # Python notebooks avec ML/AI libraries
+            if any(pattern in content for pattern in ['tensorflow', 'pytorch', 'sklearn', 'pandas', 'numpy']):
+                return max(base_timeout, 180)  # 3 minutes pour ML
+            
+            # Notebooks simples
+            return base_timeout
+            
+        except Exception as e:
+            logger.warning(f"Failed to calculate optimal timeout for {notebook_path}: {e}")
+            return 120  # Default fallback
+    
+    def _build_complete_environment(self) -> Dict[str, str]:
+        """
+        Construit un environnement complet (réutilise la logique existante).
+        """
+        env = os.environ.copy()
+        
+        # Variables critiques pour conda
+        conda_vars = {
+            "CONDA_DEFAULT_ENV": "mcp-jupyter-py310",
+            "CONDA_PREFIX": "C:/Users/jsboi/.conda/envs/mcp-jupyter-py310",
+            "CONDA_PROMPT_MODIFIER": "(mcp-jupyter-py310) ",
+            "CONDA_PYTHON_EXE": "C:/Users/jsboi/.conda/envs/mcp-jupyter-py310/python.exe",
+            "CONDA_SHLVL": "1",
+            "CONDA_EXE": "C:/Users/jsboi/.conda/Scripts/conda.exe"
+        }
+        
+        # Variables critiques pour .NET
+        dotnet_vars = {
+            "DOTNET_ROOT": "C:\\Program Files\\dotnet",
+            "DOTNET_HOST_PATH": "C:\\Program Files\\dotnet\\dotnet.exe",
+            "NUGET_PACKAGES": "C:\\Users\\jsboi\\.nuget\\packages",
+            "MSBuildExtensionsPath": "C:\\Program Files\\dotnet\\sdk\\9.0.305",
+            "MSBuildSDKsPath": "C:\\Program Files\\dotnet\\sdk\\9.0.305\\Sdks",
+            "MSBuildToolsPath": "C:\\Program Files\\dotnet\\sdk\\9.0.305",
+            "MSBuildUserExtensionsPath": "C:\\Users\\jsboi\\AppData\\Local\\Microsoft\\MSBuild",
+            "DOTNET_CLI_TELEMETRY_OPTOUT": "1",
+            "DOTNET_NOLOGO": "1",
+            "DOTNET_SKIP_FIRST_TIME_EXPERIENCE": "1"
+        }
+        
+        # Variables pour Jupyter et Python
+        python_vars = {
+            "PYTHONPATH": "D:/dev/roo-extensions/mcps/internal/servers/jupyter-papermill-mcp-server",
+            "JUPYTER_DATA_DIR": "C:/Users/jsboi/.conda/envs/mcp-jupyter-py310/share/jupyter",
+            "JUPYTER_CONFIG_DIR": "C:/Users/jsboi/.conda/envs/mcp-jupyter-py310/etc/jupyter",
+            "PYTHONUNBUFFERED": "1",
+            "PYTHONDONTWRITEBYTECODE": "1"
+        }
+        
+        # Variables spécifiques Roo
+        workspace_dir = os.getenv('ROO_WORKSPACE_DIR', 'd:/dev/CoursIA')
+        roo_vars = {
+            "ROO_WORKSPACE_DIR": workspace_dir
+        }
+        
+        # Construire le PATH complet
+        path_components = [
+            "C:/Users/jsboi/.conda/envs/mcp-jupyter-py310/Scripts",
+            "C:/Users/jsboi/.conda/envs/mcp-jupyter-py310/Library/mingw-w64/bin",
+            "C:/Users/jsboi/.conda/envs/mcp-jupyter-py310/Library/usr/bin",
+            "C:/Users/jsboi/.conda/envs/mcp-jupyter-py310/Library/bin",
+            "C:/Users/jsboi/.conda/envs/mcp-jupyter-py310",
+            "C:\\Program Files\\dotnet",
+            env.get("PATH", "")
+        ]
+        
+        # Mettre à jour l'environnement
+        env.update(conda_vars)
+        env.update(dotnet_vars)
+        env.update(python_vars)
+        env.update(roo_vars)
+        env["PATH"] = ";".join(path_components)
+        
+        return env
+    
+    def cleanup_old_jobs(self, max_age_hours: int = 24) -> Dict[str, Any]:
+        """
+        Nettoie les anciens jobs terminés.
+        
+        Args:
+            max_age_hours: Age maximum en heures pour conserver les jobs
+            
+        Returns:
+            Dictionary avec résultat du nettoyage
+        """
+        cutoff_time = datetime.now() - timedelta(hours=max_age_hours)
+        cleaned_count = 0
+        
+        with self.lock:
+            jobs_to_remove = []
+            for job_id, job in self.jobs.items():
+                if (job.status in [JobStatus.SUCCEEDED, JobStatus.FAILED, JobStatus.CANCELED, JobStatus.TIMEOUT] and
+                    job.ended_at and job.ended_at < cutoff_time):
+                    jobs_to_remove.append(job_id)
+            
+            for job_id in jobs_to_remove:
+                del self.jobs[job_id]
+                cleaned_count += 1
+        
+        logger.info(f"Cleaned up {cleaned_count} old jobs")
+        return {
+            "success": True,
+            "cleaned_jobs": cleaned_count,
+            "remaining_jobs": len(self.jobs)
+        }
+
+
+# Instance globale du gestionnaire d'exécution
+_execution_manager: Optional[ExecutionManager] = None
+
+
+def get_execution_manager() -> ExecutionManager:
+    """Récupère l'instance globale du gestionnaire d'exécution."""
+    global _execution_manager
+    if _execution_manager is None:
+        _execution_manager = ExecutionManager()
+    return _execution_manager
 
 
 class NotebookService:
@@ -807,167 +1429,130 @@ class NotebookService:
         self,
         input_path: Union[str, Path],
         output_path: Optional[Union[str, Path]] = None,
-        timeout: Optional[int] = None
+        timeout: Optional[int] = None,
+        sync_timeout_seconds: int = 25
     ) -> Dict[str, Any]:
         """
-        SOLUTION A - Architecture subprocess avec conda run et environnement complet.
-        Résout le timeout de 60s en utilisant subprocess.run avec conda run.
+        SOLUTION A - Architecture subprocess hybride : sync court + job asynchrone.
+        Résout le timeout MCP de 60s en utilisant ExecutionManager job-based.
         
         Args:
             input_path: Path to input notebook
             output_path: Optional path to output notebook
-            timeout: Optional timeout in seconds (default 60)
+            timeout: Optional timeout total pour le job (auto-calculé si None)
+            sync_timeout_seconds: Temps d'attente sync avant passage en mode async (défaut 25s)
             
         Returns:
-            Dictionary with execution result and diagnostics
+            Dictionary with execution result or in_progress status with job_id
         """
         try:
             import datetime
-            import os
-            import subprocess
+            start_time = datetime.datetime.now()
             
-            # Resolve input path against workspace
+            # Résoudre le path d'entrée
             resolved_input_path = Path(self.resolve_path(input_path))
+            logger.info(f"Executing notebook (Solution A - Hybrid): {input_path} -> {resolved_input_path}")
             
-            if output_path is None:
-                # CORRECTION BUG INSTABILITÉ : éviter conflits de fichiers avec timestamps
-                timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
-                output_path = resolved_input_path.parent / f"{resolved_input_path.stem}_executed_{timestamp}.ipynb"
-            else:
-                output_path = Path(self.resolve_path(output_path))
+            # Utiliser l'ExecutionManager pour démarrer le job
+            exec_manager = get_execution_manager()
             
-            logger.info(f"Executing notebook (Solution A - subprocess): {input_path} -> {resolved_input_path}")
+            job_result = exec_manager.start_notebook_async(
+                input_path=str(resolved_input_path),
+                output_path=str(output_path) if output_path else None,
+                timeout_seconds=timeout,
+                wait_seconds=2  # Attendre 2s pour confirmation démarrage
+            )
             
-            # Configure timeout (default to 300s for subprocess method)
-            if timeout is None:
-                timeout = 300  # 5 minutes default pour subprocess
-            
-            # Working directory fix for .NET NuGet packages
-            notebook_dir = resolved_input_path.parent.absolute()
-            original_cwd = os.getcwd()
-            
-            try:
-                # Change to notebook directory
-                os.chdir(notebook_dir)
-                
-                start_time = datetime.datetime.now()
-                
-                # CORRECTION : Utiliser directement python de l'environnement plutôt que conda run
-                conda_python = "C:/Users/jsboi/.conda/envs/mcp-jupyter-py310/python.exe"
-                cmd = [
-                    conda_python, "-m", "papermill",
-                    str(resolved_input_path),
-                    str(output_path),
-                    "--progress-bar"
-                ]
-                
-                logger.info(f"Executing command: {' '.join(cmd)}")
-                logger.info(f"Working directory: {notebook_dir}")
-                logger.info(f"Timeout: {timeout}s")
-                
-                # Execute subprocess with comprehensive environment
-                env = os.environ.copy()
-                
-                # Ajouter variables d'environnement critiques
-                critical_env_vars = {
-                    "CONDA_DEFAULT_ENV": "mcp-jupyter-py310",
-                    "CONDA_PREFIX": env.get("CONDA_PREFIX", ""),
-                    "ROO_WORKSPACE_DIR": self.workspace_dir,
-                    "PYTHONUNBUFFERED": "1",
-                    "DOTNET_CLI_TELEMETRY_OPTOUT": "1"
-                }
-                
-                env.update(critical_env_vars)
-                
-                result = subprocess.run(
-                    cmd,
-                    capture_output=True,
-                    text=True,
-                    check=False,
-                    timeout=timeout,
-                    env=env,
-                    cwd=notebook_dir
-                )
-                
-                end_time = datetime.datetime.now()
-                execution_time = (end_time - start_time).total_seconds()
-                
-                # Diagnostic info
-                diagnostic_info = {
-                    "method": "conda_run_subprocess",
-                    "command": " ".join(cmd),
-                    "cwd": str(notebook_dir),
-                    "original_cwd": original_cwd,
-                    "timeout_configured": timeout,
-                    "execution_time_seconds": execution_time,
-                    "returncode": result.returncode,
-                    "stdout_length": len(result.stdout) if result.stdout else 0,
-                    "stderr_length": len(result.stderr) if result.stderr else 0
-                }
-                
-                # Check if execution was successful
-                success = result.returncode == 0 and os.path.exists(output_path)
-                
-                result_dict = {
-                    "success": success,
+            if not job_result["success"]:
+                return {
+                    "success": False,
                     "method": "execute_notebook_solution_a",
                     "input_path": str(resolved_input_path),
-                    "output_path": str(output_path),
-                    "execution_time_seconds": execution_time,
-                    "diagnostic": diagnostic_info,
-                    "timestamp": end_time.isoformat(),
-                    "returncode": result.returncode,
-                    "timeout_used": timeout
+                    "error": job_result.get("error", "Failed to start async job"),
+                    "timestamp": start_time.isoformat()
                 }
-                
-                # Add stdout/stderr if there are issues or for debugging
-                if result.stdout:
-                    result_dict["stdout"] = result.stdout
-                if result.stderr:
-                    result_dict["stderr"] = result.stderr
-                
-                # Add file size info if output exists
-                if os.path.exists(output_path):
-                    stat = os.stat(output_path)
-                    result_dict["output_file_size"] = stat.st_size
-                else:
-                    result_dict["error"] = "Output notebook file not created"
-                    success = False
-                    result_dict["success"] = False
-                
-                if success:
-                    logger.info(f"Successfully executed notebook (Solution A subprocess): {output_path}")
-                    logger.info(f"Execution time: {execution_time:.2f}s")
-                else:
-                    logger.error(f"Notebook execution failed (returncode: {result.returncode})")
-                    if result.stderr:
-                        logger.error(f"Error output: {result.stderr[:500]}...")
-                
-                return result_dict
-                
-            finally:
-                # Always restore original directory
-                os.chdir(original_cwd)
             
-        except subprocess.TimeoutExpired as e:
-            logger.error(f"Notebook execution timed out after {timeout}s: {input_path}")
-            return {
-                "success": False,
-                "method": "execute_notebook_solution_a",
-                "input_path": str(input_path),
-                "output_path": str(output_path) if output_path else None,
-                "error": f"Execution timed out after {timeout}s",
-                "error_type": "TimeoutExpired",
-                "timeout_used": timeout,
-                "timestamp": datetime.datetime.now().isoformat()
-            }
+            job_id = job_result["job_id"]
+            logger.info(f"Started async job {job_id}, waiting up to {sync_timeout_seconds}s for completion")
+            
+            # Polling avec timeout sync
+            poll_start = datetime.datetime.now()
+            poll_interval = 1.0  # 1 seconde entre polls
+            
+            while True:
+                # Vérifier le statut du job
+                status_result = exec_manager.get_execution_status(job_id)
+                if not status_result["success"]:
+                    return {
+                        "success": False,
+                        "method": "execute_notebook_solution_a",
+                        "job_id": job_id,
+                        "error": "Failed to get job status",
+                        "timestamp": datetime.datetime.now().isoformat()
+                    }
+                
+                job_status = status_result["status"]
+                elapsed_time = (datetime.datetime.now() - poll_start).total_seconds()
+                
+                # Si terminé avec succès dans les temps : retour sync
+                if job_status == "SUCCEEDED":
+                    logger.info(f"Job {job_id} completed successfully in {elapsed_time:.2f}s (sync mode)")
+                    return {
+                        "success": True,
+                        "method": "execute_notebook_solution_a",
+                        "execution_mode": "sync_completed",
+                        "input_path": str(resolved_input_path),
+                        "output_path": status_result["output_path"],
+                        "execution_time_seconds": status_result["duration_seconds"],
+                        "job_id": job_id,
+                        "timestamp": datetime.datetime.now().isoformat()
+                    }
+                
+                # Si échec : retour sync avec erreur
+                elif job_status in ["FAILED", "CANCELED", "TIMEOUT"]:
+                    logger.error(f"Job {job_id} failed with status {job_status}")
+                    return {
+                        "success": False,
+                        "method": "execute_notebook_solution_a",
+                        "execution_mode": "sync_failed",
+                        "input_path": str(resolved_input_path),
+                        "job_id": job_id,
+                        "job_status": job_status,
+                        "error": status_result.get("error_summary", f"Job {job_status}"),
+                        "execution_time_seconds": status_result["duration_seconds"],
+                        "timestamp": datetime.datetime.now().isoformat()
+                    }
+                
+                # Si timeout sync atteint : passage en mode async
+                elif elapsed_time >= sync_timeout_seconds:
+                    logger.info(f"Job {job_id} still running after {sync_timeout_seconds}s, switching to async mode")
+                    return {
+                        "success": True,
+                        "method": "execute_notebook_solution_a",
+                        "execution_mode": "in_progress",
+                        "input_path": str(resolved_input_path),
+                        "job_id": job_id,
+                        "job_status": job_status,
+                        "elapsed_time_seconds": elapsed_time,
+                        "sync_timeout_seconds": sync_timeout_seconds,
+                        "message": f"Notebook execution in progress. Use get_execution_status('{job_id}') to poll status.",
+                        "polling_instructions": {
+                            "get_status": f"get_execution_status('{job_id}')",
+                            "get_logs": f"get_job_logs('{job_id}')",
+                            "cancel": f"cancel_job('{job_id}')"
+                        },
+                        "timestamp": datetime.datetime.now().isoformat()
+                    }
+                
+                # Continuer le polling
+                await asyncio.sleep(poll_interval)
+                
         except Exception as e:
-            logger.error(f"Error executing notebook (Solution A subprocess) {input_path}: {e}")
+            logger.error(f"Error in execute_notebook_solution_a {input_path}: {e}")
             return {
                 "success": False,
                 "method": "execute_notebook_solution_a",
                 "input_path": str(input_path),
-                "output_path": str(output_path) if output_path else None,
                 "error": str(e),
                 "error_type": type(e).__name__,
                 "timestamp": datetime.datetime.now().isoformat()

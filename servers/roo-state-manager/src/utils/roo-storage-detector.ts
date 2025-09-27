@@ -23,7 +23,7 @@ import {
     NewTaskInstruction,
 } from '../types/conversation.js';
 import { globalCacheManager } from './cache-manager.js';
-import { globalTaskInstructionIndex } from './task-instruction-index.js';
+import { globalTaskInstructionIndex, computeInstructionPrefix } from './task-instruction-index.js';
 
 export class RooStorageDetector {
   private static readonly COMMON_ROO_PATHS = [
@@ -361,9 +361,9 @@ export class RooStorageDetector {
                 console.log(`[analyzeConversation] 🔍 DEBUG PHASE 1 - Found ${instructions.length} instructions for ${taskId.substring(0, 8)}`);
                 
                 childTaskInstructionPrefixes = instructions.map(inst => {
-                    // 🎯 CORRECTION CRITIQUE: Stocker seulement le message sans préfixe de mode pour un matching simple
-                    const prefix = inst.message.substring(0, 192);
-                    console.log(`[analyzeConversation] 🔍 DEBUG PHASE 1 - Created prefix for ${taskId.substring(0, 8)}: "${prefix.substring(0, 60)}..." (mode: ${inst.mode})`);
+                    // 🎯 CORRECTION SDDD Phase 2: Utiliser computeInstructionPrefix pour alignement strict
+                    const prefix = computeInstructionPrefix(inst.message, 192);
+                    console.log(`[analyzeConversation] 🔍 DEBUG PHASE 1 - Created normalized prefix for ${taskId.substring(0, 8)}: "${prefix.substring(0, 60)}..." (mode: ${inst.mode})`);
                     return prefix;
                 }).filter(prefix => prefix.length > 10); // Filtrer les préfixes trop courts
                 
@@ -424,12 +424,9 @@ export class RooStorageDetector {
                 }
             }
             
-            // Troncature à 200 caractères maximum
-            if (instruction.length > 200) {
-                instruction = instruction.substring(0, 197) + '...';
-            }
-            
-            truncatedInstruction = instruction.length > 0 ? instruction : undefined;
+            // 🎯 CORRECTION SDDD Phase 2: Utiliser computeInstructionPrefix pour alignement strict
+            // Suppression de l'ajout de "..." et alignement sur K=192
+            truncatedInstruction = instruction.length > 0 ? computeInstructionPrefix(instruction, 192) : undefined;
             
             // 📊 LOG DÉTAILLÉ : Traçabilité de l'extraction
             if (truncatedInstruction) {
@@ -532,10 +529,12 @@ export class RooStorageDetector {
         };
 
         // 🚀 PRODUCTION : Alimenter l'index radix-tree avec les instructions trouvées
+        // SDDD Phase 2: Les préfixes sont déjà normalisés via computeInstructionPrefix,
+        // mais addInstruction() passe la valeur RAW au radix tree comme spécifié
         if (useProductionHierarchy && childTaskInstructionPrefixes.length > 0) {
             for (const prefix of childTaskInstructionPrefixes) {
-                console.log(`[PASS 1 - INDEXING] Task: ${taskId.substring(0,8)} | RAW PREFIX: "${prefix}"`);
-                globalTaskInstructionIndex.addInstruction(prefix, taskId);
+                console.log(`[PASS 1 - INDEXING] Task: ${taskId.substring(0,8)} | NORMALIZED PREFIX: "${prefix}"`);
+                globalTaskInstructionIndex.addInstruction(taskId, prefix);
             }
         }
 
@@ -901,7 +900,7 @@ export class RooStorageDetector {
               const instruction: NewTaskInstruction = {
                 timestamp: new Date(message.timestamp || message.ts || 0).getTime(),
                 mode: mode,
-                message: taskMessage.substring(0, 192), // Troncature sécurisée
+                message: taskMessage, // 🎯 CORRECTION SDDD: Pas de troncature ici, elle sera faite par computeInstructionPrefix
               };
               instructions.push(instruction);
               console.log(`[extractFromMessageFile] 🎯 DÉLÉGATION XML ${mode} dans ${path.basename(filePath)}: ${taskMessage.substring(0, 50)}...`);
@@ -919,7 +918,7 @@ export class RooStorageDetector {
               const instruction: NewTaskInstruction = {
                 timestamp: new Date(message.timestamp || message.ts || 0).getTime(),
                 mode: 'task', // Mode générique pour balises task simples
-                message: taskContent.substring(0, 192), // Troncature sécurisée
+                message: taskContent, // 🎯 CORRECTION SDDD: Pas de troncature ici, elle sera faite par computeInstructionPrefix
               };
               instructions.push(instruction);
               console.log(`[extractFromMessageFile] 🎯 BALISE TASK SIMPLE AJOUTÉE dans ${path.basename(filePath)}: ${taskContent.substring(0, 50)}...`);
