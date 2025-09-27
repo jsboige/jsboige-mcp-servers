@@ -706,13 +706,55 @@ export class RooStorageDetector {
 
     conversations.push(...processedSkeletons.filter(s => s !== null) as ConversationSkeleton[]);
 
-    // 🛡️ CORRECTION ARCHITECTURE : PHASE 3 DÉSACTIVÉE
-    // Plus aucune tentative de résolution inverse des parents depuis les enfants
-    // Les parents sont définis uniquement dans les métadonnées
-    console.log(`[buildHierarchicalSkeletons] 🔗 PHASE 3: DÉSACTIVÉE - Architecture corrigée`);
+    // 🚀 PHASE 3: Résolution strict mode des parents manquants en 2 passes
+    console.log(`[buildHierarchicalSkeletons] 🔗 PHASE 3: Résolution des parents manquants en mode strict`);
+    console.log(`STRICT MODE: pass1 indexing complete`);
+    
     const orphanTasks = conversations.filter(c => !c.parentTaskId);
     let resolvedCount = 0;
-    console.log(`[buildHierarchicalSkeletons] ℹ️ ${orphanTasks.length} tâches orphelines conservées sans parent`);
+    console.log(`STRICT MODE: linking pass2 started`);
+    
+    // File de liaisons différées pour les enfants sans parent trouvé en strict pendant passe 1
+    const deferredLinkings: Array<{child: ConversationSkeleton, truncatedInstruction: string}> = [];
+    
+    // Pass 2: Tentative de résolution strict uniquement via exact prefix matching
+    for (const orphan of orphanTasks) {
+        if (!orphan.truncatedInstruction) {
+            continue; // Skip les tâches sans instruction
+        }
+        
+        // Utilisation du globalTaskInstructionIndex pour recherche exact prefix
+        const exactMatches = globalTaskInstructionIndex.searchExactPrefix(orphan.truncatedInstruction);
+        
+        if (exactMatches && exactMatches.length === 1) {
+            const candidateParent = exactMatches[0];
+            
+            // Validation basique : pas d'auto-référence
+            if (candidateParent.taskId !== orphan.taskId) {
+                // Vérifier que le parent existe dans notre dataset
+                const parentExists = conversations.find(c => c.taskId === candidateParent.taskId);
+                if (parentExists) {
+                    orphan.parentTaskId = candidateParent.taskId;
+                    resolvedCount++;
+                    console.log(`STRICT MODE: exact match resolved ${orphan.taskId.substring(0,8)} → ${candidateParent.taskId.substring(0,8)}`);
+                } else {
+                    console.log(`STRICT MODE: parent candidate ${candidateParent.taskId.substring(0,8)} not in dataset for ${orphan.taskId.substring(0,8)}`);
+                }
+            }
+        } else if (exactMatches && exactMatches.length > 1) {
+            console.log(`STRICT MODE: ambiguous matches (${exactMatches.length}) for ${orphan.taskId.substring(0,8)}, skipped`);
+        } else {
+            // Pas de match exact, ajouter à la file différée
+            deferredLinkings.push({ child: orphan, truncatedInstruction: orphan.truncatedInstruction });
+        }
+    }
+    
+    console.log(`STRICT MODE: deferred linkings count: ${deferredLinkings.length}`);
+    // Note: Pour cette phase de validation, on ne retraite pas les liaisons différées
+    // car le strict mode doit être déterministe et utiliser uniquement exact prefix matching
+    
+    const finalOrphansCount = conversations.filter(c => !c.parentTaskId).length;
+    console.log(`STRICT MODE: final orphans count: ${finalOrphansCount}`);
 
     const indexStats = globalTaskInstructionIndex.getStats();
     console.log(`[buildHierarchicalSkeletons] ✅ TERMINÉ:`);
