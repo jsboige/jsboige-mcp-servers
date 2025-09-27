@@ -1558,6 +1558,177 @@ class NotebookService:
                 "timestamp": datetime.datetime.now().isoformat()
             }
     
+    # Méthodes wrapper pour ExecutionManager (exposition MCP)
+    
+    async def start_notebook_async(
+        self,
+        input_path: Union[str, Path],
+        output_path: Optional[Union[str, Path]] = None,
+        parameters: Optional[Dict[str, Any]] = None,
+        working_dir_override: Optional[str] = None,
+        env_overrides: Optional[Dict[str, str]] = None,
+        timeout_seconds: Optional[int] = None,
+        wait_seconds: float = 0
+    ) -> Dict[str, Any]:
+        """
+        Démarre l'exécution asynchrone d'un notebook.
+        
+        Args:
+            input_path: Chemin du notebook d'entrée
+            output_path: Chemin du notebook de sortie (optionnel)
+            parameters: Paramètres à injecter (optionnel)
+            working_dir_override: Répertoire de travail personnalisé
+            env_overrides: Variables d'environnement supplémentaires
+            timeout_seconds: Timeout personnalisé (auto-calculé si None)
+            wait_seconds: Attendre la confirmation de démarrage (0 = immédiat)
+            
+        Returns:
+            Dictionary avec job_id, status, started_at, etc.
+        """
+        try:
+            # Résoudre les paths avec workspace
+            resolved_input_path = self.resolve_path(input_path)
+            resolved_output_path = self.resolve_path(output_path) if output_path else None
+            
+            logger.info(f"Starting async notebook execution: {input_path} -> {resolved_input_path}")
+            
+            exec_manager = get_execution_manager()
+            result = exec_manager.start_notebook_async(
+                input_path=resolved_input_path,
+                output_path=resolved_output_path,
+                parameters=parameters,
+                working_dir_override=working_dir_override,
+                env_overrides=env_overrides,
+                timeout_seconds=timeout_seconds,
+                wait_seconds=wait_seconds
+            )
+            
+            logger.info(f"Async job started: {result.get('job_id', 'unknown')}")
+            return result
+            
+        except Exception as e:
+            logger.error(f"Error starting async notebook execution {input_path}: {e}")
+            return {
+                "success": False,
+                "error": str(e),
+                "error_type": type(e).__name__,
+                "input_path": str(input_path),
+                "timestamp": datetime.now().isoformat()
+            }
+    
+    async def get_execution_status_async(self, job_id: str) -> Dict[str, Any]:
+        """
+        Récupère le statut d'exécution d'un job asynchrone.
+        
+        Args:
+            job_id: ID du job
+            
+        Returns:
+            Dictionary avec statut complet du job
+        """
+        try:
+            logger.info(f"Getting execution status for job: {job_id}")
+            
+            exec_manager = get_execution_manager()
+            result = exec_manager.get_execution_status(job_id)
+            
+            logger.info(f"Status retrieved for job {job_id}: {result.get('status', 'unknown')}")
+            return result
+            
+        except Exception as e:
+            logger.error(f"Error getting execution status for job {job_id}: {e}")
+            return {
+                "success": False,
+                "error": str(e),
+                "error_type": type(e).__name__,
+                "job_id": job_id,
+                "timestamp": datetime.now().isoformat()
+            }
+    
+    async def get_job_logs_async(self, job_id: str, since_line: int = 0) -> Dict[str, Any]:
+        """
+        Récupère les logs d'un job avec pagination.
+        
+        Args:
+            job_id: ID du job
+            since_line: Ligne de départ pour la pagination
+            
+        Returns:
+            Dictionary avec chunks de logs
+        """
+        try:
+            logger.info(f"Getting logs for job {job_id} from line {since_line}")
+            
+            exec_manager = get_execution_manager()
+            result = exec_manager.get_job_logs(job_id, since_line)
+            
+            logger.info(f"Logs retrieved for job {job_id}: {len(result.get('stdout_chunk', []))} stdout, {len(result.get('stderr_chunk', []))} stderr lines")
+            return result
+            
+        except Exception as e:
+            logger.error(f"Error getting logs for job {job_id}: {e}")
+            return {
+                "success": False,
+                "error": str(e),
+                "error_type": type(e).__name__,
+                "job_id": job_id,
+                "timestamp": datetime.now().isoformat()
+            }
+    
+    async def cancel_job_async(self, job_id: str) -> Dict[str, Any]:
+        """
+        Annule un job en cours d'exécution.
+        
+        Args:
+            job_id: ID du job à annuler
+            
+        Returns:
+            Dictionary avec résultat de l'annulation
+        """
+        try:
+            logger.info(f"Canceling job: {job_id}")
+            
+            exec_manager = get_execution_manager()
+            result = exec_manager.cancel_job(job_id)
+            
+            logger.info(f"Job {job_id} cancellation result: {result.get('canceled', False)}")
+            return result
+            
+        except Exception as e:
+            logger.error(f"Error canceling job {job_id}: {e}")
+            return {
+                "success": False,
+                "error": str(e),
+                "error_type": type(e).__name__,
+                "job_id": job_id,
+                "timestamp": datetime.now().isoformat()
+            }
+    
+    async def list_jobs_async(self) -> Dict[str, Any]:
+        """
+        Liste tous les jobs avec statuts raccourcis.
+        
+        Returns:
+            Dictionary avec liste des jobs
+        """
+        try:
+            logger.info("Listing all execution jobs")
+            
+            exec_manager = get_execution_manager()
+            result = exec_manager.list_jobs()
+            
+            logger.info(f"Listed {result.get('total_jobs', 0)} jobs ({result.get('running_jobs', 0)} running)")
+            return result
+            
+        except Exception as e:
+            logger.error(f"Error listing jobs: {e}")
+            return {
+                "success": False,
+                "error": str(e),
+                "error_type": type(e).__name__,
+                "timestamp": datetime.now().isoformat()
+            }
+    
     async def parameterize_notebook(
         self,
         input_path: Union[str, Path],

@@ -96,7 +96,7 @@ class JupyterPapermillMCPServer:
             logger.info("[PLUGIN] Registering kernel tools (6 tools)...")
             register_kernel_tools(self.app)
             
-            logger.info("Registering execution tools (13 tools)...")
+            logger.info("Registering execution tools (18 tools)...")
             register_execution_tools(self.app)
             
             self._initialized = True
@@ -128,7 +128,9 @@ class JupyterPapermillMCPServer:
                 "execute_notebook_papermill", "list_notebook_files", "get_notebook_info",
                 "get_kernel_status", "cleanup_all_kernels", "start_jupyter_server",
                 "stop_jupyter_server", "debug_list_runtime_dir", "execute_notebook_solution_a",
-                "parameterize_notebook", "execute_notebook_cell", "get_execution_status"
+                "parameterize_notebook", "execute_notebook_cell", "get_execution_status",
+                "start_notebook_async", "get_execution_status_async", "get_job_logs",
+                "cancel_job", "list_jobs"
             ]
             
             total_tools = len(notebook_tools) + len(kernel_tools) + len(execution_tools)
@@ -231,9 +233,9 @@ def cli_main() -> None:
     try:
         logger.info("=" * 60)
         logger.info("CONSOLIDATED JUPYTER PAPERMILL MCP SERVER")
-        logger.info("Architecture: Modular + Monolithic Optimizations")
-        logger.info("Tools: 32 Unified Tools")
-        logger.info("Framework: FastMCP")
+        logger.info("Architecture: Modular + Monolithic Optimizations + Async Jobs")
+        logger.info("Tools: 37 Unified Tools (32 + 5 Async)")
+        logger.info("Framework: FastMCP + ExecutionManager")
         logger.info("=" * 60)
         
         # Initialize and run server synchronously via FastMCP

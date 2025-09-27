@@ -548,4 +548,163 @@ def register_execution_tools(app: FastMCP) -> None:
                 "success": False
             }
     
-    logger.info("Registered execution tools (13 total)")
+    @app.tool()
+    async def start_notebook_async(
+        input_path: str,
+        output_path: Optional[str] = None,
+        parameters: Optional[Dict[str, Any]] = None,
+        working_dir_override: Optional[str] = None,
+        env_overrides: Optional[Dict[str, str]] = None,
+        timeout_seconds: Optional[int] = None,
+        wait_seconds: float = 0
+    ) -> Dict[str, Any]:
+        """
+        Démarre l'exécution asynchrone d'un notebook
+        
+        Args:
+            input_path: Chemin du notebook d'entrée
+            output_path: Chemin du notebook de sortie (optionnel)
+            parameters: Paramètres à injecter (optionnel)
+            working_dir_override: Répertoire de travail personnalisé
+            env_overrides: Variables d'environnement supplémentaires
+            timeout_seconds: Timeout personnalisé (auto-calculé si None)
+            wait_seconds: Attendre la confirmation de démarrage (0 = immédiat)
+            
+        Returns:
+            Dictionary avec job_id, status, started_at, etc.
+        """
+        try:
+            logger.info(f"Starting async notebook execution: {input_path}")
+            notebook_service, _ = get_services()
+            
+            result = await notebook_service.start_notebook_async(
+                input_path=input_path,
+                output_path=output_path,
+                parameters=parameters,
+                working_dir_override=working_dir_override,
+                env_overrides=env_overrides,
+                timeout_seconds=timeout_seconds,
+                wait_seconds=wait_seconds
+            )
+            
+            logger.info(f"Successfully started async execution: {result.get('job_id', 'unknown')}")
+            return result
+            
+        except Exception as e:
+            logger.error(f"Error starting async notebook execution {input_path}: {e}")
+            return {
+                "error": str(e),
+                "input_path": input_path,
+                "success": False
+            }
+    
+    @app.tool()
+    async def get_execution_status_async(job_id: str) -> Dict[str, Any]:
+        """
+        Récupère le statut d'exécution d'un job asynchrone
+        
+        Args:
+            job_id: ID du job
+            
+        Returns:
+            Dictionary avec statut complet du job
+        """
+        try:
+            logger.info(f"Getting execution status for job: {job_id}")
+            notebook_service, _ = get_services()
+            
+            result = await notebook_service.get_execution_status_async(job_id)
+            
+            logger.info(f"Successfully retrieved status for job {job_id}")
+            return result
+            
+        except Exception as e:
+            logger.error(f"Error getting execution status for job {job_id}: {e}")
+            return {
+                "error": str(e),
+                "job_id": job_id,
+                "success": False
+            }
+    
+    @app.tool()
+    async def get_job_logs(job_id: str, since_line: int = 0) -> Dict[str, Any]:
+        """
+        Récupère les logs d'un job avec pagination
+        
+        Args:
+            job_id: ID du job
+            since_line: Ligne de départ pour la pagination
+            
+        Returns:
+            Dictionary avec chunks de logs
+        """
+        try:
+            logger.info(f"Getting logs for job {job_id} from line {since_line}")
+            notebook_service, _ = get_services()
+            
+            result = await notebook_service.get_job_logs_async(job_id, since_line)
+            
+            logger.info(f"Successfully retrieved logs for job {job_id}")
+            return result
+            
+        except Exception as e:
+            logger.error(f"Error getting logs for job {job_id}: {e}")
+            return {
+                "error": str(e),
+                "job_id": job_id,
+                "success": False
+            }
+    
+    @app.tool()
+    async def cancel_job(job_id: str) -> Dict[str, Any]:
+        """
+        Annule un job en cours d'exécution
+        
+        Args:
+            job_id: ID du job à annuler
+            
+        Returns:
+            Dictionary avec résultat de l'annulation
+        """
+        try:
+            logger.info(f"Canceling job: {job_id}")
+            notebook_service, _ = get_services()
+            
+            result = await notebook_service.cancel_job_async(job_id)
+            
+            logger.info(f"Successfully processed cancellation for job {job_id}")
+            return result
+            
+        except Exception as e:
+            logger.error(f"Error canceling job {job_id}: {e}")
+            return {
+                "error": str(e),
+                "job_id": job_id,
+                "success": False
+            }
+    
+    @app.tool()
+    async def list_jobs() -> Dict[str, Any]:
+        """
+        Liste tous les jobs avec statuts raccourcis
+        
+        Returns:
+            Dictionary avec liste des jobs
+        """
+        try:
+            logger.info("Listing all execution jobs")
+            notebook_service, _ = get_services()
+            
+            result = await notebook_service.list_jobs_async()
+            
+            logger.info(f"Successfully listed jobs")
+            return result
+            
+        except Exception as e:
+            logger.error(f"Error listing jobs: {e}")
+            return {
+                "error": str(e),
+                "success": False
+            }
+    
+    logger.info("Registered execution tools (18 total)")
