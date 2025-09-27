@@ -323,17 +323,88 @@ function sanitizeSectionHtml(raw: string): string {
 }
 
 /**
- * PLAN BÉTON ChatGPT-5 : Filtre strict du bruit (environment_details, etc.)
+ * CORRECTION CRITIQUE : Détermine si un contenu est "pur bruit" (quasi-exclusivement du bruit environnemental)
+ * Remplace l'ancien filtrage destructif par un nettoyage conservateur
  */
-function isEnvironmentNoise(item: RenderItem): boolean {
-    const s = item.html || '';
-    return /<environment_details>/i.test(s)
-        || /VSCode Visible Files/i.test(s)
-        || /Current Time in ISO 8601/i.test(s)
-        || /Current Mode/i.test(s)
-        || /Current Workspace Directory/i.test(s)
-        || /\[attempt_completion\] Result:/i.test(s)
-        || /# VSCode Open Tabs/i.test(s);
+function isPureEnvironmentNoise(html: string): boolean {
+    if (!html) return true;
+    
+    // Créer une copie pour nettoyer et tester
+    let cleanedContent = html;
+    
+    // Supprimer tous les blocs <environment_details>
+    cleanedContent = cleanedContent.replace(/<environment_details>[\s\S]*?<\/environment_details>/gi, '');
+    
+    // Supprimer les sections VSCode typiques
+    cleanedContent = cleanedContent.replace(/# VSCode Visible Files[\s\S]*?(?=# [A-Z]|\n\n|$)/gi, '');
+    cleanedContent = cleanedContent.replace(/# VSCode Open Tabs[\s\S]*?(?=# [A-Z]|\n\n|$)/gi, '');
+    cleanedContent = cleanedContent.replace(/# Current Time[\s\S]*?(?=# [A-Z]|\n\n|$)/gi, '');
+    cleanedContent = cleanedContent.replace(/# Current Mode[\s\S]*?(?=# [A-Z]|\n\n|$)/gi, '');
+    cleanedContent = cleanedContent.replace(/# Current Workspace Directory[\s\S]*?(?=# [A-Z]|\n\n|$)/gi, '');
+    cleanedContent = cleanedContent.replace(/# Current Cost[\s\S]*?(?=# [A-Z]|\n\n|$)/gi, '');
+    
+    // Supprimer les lignes vides multiples et trim
+    cleanedContent = cleanedContent.replace(/\n{3,}/g, '\n\n').trim();
+    
+    // Si après nettoyage il reste moins de 3 caractères et aucun mot alphanumérique : considérer comme pur bruit
+    return cleanedContent.length < 3 || !/[a-zA-Z0-9]/.test(cleanedContent);
+}
+
+/**
+ * CORRECTION CRITIQUE : Nettoie le contenu des messages utilisateur sans les supprimer
+ * Inspiré du script PowerShell Clean-UserMessage
+ */
+function cleanUserMessage(content: string): string {
+    if (!content) return '';
+    
+    let cleaned = content;
+    
+    // Supprimer les blocs <environment_details> entiers
+    cleaned = cleaned.replace(/<environment_details>[\s\S]*?<\/environment_details>/gi, '[Environment details supprimes pour lisibilite]');
+    
+    // Supprimer les sections VSCode volumineuses
+    cleaned = cleaned.replace(/# VSCode Visible Files[\s\S]*?(?=# [A-Z]|\n\n|$)/gi, '[Fichiers VSCode supprimés]');
+    cleaned = cleaned.replace(/# VSCode Open Tabs[\s\S]*?(?=# [A-Z]|\n\n|$)/gi, '[Onglets VSCode supprimés]');
+    cleaned = cleaned.replace(/# Current Workspace Directory[\s\S]*?(?=# [A-Z]|\n\n|$)/gi, '[Liste des fichiers workspace supprimée]');
+    
+    // Garder les informations importantes mais raccourcir
+    cleaned = cleaned.replace(/# Current Mode\n<slug>([^<]+)<\/slug>\n<name>([^<]+)<\/name>[\s\S]*?(?=# [A-Z]|\n\n|$)/gi, '**Mode:** $2 ($1)');
+    cleaned = cleaned.replace(/# Current Time[\s\S]*?UTC\+[\d:]+/gi, '[Timestamp]');
+    cleaned = cleaned.replace(/# Current Cost[\s\S]*?\$[\d.]+/gi, '[Coût]');
+    
+    // Nettoyer les espaces multiples
+    cleaned = cleaned.replace(/\n{3,}/g, '\n\n').trim();
+    
+    // Si le message devient trop court, tenter d'extraire l'essentiel
+    if (cleaned.length < 50 && content.length > 200) {
+        const userMessageMatch = content.match(/<user_message>([\s\S]*?)<\/user_message>/);
+        if (userMessageMatch) {
+            cleaned = userMessageMatch[1].trim();
+        }
+    }
+    
+    return cleaned;
+}
+
+/**
+ * CORRECTION CRITIQUE : Nettoie le contenu des résultats d'outils sans les supprimer
+ */
+function cleanToolContent(content: string): string {
+    if (!content) return '';
+    
+    let cleaned = content;
+    
+    // Supprimer les blocs environment_details dans les résultats d'outils
+    cleaned = cleaned.replace(/<environment_details>[\s\S]*?<\/environment_details>/gi, '[Environment details masqués]');
+    
+    // Supprimer les sections VSCode dans les résultats si présentes
+    cleaned = cleaned.replace(/# VSCode Visible Files[\s\S]*?(?=# [A-Z]|\n\n|$)/gi, '[Fichiers VSCode masqués]');
+    cleaned = cleaned.replace(/# Current Workspace Directory[\s\S]*?(?=# [A-Z]|\n\n|$)/gi, '[Workspace masqué]');
+    
+    // Nettoyer les espaces multiples
+    cleaned = cleaned.replace(/\n{3,}/g, '\n\n').trim();
+    
+    return cleaned;
 }
 
 // ---- Rendu TOC & sections PLAN BÉTON (sans génération d'ID) -------------------------------
@@ -1690,12 +1761,13 @@ export class TraceSummaryService {
                             };
                             isFirstUser = false;
                         } else {
-                            const firstLine = this.getTruncatedFirstLine(item.content, 200);
+                            const cleanedContent = cleanUserMessage(item.content);
+                            const firstLine = this.getTruncatedFirstLine(cleanedContent, 200);
                             renderItem = {
                                 type: 'user',
                                 n: globalCounter,
                                 title: `UTILISATEUR #${globalCounter} - ${firstLine}`,
-                                html: this.cleanUserMessage(item.content)
+                                html: cleanedContent
                             };
                         }
                     }
@@ -1703,24 +1775,26 @@ export class TraceSummaryService {
 
                 case 'ErrorMessage':
                     if (this.shouldIncludeMessageType('user', options.detailLevel)) {
-                        const firstLine = this.getTruncatedFirstLine(item.content, 200);
+                        const cleanedContent = cleanUserMessage(item.content);
+                        const firstLine = this.getTruncatedFirstLine(cleanedContent, 200);
                         renderItem = {
                             type: 'erreur',
                             n: globalCounter,
                             title: `ERREUR SYSTÈME #${globalCounter} - ${firstLine}`,
-                            html: this.cleanUserMessage(item.content)
+                            html: cleanedContent
                         };
                     }
                     break;
 
                 case 'ContextCondensation':
                     if (this.shouldIncludeMessageType('user', options.detailLevel)) {
-                        const firstLine = this.getTruncatedFirstLine(item.content, 200);
+                        const cleanedContent = cleanUserMessage(item.content);
+                        const firstLine = this.getTruncatedFirstLine(cleanedContent, 200);
                         renderItem = {
                             type: 'condensation',
                             n: globalCounter,
                             title: `CONDENSATION CONTEXTE #${globalCounter} - ${firstLine}`,
-                            html: this.cleanUserMessage(item.content)
+                            html: cleanedContent
                         };
                     }
                     break;
@@ -1730,12 +1804,13 @@ export class TraceSummaryService {
                         // Extraire le contenu après "New instructions for task continuation:"
                         const instructionMatch = item.content.match(/^New instructions for task continuation:\s*(.*)/i);
                         const actualInstruction = instructionMatch ? instructionMatch[1] : item.content;
-                        const firstLine = this.getTruncatedFirstLine(actualInstruction, 200);
+                        const cleanedContent = cleanUserMessage(actualInstruction);
+                        const firstLine = this.getTruncatedFirstLine(cleanedContent, 200);
                         renderItem = {
                             type: 'new-instructions',
                             n: globalCounter,
                             title: `NOUVELLES INSTRUCTIONS #${globalCounter} - ${firstLine}`,
-                            html: this.cleanUserMessage(actualInstruction)
+                            html: cleanedContent
                         };
                     }
                     break;
@@ -1743,17 +1818,18 @@ export class TraceSummaryService {
                 case 'ToolResult':
                     if (this.shouldIncludeMessageType('tool', options.detailLevel)) {
                         const toolName = this.extractToolType(item.content);
-                        const firstLine = this.getTruncatedFirstLine(toolName || item.content, 200);
                         // Appliquer la troncature si nécessaire
                         let content = item.content;
                         if (options.truncationChars > 0 && content.length > options.truncationChars) {
                             content = content.substring(0, options.truncationChars) + '...';
                         }
+                        const cleanedContent = cleanToolContent(content);
+                        const firstLine = this.getTruncatedFirstLine(toolName || cleanedContent, 200);
                         renderItem = {
                             type: 'outil',
                             n: globalCounter,
                             title: `OUTIL #${globalCounter} - ${firstLine}`,
-                            html: content,
+                            html: cleanedContent,
                             toolType: item.toolType,
                             resultType: item.resultType
                         };
@@ -1788,8 +1864,16 @@ export class TraceSummaryService {
             }
         }
 
-        // 2) PLAN BÉTON : Filtrage du bruit AVANT rendu
-        const filteredItems = items.filter(it => !isEnvironmentNoise(it));
+        // CORRECTION CRITIQUE : Journalisation avant filtrage
+        const countsByType = this.countItemsByType(items);
+        console.log(`[TraceSummaryService] AVANT filtrage: ${JSON.stringify(countsByType)}`);
+
+        // 2) PLAN BÉTON : Filtrage conservateur du pur bruit AVANT rendu
+        const filteredItems = items.filter(it => !isPureEnvironmentNoise(it.html));
+        
+        // CORRECTION CRITIQUE : Journalisation après filtrage
+        const filteredCountsByType = this.countItemsByType(filteredItems);
+        console.log(`[TraceSummaryService] APRÈS filtrage: ${JSON.stringify(filteredCountsByType)}`);
         
         // 3) PLAN BÉTON : Assignation UNIQUE des IDs (une seule fois)
         assignStableIds(filteredItems);
@@ -1855,6 +1939,29 @@ export class TraceSummaryService {
         // Cette méthode est obsolète. Le rendu est maintenant géré par renderConversationContent
         // en utilisant le pipeline unifié avec assignStableIds et renderSectionChatGPT5.
         return '';
+    }
+
+    /**
+     * CORRECTION CRITIQUE : Compte les items par type pour la journalisation
+     */
+    private countItemsByType(items: RenderItem[]): Record<string, number> {
+        const counts: Record<string, number> = {
+            user: 0,
+            assistant: 0,
+            outil: 0,
+            erreur: 0,
+            condensation: 0,
+            'new-instructions': 0,
+            completion: 0
+        };
+        
+        for (const item of items) {
+            if (counts.hasOwnProperty(item.type)) {
+                counts[item.type]++;
+            }
+        }
+        
+        return counts;
     }
 
     /**
