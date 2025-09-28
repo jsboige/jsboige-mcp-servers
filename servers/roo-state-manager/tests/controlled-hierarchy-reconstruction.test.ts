@@ -11,10 +11,15 @@
 import { describe, it, expect, beforeEach, afterEach, jest } from '@jest/globals';
 import * as fs from 'fs';
 import * as path from 'path';
+import { fileURLToPath } from 'url';
 import { HierarchyReconstructionEngine } from '../src/utils/hierarchy-reconstruction-engine.js';
 import { TaskInstructionIndex } from '../src/utils/task-instruction-index.js';
 import type { ConversationSkeleton } from '../src/types/conversation.js';
 import type { EnhancedConversationSkeleton } from '../src/types/enhanced-hierarchy.js';
+
+// Support ES modules
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
 
 // Pas de mock fs pour ce test - nous voulons lire les vraies données
 

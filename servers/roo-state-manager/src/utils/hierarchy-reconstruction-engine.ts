@@ -305,7 +305,7 @@ export class HierarchyReconstructionEngine {
         if (config.strictMode === true) {
             if (skeleton.truncatedInstruction) {
                 // Utiliser searchExactPrefix avec l'instruction tronquée (K=192 via computeInstructionPrefix)
-                const exactResults = await this.instructionIndex.searchExactPrefix(skeleton.truncatedInstruction);
+                const exactResults = await this.instructionIndex.searchExactPrefix(skeleton.truncatedInstruction, 192);
                 
                 if (!exactResults || exactResults.length === 0) {
                     this.log(`STRICT MODE: no exact parent match for ${skeleton.taskId}`);

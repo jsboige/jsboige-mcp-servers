@@ -1287,6 +1287,63 @@ export class TraceSummaryService {
     }
 
     /**
+     * Extrait le résumé complet entre crochets d'un résultat d'outil
+     * Exemple: "[read_file for 'g:/path/file.ext']" retourne "read_file for 'g:/path/file.ext'"
+     * Adapté pour traiter aussi les données JSON d'outils
+     */
+    private extractToolBracketSummaryFromResult(content: string): string | null {
+        const textContent = this.extractTextContent(content);
+        
+        // Essayer d'abord le pattern bracket classique
+        let match = textContent.match(/^\[([^\]]+)]\s+Result:/i);
+        if (match) {
+            return match[1];
+        }
+        
+        // Si pas de bracket, essayer de parser le JSON d'outil
+        try {
+            const jsonMatch = textContent.match(/^\{.*\}$/s);
+            if (jsonMatch) {
+                const toolData = JSON.parse(jsonMatch[0]);
+                if (toolData.tool) {
+                    let summary = toolData.tool;
+                    
+                    // Ajouter des détails selon le type d'outil
+                    if (toolData.path) {
+                        const shortPath = toolData.path.length > 50 ?
+                            '...' + toolData.path.slice(-47) : toolData.path;
+                        summary += ` for '${shortPath}'`;
+                    } else if (toolData.serverName && toolData.toolName) {
+                        summary = `${toolData.serverName}/${toolData.toolName}`;
+                        if (toolData.arguments && typeof toolData.arguments === 'string') {
+                            try {
+                                const args = JSON.parse(toolData.arguments);
+                                if (args.path) {
+                                    const shortPath = args.path.length > 30 ?
+                                        '...' + args.path.slice(-27) : args.path;
+                                    summary += ` for '${shortPath}'`;
+                                } else if (args.taskId) {
+                                    summary += ` for task '${args.taskId.slice(0, 8)}...'`;
+                                }
+                            } catch {
+                                // Ignore parsing errors
+                            }
+                        }
+                    } else if (toolData.type) {
+                        summary = toolData.type;
+                    }
+                    
+                    return summary;
+                }
+            }
+        } catch {
+            // Si le parsing JSON échoue, continuer avec l'extraction classique
+        }
+        
+        return null;
+    }
+
+    /**
      * Extrait le type d'outil d'un message
      */
     private extractToolType(content: string | any): string {
@@ -1817,22 +1874,17 @@ export class TraceSummaryService {
 
                 case 'ToolResult':
                     if (this.shouldIncludeMessageType('tool', options.detailLevel)) {
-                        const toolName = this.extractToolType(item.content);
-                        // Appliquer la troncature si nécessaire
-                        let content = item.content;
-                        if (options.truncationChars > 0 && content.length > options.truncationChars) {
-                            content = content.substring(0, options.truncationChars) + '...';
-                        }
-                        const cleanedContent = cleanToolContent(content);
-                        const firstLine = this.getTruncatedFirstLine(toolName || cleanedContent, 200);
+                        const bracket = this.extractToolBracketSummaryFromResult(item.content);
+                        const titleSuffix = bracket ? `[${bracket}]` : this.extractToolType(item.content);
                         renderItem = {
                             type: 'outil',
                             n: globalCounter,
-                            title: `OUTIL #${globalCounter} - ${firstLine}`,
-                            html: cleanedContent,
+                            title: `OUTIL #${globalCounter} - ${titleSuffix}`,
+                            html: await this.renderUserToolResult(item.content, options),
                             toolType: item.toolType,
                             resultType: item.resultType
                         };
+                        console.log(`[TraceSummaryService] Extracted bracket summary: "${bracket}"`);
                     }
                     break;
 
@@ -1841,19 +1893,20 @@ export class TraceSummaryService {
                     if (this.shouldIncludeMessageType('assistant', options.detailLevel)) {
                         const firstLine = this.getTruncatedFirstLine(item.content, 200);
                         const isCompletion = item.subType === 'Completion';
-                        // Appliquer la troncature si nécessaire
-                        let content = item.content;
-                        if (options.truncationChars > 0 && content.length > options.truncationChars) {
-                            content = content.substring(0, options.truncationChars) + '...';
-                        }
+                        // Traiter le contenu avec processAssistantContent
+                        const { textContent, technicalBlocks } = await this.processAssistantContent(item.content, options);
+                        const tech = await this.renderTechnicalBlocks(technicalBlocks, options);
+                        const html = [textContent.trim(), tech].filter(Boolean).join('\n\n');
+                        
                         renderItem = {
                             type: 'assistant',
                             n: globalCounter,
                             title: isCompletion
                                 ? `ASSISTANT #${globalCounter} (Terminaison) - ${firstLine}`
                                 : `ASSISTANT #${globalCounter} - ${firstLine}`,
-                            html: content
+                            html: html
                         };
+                        console.log(`[TraceSummaryService] Rendered ${technicalBlocks.length} technical blocks for assistant message`);
                     }
                     break;
             }
@@ -2185,7 +2238,7 @@ export class TraceSummaryService {
     }
 
     /**
-     * Rend un bloc outil XML avec Progressive Disclosure
+     * Rend un bloc outil XML avec Progressive Disclosure et aperçu des paramètres
      */
     private async renderToolBlock(
         block: TechnicalBlock,
@@ -2195,7 +2248,23 @@ export class TraceSummaryService {
         
         parts.push("");
         parts.push("<details>");
-        parts.push(`<summary>**OUTIL - ${block.toolTag}** - Cliquez pour afficher</summary>`);
+        
+        // Extraire les paramètres pour l'aperçu dans le summary
+        const params = this.parseToolParameters(block.content);
+        let summaryText = `**OUTIL - ${block.toolTag}**`;
+        
+        if (params && Object.keys(params).length > 0) {
+            const paramEntries = Object.entries(params).slice(0, 3); // Max 3 paramètres
+            const paramSummary = paramEntries.map(([key, value]) => {
+                const shortValue = typeof value === 'string' && value.length > 50
+                    ? value.substring(0, 50) + '...'
+                    : value;
+                return `${key}=${shortValue}`;
+            }).join(', ');
+            summaryText += ` — ${paramSummary}`;
+        }
+        
+        parts.push(`<summary>${summaryText}</summary>`);
         parts.push("");
         
         if (this.shouldShowToolDetails(options.detailLevel)) {
@@ -2208,6 +2277,51 @@ export class TraceSummaryService {
             parts.push(`*Contenu des paramètres d'outil masqué - utilisez -DetailLevel Full pour afficher*`);
         }
         
+        parts.push("</details>");
+        
+        return parts.join('\n');
+    }
+
+    /**
+     * Rend un résultat d'outil utilisateur avec section repliable dédiée
+     */
+    private async renderUserToolResult(content: string, options: SummaryOptions): Promise<string> {
+        const bracket = this.extractToolBracketSummaryFromResult(content);
+        const resultType = this.getResultType(content);
+        
+        let cleanedContent = cleanToolContent(content);
+        if (options.truncationChars > 0 && cleanedContent.length > options.truncationChars) {
+            cleanedContent = cleanedContent.substring(0, options.truncationChars) + '...';
+        }
+        
+        const parts: string[] = [];
+        parts.push("<details>");
+        
+        let summaryText = `RESULTAT OUTIL — ${bracket || 'outil'}`;
+        if (resultType && resultType !== 'résultat') {
+            summaryText += ` · ${resultType}`;
+        }
+        summaryText += ' — Cliquez pour afficher';
+        
+        parts.push(`<summary>${summaryText}</summary>`);
+        parts.push("");
+        
+        // Ajouter résumé spécial pour certains types de résultats
+        if (cleanedContent.includes('<files>') || cleanedContent.includes('<file>')) {
+            const fileMatches = cleanedContent.match(/<file>/g);
+            const fileCount = fileMatches ? fileMatches.length : 'N';
+            parts.push(`${fileCount} fichiers`);
+            parts.push("");
+        } else if (cleanedContent.includes('<file_write_result>')) {
+            const success = cleanedContent.includes('<operation>modified</operation>') ||
+                          cleanedContent.includes('<operation>created</operation>');
+            parts.push(`écriture fichier: ${success ? 'OK' : 'KO'}`);
+            parts.push("");
+        }
+        
+        parts.push('```text');
+        parts.push(cleanedContent);
+        parts.push('```');
         parts.push("</details>");
         
         return parts.join('\n');

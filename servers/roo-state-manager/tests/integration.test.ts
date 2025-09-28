@@ -4,13 +4,25 @@
  */
 
 import { describe, it, expect, beforeEach, afterEach, jest } from '@jest/globals';
-import * as fs from 'fs';
+
+// Mock fs AVANT tous les autres imports pour ES modules
+const mockedFs = {
+    existsSync: jest.fn(),
+    readFileSync: jest.fn(),
+    statSync: jest.fn(),
+    mkdirSync: jest.fn(),
+    writeFileSync: jest.fn()
+};
+
+// Mock fs avec ES modules - DOIT être avant les imports qui utilisent fs
+jest.unstable_mockModule('fs', () => mockedFs);
+
 import * as path from 'path';
 import { HierarchyReconstructionEngine } from '../src/utils/hierarchy-reconstruction-engine.js';
 import { TaskInstructionIndex } from '../src/utils/task-instruction-index.js';
 import type { ConversationSkeleton } from '../src/types/conversation.js';
 import type { EnhancedConversationSkeleton } from '../src/types/enhanced-hierarchy.js';
-import { 
+import {
     mockSkeletons,
     mockNewTaskInstructions,
     mockUiMessages,
@@ -18,10 +30,6 @@ import {
     enhanceSkeleton,
     mockCyclicSkeletons
 } from './fixtures/hierarchy-test-data.js';
-
-// Mock du fs pour les tests
-jest.mock('fs');
-const mockedFs = jest.mocked(fs);
 
 describe('Hierarchy Reconstruction - Integration Tests', () => {
     let engine: HierarchyReconstructionEngine;
