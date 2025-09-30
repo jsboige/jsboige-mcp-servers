@@ -356,18 +356,18 @@ export class RooStorageDetector {
         if (useProductionHierarchy) {
             // Phase 1: Extraire les préfixes d'instructions de cette tâche
             if (uiMessagesStats) {
-                console.log(`[analyzeConversation] 🔍 DEBUG PHASE 1 - Extracting instructions for ${taskId.substring(0, 8)}`);
                 const instructions = await this.extractNewTaskInstructionsFromUI(uiMessagesPath, 0); // Pas de limite
-                console.log(`[analyzeConversation] 🔍 DEBUG PHASE 1 - Found ${instructions.length} instructions for ${taskId.substring(0, 8)}`);
                 
                 childTaskInstructionPrefixes = instructions.map(inst => {
                     // 🎯 CORRECTION SDDD Phase 2: Utiliser computeInstructionPrefix pour alignement strict
                     const prefix = computeInstructionPrefix(inst.message, 192);
-                    console.log(`[analyzeConversation] 🔍 DEBUG PHASE 1 - Created normalized prefix for ${taskId.substring(0, 8)}: "${prefix.substring(0, 60)}..." (mode: ${inst.mode})`);
                     return prefix;
                 }).filter(prefix => prefix.length > 10); // Filtrer les préfixes trop courts
                 
-                console.log(`[analyzeConversation] 🔍 DEBUG PHASE 1 - Final prefixes count for ${taskId.substring(0, 8)}: ${childTaskInstructionPrefixes.length}`);
+                // Log seulement si des instructions trouvées
+                if (childTaskInstructionPrefixes.length > 0) {
+                    console.log(`[analyzeConversation] ✅ Extracted ${childTaskInstructionPrefixes.length} instruction prefixes for ${taskId.substring(0, 8)}`);
+                }
             }
             
             // Phase 2: Recherche de parent déplacée après calcul de truncatedInstruction
@@ -419,18 +419,32 @@ export class RooStorageDetector {
                     if (mode.length > 0 && taskMessage.length > 0) {
                         instruction = `[${mode}] ${taskMessage}`;
                         instructionSource = 'delegation_xml';
-                        console.log(`[analyzeConversation] 🎯 INSTRUCTION DÉLÉGATION extraite pour ${taskId}: ${instruction.substring(0, 50)}...`);
                     }
                 }
+            }
+            
+            // 🔧 FALLBACK: Balise <task> ouverte sans fermeture (ou encodée) → strip explicite
+            const lower = instruction.toLowerCase();
+            const hasClosedTask = lower.includes('</task>') || lower.includes('</task>');
+            if (!taskMatch && (lower.startsWith('<task>') || lower.startsWith('<task>')) && !hasClosedTask) {
+                // Retirer une ou plusieurs occurrences d'ouverture au début
+                instruction = instruction.replace(/^(\s*(?:<\s*task\s*>|<\s*task\s*>))+/, '').trim();
+                instructionSource = 'task_open_tag';
+            }
+
+            // 📊 LOG DÉTAILLÉ AVANT NORMALISATION (optionnel)
+            if (process.env.ROO_DEBUG_INSTRUCTIONS === '1') {
+                const preview = instruction.length > 200 ? instruction.substring(0, 200) + '…' : instruction;
+                console.log(`[analyzeConversation] 🧪 RAW instruction (${instructionSource}) pour ${taskId}: "${preview}"`);
             }
             
             // 🎯 CORRECTION SDDD Phase 2: Utiliser computeInstructionPrefix pour alignement strict
             // Suppression de l'ajout de "..." et alignement sur K=192
             truncatedInstruction = instruction.length > 0 ? computeInstructionPrefix(instruction, 192) : undefined;
             
-            // 📊 LOG DÉTAILLÉ : Traçabilité de l'extraction
-            if (truncatedInstruction) {
-                console.log(`[analyzeConversation] ✅ Instruction extraite (${instructionSource}) pour ${taskId}: "${truncatedInstruction}"`);
+            // 📊 LOG DÉTAILLÉ : Traçabilité de l'extraction (après normalisation)
+            if (truncatedInstruction && process.env.ROO_DEBUG_INSTRUCTIONS === '1') {
+                console.log(`[analyzeConversation] ✅ Normalisé pour ${taskId}: "${truncatedInstruction}"`);
             }
             
             // 🎯 CORRECTION ARCHITECTURE : Le parentId doit venir UNIQUEMENT des métadonnées
@@ -521,6 +535,7 @@ export class RooStorageDetector {
                 actionCount,
                 totalSize,
                 workspace: extractedWorkspace || rawMetadata.workspace,
+                dataSource: taskPath, // ✅ CRITIQUE: Chemin pour que HierarchyEngine trouve ui_messages.json
             },
             childTaskInstructionPrefixes: childTaskInstructionPrefixes.length > 0 ? childTaskInstructionPrefixes : undefined,
             // 🚀 NOUVEAUX CHAMPS : Ajout des fonctionnalités demandées
@@ -533,7 +548,6 @@ export class RooStorageDetector {
         // mais addInstruction() passe la valeur RAW au radix tree comme spécifié
         if (useProductionHierarchy && childTaskInstructionPrefixes.length > 0) {
             for (const prefix of childTaskInstructionPrefixes) {
-                console.log(`[PASS 1 - INDEXING] Task: ${taskId.substring(0,8)} | NORMALIZED PREFIX: "${prefix}"`);
                 globalTaskInstructionIndex.addInstruction(taskId, prefix);
             }
         }
@@ -878,7 +892,6 @@ export class RooStorageDetector {
   ): Promise<void> {
     try {
       if (!existsSync(filePath)) {
-        console.log(`[extractFromMessageFile] ⚠️ Fichier non trouvé: ${filePath}`);
         return;
       }
 
@@ -899,11 +912,38 @@ export class RooStorageDetector {
       
       let messages: any[] = [];
       try {
+        // Tentative 1: JSON standard (tableau)
         const data = JSON.parse(processedContent);
         messages = Array.isArray(data) ? data : [];
-      } catch (error) {
-        console.warn(`[extractFromMessageFile] ⚠️ Parsing JSON échoué pour ${filePath}`);
-        return;
+      } catch (e1) {
+        // Tentative 2: Contenu "presque array" (éléments séparés par des virgules sans [ ])
+        let sanitized = processedContent.trim();
+        if (!sanitized.startsWith('[') && !sanitized.endsWith(']')) {
+          sanitized = `[${sanitized}]`;
+        }
+        try {
+          const data2 = JSON.parse(sanitized);
+          messages = Array.isArray(data2) ? data2 : [];
+        } catch (e2) {
+          // Tentative 3: JSONL (une entrée JSON par ligne)
+          const lines = processedContent.split('\n');
+          const jsonlItems: any[] = [];
+          for (const line of lines) {
+            const trimmed = line.trim();
+            if (!trimmed) continue;
+            try {
+              jsonlItems.push(JSON.parse(trimmed));
+            } catch (_e3) {
+              // ignorer les lignes invalides
+            }
+          }
+          if (jsonlItems.length > 0) {
+            messages = jsonlItems;
+          } else {
+            console.warn(`[extractFromMessageFile] ⚠️ Parsing JSON échoué pour ${filePath} (standard/array/JSONL).`);
+            return;
+          }
+        }
       }
 
       for (const message of messages) {
@@ -920,8 +960,12 @@ export class RooStorageDetector {
             }
           }
         } else if (message.role && typeof message.text === 'string') {
-          // Fallback pour ui_messages.json format
+          // Fallback pour ui_messages.json format (cas avec role présent)
           contentText = message.text;
+        }
+        // 🔧 CORRECTION CRITIQUE: couvrir les messages UI de type "ask" (sans 'role') avec champ 'text'
+        if (!contentText && typeof (message as any).text === 'string') {
+          contentText = (message as any).text;
         }
         
         if (contentText) {
@@ -945,7 +989,6 @@ export class RooStorageDetector {
                 message: taskMessage, // 🎯 CORRECTION SDDD: Pas de troncature ici, elle sera faite par computeInstructionPrefix
               };
               instructions.push(instruction);
-              console.log(`[extractFromMessageFile] 🎯 DÉLÉGATION XML ${mode} dans ${path.basename(filePath)}: ${taskMessage.substring(0, 50)}...`);
             }
           }
           
@@ -969,13 +1012,144 @@ export class RooStorageDetector {
             }
           }
           
-          // 🎯 PATTERN 2: Résultats délégation complétée (user)
+          // 🎯 PATTERN 3: Résultats délégation complétée (user) - CORRECTION CRITIQUE
           if (message.role === 'user') {
             const completedPattern = /\[(\w+_\w+) completed\] Result:\s*([\s\S]*?)(?=\n\n|\n\[|$)/g;
             let match;
             while ((match = completedPattern.exec(contentText)) !== null) {
+              const taskType = match[1].trim();
               const result = match[2].trim();
-              console.log(`[extractFromMessageFile] ✅ DÉLÉGATION COMPLÉTÉE dans ${path.basename(filePath)}: ${result.substring(0, 50)}...`);
+              
+              // 🎯 CORRECTION : Extraire et ajouter aux instructions
+              if (result.length > 20) { // Filtrer les résultats trop courts
+                const instruction: NewTaskInstruction = {
+                  timestamp: new Date(message.timestamp || message.ts || 0).getTime(),
+                  mode: 'completed', // Mode spécial pour les délégations complétées
+                  message: `[${taskType} completed] ${result}`,
+                };
+                instructions.push(instruction);
+              }
+            }
+            
+            // 🎯 PATTERN 4: Appels new_task avec mode spécifique (user) - NOUVEAU
+            const newTaskInModePattern = /\[new_task in ([^:]+): '([^']+)'\] Result:\s*([\s\S]*?)(?=\n\n|\n\[|$)/g;
+            let newTaskMatch;
+            while ((newTaskMatch = newTaskInModePattern.exec(contentText)) !== null) {
+              const modeWithIcon = newTaskMatch[1].trim();
+              const taskMessage = newTaskMatch[2].trim();
+              const result = newTaskMatch[3].trim();
+              
+              // 🔧 Extraire le mode sans l'icône (ex: "🪲 Debug mode" -> "debug")
+              const modeMatch = modeWithIcon.match(/([^🎯🪲💻🏗️🪃❓👨💼]*)\s*mode/i);
+              const cleanMode = modeMatch ? modeMatch[1].trim().toLowerCase() : 'task';
+              
+              if (taskMessage.length > 10) { // Filtrer les messages trop courts
+                const instruction: NewTaskInstruction = {
+                  timestamp: new Date(message.timestamp || message.ts || 0).getTime(),
+                  mode: cleanMode,
+                  message: taskMessage,
+                };
+                instructions.push(instruction);
+              }
+            }
+          }
+          
+          // 🎯 PATTERN 5: Format ui_messages.json - newTask (JSON échappé OU JSON brut)
+          if (contentText.includes('"tool":"newTask"')) {
+            // 5.a) Cas 1 : JSON échappé (ancien format capturé depuis "text":"{\"tool\":\"newTask\"...}")
+            const escapedNewTaskPattern = /"text":"(\{\\\"tool\\\":\\\"newTask\\\",\\\"mode\\\":\\\"([^\\\"]+)\\\",\\\"content\\\":\\\"([\\s\\S]*?)\\\",\\\"todos\\\":\\\[\\\][^}]*\})"/g;
+            let matchedAny = false;
+            let escapedMatch;
+            while ((escapedMatch = escapedNewTaskPattern.exec(contentText)) !== null) {
+              matchedAny = true;
+              const mode = escapedMatch[2];
+              const escapedContent = escapedMatch[3];
+              
+              if (mode.length > 0 && escapedContent.length > 20) {
+                // Décoder les échappements JSON multiples (\\n -> \n, \\\\ -> \, etc.)
+                let decodedContent = escapedContent
+                  .replace(/\\\\n/g, '\n')
+                  .replace(/\\\\r/g, '\r')
+                  .replace(/\\\\t/g, '\t')
+                  .replace(/\\\\\\\\/g, '\\\\')
+                  .replace(/\\\\"/g, '\\"')
+                  .replace(/\\"/g, '"')
+                  .replace(/\\\\/g, '\\');
+                
+                const instruction: NewTaskInstruction = {
+                  timestamp: new Date(message.timestamp || message.ts || 0).getTime(),
+                  mode: String(mode).trim(),
+                  message: decodedContent.trim(),
+                };
+                instructions.push(instruction);
+              }
+            }
+    
+            // 5.b) Cas 2 : JSON brut dans message.text (format réel UI "ask/tool")
+            if (!matchedAny) {
+              try {
+                // contentText est directement le JSON {"tool":"newTask","mode":"...","content":"...","todos":[]}
+                const obj = JSON.parse(contentText);
+                if (obj && obj.tool === 'newTask' && typeof obj.content === 'string' && obj.content.length > 20) {
+                  const rawMode = String(obj.mode || 'task');
+                  const cleanMode = rawMode.replace(/[^\w\s]/g, '').trim().toLowerCase();
+                  const instruction: NewTaskInstruction = {
+                    timestamp: new Date(message.timestamp || message.ts || 0).getTime(),
+                    mode: cleanMode || 'task',
+                    message: obj.content.trim(),
+                  };
+                  instructions.push(instruction);
+                }
+              } catch (e) {
+                // JSON.parse a échoué, ignorer silencieusement ce cas
+              }
+            }
+          }
+          
+          // 5.c) Cas 3 : Objet brut déjà parsé dans message.text OU message.content
+          //     Exemple réel UI: { type: 'ask', ask: 'tool', text: { tool: 'newTask', mode: '💻 Code mode', content: '...' } }
+          if (typeof (message as any).text === 'object' || typeof (message as any).content === 'object') {
+            const obj = (typeof (message as any).text === 'object' && (message as any).text)
+              ? (message as any).text
+              : ((typeof (message as any).content === 'object' && (message as any).content) ? (message as any).content : null);
+            
+            try {
+              if (obj && obj.tool === 'newTask' && typeof obj.content === 'string' && obj.content.trim().length > 20) {
+                const rawMode = String(obj.mode || 'task');
+                const cleanMode = rawMode.replace(/[^\w\s]/g, '').trim().toLowerCase();
+                
+                const instruction: NewTaskInstruction = {
+                  timestamp: new Date((message as any).timestamp || (message as any).ts || 0).getTime(),
+                  mode: cleanMode || 'task',
+                  message: obj.content.trim()
+                };
+                instructions.push(instruction);
+                
+                if (process.env.ROO_DEBUG_INSTRUCTIONS === '1') {
+                  console.log(`[extractFromMessageFile] ✅ Objet newTask (brut) détecté: mode=${instruction.mode}, len=${instruction.message.length}`);
+                }
+              }
+            } catch (_eobj) {
+              // ignorer
+            }
+          }
+          
+          // 🎯 PATTERN 6: new_task non fermée en fin de message (assistant) - NOUVEAU
+          if (message.role === 'assistant') {
+            const unClosedNewTaskPattern = /<new_task>\s*<mode>([^<]+)<\/mode>\s*<message>([^<]+)<\/message>\s*$/gi;
+            let unClosedMatch;
+            while ((unClosedMatch = unClosedNewTaskPattern.exec(contentText)) !== null) {
+              const mode = unClosedMatch[1].trim();
+              const taskMessage = unClosedMatch[2].trim();
+              
+              if (mode.length > 0 && taskMessage.length > 10) {
+                const instruction: NewTaskInstruction = {
+                  timestamp: new Date(message.timestamp || message.ts || 0).getTime(),
+                  mode: mode,
+                  message: taskMessage,
+                };
+                instructions.push(instruction);
+              }
             }
           }
         }
@@ -988,7 +1162,6 @@ export class RooStorageDetector {
             message: message.content.message || '',
           };
           instructions.push(instruction);
-          console.log(`[extractFromMessageFile] 🔄 Legacy tool_call dans ${path.basename(filePath)}`);
         }
       }
       
