@@ -1050,12 +1050,7 @@ class RooStateManagerServer {
                             }
                         }
                         
-                        // DEBUG: Toujours logger ce qui se passe
-                        console.log(`📋 Processing ${conversationId}: shouldRebuild=${shouldRebuild}, force_rebuild=${force_rebuild}`);
-                        
                         if (shouldRebuild) {
-                            console.log(`🔨 ${force_rebuild ? 'Force rebuilding' : 'Rebuilding'} skeleton for task: ${conversationId}`);
-                            
                             try {
                                 const skeleton = await RooStorageDetector.analyzeConversation(conversationId, taskPath);
                                 if (skeleton) {
@@ -1067,7 +1062,6 @@ class RooStateManagerServer {
                                         skeletonsWithPrefixes.push({ skeleton, prefixes: skeleton.childTaskInstructionPrefixes });
                                     }
                                     skeletonsBuilt++;
-                                    console.log(`✅ Successfully built skeleton for ${skeleton.taskId} (prefixes: ${skeleton.childTaskInstructionPrefixes?.length || 0})`);
                                 } else {
                                     console.error(`❌ Failed to analyze conversation ${conversationId}: analyzeConversation returned null`);
                                     skeletonsSkipped++;
@@ -1077,7 +1071,6 @@ class RooStateManagerServer {
                                 skeletonsSkipped++;
                             }
                         } else {
-                            console.log(`⏭️ Skipping ${conversationId} (shouldRebuild=false)`);
                         }
                         
                     } catch (error) {
@@ -1099,28 +1092,16 @@ class RooStateManagerServer {
         
         for (const { skeleton, prefixes } of skeletonsWithPrefixes) {
             for (const prefix of prefixes) {
-                globalTaskInstructionIndex.addInstruction(prefix, skeleton.taskId);
+                globalTaskInstructionIndex.addInstruction(skeleton.taskId, prefix);
             }
         }
         
         const indexStats = globalTaskInstructionIndex.getStats();
         console.log(`🎯 RadixTree populated: ${indexStats.totalInstructions} instructions, ${indexStats.totalNodes} nodes`);
         
-        // 🚨 DEBUG: Afficher les premières instructions de l'index avec détails COMPLETS
-        if (indexStats.totalInstructions > 0) {
-            console.log(`🔍 DEBUG - Premières instructions dans l'index (DÉTAILS COMPLETS) :`);
-            for (const { skeleton, prefixes } of skeletonsWithPrefixes.slice(0, 3)) {
-                console.log(`  Task ${skeleton.taskId.substring(0, 8)} has ${prefixes.length} prefixes:`);
-                prefixes.slice(0, 2).forEach((p, i) => {
-                    console.log(`    [${i}] INDEXÉ: "${p}" (${p.length} chars)`);
-                    console.log(`    [${i}] HEX: ${Buffer.from(p.substring(0, 50)).toString('hex')}`);
-                });
-            }
-        } else {
-            console.log(`🚨 DEBUG - Aucune instruction dans l'index ! Détails des squelettes:`);
-            for (const { skeleton, prefixes } of skeletonsWithPrefixes.slice(0, 3)) {
-                console.log(`  Task ${skeleton.taskId.substring(0, 8)}: ${prefixes.length} prefixes, truncated="${skeleton.truncatedInstruction?.substring(0, 50)}"`);
-            }
+        // Log critique seulement si problème détecté
+        if (indexStats.totalInstructions === 0 && skeletonsWithPrefixes.length > 0) {
+            console.log(`⚠️ ATTENTION: ${skeletonsWithPrefixes.length} squelettes avec préfixes mais index vide`);
         }
         
         // CORRECTION: Exécuter les Phases 2-3 même en mode intelligent si l'index était vide
@@ -1132,7 +1113,7 @@ class RooStateManagerServer {
         
         const skeletonsToUpdate: Array<{ taskId: string; newParentId: string }> = [];
         const orphanSkeletons = Array.from(this.conversationCache.values()).filter(s =>
-            !s.parentTaskId && s.metadata?.workspace
+            !(((s as any)?.parentId) || s.parentTaskId) && s.metadata?.workspace
         );
         
         console.log(`🔍 Found ${orphanSkeletons.length} orphan tasks to process...`);
@@ -1142,101 +1123,80 @@ class RooStateManagerServer {
         const MAX_PROCESSING_TIME = 45000; // 45 secondes max pour cette phase
         const startTime = Date.now();
         
-        for (let i = 0; i < orphanSkeletons.length; i += BATCH_SIZE) {
-            // Vérifier le timeout
-            if (Date.now() - startTime > MAX_PROCESSING_TIME) {
-                console.log(`⏰ Phase 3 timeout reached, processed ${i}/${orphanSkeletons.length} tasks`);
-                break;
-            }
-            
-            const batch = orphanSkeletons.slice(i, i + BATCH_SIZE);
-            console.log(`📦 Processing batch ${Math.floor(i / BATCH_SIZE) + 1}/${Math.ceil(orphanSkeletons.length / BATCH_SIZE)}: ${batch.length} tasks`);
-            
-            for (const skeleton of batch) {
-                // Utiliser truncatedInstruction qui contient le début du premier message utilisateur
-                let rawChildText = skeleton.truncatedInstruction || skeleton.metadata?.title || '';
-                const originalText = rawChildText;
-                
-                // 🎯 CORRECTION FINALE: Appliquer EXACTEMENT le même traitement que l'indexation
-                
-                // 1. TOUJOURS nettoyer les balises task simples d'abord (Pattern de base dans l'indexation)
-                const taskMatch = rawChildText.match(/<task>([\s\S]*?)<\/task>/i);
-                if (taskMatch) {
-                    rawChildText = taskMatch[1].trim();
-                } else {
-                    // Si pas de balise task, nettoyer quand même les balises orphelines
-                    rawChildText = rawChildText.replace(/<\/?task>/gi, '').trim();
-                }
-                
-                // 2. Pattern extraction délégation avancée (optionnel, après nettoyage task)
-                const delegationPattern = /<(\w+_\w+)>\s*<mode>([^<]+)<\/mode>\s*<message>([^<]+)<\/message>\s*<\/\1>/g;
-                const delegationMatch = delegationPattern.exec(rawChildText);
-                if (delegationMatch) {
-                    const taskMessage = delegationMatch[3].trim();
-                    if (taskMessage.length > 0) {
-                        rawChildText = taskMessage; // Extraction précise du message de délégation
-                    }
-                }
-                
-                // 3. Troncature identique à l'indexation (200 chars AVANT normalisation)
-                rawChildText = rawChildText.substring(0, 200);
-                
-                // 4. Puis normalisation via normalizePrefix() comme l'index
-                rawChildText = rawChildText.toLowerCase().replace(/\s+/g, ' ').trim().substring(0, 200);
+        // 🎯 SOLUTION ARCHITECTURALE : Utiliser le VRAI HierarchyReconstructionEngine en MODE STRICT
+        // ✅ EXÉCUTION UNIQUE sur TOUS les squelettes (pas batch par batch)
+        console.log(`🚀 Utilisation du HierarchyReconstructionEngine (MODE STRICT - MATCHING EXACT) sur ${orphanSkeletons.length} orphelins...`);
         
-                console.log(`🔍 DEBUG - Processing ${skeleton.taskId.substring(0, 8)}: AVANT="${originalText?.substring(0, 50)}..."`);
-                console.log(`🔍 DEBUG - Processing ${skeleton.taskId.substring(0, 8)}: APRÈS="${rawChildText?.substring(0, 50)}..." (${rawChildText?.length} chars)`);
-                console.log(`🎯 RECHERCHÉ COMPLET: "${rawChildText}" (${rawChildText.length} chars)`);
-                console.log(`🎯 RECHERCHÉ HEX: ${Buffer.from(rawChildText.substring(0, 50)).toString('hex')}`);
-                
-                console.log(`[PASS 2 - PRE-CHECK] Orphan Task: ${skeleton.taskId.substring(0, 8)} | Text length: ${rawChildText.length} | Text: "${rawChildText}"`);
-                if (rawChildText.length > 5) {
-                    try {
-                        // 🎯 CORRECTION FINALE: L'index ne contient plus de préfixes de mode, recherche directe avec le texte brut
-                        // 🛡️ CORRECTION ARCHITECTURE : Plus aucune recherche de parent depuis l'enfant
-                        console.log(`[PASS 2 - DÉSACTIVÉ] Orphan Task: ${skeleton.taskId.substring(0, 8)} - Recherche de parent désactivée (architecture corrigée)`);
-                        let foundParentId: string | undefined = undefined;
-                        // Le parentId doit venir des métadonnées ou rester undefined
-                        
-                        if (!foundParentId) {
-                            console.log(`🔍 COMPARAISON DEBUG for ${skeleton.taskId.substring(0, 8)}:`);
-                            const stats = globalTaskInstructionIndex.getStats();
-                            console.log(`  Index has ${stats.totalInstructions} instructions, ${stats.totalNodes} nodes`);
-                            
-                            // Test de recherche détaillé
-                            console.log(`🧪 TESTS RECHERCHE DÉTAILLÉS:`);
-                            const rawText = rawChildText;
-                            const normalizedText = rawText.toLowerCase().replace(/\s+/g, ' ').trim();
-                            console.log(`  RAW: "${rawText.substring(0, 60)}..."`);
-                            console.log(`  NORMALIZED: "${normalizedText.substring(0, 60)}..."`);
-                            
-                            // Test avec différentes variantes
-                            const testSearches = [
-                                rawText,
-                                normalizedText,
-                                rawText.substring(0, 50),
-                                rawText.substring(0, 100),
-                                rawText.substring(0, 150)
-                            ];
-                            
-                            for (let i = 0; i < testSearches.length; i++) {
-                                const testText = testSearches[i];
-                                // 🛡️ CORRECTION ARCHITECTURE : Tests désactivés - pas de recherche inverse
-                                const result = undefined;
-                                console.log(`    Test[${i}]: DÉSACTIVÉ - Architecture corrigée`);
-                            }
-                        }
-                        
-                        // 🛡️ CORRECTION ARCHITECTURE : Plus aucune mise à jour de parent depuis la recherche inverse
-                        // Les parents sont définis uniquement dans les métadonnées
-                        // Code de mise à jour supprimé car foundParentId est toujours undefined maintenant
-                    } catch (searchError) {
-                        console.error(`Error finding parent for ${skeleton.taskId.substring(0, 8)}:`, searchError);
-                    }
-                } else {
-                    console.log(`🚨 DEBUG - Skipped ${skeleton.taskId.substring(0, 8)} (childText too short: ${rawChildText.length} chars)`);
+        try {
+            // Import dynamique du vrai engine
+            const { HierarchyReconstructionEngine } = await import('./utils/hierarchy-reconstruction-engine.js');
+            
+            // Configuration STRICT comme demandé (matching exact seulement)
+            const hierarchyEngine = new HierarchyReconstructionEngine({
+                batchSize: 50,
+                strictMode: true,        // ✅ MODE STRICT = MATCHING EXACT
+                debugMode: true,
+                forceRebuild: false
+            });
+            
+            // Conversion des squelettes pour le vrai engine
+            const enhancedSkeletons = Array.from(this.conversationCache.values()).map(skeleton => ({
+                ...skeleton,
+                // Enhanced fields requis par l'interface EnhancedConversationSkeleton
+                parsedSubtaskInstructions: undefined,
+                processingState: {
+                    phase1Completed: false,
+                    phase2Completed: false,
+                    processingErrors: [],
+                    lastProcessedAt: new Date().toISOString()
+                },
+                sourceFileChecksums: {
+                    uiMessages: undefined,
+                    apiHistory: undefined,
+                    metadata: undefined
                 }
-            }
+            }));
+            
+            console.log(`🎯 Lancement engine sur ${enhancedSkeletons.length} squelettes en MODE STRICT...`);
+            
+            // Phase 1: Extraction des instructions new_task (avec matching exact)
+            console.log(`📋 Phase 1: Extraction des déclarations new_task en MODE STRICT...`);
+            const phase1Result = await hierarchyEngine.executePhase1(enhancedSkeletons, { strictMode: true });
+            console.log(`✅ Phase 1: ${phase1Result.processedCount} traités, ${phase1Result.totalInstructionsExtracted} instructions extraites`);
+            
+            // Phase 2: Reconstruction hiérarchique (avec matching exact)
+            console.log(`🔗 Phase 2: Reconstruction hiérarchique MODE STRICT...`);
+            const phase2Result = await hierarchyEngine.executePhase2(enhancedSkeletons, { strictMode: true });
+            console.log(`✅ Phase 2: ${phase2Result.resolvedCount} relations assignées, ${phase2Result.unresolvedCount} ignorés`);
+            
+            // ✅ BUG FIX: Utiliser directement phase2Result.resolvedCount au lieu de re-compter
+            hierarchyRelationsFound = phase2Result.resolvedCount;
+            
+            // Application des résultats (ne compter QUE les nouvelles relations via reconstructedParentId)
+            enhancedSkeletons.forEach(skeleton => {
+                const newlyResolvedParent = (skeleton as any)?.reconstructedParentId;
+                if (newlyResolvedParent && newlyResolvedParent !== skeleton.taskId) {
+                    skeletonsToUpdate.push({
+                        taskId: skeleton.taskId,
+                        newParentId: newlyResolvedParent
+                    });
+
+                    // Mettre à jour le cache en mémoire pour persister la relation avant sauvegarde disque
+                    const cached = this.conversationCache.get(skeleton.taskId);
+                    if (cached) {
+                        cached.parentTaskId = newlyResolvedParent;
+                        (cached as any).parentId = newlyResolvedParent;
+                    }
+
+                    console.log(`🎯 Relation MODE STRICT: ${skeleton.taskId.substring(0, 8)} → ${newlyResolvedParent.substring(0, 8)}`);
+                }
+            });
+            
+            console.log(`🎉 BILAN ENGINE MODE STRICT: ${hierarchyRelationsFound} relations trouvées !`);
+            
+        } catch (engineError) {
+            console.error(`❌ Erreur HierarchyReconstructionEngine:`, engineError);
+            console.log(`🔄 Fallback: Continuer sans hierarchy engine...`);
         }
         
         console.log(`🔗 Found ${skeletonsToUpdate.length} parent-child relationships to apply...`);
@@ -1447,11 +1407,12 @@ class RooStateManagerServer {
 
         const childrenMap = new Map<string, string[]>();
         skeletons.forEach(s => {
-            if (s.parentTaskId) {
-                if (!childrenMap.has(s.parentTaskId)) {
-                    childrenMap.set(s.parentTaskId, []);
+            const pId = (s as any)?.parentId ?? (s as any)?.parentTaskId;
+            if (pId) {
+                if (!childrenMap.has(pId)) {
+                    childrenMap.set(pId, []);
                 }
-                childrenMap.get(s.parentTaskId)!.push(s.taskId);
+                childrenMap.get(pId)!.push(s.taskId);
             }
         });
 
@@ -1482,14 +1443,15 @@ class RooStateManagerServer {
                     createdAt: skeleton.metadata?.createdAt || 'Unknown',
                     mode: skeleton.metadata?.mode || 'Unknown',
                     workspace: skeleton.metadata?.workspace || 'Unknown',
-                    hasParent: !!skeleton.parentTaskId,
+                    hasParent: !!(((skeleton as any)?.parentId) || ((skeleton as any)?.parentTaskId)),
                     childrenCount: childrenIds.length,
                     depth: depth,
                     // 🚀 NOUVEAUX CHAMPS : Ajout des fonctionnalités demandées
                     isCompleted: skeleton.isCompleted || false,
                     truncatedInstruction: skeleton.truncatedInstruction || undefined
                 },
-                parentTaskId: skeleton.parentTaskId,
+                parentId: (skeleton as any)?.parentId ?? (skeleton as any)?.parentTaskId,
+                parentTaskId: (skeleton as any)?.parentTaskId,
                 children: children.length > 0 ? children : undefined,
             };
             
@@ -1498,10 +1460,11 @@ class RooStateManagerServer {
         
         let tree;
         
-        if (include_siblings && targetSkeleton.parentTaskId) {
+        const targetParentId = (targetSkeleton as any)?.parentId ?? (targetSkeleton as any)?.parentTaskId;
+        if (include_siblings && targetParentId) {
             // Si la tâche a un parent et que les siblings sont demandés,
             // construire l'arbre depuis le parent pour inclure les frères et sœurs.
-            tree = buildTree(targetSkeleton.parentTaskId, 0);
+            tree = buildTree(targetParentId, 0);
         } else {
             // Sinon (pas de parent ou siblings non demandés),
             // construire l'arbre depuis la tâche cible elle-même.
