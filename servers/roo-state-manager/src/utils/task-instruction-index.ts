@@ -1,33 +1,32 @@
 /**
  * Index radix-tree pour les instructions de création de sous-tâches
  * Optimisé pour la recherche rapide de relations parent-enfant
+ * Utilise exact-trie pour le matching longest-prefix robuste
  */
 
 import { NewTaskInstruction } from '../types/conversation.js';
+import Trie from 'exact-trie';
 
 /**
- * Noeud du radix-tree pour l'indexation des instructions
+ * Structure pour stocker plusieurs parents par préfixe
  */
-interface RadixTreeNode {
-    prefix: string;
-    isEndOfKey: boolean;
-    parentTaskId?: string;
-    instruction?: NewTaskInstruction;
-    children: Map<string, RadixTreeNode>;
+interface PrefixEntry {
+    parentTaskIds: string[];
+    instructions?: NewTaskInstruction[];
 }
 
 /**
  * Index radix-tree pour les instructions de création de sous-tâches
  */
 export class TaskInstructionIndex {
-    private root: RadixTreeNode;
+    private trie: Trie; // exact-trie pour longest-prefix match
+    private prefixToEntry: Map<string, PrefixEntry>; // Map interne pour itération et statistiques
+    private parentToInstructions: Map<string, string[]>; // Pour getInstructionsByParent()
     
     constructor() {
-        this.root = {
-            prefix: '',
-            isEndOfKey: false,
-            children: new Map()
-        };
+        this.trie = new Trie();
+        this.prefixToEntry = new Map();
+        this.parentToInstructions = new Map();
     }
 
     /**
@@ -39,28 +38,95 @@ export class TaskInstructionIndex {
     addInstruction(parentTaskId: string, instructionPrefix: string, instruction?: NewTaskInstruction): void {
         if (!instructionPrefix || instructionPrefix.length === 0) return;
         
-        // Utiliser la nouvelle fonction unifiée computeInstructionPrefix
+        // Normaliser le préfixe avec la fonction unifiée
         const normalizedPrefix = computeInstructionPrefix(instructionPrefix, 192);
-        console.log(`[PASS 1 - INDEXING] Task: ${parentTaskId.substring(0,8)} | NORMALIZED PREFIX: "${normalizedPrefix}"`);
-        this.insertIntoTree(this.root, normalizedPrefix, parentTaskId, instruction);
+        
+        // Récupérer ou créer l'entrée pour ce préfixe
+        let entry = this.prefixToEntry.get(normalizedPrefix);
+        if (!entry) {
+            entry = { parentTaskIds: [], instructions: [] };
+            this.prefixToEntry.set(normalizedPrefix, entry);
+            this.trie.put(normalizedPrefix, entry); // Ajouter au trie pour longest-prefix search
+        }
+        
+        // Ajouter le parentTaskId
+        if (!entry.parentTaskIds.includes(parentTaskId)) {
+            entry.parentTaskIds.push(parentTaskId);
+        }
+        
+        // Ajouter l'instruction complète si fournie
+        if (instruction && entry.instructions) {
+            entry.instructions.push(instruction);
+        }
+        
+        // Maintenir l'index inversé pour getInstructionsByParent
+        if (!this.parentToInstructions.has(parentTaskId)) {
+            this.parentToInstructions.set(parentTaskId, []);
+        }
+        const parentInstructions = this.parentToInstructions.get(parentTaskId)!;
+        if (!parentInstructions.includes(normalizedPrefix)) {
+            parentInstructions.push(normalizedPrefix);
+        }
     }
 
     /**
      * Recherche exacte sur préfixe dans l'index (SDDD Phase 2 - strict prefix only)
+     * Utilise exact-trie.getWithCheckpoints() pour LONGEST PREFIX MATCH
      * @param childText - Texte de la tâche enfant pour générer le préfixe de recherche
-     * @param K - Longueur de préfixe (défaut: 192)
-     * @returns Array des tâches avec préfixe exactement égal
+     * @param K - Longueur de préfixe pour générer le searchPrefix (défaut: 192)
+     * @returns Array des tâches avec préfixe exactement égal (longest match)
+     *
+     * IMPORTANT: K est utilisé pour normaliser ET tronquer childText avant la recherche.
+     * Cela signifie que la recherche avec K=20 cherchera un préfixe de 20 chars dans le trie.
+     * Pour le cas d'usage réel (reconstruction hiérarchique), K est toujours 192.
      */
     searchExactPrefix(childText: string, K: number = 192): Array<{ taskId: string, prefix: string }> {
         if (!childText || childText.length === 0) return [];
         
+        // ATTENTION: On normalise avec K pour que la recherche soit cohérente
+        // Si K=20, on cherche un préfixe de 20 chars
+        // Si K=192, on cherche un préfixe de 192 chars (cas d'usage standard)
         const searchPrefix = computeInstructionPrefix(childText, K);
-        console.log(`[EXACT PREFIX SEARCH] Searching for: "${searchPrefix}"`);
+        if (process.env.ROO_DEBUG_INSTRUCTIONS === '1') {
+            console.log(`[EXACT PREFIX SEARCH] Searching for: "${searchPrefix}" (K=${K})`);
+        }
+        
+        // Utiliser getWithCheckpoints() SANS checkpoint character pour obtenir le LONGEST PREFIX MATCH
+        // Note: exact-trie retourne la valeur associée à la clé qui matche le plus long préfixe de searchPrefix
+        const entry = this.trie.getWithCheckpoints(searchPrefix) as PrefixEntry | undefined;
         
         const results: Array<{ taskId: string, prefix: string }> = [];
-        this.searchExactInTree(this.root, searchPrefix, '', results);
         
-        console.log(`[EXACT PREFIX SEARCH] Found ${results.length} exact matches`);
+        if (entry) {
+            // Trouver la clé exacte qui a matché (parcourir la Map interne)
+            // On cherche la plus longue clé qui est un préfixe de searchPrefix
+            let longestMatchKey = '';
+            for (const key of this.prefixToEntry.keys()) {
+                if (searchPrefix.startsWith(key) && key.length > longestMatchKey.length) {
+                    longestMatchKey = key;
+                }
+            }
+            
+            // Récupérer l'entry via la Map
+            const matchedEntry = this.prefixToEntry.get(longestMatchKey);
+            if (matchedEntry) {
+                // Ajouter tous les parents associés à cette clé
+                for (const parentId of matchedEntry.parentTaskIds) {
+                    results.push({
+                        taskId: parentId,
+                        prefix: longestMatchKey
+                    });
+                }
+                
+                if (process.env.ROO_DEBUG_INSTRUCTIONS === '1') {
+                    console.log(`[EXACT PREFIX SEARCH] Found longest match: "${longestMatchKey}" (${longestMatchKey.length} chars) → ${matchedEntry.parentTaskIds.length} parent(s)`);
+                }
+            }
+        }
+        
+        if (process.env.ROO_DEBUG_INSTRUCTIONS === '1') {
+            console.log(`[EXACT PREFIX SEARCH] Found ${results.length} exact matches`);
+        }
         return results;
     }
 
@@ -71,27 +137,15 @@ export class TaskInstructionIndex {
      * - Les parents déclarent leurs enfants via les instructions new_task
      * - Le radix tree stocke ces déclarations (préfixes → parents)
      * - On NE DOIT JAMAIS utiliser ce tree pour "deviner" un parent depuis un enfant
-     * - Le parentId vient UNIQUEMENT des métadonnées ou reste undefined
+     * - Le parentId vient du matching exact du préfixe de longueur max, PAS d'une supposition
      *
      * @param childText - Texte de la tâche enfant (titre + description)
      * @returns TOUJOURS undefined pour respecter l'architecture
      */
     findPotentialParent(childText: string, excludeTaskId?: string): string | undefined {
-        if (!childText || childText.length === 0) return undefined;
-        
-        // Normaliser le préfixe comme lors de l'indexation
-        const normalizedChild = this.normalizePrefix(childText.substring(0, 200));
-        const matches = this.searchInTree(this.root, normalizedChild);
-        
-        for (const match of matches) {
-            // GARDE-FOU : Éviter l'auto-référencement
-            if (match.parentTaskId && match.parentTaskId !== excludeTaskId) {
-                console.log(`[findPotentialParent] ✅ Parent trouvé: ${match.parentTaskId.substring(0, 8)} pour enfant: ${excludeTaskId?.substring(0, 8)}`);
-                return match.parentTaskId;
-            }
-        }
-        
-        console.log(`[findPotentialParent] ❌ Aucun parent trouvé pour: ${excludeTaskId?.substring(0, 8)}`);
+        console.warn('⚠️ DEPRECATED: findPotentialParent() violates architecture - use searchExactPrefix() instead');
+        // 🛡️ CORRECTION ARCHITECTURE : Méthode complètement désactivée
+        // Les relations parent-enfant doivent être définies par les parents, pas devinées
         return undefined;
     }
 
@@ -104,14 +158,8 @@ export class TaskInstructionIndex {
      * @returns TOUJOURS un tableau vide pour respecter l'architecture
      */
     findAllPotentialParents(childText: string): string[] {
-        if (!childText || childText.length === 0) return [];
-        
-        const normalizedChild = this.normalizePrefix(childText.substring(0, 200));
-        const matches = this.searchInTree(this.root, normalizedChild);
-        
-        return matches
-            .filter(match => match.parentTaskId)
-            .map(match => match.parentTaskId as string);
+        console.warn('⚠️ DEPRECATED: findAllPotentialParents() violates architecture - use searchExactPrefix() instead');
+        return [];
     }
 
     /**
@@ -134,13 +182,19 @@ export class TaskInstructionIndex {
      * Obtient les statistiques de l'index
      */
     getStats(): { totalNodes: number; totalInstructions: number; avgDepth: number } {
-        const stats = { totalNodes: 0, totalInstructions: 0, depths: [] as number[] };
-        this.traverseForStats(this.root, 0, stats);
+        let totalInstructions = 0;
+        let totalParents = 0;
+        
+        // Parcourir toutes les entrées via la Map interne
+        for (const entry of this.prefixToEntry.values()) {
+            totalInstructions++;
+            totalParents += entry.parentTaskIds.length;
+        }
         
         return {
-            totalNodes: stats.totalNodes,
-            totalInstructions: stats.totalInstructions,
-            avgDepth: stats.depths.length > 0 ? stats.depths.reduce((a, b) => a + b, 0) / stats.depths.length : 0
+            totalNodes: this.prefixToEntry.size, // Nombre de clés uniques
+            totalInstructions,
+            avgDepth: totalParents > 0 ? totalParents / totalInstructions : 0
         };
     }
 
@@ -148,11 +202,9 @@ export class TaskInstructionIndex {
      * Vide complètement l'index
      */
     clear(): void {
-        this.root = {
-            prefix: '',
-            isEndOfKey: false,
-            children: new Map()
-        };
+        this.trie = new Trie(); // Recréer le trie (pas de méthode clear())
+        this.prefixToEntry.clear();
+        this.parentToInstructions.clear();
     }
 
     /**
@@ -216,117 +268,6 @@ export class TaskInstructionIndex {
     }
 
     /**
-     * Recherche exacte dans l'arbre RadixTree
-     * @param node - Noeud courant
-     * @param targetPrefix - Préfixe exact recherché
-     * @param currentPrefix - Préfixe construit jusqu'ici
-     * @param results - Array des résultats accumulés
-     */
-    private searchExactInTree(node: RadixTreeNode, targetPrefix: string, currentPrefix: string, results: Array<{ taskId: string, prefix: string }>): void {
-        // Si on a trouvé exactement le préfixe recherché ET que ce noeud termine une clé
-        if (node.isEndOfKey && node.parentTaskId && currentPrefix === targetPrefix) {
-            console.log(`[EXACT MATCH] Found exact prefix: "${currentPrefix}" -> Task: ${node.parentTaskId.substring(0, 8)}`);
-            results.push({
-                taskId: node.parentTaskId,
-                prefix: currentPrefix
-            });
-        }
-
-        // Continuer la recherche dans les enfants seulement si le préfixe cible commence par le préfixe courant
-        for (const [childKey, childNode] of node.children) {
-            const newPrefix = currentPrefix + childKey;
-            // Optimisation: ne continuer que si le préfixe cible commence par newPrefix OU si newPrefix commence par le préfixe cible
-            if (targetPrefix.startsWith(newPrefix) || newPrefix.startsWith(targetPrefix)) {
-                this.searchExactInTree(childNode, targetPrefix, newPrefix, results);
-            }
-        }
-    }
-
-    private insertIntoTree(node: RadixTreeNode, key: string, parentTaskId: string, instruction?: NewTaskInstruction): void {
-        if (key.length === 0) {
-            node.isEndOfKey = true;
-            node.parentTaskId = parentTaskId;
-            node.instruction = instruction;
-            return;
-        }
-
-        // Rechercher un enfant avec un préfixe commun
-        for (const [childKey, childNode] of node.children) {
-            const commonPrefix = this.getCommonPrefix(key, childKey);
-            
-            if (commonPrefix.length > 0) {
-                if (commonPrefix === childKey) {
-                    // Le préfixe correspond exactement, continuer dans cet enfant
-                    this.insertIntoTree(childNode, key.substring(commonPrefix.length), parentTaskId, instruction);
-                    return;
-                } else {
-                    // Diviser le noeud existant
-                    this.splitNode(node, childKey, childNode, commonPrefix);
-                    this.insertIntoTree(node, key, parentTaskId, instruction);
-                    return;
-                }
-            }
-        }
-
-        // Aucun préfixe commun trouvé, créer un nouveau noeud
-        const newNode: RadixTreeNode = {
-            prefix: key,
-            isEndOfKey: true,
-            parentTaskId,
-            instruction,
-            children: new Map()
-        };
-        node.children.set(key, newNode);
-    }
-
-    private splitNode(parentNode: RadixTreeNode, existingKey: string, existingNode: RadixTreeNode, commonPrefix: string): void {
-        // Supprimer l'ancien noeud
-        parentNode.children.delete(existingKey);
-
-        // Créer le nouveau noeud intermédiaire
-        const intermediateNode: RadixTreeNode = {
-            prefix: commonPrefix,
-            isEndOfKey: false,
-            children: new Map()
-        };
-
-        // Mettre à jour l'ancien noeud
-        const remainingKey = existingKey.substring(commonPrefix.length);
-        existingNode.prefix = remainingKey;
-        intermediateNode.children.set(remainingKey, existingNode);
-
-        // Ajouter le noeud intermédiaire au parent
-        parentNode.children.set(commonPrefix, intermediateNode);
-    }
-
-    private searchInTree(node: RadixTreeNode, text: string): Array<{prefix: string, parentTaskId: string}> {
-        const results: Array<{prefix: string, parentTaskId: string}> = [];
-
-        // Recherche récursive dans tous les noeuds
-        this.searchRecursive(node, text, '', results);
-
-        return results;
-    }
-
-    private searchRecursive(node: RadixTreeNode, text: string, currentPrefix: string, results: Array<{prefix: string, parentTaskId: string}>): void {
-        // Si ce noeud termine une clé et que le texte est similaire au préfixe actuel
-        if (node.isEndOfKey && node.parentTaskId && this.calculateSimilarity(text, currentPrefix) > 0.2) {
-            const similarity = this.calculateSimilarity(text, currentPrefix);
-            console.log(`[SIMILARITY MATCH] Prefix: "${currentPrefix.substring(0, 50)}..." | Similarity: ${similarity.toFixed(3)} | TaskId: ${node.parentTaskId.substring(0, 8)}`);
-            results.push({
-                prefix: currentPrefix,
-                parentTaskId: node.parentTaskId
-            });
-        }
-
-        // Continuer la recherche dans tous les enfants
-        for (const [childKey, childNode] of node.children) {
-            const newPrefix = currentPrefix + childKey;
-            this.searchRecursive(childNode, text, newPrefix, results);
-        }
-    }
-
-    /**
      * 🎯 CORRECTIF ALGORITHMIQUE SDDD : Algorithme de similarité robuste
      * Remplace le text.includes() défaillant par un système de mots communs pondérés
      * @param text1 - Premier texte (recherché)
@@ -375,32 +316,13 @@ export class TaskInstructionIndex {
             .filter((word, index, arr) => arr.indexOf(word) === index); // Supprimer doublons
     }
 
-    private getCommonPrefix(str1: string, str2: string): string {
-        let i = 0;
-        while (i < str1.length && i < str2.length && str1[i] === str2[i]) {
-            i++;
-        }
-        return str1.substring(0, i);
-    }
 
-    private traverseForStats(node: RadixTreeNode, depth: number, stats: any): void {
-        stats.totalNodes++;
-        if (node.isEndOfKey) {
-            stats.totalInstructions++;
-            stats.depths.push(depth);
-        }
-
-        for (const childNode of node.children.values()) {
-            this.traverseForStats(childNode, depth + 1, stats);
-        }
-    }
 
     /**
-     * Obtient la taille de l'index (nombre d'instructions stockées)
+     * Obtient la taille de l'index (nombre de clés uniques dans le trie)
      */
     async getSize(): Promise<number> {
-        const stats = this.getStats();
-        return stats.totalInstructions;
+        return this.prefixToEntry.size;
     }
 
     /**
@@ -409,21 +331,31 @@ export class TaskInstructionIndex {
      * @param threshold - Seuil de similarité (0-1)
      * @returns Array des résultats avec leurs scores
      */
-    async searchSimilar(searchText: string, threshold: number = 0.2): Promise<Array<{taskId: string, similarity: number, prefix: string}>> {
+    async searchSimilar(searchText: string, threshold: number = 0.2): Promise<Array<{taskId: string, similarity: number, prefix: string, similarityScore?: number, matchType?: string}>> {
         if (!searchText || searchText.length === 0) return [];
         
         const normalizedSearch = this.normalizePrefix(searchText);
-        const matches = this.searchInTree(this.root, normalizedSearch);
+        const results: Array<{taskId: string, similarity: number, prefix: string, similarityScore?: number, matchType?: string}> = [];
         
-        return matches
-            .filter(match => match.parentTaskId)
-            .map(match => ({
-                taskId: match.parentTaskId as string,
-                similarity: this.calculateSimilarity(normalizedSearch, match.prefix),
-                prefix: match.prefix
-            }))
-            .filter(result => result.similarity >= threshold)
-            .sort((a, b) => b.similarity - a.similarity);
+        // Parcourir toutes les entrées via la Map interne
+        for (const [prefix, entry] of this.prefixToEntry.entries()) {
+            const similarity = this.calculateSimilarity(normalizedSearch, prefix);
+            
+            if (similarity >= threshold) {
+                for (const parentId of entry.parentTaskIds) {
+                    results.push({
+                        taskId: parentId,
+                        similarity,
+                        similarityScore: similarity,
+                        prefix,
+                        matchType: similarity === 1 ? 'exact' : similarity > 0.5 ? 'prefix' : 'fuzzy'
+                    });
+                }
+            }
+        }
+        
+        // Trier par score décroissant
+        return results.sort((a, b) => b.similarity - a.similarity);
     }
 
     /**
@@ -432,13 +364,11 @@ export class TaskInstructionIndex {
      * @returns Array des instructions du parent
      */
     getInstructionsByParent(parentId: string): string[] {
-        const instructions: string[] = [];
-        this.collectInstructionsByParent(this.root, parentId, '', instructions);
-        return instructions;
+        return this.parentToInstructions.get(parentId) || [];
     }
 
     /**
-     * Valide une relation parent-enfant
+     * Valide une relation parent-enfant via recherche exacte de préfixe
      * @param childText - Texte de l'enfant
      * @param parentId - ID du parent
      * @returns true si la relation est valide
@@ -446,20 +376,11 @@ export class TaskInstructionIndex {
     validateParentChildRelation(childText: string, parentId: string): boolean {
         if (!childText || !parentId) return false;
         
-        const potentialParent = this.findPotentialParent(childText, parentId);
-        return potentialParent === parentId;
+        // Utiliser searchExactPrefix pour vérifier si ce parent est trouvé
+        const matches = this.searchExactPrefix(childText, 192);
+        return matches.some(m => m.taskId === parentId);
     }
 
-    // Méthode privée pour collectInstructionsByParent
-    private collectInstructionsByParent(node: RadixTreeNode, parentId: string, currentPrefix: string, instructions: string[]): void {
-        if (node.isEndOfKey && node.parentTaskId === parentId) {
-            instructions.push(currentPrefix);
-        }
-
-        for (const [childKey, childNode] of node.children) {
-            this.collectInstructionsByParent(childNode, parentId, currentPrefix + childKey, instructions);
-        }
-    }
 }
 
 /**
@@ -471,14 +392,75 @@ export class TaskInstructionIndex {
  */
 export function computeInstructionPrefix(raw: string, K: number = 192): string {
     if (!raw) return '';
-    
-    return raw
-        .toLowerCase()                    // Conversion en minuscules
-        .replace(/\s+/g, ' ')            // Normalisation d'espaces: remplacer séquences d'espaces par un espace simple
-        .trim()                          // Supprimer espaces début/fin
-        .substring(0, K);                // Tronquer à K caractères (sans ajouter "...")
-}
 
+    // Normalisations robustes avant troncature
+    let s = String(raw);
+
+    // 1) Retirer un éventuel BOM UTF-8 en tête
+    s = s.replace(/^\uFEFF/, '');
+
+    // 2) Dé-échappements simples courants (contenus provenant de JSON échappé)
+    //    Ne pas faire de parsing JSON ici pour rester ultra-robuste
+    s = s
+        .replace(/\\r\\n/g, '\n')
+        .replace(/\\n/g, '\n')
+        .replace(/\\t/g, '\t')
+        .replace(/\\\\/g, '\\')
+        .replace(/\\"/g, '"')
+        .replace(/\\'/g, "'");
+
+    // 3) Décodage des entités HTML (nommées + numériques)
+    // Ordre important pour éviter double-décodage
+    s = s
+        .replace(/&lt;/gi, '<')
+        .replace(/&gt;/gi, '>')
+        .replace(/&quot;/gi, '"')
+        .replace(/&apos;/gi, "'")
+        .replace(/&#39;/gi, "'")
+        .replace(/&amp;/gi, '&');
+
+    // Entités numériques décimales
+    s = s.replace(/&#(\d+);/g, (_m, d: string) => {
+        const code = parseInt(d, 10);
+        return Number.isFinite(code) ? String.fromCharCode(code) : _m;
+    });
+    // Entités numériques hexadécimales
+    s = s.replace(/&#x([0-9a-fA-F]+);/g, (_m, h: string) => {
+        const code = parseInt(h, 16);
+        return Number.isFinite(code) ? String.fromCharCode(code) : _m;
+    });
+
+    // 4) Nettoyer les restes de JSON du parsing parent (content:", etc.)
+    s = s
+        .replace(/^["']?content["']?\s*:\s*["']?/i, '')  // Enlever "content": ou 'content': au début
+        .replace(/["']$/,'' );  // Enlever guillemet final éventuel
+
+    // 5) Supprimer explicitement les balises de délégation fréquemment vues
+    //    et les wrappers <task> / <new_task> même non fermés
+    s = s
+        .replace(/<\s*task\s*>/gi, ' ')
+        .replace(/<\s*\/\s*task\s*>/gi, ' ')
+        .replace(/<\s*new_task\b[^>]*>/gi, ' ')
+        .replace(/<\s*\/\s*new_task\s*>/gi, ' ');
+
+    // 6) Purge générique de toutes les balises HTML/XML restantes
+    s = s.replace(/<[^>]+>/g, ' ');
+
+    // 7) Normalisations finales, minuscules + espaces
+    s = s
+        .toLowerCase()
+        .replace(/\s+/g, ' ')
+        .trim();
+
+    // 8) Troncature à K
+    // ATTENTION: Ne pas faire de trim() après substring() car cela change la longueur !
+    // On fait le trim() AVANT pour normaliser, mais pas APRÈS pour préserver K
+    const truncated = s.substring(0, K);
+    
+    // Si le dernier caractère est un espace, on peut le garder ou le supprimer
+    // Pour cohérence avec les tests, on le supprime SEULEMENT si c'est le dernier
+    return truncated.trimEnd();
+}
 /**
  * Instance globale du système d'index des instructions
  */
