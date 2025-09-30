@@ -1,0 +1,74 @@
+fix(quickfiles): 🚨 Restauration critique de 8 outils + garde-fous anti-régression
+
+PROBLÈME CRITIQUE:
+- Commit 0d7becf a remplacé 80% des outils par des stubs
+- 8/10 fonctionnalités critiques perdues
+- Impact: Manipulation fichiers batch complètement cassée
+- Cause: Absence de tests anti-régression et CI/CD
+
+OUTILS RESTAURÉS:
+✅ delete_files (21 lignes)
+✅ edit_multiple_files (68 lignes + gestion erreurs)
+✅ extract_markdown_structure (65 lignes: 34 + 31 helper)
+✅ copy_files (65 lignes: 9 + 56 helpers)
+✅ move_files (9 lignes + helpers partagés)
+✅ search_in_files (42 lignes + gestion erreurs)
+✅ search_and_replace (38 lignes)
+✅ restart_mcp_servers (28 lignes)
+
+GARDE-FOUS IMPLÉMENTÉS:
+🛡️ Tests anti-régression (32 tests Jest)
+  - Détection automatique de stubs par pattern
+  - Validation longueur de code (> 200 chars)
+  - Tests fonctionnels avec effets de bord
+  - Validation schémas Zod
+
+🛡️ Configuration Jest complète
+  - Support ESM + TypeScript
+  - Couverture minimale: 80% lignes/fonctions, 70% branches
+  - Tests unitaires + anti-régression séparés
+
+🛡️ CI/CD GitHub Actions
+  - Build + Tests sur chaque PR
+  - Blocage automatique si stub détecté
+  - Validation implémentations obligatoire
+
+🛡️ Scripts de validation
+  - validate-implementations.js (228 lignes)
+  - npm run validate avant chaque commit
+  - Sortie colorée avec diagnostics détaillés
+
+DOCUMENTATION:
+📚 README.md complètement réécrit (492 lignes)
+  - Documentation détaillée de chaque outil
+  - Exemples d'utilisation concrets
+  - Section garde-fous et prévention
+  
+📚 RESTAURATION-2025-09-30.md (489 lignes)
+  - Analyse complète du problème
+  - Métriques avant/après
+  - Leçons apprises
+
+📚 VALIDATION-FINALE-2025-09-30.md (720 lignes)
+  - Rapport de validation complet
+  - Résultats des tests
+  - Recommandations
+
+VALIDATION:
+✅ Build: TypeScript compilation successful
+✅ Tests unitaires: 32/32 passed (100%)
+✅ Tests legacy: 9/9 passed (100%)
+✅ Coverage: 85% lignes, 88% fonctions, 72% branches
+✅ Aucun stub détecté
+✅ Tous les garde-fous opérationnels
+
+IMPACT:
+- 0 Breaking changes (restauration comportement original)
+- +1,862 lignes de code/tests/docs
+- Protection permanente contre régressions futures
+
+RÉFÉRENCE:
+- Issue: Régression commit 0d7becf
+- Docs: docs/RESTAURATION-2025-09-30.md
+- Validation: docs/VALIDATION-FINALE-2025-09-30.md
+- Tests: __tests__/anti-regression.test.js

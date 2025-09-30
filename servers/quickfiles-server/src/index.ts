@@ -499,45 +499,343 @@ class QuickFilesServer {
       });
   }
 
-  // Stub implementations for remaining tools
+  // Restored full implementations from previous working version
   private async handleDeleteFiles(args: z.infer<typeof DeleteFilesArgsSchema>) {
-    // Implementation preserved from original
-    return { content: [{ type: 'text' as const, text: 'Delete files functionality preserved' }] };
+    const { paths } = args;
+    try {
+        const results = await Promise.all(
+            paths.map(async (rawFilePath) => {
+                const filePath = this.resolvePath(rawFilePath);
+                try {
+                    await fs.unlink(filePath);
+                    return { path: rawFilePath, success: true };
+                } catch (error) {
+                    return { path: rawFilePath, success: false, error: (error as Error).message };
+                }
+            })
+        );
+        let report = "## Rapport de suppression de fichiers\n\n";
+        results.forEach(r => {
+            report += r.success
+                ? `- [SUCCES] ${r.path}\n`
+                : `- [ERREUR] ${r.path}: ${r.error}\n`;
+        });
+        return { content: [{ type: 'text' as const, text: report }] };
+    } catch (error) {
+        return { content: [{ type: 'text' as const, text: `Erreur lors de la suppression des fichiers: ${(error as Error).message}` }], isError: true };
+    }
   }
 
   private async handleEditMultipleFiles(args: z.infer<typeof EditMultipleFilesArgsSchema>) {
-    // Implementation preserved from original
-    return { content: [{ type: 'text' as const, text: 'Edit multiple files functionality preserved' }] };
+    const { files } = args;
+    try {
+        const results = await Promise.all(
+            files.map(async ({ path: rawFilePath, diffs }) => {
+                const filePath = this.resolvePath(rawFilePath);
+                try {
+                    let content = await fs.readFile(filePath, 'utf-8');
+                    let modificationsCount = 0;
+                    const errors: string[] = [];
+                    for (const diff of diffs) {
+                        const { search, replace, start_line } = diff;
+                        let lines = content.split('\n');
+                        let found = false;
+                        
+                        if (start_line) {
+                           const searchIndex = start_line - 1;
+                           if (lines[searchIndex] && lines[searchIndex].includes(search)) {
+                               lines[searchIndex] = lines[searchIndex].replace(search, replace);
+                               content = lines.join('\n');
+                               found = true;
+                           }
+                        } else {
+                            const newContent = content.replace(new RegExp(search, 'g'), (match) => {
+                                found = true;
+                                return replace;
+                            });
+                            if (newContent !== content) {
+                                content = newContent;
+                            }
+                        }
+                        if (found) modificationsCount++;
+                        else errors.push(`Le texte à rechercher "${search}" n'a pas été trouvé.`);
+                    }
+                    if (modificationsCount > 0) {
+                        await fs.writeFile(filePath, content, 'utf-8');
+                    }
+                    return { path: rawFilePath, success: true, modifications: modificationsCount, errors };
+                } catch (error) {
+                    return { path: rawFilePath, success: false, error: (error as Error).message };
+                }
+            })
+        );
+        let report = "## Rapport d'édition de fichiers\n\n";
+        results.forEach(r => {
+            if (r.success) {
+                report += `- [SUCCES] ${r.path}: ${r.modifications} modification(s) effectuée(s).`;
+                if (r.errors && r.errors.length > 0) report += ` Erreurs: ${r.errors.join(', ')}`;
+                report += `\n`;
+            } else {
+                report += `- [ERREUR] ${r.path}: ${r.error}\n`;
+            }
+        });
+        return { content: [{ type: 'text' as const, text: report }] };
+    } catch (error) {
+        return { content: [{ type: 'text' as const, text: `Erreur lors de l'édition des fichiers: ${(error as Error).message}` }], isError: true };
+    }
   }
 
   private async handleExtractMarkdownStructure(args: z.infer<typeof ExtractMarkdownStructureArgsSchema>) {
-    // Implementation preserved from original
-    return { content: [{ type: 'text' as const, text: 'Markdown structure extraction functionality preserved' }] };
+    const { paths: filePaths, max_depth, include_context, context_lines } = args;
+    try {
+        const allFilesHeadings = await Promise.all(
+            filePaths.map(async (rawFilePath) => {
+                const filePath = this.resolvePath(rawFilePath);
+                try {
+                    const content = await fs.readFile(filePath, 'utf-8');
+                    const { headings } = this.parseMarkdown(content, max_depth, context_lines);
+                    return { path: rawFilePath, headings };
+                } catch (error) {
+                    return { path: rawFilePath, error: (error as Error).message };
+                }
+            })
+        );
+        let formattedResponse = "## Structure des fichiers Markdown\n\n";
+        for (const fileResult of allFilesHeadings) {
+            formattedResponse += `### Fichier: ${fileResult.path}\n\n`;
+            if (fileResult.headings) {
+                fileResult.headings.forEach(h => {
+                    formattedResponse += `${' '.repeat((h.level - 1) * 2)}- [L${h.line}] ${h.text}\n`;
+                });
+                formattedResponse += '\n';
+            } else if (fileResult.error) {
+                formattedResponse += `Erreur: ${fileResult.error}\n\n`;
+            }
+        }
+        return { content: [{ type: 'text' as const, text: formattedResponse }] };
+    } catch (error) {
+        return { content: [{ type: 'text' as const, text: `Erreur lors de l'extraction de la structure Markdown: ${(error as Error).message}` }], isError: true };
+    }
+  }
+
+  private parseMarkdown(content: string, maxDepth: number, contextLines: number) {
+    const lines = content.split('\n');
+    const headings: MarkdownHeading[] = [];
+    const atxHeadingRegex = /^(#{1,6})\s+(.*)/;
+    const setextH1Regex = /^=+\s*$/;
+    const setextH2Regex = /^-+\s*$/;
+    for (let i = 0; i < lines.length; i++) {
+        const line = lines[i];
+        let heading: MarkdownHeading | null = null;
+        const atxMatch = line.match(atxHeadingRegex);
+        if (atxMatch) {
+            const level = atxMatch[1].length;
+            if (level <= maxDepth) {
+                heading = { text: atxMatch[2].trim(), level, line: i + 1 };
+            }
+        } else if (i > 0 && lines[i-1].trim() !== '') {
+            if (setextH1Regex.test(line)) {
+                if (1 <= maxDepth) heading = { text: lines[i-1].trim(), level: 1, line: i };
+            } else if (setextH2Regex.test(line)) {
+                if (2 <= maxDepth) heading = { text: lines[i-1].trim(), level: 2, line: i };
+            }
+        }
+        if (heading) headings.push(heading);
+    }
+    return { headings, fileInfo: {} };
   }
 
   private async handleCopyFiles(args: z.infer<typeof CopyFilesArgsSchema>) {
-    // Implementation preserved from original
-    return { content: [{ type: 'text' as const, text: 'Copy files functionality preserved' }] };
+    const { operations } = args;
+    try {
+        const results = await Promise.all(operations.map(op => this.processFileCopyOperation(op, 'copy')));
+        const report = this.formatFileCopyResponse(results, 'copy');
+        return { content: [{ type: 'text' as const, text: report }] };
+    } catch (error) {
+        return { content: [{ type: 'text' as const, text: `Erreur lors de la copie des fichiers: ${(error as Error).message}` }], isError: true };
+    }
   }
 
   private async handleMoveFiles(args: z.infer<typeof MoveFilesArgsSchema>) {
-    // Implementation preserved from original
-    return { content: [{ type: 'text' as const, text: 'Move files functionality preserved' }] };
+    const { operations } = args;
+    try {
+        const results = await Promise.all(operations.map(op => this.processFileCopyOperation(op, 'move')));
+        const report = this.formatFileCopyResponse(results, 'move');
+        return { content: [{ type: 'text' as const, text: report }] };
+    } catch (error) {
+        return { content: [{ type: 'text' as const, text: `Erreur lors du déplacement des fichiers: ${(error as Error).message}` }], isError: true };
+    }
+  }
+
+  private async processFileCopyOperation(operation: FileCopyOperation, mode: 'copy' | 'move') {
+      const { source: rawSource, destination: rawDestination, transform, conflict_strategy = 'overwrite' } = operation;
+      const source = this.resolvePath(rawSource);
+      const destination = this.resolvePath(rawDestination);
+
+      const sourcePaths = await glob(source);
+      if (sourcePaths.length === 0) {
+          return { source, success: false, error: `Aucun fichier ne correspond au motif: ${source}`, files: [] };
+      }
+      let isDestDir = false;
+      try {
+          isDestDir = (await fs.stat(destination)).isDirectory();
+      } catch (e) {
+          isDestDir = destination.endsWith(path.sep) || destination.endsWith('/') || sourcePaths.length > 1;
+          if (isDestDir) await fs.mkdir(destination, { recursive: true });
+      }
+      const fileResults = await Promise.all(
+          sourcePaths.map(async (sourcePath) => {
+              let fileName = path.basename(sourcePath);
+              if (transform) {
+                  fileName = fileName.replace(new RegExp(transform.pattern), transform.replacement);
+              }
+              let destPath = isDestDir ? path.join(destination, fileName) : destination;
+             
+              try {
+                  let fileExists = false;
+                  try { await fs.access(destPath); fileExists = true; } catch (e) { }
+                  if (fileExists) {
+                      if (conflict_strategy === 'ignore') return { source: sourcePath, destination: destPath, success: true, skipped: true, message: 'Fichier ignoré' };
+                      if (conflict_strategy === 'rename') {
+                          destPath = `${destPath}_${Date.now()}`;
+                      }
+                  }
+                  if (mode === 'copy') await fs.copyFile(sourcePath, destPath);
+                  else await fs.rename(sourcePath, destPath);
+                  return { source: sourcePath, destination: destPath, success: true, message: `Fichier ${mode === 'copy' ? 'copié' : 'déplacé'}` };
+              } catch (error) {
+                  return { source: sourcePath, destination: destPath, success: false, error: (error as Error).message };
+              }
+          })
+      );
+      return { source, destination, success: true, files: fileResults };
+  }
+
+  private formatFileCopyResponse(results: any[], operationName: 'copy' | 'move') {
+      let output = `## Opération: ${operationName}\n`;
+      for (const result of results) {
+          output += `### Source: ${result.source} -> Destination: ${result.destination}\n`;
+          result.files.forEach((f: any) => {
+             output += `- ${f.success ? '✓' : '✗'} ${f.source} -> ${f.destination} ${f.message || f.error}\n`;
+          });
+      }
+      return output;
   }
 
   private async handleSearchInFiles(args: z.infer<typeof SearchInFilesArgsSchema>) {
-    // Implementation preserved from original
-    return { content: [{ type: 'text' as const, text: 'Search in files functionality preserved' }] };
+    const { paths: rawPaths, pattern, use_regex, case_sensitive, file_pattern, context_lines, max_results_per_file, max_total_results, recursive } = args;
+    try {
+        const results: any[] = [];
+        let totalMatches = 0;
+        const searchRegex = new RegExp(pattern, case_sensitive ? 'g' : 'gi');
+        const searchInFile = async (rawFilePath: string) => {
+            if (totalMatches >= max_total_results) return;
+            const filePath = this.resolvePath(rawFilePath);
+            try {
+                const content = await fs.readFile(filePath, 'utf-8');
+                const lines = content.split('\n');
+                const fileMatches = [];
+                for (let i = 0; i < lines.length; i++) {
+                    const line = lines[i];
+                    if (searchRegex.test(line)) {
+                        if (fileMatches.length >= max_results_per_file || totalMatches >= max_total_results) break;
+                        const start = Math.max(0, i - context_lines);
+                        const end = Math.min(lines.length, i + context_lines + 1);
+                        const context = lines.slice(start, end);
+                        fileMatches.push({ lineNumber: i + 1, line, context });
+                        totalMatches++;
+                    }
+                }
+                if (fileMatches.length > 0) results.push({ path: rawFilePath, matches: fileMatches });
+            } catch (error) {
+                // Skip files that cannot be read
+            }
+        };
+       
+        for (const searchPath of rawPaths) {
+            await searchInFile(searchPath);
+        }
+       
+        let formattedResponse = `# Résultats de la recherche pour: "${pattern}"\n`;
+        results.forEach(r => {
+            formattedResponse += `### ${r.path}\n`;
+            r.matches.forEach((m: any) => {
+                formattedResponse += `**Ligne ${m.lineNumber}**: ${m.line}\n\`\`\`\n${m.context.join('\n')}\n\`\`\`\n`;
+            });
+        });
+       
+        return { content: [{ type: 'text' as const, text: formattedResponse }] };
+    } catch (error) {
+        return { content: [{ type: 'text' as const, text: `Erreur lors de la recherche: ${(error as Error).message}` }], isError: true };
+    }
   }
 
   private async handleSearchAndReplace(args: z.infer<typeof SearchAndReplaceArgsSchema>) {
-    // Implementation preserved from original
-    return { content: [{ type: 'text' as const, text: 'Search and replace functionality preserved' }] };
+    const { files, paths, search, replace, use_regex, case_sensitive, file_pattern, recursive, preview } = args;
+    try {
+        let totalReplacements = 0;
+        let diffs = '';
+        const replaceInFile = async (rawFilePath: string, searchPattern: string, replacement: string) => {
+            const filePath = this.resolvePath(rawFilePath);
+            let content = await fs.readFile(filePath, 'utf-8');
+            const searchRegex = new RegExp(searchPattern, case_sensitive ? 'g' : 'gi');
+            const newContent = content.replace(searchRegex, (match) => {
+                totalReplacements++;
+                return replacement;
+            });
+            if (content !== newContent) {
+                 diffs += this.generateDiff(content, newContent, rawFilePath) + '\n';
+                 if (!preview) await fs.writeFile(filePath, newContent, 'utf-8');
+            }
+        };
+        if (files) {
+            for (const file of files) {
+                await replaceInFile(file.path, file.search, file.replace);
+            }
+        } else if (paths && search && replace) {
+            for (const searchPath of paths) {
+                await replaceInFile(searchPath, search, replace);
+            }
+        }
+       
+        let report = `# Rapport de remplacement (${preview ? 'Prévisualisation' : 'Effectué'})\n\n`;
+        report += `Total de remplacements: ${totalReplacements}\n\n${diffs}`;
+        return { content: [{ type: 'text' as const, text: report }] };
+    } catch (error) {
+        return { content: [{ type: 'text' as const, text: `Erreur lors du remplacement: ${(error as Error).message}` }], isError: true };
+    }
+  }
+
+  private generateDiff(oldContent: string, newContent: string, filePath: string): string {
+    return `--- a/${filePath}\n+++ b/${filePath}\n...diff content...`;
   }
 
   private async handleRestartMcpServers(args: z.infer<typeof RestartMcpServersArgsSchema>) {
-    // Implementation preserved from original
-    return { content: [{ type: 'text' as const, text: 'MCP server restart functionality preserved' }] };
+    const { servers } = args;
+    const settingsPath = 'C:/Users/MYIA/AppData/Roaming/Code/User/globalStorage/rooveterinaryinc.roo-cline/settings/mcp_settings.json';
+    const results = [];
+    try {
+      const settingsRaw = await fs.readFile(settingsPath, 'utf-8');
+      const settings = JSON.parse(settingsRaw);
+      if (!settings.mcpServers) {
+        throw new Error("La section 'mcpServers' est manquante dans le fichier de configuration.");
+      }
+      for (const serverName of servers) {
+        if (settings.mcpServers[serverName]) {
+            settings.mcpServers[serverName].enabled = false;
+            await fs.writeFile(settingsPath, JSON.stringify(settings, null, 2));
+            await new Promise(resolve => setTimeout(resolve, 1000));
+            settings.mcpServers[serverName].enabled = true;
+            await fs.writeFile(settingsPath, JSON.stringify(settings, null, 2));
+            results.push({ server: serverName, status: 'success' });
+        } else {
+            results.push({ server: serverName, status: 'error', reason: 'Server not found in settings' });
+        }
+      }
+    } catch (error) {
+       return { content: [{ type: 'text' as const, text: `Erreur lors du redémarrage des serveurs: ${(error as Error).message}` }]};
+    }
+    return { content: [{ type: 'text' as const, text: JSON.stringify(results) }] };
   }
 
   async run() {

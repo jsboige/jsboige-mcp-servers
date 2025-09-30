@@ -9,11 +9,17 @@
     "start": "node build/index.js",
     "start:debug": "node --inspect build/index.js",
     "dev": "tsc -w",
-    "test": "npm run build && npm run test:legacy",
+    "test": "npm run build && npm run test:unit && npm run test:legacy",
+    "test:unit": "jest --coverage",
+    "test:watch": "jest --watch",
+    "test:coverage": "jest --coverage --coverageReporters=text-lcov",
+    "test:anti-regression": "jest anti-regression.test.js",
     "test:legacy": "node legacy-tests/test-quickfiles.js",
     "test:simple": "node legacy-tests/test-quickfiles-simple.js",
     "test:legacy-suite": "cmd /c run-legacy-tests.bat",
-    "test:all": "npm run test && npm run test:legacy-suite"
+    "test:all": "npm run test && npm run test:legacy-suite",
+    "validate": "node scripts/validate-implementations.js",
+    "precommit": "npm run validate && npm run test"
   },
   "keywords": [
     "mcp",
@@ -33,6 +39,7 @@
     "@types/node": "^22.15.3",
     "cross-env": "^10.0.0",
     "jest": "^29.7.0",
+    "jest-junit": "^16.0.0",
     "mcp-jest": "^1.0.13",
     "mock-fs": "^5.2.0",
     "node-fetch": "^2.7.0",
