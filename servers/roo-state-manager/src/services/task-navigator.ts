@@ -16,18 +16,21 @@ export class TaskNavigator {
 
   public getTaskParent(taskId: string): ConversationSkeleton | null {
     const childConversation = this.conversationCache.get(taskId);
-    if (!childConversation?.parentTaskId) {
+    const pId = (childConversation as any)?.parentId ?? (childConversation as any)?.parentTaskId;
+    // Treat missing or sentinel ROOT as no parent
+    if (!pId || pId === 'ROOT') {
       return null;
     }
-    return this.conversationCache.get(childConversation.parentTaskId) || null;
+    return this.conversationCache.get(pId) || null;
   }
 
   public getTaskChildren(taskId: string): ConversationSkeleton[] {
     const children: ConversationSkeleton[] = [];
     for (const skeleton of this.conversationCache.values()) {
-        if (skeleton.parentTaskId === taskId) {
-            children.push(skeleton);
-        }
+      const pId = (skeleton as any)?.parentId ?? (skeleton as any)?.parentTaskId;
+      if (pId === taskId) {
+        children.push(skeleton);
+      }
     }
     return children;
   }

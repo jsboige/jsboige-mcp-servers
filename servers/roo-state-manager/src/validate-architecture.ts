@@ -45,7 +45,7 @@ async function validateArchitecture() {
     
     // Test 3: Vérifier que le radix tree peut toujours être alimenté (pour référence future)
     console.log('\n3. Test alimentation du radix tree...');
-    globalTaskInstructionIndex.addInstruction("test instruction", "parent-task-id");
+    globalTaskInstructionIndex.addInstruction("parent-task-id", "test instruction");
     const stats = globalTaskInstructionIndex.getStats();
     if (stats.totalInstructions > 0) {
         console.log('   ✅ Le radix tree peut toujours être alimenté par les parents');

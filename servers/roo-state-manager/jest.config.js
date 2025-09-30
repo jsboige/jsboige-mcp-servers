@@ -18,20 +18,28 @@ export default {
   moduleNameMapper: {
     '^(\\.{1,2}/.*)\\.js$': '$1'
   },
-  
+
+  // Racines explicites pour éviter les résolutions ESM ambiguës
+  roots: ['<rootDir>/src', '<rootDir>/tests'],
+
   testMatch: [
     '**/tests/**/*.test.ts'
   ],
-  
+
   testPathIgnorePatterns: [
     '/node_modules/',
     '/build/'
   ],
-  
+
+  // Setup Jest ESM globals et .env.test
   setupFilesAfterEnv: ['./tests/setup-env.ts'],
-  
+
+  // Provision de l'environnement ROO_STORAGE_PATH avant tests + nettoyage après
+  globalSetup: '<rootDir>/tests/config/globalSetup.ts',
+  globalTeardown: '<rootDir>/tests/config/globalTeardown.ts',
+
   testTimeout: 30000,
-  
+
   clearMocks: true,
   restoreMocks: true,
   resetMocks: true
