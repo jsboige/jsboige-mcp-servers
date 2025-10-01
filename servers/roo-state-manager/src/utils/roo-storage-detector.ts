@@ -392,65 +392,20 @@ export class RooStorageDetector {
             isCompleted = lastAssistantMessage.content.toLowerCase().includes('attempt_completion');
         }
 
-        // 🚀 NOUVEAU : Extraction de l'instruction depuis le premier message utilisateur
+        // 🔍 EXTRACTION INSTRUCTION INITIALE : Depuis ui_messages.json (premier say/text)
+        // L'instruction principale est différente des sous-tâches ([new_task in X: 'Y'])
+        // Elle se trouve dans le premier message say/text du fichier ui_messages.json
         let truncatedInstruction: string | undefined;
-        const userMessages = sequence.filter(s => 'role' in s && s.role === 'user') as MessageSkeleton[];
-        if (userMessages.length > 0) {
-            const firstUserMessage = userMessages[0];
-            let instruction = firstUserMessage.content.trim();
-            let instructionSource = 'raw';
-            
-            // 🎯 CORRECTION CRITIQUE : Support patterns XML avancés pour sous-tâches
-            // Pattern 1: Balise simple <task>content</task>
-            const taskMatch = instruction.match(/<task>([\s\S]*?)<\/task>/i);
-            if (taskMatch) {
-                instruction = taskMatch[1].trim();
-                instructionSource = 'task_tag';
-            }
-            // Pattern 2: Structures de délégation complexes avec mode et message
-            else {
-                const delegationPattern = /<(\w+_\w+)>\s*<mode>([^<]+)<\/mode>\s*<message>([^<]+)<\/message>\s*<\/\1>/g;
-                const delegationMatch = delegationPattern.exec(instruction);
-                if (delegationMatch) {
-                    const mode = delegationMatch[2].trim();
-                    const taskMessage = delegationMatch[3].trim();
-                    
-                    // 🛡️ VALIDATION : Vérifier la validité des champs extraits
-                    if (mode.length > 0 && taskMessage.length > 0) {
-                        instruction = `[${mode}] ${taskMessage}`;
-                        instructionSource = 'delegation_xml';
-                    }
+        if (uiMessagesStats) {
+            const mainInstruction = await this.extractMainInstructionFromUI(uiMessagesPath);
+            if (mainInstruction) {
+                // Normaliser avec computeInstructionPrefix pour cohérence avec les sous-tâches
+                truncatedInstruction = computeInstructionPrefix(mainInstruction, 192);
+                
+                if (process.env.ROO_DEBUG_INSTRUCTIONS === '1') {
+                    console.log(`[analyzeConversation] ✅ Instruction principale pour ${taskId}: "${truncatedInstruction}"`);
                 }
             }
-            
-            // 🔧 FALLBACK: Balise <task> ouverte sans fermeture (ou encodée) → strip explicite
-            const lower = instruction.toLowerCase();
-            const hasClosedTask = lower.includes('</task>') || lower.includes('</task>');
-            if (!taskMatch && (lower.startsWith('<task>') || lower.startsWith('<task>')) && !hasClosedTask) {
-                // Retirer une ou plusieurs occurrences d'ouverture au début
-                instruction = instruction.replace(/^(\s*(?:<\s*task\s*>|<\s*task\s*>))+/, '').trim();
-                instructionSource = 'task_open_tag';
-            }
-
-            // 📊 LOG DÉTAILLÉ AVANT NORMALISATION (optionnel)
-            if (process.env.ROO_DEBUG_INSTRUCTIONS === '1') {
-                const preview = instruction.length > 200 ? instruction.substring(0, 200) + '…' : instruction;
-                console.log(`[analyzeConversation] 🧪 RAW instruction (${instructionSource}) pour ${taskId}: "${preview}"`);
-            }
-            
-            // 🎯 CORRECTION SDDD Phase 2: Utiliser computeInstructionPrefix pour alignement strict
-            // Suppression de l'ajout de "..." et alignement sur K=192
-            truncatedInstruction = instruction.length > 0 ? computeInstructionPrefix(instruction, 192) : undefined;
-            
-            // 📊 LOG DÉTAILLÉ : Traçabilité de l'extraction (après normalisation)
-            if (truncatedInstruction && process.env.ROO_DEBUG_INSTRUCTIONS === '1') {
-                console.log(`[analyzeConversation] ✅ Normalisé pour ${taskId}: "${truncatedInstruction}"`);
-            }
-            
-            // 🎯 CORRECTION ARCHITECTURE : Le parentId doit venir UNIQUEMENT des métadonnées
-            // Plus AUCUNE tentative d'inférence inverse depuis l'enfant
-            // Le radix tree est alimenté par les parents qui déclarent leurs enfants
-            // mais on ne l'utilise PAS pour deviner des parents
         }
         // Extraire les vrais timestamps des fichiers JSON au lieu d'utiliser mtime
         const timestamps: Date[] = [];
@@ -869,26 +824,88 @@ export class RooStorageDetector {
   ): Promise<NewTaskInstruction[]> {
     const instructions: NewTaskInstruction[] = [];
     
-    // 🔧 SYSTÈME HYBRIDE: ui_messages.json PRIORITAIRE (complet) puis api_conversation_history.json (condensé)
-    const taskDir = path.dirname(uiMessagesPath);
-    const apiHistoryPath = path.join(taskDir, 'api_conversation_history.json');
+    // 🎯 CORRECTION CRITIQUE : Extraire UNIQUEMENT depuis ui_messages.json
+    // Le fichier api_conversation_history.json est condensé avec balises XML et créerait une contamination
+    // ui_messages.json contient les VRAIES déclarations newTask au format JSON pur
+    // Le flag onlyJsonFormat=true désactive les patterns XML contaminants
+    await this.extractFromMessageFile(uiMessagesPath, instructions, maxLines, true);
     
-    // PRIORITÉ 1: ui_messages.json (sans condensation, garde TOUTES les sous-tâches)
-    await this.extractFromMessageFile(uiMessagesPath, instructions, maxLines);
-    const uiInstructions = instructions.length;
-    
-    // PRIORITÉ 2: api_conversation_history.json (avec condensation, peut manquer des sous-tâches)
-    await this.extractFromMessageFile(apiHistoryPath, instructions, maxLines);
-    const totalInstructions = instructions.length;
-    
-    console.log(`[extractNewTaskInstructionsFromUI] ✅ ${totalInstructions} instructions trouvées (UI:${uiInstructions} + API:${totalInstructions - uiInstructions}) - Patterns XML activés`);
+    if (process.env.ROO_DEBUG_INSTRUCTIONS === '1') {
+      console.log(`[extractNewTaskInstructionsFromUI] ✅ ${instructions.length} instructions trouvées depuis ui_messages.json uniquement`);
+    }
     return instructions;
   }
+  /**
+   * Extrait l'instruction PRINCIPALE d'une tâche depuis ui_messages.json
+   * Cherche d'abord dans say/text, puis dans api_req_started si say/text est trop court
+   * @param uiMessagesPath Chemin vers ui_messages.json
+   * @returns L'instruction principale ou undefined
+   */
+  public static async extractMainInstructionFromUI(
+    uiMessagesPath: string
+  ): Promise<string | undefined> {
+    try {
+      if (!existsSync(uiMessagesPath)) {
+        return undefined;
+      }
+
+      let content = await fs.readFile(uiMessagesPath, 'utf-8');
+      
+      // Nettoyage BOM
+      if (content.charCodeAt(0) === 0xFEFF) {
+        content = content.slice(1);
+      }
+
+      const messages = JSON.parse(content);
+      
+      if (!Array.isArray(messages) || messages.length === 0) {
+        return undefined;
+      }
+
+      // Chercher le premier message say/text
+      let firstSayText: string | undefined;
+      for (const msg of messages) {
+        if (msg.type === 'say' && msg.say === 'text' && typeof msg.text === 'string' && msg.text.trim().length > 0) {
+          firstSayText = msg.text.trim();
+          break;
+        }
+      }
+
+      // Si say/text est trop court ou se termine par "...", chercher dans api_req_started
+      if (!firstSayText || firstSayText.length < 50 || firstSayText.endsWith('...')) {
+        for (const msg of messages) {
+          if (msg.type === 'say' && msg.say === 'api_req_started' && typeof msg.text === 'string') {
+            try {
+              const data = JSON.parse(msg.text);
+              if (data.request && typeof data.request === 'string') {
+                // Extraire le contenu entre <task> et </task>
+                const taskMatch = data.request.match(/<task>\s*([\s\S]*?)\s*<\/task>/);
+                if (taskMatch && taskMatch[1]) {
+                  return taskMatch[1].trim();
+                }
+              }
+            } catch {
+              // Pas du JSON valide, continuer
+            }
+          }
+        }
+      }
+
+      return firstSayText;
+    } catch (error) {
+      if (process.env.ROO_DEBUG_INSTRUCTIONS === '1') {
+        console.warn(`[extractMainInstructionFromUI] ⚠️ Erreur pour ${uiMessagesPath}:`, error);
+      }
+      return undefined;
+    }
+  }
+
 
   private static async extractFromMessageFile(
     filePath: string,
     instructions: NewTaskInstruction[],
-    maxLines: number = 0
+    maxLines: number = 0,
+    onlyJsonFormat: boolean = false
   ): Promise<void> {
     try {
       if (!existsSync(filePath)) {
@@ -968,8 +985,8 @@ export class RooStorageDetector {
           contentText = (message as any).text;
         }
         
-        if (contentText) {
-          // 🎯 PATTERN 1: Création délégation XML (assistant)
+        if (contentText && !onlyJsonFormat) {
+          // 🎯 PATTERN 1: Création délégation XML (assistant) - DÉSACTIVÉ si onlyJsonFormat
           if (message.role === 'assistant') {
             const delegationPattern = /<(\w+_\w+)>\s*<mode>([^<]+)<\/mode>\s*<message>([^<]+)<\/message>\s*<\/\1>/g;
             let match;
@@ -992,7 +1009,8 @@ export class RooStorageDetector {
             }
           }
           
-          // 🎯 PATTERN 2: Balises task simples (user/assistant) - NOUVEAU !
+          // 🎯 PATTERN 2: Balises task simples (user/assistant) - DÉSACTIVÉ si onlyJsonFormat
+          if (!onlyJsonFormat) {
           const taskPattern = /<task>([\s\S]*?)<\/task>/gi;
           let taskMatch;
           while ((taskMatch = taskPattern.exec(contentText)) !== null) {
@@ -1011,9 +1029,10 @@ export class RooStorageDetector {
               console.log(`[extractFromMessageFile] ⚠️ BALISE TASK REJETÉE (trop courte: ${taskContent.length} chars) dans ${path.basename(filePath)}`);
             }
           }
+          } // Fin if (!onlyJsonFormat) pour PATTERN 2
           
-          // 🎯 PATTERN 3: Résultats délégation complétée (user) - CORRECTION CRITIQUE
-          if (message.role === 'user') {
+          // 🎯 PATTERN 3: Résultats délégation complétée (user) - DÉSACTIVÉ si onlyJsonFormat
+          if (!onlyJsonFormat && message.role === 'user') {
             const completedPattern = /\[(\w+_\w+) completed\] Result:\s*([\s\S]*?)(?=\n\n|\n\[|$)/g;
             let match;
             while ((match = completedPattern.exec(contentText)) !== null) {
@@ -1052,56 +1071,86 @@ export class RooStorageDetector {
                 instructions.push(instruction);
               }
             }
-          }
+          } // Fin if (!onlyJsonFormat) pour PATTERNS 3 et 4
           
-          // 🎯 PATTERN 5: Format ui_messages.json - newTask (JSON échappé OU JSON brut)
-          if (contentText.includes('"tool":"newTask"')) {
-            // 5.a) Cas 1 : JSON échappé (ancien format capturé depuis "text":"{\"tool\":\"newTask\"...}")
-            const escapedNewTaskPattern = /"text":"(\{\\\"tool\\\":\\\"newTask\\\",\\\"mode\\\":\\\"([^\\\"]+)\\\",\\\"content\\\":\\\"([\\s\\S]*?)\\\",\\\"todos\\\":\\\[\\\][^}]*\})"/g;
-            let matchedAny = false;
-            let escapedMatch;
-            while ((escapedMatch = escapedNewTaskPattern.exec(contentText)) !== null) {
-              matchedAny = true;
-              const mode = escapedMatch[2];
-              const escapedContent = escapedMatch[3];
+        } // Fin if (contentText && !onlyJsonFormat)
+          
+        // 🎯 PATTERN 5: Format api_req_started production (TOUJOURS ACTIF)
+        // Ce pattern parse les messages de type say/api_req_started qui contiennent [new_task in X mode: 'Y']
+        // Format: message.text = JSON stringifié avec champ "request" contenant l'instruction
+        if (message.type === 'say' && message.say === 'api_req_started' && typeof message.text === 'string') {
+          try {
+            // Parser le JSON dans message.text
+            const apiData = JSON.parse(message.text);
+            
+            // Extraire le champ "request" qui contient le vrai texte
+            if (apiData && typeof apiData.request === 'string') {
+              const requestText = apiData.request;
               
-              if (mode.length > 0 && escapedContent.length > 20) {
-                // Décoder les échappements JSON multiples (\\n -> \n, \\\\ -> \, etc.)
-                let decodedContent = escapedContent
-                  .replace(/\\\\n/g, '\n')
-                  .replace(/\\\\r/g, '\r')
-                  .replace(/\\\\t/g, '\t')
-                  .replace(/\\\\\\\\/g, '\\\\')
-                  .replace(/\\\\"/g, '\\"')
-                  .replace(/\\"/g, '"')
-                  .replace(/\\\\/g, '\\');
+              // Pattern: [new_task in 🪲 Debug mode: 'instruction text here']
+              // Utilise le flag 's' (dotAll) pour supporter les sauts de ligne dans le message
+              const newTaskApiPattern = /\[new_task in ([^:]+):\s*['"](.+?)['"]\]/gs;
+              let apiMatch;
+              
+              while ((apiMatch = newTaskApiPattern.exec(requestText)) !== null) {
+                const modeWithIcon = apiMatch[1].trim();
+                const taskMessage = apiMatch[2].trim();
+                
+                // Extraire le mode sans l'icône (ex: "🪲 Debug mode" -> "debug")
+                const modeMatch = modeWithIcon.match(/([A-Za-z]+)\s*mode/i);
+                const cleanMode = modeMatch ? modeMatch[1].trim().toLowerCase() : 'task';
+                
+                if (taskMessage.length > 10) {
+                  const instruction: NewTaskInstruction = {
+                    timestamp: new Date(message.timestamp || message.ts || 0).getTime(),
+                    mode: cleanMode,
+                    message: taskMessage,
+                  };
+                  instructions.push(instruction);
+                  
+                  if (process.env.ROO_DEBUG_INSTRUCTIONS === '1') {
+                    console.log(`[extractFromMessageFile] ✅ newTask from api_req_started: mode=${cleanMode}, len=${taskMessage.length}`);
+                  }
+                }
+              }
+            }
+          } catch (e) {
+            // Parsing JSON échoué, ignorer ce message
+            if (process.env.ROO_DEBUG_INSTRUCTIONS === '1') {
+              console.log(`[extractFromMessageFile] ⚠️ Failed to parse api_req_started message.text as JSON`);
+            }
+          }
+        }
+          
+        // 🎯 PATTERN 6: Format ui_messages.json - newTask tool (TOUJOURS ACTIF)
+        if (contentText) {
+          // 🔧 CORRECTION CRITIQUE: Parser directement le JSON du champ message.text
+          // Les messages de type "ask"/"tool" contiennent du JSON dans leur champ "text"
+          if (message.type === 'ask' && message.ask === 'tool' && typeof (message as any).text === 'string') {
+            try {
+              // Parser le JSON contenu dans message.text
+              const toolData = JSON.parse((message as any).text);
+              
+              if (toolData && toolData.tool === 'newTask' && typeof toolData.content === 'string' && toolData.content.length > 20) {
+                // Nettoyer le mode (retirer emojis et espaces)
+                const rawMode = String(toolData.mode || 'task');
+                const cleanMode = rawMode.replace(/[^\w\s]/g, '').trim().toLowerCase();
                 
                 const instruction: NewTaskInstruction = {
                   timestamp: new Date(message.timestamp || message.ts || 0).getTime(),
-                  mode: String(mode).trim(),
-                  message: decodedContent.trim(),
+                  mode: cleanMode || 'task',
+                  message: toolData.content.trim(),
                 };
                 instructions.push(instruction);
-              }
-            }
-    
-            // 5.b) Cas 2 : JSON brut dans message.text (format réel UI "ask/tool")
-            if (!matchedAny) {
-              try {
-                // contentText est directement le JSON {"tool":"newTask","mode":"...","content":"...","todos":[]}
-                const obj = JSON.parse(contentText);
-                if (obj && obj.tool === 'newTask' && typeof obj.content === 'string' && obj.content.length > 20) {
-                  const rawMode = String(obj.mode || 'task');
-                  const cleanMode = rawMode.replace(/[^\w\s]/g, '').trim().toLowerCase();
-                  const instruction: NewTaskInstruction = {
-                    timestamp: new Date(message.timestamp || message.ts || 0).getTime(),
-                    mode: cleanMode || 'task',
-                    message: obj.content.trim(),
-                  };
-                  instructions.push(instruction);
+                
+                if (process.env.ROO_DEBUG_INSTRUCTIONS === '1') {
+                  console.log(`[extractFromMessageFile] ✅ newTask from ask/tool: mode=${cleanMode}, len=${toolData.content.length}`);
                 }
-              } catch (e) {
-                // JSON.parse a échoué, ignorer silencieusement ce cas
+              }
+            } catch (e) {
+              // Parsing JSON échoué, ignorer ce message
+              if (process.env.ROO_DEBUG_INSTRUCTIONS === '1') {
+                console.log(`[extractFromMessageFile] ⚠️ Failed to parse ask/tool message.text as JSON`);
               }
             }
           }
@@ -1133,8 +1182,10 @@ export class RooStorageDetector {
               // ignorer
             }
           }
+        }
           
-          // 🎯 PATTERN 6: new_task non fermée en fin de message (assistant) - NOUVEAU
+        // 🎯 PATTERN 6: new_task non fermée en fin de message (assistant) - DÉSACTIVÉ si onlyJsonFormat
+        if (contentText && !onlyJsonFormat) {
           if (message.role === 'assistant') {
             const unClosedNewTaskPattern = /<new_task>\s*<mode>([^<]+)<\/mode>\s*<message>([^<]+)<\/message>\s*$/gi;
             let unClosedMatch;
@@ -1152,7 +1203,7 @@ export class RooStorageDetector {
               }
             }
           }
-        }
+        } // Fin if (contentText && !onlyJsonFormat) pour PATTERN 6
 
         // 🔧 LEGACY: Rétrocompatibilité anciens formats
         if (message.type === 'tool_call' && message.content?.tool === 'new_task') {
