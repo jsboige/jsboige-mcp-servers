@@ -559,7 +559,7 @@ export class CacheAntiLeakManager {
       status = 'critical';
     } else if (this.stats.totalSizeGB > this.config.maxTrafficGB * 0.8) {
       issues.push(`Cache size warning: ${this.stats.totalSizeGB.toFixed(2)}GB / ${this.config.maxTrafficGB}GB`);
-      if (status !== 'critical') status = 'warning' as any;
+      if (status === 'healthy') status = 'warning';
     }
     
     // Vérification du taux de hit

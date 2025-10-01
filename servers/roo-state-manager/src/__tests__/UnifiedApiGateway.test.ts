@@ -36,31 +36,31 @@ describe('UnifiedApiGateway - Architecture consolidée', () => {
     // Mock des services consolidés
     mockServices = {
       displayService: {
-        listConversations: jest.fn().mockResolvedValue({
+        listConversations: jest.fn(() => Promise.resolve({
           conversations: [],
           total: 0
-        } as any),
-        viewConversationTree: jest.fn().mockResolvedValue({
+        })),
+        viewConversationTree: jest.fn(() => Promise.resolve({
           tree: { id: 'test', children: [] }
-        } as any)
+        }))
       },
       searchService: {
-        searchTasksSemantic: jest.fn().mockResolvedValue({
+        searchTasksSemantic: jest.fn(() => Promise.resolve({
           results: [],
           total: 0
-        } as any)
+        }))
       },
       exportService: {
-        exportConversationJson: jest.fn().mockResolvedValue({
+        exportConversationJson: jest.fn(() => Promise.resolve({
           exported: true,
           format: 'json'
-        } as any)
+        }))
       },
       cacheManager: {
-        cleanup: jest.fn().mockResolvedValue(true as any)
+        cleanup: jest.fn(() => Promise.resolve(true))
       },
       validationEngine: {
-        validate: jest.fn().mockReturnValue({ isValid: true, errors: [] } as any)
+        validate: jest.fn(() => ({ isValid: true, errors: [] }))
       }
     };
 
@@ -304,8 +304,9 @@ describe('UnifiedApiGateway - Architecture consolidée', () => {
 
     test('Gestion des erreurs d\'outils gracieuse', async () => {
       // Mock une erreur sur un outil
-      mockServices.displayService.listConversations = jest.fn()
-        .mockRejectedValue(new Error('Tool execution failed') as any);
+      mockServices.displayService.listConversations = jest.fn(() =>
+        Promise.reject(new Error('Tool execution failed'))
+      );
 
       const result = await gateway.execute(DisplayPreset.QUICK_OVERVIEW);
 
