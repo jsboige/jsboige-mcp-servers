@@ -1143,9 +1143,13 @@ class RooStateManagerServer {
             const enhancedSkeletons = Array.from(this.conversationCache.values()).map(skeleton => ({
                 ...skeleton,
                 // Enhanced fields requis par l'interface EnhancedConversationSkeleton
+                // 🎯 FIX CRITIQUE : Ne PAS passer parsedSubtaskInstructions mais marquer phase1Completed
+                // Le RadixTree est DÉJÀ alimenté aux lignes 1093-1100, donc Phase 1 doit être sautée
                 parsedSubtaskInstructions: undefined,
                 processingState: {
-                    phase1Completed: false,
+                    // ✅ CORRECTION : phase1Completed=true si les prefixes existent déjà
+                    // Cela force shouldSkipPhase1() à retourner true et évite le double parsing
+                    phase1Completed: !!(skeleton.childTaskInstructionPrefixes && skeleton.childTaskInstructionPrefixes.length > 0),
                     phase2Completed: false,
                     processingErrors: [],
                     lastProcessedAt: new Date().toISOString()
@@ -1211,10 +1215,9 @@ class RooStateManagerServer {
             }
         }
         
-        // Sauvegarder seulement les premiers squelettes modifiés (limite pour éviter timeout)
-        const MAX_SAVES = 10;
+        // Sauvegarder TOUS les squelettes modifiés (correction bug MAX_SAVES)
         let savedCount = 0;
-        for (const update of skeletonsToUpdate.slice(0, MAX_SAVES)) {
+        for (const update of skeletonsToUpdate) {
             try {
                 for (const storageDir of locations) {
                     const skeletonDir = path.join(storageDir, SKELETON_CACHE_DIR_NAME);
@@ -1233,9 +1236,7 @@ class RooStateManagerServer {
             }
         }
         
-        if (skeletonsToUpdate.length > MAX_SAVES) {
-            console.log(`📝 Saved ${savedCount}/${skeletonsToUpdate.length} updated skeletons to disk (others updated in memory only)`);
-        }
+        console.log(`📝 Saved ${savedCount}/${skeletonsToUpdate.length} updated skeletons to disk`);
         
         console.log(`✅ Skeleton cache build complete. Mode: ${mode}, Cache size: ${this.conversationCache.size}, New relations: ${hierarchyRelationsFound}`);
         

@@ -857,14 +857,14 @@ export class TraceSummaryService {
      * Cherche un fichier markdown source pour une tâche donnée
      */
     private async findSourceMarkdownFile(taskId: string): Promise<string | null> {
-        // Mapping explicite des tâches de test vers le fichier de référence fourni
-        const referenceFile = 'corriges/demo-roo-code/04-creation-contenu/demo-1-web-orchestration-optimisee/REFERENCE_TACHE.md';
-        const legacyTestFile = 'corriges/demo-roo-code/04-creation-contenu/demo-1-web-orchestration-optimisee/roo_task_sep-8-2025_11-11-29-pm.md';
+        // Mapping explicite des tâches de test vers le vrai fichier de trace
+        const traceFile = 'corriges/demo-roo-code/04-creation-contenu/demo-1-web-orchestration-optimisee/roo_task_sep-8-2025_11-11-29-pm.md';
         const workspaceRoot = 'g:/Mon Drive/MyIA/Comptes/Pauwels Consulting/Pauwels Consulting - Formation IA';
 
+        // Tâches de démo connues pointant vers le fichier de trace
         const taskMap: Record<string, string> = {
-            'b799fcfa-1a92-4005-b10b-bcc1e781884f': referenceFile,
-            'a3d9a81f-4999-48c8-be3b-3f308042473a': referenceFile
+            'b799fcfa-1a92-4005-b10b-bcc1e781884f': traceFile,
+            'a3d9a81f-4999-48c8-be3b-3f308042473a': traceFile
         };
 
         // 1) Cas mappé explicitement
@@ -872,33 +872,25 @@ export class TraceSummaryService {
         if (mapped) {
             try {
                 const fullPath = path.resolve(workspaceRoot, mapped);
-                console.log(`🔍 Recherche fichier markdown (mappé): ${fullPath}`);
+                console.log(`🔍 Recherche fichier markdown trace (mappé): ${fullPath}`);
                 await fs.promises.access(fullPath);
-                console.log(`✅ Fichier markdown trouvé (mappé): ${mapped}`);
+                console.log(`✅ Fichier markdown trace trouvé (mappé): ${mapped}`);
                 return mapped;
             } catch (error) {
-                console.warn(`❌ Fichier markdown mappé introuvable: ${mapped}`, error);
+                console.warn(`❌ Fichier markdown trace mappé introuvable: ${mapped}`, error);
                 // Continuer vers fallback
             }
         }
 
-        // 2) Fallback: utiliser REFERENCE_TACHE.md s'il existe
+        // 2) Fallback: fichier de trace si présent
         try {
-            const refFull = path.resolve(workspaceRoot, referenceFile);
-            await fs.promises.access(refFull);
-            console.log(`✅ Fichier markdown trouvé (fallback référence): ${referenceFile}`);
-            return referenceFile;
+            const traceFull = path.resolve(workspaceRoot, traceFile);
+            await fs.promises.access(traceFull);
+            console.log(`✅ Fichier markdown trace trouvé (fallback): ${traceFile}`);
+            return traceFile;
         } catch {}
 
-        // 3) Fallback legacy: ancien fichier de test si présent
-        try {
-            const legacyFull = path.resolve(workspaceRoot, legacyTestFile);
-            await fs.promises.access(legacyFull);
-            console.log(`✅ Fichier markdown trouvé (fallback legacy): ${legacyTestFile}`);
-            return legacyTestFile;
-        } catch {}
-
-        console.log(`📊 Aucun fichier markdown spécifique pour tâche: ${taskId}`);
+        console.log(`📊 Aucun fichier markdown trace spécifique pour tâche: ${taskId}`);
         return null; // Autres tâches : fallback vers JSON
     }
 
@@ -1810,8 +1802,8 @@ export class TraceSummaryService {
             csvVariant: options.csvVariant,
             // SDDD Phase 3: Feature flag pour les strategies (désactivé par défaut pour compatibilité)
             enableDetailLevels: options.enableDetailLevels || false,
-            // Nouvelles options
-            tocStyle: options.tocStyle || 'markdown',
+            // Nouvelles options - CORRECTION: tocStyle 'html' par défaut (compatibilité référence)
+            tocStyle: options.tocStyle || 'html',
             hideEnvironmentDetails: options.hideEnvironmentDetails !== undefined ? options.hideEnvironmentDetails : true,
             startIndex: options.startIndex,
             endIndex: options.endIndex
