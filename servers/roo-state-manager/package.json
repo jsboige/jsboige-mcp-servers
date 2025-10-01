@@ -1,6 +1,6 @@
 {
   "name": "roo-state-manager",
-  "version": "1.0.6",
+  "version": "1.0.8",
   "description": "MCP server for unified Roo state management and conversation persistence",
   "main": "build/src/index.js",
   "type": "module",
