@@ -286,7 +286,8 @@ describe('Production Format Extraction', () => {
                         const requestText = apiData.request;
                         
                         // Pattern: [new_task in 🪲 Debug mode: 'instruction text here']
-                        const newTaskApiPattern = /\[new_task in ([^:]+):\s*['"]([^'"]+)['"]\]/g;
+                        // Align with production extractor (RooStorageDetector) which supports multiline instructions
+                        const newTaskApiPattern = /\[new_task in ([^:]+):\s*['"](.+?)['"]\]/gs;
                         let apiMatch;
                         
                         while ((apiMatch = newTaskApiPattern.exec(requestText)) !== null) {

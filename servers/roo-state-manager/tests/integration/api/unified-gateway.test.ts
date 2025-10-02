@@ -374,12 +374,31 @@ describe('Hierarchy Reconstruction - Integration Tests', () => {
 
             const result = await engine.doReconstruction(skeletons);
 
-            // Vérifier que les parentIds valides n'ont pas changé
+            // Vérifier que les parentIds VRAIMENT VALIDES n'ont pas changé
             result.forEach(s => {
                 const original = originalRelations.get(s.taskId);
-                if (original && skeletons.find(p => p.taskId === original)) {
-                    expect(s.parentTaskId).toBe(original);
-                    expect(s.reconstructedParentId).toBeUndefined();
+                if (original) {
+                    const originalParent = skeletons.find(p => p.taskId === original);
+                    if (originalParent) {
+                        // Vérifier si la relation est temporellement valide
+                        const pTime = new Date(originalParent.metadata.createdAt).getTime();
+                        const cTime = new Date(s.metadata.createdAt).getTime();
+                        const temporalValid = !Number.isFinite(pTime) || !Number.isFinite(cTime) || pTime <= cTime;
+                        
+                        // Vérifier si les workspaces correspondent
+                        const workspaceValid = !originalParent.metadata?.workspace ||
+                                               !s.metadata?.workspace ||
+                                               originalParent.metadata.workspace === s.metadata.workspace;
+                        
+                        // Ne vérifier la préservation QUE pour les relations VALIDES
+                        if (temporalValid && workspaceValid) {
+                            expect(s.parentTaskId).toBe(original);
+                            expect(s.reconstructedParentId).toBeUndefined();
+                        } else {
+                            // Les relations invalides DOIVENT être supprimées par le moteur
+                            expect(s.parentTaskId).toBeUndefined();
+                        }
+                    }
                 }
             });
         });

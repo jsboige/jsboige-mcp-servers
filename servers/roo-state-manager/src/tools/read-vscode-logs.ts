@@ -89,8 +89,8 @@ export const readVscodeLogs = {
                     sessionsProcessed++;
 
                     const logTargets = [
-                        { name: 'Renderer', file: 'renderer.log' },
-                        { name: 'Extension Host', file: 'exthost.log' },
+                        { name: 'renderer', file: 'renderer.log' },
+                        { name: 'exthost', file: 'exthost.log' },
                         { name: 'Main', file: 'main.log' }
                     ];
 
@@ -107,6 +107,16 @@ export const readVscodeLogs = {
 
                     // Roo-Code Output Log (special search)
                     const exthostPath = path.join(latestWindowPath, 'exthost');
+
+                    // Also read nested exthost/exthost.log (tests expect this)
+                    try {
+                        const nestedExthostLog = path.join(exthostPath, 'exthost.log');
+                        await fs.access(nestedExthostLog);
+                        const nestedContent = await readLastLines(nestedExthostLog, lineCount, filter);
+                        allLogsContent.push({ title: 'exthost', path: nestedExthostLog, content: nestedContent });
+                        foundLogs = true;
+                    } catch (e) { /* ignore if not present */ }
+
                     const outputDirs = (await fs.readdir(exthostPath, { withFileTypes: true }).catch(() => []))
                         .filter(d => d.isDirectory() && d.name.startsWith('output_logging_'));
 
@@ -128,7 +138,7 @@ export const readVscodeLogs = {
 
                     if (latestRooLog.path) {
                         const content = await readLastLines(latestRooLog.path, lineCount, filter);
-                        allLogsContent.push({ title: 'Roo-Code Output Channel', path: latestRooLog.path, content });
+                        allLogsContent.push({ title: 'Roo-Code Output', path: latestRooLog.path, content });
                         foundLogs = true;
                     }
                     
@@ -136,6 +146,9 @@ export const readVscodeLogs = {
                 }
             }
             
+            if (sessionDirs.length === 0) {
+                 return { content: [{ type: 'text' as const, text: 'No session log directory found' }] };
+            }
             if (!foundLogs) {
                  return { content: [{ type: 'text' as const, text: `No relevant VS Code logs found.\n\n${debugLog.join('\n')}` }] };
             }

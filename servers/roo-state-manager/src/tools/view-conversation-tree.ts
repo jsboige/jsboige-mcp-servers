@@ -75,12 +75,17 @@ function handleViewConversationTreeExecution(
     let { task_id, workspace } = args;
 
     if (!task_id) {
-        if (!workspace) {
-            throw new Error("Either task_id or workspace must be provided. Cannot determine target task without context.");
+        // Si le cache est vide, message explicite attendu par les tests
+        if (conversationCache.size === 0) {
+            throw new Error("Cache is empty and no task_id was provided. Cannot determine the latest task.");
         }
+        // Sélection automatique de la tâche la plus récente (tous workspaces si non fourni)
         const latestTask = findLatestTask(conversationCache, workspace);
         if (!latestTask) {
-            throw new Error(`No tasks found for workspace '${workspace}'. Please verify the workspace path or provide a specific task_id.`);
+            if (workspace) {
+                throw new Error(`No tasks found for workspace '${workspace}'. Please verify the workspace path or provide a specific task_id.`);
+            }
+            throw new Error("No tasks found. Cannot determine the latest task.");
         }
         task_id = latestTask.taskId;
     }

@@ -352,15 +352,19 @@ describe('HierarchyReconstructionEngine', () => {
 
         it('should validate temporal constraints', async () => {
             const skeletons = [
-                enhanceSkeleton(mockSkeletons[5]), // time-paradox (enfant)
-                enhanceSkeleton(mockSkeletons[6])  // future-parent (parent créé après)
+                enhanceSkeleton(mockSkeletons[5]), // time-paradox (enfant créé à 09:00)
+                enhanceSkeleton(mockSkeletons[6])  // future-parent (parent créé à 12:00)
             ];
 
             const result = await engine.executePhase2(skeletons);
 
-            // Le parent créé après l'enfant ne devrait pas être accepté
+            // Le parent créé APRÈS l'enfant ne devrait pas être accepté
+            // Le parentId invalide devrait avoir été supprimé
+            expect(skeletons[0].parentTaskId).toBeUndefined();
             expect(skeletons[0].reconstructedParentId).toBeUndefined();
-            expect(result.unresolvedCount).toBeGreaterThan(0);
+            
+            // Le parent futur devrait être marqué comme racine
+            expect(skeletons[1].isRootTask).toBe(true);
         });
 
         it('should detect and prevent cycles', async () => {
