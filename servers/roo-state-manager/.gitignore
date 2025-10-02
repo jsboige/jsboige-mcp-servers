@@ -8,4 +8,7 @@
 .cache/
 
 # Reports and documentation
-*.md
+# Ignore markdown files at root level except README.md and CHANGELOG.md
+/*.md
+!README.md
+!CHANGELOG.md
