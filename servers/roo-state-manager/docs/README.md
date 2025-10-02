@@ -32,10 +32,12 @@ Rapports de phases d'implémentation :
 
 Documentation sur le parsing XML et la reconstruction de l'arbre des tâches :
 
+- [`ARBRE_CONVERSATION_CLUSTER.md`](parsing/ARBRE_CONVERSATION_CLUSTER.md) - Visualisation des grappes de conversations
 - [`ARBRE_HIERARCHIE_RECONSTRUITE_REPARE.md`](parsing/ARBRE_HIERARCHIE_RECONSTRUITE_REPARE.md)
 - [`ARBRE_TACHES_MEGA_CONVERSATION_9381_MESSAGES.md`](parsing/ARBRE_TACHES_MEGA_CONVERSATION_9381_MESSAGES.md)
 - [`ARBRE_TACHES_TEST_PARSING_FIX.md`](parsing/ARBRE_TACHES_TEST_PARSING_FIX.md)
 - [`ARBRE_TACHES_VALIDATION_FINALE_6308_MESSAGES.md`](parsing/ARBRE_TACHES_VALIDATION_FINALE_6308_MESSAGES.md)
+- [`HARMONISATION_PARENTIDS_COMPLETE.md`](parsing/HARMONISATION_PARENTIDS_COMPLETE.md) - Harmonisation des ParentIds
 - [`RAPPORT_PARSING_XML_SOUS_TACHES.md`](parsing/RAPPORT_PARSING_XML_SOUS_TACHES.md)
 - [`VALIDATION_FINALE_PARSING_XML_REPARE.md`](parsing/VALIDATION_FINALE_PARSING_XML_REPARE.md)
 
@@ -55,18 +57,13 @@ Rapports de mission, validations et déploiements :
 
 Documentation sur l'organisation et la structure des tests :
 
+- [`2025-09-28_validation_tests_unitaires_reconstruction_hierarchique.md`](tests/2025-09-28_validation_tests_unitaires_reconstruction_hierarchique.md) - Validation tests unitaires
 - [`AUDIT-TESTS-LAYOUT.md`](tests/AUDIT-TESTS-LAYOUT.md) - Audit de l'organisation des tests
 - [`MIGRATION-PLAN-TESTS.md`](tests/MIGRATION-PLAN-TESTS.md) - Plan de migration des tests
 - [`NOUVEAU-LAYOUT-TESTS.md`](tests/NOUVEAU-LAYOUT-TESTS.md) - Nouveau layout cible
 - [`RAPPORT-FINAL-CORRECTION-TESTS-POST-MERGE.md`](tests/RAPPORT-FINAL-CORRECTION-TESTS-POST-MERGE.md) - Corrections post-merge
 - [`TEST-SUITE-COMPLETE-RESULTS.md`](tests/TEST-SUITE-COMPLETE-RESULTS.md) - Résultats complets
 - [`TESTS-ORGANIZATION.md`](tests/TESTS-ORGANIZATION.md) - Organisation générale
-
-## 🗂️ Autres Documents
-
-- [`2025-09-28_validation_tests_unitaires_reconstruction_hierarchique.md`](2025-09-28_validation_tests_unitaires_reconstruction_hierarchique.md)
-- [`ARBRE_CONVERSATION_CLUSTER.md`](ARBRE_CONVERSATION_CLUSTER.md)
-- [`HARMONISATION_PARENTIDS_COMPLETE.md`](HARMONISATION_PARENTIDS_COMPLETE.md)
 
 ## 📝 Conventions
 
