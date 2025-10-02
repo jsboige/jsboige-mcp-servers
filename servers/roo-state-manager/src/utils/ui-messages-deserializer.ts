@@ -139,7 +139,7 @@ export class UIMessagesDeserializer {
     const toolCalls = this.extractToolCalls(messages);
     
     return toolCalls
-      .filter(tool => tool.tool === 'new_task' && tool.mode && tool.message)
+      .filter(tool => (tool.tool === 'new_task' || tool.tool === 'newTask') && tool.mode && tool.message)
       .map(tool => ({
         mode: tool.mode!,
         message: tool.message!,
