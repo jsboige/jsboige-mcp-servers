@@ -45,6 +45,7 @@ Documentation sur le parsing XML et la reconstruction de l'arbre des tâches :
 
 Rapports de mission, validations et déploiements :
 
+- [`CONSOLIDATION-DOCUMENTATION.md`](reports/CONSOLIDATION-DOCUMENTATION.md) - Rapport consolidation docs (2025-10-02)
 - [`FINALISATION_MISSION_PARSING.md`](reports/FINALISATION_MISSION_PARSING.md)
 - [`INDEX-LIVRABLES-REORGANISATION-TESTS.md`](reports/INDEX-LIVRABLES-REORGANISATION-TESTS.md)
 - [`RAPPORT-AVANCEMENT-REORGANISATION.md`](reports/RAPPORT-AVANCEMENT-REORGANISATION.md)
