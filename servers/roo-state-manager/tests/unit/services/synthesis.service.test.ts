@@ -1,10 +1,23 @@
 /**
  * Tests unitaires pour les services de synthèse - Phase 1 SDDD
- * 
+ *
  * Tests structurels avec configurations valides et patterns existants
  */
 
 import { jest, describe, it, expect, beforeEach, beforeAll } from '@jest/globals';
+
+// Mock simple du service OpenAI centralisé - AVANT les imports pour ESM
+jest.unstable_mockModule('../../../src/services/openai.js', () => ({
+    __esModule: true,
+    default: jest.fn(() => ({
+        chat: {
+            completions: {
+                create: jest.fn()
+            }
+        }
+    }))
+}));
+
 import { ConversationAnalysis, CondensedSynthesisBatch } from '../../../src/models/synthesis/SynthesisModels.js';
 import { NarrativeContextBuilderService } from '../../../src/services/synthesis/NarrativeContextBuilderService.js';
 import { LLMService, LLMServiceOptions, LLMModelConfig } from '../../../src/services/synthesis/LLMService.js';
@@ -17,18 +30,6 @@ import { fileURLToPath } from 'url';
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 dotenv.config({ path: path.join(__dirname, '../../.env') });
-
-// Mock simple du service OpenAI centralisé 
-jest.mock('../../../src/services/openai.js', () => ({
-    __esModule: true,
-    default: jest.fn(() => ({
-        chat: {
-            completions: {
-                create: jest.fn()
-            }
-        }
-    }))
-}));
 
 describe('Synthesis Services - Phase 1 Structure Validation', () => {
     

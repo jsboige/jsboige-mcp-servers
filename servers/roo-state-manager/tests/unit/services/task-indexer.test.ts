@@ -38,12 +38,8 @@ describe('🛡️ TaskIndexer Anti-Leak Protections & Circuit Breaker Tests', ()
       data: [{ embedding: new Array(1536).fill(0.1) }]
     });
 
-    // Mock des imports
-    const { getQdrantClient } = require('../../src/services/qdrant.js');
-    getQdrantClient.mockReturnValue(mockQdrantClient);
-
-    const getOpenAIClient = require('../../src/services/openai.js').default;
-    getOpenAIClient.mockReturnValue(mockOpenAIClient);
+    // Les mocks sont déjà définis via unstable_mockModule
+    // Pas besoin de require() en ESM
   });
 
   afterEach(() => {
