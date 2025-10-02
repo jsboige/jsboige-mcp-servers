@@ -4,7 +4,7 @@
  */
 
 import { describe, test, expect } from '@jest/globals';
-import { computeInstructionPrefix } from '../src/utils/task-instruction-index.js';
+import { computeInstructionPrefix } from '../../../src/utils/task-instruction-index.js';
 
 describe('Storage Detector — Exact Prefix normalization (K=192)', () => {
     

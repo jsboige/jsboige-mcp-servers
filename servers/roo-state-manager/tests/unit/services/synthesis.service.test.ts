@@ -5,10 +5,10 @@
  */
 
 import { jest, describe, it, expect, beforeEach, beforeAll } from '@jest/globals';
-import { ConversationAnalysis, CondensedSynthesisBatch } from '../../src/models/synthesis/SynthesisModels.js';
-import { NarrativeContextBuilderService } from '../../src/services/synthesis/NarrativeContextBuilderService.js';
-import { LLMService, LLMServiceOptions, LLMModelConfig } from '../../src/services/synthesis/LLMService.js';
-import { SynthesisOrchestratorService, SynthesisOrchestratorOptions } from '../../src/services/synthesis/SynthesisOrchestratorService.js';
+import { ConversationAnalysis, CondensedSynthesisBatch } from '../../../src/models/synthesis/SynthesisModels.js';
+import { NarrativeContextBuilderService } from '../../../src/services/synthesis/NarrativeContextBuilderService.js';
+import { LLMService, LLMServiceOptions, LLMModelConfig } from '../../../src/services/synthesis/LLMService.js';
+import { SynthesisOrchestratorService, SynthesisOrchestratorOptions } from '../../../src/services/synthesis/SynthesisOrchestratorService.js';
 import dotenv from 'dotenv';
 import path from 'path';
 
@@ -19,7 +19,7 @@ const __dirname = path.dirname(__filename);
 dotenv.config({ path: path.join(__dirname, '../../.env') });
 
 // Mock simple du service OpenAI centralisé 
-jest.mock('../../src/services/openai.js', () => ({
+jest.mock('../../../src/services/openai.js', () => ({
     __esModule: true,
     default: jest.fn(() => ({
         chat: {

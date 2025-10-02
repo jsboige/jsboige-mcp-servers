@@ -19,13 +19,13 @@ import {
   UnifiedApiGateway,
   createUnifiedApiGateway,
   INTELLIGENT_PRESETS
-} from '../gateway/UnifiedApiGateway.js';
+} from '../../../src/gateway/UnifiedApiGateway.js';
 import {
   DisplayPreset,
   ToolCategory,
   ProcessingLevel,
   DisplayOptions
-} from '../interfaces/UnifiedToolInterface.js';
+} from '../../../src/interfaces/UnifiedToolInterface.js';
 
 describe('UnifiedApiGateway - Architecture consolidée', () => {
   

@@ -18,10 +18,10 @@ const mockedFs = {
 jest.unstable_mockModule('fs', () => mockedFs);
 
 import * as path from 'path';
-import { HierarchyReconstructionEngine } from '../src/utils/hierarchy-reconstruction-engine.js';
-import { TaskInstructionIndex } from '../src/utils/task-instruction-index.js';
-import type { ConversationSkeleton } from '../src/types/conversation.js';
-import type { EnhancedConversationSkeleton } from '../src/types/enhanced-hierarchy.js';
+import { HierarchyReconstructionEngine } from '../../../src/utils/hierarchy-reconstruction-engine.js';
+import { TaskInstructionIndex } from '../../../src/utils/task-instruction-index.js';
+import type { ConversationSkeleton } from '../../../src/types/conversation.js';
+import type { EnhancedConversationSkeleton } from '../../../src/types/enhanced-hierarchy.js';
 import {
     mockSkeletons,
     mockNewTaskInstructions,
@@ -29,7 +29,7 @@ import {
     generateLargeDataset,
     enhanceSkeleton,
     mockCyclicSkeletons
-} from './fixtures/hierarchy-test-data.js';
+} from '../../fixtures/hierarchy-test-data.js';
 
 describe('Hierarchy Reconstruction - Integration Tests', () => {
     let engine: HierarchyReconstructionEngine;

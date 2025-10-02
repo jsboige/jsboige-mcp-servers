@@ -1,10 +1,10 @@
 import { jest, describe, it, expect, beforeAll, afterAll, beforeEach, test } from '@jest/globals';
-import { TaskNavigator } from '../../src/services/task-navigator.js';
+import { TaskNavigator } from '../../../src/services/task-navigator.js';
 import * as fs from 'fs/promises';
 import * as path from 'path';
-import { RooStorageDetector } from '../../src/utils/roo-storage-detector.js';
-import { TaskMetadata, ConversationSummary, ConversationSkeleton } from '../../src/types/conversation.js';
-import { globalCacheManager } from '../../src/utils/cache-manager.js';
+import { RooStorageDetector } from '../../../src/utils/roo-storage-detector.js';
+import { TaskMetadata, ConversationSummary, ConversationSkeleton } from '../../../src/types/conversation.js';
+import { globalCacheManager } from '../../../src/utils/cache-manager.js';
 import { fileURLToPath } from 'url';
 
 const __filename = fileURLToPath(import.meta.url);

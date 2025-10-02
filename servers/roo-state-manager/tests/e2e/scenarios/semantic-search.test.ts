@@ -6,13 +6,13 @@ describe('Semantic Search E2E', () => {
   });
 });
 
-// import { indexTask } from '../../src/services/task-indexer.js';
-// import { searchTasks, ContextWindow } from '../../src/services/task-searcher.js';
+// import { indexTask } from '../../../src/services/task-indexer.js';
+// import { searchTasks, ContextWindow } from '../../../src/services/task-searcher.js';
 // import * as fs from 'fs/promises';
 // import * as path from 'path';
-// import { getQdrantClient } from '../../src/services/qdrant.js';
-// import { RooStorageDetector } from '../../src/utils/roo-storage-detector.js';
-// import { globalCacheManager } from '../../src/utils/cache-manager.js';
+// import { getQdrantClient } from '../../../src/services/qdrant.js';
+// import { RooStorageDetector } from '../../../src/utils/roo-storage-detector.js';
+// import { globalCacheManager } from '../../../src/utils/cache-manager.js';
 //
 // const TEST_STORAGE_PATH = path.join(__dirname, 'test-storage');
 // const QDRANT_COLLECTION_NAME = process.env.QDRANT_COLLECTION_NAME;

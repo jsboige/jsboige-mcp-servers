@@ -19,14 +19,14 @@ jest.unstable_mockModule('fs', () => mockedFs);
 
 import * as path from 'path';
 import * as os from 'os';
-import { HierarchyReconstructionEngine } from '../src/utils/hierarchy-reconstruction-engine.js';
-import { TaskInstructionIndex } from '../src/utils/task-instruction-index.js';
+import { HierarchyReconstructionEngine } from '../../../src/utils/hierarchy-reconstruction-engine.js';
+import { TaskInstructionIndex } from '../../../src/utils/task-instruction-index.js';
 import type {
     EnhancedConversationSkeleton,
     Phase1Result,
     Phase2Result,
     ReconstructionConfig
-} from '../src/types/enhanced-hierarchy.js';
+} from '../../../src/types/enhanced-hierarchy.js';
 import {
     mockSkeletons,
     mockNewTaskInstructions,
@@ -36,7 +36,7 @@ import {
     corruptedData,
     enhanceSkeleton,
     defaultTestConfig
-} from './fixtures/hierarchy-test-data.js';
+} from '../../fixtures/hierarchy-test-data.js';
 
 describe('HierarchyReconstructionEngine', () => {
     let engine: HierarchyReconstructionEngine;
@@ -646,7 +646,7 @@ describe('HierarchyReconstructionEngine', () => {
 
     describe('Performance tests', () => {
         it('should handle 1000+ entries efficiently', async () => {
-            const { generateLargeDataset } = await import('./fixtures/hierarchy-test-data.js');
+            const { generateLargeDataset } = await import('../../fixtures/hierarchy-test-data.js');
             const largeDataset = generateLargeDataset(100).map(enhanceSkeleton); // Réduit pour les tests
 
             mockedFs.existsSync.mockReturnValue(false);

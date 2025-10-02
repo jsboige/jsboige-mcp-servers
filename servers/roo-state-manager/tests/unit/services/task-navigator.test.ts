@@ -1,10 +1,10 @@
 import { jest, describe, it, expect, beforeEach } from '@jest/globals';
-import { TaskNavigator, TreeNode } from '../src/services/task-navigator.js';
-import { globalCacheManager } from '../src/utils/cache-manager.js';
-import { ConversationSkeleton } from '../src/types/conversation.js';
+import { TaskNavigator, TreeNode } from '../../../src/services/task-navigator.js';
+import { globalCacheManager } from '../../../src/utils/cache-manager.js';
+import { ConversationSkeleton } from '../../../src/types/conversation.js';
 
 // Mock du cache manager global
-jest.mock('../src/utils/cache-manager', () => ({
+jest.mock('../../../src/utils/cache-manager', () => ({
   globalCacheManager: {
     get: jest.fn(),
     set: jest.fn(),

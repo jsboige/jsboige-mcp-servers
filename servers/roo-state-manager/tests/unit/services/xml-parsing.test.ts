@@ -10,8 +10,8 @@ import * as path from 'path';
 import { fileURLToPath } from 'url';
 
 // Import de la classe à tester
-import { RooStorageDetector } from '../src/utils/roo-storage-detector.js';
-import { NewTaskInstruction } from '../src/types/conversation.js';
+import { RooStorageDetector } from '../../../src/utils/roo-storage-detector.js';
+import { NewTaskInstruction } from '../../../src/types/conversation.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);

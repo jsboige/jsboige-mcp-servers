@@ -12,7 +12,7 @@ jest.unstable_mockModule('fs/promises', () => ({
     },
 }));
 
-jest.unstable_mockModule('../src/tools/manage-mcp-settings.js', async () => {
+jest.unstable_mockModule('../../../src/tools/manage-mcp-settings.js', async () => {
     const originalModule = await import('../src/tools/manage-mcp-settings.js');
     return {
         ...originalModule,

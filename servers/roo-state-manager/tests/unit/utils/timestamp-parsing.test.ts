@@ -1,6 +1,6 @@
 import { jest, describe, it, expect, beforeEach, afterEach } from '@jest/globals';
 import mock from 'mock-fs';
-import { RooStorageDetector } from '../src/utils/roo-storage-detector.js';
+import { RooStorageDetector } from '../../../src/utils/roo-storage-detector.js';
 import path from 'path';
 
 describe('Timestamp Parsing in RooStorageDetector', () => {

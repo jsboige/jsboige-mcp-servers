@@ -1,12 +1,12 @@
 import { describe, test, expect, beforeEach, afterEach, jest } from '@jest/globals';
-import { TaskIndexer } from '../../src/services/task-indexer.js';
-import { CacheManager } from '../../src/utils/cache-manager.js';
+import { TaskIndexer } from '../../../src/services/task-indexer.js';
+import { CacheManager } from '../../../src/utils/cache-manager.js';
 import crypto from 'crypto';
 
 // Mock des dépendances
-jest.mock('../../src/services/qdrant.js');
-jest.mock('../../src/services/openai.js');
-jest.mock('../../src/utils/roo-storage-detector.js');
+jest.mock('../../../src/services/qdrant.js');
+jest.mock('../../../src/services/openai.js');
+jest.mock('../../../src/utils/roo-storage-detector.js');
 
 describe('🛡️ TaskIndexer Anti-Leak Protections & Circuit Breaker Tests', () => {
   let taskIndexer: TaskIndexer;

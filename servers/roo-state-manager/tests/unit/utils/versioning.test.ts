@@ -1,6 +1,6 @@
 import { describe, it, expect } from '@jest/globals';
-import { RooStateManagerServer } from '../src/index.js';
-import packageJson from '../package.json' with { type: 'json' };
+import { RooStateManagerServer } from '../../../src/index.js';
+import packageJson from '../../../package.json' with { type: 'json' };
 
 describe('Server Versioning', () => {
     it('should load the version from package.json', () => {

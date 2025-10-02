@@ -4,8 +4,8 @@
  */
 
 import { describe, it, expect, beforeEach, afterEach, jest } from '@jest/globals';
-import { TaskInstructionIndex, computeInstructionPrefix } from '../src/utils/task-instruction-index.js';
-import type { NewTaskInstruction } from '../src/types/conversation.js';
+import { TaskInstructionIndex, computeInstructionPrefix } from '../../../src/utils/task-instruction-index.js';
+import type { NewTaskInstruction } from '../../../src/types/conversation.js';
 
 describe('TaskInstructionIndex', () => {
     let index: TaskInstructionIndex;

@@ -7,9 +7,9 @@ import { describe, it, expect, beforeEach } from '@jest/globals';
 import * as fs from 'fs';
 import * as path from 'path';
 import { fileURLToPath } from 'url';
-import { HierarchyReconstructionEngine } from '../src/utils/hierarchy-reconstruction-engine.js';
-import type { ConversationSkeleton } from '../src/types/conversation.js';
-import type { EnhancedConversationSkeleton } from '../src/types/enhanced-hierarchy.js';
+import { HierarchyReconstructionEngine } from '../../../src/utils/hierarchy-reconstruction-engine.js';
+import type { ConversationSkeleton } from '../../../src/types/conversation.js';
+import type { EnhancedConversationSkeleton } from '../../../src/types/enhanced-hierarchy.js';
 
 // Support ES modules
 const __filename = fileURLToPath(import.meta.url);

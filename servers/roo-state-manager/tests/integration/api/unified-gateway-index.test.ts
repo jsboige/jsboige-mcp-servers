@@ -1,5 +1,5 @@
 import { jest, describe, it, expect, beforeEach, afterEach } from '@jest/globals';
-import { RooStateManagerServer } from './index.js';
+import { RooStateManagerServer } from '../../../src/index.js';
 import { CallToolResult } from '@modelcontextprotocol/sdk/types.js';
 
 describe('RooStateManagerServer', () => {

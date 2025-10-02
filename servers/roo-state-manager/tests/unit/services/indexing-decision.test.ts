@@ -4,9 +4,9 @@
  */
 
 import { describe, it, expect, beforeEach } from '@jest/globals';
-import { IndexingDecisionService } from '../../src/services/indexing-decision.js';
-import { ConversationSkeleton } from '../../src/types/conversation.js';
-import { IndexStatus, INDEX_VERSION_CURRENT } from '../../src/types/indexing.js';
+import { IndexingDecisionService } from '../../../src/services/indexing-decision.js';
+import { ConversationSkeleton } from '../../../src/types/conversation.js';
+import { IndexStatus, INDEX_VERSION_CURRENT } from '../../../src/types/indexing.js';
 
 describe('IndexingDecisionService', () => {
     let service: IndexingDecisionService;

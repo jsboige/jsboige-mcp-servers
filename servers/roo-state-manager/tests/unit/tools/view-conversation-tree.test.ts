@@ -1,6 +1,6 @@
 import { jest, describe, it, expect, beforeEach } from '@jest/globals';
-import { viewConversationTree } from '../src/tools/view-conversation-tree.js';
-import { ConversationSkeleton } from '../src/types/conversation.js';
+import { viewConversationTree } from '../../../src/tools/view-conversation-tree.js';
+import { ConversationSkeleton } from '../../../src/types/conversation.js';
 
 const createMockSkeleton = (taskId: string, parentTaskId?: string, title?: string, lastActivity?: string, sequenceContent: string = ''): ConversationSkeleton => ({
     taskId,

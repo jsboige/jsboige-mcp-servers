@@ -1,16 +1,16 @@
 import { jest, describe, it, expect, beforeEach, afterEach } from '@jest/globals';
 import mock from 'mock-fs';
-import { RooStateManagerServer } from '../src/index.js';
+import { RooStateManagerServer } from '../../../src/index.js';
 import path from 'path';
 import fs from 'fs/promises';
 
 // Mock RooStorageDetector pour contrôler les chemins de stockage
-jest.mock('../src/utils/roo-storage-detector.js', () => ({
+jest.mock('../../../src/utils/roo-storage-detector.js', () => ({
     RooStorageDetector: {
         detectStorageLocations: jest.fn(),
     },
 }));
-import { RooStorageDetector } from '../src/utils/roo-storage-detector.js';
+import { RooStorageDetector } from '../../../src/utils/roo-storage-detector.js';
 
 describe('BOM Handling Tools', () => {
     let server: RooStateManagerServer;

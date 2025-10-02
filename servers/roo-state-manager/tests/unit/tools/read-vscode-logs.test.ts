@@ -1,6 +1,6 @@
 import { jest, describe, it, expect, beforeEach, afterEach } from '@jest/globals';
 import mock from 'mock-fs';
-import { readVscodeLogs } from '../src/tools/read-vscode-logs.js';
+import { readVscodeLogs } from '../../../src/tools/read-vscode-logs.js';
 import path from 'path';
 
 describe('read_vscode_logs Tool', () => {
