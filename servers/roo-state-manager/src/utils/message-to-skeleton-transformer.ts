@@ -11,6 +11,7 @@ import { UIMessage, ToolCallInfo, ApiReqInfo, NewTaskInfo } from './message-type
 import { UIMessagesDeserializer } from './ui-messages-deserializer.js';
 import { ConversationSkeleton } from '../types/conversation.js';
 import { computeInstructionPrefix } from './task-instruction-index.js';
+import { WorkspaceDetector } from './workspace-detector.js';
 
 /**
  * Options de configuration du transformer
@@ -45,10 +46,16 @@ export interface TransformationResult {
  */
 export class MessageToSkeletonTransformer {
   private deserializer: UIMessagesDeserializer;
+  private workspaceDetector: WorkspaceDetector;
   private options: Required<TransformerOptions>;
 
   constructor(options: TransformerOptions = {}) {
     this.deserializer = new UIMessagesDeserializer();
+    this.workspaceDetector = new WorkspaceDetector({
+      enableCache: true,
+      validateExistence: false, // Pour performance
+      normalizePaths: true,
+    });
     this.options = {
       normalizePrefixes: options.normalizePrefixes ?? true,
       includeMetadata: options.includeMetadata ?? false,
@@ -57,7 +64,7 @@ export class MessageToSkeletonTransformer {
   }
 
   /**
-   * Transforme les messages en skeleton
+   * Transforme les messages en skeleton avec auto-détection du workspace
    */
   async transform(
     messages: UIMessage[],
@@ -66,33 +73,36 @@ export class MessageToSkeletonTransformer {
   ): Promise<TransformationResult> {
     const startTime = Date.now();
     
-    // 1. Extraire les données structurées
+    // 1. Auto-détection du workspace si pas fourni
+    const detectedWorkspace = workspace || await this.autoDetectWorkspace(messages);
+    
+    // 2. Extraire les données structurées
     const toolCalls = this.deserializer.extractToolCalls(messages);
     const newTasks = this.deserializer.extractNewTasks(messages);
     const apiReqs = this.deserializer.extractApiRequests(messages);
     const userMessages = this.extractUserMessages(messages);
 
-    // 2. Construire l'instruction principale
+    // 3. Construire l'instruction principale
     const { instruction, truncatedInstruction } = this.buildMainInstruction(
       messages,
       apiReqs
     );
 
-    // 3. Construire les prefixes de sous-tâches
+    // 4. Construire les prefixes de sous-tâches
     const childTaskInstructionPrefixes = this.buildChildTaskPrefixes(newTasks);
 
-    // 4. Détecter la complétion
+    // 5. Détecter la complétion
     const isCompleted = this.detectCompletion(messages, toolCalls);
 
-    // 5. Calculer les timestamps
+    // 6. Calculer les timestamps
     const { startedAt, completedAt } = this.extractTimestamps(messages, isCompleted);
 
-    // 6. Construire le skeleton
+    // 7. Construire le skeleton
     const skeleton: ConversationSkeleton = {
       taskId,
       sequence: [], // Simplifié pour Phase 2a
       metadata: {
-        workspace: workspace || undefined,
+        workspace: detectedWorkspace || undefined,
         createdAt: new Date(startedAt).toISOString(),
         lastActivity: new Date(completedAt || startedAt).toISOString(),
         messageCount: messages.length,
@@ -285,5 +295,63 @@ export class MessageToSkeletonTransformer {
     if (skeleton.truncatedInstruction && skeleton.truncatedInstruction.length > 192) {
       throw new Error('Skeleton validation failed: truncatedInstruction exceeds 192 chars');
     }
+  }
+
+  /**
+   * Auto-détection du workspace depuis les messages UI
+   * Utilise la stratégie dual du WorkspaceDetector sans filesystem
+   */
+  private async autoDetectWorkspace(messages: UIMessage[]): Promise<string | null> {
+    try {
+      // Parcourir les messages pour chercher des environment_details
+      for (const message of messages) {
+        let textContent = '';
+        
+        // Extraire le texte selon le type de message
+        if (message.type === 'say' && typeof message.text === 'string') {
+          textContent = message.text;
+        } else if (message.type === 'ask' && typeof message.text === 'string') {
+          textContent = message.text;
+        }
+
+        if (!textContent) {
+          continue;
+        }
+
+        // Chercher le pattern "Current Workspace Directory"
+        const workspaceMatch = textContent.match(/# Current Workspace Directory \(([^)]+)\) Files/i);
+        if (workspaceMatch && workspaceMatch[1]) {
+          const workspace = workspaceMatch[1].trim();
+          
+          // Validation basique du chemin
+          if (this.isValidWorkspacePath(workspace)) {
+            return workspace;
+          }
+        }
+      }
+
+      return null;
+    } catch (error) {
+      console.warn('[MessageToSkeletonTransformer] Erreur auto-détection workspace:', error);
+      return null;
+    }
+  }
+
+  /**
+   * Validation basique du format d'un chemin workspace
+   */
+  private isValidWorkspacePath(workspace: string): boolean {
+    if (!workspace || workspace.length < 3) {
+      return false;
+    }
+
+    // Patterns valides: C:/, d:/, /home/, ./relative, etc.
+    const validPathPatterns = [
+      /^[a-zA-Z]:[\/\\]/,    // Windows: C:/ ou D:\
+      /^\/[^\/]/,           // Unix: /home, /usr, etc.
+      /^\.{1,2}[\/\\]/,     // Relatif: ./ ou ../
+    ];
+
+    return validPathPatterns.some(pattern => pattern.test(workspace));
   }
 }

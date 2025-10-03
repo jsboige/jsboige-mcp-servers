@@ -27,6 +27,7 @@ import { globalTaskInstructionIndex, computeInstructionPrefix } from './task-ins
 import { MessageToSkeletonTransformer } from './message-to-skeleton-transformer.js';
 import { SkeletonComparator } from './skeleton-comparator.js';
 import { getParsingConfig, isComparisonMode, shouldUseNewParsing } from './parsing-config.js';
+import { WorkspaceDetector } from './workspace-detector.js';
 
 export class RooStorageDetector {
   private static readonly COMMON_ROO_PATHS = [
@@ -373,17 +374,23 @@ export class RooStorageDetector {
         return null;
       }
       
-      // Extraire le workspace depuis metadata
-      let workspace: string | undefined;
-      try {
-        const metadataContent = await fs.readFile(paths.metadataPath, 'utf-8');
-        const cleanContent = metadataContent.charCodeAt(0) === 0xFEFF
-          ? metadataContent.slice(1)
-          : metadataContent;
-        const metadata = JSON.parse(cleanContent);
-        workspace = metadata.workspace;
-      } catch {
-        // Workspace extraction failed, continue without it
+      // STRATÉGIE DUAL : Utiliser WorkspaceDetector pour détection intelligente
+      const workspaceDetector = new WorkspaceDetector({
+        enableCache: true,
+        validateExistence: false, // Performance
+        normalizePaths: true,
+      });
+      
+      const workspaceResult = await workspaceDetector.detect(taskPath);
+      const detectedWorkspace = workspaceResult.workspace;
+      
+      // Logger la source de détection si mode debug
+      if (process.env.DEBUG_PARSING === 'true') {
+        console.log(`[NEW PARSING] Workspace pour ${taskId}:`, {
+          workspace: detectedWorkspace,
+          source: workspaceResult.source,
+          confidence: workspaceResult.confidence
+        });
       }
       
       // Utiliser le transformer
@@ -392,7 +399,7 @@ export class RooStorageDetector {
         strictValidation: true,
       });
       
-      const result = await transformer.transform(messages, taskId, workspace);
+      const result = await transformer.transform(messages, taskId, detectedWorkspace || undefined);
       
       // Logger les métadonnées si mode debug
       if (process.env.DEBUG_PARSING === 'true') {
