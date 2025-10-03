@@ -1,0 +1,202 @@
+{
+  "timestamp": "2025-10-03T15:30:29.766Z",
+  "mission": "SDDD Validation Détection Workspace",
+  "summary": {
+    "totalFixtures": 10,
+    "successful": 10,
+    "failed": 0,
+    "successRate": 100,
+    "averageTimeMs": 1.1,
+    "totalTimeMs": 11
+  },
+  "strategyBreakdown": {
+    "metadata": {
+      "successful": 6,
+      "failed": 0,
+      "avgTimeMs": 0
+    },
+    "fallback": {
+      "successful": 4,
+      "failed": 0,
+      "avgTimeMs": 0
+    }
+  },
+  "patterns": {
+    "autres-patterns": 8,
+    "roo-extensions-main": 2
+  },
+  "performanceTests": [
+    {
+      "batchSize": 1,
+      "totalTime": 0,
+      "avgTime": 0,
+      "throughput": null
+    },
+    {
+      "batchSize": 5,
+      "totalTime": 1,
+      "avgTime": 0.2,
+      "throughput": 5000
+    },
+    {
+      "batchSize": 10,
+      "totalTime": 4,
+      "avgTime": 0.4,
+      "throughput": 2500
+    }
+  ],
+  "dualStrategyTests": [
+    {
+      "fixtureName": "03deadab-a06d-4b29-976d-3cc142add1d9",
+      "normalResult": {
+        "workspace": "d:\\dev\\2025-Epita-Intelligence-Symbolique",
+        "source": "metadata",
+        "confidence": 0.95
+      },
+      "fallbackResult": {
+        "workspace": "d:\\dev\\2025-Epita-Intelligence-Symbolique",
+        "source": "environment_details",
+        "confidence": 0.85
+      },
+      "finalResult": {
+        "workspace": "d:\\dev\\2025-Epita-Intelligence-Symbolique",
+        "source": "metadata",
+        "confidence": 0.95
+      },
+      "dualStrategyWorking": true
+    }
+  ],
+  "fixtureDetails": [
+    {
+      "name": "03deadab-a06d-4b29-976d-3cc142add1d9",
+      "category": "controlled-hierarchy",
+      "hasMetadata": true,
+      "hasUiMessages": true,
+      "expectedWorkspace": "d:/dev/2025-Epita-Intelligence-Symbolique",
+      "detectedWorkspace": "d:\\dev\\2025-Epita-Intelligence-Symbolique",
+      "source": "metadata",
+      "confidence": 0.95,
+      "timeMs": 1,
+      "success": true,
+      "errorDetails": null
+    },
+    {
+      "name": "305b3f90-e0e1-4870-8cf4-4fd33a08cfa4",
+      "category": "controlled-hierarchy",
+      "hasMetadata": true,
+      "hasUiMessages": true,
+      "expectedWorkspace": "d:/dev/2025-Epita-Intelligence-Symbolique",
+      "detectedWorkspace": "d:\\dev\\2025-Epita-Intelligence-Symbolique",
+      "source": "metadata",
+      "confidence": 0.95,
+      "timeMs": 1,
+      "success": true,
+      "errorDetails": null
+    },
+    {
+      "name": "38948ef0-4a8b-40a2-ae29-b38d2aa9d5a7",
+      "category": "controlled-hierarchy",
+      "hasMetadata": true,
+      "hasUiMessages": true,
+      "expectedWorkspace": "d:/dev/2025-Epita-Intelligence-Symbolique",
+      "detectedWorkspace": "d:\\dev\\2025-Epita-Intelligence-Symbolique",
+      "source": "metadata",
+      "confidence": 0.95,
+      "timeMs": 0,
+      "success": true,
+      "errorDetails": null
+    },
+    {
+      "name": "8c06d62c-1ee2-4c3a-991e-c9483e90c8aa",
+      "category": "controlled-hierarchy",
+      "hasMetadata": true,
+      "hasUiMessages": true,
+      "detectedWorkspace": "d:\\dev\\2025-Epita-Intelligence-Symbolique",
+      "source": "environment_details",
+      "confidence": 0.85,
+      "timeMs": 1,
+      "success": true,
+      "errorDetails": null
+    },
+    {
+      "name": "91e837de-a4b2-4c18-ab9b-6fcd36596e38",
+      "category": "controlled-hierarchy",
+      "hasMetadata": true,
+      "hasUiMessages": true,
+      "expectedWorkspace": "d:/dev/2025-Epita-Intelligence-Symbolique",
+      "detectedWorkspace": "d:\\dev\\2025-Epita-Intelligence-Symbolique",
+      "source": "metadata",
+      "confidence": 0.95,
+      "timeMs": 1,
+      "success": true,
+      "errorDetails": null
+    },
+    {
+      "name": "b423bff7-6fec-40fe-a00e-bb2a0ebb52f4",
+      "category": "controlled-hierarchy",
+      "hasMetadata": true,
+      "hasUiMessages": true,
+      "detectedWorkspace": "d:\\dev\\2025-Epita-Intelligence-Symbolique",
+      "source": "environment_details",
+      "confidence": 0.85,
+      "timeMs": 1,
+      "success": true,
+      "errorDetails": null
+    },
+    {
+      "name": "d6a6a99a-b7fd-41fc-86ce-2f17c9520437",
+      "category": "controlled-hierarchy",
+      "hasMetadata": true,
+      "hasUiMessages": true,
+      "detectedWorkspace": "d:\\dev\\2025-Epita-Intelligence-Symbolique",
+      "source": "environment_details",
+      "confidence": 0.85,
+      "timeMs": 1,
+      "success": true,
+      "errorDetails": null
+    },
+    {
+      "name": "e73ea764-4971-4adb-9197-52c2f8ede8ef",
+      "category": "controlled-hierarchy",
+      "hasMetadata": true,
+      "hasUiMessages": true,
+      "expectedWorkspace": "d:/dev/2025-Epita-Intelligence-Symbolique",
+      "detectedWorkspace": "d:\\dev\\2025-Epita-Intelligence-Symbolique",
+      "source": "metadata",
+      "confidence": 0.95,
+      "timeMs": 0,
+      "success": true,
+      "errorDetails": null
+    },
+    {
+      "name": "ac8aa7b4-319c-4925-a139-4f4adca81921",
+      "category": "real-tasks",
+      "hasMetadata": false,
+      "hasUiMessages": true,
+      "expectedWorkspace": null,
+      "detectedWorkspace": "d:\\dev\\roo-extensions",
+      "source": "environment_details",
+      "confidence": 0.85,
+      "timeMs": 4,
+      "success": true,
+      "errorDetails": null
+    },
+    {
+      "name": "bc93a6f7-cd2e-4686-a832-46e3cd14d338",
+      "category": "real-tasks",
+      "hasMetadata": true,
+      "hasUiMessages": true,
+      "expectedWorkspace": "d:/dev/roo-extensions",
+      "detectedWorkspace": "d:\\dev\\roo-extensions",
+      "source": "metadata",
+      "confidence": 0.95,
+      "timeMs": 1,
+      "success": true,
+      "errorDetails": null
+    }
+  ],
+  "qualityMetrics": {
+    "workspaceDetectionAccuracy": 1,
+    "relationshipConfidence": 0.9099999999999998
+  }
+}
