@@ -24,6 +24,9 @@ import {
 } from '../types/conversation.js';
 import { globalCacheManager } from './cache-manager.js';
 import { globalTaskInstructionIndex, computeInstructionPrefix } from './task-instruction-index.js';
+import { MessageToSkeletonTransformer } from './message-to-skeleton-transformer.js';
+import { SkeletonComparator } from './skeleton-comparator.js';
+import { getParsingConfig, isComparisonMode, shouldUseNewParsing } from './parsing-config.js';
 
 export class RooStorageDetector {
   private static readonly COMMON_ROO_PATHS = [
@@ -309,6 +312,7 @@ export class RooStorageDetector {
 
   /**
    * Analyse une conversation et la transforme en une structure "squelette" légère.
+   * Supporte le mode parallèle (ancien + nouveau système) pour validation progressive.
    * Version production avec architecture en deux passes pour reconstruction hiérarchies
    */
   public static async analyzeConversation(
@@ -316,9 +320,105 @@ export class RooStorageDetector {
     taskPath: string,
     useProductionHierarchy: boolean = true
   ): Promise<ConversationSkeleton | null> {
+    const config = getParsingConfig();
+    
     const metadataPath = path.join(taskPath, 'task_metadata.json');
     const apiHistoryPath = path.join(taskPath, 'api_conversation_history.json');
     const uiMessagesPath = path.join(taskPath, 'ui_messages.json');
+    
+    // Mode comparaison : exécuter ancien + nouveau
+    if (isComparisonMode()) {
+      return await this.analyzeWithComparison(
+        taskId,
+        taskPath,
+        useProductionHierarchy,
+        { metadataPath, apiHistoryPath, uiMessagesPath }
+      );
+    }
+    
+    // Mode nouveau système uniquement
+    if (shouldUseNewParsing()) {
+      return await this.analyzeWithNewSystem(
+        taskId,
+        taskPath,
+        useProductionHierarchy,
+        { metadataPath, apiHistoryPath, uiMessagesPath }
+      );
+    }
+    
+    // Mode ancien système (défaut, legacy)
+    return await this.analyzeWithOldSystem(
+      taskId,
+      taskPath,
+      useProductionHierarchy,
+      { metadataPath, apiHistoryPath, uiMessagesPath }
+    );
+  }
+
+  /**
+   * Analyse avec le nouveau système (MessageToSkeletonTransformer)
+   */
+  private static async analyzeWithNewSystem(
+    taskId: string,
+    taskPath: string,
+    useProductionHierarchy: boolean,
+    paths: { metadataPath: string; apiHistoryPath: string; uiMessagesPath: string }
+  ): Promise<ConversationSkeleton | null> {
+    try {
+      // Charger les messages UI
+      const messages = await this.loadUIMessages(paths.uiMessagesPath);
+      
+      if (messages.length === 0) {
+        console.warn(`[NEW PARSING] No messages found for ${taskId}`);
+        return null;
+      }
+      
+      // Extraire le workspace depuis metadata
+      let workspace: string | undefined;
+      try {
+        const metadataContent = await fs.readFile(paths.metadataPath, 'utf-8');
+        const cleanContent = metadataContent.charCodeAt(0) === 0xFEFF
+          ? metadataContent.slice(1)
+          : metadataContent;
+        const metadata = JSON.parse(cleanContent);
+        workspace = metadata.workspace;
+      } catch {
+        // Workspace extraction failed, continue without it
+      }
+      
+      // Utiliser le transformer
+      const transformer = new MessageToSkeletonTransformer({
+        normalizePrefixes: true,
+        strictValidation: true,
+      });
+      
+      const result = await transformer.transform(messages, taskId, workspace);
+      
+      // Logger les métadonnées si mode debug
+      if (process.env.DEBUG_PARSING === 'true') {
+        console.log('[NEW PARSING] Metadata:', result.metadata);
+      }
+      
+      // Mettre en cache
+      await globalCacheManager.set(`conversation-skeleton:${taskId}`, result.skeleton);
+      
+      return result.skeleton;
+    } catch (error) {
+      console.error(`[NEW PARSING] Error for ${taskId}:`, error);
+      return null;
+    }
+  }
+
+  /**
+   * Analyse avec l'ancien système (legacy, regex-based)
+   */
+  private static async analyzeWithOldSystem(
+    taskId: string,
+    taskPath: string,
+    useProductionHierarchy: boolean,
+    paths: { metadataPath: string; apiHistoryPath: string; uiMessagesPath: string }
+  ): Promise<ConversationSkeleton | null> {
+    const { metadataPath, apiHistoryPath, uiMessagesPath } = paths;
 
     try {
         const [taskDirStats, metadataStats, apiHistoryStats, uiMessagesStats] = await Promise.all([
@@ -553,6 +653,92 @@ export class RooStorageDetector {
         return null;
     }
   }
+  /**
+   * Analyse en mode comparaison : ancien + nouveau avec rapport
+   */
+  private static async analyzeWithComparison(
+    taskId: string,
+    taskPath: string,
+    useProductionHierarchy: boolean,
+    paths: { metadataPath: string; apiHistoryPath: string; uiMessagesPath: string }
+  ): Promise<ConversationSkeleton | null> {
+    const config = getParsingConfig();
+    
+    try {
+      // Exécuter l'ancien système
+      const oldSkeleton = await this.analyzeWithOldSystem(
+        taskId,
+        taskPath,
+        useProductionHierarchy,
+        paths
+      );
+      
+      // Exécuter le nouveau système
+      const newSkeleton = await this.analyzeWithNewSystem(
+        taskId,
+        taskPath,
+        useProductionHierarchy,
+        paths
+      );
+      
+      // Si l'un des deux a échoué, retourner celui qui a réussi
+      if (!oldSkeleton && !newSkeleton) {
+        return null;
+      }
+      if (!oldSkeleton) {
+        console.warn(`[COMPARISON] Old system failed for ${taskId}, using new system`);
+        return newSkeleton;
+      }
+      if (!newSkeleton) {
+        console.warn(`[COMPARISON] New system failed for ${taskId}, using old system`);
+        return oldSkeleton;
+      }
+      
+      // Comparer les résultats
+      const comparator = new SkeletonComparator();
+      const comparisonResult = comparator.compare(oldSkeleton, newSkeleton);
+      
+      // Logger les différences si activé
+      if (config.logDifferences || comparisonResult.similarityScore < (100 - config.differenceTolerance)) {
+        console.log(`\n[COMPARISON] Task ${taskId}:`);
+        console.log(comparator.formatReport(comparisonResult));
+        
+        const summary = comparator.getDifferenceSummary(comparisonResult);
+        console.log(`  Summary: ${summary.critical} critical, ${summary.major} major, ${summary.minor} minor`);
+      }
+      
+      // Retourner le skeleton du système actif (nouveau par défaut en mode comparaison)
+      return config.useNewParsing ? newSkeleton : oldSkeleton;
+    } catch (error) {
+      console.error(`[COMPARISON] Error for ${taskId}:`, error);
+      return null;
+    }
+  }
+
+  /**
+   * Charge les messages UI depuis le fichier
+   */
+  private static async loadUIMessages(uiMessagesPath: string): Promise<any[]> {
+    try {
+      if (!existsSync(uiMessagesPath)) {
+        return [];
+      }
+      
+      let content = await fs.readFile(uiMessagesPath, 'utf8');
+      
+      // Nettoyage BOM
+      if (content.charCodeAt(0) === 0xFEFF) {
+        content = content.slice(1);
+      }
+      
+      const messages = JSON.parse(content);
+      return Array.isArray(messages) ? messages : [];
+    } catch (error) {
+      console.error(`Error loading ui_messages.json from ${uiMessagesPath}:`, error);
+      return [];
+    }
+  }
+
 
   /**
    * @deprecated MÉTHODE CORROMPUE - Violait le principe architectural
