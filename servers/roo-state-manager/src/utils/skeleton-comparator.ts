@@ -5,6 +5,7 @@
  */
 
 import { ConversationSkeleton } from '../types/conversation.js';
+import { validateComparisonResults } from './parsing-config.js';
 
 /**
  * Résultat de comparaison entre deux skeletons
@@ -229,5 +230,63 @@ export class SkeletonComparator {
     }
     
     return summary;
+  }
+
+  /**
+   * Identifie les améliorations apportées par le nouveau système
+   */
+  identifyImprovements(
+    oldSkeleton: ConversationSkeleton,
+    newSkeleton: ConversationSkeleton
+  ): string[] {
+    const improvements: string[] = [];
+    
+    // Amélioration 1 : Child tasks détectés
+    const oldChildTasks = oldSkeleton.childTaskInstructionPrefixes?.length || 0;
+    const newChildTasks = newSkeleton.childTaskInstructionPrefixes?.length || 0;
+    if (newChildTasks > oldChildTasks) {
+      const improvement = newChildTasks - oldChildTasks;
+      improvements.push(`+${improvement} child tasks détectés (${oldChildTasks} → ${newChildTasks})`);
+    }
+    
+    // Amélioration 2 : Normalisation workspace
+    if (oldSkeleton.metadata?.workspace && newSkeleton.metadata?.workspace &&
+        oldSkeleton.metadata.workspace !== newSkeleton.metadata.workspace &&
+        newSkeleton.metadata.workspace.includes('\\\\')) {
+      improvements.push('Normalisation path Windows (/ → \\\\)');
+    }
+    
+    // Amélioration 3 : Réduction truncatedInstruction
+    if (oldSkeleton.truncatedInstruction && !newSkeleton.truncatedInstruction) {
+      improvements.push('Instruction complète extraite (truncated → complete)');
+    }
+    
+    return improvements;
+  }
+
+  /**
+   * Compare avec validation des améliorations
+   */
+  compareWithImprovements(
+    oldSkeleton: ConversationSkeleton,
+    newSkeleton: ConversationSkeleton
+  ): SkeletonComparisonResult & { improvements: string[]; isValidUpgrade: boolean; validationReason: string } {
+    const baseComparison = this.compare(oldSkeleton, newSkeleton);
+    const improvements = this.identifyImprovements(oldSkeleton, newSkeleton);
+    
+    // Validation avec nouveaux critères
+    const validation = validateComparisonResults(
+      baseComparison.similarityScore,
+      oldSkeleton.childTaskInstructionPrefixes?.length || 0,
+      newSkeleton.childTaskInstructionPrefixes?.length || 0,
+      improvements
+    );
+    
+    return {
+      ...baseComparison,
+      improvements,
+      isValidUpgrade: validation.isValid,
+      validationReason: validation.reason
+    };
   }
 }

@@ -701,21 +701,31 @@ export class RooStorageDetector {
         return oldSkeleton;
       }
       
-      // Comparer les résultats
+      // Comparer avec validation des améliorations
       const comparator = new SkeletonComparator();
-      const comparisonResult = comparator.compare(oldSkeleton, newSkeleton);
+      const comparisonResult = comparator.compareWithImprovements(oldSkeleton, newSkeleton);
       
-      // Logger les différences si activé
-      if (config.logDifferences || comparisonResult.similarityScore < (100 - config.differenceTolerance)) {
-        console.log(`\n[COMPARISON] Task ${taskId}:`);
-        console.log(comparator.formatReport(comparisonResult));
+      // Logger selon les nouveaux critères
+      if (config.logDifferences || !comparisonResult.isValidUpgrade) {
+        console.log(`[COMPARISON] Task ${taskId}:`);
+        console.log(`Similarité: ${comparisonResult.similarityScore}%`);
+        console.log(`Améliorations: ${comparisonResult.improvements.join(', ')}`);
+        console.log(`Validation: ${comparisonResult.isValidUpgrade ? '✅ ACCEPTÉ' : '❌ REJETÉ'}`);
+        console.log(`Raison: ${comparisonResult.validationReason}`);
         
-        const summary = comparator.getDifferenceSummary(comparisonResult);
-        console.log(`  Summary: ${summary.critical} critical, ${summary.major} major, ${summary.minor} minor`);
+        if (!comparisonResult.isValidUpgrade) {
+          console.log('--- Rapport détaillé ---');
+          console.log(comparator.formatReport(comparisonResult));
+        }
       }
       
-      // Retourner le skeleton du système actif (nouveau par défaut en mode comparaison)
-      return config.useNewParsing ? newSkeleton : oldSkeleton;
+      // Retourner selon les critères validés
+      if (comparisonResult.isValidUpgrade || config.useNewParsing) {
+        return newSkeleton;
+      } else {
+        console.warn(`[FALLBACK] Utilisation ancien système pour ${taskId} - validation échouée`);
+        return oldSkeleton;
+      }
     } catch (error) {
       console.error(`[COMPARISON] Error for ${taskId}:`, error);
       return null;
