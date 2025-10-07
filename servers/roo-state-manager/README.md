@@ -805,10 +805,10 @@ Les variables suivantes doivent être définies dans le fichier `.env` :
 
 La configuration est automatiquement validée au démarrage du serveur. Si une variable est manquante ou invalide, une erreur `RooSyncConfigError` est levée.
 
-Pour tester la configuration manuellement :
+Pour tester la configuration, utilisez la suite de tests unitaires :
 
 ```bash
-node test-roosync-config-simple.js
+npm test src/config/roosync-config.test.ts
 ```
 
 ### Outils MCP RooSync
