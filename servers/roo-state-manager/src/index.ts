@@ -53,7 +53,7 @@ import { LLMService } from './services/synthesis/LLMService.js';
 import { IndexingDecisionService } from './services/indexing-decision.js';
 import { IndexingMetrics } from './types/indexing.js';
 
-const MAX_OUTPUT_LENGTH = 150000; // Harmonisé avec view-conversation-tree.ts pour consistance (audit 2025-09-15)
+const MAX_OUTPUT_LENGTH = 300000; // Smart Truncation Engine - Corrected from 150K to 300K for intelligent truncation
 const SKELETON_CACHE_DIR_NAME = '.skeletons';
 
 /**
@@ -724,37 +724,14 @@ class RooStateManagerServer {
     async handleGetStorageStats(): Promise<CallToolResult> {
         const stats = await RooStorageDetector.getStorageStats();
         
-        // Agrégat des stats par workspace
-        const workspaceStats = new Map<string, {count: number, totalSize: number, lastActivity: string}>();
-        
-        Array.from(this.conversationCache.values()).forEach(skeleton => {
-            if (skeleton.metadata?.workspace) {
-                const workspace = skeleton.metadata.workspace;
-                const existing = workspaceStats.get(workspace) || {count: 0, totalSize: 0, lastActivity: ''};
-                
-                existing.count++;
-                existing.totalSize += skeleton.metadata.totalSize || 0;
-                
-                // Mettre à jour la dernière activité si plus récente
-                if (skeleton.metadata.lastActivity) {
-                    if (!existing.lastActivity || new Date(skeleton.metadata.lastActivity) > new Date(existing.lastActivity)) {
-                        existing.lastActivity = skeleton.metadata.lastActivity;
-                    }
-                }
-                
-                workspaceStats.set(workspace, existing);
-            }
-        });
-
-        // Convertir en objet pour affichage
-        const workspaceStatsObject = Object.fromEntries(
-            Array.from(workspaceStats.entries()).map(([workspace, stats]) => [workspace, stats])
-        );
+        // 🔧 FIX CRITIQUE: Calculer breakdown cohérent avec le total
+        // Au lieu d'utiliser seulement le cache mémoire, on scanne directement le disque
+        const workspaceBreakdown = await RooStorageDetector.getWorkspaceBreakdown();
 
         const enhancedStats = {
             ...stats,
-            workspaceBreakdown: workspaceStatsObject,
-            totalWorkspaces: workspaceStats.size
+            workspaceBreakdown,
+            totalWorkspaces: Object.keys(workspaceBreakdown).length
         };
 
         return { content: [{ type: 'text', text: JSON.stringify(enhancedStats, null, 2) }] };
@@ -938,9 +915,53 @@ class RooStateManagerServer {
         });
     }
 
+    /**
+     * 🚨 HELPER: Construit une réponse standardisée pour les timeouts
+     */
+    private buildTimeoutResponse(
+        skeletonsBuilt: number,
+        skeletonsSkipped: number,
+        hierarchyRelations: number,
+        debugLogs: string[],
+        timeoutMessage: string
+    ): CallToolResult {
+        const currentStats = this.conversationCache.size;
+        const summary = `Skeleton cache build TIMEOUT (PARTIEL). Built: ${skeletonsBuilt}, Skipped: ${skeletonsSkipped}, Cache size: ${currentStats}, Hierarchy relations found: ${hierarchyRelations}`;
+        
+        const response = {
+            summary,
+            details: {
+                mode: "TIMEOUT_PARTIAL",
+                built: skeletonsBuilt,
+                skipped: skeletonsSkipped,
+                cached: currentStats,
+                hierarchyRelations,
+                timeoutMessage,
+                nextAction: "⚠️ Relancez build_skeleton_cache pour compléter l'analyse des parentID"
+            },
+            debugLogs: debugLogs.slice(-20) // Garder seulement les 20 derniers logs
+        };
+        
+        return { content: [{ type: 'text', text: JSON.stringify(response, null, 2) }] };
+    }
+
     async handleBuildSkeletonCache(args: { force_rebuild?: boolean; workspace_filter?: string } = {}): Promise<CallToolResult> {
         this.conversationCache.clear();
         const { force_rebuild = false, workspace_filter } = args;
+        
+        // 🚀 PROTECTION TIMEOUT ÉTENDU : 5 minutes pour permettre rebuilds complets
+        const GLOBAL_TIMEOUT_MS = 300000; // 300s = 5 minutes (ancien: 50s)
+        const globalStartTime = Date.now();
+        let timeoutReached = false;
+        
+        // Helper pour vérifier le timeout global
+        const checkGlobalTimeout = () => {
+            if (Date.now() - globalStartTime > GLOBAL_TIMEOUT_MS) {
+                timeoutReached = true;
+                return true;
+            }
+            return false;
+        };
         
         // 🔍 Capturer les logs de debug
         const debugLogs: string[] = [];
@@ -994,23 +1015,21 @@ class RooStateManagerServer {
                         // Vérifier que le fichier metadata existe (indique une tâche valide)
                         const metadataStat = await fs.stat(metadataPath);
                         
-                        // 🎯 FILTRE WORKSPACE: Vérifier si la tâche correspond au workspace demandé
+                        // 🎯 FILTRE WORKSPACE: Utiliser la même méthode que get_storage_stats pour cohérence
                         if (workspace_filter) {
                             try {
-                                const metadataContent = await fs.readFile(metadataPath, 'utf-8');
-                                const metadata = JSON.parse(metadataContent);
-                                const taskWorkspace = metadata.workspace || metadata.cwd || '';
+                                const taskWorkspace = await RooStorageDetector.detectWorkspaceForTask(taskPath);
                                 
                                 // Normalisation des chemins pour la comparaison
                                 const normalizedFilter = path.normalize(workspace_filter).toLowerCase();
                                 const normalizedWorkspace = path.normalize(taskWorkspace).toLowerCase();
                                 
-                                if (!normalizedWorkspace.includes(normalizedFilter)) {
+                                if (taskWorkspace === 'UNKNOWN' || !normalizedWorkspace.includes(normalizedFilter)) {
                                     continue; // Skip cette conversation si elle ne correspond pas au filtre
                                 }
-                            } catch (metadataError) {
-                                console.warn(`Could not read metadata for workspace filtering: ${metadataPath}`, metadataError);
-                                continue; // Skip si on ne peut pas lire les metadata
+                            } catch (workspaceError) {
+                                console.warn(`Could not detect workspace for filtering: ${taskPath}`, workspaceError);
+                                continue; // Skip si on ne peut pas détecter le workspace
                             }
                         }
                         
@@ -1118,10 +1137,21 @@ class RooStateManagerServer {
         
         console.log(`🔍 Found ${orphanSkeletons.length} orphan tasks to process...`);
         
+        // 🚨 VÉRIFICATION TIMEOUT AVANT PHASE HIÉRARCHIQUE
+        if (checkGlobalTimeout()) {
+            console.log(`⏰ TIMEOUT ANTICIPÉ atteint avant phase hiérarchique!`);
+            const partialResult = this.buildTimeoutResponse(skeletonsBuilt, skeletonsSkipped, 0, debugLogs,
+                "TIMEOUT: Phase hiérarchique non exécutée. Relancez le build pour compléter l'analyse des parentID.");
+            console.log = originalConsoleLog; // Restaurer
+            return partialResult;
+        }
+        
         // OPTIMISATION: Traiter par lots de 50 pour éviter les timeouts
         const BATCH_SIZE = 50;
-        const MAX_PROCESSING_TIME = 45000; // 45 secondes max pour cette phase
+        const MAX_PROCESSING_TIME = Math.min(35000, GLOBAL_TIMEOUT_MS - (Date.now() - globalStartTime) - 5000); // Garder 5s de marge
         const startTime = Date.now();
+        
+        console.log(`⏱️ Phase hiérarchique: ${MAX_PROCESSING_TIME}ms disponibles pour traiter ${orphanSkeletons.length} orphelins`);
         
         // 🎯 SOLUTION ARCHITECTURALE : Utiliser le VRAI HierarchyReconstructionEngine en MODE STRICT
         // ✅ EXÉCUTION UNIQUE sur TOUS les squelettes (pas batch par batch)
@@ -1201,6 +1231,23 @@ class RooStateManagerServer {
         } catch (engineError) {
             console.error(`❌ Erreur HierarchyReconstructionEngine:`, engineError);
             console.log(`🔄 Fallback: Continuer sans hierarchy engine...`);
+            
+            // 🚨 Vérifier si c'est un timeout et adapter la réponse
+            if (checkGlobalTimeout()) {
+                const partialResult = this.buildTimeoutResponse(skeletonsBuilt, skeletonsSkipped, hierarchyRelationsFound, debugLogs,
+                    "TIMEOUT: Build partiel terminé. Phase hiérarchique incomplète - relancez pour finaliser l'analyse parentID.");
+                console.log = originalConsoleLog; // Restaurer
+                return partialResult;
+            }
+        }
+        
+        // 🚨 VÉRIFICATION TIMEOUT AVANT SAUVEGARDE
+        if (checkGlobalTimeout()) {
+            console.log(`⏰ TIMEOUT ANTICIPÉ atteint avant sauvegarde!`);
+            const partialResult = this.buildTimeoutResponse(skeletonsBuilt, skeletonsSkipped, hierarchyRelationsFound, debugLogs,
+                "TIMEOUT: Relations trouvées mais sauvegarde incomplète. Relancez pour persister les changements.");
+            console.log = originalConsoleLog; // Restaurer
+            return partialResult;
         }
         
         console.log(`🔗 Found ${skeletonsToUpdate.length} parent-child relationships to apply...`);
@@ -2699,26 +2746,53 @@ class RooStateManagerServer {
 
         const locations = await RooStorageDetector.detectStorageLocations();
         for (const loc of locations) {
-            const taskPath = path.join(loc, taskId);
+            // 🚨 BUG FIX: Ajouter 'tasks' au chemin pour correspondre à la structure réelle
+            const taskPath = path.join(loc, 'tasks', taskId);
             try {
                 await fs.access(taskPath); // Vérifie si le répertoire de la tâche existe
 
                 const apiHistoryPath = path.join(taskPath, 'api_conversation_history.json');
                 const uiMessagesPath = path.join(taskPath, 'ui_messages.json');
 
-                const apiHistoryContent = await fs.readFile(apiHistoryPath, 'utf-8').catch(() => null);
-                const uiMessagesContent = await fs.readFile(uiMessagesPath, 'utf-8').catch(() => null);
+                // 🚨 BUG FIX: Gérer les BOM UTF-8 qui causent des erreurs de parsing JSON
+                const readJsonFileClean = async (filePath: string) => {
+                    try {
+                        let content = await fs.readFile(filePath, 'utf-8');
+                        // Nettoyer le BOM UTF-8 si présent
+                        if (content.charCodeAt(0) === 0xFEFF) {
+                            content = content.slice(1);
+                        }
+                        return JSON.parse(content);
+                    } catch (e) {
+                        return null;
+                    }
+                };
+
+                const apiHistoryContent = await readJsonFileClean(apiHistoryPath);
+                const uiMessagesContent = await readJsonFileClean(uiMessagesPath);
+
+                // 🚨 BUG FIX: Ajouter des métadonnées sur le fichier pour diagnostic
+                const taskStats = await fs.stat(taskPath).catch(() => null);
+                const metadataPath = path.join(taskPath, 'task_metadata.json');
+                const metadataContent = await readJsonFileClean(metadataPath);
 
                 const rawData = {
                     taskId,
                     location: taskPath,
-                    api_conversation_history: apiHistoryContent ? JSON.parse(apiHistoryContent) : null,
-                    ui_messages: uiMessagesContent ? JSON.parse(uiMessagesContent) : null,
+                    taskStats: taskStats ? {
+                        created: taskStats.birthtime,
+                        modified: taskStats.mtime,
+                        size: taskStats.size
+                    } : null,
+                    metadata: metadataContent,
+                    api_conversation_history: apiHistoryContent,
+                    ui_messages: uiMessagesContent,
                 };
 
                 return { content: [{ type: 'text', text: JSON.stringify(rawData, null, 2) }] };
             } catch (e) {
                 // Tâche non trouvée dans cet emplacement, on continue
+                console.debug(`[DEBUG] Task ${taskId} not found in ${taskPath}: ${e}`);
             }
         }
 
@@ -3360,6 +3434,12 @@ class RooStateManagerServer {
             // Décision d'indexation avec nouvelle logique
             const decision = this.indexingDecisionService.shouldIndex(skeleton);
             
+            // 🆕 FIX CRITIQUE : Sauvegarder si une migration legacy a eu lieu durant shouldIndex
+            if (decision.requiresSave) {
+                await this._saveSkeletonToDisk(skeleton);
+                migratedCount++; // Compter cette migration dans le rapport
+            }
+            
             if (decision.shouldIndex) {
                 this.qdrantIndexQueue.add(taskId);
                 if (decision.action === 'retry') {
@@ -3509,6 +3589,13 @@ class RooStateManagerServer {
             
             // NOUVELLE LOGIQUE : Vérifier la décision d'indexation en temps réel
             const decision = this.indexingDecisionService.shouldIndex(skeleton);
+            
+            // 🆕 FIX CRITIQUE : Sauvegarder si migration legacy effectuée même en cas de skip
+            if (decision.requiresSave) {
+                await this._saveSkeletonToDisk(skeleton);
+                console.log(`[MIGRATION] Task ${taskId}: Migration legacy sauvegardée`);
+            }
+            
             if (!decision.shouldIndex) {
                 console.log(`[SKIP] Task ${taskId}: ${decision.reason} - Protection anti-fuite`);
                 return;

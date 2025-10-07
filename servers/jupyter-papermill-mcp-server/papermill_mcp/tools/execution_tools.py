@@ -707,4 +707,154 @@ def register_execution_tools(app: FastMCP) -> None:
                 "success": False
             }
     
-    logger.info("Registered execution tools (18 total)")
+    @app.tool()
+    async def execute_notebook_sync(
+        notebook_path: str,
+        timeout_seconds: int = 300,
+        output_path: Optional[str] = None,
+        parameters: Optional[Dict[str, Any]] = None
+    ) -> Dict[str, Any]:
+        """
+        Version synchrone avec timeout configurable pour notebooks courts/moyens.
+        Interface conforme aux spécifications SDDD Mission.
+        
+        Args:
+            notebook_path: Chemin du notebook à exécuter
+            timeout_seconds: Timeout configurable côté serveur (défaut: 300s)
+            output_path: Chemin de sortie optionnel
+            parameters: Paramètres optionnels à injecter
+            
+        Returns:
+            Dictionary avec résultat d'exécution ou recommandation async
+            
+        Usage patterns:
+            - Notebooks < 5min : execute_notebook_sync(timeout_seconds=300)
+            - Notebooks moyens : execute_notebook_sync(timeout_seconds=600)
+            - Notebooks longs (>10min) : Recommandation automatique vers async
+        """
+        try:
+            logger.info(f"Executing notebook (sync mode): {notebook_path} (timeout: {timeout_seconds}s)")
+            notebook_service, _ = get_services()
+            
+            # Recommandation intelligente sync vs async
+            recommendation_result = _get_sync_async_recommendation(
+                notebook_path=notebook_path,
+                requested_timeout=timeout_seconds
+            )
+            
+            if recommendation_result["recommendation"] == "async_strongly_recommended":
+                logger.warning(f"Notebook {notebook_path} estimated >10min, recommending async")
+                return {
+                    "success": True,
+                    "method": "execute_notebook_sync",
+                    "execution_mode": "async_recommended",
+                    "notebook_path": notebook_path,
+                    "requested_timeout": timeout_seconds,
+                    "recommendation": recommendation_result,
+                    "message": f"This notebook is estimated to run >{recommendation_result['estimated_duration_minutes']}min. Consider using start_notebook_async() for better UX.",
+                    "alternative_command": f"start_notebook_async('{notebook_path}', timeout_seconds={max(timeout_seconds, 1200)})",
+                    "timestamp": time.time()
+                }
+            
+            # Utiliser l'architecture hybride existante (execute_notebook_solution_a)
+            # avec timeout configuré selon demande utilisateur
+            result = await notebook_service.execute_notebook_solution_a(
+                input_path=notebook_path,
+                output_path=output_path,
+                timeout=timeout_seconds * 2,  # Timeout total = 2x sync timeout
+                sync_timeout_seconds=timeout_seconds
+            )
+            
+            # Enrichir la réponse avec informations SDDD
+            result.update({
+                "method": "execute_notebook_sync",
+                "sync_timeout_configured": timeout_seconds,
+                "recommendation": recommendation_result,
+                "usage_pattern": _determine_usage_pattern(timeout_seconds)
+            })
+            
+            logger.info(f"Sync execution completed: {result.get('execution_mode', 'unknown')}")
+            return result
+            
+        except Exception as e:
+            logger.error(f"Error in execute_notebook_sync {notebook_path}: {e}")
+            return {
+                "success": False,
+                "method": "execute_notebook_sync",
+                "notebook_path": notebook_path,
+                "timeout_seconds": timeout_seconds,
+                "error": str(e),
+                "error_type": type(e).__name__,
+                "timestamp": time.time()
+            }
+    
+    def _get_sync_async_recommendation(notebook_path: str, requested_timeout: int) -> Dict[str, Any]:
+        """
+        Génère des recommandations intelligentes sync vs async.
+        
+        Args:
+            notebook_path: Chemin du notebook à analyser
+            requested_timeout: Timeout demandé par l'utilisateur
+            
+        Returns:
+            Dictionary avec recommandation et justification
+        """
+        try:
+            from pathlib import Path
+            
+            # Estimation basée sur analyse du contenu (réutilise logique existante)
+            notebook_path_obj = Path(notebook_path)
+            if not notebook_path_obj.exists():
+                return {
+                    "recommendation": "unknown",
+                    "reason": "Notebook file not found for analysis",
+                    "estimated_duration_minutes": "unknown"
+                }
+            
+            # Réutiliser la logique d'estimation existante
+            notebook_service, _ = get_services()
+            estimated_timeout = notebook_service._calculate_optimal_timeout(notebook_path_obj)
+            estimated_minutes = estimated_timeout / 60
+            
+            # Logique de recommandation SDDD
+            if estimated_minutes > 10:
+                recommendation = "async_strongly_recommended"
+                reason = f"Estimated {estimated_minutes:.1f}min execution (>10min threshold)"
+            elif estimated_minutes > 5:
+                recommendation = "async_recommended"
+                reason = f"Estimated {estimated_minutes:.1f}min execution (>5min threshold)"
+            elif requested_timeout > 600:  # 10 minutes
+                recommendation = "consider_async"
+                reason = f"Requested timeout {requested_timeout/60:.1f}min suggests long execution"
+            else:
+                recommendation = "sync_optimal"
+                reason = f"Estimated {estimated_minutes:.1f}min execution, sync mode optimal"
+            
+            return {
+                "recommendation": recommendation,
+                "reason": reason,
+                "estimated_duration_minutes": round(estimated_minutes, 1),
+                "estimated_timeout_seconds": estimated_timeout,
+                "sync_vs_async_threshold": "5min for recommendation, 10min for strong recommendation"
+            }
+            
+        except Exception as e:
+            logger.warning(f"Error generating sync/async recommendation: {e}")
+            return {
+                "recommendation": "unknown",
+                "reason": f"Analysis failed: {e}",
+                "estimated_duration_minutes": "unknown"
+            }
+    
+    def _determine_usage_pattern(timeout_seconds: int) -> str:
+        """Détermine le pattern d'usage basé sur le timeout configuré."""
+        if timeout_seconds <= 120:  # 2 minutes
+            return "quick_test_prototyping"
+        elif timeout_seconds <= 300:  # 5 minutes
+            return "medium_notebooks"
+        elif timeout_seconds <= 600:  # 10 minutes
+            return "complex_notebooks"
+        else:
+            return "long_notebooks_consider_async"
+    
+    logger.info("Registered execution tools (19 total)")

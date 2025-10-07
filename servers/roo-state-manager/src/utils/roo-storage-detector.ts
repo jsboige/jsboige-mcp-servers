@@ -24,6 +24,10 @@ import {
 } from '../types/conversation.js';
 import { globalCacheManager } from './cache-manager.js';
 import { globalTaskInstructionIndex, computeInstructionPrefix } from './task-instruction-index.js';
+import { MessageToSkeletonTransformer } from './message-to-skeleton-transformer.js';
+import { SkeletonComparator } from './skeleton-comparator.js';
+import { getParsingConfig, isComparisonMode, shouldUseNewParsing } from './parsing-config.js';
+import { WorkspaceDetector } from './workspace-detector.js';
 
 export class RooStorageDetector {
   private static readonly COMMON_ROO_PATHS = [
@@ -309,6 +313,7 @@ export class RooStorageDetector {
 
   /**
    * Analyse une conversation et la transforme en une structure "squelette" légère.
+   * Supporte le mode parallèle (ancien + nouveau système) pour validation progressive.
    * Version production avec architecture en deux passes pour reconstruction hiérarchies
    */
   public static async analyzeConversation(
@@ -316,9 +321,111 @@ export class RooStorageDetector {
     taskPath: string,
     useProductionHierarchy: boolean = true
   ): Promise<ConversationSkeleton | null> {
+    const config = getParsingConfig();
+    
     const metadataPath = path.join(taskPath, 'task_metadata.json');
     const apiHistoryPath = path.join(taskPath, 'api_conversation_history.json');
     const uiMessagesPath = path.join(taskPath, 'ui_messages.json');
+    
+    // Mode comparaison : exécuter ancien + nouveau
+    if (isComparisonMode()) {
+      return await this.analyzeWithComparison(
+        taskId,
+        taskPath,
+        useProductionHierarchy,
+        { metadataPath, apiHistoryPath, uiMessagesPath }
+      );
+    }
+    
+    // Mode nouveau système uniquement
+    if (shouldUseNewParsing()) {
+      return await this.analyzeWithNewSystem(
+        taskId,
+        taskPath,
+        useProductionHierarchy,
+        { metadataPath, apiHistoryPath, uiMessagesPath }
+      );
+    }
+    
+    // Mode ancien système (défaut, legacy)
+    return await this.analyzeWithOldSystem(
+      taskId,
+      taskPath,
+      useProductionHierarchy,
+      { metadataPath, apiHistoryPath, uiMessagesPath }
+    );
+  }
+
+  /**
+   * Analyse avec le nouveau système (MessageToSkeletonTransformer)
+   */
+  private static async analyzeWithNewSystem(
+    taskId: string,
+    taskPath: string,
+    useProductionHierarchy: boolean,
+    paths: { metadataPath: string; apiHistoryPath: string; uiMessagesPath: string }
+  ): Promise<ConversationSkeleton | null> {
+    try {
+      // Charger les messages UI
+      const messages = await this.loadUIMessages(paths.uiMessagesPath);
+      
+      if (messages.length === 0) {
+        console.warn(`[NEW PARSING] No messages found for ${taskId}`);
+        return null;
+      }
+      
+      // STRATÉGIE DUAL : Utiliser WorkspaceDetector pour détection intelligente
+      const workspaceDetector = new WorkspaceDetector({
+        enableCache: true,
+        validateExistence: false, // Performance
+        normalizePaths: true,
+      });
+      
+      const workspaceResult = await workspaceDetector.detect(taskPath);
+      const detectedWorkspace = workspaceResult.workspace;
+      
+      // Logger la source de détection si mode debug
+      if (process.env.DEBUG_PARSING === 'true') {
+        console.log(`[NEW PARSING] Workspace pour ${taskId}:`, {
+          workspace: detectedWorkspace,
+          source: workspaceResult.source,
+          confidence: workspaceResult.confidence
+        });
+      }
+      
+      // Utiliser le transformer
+      const transformer = new MessageToSkeletonTransformer({
+        normalizePrefixes: true,
+        strictValidation: true,
+      });
+      
+      const result = await transformer.transform(messages, taskId, detectedWorkspace || undefined);
+      
+      // Logger les métadonnées si mode debug
+      if (process.env.DEBUG_PARSING === 'true') {
+        console.log('[NEW PARSING] Metadata:', result.metadata);
+      }
+      
+      // Mettre en cache
+      await globalCacheManager.set(`conversation-skeleton:${taskId}`, result.skeleton);
+      
+      return result.skeleton;
+    } catch (error) {
+      console.error(`[NEW PARSING] Error for ${taskId}:`, error);
+      return null;
+    }
+  }
+
+  /**
+   * Analyse avec l'ancien système (legacy, regex-based)
+   */
+  private static async analyzeWithOldSystem(
+    taskId: string,
+    taskPath: string,
+    useProductionHierarchy: boolean,
+    paths: { metadataPath: string; apiHistoryPath: string; uiMessagesPath: string }
+  ): Promise<ConversationSkeleton | null> {
+    const { metadataPath, apiHistoryPath, uiMessagesPath } = paths;
 
     try {
         const [taskDirStats, metadataStats, apiHistoryStats, uiMessagesStats] = await Promise.all([
@@ -553,6 +660,102 @@ export class RooStorageDetector {
         return null;
     }
   }
+  /**
+   * Analyse en mode comparaison : ancien + nouveau avec rapport
+   */
+  private static async analyzeWithComparison(
+    taskId: string,
+    taskPath: string,
+    useProductionHierarchy: boolean,
+    paths: { metadataPath: string; apiHistoryPath: string; uiMessagesPath: string }
+  ): Promise<ConversationSkeleton | null> {
+    const config = getParsingConfig();
+    
+    try {
+      // Exécuter l'ancien système
+      const oldSkeleton = await this.analyzeWithOldSystem(
+        taskId,
+        taskPath,
+        useProductionHierarchy,
+        paths
+      );
+      
+      // Exécuter le nouveau système
+      const newSkeleton = await this.analyzeWithNewSystem(
+        taskId,
+        taskPath,
+        useProductionHierarchy,
+        paths
+      );
+      
+      // Si l'un des deux a échoué, retourner celui qui a réussi
+      if (!oldSkeleton && !newSkeleton) {
+        return null;
+      }
+      if (!oldSkeleton) {
+        console.warn(`[COMPARISON] Old system failed for ${taskId}, using new system`);
+        return newSkeleton;
+      }
+      if (!newSkeleton) {
+        console.warn(`[COMPARISON] New system failed for ${taskId}, using old system`);
+        return oldSkeleton;
+      }
+      
+      // Comparer avec validation des améliorations
+      const comparator = new SkeletonComparator();
+      const comparisonResult = comparator.compareWithImprovements(oldSkeleton, newSkeleton);
+      
+      // Logger selon les nouveaux critères
+      if (config.logDifferences || !comparisonResult.isValidUpgrade) {
+        console.log(`[COMPARISON] Task ${taskId}:`);
+        console.log(`Similarité: ${comparisonResult.similarityScore}%`);
+        console.log(`Améliorations: ${comparisonResult.improvements.join(', ')}`);
+        console.log(`Validation: ${comparisonResult.isValidUpgrade ? '✅ ACCEPTÉ' : '❌ REJETÉ'}`);
+        console.log(`Raison: ${comparisonResult.validationReason}`);
+        
+        if (!comparisonResult.isValidUpgrade) {
+          console.log('--- Rapport détaillé ---');
+          console.log(comparator.formatReport(comparisonResult));
+        }
+      }
+      
+      // Retourner selon les critères validés
+      if (comparisonResult.isValidUpgrade || config.useNewParsing) {
+        return newSkeleton;
+      } else {
+        console.warn(`[FALLBACK] Utilisation ancien système pour ${taskId} - validation échouée`);
+        return oldSkeleton;
+      }
+    } catch (error) {
+      console.error(`[COMPARISON] Error for ${taskId}:`, error);
+      return null;
+    }
+  }
+
+  /**
+   * Charge les messages UI depuis le fichier
+   */
+  private static async loadUIMessages(uiMessagesPath: string): Promise<any[]> {
+    try {
+      if (!existsSync(uiMessagesPath)) {
+        return [];
+      }
+      
+      let content = await fs.readFile(uiMessagesPath, 'utf8');
+      
+      // Nettoyage BOM
+      if (content.charCodeAt(0) === 0xFEFF) {
+        content = content.slice(1);
+      }
+      
+      const messages = JSON.parse(content);
+      return Array.isArray(messages) ? messages : [];
+    } catch (error) {
+      console.error(`Error loading ui_messages.json from ${uiMessagesPath}:`, error);
+      return [];
+    }
+  }
+
 
   /**
    * @deprecated MÉTHODE CORROMPUE - Violait le principe architectural
@@ -1538,6 +1741,145 @@ export class RooStorageDetector {
       totalConversations,
       totalSize,
     };
+  }
+
+  /**
+   * 🔧 FIX CRITIQUE: Calcule breakdown par workspace en scannant directement le disque
+   * pour être cohérent avec getStorageStats() qui compte aussi sur le disque
+   */
+  public static async getWorkspaceBreakdown(): Promise<Record<string, {count: number, totalSize: number, lastActivity: string}>> {
+    const locations = await this.detectStorageLocations();
+    const workspaceBreakdown: Record<string, {count: number, totalSize: number, lastActivity: string}> = {};
+    
+    for (const loc of locations) {
+        const tasksPath = path.join(loc, 'tasks');
+        
+        try {
+            const entries = await fs.readdir(tasksPath, { withFileTypes: true });
+            
+            for (const entry of entries) {
+                if (entry.isDirectory()) {
+                    const taskPath = path.join(tasksPath, entry.name);
+                    
+                    try {
+                        // Détecter le workspace pour cette tâche
+                        const workspace = await this.detectWorkspaceForTask(taskPath);
+                        
+                        const stats = await fs.stat(taskPath);
+                        const lastActivity = stats.mtime.toISOString();
+                        
+                        // Initialiser ou mettre à jour les stats du workspace
+                        if (!workspaceBreakdown[workspace]) {
+                            workspaceBreakdown[workspace] = {
+                                count: 0,
+                                totalSize: 0,
+                                lastActivity: lastActivity
+                            };
+                        }
+                        
+                        workspaceBreakdown[workspace].count++;
+                        workspaceBreakdown[workspace].totalSize += stats.size;
+                        
+                        // Mettre à jour la dernière activité si plus récente
+                        if (new Date(lastActivity) > new Date(workspaceBreakdown[workspace].lastActivity)) {
+                            workspaceBreakdown[workspace].lastActivity = lastActivity;
+                        }
+                        
+                    } catch (taskError) {
+                        // Ignorer les tâches non accessibles
+                        console.warn(`Impossible d'analyser tâche ${entry.name}:`, (taskError as Error).message);
+                    }
+                }
+            }
+        } catch (dirError) {
+            console.warn(`Impossible de lire répertoire ${tasksPath}:`, (dirError as Error).message);
+        }
+    }
+    
+    return workspaceBreakdown;
+  }
+
+  /**
+   * Détecte le workspace pour une tâche donnée en analysant les fichiers de conversation
+   */
+  public static async detectWorkspaceForTask(taskPath: string): Promise<string> {
+    try {
+        // Essayer de lire api_conversation_history.json pour déterminer le workspace
+        const apiHistoryPath = path.join(taskPath, 'api_conversation_history.json');
+        
+        if (await this.fileExists(apiHistoryPath)) {
+            const content = await fs.readFile(apiHistoryPath, 'utf8');
+            const data = JSON.parse(content);
+            
+            // Chercher workspace dans environment_details ou dans les messages
+            if (data && Array.isArray(data)) {
+                for (const message of data) {
+                    // Chercher pattern : Current Workspace Directory (chemin)
+                    const envMatch = message.environment_details?.match(/Current Workspace Directory[^(]*\(([^)]+)\)/);
+                    if (envMatch) {
+                        return this.normalizeWorkspacePath(envMatch[1].trim());
+                    }
+                    
+                    // Fallback : pattern avec ":" (ancien format)
+                    if (message.environment_details?.match(/Current Workspace Directory[^:]*:\s*([^\s\n\r)]+)/)) {
+                        const workspace = RegExp.$1.trim();
+                        return this.normalizeWorkspacePath(workspace);
+                    }
+                }
+            }
+        }
+        
+        // Fallback: essayer ui_messages.json
+        const uiMessagesPath = path.join(taskPath, 'ui_messages.json');
+        if (await this.fileExists(uiMessagesPath)) {
+            const content = await fs.readFile(uiMessagesPath, 'utf8');
+            const data = JSON.parse(content);
+            
+            if (data && Array.isArray(data)) {
+                for (const message of data) {
+                    if (message.text && typeof message.text === 'string') {
+                        // Chercher pattern : Current Workspace Directory (chemin)
+                        const envMatch = message.text.match(/Current Workspace Directory[^(]*\(([^)]+)\)/);
+                        if (envMatch) {
+                            return this.normalizeWorkspacePath(envMatch[1].trim());
+                        }
+                        
+                        // Fallback : pattern avec ":" (ancien format)
+                        const workspaceMatch = message.text.match(/Current Workspace Directory[^:]*:\s*([^\s\n\r)]+)/);
+                        if (workspaceMatch) {
+                            return this.normalizeWorkspacePath(workspaceMatch[1].trim());
+                        }
+                    }
+                }
+            }
+        }
+        
+    } catch (error) {
+        // Ignorer les erreurs de parsing
+    }
+    
+    // Workspace par défaut si non détecté
+    return 'UNKNOWN';
+  }
+
+  /**
+   * Normalise le chemin du workspace pour la cohérence
+   */
+  private static normalizeWorkspacePath(workspace: string): string {
+    // Nettoyer les caractères indésirables et normaliser
+    return workspace.replace(/[`'"]/g, '').trim() || 'UNKNOWN';
+  }
+
+  /**
+   * Vérifier si un fichier existe
+   */
+  private static async fileExists(filePath: string): Promise<boolean> {
+    try {
+        await fs.access(filePath);
+        return true;
+    } catch {
+        return false;
+    }
   }
 
   /**

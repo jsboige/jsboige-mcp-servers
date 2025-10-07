@@ -410,6 +410,41 @@ Le projet inclut une suite de tests robuste couvrant :
 - `semantic-search.test.ts` : Tests de recherche sémantique
 - `task-navigation.test.ts` : Tests de navigation dans les tâches
 
+#### Tests de Reconstruction Hiérarchique ⚠️
+
+**✅ NOUVELLE FONCTIONNALITÉ - Mission SDDD Triple Grounding**
+
+Suite de tests pour valider le système de reconstruction hiérarchique des tâches parent-enfant :
+
+**Tests Unitaires (Jest - ❌ Configuration corrompue) :**
+- `production-format-extraction.test.ts` : Validation Pattern 5 newTask production
+- `skeleton-cache-reconstruction.test.ts` : Test buildHierarchicalSkeletons complet
+- `parent-child-validation.test.ts` : Validation relations RadixTree
+
+**Scripts de Diagnostic (Node.js - ✅ Fonctionnels) :**
+- `test-pattern-extraction.mjs` : Diagnostic patterns extraction
+- `direct-diagnosis.mjs` : Diagnostic système complet (métriques détaillées)
+- `test-radixtree-matching.mjs` : Test spécifique RadixTree matching
+
+**Exécution recommandée (workaround Jest) :**
+```bash
+# Diagnostic complet système
+node scripts/direct-diagnosis.mjs
+
+# Test spécifique RadixTree
+node scripts/test-radixtree-matching.mjs
+
+# Test patterns extraction
+node scripts/test-pattern-extraction.mjs
+```
+
+**Métriques Actuelles :**
+- Tâches workspace cible : 7 (sur 3870 total = 0.18%)
+- Instructions newTask extraites : 2
+- Relations parent-enfant : 0 ❌ (taux succès RadixTree = 0%)
+
+📋 **Documentation complète :** [`docs/tests/hierarchie-reconstruction-validation.md`](docs/tests/hierarchie-reconstruction-validation.md)
+
 ### Commandes de Test
 
 ```bash
@@ -719,6 +754,92 @@ Le `TraceSummaryService` implémente une architecture modulaire pour le rendu de
 - **🆕 Analyse de grappes** : Métriques spécialisées et relations hiérarchiques
 - **🆕 Timeline consolidée** : Vue chronologique multi-tâches
 - **🆕 Patterns croisés** : Détection automatique de tendances communes
+
+## 🔄 Configuration RooSync
+
+RooSync est intégré dans roo-state-manager pour permettre la synchronisation de configurations entre plusieurs machines via Google Drive.
+
+### Variables d'Environnement
+
+Les variables suivantes doivent être définies dans le fichier `.env` :
+
+#### ROOSYNC_SHARED_PATH
+- **Type :** Chemin absolu
+- **Requis :** Oui
+- **Description :** Chemin vers le répertoire Google Drive partagé contenant les états synchronisés
+- **Exemple Windows :** `G:/Mon Drive/Synchronisation/RooSync/.shared-state`
+- **Exemple Mac/Linux :** `~/Google Drive/Synchronisation/RooSync/.shared-state`
+
+#### ROOSYNC_MACHINE_ID
+- **Type :** String (alphanumeric + tirets/underscores)
+- **Requis :** Oui
+- **Description :** Identifiant unique de cette machine
+- **Format :** `[A-Z0-9_-]+`
+- **Exemples :** `PC-PRINCIPAL`, `MAC-DEV`, `LAPTOP-WORK`
+
+#### ROOSYNC_AUTO_SYNC
+- **Type :** Boolean
+- **Requis :** Oui
+- **Valeurs :** `true` | `false`
+- **Défaut Recommandé :** `false`
+- **Description :** Active la synchronisation automatique en arrière-plan
+
+#### ROOSYNC_CONFLICT_STRATEGY
+- **Type :** Enum
+- **Requis :** Oui
+- **Valeurs :** `manual` | `auto-local` | `auto-remote`
+- **Défaut Recommandé :** `manual`
+- **Description :** Stratégie de résolution des conflits de synchronisation
+  - `manual` : L'utilisateur doit approuver chaque décision
+  - `auto-local` : Préférence automatique pour les changements locaux
+  - `auto-remote` : Préférence automatique pour les changements distants
+
+#### ROOSYNC_LOG_LEVEL
+- **Type :** Enum
+- **Requis :** Oui
+- **Valeurs :** `debug` | `info` | `warn` | `error`
+- **Défaut Recommandé :** `info`
+- **Description :** Niveau de verbosité des logs RooSync
+
+### Validation de la Configuration
+
+La configuration est automatiquement validée au démarrage du serveur. Si une variable est manquante ou invalide, une erreur `RooSyncConfigError` est levée.
+
+Pour tester la configuration, utilisez la suite de tests unitaires :
+
+```bash
+npm test src/config/roosync-config.test.ts
+```
+
+### Outils MCP RooSync
+
+Les outils suivants seront disponibles une fois l'implémentation complète :
+
+- `roosync_get_status` : Obtenir l'état de synchronisation
+- `roosync_compare_config` : Comparer configurations entre machines
+- `roosync_list_diffs` : Lister les différences détectées
+- `roosync_get_decision` : Récupérer une décision spécifique
+- `roosync_approve_decision` : Approuver une décision
+- `roosync_reject_decision` : Rejeter une décision
+- `roosync_apply_decision` : Appliquer une décision
+- `roosync_rollback_decision` : Annuler une décision appliquée
+
+### Architecture
+
+RooSync utilise une architecture 5 couches :
+
+1. **Configuration Layer** : Validation et chargement des variables .env
+2. **Read/Analysis Layer** : Lecture et parsing des fichiers RooSync
+3. **Presentation Layer** : Formatage et présentation des données
+4. **Decision Layer** : Gestion du workflow de décisions
+5. **Execution Layer** : Application et rollback des changements
+
+### Documentation Complète
+
+Pour plus de détails, consultez :
+- [Architecture d'intégration](../../../../../docs/integration/03-architecture-integration-roosync.md)
+- [Points d'intégration](../../../../../docs/integration/02-points-integration-roosync.md)
+- [CHANGELOG RooSync](../../../../../RooSync/CHANGELOG.md)
 
 ## 📝 Roadmap
 

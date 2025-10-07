@@ -7,8 +7,18 @@
 # Cache and temporary files
 .cache/
 
+# Environment variables (contains secrets)
+.env
+
+# Logs
+*.log
+
 # Reports and documentation
 # Ignore markdown files at root level except README.md and CHANGELOG.md
 /*.md
 !README.md
 !CHANGELOG.md
+
+# Reports (excluding README.md)
+*-report.md
+*-validation.md
