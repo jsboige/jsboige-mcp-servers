@@ -172,15 +172,21 @@ export class HierarchyReconstructionEngine {
                                 duplicatesRemoved: 0
                             }
                         };
+                        // CORRECTION RÉGRESSION CRITIQUE : Utiliser la nouvelle méthode d'extraction
+                        // Au lieu d'indexer chaque instruction individuellement,
+                        // extraire les sous-instructions depuis le texte parent complet
                         
-                        for (const instruction of instructions) {
-                            const prefix = computeInstructionPrefix(instruction.message, 192);
-                            await this.instructionIndex.addInstruction(
-                                skeleton.taskId,
-                                prefix,
-                                instruction
-                            );
-                        }
+                        // Récupérer le texte parent complet pour extraction
+                        const parentText = skeleton.parsedSubtaskInstructions?.instructions.map(i => i.message).join('\n') ||
+                                          instructions.map(i => i.message).join('\n');
+                        
+                        // Utiliser la nouvelle méthode avec extraction automatique
+                        const extractedCount = await this.instructionIndex.addParentTaskWithSubInstructions(
+                            skeleton.taskId,
+                            parentText
+                        );
+                        
+                        console.log(`[FIX-RÉGRESSION] Tâche ${skeleton.taskId}: ${extractedCount} sous-instructions extraites et indexées`);
                         
                         result.parsedCount++;
                         result.totalInstructionsExtracted += instructions.length;
@@ -243,7 +249,7 @@ export class HierarchyReconstructionEngine {
                 if (s.parsedSubtaskInstructions?.instructions?.length) {
                     for (const inst of s.parsedSubtaskInstructions.instructions) {
                         const prefix = computeInstructionPrefix(inst.message, 192);
-                        await this.instructionIndex.addInstruction(s.taskId, prefix, inst);
+                        await this.instructionIndex.addInstruction(s.taskId, prefix, inst.message);
                     }
                 }
                 if (s.childTaskInstructionPrefixes?.length) {

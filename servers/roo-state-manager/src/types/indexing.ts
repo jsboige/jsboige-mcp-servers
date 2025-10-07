@@ -19,6 +19,7 @@ export interface IndexingDecision {
     reason: string;
     action: 'skip' | 'index' | 'retry';
     backoffUntil?: string;
+    requiresSave?: boolean; // 🆕 Flag pour signaler qu'une sauvegarde est nécessaire (migration legacy)
 }
 
 export interface IndexingMetrics {

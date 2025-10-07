@@ -410,6 +410,41 @@ Le projet inclut une suite de tests robuste couvrant :
 - `semantic-search.test.ts` : Tests de recherche sémantique
 - `task-navigation.test.ts` : Tests de navigation dans les tâches
 
+#### Tests de Reconstruction Hiérarchique ⚠️
+
+**✅ NOUVELLE FONCTIONNALITÉ - Mission SDDD Triple Grounding**
+
+Suite de tests pour valider le système de reconstruction hiérarchique des tâches parent-enfant :
+
+**Tests Unitaires (Jest - ❌ Configuration corrompue) :**
+- `production-format-extraction.test.ts` : Validation Pattern 5 newTask production
+- `skeleton-cache-reconstruction.test.ts` : Test buildHierarchicalSkeletons complet
+- `parent-child-validation.test.ts` : Validation relations RadixTree
+
+**Scripts de Diagnostic (Node.js - ✅ Fonctionnels) :**
+- `test-pattern-extraction.mjs` : Diagnostic patterns extraction
+- `direct-diagnosis.mjs` : Diagnostic système complet (métriques détaillées)
+- `test-radixtree-matching.mjs` : Test spécifique RadixTree matching
+
+**Exécution recommandée (workaround Jest) :**
+```bash
+# Diagnostic complet système
+node scripts/direct-diagnosis.mjs
+
+# Test spécifique RadixTree
+node scripts/test-radixtree-matching.mjs
+
+# Test patterns extraction
+node scripts/test-pattern-extraction.mjs
+```
+
+**Métriques Actuelles :**
+- Tâches workspace cible : 7 (sur 3870 total = 0.18%)
+- Instructions newTask extraites : 2
+- Relations parent-enfant : 0 ❌ (taux succès RadixTree = 0%)
+
+📋 **Documentation complète :** [`docs/tests/hierarchie-reconstruction-validation.md`](docs/tests/hierarchie-reconstruction-validation.md)
+
 ### Commandes de Test
 
 ```bash

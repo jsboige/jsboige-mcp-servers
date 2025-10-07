@@ -6,6 +6,7 @@
 
 import { NewTaskInstruction } from '../types/conversation.js';
 import Trie from 'exact-trie';
+import { extractSubInstructions } from './sub-instruction-extractor.js';
 
 /**
  * Structure pour stocker plusieurs parents par préfixe
@@ -35,7 +36,7 @@ export class TaskInstructionIndex {
      * @param parentTaskId - ID de la tâche parente qui contient cette instruction
      * @param instruction - Instruction complète (optionnelle)
      */
-    addInstruction(parentTaskId: string, instructionPrefix: string, instruction?: NewTaskInstruction): void {
+    addInstruction(parentTaskId: string, instructionPrefix: string, instruction?: string): void {
         if (!instructionPrefix || instructionPrefix.length === 0) return;
         
         // Normaliser le préfixe avec la fonction unifiée
@@ -56,7 +57,13 @@ export class TaskInstructionIndex {
         
         // Ajouter l'instruction complète si fournie
         if (instruction && entry.instructions) {
-            entry.instructions.push(instruction);
+            // Convertir la string en NewTaskInstruction
+            const taskInstruction: NewTaskInstruction = {
+                mode: 'unknown', // Mode sera déterminé par le contexte
+                message: instruction,
+                timestamp: Date.now()
+            };
+            entry.instructions.push(taskInstruction);
         }
         
         // Maintenir l'index inversé pour getInstructionsByParent
@@ -67,6 +74,35 @@ export class TaskInstructionIndex {
         if (!parentInstructions.includes(normalizedPrefix)) {
             parentInstructions.push(normalizedPrefix);
         }
+    }
+
+    /**
+     * Ajoute une tâche parent complète en extrayant automatiquement les sous-instructions
+     * CORRECTION DE LA RÉGRESSION CRITIQUE
+     * @param parentTaskId - ID de la tâche parente
+     * @param fullInstructionText - Texte complet de l'instruction parente
+     */
+    addParentTaskWithSubInstructions(parentTaskId: string, fullInstructionText: string): number {
+        if (!fullInstructionText) return 0;
+        
+        // 1. Extraire les sous-instructions du texte parent
+        const subInstructions = extractSubInstructions(fullInstructionText);
+        
+        // 2. Indexer chaque sous-instruction extraite
+        let indexedCount = 0;
+        for (const subInstruction of subInstructions) {
+            this.addInstruction(parentTaskId, subInstruction, subInstruction);
+            indexedCount++;
+        }
+        
+        // 3. Si aucune sous-instruction trouvée, utiliser l'ancienne méthode (fallback)
+        if (indexedCount === 0) {
+            const fallbackPrefix = computeInstructionPrefix(fullInstructionText, 192);
+            this.addInstruction(parentTaskId, fallbackPrefix, fullInstructionText);
+            indexedCount = 1;
+        }
+        
+        return indexedCount;
     }
 
     /**
@@ -91,35 +127,33 @@ export class TaskInstructionIndex {
             console.log(`[EXACT PREFIX SEARCH] Searching for: "${searchPrefix}" (K=${K})`);
         }
         
-        // Utiliser getWithCheckpoints() SANS checkpoint character pour obtenir le LONGEST PREFIX MATCH
-        // Note: exact-trie retourne la valeur associée à la clé qui matche le plus long préfixe de searchPrefix
+        // Utiliser getWithCheckpoints() pour EXACT PREFIX MATCH
         const entry = this.trie.getWithCheckpoints(searchPrefix) as PrefixEntry | undefined;
         
         const results: Array<{ taskId: string, prefix: string }> = [];
         
         if (entry) {
-            // Trouver la clé exacte qui a matché (parcourir la Map interne)
-            // On cherche la plus longue clé qui est un préfixe de searchPrefix
-            let longestMatchKey = '';
-            for (const key of this.prefixToEntry.keys()) {
-                if (searchPrefix.startsWith(key) && key.length > longestMatchKey.length) {
-                    longestMatchKey = key;
+            // LOGIQUE SIMPLE ET FONCTIONNELLE : utiliser directement le résultat du trie
+            // Trouver la clé exacte dans la Map qui correspond à cette entrée
+            let matchedKey = '';
+            for (const [key, value] of this.prefixToEntry.entries()) {
+                if (value === entry) {
+                    matchedKey = key;
+                    break;
                 }
             }
             
-            // Récupérer l'entry via la Map
-            const matchedEntry = this.prefixToEntry.get(longestMatchKey);
-            if (matchedEntry) {
+            if (matchedKey) {
                 // Ajouter tous les parents associés à cette clé
-                for (const parentId of matchedEntry.parentTaskIds) {
+                for (const parentId of entry.parentTaskIds) {
                     results.push({
                         taskId: parentId,
-                        prefix: longestMatchKey
+                        prefix: matchedKey
                     });
                 }
                 
                 if (process.env.ROO_DEBUG_INSTRUCTIONS === '1') {
-                    console.log(`[EXACT PREFIX SEARCH] Found longest match: "${longestMatchKey}" (${longestMatchKey.length} chars) → ${matchedEntry.parentTaskIds.length} parent(s)`);
+                    console.log(`[EXACT PREFIX SEARCH] Found exact match: "${matchedKey}" (${matchedKey.length} chars) → ${entry.parentTaskIds.length} parent(s)`);
                 }
             }
         }
