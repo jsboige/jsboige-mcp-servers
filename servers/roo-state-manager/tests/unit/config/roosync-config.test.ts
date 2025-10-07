@@ -5,7 +5,7 @@
  */
 
 import { describe, it, expect, beforeEach, afterEach } from '@jest/globals';
-import { loadRooSyncConfig, tryLoadRooSyncConfig, isRooSyncEnabled, RooSyncConfigError } from './roosync-config.js';
+import { loadRooSyncConfig, tryLoadRooSyncConfig, isRooSyncEnabled, RooSyncConfigError } from '../../../src/config/roosync-config.js';
 
 describe('RooSync Configuration', () => {
   let originalEnv: NodeJS.ProcessEnv;

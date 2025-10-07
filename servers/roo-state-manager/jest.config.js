@@ -23,7 +23,11 @@ export default {
   roots: ['<rootDir>/src', '<rootDir>/tests'],
 
   testMatch: [
-    '**/tests/**/*.test.ts'
+    '**/tests/unit/**/*.test.ts',
+    '**/tests/unit/**/*.test.js',
+    '**/tests/integration/**/*.test.ts',
+    '**/tests/integration/**/*.test.js',
+    '**/tests/e2e/**/*.test.ts'
   ],
 
   testPathIgnorePatterns: [
