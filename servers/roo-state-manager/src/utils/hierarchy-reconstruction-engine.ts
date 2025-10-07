@@ -177,7 +177,7 @@ export class HierarchyReconstructionEngine {
                         // extraire les sous-instructions depuis le texte parent complet
                         
                         // Récupérer le texte parent complet pour extraction
-                        const parentText = skeleton.parsedSubtaskInstructions?.fullText ||
+                        const parentText = skeleton.parsedSubtaskInstructions?.instructions.map(i => i.message).join('\n') ||
                                           instructions.map(i => i.message).join('\n');
                         
                         // Utiliser la nouvelle méthode avec extraction automatique

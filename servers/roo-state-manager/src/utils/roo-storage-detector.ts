@@ -1744,6 +1744,145 @@ export class RooStorageDetector {
   }
 
   /**
+   * 🔧 FIX CRITIQUE: Calcule breakdown par workspace en scannant directement le disque
+   * pour être cohérent avec getStorageStats() qui compte aussi sur le disque
+   */
+  public static async getWorkspaceBreakdown(): Promise<Record<string, {count: number, totalSize: number, lastActivity: string}>> {
+    const locations = await this.detectStorageLocations();
+    const workspaceBreakdown: Record<string, {count: number, totalSize: number, lastActivity: string}> = {};
+    
+    for (const loc of locations) {
+        const tasksPath = path.join(loc, 'tasks');
+        
+        try {
+            const entries = await fs.readdir(tasksPath, { withFileTypes: true });
+            
+            for (const entry of entries) {
+                if (entry.isDirectory()) {
+                    const taskPath = path.join(tasksPath, entry.name);
+                    
+                    try {
+                        // Détecter le workspace pour cette tâche
+                        const workspace = await this.detectWorkspaceForTask(taskPath);
+                        
+                        const stats = await fs.stat(taskPath);
+                        const lastActivity = stats.mtime.toISOString();
+                        
+                        // Initialiser ou mettre à jour les stats du workspace
+                        if (!workspaceBreakdown[workspace]) {
+                            workspaceBreakdown[workspace] = {
+                                count: 0,
+                                totalSize: 0,
+                                lastActivity: lastActivity
+                            };
+                        }
+                        
+                        workspaceBreakdown[workspace].count++;
+                        workspaceBreakdown[workspace].totalSize += stats.size;
+                        
+                        // Mettre à jour la dernière activité si plus récente
+                        if (new Date(lastActivity) > new Date(workspaceBreakdown[workspace].lastActivity)) {
+                            workspaceBreakdown[workspace].lastActivity = lastActivity;
+                        }
+                        
+                    } catch (taskError) {
+                        // Ignorer les tâches non accessibles
+                        console.warn(`Impossible d'analyser tâche ${entry.name}:`, (taskError as Error).message);
+                    }
+                }
+            }
+        } catch (dirError) {
+            console.warn(`Impossible de lire répertoire ${tasksPath}:`, (dirError as Error).message);
+        }
+    }
+    
+    return workspaceBreakdown;
+  }
+
+  /**
+   * Détecte le workspace pour une tâche donnée en analysant les fichiers de conversation
+   */
+  public static async detectWorkspaceForTask(taskPath: string): Promise<string> {
+    try {
+        // Essayer de lire api_conversation_history.json pour déterminer le workspace
+        const apiHistoryPath = path.join(taskPath, 'api_conversation_history.json');
+        
+        if (await this.fileExists(apiHistoryPath)) {
+            const content = await fs.readFile(apiHistoryPath, 'utf8');
+            const data = JSON.parse(content);
+            
+            // Chercher workspace dans environment_details ou dans les messages
+            if (data && Array.isArray(data)) {
+                for (const message of data) {
+                    // Chercher pattern : Current Workspace Directory (chemin)
+                    const envMatch = message.environment_details?.match(/Current Workspace Directory[^(]*\(([^)]+)\)/);
+                    if (envMatch) {
+                        return this.normalizeWorkspacePath(envMatch[1].trim());
+                    }
+                    
+                    // Fallback : pattern avec ":" (ancien format)
+                    if (message.environment_details?.match(/Current Workspace Directory[^:]*:\s*([^\s\n\r)]+)/)) {
+                        const workspace = RegExp.$1.trim();
+                        return this.normalizeWorkspacePath(workspace);
+                    }
+                }
+            }
+        }
+        
+        // Fallback: essayer ui_messages.json
+        const uiMessagesPath = path.join(taskPath, 'ui_messages.json');
+        if (await this.fileExists(uiMessagesPath)) {
+            const content = await fs.readFile(uiMessagesPath, 'utf8');
+            const data = JSON.parse(content);
+            
+            if (data && Array.isArray(data)) {
+                for (const message of data) {
+                    if (message.text && typeof message.text === 'string') {
+                        // Chercher pattern : Current Workspace Directory (chemin)
+                        const envMatch = message.text.match(/Current Workspace Directory[^(]*\(([^)]+)\)/);
+                        if (envMatch) {
+                            return this.normalizeWorkspacePath(envMatch[1].trim());
+                        }
+                        
+                        // Fallback : pattern avec ":" (ancien format)
+                        const workspaceMatch = message.text.match(/Current Workspace Directory[^:]*:\s*([^\s\n\r)]+)/);
+                        if (workspaceMatch) {
+                            return this.normalizeWorkspacePath(workspaceMatch[1].trim());
+                        }
+                    }
+                }
+            }
+        }
+        
+    } catch (error) {
+        // Ignorer les erreurs de parsing
+    }
+    
+    // Workspace par défaut si non détecté
+    return 'UNKNOWN';
+  }
+
+  /**
+   * Normalise le chemin du workspace pour la cohérence
+   */
+  private static normalizeWorkspacePath(workspace: string): string {
+    // Nettoyer les caractères indésirables et normaliser
+    return workspace.replace(/[`'"]/g, '').trim() || 'UNKNOWN';
+  }
+
+  /**
+   * Vérifier si un fichier existe
+   */
+  private static async fileExists(filePath: string): Promise<boolean> {
+    try {
+        await fs.access(filePath);
+        return true;
+    } catch {
+        return false;
+    }
+  }
+
+  /**
    * Valide un chemin de stockage personnalisé
    */
   public static async validateCustomPath(customPath: string): Promise<boolean> {
