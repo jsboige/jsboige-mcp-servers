@@ -60,6 +60,7 @@ class GitHubProjectsServer {
     const accounts: GitHubAccount[] = [];
     let index = 1;
 
+    // 1. Essayer le format indexé (GITHUB_OWNER_1, GITHUB_TOKEN_1, ...)
     while (true) {
       const owner = process.env[`GITHUB_OWNER_${index}`];
       const token = process.env[`GITHUB_TOKEN_${index}`];
@@ -73,9 +74,9 @@ class GitHubProjectsServer {
       index++;
     }
 
+    // 2. Fallback : format simple (GITHUB_OWNER + GITHUB_TOKEN)
     if (accounts.length === 0) {
-      // Fallback: essayer sans index
-      const owner = process.env.GITHUB_OWNER;
+      const owner = process.env.GITHUB_OWNER || process.env.DEFAULT_USER;
       const token = process.env.GITHUB_TOKEN;
 
       if (owner && token) {
@@ -84,8 +85,31 @@ class GitHubProjectsServer {
       }
     }
 
+    // 3. Fallback final : format JSON legacy (GITHUB_ACCOUNTS_JSON)
+    if (accounts.length === 0 && process.env.GITHUB_ACCOUNTS_JSON) {
+      try {
+        const jsonAccounts = JSON.parse(process.env.GITHUB_ACCOUNTS_JSON);
+        if (Array.isArray(jsonAccounts)) {
+          jsonAccounts.forEach((acc: any, idx: number) => {
+            // Support both "user" (legacy .env format) and "owner" (mcp_settings.json format)
+            const ownerValue = acc.owner || acc.user;
+            if (ownerValue && acc.token) {
+              accounts.push({ owner: ownerValue, token: acc.token });
+              console.log(`[GP-MCP][ACCOUNTS] Compte ${idx + 1} chargé depuis JSON: ${ownerValue}`);
+            }
+          });
+        }
+      } catch (error) {
+        console.error('[GP-MCP][ACCOUNTS] Erreur parsing GITHUB_ACCOUNTS_JSON:', error);
+      }
+    }
+
     this.accounts = accounts;
-    console.log(`[GP-MCP][ACCOUNTS] ${accounts.length} compte(s) chargé(s).`);
+    console.log(`[GP-MCP][ACCOUNTS] ${accounts.length} compte(s) chargé(s) au total.`);
+
+    if (accounts.length === 0) {
+      console.warn('[GP-MCP][ACCOUNTS] ATTENTION: Aucun compte GitHub configuré !');
+    }
   }
 
   async run() {

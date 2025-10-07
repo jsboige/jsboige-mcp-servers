@@ -454,12 +454,12 @@ export function setupTools(server: any, accounts: GitHubAccount[]): Tool[] {
       inputSchema: {
         type: 'object',
         properties: {
-          owner: { type: 'string', description: 'Propriétaire du projet' },
-          project_id: { type: 'string', description: 'ID du projet' },
+          owner: { type: 'string', description: "Propriétaire du projet" },
+          project_id: { type: 'string', description: "ID du projet" },
           item_id: { type: 'string', description: "ID de l'élément" },
-          field_id: { type: 'string', description: 'ID du champ' },
+          field_id: { type: 'string', description: "ID du champ" },
           field_type: { type: 'string', enum: ['text', 'date', 'single_select', 'number'], default: 'text' },
-          value: { type: 'string', description: 'Nouvelle valeur' },
+          value: { type: 'string', description: "Nouvelle valeur" },
           option_id: { type: 'string', description: "ID de l'option pour single_select" }
         },
         required: ['owner', 'project_id', 'item_id', 'field_id', 'field_type']
@@ -499,8 +499,8 @@ export function setupTools(server: any, accounts: GitHubAccount[]): Tool[] {
       inputSchema: {
         type: 'object',
         properties: {
-          owner: { type: 'string', description: 'Propriétaire du projet' },
-          project_id: { type: 'string', description: 'ID du projet' },
+          owner: { type: 'string', description: "Propriétaire du projet" },
+          project_id: { type: 'string', description: "ID du projet" },
           item_id: { type: 'string', description: "ID de l'élément à supprimer" },
         },
         required: ['owner', 'project_id', 'item_id'],
@@ -569,10 +569,10 @@ export function setupTools(server: any, accounts: GitHubAccount[]): Tool[] {
       inputSchema: {
         type: 'object',
         properties: {
-          owner: { type: 'string', description: 'Propriétaire du projet' },
+          owner: { type: 'string', description: "Propriétaire du projet" },
           project_id: { type: 'string', description: "L'ID du projet à modifier." },
-          title: { type: 'string', description: 'Le nouveau titre du projet.' },
-          description: { type: 'string', description: 'La nouvelle description courte du projet.' },
+          title: { type: 'string', description: "Le nouveau titre du projet." },
+          description: { type: 'string', description: "La nouvelle description courte du projet." },
           state: { type: 'string', enum: ['OPEN', 'CLOSED'], description: "Le nouvel état du projet. NOTE: Ignoré actuellement." }
         },
         required: ['owner', 'project_id']
@@ -966,7 +966,7 @@ export function setupTools(server: any, accounts: GitHubAccount[]): Tool[] {
           
           return {
             success: true,
-            workflow_runs: response.data.workflow_runs
+            workflow_runs: response.data.workflow_runs as WorkflowRun[]
           };
         } catch (error: any) {
           logger.error('Erreur dans get_workflow_runs', { error });
@@ -1008,7 +1008,7 @@ export function setupTools(server: any, accounts: GitHubAccount[]): Tool[] {
           
           return {
             success: true,
-            workflow_run: response.data
+            workflow_run: response.data as WorkflowRun
           };
         } catch (error: any) {
           logger.error('Erreur dans get_workflow_run_status', { error });
