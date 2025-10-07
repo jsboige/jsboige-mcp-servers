@@ -124,11 +124,19 @@ export class IndexingDecisionService {
         // SUPPORT RÉTROCOMPATIBILITÉ : Migration depuis qdrantIndexedAt
         if (!indexingState.indexStatus && skeleton.metadata.qdrantIndexedAt) {
             const legacyIndexed = new Date(skeleton.metadata.qdrantIndexedAt).getTime();
+            
+            // 🆕 FIX CRITIQUE : Toujours migrer AVANT de décider du skip
+            const migrated = this.migrateLegacyIndexingState(skeleton);
+            if (migrated) {
+                console.log(`[MIGRATION] Task ${taskId}: Migration legacy effectuée depuis ${skeleton.metadata.qdrantIndexedAt}`);
+            }
+            
             if (lastActivity <= legacyIndexed) {
                 return {
                     shouldIndex: false,
                     reason: `Migration legacy : contenu inchangé depuis ${skeleton.metadata.qdrantIndexedAt}`,
-                    action: 'skip'
+                    action: 'skip',
+                    requiresSave: migrated // 🆕 Signal pour sauvegarder si migration effectuée
                 };
             }
         }

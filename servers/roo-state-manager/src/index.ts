@@ -53,7 +53,7 @@ import { LLMService } from './services/synthesis/LLMService.js';
 import { IndexingDecisionService } from './services/indexing-decision.js';
 import { IndexingMetrics } from './types/indexing.js';
 
-const MAX_OUTPUT_LENGTH = 150000; // Harmonisé avec view-conversation-tree.ts pour consistance (audit 2025-09-15)
+const MAX_OUTPUT_LENGTH = 300000; // Smart Truncation Engine - Corrected from 150K to 300K for intelligent truncation
 const SKELETON_CACHE_DIR_NAME = '.skeletons';
 
 /**
@@ -3434,6 +3434,12 @@ class RooStateManagerServer {
             // Décision d'indexation avec nouvelle logique
             const decision = this.indexingDecisionService.shouldIndex(skeleton);
             
+            // 🆕 FIX CRITIQUE : Sauvegarder si une migration legacy a eu lieu durant shouldIndex
+            if (decision.requiresSave) {
+                await this._saveSkeletonToDisk(skeleton);
+                migratedCount++; // Compter cette migration dans le rapport
+            }
+            
             if (decision.shouldIndex) {
                 this.qdrantIndexQueue.add(taskId);
                 if (decision.action === 'retry') {
@@ -3583,6 +3589,13 @@ class RooStateManagerServer {
             
             // NOUVELLE LOGIQUE : Vérifier la décision d'indexation en temps réel
             const decision = this.indexingDecisionService.shouldIndex(skeleton);
+            
+            // 🆕 FIX CRITIQUE : Sauvegarder si migration legacy effectuée même en cas de skip
+            if (decision.requiresSave) {
+                await this._saveSkeletonToDisk(skeleton);
+                console.log(`[MIGRATION] Task ${taskId}: Migration legacy sauvegardée`);
+            }
+            
             if (!decision.shouldIndex) {
                 console.log(`[SKIP] Task ${taskId}: ${decision.reason} - Protection anti-fuite`);
                 return;
