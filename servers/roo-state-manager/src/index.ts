@@ -2746,26 +2746,53 @@ class RooStateManagerServer {
 
         const locations = await RooStorageDetector.detectStorageLocations();
         for (const loc of locations) {
-            const taskPath = path.join(loc, taskId);
+            // 🚨 BUG FIX: Ajouter 'tasks' au chemin pour correspondre à la structure réelle
+            const taskPath = path.join(loc, 'tasks', taskId);
             try {
                 await fs.access(taskPath); // Vérifie si le répertoire de la tâche existe
 
                 const apiHistoryPath = path.join(taskPath, 'api_conversation_history.json');
                 const uiMessagesPath = path.join(taskPath, 'ui_messages.json');
 
-                const apiHistoryContent = await fs.readFile(apiHistoryPath, 'utf-8').catch(() => null);
-                const uiMessagesContent = await fs.readFile(uiMessagesPath, 'utf-8').catch(() => null);
+                // 🚨 BUG FIX: Gérer les BOM UTF-8 qui causent des erreurs de parsing JSON
+                const readJsonFileClean = async (filePath: string) => {
+                    try {
+                        let content = await fs.readFile(filePath, 'utf-8');
+                        // Nettoyer le BOM UTF-8 si présent
+                        if (content.charCodeAt(0) === 0xFEFF) {
+                            content = content.slice(1);
+                        }
+                        return JSON.parse(content);
+                    } catch (e) {
+                        return null;
+                    }
+                };
+
+                const apiHistoryContent = await readJsonFileClean(apiHistoryPath);
+                const uiMessagesContent = await readJsonFileClean(uiMessagesPath);
+
+                // 🚨 BUG FIX: Ajouter des métadonnées sur le fichier pour diagnostic
+                const taskStats = await fs.stat(taskPath).catch(() => null);
+                const metadataPath = path.join(taskPath, 'task_metadata.json');
+                const metadataContent = await readJsonFileClean(metadataPath);
 
                 const rawData = {
                     taskId,
                     location: taskPath,
-                    api_conversation_history: apiHistoryContent ? JSON.parse(apiHistoryContent) : null,
-                    ui_messages: uiMessagesContent ? JSON.parse(uiMessagesContent) : null,
+                    taskStats: taskStats ? {
+                        created: taskStats.birthtime,
+                        modified: taskStats.mtime,
+                        size: taskStats.size
+                    } : null,
+                    metadata: metadataContent,
+                    api_conversation_history: apiHistoryContent,
+                    ui_messages: uiMessagesContent,
                 };
 
                 return { content: [{ type: 'text', text: JSON.stringify(rawData, null, 2) }] };
             } catch (e) {
                 // Tâche non trouvée dans cet emplacement, on continue
+                console.debug(`[DEBUG] Task ${taskId} not found in ${taskPath}: ${e}`);
             }
         }
 
