@@ -7,7 +7,7 @@ using the JupyterManager for low-level kernel interactions.
 
 import asyncio
 import logging
-from typing import Dict, List, Optional, Any, Union
+from typing import Dict, List, Optional, Any, Union, Literal
 
 from ..core.jupyter_manager import JupyterManager, ExecutionResult
 from ..config import MCPConfig
@@ -382,6 +382,95 @@ class KernelService:
         except Exception as e:
             logger.error(f"Error executing cell {cell_index} from notebook {notebook_path}: {e}")
             raise
+    async def execute_on_kernel_consolidated(
+        self,
+        kernel_id: str,
+        mode: Literal["code", "notebook", "notebook_cell"],
+        code: Optional[str] = None,
+        path: Optional[str] = None,
+        cell_index: Optional[int] = None,
+        timeout: int = 60
+    ) -> Dict[str, Any]:
+        """
+        🆕 MÉTHODE CONSOLIDÉE - Exécution de code sur un kernel.
+        
+        Remplace: execute_cell, execute_notebook_in_kernel, execute_notebook_cell
+        
+        Args:
+            kernel_id: ID du kernel sur lequel exécuter
+            mode: Type d'exécution
+                - "code": Code Python brut (requiert code)
+                - "notebook": Toutes les cellules d'un notebook (requiert path)
+                - "notebook_cell": Une cellule spécifique (requiert path + cell_index)
+            code: Code Python à exécuter (pour mode="code")
+            path: Chemin du notebook (pour mode="notebook" | "notebook_cell")
+            cell_index: Index de la cellule (pour mode="notebook_cell", 0-based)
+            timeout: Timeout en secondes (défaut: 60)
+            
+        Returns:
+            Dictionary avec les résultats selon le mode
+            
+        Raises:
+            ValueError: Si les paramètres requis manquent selon le mode
+            RuntimeError: Si le kernel n'existe pas ou l'exécution échoue
+        """
+        import time
+        
+        # Validation des paramètres selon le mode
+        if mode == "code":
+            if code is None:
+                raise ValueError("Parameter 'code' is required for mode='code'")
+        elif mode == "notebook":
+            if path is None:
+                raise ValueError("Parameter 'path' is required for mode='notebook'")
+        elif mode == "notebook_cell":
+            if path is None or cell_index is None:
+                raise ValueError("Parameters 'path' and 'cell_index' are required for mode='notebook_cell'")
+        else:
+            raise ValueError(f"Invalid mode: {mode}. Must be 'code', 'notebook', or 'notebook_cell'")
+        
+        # Vérifier que le kernel existe
+        if kernel_id not in self.jupyter_manager._active_kernels:
+            raise ValueError(f"Kernel '{kernel_id}' not found in active kernels")
+        
+        start_time = time.time()
+        
+        # Dispatcher selon le mode
+        try:
+            if mode == "code":
+                # Exécution de code brut
+                result = await self.execute_cell(kernel_id, code, timeout)
+                result["mode"] = "code"
+                result["execution_time"] = time.time() - start_time
+                return result
+                
+            elif mode == "notebook":
+                # Exécution de toutes les cellules du notebook
+                result = await self.execute_notebook_in_kernel(kernel_id, path)
+                result["mode"] = "notebook"
+                result["path"] = path
+                # Renommer les champs pour cohérence avec les specs
+                result["cells_executed"] = result.pop("executed_cells", 0)
+                result["cells_succeeded"] = result.pop("successful_cells", 0)
+                result["cells_failed"] = result.pop("error_cells", 0)
+                result["execution_time"] = result.pop("total_execution_time", 0.0)
+                # Transformer results pour correspondre aux specs
+                if "results" in result:
+                    for cell_result in result["results"]:
+                        cell_result["cell_type"] = "code"  # Toujours code car on exécute que les code cells
+                return result
+                
+            elif mode == "notebook_cell":
+                # Exécution d'une cellule spécifique
+                result = await self.execute_notebook_cell(path, cell_index, kernel_id)
+                result["mode"] = "notebook_cell"
+                result["cell_type"] = "code"  # Déjà vérifié dans execute_notebook_cell
+                return result
+                
+        except Exception as e:
+            logger.error(f"Error in execute_on_kernel_consolidated (mode={mode}): {e}")
+            raise
+
     
     async def get_kernel_status(self, kernel_id: str) -> Dict[str, Any]:
         """

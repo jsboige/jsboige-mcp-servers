@@ -38,9 +38,15 @@ Un serveur MCP (Model Context Protocol) Python pour les opérations Jupyter Note
 - `stop_kernel` - Arrêter un kernel actif
 - `interrupt_kernel` - Interrompre l'exécution d'un kernel
 - `restart_kernel` - Redémarrer un kernel
-- `execute_cell` - Exécuter du code dans un kernel spécifique
-- `execute_notebook` - Exécuter toutes les cellules de code d'un notebook
-- `execute_notebook_cell` - Exécuter une cellule spécifique d'un notebook
+- **`execute_on_kernel`** 🆕 - **Outil consolidé** pour l'exécution sur kernel (remplace `execute_cell`, `execute_notebook`, `execute_notebook_cell`)
+  - Mode `code` : Exécuter du code Python brut
+  - Mode `notebook` : Exécuter toutes les cellules d'un notebook
+  - Mode `notebook_cell` : Exécuter une cellule spécifique d'un notebook
+
+##### 🔄 Outils Kernel Dépréciés (Compatibilité Maintenue)
+- `execute_cell` ⚠️ DEPRECATED - Utiliser `execute_on_kernel(mode="code")` à la place
+- `execute_notebook` ⚠️ DEPRECATED - Utiliser `execute_on_kernel(mode="notebook")` à la place
+- `execute_notebook_cell` ⚠️ DEPRECATED - Utiliser `execute_on_kernel(mode="notebook_cell")` à la place
 
 #### 🛠️ Outils d'Exécution Avancés
 - `execute_notebook_papermill` - Exécuter un notebook avec Papermill (paramètres injectés)
@@ -227,12 +233,124 @@ async def main():
     kernel_result = await client.call_tool("start_kernel", kernel_name="python3")
     kernel_id = kernel_result["kernel_id"]
     
-    # Exécuter le notebook
-    await client.call_tool(
-        "execute_notebook",
-        path="example.ipynb",
-        kernel_id=kernel_id
+    # 🆕 Utiliser execute_on_kernel pour l'exécution
+    # Mode code : exécuter du code Python brut
+    code_result = await client.call_tool(
+        "execute_on_kernel",
+        kernel_id=kernel_id,
+        mode="code",
+        code="x = 5\nprint(x * 2)",
+        timeout=60
     )
+    
+    # Mode notebook : exécuter toutes les cellules d'un notebook
+    notebook_result = await client.call_tool(
+        "execute_on_kernel",
+        kernel_id=kernel_id,
+        mode="notebook",
+        path="example.ipynb",
+        timeout=120
+    )
+    
+    # Mode notebook_cell : exécuter une cellule spécifique
+    cell_result = await client.call_tool(
+        "execute_on_kernel",
+        kernel_id=kernel_id,
+        mode="notebook_cell",
+        path="example.ipynb",
+        cell_index=0,
+        timeout=60
+    )
+```
+
+### Exemples Détaillés : execute_on_kernel
+
+#### Mode "code" - Exécution Code Python Brut
+```python
+# Exécuter du code Python simple
+result = await client.call_tool(
+    "execute_on_kernel",
+    kernel_id="kernel_123",
+    mode="code",
+    code="print('Hello from Jupyter!')",
+    timeout=30
+)
+
+# Résultat
+{
+    "kernel_id": "kernel_123",
+    "mode": "code",
+    "execution_count": 1,
+    "outputs": [
+        {
+            "output_type": "stream",
+            "text": "Hello from Jupyter!\n"
+        }
+    ],
+    "status": "ok",
+    "execution_time": 0.05,
+    "success": True
+}
+```
+
+#### Mode "notebook" - Exécution Notebook Complet
+```python
+# Exécuter toutes les cellules d'un notebook
+result = await client.call_tool(
+    "execute_on_kernel",
+    kernel_id="kernel_123",
+    mode="notebook",
+    path="analysis.ipynb",
+    timeout=300
+)
+
+# Résultat
+{
+    "kernel_id": "kernel_123",
+    "mode": "notebook",
+    "path": "analysis.ipynb",
+    "cells_executed": 10,
+    "cells_succeeded": 9,
+    "cells_failed": 1,
+    "execution_time": 45.2,
+    "results": [
+        {
+            "cell_index": 0,
+            "cell_type": "code",
+            "execution_count": 1,
+            "status": "ok",
+            "outputs": [...]
+        }
+    ],
+    "success": False
+}
+```
+
+#### Mode "notebook_cell" - Exécution Cellule Spécifique
+```python
+# Exécuter uniquement la cellule 5 d'un notebook
+result = await client.call_tool(
+    "execute_on_kernel",
+    kernel_id="kernel_123",
+    mode="notebook_cell",
+    path="analysis.ipynb",
+    cell_index=5,
+    timeout=60
+)
+
+# Résultat
+{
+    "kernel_id": "kernel_123",
+    "mode": "notebook_cell",
+    "path": "analysis.ipynb",
+    "cell_index": 5,
+    "cell_type": "code",
+    "execution_count": 1,
+    "outputs": [...],
+    "status": "ok",
+    "execution_time": 1.2,
+    "success": True
+}
 ```
 
 ## 🔧 Configuration Avancée
