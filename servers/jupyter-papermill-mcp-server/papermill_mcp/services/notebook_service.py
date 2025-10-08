@@ -26,6 +26,7 @@ from nbformat import NotebookNode
 from ..core.papermill_executor import PapermillExecutor
 from ..utils.file_utils import FileUtils
 from ..config import MCPConfig
+from .notebook_service_consolidated import ExecuteNotebookConsolidated
 
 logger = logging.getLogger(__name__)
 
@@ -661,6 +662,53 @@ class NotebookService:
         # This should be set by the MCP client (Roo)
         self.workspace_dir = os.getenv('ROO_WORKSPACE_DIR', 'd:/dev/CoursIA')
         logger.info(f"NotebookService initialized with workspace: {self.workspace_dir}")
+        
+        # Initialize consolidated executor (Phase 3)
+        self._consolidated_executor = ExecuteNotebookConsolidated(self)
+    
+    async def execute_notebook_consolidated(
+        self,
+        input_path: str,
+        output_path: Optional[str] = None,
+        parameters: Optional[Dict[str, Any]] = None,
+        mode: str = "sync",
+        kernel_name: Optional[str] = None,
+        timeout: Optional[int] = None,
+        log_output: bool = True,
+        progress_bar: bool = False,
+        report_mode: str = "summary"
+    ) -> Dict[str, Any]:
+        """
+        🆕 PHASE 3 - Exécution consolidée de notebook avec Papermill.
+        
+        Remplace: execute_notebook_papermill, parameterize_notebook,
+                  execute_notebook_solution_a, execute_notebook_sync, start_notebook_async
+        
+        Args:
+            input_path: Chemin du notebook source
+            output_path: Chemin du notebook de sortie (optionnel, auto-généré si None)
+            parameters: Paramètres à injecter dans le notebook (dict clé-valeur)
+            mode: Mode d'exécution ("sync" | "async")
+            kernel_name: Nom du kernel à utiliser (auto-détecté si None)
+            timeout: Timeout global en secondes (None = illimité)
+            log_output: Activer logging des outputs pendant exécution
+            progress_bar: Afficher barre de progression (mode sync uniquement)
+            report_mode: Niveau de détail du rapport ("full" | "summary" | "minimal")
+            
+        Returns:
+            Dictionary avec résultat selon le mode (voir ExecuteNotebookConsolidated.execute_notebook)
+        """
+        return await self._consolidated_executor.execute_notebook(
+            input_path=input_path,
+            output_path=output_path,
+            parameters=parameters,
+            mode=mode,
+            kernel_name=kernel_name,
+            timeout=timeout,
+            log_output=log_output,
+            progress_bar=progress_bar,
+            report_mode=report_mode
+        )
     
     def resolve_path(self, path: Union[str, Path]) -> str:
         """

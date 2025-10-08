@@ -62,6 +62,104 @@ def register_execution_tools(app: FastMCP) -> None:
     """Register all execution tools with the FastMCP app."""
     
     @app.tool()
+    async def execute_notebook(
+        input_path: str,
+        output_path: Optional[str] = None,
+        parameters: Optional[Dict[str, Any]] = None,
+        mode: str = "sync",
+        kernel_name: Optional[str] = None,
+        timeout: Optional[int] = None,
+        log_output: bool = True,
+        progress_bar: bool = False,
+        report_mode: str = "summary"
+    ) -> Dict[str, Any]:
+        """
+        🆕 OUTIL CONSOLIDÉ - Exécution de notebook avec Papermill.
+        
+        Remplace: execute_notebook_papermill, parameterize_notebook,
+                  execute_notebook_solution_a, execute_notebook_sync, start_notebook_async
+        
+        Args:
+            input_path: Chemin du notebook source
+            output_path: Chemin du notebook de sortie (optionnel, auto-généré si None)
+            parameters: Paramètres à injecter dans le notebook (dict clé-valeur)
+            mode: Mode d'exécution
+                - "sync": Exécution synchrone (bloquant, pour notebooks courts)
+                - "async": Exécution asynchrone (non-bloquant, retourne job_id)
+            kernel_name: Nom du kernel à utiliser (auto-détecté si None)
+            timeout: Timeout global en secondes (None = illimité)
+            log_output: Activer logging des outputs pendant exécution
+            progress_bar: Afficher barre de progression (mode sync uniquement)
+            report_mode: Niveau de détail du rapport
+                - "full": Toutes les cellules avec outputs
+                - "summary": Statistiques + erreurs
+                - "minimal": Status uniquement
+            
+        Returns:
+            Mode "sync":
+            {
+                "status": "success" | "error",
+                "mode": "sync",
+                "input_path": str,
+                "output_path": str,
+                "execution_time": float,
+                "cells_executed": int,
+                "cells_succeeded": int,
+                "cells_failed": int,
+                "parameters_injected": Dict[str, Any],
+                "kernel_name": str,
+                "report": {...},
+                "error": Optional[dict]
+            }
+            
+            Mode "async":
+            {
+                "status": "submitted",
+                "mode": "async",
+                "job_id": str,
+                "input_path": str,
+                "output_path": str,
+                "parameters_injected": Dict[str, Any],
+                "kernel_name": str,
+                "submitted_at": str,
+                "estimated_duration": Optional[float],
+                "message": "..."
+            }
+        """
+        try:
+            logger.info(f"🆕 CONSOLIDATED execute_notebook (mode={mode}): {input_path}")
+            notebook_service, _ = get_services()
+            
+            result = await notebook_service.execute_notebook_consolidated(
+                input_path=input_path,
+                output_path=output_path,
+                parameters=parameters,
+                mode=mode,
+                kernel_name=kernel_name,
+                timeout=timeout,
+                log_output=log_output,
+                progress_bar=progress_bar,
+                report_mode=report_mode
+            )
+            
+            logger.info(f"✅ Execute notebook completed (status={result.get('status')})")
+            return result
+            
+        except Exception as e:
+            logger.error(f"❌ Error in execute_notebook {input_path}: {e}")
+            return {
+                "status": "error",
+                "mode": mode,
+                "error": str(e),
+                "input_path": input_path,
+                "output_path": output_path
+            }
+    
+    # ==================== DEPRECATED WRAPPERS ====================
+    # These tools are kept for backward compatibility but will be removed in future versions.
+    # They now delegate to the consolidated execute_notebook tool.
+    
+    @app.tool()
     async def execute_notebook_papermill(
         input_path: str,
         output_path: Optional[str] = None,
@@ -70,6 +168,8 @@ def register_execution_tools(app: FastMCP) -> None:
         timeout: Optional[int] = 60
     ) -> Dict[str, Any]:
         """
+        ⚠️ DEPRECATED: Use execute_notebook(..., mode="sync") instead.
+        
         Execute un notebook avec Papermill (execution complete avec parametres)
         
         Args:
@@ -81,30 +181,141 @@ def register_execution_tools(app: FastMCP) -> None:
         Returns:
             Resultat de l'execution Papermill
         """
-        try:
-            logger.info(f"Executing notebook with Papermill: {input_path}")
-            notebook_service, _ = get_services()
+        logger.warning("⚠️ execute_notebook_papermill is deprecated, use execute_notebook(mode='sync') instead")
+        return await execute_notebook(
+            input_path=input_path,
+            output_path=output_path,
+            parameters=parameters,
+            mode="sync",
+            kernel_name=kernel_name,
+            timeout=timeout
+        )
+    
+    @app.tool()
+    async def parameterize_notebook(
+        input_path: str,
+        parameters: Dict[str, Any],
+        output_path: Optional[str] = None
+    ) -> Dict[str, Any]:
+        """
+        ⚠️ DEPRECATED: Use execute_notebook(..., parameters=..., mode="sync") instead.
+        
+        Execute un notebook avec des parametres via Papermill API directe
+        
+        Args:
+            input_path: Chemin du notebook d'entree
+            parameters: Parametres a injecter dans le notebook
+            output_path: Chemin du notebook de sortie (optionnel)
             
-            result = await notebook_service.execute_notebook(
-                path=input_path,
-                output_path=output_path,
-                parameters=parameters or {},
-                kernel_name=kernel_name,
-                timeout=timeout
-            )
+        Returns:
+            Resultat de l'execution parametree
+        """
+        logger.warning("⚠️ parameterize_notebook is deprecated, use execute_notebook(parameters=...) instead")
+        return await execute_notebook(
+            input_path=input_path,
+            output_path=output_path,
+            parameters=parameters,
+            mode="sync"
+        )
+    
+    @app.tool()
+    async def execute_notebook_solution_a(
+        input_path: str,
+        output_path: Optional[str] = None,
+        timeout: Optional[int] = 60
+    ) -> Dict[str, Any]:
+        """
+        ⚠️ DEPRECATED: Use execute_notebook(..., mode="sync") instead.
+        
+        SOLUTION A - API Papermill directe avec correction working directory
+        
+        Args:
+            input_path: Chemin du notebook d'entree
+            output_path: Chemin du notebook de sortie (optionnel)
             
-            logger.info(f"Successfully executed notebook with Papermill: {input_path}")
-            # Result is already converted to dict in notebook_service
-            return result
+        Returns:
+            Resultat de l'execution avec timing et diagnostic
+        """
+        logger.warning("⚠️ execute_notebook_solution_a is deprecated, use execute_notebook(mode='sync') instead")
+        return await execute_notebook(
+            input_path=input_path,
+            output_path=output_path,
+            mode="sync",
+            timeout=timeout
+        )
+    
+    @app.tool()
+    async def execute_notebook_sync(
+        notebook_path: str,
+        timeout_seconds: int = 300,
+        output_path: Optional[str] = None,
+        parameters: Optional[Dict[str, Any]] = None
+    ) -> Dict[str, Any]:
+        """
+        ⚠️ DEPRECATED: Use execute_notebook(..., mode="sync", timeout=...) instead.
+        
+        Version synchrone avec timeout configurable pour notebooks courts/moyens.
+        Interface conforme aux spécifications SDDD Mission.
+        
+        Args:
+            notebook_path: Chemin du notebook à exécuter
+            timeout_seconds: Timeout configurable côté serveur (défaut: 300s)
+            output_path: Chemin de sortie optionnel
+            parameters: Paramètres optionnels à injecter
             
-        except Exception as e:
-            logger.error(f"Error executing notebook with Papermill {input_path}: {e}")
-            return {
-                "error": str(e),
-                "input_path": input_path,
-                "output_path": output_path,
-                "success": False
-            }
+        Returns:
+            Dictionary avec résultat d'exécution ou recommandation async
+        """
+        logger.warning("⚠️ execute_notebook_sync is deprecated, use execute_notebook(mode='sync', timeout=...) instead")
+        return await execute_notebook(
+            input_path=notebook_path,
+            output_path=output_path,
+            parameters=parameters,
+            mode="sync",
+            timeout=timeout_seconds
+        )
+    
+    @app.tool()
+    async def start_notebook_async(
+        input_path: str,
+        output_path: Optional[str] = None,
+        parameters: Optional[Dict[str, Any]] = None,
+        working_dir_override: Optional[str] = None,
+        env_overrides: Optional[Dict[str, str]] = None,
+        timeout_seconds: Optional[int] = None,
+        wait_seconds: float = 0
+    ) -> Dict[str, Any]:
+        """
+        ⚠️ DEPRECATED: Use execute_notebook(..., mode="async") instead.
+        
+        Démarre l'exécution asynchrone d'un notebook
+        
+        Args:
+            input_path: Chemin du notebook d'entrée
+            output_path: Chemin du notebook de sortie (optionnel)
+            parameters: Paramètres à injecter (optionnel)
+            working_dir_override: Répertoire de travail personnalisé
+            env_overrides: Variables d'environnement supplémentaires
+            timeout_seconds: Timeout personnalisé (auto-calculé si None)
+            wait_seconds: Attendre la confirmation de démarrage (0 = immédiat)
+            
+        Returns:
+            Dictionary avec job_id, status, started_at, etc.
+        """
+        logger.warning("⚠️ start_notebook_async is deprecated, use execute_notebook(mode='async') instead")
+        
+        # Note: working_dir_override et env_overrides ne sont pas supportés par le nouvel outil consolidé
+        # Ces paramètres étaient rarement utilisés et complexifient l'interface
+        if working_dir_override or env_overrides:
+            logger.warning("⚠️ working_dir_override and env_overrides are not supported in consolidated tool")
+        
+        return await execute_notebook(
+            input_path=input_path,
+            output_path=output_path,
+            parameters=parameters,
+            mode="async",
+            timeout=timeout_seconds
+        )
     
     @app.tool()
     async def list_notebook_files(directory: str = ".", recursive: bool = False) -> Dict[str, Any]:
@@ -857,4 +1068,4 @@ def register_execution_tools(app: FastMCP) -> None:
         else:
             return "long_notebooks_consider_async"
     
-    logger.info("Registered execution tools (19 total)")
+    logger.info("Registered execution tools: 1 consolidated (execute_notebook) + 5 deprecated wrappers + 13 others = 19 total")

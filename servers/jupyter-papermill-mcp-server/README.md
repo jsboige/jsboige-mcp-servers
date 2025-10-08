@@ -48,8 +48,22 @@ Un serveur MCP (Model Context Protocol) Python pour les opérations Jupyter Note
 - `execute_notebook` ⚠️ DEPRECATED - Utiliser `execute_on_kernel(mode="notebook")` à la place
 - `execute_notebook_cell` ⚠️ DEPRECATED - Utiliser `execute_on_kernel(mode="notebook_cell")` à la place
 
-#### 🛠️ Outils d'Exécution Avancés
-- `execute_notebook_papermill` - Exécuter un notebook avec Papermill (paramètres injectés)
+#### 🛠️ Outils d'Exécution Papermill
+- **`execute_notebook`** 🆕 - **Outil consolidé** pour l'exécution Papermill (remplace `execute_notebook_papermill`, `parameterize_notebook`, `execute_notebook_solution_a`, `execute_notebook_sync`, `start_notebook_async`)
+  - Mode `sync` : Exécution synchrone bloquante avec résultat immédiat
+  - Mode `async` : Exécution asynchrone non-bloquante avec job_id
+  - Report modes : `minimal`, `summary`, `full`
+  - Auto-génération output_path avec timestamp
+  - Injection de paramètres flexible
+
+##### 🔄 Outils Papermill Dépréciés (Compatibilité Maintenue)
+- `execute_notebook_papermill` ⚠️ DEPRECATED - Utiliser `execute_notebook(mode="sync")` à la place
+- `parameterize_notebook` ⚠️ DEPRECATED - Utiliser `execute_notebook(parameters=..., mode="sync")` à la place
+- `execute_notebook_solution_a` ⚠️ DEPRECATED - Utiliser `execute_notebook(mode="sync")` à la place
+- `execute_notebook_sync` ⚠️ DEPRECATED - Utiliser `execute_notebook(mode="sync")` à la place
+- `start_notebook_async` ⚠️ DEPRECATED - Utiliser `execute_notebook(mode="async")` à la place
+
+#### 🗂️ Outils Utilitaires
 - `list_notebook_files` - Lister les fichiers notebook dans un répertoire
 - `get_notebook_info` - Récupérer les métadonnées détaillées d'un notebook
 - `get_kernel_status` - Récupérer le statut détaillé d'un kernel
@@ -261,6 +275,28 @@ async def main():
         cell_index=0,
         timeout=60
     )
+    
+    # 🆕 Utiliser execute_notebook pour l'exécution Papermill
+    # Mode sync : exécution bloquante avec résultat immédiat
+    sync_result = await client.call_tool(
+        "execute_notebook",
+        input_path="analysis.ipynb",
+        output_path="analysis_output.ipynb",
+        parameters={"date": "2025-01-08", "threshold": 0.95},
+        mode="sync",
+        report_mode="summary",
+        timeout=300
+    )
+    
+    # Mode async : exécution non-bloquante avec job_id
+    async_result = await client.call_tool(
+        "execute_notebook",
+        input_path="long_analysis.ipynb",
+        mode="async",
+        parameters={"dataset": "large"}
+    )
+    job_id = async_result["job_id"]
+    # Suivi via manage_async_job (Phase 4)
 ```
 
 ### Exemples Détaillés : execute_on_kernel
@@ -336,6 +372,144 @@ result = await client.call_tool(
     path="analysis.ipynb",
     cell_index=5,
     timeout=60
+### Exemples Détaillés : execute_notebook (Papermill)
+
+#### Mode "sync" - Exécution Synchrone avec Résultat Immédiat
+```python
+# Exécution synchrone basique
+result = await client.call_tool(
+    "execute_notebook",
+    input_path="analysis.ipynb",
+    mode="sync",
+    timeout=300
+)
+
+# Résultat
+{
+    "status": "success",
+    "mode": "sync",
+    "input_path": "analysis.ipynb",
+    "output_path": "analysis_output_20250108_213000.ipynb",
+    "execution_time": 45.2,
+    "cells_executed": 10,
+    "cells_succeeded": 10,
+    "cells_failed": 0,
+    "parameters_injected": {},
+    "kernel_name": "python3",
+    "report": {
+        "mode": "summary",
+        "success_rate": 1.0
+    }
+}
+```
+
+#### Mode "sync" avec Paramètres - Injection de Paramètres
+```python
+# Exécution avec injection de paramètres
+result = await client.call_tool(
+    "execute_notebook",
+    input_path="analysis.ipynb",
+    output_path="output/analysis_2025.ipynb",
+    parameters={
+        "date": "2025-01-08",
+        "threshold": 0.95,
+        "iterations": 1000
+    },
+    mode="sync",
+    report_mode="full",
+    timeout=600
+)
+
+# Résultat avec report détaillé
+{
+    "status": "success",
+    "mode": "sync",
+    "parameters_injected": {
+        "date": "2025-01-08",
+        "threshold": 0.95,
+        "iterations": 1000
+    },
+    "report": {
+        "mode": "full",
+        "cells_details": [
+            {
+                "index": 0,
+                "execution_count": 1,
+                "source": "# Parameters cell",
+                "outputs": []
+            },
+            {
+                "index": 1,
+                "execution_count": 2,
+                "source": "print(f'Date: {date}')",
+                "outputs": [
+                    {"output_type": "stream", "text": "Date: 2025-01-08\n"}
+                ]
+            }
+        ]
+    }
+}
+```
+
+#### Mode "async" - Exécution Asynchrone Non-Bloquante
+```python
+# Lancer exécution asynchrone pour notebooks longs (>5min)
+result = await client.call_tool(
+    "execute_notebook",
+    input_path="heavy_computation.ipynb",
+    parameters={"dataset_size": 1000000},
+    mode="async",
+    timeout=3600
+)
+
+# Résultat immédiat avec job_id
+{
+    "status": "submitted",
+    "mode": "async",
+    "job_id": "job_abc123",
+    "input_path": "heavy_computation.ipynb",
+    "output_path": "heavy_computation_output_20250108_213000.ipynb",
+    "parameters_injected": {"dataset_size": 1000000},
+    "kernel_name": "python3",
+    "submitted_at": "2025-01-08T21:30:00Z",
+    "estimated_duration": 60.0,
+    "message": "Job submitted successfully. Use manage_async_job(job_id='job_abc123') to check status."
+}
+
+# Suivi du job (Phase 4 - manage_async_job)
+# status_result = await client.call_tool("manage_async_job", job_id="job_abc123", action="status")
+```
+
+#### Report Modes - Niveaux de Détail
+```python
+# Report minimal : status uniquement (rapide)
+result = await client.call_tool(
+    "execute_notebook",
+    input_path="quick_analysis.ipynb",
+    mode="sync",
+    report_mode="minimal"
+)
+# report = {"mode": "minimal", "success": True, "cells_executed": 5}
+
+# Report summary : statistiques + erreurs (défaut, équilibré)
+result = await client.call_tool(
+    "execute_notebook",
+    input_path="analysis.ipynb",
+    mode="sync",
+    report_mode="summary"
+)
+# report = {"mode": "summary", "cells_executed": 10, "success_rate": 0.9, "errors": [...]}
+
+# Report full : détails complets (détaillé)
+result = await client.call_tool(
+    "execute_notebook",
+    input_path="detailed_analysis.ipynb",
+    mode="sync",
+    report_mode="full"
+)
+# report = {"mode": "full", "cells_details": [...], "timings": [...]}
+```
+
 )
 
 # Résultat
