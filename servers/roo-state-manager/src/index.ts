@@ -1009,11 +1009,50 @@ class RooStateManagerServer {
                     const conversationId = convDir.name;
                     const taskPath = path.join(tasksDir, conversationId);
                     const metadataPath = path.join(taskPath, 'task_metadata.json');
+                    const apiHistoryPath = path.join(taskPath, 'api_conversation_history.json');
+                    const uiMessagesPath = path.join(taskPath, 'ui_messages.json');
                     const skeletonPath = path.join(skeletonDir, `${conversationId}.json`);
 
                     try {
-                        // Vérifier que le fichier metadata existe (indique une tâche valide)
-                        const metadataStat = await fs.stat(metadataPath);
+                        // 🔍 CORRECTION BUG: Valider la tâche si elle a au moins un fichier de conversation
+                        // (pas seulement task_metadata.json qui peut manquer pour des tâches anciennes/récentes)
+                        let isValidTask = false;
+                        let metadataStat: any = null;
+                        let validationSource = '';
+                        
+                        // Tentative 1: Vérifier task_metadata.json (préféré)
+                        try {
+                            metadataStat = await fs.stat(metadataPath);
+                            isValidTask = true;
+                            validationSource = 'task_metadata.json';
+                        } catch {
+                            // Tentative 2: Vérifier api_conversation_history.json
+                            try {
+                                const apiStat = await fs.stat(apiHistoryPath);
+                                metadataStat = apiStat; // Utiliser la date du fichier API comme référence
+                                isValidTask = true;
+                                validationSource = 'api_conversation_history.json';
+                            } catch {
+                                // Tentative 3: Vérifier ui_messages.json
+                                try {
+                                    const uiStat = await fs.stat(uiMessagesPath);
+                                    metadataStat = uiStat; // Utiliser la date du fichier UI comme référence
+                                    isValidTask = true;
+                                    validationSource = 'ui_messages.json';
+                                } catch {
+                                    // Aucun fichier valide trouvé
+                                    console.warn(`⚠️ INVALID: Task ${conversationId} has no valid conversation files`);
+                                }
+                            }
+                        }
+                        
+                        if (!isValidTask) {
+                            console.log(`🔍 SKIP INVALID: ${conversationId} - no metadata/api/ui files found`);
+                            skeletonsSkipped++;
+                            continue;
+                        }
+                        
+                        console.log(`✅ VALID: ${conversationId} (validated via ${validationSource})`);
                         
                         // 🎯 FILTRE WORKSPACE: Utiliser la même méthode que get_storage_stats pour cohérence
                         if (workspace_filter) {
@@ -1092,8 +1131,16 @@ class RooStateManagerServer {
                         } else {
                         }
                         
-                    } catch (error) {
-                        console.error(`Could not process task ${conversationId}:`, error);
+                    } catch (error: any) {
+                        // 🔍 AMÉLIORATION: Logging détaillé pour comprendre pourquoi une tâche est skipped
+                        const errorMsg = error?.message || String(error);
+                        if (errorMsg.includes('ENOENT')) {
+                            console.warn(`⚠️ SKIP: Task ${conversationId} - File not found (${errorMsg})`);
+                        } else if (errorMsg.includes('permission')) {
+                            console.warn(`⚠️ SKIP: Task ${conversationId} - Permission denied`);
+                        } else {
+                            console.error(`❌ ERROR: Task ${conversationId} - ${errorMsg}`);
+                        }
                         skeletonsSkipped++;
                     }
                 }
