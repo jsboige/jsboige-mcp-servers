@@ -18,11 +18,19 @@ Un serveur MCP (Model Context Protocol) Python pour les opérations Jupyter Note
   - Mode `range` : Lire une plage de cellules
   - Mode `list` : Lister les cellules avec preview
   - Mode `all` : Récupérer toutes les cellules complètes
+- **`inspect_notebook`** 🆕 - **Outil consolidé** pour l'inspection et la validation (remplace `get_notebook_metadata`, `inspect_notebook_outputs`, `validate_notebook`)
+  - Mode `metadata` : Métadonnées du notebook (kernel, language, auteur)
+  - Mode `outputs` : Analyse des sorties de toutes les cellules code
+  - Mode `validate` : Validation nbformat + rapport de problèmes
+  - Mode `full` : Combinaison de metadata + outputs + validate
 
 ##### 🔄 Outils Dépréciés (Compatibilité Maintenue)
 - `read_cell` ⚠️ DEPRECATED - Utiliser `read_cells(mode="single")` à la place
 - `read_cells_range` ⚠️ DEPRECATED - Utiliser `read_cells(mode="range")` à la place
 - `list_notebook_cells` ⚠️ DEPRECATED - Utiliser `read_cells(mode="list")` à la place
+- `get_notebook_metadata` ⚠️ DEPRECATED - Utiliser `inspect_notebook(mode="metadata")` à la place
+- `inspect_notebook_outputs` ⚠️ DEPRECATED - Utiliser `inspect_notebook(mode="outputs")` à la place
+- `validate_notebook` ⚠️ DEPRECATED - Utiliser `inspect_notebook(mode="validate")` à la place
 
 #### ⚙️ Outils Kernel
 - `list_kernels` - Lister les kernels disponibles et actifs
