@@ -676,13 +676,14 @@ class NotebookService:
         
         # If already absolute, return as-is
         if os.path.isabs(path_str):
+            logger.info(f"Path resolution (absolute): {path_str}")
             return path_str
         
         # If relative, resolve against workspace directory
         workspace_path = os.path.join(self.workspace_dir, path_str)
         absolute_path = os.path.abspath(workspace_path)
         
-        logger.debug(f"Path resolution: {path_str} -> {absolute_path}")
+        logger.info(f"Path resolution: {path_str} -> {absolute_path} (workspace: {self.workspace_dir})")
         return absolute_path
     
     async def read_notebook(self, path: Union[str, Path]) -> Dict[str, Any]:
@@ -763,8 +764,9 @@ class NotebookService:
             ValueError: If notebook content is invalid
         """
         try:
-            path = Path(path)
-            logger.info(f"Writing notebook: {path}")
+            # Resolve path against workspace
+            resolved_path = Path(self.resolve_path(path))
+            logger.info(f"Writing notebook: {path} -> {resolved_path}")
             
             # Convert dictionary to NotebookNode
             from nbformat.v4 import new_notebook
@@ -799,7 +801,7 @@ class NotebookService:
                 notebook.cells.append(cell)
             
             # Write notebook using FileUtils
-            written_path = FileUtils.write_notebook(notebook, path)
+            written_path = FileUtils.write_notebook(notebook, resolved_path)
             
             # Get file stats
             stat = written_path.stat()
@@ -830,14 +832,15 @@ class NotebookService:
             Dictionary with creation result
         """
         try:
-            path = Path(path)
-            logger.info(f"Creating new notebook: {path}")
+            # Resolve path against workspace
+            resolved_path = Path(self.resolve_path(path))
+            logger.info(f"Creating new notebook: {path} -> {resolved_path}")
             
             # Create empty notebook using FileUtils
             notebook = FileUtils.create_empty_notebook(kernel)
             
             # Write to file
-            written_path = FileUtils.write_notebook(notebook, path)
+            written_path = FileUtils.write_notebook(notebook, resolved_path)
             
             # Get file stats
             stat = written_path.stat()
@@ -873,7 +876,8 @@ class NotebookService:
             Dictionary with operation result
         """
         try:
-            path = Path(path)
+            resolved_path = self.resolve_path(path)
+            path = Path(resolved_path)
             logger.info(f"Adding {cell_type} cell to notebook: {path}")
             
             # Read existing notebook
@@ -911,7 +915,8 @@ class NotebookService:
             Dictionary with operation result
         """
         try:
-            path = Path(path)
+            resolved_path = self.resolve_path(path)
+            path = Path(resolved_path)
             logger.info(f"Removing cell {index} from notebook: {path}")
             
             # Read existing notebook
@@ -956,7 +961,8 @@ class NotebookService:
             Dictionary with operation result
         """
         try:
-            path = Path(path)
+            resolved_path = self.resolve_path(path)
+            path = Path(resolved_path)
             logger.info(f"Updating cell {index} in notebook: {path}")
             
             # Read existing notebook
@@ -1781,39 +1787,31 @@ class NotebookService:
                 "parameters_count": len(parameters)
             }
             
-            # Working directory fix for .NET NuGet packages
+            # CORRECTION BUG CRITIQUE : Éviter os.chdir() - Les executors gèrent leur working directory
             notebook_dir = input_path.parent.absolute()
-            original_cwd = os.getcwd()
             
-            try:
-                # Change to notebook directory
-                os.chdir(notebook_dir)
-                
-                start_time = datetime.datetime.now()
-                
-                # Execute with PapermillExecutor
-                result = await self.papermill_executor.execute_notebook(
-                    input_path=input_path,
-                    output_path=output_path,
-                    parameters=parameters,
-                    kernel=None
-                )
-                
-                end_time = datetime.datetime.now()
-                execution_time = (end_time - start_time).total_seconds()
-                
-                # Enhance result
-                result.update({
-                    "parameters": parameters,
-                    "method": "parameterize_notebook",
-                    "execution_time_seconds": execution_time,
-                    "diagnostic": diagnostic_info,
-                    "timestamp": end_time.isoformat()
-                })
-                
-            finally:
-                # Always restore original directory
-                os.chdir(original_cwd)
+            start_time = datetime.datetime.now()
+            
+            # Execute with PapermillExecutor (il gère son propre working directory)
+            result = await self.papermill_executor.execute_notebook(
+                input_path=input_path,
+                output_path=output_path,
+                parameters=parameters,
+                kernel=None
+            )
+            
+            end_time = datetime.datetime.now()
+            execution_time = (end_time - start_time).total_seconds()
+            
+            # Enhance result
+            result.update({
+                "parameters": parameters,
+                "method": "parameterize_notebook_fixed",
+                "execution_time_seconds": execution_time,
+                "diagnostic": diagnostic_info,
+                "timestamp": end_time.isoformat(),
+                "notebook_dir": str(notebook_dir)
+            })
             
             logger.info(f"Successfully executed parameterized notebook: {result.get('output_path')}")
             return result
@@ -1876,122 +1874,113 @@ class NotebookService:
             if not shutil.which("conda"):
                 raise EnvironmentError("conda command not found in PATH")
             
-            # Working directory setup
+            # CORRECTION BUG CRITIQUE : Utiliser seulement cwd parameter (redondance os.chdir dangereuse supprimée)
             notebook_dir = resolved_input_path.parent.absolute()
-            original_cwd = os.getcwd()
             
-            try:
-                # Change to notebook directory
-                os.chdir(notebook_dir)
+            # Construire la commande conda run avec papermill
+            cmd = [
+                "conda", "run", "-n", "mcp-jupyter-py310",
+                "python", "-m", "papermill",
+                str(resolved_input_path.name),  # Utiliser nom relatif dans le répertoire
+                str(output_path.name if output_path.parent == notebook_dir else output_path),
+                "--progress-bar",
+                "--log-output",
+                "--no-request-save-on-cell-execute"
+            ]
+            
+            logger.info(f"Executing command: {' '.join(cmd)}")
+            logger.info(f"Working directory: {notebook_dir}")
+            
+            # Construire l'environnement complet
+            env = self._build_complete_environment()
+            
+            # Diagnostic pré-exécution
+            diagnostic_info = {
+                "method": "execute_notebook_subprocess_fixed",
+                "command": " ".join(cmd),
+                "cwd": str(notebook_dir),
+                "timeout_configured": timeout,
+                "env_vars_count": len(env),
+                "conda_env": env.get("CONDA_DEFAULT_ENV", "unknown"),
+                "python_path": env.get("PYTHONPATH", "not_set"),
+                "fix_applied": "removed_dangerous_os_chdir"
+            }
+            
+            # Execute subprocess with comprehensive environment (cwd parameter SEULEMENT)
+            exec_start = datetime.datetime.now()
+            
+            result = subprocess.run(
+                cmd,
+                capture_output=capture_output,
+                text=True,
+                check=False,
+                timeout=timeout,
+                env=env,
+                cwd=notebook_dir  # Working directory sécurisé - PAS de os.chdir()
+            )
+            
+            exec_end = datetime.datetime.now()
+            execution_time = (exec_end - exec_start).total_seconds()
+            
+            # Check if execution was successful
+            success = result.returncode == 0 and output_path.exists()
+            
+            # Comprehensive result dictionary
+            result_dict = {
+                "success": success,
+                "method": "execute_notebook_subprocess_fixed",
+                "input_path": str(resolved_input_path),
+                "output_path": str(output_path),
+                "execution_time_seconds": execution_time,
+                "timeout_used": timeout,
+                "returncode": result.returncode,
+                "timestamp": exec_end.isoformat(),
+                "diagnostic": diagnostic_info
+            }
+            
+            # Add output analysis
+            if output_path.exists():
+                stat = output_path.stat()
+                result_dict["output_file_size"] = stat.st_size
+                result_dict["output_created"] = True
                 
-                # Construire la commande conda run avec papermill
-                cmd = [
-                    "conda", "run", "-n", "mcp-jupyter-py310",
-                    "python", "-m", "papermill",
-                    str(resolved_input_path.name),  # Utiliser nom relatif dans le répertoire
-                    str(output_path.name if output_path.parent == notebook_dir else output_path),
-                    "--progress-bar",
-                    "--log-output",
-                    "--no-request-save-on-cell-execute"
-                ]
-                
-                logger.info(f"Executing command: {' '.join(cmd)}")
-                logger.info(f"Working directory: {notebook_dir}")
-                
-                # Construire l'environnement complet
-                env = self._build_complete_environment()
-                
-                # Diagnostic pré-exécution
-                diagnostic_info = {
-                    "method": "execute_notebook_subprocess",
-                    "command": " ".join(cmd),
-                    "cwd": str(notebook_dir),
-                    "original_cwd": original_cwd,
-                    "timeout_configured": timeout,
-                    "env_vars_count": len(env),
-                    "conda_env": env.get("CONDA_DEFAULT_ENV", "unknown"),
-                    "python_path": env.get("PYTHONPATH", "not_set")
-                }
-                
-                # Execute subprocess with comprehensive environment
-                exec_start = datetime.datetime.now()
-                
-                result = subprocess.run(
-                    cmd,
-                    capture_output=capture_output,
-                    text=True,
-                    check=False,
-                    timeout=timeout,
-                    env=env,
-                    cwd=notebook_dir
-                )
-                
-                exec_end = datetime.datetime.now()
-                execution_time = (exec_end - exec_start).total_seconds()
-                
-                # Check if execution was successful
-                success = result.returncode == 0 and output_path.exists()
-                
-                # Comprehensive result dictionary
-                result_dict = {
-                    "success": success,
-                    "method": "execute_notebook_subprocess",
-                    "input_path": str(resolved_input_path),
-                    "output_path": str(output_path),
-                    "execution_time_seconds": execution_time,
-                    "timeout_used": timeout,
-                    "returncode": result.returncode,
-                    "timestamp": exec_end.isoformat(),
-                    "diagnostic": diagnostic_info
-                }
-                
-                # Add output analysis
-                if output_path.exists():
-                    stat = output_path.stat()
-                    result_dict["output_file_size"] = stat.st_size
-                    result_dict["output_created"] = True
-                    
-                    # Quick analysis of output notebook
-                    try:
-                        with open(output_path, 'r', encoding='utf-8') as f:
-                            output_content = f.read()
-                        result_dict["output_analysis"] = {
-                            "content_length": len(output_content),
-                            "contains_errors": '"output_type": "error"' in output_content,
-                            "execution_count_found": '"execution_count":' in output_content
-                        }
-                    except Exception as analysis_error:
-                        result_dict["output_analysis"] = {"error": str(analysis_error)}
-                else:
-                    result_dict["output_created"] = False
-                    if success:
-                        success = False
-                        result_dict["success"] = False
-                        result_dict["error"] = "Output notebook file not created despite successful returncode"
-                
-                # Add captured output if requested
-                if capture_output:
-                    if result.stdout:
-                        result_dict["stdout"] = result.stdout
-                        result_dict["stdout_length"] = len(result.stdout)
-                    if result.stderr:
-                        result_dict["stderr"] = result.stderr
-                        result_dict["stderr_length"] = len(result.stderr)
-                
-                # Log results
+                # Quick analysis of output notebook
+                try:
+                    with open(output_path, 'r', encoding='utf-8') as f:
+                        output_content = f.read()
+                    result_dict["output_analysis"] = {
+                        "content_length": len(output_content),
+                        "contains_errors": '"output_type": "error"' in output_content,
+                        "execution_count_found": '"execution_count":' in output_content
+                    }
+                except Exception as analysis_error:
+                    result_dict["output_analysis"] = {"error": str(analysis_error)}
+            else:
+                result_dict["output_created"] = False
                 if success:
-                    logger.info(f"✅ Notebook executed successfully in {execution_time:.2f}s")
-                    logger.info(f"📁 Output: {output_path} ({result_dict.get('output_file_size', 0)} bytes)")
-                else:
-                    logger.error(f"❌ Notebook execution failed (returncode: {result.returncode})")
-                    if result.stderr:
-                        logger.error(f"Error output: {result.stderr[:500]}...")
-                
-                return result_dict
-                
-            finally:
-                # Always restore original directory
-                os.chdir(original_cwd)
+                    success = False
+                    result_dict["success"] = False
+                    result_dict["error"] = "Output notebook file not created despite successful returncode"
+            
+            # Add captured output if requested
+            if capture_output:
+                if result.stdout:
+                    result_dict["stdout"] = result.stdout
+                    result_dict["stdout_length"] = len(result.stdout)
+                if result.stderr:
+                    result_dict["stderr"] = result.stderr
+                    result_dict["stderr_length"] = len(result.stderr)
+            
+            # Log results
+            if success:
+                logger.info(f"✅ Notebook executed successfully in {execution_time:.2f}s")
+                logger.info(f"📁 Output: {output_path} ({result_dict.get('output_file_size', 0)} bytes)")
+            else:
+                logger.error(f"❌ Notebook execution failed (returncode: {result.returncode})")
+                if result.stderr:
+                    logger.error(f"Error output: {result.stderr[:500]}...")
+            
+            return result_dict
             
         except subprocess.TimeoutExpired as e:
             exec_time = (datetime.datetime.now() - start_time).total_seconds()

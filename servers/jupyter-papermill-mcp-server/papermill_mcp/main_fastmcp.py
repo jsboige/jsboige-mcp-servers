@@ -173,14 +173,29 @@ def execute_notebook_solution_a(
             "python_env": sys.executable
         }
         
-        # CORRECTION WORKING DIRECTORY - Solution basee sur papermill_executor.py
+        # CORRECTION BUG CRITIQUE : Context manager robuste pour API Papermill
         notebook_dir = os.path.dirname(os.path.abspath(notebook_path))
-        original_cwd = os.getcwd()
         
-        try:
-            # Changer vers le repertoire du notebook pour resoudre les chemins relatifs NuGet
-            os.chdir(notebook_dir)
-            
+        # Context manager robuste pour working directory (API Papermill nécessite os.chdir)
+        from contextlib import contextmanager
+        
+        @contextmanager
+        def safe_working_directory(target_dir):
+            """Context manager thread-safe pour working directory"""
+            original_cwd = os.getcwd()
+            try:
+                os.chdir(target_dir)
+                yield target_dir
+            except Exception as e:
+                print(f"❌ Failed to change working directory: {e}")
+                raise
+            finally:
+                try:
+                    os.chdir(original_cwd)
+                except Exception as restore_error:
+                    print(f"⚠️ CRITICAL: Failed to restore working directory: {restore_error}")
+        
+        with safe_working_directory(notebook_dir):
             # Execution directe avec l'API Papermill
             start_time = datetime.datetime.now()
             
@@ -193,9 +208,6 @@ def execute_notebook_solution_a(
                 cwd=None,
                 store_widget_state=True  # Support ipywidgets for interactive notebooks
             )
-        finally:
-            # Restaurer le working directory original
-            os.chdir(original_cwd)
         
         end_time = datetime.datetime.now()
         execution_time = (end_time - start_time).total_seconds()
@@ -246,29 +258,24 @@ def execute_notebook(
         if not output_path:
             output_path = notebook_path.replace('.ipynb', '_executed.ipynb')
         
-        # Changement du repertoire de travail vers le repertoire du notebook
+        # CORRECTION BUG CRITIQUE : Utiliser cwd parameter au lieu de os.chdir()
         notebook_dir = os.path.dirname(os.path.abspath(notebook_path))
-        original_cwd = os.getcwd()
         
-        try:
-            os.chdir(notebook_dir)
-            
-            cmd = [
-                "conda", "run", "-n", "mcp-jupyter-py310",
-                "python", "-m", "papermill",
-                notebook_path,
-                output_path,
-                "--progress-bar"
-            ]
-            
-            result = subprocess.run(
-                cmd,
-                capture_output=True,
-                text=True,
-                check=False
-            )
-        finally:
-            os.chdir(original_cwd)
+        cmd = [
+            "conda", "run", "-n", "mcp-jupyter-py310",
+            "python", "-m", "papermill",
+            os.path.basename(notebook_path),  # Nom relatif dans le working directory
+            os.path.basename(output_path) if os.path.dirname(output_path) == notebook_dir else output_path,
+            "--progress-bar"
+        ]
+        
+        result = subprocess.run(
+            cmd,
+            cwd=notebook_dir,  # Working directory sécurisé
+            capture_output=True,
+            text=True,
+            check=False
+        )
             
         # Traitement du resultat...
         return {
@@ -278,20 +285,16 @@ def execute_notebook(
             "stdout": result.stdout,
             "stderr": result.stderr if result.stderr else None,
             "return_code": result.returncode,
-            "method": "papermill_direct_api"
+            "method": "papermill_subprocess_fixed"
         }
         
     except Exception as e:
         return {
-            "error": f"Erreur lors de l'execution : {str(e)}",
-            "success": False
-        }
-    except Exception as e:
-        return {
             "status": "error",
-            "error": f"Erreur: {str(e)}",
+            "error": f"Erreur lors de l'execution: {str(e)}",
             "error_type": type(e).__name__,
-            "method": "papermill_direct_api"
+            "method": "papermill_subprocess_fixed",
+            "success": False
         }
 
 @mcp.tool()
@@ -334,14 +337,29 @@ def parameterize_notebook(
             "parameters_count": len(params)
         }
         
-        # CORRECTION WORKING DIRECTORY - Solution basee sur papermill_executor.py
+        # CORRECTION BUG CRITIQUE : Context manager robuste pour API Papermill
         notebook_dir = os.path.dirname(os.path.abspath(notebook_path))
-        original_cwd = os.getcwd()
         
-        try:
-            # Changer vers le repertoire du notebook pour resoudre les chemins relatifs NuGet
-            os.chdir(notebook_dir)
-            
+        # Context manager robuste pour working directory (API Papermill nécessite os.chdir)
+        from contextlib import contextmanager
+        
+        @contextmanager
+        def safe_working_directory(target_dir):
+            """Context manager thread-safe pour working directory"""
+            original_cwd = os.getcwd()
+            try:
+                os.chdir(target_dir)
+                yield target_dir
+            except Exception as e:
+                print(f"❌ Failed to change working directory: {e}")
+                raise
+            finally:
+                try:
+                    os.chdir(original_cwd)
+                except Exception as restore_error:
+                    print(f"⚠️ CRITICAL: Failed to restore working directory: {restore_error}")
+        
+        with safe_working_directory(notebook_dir):
             # Execution directe avec Papermill Python API et injection parametres
             start_time = datetime.datetime.now()
             
@@ -355,9 +373,6 @@ def parameterize_notebook(
                 cwd=None,
                 store_widget_state=True  # Support ipywidgets for interactive notebooks
             )
-        finally:
-            # Restaurer le working directory original
-            os.chdir(original_cwd)
         
         end_time = datetime.datetime.now()
         execution_time = (end_time - start_time).total_seconds()

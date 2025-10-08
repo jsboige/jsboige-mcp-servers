@@ -321,12 +321,10 @@ class PapermillExecutor:
         """
         
         try:
-            # Working Directory comme papermill-coursia
+            # CORRECTION BUG CRITIQUE : Context manager robuste pour working directory
             notebook_dir = os.path.dirname(os.path.abspath(input_path))
-            original_cwd = os.getcwd()
-            os.chdir(notebook_dir)
             
-            self.logger.info(f"? Working directory: {notebook_dir}")
+            self.logger.info(f"🔧 Working directory: {notebook_dir}")
             
             # Configure Papermill parameters
             pm_kwargs = {
@@ -343,8 +341,29 @@ class PapermillExecutor:
             # Execute with timing + INJECTION D'ENVIRONNEMENT .NET
             start_exec = time.time()
             
-            try:
-                # SOLUTION D?FINITIVE : Injection d'environnement .NET pour kernel
+            # Context manager robuste pour working directory (API Papermill nécessite os.chdir)
+            from contextlib import contextmanager
+            
+            @contextmanager
+            def safe_working_directory(target_dir):
+                """Context manager thread-safe pour working directory"""
+                original_cwd = os.getcwd()
+                try:
+                    os.chdir(target_dir)
+                    self.logger.debug(f"✅ Switched to working directory: {target_dir}")
+                    yield target_dir
+                except Exception as e:
+                    self.logger.error(f"❌ Failed to change working directory: {e}")
+                    raise
+                finally:
+                    try:
+                        os.chdir(original_cwd)
+                        self.logger.debug(f"🔄 Restored working directory: {original_cwd}")
+                    except Exception as restore_error:
+                        self.logger.error(f"⚠️ CRITICAL: Failed to restore working directory: {restore_error}")
+            
+            with safe_working_directory(notebook_dir):
+                # SOLUTION DÉFINITIVE : Injection d'environnement .NET pour kernel
                 # Resout l'erreur "Value cannot be null. (Parameter 'path1')"
                 with inject_dotnet_environment() as injected_vars:
                     if injected_vars:
@@ -359,9 +378,6 @@ class PapermillExecutor:
                     
                     # Execution Papermill avec environnement .NET enrichi
                     result_nb = pm.execute_notebook(**pm_kwargs)
-            finally:
-                # Restauration working directory original
-                os.chdir(original_cwd)
             
             end_exec = time.time()
             
