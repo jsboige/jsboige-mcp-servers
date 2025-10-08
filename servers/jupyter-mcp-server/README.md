@@ -1,32 +1,124 @@
 # Jupyter MCP Server
 
-Ce serveur MCP fournit une interface pour interagir avec des serveurs Jupyter.
+Ce serveur MCP fournit une interface complète pour interagir avec des serveurs Jupyter et gérer les environnements Conda.
 
-## Tools
+## Fonctionnalités
 
-### `start_jupyter_server`
+- 📓 Gestion de notebooks Jupyter (lecture, écriture, exécution)
+- 🔧 Gestion de kernels (démarrage, arrêt, interruption, redémarrage)
+- ⚙️ Exécution de cellules et de notebooks complets
+- 🖥️ Gestion du serveur Jupyter Lab
+- 🐍 **Nouveau** : Gestion complète des environnements Conda
 
-Démarre un serveur Jupyter Lab en tant que processus enfant détaché.
+## Installation
 
-**Paramètres:**
+Voir [INSTALLATION.md](docs/INSTALLATION.md) pour les instructions détaillées d'installation.
 
-*   `envPath` (string, requis): Le chemin complet vers l'exécutable `jupyter-lab.exe` dans l'environnement souhaité (par exemple, un environnement Conda).
+## Outils disponibles
 
-**Retourne:**
+### Gestion de notebooks
 
-*   `pid` (number): L'ID du processus du serveur Jupyter démarré.
-*   `status` (string): 'started' si le serveur a démarré avec succès, 'error' sinon.
-*   `message` (string, optionnel): Un message d'erreur en cas d'échec.
+- `read_notebook` - Lire un notebook Jupyter
+- `write_notebook` - Écrire un notebook Jupyter
+- `create_notebook` - Créer un nouveau notebook vide
+- `add_cell` - Ajouter une cellule à un notebook
+- `remove_cell` - Supprimer une cellule d'un notebook
+- `update_cell` - Modifier une cellule d'un notebook
 
-**Exemple d'utilisation:**
+### Gestion de kernels
 
-```json
-{
-  "tool": "start_jupyter_server",
-  "arguments": {
-    "envPath": "C:\\Users\\jsboi\\.conda\\envs\\mcp-jupyter\\Scripts\\jupyter-lab.exe"
+- `list_kernels` - Lister les kernels disponibles et actifs
+- `start_kernel` - Démarrer un nouveau kernel
+- `stop_kernel` - Arrêter un kernel actif
+- `interrupt_kernel` - Interrompre l'exécution d'un kernel
+- `restart_kernel` - Redémarrer un kernel
+
+### Exécution
+
+- `execute_cell` - Exécuter du code dans un kernel spécifique
+- `execute_notebook` - Exécuter toutes les cellules de code d'un notebook
+- `execute_notebook_cell` - Exécuter une cellule spécifique d'un notebook
+
+### Gestion du serveur
+
+- `start_jupyter_server` - Démarrer un serveur Jupyter Lab
+- `stop_jupyter_server` - Arrêter le serveur Jupyter
+- `debug_list_runtime_dir` - Lister les fichiers du répertoire runtime Jupyter
+
+### 🆕 Gestion des environnements Conda
+
+- `list_conda_environments` - Liste tous les environnements Conda disponibles
+- `create_conda_environment` - Crée un nouvel environnement Conda
+- `install_conda_packages` - Installe des packages dans un environnement existant
+- `check_conda_environment` - Vérifie l'existence d'un environnement et ses packages
+
+**Documentation complète** : [CONDA-ENVIRONMENTS.md](docs/CONDA-ENVIRONMENTS.md)
+
+### Setup automatique de l'environnement (Recommandé)
+
+Le moyen le plus simple de configurer l'environnement MCP Jupyter :
+
+```typescript
+// Configuration automatique - aucun paramètre requis !
+const result = await use_mcp_tool({
+  server_name: "jupyter",
+  tool_name: "setup_jupyter_mcp_environment",
+  arguments: {}
+});
+
+// L'environnement mcp-jupyter-py310 est créé/vérifié automatiquement
+// avec tous les packages requis (papermill, jupyter, ipykernel, etc.)
+```
+
+
+## Exemple d'utilisation rapide
+
+### Restaurer un environnement Conda manquant
+
+```typescript
+// 1. Vérifier si l'environnement existe
+const check = await use_mcp_tool({
+  server_name: "jupyter",
+  tool_name: "check_conda_environment",
+  arguments: {
+    env_name: "mcp-jupyter-py310",
+    required_packages: ["papermill", "jupyter", "ipykernel"]
   }
+});
+
+// 2. Créer l'environnement s'il n'existe pas
+if (!check.exists) {
+  await use_mcp_tool({
+    server_name: "jupyter",
+    tool_name: "create_conda_environment",
+    arguments: {
+      name: "mcp-jupyter-py310",
+      python_version: "3.10",
+      packages: ["papermill", "jupyter", "ipykernel", "ipython"]
+    }
+  });
 }
+```
+
+### Démarrer un serveur Jupyter
+
+```typescript
+await use_mcp_tool({
+  server_name: "jupyter",
+  tool_name: "start_jupyter_server",
+  arguments: {
+    envPath: "C:\\Users\\username\\.conda\\envs\\mcp-jupyter-py310\\Scripts\\jupyter-lab.exe"
+  }
+});
+```
+
+## Documentation
+
+- [Installation](docs/INSTALLATION.md) - Guide d'installation complet
+- [Configuration](docs/CONFIGURATION.md) - Options de configuration
+- [Utilisation](docs/USAGE.md) - Exemples d'utilisation détaillés
+- [Gestion Conda](docs/CONDA-ENVIRONMENTS.md) - Guide des outils Conda
+- [Dépannage](docs/TROUBLESHOOTING.md) - Résolution de problèmes courants
 
 ## Note de Compatibilité
 

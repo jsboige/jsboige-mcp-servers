@@ -44,6 +44,7 @@ import { notebookTools } from './tools/notebook.js';
 import { kernelTools } from './tools/kernel.js';
 import { executionTools } from './tools/execution.js';
 import { serverTools } from './tools/server.js';
+import { condaTools } from './tools/conda.js';
 
 // Conversion des types
 type AllTools = JupyterTool[];
@@ -97,7 +98,12 @@ export class JupyterMcpServer {
          name: tool.name,
          description: tool.description,
          inputSchema: tool.schema
-       }))
+       })),
+        ...condaTools.map(tool => ({
+          name: tool.name,
+          description: tool.description,
+          inputSchema: tool.schema
+        }))
       ];
       
       return { tools };
@@ -112,7 +118,7 @@ export class JupyterMcpServer {
     const args = request.params.arguments;
     
     // Trouver l'outil correspondant
-    const allTools = [...notebookTools, ...kernelTools, ...executionTools, ...serverTools] as JupyterTool[];
+    const allTools = [...notebookTools, ...kernelTools, ...executionTools, ...serverTools, ...condaTools] as JupyterTool[];
     const tool = allTools.find(t => t.name === toolName) as JupyterTool;
     
     if (!tool) {
