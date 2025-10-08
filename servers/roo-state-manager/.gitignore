@@ -20,5 +20,7 @@
 !CHANGELOG.md
 
 # Reports (excluding README.md)
-*-report.md
-*-validation.md
+# Ignore reports at root level but allow in docs/ subdirectories
+/*-report.md
+/*-validation.md
+!docs/**/*-validation.md
