@@ -401,9 +401,61 @@ def register_notebook_tools(app: FastMCP) -> None:
             }
     
     @app.tool()
+    async def inspect_notebook(
+        path: str,
+        mode: str = "metadata"
+    ) -> Dict[str, Any]:
+        """
+        🆕 OUTIL CONSOLIDÉ - Inspection et validation de notebooks.
+        
+        Remplace: get_notebook_metadata, inspect_notebook_outputs, validate_notebook
+        
+        Args:
+            path: Chemin du fichier notebook (.ipynb)
+            mode: Type d'inspection
+                - "metadata": Métadonnées du notebook (kernel, language, auteur)
+                - "outputs": Analyse des sorties de toutes les cellules code
+                - "validate": Validation nbformat + rapport de problèmes
+                - "full": Combinaison de metadata + outputs + validate
+                
+        Returns:
+            Dictionary with inspection results based on mode
+            
+        Examples:
+            # Métadonnées seulement
+            inspect_notebook("nb.ipynb", mode="metadata")
+            
+            # Analyse des outputs
+            inspect_notebook("nb.ipynb", mode="outputs")
+            
+            # Validation du notebook
+            inspect_notebook("nb.ipynb", mode="validate")
+            
+            # Inspection complète
+            inspect_notebook("nb.ipynb", mode="full")
+        """
+        try:
+            logger.info(f"Inspecting notebook (mode={mode}): {path}")
+            service = get_notebook_service()
+            result = await service.inspect_notebook(path, mode=mode)
+            logger.info(f"Successfully inspected notebook: {path}")
+            return result
+        except Exception as e:
+            logger.error(f"Error inspecting notebook {path}: {e}")
+            return {
+                "error": str(e),
+                "error_type": type(e).__name__,
+                "path": path,
+                "mode": mode,
+                "success": False
+            }
+    
+    @app.tool()
     async def get_notebook_metadata(path: str) -> Dict[str, Any]:
         """
         Recupere les metadonnees completes d'un notebook
+        
+        ⚠️ DEPRECATED: Use inspect_notebook(path, mode="metadata") instead.
         
         Args:
             path: Chemin du fichier notebook (.ipynb)
@@ -411,6 +463,7 @@ def register_notebook_tools(app: FastMCP) -> None:
         Returns:
             Metadonnees completes du notebook
         """
+        logger.warning("get_notebook_metadata is deprecated, use inspect_notebook(mode='metadata') instead")
         try:
             logger.info(f"Getting metadata from notebook: {path}")
             service = get_notebook_service()
@@ -430,12 +483,15 @@ def register_notebook_tools(app: FastMCP) -> None:
         """
         Inspecte les sorties des cellules d'un notebook
         
+        ⚠️ DEPRECATED: Use inspect_notebook(path, mode="outputs") instead.
+        
         Args:
             path: Chemin du fichier notebook (.ipynb)
             
         Returns:
             Inspection detaillee des outputs de chaque cellule
         """
+        logger.warning("inspect_notebook_outputs is deprecated, use inspect_notebook(mode='outputs') instead")
         try:
             logger.info(f"Inspecting outputs from notebook: {path}")
             service = get_notebook_service()
@@ -455,12 +511,15 @@ def register_notebook_tools(app: FastMCP) -> None:
         """
         Valide la structure d'un notebook Jupyter
         
+        ⚠️ DEPRECATED: Use inspect_notebook(path, mode="validate") instead.
+        
         Args:
             path: Chemin du fichier notebook (.ipynb)
             
         Returns:
             Resultat de la validation avec problemes detectes
         """
+        logger.warning("validate_notebook is deprecated, use inspect_notebook(mode='validate') instead")
         try:
             logger.info(f"Validating notebook: {path}")
             service = get_notebook_service()

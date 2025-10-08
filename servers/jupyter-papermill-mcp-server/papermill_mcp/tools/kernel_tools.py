@@ -5,7 +5,7 @@ Defines all kernel-related MCP tools using FastMCP.
 """
 
 import logging
-from typing import Any, Dict, Optional
+from typing import Any, Dict, Optional, Literal
 
 from mcp.server.fastmcp import FastMCP
 from pydantic import BaseModel, Field
@@ -200,6 +200,8 @@ def register_kernel_tools(app: FastMCP) -> None:
     @app.tool()
     async def execute_cell(kernel_id: str, code: str) -> Dict[str, Any]:
         """
+        ⚠️ DEPRECATED: Use execute_on_kernel(kernel_id, mode="code", code=...) instead.
+        
         Execute du code dans un kernel specifique
         
         Args:
@@ -209,23 +211,14 @@ def register_kernel_tools(app: FastMCP) -> None:
         Returns:
             Resultat de l'execution du code
         """
-        try:
-            logger.info(f"Executing code in kernel: {kernel_id}")
-            service = get_kernel_service()
-            result = await service.execute_cell(kernel_id, code)
-            logger.info(f"Successfully executed code in kernel: {kernel_id}")
-            return result
-        except Exception as e:
-            logger.error(f"Error executing code in kernel {kernel_id}: {e}")
-            return {
-                "error": str(e),
-                "kernel_id": kernel_id,
-                "success": False
-            }
+        logger.warning("execute_cell is deprecated, use execute_on_kernel(mode='code') instead")
+        return await execute_on_kernel(kernel_id=kernel_id, mode="code", code=code)
     
     @app.tool()
     async def execute_notebook(path: str, kernel_id: str) -> Dict[str, Any]:
         """
+        ⚠️ DEPRECATED: Use execute_on_kernel(kernel_id, mode="notebook", path=...) instead.
+        
         Execute toutes les cellules de code d'un notebook
         
         Args:
@@ -235,24 +228,14 @@ def register_kernel_tools(app: FastMCP) -> None:
         Returns:
             Resultat de l'execution du notebook
         """
-        try:
-            logger.info(f"Executing notebook {path} in kernel: {kernel_id}")
-            service = get_kernel_service()
-            result = await service.execute_notebook_in_kernel(kernel_id, path)
-            logger.info(f"Successfully executed notebook: {path}")
-            return result
-        except Exception as e:
-            logger.error(f"Error executing notebook {path}: {e}")
-            return {
-                "error": str(e),
-                "path": path,
-                "kernel_id": kernel_id,
-                "success": False
-            }
+        logger.warning("execute_notebook is deprecated, use execute_on_kernel(mode='notebook') instead")
+        return await execute_on_kernel(kernel_id=kernel_id, mode="notebook", path=path)
     
     @app.tool()
     async def execute_notebook_cell(path: str, cell_index: int, kernel_id: str) -> Dict[str, Any]:
         """
+        ⚠️ DEPRECATED: Use execute_on_kernel(kernel_id, mode="notebook_cell", path=..., cell_index=...) instead.
+        
         Execute une cellule specifique d'un notebook
         
         Args:
@@ -263,20 +246,123 @@ def register_kernel_tools(app: FastMCP) -> None:
         Returns:
             Resultat de l'execution de la cellule
         """
+        logger.warning("execute_notebook_cell is deprecated, use execute_on_kernel(mode='notebook_cell') instead")
+        return await execute_on_kernel(kernel_id=kernel_id, mode="notebook_cell", path=path, cell_index=cell_index)
+    
+    @app.tool()
+    async def execute_on_kernel(
+        kernel_id: str,
+        mode: Literal["code", "notebook", "notebook_cell"],
+        code: Optional[str] = None,
+        path: Optional[str] = None,
+        cell_index: Optional[int] = None,
+        timeout: int = 60
+    ) -> Dict[str, Any]:
+        """
+        🆕 OUTIL CONSOLIDÉ - Exécution de code sur un kernel.
+        
+        Remplace: execute_cell, execute_notebook, execute_notebook_cell
+        
+        Args:
+            kernel_id: ID du kernel sur lequel exécuter
+            mode: Type d'exécution
+                - "code": Code Python brut (requiert code)
+                - "notebook": Toutes les cellules d'un notebook (requiert path)
+                - "notebook_cell": Une cellule spécifique (requiert path + cell_index)
+            code: Code Python à exécuter (pour mode="code")
+            path: Chemin du notebook (pour mode="notebook" | "notebook_cell")
+            cell_index: Index de la cellule (pour mode="notebook_cell", 0-based)
+            timeout: Timeout en secondes (défaut: 60)
+            
+        Returns:
+            Mode "code":
+            {
+                "kernel_id": str,
+                "mode": "code",
+                "execution_count": int,
+                "outputs": [
+                    {
+                        "output_type": str,
+                        "text": Optional[str],
+                        "data": Optional[dict],
+                        "metadata": Optional[dict]
+                    },
+                    ...
+                ],
+                "status": str,  # "ok" | "error" | "abort"
+                "error": Optional[{
+                    "ename": str,
+                    "evalue": str,
+                    "traceback": [str]
+                }],
+                "execution_time": float,
+                "success": bool
+            }
+            
+            Mode "notebook":
+            {
+                "kernel_id": str,
+                "mode": "notebook",
+                "path": str,
+                "cells_executed": int,
+                "cells_succeeded": int,
+                "cells_failed": int,
+                "execution_time": float,
+                "results": [
+                    {
+                        "cell_index": int,
+                        "cell_type": str,
+                        "execution_count": Optional[int],
+                        "status": str,
+                        "error": Optional[dict],
+                        "outputs": [...]
+                    },
+                    ...
+                ],
+                "success": bool
+            }
+            
+            Mode "notebook_cell":
+            {
+                "kernel_id": str,
+                "mode": "notebook_cell",
+                "path": str,
+                "cell_index": int,
+                "cell_type": str,
+                "execution_count": int,
+                "outputs": [...],
+                "status": str,
+                "error": Optional[dict],
+                "execution_time": float,
+                "success": bool
+            }
+        
+        Validation:
+            - mode="code" → code requis
+            - mode="notebook" → path requis
+            - mode="notebook_cell" → path + cell_index requis
+        """
         try:
-            logger.info(f"Executing cell {cell_index} from notebook {path} in kernel: {kernel_id}")
+            logger.info(f"Executing on kernel {kernel_id} in mode: {mode}")
             service = get_kernel_service()
-            result = await service.execute_notebook_cell(path, cell_index, kernel_id)
-            logger.info(f"Successfully executed cell {cell_index} from notebook: {path}")
+            result = await service.execute_on_kernel_consolidated(
+                kernel_id=kernel_id,
+                mode=mode,
+                code=code,
+                path=path,
+                cell_index=cell_index,
+                timeout=timeout
+            )
+            logger.info(f"Successfully executed on kernel {kernel_id} in mode: {mode}")
             return result
         except Exception as e:
-            logger.error(f"Error executing cell {cell_index} from notebook {path}: {e}")
+            logger.error(f"Error executing on kernel {kernel_id} in mode {mode}: {e}")
             return {
                 "error": str(e),
-                "path": path,
-                "cell_index": cell_index,
                 "kernel_id": kernel_id,
+                "mode": mode,
                 "success": False
             }
+    
     
     logger.info("Registered kernel tools")

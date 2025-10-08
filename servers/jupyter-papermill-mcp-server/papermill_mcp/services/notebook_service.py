@@ -26,6 +26,7 @@ from nbformat import NotebookNode
 from ..core.papermill_executor import PapermillExecutor
 from ..utils.file_utils import FileUtils
 from ..config import MCPConfig
+from .notebook_service_consolidated import ExecuteNotebookConsolidated
 
 logger = logging.getLogger(__name__)
 
@@ -661,6 +662,53 @@ class NotebookService:
         # This should be set by the MCP client (Roo)
         self.workspace_dir = os.getenv('ROO_WORKSPACE_DIR', 'd:/dev/CoursIA')
         logger.info(f"NotebookService initialized with workspace: {self.workspace_dir}")
+        
+        # Initialize consolidated executor (Phase 3)
+        self._consolidated_executor = ExecuteNotebookConsolidated(self)
+    
+    async def execute_notebook_consolidated(
+        self,
+        input_path: str,
+        output_path: Optional[str] = None,
+        parameters: Optional[Dict[str, Any]] = None,
+        mode: str = "sync",
+        kernel_name: Optional[str] = None,
+        timeout: Optional[int] = None,
+        log_output: bool = True,
+        progress_bar: bool = False,
+        report_mode: str = "summary"
+    ) -> Dict[str, Any]:
+        """
+        🆕 PHASE 3 - Exécution consolidée de notebook avec Papermill.
+        
+        Remplace: execute_notebook_papermill, parameterize_notebook,
+                  execute_notebook_solution_a, execute_notebook_sync, start_notebook_async
+        
+        Args:
+            input_path: Chemin du notebook source
+            output_path: Chemin du notebook de sortie (optionnel, auto-généré si None)
+            parameters: Paramètres à injecter dans le notebook (dict clé-valeur)
+            mode: Mode d'exécution ("sync" | "async")
+            kernel_name: Nom du kernel à utiliser (auto-détecté si None)
+            timeout: Timeout global en secondes (None = illimité)
+            log_output: Activer logging des outputs pendant exécution
+            progress_bar: Afficher barre de progression (mode sync uniquement)
+            report_mode: Niveau de détail du rapport ("full" | "summary" | "minimal")
+            
+        Returns:
+            Dictionary avec résultat selon le mode (voir ExecuteNotebookConsolidated.execute_notebook)
+        """
+        return await self._consolidated_executor.execute_notebook(
+            input_path=input_path,
+            output_path=output_path,
+            parameters=parameters,
+            mode=mode,
+            kernel_name=kernel_name,
+            timeout=timeout,
+            log_output=log_output,
+            progress_bar=progress_bar,
+            report_mode=report_mode
+        )
     
     def resolve_path(self, path: Union[str, Path]) -> str:
         """
@@ -1057,24 +1105,28 @@ class NotebookService:
         """
         Get metadata from a notebook file.
         
+        DEPRECATED: Use inspect_notebook(path, mode="metadata") instead.
+        
         Args:
             path: Path to notebook file
             
         Returns:
             Dictionary with notebook metadata
         """
-        try:
-            # Resolve path against workspace
-            resolved_path = self.resolve_path(path)
-            logger.info(f"Getting metadata for notebook: {path} -> {resolved_path}")
-            
-            metadata = FileUtils.get_notebook_metadata(resolved_path)
-            
-            logger.info("Successfully retrieved notebook metadata")
-            return metadata
-            
-        except Exception as e:
-            logger.error(f"Error getting metadata for notebook {path}: {e}")
+        logger.warning("get_notebook_metadata is deprecated, use inspect_notebook(mode='metadata') instead")
+        result = await self.inspect_notebook(path, mode="metadata")
+        
+        # Transform to old format for backward compatibility
+        old_format = {
+            'path': result['path'],
+            'metadata': result['metadata'],
+            'nbformat': result['nbformat'],
+            'nbformat_minor': result['nbformat_minor'],
+            'cell_count': result['cell_count'],
+            'success': result['success']
+        }
+        
+        return old_format
     
     async def read_cell(self, path: Union[str, Path], index: int) -> Dict[str, Any]:
         """
@@ -1333,120 +1385,298 @@ class NotebookService:
         """
         Inspecte les sorties des cellules d'un notebook.
         
+        DEPRECATED: Use inspect_notebook(path, mode="outputs") instead.
+        
         Args:
             path: Path to notebook file
             
         Returns:
             Dictionary with detailed outputs information
         """
-        try:
-            # Resolve path against workspace
-            resolved_path = Path(self.resolve_path(path))
-            logger.info(f"Inspecting outputs from notebook: {path} -> {resolved_path}")
-            
-            # Read notebook
-            notebook = FileUtils.read_notebook(resolved_path)
-            
-            outputs_info = []
-            for i, cell in enumerate(notebook.cells):
-                if cell.cell_type == "code":
-                    outputs = getattr(cell, 'outputs', [])
-                    if outputs:
-                        cell_outputs = {
-                            "cell_index": i,
-                            "execution_count": getattr(cell, 'execution_count', None),
-                            "output_count": len(outputs),
-                            "output_types": [out.get("output_type") for out in outputs]
-                        }
-                        
-                        # Preview output data
-                        for j, output in enumerate(outputs):
-                            if output.get("output_type") == "execute_result":
-                                data = output.get("data", {})
-                                cell_outputs[f"output_{j}_data_keys"] = list(data.keys())
-                            elif output.get("output_type") == "stream":
-                                text = ''.join(output.get("text", []))
-                                preview = text[:200] + "..." if len(text) > 200 else text
-                                cell_outputs[f"output_{j}_text_preview"] = preview
-                        
-                        outputs_info.append(cell_outputs)
-            
-            result = {
-                "path": str(path),
-                "cells_with_outputs": len(outputs_info),
-                "outputs": outputs_info,
-                "success": True
-            }
-            
-            logger.info(f"Successfully inspected outputs from {len(outputs_info)} cells")
-            return result
-            
-        except Exception as e:
-            logger.error(f"Error inspecting outputs from notebook {path}: {e}")
-            raise
+        logger.warning("inspect_notebook_outputs is deprecated, use inspect_notebook(mode='outputs') instead")
+        result = await self.inspect_notebook(path, mode="outputs")
+        
+        # Transform to old format for backward compatibility
+        old_format = {
+            "path": result["path"],
+            "cells_with_outputs": result["output_analysis"]["cells_with_outputs"],
+            "outputs": [
+                {
+                    "cell_index": cell["index"],
+                    "execution_count": cell["execution_count"],
+                    "output_count": cell["output_count"],
+                    "output_types": cell["output_types"]
+                }
+                for cell in result["output_analysis"]["cells"]
+            ],
+            "success": result["success"]
+        }
+        
+        return old_format
     
     async def validate_notebook(self, path: Union[str, Path]) -> Dict[str, Any]:
         """
+        DEPRECATED: Use inspect_notebook(path, mode="validate") instead.
+        
         Valide la structure d'un notebook Jupyter.
         
         Args:
             path: Path to notebook file
             
         Returns:
-            Dictionary with validation results
+            Dictionary with validation results (old format for backward compatibility)
         """
+        logger.warning(
+            "validate_notebook is deprecated, use inspect_notebook(mode='validate') instead"
+        )
+        
+        # Call new consolidated method
+        result = await self.inspect_notebook(path, mode="validate")
+        
+        # Transform to old format for backward compatibility
+        validation = result.get("validation", {})
+        
+        # Convert new errors format to old issues format
+        notebook_issues = [
+            error["message"] for error in validation.get("errors", [])
+            if error.get("cell_index") is None
+        ]
+        
+        cell_issues = []
+        for error in validation.get("errors", []):
+            if error.get("cell_index") is not None:
+                cell_idx = error["cell_index"]
+                # Check if we already have an entry for this cell
+                existing = next((c for c in cell_issues if c["cell_index"] == cell_idx), None)
+                if existing:
+                    existing["issues"].append(error["message"])
+                else:
+                    cell_issues.append({
+                        "cell_index": cell_idx,
+                        "issues": [error["message"]]
+                    })
+        
+        old_format = {
+            "path": result["path"],
+            "is_valid": validation.get("is_valid", False),
+            "notebook_issues": notebook_issues,
+            "cell_issues": cell_issues,
+            "success": result["success"]
+        }
+        
+        return old_format
+    async def inspect_notebook(
+        self, 
+        path: Union[str, Path], 
+        mode: str = "metadata"
+    ) -> Dict[str, Any]:
+        """
+        🆕 OUTIL CONSOLIDÉ - Inspection et validation de notebooks.
+        
+        Remplace: get_notebook_metadata, inspect_notebook_outputs, validate_notebook
+        
+        Args:
+            path: Path to notebook file
+            mode: Type d'inspection
+                - "metadata": Métadonnées du notebook (kernel, language, auteur)
+                - "outputs": Analyse des sorties de toutes les cellules code
+                - "validate": Validation nbformat + rapport de problèmes
+                - "full": Combinaison de metadata + outputs + validate
+        
+        Returns:
+            Dictionary with inspection results based on mode
+        """
+        import time
+        
         try:
-            # Resolve path against workspace
+            # Validate mode
+            valid_modes = ["metadata", "outputs", "validate", "full"]
+            if mode not in valid_modes:
+                raise ValueError(f"Invalid mode: {mode}. Must be one of {valid_modes}")
+            
+            # Resolve path
             resolved_path = Path(self.resolve_path(path))
-            logger.info(f"Validating notebook: {path} -> {resolved_path}")
+            logger.info(f"Inspecting notebook: {path} -> {resolved_path} (mode={mode})")
             
-            # Read raw JSON content
-            with open(resolved_path, 'r', encoding='utf-8') as f:
-                notebook_data = json.load(f)
+            if not resolved_path.exists():
+                raise FileNotFoundError(f"Notebook not found: {resolved_path}")
             
-            issues = []
+            # Read notebook once
+            notebook = FileUtils.read_notebook(resolved_path)
             
-            # Basic structure validation
-            if "nbformat" not in notebook_data:
-                issues.append("Missing 'nbformat' field")
-            elif notebook_data.get("nbformat") < 4:
-                issues.append(f"Old nbformat version: {notebook_data.get('nbformat')}")
-            
-            if "cells" not in notebook_data:
-                issues.append("Missing 'cells' field")
-            elif not isinstance(notebook_data["cells"], list):
-                issues.append("'cells' field is not a list")
-            
-            # Cell validation
-            cell_issues = []
-            for i, cell in enumerate(notebook_data.get("cells", [])):
-                cell_problems = []
-                
-                if "cell_type" not in cell:
-                    cell_problems.append("Missing cell_type")
-                elif cell["cell_type"] not in ["code", "markdown", "raw"]:
-                    cell_problems.append(f"Invalid cell_type: {cell['cell_type']}")
-                
-                if "source" not in cell:
-                    cell_problems.append("Missing source")
-                
-                if cell_problems:
-                    cell_issues.append({"cell_index": i, "issues": cell_problems})
-            
+            # Initialize result
             result = {
                 "path": str(path),
-                "is_valid": len(issues) == 0 and len(cell_issues) == 0,
-                "notebook_issues": issues,
-                "cell_issues": cell_issues,
+                "mode": mode,
                 "success": True
             }
             
-            logger.info(f"Notebook validation completed, valid: {result['is_valid']}")
+            # Mode METADATA
+            if mode in ["metadata", "full"]:
+                metadata_info = {
+                    "kernelspec": dict(notebook.metadata.get('kernelspec', {})),
+                    "language_info": dict(notebook.metadata.get('language_info', {})),
+                }
+                
+                # Add optional metadata fields
+                if 'authors' in notebook.metadata:
+                    metadata_info['authors'] = notebook.metadata.get('authors')
+                if 'title' in notebook.metadata:
+                    metadata_info['title'] = notebook.metadata.get('title')
+                
+                # Add custom metadata (excluding standard fields)
+                standard_fields = {'kernelspec', 'language_info', 'authors', 'title'}
+                custom_metadata = {
+                    k: v for k, v in notebook.metadata.items() 
+                    if k not in standard_fields
+                }
+                if custom_metadata:
+                    metadata_info['custom_metadata'] = custom_metadata
+                
+                result["metadata"] = metadata_info
+                result["nbformat"] = notebook.nbformat
+                result["nbformat_minor"] = notebook.nbformat_minor
+                result["cell_count"] = len(notebook.cells)
+            
+            # Mode OUTPUTS
+            if mode in ["outputs", "full"]:
+                total_cells = len(notebook.cells)
+                code_cells = sum(1 for cell in notebook.cells if cell.cell_type == "code")
+                cells_with_outputs = 0
+                cells_with_errors = 0
+                output_types_count = {}
+                cells_analysis = []
+                
+                for i, cell in enumerate(notebook.cells):
+                    if cell.cell_type == "code":
+                        outputs = getattr(cell, 'outputs', [])
+                        
+                        if outputs:
+                            cells_with_outputs += 1
+                            
+                            # Analyze cell outputs
+                            cell_output_types = []
+                            has_error = False
+                            error_name = None
+                            output_size = 0
+                            
+                            for output in outputs:
+                                output_type = output.get("output_type", "unknown")
+                                cell_output_types.append(output_type)
+                                
+                                # Count by type
+                                output_types_count[output_type] = output_types_count.get(output_type, 0) + 1
+                                
+                                # Check for errors
+                                if output_type == "error":
+                                    has_error = True
+                                    error_name = output.get("ename", "Unknown")
+                                    cells_with_errors += 1
+                                
+                                # Calculate size
+                                output_size += len(str(output))
+                            
+                            cell_info = {
+                                "index": i,
+                                "execution_count": getattr(cell, 'execution_count', None),
+                                "output_count": len(outputs),
+                                "output_types": cell_output_types,
+                                "has_error": has_error,
+                                "output_size_bytes": output_size
+                            }
+                            
+                            if has_error:
+                                cell_info["error_name"] = error_name
+                            
+                            cells_analysis.append(cell_info)
+                
+                result["output_analysis"] = {
+                    "total_cells": total_cells,
+                    "code_cells": code_cells,
+                    "cells_with_outputs": cells_with_outputs,
+                    "cells_with_errors": cells_with_errors,
+                    "output_types": output_types_count,
+                    "cells": cells_analysis
+                }
+            
+            # Mode VALIDATE
+            if mode in ["validate", "full"]:
+                start_time = time.time()
+                
+                # Read raw JSON for validation
+                with open(resolved_path, 'r', encoding='utf-8') as f:
+                    notebook_data = json.load(f)
+                
+                errors = []
+                warnings = []
+                
+                # Validate nbformat version
+                if "nbformat" not in notebook_data:
+                    errors.append({
+                        "type": "missing_field",
+                        "message": "Missing 'nbformat' field",
+                        "cell_index": None
+                    })
+                elif notebook_data.get("nbformat") < 4:
+                    warnings.append({
+                        "type": "old_version",
+                        "message": f"Old nbformat version: {notebook_data.get('nbformat')} (recommended: 4+)",
+                        "cell_index": None
+                    })
+                
+                # Validate cells field
+                if "cells" not in notebook_data:
+                    errors.append({
+                        "type": "missing_field",
+                        "message": "Missing 'cells' field",
+                        "cell_index": None
+                    })
+                elif not isinstance(notebook_data["cells"], list):
+                    errors.append({
+                        "type": "invalid_type",
+                        "message": "'cells' field is not a list",
+                        "cell_index": None
+                    })
+                
+                # Validate each cell
+                for i, cell in enumerate(notebook_data.get("cells", [])):
+                    if "cell_type" not in cell:
+                        errors.append({
+                            "type": "missing_field",
+                            "message": "Missing cell_type",
+                            "cell_index": i
+                        })
+                    elif cell["cell_type"] not in ["code", "markdown", "raw"]:
+                        errors.append({
+                            "type": "invalid_value",
+                            "message": f"Invalid cell_type: {cell['cell_type']}",
+                            "cell_index": i
+                        })
+                    
+                    if "source" not in cell:
+                        errors.append({
+                            "type": "missing_field",
+                            "message": "Missing source",
+                            "cell_index": i
+                        })
+                
+                validation_time = time.time() - start_time
+                
+                result["validation"] = {
+                    "is_valid": len(errors) == 0,
+                    "nbformat_version": f"{notebook_data.get('nbformat', 'unknown')}.{notebook_data.get('nbformat_minor', 'unknown')}",
+                    "errors": errors,
+                    "warnings": warnings,
+                    "validation_time": round(validation_time, 4)
+                }
+            
+            logger.info(f"Successfully inspected notebook in mode '{mode}'")
             return result
             
         except Exception as e:
-            logger.error(f"Error validating notebook {path}: {e}")
+            logger.error(f"Error inspecting notebook {path}: {e}")
             raise
+    
     
     async def system_info(self) -> Dict[str, Any]:
         """
