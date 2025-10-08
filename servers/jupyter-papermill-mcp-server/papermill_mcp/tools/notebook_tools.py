@@ -240,9 +240,82 @@ def register_notebook_tools(app: FastMCP) -> None:
             }
     
     @app.tool()
+    async def read_cells(
+        path: str,
+        mode: str = "list",
+        index: Optional[int] = None,
+        start_index: Optional[int] = None,
+        end_index: Optional[int] = None,
+        include_preview: bool = True,
+        preview_length: int = 100
+    ) -> Dict[str, Any]:
+        """
+        🆕 OUTIL CONSOLIDÉ - Lecture flexible de cellules d'un notebook.
+        
+        Remplace: read_cell, read_cells_range, list_notebook_cells
+        
+        Args:
+            path: Chemin du fichier notebook (.ipynb)
+            mode: Mode de lecture
+                - "single": Une seule cellule (requiert index)
+                - "range": Plage de cellules (requiert start_index, end_index optionnel)
+                - "list": Liste avec preview de toutes les cellules (défaut)
+                - "all": Toutes les cellules complètes
+            index: Index de la cellule pour mode="single" (0-based)
+            start_index: Index de début pour mode="range" (0-based, inclus)
+            end_index: Index de fin pour mode="range" (0-based, inclus, None = jusqu'à la fin)
+            include_preview: Inclure preview dans mode="list" (défaut: True)
+            preview_length: Longueur du preview (défaut: 100 caractères)
+            
+        Returns:
+            Dictionary with cells data based on mode
+            
+        Examples:
+            # Lire cellule 5
+            read_cells("nb.ipynb", mode="single", index=5)
+            
+            # Lire cellules 10-20
+            read_cells("nb.ipynb", mode="range", start_index=10, end_index=20)
+            
+            # Lire cellules 10 jusqu'à la fin
+            read_cells("nb.ipynb", mode="range", start_index=10)
+            
+            # Liste avec preview (défaut)
+            read_cells("nb.ipynb")
+            
+            # Toutes les cellules complètes
+            read_cells("nb.ipynb", mode="all")
+        """
+        try:
+            logger.info(f"Reading cells from notebook (mode={mode}): {path}")
+            service = get_notebook_service()
+            result = await service.read_cells(
+                path=path,
+                mode=mode,
+                index=index,
+                start_index=start_index,
+                end_index=end_index,
+                include_preview=include_preview,
+                preview_length=preview_length
+            )
+            logger.info(f"Successfully read cells from notebook: {path}")
+            return result
+        except Exception as e:
+            logger.error(f"Error reading cells from notebook {path}: {e}")
+            return {
+                "error": str(e),
+                "error_type": type(e).__name__,
+                "path": path,
+                "mode": mode,
+                "success": False
+            }
+    
+    @app.tool()
     async def read_cell(path: str, index: int) -> Dict[str, Any]:
         """
         Lit une cellule specifique d'un notebook
+        
+        ⚠️ DEPRECATED: Use read_cells(path, mode="single", index=...) instead.
         
         Args:
             path: Chemin du fichier notebook (.ipynb)
@@ -251,10 +324,11 @@ def register_notebook_tools(app: FastMCP) -> None:
         Returns:
             Informations detaillees sur la cellule
         """
+        logger.warning("read_cell is deprecated, use read_cells(mode='single', index=...) instead")
         try:
             logger.info(f"Reading cell {index} from notebook: {path}")
             service = get_notebook_service()
-            result = await service.read_cell(path, index)
+            result = await service.read_cells(path, mode="single", index=index)
             logger.info(f"Successfully read cell {index} from notebook: {path}")
             return result
         except Exception as e:
@@ -271,6 +345,8 @@ def register_notebook_tools(app: FastMCP) -> None:
         """
         Lit une plage de cellules d'un notebook
         
+        ⚠️ DEPRECATED: Use read_cells(path, mode="range", start_index=..., end_index=...) instead.
+        
         Args:
             path: Chemin du fichier notebook (.ipynb)
             start_index: Index de debut (0-based, inclus)
@@ -279,10 +355,11 @@ def register_notebook_tools(app: FastMCP) -> None:
         Returns:
             Informations sur les cellules dans la plage
         """
+        logger.warning("read_cells_range is deprecated, use read_cells(mode='range', start_index=..., end_index=...) instead")
         try:
             logger.info(f"Reading cells range {start_index}-{end_index} from notebook: {path}")
             service = get_notebook_service()
-            result = await service.read_cells_range(path, start_index, end_index)
+            result = await service.read_cells(path, mode="range", start_index=start_index, end_index=end_index)
             logger.info(f"Successfully read cells range from notebook: {path}")
             return result
         except Exception as e:
@@ -300,16 +377,19 @@ def register_notebook_tools(app: FastMCP) -> None:
         """
         Liste les cellules d'un notebook avec apercu du contenu
         
+        ⚠️ DEPRECATED: Use read_cells(path, mode="list") instead.
+        
         Args:
             path: Chemin du fichier notebook (.ipynb)
             
         Returns:
             Liste detaillee des cellules avec preview
         """
+        logger.warning("list_notebook_cells is deprecated, use read_cells(mode='list') instead")
         try:
             logger.info(f"Listing cells from notebook: {path}")
             service = get_notebook_service()
-            result = await service.list_notebook_cells(path)
+            result = await service.read_cells(path, mode="list")
             logger.info(f"Successfully listed cells from notebook: {path}")
             return result
         except Exception as e:

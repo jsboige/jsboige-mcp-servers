@@ -1080,6 +1080,8 @@ class NotebookService:
         """
         Read a specific cell from a notebook.
         
+        DEPRECATED: Use read_cells(path, mode="single", index=index) instead.
+        
         Args:
             path: Path to notebook file
             index: Index of the cell to read (0-based)
@@ -1090,54 +1092,15 @@ class NotebookService:
         Raises:
             IndexError: If cell index is out of range
         """
-        try:
-            # Resolve path against workspace
-            resolved_path = Path(self.resolve_path(path))
-            logger.info(f"Reading cell {index} from notebook: {path} -> {resolved_path}")
-            
-            # Read notebook
-            notebook = FileUtils.read_notebook(resolved_path)
-            
-            # Check if index is valid
-            if index < 0 or index >= len(notebook.cells):
-                raise IndexError(f"Cell index {index} out of range (0 to {len(notebook.cells) - 1})")
-            
-            cell = notebook.cells[index]
-            
-            # Convert cell to dictionary format
-            cell_data = {
-                "index": index,
-                "cell_type": cell.cell_type,
-                "source": cell.source,
-                "metadata": cell.metadata,
-                "has_outputs": hasattr(cell, 'outputs') and bool(cell.outputs)
-            }
-            
-            # Add execution info for code cells
-            if cell.cell_type == "code":
-                cell_data["execution_count"] = getattr(cell, 'execution_count', None)
-                if hasattr(cell, 'outputs') and cell.outputs:
-                    cell_data["outputs"] = cell.outputs
-                    cell_data["output_count"] = len(cell.outputs)
-            
-            result = {
-                "path": str(path),
-                "cell": cell_data,
-                "total_cells": len(notebook.cells),
-                "success": True
-            }
-            
-            logger.info(f"Successfully read cell {index}")
-            return result
-            
-        except Exception as e:
-            logger.error(f"Error reading cell {index} from notebook {path}: {e}")
-            raise
+        logger.warning("read_cell is deprecated, use read_cells(mode='single', index=...) instead")
+        return await self.read_cells(path, mode="single", index=index)
             
     
     async def read_cells_range(self, path: Union[str, Path], start_index: int, end_index: Optional[int] = None) -> Dict[str, Any]:
         """
         Read a range of cells from a notebook.
+        
+        DEPRECATED: Use read_cells(path, mode="range", start_index=..., end_index=...) instead.
         
         Args:
             path: Path to notebook file
@@ -1147,38 +1110,72 @@ class NotebookService:
         Returns:
             Dictionary with cells information
         """
+        logger.warning("read_cells_range is deprecated, use read_cells(mode='range', start_index=..., end_index=...) instead")
+        return await self.read_cells(path, mode="range", start_index=start_index, end_index=end_index)
+    
+    async def read_cells(
+        self,
+        path: Union[str, Path],
+        mode: str = "list",
+        index: Optional[int] = None,
+        start_index: Optional[int] = None,
+        end_index: Optional[int] = None,
+        include_preview: bool = True,
+        preview_length: int = 100
+    ) -> Dict[str, Any]:
+        """
+        🆕 OUTIL CONSOLIDÉ - Lecture flexible de cellules d'un notebook.
+        
+        Remplace: read_cell, read_cells_range, list_notebook_cells
+        
+        Args:
+            path: Chemin du fichier notebook
+            mode: Mode de lecture
+                - "single": Une seule cellule (requiert index)
+                - "range": Plage de cellules (requiert start_index, end_index optionnel)
+                - "list": Liste avec preview de toutes les cellules (défaut)
+                - "all": Toutes les cellules complètes
+            index: Index de la cellule pour mode="single" (0-based)
+            start_index: Index de début pour mode="range" (0-based, inclus)
+            end_index: Index de fin pour mode="range" (0-based, inclus, None = jusqu'à la fin)
+            include_preview: Inclure preview dans mode="list" (défaut: True)
+            preview_length: Longueur du preview (défaut: 100 caractères)
+            
+        Returns:
+            Dictionary with cells data based on mode
+            
+        Raises:
+            ValueError: If parameters are inconsistent with mode
+            IndexError: If cell index is out of range
+        """
         try:
             # Resolve path against workspace
             resolved_path = Path(self.resolve_path(path))
-            logger.info(f"Reading cells {start_index} to {end_index} from notebook: {path} -> {resolved_path}")
+            logger.info(f"Reading cells from notebook (mode={mode}): {path} -> {resolved_path}")
+            
+            # Validation des paramètres selon le mode
+            if mode == "single":
+                if index is None:
+                    raise ValueError("mode='single' requires 'index' parameter")
+            elif mode == "range":
+                if start_index is None:
+                    raise ValueError("mode='range' requires 'start_index' parameter")
             
             # Read notebook
             notebook = FileUtils.read_notebook(resolved_path)
-            
             total_cells = len(notebook.cells)
             
-            # Handle end_index
-            if end_index is None:
-                end_index = total_cells - 1
-            
-            # Validate indices
-            if start_index < 0 or start_index >= total_cells:
-                raise IndexError(f"Start index {start_index} out of range (0 to {total_cells - 1})")
-            if end_index < 0 or end_index >= total_cells:
-                raise IndexError(f"End index {end_index} out of range (0 to {total_cells - 1})")
-            if start_index > end_index:
-                raise ValueError(f"Start index {start_index} must be <= end index {end_index}")
-            
-            # Extract cells in range
-            cells_data = []
-            for i in range(start_index, end_index + 1):
-                cell = notebook.cells[i]
+            # Mode SINGLE: Retourner une seule cellule
+            if mode == "single":
+                if index < 0 or index >= total_cells:
+                    raise IndexError(f"Cell index {index} out of range (0 to {total_cells - 1})")
+                
+                cell = notebook.cells[index]
                 cell_data = {
-                    "index": i,
+                    "index": index,
                     "cell_type": cell.cell_type,
                     "source": cell.source,
-                    "metadata": cell.metadata,
-                    "has_outputs": hasattr(cell, 'outputs') and bool(cell.outputs)
+                    "metadata": dict(cell.metadata)
                 }
                 
                 # Add execution info for code cells
@@ -1186,30 +1183,142 @@ class NotebookService:
                     cell_data["execution_count"] = getattr(cell, 'execution_count', None)
                     if hasattr(cell, 'outputs') and cell.outputs:
                         cell_data["outputs"] = cell.outputs
-                        cell_data["output_count"] = len(cell.outputs)
                 
-                cells_data.append(cell_data)
+                result = {
+                    "path": str(path),
+                    "mode": "single",
+                    "cell": cell_data,
+                    "index": index,
+                    "success": True
+                }
+                
+                logger.info(f"Successfully read cell {index}")
+                return result
             
-            result = {
-                "path": str(path),
-                "start_index": start_index,
-                "end_index": end_index,
-                "cells": cells_data,
-                "cells_count": len(cells_data),
-                "total_cells": total_cells,
-                "success": True
-            }
+            # Mode RANGE: Retourner une plage de cellules
+            elif mode == "range":
+                # Handle end_index
+                if end_index is None:
+                    end_index = total_cells - 1
+                
+                # Validate indices
+                if start_index < 0 or start_index >= total_cells:
+                    raise IndexError(f"Start index {start_index} out of range (0 to {total_cells - 1})")
+                if end_index < 0 or end_index >= total_cells:
+                    raise IndexError(f"End index {end_index} out of range (0 to {total_cells - 1})")
+                if start_index > end_index:
+                    raise ValueError(f"Start index {start_index} must be <= end index {end_index}")
+                
+                # Extract cells in range
+                cells_data = []
+                for i in range(start_index, end_index + 1):
+                    cell = notebook.cells[i]
+                    cell_data = {
+                        "index": i,
+                        "cell_type": cell.cell_type,
+                        "source": cell.source,
+                        "metadata": dict(cell.metadata)
+                    }
+                    
+                    # Add execution info for code cells
+                    if cell.cell_type == "code":
+                        cell_data["execution_count"] = getattr(cell, 'execution_count', None)
+                        if hasattr(cell, 'outputs') and cell.outputs:
+                            cell_data["outputs"] = cell.outputs
+                    
+                    cells_data.append(cell_data)
+                
+                result = {
+                    "path": str(path),
+                    "mode": "range",
+                    "cells": cells_data,
+                    "start_index": start_index,
+                    "end_index": end_index,
+                    "cell_count": len(cells_data),
+                    "success": True
+                }
+                
+                logger.info(f"Successfully read {len(cells_data)} cells")
+                return result
             
-            logger.info(f"Successfully read {len(cells_data)} cells")
-            return result
+            # Mode LIST: Liste avec preview
+            elif mode == "list":
+                cells_info = []
+                for i, cell in enumerate(notebook.cells):
+                    # Get source text
+                    source_text = ''.join(cell.source) if isinstance(cell.source, list) else cell.source
+                    
+                    cell_info = {
+                        "index": i,
+                        "cell_type": cell.cell_type,
+                        "full_length": len(source_text)
+                    }
+                    
+                    # Add preview if requested
+                    if include_preview:
+                        preview = source_text[:preview_length] + "..." if len(source_text) > preview_length else source_text
+                        cell_info["preview"] = preview
+                    
+                    # Add execution info for code cells
+                    if cell.cell_type == "code":
+                        cell_info["execution_count"] = getattr(cell, 'execution_count', None)
+                        cell_info["has_outputs"] = hasattr(cell, 'outputs') and bool(cell.outputs)
+                    
+                    cells_info.append(cell_info)
+                
+                result = {
+                    "path": str(path),
+                    "mode": "list",
+                    "cells": cells_info,
+                    "cell_count": len(cells_info),
+                    "success": True
+                }
+                
+                logger.info(f"Successfully listed {len(cells_info)} cells")
+                return result
             
+            # Mode ALL: Toutes les cellules complètes
+            elif mode == "all":
+                cells_data = []
+                for i, cell in enumerate(notebook.cells):
+                    cell_data = {
+                        "index": i,
+                        "cell_type": cell.cell_type,
+                        "source": cell.source,
+                        "metadata": dict(cell.metadata)
+                    }
+                    
+                    # Add execution info for code cells
+                    if cell.cell_type == "code":
+                        cell_data["execution_count"] = getattr(cell, 'execution_count', None)
+                        if hasattr(cell, 'outputs') and cell.outputs:
+                            cell_data["outputs"] = cell.outputs
+                    
+                    cells_data.append(cell_data)
+                
+                result = {
+                    "path": str(path),
+                    "mode": "all",
+                    "cells": cells_data,
+                    "cell_count": len(cells_data),
+                    "success": True
+                }
+                
+                logger.info(f"Successfully read all {len(cells_data)} cells")
+                return result
+            
+            else:
+                raise ValueError(f"Invalid mode: {mode}. Must be 'single', 'range', 'list', or 'all'")
+                
         except Exception as e:
-            logger.error(f"Error reading cells range from notebook {path}: {e}")
+            logger.error(f"Error reading cells from notebook {path}: {e}")
             raise
     
     async def list_notebook_cells(self, path: Union[str, Path]) -> Dict[str, Any]:
         """
         Liste les cellules d'un notebook avec apercu du contenu.
+        
+        DEPRECATED: Use read_cells(path, mode="list") instead.
         
         Args:
             path: Path to notebook file
@@ -1217,45 +1326,8 @@ class NotebookService:
         Returns:
             Dictionary with cells information and preview
         """
-        try:
-            # Resolve path against workspace
-            resolved_path = Path(self.resolve_path(path))
-            logger.info(f"Listing cells from notebook: {path} -> {resolved_path}")
-            
-            # Read notebook
-            notebook = FileUtils.read_notebook(resolved_path)
-            
-            cells_info = []
-            for i, cell in enumerate(notebook.cells):
-                # Get source preview (first 100 characters)
-                source_text = ''.join(cell.source) if isinstance(cell.source, list) else cell.source
-                source_preview = source_text[:100] + "..." if len(source_text) > 100 else source_text
-                
-                cell_info = {
-                    "index": i,
-                    "cell_type": cell.cell_type,
-                    "source_preview": source_preview
-                }
-                
-                if cell.cell_type == "code":
-                    cell_info["execution_count"] = getattr(cell, 'execution_count', None)
-                    cell_info["has_outputs"] = hasattr(cell, 'outputs') and bool(cell.outputs)
-                
-                cells_info.append(cell_info)
-            
-            result = {
-                "path": str(path),
-                "total_cells": len(cells_info),
-                "cells": cells_info,
-                "success": True
-            }
-            
-            logger.info(f"Successfully listed {len(cells_info)} cells")
-            return result
-            
-        except Exception as e:
-            logger.error(f"Error listing cells from notebook {path}: {e}")
-            raise
+        logger.warning("list_notebook_cells is deprecated, use read_cells(mode='list') instead")
+        return await self.read_cells(path, mode="list")
     
     async def inspect_notebook_outputs(self, path: Union[str, Path]) -> Dict[str, Any]:
         """

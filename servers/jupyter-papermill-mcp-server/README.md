@@ -13,6 +13,16 @@ Un serveur MCP (Model Context Protocol) Python pour les opérations Jupyter Note
 - `add_cell` - Ajouter une cellule à un notebook
 - `remove_cell` - Supprimer une cellule d'un notebook
 - `update_cell` - Modifier une cellule d'un notebook
+- **`read_cells`** 🆕 - **Outil consolidé** pour lire des cellules (remplace `read_cell`, `read_cells_range`, `list_notebook_cells`)
+  - Mode `single` : Lire une cellule spécifique
+  - Mode `range` : Lire une plage de cellules
+  - Mode `list` : Lister les cellules avec preview
+  - Mode `all` : Récupérer toutes les cellules complètes
+
+##### 🔄 Outils Dépréciés (Compatibilité Maintenue)
+- `read_cell` ⚠️ DEPRECATED - Utiliser `read_cells(mode="single")` à la place
+- `read_cells_range` ⚠️ DEPRECATED - Utiliser `read_cells(mode="range")` à la place
+- `list_notebook_cells` ⚠️ DEPRECATED - Utiliser `read_cells(mode="list")` à la place
 
 #### ⚙️ Outils Kernel
 - `list_kernels` - Lister les kernels disponibles et actifs
@@ -169,6 +179,40 @@ async def main():
         path="example.ipynb",
         cell_type="code",
         source="print('Hello, World!')"
+    )
+    
+    # 🆕 Utiliser read_cells pour lire les cellules
+    # Mode single : lire une cellule spécifique
+    cell_result = await client.call_tool(
+        "read_cells",
+        path="example.ipynb",
+        mode="single",
+        index=0
+    )
+    
+    # Mode list : lister toutes les cellules avec preview
+    list_result = await client.call_tool(
+        "read_cells",
+        path="example.ipynb",
+        mode="list",
+        include_preview=True,
+        preview_length=100
+    )
+    
+    # Mode range : lire une plage de cellules
+    range_result = await client.call_tool(
+        "read_cells",
+        path="example.ipynb",
+        mode="range",
+        start_index=0,
+        end_index=2
+    )
+    
+    # Mode all : récupérer toutes les cellules complètes
+    all_result = await client.call_tool(
+        "read_cells",
+        path="example.ipynb",
+        mode="all"
     )
     
     # Démarrer un kernel et exécuter
