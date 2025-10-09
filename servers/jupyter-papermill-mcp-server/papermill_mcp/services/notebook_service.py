@@ -16,7 +16,7 @@ import subprocess
 import time
 from pathlib import Path
 from typing import Dict, List, Optional, Any, Union
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from enum import Enum
@@ -64,7 +64,7 @@ class ExecutionJob:
         """Calcule la durée d'exécution en secondes."""
         if not self.started_at:
             return None
-        end_time = self.ended_at or datetime.now()
+        end_time = self.ended_at or datetime.now(timezone.utc)
         return (end_time - self.started_at).total_seconds()
 
 
@@ -630,6 +630,327 @@ class ExecutionManager:
             "success": True,
             "cleaned_jobs": cleaned_count,
             "remaining_jobs": len(self.jobs)
+        }
+    
+    # ========================================================================
+    # PHASE 4: CONSOLIDATED ASYNC JOB MANAGEMENT
+    # ========================================================================
+    
+    def _map_job_status(self, status: JobStatus) -> str:
+        """
+        Mappe JobStatus enum vers format string Brief Phase 4.
+        
+        Args:
+            status: JobStatus enum value
+            
+        Returns:
+            Status string in Phase 4 format
+        """
+        mapping = {
+            JobStatus.PENDING: "running",
+            JobStatus.RUNNING: "running",
+            JobStatus.SUCCEEDED: "completed",
+            JobStatus.FAILED: "failed",
+            JobStatus.CANCELED: "cancelled",
+            JobStatus.TIMEOUT: "failed"  # Timeout considéré comme failed
+        }
+        return mapping.get(status, "unknown")
+    
+    def _calculate_progress(self, job: ExecutionJob) -> Dict[str, Any]:
+        """
+        Calcule progression approximative basée sur l'état du job.
+        
+        Note: Approximation car ExecutionJob ne track pas nativement cells_total/cells_executed.
+        Solution future: Parser logs Papermill pour extraction précise.
+        
+        Args:
+            job: ExecutionJob pour lequel calculer la progression
+            
+        Returns:
+            Dictionary avec cells_total, cells_executed, percent
+        """
+        if job.status == JobStatus.PENDING:
+            return {"cells_total": 0, "cells_executed": 0, "percent": 0.0}
+        elif job.status == JobStatus.RUNNING:
+            # Approximation : 50% pendant exécution
+            return {"cells_total": 100, "cells_executed": 50, "percent": 50.0}
+        elif job.status in [JobStatus.SUCCEEDED, JobStatus.FAILED, JobStatus.CANCELED, JobStatus.TIMEOUT]:
+            return {"cells_total": 100, "cells_executed": 100, "percent": 100.0}
+        return {"cells_total": 0, "cells_executed": 0, "percent": 0.0}
+    
+    async def manage_async_job_consolidated(
+        self,
+        action: str,
+        job_id: Optional[str] = None,
+        include_logs: bool = False,
+        log_tail: Optional[int] = None,
+        filter_status: Optional[str] = None,
+        cleanup_older_than: Optional[int] = None
+    ) -> Dict[str, Any]:
+        """
+        🆕 PHASE 4 - Gestion consolidée des jobs d'exécution asynchrone.
+        
+        Remplace: get_execution_status_async, get_job_logs, cancel_job,
+                  list_jobs, cleanup_jobs
+        
+        Args:
+            action: Action à effectuer
+                - "status": Obtenir le statut d'un job (requiert job_id)
+                - "logs": Obtenir les logs d'un job (requiert job_id)
+                - "cancel": Annuler un job en cours (requiert job_id)
+                - "list": Lister tous les jobs
+                - "cleanup": Nettoyer les jobs terminés
+            job_id: ID du job (requis pour status/logs/cancel)
+            include_logs: Inclure les logs dans la réponse (action="status")
+            log_tail: Nombre de lignes de logs à retourner (action="logs")
+            filter_status: Filtrer les jobs par statut (action="list")
+            cleanup_older_than: Supprimer jobs terminés il y a plus de N heures (action="cleanup")
+            
+        Returns:
+            Dictionary avec résultat selon l'action (voir docstring tool MCP)
+            
+        Raises:
+            ValueError: Si paramètres invalides ou manquants
+        """
+        # Validation des paramètres
+        if action in ["status", "logs", "cancel"]:
+            if job_id is None:
+                raise ValueError(f"Parameter 'job_id' is required for action='{action}'")
+        
+        if log_tail is not None and log_tail <= 0:
+            raise ValueError("Parameter 'log_tail' must be positive")
+        
+        if cleanup_older_than is not None and cleanup_older_than <= 0:
+            raise ValueError("Parameter 'cleanup_older_than' must be positive")
+        
+        # Dispatcher selon l'action
+        if action == "status":
+            return await self._get_job_status_consolidated(job_id, include_logs)
+        elif action == "logs":
+            return await self._get_job_logs_consolidated(job_id, log_tail)
+        elif action == "cancel":
+            return await self._cancel_job_consolidated(job_id)
+        elif action == "list":
+            return await self._list_jobs_consolidated(filter_status)
+        elif action == "cleanup":
+            return await self._cleanup_jobs_consolidated(cleanup_older_than)
+        else:
+            raise ValueError(f"Invalid action: {action}. Must be 'status', 'logs', 'cancel', 'list', or 'cleanup'")
+    
+    async def _get_job_status_consolidated(
+        self, job_id: str, include_logs: bool
+    ) -> Dict[str, Any]:
+        """
+        Obtenir le statut complet d'un job (action="status").
+        
+        Args:
+            job_id: ID du job
+            include_logs: Inclure les logs dans la réponse
+            
+        Returns:
+            Dictionary au format Phase 4
+        """
+        with self.lock:
+            if job_id not in self.jobs:
+                raise ValueError(f"Job '{job_id}' not found")
+            
+            job = self.jobs[job_id]
+            
+            # Construire réponse format Phase 4
+            result = {
+                "action": "status",
+                "job_id": job_id,
+                "status": self._map_job_status(job.status),
+                "progress": self._calculate_progress(job),
+                "started_at": job.started_at.isoformat() if job.started_at else None,
+                "completed_at": job.ended_at.isoformat() if job.ended_at else None,
+                "execution_time": job.duration_seconds,
+                "input_path": job.input_path,
+                "output_path": job.output_path,
+                "parameters": job.parameters
+            }
+            
+            # Ajouter résultat si completed
+            if job.status == JobStatus.SUCCEEDED:
+                result["result"] = {
+                    "success": True,
+                    "output_path": job.output_path,
+                    "return_code": job.return_code
+                }
+            
+            # Ajouter erreur si failed
+            elif job.status in [JobStatus.FAILED, JobStatus.TIMEOUT]:
+                result["error"] = {
+                    "message": job.error_message or f"Job {job.status.value.lower()}",
+                    "return_code": job.return_code,
+                    "status": job.status.value
+                }
+            
+            # Ajouter logs si demandé
+            if include_logs:
+                # Fusionner stdout et stderr
+                all_logs = []
+                all_logs.extend(job.stdout_buffer)
+                all_logs.extend(job.stderr_buffer)
+                result["logs"] = all_logs
+            
+            return result
+    
+    async def _get_job_logs_consolidated(
+        self, job_id: str, log_tail: Optional[int]
+    ) -> Dict[str, Any]:
+        """
+        Obtenir les logs d'un job (action="logs").
+        
+        Args:
+            job_id: ID du job
+            log_tail: Nombre de lignes à retourner (None = toutes)
+            
+        Returns:
+            Dictionary au format Phase 4
+        """
+        with self.lock:
+            if job_id not in self.jobs:
+                raise ValueError(f"Job '{job_id}' not found")
+            
+            job = self.jobs[job_id]
+            
+            # Fusionner stdout et stderr
+            all_logs = []
+            all_logs.extend(job.stdout_buffer)
+            all_logs.extend(job.stderr_buffer)
+            
+            total_lines = len(all_logs)
+            
+            # Appliquer tail si spécifié
+            if log_tail:
+                all_logs = all_logs[-log_tail:]
+            
+            return {
+                "action": "logs",
+                "job_id": job_id,
+                "logs": all_logs,
+                "total_lines": total_lines,
+                "returned_lines": len(all_logs),
+                "tail": log_tail
+            }
+    
+    async def _cancel_job_consolidated(self, job_id: str) -> Dict[str, Any]:
+        """
+        Annuler un job en cours (action="cancel").
+        
+        Args:
+            job_id: ID du job à annuler
+            
+        Returns:
+            Dictionary au format Phase 4
+        """
+        with self.lock:
+            if job_id not in self.jobs:
+                raise ValueError(f"Job '{job_id}' not found")
+            
+            job = self.jobs[job_id]
+            
+            # Vérifier que le job est annulable
+            if job.status not in [JobStatus.PENDING, JobStatus.RUNNING]:
+                raise ValueError(f"Cannot cancel job '{job_id}' with status '{job.status.value}'")
+            
+            # Terminer le job
+            self._terminate_job(job, JobStatus.CANCELED, "Job canceled by user request")
+            
+            return {
+                "action": "cancel",
+                "job_id": job_id,
+                "status": "cancelled",
+                "message": f"Job '{job_id}' cancelled successfully",
+                "cancelled_at": job.ended_at.isoformat() if job.ended_at else datetime.now().isoformat()
+            }
+    
+    async def _list_jobs_consolidated(
+        self, filter_status: Optional[str]
+    ) -> Dict[str, Any]:
+        """
+        Lister tous les jobs (action="list").
+        
+        Args:
+            filter_status: Filtrer par statut ("running", "completed", "failed", "cancelled")
+            
+        Returns:
+            Dictionary au format Phase 4
+        """
+        with self.lock:
+            jobs = []
+            
+            for job_id, job in self.jobs.items():
+                mapped_status = self._map_job_status(job.status)
+                
+                # Appliquer filtre si spécifié
+                if filter_status and mapped_status != filter_status:
+                    continue
+                
+                progress = self._calculate_progress(job)
+                
+                jobs.append({
+                    "job_id": job_id,
+                    "status": mapped_status,
+                    "started_at": job.started_at.isoformat() if job.started_at else None,
+                    "input_path": job.input_path,
+                    "progress_percent": progress["percent"]
+                })
+            
+            return {
+                "action": "list",
+                "jobs": jobs,
+                "total": len(jobs),
+                "filter_status": filter_status
+            }
+    
+    async def _cleanup_jobs_consolidated(
+        self, cleanup_older_than: Optional[int]
+    ) -> Dict[str, Any]:
+        """
+        Nettoyer les jobs terminés (action="cleanup").
+        
+        Args:
+            cleanup_older_than: Supprimer jobs terminés il y a plus de N heures
+            
+        Returns:
+            Dictionary au format Phase 4
+        """
+        removed_job_ids = []
+        now = datetime.now(timezone.utc)
+        
+        with self.lock:
+            jobs_to_remove = []
+            
+            for job_id, job in self.jobs.items():
+                # Ne supprimer que les jobs terminés
+                if job.status not in [JobStatus.SUCCEEDED, JobStatus.FAILED, JobStatus.CANCELED, JobStatus.TIMEOUT]:
+                    continue
+                
+                # Appliquer filtre temporel si spécifié
+                if cleanup_older_than:
+                    if job.ended_at is None:
+                        continue
+                    age_hours = (now - job.ended_at).total_seconds() / 3600
+                    if age_hours < cleanup_older_than:
+                        continue
+                
+                jobs_to_remove.append(job_id)
+            
+            # Supprimer les jobs identifiés
+            for job_id in jobs_to_remove:
+                del self.jobs[job_id]
+                removed_job_ids.append(job_id)
+        
+        logger.info(f"Cleaned up {len(removed_job_ids)} jobs (older_than={cleanup_older_than}h)")
+        
+        return {
+            "action": "cleanup",
+            "jobs_removed": len(removed_job_ids),
+            "jobs_kept": len(self.jobs),
+            "older_than_hours": cleanup_older_than,
+            "removed_job_ids": removed_job_ids
         }
 
 

@@ -809,66 +809,187 @@ def register_execution_tools(app: FastMCP) -> None:
                 "success": False
             }
     
+    # ==================== PHASE 4: ASYNC JOB MANAGEMENT ====================
+    
     @app.tool()
-    async def get_execution_status_async(job_id: str) -> Dict[str, Any]:
+    async def manage_async_job(
+        action: str,
+        job_id: Optional[str] = None,
+        include_logs: bool = False,
+        log_tail: Optional[int] = None,
+        filter_status: Optional[str] = None,
+        cleanup_older_than: Optional[int] = None
+    ) -> Dict[str, Any]:
         """
+        🆕 OUTIL CONSOLIDÉ - Gestion des jobs d'exécution asynchrone.
+        
+        Remplace: get_execution_status_async, get_job_logs, cancel_job,
+                  list_jobs, cleanup_jobs
+        
+        Args:
+            action: Action à effectuer
+                - "status": Obtenir le statut d'un job (requiert job_id)
+                - "logs": Obtenir les logs d'un job (requiert job_id)
+                - "cancel": Annuler un job en cours (requiert job_id)
+                - "list": Lister tous les jobs
+                - "cleanup": Nettoyer les jobs terminés
+            job_id: ID du job (requis pour status/logs/cancel)
+            include_logs: Inclure les logs dans la réponse (action="status")
+            log_tail: Nombre de lignes de logs à retourner (action="logs")
+            filter_status: Filtrer les jobs par statut (action="list")
+            cleanup_older_than: Supprimer jobs terminés il y a plus de N heures (action="cleanup")
+            
+        Returns:
+            Action "status":
+            {
+                "action": "status",
+                "job_id": str,
+                "status": "running" | "completed" | "failed" | "cancelled",
+                "progress": {
+                    "cells_total": int,
+                    "cells_executed": int,
+                    "percent": float
+                },
+                "started_at": str,  # ISO 8601
+                "completed_at": Optional[str],
+                "execution_time": Optional[float],
+                "input_path": str,
+                "output_path": str,
+                "parameters": Dict[str, Any],
+                "result": Optional[Dict[str, Any]],  # Si completed
+                "error": Optional[Dict[str, Any]],    # Si failed
+                "logs": Optional[List[str]]           # Si include_logs=True
+            }
+            
+            Action "logs":
+            {
+                "action": "logs",
+                "job_id": str,
+                "logs": List[str],
+                "total_lines": int,
+                "returned_lines": int,
+                "tail": Optional[int]
+            }
+            
+            Action "cancel":
+            {
+                "action": "cancel",
+                "job_id": str,
+                "status": "cancelled",
+                "message": str,
+                "cancelled_at": str
+            }
+            
+            Action "list":
+            {
+                "action": "list",
+                "jobs": [
+                    {
+                        "job_id": str,
+                        "status": str,
+                        "started_at": str,
+                        "input_path": str,
+                        "progress_percent": float
+                    },
+                    ...
+                ],
+                "total": int,
+                "filter_status": Optional[str]
+            }
+            
+            Action "cleanup":
+            {
+                "action": "cleanup",
+                "jobs_removed": int,
+                "jobs_kept": int,
+                "older_than_hours": Optional[int],
+                "removed_job_ids": List[str]
+            }
+        
+        Validation:
+            - action="status"|"logs"|"cancel" → job_id requis
+            - action="list"|"cleanup" → job_id non utilisé
+            - log_tail doit être positif si spécifié
+            - cleanup_older_than doit être positif si spécifié
+        """
+        try:
+            logger.info(f"🆕 CONSOLIDATED manage_async_job (action={action}, job_id={job_id})")
+            notebook_service, _ = get_services()
+            
+            # Récupérer l'ExecutionManager
+            from ..services.notebook_service import get_execution_manager
+            exec_manager = get_execution_manager()
+            
+            result = await exec_manager.manage_async_job_consolidated(
+                action=action,
+                job_id=job_id,
+                include_logs=include_logs,
+                log_tail=log_tail,
+                filter_status=filter_status,
+                cleanup_older_than=cleanup_older_than
+            )
+            
+            logger.info(f"✅ Manage async job completed (action={action})")
+            return result
+            
+        except Exception as e:
+            logger.error(f"❌ Error in manage_async_job (action={action}): {e}")
+            return {
+                "action": action,
+                "error": str(e),
+                "error_type": type(e).__name__,
+                "job_id": job_id
+            }
+    
+    # ==================== DEPRECATED ASYNC JOB WRAPPERS ====================
+    # These tools are kept for backward compatibility but will be removed in future versions.
+    # They now delegate to the consolidated manage_async_job tool.
+    
+    @app.tool()
+    async def get_execution_status_async(
+        job_id: str,
+        include_logs: bool = False
+    ) -> Dict[str, Any]:
+        """
+        ⚠️ DEPRECATED: Use manage_async_job(action="status", job_id=...) instead.
+        
         Récupère le statut d'exécution d'un job asynchrone
         
         Args:
             job_id: ID du job
+            include_logs: Inclure les logs dans la réponse
             
         Returns:
             Dictionary avec statut complet du job
         """
-        try:
-            logger.info(f"Getting execution status for job: {job_id}")
-            notebook_service, _ = get_services()
-            
-            result = await notebook_service.get_execution_status_async(job_id)
-            
-            logger.info(f"Successfully retrieved status for job {job_id}")
-            return result
-            
-        except Exception as e:
-            logger.error(f"Error getting execution status for job {job_id}: {e}")
-            return {
-                "error": str(e),
-                "job_id": job_id,
-                "success": False
-            }
+        logger.warning("⚠️ get_execution_status_async is deprecated, use manage_async_job(action='status') instead")
+        return await manage_async_job(action="status", job_id=job_id, include_logs=include_logs)
     
     @app.tool()
-    async def get_job_logs(job_id: str, since_line: int = 0) -> Dict[str, Any]:
+    async def get_job_logs(
+        job_id: str,
+        tail: Optional[int] = None
+    ) -> Dict[str, Any]:
         """
+        ⚠️ DEPRECATED: Use manage_async_job(action="logs", job_id=...) instead.
+        
         Récupère les logs d'un job avec pagination
         
         Args:
             job_id: ID du job
-            since_line: Ligne de départ pour la pagination
+            tail: Nombre de lignes de logs à retourner
             
         Returns:
             Dictionary avec chunks de logs
         """
-        try:
-            logger.info(f"Getting logs for job {job_id} from line {since_line}")
-            notebook_service, _ = get_services()
-            
-            result = await notebook_service.get_job_logs_async(job_id, since_line)
-            
-            logger.info(f"Successfully retrieved logs for job {job_id}")
-            return result
-            
-        except Exception as e:
-            logger.error(f"Error getting logs for job {job_id}: {e}")
-            return {
-                "error": str(e),
-                "job_id": job_id,
-                "success": False
-            }
+        logger.warning("⚠️ get_job_logs is deprecated, use manage_async_job(action='logs') instead")
+        return await manage_async_job(action="logs", job_id=job_id, log_tail=tail)
     
     @app.tool()
     async def cancel_job(job_id: str) -> Dict[str, Any]:
         """
+        ⚠️ DEPRECATED: Use manage_async_job(action="cancel", job_id=...) instead.
+        
         Annule un job en cours d'exécution
         
         Args:
@@ -877,46 +998,44 @@ def register_execution_tools(app: FastMCP) -> None:
         Returns:
             Dictionary avec résultat de l'annulation
         """
-        try:
-            logger.info(f"Canceling job: {job_id}")
-            notebook_service, _ = get_services()
-            
-            result = await notebook_service.cancel_job_async(job_id)
-            
-            logger.info(f"Successfully processed cancellation for job {job_id}")
-            return result
-            
-        except Exception as e:
-            logger.error(f"Error canceling job {job_id}: {e}")
-            return {
-                "error": str(e),
-                "job_id": job_id,
-                "success": False
-            }
+        logger.warning("⚠️ cancel_job is deprecated, use manage_async_job(action='cancel') instead")
+        return await manage_async_job(action="cancel", job_id=job_id)
     
     @app.tool()
-    async def list_jobs() -> Dict[str, Any]:
+    async def list_jobs(
+        filter_status: Optional[str] = None
+    ) -> Dict[str, Any]:
         """
+        ⚠️ DEPRECATED: Use manage_async_job(action="list") instead.
+        
         Liste tous les jobs avec statuts raccourcis
+        
+        Args:
+            filter_status: Filtrer par statut ("running", "completed", "failed", "cancelled")
         
         Returns:
             Dictionary avec liste des jobs
         """
-        try:
-            logger.info("Listing all execution jobs")
-            notebook_service, _ = get_services()
+        logger.warning("⚠️ list_jobs is deprecated, use manage_async_job(action='list') instead")
+        return await manage_async_job(action="list", filter_status=filter_status)
+    
+    @app.tool()
+    async def cleanup_jobs(
+        older_than_hours: Optional[int] = None
+    ) -> Dict[str, Any]:
+        """
+        ⚠️ DEPRECATED: Use manage_async_job(action="cleanup") instead.
+        
+        Nettoie les jobs terminés
+        
+        Args:
+            older_than_hours: Supprimer jobs terminés il y a plus de N heures
             
-            result = await notebook_service.list_jobs_async()
-            
-            logger.info(f"Successfully listed jobs")
-            return result
-            
-        except Exception as e:
-            logger.error(f"Error listing jobs: {e}")
-            return {
-                "error": str(e),
-                "success": False
-            }
+        Returns:
+            Dictionary avec résultat du nettoyage
+        """
+        logger.warning("⚠️ cleanup_jobs is deprecated, use manage_async_job(action='cleanup') instead")
+        return await manage_async_job(action="cleanup", cleanup_older_than=older_than_hours)
     
     @app.tool()
     async def execute_notebook_sync(

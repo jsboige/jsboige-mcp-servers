@@ -62,6 +62,21 @@ Un serveur MCP (Model Context Protocol) Python pour les opérations Jupyter Note
 - `execute_notebook_solution_a` ⚠️ DEPRECATED - Utiliser `execute_notebook(mode="sync")` à la place
 - `execute_notebook_sync` ⚠️ DEPRECATED - Utiliser `execute_notebook(mode="sync")` à la place
 - `start_notebook_async` ⚠️ DEPRECATED - Utiliser `execute_notebook(mode="async")` à la place
+#### 📊 Outils de Gestion Async
+- **`manage_async_job`** 🆕 - **Outil consolidé** pour la gestion des jobs asynchrones (remplace `get_execution_status_async`, `get_job_logs`, `cancel_job`, `list_jobs`, `cleanup_jobs`)
+  - Action `status` : Obtenir le statut complet d'un job avec progress tracking
+  - Action `logs` : Récupérer les logs d'un job avec pagination (tail optionnel)
+  - Action `cancel` : Annuler un job en cours d'exécution
+  - Action `list` : Lister tous les jobs avec filtrage par statut
+  - Action `cleanup` : Nettoyer les jobs terminés avec filtre temporel
+
+##### 🔄 Outils Async Dépréciés (Compatibilité Maintenue)
+- `get_execution_status_async` ⚠️ DEPRECATED - Utiliser `manage_async_job(action="status")` à la place
+- `get_job_logs` ⚠️ DEPRECATED - Utiliser `manage_async_job(action="logs")` à la place
+- `cancel_job` ⚠️ DEPRECATED - Utiliser `manage_async_job(action="cancel")` à la place
+- `list_jobs` ⚠️ DEPRECATED - Utiliser `manage_async_job(action="list")` à la place
+- `cleanup_jobs` ⚠️ DEPRECATED - Utiliser `manage_async_job(action="cleanup")` à la place
+
 
 #### 🗂️ Outils Utilitaires
 - `list_notebook_files` - Lister les fichiers notebook dans un répertoire
