@@ -7,6 +7,8 @@ using the JupyterManager for low-level kernel interactions.
 
 import asyncio
 import logging
+from datetime import datetime, timezone
+from pathlib import Path
 from typing import Dict, List, Optional, Any, Union, Literal
 
 from ..core.jupyter_manager import JupyterManager, ExecutionResult
@@ -170,6 +172,217 @@ class KernelService:
             
         except Exception as e:
             logger.error(f"Error restarting kernel {kernel_id}: {e}")
+    async def manage_kernel_consolidated(
+        self,
+        action: str,
+        kernel_name: Optional[str] = None,
+        kernel_id: Optional[str] = None,
+        working_dir: Optional[str] = None
+    ) -> Dict[str, Any]:
+        """
+        🆕 MÉTHODE CONSOLIDÉE - Gestion du cycle de vie des kernels Jupyter.
+        
+        Remplace: start_kernel, stop_kernel, interrupt_kernel, restart_kernel
+        
+        Args:
+            action: Action à effectuer sur le kernel
+                - "start": Démarrer un nouveau kernel
+                - "stop": Arrêter un kernel existant
+                - "interrupt": Interrompre l'exécution d'un kernel
+                - "restart": Redémarrer un kernel existant
+            kernel_name: Nom du kernel à démarrer (requis pour action="start")
+            kernel_id: ID du kernel (requis pour stop/interrupt/restart)
+            working_dir: Répertoire de travail (optionnel, pour action="start")
+            
+        Returns:
+            Dictionary avec les résultats selon l'action
+            
+        Raises:
+            ValueError: Si les paramètres requis manquent selon l'action
+            RuntimeError: Si l'opération kernel échoue
+        """
+        # Validation des paramètres selon l'action
+        if action == "start":
+            if kernel_name is None:
+                raise ValueError("Parameter 'kernel_name' is required for action='start'")
+        elif action in ["stop", "interrupt", "restart"]:
+            if kernel_id is None:
+                raise ValueError(f"Parameter 'kernel_id' is required for action='{action}'")
+        else:
+            raise ValueError(f"Invalid action: {action}. Must be 'start', 'stop', 'interrupt', or 'restart'")
+        
+        # Dispatcher selon l'action
+        if action == "start":
+            return await self._start_kernel_consolidated(kernel_name, working_dir)
+        elif action == "stop":
+            return await self._stop_kernel_consolidated(kernel_id)
+        elif action == "interrupt":
+            return await self._interrupt_kernel_consolidated(kernel_id)
+        elif action == "restart":
+            return await self._restart_kernel_consolidated(kernel_id)
+    
+    async def _start_kernel_consolidated(
+        self,
+        kernel_name: str,
+        working_dir: Optional[str] = None
+    ) -> Dict[str, Any]:
+        """
+        Méthode privée pour démarrer un kernel (version consolidée).
+        
+        Args:
+            kernel_name: Nom du kernel à démarrer
+            working_dir: Répertoire de travail optionnel
+            
+        Returns:
+            Dictionary avec informations de démarrage enrichies
+        """
+        try:
+            logger.info(f"Starting kernel (consolidated): {kernel_name}")
+            
+            # Appeler la méthode existante
+            result = await self.start_kernel(kernel_name)
+            
+            # Enrichir avec format consolidé
+            kernel_id = result["kernel_id"]
+            
+            # Récupérer les informations de connection si disponibles
+            connection_info = {}
+            if kernel_id in self.jupyter_manager._active_kernels:
+                km = self.jupyter_manager._active_kernels[kernel_id]
+                if hasattr(km, 'connection_file') and km.connection_file:
+                    try:
+                        import json
+                        with open(km.connection_file, 'r') as f:
+                            connection_info = json.load(f)
+                    except Exception as e:
+                        logger.warning(f"Could not read connection file: {e}")
+            
+            consolidated_result = {
+                "action": "start",
+                "kernel_id": kernel_id,
+                "kernel_name": kernel_name,
+                "status": "started",
+                "working_dir": working_dir or str(Path.cwd()) if working_dir else None,
+                "connection_info": connection_info,
+                "started_at": datetime.now(timezone.utc).isoformat(),
+                "success": True
+            }
+            
+            logger.info(f"Successfully started kernel {kernel_name} with ID {kernel_id} (consolidated)")
+            return consolidated_result
+            
+        except Exception as e:
+            logger.error(f"Error starting kernel {kernel_name} (consolidated): {e}")
+            raise
+    
+    async def _stop_kernel_consolidated(self, kernel_id: str) -> Dict[str, Any]:
+        """
+        Méthode privée pour arrêter un kernel (version consolidée).
+        
+        Args:
+            kernel_id: ID du kernel à arrêter
+            
+        Returns:
+            Dictionary avec résultat de l'arrêt enrichi
+        """
+        try:
+            logger.info(f"Stopping kernel (consolidated): {kernel_id}")
+            
+            # Appeler la méthode existante
+            result = await self.stop_kernel(kernel_id)
+            
+            # Enrichir avec format consolidé
+            consolidated_result = {
+                "action": "stop",
+                "kernel_id": kernel_id,
+                "status": "stopped",
+                "message": f"Kernel {kernel_id} stopped successfully",
+                "stopped_at": datetime.now(timezone.utc).isoformat(),
+                "success": True
+            }
+            
+            logger.info(f"Successfully stopped kernel {kernel_id} (consolidated)")
+            return consolidated_result
+            
+        except Exception as e:
+            logger.error(f"Error stopping kernel {kernel_id} (consolidated): {e}")
+            raise
+    
+    async def _interrupt_kernel_consolidated(self, kernel_id: str) -> Dict[str, Any]:
+        """
+        Méthode privée pour interrompre un kernel (version consolidée).
+        
+        Args:
+            kernel_id: ID du kernel à interrompre
+            
+        Returns:
+            Dictionary avec résultat de l'interruption enrichi
+        """
+        try:
+            logger.info(f"Interrupting kernel (consolidated): {kernel_id}")
+            
+            # Appeler la méthode existante
+            result = await self.interrupt_kernel(kernel_id)
+            
+            # Enrichir avec format consolidé
+            consolidated_result = {
+                "action": "interrupt",
+                "kernel_id": kernel_id,
+                "status": "interrupted",
+                "message": f"Kernel {kernel_id} interrupted successfully",
+                "interrupted_at": datetime.now(timezone.utc).isoformat(),
+                "success": True
+            }
+            
+            logger.info(f"Successfully interrupted kernel {kernel_id} (consolidated)")
+            return consolidated_result
+            
+        except Exception as e:
+            logger.error(f"Error interrupting kernel {kernel_id} (consolidated): {e}")
+            raise
+    
+    async def _restart_kernel_consolidated(self, kernel_id: str) -> Dict[str, Any]:
+        """
+        Méthode privée pour redémarrer un kernel (version consolidée).
+        
+        Args:
+            kernel_id: ID du kernel à redémarrer
+            
+        Returns:
+            Dictionary avec résultat du redémarrage enrichi (inclut old_kernel_id)
+        """
+        try:
+            logger.info(f"Restarting kernel (consolidated): {kernel_id}")
+            
+            # Récupérer le kernel_name avant restart
+            kernel_name = "unknown"
+            if kernel_id in self.jupyter_manager._kernel_info:
+                kernel_name = self.jupyter_manager._kernel_info[kernel_id].kernel_name
+            
+            # Appeler la méthode existante
+            result = await self.restart_kernel(kernel_id)
+            
+            # Enrichir avec format consolidé
+            new_kernel_id = result["kernel_id"]
+            
+            consolidated_result = {
+                "action": "restart",
+                "kernel_id": new_kernel_id,
+                "old_kernel_id": kernel_id,
+                "status": "restarted",
+                "kernel_name": kernel_name,
+                "message": f"Kernel {kernel_id} restarted successfully as {new_kernel_id}",
+                "restarted_at": datetime.now(timezone.utc).isoformat(),
+                "success": True
+            }
+            
+            logger.info(f"Successfully restarted kernel {kernel_id} -> {new_kernel_id} (consolidated)")
+            return consolidated_result
+            
+        except Exception as e:
+            logger.error(f"Error restarting kernel {kernel_id} (consolidated): {e}")
+            raise
+
             raise
     
     async def execute_cell(self, kernel_id: str, code: str, timeout: float = 60.0) -> Dict[str, Any]:

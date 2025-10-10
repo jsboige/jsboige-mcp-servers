@@ -98,33 +98,27 @@ def register_kernel_tools(app: FastMCP) -> None:
             }
     
     @app.tool()
-    async def start_kernel(kernel_name: str = "python3") -> Dict[str, Any]:
+    async def start_kernel(kernel_name: str = "python3", working_dir: Optional[str] = None) -> Dict[str, Any]:
         """
+        ⚠️ DEPRECATED: Use manage_kernel(action="start", kernel_name=...) instead.
+        
         Demarre un nouveau kernel
         
         Args:
             kernel_name: Nom du kernel a demarrer (ex: python3)
+            working_dir: Répertoire de travail (optionnel)
             
         Returns:
             Information sur le kernel demarre
         """
-        try:
-            logger.info(f"Starting kernel: {kernel_name}")
-            service = get_kernel_service()
-            result = await service.start_kernel(kernel_name)
-            logger.info(f"Successfully started kernel: {kernel_name}")
-            return result
-        except Exception as e:
-            logger.error(f"Error starting kernel {kernel_name}: {e}")
-            return {
-                "error": str(e),
-                "kernel_name": kernel_name,
-                "success": False
-            }
+        logger.warning("start_kernel is deprecated, use manage_kernel(action='start') instead")
+        return await manage_kernel(action="start", kernel_name=kernel_name, working_dir=working_dir)
     
     @app.tool()
     async def stop_kernel(kernel_id: str) -> Dict[str, Any]:
         """
+        ⚠️ DEPRECATED: Use manage_kernel(action="stop", kernel_id=...) instead.
+        
         Arrete un kernel actif
         
         Args:
@@ -133,23 +127,14 @@ def register_kernel_tools(app: FastMCP) -> None:
         Returns:
             Resultat de l'arret du kernel
         """
-        try:
-            logger.info(f"Stopping kernel: {kernel_id}")
-            service = get_kernel_service()
-            result = await service.stop_kernel(kernel_id)
-            logger.info(f"Successfully stopped kernel: {kernel_id}")
-            return result
-        except Exception as e:
-            logger.error(f"Error stopping kernel {kernel_id}: {e}")
-            return {
-                "error": str(e),
-                "kernel_id": kernel_id,
-                "success": False
-            }
+        logger.warning("stop_kernel is deprecated, use manage_kernel(action='stop') instead")
+        return await manage_kernel(action="stop", kernel_id=kernel_id)
     
     @app.tool()
     async def interrupt_kernel(kernel_id: str) -> Dict[str, Any]:
         """
+        ⚠️ DEPRECATED: Use manage_kernel(action="interrupt", kernel_id=...) instead.
+        
         Interrompt l'execution d'un kernel
         
         Args:
@@ -158,23 +143,14 @@ def register_kernel_tools(app: FastMCP) -> None:
         Returns:
             Resultat de l'interruption
         """
-        try:
-            logger.info(f"Interrupting kernel: {kernel_id}")
-            service = get_kernel_service()
-            result = await service.interrupt_kernel(kernel_id)
-            logger.info(f"Successfully interrupted kernel: {kernel_id}")
-            return result
-        except Exception as e:
-            logger.error(f"Error interrupting kernel {kernel_id}: {e}")
-            return {
-                "error": str(e),
-                "kernel_id": kernel_id,
-                "success": False
-            }
+        logger.warning("interrupt_kernel is deprecated, use manage_kernel(action='interrupt') instead")
+        return await manage_kernel(action="interrupt", kernel_id=kernel_id)
     
     @app.tool()
     async def restart_kernel(kernel_id: str) -> Dict[str, Any]:
         """
+        ⚠️ DEPRECATED: Use manage_kernel(action="restart", kernel_id=...) instead.
+        
         Redemarre un kernel
         
         Args:
@@ -183,19 +159,8 @@ def register_kernel_tools(app: FastMCP) -> None:
         Returns:
             Information sur le kernel redemarre
         """
-        try:
-            logger.info(f"Restarting kernel: {kernel_id}")
-            service = get_kernel_service()
-            result = await service.restart_kernel(kernel_id)
-            logger.info(f"Successfully restarted kernel: {kernel_id}")
-            return result
-        except Exception as e:
-            logger.error(f"Error restarting kernel {kernel_id}: {e}")
-            return {
-                "error": str(e),
-                "kernel_id": kernel_id,
-                "success": False
-            }
+        logger.warning("restart_kernel is deprecated, use manage_kernel(action='restart') instead")
+        return await manage_kernel(action="restart", kernel_id=kernel_id)
     
     @app.tool()
     async def execute_cell(kernel_id: str, code: str) -> Dict[str, Any]:
@@ -363,6 +328,112 @@ def register_kernel_tools(app: FastMCP) -> None:
                 "mode": mode,
                 "success": False
             }
+    
+    @app.tool()
+    async def manage_kernel(
+        action: Literal["start", "stop", "interrupt", "restart"],
+        kernel_name: Optional[str] = None,
+        kernel_id: Optional[str] = None,
+        working_dir: Optional[str] = None
+    ) -> Dict[str, Any]:
+        """
+        🆕 OUTIL CONSOLIDÉ - Gestion du cycle de vie des kernels Jupyter.
+        
+        Remplace: start_kernel, stop_kernel, interrupt_kernel, restart_kernel
+        
+        Args:
+            action: Action à effectuer sur le kernel
+                - "start": Démarrer un nouveau kernel
+                - "stop": Arrêter un kernel existant
+                - "interrupt": Interrompre l'exécution d'un kernel
+                - "restart": Redémarrer un kernel existant
+            kernel_name: Nom du kernel à démarrer (requis pour action="start")
+            kernel_id: ID du kernel (requis pour stop/interrupt/restart)
+            working_dir: Répertoire de travail (optionnel, pour action="start")
+            
+        Returns:
+            Action "start":
+            {
+                "action": "start",
+                "kernel_id": str,
+                "kernel_name": str,
+                "status": "started",
+                "working_dir": Optional[str],
+                "connection_info": dict,
+                "started_at": str,  # ISO 8601
+                "success": bool
+            }
+            
+            Action "stop":
+            {
+                "action": "stop",
+                "kernel_id": str,
+                "status": "stopped",
+                "message": str,
+                "stopped_at": str,
+                "success": bool
+            }
+            
+            Action "interrupt":
+            {
+                "action": "interrupt",
+                "kernel_id": str,
+                "status": "interrupted",
+                "message": str,
+                "interrupted_at": str,
+                "success": bool
+            }
+            
+            Action "restart":
+            {
+                "action": "restart",
+                "kernel_id": str,
+                "old_kernel_id": str,
+                "status": "restarted",
+                "kernel_name": str,
+                "message": str,
+                "restarted_at": str,
+                "success": bool
+            }
+        
+        Validation:
+            - action="start" → kernel_name requis
+            - action="stop"|"interrupt"|"restart" → kernel_id requis
+            - kernel_id doit exister pour stop/interrupt/restart
+        """
+        try:
+            logger.info(f"Managing kernel with action: {action}")
+            service = get_kernel_service()
+            result = await service.manage_kernel_consolidated(
+                action=action,
+                kernel_name=kernel_name,
+                kernel_id=kernel_id,
+                working_dir=working_dir
+            )
+            logger.info(f"Successfully managed kernel with action: {action}")
+            return result
+        except Exception as e:
+            logger.error(f"Error managing kernel with action {action}: {e}")
+            return {
+                "error": str(e),
+                "action": action,
+                "success": False
+            }
+    
+    # ============================================================================
+    # WRAPPERS DEPRECATED - Backward Compatibility
+    # ============================================================================
+    
+    # Note: Les outils start_kernel, stop_kernel, interrupt_kernel, restart_kernel
+    # sont maintenant des wrappers deprecated qui appellent manage_kernel.
+    # Ils seront retirés dans une version future (après période de dépréciation).
+    
+    # Les outils originaux (lignes 100-198) doivent être remplacés par ces wrappers:
+    
+    # Wrapper pour start_kernel est déjà défini ligne 100-123, on le modifie
+    # Wrapper pour stop_kernel est déjà défini ligne 125-148, on le modifie
+    # Wrapper pour interrupt_kernel est déjà défini ligne 150-173, on le modifie
+    # Wrapper pour restart_kernel est déjà défini ligne 175-198, on le modifie
     
     
     logger.info("Registered kernel tools")
