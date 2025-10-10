@@ -310,95 +310,102 @@ def register_notebook_tools(app: FastMCP) -> None:
                 "success": False
             }
     
-    @app.tool()
-    async def read_cell(path: str, index: int) -> Dict[str, Any]:
-        """
-        Lit une cellule specifique d'un notebook
-        
-        ⚠️ DEPRECATED: Use read_cells(path, mode="single", index=...) instead.
-        
-        Args:
-            path: Chemin du fichier notebook (.ipynb)
-            index: Index de la cellule a lire (0-based)
-            
-        Returns:
-            Informations detaillees sur la cellule
-        """
-        logger.warning("read_cell is deprecated, use read_cells(mode='single', index=...) instead")
-        try:
-            logger.info(f"Reading cell {index} from notebook: {path}")
-            service = get_notebook_service()
-            result = await service.read_cells(path, mode="single", index=index)
-            logger.info(f"Successfully read cell {index} from notebook: {path}")
-            return result
-        except Exception as e:
-            logger.error(f"Error reading cell {index} from notebook {path}: {e}")
-            return {
-                "error": str(e),
-                "path": path,
-                "index": index,
-                "success": False
-            }
+    # ============================================================================
+    # DEPRECATED WRAPPERS - Commentés Phase 6c (2025-10-10)
+    # Ces wrappers ont été remplacés par les outils consolidés (Phase 1A + 1B).
+    # Code conservé pour référence historique et possibilité de rollback.
+    # NE PAS DÉCOMMENTER sans validation architecture.
+    # ============================================================================
     
-    @app.tool()
-    async def read_cells_range(path: str, start_index: int, end_index: Optional[int] = None) -> Dict[str, Any]:
-        """
-        Lit une plage de cellules d'un notebook
-        
-        ⚠️ DEPRECATED: Use read_cells(path, mode="range", start_index=..., end_index=...) instead.
-        
-        Args:
-            path: Chemin du fichier notebook (.ipynb)
-            start_index: Index de debut (0-based, inclus)
-            end_index: Index de fin (0-based, inclus). Si None, lit jusqu'a la fin
-            
-        Returns:
-            Informations sur les cellules dans la plage
-        """
-        logger.warning("read_cells_range is deprecated, use read_cells(mode='range', start_index=..., end_index=...) instead")
-        try:
-            logger.info(f"Reading cells range {start_index}-{end_index} from notebook: {path}")
-            service = get_notebook_service()
-            result = await service.read_cells(path, mode="range", start_index=start_index, end_index=end_index)
-            logger.info(f"Successfully read cells range from notebook: {path}")
-            return result
-        except Exception as e:
-            logger.error(f"Error reading cells range from notebook {path}: {e}")
-            return {
-                "error": str(e),
-                "path": path,
-                "start_index": start_index,
-                "end_index": end_index,
-                "success": False
-            }
+    # @app.tool()
+    # async def read_cell(path: str, index: int) -> Dict[str, Any]:
+    #     """
+    #     Lit une cellule specifique d'un notebook
+    #
+    #     ⚠️ DEPRECATED: Use read_cells(path, mode="single", index=...) instead.
+    #
+    #     Args:
+    #         path: Chemin du fichier notebook (.ipynb)
+    #         index: Index de la cellule a lire (0-based)
+    #
+    #     Returns:
+    #         Informations detaillees sur la cellule
+    #     """
+    #     logger.warning("read_cell is deprecated, use read_cells(mode='single', index=...) instead")
+    #     try:
+    #         logger.info(f"Reading cell {index} from notebook: {path}")
+    #         service = get_notebook_service()
+    #         result = await service.read_cells(path, mode="single", index=index)
+    #         logger.info(f"Successfully read cell {index} from notebook: {path}")
+    #         return result
+    #     except Exception as e:
+    #         logger.error(f"Error reading cell {index} from notebook {path}: {e}")
+    #         return {
+    #             "error": str(e),
+    #             "path": path,
+    #             "index": index,
+    #             "success": False
+    #         }
     
-    @app.tool()
-    async def list_notebook_cells(path: str) -> Dict[str, Any]:
-        """
-        Liste les cellules d'un notebook avec apercu du contenu
-        
-        ⚠️ DEPRECATED: Use read_cells(path, mode="list") instead.
-        
-        Args:
-            path: Chemin du fichier notebook (.ipynb)
-            
-        Returns:
-            Liste detaillee des cellules avec preview
-        """
-        logger.warning("list_notebook_cells is deprecated, use read_cells(mode='list') instead")
-        try:
-            logger.info(f"Listing cells from notebook: {path}")
-            service = get_notebook_service()
-            result = await service.read_cells(path, mode="list")
-            logger.info(f"Successfully listed cells from notebook: {path}")
-            return result
-        except Exception as e:
-            logger.error(f"Error listing cells from notebook {path}: {e}")
-            return {
-                "error": str(e),
-                "path": path,
-                "success": False
-            }
+    # @app.tool()
+    # async def read_cells_range(path: str, start_index: int, end_index: Optional[int] = None) -> Dict[str, Any]:
+    #     """
+    #     Lit une plage de cellules d'un notebook
+    #
+    #     ⚠️ DEPRECATED: Use read_cells(path, mode="range", start_index=..., end_index=...) instead.
+    #
+    #     Args:
+    #         path: Chemin du fichier notebook (.ipynb)
+    #         start_index: Index de debut (0-based, inclus)
+    #         end_index: Index de fin (0-based, inclus). Si None, lit jusqu'a la fin
+    #
+    #     Returns:
+    #         Informations sur les cellules dans la plage
+    #     """
+    #     logger.warning("read_cells_range is deprecated, use read_cells(mode='range', start_index=..., end_index=...) instead")
+    #     try:
+    #         logger.info(f"Reading cells range {start_index}-{end_index} from notebook: {path}")
+    #         service = get_notebook_service()
+    #         result = await service.read_cells(path, mode="range", start_index=start_index, end_index=end_index)
+    #         logger.info(f"Successfully read cells range from notebook: {path}")
+    #         return result
+    #     except Exception as e:
+    #         logger.error(f"Error reading cells range from notebook {path}: {e}")
+    #         return {
+    #             "error": str(e),
+    #             "path": path,
+    #             "start_index": start_index,
+    #             "end_index": end_index,
+    #             "success": False
+    #         }
+    
+    # @app.tool()
+    # async def list_notebook_cells(path: str) -> Dict[str, Any]:
+    #     """
+    #     Liste les cellules d'un notebook avec apercu du contenu
+    #
+    #     ⚠️ DEPRECATED: Use read_cells(path, mode="list") instead.
+    #
+    #     Args:
+    #         path: Chemin du fichier notebook (.ipynb)
+    #
+    #     Returns:
+    #         Liste detaillee des cellules avec preview
+    #     """
+    #     logger.warning("list_notebook_cells is deprecated, use read_cells(mode='list') instead")
+    #     try:
+    #         logger.info(f"Listing cells from notebook: {path}")
+    #         service = get_notebook_service()
+    #         result = await service.read_cells(path, mode="list")
+    #         logger.info(f"Successfully listed cells from notebook: {path}")
+    #         return result
+    #     except Exception as e:
+    #         logger.error(f"Error listing cells from notebook {path}: {e}")
+    #         return {
+    #             "error": str(e),
+    #             "path": path,
+    #             "success": False
+    #         }
     
     @app.tool()
     async def inspect_notebook(
@@ -450,89 +457,89 @@ def register_notebook_tools(app: FastMCP) -> None:
                 "success": False
             }
     
-    @app.tool()
-    async def get_notebook_metadata(path: str) -> Dict[str, Any]:
-        """
-        Recupere les metadonnees completes d'un notebook
-        
-        ⚠️ DEPRECATED: Use inspect_notebook(path, mode="metadata") instead.
-        
-        Args:
-            path: Chemin du fichier notebook (.ipynb)
-            
-        Returns:
-            Metadonnees completes du notebook
-        """
-        logger.warning("get_notebook_metadata is deprecated, use inspect_notebook(mode='metadata') instead")
-        try:
-            logger.info(f"Getting metadata from notebook: {path}")
-            service = get_notebook_service()
-            result = await service.get_notebook_metadata(path)
-            logger.info(f"Successfully got metadata from notebook: {path}")
-            return result
-        except Exception as e:
-            logger.error(f"Error getting metadata from notebook {path}: {e}")
-            return {
-                "error": str(e),
-                "path": path,
-                "success": False
-            }
+    # @app.tool()
+    # async def get_notebook_metadata(path: str) -> Dict[str, Any]:
+    #     """
+    #     Recupere les metadonnees completes d'un notebook
+    #
+    #     ⚠️ DEPRECATED: Use inspect_notebook(path, mode="metadata") instead.
+    #
+    #     Args:
+    #         path: Chemin du fichier notebook (.ipynb)
+    #
+    #     Returns:
+    #         Metadonnees completes du notebook
+    #     """
+    #     logger.warning("get_notebook_metadata is deprecated, use inspect_notebook(mode='metadata') instead")
+    #     try:
+    #         logger.info(f"Getting metadata from notebook: {path}")
+    #         service = get_notebook_service()
+    #         result = await service.get_notebook_metadata(path)
+    #         logger.info(f"Successfully got metadata from notebook: {path}")
+    #         return result
+    #     except Exception as e:
+    #         logger.error(f"Error getting metadata from notebook {path}: {e}")
+    #         return {
+    #             "error": str(e),
+    #             "path": path,
+    #             "success": False
+    #         }
     
-    @app.tool()
-    async def inspect_notebook_outputs(path: str) -> Dict[str, Any]:
-        """
-        Inspecte les sorties des cellules d'un notebook
-        
-        ⚠️ DEPRECATED: Use inspect_notebook(path, mode="outputs") instead.
-        
-        Args:
-            path: Chemin du fichier notebook (.ipynb)
-            
-        Returns:
-            Inspection detaillee des outputs de chaque cellule
-        """
-        logger.warning("inspect_notebook_outputs is deprecated, use inspect_notebook(mode='outputs') instead")
-        try:
-            logger.info(f"Inspecting outputs from notebook: {path}")
-            service = get_notebook_service()
-            result = await service.inspect_notebook_outputs(path)
-            logger.info(f"Successfully inspected outputs from notebook: {path}")
-            return result
-        except Exception as e:
-            logger.error(f"Error inspecting outputs from notebook {path}: {e}")
-            return {
-                "error": str(e),
-                "path": path,
-                "success": False
-            }
+    # @app.tool()
+    # async def inspect_notebook_outputs(path: str) -> Dict[str, Any]:
+    #     """
+    #     Inspecte les sorties des cellules d'un notebook
+    #
+    #     ⚠️ DEPRECATED: Use inspect_notebook(path, mode="outputs") instead.
+    #
+    #     Args:
+    #         path: Chemin du fichier notebook (.ipynb)
+    #
+    #     Returns:
+    #         Inspection detaillee des outputs de chaque cellule
+    #     """
+    #     logger.warning("inspect_notebook_outputs is deprecated, use inspect_notebook(mode='outputs') instead")
+    #     try:
+    #         logger.info(f"Inspecting outputs from notebook: {path}")
+    #         service = get_notebook_service()
+    #         result = await service.inspect_notebook_outputs(path)
+    #         logger.info(f"Successfully inspected outputs from notebook: {path}")
+    #         return result
+    #     except Exception as e:
+    #         logger.error(f"Error inspecting outputs from notebook {path}: {e}")
+    #         return {
+    #             "error": str(e),
+    #             "path": path,
+    #             "success": False
+    #         }
     
-    @app.tool()
-    async def validate_notebook(path: str) -> Dict[str, Any]:
-        """
-        Valide la structure d'un notebook Jupyter
-        
-        ⚠️ DEPRECATED: Use inspect_notebook(path, mode="validate") instead.
-        
-        Args:
-            path: Chemin du fichier notebook (.ipynb)
-            
-        Returns:
-            Resultat de la validation avec problemes detectes
-        """
-        logger.warning("validate_notebook is deprecated, use inspect_notebook(mode='validate') instead")
-        try:
-            logger.info(f"Validating notebook: {path}")
-            service = get_notebook_service()
-            result = await service.validate_notebook(path)
-            logger.info(f"Successfully validated notebook: {path}")
-            return result
-        except Exception as e:
-            logger.error(f"Error validating notebook {path}: {e}")
-            return {
-                "error": str(e),
-                "path": path,
-                "success": False
-            }
+    # @app.tool()
+    # async def validate_notebook(path: str) -> Dict[str, Any]:
+    #     """
+    #     Valide la structure d'un notebook Jupyter
+    #
+    #     ⚠️ DEPRECATED: Use inspect_notebook(path, mode="validate") instead.
+    #
+    #     Args:
+    #         path: Chemin du fichier notebook (.ipynb)
+    #
+    #     Returns:
+    #         Resultat de la validation avec problemes detectes
+    #     """
+    #     logger.warning("validate_notebook is deprecated, use inspect_notebook(mode='validate') instead")
+    #     try:
+    #         logger.info(f"Validating notebook: {path}")
+    #         service = get_notebook_service()
+    #         result = await service.validate_notebook(path)
+    #         logger.info(f"Successfully validated notebook: {path}")
+    #         return result
+    #     except Exception as e:
+    #         logger.error(f"Error validating notebook {path}: {e}")
+    #         return {
+    #             "error": str(e),
+    #             "path": path,
+    #             "success": False
+    #         }
     
     @app.tool()
     async def system_info() -> Dict[str, Any]:

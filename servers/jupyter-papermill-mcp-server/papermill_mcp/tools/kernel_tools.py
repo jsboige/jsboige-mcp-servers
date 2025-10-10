@@ -97,122 +97,129 @@ def register_kernel_tools(app: FastMCP) -> None:
                 "success": False
             }
     
-    @app.tool()
-    async def start_kernel(kernel_name: str = "python3", working_dir: Optional[str] = None) -> Dict[str, Any]:
-        """
-        ⚠️ DEPRECATED: Use manage_kernel(action="start", kernel_name=...) instead.
-        
-        Demarre un nouveau kernel
-        
-        Args:
-            kernel_name: Nom du kernel a demarrer (ex: python3)
-            working_dir: Répertoire de travail (optionnel)
-            
-        Returns:
-            Information sur le kernel demarre
-        """
-        logger.warning("start_kernel is deprecated, use manage_kernel(action='start') instead")
-        return await manage_kernel(action="start", kernel_name=kernel_name, working_dir=working_dir)
+    # ============================================================================
+    # DEPRECATED WRAPPERS - Commentés Phase 6c (2025-10-10)
+    # Ces wrappers ont été remplacés par les outils consolidés (Phase 5 + Phase 2).
+    # Code conservé pour référence historique et possibilité de rollback.
+    # NE PAS DÉCOMMENTER sans validation architecture.
+    # ============================================================================
     
-    @app.tool()
-    async def stop_kernel(kernel_id: str) -> Dict[str, Any]:
-        """
-        ⚠️ DEPRECATED: Use manage_kernel(action="stop", kernel_id=...) instead.
-        
-        Arrete un kernel actif
-        
-        Args:
-            kernel_id: ID du kernel a arreter
-            
-        Returns:
-            Resultat de l'arret du kernel
-        """
-        logger.warning("stop_kernel is deprecated, use manage_kernel(action='stop') instead")
-        return await manage_kernel(action="stop", kernel_id=kernel_id)
+    # @app.tool()
+    # async def start_kernel(kernel_name: str = "python3", working_dir: Optional[str] = None) -> Dict[str, Any]:
+    #     """
+    #     ⚠️ DEPRECATED: Use manage_kernel(action="start", kernel_name=...) instead.
+    #
+    #     Demarre un nouveau kernel
+    #
+    #     Args:
+    #         kernel_name: Nom du kernel a demarrer (ex: python3)
+    #         working_dir: Répertoire de travail (optionnel)
+    #
+    #     Returns:
+    #         Information sur le kernel demarre
+    #     """
+    #     logger.warning("start_kernel is deprecated, use manage_kernel(action='start') instead")
+    #     return await manage_kernel(action="start", kernel_name=kernel_name, working_dir=working_dir)
     
-    @app.tool()
-    async def interrupt_kernel(kernel_id: str) -> Dict[str, Any]:
-        """
-        ⚠️ DEPRECATED: Use manage_kernel(action="interrupt", kernel_id=...) instead.
-        
-        Interrompt l'execution d'un kernel
-        
-        Args:
-            kernel_id: ID du kernel a interrompre
-            
-        Returns:
-            Resultat de l'interruption
-        """
-        logger.warning("interrupt_kernel is deprecated, use manage_kernel(action='interrupt') instead")
-        return await manage_kernel(action="interrupt", kernel_id=kernel_id)
+    # @app.tool()
+    # async def stop_kernel(kernel_id: str) -> Dict[str, Any]:
+    #     """
+    #     ⚠️ DEPRECATED: Use manage_kernel(action="stop", kernel_id=...) instead.
+    #
+    #     Arrete un kernel actif
+    #
+    #     Args:
+    #         kernel_id: ID du kernel a arreter
+    #
+    #     Returns:
+    #         Resultat de l'arret du kernel
+    #     """
+    #     logger.warning("stop_kernel is deprecated, use manage_kernel(action='stop') instead")
+    #     return await manage_kernel(action="stop", kernel_id=kernel_id)
     
-    @app.tool()
-    async def restart_kernel(kernel_id: str) -> Dict[str, Any]:
-        """
-        ⚠️ DEPRECATED: Use manage_kernel(action="restart", kernel_id=...) instead.
-        
-        Redemarre un kernel
-        
-        Args:
-            kernel_id: ID du kernel a redemarrer
-            
-        Returns:
-            Information sur le kernel redemarre
-        """
-        logger.warning("restart_kernel is deprecated, use manage_kernel(action='restart') instead")
-        return await manage_kernel(action="restart", kernel_id=kernel_id)
+    # @app.tool()
+    # async def interrupt_kernel(kernel_id: str) -> Dict[str, Any]:
+    #     """
+    #     ⚠️ DEPRECATED: Use manage_kernel(action="interrupt", kernel_id=...) instead.
+    #
+    #     Interrompt l'execution d'un kernel
+    #
+    #     Args:
+    #         kernel_id: ID du kernel a interrompre
+    #
+    #     Returns:
+    #         Resultat de l'interruption
+    #     """
+    #     logger.warning("interrupt_kernel is deprecated, use manage_kernel(action='interrupt') instead")
+    #     return await manage_kernel(action="interrupt", kernel_id=kernel_id)
     
-    @app.tool()
-    async def execute_cell(kernel_id: str, code: str) -> Dict[str, Any]:
-        """
-        ⚠️ DEPRECATED: Use execute_on_kernel(kernel_id, mode="code", code=...) instead.
-        
-        Execute du code dans un kernel specifique
-        
-        Args:
-            kernel_id: ID du kernel sur lequel executer le code
-            code: Code a executer
-            
-        Returns:
-            Resultat de l'execution du code
-        """
-        logger.warning("execute_cell is deprecated, use execute_on_kernel(mode='code') instead")
-        return await execute_on_kernel(kernel_id=kernel_id, mode="code", code=code)
+    # @app.tool()
+    # async def restart_kernel(kernel_id: str) -> Dict[str, Any]:
+    #     """
+    #     ⚠️ DEPRECATED: Use manage_kernel(action="restart", kernel_id=...) instead.
+    #
+    #     Redemarre un kernel
+    #
+    #     Args:
+    #         kernel_id: ID du kernel a redemarrer
+    #
+    #     Returns:
+    #         Information sur le kernel redemarre
+    #     """
+    #     logger.warning("restart_kernel is deprecated, use manage_kernel(action='restart') instead")
+    #     return await manage_kernel(action="restart", kernel_id=kernel_id)
     
-    @app.tool()
-    async def execute_notebook(path: str, kernel_id: str) -> Dict[str, Any]:
-        """
-        ⚠️ DEPRECATED: Use execute_on_kernel(kernel_id, mode="notebook", path=...) instead.
-        
-        Execute toutes les cellules de code d'un notebook
-        
-        Args:
-            path: Chemin du fichier notebook (.ipynb)
-            kernel_id: ID du kernel sur lequel executer le notebook
-            
-        Returns:
-            Resultat de l'execution du notebook
-        """
-        logger.warning("execute_notebook is deprecated, use execute_on_kernel(mode='notebook') instead")
-        return await execute_on_kernel(kernel_id=kernel_id, mode="notebook", path=path)
+    # @app.tool()
+    # async def execute_cell(kernel_id: str, code: str) -> Dict[str, Any]:
+    #     """
+    #     ⚠️ DEPRECATED: Use execute_on_kernel(kernel_id, mode="code", code=...) instead.
+    #
+    #     Execute du code dans un kernel specifique
+    #
+    #     Args:
+    #         kernel_id: ID du kernel sur lequel executer le code
+    #         code: Code a executer
+    #
+    #     Returns:
+    #         Resultat de l'execution du code
+    #     """
+    #     logger.warning("execute_cell is deprecated, use execute_on_kernel(mode='code') instead")
+    #     return await execute_on_kernel(kernel_id=kernel_id, mode="code", code=code)
     
-    @app.tool()
-    async def execute_notebook_cell(path: str, cell_index: int, kernel_id: str) -> Dict[str, Any]:
-        """
-        ⚠️ DEPRECATED: Use execute_on_kernel(kernel_id, mode="notebook_cell", path=..., cell_index=...) instead.
-        
-        Execute une cellule specifique d'un notebook
-        
-        Args:
-            path: Chemin du fichier notebook (.ipynb)
-            cell_index: Index de la cellule a executer
-            kernel_id: ID du kernel sur lequel executer la cellule
-            
-        Returns:
-            Resultat de l'execution de la cellule
-        """
-        logger.warning("execute_notebook_cell is deprecated, use execute_on_kernel(mode='notebook_cell') instead")
-        return await execute_on_kernel(kernel_id=kernel_id, mode="notebook_cell", path=path, cell_index=cell_index)
+    # @app.tool()
+    # async def execute_notebook(path: str, kernel_id: str) -> Dict[str, Any]:
+    #     """
+    #     ⚠️ DEPRECATED: Use execute_on_kernel(kernel_id, mode="notebook", path=...) instead.
+    #
+    #     Execute toutes les cellules de code d'un notebook
+    #
+    #     Args:
+    #         path: Chemin du fichier notebook (.ipynb)
+    #         kernel_id: ID du kernel sur lequel executer le notebook
+    #
+    #     Returns:
+    #         Resultat de l'execution du notebook
+    #     """
+    #     logger.warning("execute_notebook is deprecated, use execute_on_kernel(mode='notebook') instead")
+    #     return await execute_on_kernel(kernel_id=kernel_id, mode="notebook", path=path)
+    
+    # @app.tool()
+    # async def execute_notebook_cell(path: str, cell_index: int, kernel_id: str) -> Dict[str, Any]:
+    #     """
+    #     ⚠️ DEPRECATED: Use execute_on_kernel(kernel_id, mode="notebook_cell", path=..., cell_index=...) instead.
+    #
+    #     Execute une cellule specifique d'un notebook
+    #
+    #     Args:
+    #         path: Chemin du fichier notebook (.ipynb)
+    #         cell_index: Index de la cellule a executer
+    #         kernel_id: ID du kernel sur lequel executer la cellule
+    #
+    #     Returns:
+    #         Resultat de l'execution de la cellule
+    #     """
+    #     logger.warning("execute_notebook_cell is deprecated, use execute_on_kernel(mode='notebook_cell') instead")
+    #     return await execute_on_kernel(kernel_id=kernel_id, mode="notebook_cell", path=path, cell_index=cell_index)
     
     @app.tool()
     async def execute_on_kernel(
@@ -419,21 +426,6 @@ def register_kernel_tools(app: FastMCP) -> None:
                 "action": action,
                 "success": False
             }
-    
-    # ============================================================================
-    # WRAPPERS DEPRECATED - Backward Compatibility
-    # ============================================================================
-    
-    # Note: Les outils start_kernel, stop_kernel, interrupt_kernel, restart_kernel
-    # sont maintenant des wrappers deprecated qui appellent manage_kernel.
-    # Ils seront retirés dans une version future (après période de dépréciation).
-    
-    # Les outils originaux (lignes 100-198) doivent être remplacés par ces wrappers:
-    
-    # Wrapper pour start_kernel est déjà défini ligne 100-123, on le modifie
-    # Wrapper pour stop_kernel est déjà défini ligne 125-148, on le modifie
-    # Wrapper pour interrupt_kernel est déjà défini ligne 150-173, on le modifie
-    # Wrapper pour restart_kernel est déjà défini ligne 175-198, on le modifie
     
     
     logger.info("Registered kernel tools")
