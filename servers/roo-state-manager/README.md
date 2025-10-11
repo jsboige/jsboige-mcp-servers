@@ -834,9 +834,44 @@ RooSync utilise une architecture 5 couches :
 4. **Decision Layer** : Gestion du workflow de décisions
 5. **Execution Layer** : Application et rollback des changements
 
+### Intégration PowerShell Réelle
+
+**✅ PHASE 8 TÂCHE 40 - INTÉGRATION COMPLÈTE**
+
+Le roo-state-manager inclut désormais une intégration PowerShell complète avec RooSync :
+
+**Composants d'intégration :**
+- **PowerShellExecutor** : Wrapper Node.js → PowerShell avec `child_process.spawn`
+  - Gestion timeout configurable (défaut 30s, 60s pour Apply-Decisions)
+  - Parsing JSON output automatique
+  - Isolation processus et gestion erreurs robuste
+  - Support chemins avec espaces et caractères spéciaux
+
+- **RooSyncService Extended** : 3 nouvelles méthodes PowerShell
+  - `executeDecision()` : Approbation auto roadmap + invoke Apply-Decisions
+  - `createRollbackPoint()` : Backup manuel dans .rollback/
+  - `restoreFromRollbackPoint()` : Restore depuis backup
+  - Invalidation cache après modifications
+  - Support dryRun via backup temporaire
+
+**Tests E2E (1182 lignes) :**
+- `tests/e2e/roosync-workflow.test.ts` : Workflow complet detect → approve → apply
+- `tests/e2e/roosync-error-handling.test.ts` : 20+ tests robustesse et erreurs
+- `tests/e2e/run-e2e-tests.ps1` : Script automatisation exécution
+
+**Quick Start Tests E2E :**
+```bash
+cd tests/e2e
+.\run-e2e-tests.ps1 -All        # Tous les tests
+.\run-e2e-tests.ps1 -Workflow   # Tests workflow uniquement
+```
+
 ### Documentation Complète
 
 Pour plus de détails, consultez :
+- **[Plan d'intégration E2E](../../../../../docs/integration/12-plan-integration-e2e.md)** - Architecture et stratégie
+- **[Résultats tests E2E](../../../../../docs/integration/13-resultats-tests-e2e.md)** - Métriques et validation
+- **[Guide utilisation outils](../../../../../docs/integration/14-guide-utilisation-outils-roosync.md)** - Documentation 8 outils MCP
 - [Architecture d'intégration](../../../../../docs/integration/03-architecture-integration-roosync.md)
 - [Points d'intégration](../../../../../docs/integration/02-points-integration-roosync.md)
 - [CHANGELOG RooSync](../../../../../RooSync/CHANGELOG.md)

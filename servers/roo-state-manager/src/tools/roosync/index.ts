@@ -41,16 +41,87 @@ export type {
   ListDiffsResult
 } from './list-diffs.js';
 
+export {
+  roosyncApproveDecision,
+  ApproveDecisionArgsSchema,
+  ApproveDecisionResultSchema,
+  approveDecisionToolMetadata
+} from './approve-decision.js';
+
+export type {
+  ApproveDecisionArgs,
+  ApproveDecisionResult
+} from './approve-decision.js';
+
+export {
+  roosyncRejectDecision,
+  RejectDecisionArgsSchema,
+  RejectDecisionResultSchema,
+  rejectDecisionToolMetadata
+} from './reject-decision.js';
+
+export type {
+  RejectDecisionArgs,
+  RejectDecisionResult
+} from './reject-decision.js';
+
+export {
+  roosyncApplyDecision,
+  ApplyDecisionArgsSchema,
+  ApplyDecisionResultSchema,
+  applyDecisionToolMetadata
+} from './apply-decision.js';
+
+export type {
+  ApplyDecisionArgs,
+  ApplyDecisionResult
+} from './apply-decision.js';
+
+export {
+  roosyncRollbackDecision,
+  RollbackDecisionArgsSchema,
+  RollbackDecisionResultSchema,
+  rollbackDecisionToolMetadata
+} from './rollback-decision.js';
+
+export type {
+  RollbackDecisionArgs,
+  RollbackDecisionResult
+} from './rollback-decision.js';
+
+export {
+  roosyncGetDecisionDetails,
+  GetDecisionDetailsArgsSchema,
+  GetDecisionDetailsResultSchema,
+  getDecisionDetailsToolMetadata
+} from './get-decision-details.js';
+
+export type {
+  GetDecisionDetailsArgs,
+  GetDecisionDetailsResult
+} from './get-decision-details.js';
+
 // Import des métadonnées pour l'array
 import { getStatusToolMetadata } from './get-status.js';
 import { compareConfigToolMetadata } from './compare-config.js';
 import { listDiffsToolMetadata } from './list-diffs.js';
+import { approveDecisionToolMetadata } from './approve-decision.js';
+import { rejectDecisionToolMetadata } from './reject-decision.js';
+import { applyDecisionToolMetadata } from './apply-decision.js';
+import { rollbackDecisionToolMetadata } from './rollback-decision.js';
+import { getDecisionDetailsToolMetadata } from './get-decision-details.js';
 
 /**
  * Liste de tous les outils RooSync pour enregistrement MCP
+ * Phase 5 : 8 outils complets (Configuration + Services + Présentation + Décision + Exécution)
  */
 export const roosyncTools = [
   getStatusToolMetadata,
   compareConfigToolMetadata,
-  listDiffsToolMetadata
+  listDiffsToolMetadata,
+  approveDecisionToolMetadata,
+  rejectDecisionToolMetadata,
+  applyDecisionToolMetadata,
+  rollbackDecisionToolMetadata,
+  getDecisionDetailsToolMetadata
 ];
