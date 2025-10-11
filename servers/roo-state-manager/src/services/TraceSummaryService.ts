@@ -590,140 +590,6 @@ export class TraceSummaryService {
     }
 
     /**
-     * ChatGPT-5: Convertit ClassifiedContent vers RenderItem (source unique)
-     */
-    private convertToRenderItems(classifiedContent: ClassifiedContent[]): RenderItem[] {
-        const items: RenderItem[] = [];
-        let userCounter = 1;
-        let assistantCounter = 1;
-        let toolCounter = 1;
-        let errorCounter = 1;
-        let condensationCounter = 1;
-        let instructionCounter = 1;
-        let completionCounter = 1;
-        let isFirstUser = true;
-
-        for (const item of classifiedContent) {
-            let renderItem: RenderItem | null = null;
-
-            switch (item.subType) {
-                case 'UserMessage':
-                    if (isFirstUser) {
-                        renderItem = {
-                            type: 'user',
-                            n: 1,
-                            title: 'INSTRUCTION DE TÂCHE INITIALE',
-                            html: item.content,
-                            originalIndex: item.index,
-                            lineNumber: item.lineNumber
-                        };
-                        isFirstUser = false;
-                    } else {
-                        const firstLine = this.getTruncatedFirstLine(item.content, 200);
-                        renderItem = {
-                            type: 'user',
-                            n: userCounter++,
-                            title: `UTILISATEUR #${userCounter - 1} - ${firstLine}`,
-                            html: item.content,
-                            originalIndex: item.index,
-                            lineNumber: item.lineNumber
-                        };
-                    }
-                    break;
-
-                case 'ErrorMessage':
-                    const errorFirstLine = this.getTruncatedFirstLine(item.content, 200);
-                    renderItem = {
-                        type: 'erreur',
-                        n: errorCounter++,
-                        title: `ERREUR SYSTÈME #${errorCounter - 1} - ${errorFirstLine}`,
-                        html: item.content,
-                        originalIndex: item.index,
-                        lineNumber: item.lineNumber
-                    };
-                    break;
-
-                case 'ContextCondensation':
-                    const condensationFirstLine = this.getTruncatedFirstLine(item.content, 200);
-                    renderItem = {
-                        type: 'condensation',
-                        n: condensationCounter++,
-                        title: `CONDENSATION CONTEXTE #${condensationCounter - 1} - ${condensationFirstLine}`,
-                        html: item.content,
-                        originalIndex: item.index,
-                        lineNumber: item.lineNumber
-                    };
-                    break;
-
-                case 'NewInstructions':
-                    const instructionMatch = item.content.match(/^New instructions for task continuation:\s*(.*)/i);
-                    const actualInstruction = instructionMatch ? instructionMatch[1] : this.getTruncatedFirstLine(item.content, 200);
-                    renderItem = {
-                        type: 'new-instructions',
-                        n: instructionCounter++,
-                        title: `NOUVELLES INSTRUCTIONS #${instructionCounter - 1} - ${this.getTruncatedFirstLine(actualInstruction, 200)}`,
-                        html: item.content,
-                        originalIndex: item.index,
-                        lineNumber: item.lineNumber
-                    };
-                    break;
-
-                case 'ToolResult':
-                    const toolName = item.toolType || 'outil';
-                    const toolFirstLine = this.getTruncatedFirstLine(toolName, 200);
-                    renderItem = {
-                        type: 'outil',
-                        n: toolCounter++,
-                        title: `OUTIL #${toolCounter - 1} - ${toolFirstLine}`,
-                        html: item.content,
-                        originalIndex: item.index,
-                        toolType: item.toolType,
-                        resultType: item.resultType,
-                        lineNumber: item.lineNumber
-                    };
-                    break;
-
-                case 'ToolCall':
-                    const assistantFirstLine = this.getTruncatedFirstLine(item.content, 200);
-                    const toolNameInTitle = this.extractFirstToolName(item.content);
-                    const toolSuffix = toolNameInTitle ? ` (${toolNameInTitle})` : '';
-                    renderItem = {
-                        type: 'assistant',
-                        n: assistantCounter++,
-                        title: `ASSISTANT #${assistantCounter - 1}${toolSuffix} - ${assistantFirstLine}`,
-                        html: item.content,
-                        originalIndex: item.index,
-                        lineNumber: item.lineNumber
-                    };
-                    break;
-
-                case 'Completion':
-                    const completionFirstLine = this.getTruncatedFirstLine(item.content, 200);
-                    const completionToolName = this.extractFirstToolName(item.content);
-                    const completionToolSuffix = completionToolName ? ` (${completionToolName})` : '';
-                    renderItem = {
-                        type: 'completion',
-                        n: completionCounter++,
-                        title: `ASSISTANT #${assistantCounter} (Terminaison)${completionToolSuffix} - ${completionFirstLine}`,
-                        html: item.content,
-                        originalIndex: item.index,
-                        lineNumber: item.lineNumber
-                    };
-                    assistantCounter++; // Increment for next assistant
-                    break;
-            }
-
-            if (renderItem) {
-                items.push(renderItem);
-            }
-        }
-
-        return items;
-    }
-
-
-
-    /**
      * Génère un résumé intelligent à partir d'un ConversationSkeleton
      */
     async generateSummary(
@@ -1992,6 +1858,15 @@ export class TraceSummaryService {
         // CORRECTION CRITIQUE : Journalisation après filtrage
         const filteredCountsByType = this.countItemsByType(filteredItems);
         console.log(`[TraceSummaryService] APRÈS filtrage: ${JSON.stringify(filteredCountsByType)}`);
+        
+        // 🔧 CORRECTION OFF-BY-ONE : Renuméroter après filtrage pour commencer à 1
+        for (let i = 0; i < filteredItems.length; i++) {
+            const oldN = filteredItems[i].n;
+            const newN = i + 1;
+            filteredItems[i].n = newN;
+            // Mettre à jour le titre pour refléter le nouveau numéro
+            filteredItems[i].title = filteredItems[i].title.replace(`#${oldN}`, `#${newN}`);
+        }
         
         // 3) PLAN BÉTON : Assignation UNIQUE des IDs (une seule fois)
         assignStableIds(filteredItems);
