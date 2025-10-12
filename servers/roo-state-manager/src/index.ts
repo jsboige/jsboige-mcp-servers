@@ -589,13 +589,13 @@ class RooStateManagerServer {
                     result = await this.handleBuildSkeletonCache(args as any);
                     break;
                 case 'get_task_tree':
-                    result = this.handleGetTaskTree(args as any);
+                    result = await this.handleGetTaskTree(args as any);
                     break;
                 case viewConversationTree.name:
                     result = viewConversationTree.handler(args as any, this.conversationCache);
                     break;
                 case 'view_task_details':
-                    result = this.handleViewTaskDetails(args as any);
+                    result = await this.handleViewTaskDetails(args as any);
                     break;
                 case 'search_tasks_semantic':
                     result = await this.handleSearchTasksSemantic(args as any);
@@ -1462,8 +1462,11 @@ class RooStateManagerServer {
         return { content: [{ type: 'text', text: debugInfo.join('\n') }] };
     }
 
-    handleGetTaskTree(args: { conversation_id: string, max_depth?: number, include_siblings?: boolean, output_format?: 'json' | 'markdown' }): CallToolResult {
+    async handleGetTaskTree(args: { conversation_id: string, max_depth?: number, include_siblings?: boolean, output_format?: 'json' | 'markdown' }): Promise<CallToolResult> {
         const { conversation_id, max_depth = Infinity, include_siblings = false, output_format = 'json' } = args;
+
+        // **FAILSAFE: Auto-rebuild cache si nécessaire**
+        await this._ensureSkeletonCacheIsFresh();
 
         // Ensure cache is populated
         if (this.conversationCache.size === 0) {
@@ -1686,6 +1689,9 @@ class RooStateManagerServer {
     async handleSearchTasksSemantic(args: { conversation_id?: string, search_query: string, max_results?: number, diagnose_index?: boolean, workspace?: string }): Promise<CallToolResult> {
         const { conversation_id, search_query, max_results = 10, diagnose_index = false, workspace } = args;
         
+        // **FAILSAFE: Auto-rebuild cache si nécessaire avec filtre workspace**
+        await this._ensureSkeletonCacheIsFresh({ workspace });
+        
         // Mode diagnostic - retourne des informations sur l'état de l'indexation
         if (diagnose_index) {
             try {
@@ -1878,6 +1884,9 @@ class RooStateManagerServer {
     async handleIndexTaskSemantic(args: { task_id: string }): Promise<CallToolResult> {
         try {
             const { task_id } = args;
+            
+            // **FAILSAFE: Auto-rebuild cache si nécessaire**
+            await this._ensureSkeletonCacheIsFresh();
             
             // Vérification des variables d'environnement
             const openaiKey = process.env.OPENAI_API_KEY;
@@ -2134,6 +2143,9 @@ class RooStateManagerServer {
         try {
             const { taskId, filePath, includeContent = false, prettyPrint = true } = args;
             
+            // **FAILSAFE: Auto-rebuild cache si nécessaire**
+            await this._ensureSkeletonCacheIsFresh();
+            
             const skeleton = this.conversationCache.get(taskId);
             if (!skeleton) {
                 throw new Error(`Tâche avec l'ID '${taskId}' non trouvée dans le cache.`);
@@ -2184,6 +2196,9 @@ class RooStateManagerServer {
     }): Promise<CallToolResult> {
         try {
             const { conversationId, filePath, maxDepth, includeContent = false, prettyPrint = true } = args;
+            
+            // **FAILSAFE: Auto-rebuild cache si nécessaire**
+            await this._ensureSkeletonCacheIsFresh();
             
             const rootSkeleton = this.conversationCache.get(conversationId);
             if (!rootSkeleton) {
@@ -2261,6 +2276,9 @@ class RooStateManagerServer {
     }): Promise<CallToolResult> {
         try {
             const { projectPath, filePath, startDate, endDate, prettyPrint = true } = args;
+            
+            // **FAILSAFE: Auto-rebuild cache si nécessaire avec filtre workspace**
+            await this._ensureSkeletonCacheIsFresh({ workspace: projectPath });
             
             // Filtrer les conversations par workspace et date
             const relevantTasks = Array.from(this.conversationCache.values()).filter(skeleton => {
@@ -2432,6 +2450,9 @@ class RooStateManagerServer {
             if (!rootTaskId) {
                 throw new Error("rootTaskId est requis");
             }
+
+            // **FAILSAFE: Auto-rebuild cache si nécessaire**
+            await this._ensureSkeletonCacheIsFresh();
 
             // Récupérer le ConversationSkeleton de la tâche racine depuis le cache
             const rootConversation = this.conversationCache.get(rootTaskId);
@@ -2673,8 +2694,11 @@ class RooStateManagerServer {
         }
     }
     
-    handleViewTaskDetails(args: { task_id: string, action_index?: number, truncate?: number }): CallToolResult {
+    async handleViewTaskDetails(args: { task_id: string, action_index?: number, truncate?: number }): Promise<CallToolResult> {
         try {
+            // **FAILSAFE: Auto-rebuild cache si nécessaire**
+            await this._ensureSkeletonCacheIsFresh();
+            
             const skeleton = this.conversationCache.get(args.task_id);
             
             if (!skeleton) {
@@ -2861,6 +2885,9 @@ class RooStateManagerServer {
                 throw new Error("taskId est requis");
             }
 
+            // **FAILSAFE: Auto-rebuild cache si nécessaire**
+            await this._ensureSkeletonCacheIsFresh();
+
             // Récupérer le ConversationSkeleton depuis le cache
             const conversation = this.conversationCache.get(taskId);
             if (!conversation) {
@@ -2902,6 +2929,11 @@ class RooStateManagerServer {
             if (!conversation_id) {
                 throw new Error("conversation_id est requis");
             }
+
+            // **FAILSAFE: Auto-rebuild cache si nécessaire**
+            // Note: handleGetTaskTree ci-dessous va déjà appeler _ensureSkeletonCacheIsFresh,
+            // mais on le fait aussi ici pour cohérence et sécurité
+            await this._ensureSkeletonCacheIsFresh();
 
             // Utiliser get_task_tree pour récupérer l'arbre avec les nouveaux champs
             const treeResult = await this.handleGetTaskTree({
@@ -3136,15 +3168,21 @@ class RooStateManagerServer {
     /**
      * FAILSAFE: Ensure skeleton cache is fresh and up-to-date
      * Vérifie si le cache des squelettes est à jour et déclenche une reconstruction différentielle si nécessaire
+     *
+     * @param args - Arguments optionnels pour filtrer la reconstruction par workspace
+     * @param args.workspace - Filtre optionnel par workspace pour limiter la portée de la reconstruction
      */
-    private async _ensureSkeletonCacheIsFresh(): Promise<boolean> {
+    private async _ensureSkeletonCacheIsFresh(args?: { workspace?: string }): Promise<boolean> {
         try {
             console.log('[FAILSAFE] Checking skeleton cache freshness...');
             
             // Vérifier si le cache est vide - reconstruction nécessaire
             if (this.conversationCache.size === 0) {
                 console.log('[FAILSAFE] Cache empty, triggering differential rebuild...');
-                await this.handleBuildSkeletonCache({ force_rebuild: false });
+                await this.handleBuildSkeletonCache({
+                    force_rebuild: false,
+                    workspace_filter: args?.workspace
+                });
                 return true;
             }
             
@@ -3194,7 +3232,10 @@ class RooStateManagerServer {
             // Déclencher reconstruction différentielle si nécessaire
             if (needsUpdate) {
                 console.log('[FAILSAFE] Cache outdated, triggering differential rebuild...');
-                await this.handleBuildSkeletonCache({ force_rebuild: false });
+                await this.handleBuildSkeletonCache({
+                    force_rebuild: false,
+                    workspace_filter: args?.workspace
+                });
                 return true;
             }
             

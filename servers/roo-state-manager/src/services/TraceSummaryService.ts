@@ -389,7 +389,8 @@ function cleanUserMessage(content: string): string {
         }
     }
     
-    return cleaned;
+    // CORRECTION CRITIQUE : Échapper les entités HTML pour éviter injection de balises
+    return escapeHtml(cleaned);
 }
 
 /**
@@ -410,7 +411,8 @@ function cleanToolContent(content: string): string {
     // Nettoyer les espaces multiples
     cleaned = cleaned.replace(/\n{3,}/g, '\n\n').trim();
     
-    return cleaned;
+    // CORRECTION CRITIQUE : Échapper les entités HTML pour éviter injection de balises
+    return escapeHtml(cleaned);
 }
 
 // ---- Rendu TOC & sections PLAN BÉTON (sans génération d'ID) -------------------------------
@@ -1172,7 +1174,8 @@ export class TraceSummaryService {
     }
 
     private formatValue(value: any): string {
-        if (typeof value === 'string') return value;
+        // CORRECTION CRITIQUE #1B : Échapper les entités HTML dans les valeurs des paramètres d'outils
+        if (typeof value === 'string') return escapeHtml(value);
         try {
             return JSON.stringify(value, null, 2);
         } catch {
@@ -2150,8 +2153,10 @@ export class TraceSummaryService {
             }
         }
         
+        // CORRECTION CRITIQUE : Échapper le contenu textuel pour éviter injection de balises
+        // Les technicalBlocks contiennent du HTML intentionnel (<details>), donc on ne les échappe pas
         return {
-            textContent: textContent.trim(),
+            textContent: escapeHtml(textContent.trim()),
             technicalBlocks
         };
     }
@@ -2230,10 +2235,11 @@ export class TraceSummaryService {
             cleanedResult = cleanedResult.substring(0, options.truncationChars) + '... [tronqué]';
         }
 
+        // CORRECTION CRITIQUE #1C : Échapper le résultat d'outil pour éviter injection de balises HTML
         const parts = [
             `**Résultat d'outil :** \`${details.toolName}\``,
             '```',
-            cleanedResult,
+            escapeHtml(cleanedResult),
             '```'
         ];
 
