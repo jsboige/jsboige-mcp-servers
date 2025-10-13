@@ -1,4 +1,4 @@
-# Installation du serveur MCP JinaNavigator
+﻿# Installation du serveur MCP JinaNavigator
 
 <!-- START_SECTION: prerequisites -->
 ## Prérequis
@@ -190,5 +190,5 @@ Maintenant que vous avez installé le serveur JinaNavigator, vous pouvez :
 1. [Configurer le serveur](CONFIGURATION.md) selon vos besoins
 2. [Apprendre à utiliser le serveur](USAGE.md) avec des exemples pratiques
 3. [Consulter le guide de dépannage](TROUBLESHOOTING.md) en cas de problèmes
-4. [Explorer les cas d'utilisation avancés](../docs/jinavigator-use-cases.md) pour tirer le meilleur parti du serveur
+4. [Explorer les cas d'utilisation avancés](../../docs/jinavigator-use-cases.md) pour tirer le meilleur parti du serveur
 <!-- END_SECTION: next_steps -->

@@ -1,4 +1,4 @@
-# Guide de dépannage du serveur MCP JinaNavigator
+﻿# Guide de dépannage du serveur MCP JinaNavigator
 
 <!-- START_SECTION: introduction -->
 Ce guide de dépannage vous aidera à résoudre les problèmes courants rencontrés lors de l'utilisation du serveur MCP JinaNavigator. Il couvre les problèmes d'installation, de configuration, de connexion, et d'utilisation des différents outils.
@@ -845,7 +845,7 @@ Si vous avez résolu votre problème, vous pouvez maintenant :
 
 1. [Configurer le serveur](CONFIGURATION.md) selon vos besoins
 2. [Apprendre à utiliser le serveur](USAGE.md) avec des exemples pratiques
-3. [Explorer les cas d'utilisation avancés](../docs/jinavigator-use-cases.md) pour tirer le meilleur parti du serveur
+3. [Explorer les cas d'utilisation avancés](../../docs/jinavigator-use-cases.md) pour tirer le meilleur parti du serveur
 
 Si vous n'avez pas pu résoudre votre problème :
 

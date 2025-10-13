@@ -1,4 +1,4 @@
-<!-- START_SECTION: metadata -->
+﻿<!-- START_SECTION: metadata -->
 ---
 title: "Installation du serveur MCP QuickFiles"
 description: "Guide d'installation complet pour le serveur MCP QuickFiles"
@@ -175,7 +175,7 @@ Maintenant que vous avez installé le serveur QuickFiles, vous pouvez :
 1. [Configurer le serveur](CONFIGURATION.md) selon vos besoins
 2. [Apprendre à utiliser le serveur](USAGE.md) avec des exemples pratiques
 3. [Consulter le guide de dépannage](TROUBLESHOOTING.md) en cas de problèmes
-4. [Explorer les cas d'utilisation avancés](../docs/quickfiles-use-cases.md) pour tirer le meilleur parti du serveur
+4. [Explorer les cas d'utilisation avancés](../../docs/quickfiles-use-cases.md) pour tirer le meilleur parti du serveur
 <!-- END_SECTION: next_steps -->
 
 <!-- START_SECTION: navigation -->

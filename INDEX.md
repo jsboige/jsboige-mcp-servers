@@ -1,4 +1,4 @@
-<!-- START_SECTION: metadata -->
+﻿<!-- START_SECTION: metadata -->
 ---
 title: "Documentation des MCPs Internes"
 description: "Point d'entrée pour la documentation des serveurs MCP internes"
@@ -41,9 +41,9 @@ QuickFiles est un serveur MCP qui fournit des méthodes pour lire rapidement le 
 - [Configuration](servers/quickfiles-server/CONFIGURATION.md) - Options de configuration détaillées
 - [Utilisation](servers/quickfiles-server/USAGE.md) - Exemples d'utilisation et bonnes pratiques
 - [Dépannage](servers/quickfiles-server/TROUBLESHOOTING.md) - Résolution des problèmes courants
-- [Guide d'utilisation](docs/quickfiles-guide.md) - Guide complet d'utilisation
-- [Cas d'utilisation](docs/quickfiles-use-cases.md) - Exemples de cas d'utilisation
-- [Intégration](docs/quickfiles-integration.md) - Guide d'intégration avec d'autres systèmes
+- [Guide d'utilisation](./docs/quickfiles-guide.md) - Guide complet d'utilisation
+- [Cas d'utilisation](./docs/quickfiles-use-cases.md) - Exemples de cas d'utilisation
+- [Intégration](./docs/quickfiles-integration.md) - Guide d'intégration avec d'autres systèmes
 
 ### [JinaNavigator](servers/jinavigator-server/README.md)
 
@@ -65,17 +65,17 @@ Jupyter MCP est un serveur MCP qui permet d'interagir avec des notebooks Jupyter
 - [Configuration](servers/jupyter-mcp-server/CONFIGURATION.md) - Options de configuration détaillées
 - [Utilisation](servers/jupyter-mcp-server/USAGE.md) - Exemples d'utilisation et bonnes pratiques
 - [Dépannage](servers/jupyter-mcp-server/TROUBLESHOOTING.md) - Résolution des problèmes courants
-- [Dépannage avancé](docs/jupyter-mcp-troubleshooting.md) - Guide de dépannage avancé
-- [Mode hors ligne](docs/jupyter-mcp-offline-mode.md) - Utilisation en mode hors ligne
-- [Test de connexion](docs/jupyter-mcp-connection-test.md) - Test de connexion au serveur Jupyter
+- [Dépannage avancé](./docs/jupyter-mcp-troubleshooting.md) - Guide de dépannage avancé
+- [Mode hors ligne](./docs/jupyter-mcp-offline-mode.md) - Utilisation en mode hors ligne
+- [Test de connexion](./docs/jupyter-mcp-connection-test.md) - Test de connexion au serveur Jupyter
 <!-- END_SECTION: mcp_list -->
 
 <!-- START_SECTION: general_docs -->
 ## Documentation Générale
 
-- [Architecture](docs/architecture.md) - Documentation sur l'architecture MCP
-- [Guide de démarrage](docs/getting-started.md) - Guide de démarrage rapide
-- [Dépannage général](docs/troubleshooting.md) - Guide de dépannage général
+- [Architecture](./docs/architecture.md) - Documentation sur l'architecture MCP
+- [Guide de démarrage](./docs/getting-started.md) - Guide de démarrage rapide
+- [Dépannage général](./docs/troubleshooting.md) - Guide de dépannage général
 <!-- END_SECTION: general_docs -->
 
 <!-- START_SECTION: integration -->

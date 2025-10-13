@@ -1,4 +1,4 @@
-# Utilisation du serveur MCP Jupyter
+﻿# Utilisation du serveur MCP Jupyter
 
 <!-- START_SECTION: introduction -->
 Ce document fournit des exemples détaillés d'utilisation et des bonnes pratiques pour le serveur MCP Jupyter. Vous y trouverez des exemples concrets pour chaque outil exposé par le serveur, ainsi que des scénarios d'utilisation avancés.
@@ -802,6 +802,6 @@ Le serveur MCP Jupyter permet d'exécuter du code arbitraire sur le serveur, ce 
 Maintenant que vous savez comment utiliser le serveur MCP Jupyter, vous pouvez :
 
 1. [Consulter le guide de dépannage](TROUBLESHOOTING.md) pour résoudre les problèmes courants
-2. [Explorer les cas d'utilisation avancés](../docs/jupyter-mcp-use-cases.md) pour tirer le meilleur parti du serveur
+2. [Explorer les cas d'utilisation avancés](../../docs/jupyter-mcp-use-cases.md) pour tirer le meilleur parti du serveur
 3. [Contribuer au développement](../CONTRIBUTING.md) du serveur MCP Jupyter
 <!-- END_SECTION: next_steps -->
