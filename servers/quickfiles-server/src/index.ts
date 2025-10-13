@@ -815,18 +815,29 @@ class QuickFilesServer {
     const settingsPath = 'C:/Users/MYIA/AppData/Roaming/Code/User/globalStorage/rooveterinaryinc.roo-cline/settings/mcp_settings.json';
     const results = [];
     try {
-      const settingsRaw = await fs.readFile(settingsPath, 'utf-8');
-      const settings = JSON.parse(settingsRaw);
-      if (!settings.mcpServers) {
-        throw new Error("La section 'mcpServers' est manquante dans le fichier de configuration.");
-      }
+      // ✅ FIX: Relire le fichier avant chaque modification pour éviter les corruptions
       for (const serverName of servers) {
+        // Lire l'état actuel du fichier
+        let settingsRaw = await fs.readFile(settingsPath, 'utf-8');
+        let settings = JSON.parse(settingsRaw);
+        
+        if (!settings.mcpServers) {
+          throw new Error("La section 'mcpServers' est manquante dans le fichier de configuration.");
+        }
+        
         if (settings.mcpServers[serverName]) {
+            // Désactiver le serveur
             settings.mcpServers[serverName].enabled = false;
-            await fs.writeFile(settingsPath, JSON.stringify(settings, null, 2));
+            await fs.writeFile(settingsPath, JSON.stringify(settings, null, 2), 'utf-8');
             await new Promise(resolve => setTimeout(resolve, 1000));
+            
+            // ✅ FIX: Relire à nouveau avant de réactiver pour avoir l'état le plus récent
+            settingsRaw = await fs.readFile(settingsPath, 'utf-8');
+            settings = JSON.parse(settingsRaw);
+            
+            // Réactiver le serveur
             settings.mcpServers[serverName].enabled = true;
-            await fs.writeFile(settingsPath, JSON.stringify(settings, null, 2));
+            await fs.writeFile(settingsPath, JSON.stringify(settings, null, 2), 'utf-8');
             results.push({ server: serverName, status: 'success' });
         } else {
             results.push({ server: serverName, status: 'error', reason: 'Server not found in settings' });
