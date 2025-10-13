@@ -23,4 +23,6 @@ export * from './task/index.js';
 
 // Search & Indexing tools - Batch 4 refactoring
 export * from './search/index.js';
+// XML Export tools - Batch 5 refactoring
+export * from './export/index.js';
 export * from './indexing/index.js';

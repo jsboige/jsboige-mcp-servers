@@ -39,7 +39,7 @@ import { exec } from 'child_process';
 import { TaskNavigator } from './services/task-navigator.js';
 import { ConversationSkeleton, ActionMetadata, MessageSkeleton, ClusterSummaryOptions, ClusterSummaryResult } from './types/conversation.js';
 import packageJson from '../package.json' with { type: 'json' };
-import { readVscodeLogs, rebuildAndRestart, getMcpBestPractices, manageMcpSettings, rebuildTaskIndexFixed, generateTraceSummaryTool, handleGenerateTraceSummary, generateClusterSummaryTool, handleGenerateClusterSummary, exportConversationJsonTool, handleExportConversationJson, exportConversationCsvTool, handleExportConversationCsv, viewConversationTree, getConversationSynthesisTool, handleGetConversationSynthesis, detectStorageTool, getStorageStatsTool, listConversationsTool, debugAnalyzeTool, getRawConversationTool, viewTaskDetailsTool, getTaskTreeTool, handleGetTaskTree, debugTaskParsingTool, handleDebugTaskParsing, exportTaskTreeMarkdownTool, handleExportTaskTreeMarkdown, searchTasksSemanticTool, handleSearchTasksSemanticFallback, indexTaskSemanticTool, handleDiagnoseSemanticIndex, resetQdrantCollectionTool } from './tools/index.js';
+import { readVscodeLogs, rebuildAndRestart, getMcpBestPractices, manageMcpSettings, rebuildTaskIndexFixed, generateTraceSummaryTool, handleGenerateTraceSummary, generateClusterSummaryTool, handleGenerateClusterSummary, exportConversationJsonTool, handleExportConversationJson, exportConversationCsvTool, handleExportConversationCsv, viewConversationTree, getConversationSynthesisTool, handleGetConversationSynthesis, detectStorageTool, getStorageStatsTool, listConversationsTool, debugAnalyzeTool, getRawConversationTool, viewTaskDetailsTool, getTaskTreeTool, handleGetTaskTree, debugTaskParsingTool, handleDebugTaskParsing, exportTaskTreeMarkdownTool, handleExportTaskTreeMarkdown, searchTasksSemanticTool, handleSearchTasksSemanticFallback, indexTaskSemanticTool, handleDiagnoseSemanticIndex, resetQdrantCollectionTool, exportTasksXmlTool, handleExportTasksXml, exportConversationXmlTool, handleExportConversationXml, exportProjectXmlTool, handleExportProjectXml, configureXmlExportTool, handleConfigureXmlExport } from './tools/index.js';
 import { searchTasks } from './services/task-searcher.js';
 import { indexTask, TaskIndexer } from './services/task-indexer.js';
 import { getQdrantClient } from './services/qdrant.js';
@@ -286,69 +286,10 @@ class RooStateManagerServer {
                            },
                        },
                     },
-                    {
-                        name: 'export_tasks_xml',
-                        description: 'Exporte une tâche individuelle au format XML.',
-                        inputSchema: {
-                            type: 'object',
-                            properties: {
-                                taskId: { type: 'string', description: 'L\'identifiant unique de la tâche à exporter.' },
-                                filePath: { type: 'string', description: 'Chemin de sortie pour le fichier XML. Si non fourni, le contenu est retourné.' },
-                                includeContent: { type: 'boolean', description: 'Si true, inclut le contenu complet des messages (false par défaut).' },
-                                prettyPrint: { type: 'boolean', description: 'Si true, indente le XML pour une meilleure lisibilité (true par défaut).' }
-                            },
-                            required: ['taskId']
-                        }
-                    },
-                    {
-                        name: 'export_conversation_xml',
-                        description: 'Exporte une conversation complète (tâche racine + descendants) au format XML.',
-                        inputSchema: {
-                            type: 'object',
-                            properties: {
-                                conversationId: { type: 'string', description: 'L\'identifiant de la tâche racine de la conversation à exporter.' },
-                                filePath: { type: 'string', description: 'Chemin de sortie pour le fichier XML. Si non fourni, le contenu est retourné.' },
-                                maxDepth: { type: 'integer', description: 'Profondeur maximale de l\'arbre de tâches à inclure.' },
-                                includeContent: { type: 'boolean', description: 'Si true, inclut le contenu complet des messages (false par défaut).' },
-                                prettyPrint: { type: 'boolean', description: 'Si true, indente le XML pour une meilleure lisibilité (true par défaut).' }
-                            },
-                            required: ['conversationId']
-                        }
-                    },
-                    {
-                        name: 'export_project_xml',
-                        description: 'Exporte un aperçu de haut niveau d\'un projet entier au format XML.',
-                        inputSchema: {
-                            type: 'object',
-                            properties: {
-                                projectPath: { type: 'string', description: 'Le chemin du workspace/projet à analyser.' },
-                                filePath: { type: 'string', description: 'Chemin de sortie pour le fichier XML. Si non fourni, le contenu est retourné.' },
-                                startDate: { type: 'string', description: 'Date de début (ISO 8601) pour filtrer les conversations.' },
-                                endDate: { type: 'string', description: 'Date de fin (ISO 8601) pour filtrer les conversations.' },
-                                prettyPrint: { type: 'boolean', description: 'Si true, indente le XML pour une meilleure lisibilité (true par défaut).' }
-                            },
-                            required: ['projectPath']
-                        }
-                    },
-                    {
-                        name: 'configure_xml_export',
-                        description: 'Gère les paramètres de configuration des exports XML.',
-                        inputSchema: {
-                            type: 'object',
-                            properties: {
-                                action: {
-                                    type: 'string',
-                                    enum: ['get', 'set', 'reset'],
-                                    description: 'L\'opération à effectuer : get, set, reset.'
-                                },
-                                config: {
-                                    type: 'object',
-                                    description: 'L\'objet de configuration à appliquer pour l\'action set.'
-                                }
-                            },
-                            required: ['action']
-                        }
-                    },
+                    exportTasksXmlTool,
+                    exportConversationXmlTool,
+                    exportProjectXmlTool,
+                    configureXmlExportTool,
                     {
                         name: generateTraceSummaryTool.name,
                         description: generateTraceSummaryTool.description,
@@ -524,18 +465,18 @@ class RooStateManagerServer {
                case exportConversationCsvTool.name:
                   result = await this.handleExportConversationCsv(args as any);
                   break;
-              case 'export_tasks_xml':
-                  result = await this.handleExportTaskXml(args as any);
-                  break;
-              case 'export_conversation_xml':
-                  result = await this.handleExportConversationXml(args as any);
-                  break;
-              case 'export_project_xml':
-                  result = await this.handleExportProjectXml(args as any);
-                  break;
-              case 'configure_xml_export':
-                  result = await this.handleConfigureXmlExport(args as any);
-                  break;
+              case exportTasksXmlTool.name:
+                 result = await handleExportTasksXml(args as any, this.conversationCache, this.xmlExporterService, async () => { await this._ensureSkeletonCacheIsFresh(); });
+                 break;
+             case exportConversationXmlTool.name:
+                 result = await handleExportConversationXml(args as any, this.conversationCache, this.xmlExporterService, async () => { await this._ensureSkeletonCacheIsFresh(); });
+                 break;
+             case exportProjectXmlTool.name:
+                 result = await handleExportProjectXml(args as any, this.conversationCache, this.xmlExporterService, async (options?: { workspace?: string }) => { await this._ensureSkeletonCacheIsFresh(options); });
+                 break;
+             case configureXmlExportTool.name:
+                 result = await handleConfigureXmlExport(args as any, this.exportConfigManager);
+                 break;
                 case getRawConversationTool.definition.name:
                     result = await getRawConversationTool.handler(args as any);
                     break;
@@ -1232,218 +1173,8 @@ class RooStateManagerServer {
         return { content: [{ type: 'text', text: report }] };
     }
 
-    /**
-     * Gère l'export XML d'une tâche individuelle
-     */
-    async handleExportTaskXml(args: {
-        taskId: string,
-        filePath?: string,
-        includeContent?: boolean,
-        prettyPrint?: boolean
-    }): Promise<CallToolResult> {
-        try {
-            const { taskId, filePath, includeContent = false, prettyPrint = true } = args;
-            
-            // **FAILSAFE: Auto-rebuild cache si nécessaire**
-            await this._ensureSkeletonCacheIsFresh();
-            
-            const skeleton = this.conversationCache.get(taskId);
-            if (!skeleton) {
-                throw new Error(`Tâche avec l'ID '${taskId}' non trouvée dans le cache.`);
-            }
 
-            const xmlContent = this.xmlExporterService.generateTaskXml(skeleton, {
-                includeContent,
-                prettyPrint
-            });
 
-            if (filePath) {
-                await this.xmlExporterService.saveXmlToFile(xmlContent, filePath);
-                return {
-                    content: [{
-                        type: 'text',
-                        text: `Export XML de la tâche '${taskId}' sauvegardé dans '${filePath}'.`
-                    }]
-                };
-            } else {
-                return {
-                    content: [{
-                        type: 'text',
-                        text: xmlContent
-                    }]
-                };
-            }
-
-        } catch (error) {
-            const errorMessage = error instanceof Error ? error.message : String(error);
-            return {
-                content: [{
-                    type: 'text',
-                    text: `Erreur lors de l'export XML : ${errorMessage}`
-                }]
-            };
-        }
-    }
-
-    /**
-     * Gère l'export XML d'une conversation complète
-     */
-    async handleExportConversationXml(args: {
-        conversationId: string,
-        filePath?: string,
-        maxDepth?: number,
-        includeContent?: boolean,
-        prettyPrint?: boolean
-    }): Promise<CallToolResult> {
-        try {
-            const { conversationId, filePath, maxDepth, includeContent = false, prettyPrint = true } = args;
-            
-            // **FAILSAFE: Auto-rebuild cache si nécessaire**
-            await this._ensureSkeletonCacheIsFresh();
-            
-            const rootSkeleton = this.conversationCache.get(conversationId);
-            if (!rootSkeleton) {
-                throw new Error(`Conversation racine avec l'ID '${conversationId}' non trouvée dans le cache.`);
-            }
-
-            // Collecter toutes les tâches de la conversation
-            const collectTasks = (taskId: string, currentDepth = 0): ConversationSkeleton[] => {
-                if (maxDepth && currentDepth >= maxDepth) {
-                    return [];
-                }
-                
-                const task = this.conversationCache.get(taskId);
-                if (!task) {
-                    return [];
-                }
-
-                const tasks = [task];
-                
-                // Rechercher les enfants
-                for (const [childTaskId, childTask] of this.conversationCache.entries()) {
-                    if (childTask.parentTaskId === taskId) {
-                        tasks.push(...collectTasks(childTaskId, currentDepth + 1));
-                    }
-                }
-                
-                return tasks;
-            };
-
-            const allTasks = collectTasks(conversationId);
-            
-            // TODO: Correction temporaire - adapter l'interface du service
-            const xmlContent = (this.xmlExporterService as any).generateConversationXml(allTasks, {
-                includeContent,
-                prettyPrint
-            });
-
-            if (filePath) {
-                await this.xmlExporterService.saveXmlToFile(xmlContent, filePath);
-                return {
-                    content: [{
-                        type: 'text',
-                        text: `Export XML de la conversation '${conversationId}' sauvegardé dans '${filePath}'.`
-                    }]
-                };
-            } else {
-                return {
-                    content: [{
-                        type: 'text',
-                        text: xmlContent
-                    }]
-                };
-            }
-
-        } catch (error) {
-            const errorMessage = error instanceof Error ? error.message : String(error);
-            return {
-                content: [{
-                    type: 'text',
-                    text: `Erreur lors de l'export XML de la conversation : ${errorMessage}`
-                }]
-            };
-        }
-    }
-
-    /**
-     * Gère l'export XML d'un projet entier
-     */
-    async handleExportProjectXml(args: {
-        projectPath: string,
-        filePath?: string,
-        startDate?: string,
-        endDate?: string,
-        prettyPrint?: boolean
-    }): Promise<CallToolResult> {
-        try {
-            const { projectPath, filePath, startDate, endDate, prettyPrint = true } = args;
-            
-            // **FAILSAFE: Auto-rebuild cache si nécessaire avec filtre workspace**
-            await this._ensureSkeletonCacheIsFresh({ workspace: projectPath });
-            
-            // Filtrer les conversations par workspace et date
-            const relevantTasks = Array.from(this.conversationCache.values()).filter(skeleton => {
-                if (skeleton.metadata?.workspace) {
-                    const normalizedWorkspace = normalizePath(skeleton.metadata.workspace);
-                    const normalizedProject = normalizePath(projectPath);
-                    
-                    if (normalizedWorkspace !== normalizedProject) {
-                        return false;
-                    }
-                }
-                
-                if (startDate) {
-                    const taskDate = new Date(skeleton.metadata?.lastActivity || skeleton.metadata?.createdAt || '');
-                    if (taskDate < new Date(startDate)) {
-                        return false;
-                    }
-                }
-                
-                if (endDate) {
-                    const taskDate = new Date(skeleton.metadata?.lastActivity || skeleton.metadata?.createdAt || '');
-                    if (taskDate > new Date(endDate)) {
-                        return false;
-                    }
-                }
-                
-                return true;
-            });
-
-            // TODO: Correction temporaire - adapter l'interface du service
-            const xmlContent = (this.xmlExporterService as any).generateProjectXml(relevantTasks, {
-                projectPath,
-                startDate,
-                endDate,
-                prettyPrint
-            });
-
-            if (filePath) {
-                await this.xmlExporterService.saveXmlToFile(xmlContent, filePath);
-                return {
-                    content: [{
-                        type: 'text',
-                        text: `Export XML du projet '${projectPath}' sauvegardé dans '${filePath}'.`
-                    }]
-                };
-            } else {
-                return {
-                    content: [{
-                        type: 'text',
-                        text: xmlContent
-                    }]
-                };
-            }
-
-        } catch (error) {
-            const errorMessage = error instanceof Error ? error.message : String(error);
-            return {
-                content: [{
-                    type: 'text',
-                    text: `Erreur lors de l'export XML du projet : ${errorMessage}`
-                }]
-            };
-        }
-    }
 
     /**
      * Extrait une séquence d'actions (métadonnées) depuis la séquence de messages
@@ -1739,61 +1470,6 @@ class RooStateManagerServer {
         }
     }
 
-    /**
-     * Gère la configuration des exports XML
-     */
-    async handleConfigureXmlExport(args: {
-        action: 'get' | 'set' | 'reset',
-        config?: any
-    }): Promise<CallToolResult> {
-        try {
-            const { action, config } = args;
-
-            switch (action) {
-                case 'get':
-                    const currentConfig = await this.exportConfigManager.getConfig();
-                    return {
-                        content: [{
-                            type: 'text',
-                            text: JSON.stringify(currentConfig, null, 2)
-                        }]
-                    };
-
-                case 'set':
-                    if (!config) {
-                        throw new Error('Configuration manquante pour l\'action \'set\'.');
-                    }
-                    await this.exportConfigManager.updateConfig(config);
-                    return {
-                        content: [{
-                            type: 'text',
-                            text: 'Configuration mise à jour avec succès.'
-                        }]
-                    };
-
-                case 'reset':
-                    await this.exportConfigManager.resetConfig();
-                    return {
-                        content: [{
-                            type: 'text',
-                            text: 'Configuration remise aux valeurs par défaut.'
-                        }]
-                    };
-
-                default:
-                    throw new Error(`Action non reconnue : ${action}`);
-            }
-
-        } catch (error) {
-            const errorMessage = error instanceof Error ? error.message : String(error);
-            return {
-                content: [{
-                    type: 'text',
-                    text: `Erreur lors de la configuration : ${errorMessage}`
-                }]
-            };
-        }
-    }
     
     /**
      * Gère la génération de résumés de traces
