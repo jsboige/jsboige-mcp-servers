@@ -1,8 +1,10 @@
 {
   "compilerOptions": {
     "target": "ES2022",
+    "lib": ["ES2022"],
     "module": "NodeNext",
     "moduleResolution": "NodeNext",
+    "downlevelIteration": true,
     "rootDir": ".",
     "outDir": "./build",
     "strict": true,

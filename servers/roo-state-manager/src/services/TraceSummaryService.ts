@@ -2235,7 +2235,7 @@ export class TraceSummaryService {
         // Utiliser la nouvelle fonction de formatage
         const markdownContent = this.formatToolCallsAsMarkdown(details);
 
-        return `\n<details>\n<summary><strong>OUTIL :</strong> ${details.toolCalls.map((c:any) => c.toolName).join(', ')}</summary>\n\n${markdownContent}\n\n</details>\n`;
+        return `\n<details>\n<summary>OUTIL - ${details.toolCalls.map((c:any) => c.toolName).join(', ')}</summary>\n\n${markdownContent}\n\n</details>\n`;
     }
 
     /**
