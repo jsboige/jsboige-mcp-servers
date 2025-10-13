@@ -1,4 +1,4 @@
-# Utilisation du serveur MCP QuickFiles
+﻿# Utilisation du serveur MCP QuickFiles
 
 <!-- START_SECTION: introduction -->
 Ce document fournit des exemples détaillés d'utilisation et des bonnes pratiques pour le serveur MCP QuickFiles. Vous y trouverez des exemples concrets pour chaque outil exposé par le serveur, ainsi que des scénarios d'utilisation avancés.
@@ -647,6 +647,6 @@ J'ai ajouté le commentaire de copyright à tous les fichiers JavaScript dans le
 Maintenant que vous savez comment utiliser le serveur QuickFiles, vous pouvez :
 
 1. [Consulter le guide de dépannage](TROUBLESHOOTING.md) pour résoudre les problèmes courants
-2. [Explorer les cas d'utilisation avancés](../docs/quickfiles-use-cases.md) pour tirer le meilleur parti du serveur
+2. [Explorer les cas d'utilisation avancés](../../docs/quickfiles-use-cases.md) pour tirer le meilleur parti du serveur
 3. [Contribuer au développement](../CONTRIBUTING.md) du serveur QuickFiles
 <!-- END_SECTION: next_steps -->

@@ -1,4 +1,4 @@
-# Utilisation du serveur MCP JinaNavigator
+﻿# Utilisation du serveur MCP JinaNavigator
 
 <!-- START_SECTION: introduction -->
 Ce document fournit des exemples détaillés d'utilisation et des bonnes pratiques pour le serveur MCP JinaNavigator. Vous y trouverez des exemples concrets pour chaque outil exposé par le serveur, ainsi que des scénarios d'utilisation avancés.
@@ -562,6 +562,6 @@ Voici la structure de la documentation de Node.js:
 Maintenant que vous savez comment utiliser le serveur JinaNavigator, vous pouvez :
 
 1. [Consulter le guide de dépannage](TROUBLESHOOTING.md) pour résoudre les problèmes courants
-2. [Explorer les cas d'utilisation avancés](../docs/jinavigator-use-cases.md) pour tirer le meilleur parti du serveur
+2. [Explorer les cas d'utilisation avancés](../../docs/jinavigator-use-cases.md) pour tirer le meilleur parti du serveur
 3. [Contribuer au développement](../CONTRIBUTING.md) du serveur JinaNavigator
 <!-- END_SECTION: next_steps -->
