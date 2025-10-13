@@ -156,13 +156,20 @@ async function ensureCollectionExists() {
 
         if (!collectionExists) {
             console.log(`Collection "${COLLECTION_NAME}" not found. Creating...`);
+            
+            // 🚨 FIX CRITIQUE: Spécifier max_indexing_threads > 0 lors de la création
+            // Sans cela, Qdrant peut utiliser 0 par défaut, causant des deadlocks avec wait=true
+            // Référence: diagnostics/20251013_DIAGNOSTIC_FINAL.md - "max_indexing_threads: 0"
             await qdrant.createCollection(COLLECTION_NAME, {
                 vectors: {
                     size: 1536,
                     distance: 'Cosine',
                 },
+                hnsw_config: {
+                    max_indexing_threads: 2  // ✅ DOIT être > 0 pour éviter deadlock avec wait=true
+                }
             });
-            console.log(`Collection "${COLLECTION_NAME}" created successfully.`);
+            console.log(`Collection "${COLLECTION_NAME}" created successfully with max_indexing_threads: 2`);
         }
     } catch (error) {
         console.error('Error ensuring Qdrant collection exists:', error);
@@ -323,6 +330,22 @@ async function safeQdrantUpsert(points: PointStruct[]): Promise<boolean> {
             console.error(`🔍 [safeQdrantUpsert] État système: Circuit=${circuitBreakerState}, Échecs cumulés=${failureCount + 1}`);
             console.error(`🔍 [safeQdrantUpsert] Points concernés: ${points.length}, Tentative: ${attempt}`);
             console.error(`🔍 [safeQdrantUpsert] Stack trace:`, error?.stack?.split('\n').slice(0, 5).join('\n'));
+            
+            // 🚨 FIX CRITIQUE: Ne JAMAIS retry les erreurs HTTP 400 (Bad Request)
+            // Les erreurs 400 sont des erreurs client qui indiquent un problème avec les données
+            // Retry les erreurs 400 cause une boucle infernale de spam au serveur
+            const httpStatus = error?.response?.status || error?.status;
+            if (httpStatus === 400) {
+                recordFailure();
+                const totalDuration = Date.now() - startTime;
+                
+                console.error(`🔴 [safeQdrantUpsert] ERREUR HTTP 400 - NE PAS RETRY - Abandon immédiat`);
+                console.error(`🔴 [safeQdrantUpsert] Les erreurs 400 indiquent un problème avec les données envoyées`);
+                console.error(`🔴 [safeQdrantUpsert] Durée totale: ${totalDuration}ms`);
+                console.error(`🔴 [safeQdrantUpsert] Circuit breaker activé - État: ${circuitBreakerState}`);
+                
+                return false;
+            }
             
             if (attempt >= MAX_RETRY_ATTEMPTS) {
                 recordFailure();
@@ -613,10 +636,20 @@ export async function indexTask(taskId: string, taskPath: string): Promise<Point
                         });
                         vector = embeddingResponse.data[0].embedding;
                         
+                        // 🚨 FIX CRITIQUE: Validation de la dimension des embeddings
+                        // text-embedding-3-small produit des vecteurs de dimension 1536
+                        // Qdrant rejette les vecteurs de dimension incorrecte avec HTTP 400
+                        if (vector.length !== 1536) {
+                            console.error(`❌ [indexTask] Dimension de vecteur invalide: ${vector.length}, attendu: 1536`);
+                            console.error(`❌ [indexTask] Modèle: ${EMBEDDING_MODEL}, Chunk: ${subChunk.chunk_id}`);
+                            console.error(`❌ [indexTask] Contenu: ${subChunk.content.substring(0, 100)}...`);
+                            throw new Error(`Invalid vector dimension: ${vector.length}, expected 1536 for model ${EMBEDDING_MODEL}`);
+                        }
+                        
                         // Stocker en cache
                         embeddingCache.set(contentHash, { vector, timestamp: now });
                         operationTimestamps.push(now);
-                        console.log(`[CACHE] Embedding mis en cache pour subchunk ${subChunk.chunk_id}`);
+                        console.log(`[CACHE] Embedding mis en cache pour subchunk ${subChunk.chunk_id} (dimension: ${vector.length})`);
                     }
 
                     const point: PointStruct = {
@@ -741,11 +774,15 @@ export class TaskIndexer {
                 console.log(`Collection ${COLLECTION_NAME} n'existait pas, continuer...`);
             }
             
+            // 🚨 FIX CRITIQUE: Spécifier max_indexing_threads > 0 lors de la recréation
             await qdrant.createCollection(COLLECTION_NAME, {
                 vectors: {
                     size: 1536,
                     distance: 'Cosine',
                 },
+                hnsw_config: {
+                    max_indexing_threads: 2  // ✅ DOIT être > 0 pour éviter deadlock avec wait=true
+                }
             });
             
             console.log(`Collection ${COLLECTION_NAME} recréée avec succès`);
