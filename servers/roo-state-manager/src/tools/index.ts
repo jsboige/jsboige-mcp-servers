@@ -1,4 +1,5 @@
 export * from './read-vscode-logs.js';
+export * from './storage/index.js';
 export * from './rebuild-and-restart.js';
 export { getMcpBestPractices } from './get_mcp_best_practices.js';
 export * from './manage-mcp-settings.js';
@@ -13,3 +14,6 @@ export { exportConversationJsonTool, handleExportConversationJson } from './expo
 export { exportConversationCsvTool, handleExportConversationCsv } from './export-conversation-csv.js';
 export { viewConversationTree } from './view-conversation-tree.js';
 export { getConversationSynthesisTool, handleGetConversationSynthesis } from './synthesis/get-conversation-synthesis.js';
+
+// Conversation tools - Batch 2 refactoring
+export * from './conversation/index.js';

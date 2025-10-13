@@ -39,7 +39,7 @@ import { exec } from 'child_process';
 import { TaskNavigator } from './services/task-navigator.js';
 import { ConversationSkeleton, ActionMetadata, MessageSkeleton, ClusterSummaryOptions, ClusterSummaryResult } from './types/conversation.js';
 import packageJson from '../package.json' with { type: 'json' };
-import { readVscodeLogs, rebuildAndRestart, getMcpBestPractices, manageMcpSettings, rebuildTaskIndexFixed, generateTraceSummaryTool, handleGenerateTraceSummary, generateClusterSummaryTool, handleGenerateClusterSummary, exportConversationJsonTool, handleExportConversationJson, exportConversationCsvTool, handleExportConversationCsv, viewConversationTree, getConversationSynthesisTool, handleGetConversationSynthesis } from './tools/index.js';
+import { readVscodeLogs, rebuildAndRestart, getMcpBestPractices, manageMcpSettings, rebuildTaskIndexFixed, generateTraceSummaryTool, handleGenerateTraceSummary, generateClusterSummaryTool, handleGenerateClusterSummary, exportConversationJsonTool, handleExportConversationJson, exportConversationCsvTool, handleExportConversationCsv, viewConversationTree, getConversationSynthesisTool, handleGetConversationSynthesis, detectStorageTool, getStorageStatsTool, listConversationsTool, debugAnalyzeTool, getRawConversationTool, viewTaskDetailsTool } from './tools/index.js';
 import { searchTasks } from './services/task-searcher.js';
 import { indexTask, TaskIndexer } from './services/task-indexer.js';
 import { getQdrantClient } from './services/qdrant.js';
@@ -52,26 +52,11 @@ import { NarrativeContextBuilderService } from './services/synthesis/NarrativeCo
 import { LLMService } from './services/synthesis/LLMService.js';
 import { IndexingDecisionService } from './services/indexing-decision.js';
 import { IndexingMetrics } from './types/indexing.js';
+import { SkeletonCacheService } from './services/skeleton-cache.service.js';
+import { normalizePath } from './utils/path-normalizer.js';
 
 const MAX_OUTPUT_LENGTH = 300000; // Smart Truncation Engine - Corrected from 150K to 300K for intelligent truncation
 const SKELETON_CACHE_DIR_NAME = '.skeletons';
-
-/**
- * Normalise un chemin pour la comparaison en gérant les différences de format
- * entre les plateformes et les sources de données
- */
-function normalizePath(inputPath: string): string {
-    if (!inputPath) return '';
-    
-    // Convertir les slashes en forward slashes pour une comparaison uniforme
-    const normalized = inputPath.replace(/\\/g, '/');
-    
-    // Supprimer les slashes de fin
-    const trimmed = normalized.endsWith('/') ? normalized.slice(0, -1) : normalized;
-    
-    // Convertir en minuscules pour éviter les problèmes de casse (principalement Windows)
-    return trimmed.toLowerCase();
-}
 
 class RooStateManagerServer {
     private server: Server;
@@ -182,31 +167,9 @@ class RooStateManagerServer {
                         description: 'This is a minimal tool to check if the MCP is reloading.',
                         inputSchema: { type: 'object', properties: {}, required: [] },
                     },
-                    {
-                        name: 'detect_roo_storage',
-                        description: 'Détecte automatiquement les emplacements de stockage Roo et scanne les conversations existantes',
-                        inputSchema: { type: 'object', properties: {}, required: [] },
-                    },
-                    {
-                       name: 'get_storage_stats',
-                       description: 'Calcule des statistiques sur le stockage (nombre de conversations, taille totale).',
-                       inputSchema: { type: 'object', properties: {}, required: [] },
-                    },
-                    {
-                        name: 'list_conversations',
-                        description: 'Liste toutes les conversations avec filtres et tri.',
-                        inputSchema: {
-                            type: 'object',
-                            properties: {
-                                limit: { type: 'number' },
-                                sortBy: { type: 'string', enum: ['lastActivity', 'messageCount', 'totalSize'] },
-                                sortOrder: { type: 'string', enum: ['asc', 'desc'] },
-                                hasApiHistory: { type: 'boolean' },
-                                hasUiMessages: { type: 'boolean' },
-                                workspace: { type: 'string', description: 'Filtre les conversations par chemin de workspace.' },
-                            },
-                        },
-                    },
+                    detectStorageTool.definition,
+                    getStorageStatsTool.definition,
+                    listConversationsTool.definition,
                     {
                         name: 'touch_mcp_settings',
                         description: 'Touche le fichier de paramètres pour forcer le rechargement des MCPs Roo.',
@@ -271,17 +234,7 @@ class RooStateManagerServer {
                             required: ['search_query'],
                         },
                     },
-                    {
-                       name: 'debug_analyze_conversation',
-                       description: 'Debug tool to analyze a single conversation and return raw data.',
-                       inputSchema: {
-                           type: 'object',
-                           properties: {
-                               taskId: { type: 'string', description: 'The ID of the task to analyze.' }
-                           },
-                           required: ['taskId']
-                       }
-                    },
+                     debugAnalyzeTool.definition,
                     {
                         name: viewConversationTree.name,
                         description: viewConversationTree.description,
@@ -472,29 +425,7 @@ class RooStateManagerServer {
                         description: exportConversationCsvTool.description,
                         inputSchema: exportConversationCsvTool.inputSchema,
                     },
-                    {
-                        name: 'view_task_details',
-                        description: 'Affiche les détails techniques complets (métadonnées des actions) pour une tâche spécifique',
-                        inputSchema: {
-                            type: 'object',
-                            properties: {
-                                task_id: {
-                                    type: 'string',
-                                    description: 'L\'ID de la tâche pour laquelle afficher les détails techniques.'
-                                },
-                                action_index: {
-                                    type: 'number',
-                                    description: 'Index optionnel d\'une action spécifique à examiner (commence à 0).'
-                                },
-                                truncate: {
-                                    type: 'number',
-                                    description: 'Nombre de lignes à conserver au début et à la fin des contenus longs (0 = complet).',
-                                    default: 0
-                                }
-                            },
-                            required: ['task_id']
-                        }
-                    },
+                    viewTaskDetailsTool.definition,
                     {
                         name: 'reset_qdrant_collection',
                         description: 'Réinitialise complètement la collection Qdrant et supprime tous les timestamps d\'indexation des squelettes pour forcer une réindexation complète.',
@@ -504,17 +435,7 @@ class RooStateManagerServer {
                             required: [],
                         },
                     },
-                    {
-                        name: 'get_raw_conversation',
-                        description: 'Récupère le contenu brut d\'une conversation (fichiers JSON) sans condensation.',
-                        inputSchema: {
-                            type: 'object',
-                            properties: {
-                                taskId: { type: 'string', description: 'L\'identifiant de la tâche à récupérer.' },
-                            },
-                            required: ['taskId'],
-                        },
-                    },
+                    getRawConversationTool.definition,
                     {
                         name: getConversationSynthesisTool.name,
                         description: getConversationSynthesisTool.description,
@@ -573,14 +494,14 @@ class RooStateManagerServer {
                     
                     result = { content: [{ type: 'text', text: `INVESTIGATION DES CANAUX DE LOGS - ${timestamp} - Vérifiez tous les logs maintenant!` }] };
                     break;
-               case 'detect_roo_storage':
-                   result = await this.handleDetectRooStorage();
+               case detectStorageTool.definition.name:
+                   result = await detectStorageTool.handler({});
                    break;
-              case 'get_storage_stats':
-                    result = await this.handleGetStorageStats();
+              case getStorageStatsTool.definition.name:
+                    result = await getStorageStatsTool.handler({});
                     break;
-                case 'list_conversations':
-                    result = await this.handleListConversations(args as any);
+                case listConversationsTool.definition.name:
+                    result = await listConversationsTool.handler(args as any, this.conversationCache);
                     break;
                 case 'touch_mcp_settings':
                     result = await this.handleTouchMcpSettings();
@@ -594,14 +515,14 @@ class RooStateManagerServer {
                 case viewConversationTree.name:
                     result = viewConversationTree.handler(args as any, this.conversationCache);
                     break;
-                case 'view_task_details':
-                    result = await this.handleViewTaskDetails(args as any);
+                case viewTaskDetailsTool.definition.name:
+                    result = await viewTaskDetailsTool.handler(args as any, this.conversationCache);
                     break;
                 case 'search_tasks_semantic':
                     result = await this.handleSearchTasksSemantic(args as any);
                     break;
-               case 'debug_analyze_conversation':
-                   result = await this.handleDebugAnalyzeConversation(args as any);
+               case debugAnalyzeTool.definition.name:
+                   result = await debugAnalyzeTool.handler(args as any, this.conversationCache);
                    break;
                case 'debug_task_parsing':
                    result = await this.handleDebugTaskParsing(args as any);
@@ -690,9 +611,9 @@ class RooStateManagerServer {
               case 'configure_xml_export':
                   result = await this.handleConfigureXmlExport(args as any);
                   break;
-              case 'get_raw_conversation':
-                  result = await this.handleGetRawConversation(args as any);
-                  break;
+                case getRawConversationTool.definition.name:
+                    result = await getRawConversationTool.handler(args as any);
+                    break;
               case getConversationSynthesisTool.name:
                   result = await this.handleGetConversationSynthesis(args as any);
                   break;
@@ -716,186 +637,6 @@ class RooStateManagerServer {
         return result;
     }
 
-    async handleDetectRooStorage(): Promise<CallToolResult> {
-        const result = await RooStorageDetector.detectRooStorage();
-        return { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }] };
-    }
-
-    async handleGetStorageStats(): Promise<CallToolResult> {
-        const stats = await RooStorageDetector.getStorageStats();
-        
-        // 🔧 FIX CRITIQUE: Calculer breakdown cohérent avec le total
-        // Au lieu d'utiliser seulement le cache mémoire, on scanne directement le disque
-        const workspaceBreakdown = await RooStorageDetector.getWorkspaceBreakdown();
-
-        const enhancedStats = {
-            ...stats,
-            workspaceBreakdown,
-            totalWorkspaces: Object.keys(workspaceBreakdown).length
-        };
-
-        return { content: [{ type: 'text', text: JSON.stringify(enhancedStats, null, 2) }] };
-    }
-
-    async handleListConversations(args: { limit?: number, sortBy?: 'lastActivity' | 'messageCount' | 'totalSize', sortOrder?: 'asc' | 'desc', workspace?: string }): Promise<CallToolResult> {
-        console.log('[TOOL] list_conversations called with:', JSON.stringify(args));
-        
-        // **FAILSAFE: Vérifier la fraîcheur du cache skeleton avant utilisation**
-        await this._ensureSkeletonCacheIsFresh();
-        
-        interface SkeletonNode extends ConversationSkeleton {
-            firstUserMessage?: string; // Premier message utilisateur ajouté
-            isCompleted?: boolean; // Flag de terminaison
-            completionMessage?: string; // Message de terminaison
-            children: SkeletonNode[];
-        }
-        
-        // Interface allégée pour list_conversations - AVEC informations essentielles
-        interface ConversationSummary {
-            taskId: string;
-            parentTaskId?: string;
-            firstUserMessage?: string; // Premier message utilisateur pour identifier la tâche
-            isCompleted?: boolean; // Flag de terminaison
-            completionMessage?: string; // Message de terminaison
-            metadata: {
-                title?: string;
-                lastActivity: string;
-                createdAt: string;
-                mode?: string;
-                messageCount: number;
-                actionCount: number;
-                totalSize: number;
-                workspace?: string;
-            };
-            children: ConversationSummary[];
-        }
-
-        // Fonction pour convertir SkeletonNode vers ConversationSummary (avec toutes les infos)
-        function toConversationSummary(node: SkeletonNode): ConversationSummary {
-            return {
-                taskId: node.taskId,
-                parentTaskId: node.parentTaskId,
-                firstUserMessage: node.firstUserMessage, // Déjà extrait dans skeletonMap
-                isCompleted: node.isCompleted, // Flag de terminaison
-                completionMessage: node.completionMessage, // Message de terminaison
-                metadata: node.metadata,
-                children: node.children.map((child: SkeletonNode) => toConversationSummary(child))
-            };
-        }
-
-        let allSkeletons = Array.from(this.conversationCache.values()).filter(skeleton =>
-            skeleton.metadata
-        );
-
-        // Filtrage par workspace
-        if (args.workspace) {
-            const normalizedWorkspace = normalizePath(args.workspace);
-            console.log(`[DEBUG] Filtering by workspace: "${args.workspace}" -> normalized: "${normalizedWorkspace}"`);
-            
-            // Debug : afficher tous les workspaces disponibles
-            const workspaces = allSkeletons
-                .filter(s => s.metadata.workspace)
-                .map(s => `"${s.metadata.workspace!}" -> normalized: "${normalizePath(s.metadata.workspace!)}"`)
-                .slice(0, 5);
-            console.log(`[DEBUG] Available workspaces (first 5):`, workspaces);
-            
-            allSkeletons = allSkeletons.filter(skeleton =>
-                skeleton.metadata.workspace &&
-                normalizePath(skeleton.metadata.workspace) === normalizedWorkspace
-            );
-            console.log(`[DEBUG] Found ${allSkeletons.length} conversations matching workspace filter`);
-        }
-
-        // Tri
-        allSkeletons.sort((a, b) => {
-            let comparison = 0;
-            const sortBy = args.sortBy || 'lastActivity';
-            switch (sortBy) {
-                case 'lastActivity':
-                    comparison = new Date(b.metadata!.lastActivity).getTime() - new Date(a.metadata!.lastActivity).getTime();
-                    break;
-                case 'messageCount':
-                    comparison = (b.metadata?.messageCount || 0) - (a.metadata?.messageCount || 0);
-                    break;
-                case 'totalSize':
-                    comparison = (b.metadata?.totalSize || 0) - (a.metadata?.totalSize || 0);
-                    break;
-            }
-            return (args.sortOrder === 'asc') ? -comparison : comparison;
-        });
-        
-        // Créer les SkeletonNode SANS la propriété sequence MAIS avec toutes les infos importantes
-        const skeletonMap = new Map<string, SkeletonNode>(allSkeletons.map(s => {
-            const { sequence, ...skeletonWithoutSequence } = s as any;
-            
-            // Variables pour les informations à extraire
-            let firstUserMessage: string | undefined = undefined;
-            let isCompleted = false;
-            let completionMessage: string | undefined = undefined;
-            
-            // Extraire les informations de la sequence si elle existe
-            if (sequence && Array.isArray(sequence)) {
-                // 1. Premier message utilisateur
-                const firstUserMsg = sequence.find((msg: any) => msg.role === 'user');
-                if (firstUserMsg && firstUserMsg.content) {
-                    // Tronquer à 200 caractères pour éviter les messages trop longs
-                    firstUserMessage = firstUserMsg.content.length > 200
-                        ? firstUserMsg.content.substring(0, 200) + '...'
-                        : firstUserMsg.content;
-                }
-                
-                // 2. Détecter si la conversation est terminée (dernier message de type attempt_completion)
-                const lastAssistantMessages = sequence
-                    .filter((msg: any) => msg.role === 'assistant')
-                    .slice(-3); // Prendre les 3 derniers messages assistant pour chercher attempt_completion
-                
-                for (const msg of lastAssistantMessages.reverse()) {
-                    if (msg.content && Array.isArray(msg.content)) {
-                        for (const content of msg.content) {
-                            if (content.type === 'tool_use' && content.name === 'attempt_completion') {
-                                isCompleted = true;
-                                const result = content.input?.result;
-                                if (result) {
-                                    completionMessage = result.length > 150
-                                        ? result.substring(0, 150) + '...'
-                                        : result;
-                                }
-                                break;
-                            }
-                        }
-                        if (isCompleted) break;
-                    }
-                }
-            }
-            
-            return [s.taskId, {
-                ...skeletonWithoutSequence,
-                firstUserMessage,
-                isCompleted,
-                completionMessage,
-                children: []
-            }];
-        }));
-        const forest: SkeletonNode[] = [];
-
-        skeletonMap.forEach(node => {
-            if (node.parentTaskId && skeletonMap.has(node.parentTaskId)) {
-                skeletonMap.get(node.parentTaskId)!.children.push(node);
-            } else {
-                forest.push(node);
-            }
-        });
-
-        // Appliquer la limite à la forêt de premier niveau
-        const limitedForest = args.limit ? forest.slice(0, args.limit) : forest;
-        
-        // Convertir en ConversationSummary pour EXCLURE la propriété sequence qui contient tout le contenu
-        const summaries = limitedForest.map(node => toConversationSummary(node));
-        
-        const result = JSON.stringify(summaries, null, 2);
-
-        return { content: [{ type: 'text', text: result }] };
-    }
 
     async handleTouchMcpSettings(): Promise<CallToolResult> {
         const settingsPath = "c:/Users/jsboi/AppData/Roaming/Code/User/globalStorage/rooveterinaryinc.roo-cline/settings/mcp_settings.json";
@@ -1604,16 +1345,6 @@ class RooStateManagerServer {
         }
     }
 
-   async handleDebugAnalyzeConversation(args: { taskId: string }): Promise<CallToolResult> {
-       const { taskId } = args;
-       const summary = await RooStorageDetector.findConversationById(taskId);
-       if (summary) {
-           return { content: [{ type: 'text', text: JSON.stringify(summary, null, 2) }] };
-       }
-       throw new Error(`Task with ID '${taskId}' not found in any storage location.`);
-   }
-
-
     private truncateMessage(message: string, truncate: number): string {
         if (truncate === 0) {
             return message;
@@ -1631,59 +1362,6 @@ class RooStateManagerServer {
         return {
             content: [{ type: 'text', text: 'Test simple réussi!' }]
         };
-    }
-
-    private formatActionDetails(action: any, index: number, truncate: number): string {
-        const icon = action.type === 'command' ? '⚙️' : '🛠️';
-        let output = `[${index}] ${icon} ${action.name} → ${action.status}\n`;
-        
-        // Type et timestamp
-        output += `    Type: ${action.type}\n`;
-        if (action.timestamp) {
-            output += `    Timestamp: ${action.timestamp}\n`;
-        }
-        
-        // Paramètres
-        if (action.parameters) {
-            const paramStr = JSON.stringify(action.parameters, null, 2);
-            output += `    Paramètres: ${truncate > 0 ? this.truncateContent(paramStr, truncate) : paramStr}\n`;
-        }
-        
-        // Résultat (si disponible)
-        if ('result' in action && action.result) {
-            const resultStr = typeof action.result === 'string' ? action.result : JSON.stringify(action.result, null, 2);
-            output += `    Résultat: ${truncate > 0 ? this.truncateContent(resultStr, truncate) : resultStr}\n`;
-        }
-        
-        // Erreur (si disponible)
-        if ('error' in action && action.error) {
-            output += `    ❌ Erreur: ${action.error}\n`;
-        }
-        
-        // Métadonnées additionnelles (si disponibles)
-        if (action.metadata) {
-            const metaStr = JSON.stringify(action.metadata, null, 2);
-            output += `    Métadonnées: ${truncate > 0 ? this.truncateContent(metaStr, truncate) : metaStr}\n`;
-        }
-        
-        return output;
-    }
-
-    private truncateContent(content: string, lines: number): string {
-        if (lines <= 0) return content;
-        
-        const contentLines = content.split('\n');
-        if (contentLines.length <= lines * 2) return content;
-        
-        const start = contentLines.slice(0, lines);
-        const end = contentLines.slice(-lines);
-        const omitted = contentLines.length - (lines * 2);
-        
-        return [
-            ...start,
-            `... [${omitted} lignes omises] ...`,
-            ...end
-        ].join('\n');
     }
 
     async handleSearchTasksSemantic(args: { conversation_id?: string, search_query: string, max_results?: number, diagnose_index?: boolean, workspace?: string }): Promise<CallToolResult> {
@@ -2694,75 +2372,6 @@ class RooStateManagerServer {
         }
     }
     
-    async handleViewTaskDetails(args: { task_id: string, action_index?: number, truncate?: number }): Promise<CallToolResult> {
-        try {
-            // **FAILSAFE: Auto-rebuild cache si nécessaire**
-            await this._ensureSkeletonCacheIsFresh();
-            
-            const skeleton = this.conversationCache.get(args.task_id);
-            
-            if (!skeleton) {
-                return {
-                    content: [{
-                        type: 'text',
-                        text: `❌ Aucune tâche trouvée avec l'ID: ${args.task_id}`
-                    }]
-                };
-            }
-
-            let output = `🔍 Détails techniques complets - Tâche: ${skeleton.metadata.title || skeleton.taskId}\n`;
-            output += `═══════════════════════════════════════════════════════════════════════════════════════════════════════\n`;
-            output += `ID: ${skeleton.taskId}\n`;
-            output += `Messages: ${skeleton.metadata.messageCount}\n`;
-            output += `Taille totale: ${skeleton.metadata.totalSize} octets\n`;
-            output += `Dernière activité: ${skeleton.metadata.lastActivity}\n\n`;
-
-            // Filtrer pour ne garder que les actions (pas les messages)
-            const actions = skeleton.sequence.filter((item: any) => !('role' in item));
-            
-            if (actions.length === 0) {
-                output += "ℹ️ Aucune action technique trouvée dans cette tâche.\n";
-            } else {
-                output += `🛠️ Actions techniques trouvées: ${actions.length}\n`;
-                output += "═══════════════════════════════════════════════════════════════════════════════════════════════════════\n\n";
-
-                // Si un index spécifique est demandé
-                if (args.action_index !== undefined) {
-                    if (args.action_index >= 0 && args.action_index < actions.length) {
-                        const action = actions[args.action_index];
-                        output += this.formatActionDetails(action, args.action_index, args.truncate || 0);
-                    } else {
-                        output += `❌ Index ${args.action_index} invalide. Indices disponibles: 0-${actions.length - 1}\n`;
-                    }
-                } else {
-                    // Afficher toutes les actions
-                    actions.forEach((action: any, index: number) => {
-                        output += this.formatActionDetails(action, index, args.truncate || 0);
-                        if (index < actions.length - 1) {
-                            output += "\n" + "─".repeat(80) + "\n\n";
-                        }
-                    });
-                }
-            }
-
-            return {
-                content: [{
-                    type: 'text',
-                    text: output
-                }]
-            };
-
-        } catch (error) {
-            console.error('Erreur dans handleViewTaskDetails:', error);
-            return {
-                content: [{
-                    type: 'text',
-                    text: `❌ Erreur lors de la récupération des détails: ${error instanceof Error ? error.message : String(error)}`
-                }]
-            };
-        }
-    }
-
     /**
      * Gère la génération de résumés de traces
      */
@@ -2807,67 +2416,6 @@ class RooStateManagerServer {
                 isError: true
             };
         }
-    }
-
-    async handleGetRawConversation(args: { taskId: string }): Promise<CallToolResult> {
-        const { taskId } = args;
-        if (!taskId) {
-            throw new Error("taskId is required.");
-        }
-
-        const locations = await RooStorageDetector.detectStorageLocations();
-        for (const loc of locations) {
-            // 🚨 BUG FIX: Ajouter 'tasks' au chemin pour correspondre à la structure réelle
-            const taskPath = path.join(loc, 'tasks', taskId);
-            try {
-                await fs.access(taskPath); // Vérifie si le répertoire de la tâche existe
-
-                const apiHistoryPath = path.join(taskPath, 'api_conversation_history.json');
-                const uiMessagesPath = path.join(taskPath, 'ui_messages.json');
-
-                // 🚨 BUG FIX: Gérer les BOM UTF-8 qui causent des erreurs de parsing JSON
-                const readJsonFileClean = async (filePath: string) => {
-                    try {
-                        let content = await fs.readFile(filePath, 'utf-8');
-                        // Nettoyer le BOM UTF-8 si présent
-                        if (content.charCodeAt(0) === 0xFEFF) {
-                            content = content.slice(1);
-                        }
-                        return JSON.parse(content);
-                    } catch (e) {
-                        return null;
-                    }
-                };
-
-                const apiHistoryContent = await readJsonFileClean(apiHistoryPath);
-                const uiMessagesContent = await readJsonFileClean(uiMessagesPath);
-
-                // 🚨 BUG FIX: Ajouter des métadonnées sur le fichier pour diagnostic
-                const taskStats = await fs.stat(taskPath).catch(() => null);
-                const metadataPath = path.join(taskPath, 'task_metadata.json');
-                const metadataContent = await readJsonFileClean(metadataPath);
-
-                const rawData = {
-                    taskId,
-                    location: taskPath,
-                    taskStats: taskStats ? {
-                        created: taskStats.birthtime,
-                        modified: taskStats.mtime,
-                        size: taskStats.size
-                    } : null,
-                    metadata: metadataContent,
-                    api_conversation_history: apiHistoryContent,
-                    ui_messages: uiMessagesContent,
-                };
-
-                return { content: [{ type: 'text', text: JSON.stringify(rawData, null, 2) }] };
-            } catch (e) {
-                // Tâche non trouvée dans cet emplacement, on continue
-                console.debug(`[DEBUG] Task ${taskId} not found in ${taskPath}: ${e}`);
-            }
-        }
-
-        throw new Error(`Task with ID '${taskId}' not found in any storage location.`);
     }
 
     /**
