@@ -3,6 +3,7 @@ import dotenv from 'dotenv';
 import { fileURLToPath } from 'url';
 import { dirname } from 'path';
 import path from 'path';
+import os from 'os';
 
 // Obtenir le répertoire du fichier actuel
 const __filename = fileURLToPath(import.meta.url);
@@ -39,7 +40,7 @@ import { exec } from 'child_process';
 import { TaskNavigator } from './services/task-navigator.js';
 import { ConversationSkeleton, ActionMetadata, MessageSkeleton, ClusterSummaryOptions, ClusterSummaryResult } from './types/conversation.js';
 import packageJson from '../package.json' with { type: 'json' };
-import { readVscodeLogs, rebuildAndRestart, getMcpBestPractices, manageMcpSettings, rebuildTaskIndexFixed, generateTraceSummaryTool, handleGenerateTraceSummary, generateClusterSummaryTool, handleGenerateClusterSummary, exportConversationJsonTool, handleExportConversationJson, exportConversationCsvTool, handleExportConversationCsv, viewConversationTree, getConversationSynthesisTool, handleGetConversationSynthesis, detectStorageTool, getStorageStatsTool, listConversationsTool, debugAnalyzeTool, getRawConversationTool, viewTaskDetailsTool, getTaskTreeTool, handleGetTaskTree, debugTaskParsingTool, handleDebugTaskParsing, exportTaskTreeMarkdownTool, handleExportTaskTreeMarkdown, searchTasksSemanticTool, handleSearchTasksSemanticFallback, indexTaskSemanticTool, handleDiagnoseSemanticIndex, resetQdrantCollectionTool, exportTasksXmlTool, handleExportTasksXml, exportConversationXmlTool, handleExportConversationXml, exportProjectXmlTool, handleExportProjectXml, configureXmlExportTool, handleConfigureXmlExport } from './tools/index.js';
+import { readVscodeLogs, rebuildAndRestart, getMcpBestPractices, manageMcpSettings, rebuildTaskIndexFixed, generateTraceSummaryTool, handleGenerateTraceSummary, generateClusterSummaryTool, handleGenerateClusterSummary, exportConversationJsonTool, handleExportConversationJson, exportConversationCsvTool, handleExportConversationCsv, viewConversationTree, getConversationSynthesisTool, handleGetConversationSynthesis, detectStorageTool, getStorageStatsTool, listConversationsTool, debugAnalyzeTool, getRawConversationTool, viewTaskDetailsTool, getTaskTreeTool, handleGetTaskTree, debugTaskParsingTool, handleDebugTaskParsing, exportTaskTreeMarkdownTool, handleExportTaskTreeMarkdown, searchTasksSemanticTool, handleSearchTasksSemanticFallback, indexTaskSemanticTool, handleDiagnoseSemanticIndex, resetQdrantCollectionTool, exportTasksXmlTool, handleExportTasksXml, exportConversationXmlTool, handleExportConversationXml, exportProjectXmlTool, handleExportProjectXml, configureXmlExportTool, handleConfigureXmlExport, roosyncTools, roosyncInit, roosyncGetStatus, roosyncCompareConfig, roosyncListDiffs, roosyncGetDecisionDetails, roosyncApproveDecision, roosyncRejectDecision, roosyncApplyDecision, roosyncRollbackDecision } from './tools/index.js';
 import { searchTasks } from './services/task-searcher.js';
 import { indexTask, TaskIndexer } from './services/task-indexer.js';
 import { getQdrantClient } from './services/qdrant.js';
@@ -318,6 +319,8 @@ class RooStateManagerServer {
                         inputSchema: getConversationSynthesisTool.inputSchema,
                     },
                     exportTaskTreeMarkdownTool,
+                    // RooSync tools - Batch 6 synchronization
+                    ...roosyncTools,
                 ] as any[],
             };
         });
@@ -502,6 +505,79 @@ class RooStateManagerServer {
                       async () => { await this._ensureSkeletonCacheIsFresh(); }
                   );
                   break;
+              // RooSync tools - Batch 6 synchronization
+              case 'roosync_get_status':
+                  try {
+                      const roosyncResult = await roosyncGetStatus(args as any);
+                      result = { content: [{ type: 'text', text: JSON.stringify(roosyncResult, null, 2) }] };
+                  } catch (error) {
+                      result = { content: [{ type: 'text', text: `Error: ${(error as Error).message}` }], isError: true };
+                  }
+                  break;
+              case 'roosync_compare_config':
+                  try {
+                      const roosyncResult = await roosyncCompareConfig(args as any);
+                      result = { content: [{ type: 'text', text: JSON.stringify(roosyncResult, null, 2) }] };
+                  } catch (error) {
+                      result = { content: [{ type: 'text', text: `Error: ${(error as Error).message}` }], isError: true };
+                  }
+                  break;
+              case 'roosync_list_diffs':
+                  try {
+                      const roosyncResult = await roosyncListDiffs(args as any);
+                      result = { content: [{ type: 'text', text: JSON.stringify(roosyncResult, null, 2) }] };
+                  } catch (error) {
+                      result = { content: [{ type: 'text', text: `Error: ${(error as Error).message}` }], isError: true };
+                  }
+                  break;
+              case 'roosync_get_decision_details':
+                  try {
+                      const roosyncResult = await roosyncGetDecisionDetails(args as any);
+                      result = { content: [{ type: 'text', text: JSON.stringify(roosyncResult, null, 2) }] };
+                  } catch (error) {
+                      result = { content: [{ type: 'text', text: `Error: ${(error as Error).message}` }], isError: true };
+                  }
+                  break;
+              case 'roosync_approve_decision':
+                  try {
+                      const roosyncResult = await roosyncApproveDecision(args as any);
+                      result = { content: [{ type: 'text', text: JSON.stringify(roosyncResult, null, 2) }] };
+                  } catch (error) {
+                      result = { content: [{ type: 'text', text: `Error: ${(error as Error).message}` }], isError: true };
+                  }
+                  break;
+              case 'roosync_reject_decision':
+                  try {
+                      const roosyncResult = await roosyncRejectDecision(args as any);
+                      result = { content: [{ type: 'text', text: JSON.stringify(roosyncResult, null, 2) }] };
+                  } catch (error) {
+                      result = { content: [{ type: 'text', text: `Error: ${(error as Error).message}` }], isError: true };
+                  }
+                  break;
+              case 'roosync_apply_decision':
+                  try {
+                      const roosyncResult = await roosyncApplyDecision(args as any);
+                      result = { content: [{ type: 'text', text: JSON.stringify(roosyncResult, null, 2) }] };
+                  } catch (error) {
+                      result = { content: [{ type: 'text', text: `Error: ${(error as Error).message}` }], isError: true };
+                  }
+                  break;
+              case 'roosync_rollback_decision':
+                  try {
+                      const roosyncResult = await roosyncRollbackDecision(args as any);
+                      result = { content: [{ type: 'text', text: JSON.stringify(roosyncResult, null, 2) }] };
+                  } catch (error) {
+                      result = { content: [{ type: 'text', text: `Error: ${(error as Error).message}` }], isError: true };
+                  }
+                  break;
+              case 'roosync_init':
+                  try {
+                      const roosyncResult = await roosyncInit(args as any);
+                      result = { content: [{ type: 'text', text: JSON.stringify(roosyncResult, null, 2) }] };
+                  } catch (error) {
+                      result = { content: [{ type: 'text', text: `Error: ${(error as Error).message}` }], isError: true };
+                  }
+                  break;
               default:
                   throw new Error(`Tool not found: ${name}`);
           }
@@ -521,8 +597,9 @@ class RooStateManagerServer {
 
 
     async handleTouchMcpSettings(): Promise<CallToolResult> {
-        const settingsPath = "c:/Users/jsboi/AppData/Roaming/Code/User/globalStorage/rooveterinaryinc.roo-cline/settings/mcp_settings.json";
-        const command = `(Get-Item "${settingsPath}").LastWriteTime = Get-Date`;
+        const appDataPath = process.env.APPDATA || path.join(os.homedir(), 'AppData', 'Roaming');
+        const settingsPath = path.join(appDataPath, 'Code', 'User', 'globalStorage', 'rooveterinaryinc.roo-cline', 'settings', 'mcp_settings.json');
+        const command = `(Get-Item "${settingsPath.replace(/\\/g, '/')}").LastWriteTime = Get-Date`;
         
         return new Promise((resolve, reject) => {
             exec(`powershell.exe -Command "${command}"`, (error, stdout, stderr) => {

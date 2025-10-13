@@ -8,6 +8,7 @@
  */
 
 import { z } from 'zod';
+import { zodToJsonSchema } from 'zod-to-json-schema';
 import { getRooSyncService, RooSyncServiceError } from '../../services/RooSyncService.js';
 import { writeFileSync, readFileSync } from 'fs';
 import { join } from 'path';
@@ -144,10 +145,24 @@ export async function roosyncApproveDecision(args: ApproveDecisionArgs): Promise
 
 /**
  * Métadonnées de l'outil pour l'enregistrement MCP
+ * Utilise Zod.shape natif pour compatibilité MCP
  */
 export const approveDecisionToolMetadata = {
   name: 'roosync_approve_decision',
   description: 'Approuver une décision de synchronisation',
-  inputSchema: ApproveDecisionArgsSchema,
-  outputSchema: ApproveDecisionResultSchema
+  inputSchema: {
+    type: 'object' as const,
+    properties: {
+      decisionId: {
+        type: 'string',
+        description: 'ID de la décision à approuver'
+      },
+      comment: {
+        type: 'string',
+        description: 'Commentaire d\'approbation (optionnel)'
+      }
+    },
+    required: ['decisionId'],
+    additionalProperties: false
+  }
 };

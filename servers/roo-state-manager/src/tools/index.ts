@@ -26,3 +26,5 @@ export * from './indexing/index.js';
 
 // Summary & Synthesis tools - Batch 6 refactoring
 export * from './summary/index.js';
+// RooSync tools - Batch 6 synchronization
+export * from './roosync/index.js';

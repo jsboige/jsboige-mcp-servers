@@ -8,6 +8,7 @@
  */
 
 import { z } from 'zod';
+import { zodToJsonSchema } from 'zod-to-json-schema';
 import { getRooSyncService, RooSyncServiceError } from '../../services/RooSyncService.js';
 
 /**
@@ -111,10 +112,19 @@ export async function roosyncGetStatus(args: GetStatusArgs): Promise<GetStatusRe
 
 /**
  * Métadonnées de l'outil pour l'enregistrement MCP
+ * Utilise Zod.shape natif pour compatibilité MCP
  */
 export const getStatusToolMetadata = {
   name: 'roosync_get_status',
   description: 'Obtenir l\'état de synchronisation actuel du système RooSync',
-  inputSchema: GetStatusArgsSchema,
-  outputSchema: GetStatusResultSchema
+  inputSchema: {
+    type: 'object' as const,
+    properties: {
+      machineFilter: {
+        type: 'string',
+        description: 'ID de machine pour filtrer les résultats (optionnel)'
+      }
+    },
+    additionalProperties: false
+  }
 };

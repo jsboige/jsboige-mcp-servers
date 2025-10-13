@@ -8,6 +8,7 @@
  */
 
 import { z } from 'zod';
+import { zodToJsonSchema } from 'zod-to-json-schema';
 import { getRooSyncService, RooSyncServiceError } from '../../services/RooSyncService.js';
 
 /**
@@ -90,10 +91,19 @@ function determineChangeType(diff: { field: string; localValue: any; targetValue
 
 /**
  * Métadonnées de l'outil pour l'enregistrement MCP
+ * Utilise Zod.shape natif pour compatibilité MCP
  */
 export const compareConfigToolMetadata = {
   name: 'roosync_compare_config',
   description: 'Comparer la configuration locale avec une autre machine',
-  inputSchema: CompareConfigArgsSchema,
-  outputSchema: CompareConfigResultSchema
+  inputSchema: {
+    type: 'object' as const,
+    properties: {
+      targetMachine: {
+        type: 'string',
+        description: 'ID de la machine cible (auto-sélection si non spécifié)'
+      }
+    },
+    additionalProperties: false
+  }
 };
