@@ -39,7 +39,7 @@ import { exec } from 'child_process';
 import { TaskNavigator } from './services/task-navigator.js';
 import { ConversationSkeleton, ActionMetadata, MessageSkeleton, ClusterSummaryOptions, ClusterSummaryResult } from './types/conversation.js';
 import packageJson from '../package.json' with { type: 'json' };
-import { readVscodeLogs, rebuildAndRestart, getMcpBestPractices, manageMcpSettings, rebuildTaskIndexFixed, generateTraceSummaryTool, handleGenerateTraceSummary, generateClusterSummaryTool, handleGenerateClusterSummary, exportConversationJsonTool, handleExportConversationJson, exportConversationCsvTool, handleExportConversationCsv, viewConversationTree, getConversationSynthesisTool, handleGetConversationSynthesis, detectStorageTool, getStorageStatsTool, listConversationsTool, debugAnalyzeTool, getRawConversationTool, viewTaskDetailsTool, getTaskTreeTool, handleGetTaskTree, debugTaskParsingTool, handleDebugTaskParsing, exportTaskTreeMarkdownTool, handleExportTaskTreeMarkdown } from './tools/index.js';
+import { readVscodeLogs, rebuildAndRestart, getMcpBestPractices, manageMcpSettings, rebuildTaskIndexFixed, generateTraceSummaryTool, handleGenerateTraceSummary, generateClusterSummaryTool, handleGenerateClusterSummary, exportConversationJsonTool, handleExportConversationJson, exportConversationCsvTool, handleExportConversationCsv, viewConversationTree, getConversationSynthesisTool, handleGetConversationSynthesis, detectStorageTool, getStorageStatsTool, listConversationsTool, debugAnalyzeTool, getRawConversationTool, viewTaskDetailsTool, getTaskTreeTool, handleGetTaskTree, debugTaskParsingTool, handleDebugTaskParsing, exportTaskTreeMarkdownTool, handleExportTaskTreeMarkdown, searchTasksSemanticTool, handleSearchTasksSemanticFallback, indexTaskSemanticTool, handleDiagnoseSemanticIndex, resetQdrantCollectionTool } from './tools/index.js';
 import { searchTasks } from './services/task-searcher.js';
 import { indexTask, TaskIndexer } from './services/task-indexer.js';
 import { getQdrantClient } from './services/qdrant.js';
@@ -197,21 +197,7 @@ class RooStateManagerServer {
                     // Task tools - Batch 3 refactoring
                     getTaskTreeTool,
                     debugTaskParsingTool,
-                    {
-                        name: 'search_tasks_semantic',
-                        description: 'Recherche des tâches de manière sémantique avec filtrage par workspace et métadonnées enrichies.',
-                         inputSchema: {
-                            type: 'object',
-                            properties: {
-                                conversation_id: { type: 'string', description: 'ID de la conversation à fouiller.' },
-                                search_query: { type: 'string', description: 'La requête de recherche sémantique.' },
-                                max_results: { type: 'number', description: 'Nombre maximum de résultats à retourner.' },
-                                workspace: { type: 'string', description: 'Filtre les résultats par workspace spécifique.' },
-                                diagnose_index: { type: 'boolean', description: 'Mode diagnostic : retourne des informations sur l\'état de l\'indexation sémantique.' },
-                            },
-                            required: ['search_query'],
-                        },
-                    },
+                    searchTasksSemanticTool.definition,
                     debugAnalyzeTool.definition,
                     {
                         name: viewConversationTree.name,
@@ -263,28 +249,8 @@ class RooStateManagerServer {
                         description: manageMcpSettings.description,
                         inputSchema: manageMcpSettings.inputSchema,
                     },
-                    {
-                        name: 'index_task_semantic',
-                        description: 'Indexe une tâche spécifique dans Qdrant pour la recherche sémantique.',
-                        inputSchema: {
-                            type: 'object',
-                            properties: {
-                                task_id: { type: 'string', description: 'ID de la tâche à indexer.' },
-                            },
-                            required: ['task_id'],
-                        },
-                    },
-                    {
-                        name: 'reset_qdrant_collection',
-                        description: 'Supprime et recrée la collection Qdrant pour corriger les données corrompues.',
-                        inputSchema: {
-                            type: 'object',
-                            properties: {
-                                confirm: { type: 'boolean', description: 'Confirmation obligatoire pour supprimer la collection.', default: false },
-                            },
-                            required: ['confirm'],
-                        },
-                    },
+                    indexTaskSemanticTool.definition,
+                    resetQdrantCollectionTool.definition,
                     {
                        name: rebuildAndRestart.name,
                        description: rebuildAndRestart.description,
@@ -404,15 +370,6 @@ class RooStateManagerServer {
                         inputSchema: exportConversationCsvTool.inputSchema,
                     },
                     viewTaskDetailsTool.definition,
-                    {
-                        name: 'reset_qdrant_collection',
-                        description: 'Réinitialise complètement la collection Qdrant et supprime tous les timestamps d\'indexation des squelettes pour forcer une réindexation complète.',
-                        inputSchema: {
-                            type: 'object',
-                            properties: {},
-                            required: [],
-                        },
-                    },
                     getRawConversationTool.definition,
                     {
                         name: getConversationSynthesisTool.name,
@@ -470,8 +427,14 @@ class RooStateManagerServer {
                 case viewTaskDetailsTool.definition.name:
                     result = await viewTaskDetailsTool.handler(args as any, this.conversationCache);
                     break;
-                case 'search_tasks_semantic':
-                    result = await this.handleSearchTasksSemantic(args as any);
+                case searchTasksSemanticTool.definition.name:
+                    result = await searchTasksSemanticTool.handler(
+                        args as any,
+                        this.conversationCache,
+                        this._ensureSkeletonCacheIsFresh.bind(this),
+                        handleSearchTasksSemanticFallback,
+                        () => handleDiagnoseSemanticIndex(this.conversationCache)
+                    );
                     break;
                case debugAnalyzeTool.definition.name:
                    result = await debugAnalyzeTool.handler(args as any, this.conversationCache);
@@ -491,11 +454,21 @@ class RooStateManagerServer {
                case manageMcpSettings.name:
                    result = await manageMcpSettings.handler(args as any);
                    break;
-               case 'index_task_semantic':
-                   result = await this.handleIndexTaskSemantic(args as any);
+               case indexTaskSemanticTool.definition.name:
+                   result = await indexTaskSemanticTool.handler(
+                       args as any,
+                       this.conversationCache,
+                       this._ensureSkeletonCacheIsFresh.bind(this)
+                   );
                    break;
-               case 'reset_qdrant_collection':
-                   result = await this.handleResetQdrantCollection(args as any);
+               case resetQdrantCollectionTool.definition.name:
+                   result = await resetQdrantCollectionTool.handler(
+                       args as any,
+                       this.conversationCache,
+                       this._saveSkeletonToDisk.bind(this),
+                       this.qdrantIndexQueue,
+                       (enabled: boolean) => { this.isQdrantIndexingEnabled = enabled; }
+                   );
                    break;
                case rebuildAndRestart.name:
                    result = await rebuildAndRestart.handler(args as any);
@@ -1063,257 +1036,6 @@ class RooStateManagerServer {
         return {
             content: [{ type: 'text', text: 'Test simple réussi!' }]
         };
-    }
-
-    async handleSearchTasksSemantic(args: { conversation_id?: string, search_query: string, max_results?: number, diagnose_index?: boolean, workspace?: string }): Promise<CallToolResult> {
-        const { conversation_id, search_query, max_results = 10, diagnose_index = false, workspace } = args;
-        
-        // **FAILSAFE: Auto-rebuild cache si nécessaire avec filtre workspace**
-        await this._ensureSkeletonCacheIsFresh({ workspace });
-        
-        // Mode diagnostic - retourne des informations sur l'état de l'indexation
-        if (diagnose_index) {
-            try {
-                const qdrant = getQdrantClient();
-                const collections = await qdrant.getCollections();
-                const collectionName = process.env.QDRANT_COLLECTION_NAME || 'roo_tasks_semantic_index';
-                const collection = collections.collections.find(c => c.name === collectionName);
-                
-                return {
-                    content: [{
-                        type: 'text',
-                        text: `Diagnostic de l'index sémantique:\n- Collection: ${collectionName}\n- Existe: ${collection ? 'Oui' : 'Non'}\n- Points: ${collection ? 'Vérification nécessaire' : 'N/A'}\n- Cache local: ${this.conversationCache.size} conversations`
-                    }]
-                };
-            } catch (error) {
-                return {
-                    content: [{
-                        type: 'text',
-                        text: `Erreur lors du diagnostic: ${error instanceof Error ? error.message : String(error)}`
-                    }]
-                };
-            }
-        }
-
-        // Tentative de recherche sémantique via Qdrant/OpenAI
-        try {
-            const qdrant = getQdrantClient();
-            const openai = getOpenAIClient();
-            
-            // Créer l'embedding de la requête
-            const embedding = await openai.embeddings.create({
-                model: 'text-embedding-3-small',
-                input: search_query
-            });
-            
-            const queryVector = embedding.data[0].embedding;
-            const collectionName = process.env.QDRANT_COLLECTION_NAME || 'roo_tasks_semantic_index';
-            
-            // Configuration de la recherche selon conversation_id et workspace
-            let filter;
-            const filterConditions = [];
-            
-            if (conversation_id && conversation_id !== 'undefined') {
-                filterConditions.push({
-                    key: "task_id",
-                    match: {
-                        value: conversation_id
-                    }
-                });
-            }
-            
-            if (workspace) {
-                filterConditions.push({
-                    key: "workspace",
-                    match: {
-                        value: workspace
-                    }
-                });
-            }
-            
-            if (filterConditions.length > 0) {
-                filter = {
-                    must: filterConditions
-                };
-            }
-            // Si pas de filtres, recherche globale
-            
-            const searchResults = await qdrant.search(collectionName, {
-                vector: queryVector,
-                limit: max_results,
-                filter: filter,
-                with_payload: true
-            });
-            
-            // Obtenir l'identifiant de la machine actuelle pour l'en-tête
-            const { TaskIndexer, getHostIdentifier } = await import('./services/task-indexer.js');
-            const taskIndexer = new TaskIndexer();
-            const currentHostId = getHostIdentifier();
-            
-            const results = searchResults.map(result => ({
-                taskId: result.payload?.task_id || 'unknown',
-                score: result.score || 0,
-                match: this.truncateMessage(String(result.payload?.content || 'No content'), 2),
-                metadata: {
-                    chunk_id: result.payload?.chunk_id,
-                    chunk_type: result.payload?.chunk_type,
-                    workspace: result.payload?.workspace,
-                    task_title: result.payload?.task_title || `Task ${result.payload?.task_id}`,
-                    message_index: result.payload?.message_index,
-                    total_messages: result.payload?.total_messages,
-                    role: result.payload?.role,
-                    timestamp: result.payload?.timestamp,
-                    message_position: result.payload?.message_index && result.payload?.total_messages
-                        ? `${result.payload.message_index}/${result.payload.total_messages}`
-                        : undefined,
-                    host_os: result.payload?.host_os || 'unknown'
-                }
-            }));
-            
-            // Créer un rapport enrichi avec contexte multi-machine
-            const searchReport = {
-                current_machine: {
-                    host_id: currentHostId,
-                    search_timestamp: new Date().toISOString(),
-                    query: search_query,
-                    results_count: results.length
-                },
-                cross_machine_analysis: {
-                    machines_found: [...new Set(results.map(r => r.metadata.host_os))],
-                    results_by_machine: results.reduce((acc: { [key: string]: number }, r: any) => {
-                        const host = r.metadata.host_os || 'unknown';
-                        acc[host] = (acc[host] || 0) + 1;
-                        return acc;
-                    }, {})
-                },
-                results: results
-            };
-            
-            return { content: [{ type: 'text', text: JSON.stringify(searchReport, null, 2) }] };
-            
-        } catch (semanticError) {
-            console.log(`[INFO] Recherche sémantique échouée, utilisation du fallback textuel: ${semanticError instanceof Error ? semanticError.message : String(semanticError)}`);
-            
-            // Fallback vers la recherche textuelle simple
-            return await this.handleSearchTasksSemanticFallback(args);
-        }
-    }
-
-    private async handleSearchTasksSemanticFallback(args: { conversation_id?: string, search_query: string, max_results?: number }): Promise<CallToolResult> {
-        console.log(`[DEBUG] Fallback called with args:`, JSON.stringify(args));
-        
-        const { conversation_id, search_query, max_results = 10 } = args;
-        console.log(`[DEBUG] Extracted conversation_id: "${conversation_id}" (type: ${typeof conversation_id})`);
-
-        // Si pas de conversation_id spécifique, rechercher dans tout le cache
-        console.log(`[DEBUG] Fallback search - conversation_id: "${conversation_id}" (type: ${typeof conversation_id})`);
-        const isUndefinedString = conversation_id === 'undefined';
-        const isEmptyOrFalsy = !conversation_id;
-        console.log(`[DEBUG] isUndefinedString: ${isUndefinedString}, isEmptyOrFalsy: ${isEmptyOrFalsy}`);
-        
-        if (!conversation_id || conversation_id === 'undefined') {
-            const query = search_query.toLowerCase();
-            const results: any[] = [];
-
-            for (const [taskId, skeleton] of this.conversationCache.entries()) {
-                if (results.length >= max_results) break;
-                
-                for (const item of skeleton.sequence) {
-                    if ('content' in item && typeof item.content === 'string' && item.content.toLowerCase().includes(query)) {
-                        results.push({
-                            taskId: taskId,
-                            score: 1.0,
-                            match: `Found in role '${item.role}': ${this.truncateMessage(item.content, 2)}`
-                        });
-                        break; // Une seule correspondance par tâche pour éviter la duplication
-                    }
-                }
-            }
-
-            return { content: [{ type: 'text', text: JSON.stringify(results, null, 2) }] };
-        }
-
-        // Recherche dans une conversation spécifique
-        console.log(`[DEBUG] Specific search - conversation_id: "${conversation_id}" (type: ${typeof conversation_id})`);
-        const skeleton = this.conversationCache.get(conversation_id);
-        if (!skeleton) {
-            throw new Error(`Conversation with ID '${conversation_id}' not found in cache.`);
-        }
-
-        const query = search_query.toLowerCase();
-        const results: any[] = [];
-
-        for (const item of skeleton.sequence) {
-            if (results.length >= max_results) {
-                break;
-            }
-            if ('content' in item && typeof item.content === 'string' && item.content.toLowerCase().includes(query)) {
-                results.push({
-                    taskId: skeleton.taskId,
-                    score: 1.0,
-                    match: `Found in role '${item.role}': ${this.truncateMessage(item.content, 2)}`
-                });
-            }
-        }
-
-        return { content: [{ type: 'text', text: JSON.stringify(results, null, 2) }] };
-    }
-
-
-    async handleIndexTaskSemantic(args: { task_id: string }): Promise<CallToolResult> {
-        try {
-            const { task_id } = args;
-            
-            // **FAILSAFE: Auto-rebuild cache si nécessaire**
-            await this._ensureSkeletonCacheIsFresh();
-            
-            // Vérification des variables d'environnement
-            const openaiKey = process.env.OPENAI_API_KEY;
-            const qdrantUrl = process.env.QDRANT_URL;
-            const qdrantCollection = process.env.QDRANT_COLLECTION_NAME;
-            
-            console.log(`[DEBUG] Environment check:`);
-            console.log(`[DEBUG] OPENAI_API_KEY: ${openaiKey ? 'SET' : 'MISSING'}`);
-            console.log(`[DEBUG] QDRANT_URL: ${qdrantUrl || 'MISSING'}`);
-            console.log(`[DEBUG] QDRANT_COLLECTION_NAME: ${qdrantCollection || 'MISSING'}`);
-            
-            if (!openaiKey) {
-                throw new Error('OPENAI_API_KEY environment variable is required');
-            }
-            
-            const skeleton = this.conversationCache.get(task_id);
-            if (!skeleton) {
-                throw new Error(`Task with ID '${task_id}' not found in cache.`);
-            }
-            
-            const conversation = await RooStorageDetector.findConversationById(task_id);
-            const taskPath = conversation?.path;
-            
-            if (!taskPath) {
-                throw new Error(`Task directory for '${task_id}' not found in any storage location.`);
-            }
-            
-            console.log(`[DEBUG] Attempting to import indexTask from task-indexer.js`);
-            const { indexTask } = await import('./services/task-indexer.js');
-            console.log(`[DEBUG] Import successful, calling indexTask with taskId=${task_id}, taskPath=${taskPath}`);
-            const indexedPoints = await indexTask(task_id, taskPath);
-            console.log(`[DEBUG] indexTask completed, returned ${indexedPoints.length} points`);
-            
-            return {
-                content: [{
-                    type: "text",
-                    text: `# Indexation sémantique terminée\n\n**Tâche:** ${task_id}\n**Chemin:** ${taskPath}\n**Chunks indexés:** ${indexedPoints.length}\n\n**Variables d'env:**\n- OPENAI_API_KEY: ${openaiKey ? 'SET' : 'MISSING'}\n- QDRANT_URL: ${qdrantUrl || 'MISSING'}\n- QDRANT_COLLECTION: ${qdrantCollection || 'MISSING'}`
-                }]
-            };
-        } catch (error) {
-            console.error('Task indexing error:', error);
-            return {
-                content: [{
-                    type: "text",
-                    text: `# Erreur d'indexation\n\n**Tâche:** ${args.task_id}\n**Erreur:** ${error instanceof Error ? error.stack : String(error)}\n\nL'indexation de la tâche a échoué.`
-                }]
-            };
-        }
     }
 
     async handleDiagnoseConversationBom(args: { fix_found?: boolean }): Promise<CallToolResult> {
@@ -2172,124 +1894,6 @@ class RooStateManagerServer {
         console.error(`Roo State Manager Server started - v${packageJson.version}`);
     }
 
-    private async handleDiagnoseSemanticIndex(): Promise<CallToolResult> {
-        const collectionName = process.env.QDRANT_COLLECTION_NAME || 'roo_tasks_semantic_index';
-        const diagnostics: any = {
-            timestamp: new Date().toISOString(),
-            collection_name: collectionName,
-            status: 'unknown',
-            errors: [],
-            details: {},
-        };
-
-        try {
-            // Test de connectivité à Qdrant
-            const qdrant = getQdrantClient();
-            diagnostics.details.qdrant_connection = 'success';
-
-            try {
-                // Vérifier si la collection existe
-                const collections = await qdrant.getCollections();
-                const collection = collections.collections.find(c => c.name === collectionName);
-                
-                if (collection) {
-                    diagnostics.details.collection_exists = true;
-                    
-                    // Obtenir des informations sur la collection
-                    const collectionInfo = await qdrant.getCollection(collectionName);
-                    diagnostics.details.collection_info = {
-                        vectors_count: collectionInfo.vectors_count,
-                        indexed_vectors_count: collectionInfo.indexed_vectors_count || 0,
-                        points_count: collectionInfo.points_count,
-                        config: {
-                            distance: collectionInfo.config?.params?.vectors?.distance || 'unknown',
-                            size: collectionInfo.config?.params?.vectors?.size || 'unknown',
-                        },
-                    };
-                    
-                    if (collectionInfo.points_count === 0) {
-                        diagnostics.status = 'empty_collection';
-                        diagnostics.errors.push('La collection existe mais ne contient aucun point indexé');
-                    } else {
-                        diagnostics.status = 'healthy';
-                    }
-                } else {
-                    diagnostics.details.collection_exists = false;
-                    diagnostics.status = 'missing_collection';
-                    diagnostics.errors.push(`La collection '${collectionName}' n'existe pas dans Qdrant`);
-                }
-            } catch (collectionError: any) {
-                diagnostics.errors.push(`Erreur lors de l'accès à la collection: ${collectionError.message}`);
-                diagnostics.status = 'collection_error';
-            }
-
-            // Test de connectivité à OpenAI
-            try {
-                const openai = getOpenAIClient();
-                const testEmbedding = await openai.embeddings.create({
-                    model: 'text-embedding-3-small',
-                    input: 'test connectivity',
-                });
-                diagnostics.details.openai_connection = testEmbedding.data[0].embedding.length > 0 ? 'success' : 'failed';
-            } catch (openaiError: any) {
-                diagnostics.errors.push(`Erreur OpenAI: ${openaiError.message}`);
-                diagnostics.details.openai_connection = 'failed';
-            }
-
-            // Vérifier les variables d'environnement nécessaires
-            console.log('[DEBUG] Environment variables during diagnostic:');
-            console.log(`QDRANT_URL: ${process.env.QDRANT_URL ? 'SET' : 'NOT SET'}`);
-            console.log(`QDRANT_API_KEY: ${process.env.QDRANT_API_KEY ? 'SET' : 'NOT SET'}`);
-            console.log(`QDRANT_COLLECTION_NAME: ${process.env.QDRANT_COLLECTION_NAME ? 'SET' : 'NOT SET'}`);
-            console.log(`OPENAI_API_KEY: ${process.env.OPENAI_API_KEY ? 'SET' : 'NOT SET'}`);
-            
-            const envVars = {
-                QDRANT_URL: !!process.env.QDRANT_URL,
-                QDRANT_API_KEY: !!process.env.QDRANT_API_KEY,
-                QDRANT_COLLECTION_NAME: !!process.env.QDRANT_COLLECTION_NAME,
-                OPENAI_API_KEY: !!process.env.OPENAI_API_KEY,
-            };
-            diagnostics.details.environment_variables = envVars;
-
-            const missingEnvVars = Object.entries(envVars)
-                .filter(([, exists]) => !exists)
-                .map(([varName]) => varName);
-            
-            if (missingEnvVars.length > 0) {
-                diagnostics.errors.push(`Variables d'environnement manquantes: ${missingEnvVars.join(', ')}`);
-            }
-
-        } catch (connectionError: any) {
-            diagnostics.status = 'connection_failed';
-            diagnostics.details.qdrant_connection = 'failed';
-            diagnostics.errors.push(`Impossible de se connecter à Qdrant: ${connectionError.message}`);
-        }
-
-        // Recommandations basées sur le diagnostic
-        const recommendations: string[] = [];
-        if (diagnostics.status === 'missing_collection') {
-            recommendations.push('Utilisez l\'outil rebuild_task_index pour créer et peupler la collection');
-        }
-        if (diagnostics.status === 'empty_collection') {
-            recommendations.push('La collection existe mais est vide. Lancez rebuild_task_index pour l\'indexer');
-        }
-        if (diagnostics.details.openai_connection === 'failed') {
-            recommendations.push('Vérifiez votre clé API OpenAI dans les variables d\'environnement');
-        }
-        if (diagnostics.details.qdrant_connection === 'failed') {
-            recommendations.push('Vérifiez la configuration Qdrant (URL, clé API, connectivité réseau)');
-        }
-
-        diagnostics.recommendations = recommendations;
-
-        return {
-            content: [{
-                type: 'text',
-                text: JSON.stringify(diagnostics, null, 2)
-            }]
-        };
-    }
-
     /**
      * FAILSAFE: Ensure skeleton cache is fresh and up-to-date
      * Vérifie si le cache des squelettes est à jour et déclenche une reconstruction différentielle si nécessaire
@@ -2926,58 +2530,6 @@ class RooStateManagerServer {
     private _queueForQdrantIndexing(taskId: string): void {
         if (this.isQdrantIndexingEnabled) {
             this.qdrantIndexQueue.add(taskId);
-        }
-    }
-
-    /**
-     * Réinitialise complètement la collection Qdrant (outil de réparation)
-     */
-    private async handleResetQdrantCollection(args: any): Promise<CallToolResult> {
-        try {
-            console.log('🧹 Réinitialisation de la collection Qdrant...');
-            
-            const taskIndexer = new TaskIndexer();
-            
-            // Supprimer et recréer la collection Qdrant
-            await taskIndexer.resetCollection();
-            
-            // Marquer tous les squelettes comme non-indexés
-            let skeletonsReset = 0;
-            for (const [taskId, skeleton] of this.conversationCache.entries()) {
-                if (skeleton.metadata.qdrantIndexedAt) {
-                    delete skeleton.metadata.qdrantIndexedAt;
-                    await this._saveSkeletonToDisk(skeleton);
-                    skeletonsReset++;
-                }
-                // Ajouter à la queue pour réindexation
-                this.qdrantIndexQueue.add(taskId);
-            }
-            
-            // Réactiver le service s'il était désactivé
-            this.isQdrantIndexingEnabled = true;
-            
-            return {
-                content: [{
-                    type: "text",
-                    text: JSON.stringify({
-                        success: true,
-                        message: `Collection Qdrant réinitialisée avec succès`,
-                        skeletonsReset,
-                        queuedForReindexing: this.qdrantIndexQueue.size
-                    }, null, 2)
-                }]
-            };
-        } catch (error: any) {
-            console.error('Erreur lors de la réinitialisation de Qdrant:', error);
-            return {
-                content: [{
-                    type: "text",
-                    text: JSON.stringify({
-                        success: false,
-                        message: `Erreur lors de la réinitialisation: ${error.message}`
-                    }, null, 2)
-                }]
-            };
         }
     }
 

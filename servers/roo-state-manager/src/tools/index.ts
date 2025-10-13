@@ -20,3 +20,7 @@ export * from './conversation/index.js';
 
 // Task tools - Batch 3 refactoring
 export * from './task/index.js';
+
+// Search & Indexing tools - Batch 4 refactoring
+export * from './search/index.js';
+export * from './indexing/index.js';
