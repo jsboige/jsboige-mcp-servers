@@ -17,3 +17,6 @@ export { getConversationSynthesisTool, handleGetConversationSynthesis } from './
 
 // Conversation tools - Batch 2 refactoring
 export * from './conversation/index.js';
+
+// Task tools - Batch 3 refactoring
+export * from './task/index.js';

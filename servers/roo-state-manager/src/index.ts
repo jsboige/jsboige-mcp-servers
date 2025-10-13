@@ -39,7 +39,7 @@ import { exec } from 'child_process';
 import { TaskNavigator } from './services/task-navigator.js';
 import { ConversationSkeleton, ActionMetadata, MessageSkeleton, ClusterSummaryOptions, ClusterSummaryResult } from './types/conversation.js';
 import packageJson from '../package.json' with { type: 'json' };
-import { readVscodeLogs, rebuildAndRestart, getMcpBestPractices, manageMcpSettings, rebuildTaskIndexFixed, generateTraceSummaryTool, handleGenerateTraceSummary, generateClusterSummaryTool, handleGenerateClusterSummary, exportConversationJsonTool, handleExportConversationJson, exportConversationCsvTool, handleExportConversationCsv, viewConversationTree, getConversationSynthesisTool, handleGetConversationSynthesis, detectStorageTool, getStorageStatsTool, listConversationsTool, debugAnalyzeTool, getRawConversationTool, viewTaskDetailsTool } from './tools/index.js';
+import { readVscodeLogs, rebuildAndRestart, getMcpBestPractices, manageMcpSettings, rebuildTaskIndexFixed, generateTraceSummaryTool, handleGenerateTraceSummary, generateClusterSummaryTool, handleGenerateClusterSummary, exportConversationJsonTool, handleExportConversationJson, exportConversationCsvTool, handleExportConversationCsv, viewConversationTree, getConversationSynthesisTool, handleGetConversationSynthesis, detectStorageTool, getStorageStatsTool, listConversationsTool, debugAnalyzeTool, getRawConversationTool, viewTaskDetailsTool, getTaskTreeTool, handleGetTaskTree, debugTaskParsingTool, handleDebugTaskParsing, exportTaskTreeMarkdownTool, handleExportTaskTreeMarkdown } from './tools/index.js';
 import { searchTasks } from './services/task-searcher.js';
 import { indexTask, TaskIndexer } from './services/task-indexer.js';
 import { getQdrantClient } from './services/qdrant.js';
@@ -194,31 +194,9 @@ class RooStateManagerServer {
                             required: []
                         },
                     },
-                    // New features being re-introduced
-                    {
-                        name: 'get_task_tree',
-                        description: 'Récupère une vue arborescente et hiérarchique des tâches.',
-                        inputSchema: {
-                            type: 'object',
-                            properties: {
-                                conversation_id: { type: 'string', description: 'ID de la conversation pour laquelle récupérer l\'arbre des tâches.' },
-                                max_depth: { type: 'number', description: 'Profondeur maximale de l\'arbre à retourner.' },
-                                include_siblings: { type: 'boolean', description: 'Inclure les tâches sœurs (même parent) dans l\'arbre.' },
-                            },
-                            required: ['conversation_id'],
-                        },
-                    },
-                    {
-                        name: 'debug_task_parsing',
-                        description: 'Analyse en détail le parsing d\'une tâche spécifique pour diagnostiquer les problèmes hiérarchiques.',
-                        inputSchema: {
-                            type: 'object',
-                            properties: {
-                                task_id: { type: 'string', description: 'ID de la tâche à analyser en détail.' }
-                            },
-                            required: ['task_id']
-                        }
-                    },
+                    // Task tools - Batch 3 refactoring
+                    getTaskTreeTool,
+                    debugTaskParsingTool,
                     {
                         name: 'search_tasks_semantic',
                         description: 'Recherche des tâches de manière sémantique avec filtrage par workspace et métadonnées enrichies.',
@@ -234,7 +212,7 @@ class RooStateManagerServer {
                             required: ['search_query'],
                         },
                     },
-                     debugAnalyzeTool.definition,
+                    debugAnalyzeTool.definition,
                     {
                         name: viewConversationTree.name,
                         description: viewConversationTree.description,
@@ -441,33 +419,7 @@ class RooStateManagerServer {
                         description: getConversationSynthesisTool.description,
                         inputSchema: getConversationSynthesisTool.inputSchema,
                     },
-                    {
-                        name: 'export_task_tree_markdown',
-                        description: 'Exporte un arbre de tâches au format Markdown hiérarchique avec statuts de complétion et instructions.',
-                        inputSchema: {
-                            type: 'object',
-                            properties: {
-                                conversation_id: {
-                                    type: 'string',
-                                    description: 'ID de la conversation pour laquelle exporter l\'arbre des tâches.'
-                                },
-                                filePath: {
-                                    type: 'string',
-                                    description: 'Chemin optionnel pour sauvegarder le fichier Markdown. Si omis, le contenu est retourné.'
-                                },
-                                max_depth: {
-                                    type: 'number',
-                                    description: 'Profondeur maximale de l\'arbre à inclure dans l\'export.'
-                                },
-                                include_siblings: {
-                                    type: 'boolean',
-                                    description: 'Inclure les tâches sœurs (même parent) dans l\'arbre.',
-                                    default: true
-                                }
-                            },
-                            required: ['conversation_id']
-                        }
-                    },
+                    exportTaskTreeMarkdownTool,
                 ] as any[],
             };
         });
@@ -510,7 +462,7 @@ class RooStateManagerServer {
                     result = await this.handleBuildSkeletonCache(args as any);
                     break;
                 case 'get_task_tree':
-                    result = await this.handleGetTaskTree(args as any);
+                    result = await handleGetTaskTree(args as any, this.conversationCache, async () => { await this._ensureSkeletonCacheIsFresh(); });
                     break;
                 case viewConversationTree.name:
                     result = viewConversationTree.handler(args as any, this.conversationCache);
@@ -525,7 +477,7 @@ class RooStateManagerServer {
                    result = await debugAnalyzeTool.handler(args as any, this.conversationCache);
                    break;
                case 'debug_task_parsing':
-                   result = await this.handleDebugTaskParsing(args as any);
+                   result = await handleDebugTaskParsing(args as any);
                    break;
             //    case 'diagnose_roo_state':
             //        result = await this.handleDiagnoseRooState(args as any);
@@ -618,7 +570,11 @@ class RooStateManagerServer {
                   result = await this.handleGetConversationSynthesis(args as any);
                   break;
               case 'export_task_tree_markdown':
-                  result = await this.handleExportTaskTreeMarkdown(args as any);
+                  result = await handleExportTaskTreeMarkdown(
+                      args as any,
+                      async (treeArgs: any) => await handleGetTaskTree(treeArgs, this.conversationCache, async () => { await this._ensureSkeletonCacheIsFresh(); }),
+                      async () => { await this._ensureSkeletonCacheIsFresh(); }
+                  );
                   break;
               default:
                   throw new Error(`Tool not found: ${name}`);
@@ -1088,261 +1044,6 @@ class RooStateManagerServer {
         }
         
         return { content: [{ type: 'text', text: response }] };
-    }
-
-    async handleDebugTaskParsing(args: { task_id: string }): Promise<CallToolResult> {
-        const { task_id } = args;
-        
-        console.log(`🔍 DEBUG: Starting detailed analysis of task ${task_id}`);
-        const debugInfo: string[] = [];
-        
-        try {
-            // Trouver le chemin de la tâche
-            const locations = await RooStorageDetector.detectStorageLocations();
-            let taskPath = null;
-            
-            for (const baseDir of locations) {
-                const tasksDir = path.join(baseDir, 'tasks');
-                const potentialPath = path.join(tasksDir, task_id);
-                if (existsSync(potentialPath)) {
-                    taskPath = potentialPath;
-                    break;
-                }
-            }
-            
-            if (!taskPath) {
-                return { content: [{ type: 'text', text: `Task ${task_id} not found in any storage location` }] };
-            }
-            
-            debugInfo.push(`📁 Task path: ${taskPath}`);
-            
-            // Analyser les fichiers
-            const uiMessagesPath = path.join(taskPath, 'ui_messages.json');
-            const apiHistoryPath = path.join(taskPath, 'api_conversation_history.json');
-            
-            debugInfo.push(`📄 UI Messages: ${existsSync(uiMessagesPath) ? '✅ EXISTS' : '❌ MISSING'}`);
-            debugInfo.push(`📄 API History: ${existsSync(apiHistoryPath) ? '✅ EXISTS' : '❌ MISSING'}`);
-            
-            // Analyser le contenu pour les balises <task>
-            if (existsSync(uiMessagesPath)) {
-                let content = await fs.readFile(uiMessagesPath, 'utf-8');
-                if (content.charCodeAt(0) === 0xFEFF) {
-                    content = content.slice(1);
-                }
-                
-                const messages = JSON.parse(content);
-                debugInfo.push(`📊 UI Messages count: ${messages.length}`);
-                
-                let taskTagCount = 0;
-                let newTaskTagCount = 0;
-                
-                for (let i = 0; i < messages.length; i++) {
-                    const message = messages[i];
-                    let contentText = '';
-                    
-                    if (typeof message.content === 'string') {
-                        contentText = message.content;
-                    } else if (Array.isArray(message.content)) {
-                        for (const item of message.content) {
-                            if (item.type === 'text' && typeof item.text === 'string') {
-                                contentText += item.text + '\n';
-                            }
-                        }
-                    }
-                    
-                    const taskMatches = contentText.match(/<task>/g);
-                    const newTaskMatches = contentText.match(/<new_task>/g);
-                    
-                    if (taskMatches) {
-                        taskTagCount += taskMatches.length;
-                        debugInfo.push(`🎯 Message ${i} (${message.role}): Found ${taskMatches.length} <task> tags`);
-                        
-                        // Extraire le contenu de la première balise <task>
-                        const taskPattern = /<task>([\s\S]*?)<\/task>/gi;
-                        const match = taskPattern.exec(contentText);
-                        if (match) {
-                            debugInfo.push(`   Content preview: "${match[1].trim().substring(0, 100)}..."`);
-                        }
-                    }
-                    
-                    if (newTaskMatches) {
-                        newTaskTagCount += newTaskMatches.length;
-                        debugInfo.push(`🎯 Message ${i} (${message.role}): Found ${newTaskMatches.length} <new_task> tags`);
-                    }
-                }
-                
-                debugInfo.push(`📈 Total <task> tags found: ${taskTagCount}`);
-                debugInfo.push(`📈 Total <new_task> tags found: ${newTaskTagCount}`);
-            }
-            
-            // Test du parsing avec RooStorageDetector
-            debugInfo.push(`\n🧪 TESTING RooStorageDetector.analyzeConversation...`);
-            const skeleton = await RooStorageDetector.analyzeConversation(task_id, taskPath);
-            
-            if (skeleton) {
-                debugInfo.push(`✅ Analysis complete:`);
-                debugInfo.push(`   - TaskId: ${skeleton.taskId}`);
-                debugInfo.push(`   - ParentTaskId: ${skeleton.parentTaskId || 'NONE'}`);
-                debugInfo.push(`   - TruncatedInstruction: ${skeleton.truncatedInstruction ? `"${skeleton.truncatedInstruction.substring(0, 100)}..."` : 'NONE'}`);
-                debugInfo.push(`   - ChildTaskInstructionPrefixes: ${skeleton.childTaskInstructionPrefixes?.length || 0} prefixes`);
-                
-                if (skeleton.childTaskInstructionPrefixes && skeleton.childTaskInstructionPrefixes.length > 0) {
-                    debugInfo.push(`   - Prefixes preview:`);
-                    skeleton.childTaskInstructionPrefixes.slice(0, 3).forEach((prefix, i) => {
-                        debugInfo.push(`     ${i+1}. "${prefix.substring(0, 80)}..."`);
-                    });
-                }
-            } else {
-                debugInfo.push(`❌ Analysis returned null`);
-            }
-            
-        } catch (error: any) {
-            debugInfo.push(`❌ ERROR: ${error?.message || 'Unknown error'}`);
-        }
-        
-        return { content: [{ type: 'text', text: debugInfo.join('\n') }] };
-    }
-
-    async handleGetTaskTree(args: { conversation_id: string, max_depth?: number, include_siblings?: boolean, output_format?: 'json' | 'markdown' }): Promise<CallToolResult> {
-        const { conversation_id, max_depth = Infinity, include_siblings = false, output_format = 'json' } = args;
-
-        // **FAILSAFE: Auto-rebuild cache si nécessaire**
-        await this._ensureSkeletonCacheIsFresh();
-
-        // Ensure cache is populated
-        if (this.conversationCache.size === 0) {
-            throw new Error(`Task cache is empty. Please run 'build_skeleton_cache' first to populate the cache.`);
-        }
-
-        const skeletons = Array.from(this.conversationCache.values());
-        
-        // Enhanced ID matching: support both exact match and prefix match
-        const findTaskById = (id: string) => {
-            // Try exact match first
-            const exactMatch = skeletons.find(s => s.taskId === id);
-            if (exactMatch) {
-                return exactMatch;
-            }
-            
-            // Try prefix match
-            const prefixMatches = skeletons.filter(s => s.taskId.startsWith(id));
-            if (prefixMatches.length === 0) {
-                return null;
-            }
-            if (prefixMatches.length === 1) {
-                return prefixMatches[0];
-            }
-            
-            // Multiple matches - throw error with suggestions
-            const suggestions = prefixMatches.slice(0, 5).map(s => s.taskId).join(', ');
-            throw new Error(`Ambiguous task ID '${id}'. Multiple matches found: ${suggestions}. Please provide a more specific ID.`);
-        };
-        
-        const targetSkeleton = findTaskById(conversation_id);
-        if (!targetSkeleton) {
-            const availableIds = skeletons.slice(0, 10).map(s => `${s.taskId.substring(0, 8)} (${s.metadata?.title || 'No title'})`).join(', ');
-            throw new Error(`Task ID '${conversation_id}' not found. Available tasks (first 10): ${availableIds}`);
-        }
-
-        const childrenMap = new Map<string, string[]>();
-        skeletons.forEach(s => {
-            const pId = (s as any)?.parentId ?? (s as any)?.parentTaskId;
-            if (pId) {
-                if (!childrenMap.has(pId)) {
-                    childrenMap.set(pId, []);
-                }
-                childrenMap.get(pId)!.push(s.taskId);
-            }
-        });
-
-        const buildTree = (taskId: string, depth: number): any => {
-            if (depth > max_depth) {
-                return null;
-            }
-            const skeleton = skeletons.find(s => s.taskId === taskId);
-            if (!skeleton) {
-                return null;
-            }
-
-            const childrenIds = childrenMap.get(taskId) || [];
-            const children = childrenIds
-                .map(childId => buildTree(childId, depth + 1))
-                .filter(child => child !== null);
-            
-            // Enhanced node with rich metadata
-            const node = {
-                taskId: skeleton.taskId,
-                taskIdShort: skeleton.taskId.substring(0, 8),
-                title: skeleton.metadata?.title || `Task ${skeleton.taskId.substring(0, 8)}`,
-                metadata: {
-                    messageCount: skeleton.metadata?.messageCount || 0,
-                    actionCount: skeleton.metadata?.actionCount || 0,
-                    totalSizeKB: skeleton.metadata?.totalSize ? Math.round(skeleton.metadata.totalSize / 1024 * 10) / 10 : 0,
-                    lastActivity: skeleton.metadata?.lastActivity || skeleton.metadata?.createdAt || 'Unknown',
-                    createdAt: skeleton.metadata?.createdAt || 'Unknown',
-                    mode: skeleton.metadata?.mode || 'Unknown',
-                    workspace: skeleton.metadata?.workspace || 'Unknown',
-                    hasParent: !!(((skeleton as any)?.parentId) || ((skeleton as any)?.parentTaskId)),
-                    childrenCount: childrenIds.length,
-                    depth: depth,
-                    // 🚀 NOUVEAUX CHAMPS : Ajout des fonctionnalités demandées
-                    isCompleted: skeleton.isCompleted || false,
-                    truncatedInstruction: skeleton.truncatedInstruction || undefined
-                },
-                parentId: (skeleton as any)?.parentId ?? (skeleton as any)?.parentTaskId,
-                parentTaskId: (skeleton as any)?.parentTaskId,
-                children: children.length > 0 ? children : undefined,
-            };
-            
-            return node;
-        };
-        
-        let tree;
-        
-        const targetParentId = (targetSkeleton as any)?.parentId ?? (targetSkeleton as any)?.parentTaskId;
-        if (include_siblings && targetParentId) {
-            // Si la tâche a un parent et que les siblings sont demandés,
-            // construire l'arbre depuis le parent pour inclure les frères et sœurs.
-            tree = buildTree(targetParentId, 0);
-        } else {
-            // Sinon (pas de parent ou siblings non demandés),
-            // construire l'arbre depuis la tâche cible elle-même.
-            tree = buildTree(targetSkeleton.taskId, 0);
-        }
-
-        if (!tree) {
-            throw new Error(`Could not build tree for conversation ID '${conversation_id}'. Task exists but tree construction failed.`);
-        }
-
-        // Format output based on output_format parameter
-        if (output_format === 'markdown') {
-            const formatTreeMarkdown = (node: any, prefix: string = '', isLast: boolean = true): string => {
-                const connector = prefix === '' ? '' : (isLast ? '└── ' : '├── ');
-                const nextPrefix = prefix === '' ? '' : prefix + (isLast ? '    ' : '│   ');
-                
-                let line = `${prefix}${connector}**${node.taskIdShort}** ${node.title}`;
-                if (node.metadata) {
-                    line += ` _(${node.metadata.messageCount} msgs, ${node.metadata.totalSizeKB}KB, ${node.metadata.mode})_`;
-                }
-                line += '\n';
-                
-                if (node.children && node.children.length > 0) {
-                    node.children.forEach((child: any, index: number) => {
-                        const childIsLast = index === node.children.length - 1;
-                        line += formatTreeMarkdown(child, nextPrefix, childIsLast);
-                    });
-                }
-                
-                return line;
-            };
-            
-            const markdownTree = formatTreeMarkdown(tree);
-            const metadata = `**Arbre des tâches:** ${conversation_id}\n**Profondeur max:** ${max_depth === Infinity ? '∞' : max_depth}\n**Inclure siblings:** ${include_siblings ? 'Oui' : 'Non'}\n**Racine:** ${tree.taskIdShort} - ${tree.title}\n\n`;
-            
-            return { content: [{ type: 'text', text: metadata + markdownTree }] };
-        } else {
-            return { content: [{ type: 'text', text: JSON.stringify(tree, null, 2) }] };
-        }
     }
 
     private truncateMessage(message: string, truncate: number): string {
@@ -2465,130 +2166,6 @@ class RooStateManagerServer {
     /**
      * 🚀 NOUVEAU : Exporte un arbre de tâches au format Markdown hiérarchique
      */
-    async handleExportTaskTreeMarkdown(args: {
-        conversation_id: string;
-        filePath?: string;
-        max_depth?: number;
-        include_siblings?: boolean;
-    }): Promise<CallToolResult> {
-        try {
-            const { conversation_id, filePath, max_depth, include_siblings = true } = args;
-
-            if (!conversation_id) {
-                throw new Error("conversation_id est requis");
-            }
-
-            // **FAILSAFE: Auto-rebuild cache si nécessaire**
-            // Note: handleGetTaskTree ci-dessous va déjà appeler _ensureSkeletonCacheIsFresh,
-            // mais on le fait aussi ici pour cohérence et sécurité
-            await this._ensureSkeletonCacheIsFresh();
-
-            // Utiliser get_task_tree pour récupérer l'arbre avec les nouveaux champs
-            const treeResult = await this.handleGetTaskTree({
-                conversation_id,
-                max_depth,
-                include_siblings
-            });
-
-            if (!treeResult || !treeResult.content || !treeResult.content[0]) {
-                throw new Error("Impossible de récupérer l'arbre des tâches");
-            }
-
-            const textContent = treeResult.content[0].text;
-            if (typeof textContent !== 'string') {
-                throw new Error("Format de données invalide retourné par get_task_tree");
-            }
-            const treeData = JSON.parse(textContent);
-
-            // Fonction récursive pour formatter l'arbre en Markdown
-            const formatNodeToMarkdown = (node: any, depth: number = 0): string => {
-                let markdown = '';
-                const indent = '#'.repeat(Math.max(2, depth + 2)); // Commence par ## au minimum
-                const shortId = node.taskIdShort || node.taskId?.substring(0, 8) || 'unknown';
-                const status = node.metadata?.isCompleted ? 'Completed' : 'In Progress';
-                const instruction = node.metadata?.truncatedInstruction || 'No instruction available';
-                
-                // Titre principal avec ID court et statut
-                markdown += `${indent} ${node.title || 'Task'} (${shortId})\n`;
-                markdown += `**Status:** ${status}\n`;
-                markdown += `**Instruction:** ${instruction}\n`;
-                
-                // Statistiques si disponibles
-                if (node.metadata?.stats) {
-                    const stats = node.metadata.stats;
-                    const messageCount = stats.messageCount || 0;
-                    const sizeKB = Math.round((stats.totalSize || 0) / 1024);
-                    markdown += `**Stats:** ${messageCount} messages | ${sizeKB} KB\n`;
-                }
-                
-                // Workspace si disponible
-                if (node.metadata?.workspace) {
-                    markdown += `**Workspace:** ${node.metadata.workspace}\n`;
-                }
-                
-                markdown += '\n';
-
-                // Enfants si présents
-                if (node.children && node.children.length > 0) {
-                    if (depth === 0) {
-                        markdown += `### Child Tasks\n\n`;
-                    }
-                    
-                    for (const child of node.children) {
-                        markdown += formatNodeToMarkdown(child, depth + 1);
-                    }
-                }
-
-                return markdown;
-            };
-
-            // En-tête du document
-            const currentDate = new Date().toISOString().split('T')[0];
-            let markdown = `# Task Tree - ${currentDate}\n\n`;
-
-            // Traiter le nœud racine ou les nœuds multiples
-            if (Array.isArray(treeData)) {
-                for (const rootNode of treeData) {
-                    markdown += formatNodeToMarkdown(rootNode, 0);
-                    markdown += '\n---\n\n';
-                }
-            } else {
-                markdown += formatNodeToMarkdown(treeData, 0);
-            }
-
-            // Sauvegarder dans un fichier si spécifié
-            if (filePath) {
-                const fs = await import('fs');
-                const path = await import('path');
-                
-                // Créer le répertoire parent si nécessaire
-                const dir = path.dirname(filePath);
-                fs.mkdirSync(dir, { recursive: true });
-                
-                // Écrire le fichier
-                fs.writeFileSync(filePath, markdown, 'utf8');
-                
-                return {
-                    content: [{
-                        type: 'text',
-                        text: `✅ Arbre des tâches exporté avec succès vers: ${filePath}\n\nContenu:\n\n${markdown}`
-                    }]
-                };
-            }
-
-            return {
-                content: [{ type: 'text', text: markdown }]
-            };
-
-        } catch (error) {
-            const errorMessage = error instanceof Error ? error.message : 'Erreur inconnue';
-            return {
-                content: [{ type: 'text', text: `❌ Erreur lors de l'export Markdown: ${errorMessage}` }],
-                isError: true
-            };
-        }
-    }
-
     async run() {
         const transport = new StdioServerTransport();
         await this.server.connect(transport);
