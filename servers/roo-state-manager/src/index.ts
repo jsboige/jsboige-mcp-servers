@@ -453,12 +453,20 @@ class RooStateManagerServer {
                       result = await normalizeWorkspacePaths.handler();
                       break;*/
                   break;
-               case generateTraceSummaryTool.name:
-                   result = await this.handleGenerateTraceSummary(args as any);
+               case generateTraceSummaryTool.name: {
+                   const summaryText = await handleGenerateTraceSummary(args as any, async (id: string) => {
+                       return this.conversationCache.get(id) || null;
+                   });
+                   result = { content: [{ type: 'text', text: summaryText }] };
                    break;
-               case generateClusterSummaryTool.name:
-                  result = await this.handleGenerateClusterSummary(args as any);
-                  break;
+               }
+               case generateClusterSummaryTool.name: {
+                   const clusterText = await handleGenerateClusterSummary(args as any, async (id: string) => {
+                       return this.conversationCache.get(id) || null;
+                   });
+                   result = { content: [{ type: 'text', text: clusterText }] };
+                   break;
+               }
                case exportConversationJsonTool.name:
                   result = await this.handleExportConversationJson(args as any);
                   break;
@@ -480,9 +488,13 @@ class RooStateManagerServer {
                 case getRawConversationTool.definition.name:
                     result = await getRawConversationTool.handler(args as any);
                     break;
-              case getConversationSynthesisTool.name:
-                  result = await this.handleGetConversationSynthesis(args as any);
+              case getConversationSynthesisTool.name: {
+                  const synthResult = await handleGetConversationSynthesis(args as any, async (id: string) => {
+                      return this.conversationCache.get(id) || null;
+                  });
+                  result = { content: [{ type: 'text', text: typeof synthResult === 'string' ? synthResult : JSON.stringify(synthResult, null, 2) }] };
                   break;
+              }
               case 'export_task_tree_markdown':
                   result = await handleExportTaskTreeMarkdown(
                       args as any,
@@ -1256,137 +1268,6 @@ class RooStateManagerServer {
     }
 
     /**
-     * Gère la génération de résumés de grappes de tâches
-     */
-    async handleGenerateClusterSummary(args: {
-        rootTaskId: string;
-        childTaskIds?: string[];
-        detailLevel?: 'Full' | 'NoTools' | 'NoResults' | 'Messages' | 'Summary' | 'UserOnly';
-        outputFormat?: 'markdown' | 'html';
-        truncationChars?: number;
-        compactStats?: boolean;
-        includeCss?: boolean;
-        generateToc?: boolean;
-        clusterMode?: 'aggregated' | 'detailed' | 'comparative';
-        includeClusterStats?: boolean;
-        crossTaskAnalysis?: boolean;
-        maxClusterDepth?: number;
-        clusterSortBy?: 'chronological' | 'size' | 'activity' | 'alphabetical';
-        includeClusterTimeline?: boolean;
-        clusterTruncationChars?: number;
-        showTaskRelationships?: boolean;
-    }): Promise<CallToolResult> {
-        try {
-            const { rootTaskId } = args;
-            
-            if (!rootTaskId) {
-                throw new Error("rootTaskId est requis");
-            }
-
-            // **FAILSAFE: Auto-rebuild cache si nécessaire**
-            await this._ensureSkeletonCacheIsFresh();
-
-            // Récupérer le ConversationSkeleton de la tâche racine depuis le cache
-            const rootConversation = this.conversationCache.get(rootTaskId);
-            if (!rootConversation) {
-                throw new Error(`Conversation racine avec taskId ${rootTaskId} introuvable`);
-            }
-
-            // Collecter les tâches enfantes (soit fournies, soit auto-détectées)
-            let childConversations: any[] = [];
-            
-            if (args.childTaskIds && args.childTaskIds.length > 0) {
-                // Utiliser les IDs fournis
-                for (const childId of args.childTaskIds) {
-                    const childConv = this.conversationCache.get(childId);
-                    if (childConv) {
-                        childConversations.push(childConv);
-                    } else {
-                        console.warn(`Tâche enfante ${childId} introuvable dans le cache`);
-                    }
-                }
-            } else {
-                // Auto-détecter les tâches enfantes en recherchant celles qui ont ce rootTaskId comme parent
-                for (const [taskId, conversation] of this.conversationCache.entries()) {
-                    if (conversation.parentTaskId === rootTaskId) {
-                        childConversations.push(conversation);
-                    }
-                }
-            }
-
-            // Préparer les options de génération
-            const clusterOptions: ClusterSummaryOptions = {
-                detailLevel: args.detailLevel || 'Full',
-                outputFormat: args.outputFormat || 'markdown',
-                truncationChars: args.truncationChars || 0,
-                compactStats: args.compactStats || false,
-                includeCss: args.includeCss !== undefined ? args.includeCss : true,
-                generateToc: args.generateToc !== undefined ? args.generateToc : true,
-                clusterMode: args.clusterMode || 'aggregated',
-                includeClusterStats: args.includeClusterStats !== undefined ? args.includeClusterStats : true,
-                crossTaskAnalysis: args.crossTaskAnalysis !== undefined ? args.crossTaskAnalysis : true,
-                maxClusterDepth: args.maxClusterDepth || 3,
-                clusterSortBy: args.clusterSortBy || 'chronological',
-                includeClusterTimeline: args.includeClusterTimeline !== undefined ? args.includeClusterTimeline : true,
-                clusterTruncationChars: args.clusterTruncationChars || 0,
-                showTaskRelationships: args.showTaskRelationships !== undefined ? args.showTaskRelationships : true
-            };
-
-            // Générer le résumé de grappe
-            const result = await this.traceSummaryService.generateClusterSummary(
-                rootConversation,
-                childConversations,
-                clusterOptions
-            );
-
-            if (!result.success) {
-                throw new Error(`Erreur lors de la génération du résumé de grappe: ${result.error}`);
-            }
-
-            // Préparer la réponse avec métadonnées
-            const response = [
-                `**Résumé de grappe généré avec succès**`,
-                ``,
-                `**Tâche racine:** ${rootTaskId}`,
-                `**Tâches enfantes:** ${childConversations.length}`,
-                ``,
-                `**Statistiques de grappe:**`,
-                `- Total des tâches: ${result.statistics.totalTasks}`,
-                `- Total des sections: ${result.statistics.totalSections}`,
-                `- Messages utilisateur: ${result.statistics.userMessages}`,
-                `- Réponses assistant: ${result.statistics.assistantMessages}`,
-                `- Taille totale: ${Math.round(result.statistics.totalContentSize / 1024 * 10) / 10} KB`,
-                result.statistics.averageTaskSize ? `- Taille moyenne par tâche: ${Math.round(result.statistics.averageTaskSize / 1024 * 10) / 10} KB` : '',
-                result.statistics.clusterTimeSpan ? `- Durée de la grappe: ${result.statistics.clusterTimeSpan.totalDurationHours}h` : '',
-                ``,
-                `**Mode de génération:** ${clusterOptions.detailLevel}`,
-                `**Mode clustering:** ${clusterOptions.clusterMode}`,
-                `**Format:** ${clusterOptions.outputFormat}`,
-                ``,
-                `---`,
-                ``,
-                result.content
-            ].filter(line => line !== '').join('\n');
-
-            return {
-                content: [{
-                    type: 'text',
-                    text: response
-                }]
-            };
-
-        } catch (error) {
-            const errorMessage = error instanceof Error ? error.message : String(error);
-            return {
-                content: [{
-                    type: 'text',
-                    text: `Erreur lors de la génération de résumé de grappe : ${errorMessage}`
-                }]
-            };
-        }
-    }
-
-    /**
      * Gère l'export de conversations au format JSON
      */
     async handleExportConversationJson(args: {
@@ -1471,96 +1352,6 @@ class RooStateManagerServer {
     }
 
     
-    /**
-     * Gère la génération de résumés de traces
-     */
-    async handleGenerateTraceSummary(args: {
-        taskId: string;
-        filePath?: string;
-        detailLevel?: 'Full' | 'NoTools' | 'NoResults' | 'Messages' | 'Summary' | 'UserOnly';
-        outputFormat?: 'markdown' | 'html';
-        truncationChars?: number;
-        compactStats?: boolean;
-        includeCss?: boolean;
-        generateToc?: boolean;
-    }): Promise<CallToolResult> {
-        try {
-            const { taskId } = args;
-            
-            if (!taskId) {
-                throw new Error("taskId est requis");
-            }
-
-            // Récupérer le ConversationSkeleton depuis le cache
-            const conversation = this.conversationCache.get(taskId);
-            if (!conversation) {
-                throw new Error(`Conversation avec taskId ${taskId} introuvable`);
-            }
-
-            // Utiliser le handler de tool externe
-            const getConversationSkeleton = async (id: string) => {
-                return this.conversationCache.get(id) || null;
-            };
-
-            const result = await handleGenerateTraceSummary(args, getConversationSkeleton);
-
-            return {
-                content: [{ type: 'text', text: result }]
-            };
-
-        } catch (error) {
-            const errorMessage = error instanceof Error ? error.message : 'Erreur inconnue';
-            return {
-                content: [{ type: 'text', text: `❌ Erreur lors de la génération du résumé: ${errorMessage}` }],
-                isError: true
-            };
-        }
-    }
-
-    /**
-     * Gère la récupération de synthèses de conversations
-     */
-    async handleGetConversationSynthesis(args: {
-        taskId: string;
-        filePath?: string;
-        outputFormat?: 'json' | 'markdown';
-    }): Promise<CallToolResult> {
-        try {
-            const { taskId } = args;
-            
-            if (!taskId) {
-                throw new Error("taskId est requis");
-            }
-
-            // **FAILSAFE: Auto-rebuild cache si nécessaire**
-            await this._ensureSkeletonCacheIsFresh();
-
-            // Récupérer le ConversationSkeleton depuis le cache
-            const conversation = this.conversationCache.get(taskId);
-            if (!conversation) {
-                throw new Error(`Conversation avec taskId ${taskId} introuvable`);
-            }
-
-            // Utiliser le handler de tool externe
-            const getConversationSkeleton = async (id: string) => {
-                return this.conversationCache.get(id) || null;
-            };
-
-            const result = await handleGetConversationSynthesis(args, getConversationSkeleton);
-
-            return {
-                content: [{ type: 'text', text: typeof result === 'string' ? result : JSON.stringify(result, null, 2) }]
-            };
-
-        } catch (error) {
-            const errorMessage = error instanceof Error ? error.message : 'Erreur inconnue';
-            return {
-                content: [{ type: 'text', text: `❌ Erreur lors de la récupération de la synthèse: ${errorMessage}` }],
-                isError: true
-            };
-        }
-    }
-
     /**
      * 🚀 NOUVEAU : Exporte un arbre de tâches au format Markdown hiérarchique
      */
