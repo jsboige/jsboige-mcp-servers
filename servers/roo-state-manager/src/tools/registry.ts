@@ -264,7 +264,8 @@ export function registerCallToolHandler(
               result = await toolExports.handleExportTaskTreeMarkdown(
                   args as any,
                   async (treeArgs: any) => await toolExports.handleGetTaskTree(treeArgs, state.conversationCache, async () => { await ensureSkeletonCacheIsFresh(); }),
-                  async () => { await ensureSkeletonCacheIsFresh(); }
+                  async () => { await ensureSkeletonCacheIsFresh(); },
+                  state.conversationCache
               );
               break;
           // RooSync tools - Batch 6 synchronization
