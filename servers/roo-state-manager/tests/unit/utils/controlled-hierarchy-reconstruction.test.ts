@@ -12,8 +12,8 @@ import { describe, it, expect, beforeEach, afterEach, jest } from 'vitest';
 import * as fs from 'fs';
 import * as path from 'path';
 import { fileURLToPath } from 'url';
-import { HierarchyReconstructionEngine } from '../src/utils/hierarchy-reconstruction-engine.js';
-import { TaskInstructionIndex } from '../src/utils/task-instruction-index.js';
+import { HierarchyReconstructionEngine } from '@/utils/hierarchy-reconstruction-engine.js';
+import { TaskInstructionIndex } from '@/utils/task-instruction-index.js';
 import type { ConversationSkeleton } from '../src/types/conversation.js';
 import type { EnhancedConversationSkeleton } from '../src/types/enhanced-hierarchy.js';
 

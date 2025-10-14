@@ -5,14 +5,14 @@ const mockWriteFile = vi.fn();
 const MOCK_SETTINGS_PATH = '/mock/mcp_settings.json';
 
 // Mock fs/promises et le chemin avant d'importer l'outil
-vi.unstable_mockModule('fs/promises', () => ({
+vi.mock('fs/promises', () => ({
     default: {
         readFile: mockReadFile,
         writeFile: mockWriteFile,
     },
 }));
 
-vi.unstable_mockModule('../../../src/tools/manage-mcp-settings.js', async () => {
+vi.mock('../../../src/tools/manage-mcp-settings.js', async () => {
     const originalModule = await import('../src/tools/manage-mcp-settings.js');
     return {
         ...originalModule,

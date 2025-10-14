@@ -225,6 +225,106 @@ Refactoriser le serveur MCP `roo-state-manager` dont le fichier `index.ts` étai
 **Commits :** 578b22d, e53bd41, dba6b0cc
 **Rapport :** `VITEST_MIGRATION_REPORT.md`
 
+### 📊 Session 2 : Analyse & Corrections Tests (14 oct, 12:00-19:51)
+**Durée :** ~8h
+**Objectif :** Analyser échecs tests et démarrer corrections prioritaires
+
+#### Analyse Fonctionnelle Redondances (12:00-15:00)
+**Durée :** 3h
+**Objectif :** Vérifier si redondances fonctionnelles causent échecs tests
+
+**Résultats :**
+- Identification 16 redondances critiques
+- Rapport : `FUNCTIONAL_REDUNDANCY_ANALYSIS.md` (454 lignes)
+- **Conclusion :** Hypothèse initiale **invalidée** (redondances ≠ tests échoués)
+- Les redondances concernent principalement :
+  * Exports et re-exports (ROI faible)
+  * Fonctions utilitaires dupliquées (à consolider)
+  * Logique métier redondante (nécessite refonte)
+
+**Leçon apprise :** Correlation ≠ Causation. Les échecs tests ont causes plus profondes.
+
+#### Batch 10 : Suppression Code Mort (15:00-17:00)
+**Durée :** 2h
+**Objectif :** Nettoyer code mort identifié durant analyse
+
+**Fichiers supprimés :**
+- `EnhancedTraceSummaryService.ts` (328 lignes) - Service obsolète
+- `MarkdownRenderer.ts` (695 lignes) - Renderer non utilisé
+
+**Résultats :**
+- **Total supprimé :** 1023 lignes de code mort
+- **Tests après suppression :** 372/478 (identique, 0 régression)
+- **Compilation :** 0 erreur
+- **Validation :** Aucun impact négatif
+
+**Commit :** 94160f1 - "chore(cleanup): remove 1023 lines of dead code (batch 10)"
+
+#### Analyse Forensique Tests (17:00-19:00)
+**Durée :** 2h
+**Objectif :** Identifier causes racines 65 échecs tests
+
+**Méthodologie :**
+1. Extraction logs échecs via PowerShell
+2. Catégorisation par pattern d'erreur
+3. Identification causes racines
+4. Plan corrections 3 phases
+
+**Résultats :**
+- **65 tests échoués** catégorisés en **7 causes racines**
+- Rapport : `TEST_FAILURES_ROOT_CAUSES.md` (complet)
+- Plan corrections détaillé : 3 phases (9-13h)
+
+**7 Causes Racines Identifiées :**
+1. Module hierarchy-reconstruction-engine (4 tests) - Imports `.js`
+2. API unstable_mockModule (3 tests) - API Vitest instable
+3. Parser XML défaillant (13 tests) - Regex cassée
+4. Assertions diverses (12 tests) - Expected vs received
+5. Stubs/mocks incomplets (8 tests) - Implémentations manquantes
+6. Timeouts configuration (5 tests) - Valeurs inadaptées
+7. Fixtures obsolètes (20 tests) - Données test périmées
+
+**Script créé :** `analysis-tests/parse-failures.ps1` (automatisation)
+
+#### Phase 1 Corrections (Partiel) (19:00-19:51)
+**Durée :** ~1h
+**Objectif :** Démarrer corrections critiques Phase 1
+
+**Corrections Complétées :**
+
+**1. Module hierarchy-reconstruction-engine (4 tests) ✅**
+- **Problème :** Imports avec extension `.js` non trouvés par Vitest
+- **Solution :** Remplacement par alias `@` configuré
+- **Fichiers :**
+  * `tests/integration/hierarchy-real-data.test.ts`
+  * `tests/integration/integration.test.ts`
+  * `tests/unit/utils/controlled-hierarchy-reconstruction.test.ts`
+
+**2. API unstable_mockModule (3 tests) ✅**
+- **Problème :** Utilisation API Vitest instable
+- **Solution :** Remplacement par `vi.mock()` stable
+- **Fichiers :**
+  * `tests/unit/services/synthesis.service.test.ts`
+  * `tests/unit/services/hierarchy-reconstruction-engine.test.ts`
+  * `tests/unit/tools/manage-mcp-settings.test.ts`
+  * `tests/integration/integration.test.ts`
+
+**Progression Tests :**
+- Tests : 372/478 (77.8%) → ~379/478 (79.3%)
+- Corrections : 7/20 tests Phase 1 (35%)
+- **Restant Phase 1 :** Parser XML (13 tests, 1-2h)
+
+**Documentation Créée :**
+- `PHASE1_CORRECTIONS_PARTIAL_REPORT.md` (328 lignes)
+- `NEXT_SESSION_PLAN.md` (504 lignes)
+
+**Statut Session 2 :** ⚠️ **Sauvegarde intermédiaire, reprise nécessaire**
+- Phase 1 : 35% complète (7/20 tests)
+- Phase 2 : Non démarrée (20 tests)
+- Phase 3 : Non démarrée (25 tests)
+
+**Prochaine session :** Terminer Phase 1 (Parser XML) + Phase 2 complète (4-6h)
+
 ---
 
 ## 📊 Métriques Finales de Succès

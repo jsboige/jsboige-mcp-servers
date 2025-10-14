@@ -1,6 +1,6 @@
 /**
- * Tests d'int√©gration et de r√©gression pour le syst√®me de reconstruction hi√©rarchique
- * Valide le fonctionnement complet sur des donn√©es r√©elles et les cas critiques
+ * Tests d'intÈgration et de rÈgression pour le systËme de reconstruction hiÈrarchique
+ * Valide le fonctionnement complet sur des donnÈes rÈelles et les cas critiques
  */
 
 import {  describe, it, expect, beforeEach, afterEach, jest , vi } from 'vitest';
@@ -14,12 +14,12 @@ const mockedFs = {
     writeFileSync: vi.fn()
 };
 
-// Mock fs avec ES modules - DOIT √™tre avant les imports qui utilisent fs
-vi.unstable_mockModule('fs', () => mockedFs);
+// Mock fs avec ES modules - DOIT Ítre avant les imports qui utilisent fs
+vi.mock('fs', () => mockedFs);
 
 import * as path from 'path';
-import { HierarchyReconstructionEngine } from '../../../src/utils/hierarchy-reconstruction-engine.js';
-import { TaskInstructionIndex } from '../../../src/utils/task-instruction-index.js';
+import { HierarchyReconstructionEngine } from '@/utils/hierarchy-reconstruction-engine.js';
+import { TaskInstructionIndex } from '@/utils/task-instruction-index.js';
 import type { ConversationSkeleton } from '../../../src/types/conversation.js';
 import type { EnhancedConversationSkeleton } from '../../../src/types/enhanced-hierarchy.js';
 import {
@@ -42,7 +42,7 @@ describe('Hierarchy Reconstruction - Integration Tests', () => {
             minConfidenceScore: 0.3
         });
 
-        // Configuration par d√©faut des mocks
+        // Configuration par dÈfaut des mocks
         mockedFs.existsSync.mockReturnValue(false);
         vi.clearAllMocks();
     });
@@ -51,11 +51,11 @@ describe('Hierarchy Reconstruction - Integration Tests', () => {
         vi.restoreAllMocks();
     });
 
-    describe('Reconstruction compl√®te sur donn√©es r√©elles', () => {
+    describe('Reconstruction complËte sur donnÈes rÈelles', () => {
         it('should reconstruct hierarchy for complete dataset', async () => {
             const skeletons = mockSkeletons.map(enhanceSkeleton);
             
-            // Simuler les fichiers UI messages pour certaines t√¢ches
+            // Simuler les fichiers UI messages pour certaines t‚ches
             mockedFs.existsSync.mockImplementation((filePath: any) => {
                 if (filePath.includes('root-task-001')) return true;
                 if (filePath.includes('child-task-002')) return true;
@@ -77,36 +77,36 @@ describe('Hierarchy Reconstruction - Integration Tests', () => {
                 mtime: new Date('2025-01-15T10:00:00Z')
             } as any);
 
-            // Ex√©cuter la reconstruction compl√®te
+            // ExÈcuter la reconstruction complËte
             const result = await engine.doReconstruction(skeletons);
 
-            // V√©rifications
+            // VÈrifications
             expect(result).toHaveLength(skeletons.length);
             
-            // V√©rifier que les orphelines ont √©t√© r√©solues
+            // VÈrifier que les orphelines ont ÈtÈ rÈsolues
             const orphanResolved = result.find(s => s.taskId === 'orphan-task-003');
             if (orphanResolved && orphanResolved.reconstructedParentId) {
                 expect(orphanResolved.reconstructedParentId).toBeDefined();
                 expect(orphanResolved.parentConfidenceScore).toBeGreaterThan(0);
             }
 
-            // V√©rifier que les parentIds valides ne sont pas modifi√©s
+            // VÈrifier que les parentIds valides ne sont pas modifiÈs
             const validParent = result.find(s => s.taskId === 'child-task-002');
             expect(validParent?.parentTaskId).toBe('root-task-001');
             expect(validParent?.reconstructedParentId).toBeUndefined();
         });
 
         it('should handle 47 orphan tasks scenario', async () => {
-            // Cr√©er 47 t√¢ches orphelines + quelques parents potentiels
+            // CrÈer 47 t‚ches orphelines + quelques parents potentiels
             const orphans: ConversationSkeleton[] = [];
             const parents: ConversationSkeleton[] = [];
             
-            // Cr√©er 5 parents
+            // CrÈer 5 parents
             for (let i = 0; i < 5; i++) {
                 parents.push({
                     taskId: `parent-${i}`,
                     parentTaskId: undefined,
-                    truncatedInstruction: `Mission principale ${i}: Cr√©er syst√®me`,
+                    truncatedInstruction: `Mission principale ${i}: CrÈer systËme`,
                     metadata: {
                         createdAt: new Date(2025, 0, 15, 10, i * 10).toISOString(),
                         lastActivity: new Date(2025, 0, 15, 11, i * 10).toISOString(),
@@ -124,13 +124,13 @@ describe('Hierarchy Reconstruction - Integration Tests', () => {
                 });
             }
 
-            // Cr√©er 47 orphelines
+            // CrÈer 47 orphelines
             for (let i = 0; i < 47; i++) {
                 const parentIndex = i % 5;
                 orphans.push({
                     taskId: `orphan-${i}`,
                     parentTaskId: undefined, // Orpheline !
-                    truncatedInstruction: `Mission secondaire ${parentIndex}: T√¢che ${i}`,
+                    truncatedInstruction: `Mission secondaire ${parentIndex}: T‚che ${i}`,
                     metadata: {
                         createdAt: new Date(2025, 0, 15, 11 + Math.floor(i/10), i % 60).toISOString(),
                         lastActivity: new Date(2025, 0, 15, 12 + Math.floor(i/10), i % 60).toISOString(),
@@ -162,7 +162,7 @@ describe('Hierarchy Reconstruction - Integration Tests', () => {
                         for (let j = 0; j < 10; j++) {
                             messages.push({
                                 role: 'assistant',
-                                content: `<new_task><mode>code</mode><message>Mission secondaire ${i}: T√¢che ${i * 10 + j}</message></new_task>`,
+                                content: `<new_task><mode>code</mode><message>Mission secondaire ${i}: T‚che ${i * 10 + j}</message></new_task>`,
                                 timestamp: Date.now() + j * 1000
                             });
                         }
@@ -177,21 +177,21 @@ describe('Hierarchy Reconstruction - Integration Tests', () => {
                 mtime: new Date()
             } as any);
 
-            // Ex√©cuter la reconstruction
+            // ExÈcuter la reconstruction
             const result = await engine.doReconstruction(allSkeletons);
 
-            // V√©rifications
+            // VÈrifications
             const resolvedOrphans = result.filter(s => 
                 s.taskId.startsWith('orphan-') && 
                 (s.reconstructedParentId || s.isRootTask)
             );
             
-            console.log(`R√©solu ${resolvedOrphans.length} / 47 orphelines`);
+            console.log(`RÈsolu ${resolvedOrphans.length} / 47 orphelines`);
             
-            // Au moins certaines orphelines devraient √™tre r√©solues
+            // Au moins certaines orphelines devraient Ítre rÈsolues
             expect(resolvedOrphans.length).toBeGreaterThan(0);
             
-            // V√©rifier qu'aucun cycle n'a √©t√© cr√©√©
+            // VÈrifier qu'aucun cycle n'a ÈtÈ crÈÈ
             const hasCycle = result.some(child => {
                 if (!child.reconstructedParentId) return false;
                 const parent = result.find(p => p.taskId === child.reconstructedParentId);
@@ -201,14 +201,14 @@ describe('Hierarchy Reconstruction - Integration Tests', () => {
         });
 
         it('should generate tree with depth > 0', async () => {
-            // Cr√©er une hi√©rarchie profonde
+            // CrÈer une hiÈrarchie profonde
             const deepHierarchy: ConversationSkeleton[] = [];
             
             // Racine
             deepHierarchy.push({
                 taskId: 'root',
                 parentTaskId: undefined,
-                truncatedInstruction: 'Cr√©er application compl√®te',
+                truncatedInstruction: 'CrÈer application complËte',
                 metadata: {
                     createdAt: '2025-01-15T10:00:00Z',
                     lastActivity: '2025-01-15T10:05:00Z',
@@ -286,7 +286,7 @@ describe('Hierarchy Reconstruction - Integration Tests', () => {
 
             const treeDepth = calculateDepth('root', result);
             expect(treeDepth).toBeGreaterThan(0);
-            console.log(`Arbre g√©n√©r√© avec profondeur: ${treeDepth}`);
+            console.log(`Arbre gÈnÈrÈ avec profondeur: ${treeDepth}`);
         });
 
         it('should complete in less than 3 seconds for 50 tasks', async () => {
@@ -305,8 +305,8 @@ describe('Hierarchy Reconstruction - Integration Tests', () => {
         it('should resume after crash between phases', async () => {
             const skeletons = mockSkeletons.slice(0, 3).map(enhanceSkeleton);
             
-            // Simuler un crash apr√®s Phase 1
-            // D'abord ex√©cuter la Phase 1
+            // Simuler un crash aprËs Phase 1
+            // D'abord exÈcuter la Phase 1
             mockedFs.existsSync.mockReturnValue(true);
             mockedFs.readFileSync.mockReturnValue('[]' as any);
             mockedFs.statSync.mockReturnValue({
@@ -317,12 +317,12 @@ describe('Hierarchy Reconstruction - Integration Tests', () => {
             const phase1Result = await engine.executePhase1(skeletons);
             expect(phase1Result.processedCount).toBeGreaterThan(0);
 
-            // Simuler un nouveau moteur (comme apr√®s un crash)
+            // Simuler un nouveau moteur (comme aprËs un crash)
             const newEngine = new HierarchyReconstructionEngine({
                 debugMode: false
             });
 
-            // Les skeletons gardent leur √©tat de Phase 1
+            // Les skeletons gardent leur Ètat de Phase 1
             const phase2Result = await newEngine.executePhase2(skeletons);
             expect(phase2Result.processedCount).toBeGreaterThan(0);
         });
@@ -352,7 +352,7 @@ describe('Hierarchy Reconstruction - Integration Tests', () => {
 
             const result = await engine.doReconstruction(mixedData);
 
-            // Devrait traiter les valides et g√©rer les corrompus
+            // Devrait traiter les valides et gÈrer les corrompus
             expect(result).toHaveLength(mixedData.length);
             
             const validResults = result.filter(r => r.taskId.startsWith('root') || r.taskId.startsWith('child'));
@@ -360,7 +360,7 @@ describe('Hierarchy Reconstruction - Integration Tests', () => {
         });
     });
 
-    describe('R√©gression - Validation des invariants', () => {
+    describe('RÈgression - Validation des invariants', () => {
         it('should not modify valid existing parentIds', async () => {
             const skeletons = mockSkeletons.map(enhanceSkeleton);
             const originalRelations = new Map<string, string | undefined>();
@@ -374,28 +374,28 @@ describe('Hierarchy Reconstruction - Integration Tests', () => {
 
             const result = await engine.doReconstruction(skeletons);
 
-            // V√©rifier que les parentIds VRAIMENT VALIDES n'ont pas chang√©
+            // VÈrifier que les parentIds VRAIMENT VALIDES n'ont pas changÈ
             result.forEach(s => {
                 const original = originalRelations.get(s.taskId);
                 if (original) {
                     const originalParent = skeletons.find(p => p.taskId === original);
                     if (originalParent) {
-                        // V√©rifier si la relation est temporellement valide
+                        // VÈrifier si la relation est temporellement valide
                         const pTime = new Date(originalParent.metadata.createdAt).getTime();
                         const cTime = new Date(s.metadata.createdAt).getTime();
                         const temporalValid = !Number.isFinite(pTime) || !Number.isFinite(cTime) || pTime <= cTime;
                         
-                        // V√©rifier si les workspaces correspondent
+                        // VÈrifier si les workspaces correspondent
                         const workspaceValid = !originalParent.metadata?.workspace ||
                                                !s.metadata?.workspace ||
                                                originalParent.metadata.workspace === s.metadata.workspace;
                         
-                        // Ne v√©rifier la pr√©servation QUE pour les relations VALIDES
+                        // Ne vÈrifier la prÈservation QUE pour les relations VALIDES
                         if (temporalValid && workspaceValid) {
                             expect(s.parentTaskId).toBe(original);
                             expect(s.reconstructedParentId).toBeUndefined();
                         } else {
-                            // Les relations invalides DOIVENT √™tre supprim√©es par le moteur
+                            // Les relations invalides DOIVENT Ítre supprimÈes par le moteur
                             expect(s.parentTaskId).toBeUndefined();
                         }
                     }
@@ -415,14 +415,14 @@ describe('Hierarchy Reconstruction - Integration Tests', () => {
                 }))
             ].map(enhanceSkeleton);
 
-            // Forcer tous √† √™tre orphelins
+            // Forcer tous ‡ Ítre orphelins
             multiWorkspace.forEach(s => {
                 s.parentTaskId = undefined;
             });
 
             const result = await engine.doReconstruction(multiWorkspace);
 
-            // V√©rifier qu'aucune t√¢che de project-a n'a un parent dans project-b
+            // VÈrifier qu'aucune t‚che de project-a n'a un parent dans project-b
             result.forEach(task => {
                 if (task.reconstructedParentId) {
                     const parent = result.find(p => p.taskId === task.reconstructedParentId);
@@ -438,7 +438,7 @@ describe('Hierarchy Reconstruction - Integration Tests', () => {
             
             const result = await engine.doReconstruction(cyclicEnhanced);
 
-            // Fonction pour d√©tecter les cycles
+            // Fonction pour dÈtecter les cycles
             function hasCycle(skeletons: EnhancedConversationSkeleton[]): boolean {
                 for (const skeleton of skeletons) {
                     const visited = new Set<string>();
@@ -446,7 +446,7 @@ describe('Hierarchy Reconstruction - Integration Tests', () => {
                     
                     while (current) {
                         if (visited.has(current.taskId)) {
-                            return true; // Cycle d√©tect√©
+                            return true; // Cycle dÈtectÈ
                         }
                         visited.add(current.taskId);
                         
@@ -467,7 +467,7 @@ describe('Hierarchy Reconstruction - Integration Tests', () => {
             
             const result = await engine.doReconstruction(skeletons);
 
-            // V√©rifier que tous les parents reconstruits sont cr√©√©s avant leurs enfants
+            // VÈrifier que tous les parents reconstruits sont crÈÈs avant leurs enfants
             result.forEach(child => {
                 if (child.reconstructedParentId) {
                     const parent = result.find(p => p.taskId === child.reconstructedParentId);
@@ -483,11 +483,11 @@ describe('Hierarchy Reconstruction - Integration Tests', () => {
         it('should maintain deterministic results', async () => {
             const skeletons = mockSkeletons.slice(0, 5).map(enhanceSkeleton);
             
-            // Ex√©cuter deux fois
+            // ExÈcuter deux fois
             const result1 = await engine.doReconstruction([...skeletons]);
             const result2 = await engine.doReconstruction([...skeletons]);
 
-            // Les r√©sultats devraient √™tre identiques
+            // Les rÈsultats devraient Ítre identiques
             result1.forEach((s1, index) => {
                 const s2 = result2[index];
                 expect(s1.taskId).toBe(s2.taskId);
@@ -521,7 +521,7 @@ describe('Hierarchy Reconstruction - Integration Tests', () => {
             expect(phase2Time).toBeLessThan(10000); // 10 secondes max
             expect(phase2Result.processedCount).toBeGreaterThan(0);
 
-            console.log(`Performance: Phase1=${phase1Time}ms, Phase2=${phase2Time}ms pour 1000 t√¢ches`);
+            console.log(`Performance: Phase1=${phase1Time}ms, Phase2=${phase2Time}ms pour 1000 t‚ches`);
         });
 
         it('should efficiently use memory with large datasets', async () => {
@@ -529,7 +529,7 @@ describe('Hierarchy Reconstruction - Integration Tests', () => {
             
             mockedFs.existsSync.mockReturnValue(false);
 
-            // Mesurer l'utilisation m√©moire (approximatif)
+            // Mesurer l'utilisation mÈmoire (approximatif)
             const initialMemory = process.memoryUsage().heapUsed;
             
             await engine.doReconstruction(hugeDataset);
@@ -537,9 +537,9 @@ describe('Hierarchy Reconstruction - Integration Tests', () => {
             const finalMemory = process.memoryUsage().heapUsed;
             const memoryIncrease = (finalMemory - initialMemory) / 1024 / 1024; // En MB
             
-            console.log(`Augmentation m√©moire: ${memoryIncrease.toFixed(2)} MB pour 500 t√¢ches`);
+            console.log(`Augmentation mÈmoire: ${memoryIncrease.toFixed(2)} MB pour 500 t‚ches`);
             
-            // L'augmentation ne devrait pas √™tre excessive
+            // L'augmentation ne devrait pas Ítre excessive
             expect(memoryIncrease).toBeLessThan(100); // Moins de 100 MB
         });
 
@@ -550,7 +550,7 @@ describe('Hierarchy Reconstruction - Integration Tests', () => {
             let callCount = 0;
             mockedFs.readFileSync.mockImplementation(() => {
                 callCount++;
-                // Changer le contenu √† chaque lecture
+                // Changer le contenu ‡ chaque lecture
                 return JSON.stringify([{ 
                     role: 'user', 
                     content: `Message ${callCount}`,
@@ -564,7 +564,7 @@ describe('Hierarchy Reconstruction - Integration Tests', () => {
                 mtime: new Date()
             } as any);
 
-            // Ne devrait pas crasher malgr√© les changements
+            // Ne devrait pas crasher malgrÈ les changements
             const result = await engine.doReconstruction(skeletons);
             expect(result).toHaveLength(skeletons.length);
         });
@@ -619,7 +619,7 @@ describe('Hierarchy Reconstruction - Integration Tests', () => {
 
             const result = await engine.doReconstruction(allOrphans);
             
-            // Certains devraient √™tre identifi√©s comme racines
+            // Certains devraient Ítre identifiÈs comme racines
             const roots = result.filter(s => s.isRootTask);
             expect(roots.length).toBeGreaterThan(0);
         });
