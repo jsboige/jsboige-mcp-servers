@@ -1,18 +1,18 @@
-import { jest, describe, it, expect, beforeEach, afterEach } from '@jest/globals';
+import {  jest, describe, it, expect, beforeEach, afterEach , vi } from 'vitest';
 
-const mockReadFile = jest.fn();
-const mockWriteFile = jest.fn();
+const mockReadFile = vi.fn();
+const mockWriteFile = vi.fn();
 const MOCK_SETTINGS_PATH = '/mock/mcp_settings.json';
 
 // Mock fs/promises et le chemin avant d'importer l'outil
-jest.unstable_mockModule('fs/promises', () => ({
+vi.unstable_mockModule('fs/promises', () => ({
     default: {
         readFile: mockReadFile,
         writeFile: mockWriteFile,
     },
 }));
 
-jest.unstable_mockModule('../../../src/tools/manage-mcp-settings.js', async () => {
+vi.unstable_mockModule('../../../src/tools/manage-mcp-settings.js', async () => {
     const originalModule = await import('../src/tools/manage-mcp-settings.js');
     return {
         ...originalModule,
@@ -36,7 +36,7 @@ describe('manage_mcp_settings Tool', () => {
     });
 
     afterEach(() => {
-        jest.clearAllMocks();
+        vi.clearAllMocks();
     });
 
     it('should read the settings file', async () => {

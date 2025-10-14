@@ -3,7 +3,7 @@
  * Phase 2a - Triple Grounding
  */
 
-import { describe, it, expect, beforeEach } from '@jest/globals';
+import { describe, it, expect, beforeEach } from 'vitest';
 import { MessageToSkeletonTransformer } from '../../src/utils/message-to-skeleton-transformer.js';
 import { UIMessage } from '../../src/utils/message-types.js';
 

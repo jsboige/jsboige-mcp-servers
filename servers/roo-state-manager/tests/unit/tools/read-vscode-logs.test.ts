@@ -1,4 +1,4 @@
-import { jest, describe, it, expect, beforeEach, afterEach } from '@jest/globals';
+import { jest, describe, it, expect, beforeEach, afterEach } from 'vitest';
 import mock from 'mock-fs';
 import { readVscodeLogs } from '../../../src/tools/read-vscode-logs.js';
 import path from 'path';

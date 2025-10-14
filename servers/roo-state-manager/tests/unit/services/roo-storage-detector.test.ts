@@ -3,7 +3,7 @@
  * Focus SDDD Phase 2: Validation de l'alignement des préfixes via computeInstructionPrefix(K=192)
  */
 
-import { describe, test, expect } from '@jest/globals';
+import { describe, test, expect } from 'vitest';
 import { computeInstructionPrefix } from '../../../src/utils/task-instruction-index.js';
 
 describe('Storage Detector — Exact Prefix normalization (K=192)', () => {

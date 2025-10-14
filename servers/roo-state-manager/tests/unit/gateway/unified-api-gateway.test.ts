@@ -14,7 +14,7 @@
  * @since 2025-09-27 (Phase tests consolidés)
  */
 
-import { describe, test, expect, beforeEach, jest } from '@jest/globals';
+import {  describe, test, expect, beforeEach, jest , vi } from 'vitest';
 import {
   UnifiedApiGateway,
   createUnifiedApiGateway,
@@ -36,31 +36,31 @@ describe('UnifiedApiGateway - Architecture consolidée', () => {
     // Mock des services consolidés
     mockServices = {
       displayService: {
-        listConversations: jest.fn(() => Promise.resolve({
+        listConversations: vi.fn(() => Promise.resolve({
           conversations: [],
           total: 0
         })),
-        viewConversationTree: jest.fn(() => Promise.resolve({
+        viewConversationTree: vi.fn(() => Promise.resolve({
           tree: { id: 'test', children: [] }
         }))
       },
       searchService: {
-        searchTasksSemantic: jest.fn(() => Promise.resolve({
+        searchTasksSemantic: vi.fn(() => Promise.resolve({
           results: [],
           total: 0
         }))
       },
       exportService: {
-        exportConversationJson: jest.fn(() => Promise.resolve({
+        exportConversationJson: vi.fn(() => Promise.resolve({
           exported: true,
           format: 'json'
         }))
       },
       cacheManager: {
-        cleanup: jest.fn(() => Promise.resolve(true))
+        cleanup: vi.fn(() => Promise.resolve(true))
       },
       validationEngine: {
-        validate: jest.fn(() => ({ isValid: true, errors: [] }))
+        validate: vi.fn(() => ({ isValid: true, errors: [] }))
       }
     };
 
@@ -175,7 +175,7 @@ describe('UnifiedApiGateway - Architecture consolidée', () => {
     
     test('Processing immédiat avec timeout <5s', async () => {
       // Mock d'un traitement long
-      mockServices.displayService.listConversations = jest.fn()
+      mockServices.displayService.listConversations = vi.fn()
         .mockImplementation(() => new Promise(resolve => setTimeout(resolve, 6000)));
 
       const startTime = Date.now();
@@ -304,7 +304,7 @@ describe('UnifiedApiGateway - Architecture consolidée', () => {
 
     test('Gestion des erreurs d\'outils gracieuse', async () => {
       // Mock une erreur sur un outil
-      mockServices.displayService.listConversations = jest.fn(() =>
+      mockServices.displayService.listConversations = vi.fn(() =>
         Promise.reject(new Error('Tool execution failed'))
       );
 
@@ -408,7 +408,7 @@ describe('UnifiedApiGateway - Architecture consolidée', () => {
 
     test('Timeout handling avec basculement', async () => {
       // Mock d'un service lent
-      mockServices.displayService.listConversations = jest.fn()
+      mockServices.displayService.listConversations = vi.fn()
         .mockImplementation(() => new Promise(resolve => setTimeout(() => resolve({}), 10000)));
 
       const result = await gateway.execute(DisplayPreset.QUICK_OVERVIEW);

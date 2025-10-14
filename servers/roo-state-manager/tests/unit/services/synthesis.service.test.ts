@@ -4,15 +4,15 @@
  * Tests structurels avec configurations valides et patterns existants
  */
 
-import { jest, describe, it, expect, beforeEach, beforeAll } from '@jest/globals';
+import {  jest, describe, it, expect, beforeEach, beforeAll , vi } from 'vitest';
 
 // Mock simple du service OpenAI centralisé - AVANT les imports pour ESM
-jest.unstable_mockModule('../../../src/services/openai.js', () => ({
+vi.unstable_mockModule('../../../src/services/openai.js', () => ({
     __esModule: true,
-    default: jest.fn(() => ({
+    default: vi.fn(() => ({
         chat: {
             completions: {
-                create: jest.fn()
+                create: vi.fn()
             }
         }
     }))
@@ -75,7 +75,7 @@ describe('Synthesis Services - Phase 1 Structure Validation', () => {
         narrativeOptions = createValidContextBuilderOptions();
         llmOptions = createValidLLMConfig();
         orchestratorOptions = createValidOrchestratorOptions();
-        jest.clearAllMocks();
+        vi.clearAllMocks();
     });
 
     describe('Service Instantiation', () => {
@@ -213,7 +213,7 @@ describe('Synthesis Services - Phase 1 Structure Validation', () => {
             );
 
             // Mock du buildNarrativeContext pour éviter les appels fichiers
-            jest.spyOn(contextBuilder, 'buildNarrativeContext').mockResolvedValue({
+            vi.spyOn(contextBuilder, 'buildNarrativeContext').mockResolvedValue({
                 contextSummary: 'Test context for method validation',
                 buildTrace: { rootTaskId: 'test-task-id', previousSiblingTaskIds: [] },
                 wasCondensed: false
@@ -291,7 +291,7 @@ describe('Synthesis Services - Phase 1 Structure Validation', () => {
         describe('Pipeline Integration', () => {
             it('should execute synthesizeConversation without throwing (Phase 2)', async () => {
                 // Mock des méthodes internes pour éviter les appels réels aux fichiers
-                const mockBuildNarrativeContext = jest.spyOn(contextBuilder, 'buildNarrativeContext')
+                const mockBuildNarrativeContext = vi.spyOn(contextBuilder, 'buildNarrativeContext')
                     .mockResolvedValue({
                         contextSummary: 'Mock context summary from NarrativeContextBuilder',
                         buildTrace: {
@@ -322,7 +322,7 @@ describe('Synthesis Services - Phase 1 Structure Validation', () => {
                     previousSiblingTaskIds: ['sibling-a', 'sibling-b']
                 };
 
-                const mockBuildNarrativeContext = jest.spyOn(contextBuilder, 'buildNarrativeContext')
+                const mockBuildNarrativeContext = vi.spyOn(contextBuilder, 'buildNarrativeContext')
                     .mockResolvedValue({
                         contextSummary: 'Test context',
                         buildTrace: expectedTrace,
@@ -344,7 +344,7 @@ describe('Synthesis Services - Phase 1 Structure Validation', () => {
             });
 
             it('should handle NarrativeContextBuilder errors gracefully', async () => {
-                const mockBuildNarrativeContext = jest.spyOn(contextBuilder, 'buildNarrativeContext')
+                const mockBuildNarrativeContext = vi.spyOn(contextBuilder, 'buildNarrativeContext')
                     .mockRejectedValue(new Error('Mock context builder error'));
 
                 const result = await orchestrator.synthesizeConversation('test-task-id');
@@ -366,7 +366,7 @@ describe('Synthesis Services - Phase 1 Structure Validation', () => {
                     includeChildrenSyntheses: false
                 };
 
-                const mockBuildNarrativeContext = jest.spyOn(contextBuilder, 'buildNarrativeContext')
+                const mockBuildNarrativeContext = vi.spyOn(contextBuilder, 'buildNarrativeContext')
                     .mockResolvedValue({
                         contextSummary: 'Options test context',
                         buildTrace: {
@@ -387,7 +387,7 @@ describe('Synthesis Services - Phase 1 Structure Validation', () => {
 
         describe('ConversationAnalysis Structure Validation', () => {
             it('should return properly structured ConversationAnalysis', async () => {
-                const mockBuildNarrativeContext = jest.spyOn(contextBuilder, 'buildNarrativeContext')
+                const mockBuildNarrativeContext = vi.spyOn(contextBuilder, 'buildNarrativeContext')
                     .mockResolvedValue({
                         contextSummary: 'Complete context summary',
                         buildTrace: {
@@ -423,7 +423,7 @@ describe('Synthesis Services - Phase 1 Structure Validation', () => {
             it('should include real metrics from context building', async () => {
                 const largeContext = 'A'.repeat(15000); // Contexte de 15k caractères
                 
-                const mockBuildNarrativeContext = jest.spyOn(contextBuilder, 'buildNarrativeContext')
+                const mockBuildNarrativeContext = vi.spyOn(contextBuilder, 'buildNarrativeContext')
                     .mockResolvedValue({
                         contextSummary: largeContext,
                         buildTrace: {
@@ -473,7 +473,7 @@ describe('Synthesis Services - Phase 1 Structure Validation', () => {
                 describe('Context Tree Traceability', () => {
                     it('should include contextTree with skeleton status in metrics', async () => {
                         // Mock du contexte pour éviter les appels réels
-                        jest.spyOn(contextBuilder, 'buildNarrativeContext').mockResolvedValue({
+                        vi.spyOn(contextBuilder, 'buildNarrativeContext').mockResolvedValue({
                             contextSummary: 'Mock context for contextTree test',
                             buildTrace: { rootTaskId: 'test-task-id', previousSiblingTaskIds: [] },
                             wasCondensed: false
@@ -504,7 +504,7 @@ describe('Synthesis Services - Phase 1 Structure Validation', () => {
         
                     it('should include contextTree in error scenarios', async () => {
                         // Mock d'erreur dans le context builder
-                        jest.spyOn(contextBuilder, 'buildNarrativeContext').mockRejectedValue(
+                        vi.spyOn(contextBuilder, 'buildNarrativeContext').mockRejectedValue(
                             new Error('Mock context builder error for contextTree test')
                         );
         
@@ -520,7 +520,7 @@ describe('Synthesis Services - Phase 1 Structure Validation', () => {
                 describe('LLM Integration Metrics', () => {
                     it('should include OpenAI usage metrics when using real LLM', async () => {
                         // Mock du contexte
-                        jest.spyOn(contextBuilder, 'buildNarrativeContext').mockResolvedValue({
+                        vi.spyOn(contextBuilder, 'buildNarrativeContext').mockResolvedValue({
                             contextSummary: 'Context for LLM metrics test',
                             buildTrace: { rootTaskId: 'test-task-id', previousSiblingTaskIds: [] },
                             wasCondensed: false
@@ -582,7 +582,7 @@ describe('Synthesis Services - Phase 1 Structure Validation', () => {
                             fromCache: false
                         };
         
-                        jest.spyOn(llmService, 'generateSynthesis').mockResolvedValue(mockLLMResult);
+                        vi.spyOn(llmService, 'generateSynthesis').mockResolvedValue(mockLLMResult);
         
                         const result = await orchestrator.synthesizeConversation('test-task-id');
         
@@ -595,14 +595,14 @@ describe('Synthesis Services - Phase 1 Structure Validation', () => {
         
                     it('should handle LLM errors gracefully with contextTree intact', async () => {
                         // Mock du contexte réussi
-                        jest.spyOn(contextBuilder, 'buildNarrativeContext').mockResolvedValue({
+                        vi.spyOn(contextBuilder, 'buildNarrativeContext').mockResolvedValue({
                             contextSummary: 'Context for LLM error test',
                             buildTrace: { rootTaskId: 'test-task-id', previousSiblingTaskIds: [] },
                             wasCondensed: false
                         });
         
                         // Mock d'erreur LLM
-                        jest.spyOn(llmService, 'generateSynthesis').mockRejectedValue(
+                        vi.spyOn(llmService, 'generateSynthesis').mockRejectedValue(
                             new Error('Mock OpenAI API error')
                         );
         
@@ -624,7 +624,7 @@ describe('Synthesis Services - Phase 1 Structure Validation', () => {
                 describe('Phase 3 Pipeline Validation', () => {
                     it('should execute complete Phase 3 pipeline: Context -> LLM -> Response with contextTree', async () => {
                         // Mock complet du pipeline
-                        jest.spyOn(contextBuilder, 'buildNarrativeContext').mockResolvedValue({
+                        vi.spyOn(contextBuilder, 'buildNarrativeContext').mockResolvedValue({
                             contextSummary: 'Complete Phase 3 context',
                             buildTrace: {
                                 rootTaskId: 'test-task-id',
@@ -694,7 +694,7 @@ describe('Synthesis Services - Phase 1 Structure Validation', () => {
                             fromCache: false
                         };
         
-                        jest.spyOn(llmService, 'generateSynthesis').mockResolvedValue(mockLLMResult);
+                        vi.spyOn(llmService, 'generateSynthesis').mockResolvedValue(mockLLMResult);
         
                         const result = await orchestrator.synthesizeConversation('test-task-id');
         
@@ -735,7 +735,7 @@ describe('E2E Tests with Real Environment', () => {
         } else {
             console.log('✅ Running E2E tests with real API keys');
             // Rétablir le service OpenAI réel pour les tests E2E
-            jest.unmock('../../src/services/openai.js');
+            vi.unmock('../../src/services/openai.js');
         }
     });
 

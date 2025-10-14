@@ -1,12 +1,12 @@
-import { describe, test, expect, beforeEach, afterEach, jest } from '@jest/globals';
+import {  describe, test, expect, beforeEach, afterEach, jest , vi } from 'vitest';
 import { TaskIndexer } from '../../../src/services/task-indexer.js';
 import { CacheManager } from '../../../src/utils/cache-manager.js';
 import crypto from 'crypto';
 
 // Mock des dépendances
-jest.mock('../../../src/services/qdrant.js');
-jest.mock('../../../src/services/openai.js');
-jest.mock('../../../src/utils/roo-storage-detector.js');
+vi.mock('../../../src/services/qdrant.js');
+vi.mock('../../../src/services/openai.js');
+vi.mock('../../../src/utils/roo-storage-detector.js');
 
 describe('🛡️ TaskIndexer Anti-Leak Protections & Circuit Breaker Tests', () => {
   let taskIndexer: TaskIndexer;
@@ -18,16 +18,16 @@ describe('🛡️ TaskIndexer Anti-Leak Protections & Circuit Breaker Tests', ()
     
     // Mock simple avec any pour éviter les problèmes TypeScript
     mockQdrantClient = {
-      upsert: jest.fn(),
-      getCollections: jest.fn(),
-      createCollection: jest.fn(),
-      getCollection: jest.fn(),
-      deleteCollection: jest.fn(),
+      upsert: vi.fn(),
+      getCollections: vi.fn(),
+      createCollection: vi.fn(),
+      getCollection: vi.fn(),
+      deleteCollection: vi.fn(),
     } as any;
 
     mockOpenAIClient = {
       embeddings: {
-        create: jest.fn()
+        create: vi.fn()
       }
     } as any;
 
@@ -43,7 +43,7 @@ describe('🛡️ TaskIndexer Anti-Leak Protections & Circuit Breaker Tests', ()
   });
 
   afterEach(() => {
-    jest.clearAllMocks();
+    vi.clearAllMocks();
   });
 
   test('Circuit Breaker - État CLOSED : Permet les requêtes', async () => {
@@ -76,7 +76,7 @@ describe('🛡️ TaskIndexer Anti-Leak Protections & Circuit Breaker Tests', ()
   });
 
   test('Circuit Breaker - Délai exponentiel : 2s, 4s, 8s', async () => {
-    jest.spyOn(global, 'setTimeout').mockImplementation((callback: any) => {
+    vi.spyOn(global, 'setTimeout').mockImplementation((callback: any) => {
       callback();
       return {} as any;
     });
@@ -137,8 +137,8 @@ describe('🛡️ TaskIndexer Anti-Leak Protections & Circuit Breaker Tests', ()
   });
 
   test('Logging détaillé - Capture des métriques critiques', async () => {
-    const consoleSpy = jest.spyOn(console, 'log').mockImplementation(() => {});
-    const consoleErrorSpy = jest.spyOn(console, 'error').mockImplementation(() => {});
+    const consoleSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
+    const consoleErrorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
 
     mockQdrantClient.upsert.mockRejectedValueOnce(new Error('Test error'));
     
@@ -341,7 +341,7 @@ describe('🛡️ Anti-Leak Protections - Corrections Bande Passante', () => {
 
     // Simulation d'une fonction retry
     let attempts = 0;
-    const mockOperation = jest.fn<() => Promise<string>>();
+    const mockOperation = vi.fn<() => Promise<string>>();
     mockOperation
       .mockRejectedValueOnce(new Error('Failure 1'))
       .mockRejectedValueOnce(new Error('Failure 2'))

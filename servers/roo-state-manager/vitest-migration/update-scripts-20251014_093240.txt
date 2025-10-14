@@ -1,0 +1,30 @@
+=== MISE À JOUR DES SCRIPTS - package.json ===
+Date: 2025-10-14 09:32:40
+
+Sauvegarde: vitest-migration/backups/package.json.20251014_093240.scripts.bak
+
+Scripts supprimés:
+  - test:setup
+  - pretest
+
+
+Scripts ajoutés/modifiés:
+  - test:run: vitest run
+  - test:unit: vitest run tests/unit
+  - test:detector: node build/tests/manual/test-storage-detector.js
+  - test:coverage: vitest run --coverage
+  - test:hierarchy:debug: cross-env ROO_DEBUG_INSTRUCTIONS=1 npm run test:hierarchy
+  - test:ui: vitest --ui
+  - test: vitest
+  - test:e2e: vitest run tests/e2e
+  - test:integration: vitest run tests/integration
+  - test:all: npm run build && npm run build:tests && npm run test:run && npm run test:detector
+  - test:watch: vitest watch
+  - test:hierarchy: vitest run tests/unit/services/hierarchy-reconstruction-engine.test.ts
+
+
+Utilisation:
+  npm test                 - Mode watch
+  npm run test:run         - Run once
+  npm run test:ui          - Interface UI
+  npm run test:coverage    - Avec couverture

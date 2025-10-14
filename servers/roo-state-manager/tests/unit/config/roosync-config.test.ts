@@ -4,7 +4,7 @@
  * Ces tests vérifient la validation de la configuration RooSync
  */
 
-import { describe, it, expect, beforeEach, afterEach } from '@jest/globals';
+import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { loadRooSyncConfig, tryLoadRooSyncConfig, isRooSyncEnabled, RooSyncConfigError } from '../../../src/config/roosync-config.js';
 
 describe('RooSync Configuration', () => {

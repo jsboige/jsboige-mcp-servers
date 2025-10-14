@@ -1,4 +1,4 @@
-import { jest, describe, it, expect, beforeEach, afterEach } from '@jest/globals';
+import { jest, describe, it, expect, beforeEach, afterEach } from 'vitest';
 import mock from 'mock-fs';
 import { RooStorageDetector } from '../../../src/utils/roo-storage-detector.js';
 import path from 'path';

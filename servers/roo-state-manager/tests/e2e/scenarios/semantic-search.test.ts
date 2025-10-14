@@ -1,4 +1,4 @@
-import { describe, it, expect } from '@jest/globals';
+import { describe, it, expect } from 'vitest';
 
 describe('Semantic Search E2E', () => {
   it('should have tests written in the future', () => {

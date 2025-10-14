@@ -9,6 +9,42 @@ Ce serveur MCP fournit des outils pour gérer et analyser l'état des conversati
 **Fichiers :** 142 modules TypeScript  
 **Lignes de code :** ~40 000 lignes
 
+## 🧪 Tests
+
+### Framework de Tests
+Le projet utilise **Vitest** pour les tests unitaires et d'intégration, offrant une compatibilité ESM native et des performances supérieures à Jest.
+
+**Statistiques :** 460 tests | 83% de réussite | Exécution ~39s
+
+### Lancer les Tests
+```bash
+npm test              # Mode watch interactif
+npm run test:run      # Exécution unique
+npm run test:ui       # Interface web de debug
+npm run test:coverage # Avec rapport de couverture
+```
+
+### Structure des Tests
+```
+tests/
+├── unit/            # Tests unitaires
+│   ├── config/
+│   ├── services/
+│   ├── tools/
+│   └── utils/
+├── integration/     # Tests d'intégration
+├── e2e/            # Tests end-to-end
+└── fixtures/       # Données de test
+
+src/
+└── tools/
+    └── **/__tests__/  # Tests co-localisés
+```
+
+### Documentation
+- [`VITEST_MIGRATION_REPORT.md`](../VITEST_MIGRATION_REPORT.md) - Rapport de migration Jest → Vitest
+- [`vitest.config.ts`](../vitest.config.ts) - Configuration Vitest
+
 ---
 
 ## 🏗️ Structure

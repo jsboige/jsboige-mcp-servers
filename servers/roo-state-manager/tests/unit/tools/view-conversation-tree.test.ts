@@ -1,4 +1,4 @@
-import { jest, describe, it, expect, beforeEach } from '@jest/globals';
+import { jest, describe, it, expect, beforeEach } from 'vitest';
 import { viewConversationTree } from '../../../src/tools/view-conversation-tree.js';
 import { ConversationSkeleton } from '../../../src/types/conversation.js';
 

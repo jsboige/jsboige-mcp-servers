@@ -1,14 +1,14 @@
-import { jest, describe, it, expect, beforeEach } from '@jest/globals';
+import {  jest, describe, it, expect, beforeEach , vi } from 'vitest';
 import { TaskNavigator, TreeNode } from '../../../src/services/task-navigator.js';
 import { globalCacheManager } from '../../../src/utils/cache-manager.js';
 import { ConversationSkeleton } from '../../../src/types/conversation.js';
 
 // Mock du cache manager global
-jest.mock('../../../src/utils/cache-manager', () => ({
+vi.mock('../../../src/utils/cache-manager', () => ({
   globalCacheManager: {
-    get: jest.fn(),
-    set: jest.fn(),
-    clear: jest.fn(),
+    get: vi.fn(),
+    set: vi.fn(),
+    clear: vi.fn(),
   },
 }));
 
@@ -38,7 +38,7 @@ describe('TaskNavigator', () => {
   beforeEach(() => {
     cache = new Map<string, ConversationSkeleton>();
     taskNavigator = new TaskNavigator(cache);
-    jest.clearAllMocks();
+    vi.clearAllMocks();
   });
 
   // Données de test

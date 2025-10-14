@@ -3,7 +3,7 @@
  * Vérifie les mécanismes d'idempotence et de skip anti-fuite
  */
 
-import { describe, it, expect, beforeEach } from '@jest/globals';
+import { describe, it, expect, beforeEach } from 'vitest';
 import { IndexingDecisionService } from '../../../src/services/indexing-decision.js';
 import { ConversationSkeleton } from '../../../src/types/conversation.js';
 import { IndexStatus, INDEX_VERSION_CURRENT } from '../../../src/types/indexing.js';

@@ -11,7 +11,7 @@
  * @module tests/e2e/roosync-workflow.test
  */
 
-import { describe, it, expect, beforeAll, afterAll, beforeEach } from '@jest/globals';
+import { describe, it, expect, beforeAll, afterAll, beforeEach } from 'vitest';
 import { RooSyncService } from '../../src/services/RooSyncService.js';
 import { existsSync } from 'fs';
 import { join } from 'path';
