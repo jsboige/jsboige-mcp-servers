@@ -8,8 +8,6 @@ export { rebuildTaskIndexFixed } from './manage-mcp-settings.js';
 // export { examineRooGlobalStateTool } from './examine-roo-global-state.js'; // Depends on vscode-global-state
 // export { repairTaskHistoryTool } from './repair-task-history.js'; // Depends on vscode-global-state
 // export * from './normalize-workspace-paths.js'; // Depends on vscode-global-state
-export { exportConversationJsonTool, handleExportConversationJson } from './export-conversation-json.js';
-export { exportConversationCsvTool, handleExportConversationCsv } from './export-conversation-csv.js';
 export { viewConversationTree } from './view-conversation-tree.js';
 
 // Conversation tools - Batch 2 refactoring
@@ -28,3 +26,7 @@ export * from './indexing/index.js';
 export * from './summary/index.js';
 // RooSync tools - Batch 6 synchronization
 export * from './roosync/index.js';
+
+// Cache & Repair tools - Batch 8 refactoring
+export * from './cache/index.js';
+export * from './repair/index.js';
