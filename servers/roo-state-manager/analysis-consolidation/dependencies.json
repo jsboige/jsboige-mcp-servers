@@ -1,0 +1,8 @@
+﻿{
+  "demo-refactoring.js": [],
+  "services/openai.js": [],
+  "types/task-tree.js": [],
+  "utils/workspace-analyzer.js": [
+    "types/task-tree.js"
+  ]
+}
