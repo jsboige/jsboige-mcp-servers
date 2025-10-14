@@ -8,6 +8,7 @@
  */
 
 import { z } from 'zod';
+import { zodToJsonSchema } from 'zod-to-json-schema';
 import { getRooSyncService, RooSyncServiceError } from '../../services/RooSyncService.js';
 import { writeFileSync, readFileSync } from 'fs';
 import { join } from 'path';
@@ -198,10 +199,24 @@ export async function roosyncRollbackDecision(args: RollbackDecisionArgs): Promi
 
 /**
  * Métadonnées de l'outil pour l'enregistrement MCP
+ * Utilise Zod.shape natif pour compatibilité MCP
  */
 export const rollbackDecisionToolMetadata = {
   name: 'roosync_rollback_decision',
   description: 'Annuler une décision de synchronisation appliquée',
-  inputSchema: RollbackDecisionArgsSchema,
-  outputSchema: RollbackDecisionResultSchema
+  inputSchema: {
+    type: 'object' as const,
+    properties: {
+      decisionId: {
+        type: 'string',
+        description: 'ID de la décision à annuler'
+      },
+      reason: {
+        type: 'string',
+        description: 'Raison du rollback (requis pour traçabilité)'
+      }
+    },
+    required: ['decisionId', 'reason'],
+    additionalProperties: false
+  }
 };

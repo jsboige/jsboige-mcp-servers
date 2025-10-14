@@ -6,9 +6,9 @@
  */
 
 import { Tool } from '@modelcontextprotocol/sdk/types.js';
-import { TraceSummaryService, SummaryOptions } from '../services/TraceSummaryService.js';
-import { ExportConfigManager } from '../services/ExportConfigManager.js';
-import { ConversationSkeleton } from '../types/conversation.js';
+import { TraceSummaryService, SummaryOptions } from '../../services/TraceSummaryService.js';
+import { ExportConfigManager } from '../../services/ExportConfigManager.js';
+import { ConversationSkeleton } from '../../types/conversation.js';
 import fs from 'fs/promises';
 import path from 'path';
 

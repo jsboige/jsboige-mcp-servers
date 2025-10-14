@@ -1131,6 +1131,7 @@ export class TraceSummaryService {
 
     /**
      * NOUVEAU : Formate les appels d'outils en Markdown granulaire
+     * CORRECTION FINALE: Sections <details> individuelles pour chaque paramètre (référence PowerShell lignes 827-834)
      */
     private formatToolCallsAsMarkdown(details: any): string {
         if (!details || !details.toolCalls || details.toolCalls.length === 0) {
@@ -1139,10 +1140,30 @@ export class TraceSummaryService {
 
         const parts: string[] = [];
         for (const call of details.toolCalls) {
-            parts.push(`**Outil :** \`${call.toolName}\``);
+            // Section principale légère (juste le titre, pas de contenu)
+            parts.push('*Voir sections détaillées ci-dessous*');
+            parts.push('');
+            
             if (call.parameters && Object.keys(call.parameters).length > 0) {
-                parts.push('**Arguments :**');
-                parts.push(this.formatParameters(call.parameters, 1));
+                // CORRECTION FINALE: Chaque paramètre a sa propre section <details> INDIVIDUELLE
+                // Référence: PowerShell lignes 827-834 - sections séquentielles au même niveau
+                for (const [paramName, paramValue] of Object.entries(call.parameters)) {
+                    parts.push('<details>');
+                    parts.push(`<summary>${paramName}</summary>`);
+                    parts.push('');
+                    // Afficher le contenu de la VALEUR du paramètre sans les balises XML englobantes
+                    if (typeof paramValue === 'string') {
+                        parts.push('```xml');
+                        parts.push(paramValue);
+                        parts.push('```');
+                    } else {
+                        parts.push('```json');
+                        parts.push(JSON.stringify(paramValue, null, 2));
+                        parts.push('```');
+                    }
+                    parts.push('</details>');
+                    parts.push('');
+                }
             }
         }
         return parts.join('\n');
@@ -2214,11 +2235,12 @@ export class TraceSummaryService {
         // Utiliser la nouvelle fonction de formatage
         const markdownContent = this.formatToolCallsAsMarkdown(details);
 
-        return `\n<details>\n<summary><strong>OUTIL :</strong> ${details.toolCalls.map((c:any) => c.toolName).join(', ')}</summary>\n\n${markdownContent}\n\n</details>\n`;
+        return `\n<details>\n<summary>OUTIL - ${details.toolCalls.map((c:any) => c.toolName).join(', ')}</summary>\n\n${markdownContent}\n\n</details>\n`;
     }
 
     /**
      * Rend un résultat d'outil utilisateur avec section repliable dédiée
+     * CORRECTION FINALE: Supprimer complètement les environment_details (référence PowerShell ligne 32)
      */
     private async renderUserToolResult(content: string, options: SummaryOptions): Promise<string> {
         const item = { content, type: 'User', subType: 'ToolResult' } as ClassifiedContent;
@@ -2228,23 +2250,46 @@ export class TraceSummaryService {
             return `**Résultat d'outil :** (parsing échoué)\n\`\`\`\n${content}\n\`\`\``;
         }
 
-        let cleanedResult = details.parsedResult?.content || content;
-        cleanedResult = cleanedResult.replace(/^\[[^\]]+\] Result:\s*/i, '').trim();
+        // Extraire le résultat brut (après "[toolName] Result:")
+        let rawResult = details.parsedResult?.content || content;
+        rawResult = rawResult.replace(/^\[[^\]]+\] Result:\s*/i, '').trim();
 
+        // CORRECTION FINALE: SUPPRIMER les environment_details (pas de section repliable)
+        // Référence: PowerShell ligne 32 - Clean-UserMessage supprime complètement les environment_details
+        let cleanedResult = rawResult.replace(/<environment_details>[\s\S]*?<\/environment_details>/g, '').trim();
+
+        // Appliquer la troncature si nécessaire
         if (options.truncationChars > 0 && cleanedResult.length > options.truncationChars) {
             cleanedResult = cleanedResult.substring(0, options.truncationChars) + '... [tronqué]';
         }
 
-        // CORRECTION CRITIQUE #1C : Échapper le résultat d'outil pour éviter injection de balises HTML
+        // Déterminer le titre de section approprié
+        let sectionTitle: string;
+        
+        if (cleanedResult.includes('<files>')) {
+            sectionTitle = '**files :** Cliquez pour afficher';
+        } else if (details.toolName === 'browser_action') {
+            sectionTitle = '**navigation web :** Cliquez pour afficher';
+        } else {
+            sectionTitle = '**résultat :** Cliquez pour afficher';
+        }
+
+        // Format final : UNE SEULE section <details> avec le résultat nettoyé
         const parts = [
             `**Résultat d'outil :** \`${details.toolName}\``,
+            '',
+            '<details>',
+            `<summary>${sectionTitle}</summary>`,
+            '',
             '```',
             escapeHtml(cleanedResult),
-            '```'
+            '```',
+            '</details>'
         ];
 
         return parts.join('\n');
     }
+
 
     /**
      * Détermine si les blocs thinking doivent être affichés

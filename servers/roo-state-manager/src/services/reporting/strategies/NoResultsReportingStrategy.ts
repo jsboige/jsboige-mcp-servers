@@ -10,6 +10,7 @@
 
 import { BaseReportingStrategy, FormattedMessage } from '../IReportingStrategy.js';
 import { ClassifiedContent, EnhancedSummaryOptions } from '../../../types/enhanced-conversation.js';
+import { DOMParser, XMLSerializer } from '@xmldom/xmldom';
 
 export class NoResultsReportingStrategy extends BaseReportingStrategy {
     readonly detailLevel = 'NoResults';
@@ -282,8 +283,8 @@ export class NoResultsReportingStrategy extends BaseReportingStrategy {
     /**
      * Extrait tous les éléments XML récursivement
      */
-    private getAllXmlElements(node: Element): Element[] {
-        const elements: Element[] = [];
+    private getAllXmlElements(node: any): any[] {
+        const elements: any[] = [];
         
         for (let i = 0; i < node.children.length; i++) {
             const child = node.children[i];

@@ -101,6 +101,18 @@ export type {
   GetDecisionDetailsResult
 } from './get-decision-details.js';
 
+export {
+  roosyncInit,
+  InitArgsSchema,
+  InitResultSchema,
+  initToolMetadata
+} from './init.js';
+
+export type {
+  InitArgs,
+  InitResult
+} from './init.js';
+
 // Import des métadonnées pour l'array
 import { getStatusToolMetadata } from './get-status.js';
 import { compareConfigToolMetadata } from './compare-config.js';
@@ -110,12 +122,14 @@ import { rejectDecisionToolMetadata } from './reject-decision.js';
 import { applyDecisionToolMetadata } from './apply-decision.js';
 import { rollbackDecisionToolMetadata } from './rollback-decision.js';
 import { getDecisionDetailsToolMetadata } from './get-decision-details.js';
+import { initToolMetadata } from './init.js';
 
 /**
  * Liste de tous les outils RooSync pour enregistrement MCP
- * Phase 5 : 8 outils complets (Configuration + Services + Présentation + Décision + Exécution)
+ * Phase 5 : 9 outils complets (Configuration + Services + Présentation + Décision + Exécution + Initialisation)
  */
 export const roosyncTools = [
+  initToolMetadata,
   getStatusToolMetadata,
   compareConfigToolMetadata,
   listDiffsToolMetadata,

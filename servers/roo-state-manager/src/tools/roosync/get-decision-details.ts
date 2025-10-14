@@ -8,6 +8,7 @@
  */
 
 import { z } from 'zod';
+import { zodToJsonSchema } from 'zod-to-json-schema';
 import { getRooSyncService, RooSyncServiceError } from '../../services/RooSyncService.js';
 import { readFileSync } from 'fs';
 import { join } from 'path';
@@ -259,10 +260,28 @@ export async function roosyncGetDecisionDetails(args: GetDecisionDetailsArgs): P
 
 /**
  * Métadonnées de l'outil pour l'enregistrement MCP
+ * Utilise Zod.shape natif pour compatibilité MCP
  */
 export const getDecisionDetailsToolMetadata = {
   name: 'roosync_get_decision_details',
   description: 'Obtenir les détails complets d\'une décision de synchronisation',
-  inputSchema: GetDecisionDetailsArgsSchema,
-  outputSchema: GetDecisionDetailsResultSchema
+  inputSchema: {
+    type: 'object' as const,
+    properties: {
+      decisionId: {
+        type: 'string',
+        description: 'ID de la décision à consulter'
+      },
+      includeHistory: {
+        type: 'boolean',
+        description: 'Inclure l\'historique complet (défaut: true)'
+      },
+      includeLogs: {
+        type: 'boolean',
+        description: 'Inclure les logs d\'exécution (défaut: true)'
+      }
+    },
+    required: ['decisionId'],
+    additionalProperties: false
+  }
 };

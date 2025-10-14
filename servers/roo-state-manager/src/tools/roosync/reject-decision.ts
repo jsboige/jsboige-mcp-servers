@@ -8,6 +8,7 @@
  */
 
 import { z } from 'zod';
+import { zodToJsonSchema } from 'zod-to-json-schema';
 import { getRooSyncService, RooSyncServiceError } from '../../services/RooSyncService.js';
 import { writeFileSync, readFileSync } from 'fs';
 import { join } from 'path';
@@ -143,10 +144,24 @@ export async function roosyncRejectDecision(args: RejectDecisionArgs): Promise<R
 
 /**
  * Métadonnées de l'outil pour l'enregistrement MCP
+ * Utilise Zod.shape natif pour compatibilité MCP
  */
 export const rejectDecisionToolMetadata = {
   name: 'roosync_reject_decision',
   description: 'Rejeter une décision de synchronisation avec motif',
-  inputSchema: RejectDecisionArgsSchema,
-  outputSchema: RejectDecisionResultSchema
+  inputSchema: {
+    type: 'object' as const,
+    properties: {
+      decisionId: {
+        type: 'string',
+        description: 'ID de la décision à rejeter'
+      },
+      reason: {
+        type: 'string',
+        description: 'Motif du rejet (requis pour traçabilité)'
+      }
+    },
+    required: ['decisionId', 'reason'],
+    additionalProperties: false
+  }
 };
