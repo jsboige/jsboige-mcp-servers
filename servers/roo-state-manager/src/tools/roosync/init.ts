@@ -9,8 +9,15 @@
 
 import { z } from 'zod';
 import { getRooSyncService, RooSyncServiceError } from '../../services/RooSyncService.js';
-import { existsSync, mkdirSync, writeFileSync, readFileSync } from 'fs';
+import { existsSync, mkdirSync, writeFileSync, readFileSync, unlinkSync } from 'fs';
 import { join, dirname } from 'path';
+import { fileURLToPath } from 'url';
+import { promisify } from 'util';
+import { exec } from 'child_process';
+
+const execAsync = promisify(exec);
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = dirname(__filename);
 
 /**
  * Schema de validation pour roosync_init
@@ -202,7 +209,80 @@ export async function roosyncInit(args: InitArgs): Promise<InitResult> {
       }
     }
     
-    // 3. Créer/vérifier sync-roadmap.md (optionnel)
+    // 3. Collecter l'inventaire machine via script PowerShell
+    try {
+      console.log('🔍 Collecte de l\'inventaire machine...');
+      // Remonter depuis le répertoire du serveur MCP vers la racine du projet
+      const projectRoot = join(dirname(dirname(dirname(dirname(dirname(__dirname))))));
+      const inventoryScriptPath = join(projectRoot, 'scripts', 'inventory', 'Get-MachineInventory.ps1');
+      
+      // Vérifier que le script existe
+      if (existsSync(inventoryScriptPath)) {
+        // Construire la commande PowerShell
+        const inventoryCmd = `powershell.exe -NoProfile -ExecutionPolicy Bypass -File "${inventoryScriptPath}" -MachineId "${config.machineId}"`;
+        
+        try {
+          const { stdout, stderr } = await execAsync(inventoryCmd, {
+            timeout: 30000, // 30 secondes max
+            cwd: projectRoot
+          });
+          
+          // Le script retourne le chemin du fichier JSON créé
+          const inventoryFilePath = stdout.trim();
+          
+          if (inventoryFilePath && existsSync(inventoryFilePath)) {
+            // Lire l'inventaire généré
+            const inventoryData = JSON.parse(readFileSync(inventoryFilePath, 'utf-8'));
+            
+            // Créer ou enrichir sync-config.json avec l'inventaire
+            const configPath = join(sharedPath, 'sync-config.json');
+            let syncConfig: any;
+            
+            if (existsSync(configPath) && !args.force) {
+              syncConfig = JSON.parse(readFileSync(configPath, 'utf-8'));
+            } else {
+              syncConfig = {
+                version: '2.0.0',
+                machines: {}
+              };
+            }
+            
+            // Ajouter l'inventaire pour cette machine
+            syncConfig.machines[config.machineId] = {
+              ...inventoryData.inventory,
+              lastInventoryUpdate: inventoryData.timestamp,
+              paths: inventoryData.paths
+            };
+            
+            // Sauvegarder sync-config.json
+            writeFileSync(configPath, JSON.stringify(syncConfig, null, 2), 'utf-8');
+            filesCreated.push('sync-config.json (inventaire intégré)');
+            
+            console.log('✅ Inventaire machine intégré avec succès');
+            
+            // Nettoyer le fichier temporaire d'inventaire
+            try {
+              unlinkSync(inventoryFilePath);
+            } catch (unlinkError) {
+              // Ignorer si échec du nettoyage
+              console.warn(`⚠️ Impossible de supprimer le fichier temporaire: ${inventoryFilePath}`);
+            }
+          } else {
+            console.warn('⚠️ Le script d\'inventaire n\'a pas généré de fichier JSON');
+          }
+        } catch (execError: any) {
+          console.warn(`⚠️ Échec de la collecte d'inventaire: ${execError.message}`);
+          // Continuer sans bloquer l'init
+        }
+      } else {
+        console.warn(`⚠️ Script d'inventaire non trouvé: ${inventoryScriptPath}`);
+      }
+    } catch (error: any) {
+      console.warn(`⚠️ Erreur lors de l'intégration de l'inventaire: ${error.message}`);
+      // Continuer sans bloquer l'init - l'inventaire est optionnel
+    }
+    
+    // 4. Créer/vérifier sync-roadmap.md (optionnel)
     if (args.createRoadmap !== false) {
       const roadmapPath = join(sharedPath, 'sync-roadmap.md');
       if (!existsSync(roadmapPath) || args.force) {
@@ -214,7 +294,7 @@ export async function roosyncInit(args: InitArgs): Promise<InitResult> {
       }
     }
     
-    // 4. Créer le répertoire .rollback s'il n'existe pas
+    // 5. Créer le répertoire .rollback s'il n'existe pas
     const rollbackDir = join(sharedPath, '.rollback');
     if (!existsSync(rollbackDir)) {
       mkdirSync(rollbackDir, { recursive: true });
