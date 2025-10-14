@@ -55,7 +55,7 @@ function handleViewConversationTreeExecution(
     args: ViewConversationTreeArgs,
     conversationCache: Map<string, ConversationSkeleton>
 ): CallToolResult {
-    const { view_mode = 'chain', detail_level = 'skeleton', max_output_length = 300000 } = args;
+    const { view_mode = 'chain', detail_level = 'skeleton', max_output_length = 300000, current_task_id } = args;
     let { truncate = 0 } = args;
     
     // Gestion intelligente de truncate selon detail_level si non spécifié explicitement
@@ -93,30 +93,10 @@ function handleViewConversationTreeExecution(
     const skeletons = Array.from(conversationCache.values());
     const skeletonMap = new Map(skeletons.map(s => [s.taskId, s]));
 
-    // 🎯 AUTO-DÉTECTION TÂCHE ACTUELLE : Trouver la tâche la plus récente du workspace
-    let currentTaskId: string | null = null;
-    
-    if (conversationCache && conversationCache.size > 0) {
-        // Obtenir le workspace depuis la tâche principale
-        const mainTask = skeletonMap.get(task_id);
-        const targetWorkspace = mainTask?.metadata?.workspace;
-        
-        if (targetWorkspace) {
-            // Filtrer toutes les tâches du même workspace ayant une lastActivity
-            const workspaceTasks = Array.from(conversationCache.values())
-                .filter(s => s.metadata?.workspace === targetWorkspace && s.metadata?.lastActivity);
-            
-            if (workspaceTasks.length > 0) {
-                // Trouver la tâche avec la date d'activité la plus récente
-                const mostRecentTask = workspaceTasks.reduce((latest, current) => {
-                    const latestDate = new Date(latest.metadata.lastActivity);
-                    const currentDate = new Date(current.metadata.lastActivity);
-                    return currentDate > latestDate ? current : latest;
-                });
-                currentTaskId = mostRecentTask.taskId;
-            }
-        }
-    }
+    // 🎯 DÉTECTION TÂCHE ACTUELLE : Utiliser current_task_id si fourni, sinon ne rien marquer
+    // Note: L'auto-détection par lastActivity est peu fiable car la tâche en cours d'exécution
+    // n'a pas encore son timestamp mis à jour. Pour une détection fiable, passer current_task_id.
+    const currentTaskId: string | null = current_task_id || null;
 
     const getTaskChain = (startTaskId: string): ConversationSkeleton[] => {
         const chain: ConversationSkeleton[] = [];
@@ -428,6 +408,7 @@ export const viewConversationTree = {
         properties: {
             task_id: { type: 'string', description: 'L\'ID de la tâche de départ. Si non fourni, workspace devient obligatoire.' },
             workspace: { type: 'string', description: 'Chemin du workspace pour trouver la tâche la plus récente. Obligatoire si task_id non fourni.' },
+            current_task_id: { type: 'string', description: 'ID de la tâche en cours d\'exécution pour marquage explicite comme "(TÂCHE ACTUELLE)". Si omis, aucune tâche ne sera marquée.' },
             view_mode: { type: 'string', enum: ['single', 'chain', 'cluster'], default: 'chain', description: 'Le mode d\'affichage.' },
             detail_level: { type: 'string', enum: ['skeleton', 'summary', 'full'], default: 'skeleton', description: 'Niveau de détail: skeleton (métadonnées seulement), summary (résumé), full (complet).' },
             truncate: { type: 'number', default: 0, description: 'Nombre de lignes à conserver au début et à la fin de chaque message. 0 pour vue complète (défaut intelligent).' },
