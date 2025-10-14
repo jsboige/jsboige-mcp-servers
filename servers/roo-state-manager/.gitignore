@@ -22,6 +22,7 @@
 !VALIDATION*.md
 !BATCH*.md
 !GIT_SYNC*.md
+!PROJECT_FINAL_SYNTHESIS.md
 
 # Reports (excluding README.md)
 # Ignore reports at root level but allow in docs/ subdirectories
