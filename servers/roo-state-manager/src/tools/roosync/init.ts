@@ -9,7 +9,7 @@
 
 import { z } from 'zod';
 import { getRooSyncService, RooSyncServiceError } from '../../services/RooSyncService.js';
-import { existsSync, mkdirSync, writeFileSync } from 'fs';
+import { existsSync, mkdirSync, writeFileSync, readFileSync } from 'fs';
 import { join, dirname } from 'path';
 
 /**
@@ -183,7 +183,23 @@ export async function roosyncInit(args: InitArgs): Promise<InitResult> {
       writeFileSync(dashboardPath, dashboardContent, 'utf-8');
       filesCreated.push('sync-dashboard.json');
     } else {
-      filesSkipped.push('sync-dashboard.json (déjà existant)');
+      // Dashboard existe : vérifier si machine est enregistrée
+      const existingDashboard = JSON.parse(readFileSync(dashboardPath, 'utf-8'));
+      if (!existingDashboard.machines[config.machineId]) {
+        // Ajouter la machine au dashboard existant
+        const now = new Date().toISOString();
+        existingDashboard.machines[config.machineId] = {
+          lastSync: now,
+          status: 'online',
+          diffsCount: 0,
+          pendingDecisions: 0
+        };
+        existingDashboard.lastUpdate = now;
+        writeFileSync(dashboardPath, JSON.stringify(existingDashboard, null, 2), 'utf-8');
+        filesCreated.push('sync-dashboard.json (machine ajoutée)');
+      } else {
+        filesSkipped.push('sync-dashboard.json (déjà existant)');
+      }
     }
     
     // 3. Créer/vérifier sync-roadmap.md (optionnel)
