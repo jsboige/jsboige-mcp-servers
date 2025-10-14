@@ -2,93 +2,62 @@
  * Configuration du serveur MCP roo-state-manager
  */
 
-import { readFileSync } from 'fs';
-import { fileURLToPath } from 'url';
-import { dirname, join } from 'path';
+import { Server } from '@modelcontextprotocol/sdk/server/index.js';
+import packageJson from '../../package.json' with { type: 'json' };
 
-// Lecture du package.json
-const __filename = fileURLToPath(import.meta.url);
-const __dirname = dirname(__filename);
-const packageJsonPath = join(__dirname, '../../package.json');
-const packageJson = JSON.parse(readFileSync(packageJsonPath, 'utf-8'));
+export interface ServerConfig {
+    name: string;
+    version: string;
+    capabilities: {
+        tools: Record<string, boolean>;
+        resources?: Record<string, boolean>;
+    };
+}
 
-// Constantes de configuration
-export const MAX_OUTPUT_LENGTH = 300000; // Smart Truncation Engine
-export const SKELETON_CACHE_DIR_NAME = '.skeletons';
-
-/**
- * Configuration du serveur MCP
- */
-export const SERVER_CONFIG = {
+export const SERVER_CONFIG: ServerConfig = {
     name: 'roo-state-manager',
     version: packageJson.version,
-};
-
-/**
- * Configuration des capabilities MCP
- */
-export const SERVER_CAPABILITIES = {
     capabilities: {
         tools: {},
     },
 };
 
-/**
- * Variables d'environnement requises
- */
-export const REQUIRED_ENV_VARS = [
-    'QDRANT_URL',
-    'QDRANT_API_KEY',
-    'QDRANT_COLLECTION_NAME',
-    'OPENAI_API_KEY'
-];
-
-/**
- * Configuration LLM par défaut
- */
-export const DEFAULT_LLM_OPTIONS = {
-    models: [{
-        modelId: 'gpt-4',
-        displayName: 'GPT-4',
-        provider: 'openai' as const,
-        modelName: 'gpt-4',
-        maxTokens: 8192,
-        costPerInputToken: 0.00003,
-        costPerOutputToken: 0.00006,
-        parameters: { temperature: 0.7 }
-    }],
-    defaultModelId: 'gpt-4',
-    defaultTimeout: 30000,
-    maxRetries: 3,
-    retryDelay: 1000,
-    enableCaching: true
-};
-
-/**
- * Configuration contexte par défaut
- */
-export const DEFAULT_CONTEXT_OPTIONS = {
-    synthesisBaseDir: './synthesis',
-    condensedBatchesDir: './synthesis/batches',
-    maxContextSizeBeforeCondensation: 100000,
-    defaultMaxDepth: 5
-};
-
-/**
- * Configuration orchestrateur par défaut
- */
-export const DEFAULT_ORCHESTRATOR_OPTIONS = {
-    synthesisOutputDir: './synthesis/output',
-    maxContextSize: 150000,
-    maxConcurrency: 3,
-    defaultLlmModel: 'gpt-4'
-};
-
-/**
- * Configuration cache et indexation
- */
+// Constantes de configuration
 export const CACHE_CONFIG = {
-    CONSISTENCY_CHECK_INTERVAL: 24 * 60 * 60 * 1000, // 24h
-    MIN_REINDEX_INTERVAL: 4 * 60 * 60 * 1000, // 4h
-    MAX_BACKGROUND_INTERVAL: 5 * 60 * 1000, // 5min
+    MAX_CACHE_SIZE: 1000,
+    CACHE_TTL_MS: 3600000, // 1 heure
+    DEFAULT_WORKSPACE: process.env.WORKSPACE_PATH || process.cwd(),
 };
+
+export const INDEXING_CONFIG = {
+    BATCH_SIZE: 100,
+    MAX_CONCURRENT_REQUESTS: 5,
+    EMBEDDING_MODEL: 'text-embedding-3-small',
+};
+
+export const OUTPUT_CONFIG = {
+    MAX_OUTPUT_LENGTH: 300000, // Smart Truncation Engine
+    SKELETON_CACHE_DIR_NAME: '.skeletons',
+};
+
+// Constantes pour la protection anti-fuite
+export const ANTI_LEAK_CONFIG = {
+    CONSISTENCY_CHECK_INTERVAL: 24 * 60 * 60 * 1000, // 24h
+    MIN_REINDEX_INTERVAL: 4 * 60 * 60 * 1000, // 4h minimum entre indexations
+    MAX_BACKGROUND_INTERVAL: 5 * 60 * 1000, // 5min au lieu de 30s
+};
+
+/**
+ * Crée une instance du serveur MCP
+ */
+export function createMcpServer(config: ServerConfig): Server {
+    return new Server(
+        {
+            name: config.name,
+            version: config.version,
+        },
+        {
+            capabilities: config.capabilities,
+        }
+    );
+}
