@@ -70,3 +70,5 @@ coverage/
 
 # Archives
 *.zip
+/servers/roo-state-manager/diag_results.json
+/servers/roo-state-manager/diag_results_full.json-e "servers/roo-state-manager/output.txt\nservers/roo-state-manager/run-hierarchy-test.ps1\nservers/roo-state-manager/test-quick.ps1" 

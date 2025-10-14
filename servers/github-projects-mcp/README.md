@@ -1,213 +1,173 @@
-# MCP Gestionnaire de Projet pour GitHub Projects
+# GitHub Projects MCP Server
 
-Ce MCP (Model Context Protocol) permet d'intégrer GitHub Projects avec VSCode Roo, offrant une interface pour interagir avec les projets GitHub directement depuis Roo.
+This MCP server provides tools to interact with GitHub Projects.
 
-## Fonctionnalités
+## Prerequisites
 
-- Lister les projets d'un utilisateur ou d'une organisation
-- Créer de nouveaux projets
-- Obtenir les détails d'un projet spécifique
-- Ajouter des éléments (issues, pull requests, notes) à un projet
-- Mettre à jour les champs des éléments dans un projet
+- Node.js
+- A GitHub Personal Access Token with `repo` and `project` scopes.
 
-## Prérequis
+## Setup
 
-- Node.js 14.x ou supérieur
-- npm 6.x ou supérieur
-- Un token d'accès personnel GitHub avec les permissions nécessaires pour GitHub Projects
+1.  Install dependencies:
+    ```bash
+    npm install
+    ```
+2.  Create a `.env` file in the root of this server's directory (`mcps/internal/servers/github-projects-mcp`).
+3.  Add your GitHub token to the `.env` file:
+    ```
+    GITHUB_TOKEN=your_personal_access_token
+    ```
 
-## Installation
+## Running the Server
 
-1. Le MCP GitHub Projects est déjà intégré dans le sous-module `mcps/mcp-servers`.
+To start the server for development or general use:
 
-2. Installez les dépendances :
-   ```bash
-   cd mcps/mcp-servers/servers/github-projects-mcp
-   npm install
-   ```
+```bash
+npm start
+```
 
-3. Créez un fichier `.env` à partir du modèle `.env.example` :
-   ```bash
-   cp .env.example .env
-   ```
+## Testing
 
-4. Modifiez le fichier `.env` pour ajouter votre token GitHub :
-   ```
-   GITHUB_TOKEN=votre_token_github_ici
-   ```
+The End-to-End (E2E) tests require the server to be running independently.
 
-5. Compilez le projet :
-   ```bash
-   npm run build
-   ```
+**1. Build the project:**
 
-## Configuration dans Roo
+Make sure you have the latest code compiled:
+```bash
+npm run build
+```
 
-Pour utiliser ce MCP avec Roo, ajoutez la configuration suivante à votre fichier `servers.json` :
+**2. Start the test server:**
 
+In your first terminal, run:
+```bash
+npm run start:e2e
+```
+The server will start on the port specified in the `.env` file or on port 3000 by default. The E2E tests will connect to it on port 3001.
+
+**3. Run the E2E tests:**
+
+In a second terminal, run:
+```bash
+npm run test:e2e
+```
+Jest will execute the tests located in the `tests/` directory against the running server.
+
+## Tools
+
+### Monitoring des Workflows GitHub Actions
+
+Cette section décrit les outils disponibles pour surveiller et analyser les workflows GitHub Actions d'un dépôt.
+
+#### `list_repository_workflows`
+
+Liste tous les workflows définis dans un dépôt GitHub.
+
+**Paramètres :**
+- `owner` (string) : Nom du propriétaire du dépôt (utilisateur ou organisation)
+- `repo` (string) : Nom du dépôt
+
+**Exemple de retour en cas de succès :**
 ```json
 {
-  "servers": [
+  "success": true,
+  "workflows": [
     {
-      "name": "github-projects",
-      "command": "cmd /c \"cd /d %~dp0\\..\\mcps\\mcp-servers\\servers\\github-projects-mcp && run-github-projects.bat\"",
-      "autostart": true
+      "id": 161335,
+      "node_id": "MDg6V29ya2Zsb3cxNjEzMzU=",
+      "name": "CI",
+      "path": ".github/workflows/ci.yml",
+      "state": "active",
+      "created_at": "2020-01-08T23:48:37.000Z",
+      "updated_at": "2020-01-08T23:50:21.000Z",
+      "url": "https://api.github.com/repos/octocat/Hello-World/actions/workflows/161335",
+      "html_url": "https://github.com/octocat/Hello-World/blob/master/.github/workflows/ci.yml",
+      "badge_url": "https://github.com/octocat/Hello-World/workflows/CI/badge.svg"
     }
   ]
 }
 ```
 
-Vous pouvez également utiliser le script batch fourni :
-```
-mcps/mcp-servers/servers/github-projects-mcp/run-github-projects.bat
-```
+#### `get_workflow_runs`
 
-## Utilisation
-
-Une fois le MCP configuré et démarré, vous pouvez l'utiliser dans vos conversations avec Roo. Voici quelques exemples d'utilisation :
-
-### Lister les projets d'un utilisateur
-
-```
-Utilisateur: Peux-tu me lister mes projets GitHub?
-
-Roo: Je vais lister vos projets GitHub.
-[Utilisation de l'outil github-projects.list_projects]
-Voici la liste de vos projets GitHub...
-```
-
-### Créer un nouveau projet
-
-```
-Utilisateur: Crée un nouveau projet GitHub pour mon application web.
-
-Roo: Je vais créer un nouveau projet pour vous.
-[Utilisation de l'outil github-projects.create_project]
-J'ai créé un nouveau projet intitulé "Application Web"...
-```
-
-### Obtenir les détails d'un projet
-
-```
-Utilisateur: Montre-moi les détails de mon projet numéro 1.
-
-Roo: Je vais récupérer les détails de ce projet.
-[Utilisation de l'outil github-projects.get_project]
-Voici les détails du projet...
-```
-
-### Ajouter une issue à un projet
-
-```
-Utilisateur: Ajoute l'issue #42 à mon projet "Application Web".
-
-Roo: Je vais ajouter cette issue à votre projet.
-[Utilisation de l'outil github-projects.add_item_to_project]
-J'ai ajouté l'issue #42 à votre projet...
-```
-
-## Outils disponibles
-
-### list_projects
-
-Liste les projets GitHub d'un utilisateur ou d'une organisation.
+Récupère les exécutions (runs) d'un workflow spécifique, avec leur statut et leurs détails.
 
 **Paramètres :**
-- `owner` : Nom d'utilisateur ou d'organisation
-- `type` : Type de propriétaire (`user` ou `org`, par défaut : `user`)
-- `state` : État des projets à récupérer (`open`, `closed` ou `all`, par défaut : `open`)
+- `owner` (string) : Nom du propriétaire du dépôt
+- `repo` (string) : Nom du dépôt
+- `workflow_id` (number) : ID du workflow (peut aussi accepter le nom du fichier .yml)
 
-### create_project
-
-Crée un nouveau projet GitHub.
-
-**Paramètres :**
-- `owner` : Nom d'utilisateur ou d'organisation
-- `title` : Titre du projet
-- `description` : Description du projet (optionnel)
-- `type` : Type de propriétaire (`user` ou `org`, par défaut : `user`)
-
-### get_project
-
-Récupère les détails d'un projet GitHub.
-
-**Paramètres :**
-- `owner` : Nom d'utilisateur ou d'organisation
-- `project_number` : Numéro du projet
-
-### add_item_to_project
-
-Ajoute un élément (issue, pull request ou note) à un projet GitHub.
-
-**Paramètres :**
-- `project_id` : ID du projet
-- `content_id` : ID de l'élément à ajouter (issue ou pull request)
-- `content_type` : Type de contenu à ajouter (`issue`, `pull_request` ou `draft_issue`, par défaut : `issue`)
-- `draft_title` : Titre de la note (uniquement pour les notes)
-- `draft_body` : Corps de la note (uniquement pour les notes)
-
-### update_project_item_field
-
-Met à jour la valeur d'un champ pour un élément dans un projet GitHub.
-
-**Paramètres :**
-- `project_id` : ID du projet
-- `item_id` : ID de l'élément dans le projet
-- `field_id` : ID du champ à mettre à jour
-- `field_type` : Type de champ (`text`, `date`, `single_select` ou `number`)
-- `value` : Nouvelle valeur pour le champ
-- `option_id` : ID de l'option pour les champs de type `single_select`
-
-## Ressources disponibles
-
-### projects
-
-Accès aux projets GitHub d'un utilisateur ou d'une organisation.
-
-**URI Schema :** `github-projects://{owner}/{type}?state={state}`
-
-### project
-
-Accès à un projet GitHub spécifique.
-
-**URI Schema :** `github-project://{owner}/{project_number}`
-
-## Dépannage
-
-Si vous rencontrez des problèmes avec ce MCP, vérifiez les points suivants :
-
-1. Assurez-vous que votre token GitHub est valide et dispose des permissions nécessaires.
-2. Vérifiez que le MCP est correctement configuré dans `servers.json`.
-3. Consultez les logs du serveur MCP pour plus d'informations sur les erreurs.
-
-## Développement
-
-### Structure du projet
-
-```
-mcps/mcp-servers/servers/github-projects-mcp/
-├── src/
-│   ├── index.ts           # Point d'entrée du serveur MCP
-│   ├── tools.ts           # Définition des outils MCP
-│   ├── resources.ts       # Définition des ressources MCP
-│   └── utils/
-│       ├── github.ts      # Fonctions utilitaires pour l'API GitHub
-│       └── errorHandlers.ts # Gestionnaires d'erreurs
-├── docs/                  # Documentation supplémentaire
-├── .env.example           # Modèle de fichier d'environnement
-├── package.json           # Dépendances et scripts
-├── tsconfig.json          # Configuration TypeScript
-├── run-github-projects.bat # Script de démarrage
-└── README.md              # Documentation
+**Exemple de retour en cas de succès :**
+```json
+{
+  "success": true,
+  "workflow_runs": [
+    {
+      "id": 30433642,
+      "name": "Build",
+      "node_id": "MDExOldvcmtmbG93UnVuMzA0MzM2NDI=",
+      "head_branch": "master",
+      "head_sha": "acb5820ced9479c074f688cc328bf03f341a511d",
+      "run_number": 562,
+      "event": "push",
+      "status": "completed",
+      "conclusion": "success",
+      "workflow_id": 161335,
+      "created_at": "2020-01-22T19:33:08Z",
+      "updated_at": "2020-01-22T19:33:08Z",
+      "url": "https://api.github.com/repos/github/hello-world/actions/runs/30433642",
+      "html_url": "https://github.com/github/hello-world/actions/runs/30433642"
+    }
+  ]
+}
 ```
 
-### Scripts disponibles
+#### `get_workflow_run_status`
 
-- `npm run build` : Compile le projet
-- `npm run start` : Démarre le serveur MCP
-- `npm run dev` : Démarre le serveur en mode développement
-- `npm run test` : Exécute les tests
+Obtient le statut détaillé d'une exécution de workflow spécifique.
 
-## Licence
+**Paramètres :**
+- `owner` (string) : Nom du propriétaire du dépôt
+- `repo` (string) : Nom du dépôt
+- `run_id` (number) : ID de l'exécution du workflow
 
-MIT
+**Exemple de retour en cas de succès :**
+```json
+{
+  "success": true,
+  "workflow_run": {
+    "id": 30433642,
+    "name": "Build",
+    "node_id": "MDExOldvcmtmbG93UnVuMzA0MzM2NDI=",
+    "head_branch": "master",
+    "head_sha": "acb5820ced9479c074f688cc328bf03f341a511d",
+    "run_number": 562,
+    "event": "push",
+    "status": "completed",
+    "conclusion": "success",
+    "workflow_id": 161335,
+    "created_at": "2020-01-22T19:33:08Z",
+    "updated_at": "2020-01-22T19:33:08Z",
+    "url": "https://api.github.com/repos/github/hello-world/actions/runs/30433642",
+    "html_url": "https://github.com/github/hello-world/actions/runs/30433642"
+  }
+}
+```
+
+**États possibles pour `status` :**
+- `completed` : L'exécution est terminée
+- `in_progress` : L'exécution est en cours
+- `queued` : L'exécution est en file d'attente
+- `requested` : L'exécution a été demandée
+- `waiting` : L'exécution attend
+- `pending` : L'exécution est en attente
+
+**Conclusions possibles pour `conclusion` (si status = "completed") :**
+- `success` : L'exécution s'est terminée avec succès
+- `failure` : L'exécution a échoué
+- `cancelled` : L'exécution a été annulée
+- `skipped` : L'exécution a été ignorée
+- `timed_out` : L'exécution a expiré
+- `action_required` : Une action manuelle est requise
+- `neutral` : L'exécution s'est terminée de manière neutre

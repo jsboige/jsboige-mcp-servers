@@ -1,24 +1,50 @@
 export default {
   preset: 'ts-jest/presets/default-esm',
   extensionsToTreatAsEsm: ['.ts'],
-  moduleNameMapping: {
-    '^(\\.{1,2}/.*)\\.js$': '$1',
-  },
-  transform: {
-    '^.+\\.ts$': ['ts-jest', {
-      useESM: true,
-    }],
-  },
   testEnvironment: 'node',
+  
+  // Utiliser un seul worker pour éviter les problèmes de mémoire
+  maxWorkers: 1,
+  
+  // Limite mémoire pour éviter heap overflow
+  workerIdleMemoryLimit: "1GB",
+  
+  transform: {
+    '^.+\\.tsx?$': ['ts-jest', {
+      useESM: true
+    }]
+  },
+  
+  moduleNameMapper: {
+    '^(\\.{1,2}/.*)\\.js$': '$1'
+  },
+
+  // Racines explicites pour éviter les résolutions ESM ambiguës
   roots: ['<rootDir>/src', '<rootDir>/tests'],
+
   testMatch: [
-    '**/__tests__/**/*.ts',
-    '**/?(*.)+(spec|test).ts'
+    '**/tests/unit/**/*.test.ts',
+    '**/tests/unit/**/*.test.js',
+    '**/tests/integration/**/*.test.ts',
+    '**/tests/integration/**/*.test.js',
+    '**/tests/e2e/**/*.test.ts'
   ],
-  collectCoverageFrom: [
-    'src/**/*.ts',
-    '!src/**/*.d.ts',
+
+  testPathIgnorePatterns: [
+    '/node_modules/',
+    '/build/'
   ],
-  coverageDirectory: 'coverage',
-  coverageReporters: ['text', 'lcov', 'html'],
+
+  // Setup Jest ESM globals et .env.test
+  setupFilesAfterEnv: ['./tests/setup-env.ts'],
+
+  // Provision de l'environnement ROO_STORAGE_PATH avant tests + nettoyage après
+  globalSetup: '<rootDir>/tests/config/globalSetup.ts',
+  globalTeardown: '<rootDir>/tests/config/globalTeardown.ts',
+
+  testTimeout: 30000,
+
+  clearMocks: true,
+  restoreMocks: true,
+  resetMocks: true
 };

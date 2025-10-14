@@ -1,55 +1,57 @@
 /**
- * Configuration Jest pour les tests du serveur QuickFiles MCP
+ * Configuration Jest pour QuickFiles MCP Server
+ * 
+ * Cette configuration active l'exécution automatique des tests unitaires,
+ * incluant les tests anti-régression critiques.
  */
 
 export default {
-  // Utiliser ts-jest pour la transformation des fichiers TypeScript
-  preset: 'ts-jest',
+  // Utiliser ts-jest pour les fichiers TypeScript avec support ESM
+  preset: 'ts-jest/presets/default-esm',
   
-  // Environnement de test Node.js
+  // Environnement Node.js
   testEnvironment: 'node',
   
-  // Transformation des fichiers
-  transform: {
-    '^.+\\.tsx?$': 'ts-jest'
-  },
+  // Support des modules ES
+  extensionsToTreatAsEsm: ['.ts'],
   
-  // Extensions à traiter comme des modules ES
-  extensionsToTreatAsEsm: ['.ts', '.js'],
-  
-  // Résolution des modules avec extension .js
+  // Mapping des modules pour résoudre les imports .js vers .ts
   moduleNameMapper: {
-    '^(\\.{1,2}/.*)\\.js$': '$1'
+    '^(\\.{1,2}/.*)\\.js$': '$1',
   },
   
-  // Patterns pour trouver les fichiers de test
+  // Configuration de transformation
+  transform: {
+    '^.+\\.tsx?$': ['ts-jest', {
+      useESM: true,
+    }],
+  },
+  
+  // Patterns de fichiers de test
   testMatch: [
-    '**/__tests__/**/*.test.js'
+    '**/__tests__/**/*.test.js',
+    '**/__tests__/**/*.test.ts',
+    '**/?(*.)+(spec|test).[jt]s?(x)'
   ],
   
-  // Fichiers à ignorer
+  // Fichiers à exclure
   testPathIgnorePatterns: [
     '/node_modules/',
-    '/dist/'
+    '/build/',
+    '/dist/',
+    '/legacy-tests/',
+    '/test-temp/'
   ],
   
-  // Collecte de la couverture de code
+  // Configuration de la couverture de code
   collectCoverageFrom: [
-    'dist/**/*.js',
-    '!dist/**/*.d.ts',
-    '!src/**/*.d.ts'
+    'src/**/*.ts',
+    '!src/**/*.d.ts',
+    '!src/**/*.test.ts',
+    '!src/**/types.ts'
   ],
   
-  // Répertoire pour les rapports de couverture
-  coverageDirectory: 'coverage',
-  
-  // Formats des rapports de couverture
-  coverageReporters: [
-    'text',
-    'lcov'
-  ],
-  
-  // Seuil minimal de couverture
+  // Seuils de couverture minimum
   coverageThreshold: {
     global: {
       branches: 70,
@@ -59,6 +61,43 @@ export default {
     }
   },
   
-  // Afficher un résumé de la couverture après les tests
-  verbose: true
+  // Répertoire de sortie pour la couverture
+  coverageDirectory: 'coverage',
+  
+  // Formats de rapport de couverture
+  coverageReporters: [
+    'text',
+    'text-summary',
+    'html',
+    'lcov'
+  ],
+  
+  // Timeout pour les tests (10 secondes)
+  testTimeout: 10000,
+  
+  // Afficher les tests individuels
+  verbose: true,
+  
+  // Configuration des globals pour ts-jest
+  globals: {
+    'ts-jest': {
+      useESM: true,
+    }
+  },
+  
+  // Setup files à exécuter avant les tests
+  // setupFilesAfterEnv: ['<rootDir>/__tests__/setup.js'],
+  
+  // Rapports de test
+  reporters: [
+    'default',
+    ['jest-junit', {
+      outputDirectory: './test-results',
+      outputName: 'junit.xml',
+      classNameTemplate: '{classname}',
+      titleTemplate: '{title}',
+      ancestorSeparator: ' › ',
+      usePathForSuiteName: true
+    }]
+  ]
 };

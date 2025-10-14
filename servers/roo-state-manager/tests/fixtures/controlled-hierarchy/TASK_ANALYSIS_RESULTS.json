@@ -1,0 +1,98 @@
+﻿[
+    {
+        "UUID":  "03deadab-a06d-4b29-976d-3cc142add1d9",
+        "TaskName":  "TEST-HIERARCHY-B",
+        "Mode":  "UNKNOWN",
+        "CreatedTime":  "2025-09-25T16:59:22.059Z",
+        "MessageContent":  "[\r\n    {\r\n        \"type\":  \"text\",\r\n        \"text\":  \"\\u003ctask\\u003e\\nTEST-HIERARCHY-B: Tu es une branche de test B dans une hiérarchie de test en cascade. Ta mission PRINCIPALE et UNIQUE est de créer exactement 1 sous-tâche orchestrateur pour valider la reconstruction hiérarchique du MCP roo-state-manager.\\n\\n### INSTRUCTIONS STRICTES :\\n\\n1. **Créer TEST-NODE-B1** en mode \\u0027orchestrator\\u0027 avec ce message exact :\\n   \\\"TEST-NODE-B1: Tu es un nœud intermédiaire dans la hiérarchie de te",
+        "IsTestTask":  true,
+        "TestPattern":  "HIERARCHY-ROOT/BRANCH",
+        "ParentInfo":  "",
+        "FileCount":  3,
+        "TotalSize":  30322
+    },
+    {
+        "UUID":  "305b3f90-e0e1-4870-8cf4-4fd33a08cfa4",
+        "TaskName":  "TEST-HIERARCHY-A",
+        "Mode":  "UNKNOWN",
+        "CreatedTime":  "2025-09-25T15:15:37.211Z",
+        "MessageContent":  "[\r\n    {\r\n        \"type\":  \"text\",\r\n        \"text\":  \"\\u003ctask\\u003e\\nTEST-HIERARCHY-A: Tu es une branche de test A dans une hiérarchie de test en cascade. Ta mission PRINCIPALE et UNIQUE est de créer exactement 2 sous-tâches pour valider la reconstruction hiérarchique du MCP roo-state-manager.\\n\\n### INSTRUCTIONS STRICTES :\\n\\n1. **Créer TEST-LEAF-A1** en mode \\u0027code\\u0027 avec ce message exact :\\n   \\\"TEST-LEAF-A1: Crée le fichier mcp-debugging/test-data/test-a1.py contenant une fonction",
+        "IsTestTask":  true,
+        "TestPattern":  "HIERARCHY-ROOT/BRANCH",
+        "ParentInfo":  "",
+        "FileCount":  3,
+        "TotalSize":  33131
+    },
+    {
+        "UUID":  "38948ef0-4a8b-40a2-ae29-b38d2aa9d5a7",
+        "TaskName":  "TEST-NODE-B1",
+        "Mode":  "UNKNOWN",
+        "CreatedTime":  "2025-09-25T16:59:43.617Z",
+        "MessageContent":  "[\r\n    {\r\n        \"type\":  \"text\",\r\n        \"text\":  \"\\u003ctask\\u003e\\nTEST-NODE-B1: Tu es un nœud intermédiaire dans la hiérarchie de test. Ta mission UNIQUE est de créer exactement 2 sous-tâches finales :\\n\\n1) TEST-LEAF-B1a en mode \\u0027code\\u0027 avec le message : \\u0027TEST-LEAF-B1a: Crée le fichier mcp-debugging/test-data/test-b1a.py contenant une fonction validate_phone() qui vérifie si un numéro de téléphone français est valide (format 06/07 suivi de 8 chiffres). Inclus des tests. Term",
+        "IsTestTask":  true,
+        "TestPattern":  "NODE",
+        "ParentInfo":  "",
+        "FileCount":  3,
+        "TotalSize":  44556
+    },
+    {
+        "UUID":  "8c06d62c-1ee2-4c3a-991e-c9483e90c8aa",
+        "TaskName":  "TEST-LEAF-B1a",
+        "Mode":  "UNKNOWN",
+        "CreatedTime":  "UNKNOWN",
+        "MessageContent":  "[\r\n    {\r\n        \"type\":  \"text\",\r\n        \"text\":  \"\\u003ctask\\u003e\\nTEST-LEAF-B1a: Crée le fichier mcp-debugging/test-data/test-b1a.py contenant une fonction validate_phone() qui vérifie si un numéro de téléphone français est valide (format 06/07 suivi de 8 chiffres). Inclus des tests. Termine avec attempt_completion en rapportant le chemin du fichier.\\n\\u003c/task\\u003e\"\r\n    },\r\n    {\r\n        \"type\":  \"text\",\r\n        \"text\":  \"\\u003cenvironment_details\\u003e\\n# VSCode Visible Files\\nmcp-",
+        "IsTestTask":  true,
+        "TestPattern":  "LEAF-B1a",
+        "ParentInfo":  "",
+        "FileCount":  3,
+        "TotalSize":  21759
+    },
+    {
+        "UUID":  "91e837de-a4b2-4c18-ab9b-6fcd36596e38",
+        "TaskName":  "TEST-HIERARCHY-ROOT",
+        "Mode":  "UNKNOWN",
+        "CreatedTime":  "2025-09-25T15:14:56.905Z",
+        "MessageContent":  "[\r\n    {\r\n        \"type\":  \"text\",\r\n        \"text\":  \"\\u003ctask\\u003e\\n**Ta mission est de créer le niveau racine d\\u0027une hiérarchie de test en cascade pour valider la reconstruction hiérarchique du MCP roo-state-manager.**\\n\\n### **Contexte**\\nNous devons créer une vraie hiérarchie Roo où chaque tâche crée ses propres enfants, permettant de tester la reconstruction descendante à 100%. Cette tâche sera la racine \\\"TEST-HIERARCHY-ROOT\\\".\\n\\n### **Objectif**\\nCréer 2 sous-tâches qui elles-même",
+        "IsTestTask":  true,
+        "TestPattern":  "HIERARCHY-ROOT/BRANCH",
+        "ParentInfo":  "",
+        "FileCount":  3,
+        "TotalSize":  83695
+    },
+    {
+        "UUID":  "b423bff7-6fec-40fe-a00e-bb2a0ebb52f4",
+        "TaskName":  "TEST-LEAF-A1",
+        "Mode":  "UNKNOWN",
+        "CreatedTime":  "UNKNOWN",
+        "MessageContent":  "[\r\n    {\r\n        \"type\":  \"text\",\r\n        \"text\":  \"\\u003ctask\\u003e\\nTEST-LEAF-A1: Crée le fichier mcp-debugging/test-data/test-a1.py contenant une fonction validate_email() qui vérifie si un email est valide. La fonction doit retourner True/False et inclure des tests basiques. Termine avec attempt_completion en rapportant le chemin du fichier créé.\\n\\u003c/task\\u003e\"\r\n    },\r\n    {\r\n        \"type\":  \"text\",\r\n        \"text\":  \"\\u003cenvironment_details\\u003e\\n# VSCode Visible Files\\nmcp-debu",
+        "IsTestTask":  true,
+        "TestPattern":  "LEAF-A1",
+        "ParentInfo":  "",
+        "FileCount":  3,
+        "TotalSize":  27745
+    },
+    {
+        "UUID":  "d6a6a99a-b7fd-41fc-86ce-2f17c9520437",
+        "TaskName":  "TEST-LEAF-B1b",
+        "Mode":  "UNKNOWN",
+        "CreatedTime":  "UNKNOWN",
+        "MessageContent":  "[\r\n    {\r\n        \"type\":  \"text\",\r\n        \"text\":  \"\\u003ctask\\u003e\\nTEST-LEAF-B1b: Analyse et teste le validateur de téléphone dans mcp-debugging/test-data/test-b1a.py. Identifie les cas limites, propose des améliorations et documente les résultats. Termine avec attempt_completion en résumant tes analyses.\\n\\u003c/task\\u003e\"\r\n    },\r\n    {\r\n        \"type\":  \"text\",\r\n        \"text\":  \"\\u003cenvironment_details\\u003e\\n# VSCode Visible Files\\nmcp-debugging\\\\test-data\\\\test-b1a.py\\n\\n# VSCode O",
+        "IsTestTask":  true,
+        "TestPattern":  "LEAF-B1b",
+        "ParentInfo":  "",
+        "FileCount":  3,
+        "TotalSize":  215168
+    },
+    {
+        "UUID":  "e73ea764-4971-4adb-9197-52c2f8ede8ef",
+        "TaskName":  "TEST-HIERARCHY-ROOT",
+        "Mode":  "UNKNOWN",
+        "CreatedTime":  "2025-09-25T17:34:37.739Z",
+        "MessageContent":  "[\r\n    {\r\n        \"type\":  \"text\",\r\n        \"text\":  \"\\u003ctask\\u003e\\n**COLLECTE DES DONNÉES DE TEST HIÉRARCHIQUE**\\n\\nTu dois identifier et copier tous les répertoires de tâches de notre hiérarchie de test depuis AppData vers le projet MCP.\\n\\n## CONTEXTE\\nNous avons créé une hiérarchie complète de test avec les tâches suivantes qui ont TOUTES généré des fichiers JSON dans AppData :\\n\\n### Structure de la hiérarchie créée :\\n```\\nTEST-HIERARCHY-ROOT (orchestrateur) - cette tâche principale\\n├",
+        "IsTestTask":  true,
+        "TestPattern":  "HIERARCHY-ROOT/BRANCH",
+        "ParentInfo":  "",
+        "FileCount":  3,
+        "TotalSize":  1186013
+    }
+]

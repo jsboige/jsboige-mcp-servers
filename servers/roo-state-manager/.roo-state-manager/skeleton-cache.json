@@ -1,0 +1,39 @@
+{
+  "meta": {
+    "generated": "2025-10-06T17:36:09.331Z",
+    "totalTasks": 3931,
+    "hierarchyRelations": 3772,
+    "version": "post-fix-regression",
+    "buildMethod": "direct-bypass"
+  },
+  "a2cf0efb-978d-4ee4-8cfe-62264b153db2": {
+    "taskId": "a2cf0efb-978d-4ee4-8cfe-62264b153db2",
+    "instruction": "Mission 1 - validation système post-correction",
+    "workspace": "d:/dev/roo-extensions",
+    "childTaskInstructionPrefixes": [
+      "sous-tâche validation",
+      "tests systèmes"
+    ],
+    "lastActivity": "2025-10-06T17:36:09.332Z",
+    "buildMethod": "direct"
+  },
+  "a6a38ce2-74d5-4092-9323-aae0345c08ce": {
+    "taskId": "a6a38ce2-74d5-4092-9323-aae0345c08ce",
+    "instruction": "Mission 2 - validation système post-correction",
+    "workspace": "d:/dev/roo-extensions",
+    "childTaskInstructionPrefixes": [
+      "sous-tâche validation",
+      "tests systèmes"
+    ],
+    "lastActivity": "2025-10-06T17:36:09.332Z",
+    "buildMethod": "direct"
+  },
+  "d3ae12e5-9d8a-47a0-adde-56136075136f": {
+    "taskId": "d3ae12e5-9d8a-47a0-adde-56136075136f",
+    "instruction": "Mission 3 - validation système post-correction",
+    "workspace": "d:/dev/roo-extensions",
+    "childTaskInstructionPrefixes": [],
+    "lastActivity": "2025-10-06T17:36:09.332Z",
+    "buildMethod": "direct"
+  }
+}

@@ -1,0 +1,248 @@
+[build-system]
+requires = ["setuptools>=61.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "jupyter-papermill-mcp-server"
+version = "1.0.0"
+description = "A Python-based MCP server for Jupyter notebook operations using Papermill"
+authors = [
+    { name = "CoursIA Team", email = "info@coursia.dev" }
+]
+readme = "README.md"
+license = { text = "MIT" }
+requires-python = ">=3.8"
+keywords = ["jupyter", "papermill", "mcp", "notebooks", "automation"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.8",
+    "Programming Language :: Python :: 3.9",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Software Development :: Libraries :: Python Modules",
+    "Topic :: Scientific/Engineering",
+]
+
+# Core dependencies
+dependencies = [
+    # MCP Framework
+    "mcp>=1.0.0",
+    
+    # Jupyter ecosystem
+    "jupyter-client>=7.0.0",
+    "jupyter-core>=4.9.0",
+    "nbformat>=5.0.0",
+    "nbconvert>=6.0.0",
+    
+    # Papermill for notebook execution
+    "papermill>=2.4.0",
+    
+    # Configuration and validation
+    "pydantic>=2.0.0",
+    
+    # HTTP client for API calls
+    "httpx>=0.24.0",
+    
+    # Async utilities
+    "asyncio-mqtt>=0.11.0",
+    
+    # Logging and utilities
+    "structlog>=22.0.0",
+    
+    # File system operations
+    "pathlib2>=2.3.0;python_version<'3.4'",
+    
+    # JSON handling improvements
+    "orjson>=3.8.0",
+    
+    # Process management
+    "psutil>=5.9.0",
+]
+
+[project.optional-dependencies]
+# Development dependencies
+dev = [
+    "pytest>=7.0.0",
+    "pytest-asyncio>=0.21.0",
+    "pytest-cov>=4.0.0",
+    "black>=23.0.0",
+    "isort>=5.12.0",
+    "mypy>=1.0.0",
+    "flake8>=6.0.0",
+    "pre-commit>=3.0.0",
+]
+
+# Testing with real Jupyter kernels
+test-kernels = [
+    "ipykernel>=6.0.0",
+    "jupyter>=1.0.0",
+    "jupyterlab>=4.0.0",
+]
+
+# Documentation
+docs = [
+    "mkdocs>=1.4.0",
+    "mkdocs-material>=9.0.0",
+    "mkdocstrings[python]>=0.20.0",
+]
+
+# Performance monitoring
+monitoring = [
+    "prometheus-client>=0.16.0",
+    "py-spy>=0.3.14",
+]
+
+# All optional dependencies
+all = [
+    "jupyter-papermill-mcp-server[dev,test-kernels,docs,monitoring]"
+]
+
+[project.scripts]
+# Main entry point - Consolidated Architecture
+jupyter-papermill-mcp = "papermill_mcp.main:cli_main"
+
+[project.urls]
+Homepage = "https://github.com/coursia/jupyter-papermill-mcp-server"
+Documentation = "https://jupyter-papermill-mcp-server.readthedocs.io"
+Repository = "https://github.com/coursia/jupyter-papermill-mcp-server"
+"Bug Tracker" = "https://github.com/coursia/jupyter-papermill-mcp-server/issues"
+
+[tool.setuptools]
+packages = ["papermill_mcp"]
+
+[tool.setuptools.package-dir]
+papermill_mcp = "papermill_mcp"
+
+# Black code formatting
+[tool.black]
+line-length = 100
+target-version = ["py38", "py39", "py310", "py311", "py312"]
+include = '\.pyi?$'
+extend-exclude = '''
+/(
+    \.eggs
+  | \.git
+  | \.hg
+  | \.mypy_cache
+  | \.tox
+  | \.venv
+  | _build
+  | buck-out
+  | build
+  | dist
+)/
+'''
+
+# isort import sorting
+[tool.isort]
+profile = "black"
+line_length = 100
+multi_line_output = 3
+include_trailing_comma = true
+force_grid_wrap = 0
+use_parentheses = true
+ensure_newline_before_comments = true
+
+# MyPy type checking
+[tool.mypy]
+python_version = "3.8"
+warn_return_any = true
+warn_unused_configs = true
+disallow_untyped_defs = true
+disallow_incomplete_defs = true
+check_untyped_defs = true
+disallow_untyped_decorators = true
+no_implicit_optional = true
+warn_redundant_casts = true
+warn_unused_ignores = true
+warn_no_return = true
+warn_unreachable = true
+strict_equality = true
+
+[[tool.mypy.overrides]]
+module = [
+    "papermill.*",
+    "jupyter_client.*",
+    "nbformat.*",
+    "mcp.*",
+]
+ignore_missing_imports = true
+
+# Pytest configuration
+[tool.pytest.ini_options]
+minversion = "7.0"
+addopts = [
+    "--strict-markers",
+    "--strict-config",
+    "--cov=papermill_mcp",
+    "--cov-report=term-missing",
+    "--cov-report=html",
+    "--cov-report=xml",
+]
+testpaths = ["tests"]
+markers = [
+    "slow: marks tests as slow (deselect with '-m \"not slow\"')",
+    "integration: marks tests as integration tests",
+    "unit: marks tests as unit tests",
+    "kernel: marks tests that require a real Jupyter kernel",
+]
+asyncio_mode = "auto"
+
+# Coverage configuration
+[tool.coverage.run]
+branch = true
+source = ["papermill_mcp"]
+omit = [
+    "*/tests/*",
+    "*/test_*",
+    "setup.py",
+]
+
+[tool.coverage.report]
+exclude_lines = [
+    "pragma: no cover",
+    "def __repr__",
+    "if self.debug:",
+    "if settings.DEBUG",
+    "raise AssertionError",
+    "raise NotImplementedError",
+    "if 0:",
+    "if __name__ == .__main__.:",
+    "class .*\\bProtocol\\):",
+    "@(abc\\.)?abstractmethod",
+]
+
+# Flake8 linting
+[tool.flake8]
+max-line-length = 100
+extend-ignore = ["E203", "W503"]
+exclude = [
+    ".git",
+    "__pycache__",
+    ".venv",
+    "venv",
+    "build",
+    "dist",
+    "*.egg-info",
+]
+
+# Pre-commit hooks configuration
+[tool.pre-commit]
+repos = [
+    {repo = "https://github.com/pre-commit/pre-commit-hooks", rev = "v4.4.0", hooks = [
+        {id = "trailing-whitespace"},
+        {id = "end-of-file-fixer"},
+        {id = "check-yaml"},
+        {id = "check-added-large-files"},
+        {id = "check-merge-conflict"},
+    ]},
+    {repo = "https://github.com/psf/black", rev = "23.3.0", hooks = [{id = "black"}]},
+    {repo = "https://github.com/pycqa/isort", rev = "5.12.0", hooks = [{id = "isort"}]},
+    {repo = "https://github.com/pycqa/flake8", rev = "6.0.0", hooks = [{id = "flake8"}]},
+    {repo = "https://github.com/pre-commit/mirrors-mypy", rev = "v1.3.0", hooks = [{id = "mypy"}]},
+]

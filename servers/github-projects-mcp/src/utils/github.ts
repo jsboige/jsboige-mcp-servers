@@ -1,23 +1,58 @@
 import { Octokit } from '@octokit/rest';
+
+// Structure partagée
+export interface GitHubAccount {
+  owner: string;
+  token: string;
+}
+
 /**
- * Obtient un client GitHub authentifié
- * @returns Instance Octokit authentifiée
+ * Obtient un client GitHub authentifié pour un propriétaire spécifique.
+ * @param owner Le nom du propriétaire du compte GitHub à utiliser.
+ * @param accounts La liste des comptes GitHub disponibles.
+ * @returns Une instance d'Octokit authentifiée.
  */
-export function getGitHubClient(): Octokit {
-  console.log('[DEBUG] Dans getGitHubClient() - Avant récupération de GITHUB_TOKEN.');
-  const token = process.env.GITHUB_TOKEN;
-  console.log('[DEBUG] Dans getGitHubClient() - process.env.GITHUB_TOKEN:', token);
-  
-  if (!token) {
-    console.warn('AVERTISSEMENT: Token GitHub non défini. Les requêtes seront limitées et certaines fonctionnalités ne seront pas disponibles.');
+export function getGitHubClient(owner: string, accounts: GitHubAccount[]): Octokit {
+    console.log('[GP-MCP][GITHUB] Appel de getGitHubClient avec owner:', owner, 'et accounts:', JSON.stringify(accounts));
+    let token: string | undefined;
+    let account: GitHubAccount | undefined;
+
+    if (owner && typeof owner === 'string' && accounts) {
+        account = accounts.find(acc => acc.owner && acc.owner.toLowerCase() === owner.toLowerCase());
+    }
+
+    if (!account && accounts && accounts.length > 0) {
+        console.log(`[GP-MCP][GITHUB] Aucun compte trouvé pour '${owner}', utilisation du premier compte disponible.`);
+        account = accounts[0];
+    }
+    
+    if (!account) {
+        throw new Error('[GP-MCP][CONFIG_ERROR] Aucun compte GitHub n\'est configuré ou trouvé.');
+    }
+
+    token = account.token;
+
+  // Tenter de résoudre la variable d'environnement si le token est sous la forme ${env:VAR}
+  const envVarMatch = token.match(/^\${env:(.*)}$/);
+  if (envVarMatch && envVarMatch[1]) {
+    const envVarName = envVarMatch[1];
+    token = process.env[envVarName];
+    if (!token) {
+      throw new Error(`[GP-MCP][CONFIG_ERROR] La variable d'environnement '${envVarName}' spécifiée dans la configuration n'est pas définie.`);
+    }
   }
-  
-  console.log('[DEBUG] Dans getGitHubClient() - Avant initialisation Octokit.');
+
+  if (!token) {
+    throw new Error('[GP-MCP][CONFIG_ERROR] Le token GitHub est vide ou non défini après résolution.');
+  }
+
+  console.log(`[GP-MCP][GITHUB] Utilisation du token: ${token}`);
+
   return new Octokit({
     auth: token,
     userAgent: 'github-projects-mcp/0.1.0',
     timeZone: 'Europe/Paris',
-    baseUrl: 'https://api.github.com'
+    baseUrl: 'https://api.github.com',
   });
 }
 

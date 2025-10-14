@@ -10,6 +10,8 @@ import {
 import * as fs from 'fs';
 import * as path from 'path';
 import minimist from 'minimist';
+import { execa } from 'execa';
+import { on, once } from 'events';
 
 // Définir notre propre interface Tool pour le serveur
 interface JupyterTool {
@@ -41,11 +43,13 @@ import { initializeJupyterServices } from './services/jupyter.js';
 import { notebookTools } from './tools/notebook.js';
 import { kernelTools } from './tools/kernel.js';
 import { executionTools } from './tools/execution.js';
+import { serverTools } from './tools/server.js';
+import { condaTools } from './tools/conda.js';
 
 // Conversion des types
 type AllTools = JupyterTool[];
 
-class JupyterMcpServer {
+export class JupyterMcpServer {
   private server: Server;
 
   constructor() {
@@ -89,6 +93,16 @@ class JupyterMcpServer {
           name: tool.name,
           description: tool.description,
           inputSchema: tool.schema
+        })),
+        ...serverTools.map(tool => ({
+         name: tool.name,
+         description: tool.description,
+         inputSchema: tool.schema
+       })),
+        ...condaTools.map(tool => ({
+          name: tool.name,
+          description: tool.description,
+          inputSchema: tool.schema
         }))
       ];
       
@@ -96,36 +110,38 @@ class JupyterMcpServer {
     });
 
     // Gérer les appels d'outils
-    this.server.setRequestHandler(CallToolRequestSchema, async (request) => {
-      const toolName = request.params.name;
-      const args = request.params.arguments;
-      
-      // Trouver l'outil correspondant
-      const allTools = [...notebookTools, ...kernelTools, ...executionTools] as JupyterTool[];
-      const tool = allTools.find(t => t.name === toolName) as JupyterTool;
-      
-      if (!tool) {
-        throw new McpError(
-          ErrorCode.MethodNotFound,
-          `Outil inconnu: ${toolName}`
-        );
+    this.server.setRequestHandler(CallToolRequestSchema, this.handleCallTool.bind(this));
+  }
+
+  public async handleCallTool(request: { params: { name: string; arguments: any; }; }) {
+    const toolName = request.params.name;
+    const args = request.params.arguments;
+    
+    // Trouver l'outil correspondant
+    const allTools = [...notebookTools, ...kernelTools, ...executionTools, ...serverTools, ...condaTools] as JupyterTool[];
+    const tool = allTools.find(t => t.name === toolName) as JupyterTool;
+    
+    if (!tool) {
+      throw new McpError(
+        ErrorCode.MethodNotFound,
+        `Outil inconnu: ${toolName}`
+      );
+    }
+    
+    try {
+      // Exécuter le handler de l'outil
+      if (!tool.handler) {
+        throw new Error(`L'outil ${toolName} n'a pas de handler défini`);
       }
-      
-      try {
-        // Exécuter le handler de l'outil
-        if (!tool.handler) {
-          throw new Error(`L'outil ${toolName} n'a pas de handler défini`);
-        }
-        const result = await tool.handler(args);
-        return result;
-      } catch (error: any) {
-        console.error(`Erreur lors de l'exécution de l'outil ${toolName}:`, error);
-        throw new McpError(
-          ErrorCode.InternalError,
-          `Erreur lors de l'exécution de l'outil: ${error.message}`
-        );
-      }
-    });
+      const result = await tool.handler(args);
+      return result;
+    } catch (error: any) {
+      console.error(`Erreur lors de l'exécution de l'outil ${toolName}:`, error);
+      throw new McpError(
+        ErrorCode.InternalError,
+        `Erreur lors de l'exécution de l'outil: ${error.message}`
+      );
+    }
   }
 
   /**
@@ -225,15 +241,12 @@ Variables d'environnement:
         console.log('Utilisation des valeurs par défaut');
       }
       
-      // Priorité des paramètres: ligne de commande > variables d'environnement > fichier de configuration
-      const baseUrl = options.url ||
-                      process.env.JUPYTER_SERVER_URL ||
-                      config.jupyterServer.baseUrl;
-      
-      const token = options.token ||
-                    process.env.JUPYTER_SERVER_TOKEN ||
-                    config.jupyterServer.token;
-      
+      let baseUrl = config.jupyterServer.baseUrl;
+      let token = config.jupyterServer.token;
+
+      // Priorité des paramètres: (1) ligne de commande, (2) variables d'environnement, (3) fichier de configuration
+      baseUrl = options.url || process.env.JUPYTER_SERVER_URL || config.jupyterServer.baseUrl;
+      token = options.token || process.env.JUPYTER_SERVER_TOKEN || config.jupyterServer.token;
       // Vérifier si le mode hors ligne est activé
       const skipConnectionCheck = options.offline ||
                                  options.skipConnectionCheck ||
@@ -252,19 +265,28 @@ Variables d'environnement:
         }
       }
       
-      // Initialiser les services Jupyter avec la configuration
-      await initializeJupyterServices({
-        baseUrl: baseUrl,
-        token: token,
-        skipConnectionCheck: skipConnectionCheck
-      });
-      console.log('Services Jupyter initialisés avec succès');
+      // L'initialisation des services Jupyter est maintenant gérée par l'outil start_jupyter_server
+      // pour éviter les erreurs de connexion au démarrage.
+      // try {
+      //   await initializeJupyterServices({
+      //     baseUrl: baseUrl,
+      //     token: token,
+      //     skipConnectionCheck: skipConnectionCheck
+      //   });
+      //   if (!skipConnectionCheck) {
+      //     console.log('Services Jupyter initialisés avec succès');
+      //   }
+      // } catch (initError) {
+      //   console.warn('AVERTISSEMENT: Échec de l\'initialisation des services Jupyter. Le serveur démarre en mode dégradé.');
+      //   console.warn('Les outils nécessitant un serveur Jupyter ne fonctionneront pas.');
+      //   // Ne propagez pas l'erreur, permettez au serveur de démarrer
+      // }
       
       const transport = new StdioServerTransport();
       await this.server.connect(transport);
       console.log('Serveur MCP Jupyter démarré avec succès sur stdio');
     } catch (error) {
-      console.error('Erreur lors du démarrage du serveur MCP Jupyter:', error);
+      console.error('Erreur fatale lors du démarrage du serveur MCP Jupyter:', error);
       process.exit(1);
     }
   }

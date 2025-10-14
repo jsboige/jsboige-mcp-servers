@@ -1,159 +1,323 @@
 /**
  * Types pour la gestion des conversations et du stockage Roo
- * Basés sur les découvertes du stockage Roo existant
  */
 
-// Types pour les messages API (format Anthropic)
-export interface ApiMessage {
-  role: 'user' | 'assistant';
-  content: string | Array<{
-    type: 'text' | 'image';
-    text?: string;
-    source?: {
-      type: 'base64';
-      media_type: string;
-      data: string;
-    };
-  }>;
-  timestamp?: string;
-}
+import { IndexingState } from './indexing.js';
 
-export interface ApiConversationHistory {
-  messages: ApiMessage[];
-  model?: string;
-  max_tokens?: number;
-  temperature?: number;
-}
-
-// Types pour les messages UI (ClineMessage)
-export interface ClineMessage {
-  id: string;
-  type: 'ask' | 'say' | 'completion_result' | 'tool_use' | 'tool_result';
-  text?: string;
-  tool?: string;
-  toolInput?: any;
-  toolResult?: any;
-  timestamp: string;
-  isError?: boolean;
-}
-
-export interface UiMessages {
-  messages: ClineMessage[];
-}
-
-// Types pour les métadonnées de tâche
-export interface TaskMetadata {
-  taskId: string;
-  createdAt: string;
-  updatedAt: string;
-  title?: string;
-  description?: string;
-  mode?: string;
-  status: 'active' | 'completed' | 'archived';
-  totalMessages: number;
-  totalTokens?: number;
-  cost?: number;
-  files_in_context?: FileInContext[];
-}
-
-// Type pour les fichiers dans le contexte
 export interface FileInContext {
-  path: string;
-  record_state: 'active' | 'stale';
-  record_source: 'read_tool' | 'roo_edited' | 'user_edited';
-  lastRead?: string;
-  lastModified?: string;
-  size?: number;
+    path: string;
+    content: string;
+    lineCount: number;
 }
 
-// Types pour l'historique global des tâches
-export interface TaskHistoryEntry {
-  id: string;
+/**
+ * Représente une métadonnée d'action de taille fixe pour remplacer les sorties complètes.
+ */
+export interface ActionMetadata {
+  type: 'tool' | 'command';
   name: string;
-  createdAt: string;
-  isRunning: boolean;
-  totalCost: number;
+  parameters: Record<string, any>;
+  status: 'success' | 'failure' | 'in_progress';
+  timestamp: string;
+  line_count?: number;
+  content_size?: number;
+  file_path?: string;
 }
 
-export interface GlobalTaskHistory {
-  tasks: TaskHistoryEntry[];
+/**
+ * Représente un message tronqué dans le squelette de la conversation.
+ */
+export interface MessageSkeleton {
+  role: 'user' | 'assistant';
+  content: string;
+  timestamp: string;
+  isTruncated: boolean;
 }
 
-// Types pour la détection du stockage Roo
-export interface RooStorageLocation {
-  globalStoragePath: string;
-  tasksPath: string;
-  settingsPath: string;
-  exists: boolean;
+/**
+ * Nouvelle représentation "squelette" d'une conversation, optimisée pour la mémoire.
+ */
+export interface ConversationSkeleton {
+   taskId: string;
+   parentTaskId?: string;
+   metadata: {
+     title?: string;
+     lastActivity: string;
+     createdAt: string;
+     mode?: string;
+     messageCount: number;
+     actionCount: number;
+     totalSize: number; // Taille totale de la conversation sur le disque
+      workspace?: string;
+      qdrantIndexedAt?: string; // DEPRECATED - utiliser indexingState.lastIndexedAt
+      dataSource?: string; // Source des données pour le debug
+      // NOUVEAU : État complet d'indexation avec mécanisme d'idempotence
+      indexingState?: IndexingState;
+    };
+   // Une séquence combinée et ordonnée de messages et d'actions.
+   sequence: (MessageSkeleton | ActionMetadata)[];
+   // Préfixes des instructions de création de sous-tâches (pour radix-tree)
+   childTaskInstructionPrefixes?: string[]; // Tronqués à 200 caractères max
+   // Nouveau : Indique si la tâche est terminée (détectée via attempt_completion)
+   isCompleted?: boolean;
+   // Nouveau : Instruction de la tâche tronquée à 200 caractères depuis le premier message utilisateur
+   truncatedInstruction?: string;
 }
 
+// Représente les métadonnées complètes d'une tâche.
+export interface TaskMetadata {
+    parentTaskId?: string; // camelCase est la nouvelle norme
+    parent_task_id?: string; // snake_case pour la rétrocompatibilité
+    rootTaskId?: string;
+    prompt?: {
+        task: string;
+    };
+    title?: string;
+    lastActivity?: string;
+    createdAt?: string;
+    mode?: string;
+    files_in_context?: FileInContext[];
+    workspace?: string;
+}
+
+// Représente une conversation complète avec toutes les données pour l'analyse.
+/** @deprecated */
 export interface ConversationSummary {
-  taskId: string;
-  path: string;
-  metadata: TaskMetadata | null;
-  messageCount: number;
-  lastActivity: string;
-  hasApiHistory: boolean;
-  hasUiMessages: boolean;
-  size: number; // taille en octets
+    // Fields from the old ConversationSkeleton to maintain compatibility during transition
+    taskId: string;
+    parentTaskId?: string;
+    prompt: string;
+    lastActivity: string;
+    messageCount: number;
+    size: number;
+    hasApiHistory: boolean;
+    hasUiMessages: boolean;
+    mode?: string;
+
+    // Fields specific to ConversationSummary
+    path: string;
+    metadata: TaskMetadata;
+}
+
+
+// Interfaces pour le stockage, non directement utilisées dans le cache principal
+export interface RooStorageLocation {
+    path: string;
+    type: 'local' | 'cloud';
 }
 
 export interface RooStorageDetectionResult {
-  found: boolean;
-  locations: RooStorageLocation[];
-  conversations: ConversationSummary[];
-  totalConversations: number;
-  totalSize: number;
-  errors: string[];
+    locations: RooStorageLocation[];
 }
 
-// Types pour les configurations Roo
-export interface RooSettings {
-  apiKey?: string;
-  model?: string;
-  maxTokens?: number;
-  temperature?: number;
-  customInstructions?: string;
-  [key: string]: any;
+export interface StorageStats {
+    conversationCount: number;
+    totalSize: number;
+    fileTypes: Record<string, number>;
 }
 
-export interface RooConfiguration {
-  settings: RooSettings;
-  modes?: any[];
-  servers?: any[];
+/**
+ * Options étendues pour la génération de résumés de grappes de tâches
+ */
+export interface ClusterSummaryOptions {
+    // Options héritées des résumés standards
+    detailLevel?: 'Full' | 'NoTools' | 'NoResults' | 'Messages' | 'Summary' | 'UserOnly';
+    truncationChars?: number;
+    compactStats?: boolean;
+    includeCss?: boolean;
+    generateToc?: boolean;
+    outputFormat?: 'markdown' | 'html';
+    
+    // Mode de génération de grappe
+    clusterMode?: 'aggregated' | 'detailed' | 'comparative';
+    
+    // Inclusion des statistiques de grappe
+    includeClusterStats?: boolean;
+    
+    // Analyse cross-task des patterns communs
+    crossTaskAnalysis?: boolean;
+    
+    // Profondeur maximale de la hiérarchie à inclure
+    maxClusterDepth?: number;
+    
+    // Tri des tâches dans la grappe
+    clusterSortBy?: 'chronological' | 'size' | 'activity' | 'alphabetical';
+    
+    // Inclusion d'une timeline unifiée
+    includeClusterTimeline?: boolean;
+    
+    // Seuil de troncature spécifique aux grappes
+    clusterTruncationChars?: number;
+    
+    // Affichage des relations inter-tâches
+    showTaskRelationships?: boolean;
+    
+    // Range processing: optional start and end indices for message filtering
+    startIndex?: number;
+    endIndex?: number;
 }
 
-// Types pour les opérations de sauvegarde/restauration
-export interface BackupMetadata {
-  version: string;
-  createdAt: string;
-  source: string;
-  conversationCount: number;
-  totalSize: number;
+/**
+ * Statistiques étendues pour les grappes de tâches
+ */
+export interface ClusterSummaryStatistics {
+    // Statistiques de base (héritées)
+    totalSections: number;
+    userMessages: number;
+    assistantMessages: number;
+    toolResults: number;
+    userContentSize: number;
+    assistantContentSize: number;
+    toolResultsSize: number;
+    totalContentSize: number;
+    userPercentage: number;
+    assistantPercentage: number;
+    toolResultsPercentage: number;
+    compressionRatio?: number;
+    
+    // Métriques spécifiques aux grappes
+    totalTasks: number;
+    clusterDepth: number;
+    averageTaskSize: number;
+    
+    // Distribution des tâches
+    taskDistribution: {
+        byMode: Record<string, number>;
+        bySize: { small: number; medium: number; large: number };
+        byActivity: Record<string, number>;
+    };
+    
+    // Métriques temporelles
+    clusterTimeSpan: {
+        startTime: string;
+        endTime: string;
+        totalDurationHours: number;
+    };
+    
+    // Métriques de contenu agrégées
+    clusterContentStats: {
+        totalUserMessages: number;
+        totalAssistantMessages: number;
+        totalToolResults: number;
+        totalContentSize: number;
+        averageMessagesPerTask: number;
+    };
+    
+    // Analyse des patterns
+    commonPatterns?: {
+        frequentTools: Record<string, number>;
+        commonModes: Record<string, number>;
+        crossTaskTopics: string[];
+    };
 }
 
-export interface ConversationBackup {
-  metadata: BackupMetadata;
-  conversations: ConversationSummary[];
-  configurations: RooConfiguration;
+/**
+ * Structure pour les instructions new_task extraites des ui_messages.json
+ * Utilisée pour la reconstruction des hiérarchies de tâches
+ */
+export interface NewTaskInstruction {
+    timestamp: number;
+    mode: string;
+    message: string;
+    taskId?: string; // si identifiable dans le contexte
 }
+
+/**
+ * Résultat de génération de résumé de grappe
+ */
+export interface ClusterSummaryResult {
+    // Propriétés héritées
+    success: boolean;
+    content: string;
+    statistics: ClusterSummaryStatistics;
+    error?: string;
+    
+    // Métadonnées spécifiques aux grappes
+    clusterMetadata: {
+        rootTaskId: string;
+        totalTasks: number;
+        clusterMode: string;
+        generationTimestamp: string;
+    };
+    
+    // Index des tâches incluses
+    taskIndex: {
+        taskId: string;
+        title: string;
+        order: number;
+        size: number;
+    }[];
+    
+    // Format et taille
+    format: string;
+    size: number;
+}
+
+/**
+ * Structure d'organisation des tâches dans une grappe
+ */
+export interface OrganizedClusterTasks {
+    rootTask: ConversationSkeleton;
+    allTasks: ConversationSkeleton[];
+    sortedTasks: ConversationSkeleton[];
+    taskHierarchy: Map<string, ConversationSkeleton[]>;
+    taskOrder: string[];
+}
+
+/**
+ * Contenu classifié au niveau de la grappe
+ */
+export interface ClassifiedClusterContent {
+    aggregatedContent: ClusterClassifiedContent[];
+    perTaskContent: Map<string, ClusterClassifiedContent[]>;
+    crossTaskPatterns: CrossTaskPattern[];
+}
+
+/**
+ * Pattern identifié à travers plusieurs tâches
+ */
+export interface CrossTaskPattern {
+    pattern: string;
+    frequency: number;
+    taskIds: string[];
+    category: 'tool' | 'mode' | 'topic' | 'interaction';
+}
+
+/**
+ * Classification de contenu pour les grappes (référence au type du service)
+ */
+export interface ClusterClassifiedContent {
+    type: 'User' | 'Assistant';
+    subType: 'UserMessage' | 'ToolResult' | 'ToolCall' | 'Completion' | 'ErrorMessage' | 'ContextCondensation' | 'NewInstructions';
+    content: string;
+    index: number;
+    toolType?: string;
+    resultType?: string;
+}
+
+export interface StorageStats {
+    conversationCount: number;
+    totalSize: number;
+    fileTypes: Record<string, number>;
+}
+
 
 // Types d'erreur spécifiques
 export class RooStorageError extends Error {
-  constructor(message: string, public code: string) {
-    super(message);
-    this.name = 'RooStorageError';
-  }
+    constructor(message: string, public code: string) {
+        super(message);
+        this.name = 'RooStorageError';
+    }
 }
 
 export class ConversationNotFoundError extends RooStorageError {
-  constructor(taskId: string) {
-    super(`Conversation with taskId ${taskId} not found`, 'CONVERSATION_NOT_FOUND');
-  }
+    constructor(taskId: string) {
+        super(`Conversation with taskId ${taskId} not found`, 'CONVERSATION_NOT_FOUND');
+    }
 }
 
 export class InvalidStoragePathError extends RooStorageError {
-  constructor(path: string) {
-    super(`Invalid storage path: ${path}`, 'INVALID_STORAGE_PATH');
-  }
+    constructor(path: string) {
+        super(`Invalid storage path: ${path}`, 'INVALID_STORAGE_PATH');
+    }
 }

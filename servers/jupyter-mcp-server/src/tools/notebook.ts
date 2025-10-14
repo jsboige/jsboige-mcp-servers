@@ -299,7 +299,12 @@ export const notebookTools: Tool[] = [
     schema: addCellSchema,
     handler: async ({ path, cell_type, source, metadata = {} }) => {
       try {
-        const notebook = await readNotebookFile(path);
+        let notebook: nbformat.INotebookContent;
+        try {
+          notebook = await readNotebookFile(path);
+        } catch (error) {
+          notebook = createEmptyNotebook();
+        }
         const updatedNotebook = addCell(notebook, cell_type as any, source, metadata);
         await writeNotebookFile(path, updatedNotebook);
         return {

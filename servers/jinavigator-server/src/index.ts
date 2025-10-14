@@ -18,7 +18,6 @@ import {
   ErrorCode,
   ListToolsRequestSchema,
   McpError,
-  Tool,
 } from '@modelcontextprotocol/sdk/types.js';
 import axios from 'axios';
 
@@ -58,7 +57,10 @@ interface ToolOutput {
  * @extends Tool
  * @property {Function} execute - Fonction d'exécution de l'outil
  */
-interface JinaTool extends Tool {
+interface JinaTool {
+  name: string;
+  description: string;
+  inputSchema: object;
   execute: (input: ToolInput) => Promise<ToolOutput>;
 }
 
@@ -269,7 +271,11 @@ async function convertUrlToMarkdown(url: string, startLine?: number, endLine?: n
     const jinaUrl = `https://r.jina.ai/${url}`;
     
     // Appel à l'API Jina
-    const response = await axios.get(jinaUrl);
+    const response = await axios.get(jinaUrl, {
+      headers: {
+        'Accept': 'text/markdown'
+      }
+    });
     
     // Récupération du contenu Markdown
     let markdownContent = response.data;
@@ -717,6 +723,8 @@ async function run() {
     const transport = new StdioServerTransport();
     await server.connect(transport);
     console.log('Serveur MCP Jinavigator démarré avec succès sur stdio');
+    // Keep the process alive
+    setInterval(() => {}, 1 << 30);
   } catch (error) {
     console.error('Erreur lors du démarrage du serveur MCP Jinavigator:', error);
     process.exit(1);
@@ -724,3 +732,5 @@ async function run() {
 }
 
 run().catch(console.error);
+
+// Keep the process alive
