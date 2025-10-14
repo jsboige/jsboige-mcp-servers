@@ -55,7 +55,7 @@ function handleViewConversationTreeExecution(
     args: ViewConversationTreeArgs,
     conversationCache: Map<string, ConversationSkeleton>
 ): CallToolResult {
-    const { view_mode = 'chain', detail_level = 'skeleton', max_output_length = 300000 } = args;
+    const { view_mode = 'chain', detail_level = 'skeleton', max_output_length = 300000, current_task_id } = args;
     let { truncate = 0 } = args;
     
     // Gestion intelligente de truncate selon detail_level si non spécifié explicitement
@@ -93,6 +93,11 @@ function handleViewConversationTreeExecution(
     const skeletons = Array.from(conversationCache.values());
     const skeletonMap = new Map(skeletons.map(s => [s.taskId, s]));
 
+    // 🎯 DÉTECTION TÂCHE ACTUELLE : Utiliser current_task_id si fourni, sinon ne rien marquer
+    // Note: L'auto-détection par lastActivity est peu fiable car la tâche en cours d'exécution
+    // n'a pas encore son timestamp mis à jour. Pour une détection fiable, passer current_task_id.
+    const currentTaskId: string | null = current_task_id || null;
+
     const getTaskChain = (startTaskId: string): ConversationSkeleton[] => {
         const chain: ConversationSkeleton[] = [];
         let currentId: string | undefined = startTaskId;
@@ -109,7 +114,12 @@ function handleViewConversationTreeExecution(
     };
 
     const formatTask = (skeleton: ConversationSkeleton, indent: string): string => {
-        let output = `${indent}▶️ Task: ${skeleton.metadata.title || skeleton.taskId} (ID: ${skeleton.taskId})\n`;
+        // 🎯 Marquer la tâche actuelle - Comparer les 8 premiers caractères (UUIDs courts)
+        const nodeShortId = (skeleton.taskId || '').substring(0, 8);
+        const currentShortId = (currentTaskId || '').substring(0, 8);
+        const currentMarker = (nodeShortId === currentShortId && currentShortId) ? ' (TÂCHE ACTUELLE)' : '';
+        
+        let output = `${indent}▶️ Task: ${skeleton.metadata.title || skeleton.taskId} (ID: ${skeleton.taskId})${currentMarker}\n`;
         output += `${indent}  Parent: ${skeleton.parentTaskId || 'None'}\n`;
         output += `${indent}  Messages: ${skeleton.metadata.messageCount}\n`;
         
@@ -208,10 +218,10 @@ function handleViewConversationTreeExecution(
     // 🎯 POINT D'AIGUILLAGE : Smart Truncation vs Legacy
     if (args.smart_truncation === true) {
         // ✨ NOUVEAU : Algorithme de troncature intelligente avec gradient
-        return handleSmartTruncation(tasksToDisplay, args, view_mode, detail_level, max_output_length);
+        return handleSmartTruncation(tasksToDisplay, args, view_mode, detail_level, max_output_length, currentTaskId);
     } else {
         // 🔄 LEGACY : Comportement original préservé (par défaut)
-        return handleLegacyTruncation(tasksToDisplay, args, view_mode, detail_level, max_output_length, truncate);
+        return handleLegacyTruncation(tasksToDisplay, args, view_mode, detail_level, max_output_length, truncate, currentTaskId);
     }
 }
 
@@ -224,7 +234,8 @@ function handleLegacyTruncation(
     view_mode: string,
     detail_level: string,
     max_output_length: number,
-    truncate: number
+    truncate: number,
+    currentTaskId: string | null
 ): CallToolResult {
     // Logique intelligente de troncature ORIGINALE
     // Utilisation du SizeCalculator du module smart-truncation pour cohérence
@@ -240,7 +251,7 @@ function handleLegacyTruncation(
         return sum + taskSize;
     }, 0);
     
-    const formatTask = createFormatTaskFunction(detail_level, truncate);
+    const formatTask = createFormatTaskFunction(detail_level, truncate, currentTaskId);
     
     // Logique intelligente de troncature basée sur detail_level (ORIGINALE)
     if (detail_level !== 'full' && truncate === 0 && estimatedSize > max_output_length) {
@@ -272,7 +283,8 @@ function handleSmartTruncation(
     args: ViewConversationTreeArgs,
     view_mode: string,
     detail_level: string,
-    max_output_length: number
+    max_output_length: number,
+    currentTaskId: string | null
 ): CallToolResult {
     try {
         // Configuration avec overrides utilisateur
@@ -301,7 +313,7 @@ function handleSmartTruncation(
         );
         
         // Formatage des tâches (réutilise la fonction existante)
-        const formatTask = createFormatTaskFunction(detail_level, 0); // Troncature géré par smart system
+        const formatTask = createFormatTaskFunction(detail_level, 0, currentTaskId); // Troncature géré par smart system
         truncatedTasks.forEach((task, index) => {
             const indent = '  '.repeat(index);
             formattedOutput += formatTask(task, indent);
@@ -329,9 +341,14 @@ function handleSmartTruncation(
 /**
  * Factory pour créer la fonction formatTask (extraction pour réutilisation)
  */
-function createFormatTaskFunction(detail_level: string, truncate: number): (skeleton: ConversationSkeleton, indent: string) => string {
+function createFormatTaskFunction(detail_level: string, truncate: number, currentTaskId: string | null): (skeleton: ConversationSkeleton, indent: string) => string {
     return (skeleton: ConversationSkeleton, indent: string): string => {
-        let output = `${indent}▶️ Task: ${skeleton.metadata.title || skeleton.taskId} (ID: ${skeleton.taskId})\n`;
+        // 🎯 Marquer la tâche actuelle - Comparer les 8 premiers caractères (UUIDs courts)
+        const nodeShortId = (skeleton.taskId || '').substring(0, 8);
+        const currentShortId = (currentTaskId || '').substring(0, 8);
+        const currentMarker = (nodeShortId === currentShortId && currentShortId) ? ' (TÂCHE ACTUELLE)' : '';
+        
+        let output = `${indent}▶️ Task: ${skeleton.metadata.title || skeleton.taskId} (ID: ${skeleton.taskId})${currentMarker}\n`;
         output += `${indent}  Parent: ${skeleton.parentTaskId || 'None'}\n`;
         output += `${indent}  Messages: ${skeleton.metadata.messageCount}\n`;
         
@@ -391,6 +408,7 @@ export const viewConversationTree = {
         properties: {
             task_id: { type: 'string', description: 'L\'ID de la tâche de départ. Si non fourni, workspace devient obligatoire.' },
             workspace: { type: 'string', description: 'Chemin du workspace pour trouver la tâche la plus récente. Obligatoire si task_id non fourni.' },
+            current_task_id: { type: 'string', description: 'ID de la tâche en cours d\'exécution pour marquage explicite comme "(TÂCHE ACTUELLE)". Si omis, aucune tâche ne sera marquée.' },
             view_mode: { type: 'string', enum: ['single', 'chain', 'cluster'], default: 'chain', description: 'Le mode d\'affichage.' },
             detail_level: { type: 'string', enum: ['skeleton', 'summary', 'full'], default: 'skeleton', description: 'Niveau de détail: skeleton (métadonnées seulement), summary (résumé), full (complet).' },
             truncate: { type: 'number', default: 0, description: 'Nombre de lignes à conserver au début et à la fin de chaque message. 0 pour vue complète (défaut intelligent).' },

@@ -10,7 +10,7 @@
  * Résultat : Relations détectées passent de 0 à 2+ (objectif atteint)
  */
 
-import { expect } from '@jest/globals';
+import { expect } from 'vitest';
 import { TaskInstructionIndex } from '../../src/utils/task-instruction-index.js';
 import { extractSubInstructions } from '../../src/utils/sub-instruction-extractor.js';
 

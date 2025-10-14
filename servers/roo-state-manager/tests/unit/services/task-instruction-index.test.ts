@@ -3,7 +3,7 @@
  * Valide le fonctionnement du radix-tree et de la recherche par similarité
  */
 
-import { describe, it, expect, beforeEach, afterEach, jest } from '@jest/globals';
+import {  describe, it, expect, beforeEach, afterEach, jest , vi } from 'vitest';
 import { TaskInstructionIndex, computeInstructionPrefix } from '../../../src/utils/task-instruction-index.js';
 import type { NewTaskInstruction } from '../../../src/types/conversation.js';
 
@@ -441,7 +441,7 @@ describe('TaskInstructionIndex', () => {
     describe('testSimilarityAlgorithm', () => {
         it('should validate similarity algorithm with test cases', () => {
             // Capture console.log output
-            const consoleSpy = jest.spyOn(console, 'log').mockImplementation(() => {});
+            const consoleSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
             
             index.testSimilarityAlgorithm();
             
@@ -503,7 +503,7 @@ describe('TaskInstructionIndex', () => {
 
     describe('Deprecated methods', () => {
         it('should warn when using findPotentialParent', () => {
-            const consoleSpy = jest.spyOn(console, 'warn').mockImplementation(() => {});
+            const consoleSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
             
             const result = index.findPotentialParent('test');
             
@@ -514,7 +514,7 @@ describe('TaskInstructionIndex', () => {
         });
 
         it('should warn when using findAllPotentialParents', () => {
-            const consoleSpy = jest.spyOn(console, 'warn').mockImplementation(() => {});
+            const consoleSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
             
             const results = index.findAllPotentialParents('test');
             

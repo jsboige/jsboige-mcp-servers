@@ -16,6 +16,13 @@ export interface ExportTaskTreeMarkdownArgs {
 }
 
 /**
+ * Interface pour passer le cache de conversations
+ */
+interface ConversationCacheProvider {
+    conversationCache: Map<string, ConversationSkeleton>;
+}
+
+/**
  * Définition de l'outil export_task_tree_markdown
  */
 export const exportTaskTreeMarkdownTool = {
@@ -53,7 +60,8 @@ export const exportTaskTreeMarkdownTool = {
 export async function handleExportTaskTreeMarkdown(
     args: ExportTaskTreeMarkdownArgs,
     handleGetTaskTree: (args: any) => Promise<CallToolResult>,
-    ensureSkeletonCacheIsFresh: () => Promise<void>
+    ensureSkeletonCacheIsFresh: () => Promise<void>,
+    conversationCache?: Map<string, ConversationSkeleton>
 ): Promise<CallToolResult> {
     try {
         const { conversation_id, filePath, max_depth, include_siblings = true } = args;
@@ -84,6 +92,31 @@ export async function handleExportTaskTreeMarkdown(
         }
         const treeData = JSON.parse(textContent);
 
+        // 🎯 AUTO-DÉTECTION TÂCHE ACTUELLE : Trouver la tâche la plus récente du workspace
+        let currentTaskId: string | null = null;
+        
+        if (conversationCache && conversationCache.size > 0) {
+            // Obtenir le workspace depuis la tâche racine
+            const mainTask = conversationCache.get(conversation_id);
+            const targetWorkspace = mainTask?.metadata?.workspace;
+            
+            if (targetWorkspace) {
+                // Filtrer toutes les tâches du même workspace ayant une lastActivity
+                const workspaceTasks = Array.from(conversationCache.values())
+                    .filter(s => s.metadata?.workspace === targetWorkspace && s.metadata?.lastActivity);
+                
+                if (workspaceTasks.length > 0) {
+                    // Trouver la tâche avec la date d'activité la plus récente
+                    const mostRecentTask = workspaceTasks.reduce((latest, current) => {
+                        const latestDate = new Date(latest.metadata.lastActivity);
+                        const currentDate = new Date(current.metadata.lastActivity);
+                        return currentDate > latestDate ? current : latest;
+                    });
+                    currentTaskId = mostRecentTask.taskId;
+                }
+            }
+        }
+
         // Fonction récursive pour formatter l'arbre en Markdown
         const formatNodeToMarkdown = (node: any, depth: number = 0): string => {
             let markdown = '';
@@ -92,8 +125,13 @@ export async function handleExportTaskTreeMarkdown(
             const status = node.metadata?.isCompleted ? 'Completed' : 'In Progress';
             const instruction = node.metadata?.truncatedInstruction || 'No instruction available';
             
+            // 🎯 Marquer la tâche actuelle - Comparer les 8 premiers caractères (UUIDs courts)
+            const nodeShortId = (node.taskId || '').substring(0, 8);
+            const currentShortId = (currentTaskId || '').substring(0, 8);
+            const currentMarker = (nodeShortId === currentShortId && currentShortId) ? ' (TÂCHE ACTUELLE)' : '';
+            
             // Titre principal avec ID court et statut
-            markdown += `${indent} ${node.title || 'Task'} (${shortId})\n`;
+            markdown += `${indent} ${node.title || 'Task'} (${shortId})${currentMarker}\n`;
             markdown += `**Status:** ${status}\n`;
             markdown += `**Instruction:** ${instruction}\n`;
             

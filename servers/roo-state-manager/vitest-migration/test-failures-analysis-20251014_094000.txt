@@ -1,0 +1,51 @@
+ANALYSE DES ÉCHECS DE TESTS VITEST
+===================================
+Date: 2025-10-14 09:40:01
+Rapport de validation analysé: validation-20251014_093549.txt
+
+1. MODULES MANQUANTS
+───────────────────────────────────────
+  • ../../src/services/task-navigator.js
+  • ../../../src/utils/hierarchy-reconstruction-engine.js
+  • ../src/utils/task-tree-builder.js
+  • mock-fs
+  • ../src/utils/hierarchy-reconstruction-engine.js
+
+
+2. IMPORTS AVEC EXTENSIONS INCORRECTES
+───────────────────────────────────────
+  • ../../src/services/task-navigator.js
+  • ../../../src/utils/hierarchy-reconstruction-engine.js
+  • ../src/utils/task-tree-builder.js
+  • ../src/utils/hierarchy-reconstruction-engine.js
+
+
+3. STATISTIQUES
+───────────────────────────────────────
+Fichiers de tests:
+  • Échoués: 
+  • Réussis: 
+  • Taux de réussite: %
+
+Tests individuels:
+  • Échoués: 
+  • Réussis: 
+  • Taux de réussite: %
+
+4. RECOMMANDATIONS
+───────────────────────────────────────
+⚠️  MODULES MANQUANTS:
+   Les modules suivants doivent être installés:
+   npm install --save-dev ../../src/services/task-navigator.js ../../../src/utils/hierarchy-reconstruction-engine.js ../src/utils/task-tree-builder.js mock-fs ../src/utils/hierarchy-reconstruction-engine.js
+
+⚠️  IMPORTS INCORRECTS:
+   Les imports utilisent l'extension .js au lieu de .ts
+   Ceci est correct pour ESM TypeScript - les imports doivent
+   utiliser .js même si les fichiers sources sont .ts
+   
+   Vérifiez que les fichiers sources .ts existent bien.
+
+⚠️  TAUX DE RÉUSSITE FAIBLE:
+   Moins de 80% des tests passent. Une révision approfondie
+   est nécessaire avant de considérer la migration comme terminée.
+

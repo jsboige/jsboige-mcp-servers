@@ -3,19 +3,19 @@
  * Valide le fonctionnement du système en deux passes
  */
 
-import { describe, it, expect, beforeEach, afterEach, jest } from '@jest/globals';
+import {  describe, it, expect, beforeEach, afterEach, jest , vi } from 'vitest';
 
 // Mock fs AVANT tous les autres imports pour ES modules
 const mockedFs = {
-    existsSync: jest.fn(),
-    readFileSync: jest.fn(),
-    statSync: jest.fn(),
-    mkdirSync: jest.fn(),
-    writeFileSync: jest.fn()
+    existsSync: vi.fn(),
+    readFileSync: vi.fn(),
+    statSync: vi.fn(),
+    mkdirSync: vi.fn(),
+    writeFileSync: vi.fn()
 };
 
 // Mock fs avec ES modules - DOIT être avant les imports qui utilisent fs
-jest.unstable_mockModule('fs', () => mockedFs);
+vi.unstable_mockModule('fs', () => mockedFs);
 
 import * as path from 'path';
 import * as os from 'os';
@@ -53,12 +53,12 @@ describe('HierarchyReconstructionEngine', () => {
         });
 
         // Clear all mocks
-        jest.clearAllMocks();
+        vi.clearAllMocks();
     });
 
     afterEach(() => {
         // Nettoyer les mocks
-        jest.restoreAllMocks();
+        vi.restoreAllMocks();
     });
 
     describe('Phase 1 - Extraction et indexation', () => {

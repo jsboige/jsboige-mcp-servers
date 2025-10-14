@@ -1,13 +1,13 @@
-import { jest, describe, it, expect, beforeEach, afterEach } from '@jest/globals';
+import {  jest, describe, it, expect, beforeEach, afterEach , vi } from 'vitest';
 import mock from 'mock-fs';
 import { RooStateManagerServer } from '../../../src/index.js';
 import path from 'path';
 import fs from 'fs/promises';
 
 // Mock RooStorageDetector pour contrôler les chemins de stockage
-jest.mock('../../../src/utils/roo-storage-detector.js', () => ({
+vi.mock('../../../src/utils/roo-storage-detector.js', () => ({
     RooStorageDetector: {
-        detectStorageLocations: jest.fn(),
+        detectStorageLocations: vi.fn(),
     },
 }));
 import { RooStorageDetector } from '../../../src/utils/roo-storage-detector.js';
@@ -21,7 +21,7 @@ describe('BOM Handling Tools', () => {
 
     beforeEach(async () => {
         server = new RooStateManagerServer();
-        (RooStorageDetector.detectStorageLocations as jest.Mock<() => Promise<string[]>>).mockResolvedValue([MOCK_TASKS_PATH]);
+        (RooStorageDetector.detectStorageLocations as vi.Mock<() => Promise<string[]>>).mockResolvedValue([MOCK_TASKS_PATH]);
 
         const bom = Buffer.from([0xEF, 0xBB, 0xBF]);
         const jsonData = Buffer.from(JSON.stringify({ message: 'test' }));
@@ -35,7 +35,7 @@ describe('BOM Handling Tools', () => {
 
     afterEach(() => {
         mock.restore();
-        jest.clearAllMocks();
+        vi.clearAllMocks();
     });
 
     it('diagnose_conversation_bom should detect file with BOM', async () => {

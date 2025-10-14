@@ -3,9 +3,9 @@
  * Test simple en JavaScript pour validation rapide
  */
 
-import { TaskTreeBuilder } from '../src/utils/task-tree-builder.js';
-import { WorkspaceAnalyzer } from '../src/utils/workspace-analyzer.js';
-import { RelationshipAnalyzer } from '../src/utils/relationship-analyzer.js';
+import { TaskTreeBuilder } from '../../src/utils/task-tree-builder.js';
+import { WorkspaceAnalyzer } from '../../src/utils/workspace-analyzer.js';
+import { RelationshipAnalyzer } from '../../src/utils/relationship-analyzer.js';
 
 // Données de test mockées
 const createMockConversation = (taskId, files = [], lastActivity = new Date().toISOString()) => ({

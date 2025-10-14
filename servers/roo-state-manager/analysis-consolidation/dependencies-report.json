@@ -1,0 +1,25 @@
+﻿{
+    "topDependencies":  {
+                            "incomingDependencies":  1,
+                            "module":  "types/task-tree.js"
+                        },
+    "timestamp":  "2025-10-14T08:03:37",
+    "highlyCoupledModules":  {
+
+                             },
+    "dependencyGraph":  {
+                            "jsonFile":  "D:\\dev\\roo-extensions\\mcps\\internal\\servers\\roo-state-manager\\analysis-consolidation\\dependencies.json",
+                            "svgFile":  null,
+                            "modulesAnalyzed":  [
+                                                    1,
+                                                    1,
+                                                    1,
+                                                    1
+                                                ]
+                        },
+    "circularDependencies":  {
+                                 "found":  false,
+                                 "file":  null,
+                                 "count":  -1
+                             }
+}

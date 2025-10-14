@@ -4,7 +4,7 @@
  * CAUSE: Extraction depuis api_conversation_history.json qui contient des balises XML condensées
  */
 
-import { describe, it, expect, beforeAll } from '@jest/globals';
+import { describe, it, expect, beforeAll } from 'vitest';
 import * as path from 'path';
 import * as fs from 'fs/promises';
 import { fileURLToPath } from 'url';

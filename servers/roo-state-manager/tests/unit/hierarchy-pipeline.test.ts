@@ -3,10 +3,11 @@
  * Validation end-to-end : extraction → normalisation → indexation → matching → persistance
  */
 
-import { describe, it, expect, beforeEach, afterEach } from '@jest/globals';
+import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { TaskInstructionIndex, computeInstructionPrefix } from '../../src/utils/task-instruction-index.js';
 import { HierarchyReconstructionEngine } from '../../src/utils/hierarchy-reconstruction-engine.js';
 import { RooStorageDetector } from '../../src/utils/roo-storage-detector.js';
+import { TaskNavigator } from '../../src/services/task-navigator.js';
 import { ConversationSkeleton, NewTaskInstruction } from '../../src/types/conversation.js';
 import { EnhancedConversationSkeleton } from '../../src/types/enhanced-hierarchy.js';
 import * as fs from 'fs/promises';
@@ -311,7 +312,6 @@ describe('Pipeline Complet de Reconstruction Hiérarchique', () => {
             cache.set('parent-001', parent);
             cache.set('child-001', child);
 
-            const { TaskNavigator } = require('../../src/services/task-navigator.js');
             const navigator = new TaskNavigator(cache);
 
             const foundParent = navigator.getTaskParent('child-001');

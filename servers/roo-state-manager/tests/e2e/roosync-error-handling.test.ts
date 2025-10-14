@@ -11,7 +11,7 @@
  * @module tests/e2e/roosync-error-handling.test
  */
 
-import { describe, it, expect, beforeAll, afterAll } from '@jest/globals';
+import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import { RooSyncService } from '../../src/services/RooSyncService.js';
 import { PowerShellExecutor } from '../../src/services/PowerShellExecutor.js';
 
