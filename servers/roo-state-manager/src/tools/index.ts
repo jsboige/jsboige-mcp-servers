@@ -26,3 +26,7 @@ export * from './indexing/index.js';
 export * from './summary/index.js';
 // RooSync tools - Batch 6 synchronization
 export * from './roosync/index.js';
+
+// Cache & Repair tools - Batch 8 refactoring
+export * from './cache/index.js';
+export * from './repair/index.js';
