@@ -13,6 +13,8 @@ export interface ExportTaskTreeMarkdownArgs {
     filePath?: string;
     max_depth?: number;
     include_siblings?: boolean;
+    /** ID de la tâche actuellement en cours d'exécution (pour marquage explicite comme "(TÂCHE ACTUELLE)") */
+    current_task_id?: string;
 }
 
 /**
@@ -47,6 +49,10 @@ export const exportTaskTreeMarkdownTool = {
                 type: 'boolean',
                 description: 'Inclure les tâches sœurs (même parent) dans l\'arbre.',
                 default: true
+            },
+            current_task_id: {
+                type: 'string',
+                description: 'ID de la tâche en cours d\'exécution pour marquage explicite comme "(TÂCHE ACTUELLE)". Si omis, aucune tâche ne sera marquée.'
             }
         },
         required: ['conversation_id']
@@ -64,7 +70,7 @@ export async function handleExportTaskTreeMarkdown(
     conversationCache?: Map<string, ConversationSkeleton>
 ): Promise<CallToolResult> {
     try {
-        const { conversation_id, filePath, max_depth, include_siblings = true } = args;
+        const { conversation_id, filePath, max_depth, include_siblings = true, current_task_id } = args;
 
         if (!conversation_id) {
             throw new Error("conversation_id est requis");
@@ -76,10 +82,12 @@ export async function handleExportTaskTreeMarkdown(
         await ensureSkeletonCacheIsFresh();
 
         // Utiliser get_task_tree pour récupérer l'arbre avec les nouveaux champs
+        // 🎯 TRANSMISSION DU current_task_id pour marquage dans get_task_tree
         const treeResult = await handleGetTaskTree({
             conversation_id,
             max_depth,
-            include_siblings
+            include_siblings,
+            current_task_id
         });
 
         if (!treeResult || !treeResult.content || !treeResult.content[0]) {
@@ -92,31 +100,6 @@ export async function handleExportTaskTreeMarkdown(
         }
         const treeData = JSON.parse(textContent);
 
-        // 🎯 AUTO-DÉTECTION TÂCHE ACTUELLE : Trouver la tâche la plus récente du workspace
-        let currentTaskId: string | null = null;
-        
-        if (conversationCache && conversationCache.size > 0) {
-            // Obtenir le workspace depuis la tâche racine
-            const mainTask = conversationCache.get(conversation_id);
-            const targetWorkspace = mainTask?.metadata?.workspace;
-            
-            if (targetWorkspace) {
-                // Filtrer toutes les tâches du même workspace ayant une lastActivity
-                const workspaceTasks = Array.from(conversationCache.values())
-                    .filter(s => s.metadata?.workspace === targetWorkspace && s.metadata?.lastActivity);
-                
-                if (workspaceTasks.length > 0) {
-                    // Trouver la tâche avec la date d'activité la plus récente
-                    const mostRecentTask = workspaceTasks.reduce((latest, current) => {
-                        const latestDate = new Date(latest.metadata.lastActivity);
-                        const currentDate = new Date(current.metadata.lastActivity);
-                        return currentDate > latestDate ? current : latest;
-                    });
-                    currentTaskId = mostRecentTask.taskId;
-                }
-            }
-        }
-
         // Fonction récursive pour formatter l'arbre en Markdown
         const formatNodeToMarkdown = (node: any, depth: number = 0): string => {
             let markdown = '';
@@ -125,10 +108,8 @@ export async function handleExportTaskTreeMarkdown(
             const status = node.metadata?.isCompleted ? 'Completed' : 'In Progress';
             const instruction = node.metadata?.truncatedInstruction || 'No instruction available';
             
-            // 🎯 Marquer la tâche actuelle - Comparer les 8 premiers caractères (UUIDs courts)
-            const nodeShortId = (node.taskId || '').substring(0, 8);
-            const currentShortId = (currentTaskId || '').substring(0, 8);
-            const currentMarker = (nodeShortId === currentShortId && currentShortId) ? ' (TÂCHE ACTUELLE)' : '';
+            // 🎯 Marquer la tâche actuelle - Utiliser le champ isCurrentTask de get_task_tree
+            const currentMarker = node.metadata?.isCurrentTask ? ' (TÂCHE ACTUELLE)' : '';
             
             // Titre principal avec ID court et statut
             markdown += `${indent} ${node.title || 'Task'} (${shortId})${currentMarker}\n`;

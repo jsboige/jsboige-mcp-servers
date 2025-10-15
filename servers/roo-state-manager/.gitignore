@@ -1,4 +1,4 @@
-# Dependencies
+﻿# Dependencies
 /node_modules/
 
 # Build artifacts
@@ -13,8 +13,13 @@
 # Logs
 *.log
 
+# Test results
+test-results.json
+
+# Debug outputs
+mcp-debugging/
+
 # Reports and documentation
-# Ignore markdown files at root level except README.md, CHANGELOG.md, and refactoring reports
 /*.md
 !README.md
 !CHANGELOG.md
@@ -23,10 +28,15 @@
 !BATCH*.md
 !GIT_SYNC*.md
 !PROJECT_FINAL_SYNTHESIS.md
+!PHASE*.md
+!NEXT_SESSION*.md
+!TEST_FAILURES*.md
+!FUNCTIONAL_REDUNDANCY*.md
 
-# Reports (excluding README.md)
-# Ignore reports at root level but allow in docs/ subdirectories
+# Reports
 /*-report.md
 /*-validation.md
 !docs/**/*-validation.md
-"mcp-debugging/" 
+
+# Vitest migration
+vitest-migration/

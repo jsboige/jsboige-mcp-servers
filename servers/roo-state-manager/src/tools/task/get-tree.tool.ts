@@ -11,6 +11,8 @@ export interface GetTaskTreeArgs {
     max_depth?: number;
     include_siblings?: boolean;
     output_format?: 'json' | 'markdown';
+    /** ID de la tâche actuellement en cours d'exécution (pour marquage explicite) */
+    current_task_id?: string;
 }
 
 /**
@@ -22,18 +24,22 @@ export const getTaskTreeTool = {
     inputSchema: {
         type: 'object',
         properties: {
-            conversation_id: { 
-                type: 'string', 
-                description: 'ID de la conversation pour laquelle récupérer l\'arbre des tâches.' 
+            conversation_id: {
+                type: 'string',
+                description: 'ID de la conversation pour laquelle récupérer l\'arbre des tâches.'
             },
-            max_depth: { 
-                type: 'number', 
-                description: 'Profondeur maximale de l\'arbre à retourner.' 
+            max_depth: {
+                type: 'number',
+                description: 'Profondeur maximale de l\'arbre à retourner.'
             },
-            include_siblings: { 
-                type: 'boolean', 
-                description: 'Inclure les tâches sœurs (même parent) dans l\'arbre.' 
+            include_siblings: {
+                type: 'boolean',
+                description: 'Inclure les tâches sœurs (même parent) dans l\'arbre.'
             },
+            current_task_id: {
+                type: 'string',
+                description: 'ID de la tâche en cours d\'exécution pour marquage explicite comme "(TÂCHE ACTUELLE)". Si omis, aucune tâche ne sera marquée.'
+            }
         },
         required: ['conversation_id'],
     }
@@ -48,7 +54,7 @@ export async function handleGetTaskTree(
     conversationCache: Map<string, ConversationSkeleton>,
     ensureSkeletonCacheIsFresh: () => Promise<void>
 ): Promise<CallToolResult> {
-    const { conversation_id, max_depth = Infinity, include_siblings = false, output_format = 'json' } = args;
+    const { conversation_id, max_depth = Infinity, include_siblings = false, output_format = 'json', current_task_id } = args;
 
     // **FAILSAFE: Auto-rebuild cache si nécessaire**
     await ensureSkeletonCacheIsFresh();
@@ -113,6 +119,11 @@ export async function handleGetTaskTree(
             .map(childId => buildTree(childId, depth + 1))
             .filter(child => child !== null);
         
+        // 🎯 Marquer la tâche actuelle - Comparer les 8 premiers caractères (UUIDs courts)
+        const nodeShortId = skeleton.taskId.substring(0, 8);
+        const currentShortId = current_task_id ? current_task_id.substring(0, 8) : '';
+        const isCurrentTask = (nodeShortId === currentShortId && currentShortId !== '');
+        
         // Enhanced node with rich metadata
         const node = {
             taskId: skeleton.taskId,
@@ -131,7 +142,9 @@ export async function handleGetTaskTree(
                 depth: depth,
                 // 🚀 NOUVEAUX CHAMPS : Ajout des fonctionnalités demandées
                 isCompleted: skeleton.isCompleted || false,
-                truncatedInstruction: skeleton.truncatedInstruction || undefined
+                truncatedInstruction: skeleton.truncatedInstruction || undefined,
+                // 🎯 NOUVEAU CHAMP : Marquage de la tâche actuelle
+                isCurrentTask: isCurrentTask
             },
             parentId: (skeleton as any)?.parentId ?? (skeleton as any)?.parentTaskId,
             parentTaskId: (skeleton as any)?.parentTaskId,
