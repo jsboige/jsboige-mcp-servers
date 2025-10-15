@@ -49,8 +49,10 @@ class GradientCalculator {
         const center = (totalTasks - 1) / 2;
         const distanceFromCenter = Math.abs(position - center) / center;
         
-        // Fonction exponentielle : exp(-k × distance²)
-        const weight = Math.exp(-gradientStrength * distanceFromCenter * distanceFromCenter);
+        // Fonction exponentielle inversée pour préserver les extrêmes
+        // Plus on est loin du centre, plus le poids de préservation est élevé
+        const centerWeight = Math.exp(-gradientStrength * distanceFromCenter * distanceFromCenter);
+        const weight = 1 - centerWeight; // Inverser: extrêmes = haute préservation, centre = basse
         
         // Contraindre entre [0,1]
         return Math.max(0, Math.min(1, weight));
