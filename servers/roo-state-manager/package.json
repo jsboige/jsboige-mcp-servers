@@ -36,7 +36,7 @@
     "@modelcontextprotocol/sdk": "^1.16.0",
     "@qdrant/js-client-rest": "^1.9.0",
     "@xmldom/xmldom": "^0.8.11",
-    "dotenv": "^17.2.0",
+    "dotenv": "^17.2.3",
     "exact-trie": "^1.0.13",
     "fast-xml-parser": "^5.2.5",
     "glob": "^10.3.10",
