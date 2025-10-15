@@ -9,8 +9,24 @@ import { normalizePath } from '../../utils/path-normalizer.js';
 
 /**
  * Node enrichi pour construire l'arbre hiérarchique
+ * Défini explicitement sans étendre ConversationSkeleton pour éviter d'inclure la propriété sequence
  */
-interface SkeletonNode extends ConversationSkeleton {
+interface SkeletonNode {
+    taskId: string;
+    parentTaskId?: string;
+    metadata: {
+        title?: string;
+        lastActivity: string;
+        createdAt: string;
+        mode?: string;
+        messageCount: number;
+        actionCount: number;
+        totalSize: number;
+        workspace?: string;
+        qdrantIndexedAt?: string;
+        dataSource?: string;
+        indexingState?: any;
+    };
     firstUserMessage?: string;
     isCompleted?: boolean;
     completionMessage?: string;
@@ -86,7 +102,8 @@ export const listConversationsTool = {
         },
         conversationCache: Map<string, ConversationSkeleton>
     ): Promise<CallToolResult> => {
-        console.log('[TOOL] list_conversations called with:', JSON.stringify(args));
+        console.log('[🔧 FIXED VERSION] list_conversations called with:', JSON.stringify(args));
+        console.log('[🔧 FIXED VERSION] This is the corrected version without sequence property');
         
         let allSkeletons = Array.from(conversationCache.values()).filter(skeleton =>
             skeleton.metadata
@@ -131,7 +148,7 @@ export const listConversationsTool = {
         
         // Créer les SkeletonNode SANS la propriété sequence MAIS avec toutes les infos importantes
         const skeletonMap = new Map<string, SkeletonNode>(allSkeletons.map(s => {
-            const { sequence, ...skeletonWithoutSequence } = s as any;
+            const sequence = (s as any).sequence;
             
             // Variables pour les informations à extraire
             let firstUserMessage: string | undefined = undefined;
@@ -173,8 +190,12 @@ export const listConversationsTool = {
                 }
             }
             
+            // Créer explicitement un SkeletonNode avec SEULEMENT les propriétés nécessaires
+            // pour éviter de copier des propriétés volumineuses ou des références circulaires
             return [s.taskId, {
-                ...skeletonWithoutSequence,
+                taskId: s.taskId,
+                parentTaskId: s.parentTaskId,
+                metadata: s.metadata,
                 firstUserMessage,
                 isCompleted,
                 completionMessage,
