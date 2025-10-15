@@ -210,29 +210,63 @@ export async function roosyncInit(args: InitArgs): Promise<InitResult> {
     }
     
     // 3. Collecter l'inventaire machine via script PowerShell
+    console.error('[INVENTORY] 📋 Début intégration inventaire PowerShell...');
     try {
-      console.log('🔍 Collecte de l\'inventaire machine...');
       // Remonter depuis le répertoire du serveur MCP vers la racine du projet
-      const projectRoot = join(dirname(dirname(dirname(dirname(dirname(__dirname))))));
+      // __dirname en production = .../roo-state-manager/build/src/tools/roosync/
+      // Il faut remonter 8 niveaux pour arriver à c:/dev/roo-extensions
+      const projectRoot = join(__dirname, '..', '..', '..', '..', '..', '..', '..', '..');
+      console.error(`[INVENTORY] 📂 Project root: ${projectRoot}`);
+      console.error(`[INVENTORY] 📂 __dirname actuel: ${__dirname}`);
+      
       const inventoryScriptPath = join(projectRoot, 'scripts', 'inventory', 'Get-MachineInventory.ps1');
+      console.error(`[INVENTORY] 📄 Script path calculé: ${inventoryScriptPath}`);
       
       // Vérifier que le script existe
-      if (existsSync(inventoryScriptPath)) {
-        // Construire la commande PowerShell
+      if (!existsSync(inventoryScriptPath)) {
+        console.warn(`[INVENTORY] ⚠️ Script NON TROUVÉ à: ${inventoryScriptPath}`);
+        console.warn('[INVENTORY] Continuing without inventory integration...');
+      } else {
+        console.error(`[INVENTORY] ✅ Script trouvé, préparation exécution...`);
+        
+        // Construire la commande PowerShell (le script retourne le chemin du fichier via Write-Output)
         const inventoryCmd = `powershell.exe -NoProfile -ExecutionPolicy Bypass -File "${inventoryScriptPath}" -MachineId "${config.machineId}"`;
+        console.error(`[INVENTORY] 🔧 Commande: ${inventoryCmd}`);
+        console.error(`[INVENTORY] 📂 Working directory: ${projectRoot}`);
         
         try {
+          console.error('[INVENTORY] ⏳ Exécution du script PowerShell...');
           const { stdout, stderr } = await execAsync(inventoryCmd, {
             timeout: 30000, // 30 secondes max
             cwd: projectRoot
           });
           
-          // Le script retourne le chemin du fichier JSON créé
-          const inventoryFilePath = stdout.trim();
+          console.error(`[INVENTORY] 📊 stdout length: ${stdout.length} bytes`);
+          if (stderr && stderr.trim()) {
+            console.warn(`[INVENTORY] ⚠️ stderr: ${stderr}`);
+          }
+          
+          // Le script retourne le chemin du fichier JSON (relatif ou absolu)
+          const lines = stdout.trim().split('\n').filter(l => l.trim());
+          const inventoryFilePathRaw = lines[lines.length - 1]?.trim();
+          console.error(`[INVENTORY] 📄 Dernière ligne stdout: ${inventoryFilePathRaw}`);
+          console.error(`[INVENTORY] 📝 Total lignes stdout: ${lines.length}`);
+          
+          // Si le chemin est relatif, le joindre avec projectRoot
+          const inventoryFilePath = inventoryFilePathRaw.includes(':') 
+            ? inventoryFilePathRaw 
+            : join(projectRoot, inventoryFilePathRaw);
+          console.error(`[INVENTORY] 📁 Chemin absolu calculé: ${inventoryFilePath}`);
           
           if (inventoryFilePath && existsSync(inventoryFilePath)) {
-            // Lire l'inventaire généré
-            const inventoryData = JSON.parse(readFileSync(inventoryFilePath, 'utf-8'));
+            console.error(`[INVENTORY] ✅ Fichier JSON trouvé: ${inventoryFilePath}`);
+            // Lire l'inventaire généré (en enlevant le BOM UTF-8 si présent)
+            let inventoryContent = readFileSync(inventoryFilePath, 'utf-8');
+            if (inventoryContent.charCodeAt(0) === 0xFEFF) {
+              inventoryContent = inventoryContent.slice(1);
+              console.error('[INVENTORY] 🔧 BOM UTF-8 détecté et supprimé');
+            }
+            const inventoryData = JSON.parse(inventoryContent);
             
             // Créer ou enrichir sync-config.json avec l'inventaire
             const configPath = join(sharedPath, 'sync-config.json');
@@ -258,29 +292,39 @@ export async function roosyncInit(args: InitArgs): Promise<InitResult> {
             writeFileSync(configPath, JSON.stringify(syncConfig, null, 2), 'utf-8');
             filesCreated.push('sync-config.json (inventaire intégré)');
             
-            console.log('✅ Inventaire machine intégré avec succès');
+            console.error('[INVENTORY] ✅ Inventaire machine intégré avec succès dans sync-config.json');
             
             // Nettoyer le fichier temporaire d'inventaire
             try {
               unlinkSync(inventoryFilePath);
+              console.error(`[INVENTORY] 🗑️ Fichier temporaire supprimé: ${inventoryFilePath}`);
             } catch (unlinkError) {
               // Ignorer si échec du nettoyage
-              console.warn(`⚠️ Impossible de supprimer le fichier temporaire: ${inventoryFilePath}`);
+              console.warn(`[INVENTORY] ⚠️ Impossible de supprimer le fichier temporaire: ${inventoryFilePath}`);
             }
           } else {
-            console.warn('⚠️ Le script d\'inventaire n\'a pas généré de fichier JSON');
+            console.warn(`[INVENTORY] ❌ Fichier JSON non trouvé ou invalide: '${inventoryFilePath}'`);
+            console.warn('[INVENTORY] Le script n\'a pas généré de fichier JSON valide');
           }
         } catch (execError: any) {
-          console.warn(`⚠️ Échec de la collecte d'inventaire: ${execError.message}`);
-          // Continuer sans bloquer l'init
+          console.error(`[INVENTORY] ❌ ERREUR EXÉCUTION: ${execError.message}`);
+          if (execError.stack) {
+            console.error(`[INVENTORY] Stack trace: ${execError.stack}`);
+          }
+          if (execError.stderr) {
+            console.error(`[INVENTORY] PowerShell stderr: ${execError.stderr}`);
+          }
+          // Continuer sans bloquer l'init - l'inventaire est optionnel
         }
-      } else {
-        console.warn(`⚠️ Script d'inventaire non trouvé: ${inventoryScriptPath}`);
       }
     } catch (error: any) {
-      console.warn(`⚠️ Erreur lors de l'intégration de l'inventaire: ${error.message}`);
+      console.error(`[INVENTORY] ❌ ERREUR GLOBALE: ${error.message}`);
+      if (error.stack) {
+        console.error(`[INVENTORY] Stack trace: ${error.stack}`);
+      }
       // Continuer sans bloquer l'init - l'inventaire est optionnel
     }
+    console.error('[INVENTORY] 🏁 Fin de l\'intégration inventaire (success ou skip)');
     
     // 4. Créer/vérifier sync-roadmap.md (optionnel)
     if (args.createRoadmap !== false) {
