@@ -51,6 +51,58 @@ const networkMetrics: NetworkMetrics = {
     lastReset: Date.now()
 };
 
+/**
+ * ✅ CORRECTION P0 (2025-10-15)
+ * Rate Limiter pour protéger Qdrant des surcharges
+ * Limite: 10 requêtes/seconde maximum vers Qdrant
+ *
+ * Coordination avec Agent Qdrant:
+ * - Infrastructure Qdrant prête (59/59 collections HNSW optimisé)
+ * - Protection contre les boucles infinies d'indexation
+ */
+class QdrantRateLimiter {
+    private queue: Array<() => Promise<any>> = [];
+    private processing = false;
+    private lastExecution = 0;
+    private minInterval = 100; // 100ms entre requêtes = max 10 req/s
+    
+    async execute<T>(fn: () => Promise<T>): Promise<T> {
+        return new Promise((resolve, reject) => {
+            this.queue.push(async () => {
+                try {
+                    // Attendre intervalle minimum
+                    const now = Date.now();
+                    const elapsed = now - this.lastExecution;
+                    if (elapsed < this.minInterval) {
+                        await new Promise(r => setTimeout(r, this.minInterval - elapsed));
+                    }
+                    
+                    const result = await fn();
+                    this.lastExecution = Date.now();
+                    resolve(result);
+                } catch (error) {
+                    reject(error);
+                }
+            });
+            
+            if (!this.processing) {
+                this.processQueue();
+            }
+        });
+    }
+    
+    private async processQueue() {
+        this.processing = true;
+        while (this.queue.length > 0) {
+            const fn = this.queue.shift();
+            if (fn) await fn();
+        }
+        this.processing = false;
+    }
+}
+
+const qdrantRateLimiter = new QdrantRateLimiter();
+
 // 🛡️ FONCTION DE RETRY AVEC BACKOFF EXPONENTIEL
 async function retryWithBackoff<T>(
     operation: () => Promise<T>,
@@ -550,7 +602,17 @@ async function extractChunksFromTask(taskId: string, taskPath: string): Promise<
             }
         }
     } catch (error) {
-        console.warn(`Could not read or parse ${apiHistoryPath}. Error: ${error}`);
+        /**
+         * ✅ CORRECTION P0 (2025-10-15) - Amélioration gestion d'erreur
+         * Plus de faux succès : propager l'erreur pour diagnostic
+         */
+        console.error('❌ ERREUR CRITIQUE extraction chunks:', error);
+        console.error('Stack trace:', error instanceof Error ? error.stack : 'No stack');
+        console.error(`Fichier problématique: ${apiHistoryPath}`);
+        console.error(`Task ID: ${taskId}`);
+        
+        // Propager l'erreur pour éviter faux succès silencieux
+        throw new Error(`Extraction chunks échouée pour ${taskId}: ${error instanceof Error ? error.message : String(error)}`);
     }
 
     const uiMessagesPath = path.join(taskPath, 'ui_messages.json');
@@ -708,6 +770,10 @@ export async function indexTask(taskId: string, taskPath: string): Promise<Point
             }
         }
 
+        /**
+         * ✅ CORRECTION P0 (2025-10-15) - Amélioration logging succès
+         * Vérifier si des chunks valides ont été extraits avant de déclarer succès
+         */
         if (pointsToIndex.length > 0) {
             console.log(`📤 Préparation upsert Qdrant: ${pointsToIndex.length} points (de ${chunks.length} chunks originaux) pour tâche ${taskId}`);
             
@@ -722,6 +788,11 @@ export async function indexTask(taskId: string, taskPath: string): Promise<Point
                 return [];
             }
         } else {
+            if (chunks.length === 0) {
+                console.warn(`⚠️ Tâche ${taskId} : Aucun chunk extrait, vérifier les données source`);
+            } else {
+                console.warn(`⚠️ Tâche ${taskId} : ${chunks.length} chunks trouvés mais aucun indexable (indexed=false ou contenu vide)`);
+            }
             console.log(`No indexable chunks found for task ${taskId}.`);
         }
 
@@ -862,9 +933,15 @@ export class TaskIndexer {
                         }
                     });
 
-                    await this.qdrantClient.upsert(COLLECTION_NAME, {
-                        points: batch,
-                        wait: shouldWait
+                    /**
+                     * ✅ CORRECTION P0 (2025-10-15) - Rate Limiter Qdrant
+                     * Wrapper avec rate limiter pour éviter surcharge (max 10 req/s)
+                     */
+                    await qdrantRateLimiter.execute(async () => {
+                        return await this.qdrantClient.upsert(COLLECTION_NAME, {
+                            points: batch,
+                            wait: shouldWait
+                        });
                     });
                     
                     success = true;
