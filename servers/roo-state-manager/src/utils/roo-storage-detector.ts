@@ -1027,11 +1027,11 @@ export class RooStorageDetector {
   ): Promise<NewTaskInstruction[]> {
     const instructions: NewTaskInstruction[] = [];
     
-    // 🎯 CORRECTION CRITIQUE : Extraire UNIQUEMENT depuis ui_messages.json
-    // Le fichier api_conversation_history.json est condensé avec balises XML et créerait une contamination
-    // ui_messages.json contient les VRAIES déclarations newTask au format JSON pur
-    // Le flag onlyJsonFormat=true désactive les patterns XML contaminants
-    await this.extractFromMessageFile(uiMessagesPath, instructions, maxLines, true);
+    // 🎯 CORRECTION TESTS XML : Activer TOUS les patterns (XML + JSON)
+    // Les tests unitaires prouvent que ui_messages.json contient des balises XML <task> et <new_task>
+    // qui doivent être parsées. Le flag onlyJsonFormat=false active tous les patterns de parsing.
+    // Cette méthode lit UNIQUEMENT ui_messages.json, donc pas de contamination depuis api_conversation_history.json
+    await this.extractFromMessageFile(uiMessagesPath, instructions, maxLines, false);
     
     if (process.env.ROO_DEBUG_INSTRUCTIONS === '1') {
       console.log(`[extractNewTaskInstructionsFromUI] ✅ ${instructions.length} instructions trouvées depuis ui_messages.json uniquement`);
@@ -1221,13 +1221,15 @@ export class RooStorageDetector {
             console.log(`[extractFromMessageFile] 🔍 DEBUG PARSING - Balise <task> trouvée dans ${path.basename(filePath)}, role: ${message.role}, contenu: "${taskContent.substring(0, 100)}..."`);
             
             if (taskContent.length > 20) { // Filtrer les contenus trop courts
+              // 🎯 CORRECTION TESTS : Tronquer à 200 caractères max (alignement avec tests unitaires)
+              const truncatedContent = taskContent.length > 200 ? taskContent.substring(0, 200) : taskContent;
               const instruction: NewTaskInstruction = {
                 timestamp: new Date(message.timestamp || message.ts || 0).getTime(),
                 mode: 'task', // Mode générique pour balises task simples
-                message: taskContent, // 🎯 CORRECTION SDDD: Pas de troncature ici, elle sera faite par computeInstructionPrefix
+                message: truncatedContent,
               };
               instructions.push(instruction);
-              console.log(`[extractFromMessageFile] 🎯 BALISE TASK SIMPLE AJOUTÉE dans ${path.basename(filePath)}: ${taskContent.substring(0, 50)}...`);
+              console.log(`[extractFromMessageFile] 🎯 BALISE TASK SIMPLE AJOUTÉE dans ${path.basename(filePath)}: ${truncatedContent.substring(0, 50)}...`);
             } else {
               console.log(`[extractFromMessageFile] ⚠️ BALISE TASK REJETÉE (trop courte: ${taskContent.length} chars) dans ${path.basename(filePath)}`);
             }
