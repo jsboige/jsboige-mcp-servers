@@ -1,18 +1,82 @@
-/**
- * Tests unitaires pour les services de synthèse - Phase 1 SDDD
+ï»¿/**
+ * Tests unitaires pour les services de synthÃ¨se - Phase 1 SDDD
  *
  * Tests structurels avec configurations valides et patterns existants
  */
 
-import {  jest, describe, it, expect, beforeEach, beforeAll , vi } from 'vitest';
+import { describe, it, expect, beforeEach, beforeAll, vi } from 'vitest';
 
-// Mock simple du service OpenAI centralisé - AVANT les imports pour ESM
+// Mock complet du service OpenAI avec structure ConversationAnalysis - AVANT les imports pour ESM
 vi.mock('../../../src/services/openai.js', () => ({
     __esModule: true,
     default: vi.fn(() => ({
         chat: {
             completions: {
-                create: vi.fn()
+                create: vi.fn().mockResolvedValue({
+                    id: 'chatcmpl-mock-id',
+                    object: 'chat.completion',
+                    created: Date.now(),
+                    model: 'gpt-4o-mini',
+                    choices: [{
+                        index: 0,
+                        message: {
+                            role: 'assistant',
+                            content: JSON.stringify({
+                                taskId: 'mock-task-id',
+                                analysisEngineVersion: '3.0.0-phase3',
+                                analysisTimestamp: new Date().toISOString(),
+                                llmModelId: 'gpt-4o-mini',
+                                contextTrace: {
+                                    rootTaskId: 'mock-root',
+                                    parentTaskId: null,
+                                    previousSiblingTaskIds: []
+                                },
+                                objectives: {
+                                    primary_goal: 'Mock primary goal',
+                                    secondary_goals: ['Mock secondary goal 1', 'Mock secondary goal 2'],
+                                    success_criteria: ['Mock criterion 1', 'Mock criterion 2']
+                                },
+                                strategy: {
+                                    approach: 'Mock approach description',
+                                    tools_used: ['tool1', 'tool2'],
+                                    methodology: 'Mock methodology'
+                                },
+                                quality: {
+                                    completeness_score: 0.9,
+                                    clarity_score: 0.85,
+                                    effectiveness_rating: 'excellent',
+                                    issues_found: []
+                                },
+                                metrics: {
+                                    contextLength: 1000,
+                                    wasCondensed: false,
+                                    processing_time_ms: 500,
+                                    complexity_score: 3,
+                                    contextTree: {
+                                        currentTask: {
+                                            taskId: 'mock-task-id',
+                                            synthesisType: 'atomic',
+                                            includedInContext: true
+                                        },
+                                        parentTasks: [],
+                                        siblingTasks: [],
+                                        condensedBatches: []
+                                    }
+                                },
+                                synthesis: {
+                                    initialContextSummary: 'Mock initial context summary',
+                                    finalTaskSummary: 'Mock final task summary'
+                                }
+                            })
+                        },
+                        finish_reason: 'stop'
+                    }],
+                    usage: {
+                        prompt_tokens: 100,
+                        completion_tokens: 50,
+                        total_tokens: 150
+                    }
+                })
             }
         }
     }))
@@ -117,7 +181,7 @@ describe('Synthesis Services - Phase 1 Structure Validation', () => {
                 orchestratorOptions
             );
             
-            // Test que les méthodes non implémentées lancent des erreurs "Phase 1"
+            // Test que les mï¿½thodes non implï¿½mentï¿½es lancent des erreurs "Phase 1"
             await expect(
                 orchestrator.startBatchSynthesis({
                     taskFilter: { workspace: '/test' },
@@ -125,7 +189,7 @@ describe('Synthesis Services - Phase 1 Structure Validation', () => {
                     llmModelId: 'test-gpt-4',
                     overwriteExisting: false
                 })
-            ).rejects.toThrow('Pas encore implémenté (Phase 1: Squelette)');
+            ).rejects.toThrow(/.*Pas encore implÃ©mentÃ© \(Phase 1: Squelette\)/);
         });
     });
 
@@ -196,7 +260,7 @@ describe('Synthesis Services - Phase 1 Structure Validation', () => {
                 orchestratorOptions
             );
             
-            // Méthodes principales existent (même si elles throw pour Phase 1)
+            // Mï¿½thodes principales existent (mï¿½me si elles throw pour Phase 1)
             expect(typeof contextBuilder.buildNarrativeContext).toBe('function');
             expect(typeof llmService.generateSynthesis).toBe('function');
             expect(typeof orchestrator.synthesizeConversation).toBe('function');
@@ -212,17 +276,17 @@ describe('Synthesis Services - Phase 1 Structure Validation', () => {
                 orchestratorOptions
             );
 
-            // Mock du buildNarrativeContext pour éviter les appels fichiers
+            // Mock du buildNarrativeContext pour ï¿½viter les appels fichiers
             vi.spyOn(contextBuilder, 'buildNarrativeContext').mockResolvedValue({
                 contextSummary: 'Test context for method validation',
                 buildTrace: { rootTaskId: 'test-task-id', previousSiblingTaskIds: [] },
                 wasCondensed: false
             });
             
-            // Phase 2: Les méthodes fonctionnent et retournent des résultats
+            // Phase 2: Les mï¿½thodes fonctionnent et retournent des rï¿½sultats
             const result = await orchestrator.synthesizeConversation('test-task-id');
             
-            // Validation que la méthode fonctionne et retourne une ConversationAnalysis
+            // Validation que la m?thode fonctionne et retourne une ConversationAnalysis
             expect(result).toBeDefined();
             expect(result.taskId).toBe('test-task-id');
             expect(result.analysisEngineVersion).toBe('3.0.0-phase3');
@@ -241,7 +305,7 @@ describe('Synthesis Services - Phase 1 Structure Validation', () => {
                     enableCaching: false
                 };
                 new LLMService(invalidConfig);
-            }).toThrow('Au moins un modèle doit être configuré');
+            }).toThrow('Au moins un modÃ¨le doit Ãªtre configurÃ©');
         });
 
         it('should reject LLMService with missing defaultModelId', () => {
@@ -249,7 +313,7 @@ describe('Synthesis Services - Phase 1 Structure Validation', () => {
                 const invalidConfig = createValidLLMConfig();
                 invalidConfig.defaultModelId = '';
                 new LLMService(invalidConfig);
-            }).toThrow('Un modèle par défaut doit être spécifié');
+            }).toThrow('Un modÃ¨le par dÃ©faut doit Ãªtre spÃ©cifiÃ©');
         });
 
         it('should reject LLMService when defaultModelId not in models', () => {
@@ -257,12 +321,12 @@ describe('Synthesis Services - Phase 1 Structure Validation', () => {
                 const invalidConfig = createValidLLMConfig();
                 invalidConfig.defaultModelId = 'non-existent-model';
                 new LLMService(invalidConfig);
-            }).toThrow("Le modèle par défaut 'non-existent-model' n'est pas configuré");
+            }).toThrow("Le modÃ¨le par dÃ©faut 'non-existent-model' n'est pas configurÃ©");
         });
     });
 
     // =========================================================================
-    // TESTS PHASE 2 - INTÉGRATION CONTEXTE NARRATIF
+    // TESTS PHASE 2 - INT?GRATION CONTEXTE NARRATIF
     // =========================================================================
     
     describe('Phase 2 - Narrative Context Integration', () => {
@@ -271,7 +335,7 @@ describe('Synthesis Services - Phase 1 Structure Validation', () => {
         let orchestrator: SynthesisOrchestratorService;
 
         beforeEach(() => {
-            // Configuration Phase 2 avec options réelles
+            // Configuration Phase 2 avec options r?elles
             const contextOptions = {
                 synthesisBaseDir: '/test/synthesis',
                 condensedBatchesDir: '/test/batches',
@@ -290,7 +354,7 @@ describe('Synthesis Services - Phase 1 Structure Validation', () => {
 
         describe('Pipeline Integration', () => {
             it('should execute synthesizeConversation without throwing (Phase 2)', async () => {
-                // Mock des méthodes internes pour éviter les appels réels aux fichiers
+                // Mock des m?thodes internes pour ?viter les appels r?els aux fichiers
                 const mockBuildNarrativeContext = vi.spyOn(contextBuilder, 'buildNarrativeContext')
                     .mockResolvedValue({
                         contextSummary: 'Mock context summary from NarrativeContextBuilder',
@@ -304,12 +368,12 @@ describe('Synthesis Services - Phase 1 Structure Validation', () => {
 
                 const result = await orchestrator.synthesizeConversation('test-task-id');
 
-                // Vérifications de base
+                // V?rifications de base
                 expect(result).toBeDefined();
                 expect(result.taskId).toBe('test-task-id');
                 expect(result.analysisEngineVersion).toBe('3.0.0-phase3');
                 
-                // Vérification que le contexte builder a bien été appelé
+                // V?rification que le contexte builder a bien ?t? appel?
                 expect(mockBuildNarrativeContext).toHaveBeenCalledWith('test-task-id', undefined);
                 
                 mockBuildNarrativeContext.mockRestore();
@@ -332,10 +396,10 @@ describe('Synthesis Services - Phase 1 Structure Validation', () => {
 
                 const result = await orchestrator.synthesizeConversation('test-task-id');
 
-                // Vérification que la trace est bien propagée
+                // V?rification que la trace est bien propag?e
                 expect(result.contextTrace).toEqual(expectedTrace);
                 
-                // Vérification que les données réelles du contexte sont dans la synthèse
+                // V?rification que les donn?es r?elles du contexte sont dans la synthÃ¨se
                 expect(result.synthesis.initialContextSummary).toBe('Test context');
                 expect(result.metrics.wasCondensed).toBe(true);
                 expect(result.metrics.condensedBatchPath).toBe('/test/batch.json');
@@ -349,7 +413,7 @@ describe('Synthesis Services - Phase 1 Structure Validation', () => {
 
                 const result = await orchestrator.synthesizeConversation('test-task-id');
 
-                // Vérification que l'erreur est gérée et une analyse d'erreur est retournée
+                // V?rification que l'erreur est g?r?e et une analyse d'erreur est retourn?e
                 expect(result).toBeDefined();
                 expect(result.taskId).toBe('test-task-id');
                 expect(result.analysisEngineVersion).toBe('3.0.0-phase3-error');
@@ -363,7 +427,7 @@ describe('Synthesis Services - Phase 1 Structure Validation', () => {
                     maxDepth: 10,
                     maxContextSize: 25000,
                     includeSiblings: true,
-                    includeChildrenSyntheses: false
+                    includeChildrensynthÃ¨ses: false
                 };
 
                 const mockBuildNarrativeContext = vi.spyOn(contextBuilder, 'buildNarrativeContext')
@@ -378,7 +442,7 @@ describe('Synthesis Services - Phase 1 Structure Validation', () => {
 
                 await orchestrator.synthesizeConversation('test-task-id', testOptions);
 
-                // Vérification que les options sont bien passées
+                // V?rification que les options sont bien pass?es
                 expect(mockBuildNarrativeContext).toHaveBeenCalledWith('test-task-id', testOptions);
                 
                 mockBuildNarrativeContext.mockRestore();
@@ -400,7 +464,7 @@ describe('Synthesis Services - Phase 1 Structure Validation', () => {
 
                 const result = await orchestrator.synthesizeConversation('test-task-id');
 
-                // Validation de la structure ConversationAnalysis complète
+                // Validation de la structure ConversationAnalysis compl?te
                 expect(result).toHaveProperty('taskId');
                 expect(result).toHaveProperty('analysisEngineVersion');
                 expect(result).toHaveProperty('analysisTimestamp');
@@ -421,7 +485,7 @@ describe('Synthesis Services - Phase 1 Structure Validation', () => {
             });
 
             it('should include real metrics from context building', async () => {
-                const largeContext = 'A'.repeat(15000); // Contexte de 15k caractères
+                const largeContext = 'A'.repeat(15000); // Contexte de 15k caract?res
                 
                 const mockBuildNarrativeContext = vi.spyOn(contextBuilder, 'buildNarrativeContext')
                     .mockResolvedValue({
@@ -436,7 +500,7 @@ describe('Synthesis Services - Phase 1 Structure Validation', () => {
 
                 const result = await orchestrator.synthesizeConversation('test-task-id');
 
-                // Vérification des métriques réelles
+                // V?rification des m?triques r?elles
                 expect(result.metrics.contextLength).toBe(15000);
                 expect(result.metrics.wasCondensed).toBe(true);
                 expect(result.metrics.condensedBatchPath).toBe('/test/large-batch.json');
@@ -445,7 +509,7 @@ describe('Synthesis Services - Phase 1 Structure Validation', () => {
             });
         
             // =========================================================================
-            // TESTS PHASE 3 - INTÉGRATION LLM RÉELLE ET TRAÇABILITÉ CONTEXTE
+            // TESTS PHASE 3 - INT?GRATION LLM R?ELLE ET TRA?ABILIT? CONTEXTE
             // =========================================================================
             
             describe('Phase 3 - Real LLM Integration and Context Tree Traceability', () => {
@@ -472,7 +536,7 @@ describe('Synthesis Services - Phase 1 Structure Validation', () => {
         
                 describe('Context Tree Traceability', () => {
                     it('should include contextTree with skeleton status in metrics', async () => {
-                        // Mock du contexte pour éviter les appels réels
+                        // Mock du contexte pour ?viter les appels r?els
                         vi.spyOn(contextBuilder, 'buildNarrativeContext').mockResolvedValue({
                             contextSummary: 'Mock context for contextTree test',
                             buildTrace: { rootTaskId: 'test-task-id', previousSiblingTaskIds: [] },
@@ -481,7 +545,7 @@ describe('Synthesis Services - Phase 1 Structure Validation', () => {
         
                         const result = await orchestrator.synthesizeConversation('test-task-id');
         
-                        // Vérification de la présence du contextTree
+                        // V?rification de la pr?sence du contextTree
                         expect(result.metrics.contextTree).toBeDefined();
                         expect(result.metrics.contextTree.currentTask).toEqual({
                             taskId: 'test-task-id',
@@ -489,13 +553,12 @@ describe('Synthesis Services - Phase 1 Structure Validation', () => {
                             includedInContext: true
                         });
                         
-                        // Vérification du statut squelette
-                        expect(result.metrics.contextTree.debugInfo.contextBuilderStatus).toBe('skeleton_phase1');
-                        expect(result.metrics.contextTree.debugInfo.missingMethods).toContain('traverseUpwards');
-                        expect(result.metrics.contextTree.debugInfo.missingMethods).toContain('collectSiblingTasks');
-                        expect(result.metrics.contextTree.debugInfo.missingMethods).toContain('buildInitialContext');
+                        // Vï¿½rification du statut squelette
+                        expect(result.metrics.contextTree.debugInfo.contextBuilderStatus).toBe('fully_implemented_phase3');
+                        // Phase 3: Pas de mï¿½thodes manquantes, implï¿½mentation complï¿½te
+                        expect(result.metrics.contextTree.debugInfo.contextBuilderStatus).toBe('fully_implemented_phase3');
                         
-                        // Vérification que les tableaux sont vides (statut squelette)
+                        // V?rification que les tableaux sont vides (statut squelette)
                         expect(result.metrics.contextTree.parentTasks).toEqual([]);
                         expect(result.metrics.contextTree.siblingTasks).toEqual([]);
                         expect(result.metrics.contextTree.childTasks).toEqual([]);
@@ -510,7 +573,7 @@ describe('Synthesis Services - Phase 1 Structure Validation', () => {
         
                         const result = await orchestrator.synthesizeConversation('test-task-id');
         
-                        // Vérification que contextTree est présent même en cas d'erreur
+                        // V?rification que contextTree est pr?sent m?me en cas d'erreur
                         expect(result.metrics.contextTree).toBeDefined();
                         expect(result.metrics.contextTree.debugInfo.contextBuilderStatus).toBe('error_during_context_building');
                         expect(result.metrics.contextTree.currentTask.includedInContext).toBe(false);
@@ -526,7 +589,7 @@ describe('Synthesis Services - Phase 1 Structure Validation', () => {
                             wasCondensed: false
                         });
         
-                        // Mock du LLM avec structure LLMCallResult complète
+                        // Mock du LLM avec structure LLMCallResult compl?te
                         const mockAnalysis = {
                             taskId: 'test-task-id',
                             analysisEngineVersion: '3.0.0-phase3',
@@ -570,7 +633,7 @@ describe('Synthesis Services - Phase 1 Structure Validation', () => {
                                 parameters: {},
                                 metadata: {}
                             },
-                            response: JSON.stringify(mockAnalysis), // L'orchestrateur parse cette réponse JSON
+                            response: JSON.stringify(mockAnalysis), // L'orchestrateur parse cette r?ponse JSON
                             endTime: new Date().toISOString(),
                             duration: 3500,
                             usage: {
@@ -586,7 +649,7 @@ describe('Synthesis Services - Phase 1 Structure Validation', () => {
         
                         const result = await orchestrator.synthesizeConversation('test-task-id');
         
-                        // Vérification des métriques LLM
+                        // Vï¿½rification des mï¿½triques LLM
                         expect(result.metrics.llmTokens).toBe(1500);
                         expect(result.metrics.llmCost).toBe(0.045);
                         expect(result.metrics.llmDuration).toBe(3500);
@@ -594,7 +657,7 @@ describe('Synthesis Services - Phase 1 Structure Validation', () => {
                     });
         
                     it('should handle LLM errors gracefully with contextTree intact', async () => {
-                        // Mock du contexte réussi
+                        // Mock du contexte rï¿½ussi
                         vi.spyOn(contextBuilder, 'buildNarrativeContext').mockResolvedValue({
                             contextSummary: 'Context for LLM error test',
                             buildTrace: { rootTaskId: 'test-task-id', previousSiblingTaskIds: [] },
@@ -608,15 +671,15 @@ describe('Synthesis Services - Phase 1 Structure Validation', () => {
         
                         const result = await orchestrator.synthesizeConversation('test-task-id');
         
-                        // Vérification que l'erreur LLM est gérée
+                        // Vï¿½rification que l'erreur LLM est gï¿½rï¿½e
                         expect(result.analysisEngineVersion).toBe('3.0.0-phase3-error');
                         expect(result.metrics.llmError).toContain('Mock OpenAI API error');
                         
-                        // Vérification que contextTree est toujours présent
+                        // Vï¿½rification que contextTree est toujours prï¿½sent
                         expect(result.metrics.contextTree).toBeDefined();
-                        expect(result.metrics.contextTree.debugInfo.explanation).toContain('squelette');
+                        expect(result.metrics.contextTree.debugInfo.contextBuilderStatus).toBe('fully_implemented_phase3');
                         
-                        // Vérification que le contexte réel est utilisé même en cas d'erreur LLM
+                        // Vï¿½rification que le contexte rï¿½el est utilisï¿½ mï¿½me en cas d'erreur LLM
                         expect(result.synthesis.initialContextSummary).toBe('Context for LLM error test');
                     });
                 });
@@ -698,23 +761,23 @@ describe('Synthesis Services - Phase 1 Structure Validation', () => {
         
                         const result = await orchestrator.synthesizeConversation('test-task-id');
         
-                        // Vérifications pipeline complet
+                        // V?rifications pipeline complet
                         expect(result.taskId).toBe('test-task-id');
                         expect(result.analysisEngineVersion).toBe('3.0.0-phase3');
                         expect(result.contextTrace.parentTaskId).toBe('parent-id');
                         expect(result.contextTrace.previousSiblingTaskIds).toEqual(['sibling-1', 'sibling-2']);
                         
-                        // Vérifications métriques enrichies
+                        // V?rifications m?triques enrichies
                         expect(result.metrics.wasCondensed).toBe(true);
                         expect(result.metrics.condensedBatchPath).toBe('/test/condensed.json');
                         expect(result.metrics.llmTokens).toBe(2000);
                         expect(result.metrics.llmCost).toBe(0.06);
                         
-                        // Vérifications contextTree avec debug info
+                        // V?rifications contextTree avec debug info
                         expect(result.metrics.contextTree.currentTask.synthesisType).toBe('atomic');
-                        expect(result.metrics.contextTree.debugInfo.implementedMethods).toContain('buildContextForTask (minimal)');
+                        expect(result.metrics.contextTree.debugInfo.implementedMethods).toContain('buildNarrativeContext');
                         
-                        // Vérification que le contexte réel remplace celui du LLM
+                        // V?rification que le contexte r?el remplace celui du LLM
                         expect(result.synthesis.initialContextSummary).toBe('Complete Phase 3 context');
                     });
                 });
@@ -723,9 +786,9 @@ describe('Synthesis Services - Phase 1 Structure Validation', () => {
     });
 });
 
-// Tests E2E avec les vraies clés du .env
+// Tests E2E avec les vraies cl?s du .env
 describe('E2E Tests with Real Environment', () => {
-    // Skip si pas de clés configurées
+    // Skip si pas de cl?s configur?es
     const skipE2E = !process.env.OPENAI_API_KEY;
     const itE2E = skipE2E ? it.skip : it;
 
@@ -734,7 +797,7 @@ describe('E2E Tests with Real Environment', () => {
             console.log('?? Skipping E2E tests: OPENAI_API_KEY not configured in .env');
         } else {
             console.log('? Running E2E tests with real API keys');
-            // Rétablir le service OpenAI réel pour les tests E2E
+            // R?tablir le service OpenAI r?el pour les tests E2E
             vi.unmock('../../src/services/openai.js');
         }
     });
@@ -836,14 +899,14 @@ describe('E2E Tests with Real Environment', () => {
             );
 
             // Phase 2 : synthesizeConversation fonctionne et retourne une analyse
-            // (même si le taskId n'existe pas, il gère l'erreur gracieusement)
+            // (m?me si le taskId n'existe pas, il g?re l'erreur gracieusement)
             const result = await orchestrator.synthesizeConversation('real-task-id');
             
             expect(result).toBeDefined();
             expect(result.taskId).toBe('real-task-id');
             expect(result.analysisEngineVersion).toBe('2.0.0-phase2');
             
-            // Vérification que l'erreur "conversation not found" est dans le contexte
+            // V?rification que l'erreur "conversation not found" est dans le contexte
             expect(result.synthesis.initialContextSummary).toContain('Conversation skeleton not found');
         });
     });
