@@ -154,4 +154,11 @@ Combien de fichiers ?
 
 **Règle d'or** : Si vous vous apprêtez à appeler le même outil natif 3+ fois, demandez-vous si quickfiles ne le fait pas en 1 seul appel.
 
-**Pour plus de détails techniques** : Voir `docs/TECHNICAL-DETAILS.md`
+---
+
+## 🔧 Documentation Technique
+
+Pour les développeurs souhaitant contribuer ou comprendre l'architecture interne, consultez :
+- **[TECHNICAL.md](TECHNICAL.md)** : Architecture ESM, build, configuration détaillée, debugging
+
+Le README se concentre sur l'utilisation pratique. La documentation technique couvre les aspects de développement et maintenance.
