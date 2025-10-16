@@ -7,6 +7,8 @@ import {
     DEFAULT_SMART_TRUNCATION_CONFIG,
     ViewConversationTreeArgs
 } from './smart-truncation/index.js';
+import { promises as fs } from 'fs';
+import * as path from 'path';
 
 /**
  * Tronque un message en gardant le début et la fin
@@ -49,12 +51,12 @@ function truncateMessage(message: string, truncate: number): string {
      });
  }
 /**
- * Logique principale pour view_conversation_tree
+ * Logique principale pour view_conversation_tree (version asynchrone)
  */
-function handleViewConversationTreeExecution(
+async function handleViewConversationTreeExecutionAsync(
     args: ViewConversationTreeArgs,
     conversationCache: Map<string, ConversationSkeleton>
-): CallToolResult {
+): Promise<CallToolResult> {
     const { view_mode = 'chain', detail_level = 'skeleton', max_output_length = 300000, current_task_id } = args;
     let { truncate = 0 } = args;
     
@@ -218,11 +220,186 @@ function handleViewConversationTreeExecution(
     // 🎯 POINT D'AIGUILLAGE : Smart Truncation vs Legacy
     if (args.smart_truncation === true) {
         // ✨ NOUVEAU : Algorithme de troncature intelligente avec gradient
-        return handleSmartTruncation(tasksToDisplay, args, view_mode, detail_level, max_output_length, currentTaskId);
+        return handleSmartTruncationAsync(tasksToDisplay, args, view_mode, detail_level, max_output_length, currentTaskId);
     } else {
         // 🔄 LEGACY : Comportement original préservé (par défaut)
+        return handleLegacyTruncationAsync(tasksToDisplay, args, view_mode, detail_level, max_output_length, truncate, currentTaskId);
+    }
+}
+
+/**
+ * Logique principale pour view_conversation_tree (version synchrone - pour compatibilité)
+ */
+function handleViewConversationTreeExecution(
+    args: ViewConversationTreeArgs,
+    conversationCache: Map<string, ConversationSkeleton>
+): CallToolResult {
+    const { view_mode = 'chain', detail_level = 'skeleton', max_output_length = 300000, current_task_id } = args;
+    let { truncate = 0 } = args;
+    
+    // Gestion intelligente de truncate selon detail_level si non spécifié explicitement
+    if (truncate === 0) {
+        switch (detail_level) {
+            case 'skeleton':
+                truncate = 3;
+                break;
+            case 'summary':
+                truncate = 10;
+                break;
+            case 'full':
+                truncate = 0;
+                break;
+        }
+    }
+    let { task_id, workspace } = args;
+
+    if (!task_id) {
+        // Si le cache est vide, message explicite attendu par les tests
+        if (conversationCache.size === 0) {
+            throw new Error("Cache is empty and no task_id was provided. Cannot determine the latest task.");
+        }
+        // Sélection automatique de la tâche la plus récente (tous workspaces si non fourni)
+        const latestTask = findLatestTask(conversationCache, workspace);
+        if (!latestTask) {
+            if (workspace) {
+                throw new Error(`No tasks found for workspace '${workspace}'. Please verify the workspace path or provide a specific task_id.`);
+            }
+            throw new Error("No tasks found. Cannot determine the latest task.");
+        }
+        task_id = latestTask.taskId;
+    }
+
+    const skeletons = Array.from(conversationCache.values());
+    const skeletonMap = new Map(skeletons.map(s => [s.taskId, s]));
+
+    const currentTaskId: string | null = current_task_id || null;
+
+    const getTaskChain = (startTaskId: string): ConversationSkeleton[] => {
+        const chain: ConversationSkeleton[] = [];
+        let currentId: string | undefined = startTaskId;
+        while (currentId) {
+            const skeleton = skeletonMap.get(currentId);
+            if (skeleton) {
+                chain.unshift(skeleton);
+                currentId = skeleton.parentTaskId;
+            } else {
+                break;
+            }
+        }
+        return chain;
+    };
+
+    let tasksToDisplay: ConversationSkeleton[] = [];
+    const mainTask = skeletonMap.get(task_id);
+    if (!mainTask) {
+        throw new Error(`Task with ID '${task_id}' not found in cache.`);
+    }
+
+    switch (view_mode) {
+        case 'single':
+            tasksToDisplay.push(mainTask);
+            break;
+        case 'chain':
+            tasksToDisplay = getTaskChain(task_id);
+            break;
+        case 'cluster':
+            const chain = getTaskChain(task_id);
+            if (chain.length > 0) {
+                const directParentId = chain[chain.length - 1].parentTaskId;
+                if (directParentId) {
+                    const siblings = skeletons.filter(s => s.parentTaskId === directParentId);
+                    const parentTask = skeletonMap.get(directParentId);
+                    if(parentTask) tasksToDisplay.push(parentTask);
+                    tasksToDisplay.push(...siblings);
+                } else {
+                     tasksToDisplay = chain;
+                }
+            } else {
+                 tasksToDisplay.push(mainTask);
+            }
+            break;
+    }
+    
+    // Version synchrone sans sauvegarde fichier
+    if (args.smart_truncation === true) {
+        return handleSmartTruncation(tasksToDisplay, args, view_mode, detail_level, max_output_length, currentTaskId);
+    } else {
         return handleLegacyTruncation(tasksToDisplay, args, view_mode, detail_level, max_output_length, truncate, currentTaskId);
     }
+}
+
+/**
+ * Helper pour sauvegarder le résultat dans un fichier si output_file est spécifié
+ */
+async function saveToFileIfRequested(
+    output_file: string | undefined,
+    content: string
+): Promise<{ saved: boolean; filePath?: string; error?: string }> {
+    if (!output_file) {
+        return { saved: false };
+    }
+
+    try {
+        // Résoudre le chemin relatif par rapport au workspace
+        const fullPath = path.resolve(process.cwd(), output_file);
+        
+        // Créer les répertoires parents si nécessaire
+        await fs.mkdir(path.dirname(fullPath), { recursive: true });
+        
+        // Écrire le contenu formaté
+        await fs.writeFile(fullPath, content, 'utf-8');
+        
+        return { saved: true, filePath: fullPath };
+    } catch (error) {
+        const errorMsg = error instanceof Error ? error.message : String(error);
+        return { saved: false, error: errorMsg };
+    }
+}
+
+/**
+ * Wrapper pour rendre handleLegacyTruncation asynchrone
+ */
+async function handleLegacyTruncationAsync(
+    tasksToDisplay: ConversationSkeleton[],
+    args: ViewConversationTreeArgs,
+    view_mode: string,
+    detail_level: string,
+    max_output_length: number,
+    truncate: number,
+    currentTaskId: string | null
+): Promise<CallToolResult> {
+    const result = handleLegacyTruncation(
+        tasksToDisplay,
+        args,
+        view_mode,
+        detail_level,
+        max_output_length,
+        truncate,
+        currentTaskId
+    );
+
+    const treeOutput = result.content[0].text as string;
+
+    // Sauvegarder dans un fichier si demandé
+    const saveResult = await saveToFileIfRequested(args.output_file, treeOutput);
+    
+    if (saveResult.saved && saveResult.filePath) {
+        return {
+            content: [{
+                type: 'text',
+                text: `✅ Arbre sauvegardé dans: ${saveResult.filePath}\n\n${treeOutput}`
+            }]
+        };
+    } else if (saveResult.error) {
+        return {
+            content: [{
+                type: 'text',
+                text: `❌ Erreur lors de la sauvegarde: ${saveResult.error}\n\n${treeOutput}`
+            }]
+        };
+    }
+
+    return result;
 }
 
 /**
@@ -273,6 +450,50 @@ function handleLegacyTruncation(
     });
 
     return { content: [{ type: 'text', text: formattedOutput }] };
+}
+
+/**
+ * Wrapper pour rendre handleSmartTruncation asynchrone
+ */
+async function handleSmartTruncationAsync(
+    tasksToDisplay: ConversationSkeleton[],
+    args: ViewConversationTreeArgs,
+    view_mode: string,
+    detail_level: string,
+    max_output_length: number,
+    currentTaskId: string | null
+): Promise<CallToolResult> {
+    const result = handleSmartTruncation(
+        tasksToDisplay,
+        args,
+        view_mode,
+        detail_level,
+        max_output_length,
+        currentTaskId
+    );
+
+    const treeOutput = result.content[0].text as string;
+
+    // Sauvegarder dans un fichier si demandé
+    const saveResult = await saveToFileIfRequested(args.output_file, treeOutput);
+    
+    if (saveResult.saved && saveResult.filePath) {
+        return {
+            content: [{
+                type: 'text',
+                text: `✅ Arbre sauvegardé dans: ${saveResult.filePath}\n\n${treeOutput}`
+            }]
+        };
+    } else if (saveResult.error) {
+        return {
+            content: [{
+                type: 'text',
+                text: `❌ Erreur lors de la sauvegarde: ${saveResult.error}\n\n${treeOutput}`
+            }]
+        };
+    }
+
+    return result;
 }
 
 /**
@@ -422,10 +643,11 @@ export const viewConversationTree = {
                     minPreservationRate: { type: 'number', description: 'Taux minimum de préservation pour les extrêmes (défaut: 0.9)' },
                     maxTruncationRate: { type: 'number', description: 'Taux maximum de troncature pour le centre (défaut: 0.7)' }
                 }
-            }
+            },
+            output_file: { type: 'string', description: 'Chemin optionnel pour sauvegarder l\'arbre dans un fichier markdown' }
         },
     },
-    handler: (args: any, conversationCache: Map<string, ConversationSkeleton>): CallToolResult => {
-        return handleViewConversationTreeExecution(args, conversationCache);
+    handler: async (args: any, conversationCache: Map<string, ConversationSkeleton>): Promise<CallToolResult> => {
+        return handleViewConversationTreeExecutionAsync(args, conversationCache);
     }
 };

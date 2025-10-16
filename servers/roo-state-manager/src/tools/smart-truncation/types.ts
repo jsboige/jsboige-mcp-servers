@@ -111,4 +111,6 @@ export interface ViewConversationTreeArgs {
     smart_truncation?: boolean;
     /** Configuration personnalisée pour la troncature intelligente */
     smart_truncation_config?: Partial<SmartTruncationConfig>;
+    /** Chemin optionnel pour sauvegarder l'arbre dans un fichier markdown */
+    output_file?: string;
 }
