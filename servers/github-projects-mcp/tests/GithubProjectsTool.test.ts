@@ -143,7 +143,8 @@ describe('GitHub Actions E2E Tests', () => {
       projectId: testProjectId,
     });
     if (!issueResult.success || !issueResult.projectItemId) {
-      throw new Error(`Failed to create test item: ${title}`);
+      console.error('Failed to create test item:', issueResult);
+      throw new Error(`Failed to create test item: ${title} - ${JSON.stringify(issueResult)}`);
     }
     return issueResult.projectItemId;
   };
@@ -198,10 +199,16 @@ describe('GitHub Actions E2E Tests', () => {
 
   it('should return "moyenne" complexity for a standard task', async () => {
     const itemId = await createTestItem('Standard Task', 'This is a standard task with a description of reasonable length that should result in medium complexity.');
+    
+    // Obtenir le numéro du projet de test
+    const listProjectsTool = tools.find(t => t.name === 'list_projects') as any;
+    const allProjects = await listProjectsTool.execute({ owner: TEST_GITHUB_OWNER! });
+    const projectInfo = allProjects.projects.find((p: any) => p.id === testProjectId);
+    
     const result = await analyze_task_complexity(octokit, {
       owner: TEST_GITHUB_OWNER!,
       repo: TEST_GITHUB_REPO!,
-      projectNumber: 0,
+      projectNumber: projectInfo.number,
       itemId: itemId,
     });
     expect(result.success).toBe(true);
@@ -211,10 +218,16 @@ describe('GitHub Actions E2E Tests', () => {
   it('should return "élevée" complexity for a long task', async () => {
     const longBody = 'This is a very long task description. '.repeat(20) + 'It requires a lot of effort and careful planning. The implementation details are complex and involve multiple components interacting with each other. We need to be very careful with this one to avoid introducing regressions in other parts of the system.';
     const itemId = await createTestItem('Long Task', longBody);
+    
+    // Obtenir le numéro du projet de test
+    const listProjectsTool = tools.find(t => t.name === 'list_projects') as any;
+    const allProjects = await listProjectsTool.execute({ owner: TEST_GITHUB_OWNER! });
+    const projectInfo = allProjects.projects.find((p: any) => p.id === testProjectId);
+    
     const result = await analyze_task_complexity(octokit, {
       owner: TEST_GITHUB_OWNER!,
       repo: TEST_GITHUB_REPO!,
-      projectNumber: 0,
+      projectNumber: projectInfo.number,
       itemId: itemId,
     });
     expect(result.success).toBe(true);
@@ -224,10 +237,16 @@ describe('GitHub Actions E2E Tests', () => {
 
   it('should return "élevée" complexity for a task with critical keywords', async () => {
     const itemId = await createTestItem('Critical Bug Task', 'We need to investigate this critical bug immediately. It is causing a major outage.');
+    
+    // Obtenir le numéro du projet de test
+    const listProjectsTool = tools.find(t => t.name === 'list_projects') as any;
+    const allProjects = await listProjectsTool.execute({ owner: TEST_GITHUB_OWNER! });
+    const projectInfo = allProjects.projects.find((p: any) => p.id === testProjectId);
+    
     const result = await analyze_task_complexity(octokit, {
       owner: TEST_GITHUB_OWNER!,
       repo: TEST_GITHUB_REPO!,
-      projectNumber: 0,
+      projectNumber: projectInfo.number,
       itemId: itemId,
     });
     expect(result.success).toBe(true);
