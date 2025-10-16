@@ -43,4 +43,6 @@ mcp-debugging/
 
 # Vitest migration
 vitest-migration/
-"servers/roo-state-manager/synthesis-test-output.txt" 
+
+# Test outputs
+synthesis-test-output.txt
