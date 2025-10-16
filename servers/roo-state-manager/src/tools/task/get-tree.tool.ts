@@ -14,12 +14,16 @@ import {
     type TaskTreeNode,
     type FormatAsciiTreeOptions
 } from './format-ascii-tree.js';
+import {
+    formatTaskTreeHierarchical,
+    type FormatHierarchicalTreeOptions
+} from './format-hierarchical-tree.js';
 
 export interface GetTaskTreeArgs {
     conversation_id: string;
     max_depth?: number;
     include_siblings?: boolean;
-    output_format?: 'json' | 'markdown' | 'ascii-tree';
+    output_format?: 'json' | 'markdown' | 'ascii-tree' | 'hierarchical';
     /** ID de la tâche actuellement en cours d'exécution (pour marquage explicite) */
     current_task_id?: string;
     /** Longueur maximale de l'instruction affichée (défaut: 80) */
@@ -51,8 +55,8 @@ export const getTaskTreeTool = {
             },
             output_format: {
                 type: 'string',
-                enum: ['json', 'markdown', 'ascii-tree'],
-                description: 'Format de sortie: json (défaut), markdown (legacy), ou ascii-tree (arbre visuel avec connecteurs).',
+                enum: ['json', 'markdown', 'ascii-tree', 'hierarchical'],
+                description: 'Format de sortie: json (défaut), markdown (legacy), ascii-tree (arbre visuel avec connecteurs), ou hierarchical (format complet avec TOC et métadonnées).',
                 default: 'json'
             },
             current_task_id: {
@@ -225,6 +229,17 @@ export async function handleGetTaskTree(
         const footer = generateTreeFooter(totalNodes, actualDepth);
         
         return { content: [{ type: 'text', text: header + asciiTree + footer }] };
+    } else if (output_format === 'hierarchical') {
+        // Format hiérarchique complet avec TOC et métadonnées
+        const options: FormatHierarchicalTreeOptions = {
+            includeToC: true,
+            includeLegend: true,
+            includeStats: true
+        };
+        
+        const hierarchicalTree = formatTaskTreeHierarchical(tree as TaskTreeNode, options);
+        
+        return { content: [{ type: 'text', text: hierarchicalTree }] };
     } else if (output_format === 'markdown') {
         // Format markdown legacy (conservé pour compatibilité)
         const formatTreeMarkdown = (node: any, prefix: string = '', isLast: boolean = true): string => {

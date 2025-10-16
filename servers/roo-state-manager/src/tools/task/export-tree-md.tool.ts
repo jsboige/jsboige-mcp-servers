@@ -15,8 +15,8 @@ export interface ExportTaskTreeMarkdownArgs {
     include_siblings?: boolean;
     /** ID de la tâche actuellement en cours d'exécution (pour marquage explicite comme "(TÂCHE ACTUELLE)") */
     current_task_id?: string;
-    /** Format de sortie: 'ascii-tree' (défaut), 'markdown' (legacy), ou 'json' */
-    output_format?: 'ascii-tree' | 'markdown' | 'json';
+    /** Format de sortie: 'ascii-tree' (défaut), 'markdown' (legacy), 'hierarchical' (complet avec TOC), ou 'json' */
+    output_format?: 'ascii-tree' | 'markdown' | 'hierarchical' | 'json';
     /** Longueur maximale de l'instruction affichée (défaut: 80) */
     truncate_instruction?: number;
     /** Afficher les métadonnées détaillées (défaut: false) */
@@ -58,8 +58,8 @@ export const exportTaskTreeMarkdownTool = {
             },
             output_format: {
                 type: 'string',
-                enum: ['ascii-tree', 'markdown', 'json'],
-                description: 'Format de sortie: ascii-tree (défaut, arbre visuel), markdown (legacy, titres hiérarchiques), ou json (données brutes).',
+                enum: ['ascii-tree', 'markdown', 'hierarchical', 'json'],
+                description: 'Format de sortie: ascii-tree (défaut, arbre visuel), markdown (legacy, titres hiérarchiques), hierarchical (complet avec TOC et métadonnées), ou json (données brutes).',
                 default: 'ascii-tree'
             },
             current_task_id: {
