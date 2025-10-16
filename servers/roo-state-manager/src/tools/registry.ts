@@ -103,6 +103,83 @@ export function registerListToolsHandler(server: Server): void {
                 toolExports.exportTaskTreeMarkdownTool,
                 // RooSync tools - Batch 6 synchronization
                 ...toolExports.roosyncTools,
+                // RooSync Messaging tools - Phase 1
+                {
+                    name: 'roosync_send_message',
+                    description: 'Envoyer un message structuré à une autre machine via RooSync',
+                    inputSchema: {
+                        type: 'object',
+                        properties: {
+                            to: {
+                                type: 'string',
+                                description: 'ID de la machine destinataire (ex: myia-ai-01)'
+                            },
+                            subject: {
+                                type: 'string',
+                                description: 'Sujet du message'
+                            },
+                            body: {
+                                type: 'string',
+                                description: 'Corps du message (markdown supporté)'
+                            },
+                            priority: {
+                                type: 'string',
+                                enum: ['LOW', 'MEDIUM', 'HIGH', 'URGENT'],
+                                description: 'Priorité du message (défaut: MEDIUM)'
+                            },
+                            tags: {
+                                type: 'array',
+                                items: { type: 'string' },
+                                description: 'Tags optionnels pour catégoriser le message'
+                            },
+                            thread_id: {
+                                type: 'string',
+                                description: 'ID du thread pour regrouper les messages'
+                            },
+                            reply_to: {
+                                type: 'string',
+                                description: 'ID du message auquel on répond'
+                            }
+                        },
+                        required: ['to', 'subject', 'body']
+                    }
+                },
+                {
+                    name: 'roosync_read_inbox',
+                    description: 'Lire la boîte de réception des messages RooSync',
+                    inputSchema: {
+                        type: 'object',
+                        properties: {
+                            status: {
+                                type: 'string',
+                                enum: ['unread', 'read', 'all'],
+                                description: 'Filtrer par status (défaut: all)'
+                            },
+                            limit: {
+                                type: 'number',
+                                description: 'Nombre maximum de messages à retourner'
+                            }
+                        }
+                    }
+                },
+                {
+                    name: 'roosync_get_message',
+                    description: 'Obtenir les détails complets d\'un message spécifique',
+                    inputSchema: {
+                        type: 'object',
+                        properties: {
+                            message_id: {
+                                type: 'string',
+                                description: 'ID du message à récupérer'
+                            },
+                            mark_as_read: {
+                                type: 'boolean',
+                                description: 'Marquer automatiquement comme lu (défaut: false)'
+                            }
+                        },
+                        required: ['message_id']
+                    }
+                }
             ] as any[],
         };
     });
@@ -341,6 +418,28 @@ export function registerCallToolHandler(
                   result = { content: [{ type: 'text', text: `Error: ${(error as Error).message}` }], isError: true };
               }
               break;
+           // RooSync Messaging tools - Phase 1
+           case 'roosync_send_message':
+               try {
+                   result = await toolExports.sendMessage(args as any) as CallToolResult;
+               } catch (error) {
+                   result = { content: [{ type: 'text', text: `Error: ${(error as Error).message}` }], isError: true };
+               }
+               break;
+           case 'roosync_read_inbox':
+               try {
+                   result = await toolExports.readInbox(args as any) as CallToolResult;
+               } catch (error) {
+                   result = { content: [{ type: 'text', text: `Error: ${(error as Error).message}` }], isError: true };
+               }
+               break;
+           case 'roosync_get_message':
+               try {
+                   result = await toolExports.getMessage(args as any) as CallToolResult;
+               } catch (error) {
+                   result = { content: [{ type: 'text', text: `Error: ${(error as Error).message}` }], isError: true };
+               }
+               break;
           default:
               throw new Error(`Tool not found: ${name}`);
       }

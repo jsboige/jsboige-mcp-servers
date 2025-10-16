@@ -113,6 +113,11 @@ export type {
   InitResult
 } from './init.js';
 
+// Export des nouveaux outils de messagerie (Phase 1)
+export { sendMessage } from './send_message.js';
+export { readInbox } from './read_inbox.js';
+export { getMessage } from './get_message.js';
+
 // Import des métadonnées pour l'array
 import { getStatusToolMetadata } from './get-status.js';
 import { compareConfigToolMetadata } from './compare-config.js';
