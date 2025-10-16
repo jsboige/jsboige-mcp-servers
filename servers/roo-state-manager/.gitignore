@@ -17,6 +17,9 @@
 test-results.json
 
 # Debug outputs
+# Temporary debug files
+tmp-debug/
+
 mcp-debugging/
 
 # Reports and documentation
