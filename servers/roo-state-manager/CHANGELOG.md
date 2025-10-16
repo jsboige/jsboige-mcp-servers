@@ -1,5 +1,62 @@
 # Changelog - Roo State Manager
 
+## [2.0.0] - 2025-10-16
+
+### 🎉 Messagerie RooSync Phase 2 - PRODUCTION READY
+
+#### ✨ Nouvelles Fonctionnalités
+- **roosync_mark_message_read** : Marquer messages comme lus avec persistence
+- **roosync_archive_message** : Archiver messages avec déplacement physique (inbox → archive)
+- **roosync_reply_message** : Répondre aux messages avec :
+  - Inversion automatique from/to
+  - Héritage thread_id et priority
+  - Ajout automatique tag "reply"
+  - Préfixe "Re:" au sujet
+
+#### 🧪 Tests
+- 18 nouveaux tests unitaires (70-85% coverage)
+  - 4 tests mark_message_read
+  - 5 tests archive_message
+  - 9 tests reply_message
+- 8 tests E2E workflow complet (100% succès)
+  - Communication bidirectionnelle validée
+  - Persistence fichiers validée
+  - Thread management opérationnel
+
+#### 📚 Documentation
+- Guide utilisateur Phase 2 complet
+- 5 scénarios d'usage documentés
+- Workflow complets avec exemples
+- Rapport tests E2E détaillé (426 lignes)
+
+#### 📊 Statistiques Globales
+- **6 outils MCP** (Phase 1+2)
+- **49 tests unitaires** (100% passing)
+- **~2300 lignes de code**
+- **1200+ lignes documentation**
+
+---
+
+## [1.0.0] - 2025-10-16
+
+### 🎉 Messagerie RooSync Phase 1 - Core Tools
+
+#### ✨ Nouvelles Fonctionnalités
+- **roosync_send_message** : Envoi messages structurés
+- **roosync_read_inbox** : Lecture boîte de réception
+- **roosync_get_message** : Lecture message complet
+- **MessageManager** : Service de gestion messages (403 lignes)
+
+#### 🧪 Tests
+- 31 tests unitaires MessageManager (100% coverage)
+- Tests E2E Phase 1 (3/3 outils validés)
+
+#### 📚 Documentation
+- Guide utilisateur MESSAGING-USAGE.md (253 lignes)
+- Rapport implémentation Phase 1 (502 lignes)
+
+---
+
 ## [Unreleased]
 
 ### Changed
