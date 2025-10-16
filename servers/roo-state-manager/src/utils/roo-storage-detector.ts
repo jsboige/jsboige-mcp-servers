@@ -25,6 +25,7 @@ import {
 import { globalCacheManager } from './cache-manager.js';
 import { globalTaskInstructionIndex, computeInstructionPrefix } from './task-instruction-index.js';
 import { MessageToSkeletonTransformer } from './message-to-skeleton-transformer.js';
+import { HierarchyReconstructionEngine } from './hierarchy-reconstruction-engine.js';
 import { SkeletonComparator } from './skeleton-comparator.js';
 import { getParsingConfig, isComparisonMode, shouldUseNewParsing } from './parsing-config.js';
 import { WorkspaceDetector } from './workspace-detector.js';
@@ -810,19 +811,94 @@ export class RooStorageDetector {
    */
   public static async buildHierarchicalSkeletons(
     workspacePath?: string,
-    useFullVolume: boolean = true
+    useFullVolume: boolean = true,
+    forceRebuild: boolean = false
   ): Promise<ConversationSkeleton[]> {
     console.log(`[buildHierarchicalSkeletons] 🏗️ DÉMARRAGE reconstruction hiérarchique ${workspacePath || 'TOUS WORKSPACES'}`);
+    
+    // NOUVEAU : Utiliser le HierarchyReconstructionEngine pour la reconstruction en deux passes
+    console.log(`[buildHierarchicalSkeletons] 🚀 Utilisation du nouveau HierarchyReconstructionEngine`);
+    
+    try {
+      // Lancer la reconstruction avec le nouveau moteur
+      const reconstructedSkeletons = await HierarchyReconstructionEngine.reconstructHierarchy(
+        workspacePath,
+        forceRebuild
+      );
+
+      console.log(`[buildHierarchicalSkeletons] ✅ Reconstruction terminée avec ${reconstructedSkeletons.length} squelettes`);
+      
+      // Statistiques de validation
+      const orphanTasks = reconstructedSkeletons.filter((c: ConversationSkeleton) => !c.parentTaskId);
+      const withParents = reconstructedSkeletons.filter((c: ConversationSkeleton) => c.parentTaskId);
+
+      console.log(`[buildHierarchicalSkeletons] 📊 STATISTIQUES:`);
+      console.log(`   📋 ${reconstructedSkeletons.length} tâches totales`);
+      console.log(`   ✅ ${withParents.length} avec parent dans les métadonnées`);
+      console.log(`   ⚠️ ${orphanTasks.length} tâches orphelines ou racines`);
+
+      // Analyser la profondeur de l'arbre
+      const treeDepth = this.calculateTreeDepth(reconstructedSkeletons);
+      console.log(`   🌳 Profondeur de l'arbre: ${treeDepth}`);
+
+      return reconstructedSkeletons;
+
+    } catch (error) {
+      console.error(`[buildHierarchicalSkeletons] ❌ Erreur lors de la reconstruction:`, error);
+      
+      // Fallback vers l'ancienne méthode en cas d'erreur
+      console.log(`[buildHierarchicalSkeletons] 🔄 Fallback vers l'ancienne méthode`);
+      return this.buildHierarchicalSkeletonsLegacy(workspacePath, useFullVolume);
+    }
+  }
+
+  /**
+   * Calcule la profondeur maximale de l'arbre des tâches
+   */
+  private static calculateTreeDepth(skeletons: ConversationSkeleton[]): number {
+    const taskMap = new Map<string, ConversationSkeleton>();
+    for (const skeleton of skeletons) {
+      taskMap.set(skeleton.taskId, skeleton);
+    }
+
+    let maxDepth = 0;
+    
+    const calculateDepth = (taskId: string, currentDepth: number = 0): number => {
+      const task = taskMap.get(taskId);
+      if (!task || !task.parentTaskId) {
+        return currentDepth;
+      }
+      return calculateDepth(task.parentTaskId, currentDepth + 1);
+    };
+
+    for (const skeleton of skeletons) {
+      const depth = calculateDepth(skeleton.taskId);
+      if (depth > maxDepth) {
+        maxDepth = depth;
+      }
+    }
+
+    return maxDepth;
+  }
+
+  /**
+   * LEGACY : Ancienne méthode de reconstruction (utilisée en fallback)
+   */
+  private static async buildHierarchicalSkeletonsLegacy(
+    workspacePath?: string,
+    useFullVolume: boolean = true
+  ): Promise<ConversationSkeleton[]> {
+    console.log(`[buildHierarchicalSkeletonsLegacy] 📋 Utilisation de l'ancienne méthode`);
     
     const conversations: ConversationSkeleton[] = [];
     const storageLocations = await this.detectStorageLocations();
     
     // PHASE 1: Reconstruction de l'index à partir des squelettes existants
-    console.log(`[buildHierarchicalSkeletons] 📋 PHASE 1: Reconstruction index radix-tree`);
+    console.log(`[buildHierarchicalSkeletonsLegacy] 📋 PHASE 1: Reconstruction index radix-tree`);
     await this.rebuildIndexFromExistingSkeletons();
 
     // PHASE 2: Scan et génération des squelettes (PARALLÉLISÉE)
-    console.log(`[buildHierarchicalSkeletons] 🔄 PHASE 2: Génération squelettes avec hiérarchies en parallèle`);
+    console.log(`[buildHierarchicalSkeletonsLegacy] 🔄 PHASE 2: Génération squelettes avec hiérarchies en parallèle`);
     const maxTasks = useFullVolume ? Number.MAX_SAFE_INTEGER : 100;
 
     // Collecter toutes les tâches à traiter
@@ -833,7 +909,7 @@ export class RooStorageDetector {
       
       try {
         const taskDirs = await fs.readdir(tasksPath, { withFileTypes: true });
-        console.log(`[buildHierarchicalSkeletons] 📁 Collecte ${taskDirs.length} tâches dans ${locationPath}`);
+        console.log(`[buildHierarchicalSkeletonsLegacy] 📁 Collecte ${taskDirs.length} tâches dans ${locationPath}`);
         
         for (const entry of taskDirs) {
           if (allTaskEntries.length >= maxTasks) break;
@@ -847,12 +923,12 @@ export class RooStorageDetector {
           });
         }
       } catch (error) {
-        console.warn(`[buildHierarchicalSkeletons] ⚠️ Impossible de scanner ${tasksPath}:`, error);
+        console.warn(`[buildHierarchicalSkeletonsLegacy] ⚠️ Impossible de scanner ${tasksPath}:`, error);
       }
     }
 
     // Traitement parallèle par batches de 20
-    console.log(`[buildHierarchicalSkeletons] 🚀 Traitement parallèle de ${allTaskEntries.length} tâches (batches de 20)`);
+    console.log(`[buildHierarchicalSkeletonsLegacy] 🚀 Traitement parallèle de ${allTaskEntries.length} tâches (batches de 20)`);
     
     const processedSkeletons = await this.processBatch(
       allTaskEntries,
@@ -864,14 +940,14 @@ export class RooStorageDetector {
           }
           return null;
         } catch (error) {
-          console.warn(`[buildHierarchicalSkeletons] ⚠️ Erreur sur tâche ${taskEntry.taskId}:`, error);
+          console.warn(`[buildHierarchicalSkeletonsLegacy] ⚠️ Erreur sur tâche ${taskEntry.taskId}:`, error);
           return null;
         }
       },
       20, // Batch size
       (processed, total) => {
         if (processed % 200 === 0) {
-          console.log(`[buildHierarchicalSkeletons] 📊 Progression: ${processed}/${total} tâches traitées`);
+          console.log(`[buildHierarchicalSkeletonsLegacy] 📊 Progression: ${processed}/${total} tâches traitées`);
         }
       }
     );
@@ -879,7 +955,7 @@ export class RooStorageDetector {
     conversations.push(...processedSkeletons.filter(s => s !== null) as ConversationSkeleton[]);
 
     // 🚀 PHASE 3: Résolution strict mode des parents manquants en 2 passes
-    console.log(`[buildHierarchicalSkeletons] 🔗 PHASE 3: Résolution des parents manquants en mode strict`);
+    console.log(`[buildHierarchicalSkeletonsLegacy] 🔗 PHASE 3: Résolution des parents manquants en mode strict`);
     console.log(`STRICT MODE: pass1 indexing complete`);
     
     const orphanTasks = conversations.filter(c => !c.parentTaskId);
@@ -929,7 +1005,7 @@ export class RooStorageDetector {
     console.log(`STRICT MODE: final orphans count: ${finalOrphansCount}`);
 
     const indexStats = globalTaskInstructionIndex.getStats();
-    console.log(`[buildHierarchicalSkeletons] ✅ TERMINÉ:`);
+    console.log(`[buildHierarchicalSkeletonsLegacy] ✅ TERMINÉ:`);
     console.log(`   📊 ${conversations.length} squelettes générés`);
     console.log(`   🔗 ${resolvedCount} relations résolues en phase 3`);
     console.log(`   📈 Index: ${indexStats.totalInstructions} instructions, ${indexStats.totalNodes} noeuds`);
