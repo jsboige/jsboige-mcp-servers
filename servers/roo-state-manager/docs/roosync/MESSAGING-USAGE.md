@@ -1,7 +1,7 @@
 # 📨 RooSync Messaging System - Guide Utilisateur
 
-**Version :** Phase 1 - Core Tools  
-**Date :** 16 octobre 2025  
+**Version :** Phase 2 - Management Tools
+**Date :** 16 octobre 2025
 **Serveur MCP :** roo-state-manager
 
 ---
@@ -131,6 +131,107 @@ Paramètres : {
 
 ---
 
+## 🛠️ Outils Phase 2 - Management Tools
+
+### 4. roosync_mark_message_read
+
+Marquer un message comme lu en mettant à jour son statut.
+
+**Serveur :** `roo-state-manager`
+
+**Paramètres :**
+
+| Paramètre | Type | Requis | Description |
+|-----------|------|--------|-------------|
+| `message_id` | string | ✅ | ID du message à marquer comme lu |
+
+**Exemple d'utilisation :**
+
+```
+Outil MCP : roosync_mark_message_read
+Serveur : roo-state-manager
+Paramètres : {
+  "message_id": "msg-20251016125500-abc123"
+}
+```
+
+**Résultat :**
+- Status mis à jour de `unread` → `read`
+- Fichier JSON modifié dans inbox/
+- Confirmation avec détails du message
+
+---
+
+### 5. roosync_archive_message
+
+Archiver un message en le déplaçant vers le dossier `archive/`.
+
+**Serveur :** `roo-state-manager`
+
+**Paramètres :**
+
+| Paramètre | Type | Requis | Description |
+|-----------|------|--------|-------------|
+| `message_id` | string | ✅ | ID du message à archiver |
+
+**Exemple d'utilisation :**
+
+```
+Outil MCP : roosync_archive_message
+Serveur : roo-state-manager
+Paramètres : {
+  "message_id": "msg-20251016125500-abc123"
+}
+```
+
+**Résultat :**
+- Message déplacé de `inbox/` vers `archive/`
+- Status mis à jour vers `archived`
+- N'apparaît plus dans `roosync_read_inbox`
+- Timestamp d'archivage ajouté
+
+---
+
+### 6. roosync_reply_message
+
+Répondre à un message existant en créant un nouveau message lié.
+
+**Serveur :** `roo-state-manager`
+
+**Paramètres :**
+
+| Paramètre | Type | Requis | Description |
+|-----------|------|--------|-------------|
+| `message_id` | string | ✅ | ID du message auquel répondre |
+| `body` | string | ✅ | Corps de la réponse |
+| `priority` | string | ❌ | LOW\|MEDIUM\|HIGH\|URGENT (défaut: priorité de l'original) |
+| `tags` | array | ❌ | Tags supplémentaires (le tag "reply" est ajouté automatiquement) |
+
+**Exemple d'utilisation :**
+
+```
+Outil MCP : roosync_reply_message
+Serveur : roo-state-manager
+Paramètres : {
+  "message_id": "msg-20251016125500-abc123",
+  "body": "Message bien reçu ! Tests validés de mon côté.",
+  "priority": "HIGH",
+  "tags": ["confirmation", "tests"]
+}
+```
+
+**Résultat :**
+- Nouveau message créé avec :
+  - `from` et `to` inversés automatiquement
+  - Sujet préfixé par "Re: "
+  - `reply_to` pointant vers le message original
+  - `thread_id` hérité ou créé avec l'ID original
+  - Tag "reply" ajouté automatiquement
+- Message envoyé au destinataire
+- Affichage du message original et de la réponse
+
+---
+
 ## 🔄 Workflow Typique
 
 ### Scénario 1 : Envoyer un message
@@ -146,7 +247,7 @@ Paramètres : {
 3. **Utiliser `roosync_get_message`** pour le contenu complet
 4. **Optionnel :** Marquer comme lu avec `mark_as_read: true`
 
-### Scénario 3 : Répondre à un message
+### Scénario 3 : Répondre à un message (Méthode manuelle - Phase 1)
 
 1. **Lire le message original** avec `roosync_get_message`
 2. **Noter l'ID du message** (pour `reply_to`)
@@ -154,6 +255,45 @@ Paramètres : {
    - `to`: expéditeur original
    - `reply_to`: ID du message original
    - `thread_id`: même thread_id si présent
+
+### Scénario 4 : Répondre à un message (Phase 2 - Simplifié)
+
+1. **Lire le message** avec `roosync_get_message`
+2. **Utiliser `roosync_reply_message`** directement :
+   - Inversion `from`/`to` automatique
+   - Préfixe "Re: " automatique
+   - Liaison thread automatique
+
+### Scénario 5 : Workflow Complet Phase 2
+
+```
+# 1. Consulter boîte de réception
+roosync_read_inbox({ status: "unread" })
+
+# 2. Lire un message sans le marquer comme lu
+roosync_get_message({
+  message_id: "msg-20251016125500-abc123",
+  mark_as_read: false
+})
+
+# 3. Marquer comme lu après analyse
+roosync_mark_message_read({
+  message_id: "msg-20251016125500-abc123"
+})
+
+# 4. Répondre au message
+roosync_reply_message({
+  message_id: "msg-20251016125500-abc123",
+  body: "Bien reçu, tests validés !",
+  priority: "HIGH",
+  tags: ["confirmation"]
+})
+
+# 5. Archiver le message original
+roosync_archive_message({
+  message_id: "msg-20251016125500-abc123"
+})
+```
 
 ---
 
@@ -194,10 +334,10 @@ Paramètres : {
 
 ## 🚀 Prochaines Phases
 
-**Phase 2 - Management Tools :**
-- `roosync_mark_message_read` : Marquer comme lu
-- `roosync_archive_message` : Archiver un message
-- `roosync_reply_message` : Répondre directement
+**✅ Phase 2 - Management Tools (IMPLÉMENTÉ) :**
+- ✅ `roosync_mark_message_read` : Marquer comme lu
+- ✅ `roosync_archive_message` : Archiver un message
+- ✅ `roosync_reply_message` : Répondre directement
 
 **Phase 3 - Advanced Features :**
 - Recherche de messages
@@ -236,4 +376,4 @@ Paramètres : {
 
 ---
 
-*Documentation générée le 2025-10-16 - Phase 1 Implementation*
+*Documentation générée le 2025-10-16 - Phase 2 Implementation*

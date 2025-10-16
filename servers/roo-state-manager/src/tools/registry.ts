@@ -179,6 +179,63 @@ export function registerListToolsHandler(server: Server): void {
                         },
                         required: ['message_id']
                     }
+                },
+                // RooSync Messaging tools - Phase 2 (Management)
+                {
+                    name: 'roosync_mark_message_read',
+                    description: 'Marquer un message comme lu en mettant à jour son statut',
+                    inputSchema: {
+                        type: 'object',
+                        properties: {
+                            message_id: {
+                                type: 'string',
+                                description: 'ID du message à marquer comme lu'
+                            }
+                        },
+                        required: ['message_id']
+                    }
+                },
+                {
+                    name: 'roosync_archive_message',
+                    description: 'Archiver un message en le déplaçant de inbox/ vers archive/',
+                    inputSchema: {
+                        type: 'object',
+                        properties: {
+                            message_id: {
+                                type: 'string',
+                                description: 'ID du message à archiver'
+                            }
+                        },
+                        required: ['message_id']
+                    }
+                },
+                {
+                    name: 'roosync_reply_message',
+                    description: 'Répondre à un message existant en créant un nouveau message lié',
+                    inputSchema: {
+                        type: 'object',
+                        properties: {
+                            message_id: {
+                                type: 'string',
+                                description: 'ID du message auquel répondre'
+                            },
+                            body: {
+                                type: 'string',
+                                description: 'Corps de la réponse'
+                            },
+                            priority: {
+                                type: 'string',
+                                enum: ['LOW', 'MEDIUM', 'HIGH', 'URGENT'],
+                                description: 'Priorité de la réponse (défaut: priorité du message original)'
+                            },
+                            tags: {
+                                type: 'array',
+                                items: { type: 'string' },
+                                description: 'Tags supplémentaires (le tag "reply" est ajouté automatiquement)'
+                            }
+                        },
+                        required: ['message_id', 'body']
+                    }
                 }
             ] as any[],
         };
@@ -440,8 +497,30 @@ export function registerCallToolHandler(
                    result = { content: [{ type: 'text', text: `Error: ${(error as Error).message}` }], isError: true };
                }
                break;
-          default:
-              throw new Error(`Tool not found: ${name}`);
+           // RooSync Messaging tools - Phase 2 (Management)
+           case 'roosync_mark_message_read':
+               try {
+                   result = await toolExports.markMessageRead(args as any) as CallToolResult;
+               } catch (error) {
+                   result = { content: [{ type: 'text', text: `Error: ${(error as Error).message}` }], isError: true };
+               }
+               break;
+           case 'roosync_archive_message':
+               try {
+                   result = await toolExports.archiveMessage(args as any) as CallToolResult;
+               } catch (error) {
+                   result = { content: [{ type: 'text', text: `Error: ${(error as Error).message}` }], isError: true };
+               }
+               break;
+           case 'roosync_reply_message':
+               try {
+                   result = await toolExports.replyMessage(args as any) as CallToolResult;
+               } catch (error) {
+                   result = { content: [{ type: 'text', text: `Error: ${(error as Error).message}` }], isError: true };
+               }
+               break;
+           default:
+               throw new Error(`Tool not found: ${name}`);
       }
 
         return result;
