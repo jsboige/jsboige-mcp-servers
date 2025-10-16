@@ -2,7 +2,7 @@
  * Tests pour roosync_apply_decision
  */
 
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { writeFileSync, mkdirSync, rmSync } from 'fs';
 import { join, dirname } from 'path';
 import { fileURLToPath } from 'url';
@@ -74,6 +74,22 @@ describe('roosync_apply_decision', () => {
     process.env.ROOSYNC_LOG_LEVEL = 'info';
     
     RooSyncService.resetInstance();
+    
+    // Mock executeDecision pour éviter les appels PowerShell réels
+    const service = RooSyncService.getInstance();
+    vi.spyOn(service, 'executeDecision').mockResolvedValue({
+      success: true,
+      logs: ['[MOCK] Exécution simulée réussie'],
+      changes: {
+        filesModified: ['.config/test.json'],
+        filesCreated: [],
+        filesDeleted: []
+      },
+      executionTime: 100
+    });
+    
+    // Mock createRollbackPoint pour éviter les appels PowerShell réels
+    vi.spyOn(service, 'createRollbackPoint').mockResolvedValue(undefined);
   });
   
   afterEach(() => {

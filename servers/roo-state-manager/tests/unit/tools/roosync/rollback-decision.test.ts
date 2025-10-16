@@ -2,7 +2,7 @@
  * Tests pour roosync_rollback_decision
  */
 
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { writeFileSync, mkdirSync, rmSync } from 'fs';
 import { join, dirname } from 'path';
 import { fileURLToPath } from 'url';
@@ -77,6 +77,32 @@ describe('roosync_rollback_decision', () => {
     process.env.ROOSYNC_LOG_LEVEL = 'info';
     
     RooSyncService.resetInstance();
+    
+    // Créer répertoire .rollback avec backup simulé
+    const rollbackDir = join(testDir, '.rollback');
+    mkdirSync(rollbackDir, { recursive: true });
+    
+    // Créer backup simulé pour test-decision-applied
+    const backupPath = join(rollbackDir, `test-decision-applied_${Date.now()}`);
+    mkdirSync(backupPath, { recursive: true });
+    writeFileSync(join(backupPath, 'backup-info.json'), JSON.stringify({
+      decisionId: 'test-decision-applied',
+      timestamp: new Date().toISOString(),
+      files: ['.config/test.json']
+    }), 'utf-8');
+    
+    // Mock restoreFromRollbackPoint pour simuler succès du rollback
+    const service = RooSyncService.getInstance();
+    vi.spyOn(service, 'restoreFromRollbackPoint').mockResolvedValue({
+      success: true,
+      restoredFiles: ['.config/test.json'],
+      logs: [
+        '[ROLLBACK] Recherche du point de rollback...',
+        '[ROLLBACK] Point de rollback trouvé',
+        '[ROLLBACK] Restauration de .config/test.json',
+        '[ROLLBACK] Rollback terminé avec succès'
+      ]
+    });
   });
   
   afterEach(() => {
