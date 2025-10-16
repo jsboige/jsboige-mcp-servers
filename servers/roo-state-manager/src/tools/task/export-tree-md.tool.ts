@@ -15,6 +15,12 @@ export interface ExportTaskTreeMarkdownArgs {
     include_siblings?: boolean;
     /** ID de la tâche actuellement en cours d'exécution (pour marquage explicite comme "(TÂCHE ACTUELLE)") */
     current_task_id?: string;
+    /** Format de sortie: 'ascii-tree' (défaut), 'markdown' (legacy), ou 'json' */
+    output_format?: 'ascii-tree' | 'markdown' | 'json';
+    /** Longueur maximale de l'instruction affichée (défaut: 80) */
+    truncate_instruction?: number;
+    /** Afficher les métadonnées détaillées (défaut: false) */
+    show_metadata?: boolean;
 }
 
 /**
@@ -50,9 +56,25 @@ export const exportTaskTreeMarkdownTool = {
                 description: 'Inclure les tâches sœurs (même parent) dans l\'arbre.',
                 default: true
             },
+            output_format: {
+                type: 'string',
+                enum: ['ascii-tree', 'markdown', 'json'],
+                description: 'Format de sortie: ascii-tree (défaut, arbre visuel), markdown (legacy, titres hiérarchiques), ou json (données brutes).',
+                default: 'ascii-tree'
+            },
             current_task_id: {
                 type: 'string',
                 description: 'ID de la tâche en cours d\'exécution pour marquage explicite comme "(TÂCHE ACTUELLE)". Si omis, aucune tâche ne sera marquée.'
+            },
+            truncate_instruction: {
+                type: 'number',
+                description: 'Longueur maximale de l\'instruction affichée dans le format ascii-tree (défaut: 80).',
+                default: 80
+            },
+            show_metadata: {
+                type: 'boolean',
+                description: 'Afficher les métadonnées détaillées dans le format ascii-tree (défaut: false).',
+                default: false
             }
         },
         required: ['conversation_id']
@@ -70,93 +92,42 @@ export async function handleExportTaskTreeMarkdown(
     conversationCache?: Map<string, ConversationSkeleton>
 ): Promise<CallToolResult> {
     try {
-        const { conversation_id, filePath, max_depth, include_siblings = true, current_task_id } = args;
+        const {
+            conversation_id,
+            filePath,
+            max_depth,
+            include_siblings = true,
+            current_task_id,
+            output_format = 'ascii-tree',
+            truncate_instruction = 80,
+            show_metadata = false
+        } = args;
 
         if (!conversation_id) {
             throw new Error("conversation_id est requis");
         }
 
         // **FAILSAFE: Auto-rebuild cache si nécessaire**
-        // Note: handleGetTaskTree ci-dessous va déjà appeler _ensureSkeletonCacheIsFresh,
-        // mais on le fait aussi ici pour cohérence et sécurité
         await ensureSkeletonCacheIsFresh();
 
-        // Utiliser get_task_tree pour récupérer l'arbre avec les nouveaux champs
-        // 🎯 TRANSMISSION DU current_task_id pour marquage dans get_task_tree
+        // Utiliser get_task_tree pour récupérer l'arbre formaté
         const treeResult = await handleGetTaskTree({
             conversation_id,
             max_depth,
             include_siblings,
-            current_task_id
+            current_task_id,
+            output_format,
+            truncate_instruction,
+            show_metadata
         });
 
         if (!treeResult || !treeResult.content || !treeResult.content[0]) {
             throw new Error("Impossible de récupérer l'arbre des tâches");
         }
 
-        const textContent = treeResult.content[0].text;
-        if (typeof textContent !== 'string') {
+        const formattedTree = treeResult.content[0].text;
+        if (typeof formattedTree !== 'string') {
             throw new Error("Format de données invalide retourné par get_task_tree");
-        }
-        const treeData = JSON.parse(textContent);
-
-        // Fonction récursive pour formatter l'arbre en Markdown
-        const formatNodeToMarkdown = (node: any, depth: number = 0): string => {
-            let markdown = '';
-            const indent = '#'.repeat(Math.max(2, depth + 2)); // Commence par ## au minimum
-            const shortId = node.taskIdShort || node.taskId?.substring(0, 8) || 'unknown';
-            const status = node.metadata?.isCompleted ? 'Completed' : 'In Progress';
-            const instruction = node.metadata?.truncatedInstruction || 'No instruction available';
-            
-            // 🎯 Marquer la tâche actuelle - Utiliser le champ isCurrentTask de get_task_tree
-            const currentMarker = node.metadata?.isCurrentTask ? ' (TÂCHE ACTUELLE)' : '';
-            
-            // Titre principal avec ID court et statut
-            markdown += `${indent} ${node.title || 'Task'} (${shortId})${currentMarker}\n`;
-            markdown += `**Status:** ${status}\n`;
-            markdown += `**Instruction:** ${instruction}\n`;
-            
-            // Statistiques si disponibles
-            if (node.metadata?.stats) {
-                const stats = node.metadata.stats;
-                const messageCount = stats.messageCount || 0;
-                const sizeKB = Math.round((stats.totalSize || 0) / 1024);
-                markdown += `**Stats:** ${messageCount} messages | ${sizeKB} KB\n`;
-            }
-            
-            // Workspace si disponible
-            if (node.metadata?.workspace) {
-                markdown += `**Workspace:** ${node.metadata.workspace}\n`;
-            }
-            
-            markdown += '\n';
-
-            // Enfants si présents
-            if (node.children && node.children.length > 0) {
-                if (depth === 0) {
-                    markdown += `### Child Tasks\n\n`;
-                }
-                
-                for (const child of node.children) {
-                    markdown += formatNodeToMarkdown(child, depth + 1);
-                }
-            }
-
-            return markdown;
-        };
-
-        // En-tête du document
-        const currentDate = new Date().toISOString().split('T')[0];
-        let markdown = `# Task Tree - ${currentDate}\n\n`;
-
-        // Traiter le nœud racine ou les nœuds multiples
-        if (Array.isArray(treeData)) {
-            for (const rootNode of treeData) {
-                markdown += formatNodeToMarkdown(rootNode, 0);
-                markdown += '\n---\n\n';
-            }
-        } else {
-            markdown += formatNodeToMarkdown(treeData, 0);
         }
 
         // Sauvegarder dans un fichier si spécifié
@@ -166,24 +137,30 @@ export async function handleExportTaskTreeMarkdown(
             await fs.mkdir(dir, { recursive: true });
             
             // Écrire le fichier
-            await fs.writeFile(filePath, markdown, 'utf8');
+            await fs.writeFile(filePath, formattedTree, 'utf8');
+            
+            // Extraire les premières lignes pour l'aperçu
+            const lines = formattedTree.split('\n');
+            const preview = lines.slice(0, 50).join('\n');
+            const truncated = lines.length > 50 ? '\n\n... (fichier complet sauvegardé)' : '';
             
             return {
                 content: [{
                     type: 'text',
-                    text: `✅ Arbre des tâches exporté avec succès vers: ${filePath}\n\nContenu:\n\n${markdown}`
+                    text: `✅ Arbre des tâches exporté avec succès vers: ${filePath}\n\n**Format:** ${output_format}\n**Lignes:** ${lines.length}\n\n**Aperçu:**\n\n${preview}${truncated}`
                 }]
             };
         }
 
+        // Retourner le contenu directement si pas de fichier
         return {
-            content: [{ type: 'text', text: markdown }]
+            content: [{ type: 'text', text: formattedTree }]
         };
 
     } catch (error) {
         const errorMessage = error instanceof Error ? error.message : 'Erreur inconnue';
         return {
-            content: [{ type: 'text', text: `❌ Erreur lors de l'export Markdown: ${errorMessage}` }],
+            content: [{ type: 'text', text: `❌ Erreur lors de l'export: ${errorMessage}` }],
             isError: true
         };
     }

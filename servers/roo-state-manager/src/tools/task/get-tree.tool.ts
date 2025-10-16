@@ -5,14 +5,27 @@
 
 import { CallToolResult } from '@modelcontextprotocol/sdk/types.js';
 import { ConversationSkeleton } from '../../types/conversation.js';
+import {
+    formatTaskTreeAscii,
+    generateTreeHeader,
+    generateTreeFooter,
+    countTreeNodes,
+    getMaxTreeDepth,
+    type TaskTreeNode,
+    type FormatAsciiTreeOptions
+} from './format-ascii-tree.js';
 
 export interface GetTaskTreeArgs {
     conversation_id: string;
     max_depth?: number;
     include_siblings?: boolean;
-    output_format?: 'json' | 'markdown';
+    output_format?: 'json' | 'markdown' | 'ascii-tree';
     /** ID de la tâche actuellement en cours d'exécution (pour marquage explicite) */
     current_task_id?: string;
+    /** Longueur maximale de l'instruction affichée (défaut: 80) */
+    truncate_instruction?: number;
+    /** Afficher les métadonnées détaillées (défaut: false) */
+    show_metadata?: boolean;
 }
 
 /**
@@ -36,9 +49,25 @@ export const getTaskTreeTool = {
                 type: 'boolean',
                 description: 'Inclure les tâches sœurs (même parent) dans l\'arbre.'
             },
+            output_format: {
+                type: 'string',
+                enum: ['json', 'markdown', 'ascii-tree'],
+                description: 'Format de sortie: json (défaut), markdown (legacy), ou ascii-tree (arbre visuel avec connecteurs).',
+                default: 'json'
+            },
             current_task_id: {
                 type: 'string',
                 description: 'ID de la tâche en cours d\'exécution pour marquage explicite comme "(TÂCHE ACTUELLE)". Si omis, aucune tâche ne sera marquée.'
+            },
+            truncate_instruction: {
+                type: 'number',
+                description: 'Longueur maximale de l\'instruction affichée dans le format ascii-tree (défaut: 80).',
+                default: 80
+            },
+            show_metadata: {
+                type: 'boolean',
+                description: 'Afficher les métadonnées détaillées dans le format ascii-tree (défaut: false).',
+                default: false
             }
         },
         required: ['conversation_id'],
@@ -54,7 +83,15 @@ export async function handleGetTaskTree(
     conversationCache: Map<string, ConversationSkeleton>,
     ensureSkeletonCacheIsFresh: () => Promise<void>
 ): Promise<CallToolResult> {
-    const { conversation_id, max_depth = Infinity, include_siblings = false, output_format = 'json', current_task_id } = args;
+    const {
+        conversation_id,
+        max_depth = Infinity,
+        include_siblings = false,
+        output_format = 'json',
+        current_task_id,
+        truncate_instruction = 80,
+        show_metadata = false
+    } = args;
 
     // **FAILSAFE: Auto-rebuild cache si nécessaire**
     await ensureSkeletonCacheIsFresh();
@@ -172,7 +209,24 @@ export async function handleGetTaskTree(
     }
 
     // Format output based on output_format parameter
-    if (output_format === 'markdown') {
+    if (output_format === 'ascii-tree') {
+        // Format ASCII avec la nouvelle fonction
+        const options: FormatAsciiTreeOptions = {
+            truncateInstruction: truncate_instruction,
+            showMetadata: show_metadata,
+            showStatus: true,
+            highlightCurrent: true
+        };
+        
+        const asciiTree = formatTaskTreeAscii(tree as TaskTreeNode, options);
+        const header = generateTreeHeader(conversation_id, max_depth, include_siblings, tree.title);
+        const totalNodes = countTreeNodes(tree as TaskTreeNode);
+        const actualDepth = getMaxTreeDepth(tree as TaskTreeNode);
+        const footer = generateTreeFooter(totalNodes, actualDepth);
+        
+        return { content: [{ type: 'text', text: header + asciiTree + footer }] };
+    } else if (output_format === 'markdown') {
+        // Format markdown legacy (conservé pour compatibilité)
         const formatTreeMarkdown = (node: any, prefix: string = '', isLast: boolean = true): string => {
             const connector = prefix === '' ? '' : (isLast ? '└── ' : '├── ');
             const nextPrefix = prefix === '' ? '' : prefix + (isLast ? '    ' : '│   ');
@@ -198,6 +252,7 @@ export async function handleGetTaskTree(
         
         return { content: [{ type: 'text', text: metadata + markdownTree }] };
     } else {
+        // Format JSON (défaut)
         return { content: [{ type: 'text', text: JSON.stringify(tree, null, 2) }] };
     }
 }
