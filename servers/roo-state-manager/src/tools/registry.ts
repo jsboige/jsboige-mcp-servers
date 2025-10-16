@@ -161,7 +161,7 @@ export function registerCallToolHandler(
                 result = await toolExports.handleGetTaskTree(args as any, state.conversationCache, async () => { await ensureSkeletonCacheIsFresh(); });
                 break;
             case toolExports.viewConversationTree.name:
-                result = toolExports.viewConversationTree.handler(args as any, state.conversationCache);
+                result = await toolExports.viewConversationTree.handler(args as any, state.conversationCache);
                 break;
             case toolExports.viewTaskDetailsTool.definition.name:
                 result = await toolExports.viewTaskDetailsTool.handler(args as any, state.conversationCache);
