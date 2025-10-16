@@ -5,6 +5,7 @@
 import { CallToolResult } from '@modelcontextprotocol/sdk/types.js';
 import { ConversationSkeleton } from '../../types/conversation.js';
 import { normalizePath } from '../../utils/path-normalizer.js';
+import { scanDiskForNewTasks } from './disk-scanner.js';
 
 /**
  * Interface pour le résultat de get_current_task
@@ -25,10 +26,31 @@ interface CurrentTaskResult {
 /**
  * Trouve la tâche la plus récente dans le cache, optionnellement filtrée par workspace
  */
-function findMostRecentTask(
+async function findMostRecentTask(
     conversationCache: Map<string, ConversationSkeleton>,
-    workspace?: string
-): ConversationSkeleton | undefined {
+    workspace?: string,
+    forceRescan: boolean = true
+): Promise<ConversationSkeleton | undefined> {
+    // ÉTAPE 1: Scanner le disque pour nouvelles conversations
+    if (forceRescan) {
+        try {
+            const newTasks = await scanDiskForNewTasks(conversationCache, workspace);
+            
+            // Ajouter les nouvelles tâches au cache
+            for (const task of newTasks) {
+                conversationCache.set(task.taskId, task);
+            }
+            
+            if (newTasks.length > 0) {
+                console.log(`[get_current_task] Discovered ${newTasks.length} new task(s) not in cache`);
+            }
+        } catch (error) {
+            console.error('[get_current_task] Error during disk scan:', error);
+            // Continue avec le cache existant si le scan échoue
+        }
+    }
+    
+    // ÉTAPE 2: Filtrer et trier (logique existante inchangée)
     if (conversationCache.size === 0) {
         return undefined;
     }
@@ -105,8 +127,8 @@ export const getCurrentTaskTool = {
         
         console.log('[get_current_task] Using workspace:', targetWorkspace);
         
-        // Chercher la tâche la plus récente
-        const currentTask = findMostRecentTask(conversationCache, targetWorkspace);
+        // Chercher la tâche la plus récente avec scan disque activé
+        const currentTask = await findMostRecentTask(conversationCache, targetWorkspace, true);
         
         if (!currentTask) {
             throw new Error(

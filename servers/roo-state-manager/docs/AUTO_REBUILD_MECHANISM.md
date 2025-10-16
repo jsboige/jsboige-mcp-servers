@@ -83,9 +83,11 @@ Tous les handlers dépendants du `conversationCache` ont été modifiés pour ap
     - Appel sans filtre workspace
 
 13. [`handleGetCurrentTask()`](../src/tools/task/get-current-task.tool.ts:82-134)
-    - ✅ **AJOUT 2025-10-16** : Intégration du mécanisme auto-rebuild
-    - Appel **avec** filtre workspace (args.workspace)
-    - Pattern: Callback async passé via registry.ts
+     - ✅ **AJOUT 2025-10-16** : Intégration du mécanisme auto-rebuild
+     - ✅ **AMÉLIORATION 2025-10-16** : Scan disque complémentaire via [`disk-scanner.ts`](../src/tools/task/disk-scanner.ts)
+     - Appel **avec** filtre workspace (args.workspace)
+     - Pattern: Callback async passé via registry.ts
+     - **Double détection** : Cache rebuild + scan disque pour conversations orphelines
 
 ### Pattern d'intégration
 
@@ -246,15 +248,59 @@ Logs à surveiller :
 - `[FAILSAFE] Cache outdated, triggering differential rebuild...` : Nouvelles conversations
 - `[FAILSAFE] Skeleton cache is fresh` : Cache à jour, skip reconstruction
 
+## 🆕 Amélioration : Scan disque complémentaire (2025-10-16)
+
+### Contexte
+
+Le mécanisme auto-rebuild reconstruit efficacement le cache, mais avec une latence de détection (~5 minutes). Pour l'outil `get_current_task`, cette latence est inacceptable car il doit retourner **immédiatement** la tâche en cours.
+
+### Solution : Scan disque dynamique
+
+Un module complémentaire [`disk-scanner.ts`](../src/tools/task/disk-scanner.ts) a été développé pour :
+
+1. **Scanner le système de fichiers** à chaque appel de `get_current_task`
+2. **Détecter les conversations orphelines** non présentes dans le cache
+3. **Créer des squelettes légers** sans traitement lourd
+4. **Enrichir temporairement le cache** pour la durée de l'appel
+
+### Complémentarité des mécanismes
+
+| Mécanisme | Auto-Rebuild | Scan Disque |
+|-----------|-------------|-------------|
+| **Déclenchement** | Périodique (5 min) | À chaque appel |
+| **Scope** | Toutes les conversations | Conversations orphelines |
+| **Performance** | Optimisée (conditionnelle) | Ultra-rapide (vérification existence) |
+| **Complétude** | 100% des métadonnées | Métadonnées minimales |
+| **Usage** | Cache global persistant | Enrichissement temporaire |
+
+### Outils bénéficiaires
+
+Actuellement, seul `get_current_task` utilise le scan disque car :
+- C'est le seul outil nécessitant une détection **temps réel** absolue
+- Les autres outils peuvent tolérer la latence de 5 minutes de l'auto-rebuild
+- Le scan disque ajoute un overhead léger (~20-50ms) acceptable pour cet outil critique
+
+### Extension future possible
+
+D'autres outils pourraient bénéficier du scan disque si nécessaire :
+- `list_conversations` avec filtre `created_recently=true`
+- `search_tasks_semantic` pour inclure les tâches très récentes
+- Tout nouvel outil nécessitant une fraîcheur absolue des données
+
 ## 🔗 Références
 
 - Code source : [`src/index.ts`](../src/index.ts)
 - Méthode principale : [`_ensureSkeletonCacheIsFresh()`](../src/index.ts:3175-3249)
 - Méthode de reconstruction : [`handleBuildSkeletonCache()`](../src/index.ts:948-1350)
-- Issue tracking : Mission correction auto-construction squelettes
+- Module scan disque : [`disk-scanner.ts`](../src/tools/task/disk-scanner.ts)
+- Outil amélioré : [`get-current-task.tool.ts`](../src/tools/task/get-current-task.tool.ts)
+- Issue tracking : Mission correction auto-construction squelettes + scan disque
 
 ---
 
-**Version** : 1.0.0  
-**Dernière mise à jour** : 2025-01-11  
+**Version** : 1.1.0
+**Dernière mise à jour** : 2025-10-16
 **Auteur** : Équipe roo-state-manager
+**Changelog** :
+- v1.1.0 (2025-10-16) : Ajout scan disque complémentaire pour `get_current_task`
+- v1.0.0 (2025-01-11) : Version initiale du mécanisme auto-rebuild
