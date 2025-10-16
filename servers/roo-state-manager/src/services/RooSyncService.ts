@@ -121,7 +121,7 @@ export class RooSyncService {
     this.powershellExecutor = new PowerShellExecutor({
       roosyncBasePath: join(process.env.ROO_HOME || 'd:/roo-extensions', 'RooSync')
     });
-    this.inventoryCollector = new InventoryCollector(this.powershellExecutor);
+    this.inventoryCollector = new InventoryCollector();
     this.diffDetector = new DiffDetector();
   }
   
