@@ -14,8 +14,12 @@ export {
     type DebugTaskParsingArgs 
 } from './debug-parsing.tool.js';
 
-export { 
-    exportTaskTreeMarkdownTool, 
+export {
+    exportTaskTreeMarkdownTool,
     handleExportTaskTreeMarkdown,
-    type ExportTaskTreeMarkdownArgs 
+    type ExportTaskTreeMarkdownArgs
 } from './export-tree-md.tool.js';
+
+export {
+    getCurrentTaskTool
+} from './get-current-task.tool.js';

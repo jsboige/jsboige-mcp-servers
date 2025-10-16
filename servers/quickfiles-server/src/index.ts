@@ -5,6 +5,7 @@ import { pathToFileURL } from 'url';
 import { z } from 'zod';
 import * as fs from 'fs/promises';
 import * as path from 'path';
+import * as os from 'os';
 import { glob } from 'glob';
 
 // Zod Schemas
@@ -882,7 +883,9 @@ class QuickFilesServer {
 
   private async handleRestartMcpServers(args: z.infer<typeof RestartMcpServersArgsSchema>) {
     const { servers } = args;
-    const settingsPath = 'C:/Users/MYIA/AppData/Roaming/Code/User/globalStorage/rooveterinaryinc.roo-cline/settings/mcp_settings.json';
+    // Détection automatique du chemin utilisateur en utilisant la variable d'environnement ou os.homedir()
+    const userHome = process.env.USERPROFILE || process.env.HOME || os.homedir();
+    const settingsPath = path.join(userHome, 'AppData', 'Roaming', 'Code', 'User', 'globalStorage', 'rooveterinaryinc.roo-cline', 'settings', 'mcp_settings.json');
     const results = [];
     try {
       // ✅ FIX: Relire le fichier avant chaque modification pour éviter les corruptions

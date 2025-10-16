@@ -82,6 +82,11 @@ Tous les handlers dépendants du `conversationCache` ont été modifiés pour ap
 12. [`handleExportTaskTreeMarkdown()`](../src/index.ts:2920-3042)
     - Appel sans filtre workspace
 
+13. [`handleGetCurrentTask()`](../src/tools/task/get-current-task.tool.ts:82-134)
+    - ✅ **AJOUT 2025-10-16** : Intégration du mécanisme auto-rebuild
+    - Appel **avec** filtre workspace (args.workspace)
+    - Pattern: Callback async passé via registry.ts
+
 ### Pattern d'intégration
 
 ```typescript
