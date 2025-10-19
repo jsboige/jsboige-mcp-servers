@@ -1,0 +1,22 @@
+{
+  "taskId": "38948ef0-abcd-4321-fedc-ba0987654321",
+  "title": "TEST-NODE-B1",
+  "status": "completed",
+  "mode": "code",
+  "startTime": "2025-10-17T21:58:00.000Z",
+  "endTime": "2025-10-17T21:59:00.000Z",
+  "messageCount": 2,
+  "lastActivity": "2025-10-17T21:58:30.000Z",
+  "parentTaskId": "03deadab-c123-4d56-ef78-9012345678ab",
+  "truncatedInstruction": "TEST-NODE-B1: Tu es un nœud intermédiaire de la hiérarchie de test. Ta mission est de créer exactement 2 sous-tâches feuilles.",
+  "totalTokens": 0,
+  "hasApiHistory": false,
+  "hasUiMessages": true,
+  "workspace": "test-workspace",
+  "metadata": {
+    "testType": "controlled-hierarchy",
+    "level": 3,
+    "expectedChildren": 2,
+    "childIds": ["c5d6e7f8-9012-3456-789a-bcdef0123456", "d7e8f9a0-1234-5678-9abc-def012345678"]
+  }
+}
