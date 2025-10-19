@@ -146,6 +146,32 @@ export async function handleGetTaskTree(
         }
     });
 
+    /**
+     * Trouve la racine absolue en remontant la chaîne des parents
+     */
+    const findAbsoluteRoot = (taskId: string): string => {
+        let currentId = taskId;
+        let visited = new Set<string>();
+        
+        while (currentId && !visited.has(currentId)) {
+            visited.add(currentId);
+            const skeleton = skeletons.find(s => s.taskId === currentId);
+            if (!skeleton) {
+                break; // Tâche non trouvée, on arrête
+            }
+            
+            const parentId = (skeleton as any)?.parentId ?? (skeleton as any)?.parentTaskId;
+            if (!parentId) {
+                // Plus de parent, c'est la racine
+                return currentId;
+            }
+            
+            currentId = parentId;
+        }
+        
+        return currentId; // Dernier ID trouvé (racine ou boucle détectée)
+    };
+
     const buildTree = (taskId: string, depth: number): any => {
         if (depth > max_depth) {
             return null;
@@ -197,15 +223,18 @@ export async function handleGetTaskTree(
     
     let tree;
     
-    const targetParentId = (targetSkeleton as any)?.parentId ?? (targetSkeleton as any)?.parentTaskId;
-    if (include_siblings && targetParentId) {
-        // Si la tâche a un parent et que les siblings sont demandés,
-        // construire l'arbre depuis le parent pour inclure les frères et sœurs.
-        tree = buildTree(targetParentId, 0);
+    // 🚀 NOUVELLE LOGIQUE : Toujours remonter jusqu'à la racine absolue
+    // pour garantir la hiérarchie complète depuis le début
+    const absoluteRootId = findAbsoluteRoot(targetSkeleton.taskId);
+    
+    if (include_siblings) {
+        // Si les siblings sont demandés, construire l'arbre depuis la racine absolue
+        // pour inclure toute la hiérarchie complète
+        tree = buildTree(absoluteRootId, 0);
     } else {
-        // Sinon (pas de parent ou siblings non demandés),
-        // construire l'arbre depuis la tâche cible elle-même.
-        tree = buildTree(targetSkeleton.taskId, 0);
+        // Même sans siblings, on construit depuis la racine absolue pour avoir
+        // le contexte complet de la hiérarchie jusqu'à la tâche cible
+        tree = buildTree(absoluteRootId, 0);
     }
 
     if (!tree) {

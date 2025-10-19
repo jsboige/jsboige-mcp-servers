@@ -205,39 +205,26 @@ export const rebuildTaskIndex = {
                         let hasFiles = false;
                         
                         try {
-                            const historyFile = path.join(taskPath, 'api_conversation_history.json');
-                            const metadataFile = path.join(taskPath, 'task_metadata.json');
-                            
                             // Vérifier s'il y a des fichiers dans ce répertoire
                             const files = await fs.readdir(taskPath);
                             hasFiles = files.length > 0;
                             
-                            // Essayer d'extraire le workspace
+                            // Utiliser le WorkspaceDetector standardisé pour détecter le workspace
                             try {
-                                let historyContent = await fs.readFile(historyFile, 'utf8');
+                                const { WorkspaceDetector } = await import('../utils/workspace-detector.js');
+                                const workspaceDetector = new WorkspaceDetector({
+                                    enableCache: true,
+                                    validateExistence: false,
+                                    normalizePaths: true
+                                });
                                 
-                                // Gérer le BOM UTF-8
-                                if (historyContent.charCodeAt(0) === 0xFEFF) {
-                                    historyContent = historyContent.slice(1);
+                                const workspaceResult = await workspaceDetector.detect(taskPath);
+                                if (workspaceResult.workspace) {
+                                    workspace = workspaceResult.workspace;
                                 }
-                                
-                                // Recherche du workspace
-                                const match = historyContent.match(/Current Workspace Directory \(([^)]+)\)/);
-                                if (match && match[1]) {
-                                    workspace = match[1];
-                                }
-                            } catch (historyError) {
-                                // Essayer task_metadata.json comme fallback
-                                try {
-                                    const metadataContent = await fs.readFile(metadataFile, 'utf8');
-                                    const metadataData = JSON.parse(metadataContent);
-                                    
-                                    if (metadataData.workspace) {
-                                        workspace = metadataData.workspace;
-                                    }
-                                } catch (metadataError) {
-                                    // Pas de workspace trouvé
-                                }
+                            } catch (workspaceError) {
+                                console.warn(`[WARN] Impossible de détecter le workspace pour ${taskId}: ${workspaceError}`);
+                                // Garder la tâche même sans workspace
                             }
                         } catch (error) {
                             // Erreur générale, on garde la tâche sans workspace
@@ -337,8 +324,11 @@ export const rebuildTaskIndex = {
                         // On ne bloque pas le processus, on continue avec un HistoryItem basique
                     }
                     
-                    // Normaliser le chemin de workspace pour éviter les problèmes forward/backslash
+                    // Utiliser le workspace détecté par le WorkspaceDetector ou celui du squelette
+                    // Le WorkspaceDetector est plus fiable que la détection manuelle précédente
                     let normalizedWorkspace = skeleton?.metadata?.workspace || orphanTask.workspace || 'unknown';
+                    
+                    // Normaliser le chemin de workspace pour éviter les problèmes forward/backslash
                     if (normalizedWorkspace !== 'unknown') {
                         // Convertir en backslashes et supprimer les slashes de fin
                         normalizedWorkspace = normalizedWorkspace

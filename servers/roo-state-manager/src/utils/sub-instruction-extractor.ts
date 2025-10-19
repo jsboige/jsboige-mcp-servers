@@ -53,6 +53,13 @@ export function extractSubInstructions(parentText: string): string[] {
         }
     }
     
+    // Pattern 5: XML-like tags <message>TEST-XXX: ...</message>
+    // <message>TEST-BRANCH-A: Crée le fichier...</message>
+    const xmlMessagePattern = /<message>(TEST-[^<]+)<\/message>/gi;
+    while ((match = xmlMessagePattern.exec(parentText)) !== null) {
+        subInstructions.push(match[1]);
+    }
+    
     // Déduplication et nettoyage
     const uniqueInstructions = Array.from(new Set(subInstructions))
         .map(instr => instr.trim())

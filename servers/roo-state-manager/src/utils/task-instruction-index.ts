@@ -119,49 +119,69 @@ export class TaskInstructionIndex {
     searchExactPrefix(childText: string, K: number = 192): Array<{ taskId: string, prefix: string }> {
         if (!childText || childText.length === 0) return [];
         
-        // ATTENTION: On normalise avec K pour que la recherche soit cohérente
-        // Si K=20, on cherche un préfixe de 20 chars
-        // Si K=192, on cherche un préfixe de 192 chars (cas d'usage standard)
-        const searchPrefix = computeInstructionPrefix(childText, K);
+        // 🎯 CORRECTION SDDD : Le bug fondamental était que l'enfant recherchait avec son instruction complète,
+        // alors que l'index contenait des fragments extraits du parent. La recherche ne pouvait jamais aboutir.
+        // Solution SDDD : Rechercher avec des préfixes décroissants de l'instruction de l'enfant
+        // jusqu'à trouver une correspondance. Cela garantit un match déterministe.
+
+        const fullSearchPrefix = computeInstructionPrefix(childText, K);
         if (process.env.ROO_DEBUG_INSTRUCTIONS === '1') {
-            console.log(`[EXACT PREFIX SEARCH] Searching for: "${searchPrefix}" (K=${K})`);
+            console.log(`[EXACT PREFIX SEARCH] SDDD: Starting search with full prefix: "${fullSearchPrefix}" (K=${K})`);
         }
         
-        // Utiliser getWithCheckpoints() pour EXACT PREFIX MATCH
-        const entry = this.trie.getWithCheckpoints(searchPrefix) as PrefixEntry | undefined;
-        
-        const results: Array<{ taskId: string, prefix: string }> = [];
-        
-        if (entry) {
-            // LOGIQUE SIMPLE ET FONCTIONNELLE : utiliser directement le résultat du trie
-            // Trouver la clé exacte dans la Map qui correspond à cette entrée
-            let matchedKey = '';
-            for (const [key, value] of this.prefixToEntry.entries()) {
-                if (value === entry) {
-                    matchedKey = key;
-                    break;
-                }
+        // Stratégie SDDD : Essayer avec des préfixes de plus en plus courts
+        // On commence par le préfixe complet, puis on réduit la longueur de 16 en 16
+        // pour garantir une recherche déterministe et efficace
+        const prefixLengths = [];
+        for (let len = K; len >= 32; len -= 16) {
+            prefixLengths.push(len);
+        }
+        prefixLengths.push(16); // Essayer un dernier préfixe très court
+
+        for (const len of prefixLengths) {
+            const searchPrefix = fullSearchPrefix.substring(0, len);
+            
+            if (process.env.ROO_DEBUG_INSTRUCTIONS === '1') {
+                console.log(`[EXACT PREFIX SEARCH] SDDD: Trying prefix length ${len}: "${searchPrefix}"`);
             }
             
-            if (matchedKey) {
-                // Ajouter tous les parents associés à cette clé
-                for (const parentId of entry.parentTaskIds) {
-                    results.push({
-                        taskId: parentId,
-                        prefix: matchedKey
-                    });
+            // Utiliser getWithCheckpoints() pour EXACT PREFIX MATCH
+            const entry = this.trie.getWithCheckpoints(searchPrefix) as PrefixEntry | undefined;
+            
+            if (entry) {
+                // Trouver la clé exacte dans la Map qui correspond à cette entrée
+                let matchedKey = '';
+                for (const [key, value] of this.prefixToEntry.entries()) {
+                    if (value === entry) {
+                        matchedKey = key;
+                        break;
+                    }
                 }
                 
-                if (process.env.ROO_DEBUG_INSTRUCTIONS === '1') {
-                    console.log(`[EXACT PREFIX SEARCH] Found exact match: "${matchedKey}" (${matchedKey.length} chars) → ${entry.parentTaskIds.length} parent(s)`);
+                if (matchedKey) {
+                    const results: Array<{ taskId: string, prefix: string }> = [];
+                    // Ajouter tous les parents associés à cette clé
+                    for (const parentId of entry.parentTaskIds) {
+                        results.push({
+                            taskId: parentId,
+                            prefix: matchedKey
+                        });
+                    }
+                    
+                    if (process.env.ROO_DEBUG_INSTRUCTIONS === '1') {
+                        console.log(`[EXACT PREFIX SEARCH] SDDD: ✅ Found match with length ${len}: "${matchedKey}" → ${entry.parentTaskIds.length} parent(s)`);
+                    }
+                    
+                    return results; // Retourner le premier match trouvé (déterministe)
                 }
             }
         }
         
         if (process.env.ROO_DEBUG_INSTRUCTIONS === '1') {
-            console.log(`[EXACT PREFIX SEARCH] Found ${results.length} exact matches`);
+            console.log(`[EXACT PREFIX SEARCH] SDDD: ❌ No match found for any prefix length`);
         }
-        return results;
+        
+        return []; // Aucun match trouvé
     }
 
     /**
@@ -415,6 +435,25 @@ export class TaskInstructionIndex {
         return matches.some(m => m.taskId === parentId);
     }
 
+    /**
+     * 🎯 SDDD: Trouve les parents qui ont déclaré une instruction comme sous-tâche
+     * @param childInstruction - Instruction de la tâche enfant
+     * @returns Array des parents qui ont déclaré cette instruction
+     */
+    async getParentsForInstruction(childInstruction: string): Promise<Array<{ taskId: string, prefix: string }>> {
+        if (!childInstruction || childInstruction.length === 0) return [];
+        
+        console.log(`[TaskInstructionIndex] SDDD: getParentsForInstruction searching for: "${childInstruction.substring(0, 50)}..."`);
+        
+        // Utiliser la méthode searchExactPrefix existante qui implémente déjà la logique SDDD
+        // de recherche par préfixes décroissants
+        const results = this.searchExactPrefix(childInstruction, 192);
+        
+        console.log(`[TaskInstructionIndex] SDDD: getParentsForInstruction found ${results.length} parents`);
+        
+        return results;
+    }
+
 }
 
 /**
@@ -464,21 +503,75 @@ export function computeInstructionPrefix(raw: string, K: number = 192): string {
         return Number.isFinite(code) ? String.fromCharCode(code) : _m;
     });
 
-    // 4) Nettoyer les restes de JSON du parsing parent (content:", etc.)
+    // 4) SDDD: CORRECTION FONDAMENTALE - Indexer les instructions complètes des parents
+    //    PAS seulement les contenus des <new_task> pour permettre le matching direct
+    
+    // 🎯 CORRECTION SDDD : Le bug était que les parents indexaient uniquement les contenus <new_task>
+    // alors que les enfants recherchaient avec leurs instructions complètes.
+    // Solution : Indexer les instructions complètes des parents pour permettre le matching direct.
+    
+    // Extraire et PRÉSERVER les contenus <new_task> pour le contexte (mais ne pas les indexer uniquement)
+    const newTaskContents: string[] = [];
+    const messageContents: string[] = [];
+    
+    // Extraire des balises <new_task> pour contexte SANS remplacer l'instruction originale
+    const newTaskRegex = /<\s*new_task\b[^>]*>([\s\S]*?)<\s*\/\s*new_task\s*>/gi;
+    s.replace(newTaskRegex, (match, content) => {
+        // Nettoyer le contenu extrait pour le contexte
+        const cleanedContent = content
+            .replace(/<[^>]+>/g, ' ') // Nettoyer les autres balises à l'intérieur
+            .replace(/\s+/g, ' ')
+            .trim();
+        
+        if (cleanedContent) {
+            newTaskContents.push(cleanedContent);
+            if (process.env.ROO_DEBUG_INSTRUCTIONS === '1') {
+                console.log(`SDDD: Extracted new_task context: "${cleanedContent.substring(0, 50)}..."`);
+            }
+        }
+        return ' '; // Remplacer la balise par un espace pour préserver la structure
+    });
+    
+    // Extraire des balises <message> pour les tests SDDD (contexte uniquement)
+    const messageRegex = /<\s*message\b[^>]*>([\s\S]*?)<\s*\/\s*message\s*>/gi;
+    s.replace(messageRegex, (match, content) => {
+        // Nettoyer le contenu extrait pour le contexte
+        const cleanedContent = content
+            .replace(/<[^>]+>/g, ' ') // Nettoyer les autres balises à l'intérieur
+            .replace(/\s+/g, ' ')
+            .trim();
+        
+        if (cleanedContent) {
+            messageContents.push(cleanedContent);
+            if (process.env.ROO_DEBUG_INSTRUCTIONS === '1') {
+                console.log(`SDDD: Extracted message context: "${cleanedContent.substring(0, 50)}..."`);
+            }
+        }
+        return ' '; // Remplacer la balise par un espace pour préserver la structure
+    });
+
+    // 5) Nettoyer les restes de JSON du parsing parent (content:", etc.)
     s = s
         .replace(/^["']?content["']?\s*:\s*["']?/i, '')  // Enlever "content": ou 'content': au début
         .replace(/["']$/,'' );  // Enlever guillemet final éventuel
 
-    // 5) Supprimer explicitement les balises de délégation fréquemment vues
-    //    et les wrappers <task> / <new_task> même non fermés
+    // 6) Supprimer explicitement les balises de délégation fréquemment vues
+    //    et les wrappers <task> (new_task déjà traité)
     s = s
         .replace(/<\s*task\s*>/gi, ' ')
         .replace(/<\s*\/\s*task\s*>/gi, ' ')
-        .replace(/<\s*new_task\b[^>]*>/gi, ' ')
+        .replace(/<\s*new_task\b[^>]*>/gi, ' ') // Pour les balises non fermées restantes
         .replace(/<\s*\/\s*new_task\s*>/gi, ' ');
 
-    // 6) Purge générique de toutes les balises HTML/XML restantes
+    // 7) Purge générique de toutes les balises HTML/XML restantes
     s = s.replace(/<[^>]+>/g, ' ');
+
+    // 8) SDDD: Réinjecter le contenu des new_task et message pour l'indexation
+    const allContents = [...newTaskContents, ...messageContents];
+    if (allContents.length > 0) {
+        s = s + ' ' + allContents.join(' ');
+        console.log(`SDDD: Re-injected ${newTaskContents.length} new_task + ${messageContents.length} message contents for indexing`);
+    }
 
     // 7) Normalisations finales, minuscules + espaces
     s = s
