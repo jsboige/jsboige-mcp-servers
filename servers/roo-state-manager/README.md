@@ -55,6 +55,35 @@ Le Roo State Manager intègre un système avancé de synthèse automatique de co
 
 ---
 
+## 🔔 Système de Notifications Push
+
+**✅ NOUVELLE FONCTIONNALITÉ - NOTIFICATIONS EVENT-DRIVEN OPÉRATIONNELLES**
+
+Le Roo State Manager intègre un système de notifications push générique qui déclenche automatiquement des événements lors de l'usage de n'importe quel outil MCP.
+
+**Documentation technique complète :** [`docs/notifications/PUSH-NOTIFICATION-SYSTEM.md`](./docs/notifications/PUSH-NOTIFICATION-SYSTEM.md)
+
+### Fonctionnalités Clés
+
+- **Interception automatique** de tous les appels d'outils MCP
+- **Indexation temps réel** des nouvelles conversations détectées sur disque
+- **Vérification boîte de réception RooSync** pour nouveaux messages inter-machines
+- **Filtrage configurable** des notifications via règles firewall-like
+- **Architecture event-driven** basée sur le pattern Observer
+
+### Activation Rapide
+
+```bash
+# Dans .env
+NOTIFICATIONS_ENABLED=true
+NOTIFICATIONS_CHECK_INBOX=true
+NOTIFICATIONS_MIN_PRIORITY=HIGH
+```
+
+**Configuration avancée :** Voir [`config/notification-filters.json`](./config/notification-filters.json) pour personnaliser les règles de filtrage.
+
+---
+
 ## 📁 Structure du Projet
 
 ```

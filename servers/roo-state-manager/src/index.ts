@@ -47,6 +47,9 @@ import { RooStorageDetector } from './utils/roo-storage-detector.js';
 import { promises as fs } from 'fs';
 import packageJson from '../package.json' with { type: 'json' };
 import { handleBuildSkeletonCache } from './tools/index.js';
+import { NotificationService } from './notifications/NotificationService.js';
+import { ToolUsageInterceptor } from './notifications/ToolUsageInterceptor.js';
+import { MessageManager } from './services/MessageManager.js';
 
 /**
  * Classe principale du serveur MCP
@@ -54,6 +57,8 @@ import { handleBuildSkeletonCache } from './tools/index.js';
 class RooStateManagerServer {
     private server: ReturnType<typeof createMcpServer>;
     private stateManager: StateManager;
+    private notificationService: NotificationService;
+    private toolInterceptor: ToolUsageInterceptor | null = null;
 
     constructor() {
         // Initialisation de l'état global via StateManager
@@ -62,6 +67,10 @@ class RooStateManagerServer {
         // Création du serveur MCP
         this.server = createMcpServer(SERVER_CONFIG);
 
+        // Initialiser le système de notifications
+        this.notificationService = new NotificationService();
+        this.initializeNotificationSystem();
+
         // Enregistrement des handlers
         this.registerHandlers();
         
@@ -69,6 +78,67 @@ class RooStateManagerServer {
         this.initializeBackgroundServices().catch((error: Error) => {
             console.error("Error during background services initialization:", error);
         });
+    }
+
+    /**
+     * Initialise le système de notifications push
+     */
+    private initializeNotificationSystem(): void {
+        try {
+            // Vérifier si les notifications sont activées
+            const notificationsEnabled = process.env.NOTIFICATIONS_ENABLED !== 'false';
+            if (!notificationsEnabled) {
+                console.log('📴 [Notifications] Système désactivé via NOTIFICATIONS_ENABLED=false');
+                return;
+            }
+
+            // Initialiser le MessageManager
+            const sharedStatePath = process.env.ROOSYNC_SHARED_PATH;
+            if (!sharedStatePath) {
+                console.warn('⚠️ [Notifications] ROOSYNC_SHARED_PATH non défini, notifications push désactivées');
+                return;
+            }
+
+            const messageManager = new MessageManager(sharedStatePath);
+
+            // Charger les règles de filtrage
+            const minPriority = process.env.NOTIFICATIONS_MIN_PRIORITY || 'MEDIUM';
+            this.notificationService.loadFilterRules([
+                {
+                    id: 'min-priority-filter',
+                    eventType: 'new_message',
+                    condition: {
+                        priority: minPriority === 'URGENT' ? ['URGENT']
+                                : minPriority === 'HIGH' ? ['URGENT', 'HIGH']
+                                : minPriority === 'MEDIUM' ? ['URGENT', 'HIGH', 'MEDIUM']
+                                : ['URGENT', 'HIGH', 'MEDIUM', 'LOW']
+                    },
+                    action: 'allow',
+                    notifyUser: true
+                }
+            ]);
+
+            // Créer l'intercepteur d'outils
+            const state = this.stateManager.getState();
+            const machineId = process.env.MACHINE_ID || 'local_machine';
+            
+            this.toolInterceptor = new ToolUsageInterceptor(
+                this.notificationService,
+                messageManager,
+                state.conversationCache,
+                {
+                    enabled: true,
+                    checkInbox: process.env.NOTIFICATIONS_CHECK_INBOX !== 'false',
+                    refreshCache: true,
+                    machineId
+                }
+            );
+
+            console.log('✅ [Notifications] Système initialisé avec succès');
+        } catch (error) {
+            console.error('❌ [Notifications] Erreur lors de l\'initialisation:', error);
+            console.warn('⚠️ [Notifications] Le serveur continuera sans notifications push');
+        }
     }
 
     /**
@@ -91,12 +161,23 @@ class RooStateManagerServer {
             saveSkeletonToDisk
         );
 
-        // Wrapper pour tronquer les résultats
+        // Wrapper pour tronquer les résultats ET activer l'intercepteur de notifications
         const originalCallTool = this.server['_requestHandlers'].get('tools/call');
         if (originalCallTool) {
             this.server['_requestHandlers'].set('tools/call', async (request: any) => {
-                const result = await originalCallTool(request);
-                return truncateResult(result);
+                // Si l'intercepteur est activé, l'utiliser
+                if (this.toolInterceptor) {
+                    const wrappedResult = await this.toolInterceptor.interceptToolCall(
+                        request.params.name,
+                        request.params.arguments,
+                        async () => await originalCallTool(request)
+                    );
+                    return truncateResult(wrappedResult);
+                } else {
+                    // Sinon, exécution normale
+                    const result = await originalCallTool(request);
+                    return truncateResult(result);
+                }
             });
         }
     }

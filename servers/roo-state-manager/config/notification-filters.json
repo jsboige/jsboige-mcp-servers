@@ -1,0 +1,60 @@
+{
+  "version": "1.0.0",
+  "description": "Règles de filtrage pour le système de notifications push MCP",
+  "lastUpdated": "2025-10-19T20:57:00Z",
+  "rules": [
+    {
+      "id": "urgent-messages-only",
+      "description": "Autorise uniquement les messages URGENT à déclencher des notifications",
+      "eventType": "new_message",
+      "condition": {
+        "priority": ["URGENT"]
+      },
+      "action": "allow",
+      "notifyUser": true
+    },
+    {
+      "id": "high-priority-messages",
+      "description": "Autorise les messages HIGH et URGENT",
+      "eventType": "new_message",
+      "condition": {
+        "priority": ["HIGH", "URGENT"]
+      },
+      "action": "allow",
+      "notifyUser": true
+    },
+    {
+      "id": "block-low-priority",
+      "description": "Bloque les messages de priorité LOW pour éviter le spam",
+      "eventType": "new_message",
+      "condition": {
+        "priority": ["LOW"]
+      },
+      "action": "block",
+      "notifyUser": false
+    },
+    {
+      "id": "important-decisions",
+      "description": "Notifications pour les décisions critiques en attente",
+      "eventType": "decision_pending",
+      "condition": {
+        "priority": ["CRITICAL", "HIGH"]
+      },
+      "action": "allow",
+      "notifyUser": true
+    },
+    {
+      "id": "roosync-auto-sync-events",
+      "description": "Notifications pour les événements de synchronisation automatique",
+      "eventType": "tool_used",
+      "condition": {
+        "sourceTool": ["roosync_compare_config", "roosync_apply_decision"],
+        "priority": ["HIGH", "URGENT"]
+      },
+      "action": "allow",
+      "notifyUser": false
+    }
+  ],
+  "defaultAction": "allow",
+  "defaultNotifyUser": false
+}
