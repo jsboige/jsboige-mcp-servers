@@ -9,6 +9,8 @@ import {
   ListRepositoryWorkflowsResult,
   GetWorkflowRunsParams,
   GetWorkflowRunsResult,
+  SummarizedWorkflowRun,
+  GetSummarizedWorkflowRunsResult,
   GetWorkflowRunStatusParams,
   GetWorkflowRunStatusResult,
   Workflow,
@@ -945,7 +947,7 @@ export function setupTools(server: any, accounts: GitHubAccount[]): Tool[] {
      */
     {
       name: 'get_workflow_runs',
-      description: "Récupère les exécutions (runs) d'un workflow spécifique",
+      description: "Récupère une liste résumée des exécutions (runs) d'un workflow spécifique",
       inputSchema: {
         type: 'object',
         properties: {
@@ -955,7 +957,7 @@ export function setupTools(server: any, accounts: GitHubAccount[]): Tool[] {
         },
         required: ['owner', 'repo', 'workflow_id']
       },
-      execute: async ({ owner, repo, workflow_id }: GetWorkflowRunsParams): Promise<GetWorkflowRunsResult> => {
+      execute: async ({ owner, repo, workflow_id }: GetWorkflowRunsParams): Promise<GetSummarizedWorkflowRunsResult> => {
         try {
           const octokit = getGitHubClient(owner, accounts);
           const response = await octokit.rest.actions.listWorkflowRuns({
@@ -964,9 +966,19 @@ export function setupTools(server: any, accounts: GitHubAccount[]): Tool[] {
             workflow_id
           });
           
+          const summarized_runs: SummarizedWorkflowRun[] = (response.data.workflow_runs as WorkflowRun[]).map(run => ({
+            id: run.id,
+            name: run.name || "Unnamed Workflow",
+            run_number: run.run_number,
+            status: run.status,
+            conclusion: run.conclusion,
+            html_url: run.html_url,
+            created_at: run.created_at,
+          }));
+
           return {
             success: true,
-            workflow_runs: response.data.workflow_runs as WorkflowRun[]
+            workflow_runs: summarized_runs
           };
         } catch (error: any) {
           logger.error('Erreur dans get_workflow_runs', { error });

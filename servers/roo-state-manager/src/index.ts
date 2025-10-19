@@ -16,7 +16,7 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
 
 // Charger les variables d'environnement AVANT tout autre import
-dotenv.config({ path: path.join(__dirname, '../..', '.env') });
+dotenv.config({ path: path.join(__dirname, '..', '.env') });
 
 // VALIDATION STRICTE DES CONFIGURATIONS CRITIQUES AU STARTUP
 const REQUIRED_ENV_VARS = [

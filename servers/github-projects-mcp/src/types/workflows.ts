@@ -72,6 +72,28 @@ export interface GetWorkflowRunsResult {
 }
 
 /**
+ * Représentation résumée d'une exécution de workflow
+ */
+export interface SummarizedWorkflowRun {
+  id: number;
+  name: string;
+  run_number: number;
+  status: 'completed' | 'action_required' | 'cancelled' | 'failure' | 'neutral' | 'skipped' | 'stale' | 'success' | 'timed_out' | 'in_progress' | 'queued' | 'requested' | 'waiting' | 'pending';
+  conclusion: 'success' | 'failure' | 'neutral' | 'cancelled' | 'skipped' | 'timed_out' | 'action_required' | null;
+  html_url: string;
+  created_at: string;
+}
+
+/**
+ * Résultat des exécutions résumées d'un workflow
+ */
+export interface GetSummarizedWorkflowRunsResult {
+  success: boolean;
+  workflow_runs?: SummarizedWorkflowRun[];
+  error?: string;
+}
+
+/**
  * Paramètres pour récupérer le statut d'une exécution de workflow
  */
 export interface GetWorkflowRunStatusParams {
