@@ -47,6 +47,14 @@ export interface Message {
   
   /** ID du message auquel on répond */
   reply_to?: string;
+  
+  /** Métadonnées optionnelles (amendements, etc.) */
+  metadata?: {
+    amended?: boolean;
+    original_content?: string;
+    amendment_reason?: string;
+    amendment_timestamp?: string;
+  };
 }
 
 /**
@@ -341,6 +349,14 @@ export class MessageManager {
       message.status = 'read';
 
       await fs.writeFile(filePath, JSON.stringify(message, null, 2), 'utf-8');
+      
+      // Also update sent/ directory if message was sent from this machine
+      const sentPath = join(this.sentPath, `${messageId}.json`);
+      if (existsSync(sentPath)) {
+        await fs.writeFile(sentPath, JSON.stringify(message, null, 2), 'utf-8');
+        console.error('✅ [MessageManager] Message also marked as read in sent/');
+      }
+      
       console.error('✅ [MessageManager] Message marked as read');
       return true;
     } catch (error) {
@@ -378,12 +394,111 @@ export class MessageManager {
 
       // Supprimer de inbox
       await fs.unlink(inboxFile);
+      
+      // Also update sent/ directory if message was sent from this machine
+      const sentPath = join(this.sentPath, `${messageId}.json`);
+      if (existsSync(sentPath)) {
+        await fs.writeFile(sentPath, JSON.stringify(message, null, 2), 'utf-8');
+        console.error('✅ [MessageManager] Message also archived in sent/');
+      }
 
       console.error('✅ [MessageManager] Message archived');
       return true;
     } catch (error) {
       console.error('❌ [MessageManager] Error archiving message:', error);
       return false;
+    }
+  }
+
+  /**
+   * Modifie le contenu d'un message envoyé (avant lecture)
+   *
+   * Permet de corriger un message non lu en préservant le contenu original
+   * dans les métadonnées pour traçabilité. Restreint à l'émetteur uniquement.
+   *
+   * @param messageId ID du message à modifier
+     * @param senderId ID de la machine émettrice (pour validation permissions)
+     * @param newContent Nouveau contenu du message
+     * @param reason Raison de l'amendement (optionnel)
+     * @returns Résultat de l'amendement avec métadonnées
+     */
+    async amendMessage(
+      messageId: string,
+      senderId: string,
+      newContent: string,
+      reason?: string
+    ): Promise<{
+      success: boolean;
+      message_id: string;
+      amended_at: string;
+      reason: string;
+      original_content_preserved: boolean;
+    }> {
+      console.error('✏️ [MessageManager] Amending message:', messageId);
+  
+      // Rechercher le message dans sent/
+      const sentFile = join(this.sentPath, `${messageId}.json`);
+      
+      if (!existsSync(sentFile)) {
+        throw new Error(`Message non trouvé dans sent/ : ${messageId}. Seuls les messages envoyés peuvent être amendés.`);
+      }
+  
+      try {
+        // Lire le message actuel
+        const content = await fs.readFile(sentFile, 'utf-8');
+        const message: Message = JSON.parse(content);
+  
+        // Validation : Vérifier que l'émetteur correspond
+        if (message.from !== senderId) {
+          throw new Error(`Permission refusée : seul l'émetteur (${message.from}) peut amender ce message.`);
+        }
+  
+        // Validation : Vérifier que le message n'est pas lu/archivé
+        if (message.status !== 'unread') {
+          throw new Error(`Impossible d'amender un message déjà lu ou archivé (status: ${message.status}).`);
+        }
+  
+        // Préserver le contenu original si c'est le premier amendement
+        const isFirstAmendment = !message.metadata?.amended;
+        
+        if (isFirstAmendment) {
+          message.metadata = {
+            ...message.metadata,
+            amended: true,
+            original_content: message.body
+          };
+        }
+  
+        // Mettre à jour le contenu et les métadonnées d'amendement
+        message.body = newContent;
+        message.metadata = {
+          ...message.metadata,
+          amendment_reason: reason || 'Aucune raison fournie',
+          amendment_timestamp: new Date().toISOString()
+        };
+  
+        // Sauvegarder le message modifié dans sent/
+        await fs.writeFile(sentFile, JSON.stringify(message, null, 2), 'utf-8');
+  
+        // Également mettre à jour dans inbox/ si le message y est présent
+        const inboxFile = join(this.inboxPath, `${messageId}.json`);
+        if (existsSync(inboxFile)) {
+          await fs.writeFile(inboxFile, JSON.stringify(message, null, 2), 'utf-8');
+          console.error('✅ [MessageManager] Message updated in inbox as well');
+        }
+  
+        console.error('✅ [MessageManager] Message amended successfully');
+        
+        return {
+          success: true,
+          message_id: message.id,
+          amended_at: message.metadata.amendment_timestamp!,
+          reason: message.metadata.amendment_reason!,
+          original_content_preserved: !!message.metadata.original_content
+        };
+      } catch (error) {
+        console.error('❌ [MessageManager] Error amending message:', error);
+        throw error;
     }
   }
 }
