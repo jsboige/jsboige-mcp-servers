@@ -149,53 +149,107 @@ export class DiffDetector {
   ): DetectedDifference[] {
     const diffs: DetectedDifference[] = [];
 
-    // Comparer modesPath
-    if (source.roo.modesPath !== target.roo.modesPath) {
+    // Comparer paths.rooConfig
+    if (source.paths?.rooConfig !== target.paths?.rooConfig) {
       diffs.push({
         id: randomUUID(),
         category: 'roo_config',
         severity: 'CRITICAL',
-        path: 'roo.modesPath',
-        source: { value: source.roo.modesPath, machineId: source.machineId },
-        target: { value: target.roo.modesPath, machineId: target.machineId },
+        path: 'paths.rooConfig',
+        source: { value: source.paths?.rooConfig, machineId: source.machineId },
+        target: { value: target.paths?.rooConfig, machineId: target.machineId },
         type: 'MODIFIED',
-        description: `Chemin des modes Roo différent entre machines`,
+        description: `Chemin de configuration Roo différent entre machines`,
         recommendedAction: this.generateRecommendation({
           id: '',
           category: 'roo_config',
           severity: 'CRITICAL',
-          path: 'roo.modesPath',
-          source: { value: source.roo.modesPath, machineId: source.machineId },
-          target: { value: target.roo.modesPath, machineId: target.machineId },
+          path: 'paths.rooConfig',
+          source: { value: source.paths?.rooConfig, machineId: source.machineId },
+          target: { value: target.paths?.rooConfig, machineId: target.machineId },
           type: 'MODIFIED',
           description: ''
         }),
-        affectedComponents: ['Roo Modes']
+        affectedComponents: ['Roo Config']
       });
     }
 
-    // Comparer mcpSettings
-    if (source.roo.mcpSettings !== target.roo.mcpSettings) {
+    // Comparer paths.mcpSettings
+    if (source.paths?.mcpSettings !== target.paths?.mcpSettings) {
       diffs.push({
         id: randomUUID(),
         category: 'roo_config',
         severity: 'CRITICAL',
-        path: 'roo.mcpSettings',
-        source: { value: source.roo.mcpSettings, machineId: source.machineId },
-        target: { value: target.roo.mcpSettings, machineId: target.machineId },
+        path: 'paths.mcpSettings',
+        source: { value: source.paths?.mcpSettings, machineId: source.machineId },
+        target: { value: target.paths?.mcpSettings, machineId: target.machineId },
         type: 'MODIFIED',
         description: `Chemin des paramètres MCP différent entre machines`,
         recommendedAction: this.generateRecommendation({
           id: '',
           category: 'roo_config',
           severity: 'CRITICAL',
-          path: 'roo.mcpSettings',
-          source: { value: source.roo.mcpSettings, machineId: source.machineId },
-          target: { value: target.roo.mcpSettings, machineId: target.machineId },
+          path: 'paths.mcpSettings',
+          source: { value: source.paths?.mcpSettings, machineId: source.machineId },
+          target: { value: target.paths?.mcpSettings, machineId: target.machineId },
           type: 'MODIFIED',
           description: ''
         }),
         affectedComponents: ['MCP Servers']
+      });
+    }
+
+    // Comparer le nombre de serveurs MCP
+    const sourceMcpCount = source.roo.mcpServers?.length || 0;
+    const targetMcpCount = target.roo.mcpServers?.length || 0;
+    if (sourceMcpCount !== targetMcpCount) {
+      diffs.push({
+        id: randomUUID(),
+        category: 'roo_config',
+        severity: 'IMPORTANT',
+        path: 'roo.mcpServers',
+        source: { value: `${sourceMcpCount} serveurs`, machineId: source.machineId },
+        target: { value: `${targetMcpCount} serveurs`, machineId: target.machineId },
+        type: 'MODIFIED',
+        description: `Nombre de serveurs MCP différent entre machines`,
+        recommendedAction: this.generateRecommendation({
+          id: '',
+          category: 'roo_config',
+          severity: 'IMPORTANT',
+          path: 'roo.mcpServers',
+          source: { value: sourceMcpCount, machineId: source.machineId },
+          target: { value: targetMcpCount, machineId: target.machineId },
+          type: 'MODIFIED',
+          description: ''
+        }),
+        affectedComponents: ['MCP Servers']
+      });
+    }
+
+    // Comparer le nombre de modes Roo
+    const sourceModeCount = source.roo.modes?.length || 0;
+    const targetModeCount = target.roo.modes?.length || 0;
+    if (sourceModeCount !== targetModeCount) {
+      diffs.push({
+        id: randomUUID(),
+        category: 'roo_config',
+        severity: 'IMPORTANT',
+        path: 'roo.modes',
+        source: { value: `${sourceModeCount} modes`, machineId: source.machineId },
+        target: { value: `${targetModeCount} modes`, machineId: target.machineId },
+        type: 'MODIFIED',
+        description: `Nombre de modes Roo différent entre machines`,
+        recommendedAction: this.generateRecommendation({
+          id: '',
+          category: 'roo_config',
+          severity: 'IMPORTANT',
+          path: 'roo.modes',
+          source: { value: sourceModeCount, machineId: source.machineId },
+          target: { value: targetModeCount, machineId: target.machineId },
+          type: 'MODIFIED',
+          description: ''
+        }),
+        affectedComponents: ['Roo Modes']
       });
     }
 

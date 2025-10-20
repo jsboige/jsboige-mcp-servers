@@ -44,8 +44,29 @@ export interface MachineInventory {
     python?: string;
   };
   roo: {
-    modesPath?: string;
+    mcpServers: Array<{
+      name: string;
+      enabled: boolean;
+      command?: string;
+      transportType?: string;
+      alwaysAllow?: any[];
+      description?: string;
+    }>;
+    modes: Array<{
+      slug: string;
+      name: string;
+      defaultModel?: string;
+      tools?: any[];
+      allowedFilePatterns?: string[];
+    }>;
+    sdddSpecs?: any[];
+    scripts?: any;
+  };
+  paths: {
+    rooExtensions?: string;
     mcpSettings?: string;
+    rooConfig?: string;
+    scripts?: string;
   };
 }
 
@@ -180,9 +201,25 @@ export class InventoryCollector {
           python: rawInventory.inventory?.tools?.python?.version
         },
         roo: {
-          modesPath: rawInventory.inventory?.rooConfig?.modesPath,
-          mcpSettings: rawInventory.inventory?.rooConfig?.mcpSettingsPath
-        }
+          mcpServers: (rawInventory.inventory?.mcpServers || []).map((mcp: any) => ({
+            name: mcp.name,
+            enabled: mcp.enabled,
+            command: mcp.command,
+            transportType: mcp.transportType,
+            alwaysAllow: mcp.alwaysAllow,
+            description: mcp.description
+          })),
+          modes: (rawInventory.inventory?.rooModes || []).map((mode: any) => ({
+            slug: mode.slug,
+            name: mode.name,
+            defaultModel: mode.defaultModel,
+            tools: mode.tools,
+            allowedFilePatterns: mode.allowedFilePatterns
+          })),
+          sdddSpecs: rawInventory.inventory?.sdddSpecs,
+          scripts: rawInventory.inventory?.scripts
+        },
+        paths: rawInventory.paths
       };
 
       console.error(`[InventoryCollector] ✅ Inventaire structuré pour ${inventory.machineId}`);
