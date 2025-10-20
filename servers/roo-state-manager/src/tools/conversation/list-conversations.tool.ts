@@ -102,30 +102,36 @@ export const listConversationsTool = {
         },
         conversationCache: Map<string, ConversationSkeleton>
     ): Promise<CallToolResult> => {
-        console.log('[🔧 FIXED VERSION] list_conversations called with:', JSON.stringify(args));
-        console.log('[🔧 FIXED VERSION] This is the corrected version without sequence property');
+        // 🔇 LOGS VERBEUX COMMENTÉS (explosion contexte)
+        // console.log('[🔧 FIXED VERSION] list_conversations called with:', JSON.stringify(args));
+        // console.log('[🔧 FIXED VERSION] This is the corrected version without sequence property');
         
         let allSkeletons = Array.from(conversationCache.values()).filter(skeleton =>
             skeleton.metadata
         );
 
         // Filtrage par workspace
+        let workspaceFilteredCount = 0;
         if (args.workspace) {
             const normalizedWorkspace = normalizePath(args.workspace);
-            console.log(`[DEBUG] Filtering by workspace: "${args.workspace}" -> normalized: "${normalizedWorkspace}"`);
+            const countBeforeFilter = allSkeletons.length;
             
-            // Debug : afficher tous les workspaces disponibles
-            const workspaces = allSkeletons
-                .filter(s => s.metadata.workspace)
-                .map(s => `"${s.metadata.workspace!}" -> normalized: "${normalizePath(s.metadata.workspace!)}"`)
-                .slice(0, 5);
-            console.log(`[DEBUG] Available workspaces (first 5):`, workspaces);
+            // 🔇 LOGS VERBEUX COMMENTÉS (explosion contexte - liste workspaces disponibles)
+            // console.log(`[DEBUG] Filtering by workspace: "${args.workspace}" -> normalized: "${normalizedWorkspace}"`);
+            // const workspaces = allSkeletons
+            //     .filter(s => s.metadata.workspace)
+            //     .map(s => `"${s.metadata.workspace!}" -> normalized: "${normalizePath(s.metadata.workspace!)}"`)
+            //     .slice(0, 5);
+            // console.log(`[DEBUG] Available workspaces (first 5):`, workspaces);
             
             allSkeletons = allSkeletons.filter(skeleton =>
                 skeleton.metadata.workspace &&
                 normalizePath(skeleton.metadata.workspace) === normalizedWorkspace
             );
-            console.log(`[DEBUG] Found ${allSkeletons.length} conversations matching workspace filter`);
+            
+            workspaceFilteredCount = countBeforeFilter - allSkeletons.length;
+            // 🔇 LOG VERBEUX COMMENTÉ (explosion contexte)
+            // console.log(`[DEBUG] Found ${allSkeletons.length} conversations matching workspace filter`);
         }
 
         // Tri
@@ -218,6 +224,9 @@ export const listConversationsTool = {
         
         // Convertir en ConversationSummary pour EXCLURE la propriété sequence qui contient tout le contenu
         const summaries = limitedForest.map(node => toConversationSummary(node));
+        
+        // 📊 LOG AGRÉGÉ FINAL (remplace les logs verbeux commentés)
+        console.log(`📊 list_conversations: Found ${allSkeletons.length} conversations (workspace filtered: ${workspaceFilteredCount}), returning ${summaries.length} top-level results`);
         
         const result = JSON.stringify(summaries, null, 2);
 

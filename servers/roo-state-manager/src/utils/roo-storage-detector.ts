@@ -1294,7 +1294,8 @@ export class RooStorageDetector {
           let taskMatch;
           while ((taskMatch = taskPattern.exec(contentText)) !== null) {
             const taskContent = taskMatch[1].trim();
-            console.log(`[extractFromMessageFile] 🔍 DEBUG PARSING - Balise <task> trouvée dans ${path.basename(filePath)}, role: ${message.role}, contenu: "${taskContent.substring(0, 100)}..."`);
+            // 🔇 LOG VERBEUX COMMENTÉ (explosion contexte - 1 log par balise task trouvée)
+            // console.log(`[extractFromMessageFile] 🔍 DEBUG PARSING - Balise <task> trouvée dans ${path.basename(filePath)}, role: ${message.role}, contenu: "${taskContent.substring(0, 100)}..."`);
             
             if (taskContent.length > 20) { // Filtrer les contenus trop courts
               // 🎯 CORRECTION TESTS : Tronquer à 200 caractères max (alignement avec tests unitaires)
@@ -1305,7 +1306,8 @@ export class RooStorageDetector {
                 message: truncatedContent,
               };
               instructions.push(instruction);
-              console.log(`[extractFromMessageFile] 🎯 BALISE TASK SIMPLE AJOUTÉE dans ${path.basename(filePath)}: ${truncatedContent.substring(0, 50)}...`);
+              // 🔇 LOG VERBEUX COMMENTÉ (explosion contexte - 1 log par balise task ajoutée)
+              // console.log(`[extractFromMessageFile] 🎯 BALISE TASK SIMPLE AJOUTÉE dans ${path.basename(filePath)}: ${truncatedContent.substring(0, 50)}...`);
             } else {
               console.log(`[extractFromMessageFile] ⚠️ BALISE TASK REJETÉE (trop courte: ${taskContent.length} chars) dans ${path.basename(filePath)}`);
             }
