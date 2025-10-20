@@ -10,6 +10,7 @@ import { MessageManager } from '../../services/MessageManager.js';
 import { getSharedStatePath } from '../../utils/server-helpers.js';
 import { existsSync, readFileSync } from 'fs';
 import { join } from 'path';
+import os from 'os';
 
 /**
  * Arguments de l'outil roosync_read_inbox
@@ -23,30 +24,12 @@ interface ReadInboxArgs {
 }
 
 /**
- * Récupère l'ID de la machine locale depuis sync-config.json
- * 
- * @param sharedStatePath Chemin vers .shared-state
- * @returns ID de la machine locale
+ * Récupère l'ID de la machine locale depuis le hostname OS
+ *
+ * @returns ID de la machine locale (hostname normalisé)
  */
-function getLocalMachineId(sharedStatePath: string): string {
-  const configPath = join(sharedStatePath, 'sync-config.json');
-  
-  if (!existsSync(configPath)) {
-    throw new Error(`Fichier sync-config.json introuvable à : ${configPath}`);
-  }
-  
-  try {
-    const configContent = readFileSync(configPath, 'utf-8');
-    const config = JSON.parse(configContent);
-    
-    if (!config.machineId) {
-      throw new Error('machineId absent dans sync-config.json');
-    }
-    
-    return config.machineId;
-  } catch (error) {
-    throw new Error(`Erreur lecture sync-config.json : ${error instanceof Error ? error.message : String(error)}`);
-  }
+function getLocalMachineId(): string {
+  return os.hostname().toLowerCase().replace(/[^a-z0-9-]/g, '-');
 }
 
 /**
@@ -114,7 +97,7 @@ export async function readInbox(
     const messageManager = new MessageManager(sharedStatePath);
 
     // Obtenir l'ID de la machine locale
-    const machineId = getLocalMachineId(sharedStatePath);
+    const machineId = getLocalMachineId();
     console.error(`📍 [read_inbox] Machine ID: ${machineId}`);
 
     // Lire les messages

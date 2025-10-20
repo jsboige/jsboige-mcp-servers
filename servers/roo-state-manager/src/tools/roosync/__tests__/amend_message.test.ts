@@ -38,9 +38,8 @@ describe('roosync_amend_message', () => {
       }
     });
 
-    // Créer sync-config.json avec machineId pour getLocalMachineId()
-    const configPath = join(testSharedStatePath, 'sync-config.json');
-    writeFileSync(configPath, JSON.stringify({ machineId: 'test-machine-01' }, null, 2));
+    // NOTE: getLocalMachineId() utilise maintenant os.hostname() directement
+    // Plus besoin de créer sync-config.json pour les tests
 
     messageManager = new MessageManager(testSharedStatePath);
 
