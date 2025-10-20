@@ -1032,6 +1032,67 @@ export function setupTools(server: any, accounts: GitHubAccount[]): Tool[] {
       }
     },
     /**
+     * @tool get_workflow_run_jobs
+     * @description Récupère les jobs d'une exécution de workflow avec leurs statuts et logs.
+     * @param {string} owner - Nom d'utilisateur ou d'organisation propriétaire du dépôt.
+     * @param {string} repo - Nom du dépôt.
+     * @param {number} run_id - ID de l'exécution du workflow.
+     * @returns {Promise<object>} Un objet contenant la liste des jobs avec leurs détails.
+     */
+    {
+      name: 'get_workflow_run_jobs',
+      description: "Récupère les jobs d'une exécution de workflow avec leurs statuts et conclusions",
+      inputSchema: {
+        type: 'object',
+        properties: {
+          owner: { type: 'string', description: "Nom d'utilisateur ou d'organisation propriétaire du dépôt" },
+          repo: { type: 'string', description: 'Nom du dépôt' },
+          run_id: { type: 'number', description: "ID de l'exécution du workflow" }
+        },
+        required: ['owner', 'repo', 'run_id']
+      },
+      execute: async ({ owner, repo, run_id }: GetWorkflowRunStatusParams): Promise<any> => {
+        try {
+          const octokit = getGitHubClient(owner, accounts);
+          const response = await octokit.rest.actions.listJobsForWorkflowRun({
+            owner,
+            repo,
+            run_id
+          });
+          
+          const jobs = response.data.jobs.map((job: any) => ({
+            id: job.id,
+            name: job.name,
+            status: job.status,
+            conclusion: job.conclusion,
+            started_at: job.started_at,
+            completed_at: job.completed_at,
+            html_url: job.html_url,
+            steps: job.steps.map((step: any) => ({
+              name: step.name,
+              status: step.status,
+              conclusion: step.conclusion,
+              number: step.number,
+              started_at: step.started_at,
+              completed_at: step.completed_at
+            }))
+          }));
+          
+          return {
+            success: true,
+            jobs,
+            total_count: response.data.total_count
+          };
+        } catch (error: any) {
+          logger.error('Erreur dans get_workflow_run_jobs', { error });
+          return {
+            success: false,
+            error: error.message || "Erreur lors de la récupération des jobs"
+          };
+        }
+      }
+    },
+    /**
      * @tool search_repositories
      * @description Recherche des dépôts sur GitHub.
      * @param {string} query - La requête de recherche.
