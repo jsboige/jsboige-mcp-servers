@@ -1880,85 +1880,33 @@ export class RooStorageDetector {
   }
 
   /**
-   * Détecte le workspace pour une tâche donnée en analysant les fichiers de conversation
+   * Détecte le workspace pour une tâche donnée
+   * @version 2.0 - Utilise WorkspaceDetector moderne (stratégie dual)
+   * @see WorkspaceDetector pour détails stratégie metadata → environment_details fallback
    */
   public static async detectWorkspaceForTask(taskPath: string): Promise<string> {
     try {
-        // Essayer de lire api_conversation_history.json pour déterminer le workspace
-        const apiHistoryPath = path.join(taskPath, 'api_conversation_history.json');
-        
-        if (await this.fileExists(apiHistoryPath)) {
-            const content = await fs.readFile(apiHistoryPath, 'utf8');
-            const data = JSON.parse(content);
-            
-            // Chercher workspace dans environment_details ou dans les messages
-            if (data && Array.isArray(data)) {
-                for (const message of data) {
-                    // Chercher pattern : Current Workspace Directory (chemin)
-                    const envMatch = message.environment_details?.match(/Current Workspace Directory[^(]*\(([^)]+)\)/);
-                    if (envMatch) {
-                        return this.normalizeWorkspacePath(envMatch[1].trim());
-                    }
-                    
-                    // Fallback : pattern avec ":" (ancien format)
-                    if (message.environment_details?.match(/Current Workspace Directory[^:]*:\s*([^\s\n\r)]+)/)) {
-                        const workspace = RegExp.$1.trim();
-                        return this.normalizeWorkspacePath(workspace);
-                    }
-                }
-            }
-        }
-        
-        // Fallback: essayer ui_messages.json
-        const uiMessagesPath = path.join(taskPath, 'ui_messages.json');
-        if (await this.fileExists(uiMessagesPath)) {
-            const content = await fs.readFile(uiMessagesPath, 'utf8');
-            const data = JSON.parse(content);
-            
-            if (data && Array.isArray(data)) {
-                for (const message of data) {
-                    if (message.text && typeof message.text === 'string') {
-                        // Chercher pattern : Current Workspace Directory (chemin)
-                        const envMatch = message.text.match(/Current Workspace Directory[^(]*\(([^)]+)\)/);
-                        if (envMatch) {
-                            return this.normalizeWorkspacePath(envMatch[1].trim());
-                        }
-                        
-                        // Fallback : pattern avec ":" (ancien format)
-                        const workspaceMatch = message.text.match(/Current Workspace Directory[^:]*:\s*([^\s\n\r)]+)/);
-                        if (workspaceMatch) {
-                            return this.normalizeWorkspacePath(workspaceMatch[1].trim());
-                        }
-                    }
-                }
-            }
-        }
-        
+      const workspaceDetector = new WorkspaceDetector({
+        enableCache: true,
+        validateExistence: false, // Performance
+        normalizePaths: true,
+      });
+      
+      const result = await workspaceDetector.detect(taskPath);
+      
+      // Log détaillé si mode debug
+      if (process.env.DEBUG_WORKSPACE === 'true') {
+        console.log(`[detectWorkspaceForTask] ${taskPath}:`, {
+          workspace: result.workspace,
+          source: result.source,
+          confidence: result.confidence
+        });
+      }
+      
+      return result.workspace || 'UNKNOWN';
     } catch (error) {
-        // Ignorer les erreurs de parsing
-    }
-    
-    // Workspace par défaut si non détecté
-    return 'UNKNOWN';
-  }
-
-  /**
-   * Normalise le chemin du workspace pour la cohérence
-   */
-  private static normalizeWorkspacePath(workspace: string): string {
-    // Nettoyer les caractères indésirables et normaliser
-    return workspace.replace(/[`'"]/g, '').trim() || 'UNKNOWN';
-  }
-
-  /**
-   * Vérifier si un fichier existe
-   */
-  private static async fileExists(filePath: string): Promise<boolean> {
-    try {
-        await fs.access(filePath);
-        return true;
-    } catch {
-        return false;
+      console.warn(`[detectWorkspaceForTask] Error for ${taskPath}:`, error);
+      return 'UNKNOWN';
     }
   }
 
