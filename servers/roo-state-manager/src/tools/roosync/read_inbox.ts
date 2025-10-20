@@ -140,7 +140,8 @@ ${args.status ? `**Filtre :** ${args.status}` : '**Filtre :** tous les messages'
       const statusIcon = getStatusIcon(msg.status);
       const priorityIcon = getPriorityIcon(msg.priority);
       const date = formatDate(msg.timestamp);
-      const shortId = msg.id.substring(0, 12) + '...';
+      // BUG FIX: Afficher l'ID complet au lieu de le tronquer (critique pour roosync_get_message)
+      const fullId = msg.id;
       
       // Tronquer le sujet si trop long
       const maxSubjectLength = 25;
@@ -148,7 +149,7 @@ ${args.status ? `**Filtre :** ${args.status}` : '**Filtre :** tous les messages'
         ? msg.subject.substring(0, maxSubjectLength) + '...'
         : msg.subject;
 
-      result += `| ${shortId} | ${msg.from} | ${truncatedSubject} | ${priorityIcon} ${msg.priority} | ${statusIcon} ${msg.status} | ${date} |\n`;
+      result += `| ${fullId} | ${msg.from} | ${truncatedSubject} | ${priorityIcon} ${msg.priority} | ${statusIcon} ${msg.status} | ${date} |\n`;
     }
 
     result += `\n---\n\n`;
