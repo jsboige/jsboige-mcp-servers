@@ -12,6 +12,32 @@ import { randomUUID } from 'crypto';
 import type { MachineInventory } from './InventoryCollector.js';
 
 /**
+ * Safe property accessor with default value
+ * Prevents "Cannot read properties of undefined" errors
+ *
+ * @example
+ * safeGet(obj, ['hardware', 'cpu', 'cores'], 0) // Returns obj.hardware?.cpu?.cores ?? 0
+ */
+function safeGet<T>(
+  obj: any,
+  path: string[],
+  defaultValue: T
+): T {
+  try {
+    let current = obj;
+    for (const key of path) {
+      if (current == null || typeof current !== 'object') {
+        return defaultValue;
+      }
+      current = current[key];
+    }
+    return current ?? defaultValue;
+  } catch {
+    return defaultValue;
+  }
+}
+
+/**
  * Catégories de différences
  */
 export type DiffCategory = 'roo_config' | 'hardware' | 'software' | 'system' | 'files';
@@ -200,8 +226,8 @@ export class DiffDetector {
     }
 
     // Comparer le nombre de serveurs MCP
-    const sourceMcpCount = source.roo.mcpServers?.length || 0;
-    const targetMcpCount = target.roo.mcpServers?.length || 0;
+    const sourceMcpCount = source.roo?.mcpServers?.length || 0;
+    const targetMcpCount = target.roo?.mcpServers?.length || 0;
     if (sourceMcpCount !== targetMcpCount) {
       diffs.push({
         id: randomUUID(),
@@ -227,8 +253,8 @@ export class DiffDetector {
     }
 
     // Comparer le nombre de modes Roo
-    const sourceModeCount = source.roo.modes?.length || 0;
-    const targetModeCount = target.roo.modes?.length || 0;
+    const sourceModeCount = source.roo?.modes?.length || 0;
+    const targetModeCount = target.roo?.modes?.length || 0;
     if (sourceModeCount !== targetModeCount) {
       diffs.push({
         id: randomUUID(),
@@ -269,8 +295,10 @@ export class DiffDetector {
     const diffs: DetectedDifference[] = [];
 
     // CPU : cores
-    const coreDiff = Math.abs(source.hardware.cpu.cores - target.hardware.cpu.cores);
-    const coreDiffPercent = (coreDiff / Math.max(source.hardware.cpu.cores, target.hardware.cpu.cores)) * 100;
+    const sourceCores = safeGet(source, ['hardware', 'cpu', 'cores'], 0);
+    const targetCores = safeGet(target, ['hardware', 'cpu', 'cores'], 0);
+    const coreDiff = Math.abs(sourceCores - targetCores);
+    const coreDiffPercent = (coreDiff / Math.max(sourceCores, targetCores)) * 100;
     
     if (coreDiffPercent > 0) {
       const severity = this.determineSeverity('hardware', 'MODIFIED', 'cpu.cores', coreDiffPercent);
@@ -279,11 +307,11 @@ export class DiffDetector {
         category: 'hardware',
         severity,
         path: 'hardware.cpu.cores',
-        source: { value: source.hardware.cpu.cores, machineId: source.machineId },
-        target: { value: target.hardware.cpu.cores, machineId: target.machineId },
+        source: { value: sourceCores, machineId: source.machineId },
+        target: { value: targetCores, machineId: target.machineId },
         type: 'MODIFIED',
-        description: `Nombre de cœurs CPU différent : ${source.hardware.cpu.cores} vs ${target.hardware.cpu.cores} (${coreDiffPercent.toFixed(1)}% différence)`,
-        recommendedAction: severity === 'IMPORTANT' 
+        description: `Nombre de cœurs CPU différent : ${sourceCores} vs ${targetCores} (${coreDiffPercent.toFixed(1)}% différence)`,
+        recommendedAction: severity === 'IMPORTANT'
           ? `Performance CPU significativement différente - tester comportement des tâches intensives`
           : undefined,
         affectedComponents: ['CPU', 'Performance']
@@ -291,8 +319,10 @@ export class DiffDetector {
     }
 
     // CPU : threads
-    const threadDiff = Math.abs(source.hardware.cpu.threads - target.hardware.cpu.threads);
-    const threadDiffPercent = (threadDiff / Math.max(source.hardware.cpu.threads, target.hardware.cpu.threads)) * 100;
+    const sourceThreads = safeGet(source, ['hardware', 'cpu', 'threads'], 0);
+    const targetThreads = safeGet(target, ['hardware', 'cpu', 'threads'], 0);
+    const threadDiff = Math.abs(sourceThreads - targetThreads);
+    const threadDiffPercent = (threadDiff / Math.max(sourceThreads, targetThreads)) * 100;
     
     if (threadDiffPercent > 0) {
       const severity = this.determineSeverity('hardware', 'MODIFIED', 'cpu.threads', threadDiffPercent);
@@ -301,30 +331,32 @@ export class DiffDetector {
         category: 'hardware',
         severity,
         path: 'hardware.cpu.threads',
-        source: { value: source.hardware.cpu.threads, machineId: source.machineId },
-        target: { value: target.hardware.cpu.threads, machineId: target.machineId },
+        source: { value: sourceThreads, machineId: source.machineId },
+        target: { value: targetThreads, machineId: target.machineId },
         type: 'MODIFIED',
-        description: `Nombre de threads CPU différent : ${source.hardware.cpu.threads} vs ${target.hardware.cpu.threads} (${threadDiffPercent.toFixed(1)}% différence)`,
+        description: `Nombre de threads CPU différent : ${sourceThreads} vs ${targetThreads} (${threadDiffPercent.toFixed(1)}% différence)`,
         affectedComponents: ['CPU', 'Performance']
       });
     }
 
     // RAM : total
-    const ramDiff = Math.abs(source.hardware.memory.total - target.hardware.memory.total);
-    const ramDiffPercent = (ramDiff / Math.max(source.hardware.memory.total, target.hardware.memory.total)) * 100;
+    const sourceMemTotal = safeGet(source, ['hardware', 'memory', 'total'], 0);
+    const targetMemTotal = safeGet(target, ['hardware', 'memory', 'total'], 0);
+    const ramDiff = Math.abs(sourceMemTotal - targetMemTotal);
+    const ramDiffPercent = (ramDiff / Math.max(sourceMemTotal, targetMemTotal)) * 100;
     
     if (ramDiffPercent > 0) {
       const severity = this.determineSeverity('hardware', 'MODIFIED', 'memory.total', ramDiffPercent);
-      const sourceGB = (source.hardware.memory.total / (1024 ** 3)).toFixed(1);
-      const targetGB = (target.hardware.memory.total / (1024 ** 3)).toFixed(1);
+      const sourceGB = (sourceMemTotal / (1024 ** 3)).toFixed(1);
+      const targetGB = (targetMemTotal / (1024 ** 3)).toFixed(1);
       
       diffs.push({
         id: randomUUID(),
         category: 'hardware',
         severity,
         path: 'hardware.memory.total',
-        source: { value: source.hardware.memory.total, machineId: source.machineId },
-        target: { value: target.hardware.memory.total, machineId: target.machineId },
+        source: { value: sourceMemTotal, machineId: source.machineId },
+        target: { value: targetMemTotal, machineId: target.machineId },
         type: 'MODIFIED',
         description: `RAM totale différente : ${sourceGB} GB vs ${targetGB} GB (${ramDiffPercent.toFixed(1)}% différence)`,
         recommendedAction: severity === 'IMPORTANT'
@@ -335,23 +367,27 @@ export class DiffDetector {
     }
 
     // Disques : nombre
-    if (source.hardware.disks.length !== target.hardware.disks.length) {
+    const sourceDisks = safeGet(source, ['hardware', 'disks'], []);
+    const targetDisks = safeGet(target, ['hardware', 'disks'], []);
+    if (sourceDisks.length !== targetDisks.length) {
       diffs.push({
         id: randomUUID(),
         category: 'hardware',
         severity: 'WARNING',
         path: 'hardware.disks.length',
-        source: { value: source.hardware.disks.length, machineId: source.machineId },
-        target: { value: target.hardware.disks.length, machineId: target.machineId },
+        source: { value: sourceDisks.length, machineId: source.machineId },
+        target: { value: targetDisks.length, machineId: target.machineId },
         type: 'MODIFIED',
-        description: `Nombre de disques différent : ${source.hardware.disks.length} vs ${target.hardware.disks.length}`,
+        description: `Nombre de disques différent : ${sourceDisks.length} vs ${targetDisks.length}`,
         affectedComponents: ['Storage']
       });
     }
 
     // GPU : présence
-    const sourceHasGpu = source.hardware.gpu && source.hardware.gpu.length > 0;
-    const targetHasGpu = target.hardware.gpu && target.hardware.gpu.length > 0;
+    const sourceGpu = safeGet(source, ['hardware', 'gpu'], []);
+    const targetGpu = safeGet(target, ['hardware', 'gpu'], []);
+    const sourceHasGpu = sourceGpu && sourceGpu.length > 0;
+    const targetHasGpu = targetGpu && targetGpu.length > 0;
     
     if (sourceHasGpu !== targetHasGpu) {
       diffs.push({
@@ -359,10 +395,10 @@ export class DiffDetector {
         category: 'hardware',
         severity: 'INFO',
         path: 'hardware.gpu',
-        source: { value: sourceHasGpu ? source.hardware.gpu : null, machineId: source.machineId },
-        target: { value: targetHasGpu ? target.hardware.gpu : null, machineId: target.machineId },
+        source: { value: sourceHasGpu ? sourceGpu : null, machineId: source.machineId },
+        target: { value: targetHasGpu ? targetGpu : null, machineId: target.machineId },
         type: sourceHasGpu ? 'MISSING' : 'ADDED',
-        description: sourceHasGpu 
+        description: sourceHasGpu
           ? `GPU présent sur ${source.machineId} mais absent sur ${target.machineId}`
           : `GPU présent sur ${target.machineId} mais absent sur ${source.machineId}`,
         affectedComponents: ['GPU', 'Graphics']
@@ -383,34 +419,38 @@ export class DiffDetector {
     const diffs: DetectedDifference[] = [];
 
     // PowerShell
-    if (source.software.powershell !== target.software.powershell) {
+    const sourcePwsh = safeGet(source, ['software', 'powershell'], 'Unknown');
+    const targetPwsh = safeGet(target, ['software', 'powershell'], 'Unknown');
+    if (sourcePwsh !== targetPwsh) {
       diffs.push({
         id: randomUUID(),
         category: 'software',
         severity: 'WARNING',
         path: 'software.powershell',
-        source: { value: source.software.powershell, machineId: source.machineId },
-        target: { value: target.software.powershell, machineId: target.machineId },
+        source: { value: sourcePwsh, machineId: source.machineId },
+        target: { value: targetPwsh, machineId: target.machineId },
         type: 'VERSION_MISMATCH',
-        description: `Version PowerShell différente : ${source.software.powershell} vs ${target.software.powershell}`,
-        recommendedAction: `Mettre à jour PowerShell sur ${target.machineId} vers version ${source.software.powershell}`,
+        description: `Version PowerShell différente : ${sourcePwsh} vs ${targetPwsh}`,
+        recommendedAction: `Mettre à jour PowerShell sur ${target.machineId} vers version ${sourcePwsh}`,
         affectedComponents: ['PowerShell', 'Scripts']
       });
     }
 
     // Node.js
-    if (source.software.node !== target.software.node) {
+    const sourceNode = safeGet(source, ['software', 'node'], null);
+    const targetNode = safeGet(target, ['software', 'node'], null);
+    if (sourceNode !== targetNode) {
       // Gérer le cas où Node est absent sur une machine
-      if (!source.software.node || !target.software.node) {
+      if (!sourceNode || !targetNode) {
         diffs.push({
           id: randomUUID(),
           category: 'software',
           severity: 'INFO',
           path: 'software.node',
-          source: { value: source.software.node, machineId: source.machineId },
-          target: { value: target.software.node, machineId: target.machineId },
-          type: source.software.node ? 'MISSING' : 'ADDED',
-          description: !target.software.node 
+          source: { value: sourceNode, machineId: source.machineId },
+          target: { value: targetNode, machineId: target.machineId },
+          type: sourceNode ? 'MISSING' : 'ADDED',
+          description: !targetNode
             ? `Node.js absent sur ${target.machineId}`
             : `Node.js absent sur ${source.machineId}`,
           affectedComponents: ['Node.js']
@@ -421,27 +461,29 @@ export class DiffDetector {
           category: 'software',
           severity: 'INFO',
           path: 'software.node',
-          source: { value: source.software.node, machineId: source.machineId },
-          target: { value: target.software.node, machineId: target.machineId },
+          source: { value: sourceNode, machineId: source.machineId },
+          target: { value: targetNode, machineId: target.machineId },
           type: 'VERSION_MISMATCH',
-          description: `Version Node.js différente : ${source.software.node} vs ${target.software.node}`,
+          description: `Version Node.js différente : ${sourceNode} vs ${targetNode}`,
           affectedComponents: ['Node.js', 'NPM']
         });
       }
     }
 
     // Python
-    if (source.software.python !== target.software.python) {
-      if (!source.software.python || !target.software.python) {
+    const sourcePython = safeGet(source, ['software', 'python'], null);
+    const targetPython = safeGet(target, ['software', 'python'], null);
+    if (sourcePython !== targetPython) {
+      if (!sourcePython || !targetPython) {
         diffs.push({
           id: randomUUID(),
           category: 'software',
           severity: 'INFO',
           path: 'software.python',
-          source: { value: source.software.python, machineId: source.machineId },
-          target: { value: target.software.python, machineId: target.machineId },
-          type: source.software.python ? 'MISSING' : 'ADDED',
-          description: !target.software.python 
+          source: { value: sourcePython, machineId: source.machineId },
+          target: { value: targetPython, machineId: target.machineId },
+          type: sourcePython ? 'MISSING' : 'ADDED',
+          description: !targetPython
             ? `Python absent sur ${target.machineId}`
             : `Python absent sur ${source.machineId}`,
           affectedComponents: ['Python']
@@ -452,10 +494,10 @@ export class DiffDetector {
           category: 'software',
           severity: 'INFO',
           path: 'software.python',
-          source: { value: source.software.python, machineId: source.machineId },
-          target: { value: target.software.python, machineId: target.machineId },
+          source: { value: sourcePython, machineId: source.machineId },
+          target: { value: targetPython, machineId: target.machineId },
           type: 'VERSION_MISMATCH',
-          description: `Version Python différente : ${source.software.python} vs ${target.software.python}`,
+          description: `Version Python différente : ${sourcePython} vs ${targetPython}`,
           affectedComponents: ['Python', 'Pip']
         });
       }
@@ -475,47 +517,53 @@ export class DiffDetector {
     const diffs: DetectedDifference[] = [];
 
     // OS
-    if (source.system.os !== target.system.os) {
+    const sourceOs = safeGet(source, ['system', 'os'], 'unknown');
+    const targetOs = safeGet(target, ['system', 'os'], 'unknown');
+    if (sourceOs !== targetOs) {
       diffs.push({
         id: randomUUID(),
         category: 'system',
         severity: 'INFO',
         path: 'system.os',
-        source: { value: source.system.os, machineId: source.machineId },
-        target: { value: target.system.os, machineId: target.machineId },
+        source: { value: sourceOs, machineId: source.machineId },
+        target: { value: targetOs, machineId: target.machineId },
         type: 'MODIFIED',
-        description: `Système d'exploitation différent : ${source.system.os} vs ${target.system.os}`,
+        description: `Système d'exploitation différent : ${sourceOs} vs ${targetOs}`,
         affectedComponents: ['OS']
       });
     }
 
     // Architecture
-    if (source.system.architecture !== target.system.architecture) {
+    const sourceArch = safeGet(source, ['system', 'architecture'], 'unknown');
+    const targetArch = safeGet(target, ['system', 'architecture'], 'unknown');
+    if (sourceArch !== targetArch) {
       diffs.push({
         id: randomUUID(),
         category: 'system',
         severity: 'IMPORTANT',
         path: 'system.architecture',
-        source: { value: source.system.architecture, machineId: source.machineId },
-        target: { value: target.system.architecture, machineId: target.machineId },
+        source: { value: sourceArch, machineId: source.machineId },
+        target: { value: targetArch, machineId: target.machineId },
         type: 'MODIFIED',
-        description: `Architecture système différente : ${source.system.architecture} vs ${target.system.architecture}`,
+        description: `Architecture système différente : ${sourceArch} vs ${targetArch}`,
         recommendedAction: `Attention : architectures incompatibles peuvent nécessiter des builds différents`,
         affectedComponents: ['Architecture', 'Binaries']
       });
     }
 
     // Hostname
-    if (source.system.hostname !== target.system.hostname) {
+    const sourceHostname = safeGet(source, ['system', 'hostname'], 'unknown');
+    const targetHostname = safeGet(target, ['system', 'hostname'], 'unknown');
+    if (sourceHostname !== targetHostname) {
       diffs.push({
         id: randomUUID(),
         category: 'system',
         severity: 'INFO',
         path: 'system.hostname',
-        source: { value: source.system.hostname, machineId: source.machineId },
-        target: { value: target.system.hostname, machineId: target.machineId },
+        source: { value: sourceHostname, machineId: source.machineId },
+        target: { value: targetHostname, machineId: target.machineId },
         type: 'MODIFIED',
-        description: `Hostname différent : ${source.system.hostname} vs ${target.system.hostname}`,
+        description: `Hostname différent : ${sourceHostname} vs ${targetHostname}`,
         affectedComponents: ['Network']
       });
     }
