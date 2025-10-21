@@ -95,6 +95,12 @@ export class InventoryCollector {
 
   /**
    * Collecte l'inventaire d'une machine (avec cache)
+   *
+   * Stratégie optimisée :
+   * 1. Vérifier cache en mémoire (TTL 1h)
+   * 2. Charger depuis .shared-state/inventories/ (synchronisé Google Drive)
+   * 3. Si pas trouvé ET machine locale : exécuter script PowerShell
+   *
    * @param machineId - Identifiant de la machine
    * @param forceRefresh - Forcer la collecte même si cache valide
    * @returns Inventaire structuré ou null en cas d'échec
@@ -108,6 +114,27 @@ export class InventoryCollector {
       return this.cache.get(machineId)!.data;
     }
 
+    // STRATÉGIE 1 : Charger depuis .shared-state/inventories/ (prioritaire)
+    console.error(`[InventoryCollector] 📂 Tentative de chargement depuis .shared-state/inventories/`);
+    const sharedInventory = await this.loadFromSharedState(machineId);
+    
+    if (sharedInventory) {
+      console.error(`[InventoryCollector] ✅ Inventaire chargé depuis .shared-state pour ${machineId}`);
+      return sharedInventory;
+    }
+
+    // STRATÉGIE 2 : Si pas trouvé, vérifier si machine locale et exécuter script PowerShell
+    const localHostname = os.hostname().toLowerCase();
+    const isLocalMachine = machineId.toLowerCase() === localHostname ||
+                          machineId.toLowerCase().includes('myia-ai-01');
+    
+    if (!isLocalMachine) {
+      console.error(`[InventoryCollector] ❌ Machine distante ${machineId} sans inventaire dans .shared-state`);
+      return null;
+    }
+
+    console.error(`[InventoryCollector] 🔧 Machine locale détectée, exécution du script PowerShell en fallback`);
+    
     try {
       // Calculer projectRoot comme dans init.ts (remonter 7 niveaux depuis build/src/services/)
       // __dirname en production = .../roo-state-manager/build/src/services/
@@ -266,6 +293,65 @@ export class InventoryCollector {
     }
     
     return isValid;
+  }
+
+  /**
+   * Charge l'inventaire d'une machine distante depuis .shared-state/inventories/
+   * @param machineId - Identifiant de la machine
+   * @returns Inventaire ou null si non trouvé
+   */
+  private async loadFromSharedState(machineId: string): Promise<MachineInventory | null> {
+    try {
+      const sharedStatePath = process.env.SHARED_STATE_PATH ||
+        'G:/Mon Drive/Synchronisation/RooSync/.shared-state';
+      const inventoriesDir = join(sharedStatePath, 'inventories');
+
+      if (!existsSync(inventoriesDir)) {
+        console.error(`[InventoryCollector] ❌ Répertoire inventories non trouvé: ${inventoriesDir}`);
+        return null;
+      }
+
+      // Lire tous les fichiers d'inventaire pour cette machine
+      const files = await fs.readdir(inventoriesDir);
+      const machineFiles = files
+        .filter(f => f.startsWith(machineId.toLowerCase()) && f.endsWith('.json'))
+        .sort()
+        .reverse(); // Plus récent en premier
+
+      if (machineFiles.length === 0) {
+        console.error(`[InventoryCollector] ❌ Aucun inventaire trouvé pour ${machineId}`);
+        return null;
+      }
+
+      // Charger le fichier le plus récent
+      const latestFile = machineFiles[0];
+      const filepath = join(inventoriesDir, latestFile);
+      console.error(`[InventoryCollector] 📂 Chargement depuis: ${filepath}`);
+
+      let content = await fs.readFile(filepath, 'utf-8');
+      
+      // Strip BOM UTF-8 si présent
+      if (content.charCodeAt(0) === 0xFEFF) {
+        content = content.slice(1);
+        console.error('[InventoryCollector] 🔧 BOM UTF-8 détecté et supprimé');
+      }
+
+      const inventory: MachineInventory = JSON.parse(content);
+      console.error(`[InventoryCollector] ✅ Inventaire chargé pour ${inventory.machineId} (${latestFile})`);
+
+      // Mettre à jour le cache
+      this.cache.set(machineId, {
+        data: inventory,
+        timestamp: Date.now()
+      });
+
+      return inventory;
+
+    } catch (error) {
+      console.error(`[InventoryCollector] ❌ Erreur chargement depuis .shared-state:`,
+        error instanceof Error ? error.message : String(error));
+      return null;
+    }
   }
 
   /**
