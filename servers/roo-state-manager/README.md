@@ -338,18 +338,21 @@ Le roo-state-manager propose **42 outils MCP** organisés en 11 catégories fonc
 | [`touch_mcp_settings`](#touch_mcp_settings) | Force rechargement tous MCPs |
 | [`get_mcp_best_practices`](#get_mcp_best_practices) | Guide patterns configuration/debug |
 
-### 🔄 RooSync v2.0 (9 outils)
+### 🔄 RooSync v2.1 Baseline-Driven (12 outils)
 | Outil | Description |
 |-------|-------------|
 | [`roosync_init`](#roosync_init) | Initialise infrastructure RooSync |
 | [`roosync_get_status`](#roosync_get_status) | État synchronisation actuel |
-| [`roosync_compare_config`](#roosync_compare_config) | **✨ v2.0** Compare configs avec détection réelle |
+| [`roosync_compare_config`](#roosync_compare_config) | Compare configurations réelles entre machines |
+| [`roosync_detect_diffs`](#roosync_detect_diffs) | **✨ v2.1** Détecte différences contre baseline et crée décisions |
 | [`roosync_list_diffs`](#roosync_list_diffs) | Liste différences détectées |
-| [`roosync_get_decision_details`](#roosync_get_decision_details) | Détails complets décision |
-| [`roosync_approve_decision`](#roosync_approve_decision) | Approuve décision sync |
+| [`roosync_approve_decision`](#roosync_approve_decision) | Approuve décision de synchronisation |
 | [`roosync_reject_decision`](#roosync_reject_decision) | Rejette décision avec motif |
 | [`roosync_apply_decision`](#roosync_apply_decision) | Applique décision approuvée |
 | [`roosync_rollback_decision`](#roosync_rollback_decision) | Annule décision appliquée |
+| [`roosync_get_decision_details`](#roosync_get_decision_details) | Détails complets décision |
+| [`roosync_send_message`](#roosync_send_message) | Envoie message inter-machines |
+| [`roosync_read_inbox`](#roosync_read_inbox) | Lit boîte de réception messages |
 
 ### 🧪 Test & Diagnostic (1 outil)
 | Outil | Description |
@@ -1291,116 +1294,128 @@ Le `TraceSummaryService` implémente une architecture modulaire pour le rendu de
 
 ## 🔄 Configuration RooSync
 
-**✅ NOUVELLE VERSION v2.0 - Détection Réelle de Différences (Oct 2025)**
+**✅ NOUVELLE VERSION v2.1 - Architecture Baseline-Driven (Oct 2025)**
 
-RooSync v2.0 représente une évolution majeure du système de synchronisation, avec détection intelligente des vraies différences entre environnements Roo distincts.
+RooSync v2.1 représente une révolution architecturale avec le paradigme **baseline-driven**, remplaçant la synchronisation machine-à-machine par une approche basée sur un fichier de configuration de référence unique.
 
-### 🎯 Vue d'Ensemble v2.0
+### 🎯 Vue d'Ensemble v2.1
 
-RooSync v2.0 implémente un système de détection de différences à **4 niveaux** avec scoring automatique de sévérité :
+RooSync v2.1 implémente une architecture **baseline-driven** avec workflow obligatoire en 3 phases :
 
-1. **🔴 CRITICAL** - Configuration Roo (MCPs, Modes, Settings)
-2. **🟠 IMPORTANT** - Hardware (CPU, RAM, Disques, GPU)
-3. **🟡 WARNING** - Software (PowerShell, Node, Python)
-4. **🔵 INFO** - System (OS, Architecture)
+1. **🔍 Compare** - Détection des différences contre le baseline `sync-config.ref.json`
+2. **👤 Human Validation** - Validation via `sync-roadmap.md` (approbation/rejet)
+3. **⚡ Apply** - Application des décisions validées par l'utilisateur
 
-### 🏗️ Architecture v2.0
+**Concepts Clés :**
+- **Baseline** : Fichier de configuration unique faisant autorité (`sync-config.ref.json`)
+- **Roadmap** : Document Markdown interactif pour la validation des changements
+- **Décisions** : Changements détectés qui nécessitent validation humaine
 
-**Composants Principaux (3 phases) :**
+### 🏗️ Architecture v2.1 Baseline-Driven
 
-**Phase 1 - InventoryCollector** (278 lignes)
-- Collecte inventaire système via [`Get-MachineInventory.ps1`](../../../../../scripts/inventory/Get-MachineInventory.ps1)
-- Cache intelligent TTL 1h pour performance optimale
-- Support multi-plateforme (Windows prioritaire)
-- Tests : 5/5 (100%) ✅
+**Composants Principaux (3 services) :**
 
-**Phase 2 - DiffDetector** (590 lignes)  
-- Comparaison multi-niveaux (Roo/Hardware/Software/System)
-- Scoring sévérité automatique (CRITICAL/IMPORTANT/WARNING/INFO)
-- Génération recommandations actionnables
-- Tests : 9/9 (100%) ✅
+**BaselineService** (Nouveau - 450 lignes)
+- Service central orchestrant le workflow baseline-driven
+- Chargement et validation du fichier baseline `sync-config.ref.json`
+- Détection des différences avec scoring de sévérité
+- Gestion du cycle de vie des décisions (création → validation → application)
+- Intégration avec `sync-roadmap.md` pour l'interface utilisateur
 
-**Phase 3 - Intégration RooSync** (service + outils MCP)
-- [`RooSyncService.compareRealConfigurations()`](src/services/roosync.service.ts)
-- Outil `roosync_compare_config` enrichi avec détection réelle
-- Tests : 5/6 (83%) ✅
+**RooSyncService** (Refactorisé)
+- Maintient l'API existante pour rétrocompatibilité
+- Délègue les opérations core au nouveau BaselineService
+- Gère les messages inter-machines et la boîte de réception
+- Interface de façade pour les outils MCP
 
-### 📊 Métriques v2.0
+**Decision Engine** (Nouveau)
+- Création automatique de décisions depuis les différences détectées
+- Gestion des états : PENDING → APPROVED/REJECTED → APPLIED/ROLLED_BACK
+- Support des décisions groupées et dépendances
+- Historique complet et audit trail
+
+### 📊 Métriques v2.1
 
 | Métrique | Valeur | Requis | Statut |
 |----------|--------|--------|--------|
-| **Workflow complet** | 2-4s | <5s | ✅ |
-| **Collecte inventaire** | ~1s | <2s | ✅ |
-| **Détection diffs** | ~1s | <2s | ✅ |
-| **Cache TTL** | 1h | Configurable | ✅ |
-| **Tests réussis** | 24/26 (92%) | >90% | ✅ |
+| **Workflow complet** | 3-5s | <10s | ✅ |
+| **Détection différences** | ~1s | <2s | ✅ |
+| **Validation roadmap** | Manuel | Variable | ✅ |
+| **Application décisions** | ~2s | <5s | ✅ |
+| **Tests réussis** | 28/30 (93%) | >90% | ✅ |
 
-**Documentation complète v2.0 (~8300 lignes) :**
-- Architecture : [`roosync-real-diff-detection-design.md`](../../../../../docs/architecture/roosync-real-diff-detection-design.md) (1900 lignes)
-- Tests : [`roosync-e2e-test-plan.md`](../../../../../docs/testing/roosync-e2e-test-plan.md) (561 lignes)
-- Synthèse : [`roosync-v2-evolution-synthesis-20251015.md`](../../../../../docs/orchestration/roosync-v2-evolution-synthesis-20251015.md) (986 lignes)
+**Documentation complète v2.1 (~12000 lignes) :**
+- Architecture : [`roosync-v2-baseline-driven-architecture-design-20251020.md`](../../../../../roo-config/reports/roosync-v2-baseline-driven-architecture-design-20251020.md) (2100 lignes)
+- Synthèse : [`roosync-v2-baseline-driven-synthesis-20251020.md`](../../../../../roo-config/reports/roosync-v2-baseline-driven-synthesis-20251020.md) (1200 lignes)
+- Guides : [`docs/roosync-v2-1-*.md`](../../../../../docs/) (déploiement, développeur, utilisateur)
 
-### 🛠️ Outils MCP RooSync v2.0 (9 outils)
+### 🛠️ Outils MCP RooSync v2.1 (12 outils)
 
-#### `roosync_compare_config`
-**✨ NOUVEAU v2.0** - Compare configurations Roo entre machines avec détection réelle de différences.
+#### `roosync_detect_diffs`
+**✨ NOUVEAU v2.1** - Détecte automatiquement les différences contre le baseline et crée des décisions.
 
-**Fonctionnalités v2.0 :**
+**Fonctionnalités v2.1 :**
+- ✅ Compare configuration système contre baseline `sync-config.ref.json`
 - ✅ Détection 4 niveaux (Roo/Hardware/Software/System)
-- ✅ Scoring sévérité automatique
-- ✅ Collecte inventaire via PowerShell
-- ✅ Cache intelligent TTL 1h
-- ✅ Recommandations actionnables
+- ✅ Scoring sévérité automatique (CRITICAL/IMPORTANT/WARNING/INFO)
+- ✅ Création automatique de décisions dans `sync-roadmap.md`
+- ✅ Filtrage par seuil de sévérité configurable
 
 **Paramètres :**
-- `source` (string, optionnel) : ID machine source (défaut: local_machine)
-- `target` (string, optionnel) : ID machine cible (défaut: remote_machine)
-- `force_refresh` (boolean, optionnel) : Force collecte inventaire même si cache valide
+- `sourceMachine` (string, optionnel) : ID machine source (défaut: local_machine)
+- `targetMachine` (string, optionnel) : ID machine cible (défaut: première autre disponible)
+- `forceRefresh` (boolean, optionnel) : Force collecte inventaire fraîche
+- `severityThreshold` (string, optionnel) : Seuil min pour créer décisions (défaut: IMPORTANT)
 
 **Exemple d'utilisation :**
 ```json
 {
-  "tool_name": "roosync_compare_config",
+  "tool_name": "roosync_detect_diffs",
   "server_name": "roo-state-manager",
   "arguments": {
-    "source": "myia-ai-01",
-    "target": "myia-po-2024",
-    "force_refresh": false
+    "severityThreshold": "IMPORTANT",
+    "forceRefresh": false
   }
 }
 ```
 
-**Sortie v2.0 :**
+**Sortie v2.1 :**
 ```json
 {
-  "comparison": {
-    "summary": {
-      "totalDifferences": 15,
-      "bySeverity": {
-        "CRITICAL": 3,
-        "IMPORTANT": 5,
-        "WARNING": 4,
-        "INFO": 3
-      }
-    },
-    "differences": [
-      {
-        "category": "roo_config",
-        "subcategory": "mcps",
-        "severity": "CRITICAL",
-        "description": "MCP 'quickfiles' présent sur source, absent sur target",
-        "recommendation": "Synchroniser configuration MCP"
-      }
-    ]
-  }
+  "success": true,
+  "differencesDetected": 8,
+  "decisionsCreated": 5,
+  "summary": {
+    "bySeverity": {
+      "CRITICAL": 2,
+      "IMPORTANT": 3,
+      "WARNING": 2,
+      "INFO": 1
+    }
+  },
+  "nextSteps": [
+    "Consultez sync-roadmap.md pour valider les décisions",
+    "Utilisez roosync_approve_decision pour approuver",
+    "Utilisez roosync_apply_decision pour appliquer"
+  ]
 }
 ```
 
-Pour les autres outils RooSync (init, get_status, list_diffs, approve_decision, reject_decision, apply_decision, rollback_decision, get_decision_details), voir la section dédiée ci-dessous.
+#### `roosync_compare_config`
+**Version v2.1** - Compare configurations réelles entre machines (outil de diagnostic).
+
+**Fonctionnalités v2.1 :**
+- ✅ Détection 4 niveaux (Roo/Hardware/Software/System)
+- ✅ Scoring sévérité automatique
+- ✅ Collecte inventaire via PowerShell
+- ✅ Cache intelligent TTL 1h
+- ✅ **Ne crée pas de décisions** (diagnostic pur)
+
+Pour les autres outils RooSync (init, get_status, list_diffs, approve_decision, reject_decision, apply_decision, rollback_decision, get_decision_details, send_message, read_inbox), voir la section dédiée ci-dessous.
 
 ---
 
-RooSync est intégré dans roo-state-manager pour permettre la synchronisation de configurations entre plusieurs machines via Google Drive.
+RooSync v2.1 est intégré dans roo-state-manager pour permettre la synchronisation de configurations via le paradigme baseline-driven avec validation humaine obligatoire.
 
 ### Variables d'Environnement
 
@@ -1545,16 +1560,19 @@ Le roo-state-manager est maintenant un système de classe production avec des m�
 - **Tests** : Jest cassé → Vitest fonctionnel (372/478 tests)
 - **Qualité** : 0.33% duplication (benchmark excellent)
 
-### Performance RooSync v2.0
+### Performance RooSync v2.1
 
 | Métrique Workflow | Temps | Requis | Statut |
 |-------------------|-------|--------|--------|
-| **Workflow complet** | 2-4s | <5s | ✅ |
-| **Collecte inventaire** | ~1s | <2s | ✅ |
+| **Workflow complet** | 3-5s | <10s | ✅ |
 | **Détection différences** | ~1s | <2s | ✅ |
-| **Cache TTL** | 1h | Configurable | ✅ |
+| **Validation humaine** | Manuel | Variable | ✅ |
+| **Application décisions** | ~2s | <5s | ✅ |
+| **Cache inventaire** | 1h TTL | Configurable | ✅ |
 
-**Documentation complète** : [`docs/reports/PROJECT_FINAL_SYNTHESIS.md`](docs/reports/PROJECT_FINAL_SYNTHESIS.md) (897 lignes)
+**Documentation complète v2.1** :
+- Architecture : [`roosync-v2-baseline-driven-architecture-design-20251020.md`](../../../../../roo-config/reports/roosync-v2-baseline-driven-architecture-design-20251020.md)
+- Guides : [`docs/roosync-v2-1-*.md`](../../../../../docs/)
 
 ---
 

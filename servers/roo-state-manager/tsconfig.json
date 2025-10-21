@@ -2,8 +2,8 @@
   "compilerOptions": {
     "target": "ES2022",
     "lib": ["ES2022"],
-    "module": "NodeNext",
-    "moduleResolution": "NodeNext",
+    "module": "ES2022",
+    "moduleResolution": "node",
     "downlevelIteration": true,
     "rootDir": "./src",
     "outDir": "./build",
@@ -17,14 +17,13 @@
     "resolveJsonModule": true,
     "allowSyntheticDefaultImports": true,
     "isolatedModules": true,
-    "types": ["vitest/globals", "node"]
+    "types": ["jest", "node"]
   },
   "include": [
     "src/**/*.ts"
   ],
   "exclude": [
     "node_modules",
-    "build",
-    "tests/**/*.ts"
+    "build"
   ]
 }

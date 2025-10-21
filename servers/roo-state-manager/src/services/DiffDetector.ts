@@ -1,15 +1,21 @@
 /**
- * DiffDetector - Détection intelligente de différences entre inventaires machines
+ * DiffDetector - Service de détection des différences
  * 
- * Compare 2 inventaires machines et génère un rapport structuré de différences
- * avec scoring de sévérité et recommandations d'actions.
+ * Service responsable de comparer les configurations baseline
+ * avec les configurations des machines cibles pour identifier
+ * les différences et leur sévérité.
  * 
  * @module DiffDetector
- * @version 1.0.0
+ * @version 2.1.0
  */
 
-import { randomUUID } from 'crypto';
-import type { MachineInventory } from './InventoryCollector.js';
+import { 
+  IDiffDetector, 
+  BaselineConfig, 
+  MachineInventory, 
+  BaselineDifference,
+  BaselineComparisonReport 
+} from '../types/baseline.js';
 
 /**
  * Safe property accessor with default value
@@ -38,653 +44,499 @@ function safeGet<T>(
 }
 
 /**
- * Catégories de différences
+ * Implémentation du service de détection de différences
  */
-export type DiffCategory = 'roo_config' | 'hardware' | 'software' | 'system' | 'files';
-
-/**
- * Niveaux de sévérité
- */
-export type DiffSeverity = 'CRITICAL' | 'IMPORTANT' | 'WARNING' | 'INFO';
-
-/**
- * Types de différences
- */
-export type DiffType = 'MISSING' | 'ADDED' | 'MODIFIED' | 'VERSION_MISMATCH';
-
-/**
- * Interface pour une différence détectée
- */
-export interface DetectedDifference {
-  id: string; // UUID unique
-  category: DiffCategory;
-  severity: DiffSeverity;
-  path: string; // Chemin de la différence (ex: "hardware.cpu.cores")
-  source: {
-    value: any;
-    machineId: string;
-  };
-  target: {
-    value: any;
-    machineId: string;
-  };
-  type: DiffType;
-  description: string;
-  recommendedAction?: string;
-  affectedComponents?: string[];
-}
-
-/**
- * Interface pour le rapport de comparaison
- */
-export interface ComparisonReport {
-  reportId: string;
-  timestamp: string;
-  sourceMachine: string;
-  targetMachine: string;
-  summary: {
-    total: number;
-    critical: number;
-    important: number;
-    warning: number;
-    info: number;
-  };
-  differences: DetectedDifference[];
-  metadata: {
-    comparisonDuration: number; // ms
-    sourceInventoryAge: number; // ms
-    targetInventoryAge: number; // ms
-  };
-}
-
-/**
- * Classe DiffDetector pour comparer intelligemment 2 inventaires machines
- */
-export class DiffDetector {
-  /**
-   * Compare 2 inventaires et génère un rapport de différences
-   * @param sourceInventory - Inventaire machine source
-   * @param targetInventory - Inventaire machine cible
-   * @returns Rapport de comparaison structuré
-   */
-  async compareInventories(
-    sourceInventory: MachineInventory,
-    targetInventory: MachineInventory
-  ): Promise<ComparisonReport> {
-    const startTime = Date.now();
-    console.log(`[DiffDetector] Comparaison ${sourceInventory.machineId} vs ${targetInventory.machineId}`);
-
-    const differences: DetectedDifference[] = [];
-
-    // Niveau 1 : Configuration Roo (CRITICAL)
-    differences.push(...this.compareRooConfig(sourceInventory, targetInventory));
-
-    // Niveau 2 : Hardware (IMPORTANT)
-    differences.push(...this.compareHardware(sourceInventory, targetInventory));
-
-    // Niveau 3 : Software (WARNING)
-    differences.push(...this.compareSoftware(sourceInventory, targetInventory));
-
-    // Niveau 4 : System (INFO)
-    differences.push(...this.compareSystem(sourceInventory, targetInventory));
-
-    // Calcul des statistiques
-    const summary = {
-      total: differences.length,
-      critical: differences.filter(d => d.severity === 'CRITICAL').length,
-      important: differences.filter(d => d.severity === 'IMPORTANT').length,
-      warning: differences.filter(d => d.severity === 'WARNING').length,
-      info: differences.filter(d => d.severity === 'INFO').length
-    };
-
-    const comparisonDuration = Date.now() - startTime;
-
-    // Calculer l'âge des inventaires
-    const sourceAge = Date.now() - new Date(sourceInventory.timestamp).getTime();
-    const targetAge = Date.now() - new Date(targetInventory.timestamp).getTime();
-
-    console.log(`[DiffDetector] Comparaison terminée en ${comparisonDuration}ms : ${differences.length} différences détectées`);
-    console.log(`[DiffDetector] Résumé : ${summary.critical} CRITICAL, ${summary.important} IMPORTANT, ${summary.warning} WARNING, ${summary.info} INFO`);
-
-    return {
-      reportId: randomUUID(),
-      timestamp: new Date().toISOString(),
-      sourceMachine: sourceInventory.machineId,
-      targetMachine: targetInventory.machineId,
-      summary,
-      differences: differences.sort((a, b) => {
-        // Tri par sévérité (CRITICAL > IMPORTANT > WARNING > INFO)
-        const severityOrder = { CRITICAL: 0, IMPORTANT: 1, WARNING: 2, INFO: 3 };
-        return severityOrder[a.severity] - severityOrder[b.severity];
-      }),
-      metadata: {
-        comparisonDuration,
-        sourceInventoryAge: sourceAge,
-        targetInventoryAge: targetAge
-      }
-    };
+export class DiffDetector implements IDiffDetector {
+  
+  constructor() {
+    // Initialisation du service
   }
 
   /**
-   * Compare configurations Roo (MCPs, Modes, Settings)
-   * @returns Liste de différences détectées
+   * Compare une configuration baseline avec une machine cible
+   */
+  public async compareBaselineWithMachine(
+    baseline: BaselineConfig,
+    machine: MachineInventory
+  ): Promise<BaselineDifference[]> {
+    const differences: BaselineDifference[] = [];
+
+    try {
+      // Comparer la configuration Roo
+      const rooDiffs = this.compareRooConfig(baseline.config.roo, machine.config.roo);
+      differences.push(...rooDiffs);
+
+      // Comparer la configuration matérielle
+      const hardwareDiffs = this.compareHardwareConfig(baseline.config.hardware, machine.config.hardware);
+      differences.push(...hardwareDiffs);
+
+      // Comparer la configuration logicielle
+      const softwareDiffs = this.compareSoftwareConfig(baseline.config.software, machine.config.software);
+      differences.push(...softwareDiffs);
+
+      // Comparer la configuration système
+      const systemDiffs = this.compareSystemConfig(baseline.config.system, machine.config.system);
+      differences.push(...systemDiffs);
+
+      return differences;
+    } catch (error) {
+      console.error('Erreur lors de la comparaison baseline/machine:', error);
+      throw error;
+    }
+  }
+
+  /**
+   * Compare les configurations Roo
    */
   private compareRooConfig(
-    source: MachineInventory,
-    target: MachineInventory
-  ): DetectedDifference[] {
-    const diffs: DetectedDifference[] = [];
+    baselineRoo: any,
+    machineRoo: any
+  ): BaselineDifference[] {
+    const differences: BaselineDifference[] = [];
 
     // Comparer paths.rooConfig
-    if (source.paths?.rooConfig !== target.paths?.rooConfig) {
-      diffs.push({
-        id: randomUUID(),
-        category: 'roo_config',
+    if (baselineRoo.paths?.rooConfig !== machineRoo.paths?.rooConfig) {
+      differences.push({
+        category: 'config',
         severity: 'CRITICAL',
         path: 'paths.rooConfig',
-        source: { value: source.paths?.rooConfig, machineId: source.machineId },
-        target: { value: target.paths?.rooConfig, machineId: target.machineId },
-        type: 'MODIFIED',
         description: `Chemin de configuration Roo différent entre machines`,
-        recommendedAction: this.generateRecommendation({
-          id: '',
-          category: 'roo_config',
-          severity: 'CRITICAL',
-          path: 'paths.rooConfig',
-          source: { value: source.paths?.rooConfig, machineId: source.machineId },
-          target: { value: target.paths?.rooConfig, machineId: target.machineId },
-          type: 'MODIFIED',
-          description: ''
-        }),
-        affectedComponents: ['Roo Config']
+        baselineValue: baselineRoo.paths?.rooConfig,
+        actualValue: machineRoo.paths?.rooConfig,
+        recommendedAction: 'Synchroniser le chemin de configuration Roo'
       });
     }
 
     // Comparer paths.mcpSettings
-    if (source.paths?.mcpSettings !== target.paths?.mcpSettings) {
-      diffs.push({
-        id: randomUUID(),
-        category: 'roo_config',
+    if (baselineRoo.paths?.mcpSettings !== machineRoo.paths?.mcpSettings) {
+      differences.push({
+        category: 'config',
         severity: 'CRITICAL',
         path: 'paths.mcpSettings',
-        source: { value: source.paths?.mcpSettings, machineId: source.machineId },
-        target: { value: target.paths?.mcpSettings, machineId: target.machineId },
-        type: 'MODIFIED',
         description: `Chemin des paramètres MCP différent entre machines`,
-        recommendedAction: this.generateRecommendation({
-          id: '',
-          category: 'roo_config',
-          severity: 'CRITICAL',
-          path: 'paths.mcpSettings',
-          source: { value: source.paths?.mcpSettings, machineId: source.machineId },
-          target: { value: target.paths?.mcpSettings, machineId: target.machineId },
-          type: 'MODIFIED',
-          description: ''
-        }),
-        affectedComponents: ['MCP Servers']
+        baselineValue: baselineRoo.paths?.mcpSettings,
+        actualValue: machineRoo.paths?.mcpSettings,
+        recommendedAction: 'Synchroniser le chemin des paramètres MCP'
       });
     }
 
     // Comparer le nombre de serveurs MCP
-    const sourceMcpCount = source.roo?.mcpServers?.length || 0;
-    const targetMcpCount = target.roo?.mcpServers?.length || 0;
-    if (sourceMcpCount !== targetMcpCount) {
-      diffs.push({
-        id: randomUUID(),
-        category: 'roo_config',
+    const baselineMcpCount = baselineRoo.mcpServers?.length || 0;
+    const machineMcpCount = machineRoo.mcpServers?.length || 0;
+    if (baselineMcpCount !== machineMcpCount) {
+      differences.push({
+        category: 'config',
         severity: 'IMPORTANT',
         path: 'roo.mcpServers',
-        source: { value: `${sourceMcpCount} serveurs`, machineId: source.machineId },
-        target: { value: `${targetMcpCount} serveurs`, machineId: target.machineId },
-        type: 'MODIFIED',
         description: `Nombre de serveurs MCP différent entre machines`,
-        recommendedAction: this.generateRecommendation({
-          id: '',
-          category: 'roo_config',
-          severity: 'IMPORTANT',
-          path: 'roo.mcpServers',
-          source: { value: sourceMcpCount, machineId: source.machineId },
-          target: { value: targetMcpCount, machineId: target.machineId },
-          type: 'MODIFIED',
-          description: ''
-        }),
-        affectedComponents: ['MCP Servers']
+        baselineValue: `${baselineMcpCount} serveurs`,
+        actualValue: `${machineMcpCount} serveurs`,
+        recommendedAction: 'Vérifier la configuration des serveurs MCP'
       });
     }
 
     // Comparer le nombre de modes Roo
-    const sourceModeCount = source.roo?.modes?.length || 0;
-    const targetModeCount = target.roo?.modes?.length || 0;
-    if (sourceModeCount !== targetModeCount) {
-      diffs.push({
-        id: randomUUID(),
-        category: 'roo_config',
+    const baselineModeCount = baselineRoo.modes?.length || 0;
+    const machineModeCount = machineRoo.modes?.length || 0;
+    if (baselineModeCount !== machineModeCount) {
+      differences.push({
+        category: 'config',
         severity: 'IMPORTANT',
         path: 'roo.modes',
-        source: { value: `${sourceModeCount} modes`, machineId: source.machineId },
-        target: { value: `${targetModeCount} modes`, machineId: target.machineId },
-        type: 'MODIFIED',
         description: `Nombre de modes Roo différent entre machines`,
-        recommendedAction: this.generateRecommendation({
-          id: '',
-          category: 'roo_config',
-          severity: 'IMPORTANT',
-          path: 'roo.modes',
-          source: { value: sourceModeCount, machineId: source.machineId },
-          target: { value: targetModeCount, machineId: target.machineId },
-          type: 'MODIFIED',
-          description: ''
-        }),
-        affectedComponents: ['Roo Modes']
+        baselineValue: `${baselineModeCount} modes`,
+        actualValue: `${machineModeCount} modes`,
+        recommendedAction: 'Vérifier la configuration des modes Roo'
       });
     }
 
-    // TODO Phase 3 : Parser contenu réel des fichiers MCP et Modes
+    // Comparer les modes
+    if (JSON.stringify(baselineRoo.modes) !== JSON.stringify(machineRoo.modes)) {
+      differences.push({
+        category: 'config',
+        severity: 'IMPORTANT',
+        path: 'roo.modes',
+        description: 'Différence dans les modes Roo configurés',
+        baselineValue: baselineRoo.modes,
+        actualValue: machineRoo.modes,
+        recommendedAction: 'Synchroniser les modes avec la baseline'
+      });
+    }
 
-    return diffs;
+    // Comparer les paramètres MCP
+    const mcpDiffs = this.compareObjects(
+      baselineRoo.mcpSettings || {},
+      machineRoo.mcpSettings || {},
+      'roo.mcpSettings'
+    );
+    differences.push(...mcpDiffs);
+
+    // Comparer les paramètres utilisateur
+    const userDiffs = this.compareObjects(
+      baselineRoo.userSettings || {},
+      machineRoo.userSettings || {},
+      'roo.userSettings'
+    );
+    differences.push(...userDiffs);
+
+    return differences;
   }
 
   /**
-   * Compare hardware (CPU, RAM, GPU, Disques)
-   * @returns Liste de différences détectées
+   * Compare les configurations matérielles
    */
-  private compareHardware(
-    source: MachineInventory,
-    target: MachineInventory
-  ): DetectedDifference[] {
-    const diffs: DetectedDifference[] = [];
+  private compareHardwareConfig(
+    baselineHardware: any,
+    machineHardware: any
+  ): BaselineDifference[] {
+    const differences: BaselineDifference[] = [];
 
     // CPU : cores
-    const sourceCores = safeGet(source, ['hardware', 'cpu', 'cores'], 0);
-    const targetCores = safeGet(target, ['hardware', 'cpu', 'cores'], 0);
-    const coreDiff = Math.abs(sourceCores - targetCores);
-    const coreDiffPercent = (coreDiff / Math.max(sourceCores, targetCores)) * 100;
+    const baselineCores = safeGet(baselineHardware, ['cpu', 'cores'], 0);
+    const machineCores = safeGet(machineHardware, ['cpu', 'cores'], 0);
+    const coreDiff = Math.abs(baselineCores - machineCores);
+    const coreDiffPercent = (coreDiff / Math.max(baselineCores, machineCores)) * 100;
     
     if (coreDiffPercent > 0) {
       const severity = this.determineSeverity('hardware', 'MODIFIED', 'cpu.cores', coreDiffPercent);
-      diffs.push({
-        id: randomUUID(),
+      differences.push({
         category: 'hardware',
         severity,
         path: 'hardware.cpu.cores',
-        source: { value: sourceCores, machineId: source.machineId },
-        target: { value: targetCores, machineId: target.machineId },
-        type: 'MODIFIED',
-        description: `Nombre de cœurs CPU différent : ${sourceCores} vs ${targetCores} (${coreDiffPercent.toFixed(1)}% différence)`,
+        description: `Nombre de cœurs CPU différent : ${baselineCores} vs ${machineCores} (${coreDiffPercent.toFixed(1)}% différence)`,
+        baselineValue: baselineCores,
+        actualValue: machineCores,
         recommendedAction: severity === 'IMPORTANT'
           ? `Performance CPU significativement différente - tester comportement des tâches intensives`
-          : undefined,
-        affectedComponents: ['CPU', 'Performance']
+          : 'Aucune action requise'
       });
     }
 
     // CPU : threads
-    const sourceThreads = safeGet(source, ['hardware', 'cpu', 'threads'], 0);
-    const targetThreads = safeGet(target, ['hardware', 'cpu', 'threads'], 0);
-    const threadDiff = Math.abs(sourceThreads - targetThreads);
-    const threadDiffPercent = (threadDiff / Math.max(sourceThreads, targetThreads)) * 100;
+    const baselineThreads = safeGet(baselineHardware, ['cpu', 'threads'], 0);
+    const machineThreads = safeGet(machineHardware, ['cpu', 'threads'], 0);
+    const threadDiff = Math.abs(baselineThreads - machineThreads);
+    const threadDiffPercent = (threadDiff / Math.max(baselineThreads, machineThreads)) * 100;
     
     if (threadDiffPercent > 0) {
       const severity = this.determineSeverity('hardware', 'MODIFIED', 'cpu.threads', threadDiffPercent);
-      diffs.push({
-        id: randomUUID(),
+      differences.push({
         category: 'hardware',
         severity,
         path: 'hardware.cpu.threads',
-        source: { value: sourceThreads, machineId: source.machineId },
-        target: { value: targetThreads, machineId: target.machineId },
-        type: 'MODIFIED',
-        description: `Nombre de threads CPU différent : ${sourceThreads} vs ${targetThreads} (${threadDiffPercent.toFixed(1)}% différence)`,
-        affectedComponents: ['CPU', 'Performance']
+        description: `Nombre de threads CPU différent : ${baselineThreads} vs ${machineThreads} (${threadDiffPercent.toFixed(1)}% différence)`,
+        baselineValue: baselineThreads,
+        actualValue: machineThreads,
+        recommendedAction: 'Aucune action requise'
       });
     }
 
     // RAM : total
-    const sourceMemTotal = safeGet(source, ['hardware', 'memory', 'total'], 0);
-    const targetMemTotal = safeGet(target, ['hardware', 'memory', 'total'], 0);
-    const ramDiff = Math.abs(sourceMemTotal - targetMemTotal);
-    const ramDiffPercent = (ramDiff / Math.max(sourceMemTotal, targetMemTotal)) * 100;
+    const baselineMemTotal = safeGet(baselineHardware, ['memory', 'total'], 0);
+    const machineMemTotal = safeGet(machineHardware, ['memory', 'total'], 0);
+    const ramDiff = Math.abs(baselineMemTotal - machineMemTotal);
+    const ramDiffPercent = (ramDiff / Math.max(baselineMemTotal, machineMemTotal)) * 100;
     
     if (ramDiffPercent > 0) {
       const severity = this.determineSeverity('hardware', 'MODIFIED', 'memory.total', ramDiffPercent);
-      const sourceGB = (sourceMemTotal / (1024 ** 3)).toFixed(1);
-      const targetGB = (targetMemTotal / (1024 ** 3)).toFixed(1);
+      const baselineGB = (baselineMemTotal / (1024 ** 3)).toFixed(1);
+      const machineGB = (machineMemTotal / (1024 ** 3)).toFixed(1);
       
-      diffs.push({
-        id: randomUUID(),
+      differences.push({
         category: 'hardware',
         severity,
         path: 'hardware.memory.total',
-        source: { value: sourceMemTotal, machineId: source.machineId },
-        target: { value: targetMemTotal, machineId: target.machineId },
-        type: 'MODIFIED',
-        description: `RAM totale différente : ${sourceGB} GB vs ${targetGB} GB (${ramDiffPercent.toFixed(1)}% différence)`,
+        description: `RAM totale différente : ${baselineGB} GB vs ${machineGB} GB (${ramDiffPercent.toFixed(1)}% différence)`,
+        baselineValue: baselineMemTotal,
+        actualValue: machineMemTotal,
         recommendedAction: severity === 'IMPORTANT'
-          ? `RAM insuffisante sur ${target.machineId} - risque de performance dégradée`
-          : undefined,
-        affectedComponents: ['RAM', 'Performance']
+          ? `RAM insuffisante - risque de performance dégradée`
+          : 'Aucune action requise'
       });
     }
 
     // Disques : nombre
-    const sourceDisks = safeGet(source, ['hardware', 'disks'], []);
-    const targetDisks = safeGet(target, ['hardware', 'disks'], []);
-    if (sourceDisks.length !== targetDisks.length) {
-      diffs.push({
-        id: randomUUID(),
+    const baselineDisks = safeGet(baselineHardware, ['disks'], []);
+    const machineDisks = safeGet(machineHardware, ['disks'], []);
+    if (baselineDisks.length !== machineDisks.length) {
+      differences.push({
         category: 'hardware',
         severity: 'WARNING',
         path: 'hardware.disks.length',
-        source: { value: sourceDisks.length, machineId: source.machineId },
-        target: { value: targetDisks.length, machineId: target.machineId },
-        type: 'MODIFIED',
-        description: `Nombre de disques différent : ${sourceDisks.length} vs ${targetDisks.length}`,
-        affectedComponents: ['Storage']
+        description: `Nombre de disques différent : ${baselineDisks.length} vs ${machineDisks.length}`,
+        baselineValue: baselineDisks.length,
+        actualValue: machineDisks.length,
+        recommendedAction: 'Vérifier la configuration des disques'
       });
     }
 
     // GPU : présence
-    const sourceGpu = safeGet(source, ['hardware', 'gpu'], []);
-    const targetGpu = safeGet(target, ['hardware', 'gpu'], []);
-    const sourceHasGpu = sourceGpu && sourceGpu.length > 0;
-    const targetHasGpu = targetGpu && targetGpu.length > 0;
+    const baselineGpu = safeGet(baselineHardware, ['gpu'], []);
+    const machineGpu = safeGet(machineHardware, ['gpu'], []);
+    const baselineHasGpu = baselineGpu && baselineGpu.length > 0;
+    const machineHasGpu = machineGpu && machineGpu.length > 0;
     
-    if (sourceHasGpu !== targetHasGpu) {
-      diffs.push({
-        id: randomUUID(),
+    if (baselineHasGpu !== machineHasGpu) {
+      differences.push({
         category: 'hardware',
         severity: 'INFO',
         path: 'hardware.gpu',
-        source: { value: sourceHasGpu ? sourceGpu : null, machineId: source.machineId },
-        target: { value: targetHasGpu ? targetGpu : null, machineId: target.machineId },
-        type: sourceHasGpu ? 'MISSING' : 'ADDED',
-        description: sourceHasGpu
-          ? `GPU présent sur ${source.machineId} mais absent sur ${target.machineId}`
-          : `GPU présent sur ${target.machineId} mais absent sur ${source.machineId}`,
-        affectedComponents: ['GPU', 'Graphics']
+        description: baselineHasGpu
+          ? `GPU présent sur baseline mais absent sur machine`
+          : `GPU présent sur machine mais absent sur baseline`,
+        baselineValue: baselineHasGpu ? baselineGpu : null,
+        actualValue: machineHasGpu ? machineGpu : null,
+        recommendedAction: 'Vérifier la configuration GPU'
       });
     }
 
-    return diffs;
+    return differences;
   }
 
   /**
-   * Compare versions logicielles (Node, Python, PowerShell)
-   * @returns Liste de différences détectées
+   * Compare les configurations logicielles
    */
-  private compareSoftware(
-    source: MachineInventory,
-    target: MachineInventory
-  ): DetectedDifference[] {
-    const diffs: DetectedDifference[] = [];
+  private compareSoftwareConfig(
+    baselineSoftware: any,
+    machineSoftware: any
+  ): BaselineDifference[] {
+    const differences: BaselineDifference[] = [];
 
     // PowerShell
-    const sourcePwsh = safeGet(source, ['software', 'powershell'], 'Unknown');
-    const targetPwsh = safeGet(target, ['software', 'powershell'], 'Unknown');
-    if (sourcePwsh !== targetPwsh) {
-      diffs.push({
-        id: randomUUID(),
+    const baselinePwsh = safeGet(baselineSoftware, ['powershell'], 'Unknown');
+    const machinePwsh = safeGet(machineSoftware, ['powershell'], 'Unknown');
+    if (baselinePwsh !== machinePwsh) {
+      differences.push({
         category: 'software',
         severity: 'WARNING',
         path: 'software.powershell',
-        source: { value: sourcePwsh, machineId: source.machineId },
-        target: { value: targetPwsh, machineId: target.machineId },
-        type: 'VERSION_MISMATCH',
-        description: `Version PowerShell différente : ${sourcePwsh} vs ${targetPwsh}`,
-        recommendedAction: `Mettre à jour PowerShell sur ${target.machineId} vers version ${sourcePwsh}`,
-        affectedComponents: ['PowerShell', 'Scripts']
+        description: `Version PowerShell différente : ${baselinePwsh} vs ${machinePwsh}`,
+        baselineValue: baselinePwsh,
+        actualValue: machinePwsh,
+        recommendedAction: `Mettre à jour PowerShell vers version ${baselinePwsh}`
       });
     }
 
     // Node.js
-    const sourceNode = safeGet(source, ['software', 'node'], null);
-    const targetNode = safeGet(target, ['software', 'node'], null);
-    if (sourceNode !== targetNode) {
+    const baselineNode = safeGet(baselineSoftware, ['node'], null);
+    const machineNode = safeGet(machineSoftware, ['node'], null);
+    if (baselineNode !== machineNode) {
       // Gérer le cas où Node est absent sur une machine
-      if (!sourceNode || !targetNode) {
-        diffs.push({
-          id: randomUUID(),
+      if (!baselineNode || !machineNode) {
+        differences.push({
           category: 'software',
           severity: 'INFO',
           path: 'software.node',
-          source: { value: sourceNode, machineId: source.machineId },
-          target: { value: targetNode, machineId: target.machineId },
-          type: sourceNode ? 'MISSING' : 'ADDED',
-          description: !targetNode
-            ? `Node.js absent sur ${target.machineId}`
-            : `Node.js absent sur ${source.machineId}`,
-          affectedComponents: ['Node.js']
+          description: !machineNode
+            ? `Node.js absent sur machine cible`
+            : `Node.js absent sur baseline`,
+          baselineValue: baselineNode,
+          actualValue: machineNode,
+          recommendedAction: 'Installer Node.js si nécessaire'
         });
       } else {
-        diffs.push({
-          id: randomUUID(),
+        differences.push({
           category: 'software',
           severity: 'INFO',
           path: 'software.node',
-          source: { value: sourceNode, machineId: source.machineId },
-          target: { value: targetNode, machineId: target.machineId },
-          type: 'VERSION_MISMATCH',
-          description: `Version Node.js différente : ${sourceNode} vs ${targetNode}`,
-          affectedComponents: ['Node.js', 'NPM']
+          description: `Version Node.js différente : ${baselineNode} vs ${machineNode}`,
+          baselineValue: baselineNode,
+          actualValue: machineNode,
+          recommendedAction: 'Mettre à jour Node.js vers la version de la baseline'
         });
       }
     }
 
     // Python
-    const sourcePython = safeGet(source, ['software', 'python'], null);
-    const targetPython = safeGet(target, ['software', 'python'], null);
-    if (sourcePython !== targetPython) {
-      if (!sourcePython || !targetPython) {
-        diffs.push({
-          id: randomUUID(),
+    const baselinePython = safeGet(baselineSoftware, ['python'], null);
+    const machinePython = safeGet(machineSoftware, ['python'], null);
+    if (baselinePython !== machinePython) {
+      if (!baselinePython || !machinePython) {
+        differences.push({
           category: 'software',
           severity: 'INFO',
           path: 'software.python',
-          source: { value: sourcePython, machineId: source.machineId },
-          target: { value: targetPython, machineId: target.machineId },
-          type: sourcePython ? 'MISSING' : 'ADDED',
-          description: !targetPython
-            ? `Python absent sur ${target.machineId}`
-            : `Python absent sur ${source.machineId}`,
-          affectedComponents: ['Python']
+          description: !machinePython
+            ? `Python absent sur machine cible`
+            : `Python absent sur baseline`,
+          baselineValue: baselinePython,
+          actualValue: machinePython,
+          recommendedAction: 'Installer Python si nécessaire'
         });
       } else {
-        diffs.push({
-          id: randomUUID(),
+        differences.push({
           category: 'software',
           severity: 'INFO',
           path: 'software.python',
-          source: { value: sourcePython, machineId: source.machineId },
-          target: { value: targetPython, machineId: target.machineId },
-          type: 'VERSION_MISMATCH',
-          description: `Version Python différente : ${sourcePython} vs ${targetPython}`,
-          affectedComponents: ['Python', 'Pip']
+          description: `Version Python différente : ${baselinePython} vs ${machinePython}`,
+          baselineValue: baselinePython,
+          actualValue: machinePython,
+          recommendedAction: 'Mettre à jour Python vers la version de la baseline'
         });
       }
     }
 
-    return diffs;
+    return differences;
   }
 
   /**
-   * Compare informations système (OS, architecture, uptime)
-   * @returns Liste de différences détectées
+   * Compare les configurations système
    */
-  private compareSystem(
-    source: MachineInventory,
-    target: MachineInventory
-  ): DetectedDifference[] {
-    const diffs: DetectedDifference[] = [];
+  private compareSystemConfig(
+    baselineSystem: any,
+    machineSystem: any
+  ): BaselineDifference[] {
+    const differences: BaselineDifference[] = [];
 
     // OS
-    const sourceOs = safeGet(source, ['system', 'os'], 'unknown');
-    const targetOs = safeGet(target, ['system', 'os'], 'unknown');
-    if (sourceOs !== targetOs) {
-      diffs.push({
-        id: randomUUID(),
+    const baselineOs = safeGet(baselineSystem, ['os'], 'unknown');
+    const machineOs = safeGet(machineSystem, ['os'], 'unknown');
+    if (baselineOs !== machineOs) {
+      differences.push({
         category: 'system',
-        severity: 'INFO',
+        severity: 'CRITICAL',
         path: 'system.os',
-        source: { value: sourceOs, machineId: source.machineId },
-        target: { value: targetOs, machineId: target.machineId },
-        type: 'MODIFIED',
-        description: `Système d'exploitation différent : ${sourceOs} vs ${targetOs}`,
-        affectedComponents: ['OS']
+        description: `Système d'exploitation différent : ${baselineOs} vs ${machineOs}`,
+        baselineValue: baselineOs,
+        actualValue: machineOs,
+        recommendedAction: 'Revue manuelle requise - différence système critique'
       });
     }
 
     // Architecture
-    const sourceArch = safeGet(source, ['system', 'architecture'], 'unknown');
-    const targetArch = safeGet(target, ['system', 'architecture'], 'unknown');
-    if (sourceArch !== targetArch) {
-      diffs.push({
-        id: randomUUID(),
+    const baselineArch = safeGet(baselineSystem, ['architecture'], 'unknown');
+    const machineArch = safeGet(machineSystem, ['architecture'], 'unknown');
+    if (baselineArch !== machineArch) {
+      differences.push({
         category: 'system',
-        severity: 'IMPORTANT',
+        severity: 'CRITICAL',
         path: 'system.architecture',
-        source: { value: sourceArch, machineId: source.machineId },
-        target: { value: targetArch, machineId: target.machineId },
-        type: 'MODIFIED',
-        description: `Architecture système différente : ${sourceArch} vs ${targetArch}`,
-        recommendedAction: `Attention : architectures incompatibles peuvent nécessiter des builds différents`,
-        affectedComponents: ['Architecture', 'Binaries']
+        description: `Architecture système différente : ${baselineArch} vs ${machineArch}`,
+        baselineValue: baselineArch,
+        actualValue: machineArch,
+        recommendedAction: 'Attention : architectures incompatibles peuvent nécessiter des builds différents'
       });
     }
 
     // Hostname
-    const sourceHostname = safeGet(source, ['system', 'hostname'], 'unknown');
-    const targetHostname = safeGet(target, ['system', 'hostname'], 'unknown');
-    if (sourceHostname !== targetHostname) {
-      diffs.push({
-        id: randomUUID(),
+    const baselineHostname = safeGet(baselineSystem, ['hostname'], 'unknown');
+    const machineHostname = safeGet(machineSystem, ['hostname'], 'unknown');
+    if (baselineHostname !== machineHostname) {
+      differences.push({
         category: 'system',
         severity: 'INFO',
         path: 'system.hostname',
-        source: { value: sourceHostname, machineId: source.machineId },
-        target: { value: targetHostname, machineId: target.machineId },
-        type: 'MODIFIED',
-        description: `Hostname différent : ${sourceHostname} vs ${targetHostname}`,
-        affectedComponents: ['Network']
+        description: `Hostname différent : ${baselineHostname} vs ${machineHostname}`,
+        baselineValue: baselineHostname,
+        actualValue: machineHostname,
+        recommendedAction: 'Aucune action requise'
       });
     }
 
-    // Note : uptime n'est pas comparé (normal qu'il diffère)
-
-    return diffs;
+    return differences;
   }
 
   /**
-   * Détermine la sévérité d'une différence selon catégorie et type
-   * @param category - Catégorie de la différence
-   * @param type - Type de la différence
-   * @param path - Chemin de la différence
-   * @param diffPercent - Pourcentage de différence (optionnel, pour hardware)
-   * @returns Niveau de sévérité
+   * Compare deux objets et retourne les différences
+   */
+  private compareObjects(
+    baseline: Record<string, any>,
+    actual: Record<string, any>,
+    basePath: string
+  ): BaselineDifference[] {
+    const differences: BaselineDifference[] = [];
+
+    // Clés présentes dans la baseline mais pas dans l'actuel
+    for (const key in baseline) {
+      if (!(key in actual)) {
+        differences.push({
+          category: 'config',
+          severity: 'WARNING',
+          path: `${basePath}.${key}`,
+          description: `Propriété manquante: ${key}`,
+          baselineValue: baseline[key],
+          actualValue: undefined,
+          recommendedAction: 'Ajouter la propriété manquante'
+        });
+      } else if (JSON.stringify(baseline[key]) !== JSON.stringify(actual[key])) {
+        differences.push({
+          category: 'config',
+          severity: 'IMPORTANT',
+          path: `${basePath}.${key}`,
+          description: `Valeur différente pour: ${key}`,
+          baselineValue: baseline[key],
+          actualValue: actual[key],
+          recommendedAction: 'Synchroniser avec la valeur de la baseline'
+        });
+      }
+    }
+
+    // Clés présentes dans l'actuel mais pas dans la baseline
+    for (const key in actual) {
+      if (!(key in baseline)) {
+        differences.push({
+          category: 'config',
+          severity: 'INFO',
+          path: `${basePath}.${key}`,
+          description: `Propriété supplémentaire: ${key}`,
+          baselineValue: undefined,
+          actualValue: actual[key],
+          recommendedAction: 'Revoir la nécessité de cette propriété'
+        });
+      }
+    }
+
+    return differences;
+  }
+
+  /**
+   * Détermine la sévérité d'une différence en fonction du contexte
    */
   private determineSeverity(
-    category: DiffCategory,
-    type: DiffType,
+    category: string,
+    type: string,
     path: string,
-    diffPercent?: number
-  ): DiffSeverity {
-    // Matrice de sévérité selon le design
-    
-    if (category === 'roo_config') {
-      // Configuration Roo = toujours CRITICAL
+    diffPercent: number
+  ): 'CRITICAL' | 'IMPORTANT' | 'WARNING' | 'INFO' {
+    // Règles de sévérité basées sur la catégorie et le pourcentage de différence
+    if (category === 'system') {
       return 'CRITICAL';
     }
-
-    if (category === 'hardware') {
-      // Hardware : sévérité selon le pourcentage de différence
-      if (path.includes('cpu.cores') || path.includes('cpu.threads')) {
-        return diffPercent && diffPercent > 25 ? 'IMPORTANT' : 'INFO';
-      }
-      if (path.includes('memory.total')) {
-        return diffPercent && diffPercent > 20 ? 'IMPORTANT' : 'WARNING';
-      }
-      if (path.includes('disks')) {
-        return 'WARNING';
-      }
-      if (path.includes('gpu')) {
-        return 'INFO';
-      }
+    
+    if (category === 'config') {
+      return 'CRITICAL';
     }
-
+    
+    if (category === 'hardware' && path.includes('memory')) {
+      return diffPercent > 20 ? 'IMPORTANT' : 'WARNING';
+    }
+    
+    if (category === 'hardware' && path.includes('cpu')) {
+      return diffPercent > 30 ? 'IMPORTANT' : 'WARNING';
+    }
+    
     if (category === 'software') {
-      // Software : WARNING pour PowerShell, INFO pour le reste
-      if (path.includes('powershell')) {
-        return 'WARNING';
-      }
-      return 'INFO';
+      return 'WARNING';
     }
-
-    if (category === 'system') {
-      // System : IMPORTANT pour architecture, INFO pour le reste
-      if (path.includes('architecture')) {
-        return 'IMPORTANT';
-      }
-      return 'INFO';
-    }
-
-    // Par défaut
+    
     return 'INFO';
   }
 
   /**
-   * Génère une action recommandée pour une différence
-   * @param diff - La différence détectée
-   * @returns Action recommandée (optionnel)
+   * Génère une recommandation pour une différence
    */
-  private generateRecommendation(diff: Partial<DetectedDifference>): string | undefined {
-    const { category, path, type, source, target } = diff;
-
-    if (!category || !path || !type || !source || !target) {
-      return undefined;
+  private generateRecommendation(diff: BaselineDifference): string {
+    switch (diff.category) {
+      case 'config':
+        return 'Synchroniser la configuration Roo avec la baseline';
+      case 'system':
+        return 'Revue manuelle requise - différence système critique';
+      case 'hardware':
+        return 'Vérifier la compatibilité matérielle';
+      case 'software':
+        return 'Mettre à jour les logiciels vers les versions de la baseline';
+      default:
+        return 'Synchroniser avec la baseline';
     }
-
-    // Recommandations pour configuration Roo
-    if (category === 'roo_config') {
-      if (path.includes('modesPath')) {
-        return `Synchroniser le chemin des modes Roo : copier la configuration de ${source.machineId} vers ${target.machineId}`;
-      }
-      if (path.includes('mcpSettings')) {
-        return `Synchroniser les paramètres MCP : vérifier et aligner les fichiers mcp_settings.json`;
-      }
-    }
-
-    // Recommandations pour hardware
-    if (category === 'hardware') {
-      if (path.includes('cpu')) {
-        return `Performance CPU différente - tester le comportement des tâches intensives`;
-      }
-      if (path.includes('memory')) {
-        return `Différence de RAM - surveiller la consommation mémoire sur ${target.machineId}`;
-      }
-      if (path.includes('gpu') && type === 'MISSING') {
-        return `GPU manquant sur ${target.machineId} - certaines opérations graphiques peuvent être plus lentes`;
-      }
-    }
-
-    // Recommandations pour software
-    if (category === 'software') {
-      if (path.includes('powershell')) {
-        return `Mettre à jour PowerShell sur ${target.machineId} vers version ${source.value}`;
-      }
-      if (path.includes('node') && type === 'MISSING') {
-        return `Installer Node.js sur ${target.machineId}`;
-      }
-      if (path.includes('python') && type === 'MISSING') {
-        return `Installer Python sur ${target.machineId} si nécessaire`;
-      }
-    }
-
-    // Recommandations pour system
-    if (category === 'system') {
-      if (path.includes('architecture')) {
-        return `Architectures incompatibles - compiler séparément pour chaque plateforme`;
-      }
-    }
-
-    return undefined;
   }
 }
