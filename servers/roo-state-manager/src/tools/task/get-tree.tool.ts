@@ -18,6 +18,7 @@ import {
     formatTaskTreeHierarchical,
     type FormatHierarchicalTreeOptions
 } from './format-hierarchical-tree.js';
+import { globalTaskInstructionIndex } from '../../utils/task-instruction-index.js';
 
 export interface GetTaskTreeArgs {
     conversation_id: string;
@@ -131,20 +132,53 @@ export async function handleGetTaskTree(
     
     const targetSkeleton = findTaskById(conversation_id);
     if (!targetSkeleton) {
-        const availableIds = skeletons.slice(0, 10).map(s => `${s.taskId.substring(0, 8)} (${s.metadata?.title || 'No title'})`).join(', ');
+        const availableIds = skeletons.slice(0, 10).map(s => `${s.taskId} (${s.metadata?.title || 'No title'})`).join(', ');
         throw new Error(`Task ID '${conversation_id}' not found. Available tasks (first 10): ${availableIds}`);
     }
 
+    // 🎯 CORRECTION CRITIQUE : Reconstruction dynamique via radix tree inversé
+    // Plus d'utilisation des métadonnées parentId statiques qui peuvent être corrompues
     const childrenMap = new Map<string, string[]>();
-    skeletons.forEach(s => {
-        const pId = (s as any)?.parentId ?? (s as any)?.parentTaskId;
-        if (pId) {
-            if (!childrenMap.has(pId)) {
-                childrenMap.set(pId, []);
+    
+    console.log(`[get-task-tree] 🔄 Reconstruction hiérarchique via radix tree pour ${skeletons.length} tâches`);
+    
+    // Pour chaque tâche, trouver ses parents via le radix tree
+    for (const skeleton of skeletons) {
+        // Utiliser l'instruction complète de la tâche pour la recherche
+        const taskInstruction = skeleton.metadata?.title || skeleton.truncatedInstruction || '';
+        
+        if (taskInstruction && taskInstruction.length > 10) {
+            try {
+                // 🔍 Rechercher les parents via le radix tree inversé
+                const parentCandidates = await globalTaskInstructionIndex.getParentsForInstruction(taskInstruction);
+                
+                if (parentCandidates.length > 0) {
+                    // Prendre le premier parent trouvé (déterministe)
+                    const parentId = parentCandidates[0].taskId;
+                    
+                    console.log(`[get-task-tree] ✅ Parent trouvé pour ${skeleton.taskId.substring(0, 8)} -> ${parentId.substring(0, 8)} via radix tree`);
+                    
+                    // Ajouter la relation parent-enfant dans le childrenMap
+                    if (!childrenMap.has(parentId)) {
+                        childrenMap.set(parentId, []);
+                    }
+                    childrenMap.get(parentId)!.push(skeleton.taskId);
+                    
+                    // Mettre à jour le parentId dans le squelette pour cohérence
+                    (skeleton as any).parentTaskId = parentId;
+                    (skeleton as any).parentId = parentId;
+                } else {
+                    console.log(`[get-task-tree] ⚠️ Aucun parent trouvé pour ${skeleton.taskId.substring(0, 8)} via radix tree`);
+                }
+            } catch (error) {
+                console.warn(`[get-task-tree] ❌ Erreur recherche parent pour ${skeleton.taskId.substring(0, 8)}:`, error);
             }
-            childrenMap.get(pId)!.push(s.taskId);
+        } else {
+            console.log(`[get-task-tree] ⏭️ Instruction trop courte pour ${skeleton.taskId.substring(0, 8)}, skipping`);
         }
-    });
+    }
+    
+    console.log(`[get-task-tree] 📊 Reconstruction terminée: ${childrenMap.size} relations parent-enfant trouvées`);
 
     /**
      * Trouve la racine absolue en remontant la chaîne des parents

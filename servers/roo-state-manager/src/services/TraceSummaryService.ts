@@ -304,6 +304,16 @@ function boxClass(t: MsgType): string {
 function sanitizeSectionHtml(raw: string): string {
     let html = raw ?? '';
 
+    // CORRECTION CRITIQUE PHASE 0: Protéger les balises <details> contre l'interprétation Markdown
+    // Les balises <details> indentées sont transformées en code blocks par Markdown
+    // On les préserve en s'assurant qu'elles sont au niveau 0 (pas d'indentation)
+    
+    // 0) Protection des balises <details> - CORRECTION CRITIQUE
+    html = html.replace(/^(\s*)<details>/gm, '<details>');
+    html = html.replace(/^(\s*)<\/details>/gm, '</details>');
+    html = html.replace(/^(\s*)<summary>/gm, '<summary>');
+    html = html.replace(/^(\s*)<\/summary>/gm, '</summary>');
+
     // 1) Dédup de la 1ère/2e ligne (symptôme titres/lead répétés)
     const lines = html.split('\n');
     if (lines.length >= 2 && lines[0].trim() && lines[0].trim() === lines[1].trim()) {
