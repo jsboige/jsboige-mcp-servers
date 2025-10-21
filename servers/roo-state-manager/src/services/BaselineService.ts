@@ -762,12 +762,12 @@ ${decision.notes ? `### Notes\n${decision.notes}` : ''}
    */
   private parseDecisionsFromMarkdown(content: string): SyncDecision[] {
     const decisions: SyncDecision[] = [];
-    const sections = content.split(/## Décision /).filter(section => section.trim());
+    const sections = content.split(/## (⏳|✅|❌|🎯) Décision /).filter(section => section.trim());
 
     for (const section of sections) {
       try {
         const lines = section.split('\n').filter(line => line.trim());
-        const idLine = lines.find(line => line.match(/^\d+/));
+        const idLine = lines.find(line => line.match(/^[a-zA-Z0-9-]+/));
         if (!idLine) continue;
 
         const id = idLine.trim();
@@ -826,8 +826,13 @@ ${decision.notes ? `### Notes\n${decision.notes}` : ''}
     const line = lines.find(line => line.includes(fieldName));
     if (!line) return '';
     
-    const match = line.match(new RegExp(`${fieldName}\\s*(.+)`));
-    return match ? match[1].trim() : '';
+    // Format: **Machine:** machine-1
+    const match = line.match(new RegExp(`\\*\\*${fieldName}\\*\\*\\s*(.+)`));
+    if (match) return match[1].trim();
+    
+    // Fallback pour les champs sans formatage gras
+    const fallbackMatch = line.match(new RegExp(`${fieldName}\\s*(.+)`));
+    return fallbackMatch ? fallbackMatch[1].trim() : '';
   }
 
   /**

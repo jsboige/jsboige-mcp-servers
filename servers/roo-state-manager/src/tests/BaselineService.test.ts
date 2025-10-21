@@ -235,11 +235,8 @@ describe('BaselineService', () => {
       // Arrange
       jest.spyOn(baselineService as any, 'loadBaseline').mockResolvedValue(null);
 
-      // Act
-      const result = await baselineService.compareWithBaseline('test-machine');
-
-      // Assert
-      expect(result).toBeNull();
+      // Act & Assert
+      await expect(baselineService.compareWithBaseline('test-machine')).rejects.toThrow('Configuration baseline non disponible');
     });
 
     it('devrait gérer les erreurs de collecte d\'inventaire', async () => {
@@ -274,11 +271,8 @@ describe('BaselineService', () => {
       jest.spyOn(baselineService as any, 'loadBaseline').mockResolvedValue(mockBaselineConfig);
       mockInventoryCollector.collectInventory.mockResolvedValue(null);
 
-      // Act
-      const result = await baselineService.compareWithBaseline('test-machine');
-
-      // Assert
-      expect(result).toBeNull();
+      // Act & Assert
+      await expect(baselineService.compareWithBaseline('test-machine')).rejects.toThrow('Échec collecte inventaire pour test-machine');
     });
   });
 
@@ -292,7 +286,7 @@ describe('BaselineService', () => {
         differences: [
           {
             category: 'config',
-            severity: 'INFO',
+            severity: 'IMPORTANT',
             path: 'roo.userSettings.theme',
             description: 'Theme setting differs',
             baselineValue: 'dark',
@@ -303,23 +297,23 @@ describe('BaselineService', () => {
         summary: {
           total: 1,
           critical: 0,
-          important: 0,
+          important: 1,
           warning: 0,
-          info: 1,
+          info: 0,
         },
         generatedAt: new Date().toISOString(),
       };
 
       // Act
-      const decisions = await baselineService.createSyncDecisions(mockComparisonReport);
+      const decisions = await baselineService.createSyncDecisions(mockComparisonReport, 'INFO');
 
       // Assert
       expect(decisions).toHaveLength(1);
       expect(decisions[0].id).toBeDefined();
       expect(decisions[0].machineId).toBe('target-machine');
       expect(decisions[0].status).toBe('pending');
-      expect(decisions[0].severity).toBe('INFO');
-      expect(decisions[0].differenceId).toBe('roo.userSettings.theme');
+      expect(decisions[0].severity).toBe('IMPORTANT');
+      expect(decisions[0].differenceId).toBe('config-roo.userSettings.theme');
     });
 
     it('devrait filtrer les différences en dessous du seuil de sévérité', async () => {
@@ -437,12 +431,8 @@ describe('BaselineService', () => {
       // Arrange
       jest.spyOn(baselineService as any, 'loadDecisionsFromRoadmap').mockResolvedValue([]);
 
-      // Act
-      const result = await baselineService.applyDecision('non-existent-decision');
-
-      // Assert
-      expect(result.success).toBe(false);
-      expect(result.message).toContain('non trouvée');
+      // Act & Assert
+      await expect(baselineService.applyDecision('non-existent-decision')).rejects.toThrow('non trouvée');
     });
 
     it('devrait retourner une erreur si la décision n\'est pas approuvée', async () => {
@@ -463,12 +453,8 @@ describe('BaselineService', () => {
 
       jest.spyOn(baselineService as any, 'loadDecisionsFromRoadmap').mockResolvedValue([decision]);
 
-      // Act
-      const result = await baselineService.applyDecision(decision.id);
-
-      // Assert
-      expect(result.success).toBe(false);
-      expect(result.message).toContain('n\'est pas approuvée');
+      // Act & Assert
+      await expect(baselineService.applyDecision(decision.id)).rejects.toThrow('n\'est pas approuvée');
     });
 
     it('devrait gérer les erreurs lors de l\'application des changements', async () => {
