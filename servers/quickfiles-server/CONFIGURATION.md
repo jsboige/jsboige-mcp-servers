@@ -1,0 +1,1 @@
+C:/dev/roo-extensions/mcps/internal/servers/quickfiles-server/docs/CONFIGURATION.md

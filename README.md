@@ -56,7 +56,7 @@ Un serveur MCP qui permet d'interagir avec des notebooks Jupyter:
 - Tests de performance et de gestion d'erreurs
 - Documentation détaillée avec exemples d'utilisation
 
-> **Note**: Le serveur MCP Jupyter peut présenter des problèmes d'authentification dans certaines configurations. Consultez le [Guide de dépannage du MCP Jupyter](./docs/jupyter-mcp-troubleshooting.md) pour les solutions recommandées.
+> **Note**: Le serveur MCP Jupyter peut présenter des problèmes d'authentification dans certaines configurations. Consultez le [Guide de dépannage du MCP Jupyter](./././docs/jupyter-mcp-troubleshooting.md) pour les solutions recommandées.
 
 [En savoir plus sur Jupyter MCP Server](servers/jupyter-mcp-server/README.md)
 
@@ -133,7 +133,7 @@ npm install
 npm run build
 ```
 
-Pour des instructions d'installation plus détaillées, consultez le [Guide de démarrage](./docs/getting-started.md).
+Pour des instructions d'installation plus détaillées, consultez le [Guide de démarrage](./././docs/getting-started.md).
 
 ## Utilisation
 
@@ -215,7 +215,7 @@ Le notebook a été créé avec succès avec une cellule de code pour l'analyse 
 > **Bonnes pratiques**: Pour éviter les erreurs 403 Forbidden, assurez-vous que:
 > 1. Le token dans config.json correspond exactement au token du serveur Jupyter
 > 2. Le serveur Jupyter est démarré avec `--NotebookApp.allow_origin='*'`
-> 3. Consultez le [Guide de dépannage](./docs/jupyter-mcp-troubleshooting.md) pour plus de détails
+> 3. Consultez le [Guide de dépannage](./././docs/jupyter-mcp-troubleshooting.md) pour plus de détails
 
 #### JinaNavigator Server
 ```
@@ -226,7 +226,7 @@ LLM: Je vais convertir cette page pour vous.
 Voici le contenu de la page GitHub en format Markdown...
 ```
 
-Pour plus d'exemples et d'informations sur l'utilisation, consultez le [Guide de démarrage](./docs/getting-started.md).
+Pour plus d'exemples et d'informations sur l'utilisation, consultez le [Guide de démarrage](./././docs/getting-started.md).
 
 ## Architecture
 
@@ -250,7 +250,7 @@ servers/
         └── performance.test.js    # Tests de performance
 ```
 
-Pour plus d'informations sur l'architecture, consultez la [Documentation sur l'architecture MCP](./docs/architecture.md).
+Pour plus d'informations sur l'architecture, consultez la [Documentation sur l'architecture MCP](./././docs/architecture.md).
 
 ## Intégration Continue
 
@@ -286,8 +286,8 @@ Pour contribuer:
 ## Dépannage
 
 Si vous rencontrez des problèmes lors de l'installation ou de l'utilisation des serveurs MCP, consultez:
-- [Guide de dépannage général](./docs/troubleshooting.md)
-- [Guide de dépannage du MCP Jupyter](./docs/jupyter-mcp-troubleshooting.md)
+- [Guide de dépannage général](./././docs/troubleshooting.md)
+- [Guide de dépannage du MCP Jupyter](./././docs/jupyter-mcp-troubleshooting.md)
 
 ## Licence
 
@@ -296,7 +296,7 @@ Ce projet est sous licence MIT - voir le fichier [LICENSE](LICENSE) pour plus de
 ## Ressources
 
 - [Spécification MCP officielle](https://github.com/microsoft/mcp)
-- [Guide de démarrage](./docs/getting-started.md)
-- [Documentation sur l'architecture MCP](./docs/architecture.md)
-- [Guide de dépannage](./docs/troubleshooting.md)
+- [Guide de démarrage](./././docs/getting-started.md)
+- [Documentation sur l'architecture MCP](./././docs/architecture.md)
+- [Guide de dépannage](./././docs/troubleshooting.md)
 - [Guide de contribution](CONTRIBUTING.md)

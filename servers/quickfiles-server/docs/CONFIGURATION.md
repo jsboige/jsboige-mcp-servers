@@ -299,7 +299,7 @@ Maintenant que vous avez configuré le serveur QuickFiles, vous pouvez :
 
 1. [Apprendre à utiliser le serveur](USAGE.md) avec des exemples pratiques
 2. [Consulter le guide de dépannage](TROUBLESHOOTING.md) en cas de problèmes
-3. [Explorer les cas d'utilisation avancés](../../docs/quickfiles-use-cases.md) pour tirer le meilleur parti du serveur
+3. [Explorer les cas d'utilisation avancés](../../../docs/quickfiles-use-cases.md) pour tirer le meilleur parti du serveur
 <!-- END_SECTION: next_steps -->
 
 <!-- START_SECTION: navigation -->

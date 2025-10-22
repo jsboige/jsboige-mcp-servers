@@ -210,11 +210,11 @@ Ce script :
 
 ## Dépannage
 
-Pour les problèmes courants et leurs solutions, consultez le document [jupyter-mcp-troubleshooting.md](./docs/jupyter-mcp-troubleshooting.md).
+Pour les problèmes courants et leurs solutions, consultez le document [jupyter-mcp-troubleshooting.md](./././docs/jupyter-mcp-troubleshooting.md).
 
-Pour plus d'informations sur le mode hors ligne, consultez [jupyter-mcp-offline-mode.md](./docs/jupyter-mcp-offline-mode.md).
+Pour plus d'informations sur le mode hors ligne, consultez [jupyter-mcp-offline-mode.md](./././docs/jupyter-mcp-offline-mode.md).
 
-Pour les tests de connexion, consultez [jupyter-mcp-connection-test.md](./docs/jupyter-mcp-connection-test.md).
+Pour les tests de connexion, consultez [jupyter-mcp-connection-test.md](./././docs/jupyter-mcp-connection-test.md).
 
 ## Conclusion
 
