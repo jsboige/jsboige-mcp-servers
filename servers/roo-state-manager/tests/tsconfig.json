@@ -5,7 +5,7 @@
     "outDir": "../build/tests",
     "noEmit": false,
     "types": [
-      "jest",
+      "vitest/globals",
       "node"
     ]
   },

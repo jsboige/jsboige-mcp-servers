@@ -2,7 +2,7 @@
  * Tests pour RooSyncService.ts
  */
 
-import { describe, it, expect, beforeEach, afterEach, jest } from '@jest/globals';
+import { describe, it, expect, beforeEach, afterEach, jest } from 'vitest';
 import { writeFileSync, mkdirSync, rmSync, readFileSync } from 'fs';
 import { join } from 'path';
 import { RooSyncService, getRooSyncService, RooSyncServiceError } from '../../../src/services/RooSyncService.js';

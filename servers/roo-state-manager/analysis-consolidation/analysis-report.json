@@ -1,0 +1,148 @@
+﻿{
+    "estimatedImpact":  {
+                            "reductionPercentage":  0.3,
+                            "filesImpacted":  55,
+                            "errorLinesFactorizable":  30,
+                            "totalFactorizableLines":  128,
+                            "formatLinesFactorizable":  98
+                        },
+    "patterns":  {
+                     "errorHandling":  {
+                                           "isError_true":  10,
+                                           "catch_block":  107,
+                                           "CallToolResult":  73,
+                                           "throw_error":  53,
+                                           "try_block":  104
+                                       },
+                     "formatting":  {
+                                        "filter_method":  32,
+                                        "JSON_stringify":  49,
+                                        "content_array":  104,
+                                        "map_method":  33
+                                    }
+                 },
+    "timestamp":  "2025-10-14T07:59:38",
+    "summary":  {
+                    "totalLines":  38975,
+                    "avgLinesPerFile":  284,
+                    "totalFiles":  137
+                },
+    "modules":  [
+                    {
+                        "Module":  "tools",
+                        "Files":  57,
+                        "Lines":  8742,
+                        "AvgLinesPerFile":  153
+                    },
+                    {
+                        "Module":  "services",
+                        "Files":  43,
+                        "Lines":  17833,
+                        "AvgLinesPerFile":  415
+                    },
+                    {
+                        "Module":  "utils",
+                        "Files":  18,
+                        "Lines":  7870,
+                        "AvgLinesPerFile":  437
+                    },
+                    {
+                        "Module":  "types",
+                        "Files":  6,
+                        "Lines":  1072,
+                        "AvgLinesPerFile":  179
+                    },
+                    {
+                        "Module":  "config",
+                        "Files":  2,
+                        "Lines":  204,
+                        "AvgLinesPerFile":  102
+                    },
+                    {
+                        "Module":  "models",
+                        "Files":  1,
+                        "Lines":  346,
+                        "AvgLinesPerFile":  346
+                    },
+                    {
+                        "Module":  "gateway",
+                        "Files":  1,
+                        "Lines":  595,
+                        "AvgLinesPerFile":  595
+                    },
+                    {
+                        "Module":  "interfaces",
+                        "Files":  1,
+                        "Lines":  417,
+                        "AvgLinesPerFile":  417
+                    },
+                    {
+                        "Module":  "validation",
+                        "Files":  1,
+                        "Lines":  510,
+                        "AvgLinesPerFile":  510
+                    }
+                ],
+    "topImports":  [
+                       {
+                           "count":  46,
+                           "path":  "path"
+                       },
+                       {
+                           "count":  35,
+                           "path":  "@modelcontextprotocol/sdk/types.js"
+                       },
+                       {
+                           "count":  27,
+                           "path":  "fs"
+                       },
+                       {
+                           "count":  24,
+                           "path":  "../../types/conversation.js"
+                       },
+                       {
+                           "count":  20,
+                           "path":  "../types/conversation.js"
+                       },
+                       {
+                           "count":  16,
+                           "path":  "fs/promises"
+                       },
+                       {
+                           "count":  13,
+                           "path":  "zod"
+                       },
+                       {
+                           "count":  13,
+                           "path":  "../../../types/enhanced-conversation.js"
+                       },
+                       {
+                           "count":  9,
+                           "path":  "../../services/RooSyncService.js"
+                       },
+                       {
+                           "count":  9,
+                           "path":  "../../utils/roo-storage-detector.js"
+                       },
+                       {
+                           "count":  8,
+                           "path":  "zod-to-json-schema"
+                       },
+                       {
+                           "count":  7,
+                           "path":  "./IReportingStrategy.js"
+                       },
+                       {
+                           "count":  6,
+                           "path":  "../types/enhanced-conversation.js"
+                       },
+                       {
+                           "count":  6,
+                           "path":  "../IReportingStrategy.js"
+                       },
+                       {
+                           "count":  5,
+                           "path":  "../utils/roo-storage-detector.js"
+                       }
+                   ]
+}

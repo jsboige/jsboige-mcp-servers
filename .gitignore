@@ -58,6 +58,7 @@ temp/
 # Fichiers de couverture de test
 coverage/
 .nyc_output/
+test-results/
 
 # Fichiers de débogage
 .node-xmlhttprequest-sync-*

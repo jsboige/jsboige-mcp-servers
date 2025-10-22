@@ -2,10 +2,10 @@
   "compilerOptions": {
     "target": "ES2022",
     "lib": ["ES2022"],
-    "module": "NodeNext",
-    "moduleResolution": "NodeNext",
+    "module": "ES2022",
+    "moduleResolution": "node",
     "downlevelIteration": true,
-    "rootDir": ".",
+    "rootDir": "./src",
     "outDir": "./build",
     "strict": true,
     "esModuleInterop": true,
@@ -24,7 +24,6 @@
   ],
   "exclude": [
     "node_modules",
-    "build",
-    "tests/**/*.ts"
+    "build"
   ]
 }

@@ -51,6 +51,58 @@ const networkMetrics: NetworkMetrics = {
     lastReset: Date.now()
 };
 
+/**
+ * ✅ CORRECTION P0 (2025-10-15)
+ * Rate Limiter pour protéger Qdrant des surcharges
+ * Limite: 10 requêtes/seconde maximum vers Qdrant
+ *
+ * Coordination avec Agent Qdrant:
+ * - Infrastructure Qdrant prête (59/59 collections HNSW optimisé)
+ * - Protection contre les boucles infinies d'indexation
+ */
+class QdrantRateLimiter {
+    private queue: Array<() => Promise<any>> = [];
+    private processing = false;
+    private lastExecution = 0;
+    private minInterval = 100; // 100ms entre requêtes = max 10 req/s
+    
+    async execute<T>(fn: () => Promise<T>): Promise<T> {
+        return new Promise((resolve, reject) => {
+            this.queue.push(async () => {
+                try {
+                    // Attendre intervalle minimum
+                    const now = Date.now();
+                    const elapsed = now - this.lastExecution;
+                    if (elapsed < this.minInterval) {
+                        await new Promise(r => setTimeout(r, this.minInterval - elapsed));
+                    }
+                    
+                    const result = await fn();
+                    this.lastExecution = Date.now();
+                    resolve(result);
+                } catch (error) {
+                    reject(error);
+                }
+            });
+            
+            if (!this.processing) {
+                this.processQueue();
+            }
+        });
+    }
+    
+    private async processQueue() {
+        this.processing = true;
+        while (this.queue.length > 0) {
+            const fn = this.queue.shift();
+            if (fn) await fn();
+        }
+        this.processing = false;
+    }
+}
+
+const qdrantRateLimiter = new QdrantRateLimiter();
+
 // 🛡️ FONCTION DE RETRY AVEC BACKOFF EXPONENTIEL
 async function retryWithBackoff<T>(
     operation: () => Promise<T>,
@@ -239,7 +291,26 @@ function sanitizePayload(payload: any): any {
 }
 
 /**
- * Appel sécurisé à Qdrant avec circuit breaker et retry
+ * Valide qu'un vecteur a la bonne dimension et ne contient pas de NaN/Infinity
+ */
+function validateVectorGlobal(vector: number[], expectedDim: number = 1536): void {
+    if (!Array.isArray(vector)) {
+        throw new Error(`Vector doit être un tableau, reçu: ${typeof vector}`);
+    }
+    
+    if (vector.length !== expectedDim) {
+        throw new Error(`Dimension invalide: ${vector.length}, attendu: ${expectedDim}`);
+    }
+    
+    // Vérifier NaN/Infinity qui causent erreurs 400
+    const hasInvalidValues = vector.some(v => !Number.isFinite(v));
+    if (hasInvalidValues) {
+        throw new Error(`Vector contient NaN ou Infinity - invalide pour Qdrant`);
+    }
+}
+
+/**
+ * Appel sécurisé à Qdrant avec circuit breaker, retry et batching intelligent
  */
 async function safeQdrantUpsert(points: PointStruct[]): Promise<boolean> {
     const startTime = Date.now();
@@ -254,119 +325,146 @@ async function safeQdrantUpsert(points: PointStruct[]): Promise<boolean> {
         return false;
     }
     
-    let attempt = 0;
+    // 🔍 LOGGING DÉTAILLÉ - Validation des payloads
+    console.log(`🔍 [safeQdrantUpsert] Validation et nettoyage de ${points.length} points`);
     
-    while (attempt < MAX_RETRY_ATTEMPTS) {
-        const attemptStartTime = Date.now();
+    // Valider et nettoyer tous les payloads
+    const sanitizedPoints = points.map((point, index) => {
+        const originalPayload = point.payload;
+        const sanitizedPayload = sanitizePayload(originalPayload);
         
+        // Valider le vecteur
         try {
-            // 🔍 LOGGING DÉTAILLÉ - Validation des payloads
-            console.log(`🔍 [safeQdrantUpsert] Tentative ${attempt + 1}/${MAX_RETRY_ATTEMPTS} - Validation de ${points.length} points`);
+            validateVectorGlobal(point.vector as number[]);
+        } catch (error: any) {
+            console.error(`❌ [safeQdrantUpsert] Validation vecteur échouée pour point ${index}:`, error.message);
+            throw error;
+        }
+        
+        // Log des transformations critiques
+        const payloadChanges = Object.keys(originalPayload || {}).length - Object.keys(sanitizedPayload).length;
+        if (payloadChanges > 0) {
+            console.log(`🧹 [safeQdrantUpsert] Point ${index}: ${payloadChanges} champs nettoyés`);
+        }
+        
+        return {
+            ...point,
+            payload: sanitizedPayload
+        };
+    });
+    
+    // 🔍 LOGGING DÉTAILLÉ - Informations sur la requête
+    const payloadSample = sanitizedPoints[0]?.payload || {};
+    console.log(`📤 [safeQdrantUpsert] Échantillon payload:`, {
+        task_id: payloadSample.task_id,
+        parent_task_id: payloadSample.parent_task_id,
+        workspace: payloadSample.workspace,
+        chunk_type: payloadSample.chunk_type,
+        content_length: payloadSample.content?.length || 0,
+        host_os: payloadSample.host_os
+    });
+    
+    // 🚀 BATCHING INTELLIGENT: Si plus de 100 points, découper en batches
+    const batchSize = 100;
+    const totalBatches = Math.ceil(sanitizedPoints.length / batchSize);
+    
+    if (totalBatches > 1) {
+        console.log(`📦 [safeQdrantUpsert] Batching activé: ${sanitizedPoints.length} points en ${totalBatches} batches`);
+    }
+    
+    for (let batchIdx = 0; batchIdx < totalBatches; batchIdx++) {
+        const batchStart = batchIdx * batchSize;
+        const batch = sanitizedPoints.slice(batchStart, batchStart + batchSize);
+        const isLastBatch = batchIdx === totalBatches - 1;
+        
+        // wait=true seulement sur le dernier batch pour garantir indexation
+        const shouldWait = isLastBatch;
+        
+        let attempt = 0;
+        let batchSuccess = false;
+        
+        while (attempt < MAX_RETRY_ATTEMPTS && !batchSuccess) {
+            const attemptStartTime = Date.now();
             
-            // Valider et nettoyer tous les payloads
-            const sanitizedPoints = points.map((point, index) => {
-                const originalPayload = point.payload;
-                const sanitizedPayload = sanitizePayload(originalPayload);
+            try {
+                console.log(`🔄 [safeQdrantUpsert] Batch ${batchIdx + 1}/${totalBatches}, Tentative ${attempt + 1}/${MAX_RETRY_ATTEMPTS} (${batch.length} points, wait=${shouldWait})`);
                 
-                // Log des transformations critiques
-                const payloadChanges = Object.keys(originalPayload || {}).length - Object.keys(sanitizedPayload).length;
-                if (payloadChanges > 0) {
-                    console.log(`🧹 [safeQdrantUpsert] Point ${index}: ${payloadChanges} champs nettoyés`);
+                await getQdrantClient().upsert(COLLECTION_NAME, {
+                    wait: shouldWait,
+                    points: batch,
+                });
+                
+                const attemptDuration = Date.now() - attemptStartTime;
+                
+                batchSuccess = true;
+                
+                // 📊 Mise à jour métriques réseau
+                networkMetrics.qdrantCalls++;
+                networkMetrics.bytesTransferred += batch.length * 6144; // 1536 dims * 4 bytes
+                
+                console.log(`✅ [safeQdrantUpsert] Batch ${batchIdx + 1}/${totalBatches} réussi - ${batch.length} points (${attemptDuration}ms)`);
+                
+            } catch (error: any) {
+                attempt++;
+                const attemptDuration = Date.now() - attemptStartTime;
+                
+                // 📊 LOGGING CRITIQUE - Erreurs détaillées
+                console.error(`❌ [safeQdrantUpsert] ÉCHEC batch ${batchIdx + 1}/${totalBatches}, tentative ${attempt}/${MAX_RETRY_ATTEMPTS} après ${attemptDuration}ms`);
+                console.error(`🔍 [safeQdrantUpsert] Type erreur: ${error?.constructor?.name || 'Unknown'}`);
+                console.error(`🔍 [safeQdrantUpsert] Message erreur: ${error?.message || 'No message'}`);
+                console.error(`🔍 [safeQdrantUpsert] Code erreur: ${error?.code || error?.status || 'No code'}`);
+                
+                // Logging des détails de requête pour reproduction
+                if (error?.response) {
+                    console.error(`🔍 [safeQdrantUpsert] Réponse HTTP: ${error.response.status} - ${error.response.statusText}`);
+                    console.error(`🔍 [safeQdrantUpsert] Headers réponse:`, JSON.stringify(error.response.headers, null, 2));
                 }
                 
-                return {
-                    ...point,
-                    payload: sanitizedPayload
-                };
-            });
-            
-            // 🔍 LOGGING DÉTAILLÉ - Informations sur la requête
-            const payloadSample = sanitizedPoints[0]?.payload || {};
-            console.log(`📤 [safeQdrantUpsert] Échantillon payload:`, {
-                task_id: payloadSample.task_id,
-                parent_task_id: payloadSample.parent_task_id,
-                workspace: payloadSample.workspace,
-                chunk_type: payloadSample.chunk_type,
-                content_length: payloadSample.content?.length || 0,
-                host_os: payloadSample.host_os
-            });
-            
-            console.log(`🔄 [safeQdrantUpsert] Tentative ${attempt + 1}/${MAX_RETRY_ATTEMPTS} d'upsert vers Qdrant (${sanitizedPoints.length} points)`);
-            
-            await getQdrantClient().upsert(COLLECTION_NAME, {
-                wait: true,
-                points: sanitizedPoints,
-            });
-            
-            const attemptDuration = Date.now() - attemptStartTime;
-            const totalDuration = Date.now() - startTime;
-            
-            recordSuccess();
-            
-            // 📊 LOGGING DÉTAILLÉ - Succès
-            console.log(`✅ [safeQdrantUpsert] Upsert Qdrant réussi - ${sanitizedPoints.length} points indexés`);
-            console.log(`⏱️ [safeQdrantUpsert] Durée tentative: ${attemptDuration}ms, Total: ${totalDuration}ms`);
-            console.log(`🔄 [safeQdrantUpsert] Circuit breaker réinitialisé - État: CLOSED`);
-            
-            return true;
-            
-        } catch (error: any) {
-            attempt++;
-            const attemptDuration = Date.now() - attemptStartTime;
-            
-            // 📊 LOGGING CRITIQUE - Erreurs détaillées
-            console.error(`❌ [safeQdrantUpsert] ÉCHEC tentative ${attempt}/${MAX_RETRY_ATTEMPTS} après ${attemptDuration}ms`);
-            console.error(`🔍 [safeQdrantUpsert] Type erreur: ${error?.constructor?.name || 'Unknown'}`);
-            console.error(`🔍 [safeQdrantUpsert] Message erreur: ${error?.message || 'No message'}`);
-            console.error(`🔍 [safeQdrantUpsert] Code erreur: ${error?.code || error?.status || 'No code'}`);
-            
-            // Logging des détails de requête pour reproduction
-            if (error?.response) {
-                console.error(`🔍 [safeQdrantUpsert] Réponse HTTP: ${error.response.status} - ${error.response.statusText}`);
-                console.error(`🔍 [safeQdrantUpsert] Headers réponse:`, JSON.stringify(error.response.headers, null, 2));
+                // 🚨 FIX CRITIQUE: Ne JAMAIS retry les erreurs HTTP 400 (Bad Request)
+                const httpStatus = error?.response?.status || error?.status;
+                if (httpStatus === 400) {
+                    recordFailure();
+                    const totalDuration = Date.now() - startTime;
+                    
+                    console.error(`🔴 [safeQdrantUpsert] ERREUR HTTP 400 - NE PAS RETRY - Abandon immédiat`);
+                    console.error(`🔴 [safeQdrantUpsert] Les erreurs 400 indiquent un problème avec les données envoyées`);
+                    console.error(`🔴 [safeQdrantUpsert] Durée totale: ${totalDuration}ms`);
+                    console.error(`🔴 [safeQdrantUpsert] Circuit breaker activé - État: ${circuitBreakerState}`);
+                    
+                    return false;
+                }
+                
+                if (attempt >= MAX_RETRY_ATTEMPTS) {
+                    recordFailure();
+                    
+                    console.error(`🔴 [safeQdrantUpsert] ÉCHEC DÉFINITIF batch ${batchIdx + 1} après ${MAX_RETRY_ATTEMPTS} tentatives`);
+                    console.error(`🔴 [safeQdrantUpsert] Circuit breaker activé - État: ${circuitBreakerState}`);
+                    
+                    return false;
+                }
+                
+                // Délai exponentiel : 2s, 4s, 8s
+                const delay = RETRY_DELAY_MS * Math.pow(2, attempt - 1);
+                console.log(`⏳ [safeQdrantUpsert] Attente ${delay}ms avant retry batch ${batchIdx + 1}...`);
+                await new Promise(resolve => setTimeout(resolve, delay));
             }
-            
-            // Logging de l'état système au moment de l'erreur
-            console.error(`🔍 [safeQdrantUpsert] État système: Circuit=${circuitBreakerState}, Échecs cumulés=${failureCount + 1}`);
-            console.error(`🔍 [safeQdrantUpsert] Points concernés: ${points.length}, Tentative: ${attempt}`);
-            console.error(`🔍 [safeQdrantUpsert] Stack trace:`, error?.stack?.split('\n').slice(0, 5).join('\n'));
-            
-            // 🚨 FIX CRITIQUE: Ne JAMAIS retry les erreurs HTTP 400 (Bad Request)
-            // Les erreurs 400 sont des erreurs client qui indiquent un problème avec les données
-            // Retry les erreurs 400 cause une boucle infernale de spam au serveur
-            const httpStatus = error?.response?.status || error?.status;
-            if (httpStatus === 400) {
-                recordFailure();
-                const totalDuration = Date.now() - startTime;
-                
-                console.error(`🔴 [safeQdrantUpsert] ERREUR HTTP 400 - NE PAS RETRY - Abandon immédiat`);
-                console.error(`🔴 [safeQdrantUpsert] Les erreurs 400 indiquent un problème avec les données envoyées`);
-                console.error(`🔴 [safeQdrantUpsert] Durée totale: ${totalDuration}ms`);
-                console.error(`🔴 [safeQdrantUpsert] Circuit breaker activé - État: ${circuitBreakerState}`);
-                
-                return false;
-            }
-            
-            if (attempt >= MAX_RETRY_ATTEMPTS) {
-                recordFailure();
-                const totalDuration = Date.now() - startTime;
-                
-                // 📊 LOGGING CRITIQUE - Échec définitif
-                console.error(`🔴 [safeQdrantUpsert] ÉCHEC DÉFINITIF après ${MAX_RETRY_ATTEMPTS} tentatives (${totalDuration}ms total)`);
-                console.error(`🔴 [safeQdrantUpsert] Circuit breaker activé - État: ${circuitBreakerState}`);
-                console.error(`🔴 [safeQdrantUpsert] Prochaine tentative dans ${CIRCUIT_BREAKER_TIMEOUT_MS}ms`);
-                
-                return false;
-            }
-            
-            // Délai exponentiel : 2s, 4s, 8s
-            const delay = RETRY_DELAY_MS * Math.pow(2, attempt - 1);
-            console.log(`⏳ [safeQdrantUpsert] Attente ${delay}ms avant tentative ${attempt + 1}...`);
-            await new Promise(resolve => setTimeout(resolve, delay));
+        }
+        
+        // Pause entre batches pour éviter surcharge (sauf dernier)
+        if (!isLastBatch) {
+            await new Promise(resolve => setTimeout(resolve, 100));
         }
     }
     
-    return false;
+    const totalDuration = Date.now() - startTime;
+    recordSuccess();
+    
+    // 📊 LOGGING DÉTAILLÉ - Succès complet
+    console.log(`✅ [safeQdrantUpsert] Upsert Qdrant COMPLET - ${sanitizedPoints.length} points indexés en ${totalBatches} batch(es)`);
+    console.log(`⏱️ [safeQdrantUpsert] Durée totale: ${totalDuration}ms`);
+    console.log(`🔄 [safeQdrantUpsert] Circuit breaker réinitialisé - État: CLOSED`);
+    
+    return true;
 }
 
 export function getHostIdentifier() {
@@ -504,7 +602,17 @@ async function extractChunksFromTask(taskId: string, taskPath: string): Promise<
             }
         }
     } catch (error) {
-        console.warn(`Could not read or parse ${apiHistoryPath}. Error: ${error}`);
+        /**
+         * ✅ CORRECTION P0 (2025-10-15) - Amélioration gestion d'erreur
+         * Plus de faux succès : propager l'erreur pour diagnostic
+         */
+        console.error('❌ ERREUR CRITIQUE extraction chunks:', error);
+        console.error('Stack trace:', error instanceof Error ? error.stack : 'No stack');
+        console.error(`Fichier problématique: ${apiHistoryPath}`);
+        console.error(`Task ID: ${taskId}`);
+        
+        // Propager l'erreur pour éviter faux succès silencieux
+        throw new Error(`Extraction chunks échouée pour ${taskId}: ${error instanceof Error ? error.message : String(error)}`);
     }
 
     const uiMessagesPath = path.join(taskPath, 'ui_messages.json');
@@ -662,6 +770,10 @@ export async function indexTask(taskId: string, taskPath: string): Promise<Point
             }
         }
 
+        /**
+         * ✅ CORRECTION P0 (2025-10-15) - Amélioration logging succès
+         * Vérifier si des chunks valides ont été extraits avant de déclarer succès
+         */
         if (pointsToIndex.length > 0) {
             console.log(`📤 Préparation upsert Qdrant: ${pointsToIndex.length} points (de ${chunks.length} chunks originaux) pour tâche ${taskId}`);
             
@@ -676,6 +788,11 @@ export async function indexTask(taskId: string, taskPath: string): Promise<Point
                 return [];
             }
         } else {
+            if (chunks.length === 0) {
+                console.warn(`⚠️ Tâche ${taskId} : Aucun chunk extrait, vérifier les données source`);
+            } else {
+                console.warn(`⚠️ Tâche ${taskId} : ${chunks.length} chunks trouvés mais aucun indexable (indexed=false ou contenu vide)`);
+            }
             console.log(`No indexable chunks found for task ${taskId}.`);
         }
 
@@ -704,6 +821,193 @@ export async function indexTask(taskId: string, taskPath: string): Promise<Point
  * Classe TaskIndexer pour l'architecture à 2 niveaux
  */
 export class TaskIndexer {
+    private qdrantClient = getQdrantClient();
+    private healthCheckInterval?: NodeJS.Timeout;
+
+    /**
+     * Valide qu'un vecteur a la bonne dimension et ne contient pas de NaN/Infinity
+     */
+    private validateVector(vector: number[], expectedDim: number = 1536): void {
+        if (!Array.isArray(vector)) {
+            throw new Error(`Vector doit être un tableau, reçu: ${typeof vector}`);
+        }
+        
+        if (vector.length !== expectedDim) {
+            throw new Error(`Dimension invalide: ${vector.length}, attendu: ${expectedDim}`);
+        }
+        
+        // Vérifier NaN/Infinity qui causent erreurs 400
+        const hasInvalidValues = vector.some(v => !Number.isFinite(v));
+        if (hasInvalidValues) {
+            throw new Error(`Vector contient NaN ou Infinity - invalide pour Qdrant`);
+        }
+    }
+
+    /**
+     * Vérifie la santé de la collection et log les métriques
+     */
+    private async checkCollectionHealth(): Promise<{
+        status: string;
+        points_count: number;
+        segments_count: number;
+        indexed_vectors_count: number;
+        optimizer_status: string;
+    }> {
+        try {
+            const collectionInfo = await this.qdrantClient.getCollection(COLLECTION_NAME);
+            
+            const metrics = {
+                status: collectionInfo.status || 'unknown',
+                points_count: collectionInfo.points_count || 0,
+                segments_count: collectionInfo.segments_count || 0,
+                indexed_vectors_count: collectionInfo.indexed_vectors_count || 0,
+                optimizer_status: typeof collectionInfo.optimizer_status === 'string'
+                    ? collectionInfo.optimizer_status
+                    : (collectionInfo.optimizer_status as any)?.error || 'ok'
+            };
+            
+            // Log si status != 'green'
+            if (metrics.status !== 'green') {
+                console.error('⚠️ Collection Qdrant unhealthy:', {
+                    status: metrics.status,
+                    points: metrics.points_count,
+                    segments: metrics.segments_count,
+                    indexed_vectors: metrics.indexed_vectors_count,
+                    optimizer: metrics.optimizer_status
+                });
+            } else {
+                console.log('✓ Collection health check OK:', {
+                    points: metrics.points_count,
+                    segments: metrics.segments_count,
+                    indexed_vectors: metrics.indexed_vectors_count
+                });
+            }
+            
+            return metrics;
+            
+        } catch (error: any) {
+            console.error('✗ Échec health check collection:', error.message);
+            throw error;
+        }
+    }
+
+    /**
+     * Insère des points avec batching intelligent et monitoring
+     * @param points - Points à insérer
+     * @param options - Options d'insertion
+     */
+    private async upsertPointsBatch(
+        points: Array<{ id: string; vector: number[]; payload: any }>,
+        options?: {
+            batchSize?: number;
+            waitOnLast?: boolean;
+            maxRetries?: number;
+        }
+    ): Promise<void> {
+        const batchSize = options?.batchSize || 100;
+        const waitOnLast = options?.waitOnLast ?? true;
+        const maxRetries = options?.maxRetries || 3;
+        
+        const totalBatches = Math.ceil(points.length / batchSize);
+        
+        for (let i = 0; i < points.length; i += batchSize) {
+            const batch = points.slice(i, i + batchSize);
+            const batchNumber = Math.floor(i / batchSize) + 1;
+            const isLastBatch = i + batchSize >= points.length;
+            
+            // wait=true seulement sur le dernier batch pour garantir indexation
+            const shouldWait = isLastBatch && waitOnLast;
+            
+            let retryCount = 0;
+            let success = false;
+            
+            while (!success && retryCount < maxRetries) {
+                try {
+                    // Valider tous les vecteurs avant l'upsert
+                    batch.forEach((point, idx) => {
+                        try {
+                            this.validateVector(point.vector as number[]);
+                        } catch (error: any) {
+                            console.error(`❌ Validation échouée pour point ${idx} dans batch ${batchNumber}:`, error.message);
+                            throw error;
+                        }
+                    });
+
+                    /**
+                     * ✅ CORRECTION P0 (2025-10-15) - Rate Limiter Qdrant
+                     * Wrapper avec rate limiter pour éviter surcharge (max 10 req/s)
+                     */
+                    await qdrantRateLimiter.execute(async () => {
+                        return await this.qdrantClient.upsert(COLLECTION_NAME, {
+                            points: batch,
+                            wait: shouldWait
+                        });
+                    });
+                    
+                    success = true;
+                    console.log(`✓ Batch ${batchNumber}/${totalBatches} inséré (${batch.length} points, wait=${shouldWait})`);
+                    
+                    networkMetrics.qdrantCalls++;
+                    networkMetrics.bytesTransferred += batch.length * 6144; // Approximation: 1536 dims * 4 bytes
+                    
+                } catch (error: any) {
+                    // Ne pas retry sur HTTP 400 (erreur client)
+                    if (error.response?.status === 400 || error.status === 400) {
+                        console.error(`✗ HTTP 400 sur batch ${batchNumber} - Abandon:`, error.response?.data || error.message);
+                        throw error; // Propagate l'erreur
+                    }
+                    
+                    // Retry sur autres erreurs (timeout, 500, etc.)
+                    retryCount++;
+                    if (retryCount < maxRetries) {
+                        const backoff = Math.min(1000 * Math.pow(2, retryCount), 10000);
+                        console.warn(`⚠ Erreur batch ${batchNumber}, retry ${retryCount}/${maxRetries} dans ${backoff}ms`);
+                        await new Promise(resolve => setTimeout(resolve, backoff));
+                    } else {
+                        console.error(`✗ Échec batch ${batchNumber} après ${maxRetries} tentatives:`, error.message);
+                        throw error;
+                    }
+                }
+            }
+            
+            // Pause entre batches pour éviter surcharge (sauf dernier)
+            if (!isLastBatch) {
+                await new Promise(resolve => setTimeout(resolve, 100));
+            }
+        }
+    }
+
+    /**
+     * Initialise le health check périodique
+     */
+    startHealthCheck(): void {
+        if (this.healthCheckInterval) {
+            return; // Déjà démarré
+        }
+
+        // Health check périodique toutes les 5 minutes
+        this.healthCheckInterval = setInterval(async () => {
+            try {
+                await this.checkCollectionHealth();
+            } catch (error) {
+                console.error('Erreur health check périodique:', error);
+            }
+        }, 5 * 60 * 1000);
+
+        console.log('✓ Health check périodique démarré (intervalle: 5 minutes)');
+    }
+
+    /**
+     * Arrête le health check périodique
+     */
+    stopHealthCheck(): void {
+        if (this.healthCheckInterval) {
+            clearInterval(this.healthCheckInterval);
+            this.healthCheckInterval = undefined;
+            console.log('✓ Health check périodique arrêté');
+        }
+    }
+
     /**
      * Indexe une tâche à partir de son ID (trouve automatiquement le chemin)
      */

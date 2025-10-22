@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach } from '@jest/globals';
+import { describe, it, expect, beforeEach } from 'vitest';
 import { UIMessagesDeserializer } from '../../src/utils/ui-messages-deserializer.js';
 import { UIMessage } from '../../src/utils/message-types.js';
 

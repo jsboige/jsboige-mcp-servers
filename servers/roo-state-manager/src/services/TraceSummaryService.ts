@@ -233,6 +233,14 @@ function escapeHtml(s: string): string {
         .replace(/"/g, '&quot;');
 }
 
+function unescapeHtml(s: string): string {
+    return (s ?? '')
+        .replace(/&lt;/g, '<')
+        .replace(/&gt;/g, '>')
+        .replace(/&quot;/g, '"')
+        .replace(/&amp;/g, '&'); // DOIT être fait en dernier pour éviter double-décodage
+}
+
 function baseSectionId(i: RenderItem): string {
     switch (i.type) {
         case 'assistant': return `reponse-assistant-${i.n}`;
@@ -295,6 +303,16 @@ function boxClass(t: MsgType): string {
 
 function sanitizeSectionHtml(raw: string): string {
     let html = raw ?? '';
+
+    // CORRECTION CRITIQUE PHASE 0: Protéger les balises <details> contre l'interprétation Markdown
+    // Les balises <details> indentées sont transformées en code blocks par Markdown
+    // On les préserve en s'assurant qu'elles sont au niveau 0 (pas d'indentation)
+    
+    // 0) Protection des balises <details> - CORRECTION CRITIQUE
+    html = html.replace(/^(\s*)<details>/gm, '<details>');
+    html = html.replace(/^(\s*)<\/details>/gm, '</details>');
+    html = html.replace(/^(\s*)<summary>/gm, '<summary>');
+    html = html.replace(/^(\s*)<\/summary>/gm, '</summary>');
 
     // 1) Dédup de la 1ère/2e ligne (symptôme titres/lead répétés)
     const lines = html.split('\n');
@@ -1692,8 +1710,9 @@ export class TraceSummaryService {
             csvVariant: options.csvVariant,
             // SDDD Phase 3: Feature flag pour les strategies (désactivé par défaut pour compatibilité)
             enableDetailLevels: options.enableDetailLevels || false,
-            // Nouvelles options - CORRECTION: tocStyle 'html' par défaut (compatibilité référence)
-            tocStyle: options.tocStyle || 'html',
+            // CORRECTION CRITIQUE: tocStyle doit être synchronisé avec outputFormat
+            // Si outputFormat est 'markdown', utiliser 'markdown' pour éviter les balises HTML
+            tocStyle: options.tocStyle || ((options.outputFormat || 'markdown') === 'html' ? 'html' : 'markdown'),
             hideEnvironmentDetails: options.hideEnvironmentDetails !== undefined ? options.hideEnvironmentDetails : true,
             startIndex: options.startIndex,
             endIndex: options.endIndex
@@ -2174,10 +2193,14 @@ export class TraceSummaryService {
             }
         }
         
-        // CORRECTION CRITIQUE : Échapper le contenu textuel pour éviter injection de balises
-        // Les technicalBlocks contiennent du HTML intentionnel (<details>), donc on ne les échappe pas
+        // CORRECTION CRITIQUE : Gestion de l'échappement HTML selon le format de sortie
+        // - En HTML : Échapper pour éviter l'injection de balises
+        // - En markdown : Désechapper le contenu car les fichiers source contiennent du texte déjà échappé
+        //   (les balises XML comme <read_file> sont stockées comme &lt;read_file&gt;)
         return {
-            textContent: escapeHtml(textContent.trim()),
+            textContent: options.outputFormat === 'html'
+                ? escapeHtml(textContent.trim())
+                : unescapeHtml(textContent.trim()),
             technicalBlocks
         };
     }

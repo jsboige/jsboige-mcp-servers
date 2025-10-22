@@ -1,21 +1,21 @@
 /**
- * Tests unitaires pour le moteur de reconstruction hiÃ©rarchique
- * Valide le fonctionnement du systÃ¨me en deux passes
+ * Tests unitaires pour le moteur de reconstruction hiérarchique
+ * Valide le fonctionnement du système en deux passes
  */
 
-import { describe, it, expect, beforeEach, afterEach, jest } from '@jest/globals';
+import {  describe, it, expect, beforeEach, afterEach, jest , vi } from 'vitest';
 
 // Mock fs AVANT tous les autres imports pour ES modules
 const mockedFs = {
-    existsSync: jest.fn(),
-    readFileSync: jest.fn(),
-    statSync: jest.fn(),
-    mkdirSync: jest.fn(),
-    writeFileSync: jest.fn()
+    existsSync: vi.fn(),
+    readFileSync: vi.fn(),
+    statSync: vi.fn(),
+    mkdirSync: vi.fn(),
+    writeFileSync: vi.fn()
 };
 
-// Mock fs avec ES modules - DOIT Ãªtre avant les imports qui utilisent fs
-jest.unstable_mockModule('fs', () => mockedFs);
+// Mock fs avec ES modules - DOIT être avant les imports qui utilisent fs
+vi.mock('fs', () => mockedFs);
 
 import * as path from 'path';
 import * as os from 'os';
@@ -43,29 +43,29 @@ describe('HierarchyReconstructionEngine', () => {
     let tempDir: string;
 
     beforeEach(() => {
-        // CrÃ©er un rÃ©pertoire temporaire pour les tests
+        // Créer un répertoire temporaire pour les tests
         tempDir = path.join(os.tmpdir(), 'hierarchy-tests', Date.now().toString());
         
-        // RÃ©initialiser l'engine pour chaque test
+        // Réinitialiser l'engine pour chaque test
         engine = new HierarchyReconstructionEngine({
             ...defaultTestConfig,
             debugMode: false
         });
 
         // Clear all mocks
-        jest.clearAllMocks();
+        vi.clearAllMocks();
     });
 
     afterEach(() => {
         // Nettoyer les mocks
-        jest.restoreAllMocks();
+        vi.restoreAllMocks();
     });
 
     describe('Phase 1 - Extraction et indexation', () => {
         it('should extract new_task patterns from XML tags', async () => {
             const enhancedSkeletons = mockSkeletons.slice(0, 2).map(enhanceSkeleton);
             
-            // Mock du systÃ¨me de fichiers
+            // Mock du système de fichiers
             mockedFs.existsSync.mockImplementation((filePath: any) => {
                 return filePath.includes('ui_messages.json');
             });
@@ -95,7 +95,7 @@ describe('HierarchyReconstructionEngine', () => {
             const mockMessages = [
                 {
                     role: 'assistant',
-                    content: '<task>ImplÃ©menter la fonctionnalitÃ© de recherche</task>',
+                    content: '<task>Implémenter la fonctionnalité de recherche</task>',
                     timestamp: Date.now()
                 }
             ];
@@ -118,7 +118,7 @@ describe('HierarchyReconstructionEngine', () => {
             const mockMessages = [
                 {
                     role: 'assistant',
-                    content: 'Je te passe en mode orchestrator pour gÃ©rer les sous-tÃ¢ches',
+                    content: 'Je te passe en mode orchestrator pour gérer les sous-tâches',
                     timestamp: Date.now()
                 }
             ];
@@ -143,12 +143,12 @@ describe('HierarchyReconstructionEngine', () => {
             const duplicateMessages = [
                 {
                     role: 'assistant',
-                    content: '<new_task><mode>code</mode><message>MÃªme tÃ¢che</message></new_task>',
+                    content: '<new_task><mode>code</mode><message>Même tâche</message></new_task>',
                     timestamp: 1000
                 },
                 {
                     role: 'assistant',
-                    content: '<new_task><mode>code</mode><message>MÃªme tÃ¢che</message></new_task>',
+                    content: '<new_task><mode>code</mode><message>Même tâche</message></new_task>',
                     timestamp: 2000
                 }
             ];
@@ -162,10 +162,10 @@ describe('HierarchyReconstructionEngine', () => {
 
             const result = await engine.executePhase1([skeleton]);
 
-            // VÃ©rifier que les doublons sont gÃ©rÃ©s (selon l'implÃ©mentation)
+            // Vérifier que les doublons sont gérés (selon l'implémentation)
             expect(result.parsedCount).toBe(1);
             if (skeleton.parsedSubtaskInstructions) {
-                // L'implÃ©mentation actuelle peut garder les doublons avec timestamps diffÃ©rents
+                // L'implémentation actuelle peut garder les doublons avec timestamps différents
                 expect(skeleton.parsedSubtaskInstructions.instructions.length).toBeGreaterThan(0);
             }
         });
@@ -190,7 +190,7 @@ describe('HierarchyReconstructionEngine', () => {
         it('should skip re-parsing when checksums are identical', async () => {
             const skeleton = enhanceSkeleton(mockSkeletons[0]);
             
-            // Simuler un skeleton dÃ©jÃ  traitÃ©
+            // Simuler un skeleton déjà traité
             skeleton.processingState.phase1Completed = true;
             skeleton.sourceFileChecksums = {
                 uiMessages: 'abc123',
@@ -199,7 +199,7 @@ describe('HierarchyReconstructionEngine', () => {
             };
 
             mockedFs.existsSync.mockReturnValue(true);
-            // Retourner le mÃªme contenu (donc mÃªme checksum)
+            // Retourner le même contenu (donc même checksum)
             mockedFs.readFileSync.mockImplementation((filePath: any) => {
                 if (filePath.includes('ui_messages')) return '[]' as any;
                 if (filePath.includes('api_history')) return '[]' as any;
@@ -215,7 +215,7 @@ describe('HierarchyReconstructionEngine', () => {
 
         it('should build radix tree with 200 char prefixes', async () => {
             const skeleton = enhanceSkeleton(mockSkeletons[0]);
-            const longInstruction = 'A'.repeat(300); // Plus de 200 caractÃ¨res
+            const longInstruction = 'A'.repeat(300); // Plus de 200 caractères
             
             const mockMessages = [
                 {
@@ -236,7 +236,7 @@ describe('HierarchyReconstructionEngine', () => {
 
             expect(result.parsedCount).toBe(1);
             if (skeleton.parsedSubtaskInstructions) {
-                // VÃ©rifier que le message est tronquÃ© Ã  200 chars dans l'instruction
+                // Vérifier que le message est tronqué à 200 chars dans l'instruction
                 const instruction = skeleton.parsedSubtaskInstructions.instructions[0];
                 expect(instruction.message.length).toBeLessThanOrEqual(200);
             }
@@ -320,11 +320,11 @@ describe('HierarchyReconstructionEngine', () => {
         });
     });
 
-    describe('Phase 2 - RÃ©solution des parentIds', () => {
+    describe('Phase 2 - Résolution des parentIds', () => {
         it('should find parent by similarity search', async () => {
             const skeletons = mockSkeletons.slice(0, 3).map(enhanceSkeleton);
             
-            // Simuler que la Phase 1 a Ã©tÃ© complÃ©tÃ©e
+            // Simuler que la Phase 1 a été complétée
             skeletons[0].parsedSubtaskInstructions = {
                 instructions: mockNewTaskInstructions['root-task-001'],
                 parsingTimestamp: new Date().toISOString(),
@@ -343,7 +343,7 @@ describe('HierarchyReconstructionEngine', () => {
             const result = await engine.executePhase2(skeletons);
 
             expect(result.processedCount).toBeGreaterThan(0);
-            // La similaritÃ© devrait permettre de trouver le parent
+            // La similarité devrait permettre de trouver le parent
             if (result.resolvedCount > 0) {
                 expect(skeletons[2].reconstructedParentId).toBeDefined();
                 expect(skeletons[2].parentConfidenceScore).toBeGreaterThan(0);
@@ -352,18 +352,18 @@ describe('HierarchyReconstructionEngine', () => {
 
         it('should validate temporal constraints', async () => {
             const skeletons = [
-                enhanceSkeleton(mockSkeletons[5]), // time-paradox (enfant crÃ©Ã© Ã  09:00)
-                enhanceSkeleton(mockSkeletons[6])  // future-parent (parent crÃ©Ã© Ã  12:00)
+                enhanceSkeleton(mockSkeletons[5]), // time-paradox (enfant créé à 09:00)
+                enhanceSkeleton(mockSkeletons[6])  // future-parent (parent créé à 12:00)
             ];
 
             const result = await engine.executePhase2(skeletons);
 
-            // Le parent crÃ©Ã© APRÃˆS l'enfant ne devrait pas Ãªtre acceptÃ©
-            // Le parentId invalide devrait avoir Ã©tÃ© supprimÃ©
+            // Le parent créé APRÈS l'enfant ne devrait pas être accepté
+            // Le parentId invalide devrait avoir été supprimé
             expect(skeletons[0].parentTaskId).toBeUndefined();
             expect(skeletons[0].reconstructedParentId).toBeUndefined();
             
-            // Le parent futur devrait Ãªtre marquÃ© comme racine
+            // Le parent futur devrait être marqué comme racine
             expect(skeletons[1].isRootTask).toBe(true);
         });
 
@@ -372,20 +372,20 @@ describe('HierarchyReconstructionEngine', () => {
 
             const result = await engine.executePhase2(cyclicEnhanced);
 
-            // Aucun cycle ne devrait Ãªtre crÃ©Ã©
+            // Aucun cycle ne devrait être créé
             const hasValidCycle = cyclicEnhanced.some(s => 
                 s.reconstructedParentId && 
                 cyclicEnhanced.find(p => p.taskId === s.reconstructedParentId)
             );
             
-            // Si des parents sont rÃ©solus, ils ne doivent pas crÃ©er de cycles
+            // Si des parents sont résolus, ils ne doivent pas créer de cycles
             if (hasValidCycle) {
-                // VÃ©rifier qu'il n'y a pas de cycle rÃ©el
+                // Vérifier qu'il n'y a pas de cycle réel
                 const visited = new Set<string>();
                 let current = cyclicEnhanced[0];
                 while (current) {
                     if (visited.has(current.taskId)) {
-                        expect(false).toBe(true); // Cycle dÃ©tectÃ© !
+                        expect(false).toBe(true); // Cycle détecté !
                         break;
                     }
                     visited.add(current.taskId);
@@ -402,19 +402,19 @@ describe('HierarchyReconstructionEngine', () => {
                 enhanceSkeleton(mockSkeletons[4])  // other-project
             ];
 
-            // L'orphelin du second workspace ne doit pas Ãªtre liÃ© au premier
+            // L'orphelin du second workspace ne doit pas être lié au premier
             skeletons[1].parentTaskId = undefined;
 
             const result = await engine.executePhase2(skeletons);
 
-            // Ne devrait pas lier des tÃ¢ches de workspaces diffÃ©rents
+            // Ne devrait pas lier des tâches de workspaces différents
             expect(skeletons[1].reconstructedParentId).not.toBe(skeletons[0].taskId);
         });
 
         it('should calculate confidence scores', async () => {
             const skeletons = mockSkeletons.slice(0, 3).map(enhanceSkeleton);
             
-            // PrÃ©parer pour la rÃ©solution
+            // Préparer pour la résolution
             skeletons[2].parentTaskId = undefined;
 
             const result = await engine.executePhase2(skeletons);
@@ -432,18 +432,18 @@ describe('HierarchyReconstructionEngine', () => {
             }
         });
 
-        it('should use fallback methods (metadata â†’ temporal)', async () => {
+        it('should use fallback methods (metadata ? temporal)', async () => {
             const skeletons = mockSkeletons.slice(0, 3).map(enhanceSkeleton);
             
             // Forcer l'utilisation des fallbacks
             skeletons[2].parentTaskId = undefined;
-            skeletons[2].truncatedInstruction = 'Texte sans rapport'; // Pas de similaritÃ©
+            skeletons[2].truncatedInstruction = 'Texte sans rapport'; // Pas de similarité
 
             const result = await engine.executePhase2(skeletons);
 
             if (result.resolvedCount > 0) {
                 expect(result.resolutionMethods).toBeDefined();
-                // VÃ©rifier qu'une mÃ©thode de fallback a Ã©tÃ© utilisÃ©e
+                // Vérifier qu'une méthode de fallback a été utilisée
                 const methods = Object.keys(result.resolutionMethods);
                 const hasMetadata = methods.includes('metadata');
                 const hasTemporal = methods.includes('temporal_proximity');
@@ -455,7 +455,7 @@ describe('HierarchyReconstructionEngine', () => {
             const skeletons = [
                 enhanceSkeleton({
                     ...mockSkeletons[0],
-                    truncatedInstruction: 'Bonjour, je voudrais crÃ©er',
+                    truncatedInstruction: 'Bonjour, je voudrais créer',
                     parentTaskId: undefined
                 })
             ];
@@ -473,7 +473,7 @@ describe('HierarchyReconstructionEngine', () => {
 
             const result = await engine.executePhase2(skeletons);
 
-            // Le parentId valide ne devrait pas Ãªtre modifiÃ©
+            // Le parentId valide ne devrait pas être modifié
             expect(skeletons[1].parentTaskId).toBe(originalParentId);
             expect(skeletons[1].reconstructedParentId).toBeUndefined();
         });
@@ -484,7 +484,7 @@ describe('HierarchyReconstructionEngine', () => {
 
             const result = await engine.executePhase2(skeletons);
 
-            // Le parentId invalide devrait Ãªtre rÃ©solu ou marquÃ© comme non rÃ©solu
+            // Le parentId invalide devrait être résolu ou marqué comme non résolu
             expect(result.processedCount).toBe(1);
             if (result.resolvedCount > 0) {
                 expect(skeleton.reconstructedParentId).toBeDefined();
@@ -498,12 +498,12 @@ describe('HierarchyReconstructionEngine', () => {
             skeletons[2].parentTaskId = undefined;
 
             const engineWithHighThreshold = new HierarchyReconstructionEngine({
-                minConfidenceScore: 0.9 // Seuil trÃ¨s Ã©levÃ©
+                minConfidenceScore: 0.9 // Seuil très élevé
             });
 
             const result = await engineWithHighThreshold.executePhase2(skeletons);
 
-            // Avec un seuil Ã©levÃ©, moins de rÃ©solutions
+            // Avec un seuil élevé, moins de résolutions
             if (result.resolvedCount === 0) {
                 expect(result.unresolvedCount).toBeGreaterThan(0);
             } else {
@@ -519,7 +519,7 @@ describe('HierarchyReconstructionEngine', () => {
         it('should resume from phase 1 checkpoint', async () => {
             const skeleton = enhanceSkeleton(mockSkeletons[0]);
             
-            // Simuler une interruption aprÃ¨s Phase 1
+            // Simuler une interruption après Phase 1
             skeleton.processingState.phase1Completed = true;
             skeleton.processingState.phase2Completed = false;
             skeleton.sourceFileChecksums = {
@@ -549,7 +549,7 @@ describe('HierarchyReconstructionEngine', () => {
 
             // Devrait traiter seulement celui sans parentId
             expect(result.processedCount).toBeGreaterThan(0);
-            expect(skeletons[1].reconstructedParentId).toBeUndefined(); // Pas touchÃ©
+            expect(skeletons[1].reconstructedParentId).toBeUndefined(); // Pas touché
         });
 
         it('should force rebuild when requested', async () => {
@@ -570,7 +570,7 @@ describe('HierarchyReconstructionEngine', () => {
 
             const result = await engineWithForce.executePhase1([skeleton]);
 
-            expect(result.processedCount).toBe(1); // Devrait reprocesser malgrÃ© le cache
+            expect(result.processedCount).toBe(1); // Devrait reprocesser malgré le cache
         });
     });
 
@@ -606,7 +606,7 @@ describe('HierarchyReconstructionEngine', () => {
                 })
             );
 
-            // Devrait complÃ©ter sans timeout (car opÃ©rations rapides)
+            // Devrait compléter sans timeout (car opérations rapides)
             const result = await engineWithTimeout.executePhase1(manySkeletons);
             expect(result).toBeDefined();
         });
@@ -631,15 +631,15 @@ describe('HierarchyReconstructionEngine', () => {
 
     describe('Integration with static method', () => {
         it('should reconstruct hierarchy using static method', async () => {
-            // Ce test nÃ©cessite une approche diffÃ©rente pour mocker le module
-            // Pour simplifier, on teste juste que la mÃ©thode statique existe et fonctionne
+            // Ce test nécessite une approche différente pour mocker le module
+            // Pour simplifier, on teste juste que la méthode statique existe et fonctionne
             mockedFs.existsSync.mockReturnValue(false);
 
-            // On teste que la mÃ©thode existe et peut Ãªtre appelÃ©e
+            // On teste que la méthode existe et peut être appelée
             expect(HierarchyReconstructionEngine.reconstructHierarchy).toBeDefined();
             expect(typeof HierarchyReconstructionEngine.reconstructHierarchy).toBe('function');
             
-            // Le vrai test d'intÃ©gration serait dans un fichier sÃ©parÃ©
+            // Le vrai test d'intégration serait dans un fichier séparé
             // avec un vrai mock du module RooStorageDetector
         });
     });
@@ -647,7 +647,7 @@ describe('HierarchyReconstructionEngine', () => {
     describe('Performance tests', () => {
         it('should handle 1000+ entries efficiently', async () => {
             const { generateLargeDataset } = await import('../../fixtures/hierarchy-test-data.js');
-            const largeDataset = generateLargeDataset(100).map(enhanceSkeleton); // RÃ©duit pour les tests
+            const largeDataset = generateLargeDataset(100).map(enhanceSkeleton); // Réduit pour les tests
 
             mockedFs.existsSync.mockReturnValue(false);
 
@@ -659,7 +659,7 @@ describe('HierarchyReconstructionEngine', () => {
             const result2 = await engine.executePhase2(largeDataset);
             const phase2Time = Date.now() - startTime2;
 
-            // Devrait complÃ©ter en temps raisonnable
+            // Devrait compléter en temps raisonnable
             expect(phase1Time).toBeLessThan(5000); // 5 secondes max
             expect(phase2Time).toBeLessThan(5000);
             expect(result1.processedCount).toBe(100);

@@ -2,6 +2,7 @@
  * Outil MCP : roosync_rollback_decision
  * 
  * Annule une décision de synchronisation appliquée.
+ * ✅ Connecté aux méthodes réelles de RooSyncService.
  * 
  * @module tools/roosync/rollback-decision
  * @version 2.0.0
@@ -41,41 +42,6 @@ export const RollbackDecisionResultSchema = z.object({
 
 export type RollbackDecisionResult = z.infer<typeof RollbackDecisionResultSchema>;
 
-/**
- * Restaure l'état depuis un point de rollback
- * NOTE: Implémentation stub - sera complétée avec intégration PowerShell en Phase E2E
- */
-async function restoreFromRollbackPoint(
-  decisionId: string,
-  decision: any,
-  config: any
-): Promise<{
-  success: boolean;
-  restoredFiles: string[];
-  logs: string[];
-}> {
-  const logs: string[] = [];
-  
-  // TODO Phase E2E: Implémenter restauration réelle depuis backup
-  logs.push('[SIMULATION] Restauration simulée - Phase E2E implémentera PowerShell');
-  logs.push(`[INFO] Décision à annuler: ${decision.title}`);
-  logs.push(`[INFO] Type: ${decision.type}`);
-  
-  // Simuler la restauration de fichiers basée sur le chemin de la décision
-  const restoredFiles: string[] = [];
-  if (decision.path) {
-    restoredFiles.push(decision.path);
-    logs.push(`[SUCCESS] Fichier restauré: ${decision.path}`);
-  }
-  
-  logs.push('[SUCCESS] Rollback simulé avec succès');
-  
-  return {
-    success: true,
-    restoredFiles,
-    logs
-  };
-}
 
 /**
  * Outil roosync_rollback_decision
@@ -114,12 +80,13 @@ export async function roosyncRollbackDecision(args: RollbackDecisionArgs): Promi
     let restoredFiles: string[] = [];
     
     try {
+      // ✅ Connected to RooSyncService real methods
       // Restaurer depuis le point de rollback
       executionLog.push('[ROLLBACK] Début de la restauration...');
-      const result = await restoreFromRollbackPoint(args.decisionId, decision, config);
+      const result = await service.restoreFromRollbackPoint(args.decisionId);
       
       if (!result.success) {
-        throw new Error('Échec de la restauration');
+        throw new Error(result.error || 'Échec de la restauration');
       }
       
       executionLog.push(...result.logs);

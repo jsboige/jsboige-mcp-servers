@@ -7,7 +7,7 @@
  * PROBLÈME IDENTIFIÉ: 0 instructions extraites sur 37 tâches workspace d:/dev/roo-extensions
  */
 
-import { describe, it, expect, beforeAll, beforeEach } from '@jest/globals';
+import { describe, it, expect, beforeAll, beforeEach } from 'vitest';
 import * as path from 'path';
 import * as fs from 'fs/promises';
 import { RooStorageDetector } from '../../src/utils/roo-storage-detector.js';

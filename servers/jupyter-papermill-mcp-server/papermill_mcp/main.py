@@ -33,11 +33,12 @@ from .tools.kernel_tools import register_kernel_tools, initialize_kernel_tools
 from .tools.execution_tools import register_execution_tools, initialize_execution_tools
 
 # Configure logging with enhanced format
+# CRITICAL FIX: Use stderr for logs to avoid corrupting MCP stdio protocol
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
     handlers=[
-        logging.StreamHandler(sys.stdout)
+        logging.StreamHandler(sys.stderr)
     ]
 )
 

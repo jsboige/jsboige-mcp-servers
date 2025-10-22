@@ -1,0 +1,14 @@
+[
+  {
+    "id": "msg-1",
+    "type": "user",
+    "content": "TEST-BRANCH-B: Tu es la branche B de la hiérarchie de test. Ta mission est de créer exactement 1 sous-tâche.\n\n### INSTRUCTIONS STRICTES :\n\n1. **Créer TEST-NODE-B1** en mode 'code' avec ce message exact :\n   \"TEST-NODE-B1: Tu es un nœud intermédiaire. Crée exactement 2 sous-tâches feuilles. D'abord **Créer TEST-LEAF-B1a** avec 'leaf-b1a.js', puis **Créer TEST-LEAF-B1b** avec 'leaf-b1b.js'.\"",
+    "timestamp": "2025-10-17T21:57:00.000Z"
+  },
+  {
+    "id": "msg-2",
+    "type": "assistant",
+    "content": "Je vais créer la sous-tâche TEST-NODE-B1 comme demandé.",
+    "timestamp": "2025-10-17T21:57:30.000Z"
+  }
+]

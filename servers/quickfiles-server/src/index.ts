@@ -5,6 +5,7 @@ import { pathToFileURL } from 'url';
 import { z } from 'zod';
 import * as fs from 'fs/promises';
 import * as path from 'path';
+import * as os from 'os';
 import { glob } from 'glob';
 
 // Zod Schemas
@@ -727,16 +728,20 @@ class QuickFilesServer {
     try {
         const results: any[] = [];
         let totalMatches = 0;
-        const searchRegex = new RegExp(pattern, case_sensitive ? 'g' : 'gi');
-        const searchInFile = async (rawFilePath: string) => {
+        const searchRegex = use_regex
+            ? new RegExp(pattern, case_sensitive ? 'g' : 'gi')
+            : new RegExp(pattern.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), case_sensitive ? 'g' : 'gi');
+        
+        const searchInFile = async (absoluteFilePath: string, relativePath: string) => {
             if (totalMatches >= max_total_results) return;
-            const filePath = this.resolvePath(rawFilePath);
             try {
-                const content = await fs.readFile(filePath, 'utf-8');
+                const content = await fs.readFile(absoluteFilePath, 'utf-8');
                 const lines = content.split('\n');
                 const fileMatches = [];
                 for (let i = 0; i < lines.length; i++) {
                     const line = lines[i];
+                    // Reset regex lastIndex to avoid stateful behavior with global flag
+                    searchRegex.lastIndex = 0;
                     if (searchRegex.test(line)) {
                         if (fileMatches.length >= max_results_per_file || totalMatches >= max_total_results) break;
                         const start = Math.max(0, i - context_lines);
@@ -746,23 +751,89 @@ class QuickFilesServer {
                         totalMatches++;
                     }
                 }
-                if (fileMatches.length > 0) results.push({ path: rawFilePath, matches: fileMatches });
+                if (fileMatches.length > 0) results.push({ path: relativePath, matches: fileMatches });
             } catch (error) {
-                // Skip files that cannot be read
+                // Skip files that cannot be read (binary files, permission errors, etc.)
             }
         };
        
-        for (const searchPath of rawPaths) {
-            await searchInFile(searchPath);
+        // Collect all files to search
+        const filesToSearch: { absolute: string; relative: string }[] = [];
+        
+        for (const rawPath of rawPaths) {
+            const resolvedPath = this.resolvePath(rawPath);
+            
+            try {
+                const stats = await fs.stat(resolvedPath);
+                
+                if (stats.isFile()) {
+                    // Direct file reference
+                    filesToSearch.push({ absolute: resolvedPath, relative: rawPath });
+                } else if (stats.isDirectory()) {
+                    // Directory: need to list files
+                    if (recursive) {
+                        // Use glob to find files recursively
+                        // If file_pattern is provided without **, prepend it for recursive search
+                        let globPattern = file_pattern || '**/*';
+                        if (file_pattern && !file_pattern.includes('**')) {
+                            globPattern = `**/${file_pattern}`;
+                        }
+                        const matchedFiles = await glob(globPattern, {
+                            nodir: true,
+                            absolute: true,
+                            cwd: resolvedPath
+                        });
+                        
+                        for (const absFile of matchedFiles) {
+                            const relFile = path.relative(resolvedPath, absFile);
+                            const displayPath = path.join(rawPath, relFile);
+                            filesToSearch.push({ absolute: absFile, relative: displayPath });
+                        }
+                    } else {
+                        // Non-recursive: only top-level files
+                        const entries = await fs.readdir(resolvedPath, { withFileTypes: true });
+                        for (const entry of entries) {
+                            if (entry.isFile()) {
+                                // Check file_pattern if specified
+                                if (file_pattern) {
+                                    const matched = await glob(file_pattern, {
+                                        cwd: resolvedPath,
+                                        nodir: true
+                                    });
+                                    if (!matched.includes(entry.name)) continue;
+                                }
+                                const absFile = path.join(resolvedPath, entry.name);
+                                const displayPath = path.join(rawPath, entry.name);
+                                filesToSearch.push({ absolute: absFile, relative: displayPath });
+                            }
+                        }
+                    }
+                }
+            } catch (error) {
+                // Path doesn't exist or is not accessible, skip it
+                continue;
+            }
+        }
+        
+        // Search in all collected files
+        for (const file of filesToSearch) {
+            if (totalMatches >= max_total_results) break;
+            await searchInFile(file.absolute, file.relative);
         }
        
-        let formattedResponse = `# Résultats de la recherche pour: "${pattern}"\n`;
-        results.forEach(r => {
-            formattedResponse += `### ${r.path}\n`;
-            r.matches.forEach((m: any) => {
-                formattedResponse += `**Ligne ${m.lineNumber}**: ${m.line}\n\`\`\`\n${m.context.join('\n')}\n\`\`\`\n`;
+        let formattedResponse = `# Résultats de la recherche pour: "${pattern}"\n\n`;
+        if (results.length === 0) {
+            formattedResponse += `Aucun résultat trouvé.\n`;
+        } else {
+            formattedResponse += `**${results.length} fichier(s) contenant des correspondances**\n\n`;
+            results.forEach(r => {
+                formattedResponse += `## ${r.path}\n`;
+                formattedResponse += `${r.matches.length} correspondance(s)\n\n`;
+                r.matches.forEach((m: any) => {
+                    formattedResponse += `**Ligne ${m.lineNumber}**:\n\`\`\`\n${m.context.join('\n')}\n\`\`\`\n\n`;
+                });
             });
-        });
+        }
        
         return { content: [{ type: 'text' as const, text: formattedResponse }] };
     } catch (error) {
@@ -812,7 +883,9 @@ class QuickFilesServer {
 
   private async handleRestartMcpServers(args: z.infer<typeof RestartMcpServersArgsSchema>) {
     const { servers } = args;
-    const settingsPath = 'C:/Users/MYIA/AppData/Roaming/Code/User/globalStorage/rooveterinaryinc.roo-cline/settings/mcp_settings.json';
+    // Détection automatique du chemin utilisateur en utilisant la variable d'environnement ou os.homedir()
+    const userHome = process.env.USERPROFILE || process.env.HOME || os.homedir();
+    const settingsPath = path.join(userHome, 'AppData', 'Roaming', 'Code', 'User', 'globalStorage', 'rooveterinaryinc.roo-cline', 'settings', 'mcp_settings.json');
     const results = [];
     try {
       // ✅ FIX: Relire le fichier avant chaque modification pour éviter les corruptions

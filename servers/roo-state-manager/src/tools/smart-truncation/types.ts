@@ -101,6 +101,8 @@ export interface SmartTruncationResult {
 export interface ViewConversationTreeArgs {
     task_id?: string;
     workspace?: string;
+    /** ID de la tâche actuellement en cours d'exécution (pour marquage explicite) */
+    current_task_id?: string;
     view_mode?: 'single' | 'chain' | 'cluster';
     detail_level?: 'skeleton' | 'summary' | 'full';
     truncate?: number;
@@ -109,4 +111,6 @@ export interface ViewConversationTreeArgs {
     smart_truncation?: boolean;
     /** Configuration personnalisée pour la troncature intelligente */
     smart_truncation_config?: Partial<SmartTruncationConfig>;
+    /** Chemin optionnel pour sauvegarder l'arbre dans un fichier markdown */
+    output_file?: string;
 }

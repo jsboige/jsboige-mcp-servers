@@ -9,7 +9,7 @@
  * ou les prefixes normalisés ne correspondent pas aux instructions parentes
  */
 
-import { describe, it, expect, beforeAll, beforeEach } from '@jest/globals';
+import { describe, it, expect, beforeAll, beforeEach } from 'vitest';
 import * as path from 'path';
 import * as fs from 'fs/promises';
 import { RooStorageDetector } from '../../src/utils/roo-storage-detector.js';

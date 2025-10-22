@@ -1,0 +1,22 @@
+{
+  "taskId": "03deadab-c123-4d56-ef78-9012345678ab",
+  "title": "TEST-BRANCH-B",
+  "status": "completed",
+  "mode": "code",
+  "startTime": "2025-10-17T21:57:00.000Z",
+  "endTime": "2025-10-17T21:58:00.000Z",
+  "messageCount": 2,
+  "lastActivity": "2025-10-17T21:57:30.000Z",
+  "parentTaskId": "91e837de-a4b2-4c18-ab9b-6fcd36596e38",
+  "truncatedInstruction": "TEST-BRANCH-B: Tu es la branche B de la hiérarchie de test. Ta mission est de créer exactement 1 sous-tâche.",
+  "totalTokens": 0,
+  "hasApiHistory": false,
+  "hasUiMessages": true,
+  "workspace": "test-workspace",
+  "metadata": {
+    "testType": "controlled-hierarchy",
+    "level": 2,
+    "expectedChildren": 1,
+    "childIds": ["38948ef0-abcd-4321-fedc-ba0987654321"]
+  }
+}

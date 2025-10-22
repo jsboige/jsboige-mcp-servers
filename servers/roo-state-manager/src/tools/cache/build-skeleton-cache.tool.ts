@@ -116,6 +116,10 @@ export async function handleBuildSkeletonCache(
         let skeletonsBuilt = 0;
         let skeletonsSkipped = 0;
         let hierarchyRelationsFound = 0;
+        let invalidTasksCount = 0;
+        let workspaceFilteredCount = 0;
+        let corruptedSkeletonsCount = 0;
+        let analysisErrorsCount = 0;
         const mode = force_rebuild ? "FORCE_REBUILD" : "SMART_REBUILD";
         const filterMode = workspace_filter ? `WORKSPACE_FILTERED(${workspace_filter})` : "ALL_WORKSPACES";
 
@@ -175,17 +179,21 @@ export async function handleBuildSkeletonCache(
                                 } catch {
                                     // Aucun fichier valide trouvé
                                     console.warn(`⚠️ INVALID: Task ${conversationId} has no valid conversation files`);
+                                    invalidTasksCount++;
                                 }
                             }
                         }
                         
                         if (!isValidTask) {
-                            console.log(`🔍 SKIP INVALID: ${conversationId} - no metadata/api/ui files found`);
+                            // 🔇 LOG VERBEUX COMMENTÉ (explosion contexte)
+                            // console.log(`🔍 SKIP INVALID: ${conversationId} - no metadata/api/ui files found`);
+                            invalidTasksCount++;
                             skeletonsSkipped++;
                             continue;
                         }
                         
-                        console.log(`✅ VALID: ${conversationId} (validated via ${validationSource})`);
+                        // 🔇 LOG VERBEUX COMMENTÉ (explosion contexte - 1 log par fichier traité)
+                        // console.log(`✅ VALID: ${conversationId} (validated via ${validationSource})`);
                         
                         // 🎯 FILTRE WORKSPACE: Utiliser la même méthode que get_storage_stats pour cohérence
                         if (workspace_filter) {
@@ -197,10 +205,12 @@ export async function handleBuildSkeletonCache(
                                 const normalizedWorkspace = path.normalize(taskWorkspace).toLowerCase();
                                 
                                 if (taskWorkspace === 'UNKNOWN' || !normalizedWorkspace.includes(normalizedFilter)) {
+                                    workspaceFilteredCount++;
                                     continue; // Skip cette conversation si elle ne correspond pas au filtre
                                 }
                             } catch (workspaceError) {
                                 console.warn(`Could not detect workspace for filtering: ${taskPath}`, workspaceError);
+                                workspaceFilteredCount++;
                                 continue; // Skip si on ne peut pas détecter le workspace
                             }
                         }
@@ -227,10 +237,12 @@ export async function handleBuildSkeletonCache(
                                             }
                                             skeletonsSkipped++;
                                         } else {
+                                            corruptedSkeletonsCount++;
                                             shouldRebuild = true; // Squelette corrompu
                                         }
                                     } catch (loadError) {
                                         console.error(`Corrupted skeleton file, will rebuild: ${skeletonPath}`, loadError);
+                                        corruptedSkeletonsCount++;
                                         shouldRebuild = true;
                                     }
                                 } else {
@@ -255,24 +267,27 @@ export async function handleBuildSkeletonCache(
                                     skeletonsBuilt++;
                                 } else {
                                     console.error(`❌ Failed to analyze conversation ${conversationId}: analyzeConversation returned null`);
+                                    analysisErrorsCount++;
                                     skeletonsSkipped++;
                                 }
                             } catch (analyzeError) {
                                 console.error(`❌ Error during analysis of ${conversationId}:`, analyzeError);
+                                analysisErrorsCount++;
                                 skeletonsSkipped++;
                             }
                         }
                         
                     } catch (error: any) {
-                        // 🔍 AMÉLIORATION: Logging détaillé pour comprendre pourquoi une tâche est skipped
-                        const errorMsg = error?.message || String(error);
-                        if (errorMsg.includes('ENOENT')) {
-                            console.warn(`⚠️ SKIP: Task ${conversationId} - File not found (${errorMsg})`);
-                        } else if (errorMsg.includes('permission')) {
-                            console.warn(`⚠️ SKIP: Task ${conversationId} - Permission denied`);
-                        } else {
-                            console.error(`❌ ERROR: Task ${conversationId} - ${errorMsg}`);
-                        }
+                        // 🔇 LOGS VERBEUX COMMENTÉS (explosion contexte - détails erreurs par fichier)
+                        // const errorMsg = error?.message || String(error);
+                        // if (errorMsg.includes('ENOENT')) {
+                        //     console.warn(`⚠️ SKIP: Task ${conversationId} - File not found (${errorMsg})`);
+                        // } else if (errorMsg.includes('permission')) {
+                        //     console.warn(`⚠️ SKIP: Task ${conversationId} - Permission denied`);
+                        // } else {
+                        //     console.error(`❌ ERROR: Task ${conversationId} - ${errorMsg}`);
+                        // }
+                        analysisErrorsCount++;
                         skeletonsSkipped++;
                     }
                 }
@@ -402,7 +417,8 @@ export async function handleBuildSkeletonCache(
                         (cached as any).parentId = newlyResolvedParent;
                     }
 
-                    console.log(`🎯 Relation MODE STRICT: ${skeleton.taskId.substring(0, 8)} → ${newlyResolvedParent.substring(0, 8)}`);
+                    // 🔇 LOG VERBEUX COMMENTÉ (explosion contexte - 1 log par relation trouvée)
+                    // console.log(`🎯 Relation MODE STRICT: ${skeleton.taskId.substring(0, 8)} → ${newlyResolvedParent.substring(0, 8)}`);
                 }
             });
             
@@ -467,7 +483,9 @@ export async function handleBuildSkeletonCache(
         
         console.log(`📝 Saved ${savedCount}/${skeletonsToUpdate.length} updated skeletons to disk`);
         
+        // 📊 RÉSUMÉ AGRÉGÉ FINAL (remplace les logs verbeux commentés)
         console.log(`✅ Skeleton cache build complete. Mode: ${mode}, Cache size: ${conversationCache.size}, New relations: ${hierarchyRelationsFound}`);
+        console.log(`📊 Build Statistics: Built=${skeletonsBuilt}, Skipped=${skeletonsSkipped}, Invalid=${invalidTasksCount}, WorkspaceFiltered=${workspaceFilteredCount}, Corrupted=${corruptedSkeletonsCount}, AnalysisErrors=${analysisErrorsCount}`);
         
         // 🔍 Restaurer console.log original
         console.log = originalConsoleLog;

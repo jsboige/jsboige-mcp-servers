@@ -1,0 +1,17 @@
+{
+  "threshold": 0,
+  "reporters": ["html", "markdown", "json", "console"],
+  "ignore": [
+    "**/*.d.ts",
+    "**/*.test.ts",
+    "**/*.spec.ts",
+    "**/node_modules/**",
+    "**/build/**",
+    "**/dist/**"
+  ],
+  "format": ["typescript"],
+  "minLines": 5,
+  "minTokens": 50,
+  "output": "./analysis-consolidation/",
+  "path": ["./src/"]
+}

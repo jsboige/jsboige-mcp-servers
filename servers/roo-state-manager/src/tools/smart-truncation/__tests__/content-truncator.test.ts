@@ -1,4 +1,4 @@
-import { describe, test, expect } from '@jest/globals';
+import { describe, test, expect } from 'vitest';
 import { ContentTruncator } from '../content-truncator.js';
 import {
     TaskTruncationPlan,
@@ -112,7 +112,7 @@ describe('ContentTruncator', () => {
         test('should handle multiple tasks with different truncation plans', () => {
             const tasks = [
                 createMockTask('task1', ['Content 1', 'Response 1']),
-                createMockTask('task2', ['Content 2', 'Response 2'])
+                createMockTask('task2', ['Content 2', 'Line 1\nLine 2\nLine 3\nLine 4\nLine 5'])
             ];
             
             const plans: TaskTruncationPlan[] = [

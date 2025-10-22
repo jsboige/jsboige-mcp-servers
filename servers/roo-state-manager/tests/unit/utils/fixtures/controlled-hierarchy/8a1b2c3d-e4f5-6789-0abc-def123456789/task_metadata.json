@@ -1,0 +1,22 @@
+{
+  "taskId": "8a1b2c3d-e4f5-6789-0abc-def123456789",
+  "title": "TEST-LEAF-A1",
+  "status": "completed",
+  "mode": "code",
+  "startTime": "2025-10-17T21:59:00.000Z",
+  "endTime": "2025-10-17T22:00:00.000Z",
+  "messageCount": 3,
+  "lastActivity": "2025-10-17T22:00:00.000Z",
+  "parentTaskId": "305b3f90-e0e1-4870-8cf4-4fd33a08cfa4",
+  "truncatedInstruction": "TEST-LEAF-A1: Tu es une feuille de la hiérarchie de test. Crée le fichier leaf-a1.js contenant une fonction processLeafA1().",
+  "totalTokens": 0,
+  "hasApiHistory": false,
+  "hasUiMessages": true,
+  "workspace": "test-workspace",
+  "metadata": {
+    "testType": "controlled-hierarchy",
+    "level": 3,
+    "expectedChildren": 0,
+    "childIds": []
+  }
+}

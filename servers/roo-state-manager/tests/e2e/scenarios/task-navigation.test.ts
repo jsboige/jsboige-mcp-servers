@@ -1,4 +1,4 @@
-import { jest, describe, it, expect, beforeAll, afterAll, beforeEach, test } from '@jest/globals';
+import { jest, describe, it, expect, beforeAll, afterAll, beforeEach, test } from 'vitest';
 import { TaskNavigator } from '../../../src/services/task-navigator.js';
 import * as fs from 'fs/promises';
 import * as path from 'path';

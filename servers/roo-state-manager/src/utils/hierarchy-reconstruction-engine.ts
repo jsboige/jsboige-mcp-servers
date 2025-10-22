@@ -396,11 +396,47 @@ export class HierarchyReconstructionEngine {
         // MODE STRICT : Utilise uniquement le matching exact de préfixe
         if (config.strictMode === true) {
             if (skeleton.truncatedInstruction) {
-                // Utiliser searchExactPrefix avec l'instruction tronquée (K=192 via computeInstructionPrefix)
-                const exactResults = await this.instructionIndex.searchExactPrefix(skeleton.truncatedInstruction, 192);
+                // 🔇 LOG VERBEUX COMMENTÉ (explosion contexte - 1 log par orphelin traité)
+                // this.log(`SDDD: Searching parent for ${skeleton.taskId}`);
+                // this.log(`SDDD: Child truncated instruction: "${skeleton.truncatedInstruction.substring(0, 100)}..." (length: ${skeleton.truncatedInstruction.length})`);
+                
+                // 🎯 CORRECTION SDDD FONDAMENTALE : Le bug était que les enfants cherchaient avec leur propre instruction
+                // alors que les parents indexent les instructions des SOUS-TÂCHES qu'ils contiennent.
+                // Solution SDDD : Chercher avec l'instruction de l'enfant DANS le contenu des parents
+                
+                // 🎯 CORRECTION SDDD FONDAMENTALE : Utiliser la méthode sémantiquement correcte
+                // qui cherche si cette instruction correspond à un préfixe dans l'index
+                const exactResults = await this.instructionIndex.searchExactPrefix(skeleton.truncatedInstruction);
+
+                // 🔇 LOG VERBEUX COMMENTÉ (explosion contexte - 1 log par orphelin sans parent)
+                // this.log(`SDDD: searchExactPrefix returned ${exactResults ? exactResults.length : 0} results for ${skeleton.taskId}`);
                 
                 if (!exactResults || exactResults.length === 0) {
-                    this.log(`STRICT MODE: no exact parent match for ${skeleton.taskId}`);
+                    // 🔇 LOG VERBEUX COMMENTÉ (explosion contexte - debug répétitif)
+                    // this.log(`SDDD: STRICT MODE: no exact parent match for ${skeleton.taskId}`);
+                    
+                    // SDDD: Diagnostiquer l'état de l'index pour comprendre pourquoi aucune correspondance
+                    const indexStats = this.instructionIndex.getStats();
+                    // 🔇 LOG VERBEUX COMMENTÉ (explosion contexte - debug stats répétitif)
+                    // this.log(`SDDD: Index stats - Total nodes: ${indexStats.totalNodes}, Total instructions: ${indexStats.totalInstructions}`);
+                    
+                    // SDDD: Afficher quelques préfixes dans l'index pour comparaison
+                    // Accéder directement à la Map interne pour diagnostiquer
+                    const prefixMap = (this.instructionIndex as any).prefixToEntry;
+                    if (prefixMap && prefixMap.size > 0) {
+                        // 🔇 LOG VERBEUX COMMENTÉ (explosion contexte - debug sample répétitif)
+                        // this.log(`SDDD: Sample prefixes in index (${prefixMap.size} total):`);
+                        // let count = 0;
+                        // for (const [prefix, entry] of prefixMap.entries()) {
+                        //     if (count >= 3) break;
+                        //     this.log(`SDDD:   [${count}] prefix="${prefix.substring(0, 50)}...", parents=${(entry as any).parentTaskIds.length}`);
+                        //     count++;
+                        // }
+                    } else {
+                        // ✅ GARDER: Warning important - Index vide = problème critique
+                        this.log(`SDDD: WARNING - Index appears to be empty or inaccessible`);
+                    }
+                    
                     return null;
                 }
                 

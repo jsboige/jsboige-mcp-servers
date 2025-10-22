@@ -2,6 +2,7 @@
  * Outil MCP : roosync_apply_decision
  * 
  * Applique une décision de synchronisation approuvée.
+ * ✅ Connecté aux méthodes réelles de RooSyncService.
  * 
  * @module tools/roosync/apply-decision
  * @version 2.0.0
@@ -48,77 +49,6 @@ export const ApplyDecisionResultSchema = z.object({
 
 export type ApplyDecisionResult = z.infer<typeof ApplyDecisionResultSchema>;
 
-/**
- * Crée un point de rollback pour une décision
- * NOTE: Implémentation stub - sera complétée avec intégration PowerShell en Phase E2E
- */
-async function createRollbackPoint(decisionId: string, config: any): Promise<void> {
-  // TODO Phase E2E: Implémenter sauvegarde réelle des fichiers concernés
-  // Pour l'instant, on simule la création du point de rollback
-  const rollbackDir = join(config.sharedPath, '.rollback', decisionId);
-  // La création effective sera implémentée avec l'intégration PowerShell
-}
-
-/**
- * Exécute l'application d'une décision
- * NOTE: Implémentation stub - sera complétée avec intégration PowerShell en Phase E2E
- */
-async function executeDecision(
-  decisionId: string,
-  decision: any,
-  config: any,
-  options: { dryRun?: boolean; force?: boolean }
-): Promise<{
-  success: boolean;
-  logs: string[];
-  changes: {
-    filesModified: string[];
-    filesCreated: string[];
-    filesDeleted: string[];
-  };
-  error?: string;
-}> {
-  const logs: string[] = [];
-  
-  if (options.dryRun) {
-    // Mode dry run - simulation
-    logs.push('[DRY RUN] Simulation activée - aucune modification réelle');
-    logs.push(`[DRY RUN] Décision: ${decision.title}`);
-    logs.push(`[DRY RUN] Type: ${decision.type}`);
-    logs.push(`[DRY RUN] Chemin: ${decision.path || 'N/A'}`);
-    
-    return {
-      success: true,
-      logs,
-      changes: {
-        filesModified: [decision.path || 'example-file.txt'],
-        filesCreated: [],
-        filesDeleted: []
-      }
-    };
-  }
-  
-  // TODO Phase E2E: Implémenter exécution réelle via PowerShell
-  // Pour l'instant, simulation d'une exécution réussie
-  logs.push('[SIMULATION] Exécution simulée - Phase E2E implémentera PowerShell');
-  logs.push(`[INFO] Décision: ${decision.title}`);
-  logs.push(`[INFO] Type: ${decision.type}`);
-  
-  // Simuler des changements basés sur le type de décision
-  const changes = {
-    filesModified: decision.path ? [decision.path] : [],
-    filesCreated: [] as string[],
-    filesDeleted: [] as string[]
-  };
-  
-  logs.push(`[SUCCESS] Modifications appliquées: ${changes.filesModified.length} fichier(s)`);
-  
-  return {
-    success: true,
-    logs,
-    changes
-  };
-}
 
 /**
  * Outil roosync_apply_decision
@@ -167,20 +97,22 @@ export async function roosyncApplyDecision(args: ApplyDecisionArgs): Promise<App
       // Mode dry run
       if (args.dryRun) {
         executionLog.push('[DRY RUN] Mode simulation - aucun changement réel');
-        const result = await executeDecision(args.decisionId, decision, config, { dryRun: true });
+        // ✅ Connected to RooSyncService real methods
+        const result = await service.executeDecision(args.decisionId, { dryRun: true });
         executionLog.push(...result.logs);
         changes = result.changes;
         rollbackAvailable = false;
       } else {
         // Créer point de rollback
+        // ✅ Connected to RooSyncService real methods
         executionLog.push('[ROLLBACK] Création du point de rollback...');
-        await createRollbackPoint(args.decisionId, config);
+        await service.createRollbackPoint(args.decisionId);
         executionLog.push('[ROLLBACK] Point de rollback créé avec succès');
         rollbackAvailable = true;
         
         // Exécuter la décision
         executionLog.push('[EXECUTION] Début de l\'application...');
-        const result = await executeDecision(args.decisionId, decision, config, {
+        const result = await service.executeDecision(args.decisionId, {
           dryRun: false,
           force: args.force
         });
@@ -201,9 +133,15 @@ export async function roosyncApplyDecision(args: ApplyDecisionArgs): Promise<App
       // Tentative de rollback automatique si disponible
       if (rollbackAvailable && !args.dryRun) {
         try {
+          // ✅ Connected to RooSyncService real methods
           executionLog.push('[ROLLBACK] Tentative de rollback automatique...');
-          // TODO Phase E2E: Implémenter restauration réelle
-          executionLog.push('[ROLLBACK] Rollback simulé avec succès');
+          const rollbackResult = await service.restoreFromRollbackPoint(args.decisionId);
+          if (rollbackResult.success) {
+            executionLog.push('[ROLLBACK] Rollback automatique réussi.');
+            executionLog.push(...rollbackResult.logs);
+          } else {
+            executionLog.push(`[ROLLBACK ERREUR] Échec du rollback automatique: ${rollbackResult.error}`);
+          }
         } catch (rollbackError) {
           executionLog.push(`[ROLLBACK ERREUR] ${(rollbackError as Error).message}`);
         }

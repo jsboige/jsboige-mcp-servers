@@ -8,7 +8,7 @@
  * cause un taux de correspondance de 0.95% (37/3870) au lieu des 70% attendus
  */
 
-import { describe, it, expect, beforeAll, beforeEach, jest } from '@jest/globals';
+import { describe, it, expect, beforeAll, beforeEach, jest } from 'vitest';
 import * as path from 'path';
 import * as fs from 'fs/promises';
 import { RooStorageDetector } from '../../src/utils/roo-storage-detector.js';

@@ -113,6 +113,19 @@ export type {
   InitResult
 } from './init.js';
 
+// Export des nouveaux outils de messagerie (Phase 1)
+export { sendMessage } from './send_message.js';
+export { readInbox } from './read_inbox.js';
+export { getMessage } from './get_message.js';
+
+// Export des outils de messagerie Phase 2 - Management Tools
+export { markMessageRead } from './mark_message_read.js';
+export { archiveMessage } from './archive_message.js';
+export { replyMessage } from './reply_message.js';
+
+// Export des outils de messagerie Phase 3 - Advanced Features
+export { amendMessage } from './amend_message.js';
+
 // Import des métadonnées pour l'array
 import { getStatusToolMetadata } from './get-status.js';
 import { compareConfigToolMetadata } from './compare-config.js';

@@ -13,6 +13,20 @@ import { OUTPUT_CONFIG } from '../config/server-config.js';
 import * as toolExports from '../tools/index.js';
 
 /**
+ * Obtenir le chemin du répertoire shared-state RooSync
+ */
+export function getSharedStatePath(): string {
+    // Priorité 1 : Variable d'environnement
+    if (process.env.ROOSYNC_SHARED_STATE_PATH) {
+        return process.env.ROOSYNC_SHARED_STATE_PATH;
+    }
+    
+    // Priorité 2 : Chemin par défaut (G:/Mon Drive/Synchronisation/RooSync/.shared-state)
+    const defaultPath = 'G:/Mon Drive/Synchronisation/RooSync/.shared-state';
+    return defaultPath;
+}
+
+/**
  * Tronque les résultats trop longs
  */
 export function truncateResult(result: CallToolResult): CallToolResult {
@@ -27,24 +41,56 @@ export function truncateResult(result: CallToolResult): CallToolResult {
 
 /**
  * Gère la commande touch_mcp_settings
+ * Utilise l'API native Node.js pour éviter les problèmes d'échappement PowerShell
  */
 export async function handleTouchMcpSettings(): Promise<CallToolResult> {
-    const appDataPath = process.env.APPDATA || path.join(os.homedir(), 'AppData', 'Roaming');
-    const settingsPath = path.join(appDataPath, 'Code', 'User', 'globalStorage', 'rooveterinaryinc.roo-cline', 'settings', 'mcp_settings.json');
-    const command = `(Get-Item "${settingsPath.replace(/\\/g, '/')}").LastWriteTime = Get-Date`;
-    
-    return new Promise((resolve, reject) => {
-        exec(`powershell.exe -Command "${command}"`, (error, stdout, stderr) => {
-            if (error) {
-                reject(new Error(error.message));
-            } else if (stderr) {
-                reject(new Error(stderr));
-            } else {
-                const result = { success: true, message: stdout.trim() };
-                resolve({ content: [{ type: 'text', text: JSON.stringify(result) }] });
-            }
-        });
-    });
+    try {
+        const appDataPath = process.env.APPDATA || path.join(os.homedir(), 'AppData', 'Roaming');
+        const settingsPath = path.join(appDataPath, 'Code', 'User', 'globalStorage', 'rooveterinaryinc.roo-cline', 'settings', 'mcp_settings.json');
+        
+        // Vérifier que le fichier existe
+        try {
+            await fs.access(settingsPath);
+        } catch (error) {
+            return {
+                content: [{
+                    type: 'text',
+                    text: JSON.stringify({
+                        success: false,
+                        error: `Fichier mcp_settings.json introuvable à : ${settingsPath}`
+                    })
+                }],
+                isError: true
+            };
+        }
+        
+        // Toucher le fichier en modifiant son timestamp (atime et mtime)
+        const now = new Date();
+        await fs.utimes(settingsPath, now, now);
+        
+        return {
+            content: [{
+                type: 'text',
+                text: JSON.stringify({
+                    success: true,
+                    message: `Fichier mcp_settings.json touché avec succès à ${now.toISOString()}`,
+                    path: settingsPath
+                })
+            }]
+        };
+    } catch (error) {
+        const errorMessage = error instanceof Error ? error.message : 'Erreur inconnue';
+        return {
+            content: [{
+                type: 'text',
+                text: JSON.stringify({
+                    success: false,
+                    error: `Erreur lors du touch : ${errorMessage}`
+                })
+            }],
+            isError: true
+        };
+    }
 }
 
 /**

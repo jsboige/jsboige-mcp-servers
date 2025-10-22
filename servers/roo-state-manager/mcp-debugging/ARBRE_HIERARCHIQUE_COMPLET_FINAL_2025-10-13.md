@@ -1,4 +1,4 @@
-# Task Tree - 2025-10-13
+# Task Tree - 2025-10-16
 
 ## Task fe133888 (fe133888)
 **Status:** In Progress
@@ -100,6 +100,21 @@
 ############# Task 212ea60c (212ea60c)
 **Status:** In Progress
 **Instruction:** **mission : investigation des orphelins non résolus dans la reconstruction hiérarchique** ## contexte le système de reconstruction hiérarchique fonctionne avec un taux de résolution de 85.7% (
+**Workspace:** d:/dev/2025-Epita-Intelligence-Symbolique
+
+############# Task b294b11e (b294b11e)
+**Status:** In Progress
+**Instruction:** **mission finale : génération de l'arbre hiérarchique complet et rapport de validation final** ## contexte le système de reconstruction hiérarchique a été validé avec succès : - **taux de réso
+**Workspace:** d:/dev/2025-Epita-Intelligence-Symbolique
+
+############## Task 3152397f (3152397f)
+**Status:** In Progress
+**Instruction:** **mission finale : correction définitive du bug "tâche actuelle" dans get_task_tree** ## contexte hérité une première tentative de correction a été faite sur `view-conversation-tree.ts` et `ex
+**Workspace:** d:/dev/2025-Epita-Intelligence-Symbolique
+
+############## Task b21bf67c (b21bf67c)
+**Status:** In Progress
+**Instruction:** **mission critique : correction du bug "tâche actuelle" dans view_conversation_tree du mcp roo-state-manager** ## contexte le système de reconstruction hiérarchique fonctionne à 98.68% (75/76
 **Workspace:** d:/dev/2025-Epita-Intelligence-Symbolique
 
 ############# Task ca4d8f9c (ca4d8f9c)

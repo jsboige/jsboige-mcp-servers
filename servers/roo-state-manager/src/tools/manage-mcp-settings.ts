@@ -363,7 +363,26 @@ export const rebuildTaskIndexFixed = {
                     
                     if (!dry_run) {
                         try {
-                            // Créer un metadata basique
+                            // Détecter le workspace réel avec WorkspaceDetector
+                            let detectedWorkspace = 'unknown';
+                            try {
+                                const { WorkspaceDetector } = await import('../utils/workspace-detector.js');
+                                const workspaceDetector = new WorkspaceDetector({
+                                    enableCache: true,
+                                    validateExistence: false,
+                                    normalizePaths: true
+                                });
+                                
+                                const workspaceResult = await workspaceDetector.detect(task.path);
+                                if (workspaceResult.workspace) {
+                                    detectedWorkspace = workspaceResult.workspace;
+                                }
+                            } catch (workspaceError) {
+                                console.warn(`[WARN] Impossible de détecter le workspace pour ${task.id}: ${workspaceError}`);
+                                // Garder 'unknown' comme fallback
+                            }
+                            
+                            // Créer un metadata basique avec le workspace détecté
                             const basicMetadata = {
                                 id: task.id,
                                 createdAt: task.stats.birthtime.toISOString(),
@@ -373,7 +392,7 @@ export const rebuildTaskIndexFixed = {
                                 messageCount: 0,
                                 actionCount: 0,
                                 totalSize: 0,
-                                workspace: workspace_filter || 'unknown',
+                                workspace: detectedWorkspace,
                                 status: 'restored'
                             };
                             

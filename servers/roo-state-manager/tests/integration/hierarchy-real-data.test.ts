@@ -3,13 +3,13 @@
  * Utilise les vraies données de test contrôlées sans mocks
  */
 
-import { describe, it, expect, beforeEach } from '@jest/globals';
+import { describe, it, expect, beforeEach } from 'vitest';
 import * as fs from 'fs';
 import * as path from 'path';
 import { fileURLToPath } from 'url';
-import { HierarchyReconstructionEngine } from '../../../src/utils/hierarchy-reconstruction-engine.js';
-import type { ConversationSkeleton } from '../../../src/types/conversation.js';
-import type { EnhancedConversationSkeleton } from '../../../src/types/enhanced-hierarchy.js';
+import { HierarchyReconstructionEngine } from '../../src/utils/hierarchy-reconstruction-engine.js';
+import type { ConversationSkeleton } from '../../src/types/conversation.js';
+import type { EnhancedConversationSkeleton } from '../../src/types/enhanced-hierarchy.js';
 
 // Support ES modules
 const __filename = fileURLToPath(import.meta.url);
@@ -167,16 +167,23 @@ async function loadRealControlledData(): Promise<ConversationSkeleton[]> {
                 let title = '';
                 
                 if (fs.existsSync(uiMessagesPath)) {
-                    const uiMessages = JSON.parse(fs.readFileSync(uiMessagesPath, 'utf-8'));
+                    const uiMessagesData = JSON.parse(fs.readFileSync(uiMessagesPath, 'utf-8'));
                     
-                    // Chercher le premier message "say" avec texte significatif
-                    const firstSayMessage = uiMessages.find((msg: any) => 
-                        msg.type === 'say' && msg.text && msg.text.length > 20
-                    );
+                    // SDDD: Vérifier la structure des données et extraire le tableau de messages
+                    const uiMessages = uiMessagesData.messages || uiMessagesData || [];
                     
-                    if (firstSayMessage) {
-                        truncatedInstruction = firstSayMessage.text.substring(0, 200);
-                        title = firstSayMessage.text.substring(0, 100);
+                    if (Array.isArray(uiMessages)) {
+                        // Chercher le premier message "say" avec texte significatif
+                        const firstSayMessage = uiMessages.find((msg: any) =>
+                            msg.type === 'say' && msg.text && msg.text.length > 20
+                        );
+                        
+                        if (firstSayMessage) {
+                            truncatedInstruction = firstSayMessage.text.substring(0, 200);
+                            title = firstSayMessage.text.substring(0, 100);
+                        }
+                    } else {
+                        console.warn(`SDDD: uiMessages n'est pas un tableau pour ${taskId}:`, typeof uiMessages);
                     }
                 }
                 

@@ -4,7 +4,7 @@
  * Ces tests vérifient la validation de la configuration RooSync
  */
 
-import { describe, it, expect, beforeEach, afterEach } from '@jest/globals';
+import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { loadRooSyncConfig, tryLoadRooSyncConfig, isRooSyncEnabled, RooSyncConfigError } from '../../../src/config/roosync-config.js';
 
 describe('RooSync Configuration', () => {
@@ -43,7 +43,11 @@ describe('RooSync Configuration', () => {
     it('devrait lever une erreur si une variable est manquante', () => {
       // Arrange
       process.env.ROOSYNC_SHARED_PATH = 'G:/Mon Drive/Synchronisation/RooSync/.shared-state';
-      // ROOSYNC_MACHINE_ID manquant
+      // Nettoyer explicitement les autres variables requises
+      delete process.env.ROOSYNC_MACHINE_ID;
+      delete process.env.ROOSYNC_AUTO_SYNC;
+      delete process.env.ROOSYNC_CONFLICT_STRATEGY;
+      delete process.env.ROOSYNC_LOG_LEVEL;
 
       // Act & Assert
       expect(() => loadRooSyncConfig()).toThrow(RooSyncConfigError);

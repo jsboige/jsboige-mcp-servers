@@ -1,0 +1,14 @@
+[
+  {
+    "id": "msg-1",
+    "type": "user",
+    "content": "TEST-HIERARCHY-ROOT: Tu es la tâche racine de test. Ta mission est de créer exactement 2 sous-tâches pour valider la reconstruction hiérarchique.\n\n### INSTRUCTIONS STRICTES :\n\n1. **Créer TEST-BRANCH-A** en mode 'code' avec ce message exact :\n   \"TEST-BRANCH-A: Crée le fichier branch-a.js contenant une fonction processBranchA() qui traite les données de la branche A. Termine avec attempt_completion.\"\n\n2. **Créer TEST-BRANCH-B** en mode 'code' avec ce message exact :\n   \"TEST-BRANCH-B: Crée le fichier branch-b.js contenant une fonction processBranchB() qui traite les données de la branche B. Termine avec attempt_completion.\"\n\n<task>\n<new_task>\n<mode>code</mode>\n<message>TEST-BRANCH-A: Crée le fichier branch-a.js contenant une fonction processBranchA() qui traite les données de la branche A. Termine avec attempt_completion.</message>\n</new_task>\n</task>\n\n<task>\n<new_task>\n<mode>code</mode>\n<message>TEST-BRANCH-B: Crée le fichier branch-b.js contenant une fonction processBranchB() qui traite les données de la branche B. Termine avec attempt_completion.</message>\n</new_task>\n</task>",
+    "timestamp": "2025-10-17T21:56:00.000Z"
+  },
+  {
+    "id": "msg-2",
+    "type": "assistant",
+    "content": "Je vais créer les deux sous-tâches TEST-BRANCH-A et TEST-BRANCH-B comme demandé.",
+    "timestamp": "2025-10-17T21:56:01.000Z"
+  }
+]

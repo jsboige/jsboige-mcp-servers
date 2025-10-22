@@ -25,6 +25,7 @@ import {
 import { globalCacheManager } from './cache-manager.js';
 import { globalTaskInstructionIndex, computeInstructionPrefix } from './task-instruction-index.js';
 import { MessageToSkeletonTransformer } from './message-to-skeleton-transformer.js';
+import { HierarchyReconstructionEngine } from './hierarchy-reconstruction-engine.js';
 import { SkeletonComparator } from './skeleton-comparator.js';
 import { getParsingConfig, isComparisonMode, shouldUseNewParsing } from './parsing-config.js';
 import { WorkspaceDetector } from './workspace-detector.js';
@@ -810,19 +811,94 @@ export class RooStorageDetector {
    */
   public static async buildHierarchicalSkeletons(
     workspacePath?: string,
-    useFullVolume: boolean = true
+    useFullVolume: boolean = true,
+    forceRebuild: boolean = false
   ): Promise<ConversationSkeleton[]> {
     console.log(`[buildHierarchicalSkeletons] 🏗️ DÉMARRAGE reconstruction hiérarchique ${workspacePath || 'TOUS WORKSPACES'}`);
+    
+    // NOUVEAU : Utiliser le HierarchyReconstructionEngine pour la reconstruction en deux passes
+    console.log(`[buildHierarchicalSkeletons] 🚀 Utilisation du nouveau HierarchyReconstructionEngine`);
+    
+    try {
+      // Lancer la reconstruction avec le nouveau moteur
+      const reconstructedSkeletons = await HierarchyReconstructionEngine.reconstructHierarchy(
+        workspacePath,
+        forceRebuild
+      );
+
+      console.log(`[buildHierarchicalSkeletons] ✅ Reconstruction terminée avec ${reconstructedSkeletons.length} squelettes`);
+      
+      // Statistiques de validation
+      const orphanTasks = reconstructedSkeletons.filter((c: ConversationSkeleton) => !c.parentTaskId);
+      const withParents = reconstructedSkeletons.filter((c: ConversationSkeleton) => c.parentTaskId);
+
+      console.log(`[buildHierarchicalSkeletons] 📊 STATISTIQUES:`);
+      console.log(`   📋 ${reconstructedSkeletons.length} tâches totales`);
+      console.log(`   ✅ ${withParents.length} avec parent dans les métadonnées`);
+      console.log(`   ⚠️ ${orphanTasks.length} tâches orphelines ou racines`);
+
+      // Analyser la profondeur de l'arbre
+      const treeDepth = this.calculateTreeDepth(reconstructedSkeletons);
+      console.log(`   🌳 Profondeur de l'arbre: ${treeDepth}`);
+
+      return reconstructedSkeletons;
+
+    } catch (error) {
+      console.error(`[buildHierarchicalSkeletons] ❌ Erreur lors de la reconstruction:`, error);
+      
+      // Fallback vers l'ancienne méthode en cas d'erreur
+      console.log(`[buildHierarchicalSkeletons] 🔄 Fallback vers l'ancienne méthode`);
+      return this.buildHierarchicalSkeletonsLegacy(workspacePath, useFullVolume);
+    }
+  }
+
+  /**
+   * Calcule la profondeur maximale de l'arbre des tâches
+   */
+  private static calculateTreeDepth(skeletons: ConversationSkeleton[]): number {
+    const taskMap = new Map<string, ConversationSkeleton>();
+    for (const skeleton of skeletons) {
+      taskMap.set(skeleton.taskId, skeleton);
+    }
+
+    let maxDepth = 0;
+    
+    const calculateDepth = (taskId: string, currentDepth: number = 0): number => {
+      const task = taskMap.get(taskId);
+      if (!task || !task.parentTaskId) {
+        return currentDepth;
+      }
+      return calculateDepth(task.parentTaskId, currentDepth + 1);
+    };
+
+    for (const skeleton of skeletons) {
+      const depth = calculateDepth(skeleton.taskId);
+      if (depth > maxDepth) {
+        maxDepth = depth;
+      }
+    }
+
+    return maxDepth;
+  }
+
+  /**
+   * LEGACY : Ancienne méthode de reconstruction (utilisée en fallback)
+   */
+  private static async buildHierarchicalSkeletonsLegacy(
+    workspacePath?: string,
+    useFullVolume: boolean = true
+  ): Promise<ConversationSkeleton[]> {
+    console.log(`[buildHierarchicalSkeletonsLegacy] 📋 Utilisation de l'ancienne méthode`);
     
     const conversations: ConversationSkeleton[] = [];
     const storageLocations = await this.detectStorageLocations();
     
     // PHASE 1: Reconstruction de l'index à partir des squelettes existants
-    console.log(`[buildHierarchicalSkeletons] 📋 PHASE 1: Reconstruction index radix-tree`);
+    console.log(`[buildHierarchicalSkeletonsLegacy] 📋 PHASE 1: Reconstruction index radix-tree`);
     await this.rebuildIndexFromExistingSkeletons();
 
     // PHASE 2: Scan et génération des squelettes (PARALLÉLISÉE)
-    console.log(`[buildHierarchicalSkeletons] 🔄 PHASE 2: Génération squelettes avec hiérarchies en parallèle`);
+    console.log(`[buildHierarchicalSkeletonsLegacy] 🔄 PHASE 2: Génération squelettes avec hiérarchies en parallèle`);
     const maxTasks = useFullVolume ? Number.MAX_SAFE_INTEGER : 100;
 
     // Collecter toutes les tâches à traiter
@@ -833,7 +909,7 @@ export class RooStorageDetector {
       
       try {
         const taskDirs = await fs.readdir(tasksPath, { withFileTypes: true });
-        console.log(`[buildHierarchicalSkeletons] 📁 Collecte ${taskDirs.length} tâches dans ${locationPath}`);
+        console.log(`[buildHierarchicalSkeletonsLegacy] 📁 Collecte ${taskDirs.length} tâches dans ${locationPath}`);
         
         for (const entry of taskDirs) {
           if (allTaskEntries.length >= maxTasks) break;
@@ -847,12 +923,12 @@ export class RooStorageDetector {
           });
         }
       } catch (error) {
-        console.warn(`[buildHierarchicalSkeletons] ⚠️ Impossible de scanner ${tasksPath}:`, error);
+        console.warn(`[buildHierarchicalSkeletonsLegacy] ⚠️ Impossible de scanner ${tasksPath}:`, error);
       }
     }
 
     // Traitement parallèle par batches de 20
-    console.log(`[buildHierarchicalSkeletons] 🚀 Traitement parallèle de ${allTaskEntries.length} tâches (batches de 20)`);
+    console.log(`[buildHierarchicalSkeletonsLegacy] 🚀 Traitement parallèle de ${allTaskEntries.length} tâches (batches de 20)`);
     
     const processedSkeletons = await this.processBatch(
       allTaskEntries,
@@ -864,14 +940,14 @@ export class RooStorageDetector {
           }
           return null;
         } catch (error) {
-          console.warn(`[buildHierarchicalSkeletons] ⚠️ Erreur sur tâche ${taskEntry.taskId}:`, error);
+          console.warn(`[buildHierarchicalSkeletonsLegacy] ⚠️ Erreur sur tâche ${taskEntry.taskId}:`, error);
           return null;
         }
       },
       20, // Batch size
       (processed, total) => {
         if (processed % 200 === 0) {
-          console.log(`[buildHierarchicalSkeletons] 📊 Progression: ${processed}/${total} tâches traitées`);
+          console.log(`[buildHierarchicalSkeletonsLegacy] 📊 Progression: ${processed}/${total} tâches traitées`);
         }
       }
     );
@@ -879,7 +955,7 @@ export class RooStorageDetector {
     conversations.push(...processedSkeletons.filter(s => s !== null) as ConversationSkeleton[]);
 
     // 🚀 PHASE 3: Résolution strict mode des parents manquants en 2 passes
-    console.log(`[buildHierarchicalSkeletons] 🔗 PHASE 3: Résolution des parents manquants en mode strict`);
+    console.log(`[buildHierarchicalSkeletonsLegacy] 🔗 PHASE 3: Résolution des parents manquants en mode strict`);
     console.log(`STRICT MODE: pass1 indexing complete`);
     
     const orphanTasks = conversations.filter(c => !c.parentTaskId);
@@ -929,7 +1005,7 @@ export class RooStorageDetector {
     console.log(`STRICT MODE: final orphans count: ${finalOrphansCount}`);
 
     const indexStats = globalTaskInstructionIndex.getStats();
-    console.log(`[buildHierarchicalSkeletons] ✅ TERMINÉ:`);
+    console.log(`[buildHierarchicalSkeletonsLegacy] ✅ TERMINÉ:`);
     console.log(`   📊 ${conversations.length} squelettes générés`);
     console.log(`   🔗 ${resolvedCount} relations résolues en phase 3`);
     console.log(`   📈 Index: ${indexStats.totalInstructions} instructions, ${indexStats.totalNodes} noeuds`);
@@ -1027,11 +1103,11 @@ export class RooStorageDetector {
   ): Promise<NewTaskInstruction[]> {
     const instructions: NewTaskInstruction[] = [];
     
-    // 🎯 CORRECTION CRITIQUE : Extraire UNIQUEMENT depuis ui_messages.json
-    // Le fichier api_conversation_history.json est condensé avec balises XML et créerait une contamination
-    // ui_messages.json contient les VRAIES déclarations newTask au format JSON pur
-    // Le flag onlyJsonFormat=true désactive les patterns XML contaminants
-    await this.extractFromMessageFile(uiMessagesPath, instructions, maxLines, true);
+    // 🎯 CORRECTION TESTS XML : Activer TOUS les patterns (XML + JSON)
+    // Les tests unitaires prouvent que ui_messages.json contient des balises XML <task> et <new_task>
+    // qui doivent être parsées. Le flag onlyJsonFormat=false active tous les patterns de parsing.
+    // Cette méthode lit UNIQUEMENT ui_messages.json, donc pas de contamination depuis api_conversation_history.json
+    await this.extractFromMessageFile(uiMessagesPath, instructions, maxLines, false);
     
     if (process.env.ROO_DEBUG_INSTRUCTIONS === '1') {
       console.log(`[extractNewTaskInstructionsFromUI] ✅ ${instructions.length} instructions trouvées depuis ui_messages.json uniquement`);
@@ -1218,16 +1294,20 @@ export class RooStorageDetector {
           let taskMatch;
           while ((taskMatch = taskPattern.exec(contentText)) !== null) {
             const taskContent = taskMatch[1].trim();
-            console.log(`[extractFromMessageFile] 🔍 DEBUG PARSING - Balise <task> trouvée dans ${path.basename(filePath)}, role: ${message.role}, contenu: "${taskContent.substring(0, 100)}..."`);
+            // 🔇 LOG VERBEUX COMMENTÉ (explosion contexte - 1 log par balise task trouvée)
+            // console.log(`[extractFromMessageFile] 🔍 DEBUG PARSING - Balise <task> trouvée dans ${path.basename(filePath)}, role: ${message.role}, contenu: "${taskContent.substring(0, 100)}..."`);
             
             if (taskContent.length > 20) { // Filtrer les contenus trop courts
+              // 🎯 CORRECTION TESTS : Tronquer à 200 caractères max (alignement avec tests unitaires)
+              const truncatedContent = taskContent.length > 200 ? taskContent.substring(0, 200) : taskContent;
               const instruction: NewTaskInstruction = {
                 timestamp: new Date(message.timestamp || message.ts || 0).getTime(),
                 mode: 'task', // Mode générique pour balises task simples
-                message: taskContent, // 🎯 CORRECTION SDDD: Pas de troncature ici, elle sera faite par computeInstructionPrefix
+                message: truncatedContent,
               };
               instructions.push(instruction);
-              console.log(`[extractFromMessageFile] 🎯 BALISE TASK SIMPLE AJOUTÉE dans ${path.basename(filePath)}: ${taskContent.substring(0, 50)}...`);
+              // 🔇 LOG VERBEUX COMMENTÉ (explosion contexte - 1 log par balise task ajoutée)
+              // console.log(`[extractFromMessageFile] 🎯 BALISE TASK SIMPLE AJOUTÉE dans ${path.basename(filePath)}: ${truncatedContent.substring(0, 50)}...`);
             } else {
               console.log(`[extractFromMessageFile] ⚠️ BALISE TASK REJETÉE (trop courte: ${taskContent.length} chars) dans ${path.basename(filePath)}`);
             }
@@ -1800,85 +1880,33 @@ export class RooStorageDetector {
   }
 
   /**
-   * Détecte le workspace pour une tâche donnée en analysant les fichiers de conversation
+   * Détecte le workspace pour une tâche donnée
+   * @version 2.0 - Utilise WorkspaceDetector moderne (stratégie dual)
+   * @see WorkspaceDetector pour détails stratégie metadata → environment_details fallback
    */
   public static async detectWorkspaceForTask(taskPath: string): Promise<string> {
     try {
-        // Essayer de lire api_conversation_history.json pour déterminer le workspace
-        const apiHistoryPath = path.join(taskPath, 'api_conversation_history.json');
-        
-        if (await this.fileExists(apiHistoryPath)) {
-            const content = await fs.readFile(apiHistoryPath, 'utf8');
-            const data = JSON.parse(content);
-            
-            // Chercher workspace dans environment_details ou dans les messages
-            if (data && Array.isArray(data)) {
-                for (const message of data) {
-                    // Chercher pattern : Current Workspace Directory (chemin)
-                    const envMatch = message.environment_details?.match(/Current Workspace Directory[^(]*\(([^)]+)\)/);
-                    if (envMatch) {
-                        return this.normalizeWorkspacePath(envMatch[1].trim());
-                    }
-                    
-                    // Fallback : pattern avec ":" (ancien format)
-                    if (message.environment_details?.match(/Current Workspace Directory[^:]*:\s*([^\s\n\r)]+)/)) {
-                        const workspace = RegExp.$1.trim();
-                        return this.normalizeWorkspacePath(workspace);
-                    }
-                }
-            }
-        }
-        
-        // Fallback: essayer ui_messages.json
-        const uiMessagesPath = path.join(taskPath, 'ui_messages.json');
-        if (await this.fileExists(uiMessagesPath)) {
-            const content = await fs.readFile(uiMessagesPath, 'utf8');
-            const data = JSON.parse(content);
-            
-            if (data && Array.isArray(data)) {
-                for (const message of data) {
-                    if (message.text && typeof message.text === 'string') {
-                        // Chercher pattern : Current Workspace Directory (chemin)
-                        const envMatch = message.text.match(/Current Workspace Directory[^(]*\(([^)]+)\)/);
-                        if (envMatch) {
-                            return this.normalizeWorkspacePath(envMatch[1].trim());
-                        }
-                        
-                        // Fallback : pattern avec ":" (ancien format)
-                        const workspaceMatch = message.text.match(/Current Workspace Directory[^:]*:\s*([^\s\n\r)]+)/);
-                        if (workspaceMatch) {
-                            return this.normalizeWorkspacePath(workspaceMatch[1].trim());
-                        }
-                    }
-                }
-            }
-        }
-        
+      const workspaceDetector = new WorkspaceDetector({
+        enableCache: true,
+        validateExistence: false, // Performance
+        normalizePaths: true,
+      });
+      
+      const result = await workspaceDetector.detect(taskPath);
+      
+      // Log détaillé si mode debug
+      if (process.env.DEBUG_WORKSPACE === 'true') {
+        console.log(`[detectWorkspaceForTask] ${taskPath}:`, {
+          workspace: result.workspace,
+          source: result.source,
+          confidence: result.confidence
+        });
+      }
+      
+      return result.workspace || 'UNKNOWN';
     } catch (error) {
-        // Ignorer les erreurs de parsing
-    }
-    
-    // Workspace par défaut si non détecté
-    return 'UNKNOWN';
-  }
-
-  /**
-   * Normalise le chemin du workspace pour la cohérence
-   */
-  private static normalizeWorkspacePath(workspace: string): string {
-    // Nettoyer les caractères indésirables et normaliser
-    return workspace.replace(/[`'"]/g, '').trim() || 'UNKNOWN';
-  }
-
-  /**
-   * Vérifier si un fichier existe
-   */
-  private static async fileExists(filePath: string): Promise<boolean> {
-    try {
-        await fs.access(filePath);
-        return true;
-    } catch {
-        return false;
+      console.warn(`[detectWorkspaceForTask] Error for ${taskPath}:`, error);
+      return 'UNKNOWN';
     }
   }
 

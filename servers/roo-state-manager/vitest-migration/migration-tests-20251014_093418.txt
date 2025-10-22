@@ -1,0 +1,67 @@
+=== MIGRATION DES TESTS - Jest → Vitest ===
+Date: 2025-10-14 09:34:19
+
+Sauvegarde: vitest-migration/backups/tests-20251014_093418
+
+Statistiques:
+  - Fichiers trouvés   : 51
+  - Fichiers modifiés  : 50
+  - Fichiers inchangés : 1
+  - Total remplacements: 68
+
+Fichiers migrés:
+  - tests\e2e\scenarios\semantic-search.test.ts
+  - tests\e2e\scenarios\task-navigation.test.ts
+  - tests\e2e\roosync-error-handling.test.ts
+  - tests\e2e\roosync-workflow.test.ts
+  - tests\integration\hierarchy-real-data.test.ts
+  - tests\integration\integration.test.ts
+  - tests\unit\config\roosync-config.test.ts
+  - tests\unit\gateway\unified-api-gateway.test.ts
+  - tests\unit\services\hierarchy-reconstruction-engine.test.ts
+  - tests\unit\services\indexing-decision.test.ts
+  - tests\unit\services\powershell-executor.test.ts
+  - tests\unit\services\roo-storage-detector.test.ts
+  - tests\unit\services\RooSyncService.test.ts
+  - tests\unit\services\synthesis.service.test.ts
+  - tests\unit\services\task-indexer.test.ts
+  - tests\unit\services\task-instruction-index.test.ts
+  - tests\unit\services\task-navigator.test.ts
+  - tests\unit\services\xml-parsing.test.ts
+  - tests\unit\tools\roosync\apply-decision.test.ts
+  - tests\unit\tools\roosync\approve-decision.test.ts
+  - tests\unit\tools\roosync\compare-config.test.ts
+  - tests\unit\tools\roosync\get-decision-details.test.ts
+  - tests\unit\tools\roosync\get-status.test.ts
+  - tests\unit\tools\roosync\list-diffs.test.ts
+  - tests\unit\tools\roosync\reject-decision.test.ts
+  - tests\unit\tools\roosync\rollback-decision.test.ts
+  - tests\unit\tools\manage-mcp-settings.test.ts
+  - tests\unit\tools\read-vscode-logs.test.ts
+  - tests\unit\tools\view-conversation-tree.test.ts
+  - tests\unit\utils\bom-handling.test.ts
+  - tests\unit\utils\controlled-hierarchy-reconstruction.test.ts
+  - tests\unit\utils\hierarchy-inference.test.ts
+  - tests\unit\utils\roosync-parsers.test.ts
+  - tests\unit\utils\timestamp-parsing.test.ts
+  - tests\unit\utils\versioning.test.ts
+  - tests\unit\utils\xml-parsing.test.ts
+  - tests\unit\extraction-complete-validation.test.ts
+  - tests\unit\extraction-contamination.test.ts
+  - tests\unit\hierarchy-pipeline.test.ts
+  - tests\unit\main-instruction-fallback.test.ts
+  - tests\unit\message-to-skeleton-transformer.test.ts
+  - tests\unit\new-task-extraction.test.ts
+  - tests\unit\parent-child-validation.test.ts
+  - tests\unit\production-format-extraction.test.ts
+  - tests\unit\regression-hierarchy-extraction.test.ts
+  - tests\unit\skeleton-cache-reconstruction.test.ts
+  - tests\unit\ui-messages-deserializer.test.ts
+  - tests\unit\workspace-filtering-diagnosis.test.ts
+  - src\tools\smart-truncation\__tests__\content-truncator.test.ts
+  - src\tools\smart-truncation\__tests__\engine.test.ts
+
+
+Patterns migrés:
+  - from '@jest/globals' → from 'vitest'
+  - jest.* → vi.*

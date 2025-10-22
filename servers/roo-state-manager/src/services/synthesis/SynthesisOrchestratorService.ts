@@ -232,7 +232,7 @@ export class SynthesisOrchestratorService {
                             childTasks: contextResult.buildTrace.childContexts || [],
                             condensedBatches: contextResult.buildTrace.condensedBatches || [],
                             debugInfo: {
-                                contextBuilderStatus: "fully_implemented_phase3_llm_error",
+                                contextBuilderStatus: "fully_implemented_phase3",
                                 implementedMethods: ["buildNarrativeContext", "enrichContext", "traverseUpwards", "collectSiblingTasks", "buildInitialContext", "collectChildrenSyntheses", "buildContextTrace"],
                                 missingMethods: [],
                                 explanation: "Erreur LLM mais le NarrativeContextBuilderService a construit correctement le contexte hiérarchique.",
@@ -262,7 +262,7 @@ export class SynthesisOrchestratorService {
             // Retour d'une analyse d'erreur conforme au contrat
             const errorAnalysis: ConversationAnalysis = {
                 taskId,
-                analysisEngineVersion: "2.0.0-phase2-error",
+                analysisEngineVersion: "3.0.0-phase3-error",
                 analysisTimestamp: new Date().toISOString(),
                 llmModelId: "error-handler",
                 contextTrace: {

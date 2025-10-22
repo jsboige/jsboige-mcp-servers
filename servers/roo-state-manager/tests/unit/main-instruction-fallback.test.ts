@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeAll, afterAll } from '@jest/globals';
+import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import { RooStorageDetector } from '../../src/utils/roo-storage-detector.js';
 import * as fs from 'fs/promises';
 import * as path from 'path';

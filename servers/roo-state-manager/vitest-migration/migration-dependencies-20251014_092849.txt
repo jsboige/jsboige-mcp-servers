@@ -1,0 +1,24 @@
+=== MIGRATION DÉPENDANCES - Jest → Vitest ===
+Date: 2025-10-14 09:29:13
+
+Sauvegarde: vitest-migration/backups/package.json.20251014_092849.bak
+
+Packages désinstallés:
+  - jest
+  - @types/jest
+  - ts-jest
+  - jest-environment-node
+
+
+Packages installés:
+  - vitest
+  - @vitest/ui
+  - @vitest/coverage-v8
+
+
+Dépendances Jest restantes: 0
+
+Versions Vitest:
+  - vitest: ^3.2.4
+  - @vitest/ui: ^3.2.4
+  - @vitest/coverage-v8: ^3.2.4

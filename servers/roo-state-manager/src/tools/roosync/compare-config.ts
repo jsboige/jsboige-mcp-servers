@@ -9,14 +9,18 @@
 
 import { z } from 'zod';
 import { zodToJsonSchema } from 'zod-to-json-schema';
-import { getRooSyncService, RooSyncServiceError } from '../../services/RooSyncService.js';
+import { getRooSyncService, RooSyncServiceError, type ComparisonReport } from '../../services/RooSyncService.js';
 
 /**
  * Schema de validation pour roosync_compare_config
  */
 export const CompareConfigArgsSchema = z.object({
-  targetMachine: z.string().optional()
-    .describe('ID de la machine cible (auto-sélection si non spécifié)')
+  source: z.string().optional()
+    .describe('ID de la machine source (optionnel, défaut: local_machine)'),
+  target: z.string().optional()
+    .describe('ID de la machine cible (optionnel, défaut: remote_machine)'),
+  force_refresh: z.boolean().optional()
+    .describe('Forcer la collecte d\'inventaire même si cache valide (défaut: false)')
 });
 
 export type CompareConfigArgs = z.infer<typeof CompareConfigArgsSchema>;
@@ -25,15 +29,22 @@ export type CompareConfigArgs = z.infer<typeof CompareConfigArgsSchema>;
  * Schema de retour pour roosync_compare_config
  */
 export const CompareConfigResultSchema = z.object({
-  localMachine: z.string().describe('Machine locale'),
-  targetMachine: z.string().describe('Machine cible'),
+  source: z.string().describe('Machine source'),
+  target: z.string().describe('Machine cible'),
   differences: z.array(z.object({
-    field: z.string().describe('Nom du champ différent'),
-    localValue: z.any().describe('Valeur locale'),
-    targetValue: z.any().describe('Valeur cible'),
-    type: z.enum(['added', 'removed', 'modified']).describe('Type de différence')
-  })).describe('Liste des différences'),
-  identical: z.boolean().describe('Configurations identiques ?')
+    category: z.string().describe('Catégorie de différence'),
+    severity: z.string().describe('Niveau de sévérité'),
+    path: z.string().describe('Chemin de la différence'),
+    description: z.string().describe('Description de la différence'),
+    action: z.string().optional().describe('Action recommandée')
+  })).describe('Liste des différences détectées'),
+  summary: z.object({
+    total: z.number().describe('Nombre total de différences'),
+    critical: z.number().describe('Différences critiques'),
+    important: z.number().describe('Différences importantes'),
+    warning: z.number().describe('Avertissements'),
+    info: z.number().describe('Informations')
+  }).describe('Résumé des différences')
 });
 
 export type CompareConfigResult = z.infer<typeof CompareConfigResultSchema>;
@@ -52,18 +63,29 @@ export type CompareConfigResult = z.infer<typeof CompareConfigResultSchema>;
 export async function roosyncCompareConfig(args: CompareConfigArgs): Promise<CompareConfigResult> {
   try {
     const service = getRooSyncService();
-    const result = await service.compareConfig(args.targetMachine);
+    const config = service.getConfig();
     
-    return {
-      ...result,
-      differences: result.differences.map(d => ({
-        field: d.field,
-        localValue: d.localValue,
-        targetValue: d.targetValue,
-        type: determineChangeType(d)
-      })),
-      identical: result.differences.length === 0
-    };
+    // Déterminer machines source et cible
+    const sourceMachineId = args.source || config.machineId;
+    const targetMachineId = args.target || await getDefaultTargetMachine(service, sourceMachineId);
+    
+    // Comparaison réelle
+    const report = await service.compareRealConfigurations(
+      sourceMachineId,
+      targetMachineId,
+      args.force_refresh || false
+    );
+
+    if (!report) {
+      throw new RooSyncServiceError(
+        'Échec de la comparaison des configurations',
+        'COMPARISON_FAILED'
+      );
+    }
+
+    // Formatter le rapport pour l'affichage
+    return formatComparisonReport(report);
+    
   } catch (error) {
     if (error instanceof RooSyncServiceError) {
       throw error;
@@ -77,16 +99,40 @@ export async function roosyncCompareConfig(args: CompareConfigArgs): Promise<Com
 }
 
 /**
- * Détermine le type de changement en analysant les valeurs
+ * Obtenir la machine cible par défaut
  */
-function determineChangeType(diff: { field: string; localValue: any; targetValue: any }): 'added' | 'removed' | 'modified' {
-  if (diff.localValue === undefined || diff.localValue === null) {
-    return 'removed';
+async function getDefaultTargetMachine(service: any, sourceMachineId: string): Promise<string> {
+  const dashboard = await service.loadDashboard();
+  const machines = Object.keys(dashboard.machines).filter(
+    m => m !== sourceMachineId
+  );
+  
+  if (machines.length === 0) {
+    throw new RooSyncServiceError(
+      'Aucune autre machine trouvée pour la comparaison',
+      'NO_TARGET_MACHINE'
+    );
   }
-  if (diff.targetValue === undefined || diff.targetValue === null) {
-    return 'added';
-  }
-  return 'modified';
+  
+  return machines[0];
+}
+
+/**
+ * Formate le rapport de comparaison pour l'affichage MCP
+ */
+function formatComparisonReport(report: ComparisonReport): CompareConfigResult {
+  return {
+    source: report.sourceMachine,
+    target: report.targetMachine,
+    differences: report.differences.map(diff => ({
+      category: diff.category,
+      severity: diff.severity,
+      path: diff.path,
+      description: diff.description,
+      action: diff.recommendedAction
+    })),
+    summary: report.summary
+  };
 }
 
 /**
@@ -95,13 +141,29 @@ function determineChangeType(diff: { field: string; localValue: any; targetValue
  */
 export const compareConfigToolMetadata = {
   name: 'roosync_compare_config',
-  description: 'Comparer la configuration locale avec une autre machine',
+  description: `Compare les configurations Roo entre deux machines et détecte les différences réelles.
+
+Détection multi-niveaux :
+- Configuration Roo (modes, MCPs, settings) - CRITICAL
+- Hardware (CPU, RAM, disques, GPU) - IMPORTANT
+- Software (PowerShell, Node, Python) - WARNING
+- System (OS, architecture) - INFO
+
+Utilise Get-MachineInventory.ps1 pour collecte d'inventaire complet avec cache TTL 1h.`,
   inputSchema: {
     type: 'object' as const,
     properties: {
-      targetMachine: {
+      source: {
         type: 'string',
-        description: 'ID de la machine cible (auto-sélection si non spécifié)'
+        description: 'ID de la machine source (optionnel, défaut: local_machine)'
+      },
+      target: {
+        type: 'string',
+        description: 'ID de la machine cible (optionnel, défaut: remote_machine)'
+      },
+      force_refresh: {
+        type: 'boolean',
+        description: 'Forcer la collecte d\'inventaire même si cache valide (défaut: false)'
       }
     },
     additionalProperties: false

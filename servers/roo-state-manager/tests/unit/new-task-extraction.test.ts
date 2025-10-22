@@ -3,7 +3,7 @@
  * Valide la correction du bug de parsing incomplet (6 newTask dans une seule ligne)
  */
 
-import { describe, it, expect, beforeAll, beforeEach } from '@jest/globals';
+import { describe, it, expect, beforeAll, beforeEach } from 'vitest';
 import * as path from 'path';
 import * as fs from 'fs/promises';
 import { RooStorageDetector } from '../../src/utils/roo-storage-detector.js';

@@ -9,8 +9,24 @@ import { normalizePath } from '../../utils/path-normalizer.js';
 
 /**
  * Node enrichi pour construire l'arbre hiérarchique
+ * Défini explicitement sans étendre ConversationSkeleton pour éviter d'inclure la propriété sequence
  */
-interface SkeletonNode extends ConversationSkeleton {
+interface SkeletonNode {
+    taskId: string;
+    parentTaskId?: string;
+    metadata: {
+        title?: string;
+        lastActivity: string;
+        createdAt: string;
+        mode?: string;
+        messageCount: number;
+        actionCount: number;
+        totalSize: number;
+        workspace?: string;
+        qdrantIndexedAt?: string;
+        dataSource?: string;
+        indexingState?: any;
+    };
     firstUserMessage?: string;
     isCompleted?: boolean;
     completionMessage?: string;
@@ -86,29 +102,36 @@ export const listConversationsTool = {
         },
         conversationCache: Map<string, ConversationSkeleton>
     ): Promise<CallToolResult> => {
-        console.log('[TOOL] list_conversations called with:', JSON.stringify(args));
+        // 🔇 LOGS VERBEUX COMMENTÉS (explosion contexte)
+        // console.log('[🔧 FIXED VERSION] list_conversations called with:', JSON.stringify(args));
+        // console.log('[🔧 FIXED VERSION] This is the corrected version without sequence property');
         
         let allSkeletons = Array.from(conversationCache.values()).filter(skeleton =>
             skeleton.metadata
         );
 
         // Filtrage par workspace
+        let workspaceFilteredCount = 0;
         if (args.workspace) {
             const normalizedWorkspace = normalizePath(args.workspace);
-            console.log(`[DEBUG] Filtering by workspace: "${args.workspace}" -> normalized: "${normalizedWorkspace}"`);
+            const countBeforeFilter = allSkeletons.length;
             
-            // Debug : afficher tous les workspaces disponibles
-            const workspaces = allSkeletons
-                .filter(s => s.metadata.workspace)
-                .map(s => `"${s.metadata.workspace!}" -> normalized: "${normalizePath(s.metadata.workspace!)}"`)
-                .slice(0, 5);
-            console.log(`[DEBUG] Available workspaces (first 5):`, workspaces);
+            // 🔇 LOGS VERBEUX COMMENTÉS (explosion contexte - liste workspaces disponibles)
+            // console.log(`[DEBUG] Filtering by workspace: "${args.workspace}" -> normalized: "${normalizedWorkspace}"`);
+            // const workspaces = allSkeletons
+            //     .filter(s => s.metadata.workspace)
+            //     .map(s => `"${s.metadata.workspace!}" -> normalized: "${normalizePath(s.metadata.workspace!)}"`)
+            //     .slice(0, 5);
+            // console.log(`[DEBUG] Available workspaces (first 5):`, workspaces);
             
             allSkeletons = allSkeletons.filter(skeleton =>
                 skeleton.metadata.workspace &&
                 normalizePath(skeleton.metadata.workspace) === normalizedWorkspace
             );
-            console.log(`[DEBUG] Found ${allSkeletons.length} conversations matching workspace filter`);
+            
+            workspaceFilteredCount = countBeforeFilter - allSkeletons.length;
+            // 🔇 LOG VERBEUX COMMENTÉ (explosion contexte)
+            // console.log(`[DEBUG] Found ${allSkeletons.length} conversations matching workspace filter`);
         }
 
         // Tri
@@ -131,7 +154,7 @@ export const listConversationsTool = {
         
         // Créer les SkeletonNode SANS la propriété sequence MAIS avec toutes les infos importantes
         const skeletonMap = new Map<string, SkeletonNode>(allSkeletons.map(s => {
-            const { sequence, ...skeletonWithoutSequence } = s as any;
+            const sequence = (s as any).sequence;
             
             // Variables pour les informations à extraire
             let firstUserMessage: string | undefined = undefined;
@@ -173,8 +196,12 @@ export const listConversationsTool = {
                 }
             }
             
+            // Créer explicitement un SkeletonNode avec SEULEMENT les propriétés nécessaires
+            // pour éviter de copier des propriétés volumineuses ou des références circulaires
             return [s.taskId, {
-                ...skeletonWithoutSequence,
+                taskId: s.taskId,
+                parentTaskId: s.parentTaskId,
+                metadata: s.metadata,
                 firstUserMessage,
                 isCompleted,
                 completionMessage,
@@ -197,6 +224,9 @@ export const listConversationsTool = {
         
         // Convertir en ConversationSummary pour EXCLURE la propriété sequence qui contient tout le contenu
         const summaries = limitedForest.map(node => toConversationSummary(node));
+        
+        // 📊 LOG AGRÉGÉ FINAL (remplace les logs verbeux commentés)
+        console.log(`📊 list_conversations: Found ${allSkeletons.length} conversations (workspace filtered: ${workspaceFilteredCount}), returning ${summaries.length} top-level results`);
         
         const result = JSON.stringify(summaries, null, 2);
 

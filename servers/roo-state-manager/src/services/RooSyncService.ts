@@ -22,6 +22,8 @@ import {
   type RooSyncDashboard
 } from '../utils/roosync-parsers.js';
 import { PowerShellExecutor, type PowerShellExecutionResult } from './PowerShellExecutor.js';
+import { InventoryCollector, type MachineInventory } from './InventoryCollector.js';
+import { DiffDetector, type ComparisonReport, type DetectedDifference } from './DiffDetector.js';
 
 /**
  * Options de cache pour RooSyncService
@@ -103,6 +105,8 @@ export class RooSyncService {
   private cache: Map<string, CacheEntry<any>>;
   private cacheOptions: Required<CacheOptions>;
   private powershellExecutor: PowerShellExecutor;
+  private inventoryCollector: InventoryCollector;
+  private diffDetector: DiffDetector;
   
   /**
    * Constructeur privé (Singleton)
@@ -117,6 +121,8 @@ export class RooSyncService {
     this.powershellExecutor = new PowerShellExecutor({
       roosyncBasePath: join(process.env.ROO_HOME || 'd:/roo-extensions', 'RooSync')
     });
+    this.inventoryCollector = new InventoryCollector();
+    this.diffDetector = new DiffDetector();
   }
   
   /**
@@ -666,6 +672,71 @@ export class RooSyncService {
       };
     }
   }
+
+  /**
+   * Collecte l'inventaire d'une machine
+   * @param machineId - ID de la machine
+   * @param forceRefresh - Forcer la collecte
+   * @returns Inventaire ou null
+   */
+  async getInventory(machineId: string, forceRefresh = false): Promise<MachineInventory | null> {
+    return this.inventoryCollector.collectInventory(machineId, forceRefresh);
+  }
+
+  /**
+   * Compare 2 machines et génère un rapport de différences réelles
+   * @param sourceMachineId - ID machine source
+   * @param targetMachineId - ID machine cible
+   * @param forceRefresh - Forcer collecte inventaires
+   * @returns Rapport de comparaison ou null
+   */
+  async compareRealConfigurations(
+    sourceMachineId: string,
+    targetMachineId: string,
+    forceRefresh = false
+  ): Promise<ComparisonReport | null> {
+    console.log(`[RooSyncService] 🔍 Comparaison réelle : ${sourceMachineId} vs ${targetMachineId}`);
+    
+    // Collecte inventaires
+    const sourceInventory = await this.inventoryCollector.collectInventory(sourceMachineId, forceRefresh);
+    const targetInventory = await this.inventoryCollector.collectInventory(targetMachineId, forceRefresh);
+    
+    if (!sourceInventory || !targetInventory) {
+      console.error('[RooSyncService] ❌ Échec collecte inventaires');
+      return null;
+    }
+    
+    // Comparaison
+    const report = await this.diffDetector.compareInventories(sourceInventory, targetInventory);
+    
+    console.log(`[RooSyncService] ✅ Comparaison terminée : ${report.summary.total} différences`);
+    return report;
+  }
+
+  /**
+   * Génère des décisions RooSync depuis un rapport de comparaison
+   * @param report - Rapport de comparaison
+   * @returns Nombre de décisions créées
+   */
+  async generateDecisionsFromReport(report: ComparisonReport): Promise<number> {
+    console.log(`[RooSyncService] 📝 Génération décisions depuis rapport ${report.reportId}`);
+    
+    let createdCount = 0;
+    
+    // Pour chaque différence CRITICAL ou IMPORTANT, créer une décision
+    for (const diff of report.differences) {
+      if (diff.severity === 'CRITICAL' || diff.severity === 'IMPORTANT') {
+        // Créer décision dans roadmap
+        // TODO: Implémenter logique de création décision
+        // Pour l'instant, juste un placeholder
+        console.log(`[RooSyncService] 📋 Décision à créer : ${diff.description}`);
+        createdCount++;
+      }
+    }
+    
+    console.log(`[RooSyncService] ✅ ${createdCount} décisions créées`);
+    return createdCount;
+  }
 }
 
 /**
@@ -674,3 +745,7 @@ export class RooSyncService {
 export function getRooSyncService(cacheOptions?: CacheOptions): RooSyncService {
   return RooSyncService.getInstance(cacheOptions);
 }
+
+// Exports pour utilisation externe
+export type { MachineInventory } from './InventoryCollector.js';
+export type { ComparisonReport, DetectedDifference, DiffSeverity, DiffCategory } from './DiffDetector.js';
