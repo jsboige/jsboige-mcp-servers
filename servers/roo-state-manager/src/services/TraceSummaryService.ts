@@ -307,7 +307,7 @@ function sanitizeSectionHtml(raw: string): string {
     // CORRECTION CRITIQUE PHASE 0: Protéger les balises <details> contre l'interprétation Markdown
     // Les balises <details> indentées sont transformées en code blocks par Markdown
     // On les préserve en s'assurant qu'elles sont au niveau 0 (pas d'indentation)
-    
+
     // 0) Protection des balises <details> - CORRECTION CRITIQUE
     html = html.replace(/^(\s*)<details>/gm, '<details>');
     html = html.replace(/^(\s*)<\/details>/gm, '</details>');
@@ -352,13 +352,13 @@ function isPureEnvironmentNoise(html: string, options: SummaryOptions): boolean 
         return false;
     }
     if (!html) return true;
-    
+
     // Créer une copie pour nettoyer et tester
     let cleanedContent = html;
-    
+
     // Supprimer tous les blocs <environment_details>
     cleanedContent = cleanedContent.replace(/<environment_details>[\s\S]*?<\/environment_details>/gi, '');
-    
+
     // Supprimer les sections VSCode typiques
     cleanedContent = cleanedContent.replace(/# VSCode Visible Files[\s\S]*?(?=# [A-Z]|\n\n|$)/gi, '');
     cleanedContent = cleanedContent.replace(/# VSCode Open Tabs[\s\S]*?(?=# [A-Z]|\n\n|$)/gi, '');
@@ -366,10 +366,10 @@ function isPureEnvironmentNoise(html: string, options: SummaryOptions): boolean 
     cleanedContent = cleanedContent.replace(/# Current Mode[\s\S]*?(?=# [A-Z]|\n\n|$)/gi, '');
     cleanedContent = cleanedContent.replace(/# Current Workspace Directory[\s\S]*?(?=# [A-Z]|\n\n|$)/gi, '');
     cleanedContent = cleanedContent.replace(/# Current Cost[\s\S]*?(?=# [A-Z]|\n\n|$)/gi, '');
-    
+
     // Supprimer les lignes vides multiples et trim
     cleanedContent = cleanedContent.replace(/\n{3,}/g, '\n\n').trim();
-    
+
     // Si après nettoyage il reste moins de 3 caractères et aucun mot alphanumérique : considérer comme pur bruit
     return cleanedContent.length < 3 || !/[a-zA-Z0-9]/.test(cleanedContent);
 }
@@ -380,25 +380,25 @@ function isPureEnvironmentNoise(html: string, options: SummaryOptions): boolean 
  */
 function cleanUserMessage(content: string): string {
     if (!content) return '';
-    
+
     let cleaned = content;
-    
+
     // Supprimer les blocs <environment_details> entiers
     cleaned = cleaned.replace(/<environment_details>[\s\S]*?<\/environment_details>/gi, '[Environment details supprimes pour lisibilite]');
-    
+
     // Supprimer les sections VSCode volumineuses
     cleaned = cleaned.replace(/# VSCode Visible Files[\s\S]*?(?=# [A-Z]|\n\n|$)/gi, '[Fichiers VSCode supprimés]');
     cleaned = cleaned.replace(/# VSCode Open Tabs[\s\S]*?(?=# [A-Z]|\n\n|$)/gi, '[Onglets VSCode supprimés]');
     cleaned = cleaned.replace(/# Current Workspace Directory[\s\S]*?(?=# [A-Z]|\n\n|$)/gi, '[Liste des fichiers workspace supprimée]');
-    
+
     // Garder les informations importantes mais raccourcir
     cleaned = cleaned.replace(/# Current Mode\n<slug>([^<]+)<\/slug>\n<name>([^<]+)<\/name>[\s\S]*?(?=# [A-Z]|\n\n|$)/gi, '**Mode:** $2 ($1)');
     cleaned = cleaned.replace(/# Current Time[\s\S]*?UTC\+[\d:]+/gi, '[Timestamp]');
     cleaned = cleaned.replace(/# Current Cost[\s\S]*?\$[\d.]+/gi, '[Coût]');
-    
+
     // Nettoyer les espaces multiples
     cleaned = cleaned.replace(/\n{3,}/g, '\n\n').trim();
-    
+
     // Si le message devient trop court, tenter d'extraire l'essentiel
     if (cleaned.length < 50 && content.length > 200) {
         const userMessageMatch = content.match(/<user_message>([\s\S]*?)<\/user_message>/);
@@ -406,7 +406,7 @@ function cleanUserMessage(content: string): string {
             cleaned = userMessageMatch[1].trim();
         }
     }
-    
+
     // CORRECTION CRITIQUE : Échapper les entités HTML pour éviter injection de balises
     return escapeHtml(cleaned);
 }
@@ -416,19 +416,19 @@ function cleanUserMessage(content: string): string {
  */
 function cleanToolContent(content: string): string {
     if (!content) return '';
-    
+
     let cleaned = content;
-    
+
     // Supprimer les blocs environment_details dans les résultats d'outils
     cleaned = cleaned.replace(/<environment_details>[\s\S]*?<\/environment_details>/gi, '[Environment details masqués]');
-    
+
     // Supprimer les sections VSCode dans les résultats si présentes
     cleaned = cleaned.replace(/# VSCode Visible Files[\s\S]*?(?=# [A-Z]|\n\n|$)/gi, '[Fichiers VSCode masqués]');
     cleaned = cleaned.replace(/# Current Workspace Directory[\s\S]*?(?=# [A-Z]|\n\n|$)/gi, '[Workspace masqué]');
-    
+
     // Nettoyer les espaces multiples
     cleaned = cleaned.replace(/\n{3,}/g, '\n\n').trim();
-    
+
     // CORRECTION CRITIQUE : Échapper les entités HTML pour éviter injection de balises
     return escapeHtml(cleaned);
 }
@@ -452,12 +452,12 @@ function renderTOCChatGPT5(items: RenderItem[]): string {
 function renderSectionChatGPT5(it: RenderItem): string {
     // PLAN BÉTON : Les IDs ont déjà été assignés dans it.sid et it.tid
     const content = sanitizeSectionHtml(it.html);
-    
+
     // S'assurer que l'ID de section et l'ID TOC sont bien définis
     if (!it.sid || !it.tid) {
         console.error(`[renderSectionChatGPT5] IDs manquants pour l'item type=${it.type} n=${it.n}`);
     }
-    
+
     return [
         `<h3 id="${it.sid}">${escapeHtml(it.title)}</h3>`,
         `<div class="${boxClass(it.type)}">`,
@@ -517,7 +517,7 @@ export class TraceSummaryService {
         'new_task', 'ask_followup_question', 'attempt_completion',
         'insert_content', 'search_and_replace', 'use_mcp_tool'
     ];
-    
+
 
     constructor(
         private readonly exportConfigManager: ExportConfigManager
@@ -619,13 +619,13 @@ export class TraceSummaryService {
         try {
             // ChatGPT-5: Reset tracking d'IDs pour éviter doublons
             // this.resetIdTracking(); // Obsolète, remplacé par assignStableIds
-            
+
             const fullOptions = this.mergeWithDefaultOptions(options);
-            
+
             // Dispatcher selon le format de sortie
             let content: string;
             let statistics: SummaryStatistics;
-            
+
             switch (fullOptions.outputFormat) {
                 case 'json':
                     return await this.generateJsonSummary(conversation, fullOptions);
@@ -637,7 +637,7 @@ export class TraceSummaryService {
                     // NOUVELLE LOGIQUE : Chercher d'abord un fichier .md source
                     const classifiedContent = await this.classifyContentFromMarkdownOrJson(conversation, fullOptions);
                     statistics = this.calculateStatistics(classifiedContent);
-                    
+
                     content = await this.renderSummary(
                         conversation,
                         classifiedContent,
@@ -683,7 +683,7 @@ export class TraceSummaryService {
         if (options && (options.startIndex !== undefined || options.endIndex !== undefined)) {
             const startIdx = options.startIndex ? Math.max(1, options.startIndex) - 1 : 0; // Convert to 0-based
             const endIdx = options.endIndex ? Math.min(messages.length, options.endIndex) : messages.length; // Convert to 0-based + 1
-            
+
             // Valider les indices
             if (startIdx < messages.length && endIdx > startIdx) {
                 messages = messages.slice(startIdx, endIdx);
@@ -729,7 +729,7 @@ export class TraceSummaryService {
     private async classifyContentFromMarkdownOrJson(conversation: ConversationSkeleton, options?: SummaryOptions): Promise<ClassifiedContent[]> {
         // 1. Essayer de trouver un fichier .md source
         const markdownFile = await this.findSourceMarkdownFile(conversation.taskId);
-        
+
         if (markdownFile) {
             console.log(`🔄 Utilisation du fichier markdown source : ${markdownFile}`);
             return await this.classifyContentFromMarkdown(markdownFile, options);
@@ -747,11 +747,9 @@ export class TraceSummaryService {
         const traceFile = 'corriges/demo-roo-code/04-creation-contenu/demo-1-web-orchestration-optimisee/roo_task_sep-8-2025_11-11-29-pm.md';
         const workspaceRoot = 'g:/Mon Drive/MyIA/Comptes/Pauwels Consulting/Pauwels Consulting - Formation IA';
 
-        // Tâches de démo connues pointant vers le fichier de trace
-        const taskMap: Record<string, string> = {
-            'b799fcfa-1a92-4005-b10b-bcc1e781884f': traceFile,
-            'a3d9a81f-4999-48c8-be3b-3f308042473a': traceFile
-        };
+        // CORRECTION 2025-10-21: Suppression des IDs de test en dur
+        // Le service utilise maintenant uniquement les données du ConversationSkeleton
+        const taskMap: Record<string, string> = {};
 
         // 1) Cas mappé explicitement
         const mapped = taskMap[taskId];
@@ -787,11 +785,11 @@ export class TraceSummaryService {
         try {
             const workspaceRoot = 'g:/Mon Drive/MyIA/Comptes/Pauwels Consulting/Pauwels Consulting - Formation IA';
             const fullPath = path.resolve(workspaceRoot, filePath);
-            
+
             console.log(`📖 Lecture fichier markdown: ${fullPath}`);
             const content = await fs.promises.readFile(fullPath, 'utf8');
             console.log(`📊 Taille du contenu markdown: ${content.length} caractères`);
-            
+
             return this.parseMarkdownSections(content, options);
         } catch (error) {
             console.warn(`❌ Erreur lecture fichier markdown ${filePath}:`, error);
@@ -869,35 +867,35 @@ export class TraceSummaryService {
      */
     private determineUserSubType(content: string): string {
         const trimmed = content.trim();
-        
+
         // 1. Résultats d'outils (priorité haute) - CORRECTION RÉGRESSION
         // Format classique : [tool_name] Result:
         if (/^\[([^\]]+)\] Result:/.test(trimmed)) {
             return "ToolResult";
         }
-        
+
         // Format JSON Roo : {"tool":"...", "type":"use_mcp_tool", etc.
         if (/^{\s*"(tool|type)"\s*:/.test(trimmed)) {
             return "ToolResult";
         }
-        
+
         // 2. Messages d'erreur système (SDDD: restent rouges)
         if (/^\[ERROR\]/i.test(trimmed)) {
             return "ErrorMessage";
         }
-        
+
         // 3. Messages de condensation contexte (SDDD: nouvelle détection spécifique)
         if (/^1\.\s*\*\*Previous Conversation:\*\*/i.test(trimmed) ||
             /^1\.\s*Previous Conversation:/i.test(trimmed) ||
             trimmed.startsWith("1. **Previous Conversation:**")) {
             return "ContextCondensation";
         }
-        
+
         // 4. Messages d'instructions continuation (SDDD: extraire contenu qui suit)
         if (/^New instructions for task continuation:/i.test(trimmed)) {
             return "NewInstructions";
         }
-        
+
         // 5. Messages utilisateur normaux (SDDD: couleur violette)
         return "UserMessage";
     }
@@ -913,7 +911,7 @@ export class TraceSummaryService {
             console.log(`✅ Matched: Completion`);
             return 'Completion';
         }
-        
+
         // 2. Messages d'outils normaux
         console.log(`❌ No special match, defaulting to ToolCall`);
         return 'ToolCall';
@@ -958,7 +956,7 @@ export class TraceSummaryService {
         }
 
         const totalContentSize = userContentSize + assistantContentSize + toolResultsSize;
-        
+
         return {
             totalSections: classifiedContent.length,
             userMessages,
@@ -1067,10 +1065,10 @@ export class TraceSummaryService {
         try {
             // Convertir le format legacy vers le format enhanced
             const enhancedContent = this.convertToEnhancedFormat(classifiedContent);
-            
+
             // Créer la strategy appropriée
             const strategy = DetailLevelStrategyFactory.createStrategy(options.detailLevel as DetailLevel);
-            
+
             // Générer le contenu avec la strategy
             const enhancedOptions: EnhancedSummaryOptions = {
                 detailLevel: options.detailLevel as DetailLevel,
@@ -1082,9 +1080,9 @@ export class TraceSummaryService {
             };
 
             const strategicContent = strategy.generateReport(enhancedContent, enhancedOptions);
-            
+
             return strategicContent;
-            
+
         } catch (error) {
             console.warn('Strategy rendering failed, falling back to legacy:', error);
             return this.renderConversationContent(classifiedContent, options);
@@ -1120,7 +1118,7 @@ export class TraceSummaryService {
 
         // Parsing XML amélioré pour les outils
         const toolXmlMatches = item.content.match(/<([a-zA-Z_][a-zA-Z0-9_\-:]+)(?:\s+[^>]*)?>[\s\S]*?<\/\1>/g);
-        
+
         if (!toolXmlMatches) {
             return undefined;
         }
@@ -1128,10 +1126,10 @@ export class TraceSummaryService {
         const toolCalls = toolXmlMatches.map(xmlBlock => {
             const tagMatch = xmlBlock.match(/<([a-zA-Z_][a-zA-Z0-9_\-:]+)/);
             const toolName = tagMatch ? tagMatch[1] : 'unknown_tool';
-            
+
             // Extraction des paramètres avec parsing XML amélioré
             const parameters = this.parseToolParameters(xmlBlock);
-            
+
             return {
                 toolName,
                 parameters,
@@ -1161,7 +1159,7 @@ export class TraceSummaryService {
             // Section principale légère (juste le titre, pas de contenu)
             parts.push('*Voir sections détaillées ci-dessous*');
             parts.push('');
-            
+
             if (call.parameters && Object.keys(call.parameters).length > 0) {
                 // CORRECTION FINALE: Chaque paramètre a sa propre section <details> INDIVIDUELLE
                 // Référence: PowerShell lignes 827-834 - sections séquentielles au même niveau
@@ -1231,13 +1229,13 @@ export class TraceSummaryService {
             // Extraction basique des paramètres pour l'instant
             // TODO: Implémenter un parsing XML plus sophistiqué si nécessaire
             const paramMatches = xmlBlock.match(/<([a-zA-Z_][a-zA-Z0-9_\-:]+)>([\s\S]*?)<\/\1>/g);
-            
+
             if (!paramMatches) {
                 return null;
             }
 
             const parameters: Record<string, any> = {};
-            
+
             for (const paramMatch of paramMatches) {
                 const tagMatch = paramMatch.match(/<([a-zA-Z_][a-zA-Z0-9_\-:]+)>([\s\S]*?)<\/\1>/);
                 if (tagMatch) {
@@ -1283,7 +1281,7 @@ export class TraceSummaryService {
         }
 
         const [, toolName, result] = resultMatch;
-        
+
         return {
             toolName,
             resultType: this.getResultType(result),
@@ -1335,12 +1333,12 @@ export class TraceSummaryService {
                 .join(' ');
             return /^\[([^\]]+?)(?:\s+for\s+[^\]]*)?]\s+Result:/i.test(textContent.trim());
         }
-        
+
         // Gérer les contenus string simples
         if (typeof content === 'string') {
             return /^\[([^\]]+?)(?:\s+for\s+[^\]]*)?]\s+Result:/i.test(content.trim());
         }
-        
+
         return false;
     }
 
@@ -1358,13 +1356,13 @@ export class TraceSummaryService {
      */
     private extractToolBracketSummaryFromResult(content: string): string | null {
         const textContent = this.extractTextContent(content);
-        
+
         // Essayer d'abord le pattern bracket classique
         let match = textContent.match(/^\[([^\]]+)]\s+Result:/i);
         if (match) {
             return match[1];
         }
-        
+
         // Si pas de bracket, essayer de parser le JSON d'outil
         try {
             const jsonMatch = textContent.match(/^\{.*\}$/s);
@@ -1372,7 +1370,7 @@ export class TraceSummaryService {
                 const toolData = JSON.parse(jsonMatch[0]);
                 if (toolData.tool) {
                     let summary = toolData.tool;
-                    
+
                     // Ajouter des détails selon le type d'outil
                     if (toolData.path) {
                         const shortPath = toolData.path.length > 50 ?
@@ -1397,14 +1395,14 @@ export class TraceSummaryService {
                     } else if (toolData.type) {
                         summary = toolData.type;
                     }
-                    
+
                     return summary;
                 }
             }
         } catch {
             // Si le parsing JSON échoue, continuer avec l'extraction classique
         }
-        
+
         return null;
     }
 
@@ -1442,11 +1440,11 @@ export class TraceSummaryService {
                 .map(item => item.text)
                 .join(' ');
         }
-        
+
         if (typeof content === 'string') {
             return content;
         }
-        
+
         return '';
     }
 
@@ -1462,7 +1460,7 @@ export class TraceSummaryService {
             minute: '2-digit',
             hour12: false
         }).replace(',', ' a');
-        
+
         const sourceSizeKB = Math.round(this.getOriginalContentSize(conversation) / 1024 * 10) / 10;
 
         return `# RESUME DE TRACE D'ORCHESTRATION ROO
@@ -1602,7 +1600,7 @@ export class TraceSummaryService {
      */
     private generateStatistics(statistics: SummaryStatistics, compact: boolean): string {
         const header = compact ? "## STATISTIQUES" : "## STATISTIQUES DETAILLEES";
-        
+
         if (compact) {
             return `${header}
 
@@ -1638,17 +1636,17 @@ export class TraceSummaryService {
      */
     private getTruncatedFirstLine(content: string, maxLength: number = 100): string {
         if (!content) return '';
-        
+
         const lines = content.split(/\r?\n/);
         for (const line of lines) {
             const trimmedLine = line.trim();
             if (trimmedLine && !trimmedLine.startsWith('<')) {
-                return trimmedLine.length > maxLength 
+                return trimmedLine.length > maxLength
                     ? trimmedLine.substring(0, maxLength) + '...'
                     : trimmedLine;
             }
         }
-        
+
         return '';
     }
 
@@ -1690,8 +1688,8 @@ export class TraceSummaryService {
     private generateFooter(options: SummaryOptions): string {
         return `---
 
-**Résumé généré automatiquement par TraceSummaryService**  
-**Date :** ${new Date().toLocaleString('fr-FR')}  
+**Résumé généré automatiquement par TraceSummaryService**
+**Date :** ${new Date().toLocaleString('fr-FR')}
 **Mode :** ${options.detailLevel}`;
     }
 
@@ -1731,9 +1729,9 @@ export class TraceSummaryService {
      * Calcule la taille du contenu original
      */
     private getOriginalContentSize(conversation: ConversationSkeleton): number {
-        const messages = conversation.sequence.filter((item): item is MessageSkeleton => 
+        const messages = conversation.sequence.filter((item): item is MessageSkeleton =>
             'role' in item && 'content' in item);
-        
+
         return messages.reduce((total: number, message: MessageSkeleton) => total + message.content.length, 0);
     }
 
@@ -1764,7 +1762,7 @@ export class TraceSummaryService {
         options: SummaryOptions
     ): Promise<string> {
         // ALGORITHME OBLIGATOIRE ChatGPT-5 : Source unique items[]
-        
+
         // 1) Construis d'abord items[] (filtré, numéroté). NE RENDS PAS encore le MD.
         const items: RenderItem[] = [];
         let globalCounter = 1;
@@ -1870,7 +1868,7 @@ export class TraceSummaryService {
                         const { textContent, technicalBlocks } = await this.processAssistantContent(item.content, options);
                         const tech = await this.renderTechnicalBlocks(technicalBlocks, options);
                         const html = [textContent.trim(), tech].filter(Boolean).join('\n\n');
-                        
+
                         renderItem = {
                             type: 'assistant',
                             n: globalCounter,
@@ -1897,11 +1895,11 @@ export class TraceSummaryService {
 
         // 2) PLAN BÉTON : Filtrage conservateur du pur bruit AVANT rendu
         const filteredItems = items.filter(it => !isPureEnvironmentNoise(it.html, options));
-        
+
         // CORRECTION CRITIQUE : Journalisation après filtrage
         const filteredCountsByType = this.countItemsByType(filteredItems);
         console.log(`[TraceSummaryService] APRÈS filtrage: ${JSON.stringify(filteredCountsByType)}`);
-        
+
         // 🔧 CORRECTION OFF-BY-ONE : Renuméroter après filtrage pour commencer à 1
         for (let i = 0; i < filteredItems.length; i++) {
             const oldN = filteredItems[i].n;
@@ -1910,14 +1908,14 @@ export class TraceSummaryService {
             // Mettre à jour le titre pour refléter le nouveau numéro
             filteredItems[i].title = filteredItems[i].title.replace(`#${oldN}`, `#${newN}`);
         }
-        
+
         // 3) PLAN BÉTON : Assignation UNIQUE des IDs (une seule fois)
         assignStableIds(filteredItems);
-        
+
         // 4) Incrémenter globalCounter pour chaque élément ajouté
         // (déplacé ici pour s'assurer que tous les éléments sont comptés)
         const parts: string[] = [];
-        
+
         // Section d'introduction
         parts.push("## ÉCHANGES DE CONVERSATION");
         parts.push("");
@@ -1998,13 +1996,13 @@ export class TraceSummaryService {
             'new-instructions': 0,
             completion: 0
         };
-        
+
         for (const item of items) {
             if (counts.hasOwnProperty(item.type)) {
                 counts[item.type]++;
             }
         }
-        
+
         return counts;
     }
 
@@ -2041,14 +2039,14 @@ export class TraceSummaryService {
         }
 
         const parts: string[] = [];
-        
+
         // Détecter et séparer environment_details
         const envDetailsMatch = content.match(/<environment_details>[\s\S]*?<\/environment_details>/);
-        
+
         if (envDetailsMatch) {
             const beforeEnv = content.substring(0, envDetailsMatch.index!).trim();
             const afterEnv = content.substring(envDetailsMatch.index! + envDetailsMatch[0].length).trim();
-            
+
             // Contenu principal
             if (beforeEnv) {
                 parts.push('```markdown');
@@ -2056,7 +2054,7 @@ export class TraceSummaryService {
                 parts.push('```');
                 parts.push("");
             }
-            
+
             // Environment details en Progressive Disclosure
             parts.push("<details>");
             parts.push("<summary>**Environment Details** - Cliquez pour afficher</summary>");
@@ -2065,7 +2063,7 @@ export class TraceSummaryService {
             parts.push(envDetailsMatch[0]);
             parts.push('```');
             parts.push("</details>");
-            
+
             // Contenu après environment_details
             if (afterEnv) {
                 parts.push("");
@@ -2079,7 +2077,7 @@ export class TraceSummaryService {
             parts.push(content);
             parts.push('```');
         }
-        
+
         return parts.join('\n');
     }
 
@@ -2091,32 +2089,32 @@ export class TraceSummaryService {
             return content;
         }
         let cleaned = content;
-        
+
         // Supprimer les environment_details très verbeux
         cleaned = cleaned.replace(
             /<environment_details>[\s\S]*?<\/environment_details>/g,
             '[Environment details supprimés pour lisibilité]'
         );
-        
+
         // Supprimer les listes de fichiers très longues
         cleaned = cleaned.replace(
             /# Current Workspace Directory[\s\S]*?(?=# [A-Z]|\n\n|$)/g,
             '[Liste des fichiers workspace supprimée]'
         );
-        
+
         // Garder les informations importantes mais raccourcir
         cleaned = cleaned.replace(
             /# VSCode Visible Files\n([^\n]*)\n\n# VSCode Open Tabs\n([^\n]*(?:\n[^\n#]*)*)/g,
             "**Fichiers actifs:** $1"
         );
-        
+
         // Supprimer les métadonnées redondantes
         cleaned = cleaned.replace(/# Current (Cost|Time)[\s\S]*?\n/g, '');
-        
+
         // Nettoyer les espaces multiples
         cleaned = cleaned.replace(/\n{3,}/g, '\n\n');
         cleaned = cleaned.trim();
-        
+
         // Si le message devient trop court, extraire l'essentiel
         if (cleaned.length < 50 && content.length > 200) {
             const userMessageMatch = content.match(/<user_message>([\s\S]*?)<\/user_message>/);
@@ -2124,7 +2122,7 @@ export class TraceSummaryService {
                 cleaned = userMessageMatch[1].trim();
             }
         }
-        
+
         return cleaned;
     }
 
@@ -2134,7 +2132,7 @@ export class TraceSummaryService {
     private extractToolResultContent(content: string): string {
         // Supprimer les métadonnées de début de ligne du type "[tool_name] Result:"
         let cleaned = content.replace(/^\[[^\]]+\] Result:\s*/i, '');
-        
+
         // Si le contenu est trop long, le tronquer intelligemment
         if (cleaned.length > 2000) {
             const lines = cleaned.split('\n');
@@ -2154,7 +2152,7 @@ export class TraceSummaryService {
                 cleaned = cleaned.substring(0, 2000) + '\n\n... [Contenu tronqué] ...';
             }
         }
-        
+
         return cleaned;
     }
 
@@ -2167,7 +2165,7 @@ export class TraceSummaryService {
     ): Promise<{textContent: string, technicalBlocks: TechnicalBlock[]}> {
         let textContent = content;
         const technicalBlocks: TechnicalBlock[] = [];
-        
+
         // 1. Extraction des blocs <thinking>
         let thinkingMatch;
         while ((thinkingMatch = textContent.match(/<thinking>[\s\S]*?<\/thinking>/)) !== null) {
@@ -2177,7 +2175,7 @@ export class TraceSummaryService {
             });
             textContent = textContent.replace(thinkingMatch[0], '');
         }
-        
+
         // 2. Extraction des outils XML (patterns simples d'abord)
         const commonTools = ['read_file', 'write_to_file', 'apply_diff', 'execute_command', 'codebase_search', 'search_files'];
         for (const toolName of commonTools) {
@@ -2192,7 +2190,7 @@ export class TraceSummaryService {
                 textContent = textContent.replace(toolMatch[0], '');
             }
         }
-        
+
         // CORRECTION CRITIQUE : Gestion de l'échappement HTML selon le format de sortie
         // - En HTML : Échapper pour éviter l'injection de balises
         // - En markdown : Désechapper le contenu car les fichiers source contiennent du texte déjà échappé
@@ -2213,7 +2211,7 @@ export class TraceSummaryService {
         options: SummaryOptions
     ): Promise<string> {
         const parts: string[] = [];
-        
+
         for (const block of blocks) {
             switch (block.type) {
                 case 'thinking':
@@ -2228,7 +2226,7 @@ export class TraceSummaryService {
                         parts.push("</details>");
                     }
                     break;
-                    
+
                 case 'tool':
                     if (this.shouldShowTools(options.detailLevel)) {
                         const toolSection = await this.renderToolBlock(block, options);
@@ -2237,7 +2235,7 @@ export class TraceSummaryService {
                     break;
             }
         }
-        
+
         return parts.join('\n');
     }
 
@@ -2250,7 +2248,7 @@ export class TraceSummaryService {
     ): Promise<string> {
         const item = { content: block.content, type: 'Assistant', subType: 'ToolCall' } as ClassifiedContent;
         const details = this.extractToolCallDetails(item);
-        
+
         if (!details || details.toolCalls.length === 0) {
             return `\n<details>\n<summary>OUTIL (parsing échoué)</summary>\n\n\`\`\`xml\n${block.content}\n\`\`\`\n\n</details>\n`;
         }
@@ -2288,7 +2286,7 @@ export class TraceSummaryService {
 
         // Déterminer le titre de section approprié
         let sectionTitle: string;
-        
+
         if (cleanedResult.includes('<files>')) {
             sectionTitle = '**files :** Cliquez pour afficher';
         } else if (details.toolName === 'browser_action') {
@@ -2365,29 +2363,29 @@ export class TraceSummaryService {
         try {
             // 1. Validation des entrées
             this.validateClusterInput(rootTask, childTasks);
-            
+
             // 2. Configuration avec valeurs par défaut
             const finalOptions = this.mergeClusterOptions(options);
-            
+
             // 3. Tri et organisation des tâches
             const organizedTasks = this.organizeClusterTasks(rootTask, childTasks, finalOptions);
-            
+
             // 4. Classification du contenu agrégé
             const classifiedContent = await this.classifyClusterContent(organizedTasks, finalOptions);
-            
+
             // 5. Calcul des statistiques de grappe
             const clusterStats = this.calculateClusterStatistics(organizedTasks, classifiedContent);
-            
+
             // 6. Génération du contenu selon le mode
             const content = await this.renderClusterSummary(
                 organizedTasks,
                 clusterStats,
                 finalOptions
             );
-            
+
             // 7. Construction du résultat
             return this.buildClusterResult(content, clusterStats, organizedTasks, finalOptions);
-            
+
         } catch (error) {
             return {
                 success: false,
@@ -2414,11 +2412,11 @@ export class TraceSummaryService {
         if (!rootTask || !rootTask.taskId) {
             throw new Error('Root task is required and must have a taskId');
         }
-        
+
         if (!Array.isArray(childTasks)) {
             throw new Error('Child tasks must be an array');
         }
-        
+
         // Vérification que toutes les tâches enfantes référencent bien la tâche racine
         for (const child of childTasks) {
             if (child.parentTaskId !== rootTask.taskId) {
@@ -2439,7 +2437,7 @@ export class TraceSummaryService {
             includeCss: options.includeCss !== false,
             generateToc: options.generateToc !== false,
             outputFormat: options.outputFormat || 'markdown',
-            
+
             // Options spécifiques aux grappes
             clusterMode: options.clusterMode || 'aggregated',
             includeClusterStats: options.includeClusterStats !== false,
@@ -2460,9 +2458,9 @@ export class TraceSummaryService {
         childTasks: ConversationSkeleton[],
         options: ClusterSummaryOptions
     ): OrganizedClusterTasks {
-        
+
         const allTasks = [rootTask, ...childTasks];
-        
+
         // Tri selon la stratégie choisie
         let sortedTasks: ConversationSkeleton[];
         switch (options.clusterSortBy) {
@@ -2481,11 +2479,11 @@ export class TraceSummaryService {
             default:
                 sortedTasks = this.sortTasksByChronology(allTasks);
         }
-        
+
         // Construction de la hiérarchie
         const taskHierarchy = new Map<string, ConversationSkeleton[]>();
         taskHierarchy.set(rootTask.taskId, childTasks);
-        
+
         return {
             rootTask,
             allTasks,
@@ -2537,7 +2535,7 @@ export class TraceSummaryService {
     private async classifyClusterContent(organizedTasks: OrganizedClusterTasks, options?: ClusterSummaryOptions): Promise<ClassifiedClusterContent> {
         const allClassifiedContent: ClassifiedContent[] = [];
         const perTaskContent = new Map<string, ClassifiedContent[]>();
-        
+
         // Classification par tâche individuelle
         for (const task of organizedTasks.allTasks) {
             // Adapter les ClusterSummaryOptions vers SummaryOptions si nécessaire
@@ -2551,15 +2549,15 @@ export class TraceSummaryService {
                 startIndex: options.startIndex,
                 endIndex: options.endIndex
             } : undefined;
-            
+
             const taskContent = await this.classifyContentFromMarkdownOrJson(task, summaryOptions);
             perTaskContent.set(task.taskId, taskContent);
             allClassifiedContent.push(...taskContent);
         }
-        
+
         // Identification des patterns cross-task
         const crossTaskPatterns = this.identifyCrossTaskPatterns(perTaskContent);
-        
+
         return {
             aggregatedContent: allClassifiedContent,
             perTaskContent,
@@ -2574,17 +2572,17 @@ export class TraceSummaryService {
         const patterns: CrossTaskPattern[] = [];
         const toolUsage = new Map<string, string[]>();
         const modeUsage = new Map<string, string[]>();
-        
+
         // Analyse des outils utilisés par tâche
         for (const [taskId, content] of perTaskContent) {
             const usedTools = new Set<string>();
-            
+
             for (const item of content) {
                 if (item.toolType) {
                     usedTools.add(item.toolType);
                 }
             }
-            
+
             for (const tool of usedTools) {
                 if (!toolUsage.has(tool)) {
                     toolUsage.set(tool, []);
@@ -2592,7 +2590,7 @@ export class TraceSummaryService {
                 toolUsage.get(tool)!.push(taskId);
             }
         }
-        
+
         // Création des patterns pour les outils fréquents
         for (const [tool, taskIds] of toolUsage) {
             if (taskIds.length > 1) {
@@ -2604,7 +2602,7 @@ export class TraceSummaryService {
                 });
             }
         }
-        
+
         return patterns.sort((a, b) => b.frequency - a.frequency);
     }
 
@@ -2615,32 +2613,32 @@ export class TraceSummaryService {
         organizedTasks: OrganizedClusterTasks,
         classifiedContent: ClassifiedClusterContent
     ): ClusterSummaryStatistics {
-        
+
         // Statistiques de base (réutilise la logique existante)
         const baseStats = this.calculateStatistics(classifiedContent.aggregatedContent);
-        
+
         // Métriques spécifiques aux grappes
         const totalTasks = organizedTasks.allTasks.length;
         const clusterDepth = this.calculateClusterDepth(organizedTasks);
         const averageTaskSize = organizedTasks.allTasks.reduce((sum, task) =>
             sum + task.metadata.totalSize, 0) / totalTasks;
-        
+
         // Distribution des tâches
         const taskDistribution = this.calculateTaskDistribution(organizedTasks.allTasks);
-        
+
         // Analyse temporelle
         const clusterTimeSpan = this.calculateClusterTimeSpan(organizedTasks.allTasks);
-        
+
         // Métriques de contenu agrégées
         const clusterContentStats = this.aggregateContentStats(organizedTasks.allTasks);
-        
+
         // Patterns communs
         const commonPatterns = this.analyzeCommonPatterns(classifiedContent);
-        
+
         return {
             // Statistiques héritées
             ...baseStats,
-            
+
             // Métriques spécifiques aux grappes
             totalTasks,
             clusterDepth,
@@ -2667,23 +2665,23 @@ export class TraceSummaryService {
         const byMode: Record<string, number> = {};
         const bySize = { small: 0, medium: 0, large: 0 };
         const byActivity: Record<string, number> = {};
-        
+
         for (const task of tasks) {
             // Distribution par mode
             const mode = task.metadata.mode || 'unknown';
             byMode[mode] = (byMode[mode] || 0) + 1;
-            
+
             // Distribution par taille
             const size = task.metadata.totalSize;
             if (size < 10000) bySize.small++;
             else if (size < 100000) bySize.medium++;
             else bySize.large++;
-            
+
             // Distribution par date d'activité (par jour)
             const activityDate = new Date(task.metadata.lastActivity).toDateString();
             byActivity[activityDate] = (byActivity[activityDate] || 0) + 1;
         }
-        
+
         return { byMode, bySize, byActivity };
     }
 
@@ -2695,7 +2693,7 @@ export class TraceSummaryService {
         const startTime = new Date(Math.min(...dates.map(d => d.getTime())));
         const endTime = new Date(Math.max(...dates.map(d => d.getTime())));
         const totalDurationHours = (endTime.getTime() - startTime.getTime()) / (1000 * 60 * 60);
-        
+
         return {
             startTime: startTime.toISOString(),
             endTime: endTime.toISOString(),
@@ -2711,11 +2709,11 @@ export class TraceSummaryService {
         let totalAssistantMessages = 0;
         let totalToolResults = 0;
         let totalContentSize = 0;
-        
+
         for (const task of tasks) {
             const messages = task.sequence.filter((item): item is MessageSkeleton =>
                 'role' in item);
-                
+
             for (const message of messages) {
                 if (message.role === 'user') {
                     if (this.isToolResult(message.content)) {
@@ -2729,10 +2727,10 @@ export class TraceSummaryService {
                 totalContentSize += message.content.length;
             }
         }
-        
+
         const averageMessagesPerTask = tasks.length > 0 ?
             (totalUserMessages + totalAssistantMessages + totalToolResults) / tasks.length : 0;
-        
+
         return {
             totalUserMessages,
             totalAssistantMessages,
@@ -2749,7 +2747,7 @@ export class TraceSummaryService {
         const frequentTools: Record<string, number> = {};
         const commonModes: Record<string, number> = {};
         const crossTaskTopics: string[] = [];
-        
+
         // Analyse des outils fréquents
         for (const pattern of classifiedContent.crossTaskPatterns) {
             if (pattern.category === 'tool') {
@@ -2758,12 +2756,12 @@ export class TraceSummaryService {
                 commonModes[pattern.pattern] = pattern.frequency;
             }
         }
-        
+
         // Les topics cross-task peuvent être extraits des patterns
         crossTaskTopics.push(...classifiedContent.crossTaskPatterns
             .filter(p => p.category === 'topic')
             .map(p => p.pattern));
-        
+
         return {
             frequentTools,
             commonModes,
@@ -2809,30 +2807,30 @@ export class TraceSummaryService {
         statistics: ClusterSummaryStatistics,
         options: ClusterSummaryOptions
     ): Promise<string> {
-        
+
         const parts: string[] = [];
-        
+
         // En-tête de grappe
         parts.push(this.renderClusterHeader(organizedTasks.rootTask, statistics, options));
-        
+
         // Métadonnées de grappe
         parts.push(this.renderClusterMetadata(organizedTasks, statistics, options));
-        
+
         // Statistiques de grappe
         if (options.includeClusterStats) {
             parts.push(this.renderClusterStatistics(statistics, options));
         }
-        
+
         // Table des matières
         if (options.generateToc) {
             parts.push(this.renderClusterTableOfContents(organizedTasks, options));
         }
-        
+
         // Timeline unifiée
         if (options.includeClusterTimeline) {
             parts.push(this.renderClusterTimeline(organizedTasks, statistics));
         }
-        
+
         // Contenu selon le mode
         switch (options.clusterMode) {
             case 'aggregated':
@@ -2847,12 +2845,12 @@ export class TraceSummaryService {
             default:
                 parts.push(await this.renderAggregatedContent(organizedTasks, statistics, options));
         }
-        
+
         // Analyse cross-task
         if (options.crossTaskAnalysis) {
             parts.push(this.renderCrossTaskAnalysis(organizedTasks, statistics));
         }
-        
+
         return parts.join('\n\n');
     }
 
@@ -2864,11 +2862,11 @@ export class TraceSummaryService {
         statistics: ClusterSummaryStatistics,
         options: ClusterSummaryOptions
     ): string {
-        
+
         const title = rootTask.metadata.title || 'Grappe de Tâches Sans Titre';
         const taskCount = statistics.totalTasks;
         const timeSpan = this.formatDuration(statistics.clusterTimeSpan.totalDurationHours);
-        
+
         if (options.outputFormat === 'html') {
             return `<h1>🔗 ${title}</h1>
 <div class="cluster-summary-header">
@@ -2913,7 +2911,7 @@ export class TraceSummaryService {
     ): string {
         const metadata = statistics.clusterContentStats;
         const timeSpan = statistics.clusterTimeSpan;
-        
+
         if (options.outputFormat === 'html') {
             return `<div class="cluster-metadata">
 <h2>📊 Métadonnées de la Grappe</h2>
@@ -2976,11 +2974,11 @@ export class TraceSummaryService {
     private renderClusterStatistics(statistics: ClusterSummaryStatistics, options: ClusterSummaryOptions): string {
         const dist = statistics.taskDistribution;
         const patterns = statistics.commonPatterns;
-        
+
         if (options.compactStats) {
             return this.renderCompactClusterStats(statistics);
         }
-        
+
         if (options.outputFormat === 'html') {
             return `<div class="cluster-statistics">
 <h2>📈 Statistiques de la Grappe</h2>
@@ -2990,7 +2988,7 @@ export class TraceSummaryService {
     <h4>Par Mode :</h4>
     <ul>${Object.entries(dist.byMode).map(([mode, count]) =>
         `<li><strong>${mode}</strong>: ${count} tâche${count > 1 ? 's' : ''}</li>`).join('')}</ul>
-    
+
     <h4>Par Taille :</h4>
     <ul>
         <li><strong>Petites</strong> (&lt;10KB): ${dist.bySize.small} tâche${dist.bySize.small > 1 ? 's' : ''}</li>
@@ -3097,14 +3095,14 @@ ${organizedTasks.sortedTasks.slice(1).map((task, index) =>
         const sortedByDate = [...organizedTasks.allTasks].sort((a, b) =>
             new Date(a.metadata.createdAt).getTime() - new Date(b.metadata.createdAt).getTime()
         );
-        
+
         return `## ⏰ Timeline de la Grappe
 
 ${sortedByDate.map(task => {
             const date = new Date(task.metadata.createdAt);
             const icon = task === organizedTasks.rootTask ? '🎯' : '📝';
             const size = this.formatBytes(task.metadata.totalSize);
-            
+
             return `**${date.toLocaleDateString('fr-FR')} ${date.toLocaleTimeString('fr-FR', { hour: '2-digit', minute: '2-digit' })}** - ${icon} ${task.metadata.title || task.taskId} (${size})`;
         }).join('\n')}`;
     }
@@ -3118,17 +3116,17 @@ ${sortedByDate.map(task => {
         options: ClusterSummaryOptions
     ): Promise<string> {
         const parts: string[] = [];
-        
+
         // En-tête du contenu agrégé
         parts.push(`## 🔗 Contenu Agrégé de la Grappe`);
-        
+
         // Résumé global
         const globalSummary = await this.generateGlobalClusterSummary(organizedTasks, options);
         parts.push(`### Résumé Global\n${globalSummary}`);
-        
+
         // Contenu par tâche avec sections condensées
         parts.push(`### Contenu des Tâches`);
-        
+
         for (const task of organizedTasks.sortedTasks) {
             const taskSummary = await this.generateSummary(task, {
                 detailLevel: 'Summary',
@@ -3138,21 +3136,21 @@ ${sortedByDate.map(task => {
                 generateToc: false,
                 outputFormat: options.outputFormat
             });
-            
+
             const icon = task === organizedTasks.rootTask ? '🎯' : '📝';
             const taskId = this.sanitizeId(task.taskId);
             const title = task.metadata.title || task.taskId;
-            
+
             parts.push(`#### ${icon} ${title} {#tache${task === organizedTasks.rootTask ? '-racine' : ''}-${taskId}}`);
             parts.push(taskSummary.content);
-            
+
             if (options.showTaskRelationships && task !== organizedTasks.rootTask) {
                 parts.push(`*Tâche enfante de : ${organizedTasks.rootTask.metadata.title || organizedTasks.rootTask.taskId}*`);
             }
-            
+
             parts.push('---'); // Séparateur
         }
-        
+
         return parts.join('\n\n');
     }
 
@@ -3167,28 +3165,28 @@ ${sortedByDate.map(task => {
         const allInteractions: string[] = [];
         const toolsUsed = new Set<string>();
         const modesUsed = new Set<string>();
-        
+
         // Calcul de la durée totale
         const allDates = organizedTasks.allTasks.map(task => new Date(task.metadata.createdAt));
         const startTime = new Date(Math.min(...allDates.map(d => d.getTime())));
         const endTime = new Date(Math.max(...allDates.map(d => d.getTime())));
         const totalDurationHours = (endTime.getTime() - startTime.getTime()) / (1000 * 60 * 60);
-        
+
         for (const task of organizedTasks.allTasks) {
             // Extrait le contexte principal de chaque tâche
             const messages = task.sequence.filter((item): item is MessageSkeleton => 'role' in item);
-            
+
             // Première et dernière interaction utilisateur pour le contexte
             const userMessages = messages.filter(m => m.role === 'user' && !this.isToolResult(m.content));
-            
+
             if (userMessages.length > 0) {
                 const firstMessage = userMessages[0].content.substring(0, 200);
                 allInteractions.push(`**${task.metadata.title || task.taskId}**: ${firstMessage}...`);
             }
-            
+
             // Collecte des outils et modes
             if (task.metadata.mode) modesUsed.add(task.metadata.mode);
-            
+
             // Extraction des outils depuis les messages d'outils
             const toolMessages = messages.filter(m => m.role === 'user' && this.isToolResult(m.content));
             for (const toolMsg of toolMessages) {
@@ -3196,7 +3194,7 @@ ${sortedByDate.map(task => {
                 if (toolMatch) toolsUsed.add(toolMatch[1]);
             }
         }
-        
+
         const summary = `Cette grappe de ${organizedTasks.allTasks.length} tâches${organizedTasks.allTasks.length > 1 ? ` organisée autour de "${organizedTasks.rootTask.metadata.title || 'la tâche racine'}"` : ''} couvre une période de ${this.formatDuration(totalDurationHours)}.
 
 **Modes utilisés :** ${Array.from(modesUsed).join(', ') || 'Non spécifié'}
@@ -3204,7 +3202,7 @@ ${sortedByDate.map(task => {
 
 **Interactions principales :**
 ${allInteractions.slice(0, 3).join('\n')}${allInteractions.length > 3 ? '\n*...et autres interactions*' : ''}`;
-        
+
         return summary;
     }
 
@@ -3217,9 +3215,9 @@ ${allInteractions.slice(0, 3).join('\n')}${allInteractions.length > 3 ? '\n*...e
         options: ClusterSummaryOptions
     ): Promise<string> {
         const parts: string[] = [];
-        
+
         parts.push(`## 📋 Contenu Détaillé de la Grappe`);
-        
+
         for (const task of organizedTasks.sortedTasks) {
             const taskSummary = await this.generateSummary(task, {
                 detailLevel: options.detailLevel,
@@ -3229,25 +3227,25 @@ ${allInteractions.slice(0, 3).join('\n')}${allInteractions.length > 3 ? '\n*...e
                 generateToc: false,
                 outputFormat: options.outputFormat
             });
-            
+
             const icon = task === organizedTasks.rootTask ? '🎯' : '📝';
             const taskId = this.sanitizeId(task.taskId);
             const title = task.metadata.title || task.taskId;
-            
+
             parts.push(`### ${icon} ${title} {#tache${task === organizedTasks.rootTask ? '-racine' : ''}-${taskId}}`);
-            
+
             // Métadonnées de la tâche individuelle
             parts.push(`**ID :** \`${task.taskId}\`
 **Mode :** ${task.metadata.mode || 'Non spécifié'}
 **Créé le :** ${new Date(task.metadata.createdAt).toLocaleString('fr-FR')}
 **Taille :** ${this.formatBytes(task.metadata.totalSize)}
 ${task !== organizedTasks.rootTask ? `**Parent :** ${organizedTasks.rootTask.metadata.title || organizedTasks.rootTask.taskId}` : '**Type :** Tâche racine de la grappe'}`);
-            
+
             parts.push(taskSummary.content);
-            
+
             parts.push('---'); // Séparateur entre tâches
         }
-        
+
         return parts.join('\n\n');
     }
 
@@ -3260,12 +3258,12 @@ ${task !== organizedTasks.rootTask ? `**Parent :** ${organizedTasks.rootTask.met
         options: ClusterSummaryOptions
     ): Promise<string> {
         const parts: string[] = [];
-        
+
         parts.push(`## ⚖️ Analyse Comparative de la Grappe`);
-        
+
         // Tableau comparatif des métadonnées
         parts.push(`### Comparaison des Tâches`);
-        
+
         if (options.outputFormat === 'html') {
             parts.push(`<table class="comparative-table">
 <thead>
@@ -3300,13 +3298,13 @@ ${organizedTasks.sortedTasks.map(task => {
                 return `| ${icon} ${task.metadata.title || task.taskId} | ${task.metadata.mode || 'N/A'} | ${this.formatBytes(task.metadata.totalSize)} | ${messageCount} | ${new Date(task.metadata.createdAt).toLocaleDateString('fr-FR')} |`;
             }).join('\n')}`);
         }
-        
+
         // Comparaison des patterns de contenu
         parts.push(`### Patterns de Contenu`);
-        
+
         const contentAnalysis = await this.generateComparativeAnalysis(organizedTasks);
         parts.push(contentAnalysis);
-        
+
         return parts.join('\n\n');
     }
 
@@ -3315,17 +3313,17 @@ ${organizedTasks.sortedTasks.map(task => {
      */
     private async generateComparativeAnalysis(organizedTasks: OrganizedClusterTasks): Promise<string> {
         const analysis: string[] = [];
-        
+
         // Analyse des similitudes et différences
         const toolUsageByTask = new Map<string, Set<string>>();
         const contentTypesByTask = new Map<string, { user: number; assistant: number; tools: number }>();
-        
+
         for (const task of organizedTasks.allTasks) {
             const tools = new Set<string>();
             const contentTypes = { user: 0, assistant: 0, tools: 0 };
-            
+
             const messages = task.sequence.filter((item): item is MessageSkeleton => 'role' in item);
-            
+
             for (const message of messages) {
                 if (message.role === 'user') {
                     if (this.isToolResult(message.content)) {
@@ -3340,15 +3338,15 @@ ${organizedTasks.sortedTasks.map(task => {
                     contentTypes.assistant++;
                 }
             }
-            
+
             toolUsageByTask.set(task.taskId, tools);
             contentTypesByTask.set(task.taskId, contentTypes);
         }
-        
+
         // Outils communs
         const allTools = new Set<string>();
         toolUsageByTask.forEach(tools => tools.forEach(tool => allTools.add(tool)));
-        
+
         const commonTools: string[] = [];
         for (const tool of allTools) {
             const usageCount = Array.from(toolUsageByTask.values()).filter(taskTools => taskTools.has(tool)).length;
@@ -3356,11 +3354,11 @@ ${organizedTasks.sortedTasks.map(task => {
                 commonTools.push(`**${tool}** (${usageCount}/${organizedTasks.allTasks.length} tâches)`);
             }
         }
-        
+
         if (commonTools.length > 0) {
             analysis.push(`**Outils communs :**\n${commonTools.join(', ')}`);
         }
-        
+
         // Distribution des types de contenu
         const avgContentTypes = Array.from(contentTypesByTask.values()).reduce(
             (acc, types) => ({
@@ -3370,13 +3368,13 @@ ${organizedTasks.sortedTasks.map(task => {
             }),
             { user: 0, assistant: 0, tools: 0 }
         );
-        
+
         const taskCount = organizedTasks.allTasks.length;
         analysis.push(`**Moyenne par tâche :**
 - Messages utilisateur : ${Math.round(avgContentTypes.user / taskCount * 10) / 10}
 - Messages assistant : ${Math.round(avgContentTypes.assistant / taskCount * 10) / 10}
 - Résultats d'outils : ${Math.round(avgContentTypes.tools / taskCount * 10) / 10}`);
-        
+
         return analysis.join('\n\n');
     }
 
@@ -3385,13 +3383,13 @@ ${organizedTasks.sortedTasks.map(task => {
      */
     private renderCrossTaskAnalysis(organizedTasks: OrganizedClusterTasks, statistics: ClusterSummaryStatistics): string {
         const parts: string[] = [];
-        
+
         parts.push(`## 🔄 Analyse Cross-Task`);
-        
+
         // Récupération des patterns depuis les statistiques
         if (statistics.commonPatterns) {
             const patterns = statistics.commonPatterns;
-            
+
             if (Object.keys(patterns.frequentTools).length > 0) {
                 parts.push(`### Outils Récurrents`);
                 parts.push(Object.entries(patterns.frequentTools)
@@ -3399,7 +3397,7 @@ ${organizedTasks.sortedTasks.map(task => {
                     .map(([tool, count]) => `- **${tool}** : utilisé dans ${count} tâche${count > 1 ? 's' : ''}`)
                     .join('\n'));
             }
-            
+
             if (Object.keys(patterns.commonModes).length > 0) {
                 parts.push(`### Modes Fréquents`);
                 parts.push(Object.entries(patterns.commonModes)
@@ -3407,31 +3405,31 @@ ${organizedTasks.sortedTasks.map(task => {
                     .map(([mode, count]) => `- **${mode}** : ${count} tâche${count > 1 ? 's' : ''}`)
                     .join('\n'));
             }
-            
+
             if (patterns.crossTaskTopics.length > 0) {
                 parts.push(`### Sujets Transversaux`);
                 parts.push(patterns.crossTaskTopics.map(topic => `- ${topic}`).join('\n'));
             }
         }
-        
+
         // Analyse des dépendances et relations
         parts.push(`### Relations entre Tâches`);
-        
+
         const relationships: string[] = [];
         const rootTask = organizedTasks.rootTask;
         const childTasks = organizedTasks.allTasks.filter(task => task !== rootTask);
-        
+
         relationships.push(`**Tâche racine :** ${rootTask.metadata.title || rootTask.taskId}`);
-        
+
         if (childTasks.length > 0) {
             relationships.push(`**Tâches dépendantes (${childTasks.length}) :**`);
             childTasks.forEach((child, index) => {
                 relationships.push(`${index + 1}. ${child.metadata.title || child.taskId} (${this.formatBytes(child.metadata.totalSize)})`);
             });
         }
-        
+
         parts.push(relationships.join('\n'));
-        
+
         return parts.join('\n\n');
     }
 
@@ -3444,14 +3442,14 @@ ${organizedTasks.sortedTasks.map(task => {
         organizedTasks: OrganizedClusterTasks,
         options: ClusterSummaryOptions
     ): ClusterSummaryResult {
-        
+
         const taskIndex = organizedTasks.sortedTasks.map((task, index) => ({
             taskId: task.taskId,
             title: task.metadata.title || task.taskId,
             order: index,
             size: task.metadata.totalSize
         }));
-        
+
         return {
             success: true,
             content,
@@ -3476,11 +3474,11 @@ ${organizedTasks.sortedTasks.map(task => {
         options: SummaryOptions
     ): Promise<SummaryResult> {
         const variant = options.jsonVariant || 'light';
-        
+
         try {
             let content: string;
             let statistics: SummaryStatistics;
-            
+
             if (variant === 'light') {
                 // JSON Light - Multiple conversations skeleton
                 const conversations = [conversation]; // Pour l'instant, une seule conversation
@@ -3551,11 +3549,11 @@ ${organizedTasks.sortedTasks.map(task => {
         options: SummaryOptions
     ): Promise<SummaryResult> {
         const variant = options.csvVariant || 'conversations';
-        
+
         try {
             let content: string;
             let statistics: SummaryStatistics;
-            
+
             switch (variant) {
                 case 'conversations':
                     content = this.generateCsvConversations([conversation]);
@@ -3569,7 +3567,7 @@ ${organizedTasks.sortedTasks.map(task => {
                 default:
                     throw new Error(`Unsupported CSV variant: ${variant}`);
             }
-            
+
             statistics = this.calculateJsonStatistics([conversation]); // Réutiliser la logique de calcul
 
             return {
@@ -3599,11 +3597,11 @@ ${organizedTasks.sortedTasks.map(task => {
     private calculateJsonLightSummary(conversations: ConversationSkeleton[]) {
         const totalMessages = conversations.reduce((sum, conv) => sum + conv.metadata.messageCount, 0);
         const totalSize = conversations.reduce((sum, conv) => sum + conv.metadata.totalSize, 0);
-        
+
         const dates = conversations
             .map(conv => new Date(conv.metadata.createdAt).getTime())
             .sort((a, b) => a - b);
-        
+
         return {
             totalConversations: conversations.length,
             totalMessages: totalMessages,
@@ -3621,7 +3619,7 @@ ${organizedTasks.sortedTasks.map(task => {
     private convertToJsonSkeleton(conversation: ConversationSkeleton): JsonConversationSkeleton {
         // Récupérer le premier message utilisateur
         const firstUserMessage = this.extractFirstUserMessage(conversation);
-        
+
         return {
             taskId: conversation.taskId,
             firstUserMessage: this.truncateText(firstUserMessage, 200),
@@ -3643,7 +3641,7 @@ ${organizedTasks.sortedTasks.map(task => {
         const userMessages = conversation.sequence.filter(item =>
             'role' in item && item.role === 'user'
         ) as MessageSkeleton[];
-        
+
         if (userMessages.length > 0) {
             return userMessages[0].content || '';
         }
@@ -3660,7 +3658,7 @@ ${organizedTasks.sortedTasks.map(task => {
 
         return messages.map(message => {
             const toolCalls = this.extractToolCallsFromMessage(message.content);
-            
+
             return {
                 role: message.role as 'user' | 'assistant',
                 timestamp: message.timestamp,
@@ -3676,18 +3674,18 @@ ${organizedTasks.sortedTasks.map(task => {
      */
     private extractToolCallsFromMessage(content: string): JsonToolCall[] {
         const toolCalls: JsonToolCall[] = [];
-        
+
         if (!content) return toolCalls;
 
         // Pattern 1: Résultats d'outils standard [tool_name] Result:
         const toolResultPattern = /\[([^\]]+)(?:\s+for\s+['"]([^'"]*?)['"])?\]\s*Result:([\s\S]*?)(?=\n\[|$)/g;
         let match;
-        
+
         while ((match = toolResultPattern.exec(content)) !== null) {
             const toolName = match[1];
             const targetPath = match[2];
             const result = match[3]?.trim() || '';
-            
+
             toolCalls.push({
                 toolName: toolName,
                 arguments: targetPath ? { path: targetPath } : {},
@@ -3703,7 +3701,7 @@ ${organizedTasks.sortedTasks.map(task => {
                 const serverMatch = match[1].match(/<server_name>(.*?)<\/server_name>/);
                 const toolNameMatch = match[1].match(/<tool_name>(.*?)<\/tool_name>/);
                 const argsMatch = match[1].match(/<arguments>([\s\S]*?)<\/arguments>/);
-                
+
                 if (toolNameMatch) {
                     toolCalls.push({
                         toolName: toolNameMatch[1],
@@ -3729,7 +3727,7 @@ ${organizedTasks.sortedTasks.map(task => {
             'taskId', 'workspace', 'isCompleted', 'createdAt', 'lastActivity',
             'messageCount', 'actionCount', 'totalSize', 'firstUserMessage'
         ];
-        
+
         const rows = conversations.map(conv => {
             const firstUserMessage = this.extractFirstUserMessage(conv);
             return [
@@ -3744,7 +3742,7 @@ ${organizedTasks.sortedTasks.map(task => {
                 this.escapeCsv(this.truncateText(firstUserMessage, 200))
             ];
         });
-        
+
         return this.formatCsvOutput(headers, rows);
     }
 
@@ -3756,14 +3754,14 @@ ${organizedTasks.sortedTasks.map(task => {
             'taskId', 'messageIndex', 'role', 'timestamp', 'contentLength',
             'isTruncated', 'toolCount', 'workspace'
         ];
-        
+
         const messages = conversation.sequence.filter(item =>
             'role' in item && 'content' in item
         ) as MessageSkeleton[];
 
         const rows = messages.map((message, index) => {
             const toolCalls = this.extractToolCallsFromMessage(message.content);
-            
+
             return [
                 conversation.taskId,
                 index + 1,
@@ -3775,7 +3773,7 @@ ${organizedTasks.sortedTasks.map(task => {
                 this.escapeCsv(conversation.metadata.workspace || '')
             ];
         });
-        
+
         return this.formatCsvOutput(headers, rows);
     }
 
@@ -3787,7 +3785,7 @@ ${organizedTasks.sortedTasks.map(task => {
             'taskId', 'messageIndex', 'toolName', 'serverName', 'executionTime',
             'success', 'argsCount', 'resultLength', 'workspace'
         ];
-        
+
         const rows: any[][] = [];
         const messages = conversation.sequence.filter(item =>
             'role' in item && 'content' in item
@@ -3795,7 +3793,7 @@ ${organizedTasks.sortedTasks.map(task => {
 
         messages.forEach((message, messageIndex) => {
             const toolCalls = this.extractToolCallsFromMessage(message.content);
-            
+
             toolCalls.forEach(tool => {
                 rows.push([
                     conversation.taskId,
@@ -3810,7 +3808,7 @@ ${organizedTasks.sortedTasks.map(task => {
                 ]);
             });
         });
-        
+
         return this.formatCsvOutput(headers, rows);
     }
 
@@ -3819,12 +3817,12 @@ ${organizedTasks.sortedTasks.map(task => {
      */
     private formatCsvOutput(headers: string[], rows: any[][]): string {
         const csvLines = [headers.join(',')];
-        
+
         rows.forEach(row => {
             const escapedRow = row.map(cell => this.escapeCsv(cell));
             csvLines.push(escapedRow.join(','));
         });
-        
+
         return csvLines.join('\n');
     }
 
@@ -3864,10 +3862,10 @@ ${organizedTasks.sortedTasks.map(task => {
      */
     private truncateText(text: string, maxLength: number): string {
         if (!text || text.length <= maxLength) return text;
-        
+
         const truncated = text.substring(0, maxLength);
         const lastSpace = truncated.lastIndexOf(' ');
-        
+
         return (lastSpace > maxLength * 0.8)
             ? truncated.substring(0, lastSpace) + '...'
             : truncated + '...';
@@ -3882,15 +3880,15 @@ ${organizedTasks.sortedTasks.map(task => {
         let userMessages = 0;
         let assistantMessages = 0;
         let toolResults = 0;
-        
+
         for (const conv of conversations) {
             totalMessages += conv.metadata.messageCount;
             totalSize += conv.metadata.totalSize;
-            
+
             const messages = conv.sequence.filter(item =>
                 'role' in item && 'content' in item
             ) as MessageSkeleton[];
-            
+
             for (const message of messages) {
                 if (message.role === 'user') {
                     if (this.isToolResult(message.content)) {
@@ -3903,7 +3901,7 @@ ${organizedTasks.sortedTasks.map(task => {
                 }
             }
         }
-        
+
         return {
             totalSections: totalMessages,
             userMessages: userMessages,
