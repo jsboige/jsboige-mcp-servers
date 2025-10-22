@@ -46,3 +46,4 @@ vitest-migration/
 
 # Test outputs
 synthesis-test-output.txt
+"test-results.txt" 

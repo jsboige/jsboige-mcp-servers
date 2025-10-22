@@ -6,6 +6,9 @@ import { CallToolResult } from '@modelcontextprotocol/sdk/types.js';
 import { ConversationSkeleton } from '../../types/conversation.js';
 import { SkeletonCacheService } from '../../services/skeleton-cache.service.js';
 import { normalizePath } from '../../utils/path-normalizer.js';
+import { promises as fs } from 'fs';
+import path from 'path';
+import os from 'os';
 
 /**
  * Node enrichi pour construire l'arbre hiérarchique
@@ -31,6 +34,21 @@ interface SkeletonNode {
     isCompleted?: boolean;
     completionMessage?: string;
     children: SkeletonNode[];
+}
+
+/**
+ * Interface pour les messages API (api_conversation_history.json)
+ */
+interface ApiMessage {
+    role: 'user' | 'assistant' | 'system';
+    content: string | Array<{
+        type: 'text' | 'tool_use' | 'tool_result';
+        text?: string;
+        name?: string;
+    }>;
+    text?: string;
+    say?: string;
+    timestamp?: string;
 }
 
 /**
@@ -86,6 +104,14 @@ export const listConversationsTool = {
                 hasApiHistory: { type: 'boolean' },
                 hasUiMessages: { type: 'boolean' },
                 workspace: { type: 'string', description: 'Filtre les conversations par chemin de workspace.' },
+                pendingSubtaskOnly: {
+                    type: 'boolean',
+                    description: 'Si true, retourne uniquement les tâches ayant une instruction de sous-tâche non complétée'
+                },
+                contentPattern: {
+                    type: 'string',
+                    description: 'Filtre les tâches contenant ce texte dans leurs messages (recherche insensible à la casse)'
+                },
             },
         },
     },
@@ -98,7 +124,9 @@ export const listConversationsTool = {
             limit?: number,
             sortBy?: 'lastActivity' | 'messageCount' | 'totalSize',
             sortOrder?: 'asc' | 'desc',
-            workspace?: string
+            workspace?: string,
+            pendingSubtaskOnly?: boolean,
+            contentPattern?: string
         },
         conversationCache: Map<string, ConversationSkeleton>
     ): Promise<CallToolResult> => {
@@ -132,6 +160,48 @@ export const listConversationsTool = {
             workspaceFilteredCount = countBeforeFilter - allSkeletons.length;
             // 🔇 LOG VERBEUX COMMENTÉ (explosion contexte)
             // console.log(`[DEBUG] Found ${allSkeletons.length} conversations matching workspace filter`);
+        }
+
+        // Filtre : Tâches en attente de sous-tâche (NOUVEAU)
+        if (args.pendingSubtaskOnly === true) {
+            console.log(`[DEBUG] Filtering by pendingSubtaskOnly`);
+            const beforeCount = allSkeletons.length;
+            
+            const pendingTasks: ConversationSkeleton[] = [];
+            for (const skeleton of allSkeletons) {
+                try {
+                    const hasPending = await hasPendingSubtask(skeleton.taskId);
+                    if (hasPending) {
+                        pendingTasks.push(skeleton);
+                    }
+                } catch (error) {
+                    console.warn(`[FILTER] Error checking pending subtask for ${skeleton.taskId}:`, error);
+                }
+            }
+            
+            allSkeletons = pendingTasks;
+            console.log(`[DEBUG] Pending subtask filter: ${beforeCount} -> ${allSkeletons.length} tasks`);
+        }
+
+        // Filtre : Recherche de contenu (NOUVEAU)
+        if (args.contentPattern && args.contentPattern.trim().length > 0) {
+            console.log(`[DEBUG] Filtering by contentPattern: "${args.contentPattern}"`);
+            const beforeCount = allSkeletons.length;
+            
+            const matchingTasks: ConversationSkeleton[] = [];
+            for (const skeleton of allSkeletons) {
+                try {
+                    const matches = await matchesContentPattern(skeleton.taskId, args.contentPattern);
+                    if (matches) {
+                        matchingTasks.push(skeleton);
+                    }
+                } catch (error) {
+                    console.warn(`[FILTER] Error checking content pattern for ${skeleton.taskId}:`, error);
+                }
+            }
+            
+            allSkeletons = matchingTasks;
+            console.log(`[DEBUG] Content pattern filter: ${beforeCount} -> ${allSkeletons.length} tasks`);
         }
 
         // Tri
@@ -233,3 +303,117 @@ export const listConversationsTool = {
         return { content: [{ type: 'text', text: result }] };
     }
 };
+
+/**
+ * Détecte si une tâche a une sous-tâche en attente de completion
+ */
+async function hasPendingSubtask(taskId: string): Promise<boolean> {
+    try {
+        const apiMessages = await loadApiMessages(taskId);
+        return detectPendingSubtaskInMessages(apiMessages);
+    } catch (error) {
+        console.warn(`[hasPendingSubtask] Error for task ${taskId}:`, error);
+        return false;
+    }
+}
+
+/**
+ * Vérifie si les messages d'une tâche contiennent un motif de texte
+ */
+async function matchesContentPattern(taskId: string, pattern: string): Promise<boolean> {
+    try {
+        const apiMessages = await loadApiMessages(taskId);
+        const normalizedPattern = pattern.toLowerCase().trim();
+        
+        return apiMessages.some(msg => {
+            const textContent = extractTextFromMessage(msg).toLowerCase();
+            return textContent.includes(normalizedPattern);
+        });
+    } catch (error) {
+        console.warn(`[matchesContentPattern] Error for task ${taskId}:`, error);
+        return false;
+    }
+}
+
+/**
+ * Charge les messages API d'une tâche
+ */
+async function loadApiMessages(taskId: string): Promise<ApiMessage[]> {
+    const tasksPath = path.join(os.homedir(), 'AppData', 'Roaming', 'Code', 'User', 'globalStorage', 'rooveterinaryinc.roo-cline', 'tasks');
+    const apiHistoryPath = path.join(tasksPath, taskId, 'api_conversation_history.json');
+    
+    const content = await fs.readFile(apiHistoryPath, 'utf-8');
+    const data = JSON.parse(content);
+    
+    // Le fichier peut être un array direct ou un objet avec une propriété messages
+    return Array.isArray(data) ? data : (data.messages || []);
+}
+
+/**
+ * Extrait le texte d'un message API (gère les différents formats)
+ */
+function extractTextFromMessage(message: ApiMessage): string {
+    // Gestion du champ text (format UI)
+    if (message.text) {
+        return message.text;
+    }
+    
+    // Gestion du champ say (format UI alternatif)
+    if (message.say) {
+        return message.say;
+    }
+    
+    // Gestion du content (format API standard)
+    if (typeof message.content === 'string') {
+        return message.content;
+    }
+    
+    if (Array.isArray(message.content)) {
+        return message.content
+            .filter(c => c.type === 'text' && c.text)
+            .map(c => c.text)
+            .join(' ');
+    }
+    
+    return '';
+}
+
+/**
+ * Logique de détection de sous-tâche en attente
+ */
+function detectPendingSubtaskInMessages(messages: ApiMessage[]): boolean {
+    // Parcours inversé pour trouver la dernière instruction de sous-tâche
+    let lastSubtaskInstructionIndex = -1;
+    
+    for (let i = messages.length - 1; i >= 0; i--) {
+        const message = messages[i];
+        if (message.role !== 'assistant') continue;
+        
+        const content = extractTextFromMessage(message);
+        
+        if (content.includes('<new_task>') || content.includes('<task>')) {
+            lastSubtaskInstructionIndex = i;
+            break;
+        }
+    }
+    
+    // Aucune instruction trouvée
+    if (lastSubtaskInstructionIndex === -1) {
+        return false;
+    }
+    
+    // Vérification qu'aucun message de completion ne suit
+    for (let j = lastSubtaskInstructionIndex + 1; j < messages.length; j++) {
+        const followingMessage = messages[j];
+        if (followingMessage.role !== 'user') continue;
+        
+        const followingContent = extractTextFromMessage(followingMessage);
+        
+        if (followingContent.includes('[new_task completed]') ||
+            followingContent.includes('[task completed]')) {
+            return false; // La sous-tâche a été complétée
+        }
+    }
+    
+    return true; // En attente de completion
+}

@@ -1465,6 +1465,84 @@ export class RooStorageDetector {
               // ignorer
             }
           }
+        
+        // 🎯 PATTERN 7: Balises <task> dans api_req_started (TOUJOURS ACTIF)
+        // Fix pour cb7e564f et 18141742 : Ces tâches utilisent <task> dans api_req_started.text.request
+        // Ce pattern est sécurisé car il parse uniquement le JSON structuré, pas le flux XML condensé
+        if (message.type === 'say' && message.say === 'api_req_started' && typeof message.text === 'string') {
+          try {
+            const apiData = JSON.parse(message.text);
+            
+            if (apiData && typeof apiData.request === 'string') {
+              const taskPattern = /<task>([\s\S]*?)<\/task>/gi;
+              let taskMatch;
+              
+              while ((taskMatch = taskPattern.exec(apiData.request)) !== null) {
+                const taskContent = taskMatch[1].trim();
+                
+                if (taskContent.length > 20) {
+                  const instruction: NewTaskInstruction = {
+                    timestamp: new Date(message.timestamp || message.ts || 0).getTime(),
+                    mode: 'task',
+                    message: taskContent,
+                  };
+                  instructions.push(instruction);
+                  
+                  if (process.env.ROO_DEBUG_INSTRUCTIONS === '1') {
+                    console.log(`[extractFromMessageFile] ✅ PATTERN 7: Balise <task> depuis api_req_started: len=${taskContent.length}`);
+                  }
+                } else {
+                  if (process.env.ROO_DEBUG_INSTRUCTIONS === '1') {
+                    console.log(`[extractFromMessageFile] ⚠️ PATTERN 7: Balise <task> rejetée (trop courte: ${taskContent.length} chars)`);
+                  }
+                }
+              }
+            }
+          } catch (e) {
+            // Parsing JSON échoué, ignorer ce message
+            if (process.env.ROO_DEBUG_INSTRUCTIONS === '1') {
+              console.log(`[extractFromMessageFile] ⚠️ PATTERN 7: Failed to parse api_req_started message.text as JSON`);
+            }
+          }
+        }
+        }
+        
+        // 🎯 PATTERN 8: Messages ask/tool avec newTask stringifié (FIX pour cb7e564f)
+        // Détecte spécifiquement: {type:"ask", ask:"tool", text:"{\"tool\":\"newTask\",...}"}
+        // Ce pattern est TOUJOURS ACTIF pour assurer la capture des instructions newTask
+        if (message.type === 'ask' && (message as any).ask === 'tool' && typeof message.text === 'string') {
+          try {
+            // Parser le JSON stringifié dans message.text
+            const toolData = JSON.parse(message.text);
+            
+            // Vérifier que c'est bien un message newTask avec du contenu
+            if (toolData &&
+                toolData.tool === 'newTask' &&
+                typeof toolData.content === 'string' &&
+                toolData.content.trim().length > 20) {
+              
+              // Nettoyer le mode (retirer les emojis et caractères spéciaux)
+              const rawMode = String(toolData.mode || 'task');
+              const cleanMode = rawMode.replace(/[^\w\s]/g, '').trim().toLowerCase();
+              
+              const instruction: NewTaskInstruction = {
+                timestamp: new Date(message.timestamp || (message as any).ts || 0).getTime(),
+                mode: cleanMode || 'task',
+                message: toolData.content.trim()
+              };
+              
+              instructions.push(instruction);
+              
+              if (process.env.ROO_DEBUG_INSTRUCTIONS === '1') {
+                console.log(`[extractFromMessageFile] ✅ PATTERN 8: newTask depuis ask/tool stringifié: mode=${cleanMode}, len=${toolData.content.length}`);
+              }
+            }
+          } catch (e) {
+            // Parsing JSON échoué, ignorer ce message
+            if (process.env.ROO_DEBUG_INSTRUCTIONS === '1') {
+              console.log(`[extractFromMessageFile] ⚠️ PATTERN 8: Failed to parse ask/tool message.text as JSON:`, e);
+            }
+          }
         }
           
         // 🎯 PATTERN 6: new_task non fermée en fin de message (assistant) - DÉSACTIVÉ si onlyJsonFormat
