@@ -9,13 +9,14 @@
  * @version 2.1.0
  */
 
-import { 
-  IDiffDetector, 
-  BaselineConfig, 
-  MachineInventory, 
+import {
+  IDiffDetector,
+  BaselineConfig,
+  MachineInventory,
   BaselineDifference,
-  BaselineComparisonReport 
+  BaselineComparisonReport
 } from '../types/baseline.js';
+import { createLogger, Logger } from '../utils/logger.js';
 
 /**
  * Safe property accessor with default value
@@ -47,9 +48,10 @@ function safeGet<T>(
  * Implémentation du service de détection de différences
  */
 export class DiffDetector implements IDiffDetector {
+  private logger: Logger;
   
   constructor() {
-    // Initialisation du service
+    this.logger = createLogger('DiffDetector');
   }
 
   /**
@@ -80,7 +82,7 @@ export class DiffDetector implements IDiffDetector {
 
       return differences;
     } catch (error) {
-      console.error('Erreur lors de la comparaison baseline/machine:', error);
+      this.logger.error('Erreur lors de la comparaison baseline/machine', error);
       throw error;
     }
   }

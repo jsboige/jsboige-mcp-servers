@@ -3,7 +3,10 @@
  */
 
 import { Server } from '@modelcontextprotocol/sdk/server/index.js';
-import packageJson from '../../package.json' with { type: 'json' };
+import { createRequire } from 'module';
+
+const require = createRequire(import.meta.url);
+const packageJson = require('../../package.json');
 
 export interface ServerConfig {
     name: string;

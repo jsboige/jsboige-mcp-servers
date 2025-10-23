@@ -15,6 +15,7 @@ import { promisify } from 'util';
 import { exec } from 'child_process';
 import { fileURLToPath } from 'url';
 import os from 'os';
+import { createLogger, Logger } from '../utils/logger.js';
 
 const execAsync = promisify(exec);
 const __filename = fileURLToPath(import.meta.url);
@@ -84,13 +85,15 @@ interface CachedInventory {
 export class InventoryCollector {
   private cache: Map<string, CachedInventory>;
   private readonly cacheTTL = 3600000; // 1h en ms (3600 * 1000)
+  private logger: Logger;
   
   /**
    * Constructeur
    */
   constructor() {
     this.cache = new Map<string, CachedInventory>();
-    console.error('[InventoryCollector] Instance créée avec cache TTL de', this.cacheTTL, 'ms');
+    this.logger = createLogger('InventoryCollector');
+    this.logger.info(`Instance créée avec cache TTL de ${this.cacheTTL}ms`);
   }
 
   /**
@@ -106,20 +109,20 @@ export class InventoryCollector {
    * @returns Inventaire structuré ou null en cas d'échec
    */
   async collectInventory(machineId: string, forceRefresh = false): Promise<MachineInventory | null> {
-    console.error(`[InventoryCollector] 🔍 Collecte inventaire pour machine: ${machineId} (forceRefresh: ${forceRefresh})`);
+    this.logger.info(`🔍 Collecte inventaire pour machine: ${machineId}`, { forceRefresh });
     
     // Vérifier le cache si pas de forceRefresh
     if (!forceRefresh && this.isCacheValid(machineId)) {
-      console.error(`[InventoryCollector] ✅ Cache valide trouvé pour ${machineId}`);
+      this.logger.info(`✅ Cache valide trouvé pour ${machineId}`);
       return this.cache.get(machineId)!.data;
     }
 
     // STRATÉGIE 1 : Charger depuis .shared-state/inventories/ (prioritaire)
-    console.error(`[InventoryCollector] 📂 Tentative de chargement depuis .shared-state/inventories/`);
+    this.logger.info(`📂 Tentative de chargement depuis .shared-state/inventories/`);
     const sharedInventory = await this.loadFromSharedState(machineId);
     
     if (sharedInventory) {
-      console.error(`[InventoryCollector] ✅ Inventaire chargé depuis .shared-state pour ${machineId}`);
+      this.logger.info(`✅ Inventaire chargé depuis .shared-state pour ${machineId}`);
       return sharedInventory;
     }
 
@@ -129,75 +132,75 @@ export class InventoryCollector {
                           machineId.toLowerCase().includes('myia-ai-01');
     
     if (!isLocalMachine) {
-      console.error(`[InventoryCollector] ❌ Machine distante ${machineId} sans inventaire dans .shared-state`);
+      this.logger.error(`❌ Machine distante ${machineId} sans inventaire dans .shared-state`);
       return null;
     }
 
-    console.error(`[InventoryCollector] 🔧 Machine locale détectée, exécution du script PowerShell en fallback`);
+    this.logger.info(`🔧 Machine locale détectée, exécution du script PowerShell en fallback`);
     
     try {
       // Calculer projectRoot comme dans init.ts (remonter 7 niveaux depuis build/src/services/)
       // __dirname en production = .../roo-state-manager/build/src/services/
       const projectRoot = join(__dirname, '..', '..', '..', '..', '..', '..', '..');
-      console.error(`[InventoryCollector] 📂 Project root calculé: ${projectRoot}`);
-      console.error(`[InventoryCollector] 📂 __dirname actuel: ${__dirname}`);
+      this.logger.debug(`📂 Project root calculé: ${projectRoot}`);
+      this.logger.debug(`📂 __dirname actuel: ${__dirname}`);
       
       // Construire chemin absolu du script PowerShell
       const inventoryScriptPath = join(projectRoot, 'scripts', 'inventory', 'Get-MachineInventory.ps1');
-      console.error(`[InventoryCollector] 📄 Script path: ${inventoryScriptPath}`);
+      this.logger.debug(`📄 Script path: ${inventoryScriptPath}`);
       
       // Vérifier que le script existe
       if (!existsSync(inventoryScriptPath)) {
-        console.error(`[InventoryCollector] ❌ Script NON TROUVÉ: ${inventoryScriptPath}`);
+        this.logger.error(`❌ Script NON TROUVÉ: ${inventoryScriptPath}`);
         return null;
       }
-      console.error(`[InventoryCollector] ✅ Script trouvé`);
+      this.logger.info(`✅ Script trouvé`);
 
       // Commande PowerShell directe (comme init.ts) - PAS de -OutputPath
       const inventoryCmd = `powershell.exe -NoProfile -ExecutionPolicy Bypass -File "${inventoryScriptPath}" -MachineId "${machineId}"`;
-      console.error(`[InventoryCollector] 🔧 Commande: ${inventoryCmd}`);
-      console.error(`[InventoryCollector] 📂 Working directory: ${projectRoot}`);
+      this.logger.debug(`🔧 Commande: ${inventoryCmd}`);
+      this.logger.debug(`📂 Working directory: ${projectRoot}`);
 
       // Exécuter avec execAsync (comme init.ts)
-      console.error('[InventoryCollector] ⏳ Exécution du script PowerShell...');
+      this.logger.info('⏳ Exécution du script PowerShell...');
       const { stdout, stderr } = await execAsync(inventoryCmd, {
         timeout: 30000, // 30s timeout
         cwd: projectRoot
       });
 
-      console.error(`[InventoryCollector] 📊 stdout length: ${stdout.length} bytes`);
+      this.logger.debug(`📊 stdout length: ${stdout.length} bytes`);
       if (stderr && stderr.trim()) {
-        console.warn(`[InventoryCollector] ⚠️ stderr: ${stderr}`);
+        this.logger.warn(`⚠️ stderr: ${stderr}`);
       }
 
       // Le script retourne le chemin du fichier JSON en dernière ligne de stdout
       const lines = stdout.trim().split('\n').filter(l => l.trim());
       const inventoryFilePathRaw = lines[lines.length - 1]?.trim();
-      console.error(`[InventoryCollector] 📄 Dernière ligne stdout: ${inventoryFilePathRaw}`);
-      console.error(`[InventoryCollector] 📝 Total lignes stdout: ${lines.length}`);
+      this.logger.debug(`📄 Dernière ligne stdout: ${inventoryFilePathRaw}`);
+      this.logger.debug(`📝 Total lignes stdout: ${lines.length}`);
 
       // Résoudre chemin relatif en absolu si nécessaire
       const inventoryFilePath = inventoryFilePathRaw.includes(':')
         ? inventoryFilePathRaw
         : join(projectRoot, inventoryFilePathRaw);
-      console.error(`[InventoryCollector] 📁 Chemin absolu calculé: ${inventoryFilePath}`);
+      this.logger.debug(`📁 Chemin absolu calculé: ${inventoryFilePath}`);
 
       if (!inventoryFilePath || !existsSync(inventoryFilePath)) {
-        console.error(`[InventoryCollector] ❌ Fichier JSON non trouvé: '${inventoryFilePath}'`);
+        this.logger.error(`❌ Fichier JSON non trouvé: '${inventoryFilePath}'`);
         return null;
       }
 
-      console.error(`[InventoryCollector] ✅ Fichier JSON trouvé`);
+      this.logger.info(`✅ Fichier JSON trouvé`);
 
       // Lire et parser avec strip BOM UTF-8 (comme init.ts)
       let inventoryContent = readFileSync(inventoryFilePath, 'utf-8');
       if (inventoryContent.charCodeAt(0) === 0xFEFF) {
         inventoryContent = inventoryContent.slice(1);
-        console.error('[InventoryCollector] 🔧 BOM UTF-8 détecté et supprimé');
+        this.logger.debug('🔧 BOM UTF-8 détecté et supprimé');
       }
 
       const rawInventory = JSON.parse(inventoryContent);
-      console.error(`[InventoryCollector] 📦 JSON parsé avec succès`);
+      this.logger.info(`📦 JSON parsé avec succès`);
 
       // Mapper vers notre interface MachineInventory
       const inventory: MachineInventory = {
@@ -249,14 +252,14 @@ export class InventoryCollector {
         paths: rawInventory.paths
       };
 
-      console.error(`[InventoryCollector] ✅ Inventaire structuré pour ${inventory.machineId}`);
+      this.logger.info(`✅ Inventaire structuré pour ${inventory.machineId}`);
 
       // Mettre à jour le cache
       this.cache.set(machineId, {
         data: inventory,
         timestamp: Date.now()
       });
-      console.error(`[InventoryCollector] 💾 Cache mis à jour pour ${machineId}`);
+      this.logger.info(`💾 Cache mis à jour pour ${machineId}`);
 
       // Sauvegarder dans .shared-state/inventories/
       await this.saveToSharedState(inventory);
@@ -264,10 +267,7 @@ export class InventoryCollector {
       return inventory;
 
     } catch (error) {
-      console.error(`[InventoryCollector] ❌ ERREUR:`, error instanceof Error ? error.message : String(error));
-      if (error instanceof Error && error.stack) {
-        console.error(`[InventoryCollector] Stack:`, error.stack);
-      }
+      this.logger.error(`❌ ERREUR collecte inventaire`, error);
       return null; // Graceful degradation
     }
   }
@@ -288,7 +288,7 @@ export class InventoryCollector {
     const isValid = age < this.cacheTTL;
     
     if (!isValid) {
-      console.error(`[InventoryCollector] ⏰ Cache expiré pour ${machineId} (âge: ${Math.round(age / 1000)}s)`);
+      this.logger.debug(`⏰ Cache expiré pour ${machineId}`, { age: Math.round(age / 1000) });
       this.cache.delete(machineId);
     }
     
@@ -307,7 +307,7 @@ export class InventoryCollector {
       const inventoriesDir = join(sharedStatePath, 'inventories');
 
       if (!existsSync(inventoriesDir)) {
-        console.error(`[InventoryCollector] ❌ Répertoire inventories non trouvé: ${inventoriesDir}`);
+        this.logger.debug(`❌ Répertoire inventories non trouvé: ${inventoriesDir}`);
         return null;
       }
 
@@ -319,25 +319,25 @@ export class InventoryCollector {
         .reverse(); // Plus récent en premier
 
       if (machineFiles.length === 0) {
-        console.error(`[InventoryCollector] ❌ Aucun inventaire trouvé pour ${machineId}`);
+        this.logger.debug(`❌ Aucun inventaire trouvé pour ${machineId}`);
         return null;
       }
 
       // Charger le fichier le plus récent
       const latestFile = machineFiles[0];
       const filepath = join(inventoriesDir, latestFile);
-      console.error(`[InventoryCollector] 📂 Chargement depuis: ${filepath}`);
+      this.logger.info(`📂 Chargement depuis: ${filepath}`);
 
       let content = await fs.readFile(filepath, 'utf-8');
       
       // Strip BOM UTF-8 si présent
       if (content.charCodeAt(0) === 0xFEFF) {
         content = content.slice(1);
-        console.error('[InventoryCollector] 🔧 BOM UTF-8 détecté et supprimé');
+        this.logger.debug('🔧 BOM UTF-8 détecté et supprimé');
       }
 
       const inventory: MachineInventory = JSON.parse(content);
-      console.error(`[InventoryCollector] ✅ Inventaire chargé pour ${inventory.machineId} (${latestFile})`);
+      this.logger.info(`✅ Inventaire chargé pour ${inventory.machineId} (${latestFile})`);
 
       // Mettre à jour le cache
       this.cache.set(machineId, {
@@ -348,8 +348,7 @@ export class InventoryCollector {
       return inventory;
 
     } catch (error) {
-      console.error(`[InventoryCollector] ❌ Erreur chargement depuis .shared-state:`,
-        error instanceof Error ? error.message : String(error));
+      this.logger.error(`❌ Erreur chargement depuis .shared-state`, error);
       return null;
     }
   }
@@ -361,13 +360,13 @@ export class InventoryCollector {
   private async saveToSharedState(inventory: MachineInventory): Promise<void> {
     try {
       // Construire le chemin .shared-state/inventories/
-      const sharedStatePath = process.env.SHARED_STATE_PATH || 
+      const sharedStatePath = process.env.SHARED_STATE_PATH ||
         'G:/Mon Drive/Synchronisation/RooSync/.shared-state';
       const inventoriesDir = join(sharedStatePath, 'inventories');
 
       // Créer le répertoire s'il n'existe pas
       if (!existsSync(inventoriesDir)) {
-        console.error(`[InventoryCollector] 📁 Création du répertoire: ${inventoriesDir}`);
+        this.logger.info(`📁 Création du répertoire: ${inventoriesDir}`);
         await fs.mkdir(inventoriesDir, { recursive: true });
       }
 
@@ -378,12 +377,11 @@ export class InventoryCollector {
 
       // Sauvegarder le fichier
       await fs.writeFile(filepath, JSON.stringify(inventory, null, 2), 'utf-8');
-      console.error(`[InventoryCollector] 💾 Inventaire sauvegardé: ${filepath}`);
+      this.logger.info(`💾 Inventaire sauvegardé: ${filepath}`);
 
     } catch (error) {
       // Non-bloquant : on log mais on ne throw pas
-      console.warn(`[InventoryCollector] ⚠️ Impossible de sauvegarder dans .shared-state:`,
-        error instanceof Error ? error.message : String(error));
+      this.logger.warn(`⚠️ Impossible de sauvegarder dans .shared-state`, { error });
     }
   }
 
@@ -391,7 +389,7 @@ export class InventoryCollector {
    * Vider le cache (utile pour les tests ou forcer rafraîchissement global)
    */
   public clearCache(): void {
-    console.error(`[InventoryCollector] 🗑️ Cache vidé (${this.cache.size} entrées)`);
+    this.logger.info(`🗑️ Cache vidé (${this.cache.size} entrées)`);
     this.cache.clear();
   }
 
