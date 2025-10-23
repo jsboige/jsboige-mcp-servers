@@ -16,6 +16,7 @@ import { exec } from 'child_process';
 import { fileURLToPath } from 'url';
 import os from 'os';
 import { createLogger, Logger } from '../utils/logger.js';
+import { getGitHelpers, type GitHelpers } from '../utils/git-helpers.js';
 
 const execAsync = promisify(exec);
 const __filename = fileURLToPath(import.meta.url);
@@ -86,6 +87,7 @@ export class InventoryCollector {
   private cache: Map<string, CachedInventory>;
   private readonly cacheTTL = 3600000; // 1h en ms (3600 * 1000)
   private logger: Logger;
+  private gitHelpers: GitHelpers;
   
   /**
    * Constructeur
@@ -93,7 +95,27 @@ export class InventoryCollector {
   constructor() {
     this.cache = new Map<string, CachedInventory>();
     this.logger = createLogger('InventoryCollector');
+    this.gitHelpers = getGitHelpers();
     this.logger.info(`Instance créée avec cache TTL de ${this.cacheTTL}ms`);
+    
+    // Vérifier Git au démarrage
+    this.verifyGitOnStartup();
+  }
+  
+  /**
+   * Vérifier la disponibilité de Git au démarrage
+   */
+  private async verifyGitOnStartup(): Promise<void> {
+    try {
+      const gitCheck = await this.gitHelpers.verifyGitAvailable();
+      if (!gitCheck.available) {
+        this.logger.warn('Git NOT available - inventory collection may be limited', { error: gitCheck.error });
+      } else {
+        this.logger.info(`Git verified: ${gitCheck.version}`);
+      }
+    } catch (error) {
+      this.logger.error('Failed to verify Git', error);
+    }
   }
 
   /**
