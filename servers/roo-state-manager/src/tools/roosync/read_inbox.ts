@@ -11,6 +11,10 @@ import { getSharedStatePath } from '../../utils/server-helpers.js';
 import { existsSync, readFileSync } from 'fs';
 import { join } from 'path';
 import os from 'os';
+import { createLogger, Logger } from '../../utils/logger.js';
+
+// Logger instance for read_inbox tool
+const logger: Logger = createLogger('ReadInboxTool');
 
 /**
  * Arguments de l'outil roosync_read_inbox
@@ -89,7 +93,7 @@ function getStatusIcon(status: string): string {
 export async function readInbox(
   args: ReadInboxArgs = {}
 ): Promise<{ content: Array<{ type: string; text: string }> }> {
-  console.error('📬 [read_inbox] Starting...');
+  logger.info('📬 Starting read inbox operation');
 
   try {
     // Initialiser le MessageManager
@@ -98,7 +102,7 @@ export async function readInbox(
 
     // Obtenir l'ID de la machine locale
     const machineId = getLocalMachineId();
-    console.error(`📍 [read_inbox] Machine ID: ${machineId}`);
+    logger.debug('📍 Machine ID identified', { machineId });
 
     // Lire les messages
     const messages = await messageManager.readInbox(
@@ -169,13 +173,13 @@ ${args.status ? `**Filtre :** ${args.status}` : '**Filtre :** tous les messages'
     result += `- \`roosync_read_inbox\` avec \`status: "unread"\` pour voir uniquement les non-lus\n`;
     result += `- \`roosync_read_inbox\` avec \`limit: 5\` pour limiter le nombre de résultats`;
 
-    console.error(`✅ [read_inbox] Returning ${messages.length} messages`);
+    logger.info('✅ Inbox read successfully', { messageCount: messages.length, unreadCount, readCount });
     return {
       content: [{ type: 'text', text: result }]
     };
   } catch (error) {
     const errorMessage = error instanceof Error ? error.message : String(error);
-    console.error('❌ [read_inbox] Error:', errorMessage);
+    logger.error('❌ Read inbox error', error instanceof Error ? error : new Error(errorMessage));
     
     return {
       content: [{
