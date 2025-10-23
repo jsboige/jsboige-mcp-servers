@@ -8,6 +8,10 @@
 
 import { MessageManager } from '../../services/MessageManager.js';
 import { getSharedStatePath } from '../../utils/server-helpers.js';
+import { createLogger, Logger } from '../../utils/logger.js';
+
+// Logger instance for get_message tool
+const logger: Logger = createLogger('GetMessageTool');
 
 /**
  * Arguments de l'outil roosync_get_message
@@ -79,7 +83,7 @@ function getStatusIcon(status: string): string {
 export async function getMessage(
   args: GetMessageArgs
 ): Promise<{ content: Array<{ type: string; text: string }> }> {
-  console.error('🔍 [get_message] Starting...');
+  logger.info('🔍 Starting get message operation');
 
   try {
     // Validation des paramètres requis
@@ -92,7 +96,7 @@ export async function getMessage(
     const messageManager = new MessageManager(sharedStatePath);
 
     // Récupérer le message
-    console.error(`🔍 [get_message] Fetching message: ${args.message_id}`);
+    logger.debug('🔍 Fetching message', { messageId: args.message_id });
     const message = await messageManager.getMessage(args.message_id);
 
     // Cas : message introuvable
@@ -119,7 +123,7 @@ Le message n'a pas été trouvé dans :
 
     // Marquer comme lu si demandé
     if (args.mark_as_read && message.status === 'unread') {
-      console.error('✉️ [get_message] Marking as read...');
+      logger.debug('✉️ Marking message as read');
       await messageManager.markAsRead(args.message_id);
       message.status = 'read';
     }
@@ -178,13 +182,13 @@ Le message n'a pas été trouvé dans :
       result += `- 🔗 **Voir le thread** : Utilisez \`roosync_read_inbox\` puis filtrez par thread_id\n`;
     }
 
-    console.error('✅ [get_message] Message retrieved successfully');
+    logger.info('✅ Message retrieved successfully', { messageId: args.message_id, markedAsRead: args.mark_as_read });
     return {
       content: [{ type: 'text', text: result }]
     };
   } catch (error) {
     const errorMessage = error instanceof Error ? error.message : String(error);
-    console.error('❌ [get_message] Error:', errorMessage);
+    logger.error('❌ Get message error', error instanceof Error ? error : new Error(errorMessage));
     
     return {
       content: [{

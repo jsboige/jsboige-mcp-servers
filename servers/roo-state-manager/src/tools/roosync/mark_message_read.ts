@@ -8,6 +8,10 @@
 
 import { MessageManager } from '../../services/MessageManager.js';
 import { getSharedStatePath } from '../../utils/server-helpers.js';
+import { createLogger, Logger } from '../../utils/logger.js';
+
+// Logger instance for mark_message_read tool
+const logger: Logger = createLogger('MarkMessageReadTool');
 
 /**
  * Arguments de l'outil roosync_mark_message_read
@@ -45,7 +49,7 @@ function formatDate(isoDate: string): string {
 export async function markMessageRead(
   args: MarkMessageReadArgs
 ): Promise<{ content: Array<{ type: string; text: string }> }> {
-  console.error('🔵 [mark_message_read] Starting...');
+  logger.info('🔵 Starting mark message read operation');
 
   try {
     // Validation des paramètres requis
@@ -58,7 +62,7 @@ export async function markMessageRead(
     const messageManager = new MessageManager(sharedStatePath);
 
     // Vérifier existence du message
-    console.error(`🔍 [mark_message_read] Checking message: ${args.message_id}`);
+    logger.debug('🔍 Checking message existence', { messageId: args.message_id });
     const message = await messageManager.getMessage(args.message_id);
 
     // Cas : message introuvable
@@ -103,7 +107,7 @@ Le message était déjà marqué comme lu. Aucune modification nécessaire.`
     }
 
     // Marquer comme lu
-    console.error('✉️ [mark_message_read] Marking as read...');
+    logger.info('✉️ Marking message as read');
     await messageManager.markAsRead(args.message_id);
     
     // Récupérer le message mis à jour
@@ -124,13 +128,13 @@ Le message était déjà marqué comme lu. Aucune modification nécessaire.`
     result += `- 💬 **Répondre** : Utilisez \`roosync_reply_message\` pour répondre à ce message\n`;
     result += `- 📋 **Voir détails** : Utilisez \`roosync_get_message\` pour voir le contenu complet\n`;
 
-    console.error('✅ [mark_message_read] Message marked as read successfully');
+    logger.info('✅ Message marked as read successfully', { messageId: args.message_id });
     return {
       content: [{ type: 'text', text: result }]
     };
   } catch (error) {
     const errorMessage = error instanceof Error ? error.message : String(error);
-    console.error('❌ [mark_message_read] Error:', errorMessage);
+    logger.error('❌ Mark message read error', error instanceof Error ? error : new Error(errorMessage));
     
     return {
       content: [{
