@@ -541,4 +541,164 @@ export class DiffDetector implements IDiffDetector {
         return 'Synchroniser avec la baseline';
     }
   }
+
+  /**
+   * Compare deux inventaires machines (interface RooSync)
+   * @param source - Inventaire machine source
+   * @param target - Inventaire machine cible
+   * @returns Rapport de comparaison avec différences détectées
+   */
+  public async compareInventories(
+    source: MachineInventory,
+    target: MachineInventory
+  ): Promise<ComparisonReport> {
+    const reportId = `comp-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
+    const startTime = Date.now();
+
+    // Collecter toutes les différences via les méthodes existantes
+    const allDifferences: DetectedDifference[] = [];
+
+    // Comparer via baseline (réutilise la logique existante)
+    const baselineConfig: BaselineConfig = {
+      machineId: source.machineId || 'source',
+      version: '1.0',
+      lastUpdated: new Date().toISOString(),
+      config: source.config
+    };
+
+    const baselineDiffs = await this.compareBaselineWithMachine(baselineConfig, target);
+
+    // Convertir BaselineDifference vers DetectedDifference
+    for (const diff of baselineDiffs) {
+      allDifferences.push({
+        id: `${reportId}-${allDifferences.length}`,
+        category: this.mapCategoryToRooSync(diff.category),
+        severity: diff.severity as DiffSeverity,
+        path: diff.path,
+        type: 'modified', // Type simplifié
+        description: diff.description,
+        source: {
+          machineId: source.machineId || 'source',
+          value: diff.baselineValue
+        },
+        target: {
+          machineId: target.machineId || 'target',
+          value: diff.actualValue
+        },
+        recommendedAction: diff.recommendedAction
+      });
+    }
+
+    // Calculer le résumé
+    const summary = this.calculateComparisonSummary(allDifferences);
+    const executionTime = Date.now() - startTime;
+
+    return {
+      reportId,
+      sourceMachine: source.machineId || 'source',
+      targetMachine: target.machineId || 'target',
+      differences: allDifferences,
+      summary,
+      metadata: {
+        comparisonTimestamp: new Date().toISOString(),
+        executionTime,
+        version: '1.0'
+      }
+    };
+  }
+
+  /**
+   * Mappe les catégories baseline vers RooSync
+   */
+  private mapCategoryToRooSync(category: string): DiffCategory {
+    const mapping: Record<string, DiffCategory> = {
+      'config': 'roo_config',
+      'hardware': 'hardware',
+      'software': 'software',
+      'system': 'system'
+    };
+    return mapping[category] || 'roo_config';
+  }
+
+  /**
+   * Calcule le résumé de comparaison
+   */
+  private calculateComparisonSummary(differences: DetectedDifference[]): ComparisonSummary {
+    const summary: ComparisonSummary = {
+      total: differences.length,
+      bySeverity: {
+        CRITICAL: 0,
+        IMPORTANT: 0,
+        WARNING: 0,
+        INFO: 0
+      },
+      byCategory: {
+        roo_config: 0,
+        hardware: 0,
+        software: 0,
+        system: 0
+      }
+    };
+
+    for (const diff of differences) {
+      summary.bySeverity[diff.severity]++;
+      summary.byCategory[diff.category]++;
+    }
+
+    return summary;
+  }
+}
+
+/**
+ * Types pour l'interface RooSync
+ */
+export type DiffSeverity = 'CRITICAL' | 'IMPORTANT' | 'WARNING' | 'INFO';
+export type DiffCategory = 'roo_config' | 'hardware' | 'software' | 'system';
+
+export interface DetectedDifference {
+  id: string;
+  category: DiffCategory;
+  severity: DiffSeverity;
+  path: string;
+  type: 'added' | 'removed' | 'modified';
+  description: string;
+  source: {
+    machineId: string;
+    value: any;
+  };
+  target: {
+    machineId: string;
+    value: any;
+  };
+  recommendedAction?: string;
+  affectedComponents?: string[];
+}
+
+export interface ComparisonSummary {
+  total: number;
+  bySeverity: {
+    CRITICAL: number;
+    IMPORTANT: number;
+    WARNING: number;
+    INFO: number;
+  };
+  byCategory: {
+    roo_config: number;
+    hardware: number;
+    software: number;
+    system: number;
+  };
+}
+
+export interface ComparisonReport {
+  reportId: string;
+  sourceMachine: string;
+  targetMachine: string;
+  differences: DetectedDifference[];
+  summary: ComparisonSummary;
+  metadata: {
+    comparisonTimestamp: string;
+    executionTime: number;
+    version: string;
+  };
 }
