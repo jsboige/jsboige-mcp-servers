@@ -12,6 +12,12 @@
 
 # Logs
 *.log
+.shared-state/logs/*.log
+
+# Temporary files
+*.tmp
+*.bak
+*.old
 
 # Test results
 test-results.json
