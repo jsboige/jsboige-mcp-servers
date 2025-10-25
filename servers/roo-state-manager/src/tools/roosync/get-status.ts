@@ -16,7 +16,9 @@ import { getRooSyncService, RooSyncServiceError } from '../../services/RooSyncSe
  */
 export const GetStatusArgsSchema = z.object({
   machineFilter: z.string().optional()
-    .describe('ID de machine pour filtrer les résultats (optionnel)')
+    .describe('ID de machine pour filtrer les résultats (optionnel)'),
+  resetCache: z.boolean().optional()
+    .describe('Forcer la réinitialisation du cache du service (défaut: false)')
 });
 
 export type GetStatusArgs = z.infer<typeof GetStatusArgsSchema>;
@@ -61,11 +63,26 @@ export type GetStatusResult = z.infer<typeof GetStatusResultSchema>;
  */
 export async function roosyncGetStatus(args: GetStatusArgs): Promise<GetStatusResult> {
   try {
-    const service = getRooSyncService();
-    const dashboard = await service.loadDashboard();
+    // CRITICAL DEBUG: Log pour vérifier que le tool est appelé
+    console.log('[CRITICAL] roosyncGetStatus appelé à', new Date().toISOString());
     
-    // Filtrer par machine si demandé
-    let machines = Object.entries(dashboard.machines).map(([id, info]) => ({
+    // Si resetCache est true, réinitialiser l'instance du service
+    if (args.resetCache) {
+      console.log('[RESET] Réinitialisation du cache du service demandée...');
+      // Import dynamique pour éviter les dépendances circulaires
+      const { RooSyncService } = await import('../../services/RooSyncService.js');
+      RooSyncService.resetInstance();
+      console.log('[RESET] Service réinitialisé avec succès');
+    }
+    
+    const service = getRooSyncService();
+    console.log('[CRITICAL] Service obtenu, appel de loadDashboard...');
+    const dashboard = await service.loadDashboard();
+    console.log('[CRITICAL] Dashboard obtenu:', JSON.stringify(dashboard, null, 2));
+    
+    // CRITICAL FIX: Utiliser les champs machinesArray et summary si disponibles
+    // pour garantir la cohérence avec roosync_list_diffs
+    let machines = dashboard.machinesArray || Object.entries(dashboard.machines).map(([id, info]) => ({
       id,
       status: info.status,
       lastSync: info.lastSync,
@@ -84,8 +101,8 @@ export async function roosyncGetStatus(args: GetStatusArgs): Promise<GetStatusRe
       }
     }
     
-    // Calculer le résumé
-    const summary = {
+    // Utiliser le summary précalculé si disponible, sinon le calculer
+    const summary = dashboard.summary || {
       totalMachines: machines.length,
       onlineMachines: machines.filter(m => m.status === 'online').length,
       totalDiffs: machines.reduce((sum, m) => sum + m.diffsCount, 0),
@@ -123,6 +140,10 @@ export const getStatusToolMetadata = {
       machineFilter: {
         type: 'string',
         description: 'ID de machine pour filtrer les résultats (optionnel)'
+      },
+      resetCache: {
+        type: 'boolean',
+        description: 'Forcer la réinitialisation du cache du service (défaut: false)'
       }
     },
     additionalProperties: false

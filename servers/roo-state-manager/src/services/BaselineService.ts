@@ -13,6 +13,7 @@ import { join } from 'path';
 import { existsSync, copyFileSync } from 'fs';
 import {
   BaselineConfig,
+  BaselineFileConfig,
   BaselineDifference,
   BaselineComparisonReport,
   SyncDecision,
@@ -75,15 +76,18 @@ export class BaselineService {
       }
       
       const content = await fs.readFile(this.baselinePath, 'utf-8');
-      const baseline = JSON.parse(content) as BaselineConfig;
+      const baselineFile = JSON.parse(content) as BaselineFileConfig;
       
-      // Validation de la baseline
-      if (!this.validateBaselineConfig(baseline)) {
+      // Validation du fichier baseline (avec la bonne structure)
+      if (!this.validateBaselineFileConfig(baselineFile)) {
         throw new BaselineServiceError(
           'Configuration baseline invalide',
           BaselineServiceErrorCode.BASELINE_INVALID
         );
       }
+      
+      // Transformer le fichier baseline en BaselineConfig pour compatibilité
+      const baseline = this.transformBaselineForDiffDetector(baselineFile);
       
       this.state.isBaselineLoaded = true;
       this.state.baselineMachine = baseline.machineId;
@@ -112,6 +116,51 @@ export class BaselineService {
   }
 
   /**
+   * Lit le fichier baseline de configuration (format BaselineFileConfig)
+   */
+  public async readBaselineFile(): Promise<BaselineFileConfig | null> {
+    try {
+      this.logInfo('Lecture du fichier baseline', { path: this.baselinePath });
+      
+      if (!existsSync(this.baselinePath)) {
+        this.logWarn('Fichier baseline non trouvé', { path: this.baselinePath });
+        return null;
+      }
+      
+      const content = await fs.readFile(this.baselinePath, 'utf-8');
+      const baselineFile = JSON.parse(content) as BaselineFileConfig;
+      
+      // Validation basique de la baseline file
+      if (!baselineFile.machineId || !baselineFile.version || !baselineFile.timestamp) {
+        throw new BaselineServiceError(
+          'Configuration baseline file invalide: champs requis manquants',
+          BaselineServiceErrorCode.BASELINE_INVALID
+        );
+      }
+      
+      this.logInfo('Fichier baseline lu avec succès', {
+        machineId: baselineFile.machineId,
+        version: baselineFile.version,
+        timestamp: baselineFile.timestamp
+      });
+      
+      return baselineFile;
+    } catch (error) {
+      this.logError('Erreur lors de la lecture du fichier baseline', error);
+      
+      if (error instanceof BaselineServiceError) {
+        throw error;
+      }
+      
+      throw new BaselineServiceError(
+        `Erreur lecture fichier baseline: ${(error as Error).message}`,
+        BaselineServiceErrorCode.BASELINE_NOT_FOUND,
+        error
+      );
+    }
+  }
+
+  /**
    * Compare une machine avec la configuration baseline
    */
   public async compareWithBaseline(
@@ -126,9 +175,9 @@ export class BaselineService {
         forceRefresh
       });
       
-      // Charger la baseline
-      const baseline = await this.loadBaseline();
-      if (!baseline) {
+      // Charger la baseline depuis le fichier
+      const baselineFile = await this.readBaselineFile();
+      if (!baselineFile) {
         throw new BaselineServiceError(
           'Configuration baseline non disponible',
           BaselineServiceErrorCode.BASELINE_NOT_FOUND
@@ -137,7 +186,7 @@ export class BaselineService {
       
       // Collecter inventaire de la machine cible
       const targetInventory = await this.inventoryCollector.collectInventory(
-        targetMachineId, 
+        targetMachineId,
         forceRefresh
       );
       
@@ -148,16 +197,19 @@ export class BaselineService {
         );
       }
       
+      // Transformer la baseline pour le DiffDetector
+      const transformedBaseline = this.transformBaselineForDiffDetector(baselineFile);
+      
       // Comparer baseline avec machine cible
       const differences = await this.diffDetector.compareBaselineWithMachine(
-        baseline,
+        transformedBaseline,
         targetInventory
       );
       
       const report: BaselineComparisonReport = {
-        baselineMachine: baseline.machineId,
+        baselineMachine: baselineFile.machineId,
         targetMachine: targetMachineId,
-        baselineVersion: baseline.version,
+        baselineVersion: baselineFile.version,
         differences,
         summary: this.calculateSummary(differences),
         generatedAt: new Date().toISOString()
@@ -427,28 +479,28 @@ export class BaselineService {
     return {
       machineId: inventory.machineId,
       version: '1.0.0',
-      lastUpdated: inventory.timestamp,
       config: {
         roo: {
-          modes: inventory.config.roo?.modes || [],
-          mcpSettings: inventory.config.roo?.mcpSettings || {},
-          userSettings: inventory.config.roo?.userSettings || {}
+          modes: [],
+          mcpSettings: {},
+          userSettings: {}
         },
         hardware: {
-          cpu: inventory.config.hardware?.cpu || 'Unknown',
-          ram: inventory.config.hardware?.ram || 'Unknown',
-          disks: inventory.config.hardware?.disks || []
+          cpu: 'Unknown',
+          ram: 'Unknown',
+          disks: []
         },
         software: {
-          powershell: inventory.config.software?.powershell || 'Unknown',
-          node: inventory.config.software?.node || 'N/A',
-          python: inventory.config.software?.python || 'N/A'
+          powershell: 'Unknown',
+          node: 'Unknown',
+          python: 'Unknown'
         },
         system: {
-          os: inventory.config.system?.os || 'Unknown',
-          architecture: inventory.config.system?.architecture || 'Unknown'
+          os: 'Unknown',
+          architecture: 'Unknown'
         }
-      }
+      },
+      lastUpdated: inventory.timestamp
     };
   }
 
@@ -724,6 +776,26 @@ export class BaselineService {
   }
 
   /**
+   * Valide la configuration du fichier baseline (BaselineFileConfig)
+   */
+  private validateBaselineFileConfig(baselineFile: BaselineFileConfig): boolean {
+    try {
+      return !!(
+        baselineFile.version &&
+        baselineFile.baselineId &&
+        baselineFile.machineId &&
+        baselineFile.timestamp &&
+        baselineFile.machines &&
+        Array.isArray(baselineFile.machines) &&
+        baselineFile.machines.length > 0
+      );
+    } catch (error) {
+      this.logError('Erreur lors de la validation du fichier baseline', error);
+      return false;
+    }
+  }
+
+  /**
    * Formate une décision en Markdown pour le roadmap
    */
   private formatDecisionToMarkdown(decision: SyncDecision, timestamp: string): string {
@@ -901,5 +973,66 @@ ${decision.notes ? `### Notes\n${decision.notes}` : ''}
     };
     
     console.error(JSON.stringify(logEntry));
+  }
+
+  /**
+   * Transforme la structure du fichier baseline pour le DiffDetector
+   *
+   * Le fichier sync-config.ref.json a une structure différente de celle attendue
+   * par le DiffDetector. Cette méthode fait la transformation nécessaire.
+   */
+  private transformBaselineForDiffDetector(baselineFile: BaselineFileConfig): BaselineConfig {
+    // Récupérer la première machine du fichier baseline
+    const firstMachine = baselineFile.machines?.[0];
+    
+    return {
+      machineId: baselineFile.machineId || 'unknown',
+      config: {
+        roo: {
+          modes: firstMachine?.roo?.modes || [],
+          mcpSettings: this.extractMcpSettings(firstMachine?.roo?.mcpServers || []),
+          userSettings: {}
+        },
+        hardware: {
+          cpu: firstMachine?.hardware?.cpu?.cores?.toString() || 'Unknown',
+          ram: firstMachine?.hardware?.memory?.total?.toString() || 'Unknown',
+          disks: [],
+          gpu: 'Unknown'
+        },
+        software: {
+          powershell: 'Unknown',
+          node: firstMachine?.software?.node || 'Unknown',
+          python: firstMachine?.software?.python || 'Unknown'
+        },
+        system: {
+          os: firstMachine?.os || 'Unknown',
+          architecture: firstMachine?.architecture || 'Unknown'
+        }
+      },
+      lastUpdated: baselineFile.timestamp || new Date().toISOString(),
+      version: baselineFile.version || '2.1'
+    };
+  }
+  
+  /**
+   * Extrait les paramètres MCP depuis la liste des serveurs MCP
+   */
+  private extractMcpSettings(mcpServers: any[]): Record<string, any> {
+    const settings: Record<string, any> = {};
+    
+    mcpServers.forEach(server => {
+      if (server.name && server.enabled) {
+        settings[server.name] = {
+          enabled: server.enabled,
+          command: server.command,
+          autoStart: server.autoStart,
+          transportType: server.transportType,
+          alwaysAllow: server.alwaysAllow || [],
+          description: server.description
+        };
+      }
+    });
+    
+    return settings;
   }
 }
