@@ -206,18 +206,48 @@ export async function handleGetTaskTree(
         return currentId; // Dernier ID trouvé (racine ou boucle détectée)
     };
 
-    const buildTree = (taskId: string, depth: number): any => {
+    const buildTree = (
+        taskId: string,
+        depth: number,
+        visited: Set<string> = new Set(),
+        maxDepth: number = 100
+    ): any => {
+        // 🆕 1. VÉRIFICATION CYCLE (priorité absolue)
+        if (visited.has(taskId)) {
+            console.warn(`[get_task_tree] ❌ CYCLE DÉTECTÉ pour taskId=${taskId ? taskId.substring(0, 8) : 'undefined'}`);
+            return null;
+        }
+        
+        // 🆕 2. GARDE-FOU PROFONDEUR EXPLICITE
+        if (depth >= maxDepth) {
+            console.warn(`[get_task_tree] ⚠️ PROFONDEUR MAX ATTEINTE (${maxDepth}) pour taskId=${taskId ? taskId.substring(0, 8) : 'undefined'}`);
+            return null;
+        }
+        
+        // 🆕 3. VÉRIFICATION taskId DÉFINI
+        if (!taskId) {
+            console.warn(`[get_task_tree] ⚠️ taskId undefined ou null, profondeur=${depth}`);
+            return null;
+        }
+        
+        // 3. Vérification profondeur paramétrable (existant)
         if (depth > max_depth) {
             return null;
         }
+        
         const skeleton = skeletons.find(s => s.taskId === taskId);
         if (!skeleton) {
             return null;
         }
 
+        // 🆕 4. MARQUER COMME VISITÉ **AVANT** RÉCURSION
+        visited.add(taskId);
+
+        // 🆕 5. RÉCURSION PROTÉGÉE
         const childrenIds = childrenMap.get(taskId) || [];
         const children = childrenIds
-            .map(childId => buildTree(childId, depth + 1))
+            .filter(childId => !visited.has(childId))
+            .map(childId => buildTree(childId, depth + 1, visited, maxDepth))
             .filter(child => child !== null);
         
         // 🎯 Marquer la tâche actuelle - Comparer les 8 premiers caractères (UUIDs courts)
@@ -264,11 +294,11 @@ export async function handleGetTaskTree(
     if (include_siblings) {
         // Si les siblings sont demandés, construire l'arbre depuis la racine absolue
         // pour inclure toute la hiérarchie complète
-        tree = buildTree(absoluteRootId, 0);
+        tree = buildTree(absoluteRootId, 0, new Set(), max_depth === Infinity ? 100 : max_depth);
     } else {
         // Même sans siblings, on construit depuis la racine absolue pour avoir
         // le contexte complet de la hiérarchie jusqu'à la tâche cible
-        tree = buildTree(absoluteRootId, 0);
+        tree = buildTree(absoluteRootId, 0, new Set(), max_depth === Infinity ? 100 : max_depth);
     }
 
     if (!tree) {

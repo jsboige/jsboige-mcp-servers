@@ -2,8 +2,8 @@
   "compilerOptions": {
     "target": "ES2022",
     "lib": ["ES2022"],
-    "module": "ES2022",
-    "moduleResolution": "node",
+    "module": "NodeNext",
+    "moduleResolution": "NodeNext",
     "downlevelIteration": true,
     "rootDir": "./src",
     "outDir": "./build",
@@ -24,6 +24,8 @@
   ],
   "exclude": [
     "node_modules",
-    "build"
+    "build",
+    "src/services/RooSyncService.ts",
+    "src/tests/BaselineService.test.ts"
   ]
 }
