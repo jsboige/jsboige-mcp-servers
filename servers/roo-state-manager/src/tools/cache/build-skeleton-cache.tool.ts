@@ -41,13 +41,76 @@ async function saveSkeletonWithRetry(
     
     console.log(`[SAVE-DEBUG] ✅ Skeleton trouvé dans cache`);
     console.log(`[SAVE-DEBUG] 🏷️ parentTaskId avant écriture: ${skeleton.parentTaskId || 'undefined'}`);
+    
+    // 🔍 DIAGNOSTIC EXHAUSTIF - Phase 3 Bug Investigation
+    console.log(`[PERSISTENCE-DEBUG] ========================================`);
+    console.log(`[PERSISTENCE-DEBUG] 🔍 SKELETON AVANT SAUVEGARDE - DIAGNOSTIC COMPLET`);
+    console.log(`[PERSISTENCE-DEBUG] ========================================`);
+    console.log(`[PERSISTENCE-DEBUG] skeleton AVANT sauvegarde:`, JSON.stringify({
+        taskId: skeleton.taskId,
+        parentTaskId: skeleton.parentTaskId,
+        hasParentTaskId: 'parentTaskId' in skeleton,
+        parentTaskIdType: typeof skeleton.parentTaskId,
+        parentTaskIdValue: skeleton.parentTaskId,
+        allKeys: Object.keys(skeleton),
+        hasOwnProperty: Object.prototype.hasOwnProperty.call(skeleton, 'parentTaskId')
+    }, null, 2));
+    console.log(`[PERSISTENCE-DEBUG] ========================================`);
+    
     console.log(`[SAVE-DEBUG] 📊 Skeleton data size: ${JSON.stringify(skeleton).length} caractères`);
+    
+    // 🔍 VÉRIFICATION FINALE: Le JSON stringifié contient-il parentTaskId?
+    const stringified = JSON.stringify(skeleton, null, 2);
+    const containsParentTaskId = stringified.includes('"parentTaskId"');
+    console.log(`[PERSISTENCE-DEBUG] 🔎 JSON.stringify contient "parentTaskId": ${containsParentTaskId}`);
+    if (!containsParentTaskId && skeleton.parentTaskId) {
+        console.error(`[PERSISTENCE-DEBUG] 🚨 BUG CONFIRMÉ: parentTaskId présent dans objet mais ABSENT du JSON stringifié!`);
+        console.error(`[PERSISTENCE-DEBUG] 🔍 Objet skeleton:`, skeleton);
+        console.error(`[PERSISTENCE-DEBUG] 🔍 JSON.stringify output (premiers 500 chars):`, stringified.substring(0, 500));
+    }
+    
+    // 🎯 DIAGNOSTIC FINAL ULTIME - Capturer l'objet EXACT avant écriture disque
+    console.log(`[ULTIMATE-DEBUG] ========================================`);
+    console.log(`[ULTIMATE-DEBUG] 🔥 OBJET FINAL AVANT fs.writeFile`);
+    console.log(`[ULTIMATE-DEBUG] ========================================`);
+    console.log(`[ULTIMATE-DEBUG] skeleton.taskId: ${skeleton.taskId}`);
+    console.log(`[ULTIMATE-DEBUG] skeleton.parentTaskId: ${skeleton.parentTaskId || 'undefined'}`);
+    console.log(`[ULTIMATE-DEBUG] 'parentTaskId' in skeleton: ${'parentTaskId' in skeleton}`);
+    console.log(`[ULTIMATE-DEBUG] skeleton.hasOwnProperty('parentTaskId'): ${Object.prototype.hasOwnProperty.call(skeleton, 'parentTaskId')}`);
+    console.log(`[ULTIMATE-DEBUG] typeof skeleton.parentTaskId: ${typeof skeleton.parentTaskId}`);
+    console.log(`[ULTIMATE-DEBUG] skeleton.parentTaskId === undefined: ${skeleton.parentTaskId === undefined}`);
+    console.log(`[ULTIMATE-DEBUG] skeleton.parentTaskId === null: ${skeleton.parentTaskId === null}`);
+    console.log(`[ULTIMATE-DEBUG] JSON.stringify(skeleton).includes('parentTaskId'): ${JSON.stringify(skeleton).includes('parentTaskId')}`);
+    console.log(`[ULTIMATE-DEBUG] ========================================`);
 
     for (let attempt = 1; attempt <= maxRetries; attempt++) {
         try {
             console.log(`[SAVE-DEBUG] 💾 Tentative ${attempt}/${maxRetries} d'écriture sur ${skeletonPath}`);
-            await fs.writeFile(skeletonPath, JSON.stringify(skeleton, null, 2));
+            
+            // 🔥 CAPTURE ULTIME: Sérialiser JUSTE AVANT l'écriture pour garantir aucune modification
+            const finalJson = JSON.stringify(skeleton, null, 2);
+            console.log(`[ULTIMATE-DEBUG] 📝 Contenu JSON FINAL à écrire (100 premiers chars): ${finalJson.substring(0, 100)}`);
+            console.log(`[ULTIMATE-DEBUG] 🔍 Contenu contient 'parentTaskId': ${finalJson.includes('parentTaskId')}`);
+            
+            await fs.writeFile(skeletonPath, finalJson);
             console.log(`[SAVE-DEBUG] ✅ SUCCÈS écriture à la tentative ${attempt}`);
+            
+            // 🔍 VERIFICATION POST-WRITE IMMEDIATE
+            console.log(`[POST-WRITE-CHECK] 🔍 Relecture immédiate du fichier pour vérification...`);
+            const writtenContent = await fs.readFile(skeletonPath, 'utf-8');
+            const hasParentTaskIdInFile = writtenContent.includes('"parentTaskId"');
+            console.log(`[POST-WRITE-CHECK] 📄 Fichier contient "parentTaskId": ${hasParentTaskIdInFile}`);
+            console.log(`[POST-WRITE-CHECK] 📄 Taille fichier écrit: ${writtenContent.length} octets`);
+            console.log(`[POST-WRITE-CHECK] 📄 Premiers 200 caractères: ${writtenContent.substring(0, 200)}`);
+            
+            if (!hasParentTaskIdInFile && skeleton.parentTaskId) {
+                console.error(`[POST-WRITE-CHECK] 🚨 BUG CONFIRMÉ: parentTaskId PERDU lors de l'écriture disque!`);
+                console.error(`[POST-WRITE-CHECK] 🔍 String à écrire contenait parentTaskId: ${finalJson.includes('"parentTaskId"')}`);
+                console.error(`[POST-WRITE-CHECK] 🔍 Fichier écrit ne contient PAS parentTaskId: ${!hasParentTaskIdInFile}`);
+            } else if (hasParentTaskIdInFile) {
+                console.log(`[POST-WRITE-CHECK] ✅ SUCCÈS: parentTaskId correctement persisté sur disque`);
+            }
+            
             return { success: true, attempts: attempt };
         } catch (error) {
             const errorMsg = error instanceof Error ? error.message : String(error);
@@ -690,7 +753,9 @@ export async function handleBuildSkeletonCache(
                 let saved = false;
                 for (let locIdx = 0; locIdx < locations.length; locIdx++) {
                     const storageDir = locations[locIdx];
-                    const skeletonDir = path.join(storageDir, SKELETON_CACHE_DIR_NAME);
+                    // ✅ FIX CRITIQUE: Utiliser tasks/.skeletons comme Phase 1 (ligne 225)
+                    const tasksDir = path.join(storageDir, 'tasks');
+                    const skeletonDir = path.join(tasksDir, SKELETON_CACHE_DIR_NAME);
                     const skeletonPath = path.join(skeletonDir, `${update.taskId}.json`);
                     
                     console.log(`[PHASE3-DEBUG] 🔍 Test location ${locIdx + 1}/${locations.length}: ${storageDir}`);

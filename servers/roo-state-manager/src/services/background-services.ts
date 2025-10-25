@@ -26,7 +26,9 @@ export async function loadSkeletonsFromDisk(conversationCache: Map<string, Conve
             return;
         }
 
-        const skeletonsCacheDir = path.join(storageLocations[0], '.skeletons');
+        // ✅ FIX CRITIQUE: Utiliser tasks/.skeletons comme build-skeleton-cache.tool.ts
+        const tasksDir = path.join(storageLocations[0], 'tasks');
+        const skeletonsCacheDir = path.join(tasksDir, '.skeletons');
         
         try {
             const skeletonFiles = await fs.readdir(skeletonsCacheDir);
@@ -432,11 +434,16 @@ export async function saveSkeletonToDisk(skeleton: ConversationSkeleton): Promis
             throw new Error('Aucun emplacement de stockage Roo trouvé');
         }
 
-        const skeletonsCacheDir = path.join(storageLocations[0], '.skeletons');
+        // ✅ FIX CRITIQUE: Utiliser tasks/.skeletons comme build-skeleton-cache.tool.ts
+        const tasksDir = path.join(storageLocations[0], 'tasks');
+        const skeletonsCacheDir = path.join(tasksDir, '.skeletons');
         await fs.mkdir(skeletonsCacheDir, { recursive: true });
 
         const filePath = path.join(skeletonsCacheDir, `${skeleton.taskId}.json`);
         await fs.writeFile(filePath, JSON.stringify(skeleton, null, 2), 'utf8');
+        
+        console.log(`[BACKGROUND-SAVE-DEBUG] ✅ Skeleton sauvegardé: ${filePath}`);
+        console.log(`[BACKGROUND-SAVE-DEBUG] 🏷️ parentTaskId: ${skeleton.parentTaskId || 'undefined'}`);
     } catch (error: any) {
         console.error(`Erreur lors de la sauvegarde du squelette ${skeleton.taskId}:`, error);
     }
