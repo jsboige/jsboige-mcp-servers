@@ -10,7 +10,6 @@
 import { z } from 'zod';
 import { zodToJsonSchema } from 'zod-to-json-schema';
 import { getRooSyncService, RooSyncServiceError } from '../../services/RooSyncService.js';
-import type { BaselineComparisonReport, BaselineDifference } from '../../types/baseline.js';
 
 /**
  * Schema de validation pour roosync_compare_config
@@ -121,11 +120,11 @@ async function getDefaultTargetMachine(service: any, sourceMachineId: string): P
 /**
  * Formate le rapport de comparaison pour l'affichage MCP
  */
-function formatComparisonReport(report: BaselineComparisonReport): CompareConfigResult {
+function formatComparisonReport(report: any): CompareConfigResult {
   return {
     source: report.baselineMachine,
     target: report.targetMachine,
-    differences: report.differences.map((diff: BaselineDifference) => ({
+    differences: report.differences.map((diff: any) => ({
       category: diff.category,
       severity: diff.severity,
       path: diff.path,

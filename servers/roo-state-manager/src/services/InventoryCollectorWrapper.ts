@@ -59,22 +59,22 @@ export class InventoryCollectorWrapper implements IInventoryCollector {
           userSettings: {}
         },
         hardware: {
-          cpu: inventory.hardware.cpu.name,
-          ram: `${Math.round(inventory.hardware.memory.total / 1024 / 1024 / 1024)}GB`,
-          disks: inventory.hardware.disks.map(d => ({
-            name: d.drive,
-            size: `${Math.round(d.size / 1024 / 1024 / 1024)}GB`
+          cpu: inventory.hardware.cpu?.name || 'Unknown',
+          ram: `${Math.round((inventory.hardware.memory?.total || 0) / 1024 / 1024 / 1024)}GB`,
+          disks: (inventory.hardware.disks || []).map(d => ({
+            name: d.drive || 'Unknown',
+            size: `${Math.round((d.size || 0) / 1024 / 1024 / 1024)}GB`
           })),
-          gpu: inventory.hardware.gpu?.map(g => g.name).join(', ')
+          gpu: (inventory.hardware.gpu || []).map(g => g.name).join(', ') || 'None'
         },
         software: {
-          powershell: inventory.software.powershell,
+          powershell: inventory.software.powershell || 'Unknown',
           node: inventory.software.node || 'N/A',
           python: inventory.software.python || 'N/A'
         },
         system: {
-          os: inventory.system.os,
-          architecture: inventory.system.architecture
+          os: inventory.system.os || 'Unknown',
+          architecture: inventory.system.architecture || 'Unknown'
         }
       },
       metadata: {

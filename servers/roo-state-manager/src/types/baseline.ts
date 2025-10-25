@@ -6,7 +6,7 @@
  */
 
 /**
- * Configuration baseline complète
+ * Configuration baseline complète (ancienne structure pour compatibilité)
  */
 export interface BaselineConfig {
   machineId: string;
@@ -34,6 +34,59 @@ export interface BaselineConfig {
   };
   lastUpdated: string;
   version: string;
+}
+
+/**
+ * Configuration baseline fichier (nouvelle structure pour sync-config.ref.json)
+ */
+export interface BaselineFileConfig {
+  version: string;
+  baselineId: string;
+  timestamp: string;
+  machineId: string;
+  autoSync: boolean;
+  conflictStrategy: string;
+  logLevel: string;
+  sharedStatePath: string;
+  machines: Array<{
+    id: string;
+    name: string;
+    hostname: string;
+    os: string;
+    architecture: string;
+    lastSeen: string;
+    roo: {
+      modes: Array<any>;
+      mcpServers: Array<any>;
+      sdddSpecs: Array<any>;
+    };
+    hardware: {
+      cpu: {
+        cores: number;
+        threads: number;
+      };
+      memory: {
+        total: number;
+      };
+    };
+    software: {
+      node?: string;
+      python?: string;
+    };
+  }>;
+  syncTargets: Array<{
+    name: string;
+    localPath: string;
+    remotePath: string;
+    direction: string;
+  }>;
+  syncPaths: Array<{
+    type: string;
+    path: string;
+    exclusions: string[];
+  }>;
+  decisions: Array<any>;
+  messages: Array<any>;
 }
 
 /**
@@ -204,7 +257,28 @@ export interface ValidationReport {
 export interface MachineInventory {
   machineId: string;
   timestamp: string;
-  config: BaselineConfig['config'];
+  config: {
+    roo: {
+      modes: string[];
+      mcpSettings: Record<string, any>;
+      userSettings: Record<string, any>;
+    };
+    hardware: {
+      cpu: string;
+      ram: string;
+      disks: Array<{name: string; size: string}>;
+      gpu?: string;
+    };
+    software: {
+      powershell: string;
+      node: string;
+      python: string;
+    };
+    system: {
+      os: string;
+      architecture: string;
+    };
+  };
   metadata: {
     collectionDuration: number; // en millisecondes
     source: 'local' | 'remote';

@@ -236,6 +236,15 @@ export function registerListToolsHandler(server: Server): void {
                         },
                         required: ['message_id', 'body']
                     }
+                },
+                {
+                    name: 'debug_dashboard',
+                    description: 'Outil de diagnostic pour forcer la réinitialisation du service RooSync et contourner le cache',
+                    inputSchema: {
+                        type: 'object',
+                        properties: {},
+                        required: []
+                    }
                 }
             ] as any[],
         };
@@ -411,6 +420,14 @@ export function registerCallToolHandler(
                   result = { content: [{ type: 'text', text: `Error: ${(error as Error).message}` }], isError: true };
               }
               break;
+          case 'roosync_read_dashboard':
+              try {
+                  const roosyncResult = await toolExports.roosyncReadDashboard(args as any);
+                  result = { content: [{ type: 'text', text: JSON.stringify(roosyncResult, null, 2) }] };
+              } catch (error) {
+                  result = { content: [{ type: 'text', text: `Error: ${(error as Error).message}` }], isError: true };
+              }
+              break;
           case 'roosync_compare_config':
               try {
                   const roosyncResult = await toolExports.roosyncCompareConfig(args as any);
@@ -515,6 +532,14 @@ export function registerCallToolHandler(
            case 'roosync_reply_message':
                try {
                    result = await toolExports.replyMessage(args as any) as CallToolResult;
+               } catch (error) {
+                   result = { content: [{ type: 'text', text: `Error: ${(error as Error).message}` }], isError: true };
+               }
+               break;
+           case 'debug_dashboard':
+               try {
+                   const debugResult = await toolExports.debugDashboard(args as any);
+                   result = { content: [{ type: 'text', text: JSON.stringify(debugResult, null, 2) }] };
                } catch (error) {
                    result = { content: [{ type: 'text', text: `Error: ${(error as Error).message}` }], isError: true };
                }

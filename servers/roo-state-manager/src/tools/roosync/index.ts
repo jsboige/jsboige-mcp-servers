@@ -12,10 +12,22 @@ export {
   getStatusToolMetadata
 } from './get-status.js';
 
+export {
+  roosyncReadDashboard,
+  ReadDashboardArgsSchema,
+  ReadDashboardResultSchema,
+  readDashboardToolMetadata
+} from './read-dashboard.js';
+
 export type {
   GetStatusArgs,
   GetStatusResult
 } from './get-status.js';
+
+export type {
+  ReadDashboardArgs,
+  ReadDashboardResult
+} from './read-dashboard.js';
 
 export {
   roosyncCompareConfig,
@@ -126,8 +138,25 @@ export { replyMessage } from './reply_message.js';
 // Export des outils de messagerie Phase 3 - Advanced Features
 export { amendMessage } from './amend_message.js';
 
+// Export de l'outil de diagnostic debug dashboard
+export { debugDashboard, debugDashboardSchema } from './debug-dashboard-metadata.js';
+
+// Export de l'outil de réinitialisation du service
+export {
+  roosyncResetService,
+  ResetServiceArgsSchema,
+  ResetServiceResultSchema,
+  resetServiceToolMetadata
+} from './reset-service.js';
+
+export type {
+  ResetServiceArgs,
+  ResetServiceResult
+} from './reset-service.js';
+
 // Import des métadonnées pour l'array
 import { getStatusToolMetadata } from './get-status.js';
+import { readDashboardToolMetadata } from './read-dashboard.js';
 import { compareConfigToolMetadata } from './compare-config.js';
 import { listDiffsToolMetadata } from './list-diffs.js';
 import { approveDecisionToolMetadata } from './approve-decision.js';
@@ -136,6 +165,8 @@ import { applyDecisionToolMetadata } from './apply-decision.js';
 import { rollbackDecisionToolMetadata } from './rollback-decision.js';
 import { getDecisionDetailsToolMetadata } from './get-decision-details.js';
 import { initToolMetadata } from './init.js';
+import { debugDashboardToolMetadata } from './debug-dashboard-metadata.js';
+import { resetServiceToolMetadata } from './reset-service.js';
 
 /**
  * Liste de tous les outils RooSync pour enregistrement MCP
@@ -144,11 +175,14 @@ import { initToolMetadata } from './init.js';
 export const roosyncTools = [
   initToolMetadata,
   getStatusToolMetadata,
+  readDashboardToolMetadata,
   compareConfigToolMetadata,
   listDiffsToolMetadata,
   approveDecisionToolMetadata,
   rejectDecisionToolMetadata,
   applyDecisionToolMetadata,
   rollbackDecisionToolMetadata,
-  getDecisionDetailsToolMetadata
+  getDecisionDetailsToolMetadata,
+  debugDashboardToolMetadata,
+  resetServiceToolMetadata
 ];
