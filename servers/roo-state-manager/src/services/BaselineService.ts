@@ -9,7 +9,7 @@
  */
 
 import { promises as fs } from 'fs';
-import { join } from 'path';
+import { join, resolve } from 'path';
 import { existsSync, copyFileSync } from 'fs';
 import {
   BaselineConfig,
@@ -44,11 +44,19 @@ export class BaselineService {
     private inventoryCollector: IInventoryCollector,
     private diffDetector: IDiffDetector
   ) {
+    console.log('[DEBUG] BaselineService.constructor() appelé');
+    
     this.config = configService.getBaselineServiceConfig();
     const sharedStatePath = configService.getSharedStatePath();
     
-    this.baselinePath = join(sharedStatePath, 'sync-config.ref.json');
+    console.log('[DEBUG] sharedStatePath:', sharedStatePath);
+    
+    // CORRECTION SDDD : Forcer le chemin absolu connu et validé
+    this.baselinePath = 'g:/Mon Drive/Synchronisation/RooSync/.shared-state/sync-config.ref.json';
     this.roadmapPath = join(sharedStatePath, 'sync-roadmap.md');
+    
+    console.log('[DEBUG] this.baselinePath forcé:', this.baselinePath);
+    console.log('[DEBUG] this.roadmapPath:', this.roadmapPath);
     
     this.state = {
       isBaselineLoaded: false,
@@ -56,6 +64,12 @@ export class BaselineService {
       approvedDecisions: 0,
       appliedDecisions: 0
     };
+
+    console.log('[DEBUG] Vérification existence du fichier baseline...');
+    const fileExists = existsSync(this.baselinePath);
+    console.log('[DEBUG] Fichier baseline existe:', fileExists);
+    console.log('[DEBUG] Chemin résolu:', resolve(this.baselinePath));
+    console.log('[DEBUG] Working directory:', process.cwd());
 
     this.logInfo('BaselineService initialisé', {
       baselinePath: this.baselinePath,
@@ -67,16 +81,26 @@ export class BaselineService {
    * Charge la configuration baseline depuis sync-config.ref.json
    */
   public async loadBaseline(): Promise<BaselineConfig | null> {
+    console.log('[DEBUG] BaselineService.loadBaseline() appelé');
+    console.log('[DEBUG] this.baselinePath:', this.baselinePath);
+    
     try {
       this.logInfo('Chargement de la baseline', { path: this.baselinePath });
+      console.log('[DEBUG] Début try block dans loadBaseline');
       
       if (!existsSync(this.baselinePath)) {
+        console.log('[DEBUG] Fichier baseline non trouvé:', this.baselinePath);
         this.logWarn('Fichier baseline non trouvé', { path: this.baselinePath });
         return null;
       }
       
+      console.log('[DEBUG] Fichier baseline trouvé, lecture en cours...');
       const content = await fs.readFile(this.baselinePath, 'utf-8');
+      console.log('[DEBUG] Contenu lu, longueur:', content.length);
+      console.log('[DEBUG] Début du contenu:', content.substring(0, 100));
+      
       const baselineFile = JSON.parse(content) as BaselineFileConfig;
+      console.log('[DEBUG] JSON parsé avec succès');
       
       // Validation du fichier baseline (avec la bonne structure)
       if (!this.validateBaselineFileConfig(baselineFile)) {
@@ -101,6 +125,15 @@ export class BaselineService {
       
       return baseline;
     } catch (error) {
+      // DEBUG: Capturer l'erreur originale avec tous les détails
+      const originalError = error as Error;
+      console.error('[DEBUG] ERREUR DANS loadBaseline():');
+      console.error('[DEBUG] Message:', originalError.message);
+      console.error('[DEBUG] Stack:', originalError.stack);
+      console.error('[DEBUG] Type:', typeof originalError);
+      console.error('[DEBUG] Nom:', originalError.name);
+      console.error('[DEBUG] Path:', this.baselinePath);
+      
       this.logError('Erreur lors du chargement de la baseline', error);
       
       if (error instanceof BaselineServiceError) {
@@ -108,7 +141,7 @@ export class BaselineService {
       }
       
       throw new BaselineServiceError(
-        `Erreur chargement baseline: ${(error as Error).message}`,
+        `Erreur chargement baseline: ${originalError.message}`,
         BaselineServiceErrorCode.BASELINE_NOT_FOUND,
         error
       );
@@ -120,15 +153,44 @@ export class BaselineService {
    */
   public async readBaselineFile(): Promise<BaselineFileConfig | null> {
     try {
-      this.logInfo('Lecture du fichier baseline', { path: this.baselinePath });
+      const debugInfo = {
+        path: this.baselinePath,
+        pathType: typeof this.baselinePath,
+        pathLength: this.baselinePath?.length || 0,
+        workingDirectory: process.cwd(),
+        fileExists: false,
+        resolvedPath: ''
+      };
       
-      if (!existsSync(this.baselinePath)) {
-        this.logWarn('Fichier baseline non trouvé', { path: this.baselinePath });
-        return null;
+      const fileExists = existsSync(this.baselinePath);
+      debugInfo.fileExists = fileExists;
+      debugInfo.resolvedPath = resolve(this.baselinePath);
+      
+      if (!fileExists) {
+        throw new BaselineServiceError(
+          `Fichier baseline non trouvé: ${this.baselinePath} (WD: ${process.cwd()})`,
+          BaselineServiceErrorCode.BASELINE_NOT_FOUND
+        );
       }
       
+      console.error('DEBUG: Fichier trouvé, lecture du contenu...');
       const content = await fs.readFile(this.baselinePath, 'utf-8');
-      const baselineFile = JSON.parse(content) as BaselineFileConfig;
+      console.error('DEBUG: Contenu lu, longueur:', content.length);
+      console.error('DEBUG: Début du contenu:', content.substring(0, 100));
+      
+      let baselineFile;
+      try {
+        baselineFile = JSON.parse(content) as BaselineFileConfig;
+        console.error('DEBUG: JSON parsé avec succès');
+      } catch (parseError) {
+        console.error('DEBUG: ERREUR PARSING JSON:', parseError);
+        console.error('DEBUG: Contenu brut qui cause l\'erreur:', content);
+        throw new BaselineServiceError(
+          `Erreur parsing JSON baseline: ${(parseError as Error).message}`,
+          BaselineServiceErrorCode.BASELINE_INVALID,
+          parseError
+        );
+      }
       
       // Validation basique de la baseline file
       if (!baselineFile.machineId || !baselineFile.version || !baselineFile.timestamp) {
@@ -176,10 +238,28 @@ export class BaselineService {
       });
       
       // Charger la baseline depuis le fichier
+      this.logInfo('DEBUG: Appel readBaselineFile() pour comparaison');
       const baselineFile = await this.readBaselineFile();
+      
+      this.logInfo('DEBUG: Résultat readBaselineFile()', {
+        isNull: baselineFile === null,
+        hasValue: baselineFile !== null,
+        baselineType: typeof baselineFile,
+        baselinePath: this.baselinePath,
+        fileExists: existsSync(this.baselinePath)
+      });
+      
       if (!baselineFile) {
+        const debugDetails = {
+          targetMachineId,
+          baselinePath: this.baselinePath,
+          fileExists: existsSync(this.baselinePath),
+          workingDirectory: process.cwd(),
+          resolvedPath: resolve(this.baselinePath)
+        };
+        
         throw new BaselineServiceError(
-          'Configuration baseline non disponible',
+          `Configuration baseline non disponible: ${JSON.stringify(debugDetails)}`,
           BaselineServiceErrorCode.BASELINE_NOT_FOUND
         );
       }
