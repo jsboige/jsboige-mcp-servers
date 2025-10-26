@@ -42,7 +42,8 @@ export interface BaselineConfig {
 export interface BaselineFileConfig {
   version: string;
   baselineId: string;
-  timestamp: string;
+  timestamp?: string;
+  lastUpdated?: string;
   machineId: string;
   autoSync: boolean;
   conflictStrategy: string;

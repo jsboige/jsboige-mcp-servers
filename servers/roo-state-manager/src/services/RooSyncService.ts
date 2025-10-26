@@ -117,26 +117,68 @@ export class RooSyncService {
    * Constructeur privé (Singleton)
    */
   private constructor(cacheOptions?: CacheOptions) {
-    this.config = loadRooSyncConfig();
-    this.cache = new Map();
-    this.cacheOptions = {
-      ttl: cacheOptions?.ttl ?? 30000, // 30 secondes par défaut
-      enabled: cacheOptions?.enabled ?? true
+    // SDDD Debug: Logging direct dans fichier pour contourner le problème de visibilité
+    const debugLog = (message: string, data?: any) => {
+      const timestamp = new Date().toISOString();
+      const logEntry = `[${timestamp}] ${message}${data ? ` | ${JSON.stringify(data)}` : ''}\n`;
+      
+      // Écrire directement dans un fichier de log
+      try {
+        const fs = require('fs');
+        fs.appendFileSync('c:/dev/roo-extensions/debug-roosync-compare.log', logEntry);
+      } catch (e) {
+        // Ignorer les erreurs de logging
+      }
     };
-    this.powershellExecutor = new PowerShellExecutor({
-      roosyncBasePath: join(process.env.ROO_HOME || 'd:/roo-extensions', 'RooSync')
-    });
-    this.inventoryCollector = new InventoryCollector();
-    this.diffDetector = new DiffDetector();
-    this.configService = new ConfigService(this.config.sharedPath);
     
-    // Initialiser le BaselineService avec les wrappers nécessaires
-    const inventoryWrapper = new InventoryCollectorWrapper(this.inventoryCollector);
-    this.baselineService = new BaselineService(
-      this.configService,
-      inventoryWrapper,
-      this.diffDetector
-    );
+    debugLog('RooSyncService constructeur démarré');
+    
+    try {
+      this.config = loadRooSyncConfig();
+      debugLog('Config chargée', { configLoaded: !!this.config });
+      
+      this.cache = new Map();
+      this.cacheOptions = {
+        ttl: cacheOptions?.ttl ?? 30000, // 30 secondes par défaut
+        enabled: cacheOptions?.enabled ?? true
+      };
+      this.powershellExecutor = new PowerShellExecutor({
+        roosyncBasePath: join(process.env.ROO_HOME || 'd:/roo-extensions', 'RooSync')
+      });
+      this.inventoryCollector = new InventoryCollector();
+      this.diffDetector = new DiffDetector();
+      this.configService = new ConfigService(this.config.sharedPath);
+      
+      debugLog('Services créés', {
+        configService: !!this.configService,
+        inventoryCollector: !!this.inventoryCollector,
+        diffDetector: !!this.diffDetector
+      });
+      
+      // Initialiser le BaselineService avec les wrappers nécessaires
+      const inventoryWrapper = new InventoryCollectorWrapper(this.inventoryCollector);
+      debugLog('InventoryWrapper créé', { inventoryWrapper: !!inventoryWrapper });
+      
+      debugLog('Avant instanciation BaselineService');
+      this.baselineService = new BaselineService(
+        this.configService,
+        inventoryWrapper,
+        this.diffDetector
+      );
+      debugLog('Après instanciation BaselineService', {
+        baselineService: !!this.baselineService,
+        error: null
+      });
+      
+    } catch (error) {
+      debugLog('ERREUR dans constructeur RooSyncService', {
+        errorType: typeof error,
+        errorMessage: error instanceof Error ? error.message : String(error),
+        errorStack: error instanceof Error ? error.stack : null,
+        errorName: error instanceof Error ? error.name : null
+      });
+      throw error;
+    }
   }
   
   /**
@@ -146,8 +188,16 @@ export class RooSyncService {
    * @returns Instance du service
    */
   public static getInstance(cacheOptions?: CacheOptions): RooSyncService {
+    console.log('[DEBUG] getInstance() appelé, instance existe:', !!RooSyncService.instance);
     if (!RooSyncService.instance) {
-      RooSyncService.instance = new RooSyncService(cacheOptions);
+      console.log('[DEBUG] Création nouvelle instance RooSyncService...');
+      try {
+        RooSyncService.instance = new RooSyncService(cacheOptions);
+        console.log('[DEBUG] Instance RooSyncService créée avec succès');
+      } catch (error) {
+        console.error('[DEBUG] Erreur lors création instance RooSyncService:', error);
+        throw error;
+      }
     }
     return RooSyncService.instance;
   }
@@ -178,6 +228,10 @@ export class RooSyncService {
     
     // Recréer le BaselineService pour éviter les caches persistants
     const inventoryWrapper = new InventoryCollectorWrapper(this.inventoryCollector);
+    console.log('[DEBUG] RooSyncService: Avant instanciation BaselineService (ligne 181)');
+    console.log('[DEBUG] configService disponible:', !!this.configService);
+    console.log('[DEBUG] inventoryWrapper disponible:', !!inventoryWrapper);
+    console.log('[DEBUG] diffDetector disponible:', !!this.diffDetector);
     this.baselineService = new BaselineService(
       this.configService,
       inventoryWrapper,
@@ -947,18 +1001,19 @@ export class RooSyncService {
   ): Promise<any | null> {
     console.log(`[RooSyncService] 🔍 Comparaison réelle : ${sourceMachineId} vs ${targetMachineId}`);
     
-    // CORRECTION SDDD: Utiliser la logique baseline-driven cohérente
-    // Charger la baseline une seule fois pour éviter les incohérences
-    await this.baselineService.loadBaseline();
-    
-    // Comparer chaque machine avec la baseline (comme listDiffs et loadDashboard)
-    const sourceComparison = await this.baselineService.compareWithBaseline(sourceMachineId);
-    const targetComparison = await this.baselineService.compareWithBaseline(targetMachineId);
-    
-    if (!sourceComparison || !targetComparison) {
-      console.error('[RooSyncService] ❌ Échec comparaison avec baseline');
-      return null;
-    }
+    try {
+      // CORRECTION SDDD: Utiliser la logique baseline-driven cohérente
+      // Charger la baseline une seule fois pour éviter les incohérences
+      await this.baselineService.loadBaseline();
+      
+      // Comparer chaque machine avec la baseline (comme listDiffs et loadDashboard)
+      const sourceComparison = await this.baselineService.compareWithBaseline(sourceMachineId);
+      const targetComparison = await this.baselineService.compareWithBaseline(targetMachineId);
+      
+      if (!sourceComparison || !targetComparison) {
+        console.error('[RooSyncService] ❌ Échec comparaison avec baseline');
+        return null;
+      }
     
     // Combiner les différences des deux machines
     const allDifferences = [
@@ -972,22 +1027,33 @@ export class RooSyncService {
       }))
     ];
     
-    // Créer le rapport de comparaison
-    const report = {
-      sourceMachine: sourceMachineId,
-      targetMachine: targetMachineId,
-      differences: allDifferences,
-      summary: {
-        total: allDifferences.length,
-        critical: allDifferences.filter(d => d.severity === 'CRITICAL').length,
-        important: allDifferences.filter(d => d.severity === 'IMPORTANT').length,
-        warning: allDifferences.filter(d => d.severity === 'WARNING').length,
-        info: allDifferences.filter(d => d.severity === 'INFO').length
-      }
-    };
-    
-    console.log(`[RooSyncService] ✅ Comparaison terminée : ${allDifferences.length} différences`);
-    return report;
+      // Créer le rapport de comparaison
+      const report = {
+        sourceMachine: sourceMachineId,
+        targetMachine: targetMachineId,
+        differences: allDifferences,
+        summary: {
+          total: allDifferences.length,
+          critical: allDifferences.filter(d => d.severity === 'CRITICAL').length,
+          important: allDifferences.filter(d => d.severity === 'IMPORTANT').length,
+          warning: allDifferences.filter(d => d.severity === 'WARNING').length,
+          info: allDifferences.filter(d => d.severity === 'INFO').length
+        }
+      };
+      
+      console.log(`[RooSyncService] ✅ Comparaison terminée : ${allDifferences.length} différences`);
+      return report;
+    } catch (error) {
+      // CORRECTION SDDD: Capturer l'erreur détaillée du BaselineService
+      const originalError = error as Error;
+      console.error('[DEBUG] Erreur originale dans compareRealConfigurations:', originalError);
+      console.error('[DEBUG] Stack trace:', originalError.stack);
+      
+      throw new RooSyncServiceError(
+        `Erreur lors de la comparaison réelle: ${originalError.message}`,
+        'ROOSYNC_COMPARE_REAL_ERROR'
+      );
+    }
   }
 
   /**
