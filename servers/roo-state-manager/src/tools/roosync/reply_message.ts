@@ -8,6 +8,10 @@
 
 import { MessageManager } from '../../services/MessageManager.js';
 import { getSharedStatePath } from '../../utils/server-helpers.js';
+import { createLogger, Logger } from '../../utils/logger.js';
+
+// Logger instance for reply_message tool
+const logger: Logger = createLogger('ReplyMessageTool');
 
 /**
  * Arguments de l'outil roosync_reply_message
@@ -70,7 +74,7 @@ function getPriorityIcon(priority: string): string {
 export async function replyMessage(
   args: ReplyMessageArgs
 ): Promise<{ content: Array<{ type: string; text: string }> }> {
-  console.error('💬 [reply_message] Starting...');
+  logger.info('💬 Starting reply message operation');
 
   try {
     // Validation des paramètres requis
@@ -87,7 +91,7 @@ export async function replyMessage(
     const messageManager = new MessageManager(sharedStatePath);
 
     // Récupérer le message original
-    console.error(`🔍 [reply_message] Fetching original message: ${args.message_id}`);
+    logger.debug('🔍 Fetching original message', { messageId: args.message_id });
     const originalMessage = await messageManager.getMessage(args.message_id);
 
     // Cas : message introuvable
@@ -113,7 +117,7 @@ Impossible de répondre car le message original n'a pas été trouvé dans :
     }
 
     // Construire la réponse
-    console.error('💬 [reply_message] Building reply...');
+    logger.debug('💬 Building reply message');
     
     // Inversion from/to pour la réponse
     const replyFrom = originalMessage.to;
@@ -134,7 +138,7 @@ Impossible de répondre car le message original n'a pas été trouvé dans :
     const replyTags = args.tags ? [...args.tags, 'reply'] : ['reply'];
 
     // Envoyer la réponse
-    console.error('📤 [reply_message] Sending reply...');
+    logger.info('📤 Sending reply message');
     const replyMessageObj = await messageManager.sendMessage(
       replyFrom,
       replyTo,
@@ -187,13 +191,13 @@ Impossible de répondre car le message original n'a pas été trouvé dans :
     result += `- 🔗 **Voir le thread** : Filtrez par thread_id \`${threadId}\` dans \`roosync_read_inbox\`\n`;
     result += `- 📦 **Archiver l'original** : Utilisez \`roosync_archive_message\` avec l'ID \`${originalMessage.id}\`\n`;
 
-    console.error('✅ [reply_message] Reply sent successfully');
+    logger.info('✅ Reply sent successfully', { replyId: replyMessageObj.id, threadId });
     return {
       content: [{ type: 'text', text: result }]
     };
   } catch (error) {
     const errorMessage = error instanceof Error ? error.message : String(error);
-    console.error('❌ [reply_message] Error:', errorMessage);
+    logger.error('❌ Reply message error', error instanceof Error ? error : new Error(errorMessage));
     
     return {
       content: [{

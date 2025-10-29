@@ -25,6 +25,7 @@ import { PowerShellExecutor, type PowerShellExecutionResult } from './PowerShell
 import { InventoryCollector, type MachineInventory } from './InventoryCollector.js';
 import { DiffDetector } from './DiffDetector.js';
 import type { BaselineDifference, BaselineComparisonReport } from '../types/baseline.js';
+import { getGitHelpers, type GitHelpers } from '../utils/git-helpers.js';
 
 /**
  * Options de cache pour RooSyncService
@@ -108,6 +109,7 @@ export class RooSyncService {
   private powershellExecutor: PowerShellExecutor;
   private inventoryCollector: InventoryCollector;
   private diffDetector: DiffDetector;
+  private gitHelpers: GitHelpers;
   
   /**
    * Constructeur privé (Singleton)
@@ -124,6 +126,26 @@ export class RooSyncService {
     });
     this.inventoryCollector = new InventoryCollector();
     this.diffDetector = new DiffDetector();
+    this.gitHelpers = getGitHelpers();
+    
+    // Vérifier Git au démarrage
+    this.verifyGitOnStartup();
+  }
+  
+  /**
+   * Vérifier la disponibilité de Git au démarrage
+   */
+  private async verifyGitOnStartup(): Promise<void> {
+    try {
+      const gitCheck = await this.gitHelpers.verifyGitAvailable();
+      if (!gitCheck.available) {
+        console.warn('[RooSync Service] Git NOT available - some features may be limited:', gitCheck.error);
+      } else {
+        console.log(`[RooSync Service] Git verified: ${gitCheck.version}`);
+      }
+    } catch (error) {
+      console.error('[RooSync Service] Failed to verify Git:', error);
+    }
   }
   
   /**

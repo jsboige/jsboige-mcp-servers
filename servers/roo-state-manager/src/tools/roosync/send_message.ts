@@ -11,6 +11,10 @@ import { getSharedStatePath } from '../../utils/server-helpers.js';
 import { existsSync, readFileSync } from 'fs';
 import { join } from 'path';
 import os from 'os';
+import { createLogger, Logger } from '../../utils/logger.js';
+
+// Logger instance for send_message tool
+const logger: Logger = createLogger('SendMessageTool');
 
 /**
  * Arguments de l'outil roosync_send_message
@@ -56,7 +60,7 @@ function getLocalMachineId(): string {
 export async function sendMessage(
   args: SendMessageArgs
 ): Promise<{ content: Array<{ type: string; text: string }> }> {
-  console.error('🚀 [send_message] Starting...');
+  logger.info('🚀 Starting send message operation');
 
   try {
     // Validation des paramètres requis
@@ -78,7 +82,7 @@ export async function sendMessage(
 
     // Obtenir l'ID de la machine locale
     const from = getLocalMachineId();
-    console.error(`📍 [send_message] From: ${from}, To: ${args.to}`);
+    logger.debug('📍 Message routing', { from, to: args.to });
 
     // Envoyer le message
     const message = await messageManager.sendMessage(
@@ -109,13 +113,13 @@ Le message a été livré dans l'inbox de **${args.to}**.
 - \`messages/inbox/${message.id}.json\` (destinataire)
 - \`messages/sent/${message.id}.json\` (expéditeur)`;
 
-    console.error('✅ [send_message] Success');
+    logger.info('✅ Message sent successfully', { messageId: message.id, to: args.to });
     return {
       content: [{ type: 'text', text: result }]
     };
   } catch (error) {
     const errorMessage = error instanceof Error ? error.message : String(error);
-    console.error('❌ [send_message] Error:', errorMessage);
+    logger.error('❌ Send message error', error instanceof Error ? error : new Error(errorMessage));
     
     return {
       content: [{
