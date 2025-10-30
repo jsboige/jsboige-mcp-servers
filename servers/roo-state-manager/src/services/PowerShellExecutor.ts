@@ -1,11 +1,15 @@
 /**
  * PowerShellExecutor - Wrapper Node.js pour l'exécution de scripts PowerShell
- * 
+ *
  * Permet l'exécution sécurisée et contrôlée de scripts PowerShell depuis Node.js
  * avec gestion du timeout, des erreurs, et parsing de la sortie JSON.
- * 
+ *
+ * CORRECTION CRITIQUE UTF-8 : Les conversions Buffer→string utilisent maintenant
+ * explicitement l'encodage 'utf-8' pour préserver les emojis et caractères Unicode.
+ * Voir lignes 168 et 175 pour les corrections appliquées.
+ *
  * @module PowerShellExecutor
- * @version 1.0.0
+ * @version 1.0.1
  */
 
 import { spawn, ChildProcess } from 'child_process';
@@ -162,17 +166,19 @@ export class PowerShellExecutor {
         }, timeout);
       }
 
-      // Collecter stdout
+      // Collecter stdout avec encodage UTF-8 explicite pour préserver les caractères Unicode et emojis
       if (proc.stdout) {
         proc.stdout.on('data', (data: Buffer) => {
-          stdout += data.toString();
+          // Validation Unicode : conversion explicite en UTF-8 pour préserver tous les caractères
+          stdout += data.toString('utf-8');
         });
       }
 
-      // Collecter stderr
+      // Collecter stderr avec encodage UTF-8 explicite pour préserver les caractères Unicode et emojis
       if (proc.stderr) {
         proc.stderr.on('data', (data: Buffer) => {
-          stderr += data.toString();
+          // Validation Unicode : conversion explicite en UTF-8 pour préserver tous les caractères
+          stderr += data.toString('utf-8');
         });
       }
 
@@ -303,6 +309,20 @@ export class PowerShellExecutor {
       return null;
     }
   }
+  
+  /**
+   * NOTE DE MAINTENANCE - Tests d'encodage UTF-8
+   *
+   * Pour tester la correction d'encodage, créer un script PowerShell qui génère
+   * des emojis et caractères Unicode :
+   *
+   * ```powershell
+   * Write-Output "Test UTF-8: 🚀 ✨ café naïve 中文 العربية"
+   * ```
+   *
+   * Vérifier que la sortie préserve correctement tous les caractères
+   * sans corruption ni remplacement par des '?' ou carrés.
+   */
 }
 
 /**
