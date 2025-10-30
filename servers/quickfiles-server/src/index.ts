@@ -364,7 +364,20 @@ class QuickFilesServer {
                 }
 
                 let formattedContent = (show_line_numbers
-                    ? lines.map((line, index) => `${index + 1} | ${line}`).join('\n')
+                    ? lines.map((line, index) => {
+                        // Calculer le numéro de ligne réel en fonction des extraits
+                        let realLineNumber = index + 1;
+                        if (excerpts && excerpts.length > 0) {
+                            // Trouver l'extrait qui contient cette ligne
+                            for (const excerpt of excerpts) {
+                                if (index >= excerpt.start - 1 && index <= excerpt.end - 1) {
+                                    realLineNumber = excerpt.start + (index - (excerpt.start - 1));
+                                    break;
+                                }
+                            }
+                        }
+                        return `${realLineNumber} | ${line}`;
+                    }).join('\n')
                     : lines.join('\n'));
 
                 fileContents.push({ path: rawFilePath, content: formattedContent, truncated });
