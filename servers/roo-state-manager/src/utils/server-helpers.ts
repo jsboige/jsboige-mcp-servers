@@ -17,8 +17,8 @@ import * as toolExports from '../tools/index.js';
  */
 export function getSharedStatePath(): string {
     // Priorité 1 : Variable d'environnement
-    if (process.env.ROOSYNC_SHARED_STATE_PATH) {
-        return process.env.ROOSYNC_SHARED_STATE_PATH;
+    if (process.env.ROOSYNC_SHARED_PATH) {
+        return process.env.ROOSYNC_SHARED_PATH;
     }
     
     // Priorité 2 : Chemin par défaut (G:/Mon Drive/Synchronisation/RooSync/.shared-state)
