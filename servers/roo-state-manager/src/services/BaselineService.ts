@@ -47,12 +47,12 @@ export class BaselineService {
     console.log('[DEBUG] BaselineService.constructor() appelé');
     
     this.config = configService.getBaselineServiceConfig();
-    const sharedStatePath = configService.getSharedStatePath();
+    // CORRECTION SDDD : Utiliser la variable d'environnement ROOSYNC_SHARED_PATH
+    const sharedStatePath = process.env.ROOSYNC_SHARED_PATH || configService.getSharedStatePath();
     
     console.log('[DEBUG] sharedStatePath:', sharedStatePath);
     
-    // CORRECTION SDDD : Forcer le chemin absolu connu et validé
-    this.baselinePath = 'g:/Mon Drive/Synchronisation/RooSync/.shared-state/sync-config.ref.json';
+    this.baselinePath = join(sharedStatePath, 'sync-config.ref.json');
     this.roadmapPath = join(sharedStatePath, 'sync-roadmap.md');
     
     console.log('[DEBUG] this.baselinePath forcé:', this.baselinePath);
