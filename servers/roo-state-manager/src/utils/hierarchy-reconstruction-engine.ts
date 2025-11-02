@@ -792,12 +792,14 @@ export class HierarchyReconstructionEngine {
                                     const modeMatch = modeWithIcon.match(/([A-Za-z]+)\s*mode/i);
                                     const cleanMode = modeMatch ? modeMatch[1].trim().toLowerCase() : 'task';
                                     if (taskMessage.length > 10) {
+                                        // 🎯 FIX BUG: Normaliser les échappements
+                                        const normalizedMessage = this.normalizeEscaping(taskMessage);
                                         instructions.push({
                                             timestamp: message.ts || message.timestamp || Date.now(),
                                             mode: cleanMode,
-                                            message: taskMessage
+                                            message: normalizedMessage
                                         });
-                                        this.log(`✅ [EXTRACTION] Found api_req_started newTask: mode=${cleanMode}, content="${taskMessage.substring(0, 50)}..."`);
+                                        this.log(`✅ [EXTRACTION] Found api_req_started newTask: mode=${cleanMode}, content="${normalizedMessage.substring(0, 50)}..."`);
                                     }
                                 }
                             }
@@ -819,12 +821,14 @@ export class HierarchyReconstructionEngine {
                                     const msg = String(messageMatch[1] || '').trim();
                                     if (msg.length > 5) {
                                         xmlNewCount++;
+                                        // 🎯 FIX BUG: Normaliser les échappements
+                                        const normalizedMsg = this.normalizeEscaping(msg);
                                         instructions.push({
                                             timestamp: (message as any).ts || (message as any).timestamp || Date.now(),
                                             mode: cleanMode || 'task',
-                                            message: msg.substring(0, 200)
+                                            message: normalizedMsg.substring(0, 200)
                                         });
-                                        this.log(`✅ [EXTRACTION] Found XML newTask instruction: mode=${cleanMode}, content="${msg.substring(0, 50)}..."`);
+                                        this.log(`✅ [EXTRACTION] Found XML newTask instruction: mode=${cleanMode}, content="${normalizedMsg.substring(0, 50)}..."`);
                                     }
                                 }
                             }
@@ -1223,6 +1227,55 @@ export class HierarchyReconstructionEngine {
             result.resolutionMethods[method] = 0;
         }
         result.resolutionMethods[method]++;
+    }
+
+    /**
+     * Normalise les échappements JSON multiples pour le matching radix tree
+     * 🎯 FIX BUG: Gère les doubles/triples échappements \\\\n → \\n → \n
+     */
+    private normalizeEscaping(text: string): string {
+        return text
+            .replace(/\\\\n/g, '\n')    // Double échappement → simple
+            .replace(/\\"/g, '"')        // Guillemets échappés
+            .replace(/\\n/g, '\n')       // Simple échappement → natif
+            .trim();
+    }
+
+    /**
+     * Détecte si l'instruction utilise le format JSON moderne ou XML ancien
+     */
+    private detectInstructionFormat(text: string): 'json' | 'xml' | 'unknown' {
+        if (text.includes('{"tool":"newTask"')) return 'json';
+        if (text.includes('<new_task>')) return 'xml';
+        return 'unknown';
+    }
+
+    /**
+     * Extrait l'instruction normalisée depuis un message UI (supporte JSON + XML)
+     * 🎯 FIX BUG: Applique normalizeEscaping() pour uniformiser les formats
+     */
+    private extractNormalizedInstruction(message: any): string | null {
+        const format = this.detectInstructionFormat(message.text || message.content || '');
+        
+        if (format === 'json') {
+            try {
+                const parsed = JSON.parse(message.text || message.content);
+                if (parsed.tool === 'newTask' && parsed.content) {
+                    return this.normalizeEscaping(parsed.content);
+                }
+            } catch (e) {
+                // JSON invalide, ignorer
+            }
+        }
+        
+        if (format === 'xml') {
+            const match = (message.text || message.content)?.match(/<message>(.*?)<\/message>/s);
+            if (match && match[1]) {
+                return this.normalizeEscaping(match[1]);
+            }
+        }
+        
+        return null;
     }
 
     /**
