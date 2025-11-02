@@ -324,7 +324,7 @@ export class InventoryCollector {
    */
   private async loadFromSharedState(machineId: string): Promise<MachineInventory | null> {
     try {
-      const sharedStatePath = process.env.SHARED_STATE_PATH ||
+      const sharedStatePath = process.env.ROOSYNC_SHARED_PATH ||
         'G:/Mon Drive/Synchronisation/RooSync/.shared-state';
       const inventoriesDir = join(sharedStatePath, 'inventories');
 
@@ -382,7 +382,7 @@ export class InventoryCollector {
   private async saveToSharedState(inventory: MachineInventory): Promise<void> {
     try {
       // Construire le chemin .shared-state/inventories/
-      const sharedStatePath = process.env.SHARED_STATE_PATH ||
+      const sharedStatePath = process.env.ROOSYNC_SHARED_PATH ||
         'G:/Mon Drive/Synchronisation/RooSync/.shared-state';
       const inventoriesDir = join(sharedStatePath, 'inventories');
 
