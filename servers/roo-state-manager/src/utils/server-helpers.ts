@@ -16,12 +16,17 @@ import * as toolExports from '../tools/index.js';
  * Obtenir le chemin du répertoire shared-state RooSync
  */
 export function getSharedStatePath(): string {
-    // Priorité 1 : Variable d'environnement
+    // Priorité 1 : Variable d'environnement ROOSYNC_SHARED_PATH (cohérent avec .env)
     if (process.env.ROOSYNC_SHARED_PATH) {
         return process.env.ROOSYNC_SHARED_PATH;
     }
     
-    // Priorité 2 : Chemin par défaut (G:/Mon Drive/Synchronisation/RooSync/.shared-state)
+    // Priorité 2 : Variable d'environnement alternative (compatibilité)
+    if (process.env.ROOSYNC_SHARED_STATE_PATH) {
+        return process.env.ROOSYNC_SHARED_STATE_PATH;
+    }
+    
+    // Priorité 3 : Chemin par défaut (G:/Mon Drive/Synchronisation/RooSync/.shared-state)
     const defaultPath = 'G:/Mon Drive/Synchronisation/RooSync/.shared-state';
     return defaultPath;
 }
