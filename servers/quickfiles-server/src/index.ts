@@ -212,7 +212,7 @@ class QuickFilesServer {
     this.server.registerTool(
       'read_multiple_files',
       {
-        description: 'Reads the content of multiple files with advanced options.',
+        description: '📖 Lit le contenu de plusieurs fichiers avec options avancées et numérotation des lignes. Supporte les extraits et limitations professionnelles.',
         inputSchema: ReadMultipleFilesArgsSchema.shape,
       },
       this.handleReadMultipleFiles.bind(this)
@@ -221,7 +221,7 @@ class QuickFilesServer {
     this.server.registerTool(
       'list_directory_contents',
       {
-        description: 'Lists the contents of directories with sorting, filtering, and recursive options.',
+        description: '📁 Liste le contenu des répertoires avec tri, filtrage et options récursives. Affiche les métadonnées et structure hiérarchique.',
         inputSchema: ListDirectoryContentsArgsSchema.shape,
       },
       this.handleListDirectoryContents.bind(this)
@@ -230,7 +230,7 @@ class QuickFilesServer {
     this.server.registerTool(
       'delete_files',
       {
-        description: 'Deletes a list of files.',
+        description: '🗑️ Supprime un ou plusieurs fichiers avec rapport détaillé et validation de sécurité.',
         inputSchema: DeleteFilesArgsSchema.shape,
       },
       this.handleDeleteFiles.bind(this)
@@ -239,7 +239,7 @@ class QuickFilesServer {
     this.server.registerTool(
       'edit_multiple_files',
       {
-        description: 'Edits multiple files based on provided diffs.',
+        description: '✏️ Modifie le même pattern dans un ou plusieurs fichiers. Supporte regex, lignes spécifiques, rapport détaillé des modifications.',
         inputSchema: EditMultipleFilesArgsSchema.shape,
       },
       this.handleEditMultipleFiles.bind(this)
@@ -248,7 +248,7 @@ class QuickFilesServer {
     this.server.registerTool(
       'extract_markdown_structure',
       {
-        description: 'Extracts the heading structure from Markdown files.',
+        description: '📋 Génère TOC automatique. Analyse hiérarchie des titres, supporte contexte, numérotation des sections. Idéal pour documentation.',
         inputSchema: ExtractMarkdownStructureArgsSchema.shape,
       },
       this.handleExtractMarkdownStructure.bind(this)
@@ -257,7 +257,7 @@ class QuickFilesServer {
     this.server.registerTool(
       'copy_files',
       {
-        description: 'Copies files from source to destination with transformation and conflict resolution.',
+        description: '📋 Copie un ou plusieurs fichiers avec options de transformation, gestion des conflits, patterns de renommage.',
         inputSchema: CopyFilesArgsSchema.shape,
       },
       this.handleCopyFiles.bind(this)
@@ -266,7 +266,7 @@ class QuickFilesServer {
     this.server.registerTool(
       'move_files',
       {
-        description: 'Moves files from source to destination.',
+        description: '📦 Déplace un ou plusieurs fichiers avec transformation, gestion des conflits, patterns de renommage.',
         inputSchema: MoveFilesArgsSchema.shape,
       },
       this.handleMoveFiles.bind(this)
@@ -275,7 +275,7 @@ class QuickFilesServer {
     this.server.registerTool(
       'search_in_files',
       {
-        description: 'Searches for a pattern in files and returns matching lines with context.',
+        description: '🔍 Recherche des patterns dans les fichiers avec contexte et options de filtrage. Retourne les résultats avec lignes environnantes.',
         inputSchema: SearchInFilesArgsSchema.shape,
       },
       this.handleSearchInFiles.bind(this)
@@ -284,7 +284,7 @@ class QuickFilesServer {
     this.server.registerTool(
       'search_and_replace',
       {
-        description: 'Performs search and replace operations on files.',
+        description: '🔄 Applique modifications regex/littéral sur un ou plusieurs fichiers avec prévisualisation, rapport des changements.',
         inputSchema: SearchAndReplaceBaseSchema.shape,
       },
       this.handleSearchAndReplace.bind(this)
@@ -293,7 +293,7 @@ class QuickFilesServer {
     this.server.registerTool(
       'restart_mcp_servers',
       {
-        description: 'Restarts specified MCP servers by toggling their enabled state in settings.',
+        description: '🔄 Redémarre les serveurs MCP via modification des paramètres. Supporte multiples serveurs.',
         inputSchema: RestartMcpServersArgsSchema.shape,
       },
       this.handleRestartMcpServers.bind(this)

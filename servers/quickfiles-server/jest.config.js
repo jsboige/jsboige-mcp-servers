@@ -98,25 +98,7 @@ export default {
   
   // Rapports de test étendus
   reporters: [
-    'default',
-    ['jest-junit', {
-      outputDirectory: './test-results',
-      outputName: 'junit.xml',
-      classNameTemplate: '{classname}',
-      titleTemplate: '{title}',
-      ancestorSeparator: ' › ',
-      usePathForSuiteName: true
-    }],
-    // Rapport de couverture en HTML détaillé
-    ['html', {
-      outputPath: './coverage/html',
-      filename: 'coverage-report.html'
-    }],
-    // Rapport JSON pour l'intégration CI/CD
-    ['json', {
-      outputDirectory: './test-results',
-      filename: 'test-results.json'
-    }]
+    'default'
   ],
   
   // Configuration maximale pour la détection des problèmes
