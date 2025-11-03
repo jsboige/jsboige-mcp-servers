@@ -7,6 +7,7 @@
 - Vous éditez **le même pattern dans un ou plusieurs fichiers** → `edit_multiple_files`
 - Vous explorez **un projet récursivement** → `list_directory_contents`
 - Vous cherchez **dans un ou plusieurs fichiers** → `search_in_files`
+- Vous faites des **recherches-remplacements globaux** → `search_and_replace` (NOUVEAU)
 
 ### ❌ N'utilisez PAS Quickfiles si :
 - **Un seul fichier simple** → Utiliser `read_file` ou `write_to_file` natif
@@ -130,7 +131,7 @@ Type d'opération ?
 | 📁 `list_directory_contents` | Exploration récursive de projets | Structure de projet, localisation de fichiers |
 | ✏️ `edit_multiple_files` | Refactorisation de fichiers | Même pattern dans un ou plusieurs fichiers |
 | 🔍 `search_in_files` | Recherche dans fichiers avec contexte | Chercher patterns, débogage de fichiers |
-| 🔄 `search_and_replace` | Recherche-remplacement | Modifications regex dans fichiers |
+| 🔄 `search_and_replace` | **Recherche-remplacement AMÉLIORÉ** | Modifications regex, patterns globaux, workspace entier |
 | 📋 `copy_files` | Copie avec transformation | Backup, déploiement, transformation |
 | 📦 `move_files` | Déplacement de fichiers | Réorganisation, refactoring structure |
 | 🗑️ `delete_files` | Suppression de fichiers | Nettoyage, suppression |
@@ -147,6 +148,7 @@ Type d'opération ?
 ├── ✏️ MODIFICATION → ✏️ edit_multiple_files
 ├── 📁 EXPLORATION → 📁 list_directory_contents
 ├── 🔍 RECHERCHE → 🔍 search_in_files
+├── 🔄 RECHERCHE-REMPLACEMENT → 🔄 search_and_replace (NOUVEAU !)
 └── 🔄 OPÉRATIONS MULTIPLES
     ├── Copie → 📋 copy_files
     ├── Déplacement → 📦 move_files
@@ -165,5 +167,48 @@ Type d'opération ?
 
 Pour les développeurs souhaitant contribuer ou comprendre l'architecture interne, consultez :
 - **[TECHNICAL.md](TECHNICAL.md)** : Architecture ESM, build, configuration détaillée, debugging
+- **[docs/SEARCH-REPLACE-IMPROVEMENTS.md](docs/SEARCH-REPLACE-IMPROVEMENTS.md)** : Détail des améliorations search_and_replace
 
 Le README se concentre sur l'utilisation pratique. La documentation technique couvre les aspects de développement et maintenance.
+
+---
+
+## 🆕 Nouveautés : Search & Replace Amélioré
+
+L'outil `search_and_replace` a été complètement repensé pour supporter :
+
+### ✨ Fonctionnalités Nouvelles
+
+1. **Mode Global** : Opérations sur tout le workspace sans spécifier de fichiers
+   ```javascript
+   { "search": "console.log", "replace": "logger.debug", "preview": true }
+   ```
+
+2. **Patterns de Chemins** : Support des globs comme `src/**/*.js`
+   ```javascript
+   { "paths": ["src/**/*.ts", "lib/**/*.js"], "search": "oldApi", "replace": "newApi" }
+   ```
+
+3. **Filtrage Intelligent** : `file_pattern` fonctionne sans `paths`
+   ```javascript
+   { "file_pattern": "*.md", "search": "# TODO", "replace": "## TODO" }
+   ```
+
+### 🎯 Cas d'Usage
+
+| Scénario | Avant | Après |
+|-----------|--------|--------|
+| Remplacer dans tous les fichiers | ❌ Impossible | ✅ `{search, replace}` |
+| Pattern récursif | ❌ Non supporté | ✅ `{paths: ["**/*.js"]}` |
+| Filtrage par extension | ❌ Nécessitait paths | ✅ `{file_pattern: "*.ts"}` |
+| Rétrocompatibilité | ✅ Fonctionnait | ✅ Toujours identique |
+
+### 📖 Documentation Complète
+
+Consultez **[docs/SEARCH-REPLACE-IMPROVEMENTS.md](docs/SEARCH-REPLACE-IMPROVEMENTS.md)** pour :
+- Guide d'utilisation complet
+- Exemples pratiques
+- Bonnes pratiques
+- Détails techniques
+
+**Rétrocompatibilité 100% garantie** - votre code existant continue de fonctionner !
