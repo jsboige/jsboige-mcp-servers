@@ -1,5 +1,5 @@
 /**
- * Outil MCP : search_tasks_semantic
+ * Outil MCP : search_tasks_by_content
  * Recherche sémantique de tâches avec Qdrant
  */
 
@@ -8,7 +8,7 @@ import { ConversationSkeleton } from '../../types/conversation.js';
 import { getQdrantClient } from '../../services/qdrant.js';
 import getOpenAIClient from '../../services/openai.js';
 
-export interface SearchTasksSemanticArgs {
+export interface SearchTasksByContentArgs {
     conversation_id?: string;
     search_query: string;
     max_results?: number;
@@ -33,12 +33,12 @@ function truncateMessage(message: string, truncate: number): string {
 }
 
 /**
- * Définition de l'outil MCP search_tasks_semantic
+ * Définition de l'outil MCP search_tasks_by_content
  */
-export const searchTasksSemanticTool = {
+export const searchTasksByContentTool = {
     definition: {
-        name: 'search_tasks_semantic',
-        description: 'Recherche des tâches de manière sémantique avec filtrage par workspace et métadonnées enrichies.',
+        name: 'search_tasks_by_content',
+        description: 'Recherche des tâches par contenu sémantique avec filtrage par workspace et métadonnées enrichies.',
         inputSchema: {
             type: 'object' as const,
             properties: {
@@ -68,10 +68,10 @@ export const searchTasksSemanticTool = {
     },
 
     /**
-     * Handler principal de recherche sémantique
+     * Handler principal de recherche par contenu
      */
     handler: async (
-        args: SearchTasksSemanticArgs,
+        args: SearchTasksByContentArgs,
         conversationCache: Map<string, ConversationSkeleton>,
         ensureCacheFreshCallback: (args?: { workspace?: string }) => Promise<boolean>,
         fallbackHandler: (args: any, cache: Map<string, ConversationSkeleton>) => Promise<CallToolResult>,
