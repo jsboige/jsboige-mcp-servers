@@ -24,21 +24,33 @@ const createLoggerWithConditionalDebug = () => {
                               process.env.NODE_ENV === 'development';
   
   if (debugLoggingEnabled) {
-    // Optionnel : créer un dossier logs pour éviter d'encombrer la racine
-    const logsDir = './logs';
-    if (!fs.existsSync(logsDir)) {
-      fs.mkdirSync(logsDir, { recursive: true });
-    }
-
-    logger.add(new winston.transports.File({
-      filename: path.join(logsDir, 'github-projects-mcp-error.log'),
-      level: 'error'
-    }));
-    logger.add(new winston.transports.File({
-      filename: path.join(logsDir, 'github-projects-mcp-combined.log')
-    }));
+    // Utiliser un chemin simple sans caractères spéciaux
+    const logsDir = 'logs';
     
-    logger.debug("File logging activé pour github-projects-mcp");
+    // Créer le répertoire parent si nécessaire et forcer la création
+    try {
+      if (!fs.existsSync(logsDir)) {
+        fs.mkdirSync(logsDir, { recursive: true });
+      }
+    } catch (error) {
+      console.error('[GP-MCP][LOGGER] Erreur création dossier logs:', error);
+      // Continuer sans logging fichier plutôt que d'échouer complètement
+    }
+ 
+    try {
+      logger.add(new winston.transports.File({
+        filename: path.join(logsDir, 'github-projects-mcp-error.log'),
+        level: 'error'
+      }));
+      logger.add(new winston.transports.File({
+        filename: path.join(logsDir, 'github-projects-mcp-combined.log')
+      }));
+      
+      logger.debug("File logging activé pour github-projects-mcp");
+    } catch (error) {
+      console.error('[GP-MCP][LOGGER] Erreur ajout transports fichier:', error);
+      // Continuer sans logging fichier
+    }
   }
 
   // Console uniquement en non-production
