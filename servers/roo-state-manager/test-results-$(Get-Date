@@ -1,0 +1,15 @@
+npm warn "'yyyyMMdd-HHmmss').log" is being parsed as a normal command line argument.
+npm warn Unknown cli config "--Format". This will stop working in the next major version of npm.
+
+> roo-state-manager@1.0.14 test
+> vitest 'yyyyMMdd-HHmmss').log
+
+
+[1m[46m RUN [49m[22m [36mv3.2.4 [39m[90mc:/dev/roo-extensions/mcps/internal/servers/roo-state-manager[39m
+
+[31mNo test files found, exiting with code 1
+[39m
+[2mfilter: [22m[33m'yyyyMMdd-HHmmss').log[39m
+[2minclude: [22m[33mtests/unit/**/*.test.ts[2m, [22mtests/unit/**/*.test.js[2m, [22mtests/integration/**/*.test.ts[2m, [22mtests/integration/**/*.test.js[2m, [22mtests/e2e/**/*.test.ts[2m, [22msrc/**/__tests__/**/*.test.ts[39m
+[2mexclude:  [22m[33mnode_modules[2m, [22mbuild[2m, [22mdist[2m, [22m**/node_modules/**[2m, [22m**/build/**[2m, [22m**/dist/**[39m
+

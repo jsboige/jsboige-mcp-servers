@@ -920,6 +920,52 @@ interface ClineMessage {
 
 ## 🧪 Tests
 
+### 🆕 Architecture de Scripts Consolidés
+
+**✅ NOUVELLE FONCTIONNALITÉ - SCRIPTS UNIFIÉS OPÉRATIONNELS**
+
+Le roo-state-manager inclut désormais une architecture de scripts PowerShell consolidés qui unifient toutes les opérations de développement, de test et de déploiement en une seule interface cohérente.
+
+#### Scripts Principaux Disponibles
+
+Les scripts sont situés dans [`scripts/consolidated/`](./scripts/consolidated/) et fournissent une interface unifiée pour toutes les opérations :
+
+| Script | Fonctionnalités Principales | Usage |
+|--------|---------------------------|-------|
+| **[`roo-tests.ps1`](./scripts/consolidated/roo-tests.ps1)** | Exécution complète des tests unitaires, d'intégration et E2E | `.\roo-tests.ps1` |
+| **[`roo-deploy.ps1`](./scripts/consolidated/roo-deploy.ps1)** | Déploiement automatisé avec validation et rollback | `.\roo-deploy.ps1` |
+| **[`roo-diagnose.ps1`](./scripts/consolidated/roo-diagnose.ps1)** | Diagnostic complet système et performance | `.\roo-diagnose.ps1` |
+| **[`roo-cache.ps1`](./scripts/consolidated/roo-cache.ps1)** | Gestion optimisée des caches et nettoyage | `.\roo-cache.ps1` |
+
+#### Commande Standard pour les Tests
+
+**Pour lancer les tests unitaires :**
+```bash
+.\roo-tests.ps1 test unit
+```
+
+**Options de test disponibles :**
+- `test unit` : Tests unitaires uniquement
+- `test integration` : Tests d'intégration
+- `test e2e` : Tests end-to-end
+- `test all` : Tous les tests (défaut)
+- `test coverage` : Tests avec couverture de code
+
+#### Configuration des Scripts
+
+Les scripts utilisent les fichiers de configuration situés dans [`scripts/config/`](./scripts/config/) :
+- `test-config.json` : Configuration des tests
+- `deploy-config.json` : Configuration du déploiement
+- `diagnose-config.json` : Configuration du diagnostic
+
+#### Avantages de l'Architecture Consolidée
+
+- **Interface unifiée** : Une seule commande par type d'opération
+- **Configuration centralisée** : Tous les paramètres dans des fichiers JSON
+- **Logging structuré** : Logs détaillés avec timestamps et niveaux
+- **Gestion d'erreurs** : Gestion robuste des erreurs avec rollback automatique
+- **Extensibilité** : Architecture modulaire pour ajouter de nouvelles fonctionnalités
+
 ### Test du Détecteur de Stockage
 
 ```bash

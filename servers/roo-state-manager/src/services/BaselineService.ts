@@ -52,8 +52,9 @@ export class BaselineService {
     
     console.log('[DEBUG] sharedStatePath:', sharedStatePath);
     
-    this.baselinePath = join(sharedStatePath, 'sync-config.ref.json');
-    this.roadmapPath = join(sharedStatePath, 'sync-roadmap.md');
+    // Utiliser le chemin de la baseline depuis la configuration du service
+    this.baselinePath = this.config.baselinePath || join(sharedStatePath, 'sync-config.ref.json');
+    this.roadmapPath = this.config.roadmapPath || join(sharedStatePath, 'sync-roadmap.md');
     
     console.log('[DEBUG] this.baselinePath forcé:', this.baselinePath);
     console.log('[DEBUG] this.roadmapPath:', this.roadmapPath);
@@ -566,8 +567,14 @@ export class BaselineService {
           userSettings: {}
         },
         hardware: {
-          cpu: 'Unknown',
-          ram: 'Unknown',
+          cpu: {
+            model: 'Unknown',
+            cores: 0,
+            threads: 0
+          },
+          memory: {
+            total: 0
+          },
           disks: []
         },
         software: {
@@ -1074,8 +1081,14 @@ ${decision.notes ? `### Notes\n${decision.notes}` : ''}
           userSettings: {}
         },
         hardware: {
-          cpu: firstMachine?.hardware?.cpu?.cores?.toString() || 'Unknown',
-          ram: firstMachine?.hardware?.memory?.total?.toString() || 'Unknown',
+          cpu: {
+            model: 'Unknown CPU',
+            cores: firstMachine?.hardware?.cpu?.cores || 0,
+            threads: firstMachine?.hardware?.cpu?.threads || 0
+          },
+          memory: {
+            total: firstMachine?.hardware?.memory?.total || 0
+          },
           disks: [],
           gpu: 'Unknown'
         },
