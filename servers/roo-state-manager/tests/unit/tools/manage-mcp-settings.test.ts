@@ -34,7 +34,7 @@ describe('manage_mcp_settings Tool', () => {
 
     it('should read the settings file', async () => {
         // Import dynamique après avoir configuré les mocks
-        const { manageMcpSettings } = await import('../../../src/tools/manage-mcp-settings.ts');
+        const { manageMcpSettings } = await import('../../../src/tools/manage-mcp-settings.js');
         
         const result = await manageMcpSettings.handler({ action: 'read' });
         
@@ -51,7 +51,7 @@ describe('manage_mcp_settings Tool', () => {
 
     it('should write new settings to the file with backup', async () => {
         // Import dynamique après avoir configuré les mocks
-        const { manageMcpSettings } = await import('../../../src/tools/manage-mcp-settings.ts');
+        const { manageMcpSettings } = await import('../../../src/tools/manage-mcp-settings.js');
         
         // D'abord lire pour obtenir l'autorisation
         await manageMcpSettings.handler({ action: 'read' });
@@ -82,7 +82,7 @@ describe('manage_mcp_settings Tool', () => {
 
     it('should write new settings without backup when backup is false', async () => {
         // Import dynamique après avoir configuré les mocks
-        const { manageMcpSettings } = await import('../../../src/tools/manage-mcp-settings.ts');
+        const { manageMcpSettings } = await import('../../../src/tools/manage-mcp-settings.js');
         
         // D'abord lire pour obtenir l'autorisation
         await manageMcpSettings.handler({ action: 'read' });
@@ -101,7 +101,7 @@ describe('manage_mcp_settings Tool', () => {
 
     it('should handle file not found error', async () => {
         // Import dynamique après avoir configuré les mocks
-        const { manageMcpSettings } = await import('../../../src/tools/manage-mcp-settings.ts');
+        const { manageMcpSettings } = await import('../../../src/tools/manage-mcp-settings.js');
         
         mockReadFile.mockRejectedValue(new Error('ENOENT: no such file or directory'));
         
@@ -115,7 +115,7 @@ describe('manage_mcp_settings Tool', () => {
 
     it('should require read before write (security mechanism)', async () => {
         // Import dynamique après avoir configuré les mocks
-        const { manageMcpSettings } = await import('../../../src/tools/manage-mcp-settings.ts');
+        const { manageMcpSettings } = await import('../../../src/tools/manage-mcp-settings.js');
         
         // Créer une nouvelle instance pour éviter les problèmes d'état partagé
         // On utilise vi.clearAllMocks() et on réinitialise les mocks
@@ -143,7 +143,7 @@ describe('manage_mcp_settings Tool', () => {
 
     it('should backup settings explicitly', async () => {
         // Import dynamique après avoir configuré les mocks
-        const { manageMcpSettings } = await import('../../../src/tools/manage-mcp-settings.ts');
+        const { manageMcpSettings } = await import('../../../src/tools/manage-mcp-settings.js');
         
         const result = await manageMcpSettings.handler({ action: 'backup' });
         
@@ -163,7 +163,7 @@ describe('manage_mcp_settings Tool', () => {
 
     it('should handle backup when file does not exist', async () => {
         // Import dynamique après avoir configuré les mocks
-        const { manageMcpSettings } = await import('../../../src/tools/manage-mcp-settings.ts');
+        const { manageMcpSettings } = await import('../../../src/tools/manage-mcp-settings.js');
         
         mockReadFile.mockRejectedValue(new Error('ENOENT: no such file or directory'));
         

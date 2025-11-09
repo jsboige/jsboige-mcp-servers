@@ -179,7 +179,7 @@ describe('RooSync E2E Workflow', () => {
         service.clearCache();
         const decisionsAfter = await service.loadDecisions();
         const archived = decisionsAfter.find(
-          d => d.id === testDecisionId && d.status === 'archived'
+          d => d.id === testDecisionId && d.status === 'applied'
         );
         
         expect(archived).toBeDefined();
@@ -194,8 +194,8 @@ describe('RooSync E2E Workflow', () => {
     it('devrait lister les décisions appliquées', async () => {
       try {
         const decisions = await service.loadDecisions();
-        const appliedDecisions = decisions.filter(d => 
-          d.status === 'applied' || d.status === 'archived'
+        const appliedDecisions = decisions.filter(d =>
+          d.status === 'applied'
         );
 
         console.log(`📋 ${appliedDecisions.length} décision(s) appliquée(s)`);

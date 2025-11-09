@@ -236,8 +236,14 @@ describe('BaselineService', () => {
             userSettings: { theme: 'light' }
           },
           hardware: {
-            cpu: 'Intel Core i9-12900K',
-            ram: '32GB',
+            cpu: {
+              model: 'Intel Core i9-12900K',
+              cores: 16,
+              threads: 32
+            },
+            memory: {
+              total: 34359738368 // 32GB en bytes
+            },
             disks: [{ name: 'C:', size: '2TB' }],
             gpu: 'NVIDIA RTX 4090'
           },

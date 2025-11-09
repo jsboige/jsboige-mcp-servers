@@ -120,7 +120,9 @@ Texte entre les décisions
       const dashboard: RooSyncDashboard = {
         version: '2.0.0',
         lastUpdate: '2025-10-07T12:00:00Z',
+        lastSync: '2025-10-07T12:00:00Z',
         overallStatus: 'synced',
+        status: 'synced',
         machines: {
           'PC-PRINCIPAL': {
             lastSync: '2025-10-07T11:00:00Z',

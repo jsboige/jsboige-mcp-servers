@@ -64,10 +64,12 @@ function Invoke-Tests {
     Write-Host "===================" -ForegroundColor Cyan
     Write-Host ""
     
+    Write-Verbose-Message "Configuration complète : $($Config | ConvertTo-Json -Depth 3)"
     $testConfig = $Config.testTypes.$TestMode
     Write-Verbose-Message "TestConfig trouvé : $($testConfig | ConvertTo-Json -Compress)"
     if (-not $testConfig) {
         Write-Error-Message "Type de test non configure : $TestType"
+        Write-Error-Message "Types disponibles : $($Config.testTypes.Keys -join ', ')"
         return $false
     }
     
@@ -76,6 +78,15 @@ function Invoke-Tests {
     Write-Info "Timeout : $($testConfig.timeout)ms"
     Write-Info "Description : $($testConfig.description)"
     Write-Host ""
+    
+    # Vérifier l'environnement
+    Write-Verbose-Message "Répertoire courant : $(Get-Location)"
+    Write-Verbose-Message "Node.js version : $(node --version)"
+    Write-Verbose-Message "NPM version : $(npm --version)"
+    Write-Verbose-Message "Variables d'environnement :"
+    Get-ChildItem env: | Where-Object { $_.Name -like "ROO*" -or $_.Name -like "NODE*" -or $_.Name -like "QDRANT*" } | ForEach-Object {
+        Write-Verbose-Message "  $($_.Name) = $($_.Value)"
+    }
     
     # Preparation de la sortie
     $outputFormats = @()
@@ -224,14 +235,14 @@ function Main {
     $config = Load-Config -ConfigPath $Config
     if (-not $config) {
         Write-Error "Impossible de charger la configuration. Utilisation des valeurs par defaut."
-        # Configuration par defaut minimale
+        # Configuration par defaut minimale avec timeouts réduits pour éviter les blocages
         $config = @{
             testTypes = @{
                 unit = @{ command = "test:unit"; timeout = 30000; pattern = "tests/unit/**/*.test.ts"; description = "Tests unitaires" }
-                integration = @{ command = "test:integration"; timeout = 60000; pattern = "tests/integration/**/*.test.ts"; description = "Tests d'integration" }
-                e2e = @{ command = "test:e2e"; timeout = 120000; pattern = "tests/e2e/**/*.test.ts"; description = "Tests end-to-end" }
+                integration = @{ command = "test:integration"; timeout = 45000; pattern = "tests/integration/**/*.test.ts"; description = "Tests d'integration" }
+                e2e = @{ command = "test:e2e"; timeout = 60000; pattern = "tests/e2e/**/*.test.ts"; description = "Tests end-to-end" }
                 detector = @{ command = "test:detector"; timeout = 30000; pattern = "tests/unit/services/DiffDetector.test.ts"; description = "Tests du detecteur" }
-                all = @{ command = "test"; timeout = 120000; pattern = "tests/**/*.test.ts"; description = "Tous les tests" }
+                all = @{ command = "test"; timeout = 90000; pattern = "tests/**/*.test.ts"; description = "Tous les tests" }
             }
             output = @{
                 formats = @("console")
@@ -240,6 +251,19 @@ function Main {
             }
         }
     }
+    
+    # Configuration de l'environnement de test
+    Write-Verbose-Message "Configuration de l'environnement de test..."
+    $env:ROO_STORAGE_PATH = Join-Path $env:TEMP "roo-test-$(Get-Random)"
+    $env:NODE_ENV = "test"
+    $env:MOCK_EXTERNAL_APIS = "true"
+    $env:SKIP_NETWORK_CALLS = "true"
+    $env:QDRANT_URL = "http://localhost:6333"  # Mock Qdrant
+    $env:OPENAI_API_KEY = "sk-test-key-only"
+    
+    Write-Verbose-Message "ROO_STORAGE_PATH: $env:ROO_STORAGE_PATH"
+    Write-Verbose-Message "NODE_ENV: $env:NODE_ENV"
+    Write-Verbose-Message "MOCK_EXTERNAL_APIS: $env:MOCK_EXTERNAL_APIS"
     
     Write-Info "Repertoire du projet : $ProjectRoot"
     Write-Info "Configuration chargee : $Config"
