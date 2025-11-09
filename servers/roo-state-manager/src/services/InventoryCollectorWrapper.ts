@@ -188,9 +188,14 @@ export class InventoryCollectorWrapper implements IInventoryCollector {
           userSettings: {}
         },
         hardware: {
-          cpu: rawInventory.hardware?.cpu?.name || 'Unknown',
-          ram: rawInventory.hardware?.memory?.total ?
-            `${Math.round(rawInventory.hardware.memory.total / 1024 / 1024 / 1024)}GB` : 'Unknown',
+          cpu: {
+            model: 'Unknown CPU', // Pas de model dans la structure réelle
+            cores: rawInventory.hardware?.cpu?.cores || 0,
+            threads: rawInventory.hardware?.cpu?.threads || 0
+          },
+          memory: {
+            total: rawInventory.hardware?.memory?.total || 0
+          },
           disks: (rawInventory.hardware?.disks || []).map((d: any) => ({
             name: d.drive || 'Unknown',
             size: d.size ? `${Math.round(d.size / 1024 / 1024 / 1024)}GB` : 'Unknown'
@@ -234,8 +239,14 @@ export class InventoryCollectorWrapper implements IInventoryCollector {
           userSettings: {}
         },
         hardware: {
-          cpu: inventory.hardware.cpu?.name || 'Unknown',
-          ram: `${Math.round((inventory.hardware.memory?.total || 0) / 1024 / 1024 / 1024)}GB`,
+          cpu: {
+            model: 'Unknown CPU', // Pas de model dans la structure réelle
+            cores: inventory.hardware.cpu?.cores || 0,
+            threads: inventory.hardware.cpu?.threads || 0
+          },
+          memory: {
+            total: inventory.hardware.memory?.total || 0
+          },
           disks: (inventory.hardware.disks || []).map(d => ({
             name: d.drive || 'Unknown',
             size: `${Math.round((d.size || 0) / 1024 / 1024 / 1024)}GB`

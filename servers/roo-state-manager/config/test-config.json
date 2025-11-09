@@ -1,0 +1,39 @@
+{
+  "testTypes": {
+    "unit": {
+      "command": "test:unit",
+      "timeout": 30000,
+      "pattern": "tests/unit/**/*.test.ts",
+      "description": "Tests unitaires"
+    },
+    "integration": {
+      "command": "test:integration",
+      "timeout": 60000,
+      "pattern": "tests/integration/**/*.test.ts",
+      "description": "Tests d'integration"
+    },
+    "e2e": {
+      "command": "test:e2e",
+      "timeout": 120000,
+      "pattern": "tests/e2e/**/*.test.ts",
+      "description": "Tests end-to-end"
+    },
+    "detector": {
+      "command": "test:detector",
+      "timeout": 30000,
+      "pattern": "tests/unit/services/DiffDetector.test.ts",
+      "description": "Tests du detecteur"
+    },
+    "all": {
+      "command": "test",
+      "timeout": 120000,
+      "pattern": "tests/**/*.test.ts",
+      "description": "Tous les tests"
+    }
+  },
+  "output": {
+    "formats": ["console"],
+    "directory": "./test-results",
+    "filename": "test-results-{timestamp}"
+  }
+}

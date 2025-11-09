@@ -155,7 +155,7 @@ export async function handleGetTaskTree(
     }
     
     // ÉTAPE 2: Compléter avec radix tree pour les tâches sans parent (priorité basse)
-    const tasksWithoutParent = skeletons.filter(s => !((skeleton as any)?.parentId) && !((skeleton as any)?.parentTaskId));
+    const tasksWithoutParent = skeletons.filter(s => !((s as any)?.parentId) && !((s as any)?.parentTaskId));
     console.log(`[get-task-tree] 📊 ${tasksWithoutParent.length} tâches sans parent, tentative radix tree...`);
     
     for (const skeleton of tasksWithoutParent) {
@@ -195,7 +195,7 @@ export async function handleGetTaskTree(
     
     // ÉTAPE 3: Validation et statistiques
     const totalRelations = childrenMap.size;
-    const tasksWithRelations = skeletons.filter(s => ((skeleton as any)?.parentId) || ((skeleton as any)?.parentTaskId));
+    const tasksWithRelations = skeletons.filter(s => ((s as any)?.parentId) || ((s as any)?.parentTaskId));
     console.log(`[get-task-tree] 📊 Reconstruction terminée: ${totalRelations} relations trouvées (${tasksWithRelations.length} tâches avec relations)`);
     
     console.log(`[get-task-tree] 📊 Reconstruction terminée: ${childrenMap.size} relations parent-enfant trouvées`);

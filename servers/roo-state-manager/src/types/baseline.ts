@@ -12,13 +12,23 @@ export interface BaselineConfig {
   machineId: string;
   config: {
     roo: {
+      paths?: {
+        rooConfig?: string;
+        mcpSettings?: string;
+      };
       modes: string[];
       mcpSettings: Record<string, any>;
       userSettings: Record<string, any>;
     };
     hardware: {
-      cpu: string;
-      ram: string;
+      cpu: {
+        model: string;
+        cores: number;
+        threads: number;
+      };
+      memory: {
+        total: number;
+      };
       disks: Array<{name: string; size: string}>;
       gpu?: string;
     };
@@ -265,8 +275,14 @@ export interface MachineInventory {
       userSettings: Record<string, any>;
     };
     hardware: {
-      cpu: string;
-      ram: string;
+      cpu: {
+        model: string;
+        cores: number;
+        threads: number;
+      };
+      memory: {
+        total: number;
+      };
       disks: Array<{name: string; size: string}>;
       gpu?: string;
     };
