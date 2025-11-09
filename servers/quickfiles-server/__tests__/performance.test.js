@@ -8,21 +8,15 @@
  * - Édition de fichiers volumineux
  */
 
-import { jest } from '@jest/globals';
-import * as fs from 'fs/promises';
-import * as path from 'path';
-import { fileURLToPath } from 'url';
-import mockFs from 'mock-fs';
+const fs = require('fs/promises');
+const path = require('path');
+const mockFs = require('mock-fs');
 
 // Simuler le serveur QuickFiles pour les tests unitaires
-import { QuickFilesServer } from '../build/index.js';
-
-// Obtenir le chemin du répertoire actuel
-const __filename = fileURLToPath(import.meta.url);
-const __dirname = path.dirname(__filename);
+const { QuickFilesServer } = require('../build/index.js');
 
 // Chemin vers le dossier de test temporaire
-const TEST_DIR = path.join(__dirname, '..', 'test-temp-perf');
+const TEST_DIR = path.join(path.dirname(__filename), '..', 'test-temp-perf');
 
 // Mocks pour les requêtes MCP
 const mockRequest = (name, args) => ({

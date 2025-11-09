@@ -365,17 +365,32 @@ class QuickFilesServer {
 
                 let formattedContent = (show_line_numbers
                     ? lines.map((line, index) => {
-                        // Calculer le numéro de ligne réel en fonction des extraits
+                        // Calculer le numéro de ligne réel
                         let realLineNumber = index + 1;
+                        
+                        // Si des extraits ont été utilisés, les lignes commencent à 1 pour chaque extrait
                         if (excerpts && excerpts.length > 0) {
-                            // Trouver l'extrait qui contient cette ligne
+                            // Trouver à quel extrait cette ligne appartient et calculer son numéro relatif
+                            let currentLineNumber = 1;
                             for (const excerpt of excerpts) {
-                                if (index >= excerpt.start - 1 && index <= excerpt.end - 1) {
-                                    realLineNumber = excerpt.start + (index - (excerpt.start - 1));
+                                const excerptLength = excerpt.end - excerpt.start + 1;
+                                if (index < excerptLength) {
+                                    // Cette ligne appartient au premier extrait
+                                    realLineNumber = excerpt.start + index;
                                     break;
+                                } else {
+                                    // Soustraire la longueur de l'extrait précédent
+                                    currentLineNumber += excerptLength;
+                                    const remainingIndex = index - excerptLength;
+                                    if (remainingIndex < excerpt.end - excerpt.start + 1) {
+                                        // Cette ligne appartient à l'extrait actuel
+                                        realLineNumber = excerpt.start + remainingIndex;
+                                        break;
+                                    }
                                 }
                             }
                         }
+                        
                         return `${realLineNumber} | ${line}`;
                     }).join('\n')
                     : lines.join('\n'));
@@ -614,9 +629,9 @@ class QuickFilesServer {
                         let found = false;
                         
                         if (start_line) {
-                           const searchIndex = start_line - 1;
-                           if (lines[searchIndex] && lines[searchIndex].includes(normalizedSearch)) {
-                               lines[searchIndex] = lines[searchIndex].replace(normalizedSearch, normalizedReplace);
+                           const targetIndex = start_line - 1;
+                           if (lines[targetIndex] && lines[targetIndex].includes(normalizedSearch)) {
+                               lines[targetIndex] = lines[targetIndex].replace(normalizedSearch, normalizedReplace);
                                content = lines.join('\n');
                                found = true;
                            }
@@ -1028,10 +1043,13 @@ class QuickFilesServer {
 }
 
 // Main execution
-if (import.meta.url === pathToFileURL(process.argv[1]).href) {
+if (require.main === module) {
   const server = new QuickFilesServer();
   server.run().catch((error) => {
     console.error('Failed to start QuickFiles server:', error);
     process.exit(1);
   });
 }
+
+// Export for CommonJS
+module.exports = { QuickFilesServer };

@@ -10,18 +10,15 @@
  * @critical Ces tests DOIVENT passer avant tout commit
  */
 
-import { jest } from '@jest/globals';
-import * as fs from 'fs/promises';
-import * as path from 'path';
-import { fileURLToPath } from 'url';
-import mockFs from 'mock-fs';
+const fs = require('fs/promises');
+const path = require('path');
+const mockFs = require('mock-fs');
 
 // Simuler le serveur QuickFiles pour les tests unitaires
-import { QuickFilesServer } from '../build/index.js';
+const { QuickFilesServer } = require('../build/index.js');
 
 // Obtenir le chemin du répertoire actuel
-const __filename = fileURLToPath(import.meta.url);
-const __dirname = path.dirname(__filename);
+const currentFilename = __filename;
 
 // Liste des 8 outils qui ont été affectés par la régression
 const CRITICAL_TOOLS = [

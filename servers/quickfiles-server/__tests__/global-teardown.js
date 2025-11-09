@@ -8,7 +8,7 @@
 const mockFs = require('mock-fs');
 
 // Nettoyage global après tous les tests
-afterAll(() => {
+module.exports = () => {
   // S'assurer que le mock filesystem est restauré
   if (mockFs.restore) {
     try {
@@ -60,18 +60,16 @@ afterAll(() => {
   
   console.log('🧹 Global Jest Teardown completed');
   console.log('📊 Test environment cleaned up');
-});
+};
 
 // Export pour utilisation dans les tests
-module.exports = {
-  cleanupTempFiles: () => {
-    const tempDirs = ['C:/temp/test', 'C:/temp/destination'];
-    const fs = require('fs');
-    
-    tempDirs.forEach(dir => {
-      if (fs.existsSync(dir)) {
-        fs.rmSync(dir, { recursive: true, force: true });
-      }
-    });
-  }
+module.exports.cleanupTempFiles = () => {
+  const tempDirs = ['C:/temp/test', 'C:/temp/destination'];
+  const fs = require('fs');
+  
+  tempDirs.forEach(dir => {
+    if (fs.existsSync(dir)) {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
 };
