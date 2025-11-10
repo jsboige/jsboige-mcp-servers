@@ -343,8 +343,8 @@ export class HierarchyReconstructionEngine {
                     }
 
                     // Rechercher le parent via différentes méthodes (TOUJOURS tenter la recherche)
-                    console.log(`[ENGINE-PHASE2-SEARCH] Searching parent for child: ${skeleton.taskId.substring(0, 8)}`);
-                    console.log(`[ENGINE-PHASE2-SEARCH] Child truncatedInstruction: "${skeleton.truncatedInstruction?.substring(0, 80)}..."`);
+                    // console.log(`[ENGINE-PHASE2-SEARCH] Searching parent for child: ${skeleton.taskId.substring(0, 8)}`);
+                    // console.log(`[ENGINE-PHASE2-SEARCH] Child truncatedInstruction: "${skeleton.truncatedInstruction?.substring(0, 80)}..."`);
                     
                     const parentCandidate = await this.findParentCandidate(
                         skeleton,

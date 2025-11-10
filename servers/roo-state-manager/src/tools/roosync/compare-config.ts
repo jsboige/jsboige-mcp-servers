@@ -10,7 +10,6 @@
 import { z } from 'zod';
 import { zodToJsonSchema } from 'zod-to-json-schema';
 import { getRooSyncService, RooSyncServiceError } from '../../services/RooSyncService.js';
-import type { BaselineComparisonReport, BaselineDifference } from '../../types/baseline.js';
 
 /**
  * Schema de validation pour roosync_compare_config
@@ -62,8 +61,28 @@ export type CompareConfigResult = z.infer<typeof CompareConfigResultSchema>;
  * @throws {RooSyncServiceError} En cas d'erreur
  */
 export async function roosyncCompareConfig(args: CompareConfigArgs): Promise<CompareConfigResult> {
+  // SDDD Debug: Logging direct dans fichier pour contourner le problème de visibilité
+  const debugLog = (message: string, data?: any) => {
+    const timestamp = new Date().toISOString();
+    const logEntry = `[${timestamp}] ${message}${data ? ` | ${JSON.stringify(data)}` : ''}\n`;
+    
+    // Écrire directement dans un fichier de log
+    try {
+      const fs = require('fs');
+      fs.appendFileSync('c:/dev/roo-extensions/debug-roosync-compare.log', logEntry);
+    } catch (e) {
+      // Ignorer les erreurs de logging
+    }
+    
+    // Garder le console.log pour compatibilité
+    console.log(message, data);
+  };
+  
+  debugLog('roosyncCompareConfig appelé avec args', args);
   try {
+    debugLog('Avant getRooSyncService()');
     const service = getRooSyncService();
+    debugLog('Après getRooSyncService(), service obtenu', { serviceExists: !!service });
     const config = service.getConfig();
     
     // Déterminer machines source et cible
@@ -88,12 +107,27 @@ export async function roosyncCompareConfig(args: CompareConfigArgs): Promise<Com
     return formatComparisonReport(report);
     
   } catch (error) {
+    // CORRECTION SDDD: Laisser remonter les erreurs détaillées du BaselineService
     if (error instanceof RooSyncServiceError) {
+      debugLog('RooSyncServiceError interceptée', {
+        name: error.name,
+        message: error.message,
+        code: error.code
+      });
       throw error;
     }
     
+    // Conserver le message d'erreur original pour le debugging
+    const originalError = error as Error;
+    debugLog('Erreur originale dans compare-config', {
+      errorType: typeof error,
+      errorMessage: originalError.message,
+      errorStack: originalError.stack,
+      errorName: originalError.name
+    });
+    
     throw new RooSyncServiceError(
-      `Erreur lors de la comparaison: ${(error as Error).message}`,
+      `Erreur lors de la comparaison: ${originalError.message}`,
       'ROOSYNC_COMPARE_ERROR'
     );
   }
@@ -121,11 +155,11 @@ async function getDefaultTargetMachine(service: any, sourceMachineId: string): P
 /**
  * Formate le rapport de comparaison pour l'affichage MCP
  */
-function formatComparisonReport(report: BaselineComparisonReport): CompareConfigResult {
+function formatComparisonReport(report: any): CompareConfigResult {
   return {
     source: report.baselineMachine,
     target: report.targetMachine,
-    differences: report.differences.map((diff: BaselineDifference) => ({
+    differences: report.differences.map((diff: any) => ({
       category: diff.category,
       severity: diff.severity,
       path: diff.path,

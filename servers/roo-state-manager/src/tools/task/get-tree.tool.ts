@@ -136,14 +136,29 @@ export async function handleGetTaskTree(
         throw new Error(`Task ID '${conversation_id}' not found. Available tasks (first 10): ${availableIds}`);
     }
 
-    // 🎯 CORRECTION CRITIQUE : Reconstruction dynamique via radix tree inversé
-    // Plus d'utilisation des métadonnées parentId statiques qui peuvent être corrompues
+    // 🎯 CORRECTION CRITIQUE : Reconstruction hybride robuste
+    // Stratégie multi-niveaux avec fallback pour garantir la détection des relations
     const childrenMap = new Map<string, string[]>();
     
-    console.log(`[get-task-tree] 🔄 Reconstruction hiérarchique via radix tree pour ${skeletons.length} tâches`);
+    console.log(`[get-task-tree] 🔄 Reconstruction hiérarchique hybride pour ${skeletons.length} tâches`);
     
-    // Pour chaque tâche, trouver ses parents via le radix tree
+    // ÉTAPE 1: Utiliser les métadonnées parentId existantes (priorité haute)
     for (const skeleton of skeletons) {
+        const existingParentId = (skeleton as any)?.parentId ?? (skeleton as any)?.parentTaskId;
+        if (existingParentId) {
+            if (!childrenMap.has(existingParentId)) {
+                childrenMap.set(existingParentId, []);
+            }
+            childrenMap.get(existingParentId)!.push(skeleton.taskId);
+            console.log(`[get-task-tree] ✅ Parent statique trouvé pour ${skeleton.taskId?.substring(0, 8) || 'unknown'} -> ${existingParentId?.substring(0, 8) || 'unknown'} (métadonnées)`);
+        }
+    }
+    
+    // ÉTAPE 2: Compléter avec radix tree pour les tâches sans parent (priorité basse)
+    const tasksWithoutParent = skeletons.filter(s => !((s as any)?.parentId) && !((s as any)?.parentTaskId));
+    console.log(`[get-task-tree] 📊 ${tasksWithoutParent.length} tâches sans parent, tentative radix tree...`);
+    
+    for (const skeleton of tasksWithoutParent) {
         // Utiliser l'instruction complète de la tâche pour la recherche
         const taskInstruction = skeleton.metadata?.title || skeleton.truncatedInstruction || '';
         
@@ -156,7 +171,7 @@ export async function handleGetTaskTree(
                     // Prendre le premier parent trouvé (déterministe)
                     const parentId = parentCandidates[0].taskId;
                     
-                    console.log(`[get-task-tree] ✅ Parent trouvé pour ${skeleton.taskId?.substring(0, 8) || 'unknown'} -> ${parentId?.substring(0, 8) || 'unknown'} via radix tree`);
+                    console.log(`[get-task-tree] ✅ Parent radix trouvé pour ${skeleton.taskId?.substring(0, 8) || 'unknown'} -> ${parentId?.substring(0, 8) || 'unknown'} via radix tree`);
                     
                     // Ajouter la relation parent-enfant dans le childrenMap
                     if (!childrenMap.has(parentId)) {
@@ -168,15 +183,20 @@ export async function handleGetTaskTree(
                     (skeleton as any).parentTaskId = parentId;
                     (skeleton as any).parentId = parentId;
                 } else {
-                    console.log(`[get-task-tree] ⚠️ Aucun parent trouvé pour ${skeleton.taskId?.substring(0, 8) || 'unknown'} via radix tree`);
+                    console.log(`[get-task-tree] ⚠️ Aucun parent radix trouvé pour ${skeleton.taskId?.substring(0, 8) || 'unknown'} via radix tree`);
                 }
             } catch (error) {
-                console.warn(`[get-task-tree] ❌ Erreur recherche parent pour ${skeleton.taskId?.substring(0, 8) || 'unknown'}:`, error);
+                console.warn(`[get-task-tree] ❌ Erreur recherche parent radix pour ${skeleton.taskId?.substring(0, 8) || 'unknown'}:`, error);
             }
         } else {
             console.log(`[get-task-tree] ⏭️ Instruction trop courte pour ${skeleton.taskId?.substring(0, 8) || 'unknown'}, skipping`);
         }
     }
+    
+    // ÉTAPE 3: Validation et statistiques
+    const totalRelations = childrenMap.size;
+    const tasksWithRelations = skeletons.filter(s => ((s as any)?.parentId) || ((s as any)?.parentTaskId));
+    console.log(`[get-task-tree] 📊 Reconstruction terminée: ${totalRelations} relations trouvées (${tasksWithRelations.length} tâches avec relations)`);
     
     console.log(`[get-task-tree] 📊 Reconstruction terminée: ${childrenMap.size} relations parent-enfant trouvées`);
 
@@ -210,7 +230,7 @@ export async function handleGetTaskTree(
         taskId: string,
         depth: number,
         visited: Set<string> = new Set(),
-        maxDepth: number = 100
+        maxDepth: number
     ): any => {
         // 🆕 1. VÉRIFICATION CYCLE (priorité absolue)
         if (visited.has(taskId)) {
@@ -231,7 +251,8 @@ export async function handleGetTaskTree(
         }
         
         // 3. Vérification profondeur paramétrable (existant)
-        if (depth > max_depth) {
+        if (depth > maxDepth) {
+            console.warn(`[get_task_tree] ⚠️ PROFONDEUR PARAMÉTRÉE DÉPASSÉE (${depth} > ${maxDepth}) pour taskId=${taskId?.substring(0, 8) || 'undefined'}`);
             return null;
         }
         

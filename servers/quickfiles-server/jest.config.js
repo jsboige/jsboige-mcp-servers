@@ -96,15 +96,7 @@ export default {
   
   // Rapports de test étendus
   reporters: [
-    'default',
-    ['jest-junit', {
-      outputDirectory: './test-results',
-      outputName: 'junit.xml',
-      classNameTemplate: '{classname}',
-      titleTemplate: '{title}',
-      ancestorSeparator: ' › ',
-      usePathForSuiteName: true
-    }]
+    'default'
   ],
   
   // Configuration maximale pour la détection des problèmes

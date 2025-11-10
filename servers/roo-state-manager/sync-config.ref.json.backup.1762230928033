@@ -1,0 +1,41 @@
+{
+  "machineId": "updated-machine",
+  "version": "2.2.0",
+  "config": {
+    "roo": {
+      "modes": [
+        "code",
+        "ask"
+      ],
+      "mcpSettings": {
+        "updated-server": {
+          "enabled": true
+        }
+      },
+      "userSettings": {
+        "theme": "light"
+      }
+    },
+    "hardware": {
+      "cpu": "Intel Core i9-12900K",
+      "ram": "32GB",
+      "disks": [
+        {
+          "name": "C:",
+          "size": "2TB"
+        }
+      ],
+      "gpu": "NVIDIA RTX 4090"
+    },
+    "software": {
+      "powershell": "7.3.0",
+      "node": "20.0.0",
+      "python": "3.12.0"
+    },
+    "system": {
+      "os": "Windows 11",
+      "architecture": "x64"
+    }
+  },
+  "lastUpdated": "2025-11-04T01:00:00Z"
+}
