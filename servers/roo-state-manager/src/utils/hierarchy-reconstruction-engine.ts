@@ -57,9 +57,13 @@ export class HierarchyReconstructionEngine {
             debugMode: true // Pour voir les logs pendant la reconstruction
         });
 
-        // Récupérer les skeletons depuis le storage
+        // Récupérer les skeletons depuis le storage SANS reconstruction hiérarchique
+        // pour éviter la boucle de récursion infinie
         const { RooStorageDetector } = await import('./roo-storage-detector.js');
-        const skeletons = await RooStorageDetector.buildHierarchicalSkeletons(workspacePath);
+        const skeletons = await (RooStorageDetector as any).buildHierarchicalSkeletonsLegacy(
+            workspacePath,
+            false // Mode intelligent
+        );
         
         // Exécuter la reconstruction
         const enhancedSkeletons = await engine.doReconstruction(skeletons);

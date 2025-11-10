@@ -45,7 +45,7 @@ describe('UnifiedApiGateway - Architecture consolidée', () => {
         }))
       },
       searchService: {
-        searchTasksSemantic: vi.fn(() => Promise.resolve({
+        searchTasksByContent: vi.fn(() => Promise.resolve({
           results: [],
           total: 0
         }))
@@ -128,7 +128,7 @@ describe('UnifiedApiGateway - Architecture consolidée', () => {
       expect(result.metadata?.processingLevel).toBe(ProcessingLevel.IMMEDIATE);
       
       const tools = INTELLIGENT_PRESETS[DisplayPreset.SEARCH_RESULTS].tools;
-      expect(tools).toContain('search_tasks_semantic');
+      expect(tools).toContain('search_tasks_by_content');
       expect(tools).toContain('index_task_semantic');
       expect(tools).toHaveLength(2);
     });
@@ -456,7 +456,7 @@ describe('Architecture consolidée - Tests d\'intégration', () => {
     
     // Vérifier la présence d'outils clés par catégorie
     expect(allTools.has('list_conversations')).toBe(true); // Display
-    expect(allTools.has('search_tasks_semantic')).toBe(true); // Search  
+    expect(allTools.has('search_tasks_by_content')).toBe(true); // Search
     expect(allTools.has('export_conversation_json')).toBe(true); // Export
     expect(allTools.has('detect_roo_storage')).toBe(true); // Utility
   });

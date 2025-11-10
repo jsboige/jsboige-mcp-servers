@@ -1,4 +1,4 @@
-import { jest, describe, it, expect, beforeEach } from 'vitest';
+import { describe, it, expect, beforeEach } from 'vitest';
 import { viewConversationTree } from '../../../src/tools/view-conversation-tree.js';
 import { ConversationSkeleton } from '../../../src/types/conversation.js';
 
@@ -31,40 +31,40 @@ describe('view_conversation_tree Tool', () => {
         mockCache.set('grandchild1', grandchild1);
     });
 
-    it('should display a single task in single mode', () => {
-        const result = viewConversationTree.handler({ task_id: 'child1', view_mode: 'single' }, mockCache);
+    it('should display a single task in single mode', async () => {
+        const result = await viewConversationTree.handler({ task_id: 'child1', view_mode: 'single' }, mockCache);
         const textContent = result.content[0].type === 'text' ? result.content[0].text : '';
         expect(textContent).toContain('Task: Child 1 (ID: child1)');
         expect(textContent).not.toContain('Task: Root Task');
     });
 
-    it('should display the task and its parent in chain mode', () => {
-        const result = viewConversationTree.handler({ task_id: 'grandchild1', view_mode: 'chain' }, mockCache);
+    it('should display task and its parent in chain mode', async () => {
+        const result = await viewConversationTree.handler({ task_id: 'grandchild1', view_mode: 'chain' }, mockCache);
         const textContent = result.content[0].type === 'text' ? result.content[0].text : '';
         expect(textContent).toContain('Task: Root Task');
         expect(textContent).toContain('Task: Child 1');
         expect(textContent).toContain('Task: Grandchild 1');
     });
 
-    it('should automatically select the latest task if no task_id is provided', () => {
-        const result = viewConversationTree.handler({}, mockCache);
+    it('should automatically select the latest task if no task_id is provided', async () => {
+        const result = await viewConversationTree.handler({}, mockCache);
         const textContent = result.content[0].type === 'text' ? result.content[0].text : '';
         // Child 2 is the latest
         expect(textContent).toContain('Task: Child 2');
     });
 
-    it('should truncate long content when max_output_length is exceeded', () => {
+    it('should truncate long content when max_output_length is exceeded', async () => {
         const longContent = 'line\n'.repeat(50);
         mockCache.set('long_task', createMockSkeleton('long_task', undefined, 'Long Task', '2025-01-02T00:00:00Z', longContent));
         
-        const result = viewConversationTree.handler({ task_id: 'long_task', max_output_length: 200 }, mockCache);
+        const result = await viewConversationTree.handler({ task_id: 'long_task', max_output_length: 200 }, mockCache);
         const textContent = result.content[0].type === 'text' ? result.content[0].text : '';
         
         expect(textContent).toContain('[...]');
         expect(textContent).toContain('Sortie estimée');
     });
 
-    it('should respect detail_level skeleton mode', () => {
+    it('should respect detail_level skeleton mode', async () => {
         // Ajouter une action mockée pour tester le comportement skeleton
         const taskWithAction = createMockSkeleton('task_with_action', undefined, 'Task With Action', '2025-01-01T10:00:00Z', 'test content');
         taskWithAction.sequence.push({
@@ -76,7 +76,7 @@ describe('view_conversation_tree Tool', () => {
         });
         mockCache.set('task_with_action', taskWithAction);
 
-        const result = viewConversationTree.handler({ task_id: 'task_with_action', detail_level: 'skeleton' }, mockCache);
+        const result = await viewConversationTree.handler({ task_id: 'task_with_action', detail_level: 'skeleton' }, mockCache);
         const textContent = result.content[0].type === 'text' ? result.content[0].text : '';
         
         expect(textContent).toContain('Detail: skeleton');
@@ -85,7 +85,7 @@ describe('view_conversation_tree Tool', () => {
         expect(textContent).not.toContain('Params:');
     });
 
-    it('should respect detail_level summary mode', () => {
+    it('should respect detail_level summary mode', async () => {
         // Ajouter une action mockée pour tester le comportement summary
         const taskWithAction = createMockSkeleton('task_with_action', undefined, 'Task With Action', '2025-01-01T10:00:00Z', 'test content');
         taskWithAction.sequence.push({
@@ -97,7 +97,7 @@ describe('view_conversation_tree Tool', () => {
         });
         mockCache.set('task_with_action', taskWithAction);
 
-        const result = viewConversationTree.handler({ task_id: 'task_with_action', detail_level: 'summary' }, mockCache);
+        const result = await viewConversationTree.handler({ task_id: 'task_with_action', detail_level: 'summary' }, mockCache);
         const textContent = result.content[0].type === 'text' ? result.content[0].text : '';
         
         expect(textContent).toContain('Detail: summary');
@@ -107,7 +107,7 @@ describe('view_conversation_tree Tool', () => {
         expect(textContent).toContain('param1');
     });
 
-    it('should respect detail_level full mode', () => {
+    it('should respect detail_level full mode', async () => {
         // Ajouter une action mockée pour tester le comportement full
         const taskWithAction = createMockSkeleton('task_with_action', undefined, 'Task With Action', '2025-01-01T10:00:00Z', 'test content');
         taskWithAction.sequence.push({
@@ -121,7 +121,7 @@ describe('view_conversation_tree Tool', () => {
         });
         mockCache.set('task_with_action', taskWithAction);
 
-        const result = viewConversationTree.handler({ task_id: 'task_with_action', detail_level: 'full' }, mockCache);
+        const result = await viewConversationTree.handler({ task_id: 'task_with_action', detail_level: 'full' }, mockCache);
         const textContent = result.content[0].type === 'text' ? result.content[0].text : '';
         
         expect(textContent).toContain('Detail: full');
@@ -132,8 +132,8 @@ describe('view_conversation_tree Tool', () => {
         expect(textContent).toContain('Line Count: 5');
     });
 
-    it('should handle cluster mode correctly', () => {
-        const result = viewConversationTree.handler({ task_id: 'child1', view_mode: 'cluster' }, mockCache);
+    it('should handle cluster mode correctly', async () => {
+        const result = await viewConversationTree.handler({ task_id: 'child1', view_mode: 'cluster' }, mockCache);
         const textContent = result.content[0].type === 'text' ? result.content[0].text : '';
         
         expect(textContent).toContain('Mode: cluster');
@@ -142,17 +142,17 @@ describe('view_conversation_tree Tool', () => {
         expect(textContent).toContain('Task: Child 2'); // Sibling
     });
 
-    it('should throw error for non-existent task', () => {
-        expect(() => {
-            viewConversationTree.handler({ task_id: 'non_existent' }, mockCache);
-        }).toThrow("Task with ID 'non_existent' not found in cache.");
+    it('should throw error for non-existent task', async () => {
+        await expect(async () => {
+            await viewConversationTree.handler({ task_id: 'non_existent' }, mockCache);
+        }).rejects.toThrow("Task with ID 'non_existent' not found in cache.");
     });
 
-    it('should throw error when cache is empty and no task_id provided', () => {
+    it('should throw error when cache is empty and no task_id provided', async () => {
         const emptyCache = new Map<string, ConversationSkeleton>();
         
-        expect(() => {
-            viewConversationTree.handler({}, emptyCache);
-        }).toThrow("Cache is empty and no task_id was provided. Cannot determine the latest task.");
+        await expect(async () => {
+            await viewConversationTree.handler({}, emptyCache);
+        }).rejects.toThrow("Cache is empty and no task_id was provided. Cannot determine the latest task.");
     });
 });
