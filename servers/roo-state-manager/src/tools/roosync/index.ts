@@ -270,16 +270,123 @@ export const roosyncTools = [
   {
     name: 'roosync_granular_diff',
     description: 'Effectue une comparaison granulaire entre deux configurations ou inventaires',
-    inputSchema: GranularDiffArgsSchema
+    inputSchema: {
+      type: 'object',
+      properties: {
+        source: {
+          type: 'any',
+          description: 'Configuration ou inventaire source (objet JSON ou chemin de fichier)'
+        },
+        target: {
+          type: 'any',
+          description: 'Configuration ou inventaire cible (objet JSON ou chemin de fichier)'
+        },
+        sourceLabel: {
+          type: 'string',
+          description: 'Libellé pour la source (optionnel)'
+        },
+        targetLabel: {
+          type: 'string',
+          description: 'Libellé pour la cible (optionnel)'
+        },
+        options: {
+          type: 'object',
+          properties: {
+            includeUnchanged: { type: 'boolean', default: false },
+            ignoreWhitespace: { type: 'boolean', default: true },
+            ignoreCase: { type: 'boolean', default: false },
+            arrayDiffMode: { type: 'string', enum: ['position', 'identity'], default: 'identity' },
+            semanticAnalysis: { type: 'boolean', default: false },
+            maxDepth: { type: 'number', default: 50 }
+          }
+        },
+        outputPath: {
+          type: 'string',
+          description: 'Chemin de sortie pour le rapport (optionnel)'
+        },
+        format: {
+          type: 'string',
+          enum: ['json', 'csv', 'html'],
+          default: 'json'
+        },
+        dryRun: {
+          type: 'boolean',
+          default: false
+        }
+      },
+      required: ['source', 'target']
+    }
   },
   {
     name: 'roosync_validate_diff',
     description: 'Valide de manière interactive les différences détectées par un diff granulaire',
-    inputSchema: ValidateDiffArgsSchema
+    inputSchema: {
+      type: 'object',
+      properties: {
+        reportId: {
+          type: 'string',
+          description: 'ID du rapport de diff à valider'
+        },
+        diffIds: {
+          type: 'array',
+          items: { type: 'string' },
+          description: 'Liste des IDs de diffs à valider'
+        },
+        action: {
+          type: 'string',
+          enum: ['approve', 'reject', 'modify'],
+          description: 'Action de validation'
+        },
+        reason: {
+          type: 'string',
+          description: 'Raison de la décision (optionnel)'
+        },
+        modifications: {
+          type: 'object',
+          description: 'Modifications à appliquer (si action = modify)'
+        }
+      },
+      required: ['reportId', 'diffIds', 'action']
+    }
   },
   {
     name: 'roosync_export_diff',
     description: 'Exporte un rapport de diff granulaire vers différents formats',
-    inputSchema: ExportDiffArgsSchema
+    inputSchema: {
+      type: 'object',
+      properties: {
+        reportId: {
+          type: 'string',
+          description: 'ID du rapport de diff à exporter'
+        },
+        format: {
+          type: 'string',
+          enum: ['json', 'csv', 'html'],
+          description: 'Format d\'export'
+        },
+        outputPath: {
+          type: 'string',
+          description: 'Chemin de sortie pour le fichier exporté'
+        },
+        filter: {
+          type: 'object',
+          properties: {
+            severity: {
+              type: 'array',
+              items: { type: 'string' }
+            },
+            category: {
+              type: 'array',
+              items: { type: 'string' }
+            },
+            type: {
+              type: 'array',
+              items: { type: 'string' }
+            }
+          }
+        }
+      },
+      required: ['reportId', 'format', 'outputPath']
+    }
   }
 ];

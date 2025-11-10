@@ -125,7 +125,7 @@ class RooStateManagerServer {
 
             // Créer l'intercepteur d'outils
             const state = this.stateManager.getState();
-            const machineId = process.env.MACHINE_ID || 'local_machine';
+            const machineId = process.env.ROOSYNC_MACHINE_ID || 'local_machine';
             
             this.toolInterceptor = new ToolUsageInterceptor(
                 this.notificationService,

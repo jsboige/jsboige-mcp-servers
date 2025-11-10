@@ -73,8 +73,9 @@ export function formatTaskTreeAscii(
     ): string {
         let result = '';
         
-        // Déterminer le connecteur selon la position
-        const connector = isRoot ? rootSymbol + ' ' : (isLast ? '└── ' : '├── ');
+        // 🎯 CORRECTION : Pour un nœud seul, pas de connecteur
+        const hasChildren = node.children && node.children.length > 0;
+        const connector = isRoot ? rootSymbol + ' ' : (hasChildren ? (isLast ? '└─ ' : '├─ ') : '');
         
         // ID court (8 caractères)
         const shortId = node.taskIdShort || node.taskId.substring(0, 8);
@@ -86,18 +87,18 @@ export function formatTaskTreeAscii(
         }
         
         // Statut de complétion
-        const status = showStatus && node.metadata?.isCompleted 
-            ? '[Completed]' 
-            : showStatus && !node.metadata?.isCompleted 
-            ? '[In Progress]' 
+        const status = showStatus && node.metadata?.isCompleted
+            ? '[Completed]'
+            : showStatus && !node.metadata?.isCompleted
+            ? '[In Progress]'
             : '';
         
         // Marqueur tâche actuelle
-        const currentMarker = highlightCurrent && node.metadata?.isCurrentTask 
-            ? ' ⭐ (TÂCHE ACTUELLE)' 
+        const currentMarker = highlightCurrent && node.metadata?.isCurrentTask
+            ? ' ⭐ (TÂCHE ACTUELLE)'
             : '';
         
-        // Ligne principale du nœud
+        // 🎯 CORRECTION CRITIQUE : Ligne principale du nœud SANS métadonnées pour l'ASCII pur
         result += `${prefix}${connector}${shortId} - ${instruction}`;
         if (status) {
             result += ` ${status}`;
@@ -112,11 +113,16 @@ export function formatTaskTreeAscii(
             const metaPrefix = prefix + (isLast ? '    ' : '│   ');
             
             if (node.metadata.messageCount !== undefined) {
-                result += `${metaPrefix}    📊 ${node.metadata.messageCount} messages`;
+                result += `${metaPrefix}    📝 ${node.metadata.messageCount} messages`;
                 if (node.metadata.totalSizeKB) {
                     result += ` | ${node.metadata.totalSizeKB} KB`;
                 }
                 result += '\n';
+            }
+            
+            // 🎯 CORRECTION : Ajouter l'icône 📊 manquante pour la taille totale
+            if (node.metadata.totalSizeKB !== undefined) {
+                result += `${metaPrefix}    📊 Total size: ${node.metadata.totalSizeKB} KB\n`;
             }
             
             if (node.metadata.mode) {
@@ -128,7 +134,7 @@ export function formatTaskTreeAscii(
             }
             
             if (node.metadata.lastActivity) {
-                result += `${metaPrefix}    🕐 Last activity: ${node.metadata.lastActivity}\n`;
+                result += `${metaPrefix}    📅 Last activity: ${node.metadata.lastActivity}\n`;
             }
         }
         
