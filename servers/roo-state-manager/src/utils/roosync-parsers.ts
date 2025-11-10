@@ -62,8 +62,14 @@ export interface RooSyncDashboard {
   /** Date de dernière mise à jour */
   lastUpdate: string;
   
+  /** Date de dernière synchronisation */
+  lastSync: string;
+  
   /** État global de synchronisation */
   overallStatus: 'synced' | 'diverged' | 'conflict' | 'unknown';
+  
+  /** État de synchronisation (alias pour overallStatus) */
+  status: 'synced' | 'diverged' | 'conflict' | 'unknown';
   
   /** Machines enregistrées */
   machines: {
@@ -88,6 +94,23 @@ export interface RooSyncDashboard {
     totalDecisions: number;
     appliedDecisions: number;
     pendingDecisions: number;
+  };
+  
+  /** Tableau des machines (pour compatibilité avec get-status.ts) */
+  machinesArray?: Array<{
+    id: string;
+    status: 'online' | 'offline' | 'unknown';
+    lastSync: string;
+    pendingDecisions: number;
+    diffsCount: number;
+  }>;
+  
+  /** Résumé statistique (pour compatibilité avec get-status.ts) */
+  summary?: {
+    totalMachines: number;
+    onlineMachines: number;
+    totalDiffs: number;
+    totalPendingDecisions: number;
   };
 }
 

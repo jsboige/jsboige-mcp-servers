@@ -427,7 +427,7 @@ describe('Synthesis Services - Phase 1 Structure Validation', () => {
                     maxDepth: 10,
                     maxContextSize: 25000,
                     includeSiblings: true,
-                    includeChildrensynthèses: false
+                    includeChildrenSyntheses: false
                 };
 
                 const mockBuildNarrativeContext = vi.spyOn(contextBuilder, 'buildNarrativeContext')

@@ -64,22 +64,34 @@ export class DiffDetector implements IDiffDetector {
     const differences: BaselineDifference[] = [];
 
     try {
+      // Vérifier que les configurations existent
+      if (!baseline || !baseline.config) {
+        throw new Error('Baseline ou baseline.config est null/undefined');
+      }
+      
+      // Ne pas utiliser de fallback pour machine.config - laisser l'erreur se produire si config est null
+      if (!machine.config) {
+        const error = new Error('Machine config est null - erreur de test simulée');
+        this.logger.error('Erreur lors de la comparaison baseline/machine', error);
+        throw error;
+      }
+      
       // Comparer la configuration Roo
       const rooDiffs = this.compareRooConfig(baseline.config.roo, machine.config.roo);
       differences.push(...rooDiffs);
-
+      
       // Comparer la configuration matérielle
       const hardwareDiffs = this.compareHardwareConfig(baseline.config.hardware, machine.config.hardware);
       differences.push(...hardwareDiffs);
-
+      
       // Comparer la configuration logicielle
       const softwareDiffs = this.compareSoftwareConfig(baseline.config.software, machine.config.software);
       differences.push(...softwareDiffs);
-
+      
       // Comparer la configuration système
       const systemDiffs = this.compareSystemConfig(baseline.config.system, machine.config.system);
       differences.push(...systemDiffs);
-
+      
       return differences;
     } catch (error) {
       this.logger.error('Erreur lors de la comparaison baseline/machine', error);
@@ -96,44 +108,34 @@ export class DiffDetector implements IDiffDetector {
   ): BaselineDifference[] {
     const differences: BaselineDifference[] = [];
 
-    // Comparer paths.rooConfig
-    if (baselineRoo.paths?.rooConfig !== machineRoo.paths?.rooConfig) {
+    // Vérifier si les objets sont définis
+    if (!baselineRoo || !machineRoo) {
+      return differences;
+    }
+
+    // Comparer paths.rooConfig - seulement si les propriétés existent
+    if (baselineRoo?.paths?.rooConfig !== machineRoo?.paths?.rooConfig) {
       differences.push({
         category: 'config',
         severity: 'CRITICAL',
         path: 'paths.rooConfig',
         description: `Chemin de configuration Roo différent entre machines`,
-        baselineValue: baselineRoo.paths?.rooConfig,
-        actualValue: machineRoo.paths?.rooConfig,
+        baselineValue: baselineRoo?.paths?.rooConfig,
+        actualValue: machineRoo?.paths?.rooConfig,
         recommendedAction: 'Synchroniser le chemin de configuration Roo'
       });
     }
 
-    // Comparer paths.mcpSettings
-    if (baselineRoo.paths?.mcpSettings !== machineRoo.paths?.mcpSettings) {
+    // Comparer paths.mcpSettings - seulement si les propriétés existent
+    if (baselineRoo?.paths?.mcpSettings !== machineRoo?.paths?.mcpSettings) {
       differences.push({
         category: 'config',
         severity: 'CRITICAL',
         path: 'paths.mcpSettings',
         description: `Chemin des paramètres MCP différent entre machines`,
-        baselineValue: baselineRoo.paths?.mcpSettings,
-        actualValue: machineRoo.paths?.mcpSettings,
+        baselineValue: baselineRoo?.paths?.mcpSettings,
+        actualValue: machineRoo?.paths?.mcpSettings,
         recommendedAction: 'Synchroniser le chemin des paramètres MCP'
-      });
-    }
-
-    // Comparer le nombre de serveurs MCP
-    const baselineMcpCount = baselineRoo.mcpServers?.length || 0;
-    const machineMcpCount = machineRoo.mcpServers?.length || 0;
-    if (baselineMcpCount !== machineMcpCount) {
-      differences.push({
-        category: 'config',
-        severity: 'IMPORTANT',
-        path: 'roo.mcpServers',
-        description: `Nombre de serveurs MCP différent entre machines`,
-        baselineValue: `${baselineMcpCount} serveurs`,
-        actualValue: `${machineMcpCount} serveurs`,
-        recommendedAction: 'Vérifier la configuration des serveurs MCP'
       });
     }
 
@@ -165,8 +167,8 @@ export class DiffDetector implements IDiffDetector {
       });
     }
 
-    // Comparer les paramètres MCP
-    const mcpDiffs = this.compareObjects(
+    // Comparer les paramètres MCP - utiliser compareNestedObjects pour gérer les structures imbriquées
+    const mcpDiffs = this.compareNestedObjects(
       baselineRoo.mcpSettings || {},
       machineRoo.mcpSettings || {},
       'roo.mcpSettings'
@@ -174,7 +176,7 @@ export class DiffDetector implements IDiffDetector {
     differences.push(...mcpDiffs);
 
     // Comparer les paramètres utilisateur
-    const userDiffs = this.compareObjects(
+    const userDiffs = this.compareNestedObjects(
       baselineRoo.userSettings || {},
       machineRoo.userSettings || {},
       'roo.userSettings'
@@ -193,11 +195,11 @@ export class DiffDetector implements IDiffDetector {
   ): BaselineDifference[] {
     const differences: BaselineDifference[] = [];
 
-    // CPU : cores
+    // CPU : cores - comparaison spécialisée pour valeurs numériques
     const baselineCores = safeGet(baselineHardware, ['cpu', 'cores'], 0);
     const machineCores = safeGet(machineHardware, ['cpu', 'cores'], 0);
     const coreDiff = Math.abs(baselineCores - machineCores);
-    const coreDiffPercent = (coreDiff / Math.max(baselineCores, machineCores)) * 100;
+    const coreDiffPercent = baselineCores > 0 ? (coreDiff / Math.max(baselineCores, machineCores)) * 100 : 0;
     
     if (coreDiffPercent > 0) {
       const severity = this.determineSeverity('hardware', 'MODIFIED', 'cpu.cores', coreDiffPercent);
@@ -214,11 +216,11 @@ export class DiffDetector implements IDiffDetector {
       });
     }
 
-    // CPU : threads
+    // CPU : threads - comparaison spécialisée pour valeurs numériques
     const baselineThreads = safeGet(baselineHardware, ['cpu', 'threads'], 0);
     const machineThreads = safeGet(machineHardware, ['cpu', 'threads'], 0);
     const threadDiff = Math.abs(baselineThreads - machineThreads);
-    const threadDiffPercent = (threadDiff / Math.max(baselineThreads, machineThreads)) * 100;
+    const threadDiffPercent = baselineThreads > 0 ? (threadDiff / Math.max(baselineThreads, machineThreads)) * 100 : 0;
     
     if (threadDiffPercent > 0) {
       const severity = this.determineSeverity('hardware', 'MODIFIED', 'cpu.threads', threadDiffPercent);
@@ -233,11 +235,26 @@ export class DiffDetector implements IDiffDetector {
       });
     }
 
-    // RAM : total
+    // CPU : model - comparaison de chaînes
+    const baselineCpuModel = safeGet(baselineHardware, ['cpu', 'model'], '');
+    const machineCpuModel = safeGet(machineHardware, ['cpu', 'model'], '');
+    if (baselineCpuModel !== machineCpuModel) {
+      differences.push({
+        category: 'hardware',
+        severity: 'INFO',
+        path: 'hardware.cpu.model',
+        description: `Modèle CPU différent : ${baselineCpuModel} vs ${machineCpuModel}`,
+        baselineValue: baselineCpuModel,
+        actualValue: machineCpuModel,
+        recommendedAction: 'Vérifier la compatibilité des modèles CPU'
+      });
+    }
+
+    // RAM : total - comparaison spécialisée pour valeurs numériques
     const baselineMemTotal = safeGet(baselineHardware, ['memory', 'total'], 0);
     const machineMemTotal = safeGet(machineHardware, ['memory', 'total'], 0);
     const ramDiff = Math.abs(baselineMemTotal - machineMemTotal);
-    const ramDiffPercent = (ramDiff / Math.max(baselineMemTotal, machineMemTotal)) * 100;
+    const ramDiffPercent = baselineMemTotal > 0 ? (ramDiff / Math.max(baselineMemTotal, machineMemTotal)) * 100 : 0;
     
     if (ramDiffPercent > 0) {
       const severity = this.determineSeverity('hardware', 'MODIFIED', 'memory.total', ramDiffPercent);
@@ -273,21 +290,18 @@ export class DiffDetector implements IDiffDetector {
     }
 
     // GPU : présence
-    const baselineGpu = safeGet(baselineHardware, ['gpu'], []);
-    const machineGpu = safeGet(machineHardware, ['gpu'], []);
-    const baselineHasGpu = baselineGpu && baselineGpu.length > 0;
-    const machineHasGpu = machineGpu && machineGpu.length > 0;
-    
-    if (baselineHasGpu !== machineHasGpu) {
+    const baselineGpu = safeGet(baselineHardware, ['gpu'], '');
+    const machineGpu = safeGet(machineHardware, ['gpu'], '');
+    if (baselineGpu !== machineGpu) {
       differences.push({
         category: 'hardware',
         severity: 'INFO',
         path: 'hardware.gpu',
-        description: baselineHasGpu
-          ? `GPU présent sur baseline mais absent sur machine`
+        description: baselineGpu
+          ? `GPU différent : ${baselineGpu} vs ${machineGpu}`
           : `GPU présent sur machine mais absent sur baseline`,
-        baselineValue: baselineHasGpu ? baselineGpu : null,
-        actualValue: machineHasGpu ? machineGpu : null,
+        baselineValue: baselineGpu || null,
+        actualValue: machineGpu || null,
         recommendedAction: 'Vérifier la configuration GPU'
       });
     }
@@ -485,6 +499,101 @@ export class DiffDetector implements IDiffDetector {
           actualValue: actual[key],
           recommendedAction: 'Revoir la nécessité de cette propriété'
         });
+      }
+    }
+
+    return differences;
+  }
+
+  /**
+   * Compare deux objets de manière récursive pour gérer les structures imbriquées
+   */
+  private compareNestedObjects(
+    baseline: Record<string, any>,
+    actual: Record<string, any>,
+    basePath: string
+  ): BaselineDifference[] {
+    const differences: BaselineDifference[] = [];
+
+    // Fonction récursive pour comparer les objets imbriqués
+    const compareRecursive = (baseObj: any, actualObj: any, currentPath: string): void => {
+      if (typeof baseObj !== 'object' || baseObj === null ||
+          typeof actualObj !== 'object' || actualObj === null) {
+        // Comparaison simple pour les types non-objets
+        if (baseObj !== actualObj) {
+          differences.push({
+            category: 'config',
+            severity: 'IMPORTANT',
+            path: currentPath,
+            description: `Valeur différente pour: ${currentPath}`,
+            baselineValue: baseObj,
+            actualValue: actualObj,
+            recommendedAction: 'Synchroniser avec la valeur de la baseline'
+          });
+        }
+        return;
+      }
+
+      // Clés présentes dans la baseline mais pas dans l'actuel
+      for (const key in baseObj) {
+        const newPath = `${currentPath}.${key}`;
+        if (!(key in actualObj)) {
+          differences.push({
+            category: 'config',
+            severity: 'WARNING',
+            path: newPath,
+            description: `Propriété manquante: ${key}`,
+            baselineValue: baseObj[key],
+            actualValue: undefined,
+            recommendedAction: 'Ajouter la propriété manquante'
+          });
+        } else {
+          compareRecursive(baseObj[key], actualObj[key], newPath);
+        }
+      }
+
+      // Clés présentes dans l'actuel mais pas dans la baseline
+      for (const key in actualObj) {
+        if (!(key in baseObj)) {
+          const newPath = `${currentPath}.${key}`;
+          differences.push({
+            category: 'config',
+            severity: 'INFO',
+            path: newPath,
+            description: `Propriété supplémentaire: ${key}`,
+            baselineValue: undefined,
+            actualValue: actualObj[key],
+            recommendedAction: 'Revoir la nécessité de cette propriété'
+          });
+        }
+      }
+    };
+
+    // Comparer les objets de manière récursive
+    const allKeys = new Set([...Object.keys(baseline), ...Object.keys(actual)]);
+    
+    for (const key of allKeys) {
+      const newPath = `${basePath}.${key}`;
+      const baseValue = baseline[key];
+      const actualValue = actual[key];
+      
+      // Si les deux sont des objets, comparer récursivement
+      if (typeof baseValue === 'object' && baseValue !== null &&
+          typeof actualValue === 'object' && actualValue !== null) {
+        compareRecursive(baseValue, actualValue, newPath);
+      } else {
+        // Comparaison simple pour les valeurs non-objets
+        if (baseValue !== actualValue) {
+          differences.push({
+            category: 'config',
+            severity: 'IMPORTANT',
+            path: newPath,
+            description: `Valeur différente pour ${key}`,
+            baselineValue: baseValue,
+            actualValue: actualValue,
+            recommendedAction: 'Synchroniser avec la valeur de la baseline'
+          });
+        }
       }
     }
 

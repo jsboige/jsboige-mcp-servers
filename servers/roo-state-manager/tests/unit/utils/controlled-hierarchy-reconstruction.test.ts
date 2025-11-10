@@ -8,14 +8,14 @@
  *                                                            └ LEAF-B1b (d6a6a99a)
  */
 
-import { describe, it, expect, beforeEach, afterEach, jest } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import * as fs from 'fs';
 import * as path from 'path';
 import { fileURLToPath } from 'url';
-import { HierarchyReconstructionEngine } from '@/utils/hierarchy-reconstruction-engine.js';
-import { TaskInstructionIndex } from '@/utils/task-instruction-index.js';
-import type { ConversationSkeleton } from '../src/types/conversation.js';
-import type { EnhancedConversationSkeleton } from '../src/types/enhanced-hierarchy.js';
+import { HierarchyReconstructionEngine } from '../../../src/utils/hierarchy-reconstruction-engine.js';
+import { TaskInstructionIndex } from '../../../src/utils/task-instruction-index.js';
+import type { ConversationSkeleton } from '../../../src/types/conversation.js';
+import type { EnhancedConversationSkeleton } from '../../../src/types/enhanced-hierarchy.js';
 
 // Support ES modules
 const __filename = fileURLToPath(import.meta.url);
@@ -112,7 +112,7 @@ describe('Controlled Hierarchy Reconstruction - TEST-HIERARCHY Dataset', () => {
                 if (skeleton.parsedSubtaskInstructions) {
                     for (const instruction of skeleton.parsedSubtaskInstructions.instructions) {
                         const prefix = instruction.message.substring(0, 200);
-                        instructionIndex.addInstruction(prefix, skeleton.taskId, instruction);
+                        instructionIndex.addInstruction(prefix, skeleton.taskId, instruction.message);
                     }
                 }
             }

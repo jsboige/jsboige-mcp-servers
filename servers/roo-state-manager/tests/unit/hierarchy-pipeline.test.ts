@@ -203,7 +203,7 @@ describe('Pipeline Complet de Reconstruction Hiérarchique', () => {
             expect(phase2Result.resolvedCount).toBe(1);
             
             const child = enhancedSkeletons.find(s => s.taskId === 'child-001');
-            expect(child?.reconstructedParentId).toBe('parent-001');
+            expect((child as any)?.reconstructedParentId).toBe('parent-001');
         });
 
         it('devrait rejeter les auto-références', async () => {
@@ -240,7 +240,7 @@ describe('Pipeline Complet de Reconstruction Hiérarchique', () => {
             await engine.executePhase2(enhanced, { strictMode: true });
 
             const result = enhanced.find(s => s.taskId === 'self-001');
-            expect(result?.reconstructedParentId).toBeUndefined(); // Pas d'auto-référence
+            expect((result as any)?.reconstructedParentId).toBeUndefined(); // Pas d'auto-référence
         });
     });
 
@@ -378,8 +378,8 @@ describe('Pipeline Complet de Reconstruction Hiérarchique', () => {
 
             // Vérifier qu'aucune tâche n'a de parentId = elle-même
             for (const task of enhanced) {
-                if (task.reconstructedParentId) {
-                    expect(task.reconstructedParentId).not.toBe(task.taskId);
+                if ((task as any).reconstructedParentId) {
+                    expect((task as any).reconstructedParentId).not.toBe(task.taskId);
                 }
             }
         });

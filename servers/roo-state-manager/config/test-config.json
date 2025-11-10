@@ -1,0 +1,77 @@
+{
+  "testTypes": {
+    "unit": {
+      "command": "test:unit",
+      "timeout": 30000,
+      "pattern": "tests/unit/**/*.test.{ts,js}",
+      "description": "Tests unitaires (39 fichiers)",
+      "categories": {
+        "services": "tests/unit/services/**/*.test.{ts,js}",
+        "tools": "tests/unit/tools/**/*.test.{ts,js}",
+        "utils": "tests/unit/utils/**/*.test.{ts,js}",
+        "core": "tests/unit/*.test.{ts,js}",
+        "config": "tests/unit/config/**/*.test.{ts,js}"
+      }
+    },
+    "integration": {
+      "command": "test:integration",
+      "timeout": 60000,
+      "pattern": "tests/integration/**/*.test.{ts,js}",
+      "description": "Tests d'integration (3 fichiers)"
+    },
+    "e2e": {
+      "command": "test:e2e",
+      "timeout": 120000,
+      "pattern": "tests/e2e/**/*.test.{ts,js}",
+      "description": "Tests end-to-end (5 fichiers)",
+      "categories": {
+        "scenarios": "tests/e2e/scenarios/**/*.test.{ts,js}",
+        "workflows": "tests/e2e/*.test.{ts,js}"
+      }
+    },
+    "services": {
+      "command": "test:unit",
+      "timeout": 30000,
+      "pattern": "tests/unit/services/**/*.test.{ts,js}",
+      "description": "Tests des services (12 fichiers)"
+    },
+    "tools": {
+      "command": "test:unit",
+      "timeout": 30000,
+      "pattern": "tests/unit/tools/**/*.test.{ts,js}",
+      "description": "Tests des outils (10 fichiers)"
+    },
+    "roosync": {
+      "command": "test:unit",
+      "timeout": 30000,
+      "pattern": "tests/unit/tools/roosync/**/*.test.{ts,js}",
+      "description": "Tests RooSync (8 fichiers)"
+    },
+    "detector": {
+      "command": "test:detector",
+      "timeout": 30000,
+      "pattern": "tests/unit/services/DiffDetector.test.ts",
+      "description": "Tests du detecteur"
+    },
+    "all": {
+      "command": "test",
+      "timeout": 180000,
+      "pattern": "tests/**/*.test.{ts,js}",
+      "description": "Tous les tests (47 fichiers)"
+    }
+  },
+  "output": {
+    "formats": ["console", "json", "markdown"],
+    "directory": "./test-results",
+    "filename": "test-results-{timestamp}"
+  },
+  "summary": {
+    "totalFiles": 47,
+    "unitFiles": 39,
+    "integrationFiles": 3,
+    "e2eFiles": 5,
+    "serviceFiles": 12,
+    "toolFiles": 10,
+    "roosyncFiles": 8
+  }
+}

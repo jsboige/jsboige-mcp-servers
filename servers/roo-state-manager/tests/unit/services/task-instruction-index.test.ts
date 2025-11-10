@@ -3,7 +3,7 @@
  * Valide le fonctionnement du radix-tree et de la recherche par similarité
  */
 
-import {  describe, it, expect, beforeEach, afterEach, jest , vi } from 'vitest';
+import {  describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { TaskInstructionIndex, computeInstructionPrefix } from '../../../src/utils/task-instruction-index.js';
 import type { NewTaskInstruction } from '../../../src/types/conversation.js';
 
@@ -69,7 +69,7 @@ describe('TaskInstructionIndex', () => {
                 message: instruction
             };
             
-            index.addInstruction(parentId, instruction, taskInstruction);
+            index.addInstruction(parentId, instruction, taskInstruction.message);
             
             return index.getSize().then(size => {
                 expect(size).toBeGreaterThan(0);

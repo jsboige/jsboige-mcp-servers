@@ -23,7 +23,8 @@ const REQUIRED_ENV_VARS = [
     'QDRANT_URL',
     'QDRANT_API_KEY',
     'QDRANT_COLLECTION_NAME',
-    'OPENAI_API_KEY'
+    'OPENAI_API_KEY',
+    'ROOSYNC_SHARED_PATH'
 ];
 
 const missingVars = REQUIRED_ENV_VARS.filter(varName => !process.env[varName]);
@@ -36,6 +37,7 @@ if (missingVars.length > 0) {
 }
 
 console.log('✅ Toutes les variables d\'environnement critiques sont présentes');
+console.log('🔧 [DEBUG] ROOSYNC_SHARED_PATH =', process.env.ROOSYNC_SHARED_PATH);
 
 // Imports des modules après validation des env vars
 import { createMcpServer, SERVER_CONFIG } from './config/server-config.js';
@@ -123,7 +125,7 @@ class RooStateManagerServer {
 
             // Créer l'intercepteur d'outils
             const state = this.stateManager.getState();
-            const machineId = process.env.MACHINE_ID || 'local_machine';
+            const machineId = process.env.ROOSYNC_MACHINE_ID || 'local_machine';
             
             this.toolInterceptor = new ToolUsageInterceptor(
                 this.notificationService,

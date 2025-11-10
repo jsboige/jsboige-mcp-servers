@@ -57,9 +57,13 @@ export class HierarchyReconstructionEngine {
             debugMode: true // Pour voir les logs pendant la reconstruction
         });
 
-        // Récupérer les skeletons depuis le storage
+        // Récupérer les skeletons depuis le storage SANS reconstruction hiérarchique
+        // pour éviter la boucle de récursion infinie
         const { RooStorageDetector } = await import('./roo-storage-detector.js');
-        const skeletons = await RooStorageDetector.buildHierarchicalSkeletons(workspacePath);
+        const skeletons = await (RooStorageDetector as any).buildHierarchicalSkeletonsLegacy(
+            workspacePath,
+            false // Mode intelligent
+        );
         
         // Exécuter la reconstruction
         const enhancedSkeletons = await engine.doReconstruction(skeletons);
@@ -343,8 +347,8 @@ export class HierarchyReconstructionEngine {
                     }
 
                     // Rechercher le parent via différentes méthodes (TOUJOURS tenter la recherche)
-                    console.log(`[ENGINE-PHASE2-SEARCH] Searching parent for child: ${skeleton.taskId.substring(0, 8)}`);
-                    console.log(`[ENGINE-PHASE2-SEARCH] Child truncatedInstruction: "${skeleton.truncatedInstruction?.substring(0, 80)}..."`);
+                    // console.log(`[ENGINE-PHASE2-SEARCH] Searching parent for child: ${skeleton.taskId.substring(0, 8)}`);
+                    // console.log(`[ENGINE-PHASE2-SEARCH] Child truncatedInstruction: "${skeleton.truncatedInstruction?.substring(0, 80)}..."`);
                     
                     const parentCandidate = await this.findParentCandidate(
                         skeleton,

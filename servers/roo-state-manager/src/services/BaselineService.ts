@@ -9,10 +9,11 @@
  */
 
 import { promises as fs } from 'fs';
-import { join } from 'path';
+import { join, resolve } from 'path';
 import { existsSync, copyFileSync } from 'fs';
 import {
   BaselineConfig,
+  BaselineFileConfig,
   BaselineDifference,
   BaselineComparisonReport,
   SyncDecision,
@@ -43,11 +44,23 @@ export class BaselineService {
     private inventoryCollector: IInventoryCollector,
     private diffDetector: IDiffDetector
   ) {
-    this.config = configService.getBaselineServiceConfig();
-    const sharedStatePath = configService.getSharedStatePath();
+    console.log('[DEBUG] BaselineService.constructor() appelé');
     
-    this.baselinePath = join(sharedStatePath, 'sync-config.ref.json');
-    this.roadmapPath = join(sharedStatePath, 'sync-roadmap.md');
+    this.config = configService.getBaselineServiceConfig();
+    // CORRECTION SDDD : Utiliser la variable d'environnement ROOSYNC_SHARED_PATH
+    const sharedStatePath = process.env.ROOSYNC_SHARED_PATH || configService.getSharedStatePath();
+    
+    console.log('[DEBUG] sharedStatePath:', sharedStatePath);
+    
+    // Utiliser le chemin de la baseline depuis la configuration du service
+    this.baselinePath = this.config.baselinePath || join(sharedStatePath, 'sync-config.ref.json');
+    this.roadmapPath = this.config.roadmapPath || join(sharedStatePath, 'sync-roadmap.md');
+    
+    console.log('[DEBUG] this.baselinePath forcé:', this.baselinePath);
+    console.log('[DEBUG] this.roadmapPath:', this.roadmapPath);
+    
+    console.log('[DEBUG] this.baselinePath forcé:', this.baselinePath);
+    console.log('[DEBUG] this.roadmapPath:', this.roadmapPath);
     
     this.state = {
       isBaselineLoaded: false,
@@ -55,6 +68,12 @@ export class BaselineService {
       approvedDecisions: 0,
       appliedDecisions: 0
     };
+
+    console.log('[DEBUG] Vérification existence du fichier baseline...');
+    const fileExists = existsSync(this.baselinePath);
+    console.log('[DEBUG] Fichier baseline existe:', fileExists);
+    console.log('[DEBUG] Chemin résolu:', resolve(this.baselinePath));
+    console.log('[DEBUG] Working directory:', process.cwd());
 
     this.logInfo('BaselineService initialisé', {
       baselinePath: this.baselinePath,
@@ -66,24 +85,37 @@ export class BaselineService {
    * Charge la configuration baseline depuis sync-config.ref.json
    */
   public async loadBaseline(): Promise<BaselineConfig | null> {
+    console.log('[DEBUG] BaselineService.loadBaseline() appelé');
+    console.log('[DEBUG] this.baselinePath:', this.baselinePath);
+    
     try {
       this.logInfo('Chargement de la baseline', { path: this.baselinePath });
+      console.log('[DEBUG] Début try block dans loadBaseline');
       
       if (!existsSync(this.baselinePath)) {
+        console.log('[DEBUG] Fichier baseline non trouvé:', this.baselinePath);
         this.logWarn('Fichier baseline non trouvé', { path: this.baselinePath });
         return null;
       }
       
+      console.log('[DEBUG] Fichier baseline trouvé, lecture en cours...');
       const content = await fs.readFile(this.baselinePath, 'utf-8');
-      const baseline = JSON.parse(content) as BaselineConfig;
+      console.log('[DEBUG] Contenu lu, longueur:', content.length);
+      console.log('[DEBUG] Début du contenu:', content.substring(0, 100));
       
-      // Validation de la baseline
-      if (!this.validateBaselineConfig(baseline)) {
+      const baselineFile = JSON.parse(content) as BaselineFileConfig;
+      console.log('[DEBUG] JSON parsé avec succès');
+      
+      // Validation du fichier baseline (avec la bonne structure)
+      if (!this.validateBaselineFileConfig(baselineFile)) {
         throw new BaselineServiceError(
           'Configuration baseline invalide',
           BaselineServiceErrorCode.BASELINE_INVALID
         );
       }
+      
+      // Transformer le fichier baseline en BaselineConfig pour compatibilité
+      const baseline = this.transformBaselineForDiffDetector(baselineFile);
       
       this.state.isBaselineLoaded = true;
       this.state.baselineMachine = baseline.machineId;
@@ -97,6 +129,15 @@ export class BaselineService {
       
       return baseline;
     } catch (error) {
+      // DEBUG: Capturer l'erreur originale avec tous les détails
+      const originalError = error as Error;
+      console.error('[DEBUG] ERREUR DANS loadBaseline():');
+      console.error('[DEBUG] Message:', originalError.message);
+      console.error('[DEBUG] Stack:', originalError.stack);
+      console.error('[DEBUG] Type:', typeof originalError);
+      console.error('[DEBUG] Nom:', originalError.name);
+      console.error('[DEBUG] Path:', this.baselinePath);
+      
       this.logError('Erreur lors du chargement de la baseline', error);
       
       if (error instanceof BaselineServiceError) {
@@ -104,7 +145,81 @@ export class BaselineService {
       }
       
       throw new BaselineServiceError(
-        `Erreur chargement baseline: ${(error as Error).message}`,
+        `Erreur chargement baseline: ${originalError.message}`,
+        BaselineServiceErrorCode.BASELINE_NOT_FOUND,
+        error
+      );
+    }
+  }
+
+  /**
+   * Lit le fichier baseline de configuration (format BaselineFileConfig)
+   */
+  public async readBaselineFile(): Promise<BaselineFileConfig | null> {
+    try {
+      const debugInfo = {
+        path: this.baselinePath,
+        pathType: typeof this.baselinePath,
+        pathLength: this.baselinePath?.length || 0,
+        workingDirectory: process.cwd(),
+        fileExists: false,
+        resolvedPath: ''
+      };
+      
+      const fileExists = existsSync(this.baselinePath);
+      debugInfo.fileExists = fileExists;
+      debugInfo.resolvedPath = resolve(this.baselinePath);
+      
+      if (!fileExists) {
+        throw new BaselineServiceError(
+          `Fichier baseline non trouvé: ${this.baselinePath} (WD: ${process.cwd()})`,
+          BaselineServiceErrorCode.BASELINE_NOT_FOUND
+        );
+      }
+      
+      console.error('DEBUG: Fichier trouvé, lecture du contenu...');
+      const content = await fs.readFile(this.baselinePath, 'utf-8');
+      console.error('DEBUG: Contenu lu, longueur:', content.length);
+      console.error('DEBUG: Début du contenu:', content.substring(0, 100));
+      
+      let baselineFile;
+      try {
+        baselineFile = JSON.parse(content) as BaselineFileConfig;
+        console.error('DEBUG: JSON parsé avec succès');
+      } catch (parseError) {
+        console.error('DEBUG: ERREUR PARSING JSON:', parseError);
+        console.error('DEBUG: Contenu brut qui cause l\'erreur:', content);
+        throw new BaselineServiceError(
+          `Erreur parsing JSON baseline: ${(parseError as Error).message}`,
+          BaselineServiceErrorCode.BASELINE_INVALID,
+          parseError
+        );
+      }
+      
+      // Validation basique de la baseline file
+      if (!baselineFile.machineId || !baselineFile.version || !baselineFile.timestamp) {
+        throw new BaselineServiceError(
+          'Configuration baseline file invalide: champs requis manquants',
+          BaselineServiceErrorCode.BASELINE_INVALID
+        );
+      }
+      
+      this.logInfo('Fichier baseline lu avec succès', {
+        machineId: baselineFile.machineId,
+        version: baselineFile.version,
+        timestamp: baselineFile.timestamp
+      });
+      
+      return baselineFile;
+    } catch (error) {
+      this.logError('Erreur lors de la lecture du fichier baseline', error);
+      
+      if (error instanceof BaselineServiceError) {
+        throw error;
+      }
+      
+      throw new BaselineServiceError(
+        `Erreur lecture fichier baseline: ${(error as Error).message}`,
         BaselineServiceErrorCode.BASELINE_NOT_FOUND,
         error
       );
@@ -126,18 +241,36 @@ export class BaselineService {
         forceRefresh
       });
       
-      // Charger la baseline
-      const baseline = await this.loadBaseline();
-      if (!baseline) {
+      // Charger la baseline depuis le fichier
+      this.logInfo('DEBUG: Appel readBaselineFile() pour comparaison');
+      const baselineFile = await this.readBaselineFile();
+      
+      this.logInfo('DEBUG: Résultat readBaselineFile()', {
+        isNull: baselineFile === null,
+        hasValue: baselineFile !== null,
+        baselineType: typeof baselineFile,
+        baselinePath: this.baselinePath,
+        fileExists: existsSync(this.baselinePath)
+      });
+      
+      if (!baselineFile) {
+        const debugDetails = {
+          targetMachineId,
+          baselinePath: this.baselinePath,
+          fileExists: existsSync(this.baselinePath),
+          workingDirectory: process.cwd(),
+          resolvedPath: resolve(this.baselinePath)
+        };
+        
         throw new BaselineServiceError(
-          'Configuration baseline non disponible',
+          `Configuration baseline non disponible: ${JSON.stringify(debugDetails)}`,
           BaselineServiceErrorCode.BASELINE_NOT_FOUND
         );
       }
       
       // Collecter inventaire de la machine cible
       const targetInventory = await this.inventoryCollector.collectInventory(
-        targetMachineId, 
+        targetMachineId,
         forceRefresh
       );
       
@@ -148,16 +281,19 @@ export class BaselineService {
         );
       }
       
+      // Transformer la baseline pour le DiffDetector
+      const transformedBaseline = this.transformBaselineForDiffDetector(baselineFile);
+      
       // Comparer baseline avec machine cible
       const differences = await this.diffDetector.compareBaselineWithMachine(
-        baseline,
+        transformedBaseline,
         targetInventory
       );
       
       const report: BaselineComparisonReport = {
-        baselineMachine: baseline.machineId,
+        baselineMachine: baselineFile.machineId,
         targetMachine: targetMachineId,
-        baselineVersion: baseline.version,
+        baselineVersion: baselineFile.version,
         differences,
         summary: this.calculateSummary(differences),
         generatedAt: new Date().toISOString()
@@ -427,28 +563,34 @@ export class BaselineService {
     return {
       machineId: inventory.machineId,
       version: '1.0.0',
-      lastUpdated: inventory.timestamp,
       config: {
         roo: {
-          modes: inventory.config.roo?.modes || [],
-          mcpSettings: inventory.config.roo?.mcpSettings || {},
-          userSettings: inventory.config.roo?.userSettings || {}
+          modes: [],
+          mcpSettings: {},
+          userSettings: {}
         },
         hardware: {
-          cpu: inventory.config.hardware?.cpu || 'Unknown',
-          ram: inventory.config.hardware?.ram || 'Unknown',
-          disks: inventory.config.hardware?.disks || []
+          cpu: {
+            model: 'Unknown',
+            cores: 0,
+            threads: 0
+          },
+          memory: {
+            total: 0
+          },
+          disks: []
         },
         software: {
-          powershell: inventory.config.software?.powershell || 'Unknown',
-          node: inventory.config.software?.node || 'N/A',
-          python: inventory.config.software?.python || 'N/A'
+          powershell: 'Unknown',
+          node: 'Unknown',
+          python: 'Unknown'
         },
         system: {
-          os: inventory.config.system?.os || 'Unknown',
-          architecture: inventory.config.system?.architecture || 'Unknown'
+          os: 'Unknown',
+          architecture: 'Unknown'
         }
-      }
+      },
+      lastUpdated: inventory.timestamp
     };
   }
 
@@ -724,6 +866,26 @@ export class BaselineService {
   }
 
   /**
+   * Valide la configuration du fichier baseline (BaselineFileConfig)
+   */
+  private validateBaselineFileConfig(baselineFile: BaselineFileConfig): boolean {
+    try {
+      return !!(
+        baselineFile.version &&
+        baselineFile.baselineId &&
+        baselineFile.machineId &&
+        baselineFile.timestamp &&
+        baselineFile.machines &&
+        Array.isArray(baselineFile.machines) &&
+        baselineFile.machines.length > 0
+      );
+    } catch (error) {
+      this.logError('Erreur lors de la validation du fichier baseline', error);
+      return false;
+    }
+  }
+
+  /**
    * Formate une décision en Markdown pour le roadmap
    */
   private formatDecisionToMarkdown(decision: SyncDecision, timestamp: string): string {
@@ -901,5 +1063,72 @@ ${decision.notes ? `### Notes\n${decision.notes}` : ''}
     };
     
     console.error(JSON.stringify(logEntry));
+  }
+
+  /**
+   * Transforme la structure du fichier baseline pour le DiffDetector
+   *
+   * Le fichier sync-config.ref.json a une structure différente de celle attendue
+   * par le DiffDetector. Cette méthode fait la transformation nécessaire.
+   */
+  private transformBaselineForDiffDetector(baselineFile: BaselineFileConfig): BaselineConfig {
+    // Récupérer la première machine du fichier baseline
+    const firstMachine = baselineFile.machines?.[0];
+    
+    return {
+      machineId: baselineFile.machineId || 'unknown',
+      config: {
+        roo: {
+          modes: firstMachine?.roo?.modes || [],
+          mcpSettings: this.extractMcpSettings(firstMachine?.roo?.mcpServers || []),
+          userSettings: {}
+        },
+        hardware: {
+          cpu: {
+            model: 'Unknown CPU',
+            cores: firstMachine?.hardware?.cpu?.cores || 0,
+            threads: firstMachine?.hardware?.cpu?.threads || 0
+          },
+          memory: {
+            total: firstMachine?.hardware?.memory?.total || 0
+          },
+          disks: [],
+          gpu: 'Unknown'
+        },
+        software: {
+          powershell: 'Unknown',
+          node: firstMachine?.software?.node || 'Unknown',
+          python: firstMachine?.software?.python || 'Unknown'
+        },
+        system: {
+          os: firstMachine?.os || 'Unknown',
+          architecture: firstMachine?.architecture || 'Unknown'
+        }
+      },
+      lastUpdated: baselineFile.timestamp || new Date().toISOString(),
+      version: baselineFile.version || '2.1'
+    };
+  }
+  
+  /**
+   * Extrait les paramètres MCP depuis la liste des serveurs MCP
+   */
+  private extractMcpSettings(mcpServers: any[]): Record<string, any> {
+    const settings: Record<string, any> = {};
+    
+    mcpServers.forEach(server => {
+      if (server.name && server.enabled) {
+        settings[server.name] = {
+          enabled: server.enabled,
+          command: server.command,
+          autoStart: server.autoStart,
+          transportType: server.transportType,
+          alwaysAllow: server.alwaysAllow || [],
+          description: server.description
+        };
+      }
+    });
+    
+    return settings;
   }
 }

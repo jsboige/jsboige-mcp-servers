@@ -119,6 +119,13 @@ export class PowerShellExecutor {
       // Construire le chemin complet du script
       const fullScriptPath = path.join(this.roosyncBasePath, scriptPath);
       
+      // Vérifier si le script existe avant de l'exécuter
+      const fs = require('fs');
+      if (!fs.existsSync(fullScriptPath)) {
+        reject(new Error(`Script not found: ${fullScriptPath}`));
+        return;
+      }
+      
       // Arguments PowerShell : -NoProfile, -ExecutionPolicy Bypass, -File <script>, ...args
       const pwshArgs = [
         '-NoProfile',

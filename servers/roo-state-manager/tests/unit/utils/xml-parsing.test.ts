@@ -3,7 +3,6 @@
  * Teste les patterns <task> simples et <new_task><mode><message> complexes
  */
 
-import { jest } from 'vitest';
 import { describe, test, expect, beforeEach, afterEach } from 'vitest';
 import * as fs from 'fs/promises';
 import * as path from 'path';

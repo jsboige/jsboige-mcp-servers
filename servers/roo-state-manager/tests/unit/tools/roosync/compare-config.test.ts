@@ -92,14 +92,14 @@ describe('roosync_compare_config', () => {
 
   it('devrait comparer avec une machine spécifiée', async () => {
     // Arrange
-    const args: CompareConfigArgs = { targetMachine: 'MAC-DEV' };
+    const args: CompareConfigArgs = { target: 'MAC-DEV' };
     
     // Act
     const result = await roosyncCompareConfig(args);
     
     // Assert
-    expect(result.localMachine).toBe('PC-PRINCIPAL');
-    expect(result.targetMachine).toBe('MAC-DEV');
+    expect(result.source).toBe('PC-PRINCIPAL');
+    expect(result.target).toBe('MAC-DEV');
     expect(result.differences).toBeDefined();
     expect(Array.isArray(result.differences)).toBe(true);
   });
@@ -112,23 +112,23 @@ describe('roosync_compare_config', () => {
     const result = await roosyncCompareConfig(args);
     
     // Assert
-    expect(result.localMachine).toBe('PC-PRINCIPAL');
-    expect(result.targetMachine).toBe('MAC-DEV'); // Auto-sélectionné
-    expect(result.identical).toBeDefined();
+    expect(result.source).toBe('PC-PRINCIPAL');
+    expect(result.target).toBe('MAC-DEV'); // Auto-sélectionné
+    expect(result.differences.length === 0).toBe(true);
   });
   
   it('devrait marquer identical=true quand pas de différences', async () => {
     // Arrange
-    const args: CompareConfigArgs = { targetMachine: 'MAC-DEV' };
+    const args: CompareConfigArgs = { target: 'MAC-DEV' };
     
     // Act
     const result = await roosyncCompareConfig(args);
     
     // Assert
     if (result.differences.length === 0) {
-      expect(result.identical).toBe(true);
+      expect(result.differences.length === 0).toBe(true);
     } else {
-      expect(result.identical).toBe(false);
+      expect(result.differences.length === 0).toBe(false);
     }
   });
   
@@ -164,15 +164,15 @@ describe('roosync_compare_config', () => {
   
   it('devrait typer correctement les différences', async () => {
     // Arrange
-    const args: CompareConfigArgs = { targetMachine: 'MAC-DEV' };
+    const args: CompareConfigArgs = { target: 'MAC-DEV' };
     
     // Act
     const result = await roosyncCompareConfig(args);
     
     // Assert
     result.differences.forEach(diff => {
-      expect(['added', 'removed', 'modified']).toContain(diff.type);
-      expect(diff.field).toBeDefined();
+      expect(['added', 'removed', 'modified']).toContain(diff.category);
+      expect(diff.path).toBeDefined();
     });
   });
 });

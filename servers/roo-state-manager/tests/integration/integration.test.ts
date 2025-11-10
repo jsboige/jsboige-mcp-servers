@@ -38,7 +38,7 @@ import {
     generateLargeDataset,
     enhanceSkeleton,
     mockCyclicSkeletons
-} from '../fixtures/hierarchy-test-data.ts';
+} from '../fixtures/hierarchy-test-data';
 
 // Accéder aux mocks après import
 const mockFs = vi.mocked(await import('fs'));

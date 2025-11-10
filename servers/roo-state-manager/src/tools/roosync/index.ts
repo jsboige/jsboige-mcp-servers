@@ -113,6 +113,78 @@ export type {
   InitResult
 } from './init.js';
 
+export {
+  roosyncUpdateBaseline,
+  UpdateBaselineArgsSchema,
+  UpdateBaselineResultSchema,
+  updateBaselineToolMetadata
+} from './update-baseline.js';
+
+export type {
+  UpdateBaselineArgs,
+  UpdateBaselineResult
+} from './update-baseline.js';
+
+export {
+  versionBaseline,
+  VersionBaselineArgsSchema,
+  VersionBaselineResultSchema,
+  versionBaselineToolMetadata
+} from './version-baseline.js';
+
+export type {
+  VersionBaselineArgs,
+  VersionBaselineResult
+} from './version-baseline.js';
+
+export {
+  restoreBaseline,
+  RestoreBaselineArgsSchema,
+  RestoreBaselineResultSchema,
+  restoreBaselineToolMetadata
+} from './restore-baseline.js';
+
+export type {
+  RestoreBaselineArgs,
+  RestoreBaselineResult
+} from './restore-baseline.js';
+
+export {
+  roosync_export_baseline,
+  ExportBaselineArgsSchema,
+  ExportBaselineResultSchema
+} from './export-baseline.js';
+
+export type {
+  ExportBaselineArgs,
+  ExportBaselineResult
+} from './export-baseline.js';
+
+export {
+  roosync_granular_diff,
+  GranularDiffArgsSchema,
+  handleRoosyncGranularDiff
+} from './granular-diff.js';
+
+export type {
+  GranularDiffArgs
+} from './granular-diff.js';
+
+export {
+  roosync_validate_diff,
+  ValidateDiffArgsSchema,
+  handleRoosyncValidateDiff
+} from './granular-diff.js';
+
+export {
+  roosync_export_diff,
+  ExportDiffArgsSchema,
+  handleRoosyncExportDiff
+} from './granular-diff.js';
+
+// Import des schémas pour utilisation dans roosyncTools
+import { GranularDiffArgsSchema, ValidateDiffArgsSchema, ExportDiffArgsSchema } from './granular-diff.js';
+
 // Export des nouveaux outils de messagerie (Phase 1)
 export { sendMessage } from './send_message.js';
 export { readInbox } from './read_inbox.js';
@@ -136,6 +208,46 @@ import { applyDecisionToolMetadata } from './apply-decision.js';
 import { rollbackDecisionToolMetadata } from './rollback-decision.js';
 import { getDecisionDetailsToolMetadata } from './get-decision-details.js';
 import { initToolMetadata } from './init.js';
+import { updateBaselineToolMetadata } from './update-baseline.js';
+import { versionBaselineToolMetadata } from './version-baseline.js';
+import { restoreBaselineToolMetadata } from './restore-baseline.js';
+
+// Métadonnées pour l'outil export baseline
+const exportBaselineToolMetadata = {
+  name: 'roosync_export_baseline',
+  description: 'Exporte une baseline vers différents formats (JSON, YAML, CSV)',
+  inputSchema: {
+    type: 'object',
+    properties: {
+      format: {
+        type: 'string',
+        enum: ['json', 'yaml', 'csv'],
+        description: 'Format d\'exportation'
+      },
+      outputPath: {
+        type: 'string',
+        description: 'Chemin de sortie pour le fichier exporté (optionnel)'
+      },
+      machineId: {
+        type: 'string',
+        description: 'ID de la machine à exporter (optionnel, utilise la baseline actuelle si non spécifié)'
+      },
+      includeHistory: {
+        type: 'boolean',
+        description: 'Inclure l\'historique des modifications (défaut: false)'
+      },
+      includeMetadata: {
+        type: 'boolean',
+        description: 'Inclure les métadonnées complètes (défaut: true)'
+      },
+      prettyPrint: {
+        type: 'boolean',
+        description: 'Formater la sortie pour une meilleure lisibilité (défaut: true)'
+      }
+    },
+    required: ['format']
+  }
+};
 
 /**
  * Liste de tous les outils RooSync pour enregistrement MCP
@@ -150,5 +262,131 @@ export const roosyncTools = [
   rejectDecisionToolMetadata,
   applyDecisionToolMetadata,
   rollbackDecisionToolMetadata,
-  getDecisionDetailsToolMetadata
+  getDecisionDetailsToolMetadata,
+  updateBaselineToolMetadata,
+  versionBaselineToolMetadata,
+  restoreBaselineToolMetadata,
+  exportBaselineToolMetadata,
+  {
+    name: 'roosync_granular_diff',
+    description: 'Effectue une comparaison granulaire entre deux configurations ou inventaires',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        source: {
+          type: 'any',
+          description: 'Configuration ou inventaire source (objet JSON ou chemin de fichier)'
+        },
+        target: {
+          type: 'any',
+          description: 'Configuration ou inventaire cible (objet JSON ou chemin de fichier)'
+        },
+        sourceLabel: {
+          type: 'string',
+          description: 'Libellé pour la source (optionnel)'
+        },
+        targetLabel: {
+          type: 'string',
+          description: 'Libellé pour la cible (optionnel)'
+        },
+        options: {
+          type: 'object',
+          properties: {
+            includeUnchanged: { type: 'boolean', default: false },
+            ignoreWhitespace: { type: 'boolean', default: true },
+            ignoreCase: { type: 'boolean', default: false },
+            arrayDiffMode: { type: 'string', enum: ['position', 'identity'], default: 'identity' },
+            semanticAnalysis: { type: 'boolean', default: false },
+            maxDepth: { type: 'number', default: 50 }
+          }
+        },
+        outputPath: {
+          type: 'string',
+          description: 'Chemin de sortie pour le rapport (optionnel)'
+        },
+        format: {
+          type: 'string',
+          enum: ['json', 'csv', 'html'],
+          default: 'json'
+        },
+        dryRun: {
+          type: 'boolean',
+          default: false
+        }
+      },
+      required: ['source', 'target']
+    }
+  },
+  {
+    name: 'roosync_validate_diff',
+    description: 'Valide de manière interactive les différences détectées par un diff granulaire',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        reportId: {
+          type: 'string',
+          description: 'ID du rapport de diff à valider'
+        },
+        diffIds: {
+          type: 'array',
+          items: { type: 'string' },
+          description: 'Liste des IDs de diffs à valider'
+        },
+        action: {
+          type: 'string',
+          enum: ['approve', 'reject', 'modify'],
+          description: 'Action de validation'
+        },
+        reason: {
+          type: 'string',
+          description: 'Raison de la décision (optionnel)'
+        },
+        modifications: {
+          type: 'object',
+          description: 'Modifications à appliquer (si action = modify)'
+        }
+      },
+      required: ['reportId', 'diffIds', 'action']
+    }
+  },
+  {
+    name: 'roosync_export_diff',
+    description: 'Exporte un rapport de diff granulaire vers différents formats',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        reportId: {
+          type: 'string',
+          description: 'ID du rapport de diff à exporter'
+        },
+        format: {
+          type: 'string',
+          enum: ['json', 'csv', 'html'],
+          description: 'Format d\'export'
+        },
+        outputPath: {
+          type: 'string',
+          description: 'Chemin de sortie pour le fichier exporté'
+        },
+        filter: {
+          type: 'object',
+          properties: {
+            severity: {
+              type: 'array',
+              items: { type: 'string' }
+            },
+            category: {
+              type: 'array',
+              items: { type: 'string' }
+            },
+            type: {
+              type: 'array',
+              items: { type: 'string' }
+            }
+          }
+        }
+      },
+      required: ['reportId', 'format', 'outputPath']
+    }
+  }
 ];

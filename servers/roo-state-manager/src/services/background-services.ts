@@ -170,6 +170,11 @@ async function initializeQdrantIndexingService(state: ServerState): Promise<void
     try {
         console.log('🔍 Initialisation du service d\'indexation Qdrant...');
         
+        // DÉSACTIVATION TEMPORAIRE : Pour éviter l'indexation intensive au démarrage
+        console.log('⚠️  Indexation Qdrant temporairement désactivée pour accélérer le démarrage');
+        state.isQdrantIndexingEnabled = false;
+        return;
+        
         // Vérifier la cohérence entre squelettes et index Qdrant
         await verifyQdrantConsistency(state);
         

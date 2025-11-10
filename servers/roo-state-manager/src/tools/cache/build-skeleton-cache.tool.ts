@@ -28,80 +28,80 @@ async function saveSkeletonWithRetry(
     conversationCache: Map<string, ConversationSkeleton>,
     maxRetries: number = 3
 ): Promise<{ success: boolean; attempts: number; error?: string }> {
-    console.log(`[SAVE-DEBUG] 🔍 Début saveSkeletonWithRetry pour taskId: ${taskId.substring(0, 8)}`);
-    console.log(`[SAVE-DEBUG] 📍 Chemin cible: ${skeletonPath}`);
-    console.log(`[SAVE-DEBUG] 📦 Cache size: ${conversationCache.size}`);
+    // console.log(`[SAVE-DEBUG] 🔍 Début saveSkeletonWithRetry pour taskId: ${taskId.substring(0, 8)}`);
+    // console.log(`[SAVE-DEBUG] 📍 Chemin cible: ${skeletonPath}`);
+    // console.log(`[SAVE-DEBUG] 📦 Cache size: ${conversationCache.size}`);
     
     const skeleton = conversationCache.get(taskId);
     if (!skeleton) {
-        console.error(`[SAVE-DEBUG] ❌ CRITIQUE: Skeleton absent du cache pour ${taskId.substring(0, 8)}`);
-        console.error(`[SAVE-DEBUG] 🔑 Cache keys disponibles: ${Array.from(conversationCache.keys()).slice(0, 5).map(k => k.substring(0, 8)).join(', ')}...`);
+        // console.error(`[SAVE-DEBUG] ❌ CRITIQUE: Skeleton absent du cache pour ${taskId.substring(0, 8)}`);
+        // console.error(`[SAVE-DEBUG] 🔑 Cache keys disponibles: ${Array.from(conversationCache.keys()).slice(0, 5).map(k => k.substring(0, 8)).join(', ')}...`);
         return { success: false, attempts: 0, error: 'Skeleton not found in cache' };
     }
     
-    console.log(`[SAVE-DEBUG] ✅ Skeleton trouvé dans cache`);
-    console.log(`[SAVE-DEBUG] 🏷️ parentTaskId avant écriture: ${skeleton.parentTaskId || 'undefined'}`);
+    // console.log(`[SAVE-DEBUG] ✅ Skeleton trouvé dans cache`);
+    // console.log(`[SAVE-DEBUG] 🏷️ parentTaskId avant écriture: ${skeleton.parentTaskId || 'undefined'}`);
     
-    // 🔍 DIAGNOSTIC EXHAUSTIF - Phase 3 Bug Investigation
-    console.log(`[PERSISTENCE-DEBUG] ========================================`);
-    console.log(`[PERSISTENCE-DEBUG] 🔍 SKELETON AVANT SAUVEGARDE - DIAGNOSTIC COMPLET`);
-    console.log(`[PERSISTENCE-DEBUG] ========================================`);
-    console.log(`[PERSISTENCE-DEBUG] skeleton AVANT sauvegarde:`, JSON.stringify({
-        taskId: skeleton.taskId,
-        parentTaskId: skeleton.parentTaskId,
-        hasParentTaskId: 'parentTaskId' in skeleton,
-        parentTaskIdType: typeof skeleton.parentTaskId,
-        parentTaskIdValue: skeleton.parentTaskId,
-        allKeys: Object.keys(skeleton),
-        hasOwnProperty: Object.prototype.hasOwnProperty.call(skeleton, 'parentTaskId')
-    }, null, 2));
-    console.log(`[PERSISTENCE-DEBUG] ========================================`);
+    // 🔍 DIAGNOSTIC EXHAUSTIF - Phase 3 Bug Investigation (COMMENTÉ pour réduire le bruit)
+    // console.log(`[PERSISTENCE-DEBUG] ========================================`);
+    // console.log(`[PERSISTENCE-DEBUG] 🔍 SKELETON AVANT SAUVEGARDE - DIAGNOSTIC COMPLET`);
+    // console.log(`[PERSISTENCE-DEBUG] ========================================`);
+    // console.log(`[PERSISTENCE-DEBUG] skeleton AVANT sauvegarde:`, JSON.stringify({
+    //     taskId: skeleton.taskId,
+    //     parentTaskId: skeleton.parentTaskId,
+    //     hasParentTaskId: 'parentTaskId' in skeleton,
+    //     parentTaskIdType: typeof skeleton.parentTaskId,
+    //     parentTaskIdValue: skeleton.parentTaskId,
+    //     allKeys: Object.keys(skeleton),
+    //     hasOwnProperty: Object.prototype.hasOwnProperty.call(skeleton, 'parentTaskId')
+    // }, null, 2));
+    // console.log(`[PERSISTENCE-DEBUG] ========================================`);
     
-    console.log(`[SAVE-DEBUG] 📊 Skeleton data size: ${JSON.stringify(skeleton).length} caractères`);
+    // console.log(`[SAVE-DEBUG] 📊 Skeleton data size: ${JSON.stringify(skeleton).length} caractères`);
     
     // 🔍 VÉRIFICATION FINALE: Le JSON stringifié contient-il parentTaskId?
     const stringified = JSON.stringify(skeleton, null, 2);
     const containsParentTaskId = stringified.includes('"parentTaskId"');
-    console.log(`[PERSISTENCE-DEBUG] 🔎 JSON.stringify contient "parentTaskId": ${containsParentTaskId}`);
+    // console.log(`[PERSISTENCE-DEBUG] 🔎 JSON.stringify contient "parentTaskId": ${containsParentTaskId}`);
     if (!containsParentTaskId && skeleton.parentTaskId) {
         console.error(`[PERSISTENCE-DEBUG] 🚨 BUG CONFIRMÉ: parentTaskId présent dans objet mais ABSENT du JSON stringifié!`);
         console.error(`[PERSISTENCE-DEBUG] 🔍 Objet skeleton:`, skeleton);
         console.error(`[PERSISTENCE-DEBUG] 🔍 JSON.stringify output (premiers 500 chars):`, stringified.substring(0, 500));
     }
     
-    // 🎯 DIAGNOSTIC FINAL ULTIME - Capturer l'objet EXACT avant écriture disque
-    console.log(`[ULTIMATE-DEBUG] ========================================`);
-    console.log(`[ULTIMATE-DEBUG] 🔥 OBJET FINAL AVANT fs.writeFile`);
-    console.log(`[ULTIMATE-DEBUG] ========================================`);
-    console.log(`[ULTIMATE-DEBUG] skeleton.taskId: ${skeleton.taskId}`);
-    console.log(`[ULTIMATE-DEBUG] skeleton.parentTaskId: ${skeleton.parentTaskId || 'undefined'}`);
-    console.log(`[ULTIMATE-DEBUG] 'parentTaskId' in skeleton: ${'parentTaskId' in skeleton}`);
-    console.log(`[ULTIMATE-DEBUG] skeleton.hasOwnProperty('parentTaskId'): ${Object.prototype.hasOwnProperty.call(skeleton, 'parentTaskId')}`);
-    console.log(`[ULTIMATE-DEBUG] typeof skeleton.parentTaskId: ${typeof skeleton.parentTaskId}`);
-    console.log(`[ULTIMATE-DEBUG] skeleton.parentTaskId === undefined: ${skeleton.parentTaskId === undefined}`);
-    console.log(`[ULTIMATE-DEBUG] skeleton.parentTaskId === null: ${skeleton.parentTaskId === null}`);
-    console.log(`[ULTIMATE-DEBUG] JSON.stringify(skeleton).includes('parentTaskId'): ${JSON.stringify(skeleton).includes('parentTaskId')}`);
-    console.log(`[ULTIMATE-DEBUG] ========================================`);
+    // 🎯 DIAGNOSTIC FINAL ULTIME - Capturer l'objet EXACT avant écriture disque (COMMENTÉ)
+    // console.log(`[ULTIMATE-DEBUG] ========================================`);
+    // console.log(`[ULTIMATE-DEBUG] 🔥 OBJET FINAL AVANT fs.writeFile`);
+    // console.log(`[ULTIMATE-DEBUG] ========================================`);
+    // console.log(`[ULTIMATE-DEBUG] skeleton.taskId: ${skeleton.taskId}`);
+    // console.log(`[ULTIMATE-DEBUG] skeleton.parentTaskId: ${skeleton.parentTaskId || 'undefined'}`);
+    // console.log(`[ULTIMATE-DEBUG] 'parentTaskId' in skeleton: ${'parentTaskId' in skeleton}`);
+    // console.log(`[ULTIMATE-DEBUG] skeleton.hasOwnProperty('parentTaskId'): ${Object.prototype.hasOwnProperty.call(skeleton, 'parentTaskId')}`);
+    // console.log(`[ULTIMATE-DEBUG] typeof skeleton.parentTaskId: ${typeof skeleton.parentTaskId}`);
+    // console.log(`[ULTIMATE-DEBUG] skeleton.parentTaskId === undefined: ${skeleton.parentTaskId === undefined}`);
+    // console.log(`[ULTIMATE-DEBUG] skeleton.parentTaskId === null: ${skeleton.parentTaskId === null}`);
+    // console.log(`[ULTIMATE-DEBUG] JSON.stringify(skeleton).includes('parentTaskId'): ${JSON.stringify(skeleton).includes('parentTaskId')}`);
+    // console.log(`[ULTIMATE-DEBUG] ========================================`);
 
     for (let attempt = 1; attempt <= maxRetries; attempt++) {
         try {
-            console.log(`[SAVE-DEBUG] 💾 Tentative ${attempt}/${maxRetries} d'écriture sur ${skeletonPath}`);
+            // console.log(`[SAVE-DEBUG] 💾 Tentative ${attempt}/${maxRetries} d'écriture sur ${skeletonPath}`);
             
             // 🔥 CAPTURE ULTIME: Sérialiser JUSTE AVANT l'écriture pour garantir aucune modification
             const finalJson = JSON.stringify(skeleton, null, 2);
-            console.log(`[ULTIMATE-DEBUG] 📝 Contenu JSON FINAL à écrire (100 premiers chars): ${finalJson.substring(0, 100)}`);
-            console.log(`[ULTIMATE-DEBUG] 🔍 Contenu contient 'parentTaskId': ${finalJson.includes('parentTaskId')}`);
+            // console.log(`[ULTIMATE-DEBUG] 📝 Contenu JSON FINAL à écrire (100 premiers chars): ${finalJson.substring(0, 100)}`);
+            // console.log(`[ULTIMATE-DEBUG] 🔍 Contenu contient 'parentTaskId': ${finalJson.includes('parentTaskId')}`);
             
             await fs.writeFile(skeletonPath, finalJson);
-            console.log(`[SAVE-DEBUG] ✅ SUCCÈS écriture à la tentative ${attempt}`);
+            // console.log(`[SAVE-DEBUG] ✅ SUCCÈS écriture à la tentative ${attempt}`);
             
             // 🔍 VERIFICATION POST-WRITE IMMEDIATE
-            console.log(`[POST-WRITE-CHECK] 🔍 Relecture immédiate du fichier pour vérification...`);
+            // console.log(`[POST-WRITE-CHECK] 🔍 Relecture immédiate du fichier pour vérification...`);
             const writtenContent = await fs.readFile(skeletonPath, 'utf-8');
             const hasParentTaskIdInFile = writtenContent.includes('"parentTaskId"');
-            console.log(`[POST-WRITE-CHECK] 📄 Fichier contient "parentTaskId": ${hasParentTaskIdInFile}`);
-            console.log(`[POST-WRITE-CHECK] 📄 Taille fichier écrit: ${writtenContent.length} octets`);
-            console.log(`[POST-WRITE-CHECK] 📄 Premiers 200 caractères: ${writtenContent.substring(0, 200)}`);
+            // console.log(`[POST-WRITE-CHECK] 📄 Fichier contient "parentTaskId": ${hasParentTaskIdInFile}`);
+            // console.log(`[POST-WRITE-CHECK] 📄 Taille fichier écrit: ${writtenContent.length} octets`);
+            // console.log(`[POST-WRITE-CHECK] 📄 Premiers 200 caractères: ${writtenContent.substring(0, 200)}`);
             
             if (!hasParentTaskIdInFile && skeleton.parentTaskId) {
                 console.error(`[POST-WRITE-CHECK] 🚨 BUG CONFIRMÉ: parentTaskId PERDU lors de l'écriture disque!`);
@@ -123,7 +123,7 @@ async function saveSkeletonWithRetry(
             
             // Backoff exponentiel : 200ms, 400ms, 800ms
             const backoffMs = Math.pow(2, attempt) * 100;
-            console.log(`[SAVE-DEBUG] ⏳ Retry dans ${backoffMs}ms`);
+            // console.log(`[SAVE-DEBUG] ⏳ Retry dans ${backoffMs}ms`);
             await new Promise(resolve => setTimeout(resolve, backoffMs));
         }
     }
@@ -556,24 +556,24 @@ export async function handleBuildSkeletonCache(
             console.log('[CACHE-ENGINE-LAUNCH] Mode: STRICT (exact matching only)');
             console.log('[CACHE-ENGINE-LAUNCH] ====================================');
             
-            console.log(`🎯 Lancement engine sur ${enhancedSkeletons.length} squelettes en MODE STRICT...`);
+            // console.log(`🎯 Lancement engine sur ${enhancedSkeletons.length} squelettes en MODE STRICT...`);
             
             // Phase 1: Extraction des instructions new_task (avec matching exact)
-            console.log(`📋 Phase 1: Extraction des déclarations new_task en MODE STRICT...`);
+            // console.log(`📋 Phase 1: Extraction des déclarations new_task en MODE STRICT...`);
             const phase1Result = await hierarchyEngine.executePhase1(enhancedSkeletons, { strictMode: true });
-            console.log(`✅ Phase 1: ${phase1Result.processedCount} traités, ${phase1Result.totalInstructionsExtracted} instructions extraites`);
+            // console.log(`✅ Phase 1: ${phase1Result.processedCount} traités, ${phase1Result.totalInstructionsExtracted} instructions extraites`);
             
             // Phase 2: Reconstruction hiérarchique (avec matching exact)
-            console.log(`🔗 Phase 2: Reconstruction hiérarchique MODE STRICT...`);
-            console.log(`[CRITICAL-DEBUG] 🔍 AVANT executePhase2 - enhancedSkeletons.length=${enhancedSkeletons.length}`);
+            // console.log(`🔗 Phase 2: Reconstruction hiérarchique MODE STRICT...`);
+            // console.log(`[CRITICAL-DEBUG] 🔍 AVANT executePhase2 - enhancedSkeletons.length=${enhancedSkeletons.length}`);
             const phase2Result = await hierarchyEngine.executePhase2(enhancedSkeletons, { strictMode: true });
-            console.log(`[CRITICAL-DEBUG] 🔍 APRÈS executePhase2 - resolvedCount=${phase2Result.resolvedCount}, unresolvedCount=${phase2Result.unresolvedCount}`);
-            console.log(`✅ Phase 2: ${phase2Result.resolvedCount} relations assignées, ${phase2Result.unresolvedCount} ignorés`);
+            // console.log(`[CRITICAL-DEBUG] 🔍 APRÈS executePhase2 - resolvedCount=${phase2Result.resolvedCount}, unresolvedCount=${phase2Result.unresolvedCount}`);
+            // console.log(`✅ Phase 2: ${phase2Result.resolvedCount} relations assignées, ${phase2Result.unresolvedCount} ignorés`);
             
             // ========== PHASE 2.5 : FALLBACK MAPPING VIA PARSED INSTRUCTIONS ==========
             // Si Phase 2 n'a pas trouvé de relations via RadixTree, on essaie un mapping direct
             // basé sur les instructions new_task extraites en Phase 1
-            console.log('[PHASE2.5] 🔍 Fallback: Direct mapping via parsedSubtaskInstructions...');
+            // console.log('[PHASE2.5] 🔍 Fallback: Direct mapping via parsedSubtaskInstructions...');
             let phase25Count = 0;
             
             // Créer un map taskId -> skeleton pour accès rapide
@@ -599,15 +599,15 @@ export async function handleBuildSkeletonCache(
                         (child as any).parentConfidenceScore = 1.0; // Confiance maximale (direct match)
                         (child as any).parentResolutionMethod = 'phase2.5_direct_instruction';
                         phase25Count++;
-                        console.log(`[PHASE2.5] ✅ DIRECT MATCH: ${child.taskId.substring(0, 8)} → ${potentialParent.taskId.substring(0, 8)}`);
+                        // console.log(`[PHASE2.5] ✅ DIRECT MATCH: ${child.taskId.substring(0, 8)} → ${potentialParent.taskId.substring(0, 8)}`);
                     }
                 });
             });
             
             if (phase25Count > 0) {
-                console.log(`[PHASE2.5] ✅ ${phase25Count} relations supplémentaires trouvées via fallback direct`);
+                // console.log(`[PHASE2.5] ✅ ${phase25Count} relations supplémentaires trouvées via fallback direct`);
             } else {
-                console.log(`[PHASE2.5] ⚠️ Aucune relation supplémentaire trouvée`);
+                // console.log(`[PHASE2.5] ⚠️ Aucune relation supplémentaire trouvée`);
             }
             
             // ========== LOGS RÉSULTATS ENGINE ==========
@@ -621,31 +621,35 @@ export async function handleBuildSkeletonCache(
             
             // ✅ BUG FIX: Utiliser directement phase2Result.resolvedCount au lieu de re-compter
             hierarchyRelationsFound = phase2Result.resolvedCount;
-            console.log(`[BUG-DEBUG] 📊 Phase2 terminée: resolvedCount=${phase2Result.resolvedCount}, unresolvedCount=${phase2Result.unresolvedCount}`);
-            console.log(`[BUG-DEBUG] 📋 enhancedSkeletons.length=${enhancedSkeletons.length}`);
+            // console.log(`[BUG-DEBUG] 📊 Phase2 terminée: resolvedCount=${phase2Result.resolvedCount}, unresolvedCount=${phase2Result.unresolvedCount}`);
+            // console.log(`[BUG-DEBUG] 📋 enhancedSkeletons.length=${enhancedSkeletons.length}`);
             
             // ========== DIAGNOSTIC PHASE 3 : ZONE 1 - Construction skeletonsToUpdate ==========
-            console.log(`\n🔍 [PHASE3-PREP] ====================================`);
-            console.log(`[PHASE3-PREP] Starting skeletonsToUpdate construction...`);
-            console.log(`[PHASE3-PREP] Total skeletons in cache: ${conversationCache.size}`);
-            console.log(`[PHASE3-PREP] enhancedSkeletons length: ${enhancedSkeletons.length}`);
-            console.log(`[PHASE3-PREP] ====================================\n`);
+            // console.log(`\n🔍 [PHASE3-PREP] ====================================`);
+            // console.log(`[PHASE3-PREP] Starting skeletonsToUpdate construction...`);
+            // console.log(`[PHASE3-PREP] Total skeletons in cache: ${conversationCache.size}`);
+            // console.log(`[PHASE3-PREP] enhancedSkeletons length: ${enhancedSkeletons.length}`);
+            // console.log(`[PHASE3-PREP] ====================================\n`);
             
             // Application des résultats (ne compter QUE les nouvelles relations via reconstructedParentId)
+            // RÉDUCTION DE LOGS: Afficher seulement chaque 10ème skeleton pour éviter la saturation
             enhancedSkeletons.forEach((skeleton, index) => {
                 const reconstructed = (skeleton as any)?.reconstructedParentId;
                 const existing = skeleton.parentTaskId;
                 
-                console.log(`[PHASE3-PREP] 🔍 Skeleton ${index + 1}/${enhancedSkeletons.length}:`);
-                console.log(`  📋 TaskID: ${skeleton.taskId?.substring(0, 8) || 'UNDEFINED'}`);
-                console.log(`  🔗 reconstructedParentId: ${reconstructed ? reconstructed.substring(0, 8) : 'UNDEFINED'}`);
-                console.log(`  🔗 existing parentTaskId: ${existing ? existing.substring(0, 8) : 'UNDEFINED'}`);
+                // RÉDUCTION DE LOGS: Désactiver complètement les logs PHASE3-PREP répétitifs
+                    // if (index % 10 === 0 || reconstructed || existing) {
+                    //     // console.log(`[PHASE3-PREP] 🔍 Skeleton ${index + 1}/${enhancedSkeletons.length}:`);
+                    //     // console.log(`  📋 TaskID: ${skeleton.taskId?.substring(0, 8) || 'UNDEFINED'}`);
+                    //     // console.log(`  🔗 reconstructedParentId: ${reconstructed ? reconstructed.substring(0, 8) : 'UNDEFINED'}`);
+                    //     // console.log(`  🔗 existing parentTaskId: ${existing ? existing.substring(0, 8) : 'UNDEFINED'}`);
+                    // }
                 
                 const newlyResolvedParent = reconstructed;
                 const isSelf = newlyResolvedParent === skeleton.taskId;
                 
                 if (newlyResolvedParent && !isSelf) {
-                    console.log(`  ✅ WILL ADD to skeletonsToUpdate: ${skeleton.taskId.substring(0, 8)} → ${newlyResolvedParent.substring(0, 8)}`);
+                    // console.log(`  ✅ WILL ADD to skeletonsToUpdate: ${skeleton.taskId.substring(0, 8)} → ${newlyResolvedParent.substring(0, 8)}`);
                     skeletonsToUpdate.push({
                         taskId: skeleton.taskId,
                         newParentId: newlyResolvedParent
@@ -658,35 +662,35 @@ export async function handleBuildSkeletonCache(
                         (cached as any).parentId = newlyResolvedParent;
                     }
                 } else {
-                    console.log(`  ⏭️ SKIP reason:`);
+                    // console.log(`  ⏭️ SKIP reason:`);
                     if (!newlyResolvedParent) {
-                        console.log(`     - reconstructedParentId is UNDEFINED`);
+                        // console.log(`     - reconstructedParentId is UNDEFINED`);
                     }
                     if (isSelf) {
-                        console.log(`     - reconstructedParentId points to SELF (circular)`);
+                        // console.log(`     - reconstructedParentId points to SELF (circular)`);
                     }
                     if (existing) {
-                        console.log(`     - parentTaskId already exists: ${existing.substring(0, 8)}`);
+                        // console.log(`     - parentTaskId already exists: ${existing.substring(0, 8)}`);
                     }
                 }
-                console.log(''); // Ligne vide pour lisibilité
+                // console.log(''); // Ligne vide pour lisibilité
             });
             
-            console.log(`\n[PHASE3-PREP] 📊 ====================================`);
-            console.log(`[PHASE3-PREP] FINAL skeletonsToUpdate length: ${skeletonsToUpdate.length}`);
+            // console.log(`\n[PHASE3-PREP] 📊 ====================================`);
+            // console.log(`[PHASE3-PREP] FINAL skeletonsToUpdate length: ${skeletonsToUpdate.length}`);
             if (skeletonsToUpdate.length > 0) {
-                console.log(`[PHASE3-PREP] Updates to apply:`);
+                // console.log(`[PHASE3-PREP] Updates to apply:`);
                 skeletonsToUpdate.forEach((update, i) => {
                     console.log(`  ${i + 1}. ${update.taskId.substring(0, 8)} → ${update.newParentId.substring(0, 8)}`);
                 });
             } else {
-                console.log(`[PHASE3-PREP] ⚠️ NO UPDATES - skeletonsToUpdate is EMPTY`);
-                console.log(`[PHASE3-PREP] Possible causes:`);
-                console.log(`  - All skeletons missing reconstructedParentId`);
+                // console.log(`[PHASE3-PREP] ⚠️ NO UPDATES - skeletonsToUpdate is EMPTY`);
+                // console.log(`[PHASE3-PREP] Possible causes:`);
+                // console.log(`  - All skeletons missing reconstructedParentId`);
                 console.log(`  - All skeletons already have parentTaskId`);
                 console.log(`  - All reconstructedParentId point to self`);
             }
-            console.log(`[PHASE3-PREP] ====================================\n`);
+            // console.log(`[PHASE3-PREP] ====================================\n`);
             
         } catch (engineError) {
             console.error(`[ENGINE-ERROR] ❌ ERREUR HIERARCHY ENGINE:`, engineError);
@@ -723,8 +727,8 @@ export async function handleBuildSkeletonCache(
             console.log(`[PHASE3] ====================================\n`);
         } else {
             console.log(`[PHASE3] 🚀 Starting Phase 3 execution...`);
-            console.log(`[PHASE3] Total updates to process: ${skeletonsToUpdate.length}`);
-            console.log(`[PHASE3] ====================================\n`);
+            // console.log(`[PHASE3] Total updates to process: ${skeletonsToUpdate.length}`);
+            // console.log(`[PHASE3] ====================================\n`);
             
             let savedCount = 0;
             let errorCount = 0;
@@ -732,23 +736,23 @@ export async function handleBuildSkeletonCache(
             
             for (const update of skeletonsToUpdate) {
                 const iterNum = savedCount + errorCount + 1;
-                console.log(`[PHASE3-LOOP] 📝 Processing update ${iterNum}/${skeletonsToUpdate.length}:`);
-                console.log(`  - TaskID: ${update.taskId.substring(0, 8)}`);
-                console.log(`  - New ParentID: ${update.newParentId.substring(0, 8)}`);
+                // console.log(`[PHASE3-LOOP] 📝 Processing update ${iterNum}/${skeletonsToUpdate.length}:`);
+                // console.log(`  - TaskID: ${update.taskId.substring(0, 8)}`);
+                // console.log(`  - New ParentID: ${update.newParentId.substring(0, 8)}`);
             
                 // Vérifier d'abord si le skeleton est dans le cache
                 const cachedSkeleton = conversationCache.get(update.taskId);
                 if (!cachedSkeleton) {
-                    console.error(`[PHASE3-DEBUG] ❌ ERREUR: Skeleton ${update.taskId.substring(0, 8)} ABSENT du cache!`);
+                    // console.error(`[PHASE3-DEBUG] ❌ ERREUR: Skeleton ${update.taskId.substring(0, 8)} ABSENT du cache!`);
                     failedUpdates.push({taskId: update.taskId, reason: 'Skeleton absent du cache'});
                     errorCount++;
                     continue;
                 }
-                console.log(`[PHASE3-DEBUG] ✅ Skeleton trouvé dans cache avec parentTaskId AVANT maj: ${cachedSkeleton.parentTaskId || 'undefined'}`);
+                // console.log(`[PHASE3-DEBUG] ✅ Skeleton trouvé dans cache avec parentTaskId AVANT maj: ${cachedSkeleton.parentTaskId || 'undefined'}`);
                 
                 // ✅ FIX CRITIQUE: Mettre à jour le cache EN MÉMOIRE avant sauvegarde
                 cachedSkeleton.parentTaskId = update.newParentId;
-                console.log(`[PHASE3] 📝 Cache mémoire mis à jour: ${update.taskId.substring(0, 8)} -> parentTaskId: ${update.newParentId.substring(0, 8)}`);
+                // console.log(`[PHASE3] 📝 Cache mémoire mis à jour: ${update.taskId.substring(0, 8)} -> parentTaskId: ${update.newParentId.substring(0, 8)}`);
                 
                 let saved = false;
                 for (let locIdx = 0; locIdx < locations.length; locIdx++) {
@@ -758,37 +762,37 @@ export async function handleBuildSkeletonCache(
                     const skeletonDir = path.join(tasksDir, SKELETON_CACHE_DIR_NAME);
                     const skeletonPath = path.join(skeletonDir, `${update.taskId}.json`);
                     
-                    console.log(`[PHASE3-DEBUG] 🔍 Test location ${locIdx + 1}/${locations.length}: ${storageDir}`);
-                    console.log(`[PHASE3-DEBUG]   ├─ Skeleton dir: ${skeletonDir}`);
-                    console.log(`[PHASE3-DEBUG]   └─ Skeleton path: ${skeletonPath}`);
+                    // console.log(`[PHASE3-DEBUG] 🔍 Test location ${locIdx + 1}/${locations.length}: ${storageDir}`);
+                    // console.log(`[PHASE3-DEBUG]   ├─ Skeleton dir: ${skeletonDir}`);
+                    // console.log(`[PHASE3-DEBUG]   └─ Skeleton path: ${skeletonPath}`);
                     
                     // Vérifier si le fichier existe OU si le répertoire skeleton_cache existe
                     const skeletonDirExists = existsSync(skeletonDir);
                     const fileExists = existsSync(skeletonPath);
                     
-                    console.log(`[PHASE3-DEBUG]   Dir exists: ${skeletonDirExists}, File exists: ${fileExists}`);
+                    // console.log(`[PHASE3-DEBUG]   Dir exists: ${skeletonDirExists}, File exists: ${fileExists}`);
                     
                     if (!skeletonDirExists) {
-                        console.log(`[PHASE3-DEBUG] ⚠️ Répertoire skeleton_cache manquant, skip location`);
+                        // console.log(`[PHASE3-DEBUG] ⚠️ Répertoire skeleton_cache manquant, skip location`);
                         continue; // Essayer le prochain storage location
                     }
                     
                     // ✅ FIX FINAL: Toujours sauvegarder (saveSkeletonWithRetry crée le fichier si nécessaire)
-                    console.log(`[PHASE3-DEBUG] 📝 Sauvegarde skeleton (existe: ${fileExists})...`);
+                    // console.log(`[PHASE3-DEBUG] 📝 Sauvegarde skeleton (existe: ${fileExists})...`);
                     const saveResult = await saveSkeletonWithRetry(update.taskId, skeletonPath, conversationCache, 3);
                     
                     if (saveResult.success) {
-                        console.log(`[PHASE3] ✅ Skeleton sauvegardé: ${update.taskId.substring(0, 8)} -> ${update.newParentId?.substring(0, 8) || 'N/A'}`);
+                        // console.log(`[PHASE3] ✅ Skeleton sauvegardé: ${update.taskId.substring(0, 8)} -> ${update.newParentId?.substring(0, 8) || 'N/A'}`);
                         savedCount++;
                         saved = true;
-                        console.log(`  ✅ Result: SUCCESS - Skeleton saved`);
+                        // console.log(`  ✅ Result: SUCCESS - Skeleton saved`);
                         break; // Sortir de la boucle locations
                     } else {
-                        console.error(`[PHASE3] ❌ Erreur sauvegarde: ${saveResult.error}`);
+                        // console.error(`[PHASE3] ❌ Erreur sauvegarde: ${saveResult.error}`);
                         failedUpdates.push({taskId: update.taskId, reason: saveResult.error || 'Unknown error'});
                         errorCount++;
                         saved = false;
-                        console.log(`  ❌ Result: FAILED - ${saveResult.error || 'Unknown error'}`);
+                        // console.log(`  ❌ Result: FAILED - ${saveResult.error || 'Unknown error'}`);
                         break; // Sortir de la boucle locations même en cas d'échec
                     }
                 }
