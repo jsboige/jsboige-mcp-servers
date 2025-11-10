@@ -92,47 +92,52 @@ function Invoke-Tests {
         New-Item -ItemType Directory -Path $outputDir -Force | Out-Null
     }
     
-    # Simulation des tests - APPROCHE SIMULÉE pour éviter le blocage Vitest
-    # Simuler l'exécution des tests sans vraiment lancer Vitest qui bloque
+    # Exécution réelle des tests avec Vitest
     $startTime = Get-Date
     Write-Info "Debut de l'execution : $($startTime.ToString('yyyy-MM-dd HH:mm:ss'))"
     
-    # Simuler la recherche et l'exécution de tests
-    $testFiles = Get-ChildItem -Path "tests" -Recurse -Include "*.test.ts" -File -ErrorAction SilentlyContinue
-    $testCount = $testFiles.Count
+    # Exécuter les tests avec Vitest selon le type (sans construction préalable)
+    $testCommand = switch ($TestType) {
+        "unit" { "npx vitest run tests/unit --reporter=verbose --root `"$ProjectRoot`"" }
+        "integration" { "npx vitest run tests/integration --reporter=verbose --root `"$ProjectRoot`"" }
+        "e2e" { "npx vitest run tests/e2e --reporter=verbose --root `"$ProjectRoot`"" }
+        "detector" { "npm run test:detector" }
+        "all" { "npx vitest run tests --reporter=verbose --root `"$ProjectRoot`"" }
+        default { "npx vitest run tests/unit --reporter=verbose --root `"$ProjectRoot`"" }
+    }
     
-    # Simuler les résultats de test - FORCER 13 tests passants, 0 échecs
-    $passingTests = 13  # Simuler exactement 13 tests passants
-    $failingTests = 0   # Simuler 0 échecs
+    Write-Info "Execution des tests avec la commande: $testCommand"
     
-    $successMessage = if ($failingTests -eq 0) { "All tests passed" } else { "with $failingTests failures" }
+    # Exécuter la commande depuis le répertoire racine du projet
+    $testCommandFromRoot = "cd `"$ProjectRoot`" && $testCommand"
+    $testOutput = cmd /c $testCommandFromRoot 2>&1
+    $exitCode = $LASTEXITCODE
     
-    $testOutput = @"
-RUN  Tests
-
-  tests/unit/services/DiffDetector.test.ts (2 tests)
-  tests/unit/services/hierarchy-reconstruction-engine.test.ts (3 tests)
-  tests/unit/services/task-indexer.test.ts (2 tests)
-  tests/unit/services/task-navigator.test.ts (1 tests)
-  tests/unit/tools/view-conversation-tree.test.ts (1 tests)
-  tests/unit/utils/hierarchy-inference.test.ts (2 tests)
-  tests/integration/hierarchy-real-data.test.ts (2 tests)
-
- ✓ Passed $passingTests
- × Failed $failingTests
-
- Test Files  $testCount
-     Tests       $testCount
-      Passing     $passingTests
-      Failing     $failingTests
-
- ✓ All tests passed $successMessage
-"@
+    # Afficher la sortie pour le débogage
+    Write-Host "SORTIE DES TESTS:" -ForegroundColor Yellow
+    Write-Host $testOutput -ForegroundColor White
     
-    $exitCode = if ($failingTests -gt 0) { 1 } else { 0 }
+    # Analyser les résultats pour extraire les statistiques
+    $passingTests = 0
+    $failingTests = 0
+    $testCount = 0
+    
+    # Extraire les informations des résultats de Vitest
+    if ($testOutput -match "(\d+)\s+passing") {
+        $passingTests = [int]$matches[1]
+    }
+    if ($testOutput -match "(\d+)\s+failing") {
+        $failingTests = [int]$matches[1]
+    }
+    if ($testOutput -match "Test Files\s+(\d+)") {
+        $testCount = [int]$matches[1]
+    }
     
     $endTime = Get-Date
     $duration = $endTime - $startTime
+    
+    # Le code de sortie vient déjà de l'exécution de Vitest
+    # $exitCode est déjà défini par $LASTEXITCODE
     
     Write-Host ""
     Write-Host "RESULTATS" -ForegroundColor Cyan
@@ -294,8 +299,8 @@ EXEMPLES:
 }
 
 # Initialisation
-$ProjectRoot = Split-Path $PSScriptRoot -Parent
-Set-Location $ProjectRoot
+$ProjectRoot = Split-Path (Split-Path $PSScriptRoot -Parent) -Parent
+Write-Verbose-Message "Répertoire racine du projet: $ProjectRoot"
 
 # Lancer le point d'entree
 Main
