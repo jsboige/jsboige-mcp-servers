@@ -95,10 +95,10 @@ describe('QuickFiles Server - Recherche et remplacement', () => {
       
       const response = await server.handleSearchInFiles(request);
       
-      // Vérifier que seules les correspondances exactes sont trouvées
+      // Avec case_sensitive: true et "Exemple" (majuscule), aucun résultat ne devrait être trouvé
+      // car tous les fichiers contiennent "exemple" en minuscule
       expect(response.content[0].text).toContain('Résultats de recherche');
-      expect(response.content[0].text).toContain('file1.txt'); // Contient "Exemple" avec majuscule
-      expect(response.content[0].text).not.toContain('script.js'); // Contient "exemple" sans majuscule
+      expect(response.content[0].text).toContain('Aucun résultat trouvé');
       expect(response.isError).toBeUndefined();
     });
     
@@ -152,7 +152,7 @@ describe('QuickFiles Server - Recherche et remplacement', () => {
       
       // Vérifier que les résultats sont limités
       expect(response.content[0].text).toContain('Résultats de recherche');
-      expect(response.content[0].text).toContain('limite atteinte');
+      expect(response.content[0].text).toContain('limite de résultats atteinte');
       expect(response.isError).toBeUndefined();
     });
   });

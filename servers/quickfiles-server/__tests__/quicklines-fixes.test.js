@@ -93,7 +93,7 @@ describe('🔧 QuickLines MCP - Corrections des problèmes critiques', () => {
       // Vérifier que les deux extraits sont présents
       const lines = result.content.split('\n');
       expect(lines[0]).toMatch(/^1\|/); // Premier extrait
-      expect(lines[1]).toMatch(/^10\|/); // Deuxième extrait
+      expect(lines[4]).toMatch(/^10\|/); // Deuxième extrait (après la ligne vide de séparation)
     });
   });
 

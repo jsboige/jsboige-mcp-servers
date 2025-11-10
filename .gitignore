@@ -75,3 +75,4 @@ test-results/
 /servers/roo-state-manager/diag_results_full.json-e "servers/roo-state-manager/output.txt\nservers/roo-state-manager/run-hierarchy-test.ps1\nservers/roo-state-manager/test-quick.ps1" 
 build-test-results.txt
 servers/roo-state-manager/build-errors.txt
+servers/quickfiles-server/.jest-cache/

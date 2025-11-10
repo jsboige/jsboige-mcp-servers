@@ -42,10 +42,10 @@ function createMockServer() {
            
             for (const excerpt of excerpts) {
               const { start, end } = excerpt;
-              const excerptContent = lines.slice(start - 1, end).join('\n');
+              const excerptLinesContent = lines.slice(start - 1, end);
               
               // Ajouter la numérotation correcte
-              const numberedLines = excerptContent.split('\n').map((line, index) => {
+              const numberedLines = excerptLinesContent.map((line, index) => {
                 const lineNumber = start + index;
                 return `${lineNumber}|${line}`;
               });
@@ -158,10 +158,10 @@ function createMockServer() {
         for (let i = 0; i < file.excerpts.length; i++) {
           const excerpt = file.excerpts[i];
           const { start, end } = excerpt;
-          const excerptContent = lines.slice(start - 1, end).join('\n');
+          const excerptLinesContent = lines.slice(start - 1, end);
           
-          // Ajouter la numérotation correcte
-          const numberedLines = excerptContent.split('\n').map((line, index) => {
+          // Ajouter la numérotation correcte pour chaque ligne de l'extrait
+          const numberedLines = excerptLinesContent.map((line, index) => {
             const lineNumber = start + index;
             return `${lineNumber}|${line}`;
           });

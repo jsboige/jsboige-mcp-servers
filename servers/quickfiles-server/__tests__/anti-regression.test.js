@@ -280,7 +280,7 @@ describe('🚨 ANTI-RÉGRESSION: Détection des Stubs', () => {
       const response = await server.handleSearchAndReplace(request);
       
       // Vérifier la réponse
-      expect(response.content[0].text).toContain('Effectué');
+      expect(response.content[0].text).toContain('Modifications effectuées');
       expect(response.content[0].text).toContain('remplacement');
       
       // Vérifier que le fichier est vraiment modifié
