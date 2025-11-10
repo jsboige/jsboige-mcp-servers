@@ -8,6 +8,10 @@
 
 import { MessageManager } from '../../services/MessageManager.js';
 import { getSharedStatePath } from '../../utils/server-helpers.js';
+import { createLogger, Logger } from '../../utils/logger.js';
+
+// Logger instance for archive_message tool
+const logger: Logger = createLogger('ArchiveMessageTool');
 
 /**
  * Arguments de l'outil roosync_archive_message
@@ -45,7 +49,7 @@ function formatDate(isoDate: string): string {
 export async function archiveMessage(
   args: ArchiveMessageArgs
 ): Promise<{ content: Array<{ type: string; text: string }> }> {
-  console.error('📦 [archive_message] Starting...');
+  logger.info('📦 Starting archive message operation');
 
   try {
     // Validation des paramètres requis
@@ -58,7 +62,7 @@ export async function archiveMessage(
     const messageManager = new MessageManager(sharedStatePath);
 
     // Vérifier existence du message
-    console.error(`🔍 [archive_message] Checking message: ${args.message_id}`);
+    logger.debug('🔍 Checking message existence', { messageId: args.message_id });
     const message = await messageManager.getMessage(args.message_id);
 
     // Cas : message introuvable
@@ -106,7 +110,7 @@ Le message est déjà archivé. Il se trouve dans le dossier \`messages/archive/
     }
 
     // Archiver le message
-    console.error('📦 [archive_message] Archiving...');
+    logger.info('📦 Archiving message');
     await messageManager.archiveMessage(args.message_id);
     
     // Récupérer le message archivé
@@ -136,13 +140,13 @@ Le message est déjà archivé. Il se trouve dans le dossier \`messages/archive/
       result += `- 🔗 **Voir le thread** : Utilisez \`roosync_read_inbox\` puis filtrez par thread_id\n`;
     }
 
-    console.error('✅ [archive_message] Message archived successfully');
+    logger.info('✅ Message archived successfully', { messageId: args.message_id });
     return {
       content: [{ type: 'text', text: result }]
     };
   } catch (error) {
     const errorMessage = error instanceof Error ? error.message : String(error);
-    console.error('❌ [archive_message] Error:', errorMessage);
+    logger.error('❌ Archive message error', error instanceof Error ? error : new Error(errorMessage));
     
     return {
       content: [{

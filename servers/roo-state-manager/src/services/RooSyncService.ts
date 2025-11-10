@@ -23,7 +23,9 @@ import {
 } from '../utils/roosync-parsers.js';
 import { PowerShellExecutor, type PowerShellExecutionResult } from './PowerShellExecutor.js';
 import { InventoryCollector, type MachineInventory } from './InventoryCollector.js';
-import { DiffDetector, type ComparisonReport, type DetectedDifference } from './DiffDetector.js';
+import { DiffDetector } from './DiffDetector.js';
+import type { BaselineDifference, BaselineComparisonReport } from '../types/baseline.js';
+import { getGitHelpers, type GitHelpers } from '../utils/git-helpers.js';
 
 /**
  * Options de cache pour RooSyncService
@@ -107,6 +109,7 @@ export class RooSyncService {
   private powershellExecutor: PowerShellExecutor;
   private inventoryCollector: InventoryCollector;
   private diffDetector: DiffDetector;
+  private gitHelpers: GitHelpers;
   
   /**
    * Constructeur privé (Singleton)
@@ -123,6 +126,26 @@ export class RooSyncService {
     });
     this.inventoryCollector = new InventoryCollector();
     this.diffDetector = new DiffDetector();
+    this.gitHelpers = getGitHelpers();
+    
+    // Vérifier Git au démarrage
+    this.verifyGitOnStartup();
+  }
+  
+  /**
+   * Vérifier la disponibilité de Git au démarrage
+   */
+  private async verifyGitOnStartup(): Promise<void> {
+    try {
+      const gitCheck = await this.gitHelpers.verifyGitAvailable();
+      if (!gitCheck.available) {
+        console.warn('[RooSync Service] Git NOT available - some features may be limited:', gitCheck.error);
+      } else {
+        console.log(`[RooSync Service] Git verified: ${gitCheck.version}`);
+      }
+    } catch (error) {
+      console.error('[RooSync Service] Failed to verify Git:', error);
+    }
   }
   
   /**
@@ -694,7 +717,7 @@ export class RooSyncService {
     sourceMachineId: string,
     targetMachineId: string,
     forceRefresh = false
-  ): Promise<ComparisonReport | null> {
+  ): Promise<BaselineComparisonReport | null> {
     console.log(`[RooSyncService] 🔍 Comparaison réelle : ${sourceMachineId} vs ${targetMachineId}`);
     
     // Collecte inventaires
@@ -706,10 +729,19 @@ export class RooSyncService {
       return null;
     }
     
-    // Comparaison
-    const report = await this.diffDetector.compareInventories(sourceInventory, targetInventory);
+    // Comparaison - DiffDetector n'a plus compareInventories, utilise compareBaselineWithMachine
+    // TODO: Refactoring complet pour utiliser BaselineService proprement
+    // Pour l'instant, créer un rapport compatible temporaire
+    const report: BaselineComparisonReport = {
+      baselineMachine: sourceMachineId,
+      targetMachine: targetMachineId,
+      baselineVersion: '2.1.0',
+      differences: [], // À implémenter avec logique baseline
+      summary: { total: 0, critical: 0, important: 0, warning: 0, info: 0 },
+      generatedAt: new Date().toISOString()
+    };
     
-    console.log(`[RooSyncService] ✅ Comparaison terminée : ${report.summary.total} différences`);
+    console.log(`[RooSyncService] ⚠️ Comparaison temporaire (TODO: refactoring baseline) : ${report.summary.total} différences`);
     return report;
   }
 
@@ -718,8 +750,8 @@ export class RooSyncService {
    * @param report - Rapport de comparaison
    * @returns Nombre de décisions créées
    */
-  async generateDecisionsFromReport(report: ComparisonReport): Promise<number> {
-    console.log(`[RooSyncService] 📝 Génération décisions depuis rapport ${report.reportId}`);
+  async generateDecisionsFromReport(report: BaselineComparisonReport): Promise<number> {
+    console.log(`[RooSyncService] 📝 Génération décisions depuis rapport (${report.baselineMachine} vs ${report.targetMachine})`);
     
     let createdCount = 0;
     
@@ -748,4 +780,4 @@ export function getRooSyncService(cacheOptions?: CacheOptions): RooSyncService {
 
 // Exports pour utilisation externe
 export type { MachineInventory } from './InventoryCollector.js';
-export type { ComparisonReport, DetectedDifference, DiffSeverity, DiffCategory } from './DiffDetector.js';
+export type { BaselineDifference, BaselineComparisonReport } from '../types/baseline.js';

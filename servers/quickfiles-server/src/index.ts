@@ -133,7 +133,6 @@ interface FileCopyOperation {
   transform?: { pattern: string; replacement: string; }; 
   conflict_strategy?: 'overwrite' | 'ignore' | 'rename'; 
 }
-
 class QuickFilesServer {
   private server: McpServer;
   private workspaceRoot: string;
@@ -160,6 +159,54 @@ class QuickFilesServer {
       this.server.close();
     });
   }
+
+  /**
+   * Échappe tous les caractères spéciaux dans une chaîne pour une utilisation sécurisée dans les expressions régulières
+   * @param pattern La chaîne à échapper
+   * @returns La chaîne échappée pour une utilisation regex sécurisée
+   */
+  private escapeRegex(pattern: string): string {
+    // Liste des caractères spéciaux qui doivent être échappés dans les regex
+    const specialChars = [
+      '\\', '.', '^', '$', '*', '+', '?', '(', ')',
+      '[', ']', '{', '}', '|', '/'
+    ];
+    
+    let escaped = '';
+    for (let i = 0; i < pattern.length; i++) {
+      const char = pattern[i];
+      if (specialChars.includes(char)) {
+        escaped += '\\' + char;
+      } else {
+        escaped += char;
+      }
+    }
+    return escaped;
+  }
+
+  /**
+   * Normalise les sauts de ligne dans une chaîne de recherche
+   * @param text La chaîne à normaliser
+   * @returns La chaîne avec des sauts de ligne normalisés
+   */
+  private normalizeLineBreaks(text: string): string {
+    // Convertir tous les types de sauts de ligne en \n standard
+    return text.replace(/\r\n/g, '\n')  // Windows CRLF
+            .replace(/\r/g, '\n')     // Mac CR
+            .replace(/\n+/g, '\n');    // Multiples \n en un seul
+  }
+
+  /**
+   * Ajoute des logs de debug pour tracer les opérations
+   * @param operation Le nom de l'opération
+   * @param details Les détails à logger
+   */
+  private debugLog(operation: string, details: any): void {
+    if (process.env.DEBUG_QUICKFILES === 'true') {
+      console.error(`[QUICKFILES DEBUG] ${operation}:`, details);
+    }
+  }
+  
 
   private registerTools(): void {
     this.server.registerTool(
@@ -529,43 +576,78 @@ class QuickFilesServer {
 
   private async handleEditMultipleFiles(args: z.infer<typeof EditMultipleFilesArgsSchema>) {
     const { files } = args;
+    this.debugLog('handleEditMultipleFiles', { filesCount: files.length });
+    
     try {
         const results = await Promise.all(
             files.map(async ({ path: rawFilePath, diffs }) => {
                 const filePath = this.resolvePath(rawFilePath);
+                this.debugLog('editFile', { filePath, diffsCount: diffs.length });
+                
                 try {
                     let content = await fs.readFile(filePath, 'utf-8');
                     let modificationsCount = 0;
                     const errors: string[] = [];
+                    
                     for (const diff of diffs) {
                         const { search, replace, start_line } = diff;
-                        let lines = content.split('\n');
+                        
+                        // Normaliser les sauts de ligne dans les chaînes
+                        const normalizedSearch = this.normalizeLineBreaks(search);
+                        const normalizedReplace = this.normalizeLineBreaks(replace);
+                        const normalizedContent = this.normalizeLineBreaks(content);
+                        
+                        let lines = normalizedContent.split('\n');
                         let found = false;
                         
                         if (start_line) {
                            const searchIndex = start_line - 1;
-                           if (lines[searchIndex] && lines[searchIndex].includes(search)) {
-                               lines[searchIndex] = lines[searchIndex].replace(search, replace);
+                           if (lines[searchIndex] && lines[searchIndex].includes(normalizedSearch)) {
+                               lines[searchIndex] = lines[searchIndex].replace(normalizedSearch, normalizedReplace);
                                content = lines.join('\n');
                                found = true;
                            }
                         } else {
-                            const newContent = content.replace(new RegExp(search, 'g'), (match) => {
-                                found = true;
-                                return replace;
-                            });
-                            if (newContent !== content) {
-                                content = newContent;
-                            }
+                             // ✅ CORRECTION: Utiliser escapeRegex pour échapper les caractères spéciaux
+                             const escapedSearch = this.escapeRegex(normalizedSearch);
+                             this.debugLog('regexReplace', {
+                                 originalSearch: normalizedSearch,
+                                 escapedSearch,
+                                 filePath
+                             });
+                             
+                             const searchRegex = new RegExp(escapedSearch, 'g');
+                             const newContent = normalizedContent.replace(searchRegex, (match) => {
+                                 found = true;
+                                 return normalizedReplace;
+                             });
+                             if (newContent !== normalizedContent) {
+                                 content = newContent;
+                             }
                         }
-                        if (found) modificationsCount++;
-                        else errors.push(`Le texte à rechercher "${search}" n'a pas été trouvé.`);
+                        if (found) {
+                            modificationsCount++;
+                            this.debugLog('modificationSuccess', {
+                                filePath,
+                                search: normalizedSearch,
+                                replace: normalizedReplace
+                            });
+                        } else {
+                            errors.push(`Le texte à rechercher "${normalizedSearch}" n'a pas été trouvé.`);
+                            this.debugLog('modificationFailed', {
+                                filePath,
+                                search: normalizedSearch,
+                                error: 'Text not found'
+                            });
+                        }
                     }
                     if (modificationsCount > 0) {
                         await fs.writeFile(filePath, content, 'utf-8');
+                        this.debugLog('fileWritten', { filePath, modificationsCount });
                     }
                     return { path: rawFilePath, success: true, modifications: modificationsCount, errors };
                 } catch (error) {
+                    this.debugLog('fileError', { filePath, error: (error as Error).message });
                     return { path: rawFilePath, success: false, error: (error as Error).message };
                 }
             })
@@ -580,8 +662,10 @@ class QuickFilesServer {
                 report += `- [ERREUR] ${r.path}: ${r.error}\n`;
             }
         });
+        this.debugLog('editComplete', { totalFiles: files.length, results });
         return { content: [{ type: 'text' as const, text: report }] };
     } catch (error) {
+        this.debugLog('handleEditMultipleFilesError', { error: (error as Error).message });
         return { content: [{ type: 'text' as const, text: `Erreur lors de l'édition des fichiers: ${(error as Error).message}` }], isError: true };
     }
   }

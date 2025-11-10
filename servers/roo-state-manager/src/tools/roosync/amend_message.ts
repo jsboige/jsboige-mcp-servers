@@ -11,6 +11,10 @@ import { getSharedStatePath } from '../../utils/server-helpers.js';
 import { existsSync, readFileSync } from 'fs';
 import { join } from 'path';
 import os from 'os';
+import { createLogger, Logger } from '../../utils/logger.js';
+
+// Logger instance for amend_message tool
+const logger: Logger = createLogger('AmendMessageTool');
 
 /**
  * Arguments de l'outil roosync_amend_message
@@ -44,7 +48,7 @@ function getLocalMachineId(): string {
 export async function amendMessage(
   args: AmendMessageArgs
 ): Promise<{ content: Array<{ type: string; text: string }> }> {
-  console.error('✏️ [amend_message] Starting...');
+  logger.info('✏️ Starting amend message operation');
 
   try {
     // Validation des paramètres requis
@@ -62,10 +66,10 @@ export async function amendMessage(
 
     // Obtenir l'ID de la machine locale (émetteur)
     const senderId = getLocalMachineId();
-    console.error(`🔐 [amend_message] Sender ID: ${senderId}`);
+    logger.debug('🔐 Sender ID identified', { senderId });
 
     // Amender le message via MessageManager
-    console.error(`✏️ [amend_message] Amending message: ${args.message_id}`);
+    logger.info('✏️ Amending message', { messageId: args.message_id });
     const result = await messageManager.amendMessage(
       args.message_id,
       senderId,
@@ -111,13 +115,13 @@ Le **contenu original** est préservé dans \`metadata.original_content\` pour t
 - ✅ Seul l'émetteur peut amender ses messages
 - ✅ Amendements multiples possibles (original toujours préservé)`;
 
-    console.error('✅ [amend_message] Success');
+    logger.info('✅ Message amended successfully', { messageId: args.message_id });
     return {
       content: [{ type: 'text', text: successMessage }]
     };
   } catch (error) {
     const errorMessage = error instanceof Error ? error.message : String(error);
-    console.error('❌ [amend_message] Error:', errorMessage);
+    logger.error('❌ Amend message error', error instanceof Error ? error : new Error(errorMessage));
     
     return {
       content: [{

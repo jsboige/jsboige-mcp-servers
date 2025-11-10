@@ -1,8 +1,12 @@
 /**
- * Configuration Jest pour QuickFiles MCP Server
- * 
+ * Configuration Jest Complète pour QuickFiles MCP Server
+ *
  * Cette configuration active l'exécution automatique des tests unitaires,
- * incluant les tests anti-régression critiques.
+ * incluant les tests anti-régression critiques et la validation continue.
+ *
+ * @version 2.0.0
+ * @author Roo Code Assistant
+ * @date 2025-10-30
  */
 
 export default {
@@ -86,9 +90,13 @@ export default {
   },
   
   // Setup files à exécuter avant les tests
-  // setupFilesAfterEnv: ['<rootDir>/__tests__/setup.js'],
+  setupFilesAfterEnv: ['<rootDir>/__tests__/setup.js'],
   
-  // Rapports de test
+  // Fichiers de configuration globaux pour Jest
+  globalSetup: '<rootDir>/__tests__/global-setup.js',
+  globalTeardown: '<rootDir>/__tests__/global-teardown.js',
+  
+  // Rapports de test étendus
   reporters: [
     'default',
     ['jest-junit', {
@@ -98,6 +106,29 @@ export default {
       titleTemplate: '{title}',
       ancestorSeparator: ' › ',
       usePathForSuiteName: true
+    }],
+    // Rapport de couverture en HTML détaillé
+    ['html', {
+      outputPath: './coverage/html',
+      filename: 'coverage-report.html'
+    }],
+    // Rapport JSON pour l'intégration CI/CD
+    ['json', {
+      outputDirectory: './test-results',
+      filename: 'test-results.json'
     }]
-  ]
+  ],
+  
+  // Configuration maximale pour la détection des problèmes
+  maxWorkers: '50%',
+  maxConcurrency: 5,
+  
+  // Options de cache pour les performances
+  cache: true,
+  cacheDirectory: '<rootDir>/.jest-cache',
+  
+  // Transformation des modules pour éviter les problèmes ESM
+  transformIgnorePatterns: [
+    'node_modules/(?!(quickfiles-server)/'
+  ],
 };

@@ -45,11 +45,14 @@ import { truncateResult, handleTouchMcpSettings, handleExportConversationJson, h
 import { initializeBackgroundServices, saveSkeletonToDisk } from './services/background-services.js';
 import { RooStorageDetector } from './utils/roo-storage-detector.js';
 import { promises as fs } from 'fs';
-import packageJson from '../package.json' with { type: 'json' };
+import { createRequire } from 'module';
 import { handleBuildSkeletonCache } from './tools/index.js';
 import { NotificationService } from './notifications/NotificationService.js';
 import { ToolUsageInterceptor } from './notifications/ToolUsageInterceptor.js';
 import { MessageManager } from './services/MessageManager.js';
+
+const require = createRequire(import.meta.url);
+const packageJson = require('../package.json');
 
 /**
  * Classe principale du serveur MCP

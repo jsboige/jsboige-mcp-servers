@@ -134,6 +134,13 @@ export class HierarchyReconstructionEngine {
             processingTimeMs: 0
         };
 
+        // ========== LOGS AJOUTÉS POUR INVESTIGATION ==========
+        console.log('[ENGINE-PHASE1-START] ====================================');
+        console.log('[ENGINE-PHASE1-START] Extraction instructions...');
+        console.log('[ENGINE-PHASE1-START] Skeletons count:', skeletons.length);
+        console.log('[ENGINE-PHASE1-START] Config:', JSON.stringify(mergedConfig, null, 2));
+        console.log('[ENGINE-PHASE1-START] ====================================');
+
         // Traitement par batches
         const batches = this.createBatches(skeletons, mergedConfig.batchSize || 20);
         
@@ -154,7 +161,15 @@ export class HierarchyReconstructionEngine {
                     }
 
                     // Extraire les instructions depuis ui_messages.json
+                    console.log(`[ENGINE-PHASE1-EXTRACT] TaskID: ${skeleton.taskId.substring(0, 8)}`);
+                    console.log(`[ENGINE-PHASE1-EXTRACT] DataSource: ${skeleton.metadata?.dataSource || 'N/A'}`);
+                    
                     const instructions = await this.extractSubtaskInstructions(skeleton);
+                    
+                    console.log(`[ENGINE-PHASE1-EXTRACT] Instruction count: ${instructions.length}`);
+                    if (instructions.length > 0) {
+                        console.log(`[ENGINE-PHASE1-EXTRACT] First instruction preview: "${instructions[0].message.substring(0, 100)}..."`);
+                    }
                     
                     if (process.env.ROO_DEBUG_INSTRUCTIONS === '1') {
                         try { console.log(`[Phase1] extracted for ${skeleton.taskId} ds=${skeleton.metadata?.dataSource || 'N/A'} → ${instructions.length}`); } catch {}
@@ -186,6 +201,7 @@ export class HierarchyReconstructionEngine {
                             parentText
                         );
                         
+                        console.log(`[ENGINE-PHASE1-INDEX] Task ${skeleton.taskId.substring(0, 8)}: ${extractedCount} sub-instructions indexed`);
                         console.log(`[FIX-RÉGRESSION] Tâche ${skeleton.taskId}: ${extractedCount} sous-instructions extraites et indexées`);
                         
                         result.parsedCount++;
@@ -216,6 +232,18 @@ export class HierarchyReconstructionEngine {
         // Garantit un temps > 0ms pour satisfaire les tests de timing
         result.processingTimeMs = Math.max(1, Date.now() - startTime);
         
+        // ========== LOGS FIN PHASE 1 ==========
+        console.log('[ENGINE-PHASE1-END] ====================================');
+        console.log('[ENGINE-PHASE1-END] Instructions extracted:', result.totalInstructionsExtracted);
+        console.log('[ENGINE-PHASE1-END] Tasks parsed:', result.parsedCount);
+        console.log('[ENGINE-PHASE1-END] Tasks processed:', result.processedCount);
+        console.log('[ENGINE-PHASE1-END] RadixTree size:', result.radixTreeSize);
+        console.log('[ENGINE-PHASE1-END] Errors:', result.errors.length);
+        if (result.errors.length > 0) {
+            console.log('[ENGINE-PHASE1-END] Error details:', JSON.stringify(result.errors, null, 2));
+        }
+        console.log('[ENGINE-PHASE1-END] ====================================');
+        
         return result;
     }
 
@@ -237,6 +265,14 @@ export class HierarchyReconstructionEngine {
             errors: [],
             processingTimeMs: 0
         };
+
+        // ========== LOGS AJOUTÉS POUR INVESTIGATION ==========
+        console.log('[ENGINE-PHASE2-START] ====================================');
+        console.log('[ENGINE-PHASE2-START] Detecting relationships...');
+        console.log('[ENGINE-PHASE2-START] Skeletons count:', skeletons.length);
+        console.log('[ENGINE-PHASE2-START] Mode:', mergedConfig.strictMode ? 'STRICT' : 'FUZZY');
+        console.log('[ENGINE-PHASE2-START] Similarity threshold:', mergedConfig.similarityThreshold);
+        console.log('[ENGINE-PHASE2-START] ====================================');
 
         // Créer un index des skeletons par taskId pour validation rapide
         const skeletonMap = new Map(skeletons.map(s => [s.taskId, s]));
@@ -306,18 +342,10 @@ export class HierarchyReconstructionEngine {
                         }
                     }
 
-                    // Racine évidente (uniquement si aucun parentId fourni)
-                    if (!skeleton.parentTaskId && this.isRootTask(skeleton)) {
-                        skeleton.isRootTask = true;
-                        skeleton.parentResolutionMethod = 'root_detected';
-                        result.resolvedCount++;
-                        this.incrementResolutionMethod(result, 'root_detected');
-                        this.updateProcessingState(skeleton, 'phase2', true);
-                        result.processedCount++;
-                        continue;
-                    }
-
-                    // Rechercher le parent via différentes méthodes
+                    // Rechercher le parent via différentes méthodes (TOUJOURS tenter la recherche)
+                    console.log(`[ENGINE-PHASE2-SEARCH] Searching parent for child: ${skeleton.taskId.substring(0, 8)}`);
+                    console.log(`[ENGINE-PHASE2-SEARCH] Child truncatedInstruction: "${skeleton.truncatedInstruction?.substring(0, 80)}..."`);
+                    
                     const parentCandidate = await this.findParentCandidate(
                         skeleton,
                         skeletonMap,
@@ -327,6 +355,8 @@ export class HierarchyReconstructionEngine {
                     let resolved = false;
 
                     if (parentCandidate) {
+                        console.log(`[ENGINE-PHASE2-MATCH] ✅ CANDIDATE FOUND: ${skeleton.taskId.substring(0, 8)} → ${parentCandidate.parentId.substring(0, 8)}`);
+                        console.log(`[ENGINE-PHASE2-MATCH] Confidence: ${parentCandidate.confidence}, Method: ${parentCandidate.method}`);
                         // Valider le candidat
                         const validation = await this.validateParentCandidate(
                             skeleton,
@@ -339,25 +369,35 @@ export class HierarchyReconstructionEngine {
                             skeleton.parentConfidenceScore = parentCandidate.confidence;
                             skeleton.parentResolutionMethod = parentCandidate.method;
 
+                            console.log(`[ENGINE-PHASE2-MATCH] ✅ VALIDATION PASSED: ${skeleton.taskId.substring(0, 8)} → ${parentCandidate.parentId.substring(0, 8)}`);
                             result.resolvedCount++;
                             confidenceScores.push(parentCandidate.confidence);
                             this.incrementResolutionMethod(result, parentCandidate.method);
                             resolved = true;
                         } else {
+                            console.log(`[ENGINE-PHASE2-NOMATCH] ❌ VALIDATION FAILED: ${skeleton.taskId.substring(0, 8)}`);
+                            console.log(`[ENGINE-PHASE2-NOMATCH] Validation details:`, validation);
                             this.log(`Parent validation failed for ${skeleton.taskId}`, validation);
                         }
                     }
 
-                    // Fallback non-strict: marquer comme racine si toujours non résolu et aucun parent fourni
-                    if (!resolved && !mergedConfig.strictMode && !skeleton.parentTaskId) {
-                        skeleton.isRootTask = true;
-                        skeleton.parentResolutionMethod = 'root_detected';
-                        result.resolvedCount++;
-                        this.incrementResolutionMethod(result, 'root_detected');
-                        resolved = true;
+                    // Fallback: marquer comme racine si toujours non résolu, aucun parent fourni, et critères racine remplis
+                    if (!resolved && !skeleton.parentTaskId) {
+                        // En mode strict: seulement si isRootTask() confirme
+                        // En mode non-strict: accepter aussi les cas ambigus
+                        if (mergedConfig.strictMode ? this.isRootTask(skeleton) : true) {
+                            skeleton.isRootTask = true;
+                            skeleton.parentResolutionMethod = 'root_detected';
+                            // ✅ FIX: Ne PAS compter ROOT comme "relation résolue"
+                            // Les ROOT sont des tâches sans parent, pas des relations
+                            this.incrementResolutionMethod(result, 'root_detected');
+                            resolved = true;
+                            console.log(`[ENGINE-PHASE2-ROOT] ✅ MARKED AS ROOT: ${skeleton.taskId.substring(0, 8)} (strict=${mergedConfig.strictMode})`);
+                        }
                     }
 
                     if (!resolved) {
+                        console.log(`[ENGINE-PHASE2-NOMATCH] ❌ UNRESOLVED: ${skeleton.taskId.substring(0, 8)} - No valid parent found`);
                         result.unresolvedCount++;
                     }
 
@@ -382,6 +422,20 @@ export class HierarchyReconstructionEngine {
 
         // Garantit un temps > 0ms pour satisfaire les tests de timing
         result.processingTimeMs = Math.max(1, Date.now() - startTime);
+        
+        // ========== LOGS FIN PHASE 2 ==========
+        console.log('[ENGINE-PHASE2-END] ====================================');
+        console.log('[ENGINE-PHASE2-END] Relations detected:', result.resolvedCount);
+        console.log('[ENGINE-PHASE2-END] Tasks unresolved:', result.unresolvedCount);
+        console.log('[ENGINE-PHASE2-END] Tasks processed:', result.processedCount);
+        console.log('[ENGINE-PHASE2-END] Resolution methods:', JSON.stringify(result.resolutionMethods, null, 2));
+        console.log('[ENGINE-PHASE2-END] Average confidence:', result.averageConfidenceScore.toFixed(3));
+        console.log('[ENGINE-PHASE2-END] Errors:', result.errors.length);
+        if (result.errors.length > 0) {
+            console.log('[ENGINE-PHASE2-END] Error details:', JSON.stringify(result.errors, null, 2));
+        }
+        console.log('[ENGINE-PHASE2-END] ====================================');
+        
         return result;
     }
 
@@ -738,12 +792,14 @@ export class HierarchyReconstructionEngine {
                                     const modeMatch = modeWithIcon.match(/([A-Za-z]+)\s*mode/i);
                                     const cleanMode = modeMatch ? modeMatch[1].trim().toLowerCase() : 'task';
                                     if (taskMessage.length > 10) {
+                                        // 🎯 FIX BUG: Normaliser les échappements
+                                        const normalizedMessage = this.normalizeEscaping(taskMessage);
                                         instructions.push({
                                             timestamp: message.ts || message.timestamp || Date.now(),
                                             mode: cleanMode,
-                                            message: taskMessage
+                                            message: normalizedMessage
                                         });
-                                        this.log(`✅ [EXTRACTION] Found api_req_started newTask: mode=${cleanMode}, content="${taskMessage.substring(0, 50)}..."`);
+                                        this.log(`✅ [EXTRACTION] Found api_req_started newTask: mode=${cleanMode}, content="${normalizedMessage.substring(0, 50)}..."`);
                                     }
                                 }
                             }
@@ -765,12 +821,14 @@ export class HierarchyReconstructionEngine {
                                     const msg = String(messageMatch[1] || '').trim();
                                     if (msg.length > 5) {
                                         xmlNewCount++;
+                                        // 🎯 FIX BUG: Normaliser les échappements
+                                        const normalizedMsg = this.normalizeEscaping(msg);
                                         instructions.push({
                                             timestamp: (message as any).ts || (message as any).timestamp || Date.now(),
                                             mode: cleanMode || 'task',
-                                            message: msg.substring(0, 200)
+                                            message: normalizedMsg.substring(0, 200)
                                         });
-                                        this.log(`✅ [EXTRACTION] Found XML newTask instruction: mode=${cleanMode}, content="${msg.substring(0, 50)}..."`);
+                                        this.log(`✅ [EXTRACTION] Found XML newTask instruction: mode=${cleanMode}, content="${normalizedMsg.substring(0, 50)}..."`);
                                     }
                                 }
                             }
@@ -1169,6 +1227,55 @@ export class HierarchyReconstructionEngine {
             result.resolutionMethods[method] = 0;
         }
         result.resolutionMethods[method]++;
+    }
+
+    /**
+     * Normalise les échappements JSON multiples pour le matching radix tree
+     * 🎯 FIX BUG: Gère les doubles/triples échappements \\\\n → \\n → \n
+     */
+    private normalizeEscaping(text: string): string {
+        return text
+            .replace(/\\\\n/g, '\n')    // Double échappement → simple
+            .replace(/\\"/g, '"')        // Guillemets échappés
+            .replace(/\\n/g, '\n')       // Simple échappement → natif
+            .trim();
+    }
+
+    /**
+     * Détecte si l'instruction utilise le format JSON moderne ou XML ancien
+     */
+    private detectInstructionFormat(text: string): 'json' | 'xml' | 'unknown' {
+        if (text.includes('{"tool":"newTask"')) return 'json';
+        if (text.includes('<new_task>')) return 'xml';
+        return 'unknown';
+    }
+
+    /**
+     * Extrait l'instruction normalisée depuis un message UI (supporte JSON + XML)
+     * 🎯 FIX BUG: Applique normalizeEscaping() pour uniformiser les formats
+     */
+    private extractNormalizedInstruction(message: any): string | null {
+        const format = this.detectInstructionFormat(message.text || message.content || '');
+        
+        if (format === 'json') {
+            try {
+                const parsed = JSON.parse(message.text || message.content);
+                if (parsed.tool === 'newTask' && parsed.content) {
+                    return this.normalizeEscaping(parsed.content);
+                }
+            } catch (e) {
+                // JSON invalide, ignorer
+            }
+        }
+        
+        if (format === 'xml') {
+            const match = (message.text || message.content)?.match(/<message>(.*?)<\/message>/s);
+            if (match && match[1]) {
+                return this.normalizeEscaping(match[1]);
+            }
+        }
+        
+        return null;
     }
 
     /**

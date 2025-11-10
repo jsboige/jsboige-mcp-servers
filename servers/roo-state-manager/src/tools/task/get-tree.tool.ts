@@ -116,8 +116,8 @@ export async function handleGetTaskTree(
             return exactMatch;
         }
         
-        // Try prefix match
-        const prefixMatches = skeletons.filter(s => s.taskId.startsWith(id));
+        // Try prefix match (with defensive check)
+        const prefixMatches = skeletons.filter(s => s.taskId && s.taskId.startsWith(id));
         if (prefixMatches.length === 0) {
             return null;
         }
@@ -156,7 +156,7 @@ export async function handleGetTaskTree(
                     // Prendre le premier parent trouvé (déterministe)
                     const parentId = parentCandidates[0].taskId;
                     
-                    console.log(`[get-task-tree] ✅ Parent trouvé pour ${skeleton.taskId.substring(0, 8)} -> ${parentId.substring(0, 8)} via radix tree`);
+                    console.log(`[get-task-tree] ✅ Parent trouvé pour ${skeleton.taskId?.substring(0, 8) || 'unknown'} -> ${parentId?.substring(0, 8) || 'unknown'} via radix tree`);
                     
                     // Ajouter la relation parent-enfant dans le childrenMap
                     if (!childrenMap.has(parentId)) {
@@ -168,13 +168,13 @@ export async function handleGetTaskTree(
                     (skeleton as any).parentTaskId = parentId;
                     (skeleton as any).parentId = parentId;
                 } else {
-                    console.log(`[get-task-tree] ⚠️ Aucun parent trouvé pour ${skeleton.taskId.substring(0, 8)} via radix tree`);
+                    console.log(`[get-task-tree] ⚠️ Aucun parent trouvé pour ${skeleton.taskId?.substring(0, 8) || 'unknown'} via radix tree`);
                 }
             } catch (error) {
-                console.warn(`[get-task-tree] ❌ Erreur recherche parent pour ${skeleton.taskId.substring(0, 8)}:`, error);
+                console.warn(`[get-task-tree] ❌ Erreur recherche parent pour ${skeleton.taskId?.substring(0, 8) || 'unknown'}:`, error);
             }
         } else {
-            console.log(`[get-task-tree] ⏭️ Instruction trop courte pour ${skeleton.taskId.substring(0, 8)}, skipping`);
+            console.log(`[get-task-tree] ⏭️ Instruction trop courte pour ${skeleton.taskId?.substring(0, 8) || 'unknown'}, skipping`);
         }
     }
     
@@ -206,30 +206,60 @@ export async function handleGetTaskTree(
         return currentId; // Dernier ID trouvé (racine ou boucle détectée)
     };
 
-    const buildTree = (taskId: string, depth: number): any => {
+    const buildTree = (
+        taskId: string,
+        depth: number,
+        visited: Set<string> = new Set(),
+        maxDepth: number = 100
+    ): any => {
+        // 🆕 1. VÉRIFICATION CYCLE (priorité absolue)
+        if (visited.has(taskId)) {
+            console.warn(`[get_task_tree] ❌ CYCLE DÉTECTÉ pour taskId=${taskId?.substring(0, 8) || 'undefined'}`);
+            return null;
+        }
+        
+        // 🆕 2. GARDE-FOU PROFONDEUR EXPLICITE
+        if (depth >= maxDepth) {
+            console.warn(`[get_task_tree] ⚠️ PROFONDEUR MAX ATTEINTE (${maxDepth}) pour taskId=${taskId?.substring(0, 8) || 'undefined'}`);
+            return null;
+        }
+        
+        // 🆕 3. VÉRIFICATION taskId DÉFINI
+        if (!taskId) {
+            console.warn(`[get_task_tree] ⚠️ taskId undefined ou null, profondeur=${depth}`);
+            return null;
+        }
+        
+        // 3. Vérification profondeur paramétrable (existant)
         if (depth > max_depth) {
             return null;
         }
+        
         const skeleton = skeletons.find(s => s.taskId === taskId);
         if (!skeleton) {
             return null;
         }
 
+        // 🆕 4. MARQUER COMME VISITÉ **AVANT** RÉCURSION
+        visited.add(taskId);
+
+        // 🆕 5. RÉCURSION PROTÉGÉE
         const childrenIds = childrenMap.get(taskId) || [];
         const children = childrenIds
-            .map(childId => buildTree(childId, depth + 1))
+            .filter(childId => !visited.has(childId))
+            .map(childId => buildTree(childId, depth + 1, visited, maxDepth))
             .filter(child => child !== null);
         
         // 🎯 Marquer la tâche actuelle - Comparer les 8 premiers caractères (UUIDs courts)
-        const nodeShortId = skeleton.taskId.substring(0, 8);
-        const currentShortId = current_task_id ? current_task_id.substring(0, 8) : '';
+        const nodeShortId = skeleton.taskId?.substring(0, 8) || '';
+        const currentShortId = current_task_id?.substring(0, 8) || '';
         const isCurrentTask = (nodeShortId === currentShortId && currentShortId !== '');
         
         // Enhanced node with rich metadata
         const node = {
-            taskId: skeleton.taskId,
-            taskIdShort: skeleton.taskId.substring(0, 8),
-            title: skeleton.metadata?.title || `Task ${skeleton.taskId.substring(0, 8)}`,
+            taskId: skeleton.taskId || '',
+            taskIdShort: skeleton.taskId?.substring(0, 8) || 'unknown',
+            title: skeleton.metadata?.title || `Task ${skeleton.taskId?.substring(0, 8) || 'unknown'}`,
             metadata: {
                 messageCount: skeleton.metadata?.messageCount || 0,
                 actionCount: skeleton.metadata?.actionCount || 0,
@@ -264,11 +294,11 @@ export async function handleGetTaskTree(
     if (include_siblings) {
         // Si les siblings sont demandés, construire l'arbre depuis la racine absolue
         // pour inclure toute la hiérarchie complète
-        tree = buildTree(absoluteRootId, 0);
+        tree = buildTree(absoluteRootId, 0, new Set(), max_depth === Infinity ? 100 : max_depth);
     } else {
         // Même sans siblings, on construit depuis la racine absolue pour avoir
         // le contexte complet de la hiérarchie jusqu'à la tâche cible
-        tree = buildTree(absoluteRootId, 0);
+        tree = buildTree(absoluteRootId, 0, new Set(), max_depth === Infinity ? 100 : max_depth);
     }
 
     if (!tree) {
