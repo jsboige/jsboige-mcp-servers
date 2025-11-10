@@ -1,0 +1,52 @@
+{
+  "testTypes": {
+    "unit": {
+      "pattern": "tests/unit/**/*.test.ts",
+      "timeout": 30000,
+      "description": "Tests unitaires isolés"
+    },
+    "integration": {
+      "pattern": "tests/integration/**/*.test.ts",
+      "timeout": 60000,
+      "description": "Tests d'intégration système"
+    },
+    "e2e": {
+      "pattern": "tests/e2e/**/*.test.ts",
+      "timeout": 120000,
+      "description": "Tests end-to-end complets"
+    },
+    "detector": {
+      "pattern": "tests/unit/services/DiffDetector.test.ts",
+      "timeout": 30000,
+      "description": "Tests spécifiques du détecteur"
+    },
+    "all": {
+      "pattern": "tests/**/*.test.ts",
+      "timeout": 120000,
+      "description": "Tous les tests disponibles"
+    }
+  },
+  "output": {
+    "formats": ["console", "json", "markdown"],
+    "directory": "./test-results",
+    "filename": "test-results-{timestamp}"
+  },
+  "logging": {
+    "level": "info",
+    "file": "test-execution.log",
+    "includeTimestamps": true,
+    "includeEnvironment": true
+  },
+  "diagnostic": {
+    "includeEnvironment": true,
+    "includeDependencies": true,
+    "includeConfiguration": true,
+    "includePerformance": true
+  },
+  "audit": {
+    "includeFileStats": true,
+    "includeTestCoverage": true,
+    "includeQualityMetrics": true,
+    "outputFormat": "markdown"
+  }
+}

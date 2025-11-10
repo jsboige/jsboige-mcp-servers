@@ -113,9 +113,7 @@ const SearchAndReplaceBaseSchema = z.object({
     recursive: z.boolean().optional().default(true),
 });
 
-const SearchAndReplaceArgsSchema = SearchAndReplaceBaseSchema.refine(data => data.paths || data.files, {
-  message: "Either 'paths' or 'files' must be provided",
-});
+const SearchAndReplaceArgsSchema = SearchAndReplaceBaseSchema;
 
 const RestartMcpServersArgsSchema = z.object({
   servers: z.array(z.string()),
@@ -212,7 +210,7 @@ class QuickFilesServer {
     this.server.registerTool(
       'read_multiple_files',
       {
-        description: 'Reads the content of multiple files with advanced options.',
+        description: '📖 Lit le contenu de plusieurs fichiers avec options avancées et numérotation des lignes. Supporte les extraits et limitations professionnelles.',
         inputSchema: ReadMultipleFilesArgsSchema.shape,
       },
       this.handleReadMultipleFiles.bind(this)
@@ -221,7 +219,7 @@ class QuickFilesServer {
     this.server.registerTool(
       'list_directory_contents',
       {
-        description: 'Lists the contents of directories with sorting, filtering, and recursive options.',
+        description: '📁 Liste le contenu des répertoires avec tri, filtrage et options récursives. Affiche les métadonnées et structure hiérarchique.',
         inputSchema: ListDirectoryContentsArgsSchema.shape,
       },
       this.handleListDirectoryContents.bind(this)
@@ -230,7 +228,7 @@ class QuickFilesServer {
     this.server.registerTool(
       'delete_files',
       {
-        description: 'Deletes a list of files.',
+        description: '🗑️ Supprime un ou plusieurs fichiers avec rapport détaillé et validation de sécurité.',
         inputSchema: DeleteFilesArgsSchema.shape,
       },
       this.handleDeleteFiles.bind(this)
@@ -239,7 +237,7 @@ class QuickFilesServer {
     this.server.registerTool(
       'edit_multiple_files',
       {
-        description: 'Edits multiple files based on provided diffs.',
+        description: '✏️ Modifie le même pattern dans un ou plusieurs fichiers. Supporte regex, lignes spécifiques, rapport détaillé des modifications.',
         inputSchema: EditMultipleFilesArgsSchema.shape,
       },
       this.handleEditMultipleFiles.bind(this)
@@ -248,7 +246,7 @@ class QuickFilesServer {
     this.server.registerTool(
       'extract_markdown_structure',
       {
-        description: 'Extracts the heading structure from Markdown files.',
+        description: '📋 Génère TOC automatique. Analyse hiérarchie des titres, supporte contexte, numérotation des sections. Idéal pour documentation.',
         inputSchema: ExtractMarkdownStructureArgsSchema.shape,
       },
       this.handleExtractMarkdownStructure.bind(this)
@@ -257,7 +255,7 @@ class QuickFilesServer {
     this.server.registerTool(
       'copy_files',
       {
-        description: 'Copies files from source to destination with transformation and conflict resolution.',
+        description: '📋 Copie un ou plusieurs fichiers avec options de transformation, gestion des conflits, patterns de renommage.',
         inputSchema: CopyFilesArgsSchema.shape,
       },
       this.handleCopyFiles.bind(this)
@@ -266,7 +264,7 @@ class QuickFilesServer {
     this.server.registerTool(
       'move_files',
       {
-        description: 'Moves files from source to destination.',
+        description: '📦 Déplace un ou plusieurs fichiers avec transformation, gestion des conflits, patterns de renommage.',
         inputSchema: MoveFilesArgsSchema.shape,
       },
       this.handleMoveFiles.bind(this)
@@ -275,7 +273,7 @@ class QuickFilesServer {
     this.server.registerTool(
       'search_in_files',
       {
-        description: 'Searches for a pattern in files and returns matching lines with context.',
+        description: '🔍 Recherche des patterns dans les fichiers avec contexte et options de filtrage. Retourne les résultats avec lignes environnantes.',
         inputSchema: SearchInFilesArgsSchema.shape,
       },
       this.handleSearchInFiles.bind(this)
@@ -284,7 +282,7 @@ class QuickFilesServer {
     this.server.registerTool(
       'search_and_replace',
       {
-        description: 'Performs search and replace operations on files.',
+        description: '🔄 Applique modifications regex/littéral sur un ou plusieurs fichiers avec prévisualisation, rapport des changements. Supporte les patterns de chemins et le fonctionnement global sans fichier spécifique.',
         inputSchema: SearchAndReplaceBaseSchema.shape,
       },
       this.handleSearchAndReplace.bind(this)
@@ -293,7 +291,7 @@ class QuickFilesServer {
     this.server.registerTool(
       'restart_mcp_servers',
       {
-        description: 'Restarts specified MCP servers by toggling their enabled state in settings.',
+        description: '🔄 Redémarre les serveurs MCP via modification des paramètres. Supporte multiples serveurs.',
         inputSchema: RestartMcpServersArgsSchema.shape,
       },
       this.handleRestartMcpServers.bind(this)
@@ -1156,91 +1154,112 @@ class QuickFilesServer {
     }
   }
 
-  private async handleSearchAndReplace(request: any) {
-    // Extraire et valider les arguments
-    const args = request.params?.arguments || request;
+  /**
+   * Collecte les fichiers à traiter en fonction des paramètres fournis
+   * Supporte les patterns, les globs, et le comportement par défaut
+   */
+  private async collectFilesToProcess(
+    paths?: string[],
+    file_pattern?: string,
+    recursive?: boolean
+  ): Promise<string[]> {
+    const filesToProcess: string[] = [];
     
-    // Validation manuelle des arguments requis
-    if (!args.files && !args.paths) {
-        throw new Error("Either 'files' or 'paths' must be provided");
+    // Si aucun chemin n'est fourni, utiliser le workspace courant
+    const searchPaths = paths && paths.length > 0 ? paths : ['.'];
+    
+    for (const rawPath of searchPaths) {
+      const resolvedPath = this.resolvePath(rawPath);
+      
+      try {
+        const stats = await fs.stat(resolvedPath);
+        
+        if (stats.isFile()) {
+          // Fichier direct
+          filesToProcess.push(rawPath);
+        } else if (stats.isDirectory()) {
+          // Répertoire : utiliser la logique de recherche de fichiers
+          if (recursive !== false) { // true par défaut
+            // Utiliser glob pour trouver les fichiers récursivement
+            let globPattern = file_pattern || '**/*';
+            if (file_pattern && !file_pattern.includes('**')) {
+              globPattern = `**/${file_pattern}`;
+            }
+            const matchedFiles = await glob(globPattern, {
+              nodir: true,
+              absolute: true,
+              cwd: resolvedPath
+            });
+            
+            for (const absFile of matchedFiles) {
+              const relFile = path.relative(resolvedPath, absFile);
+              const displayPath = path.join(rawPath, relFile);
+              filesToProcess.push(displayPath);
+            }
+          } else {
+            // Non-récursif : seulement les fichiers du niveau supérieur
+            const entries = await fs.readdir(resolvedPath, { withFileTypes: true });
+            for (const entry of entries) {
+              if (entry.isFile()) {
+                // Vérifier file_pattern si spécifié
+                if (file_pattern) {
+                  const matched = await glob(file_pattern, {
+                    cwd: resolvedPath,
+                    nodir: true
+                  });
+                  if (!matched.includes(entry.name)) continue;
+                }
+                const displayPath = path.join(rawPath, entry.name);
+                filesToProcess.push(displayPath);
+              }
+            }
+          }
+        }
+      } catch (error) {
+        // Le chemin n'existe pas ou n'est pas accessible, on l'ignore
+        this.debugLog('collectFilesError', { path: rawPath, error: (error as Error).message });
+        continue;
+      }
     }
     
-    if (args.files && (!Array.isArray(args.files) || args.files.length === 0)) {
-        throw new Error("'files' must be a non-empty array");
-    }
-    
-    if (args.paths && (!Array.isArray(args.paths) || args.paths.length === 0)) {
-        throw new Error("'paths' must be a non-empty array");
-    }
-    
-    if (args.paths && (!args.search || !args.replace)) {
-        throw new Error("'search' and 'replace' are required when using 'paths'");
-    }
-    
-    // Extraire les valeurs avec des valeurs par défaut
-    const {
-      files,
-      paths,
-      search,
-      replace,
-      use_regex = true,
-      case_sensitive = false,
-      file_pattern,
-      recursive = true,
-      preview = false
-    } = args;
+    // Éliminer les doublons et trier
+    return [...new Set(filesToProcess)].sort();
+  }
+
+  private async handleSearchAndReplace(args: z.infer<typeof SearchAndReplaceArgsSchema>) {
+    const { files, paths, search, replace, use_regex, case_sensitive, file_pattern, recursive, preview } = args;
     
     try {
         let totalReplacements = 0;
         let diffs = '';
+        let processedFiles = 0;
+        let skippedFiles = 0;
         
-        // Fonction pour échapper les caractères regex si nécessaire
-        const prepareSearchPattern = (pattern: string, useRegex: boolean): string => {
-            if (!useRegex) {
-                return pattern.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-            }
-            return pattern;
-        };
-        
-        // Fonction pour effectuer le remplacement dans un fichier
-        const replaceInFile = async (rawFilePath: string, searchPattern: string, replacement: string, useRegex: boolean = true) => {
+        const replaceInFile = async (rawFilePath: string, searchPattern: string, replacement: string) => {
             const filePath = this.resolvePath(rawFilePath);
-            
-            // Vérifier si c'est un répertoire
             try {
-                const stats = await fs.stat(filePath);
-                if (stats.isDirectory()) {
-                    return; // Ignorer les répertoires
+                let content = await fs.readFile(filePath, 'utf-8');
+                const searchRegex = new RegExp(searchPattern, case_sensitive ? 'g' : 'gi');
+                const newContent = content.replace(searchRegex, (match) => {
+                    totalReplacements++;
+                    return replacement;
+                });
+                if (content !== newContent) {
+                     diffs += this.generateDiff(content, newContent, rawFilePath) + '\n';
+                     if (!preview) await fs.writeFile(filePath, newContent, 'utf-8');
                 }
+                processedFiles++;
             } catch (error) {
-                // Le fichier n'existe pas, ignorer
-                return;
-            }
-            
-            let content = await fs.readFile(filePath, 'utf-8');
-            const preparedPattern = prepareSearchPattern(searchPattern, useRegex);
-            const searchRegex = new RegExp(preparedPattern, case_sensitive ? 'g' : 'gi');
-            const newContent = content.replace(searchRegex, (match, ...groups) => {
-                totalReplacements++;
-                // Gérer les groupes de capture pour les regex
-                if (useRegex && groups.length > 0) {
-                    // Remplacer les $1, $2, etc. dans le texte de remplacement
-                    let result = replacement;
-                    for (let i = 0; i < groups.length - 2; i++) { // -2 car les 2 derniers éléments sont l'offset et la chaîne complète
-                        result = result.replace(new RegExp(`\\$${i + 1}`, 'g'), groups[i] || '');
-                    }
-                    return result;
-                }
-                return replacement;
-            });
-            if (content !== newContent) {
-                 diffs += this.generateDiff(content, newContent, rawFilePath) + '\n';
-                 if (!preview) await fs.writeFile(filePath, newContent, 'utf-8');
+                skippedFiles++;
+                this.debugLog('replaceInFileError', {
+                    filePath: rawFilePath,
+                    error: (error as Error).message
+                });
             }
         };
         
-        // Gérer le cas avec fichiers spécifiques
-        if (files && Array.isArray(files)) {
+        // Cas 1: fichiers spécifiques (rétrocompatibilité)
+        if (files && files.length > 0) {
             for (const file of files) {
                 if (file.path && file.search && file.replace) {
                     const filePreview = file.preview !== undefined ? file.preview : preview;
@@ -1288,51 +1307,65 @@ class QuickFilesServer {
                 }
             }
         }
-        // Gérer le cas avec chemins et recherche/remplacement globaux
-        else if (paths && search && replace) {
-            for (const searchPath of paths) {
-                const resolvedPath = this.resolvePath(searchPath);
-                
-                try {
-                    const stats = await fs.stat(resolvedPath);
-                    
-                    if (stats.isFile()) {
-                        // Fichier unique
-                        await replaceInFile(searchPath, search, replace, use_regex);
-                    } else if (stats.isDirectory()) {
-                        // Répertoire : trouver tous les fichiers correspondants
-                        const pattern = file_pattern || '**/*';
-                        let globPattern = pattern;
-                        if (file_pattern && !file_pattern.includes('**')) {
-                            globPattern = `**/${file_pattern}`;
-                        }
-                        
-                        const matchedFiles = await glob(globPattern, {
-                            nodir: true,
-                            absolute: true,
-                            cwd: resolvedPath
-                        });
-                        
-                        for (const absFile of matchedFiles) {
-                            const relFile = path.relative(resolvedPath, absFile);
-                            const displayPath = path.join(searchPath, relFile);
-                            await replaceInFile(displayPath, search, replace, use_regex);
-                        }
-                    }
-                } catch (error) {
-                    // Path doesn't exist or is not accessible, skip it
-                    continue;
-                }
+        // Cas 2: chemins fournis (nouveau comportement avec support des patterns)
+        else if (paths && paths.length > 0 && search && replace) {
+            const filesToProcess = await this.collectFilesToProcess(paths, file_pattern, recursive);
+            
+            if (filesToProcess.length === 0) {
+                return {
+                    content: [{
+                        type: 'text' as const,
+                        text: `Aucun fichier trouvé pour les chemins: ${paths.join(', ')}${file_pattern ? ` avec le pattern: ${file_pattern}` : ''}`
+                    }]
+                };
+            }
+            
+            for (const filePath of filesToProcess) {
+                await replaceInFile(filePath, search, replace);
             }
         }
-       
-        // Déterminer si nous sommes en mode prévisualisation
-        const isPreviewMode = files ?
-            files.some((f: any) => f.preview) :
-            preview;
+        // Cas 3: comportement par défaut (workspace courant)
+        else if (search && replace) {
+            const filesToProcess = await this.collectFilesToProcess(undefined, file_pattern, recursive);
             
-        let report = isPreviewMode ? `# Prévisualisation des modifications\n\n` : `# Modifications effectuées\n\n`;
-        report += `Total de remplacements: ${totalReplacements}\n\n${diffs}`;
+            if (filesToProcess.length === 0) {
+                return {
+                    content: [{
+                        type: 'text' as const,
+                        text: `Aucun fichier trouvé dans le workspace courant${file_pattern ? ` avec le pattern: ${file_pattern}` : ''}`
+                    }]
+                };
+            }
+            
+            for (const filePath of filesToProcess) {
+                await replaceInFile(filePath, search, replace);
+            }
+        }
+        // Cas 4: paramètres invalides
+        else {
+            return {
+                content: [{
+                    type: 'text' as const,
+                    text: `Paramètres invalides. Vous devez fournir 'search' et 'replace', soit avec 'files', soit avec 'paths', soit seuls pour le workspace courant.`
+                }],
+                isError: true
+            };
+        }
+       
+        let report = `# Rapport de remplacement (${preview ? 'Prévisualisation' : 'Effectué'})\n\n`;
+        report += `**Statistiques:**\n`;
+        report += `- Fichiers traités: ${processedFiles}\n`;
+        if (skippedFiles > 0) {
+            report += `- Fichiers ignorés (erreur): ${skippedFiles}\n`;
+        }
+        report += `- Total de remplacements: ${totalReplacements}\n\n`;
+        
+        if (diffs) {
+            report += `**Détails des modifications:**\n\n${diffs}`;
+        } else {
+            report += `Aucune modification effectuée.\n`;
+        }
+        
         return { content: [{ type: 'text' as const, text: report }] };
     } catch (error) {
         return { content: [{ type: 'text' as const, text: `Erreur lors du remplacement: ${(error as Error).message}` }], isError: true };
@@ -1340,7 +1373,30 @@ class QuickFilesServer {
   }
 
   private generateDiff(oldContent: string, newContent: string, filePath: string): string {
-    return `--- a/${filePath}\n+++ b/${filePath}\n...diff content...`;
+    const oldLines = oldContent.split('\n');
+    const newLines = newContent.split('\n');
+    const maxLines = Math.max(oldLines.length, newLines.length);
+    
+    let diff = `## Modifications dans: ${filePath}\n\n`;
+    let changesFound = false;
+    
+    for (let i = 0; i < maxLines; i++) {
+      const oldLine = oldLines[i] || '';
+      const newLine = newLines[i] || '';
+      
+      if (oldLine !== newLine) {
+        changesFound = true;
+        diff += `**Ligne ${i + 1}:**\n`;
+        diff += `- \`${oldLine}\`\n`;
+        diff += `+ \`${newLine}\`\n\n`;
+      }
+    }
+    
+    if (!changesFound) {
+      diff += `*Aucun changement détecté*\n`;
+    }
+    
+    return diff;
   }
 
   private async handleRestartMcpServers(request: any) {

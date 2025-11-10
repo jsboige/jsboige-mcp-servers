@@ -1,0 +1,34 @@
+{
+  "prerequisites": {
+    "node": { "minVersion": "18.0.0", "required": true },
+    "npm": { "minVersion": "8.0.0", "required": true },
+    "powershell": { "minVersion": "5.1", "required": true }
+  },
+  "steps": {
+    "install": {
+      "command": "npm install",
+      "description": "Installation des dépendances",
+      "timeout": 300000
+    },
+    "build": {
+      "command": "npm run build",
+      "description": "Compilation TypeScript",
+      "timeout": 120000
+    },
+    "test": {
+      "command": "npm run test:detector",
+      "description": "Tests de validation",
+      "timeout": 180000
+    },
+    "configure": {
+      "command": "node scripts/configure-mcp.js",
+      "description": "Configuration MCP",
+      "timeout": 60000
+    }
+  },
+  "output": {
+    "logFile": "deploy-execution.log",
+    "backupConfig": true,
+    "showProgress": true
+  }
+}

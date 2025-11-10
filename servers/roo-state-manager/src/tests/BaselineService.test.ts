@@ -4,12 +4,12 @@
  * Tests des fonctionnalités du service de gestion des configurations de référence
  */
 
-import { BaselineService } from '../services/BaselineService';
-import { ConfigService } from '../services/ConfigService';
-import { DiffDetector } from '../services/DiffDetector';
-import { InventoryCollectorWrapper } from '../services/InventoryCollectorWrapper';
-import { BaselineConfig, SyncDecision, MachineInventory, BaselineDifference, BaselineComparisonReport } from '../types/baseline';
-import { BaselineServiceError } from '../types/baseline';
+import { BaselineService } from '../services/BaselineService.js';
+import { ConfigService } from '../services/ConfigService.js';
+import { DiffDetector } from '../services/DiffDetector.js';
+import { InventoryCollectorWrapper } from '../services/InventoryCollectorWrapper.js';
+import { BaselineConfig, SyncDecision, MachineInventory, BaselineDifference, BaselineComparisonReport } from '../types/baseline.js';
+import { BaselineServiceError } from '../types/baseline.js';
 
 // Mock des dépendances avec Jest
 jest.mock('../services/ConfigService');

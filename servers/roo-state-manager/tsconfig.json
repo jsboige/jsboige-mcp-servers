@@ -2,8 +2,8 @@
   "compilerOptions": {
     "target": "ES2022",
     "lib": ["ES2022"],
-    "module": "NodeNext",
-    "moduleResolution": "NodeNext",
+    "module": "ESNext",
+    "moduleResolution": "node",
     "downlevelIteration": true,
     "rootDir": "./src",
     "outDir": "./build",
@@ -17,6 +17,8 @@
     "resolveJsonModule": true,
     "allowSyntheticDefaultImports": true,
     "isolatedModules": true,
+    "allowImportingTsExtensions": false,
+    "noEmit": false,
     "types": ["jest", "node"]
   },
   "include": [
@@ -25,7 +27,6 @@
   "exclude": [
     "node_modules",
     "build",
-    "src/services/RooSyncService.ts",
     "src/tests/BaselineService.test.ts"
   ]
 }

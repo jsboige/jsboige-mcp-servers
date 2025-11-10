@@ -1,0 +1,15 @@
+{
+  "name": "roosync-tests",
+  "version": "1.0.0",
+  "description": "Tests unitaires pour RooSync v2.1",
+  "scripts": {
+    "test": "npx ts-node run-all-tests.ts",
+    "test:verbose": "npx ts-node run-all-tests.ts --verbose"
+  },
+  "devDependencies": {
+    "@types/node": "^20.0.0",
+    "typescript": "^5.0.0",
+    "ts-node": "^10.9.0"
+  },
+  "dependencies": {}
+}
