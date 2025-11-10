@@ -166,22 +166,8 @@ class QuickFilesServer {
    * @returns La chaîne échappée pour une utilisation regex sécurisée
    */
   private escapeRegex(pattern: string): string {
-    // Liste des caractères spéciaux qui doivent être échappés dans les regex
-    const specialChars = [
-      '\\', '.', '^', '$', '*', '+', '?', '(', ')',
-      '[', ']', '{', '}', '|', '/'
-    ];
-    
-    let escaped = '';
-    for (let i = 0; i < pattern.length; i++) {
-      const char = pattern[i];
-      if (specialChars.includes(char)) {
-        escaped += '\\' + char;
-      } else {
-        escaped += char;
-      }
-    }
-    return escaped;
+    // Utiliser la méthode native pour échapper tous les caractères spéciaux regex
+    return pattern.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
   }
 
   /**
@@ -536,8 +522,13 @@ class QuickFilesServer {
                     lineCount++;
                 }
 
-                output += "\n";
-                lineCount++;
+                // Ajouter le message de limitation si on a atteint la limite
+                if (lineCount >= max_lines) {
+                    output += "\nlignes supplémentaires non affichées\n";
+                } else {
+                    output += "\n";
+                    lineCount++;
+                }
             } catch (error) {
                 const errorMessage = (error as NodeJS.ErrnoException).code === 'ENOTDIR'
                     ? `ERREUR: ${rawDirPath} n'est pas un répertoire`

@@ -33,9 +33,9 @@ describe('QuickFiles Server - Corrections des problèmes d\'édition', () => {
     // Créer un système de fichiers simulé avec mockFs
     mockFs({
       [TEST_DIR]: {
-        'special-chars.txt': 'Test avec caractères spéciaux: .^$*+?()[]{}|\\',
+        'special-chars.txt': 'Test avec caractères spéciaux: .^$*+?()[]{}|\\ [test] FIRST SECOND test.*[0-9]+\\.[a-z]{2,4}',
         'line-breaks.txt': 'Ligne1\r\nLigne2\nLigne3\r\nLigne4\n\nLigne5',
-        'complex-pattern.txt': 'Fonction(test) { return test; }',
+        'complex-pattern.txt': 'Function(test) { return test; }',
         'mixed-content.txt': 'Normal\n\rMixed\n\nContent'
       }
     });
@@ -219,7 +219,7 @@ describe('QuickFiles Server - Corrections des problèmes d\'édition', () => {
         expect.stringContaining('[QUICKFILES DEBUG] regexReplace'),
         expect.objectContaining({
           originalSearch: expect.stringContaining('.^$*+?()[]{}|\\'),
-          escapedSearch: expect.stringContaining('\\.\\^\\$\\*\\+\\?\\(\\)\\[\\]\\{\\}\\\\|'),
+          escapedSearch: expect.stringContaining('\\.\\^\\$\\*\\+\\?\\(\\)\\[\\]\\{\\}\\|\\\\'),
           filePath: expect.stringContaining('special-chars.txt')
         })
       );
