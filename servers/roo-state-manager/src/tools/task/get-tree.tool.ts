@@ -239,7 +239,7 @@ export async function handleGetTaskTree(
     ): any => {
         // 🎯 CORRECTION : 1. VÉRIFICATION CYCLE (priorité absolue)
         if (visited.has(taskId)) {
-            console.warn(`[get-task-tree] 🔄 Référence circulaire détectée`);
+            console.warn(`Référence circulaire détectée`);
             return null;
         }
         
@@ -284,6 +284,7 @@ export async function handleGetTaskTree(
                 messageCount: skeleton.metadata?.messageCount || 0,
                 actionCount: skeleton.metadata?.actionCount || 0,
                 totalSizeKB: skeleton.metadata?.totalSize ? Math.round(skeleton.metadata.totalSize / 1024) : 0,
+                totalSizeBytes: skeleton.metadata?.totalSize || 0,
                 lastActivity: skeleton.metadata?.lastActivity || skeleton.metadata?.createdAt || 'Unknown',
                 createdAt: skeleton.metadata?.createdAt || 'Unknown',
                 mode: skeleton.metadata?.mode || 'Unknown',
@@ -316,9 +317,121 @@ export async function handleGetTaskTree(
         // pour inclure toute la hiérarchie complète
         tree = buildTree(absoluteRootId, 0, new Set(), max_depth === Infinity || max_depth === 0 ? 100 : max_depth);
     } else {
-        // 🎯 CORRECTION : Sans siblings, construire SEULEMENT depuis la tâche cible
-        // pour limiter l'affichage à la branche spécifique
-        tree = buildTree(conversation_id, 0, new Set(), max_depth === Infinity || max_depth === 0 ? 100 : max_depth);
+        // 🎯 CORRECTION : Sans siblings, construire uniquement la branche demandée
+        // pour inclure le parent mais exclure les autres branches
+        const absoluteRoot = findAbsoluteRoot(conversation_id);
+        
+        // 🎯 CORRECTION CRITIQUE : Filtrer les enfants pour n'inclure que la branche cible
+        const filteredChildrenMap = new Map<string, string[]>();
+        
+        // Copier les relations parent-enfant existantes
+        for (const [parentId, children] of childrenMap.entries()) {
+            filteredChildrenMap.set(parentId, [...children]);
+        }
+        
+        // 🎯 FILTRAGE : Ne garder que la branche qui mène à la tâche cible
+        const filterBranch = (taskId: string, visited: Set<string>): boolean => {
+            if (taskId === conversation_id) {
+                return true; // Garder la tâche cible
+            }
+            
+            const skeleton = skeletons.find(s => s.taskId === taskId);
+            if (!skeleton) {
+                return false;
+            }
+            
+            const parentId = (skeleton as any)?.parentId ?? (skeleton as any)?.parentTaskId;
+            if (!parentId) {
+                return false; // Arrêter au niveau racine
+            }
+            
+            // Vérifier si ce parent mène à la tâche cible
+            return filterBranch(parentId, visited);
+        };
+        
+        // Filtrer toutes les relations pour ne garder que la branche cible
+        for (const [parentId, children] of childrenMap.entries()) {
+            const filteredChildren = children.filter(childId => filterBranch(childId, new Set([childId])));
+            filteredChildrenMap.set(parentId, filteredChildren);
+        }
+        
+        // Construire l'arbre avec les relations filtrées
+        const buildTreeFiltered = (
+            taskId: string,
+            depth: number,
+            visited: Set<string> = new Set(),
+            maxDepth: number
+        ): any => {
+            // 🎯 CORRECTION : 1. VÉRIFICATION CYCLE (priorité absolue)
+            if (visited.has(taskId)) {
+                console.warn(`Référence circulaire détectée`);
+                return null;
+            }
+            
+            // 🎯 CORRECTION : 2. GARDE-FOU PROFONDEUR EXPLICITE
+            if (depth >= maxDepth && maxDepth !== Infinity && maxDepth !== 0) {
+                console.warn(`[get_task_tree] ⚠️ PROFONDEUR MAX ATTEINTE (${maxDepth}) pour taskId=${taskId?.substring(0, 8) || 'undefined'}`);
+                return null;
+            }
+            
+            // 🆕 3. VÉRIFICATION taskId DÉFINI
+            if (!taskId) {
+                console.warn(`[get_task_tree] ⚠️ taskId undefined ou null, profondeur=${depth}`);
+                return null;
+            }
+            
+            const skeleton = skeletons.find(s => s.taskId === taskId);
+            if (!skeleton) {
+                return null;
+            }
+
+            // 🆕 4. MARQUER COMME VISITÉ **AVANT** RÉCURSION
+            visited.add(taskId);
+
+            // 🆕 5. RÉCURSION PROTÉGÉE avec enfants filtrés
+            const childrenIds = filteredChildrenMap.get(taskId) || [];
+            const children = childrenIds
+                .filter(childId => !visited.has(childId))
+                .map(childId => buildTreeFiltered(childId, depth + 1, visited, maxDepth))
+                .filter(child => child !== null);
+            
+            // 🎯 Marquer la tâche actuelle - Comparer les 8 premiers caractères (UUIDs courts)
+            const nodeShortId = skeleton.taskId?.substring(0, 8) || '';
+            const currentShortId = current_task_id?.substring(0, 8) || '';
+            const isCurrentTask = (nodeShortId === currentShortId && currentShortId !== '');
+            
+            // 🎯 CORRECTION : Enhanced node with rich metadata CORRECTES
+            const node = {
+                taskId: skeleton.taskId || '',
+                taskIdShort: skeleton.taskId?.substring(0, 8) || 'unknown',
+                title: skeleton.metadata?.title || `Task ${skeleton.taskId?.substring(0, 8) || 'unknown'}`,
+                metadata: {
+                    messageCount: skeleton.metadata?.messageCount || 0,
+                    actionCount: skeleton.metadata?.actionCount || 0,
+                    totalSizeKB: skeleton.metadata?.totalSize ? Math.round(skeleton.metadata.totalSize / 1024) : 0,
+                    totalSizeBytes: skeleton.metadata?.totalSize || 0,
+                    lastActivity: skeleton.metadata?.lastActivity || skeleton.metadata?.createdAt || 'Unknown',
+                    createdAt: skeleton.metadata?.createdAt || 'Unknown',
+                    mode: skeleton.metadata?.mode || 'Unknown',
+                    workspace: skeleton.metadata?.workspace || 'Unknown',
+                    hasParent: !!(((skeleton as any)?.parentId) || ((skeleton as any)?.parentTaskId)),
+                    childrenCount: childrenIds.length,
+                    depth: depth,
+                    // 🚀 NOUVEAUX CHAMPS : Ajout des fonctionnalités demandées
+                    isCompleted: skeleton.isCompleted || false,
+                    truncatedInstruction: skeleton.truncatedInstruction || undefined,
+                    // 🎯 NOUVEAU CHAMP : Marquage de la tâche actuelle
+                    isCurrentTask: isCurrentTask
+                },
+                parentId: (skeleton as any)?.parentId ?? (skeleton as any)?.parentTaskId,
+                parentTaskId: (skeleton as any)?.parentTaskId,
+                children: children.length > 0 ? children : undefined,
+            };
+            
+            return node;
+        };
+        
+        tree = buildTreeFiltered(absoluteRoot, 0, new Set(), max_depth === Infinity || max_depth === 0 ? 100 : max_depth);
     }
 
     if (!tree) {

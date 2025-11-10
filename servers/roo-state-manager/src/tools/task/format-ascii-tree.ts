@@ -17,6 +17,7 @@ export interface TaskTreeNode {
         messageCount?: number;
         actionCount?: number;
         totalSizeKB?: number;
+        totalSizeBytes?: number;
         lastActivity?: string;
         createdAt?: string;
         mode?: string;
@@ -75,7 +76,15 @@ export function formatTaskTreeAscii(
         
         // 🎯 CORRECTION : Pour un nœud seul, pas de connecteur
         const hasChildren = node.children && node.children.length > 0;
-        const connector = isRoot ? rootSymbol + ' ' : (hasChildren ? (isLast ? '└─ ' : '├─ ') : '');
+        const isSingleRoot = isRoot && !hasChildren;
+        const connector = isSingleRoot ? '' : (isRoot ? rootSymbol + ' ' : (isLast ? '└─ ' : '├─ '));
+        
+        // 🎯 CORRECTION : Marquage correct de la tâche actuelle
+        if (node.metadata?.isCurrentTask) {
+            result += ` ${node.title} (TÂCHE ACTUELLE)`;
+        } else if (highlightCurrent && node.metadata?.isCurrentTask) {
+            result += ` ⭐ (TÂCHE ACTUELLE)`;
+        }
         
         // ID court (8 caractères)
         const shortId = node.taskIdShort || node.taskId.substring(0, 8);
@@ -95,7 +104,7 @@ export function formatTaskTreeAscii(
         
         // Marqueur tâche actuelle
         const currentMarker = highlightCurrent && node.metadata?.isCurrentTask
-            ? ' ⭐ (TÂCHE ACTUELLE)'
+            ? ' (TÂCHE ACTUELLE)'
             : '';
         
         // 🎯 CORRECTION CRITIQUE : Ligne principale du nœud SANS métadonnées pour l'ASCII pur
@@ -111,18 +120,21 @@ export function formatTaskTreeAscii(
         // Métadonnées détaillées si demandées
         if (showMetadata && node.metadata) {
             const metaPrefix = prefix + (isLast ? '    ' : '│   ');
-            
             if (node.metadata.messageCount !== undefined) {
                 result += `${metaPrefix}    📝 ${node.metadata.messageCount} messages`;
-                if (node.metadata.totalSizeKB) {
-                    result += ` | ${node.metadata.totalSizeKB} KB`;
+                if (node.metadata.totalSizeBytes !== undefined) {
+                    if (node.metadata.totalSizeBytes < 1024) {
+                        result += ` | ${node.metadata.totalSizeBytes}`;
+                    } else {
+                        result += ` | ${node.metadata.totalSizeKB} KB`;
+                    }
                 }
                 result += '\n';
             }
             
-            // 🎯 CORRECTION : Ajouter l'icône 📊 manquante pour la taille totale
-            if (node.metadata.totalSizeKB !== undefined) {
-                result += `${metaPrefix}    📊 Total size: ${node.metadata.totalSizeKB} KB\n`;
+            // 🎯 CORRECTION : Ajouter l'icône de taille pour tous les nœuds avec métadonnées
+            if (node.metadata.totalSizeBytes !== undefined) {
+                result += `${metaPrefix}    📊 ${node.metadata.totalSizeBytes < 1024 ? node.metadata.totalSizeBytes : node.metadata.totalSizeKB} KB\n`;
             }
             
             if (node.metadata.mode) {
