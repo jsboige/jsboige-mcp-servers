@@ -12,22 +12,10 @@ export {
   getStatusToolMetadata
 } from './get-status.js';
 
-export {
-  roosyncReadDashboard,
-  ReadDashboardArgsSchema,
-  ReadDashboardResultSchema,
-  readDashboardToolMetadata
-} from './read-dashboard.js';
-
 export type {
   GetStatusArgs,
   GetStatusResult
 } from './get-status.js';
-
-export type {
-  ReadDashboardArgs,
-  ReadDashboardResult
-} from './read-dashboard.js';
 
 export {
   roosyncCompareConfig,
@@ -125,6 +113,75 @@ export type {
   InitResult
 } from './init.js';
 
+export {
+  roosyncUpdateBaseline,
+  UpdateBaselineArgsSchema,
+  UpdateBaselineResultSchema,
+  updateBaselineToolMetadata
+} from './update-baseline.js';
+
+export type {
+  UpdateBaselineArgs,
+  UpdateBaselineResult
+} from './update-baseline.js';
+
+export {
+  versionBaseline,
+  VersionBaselineArgsSchema,
+  VersionBaselineResultSchema,
+  versionBaselineToolMetadata
+} from './version-baseline.js';
+
+export type {
+  VersionBaselineArgs,
+  VersionBaselineResult
+} from './version-baseline.js';
+
+export {
+  restoreBaseline,
+  RestoreBaselineArgsSchema,
+  RestoreBaselineResultSchema,
+  restoreBaselineToolMetadata
+} from './restore-baseline.js';
+
+export type {
+  RestoreBaselineArgs,
+  RestoreBaselineResult
+} from './restore-baseline.js';
+
+export {
+  roosync_export_baseline,
+  ExportBaselineArgsSchema,
+  ExportBaselineResultSchema
+} from './export-baseline.js';
+
+export type {
+  ExportBaselineArgs,
+  ExportBaselineResult
+} from './export-baseline.js';
+
+export {
+  roosync_granular_diff,
+  GranularDiffArgsSchema,
+  handleRoosyncGranularDiff
+} from './granular-diff.js';
+
+export type {
+  GranularDiffArgs
+} from './granular-diff.js';
+
+export {
+  roosync_validate_diff,
+  ValidateDiffArgsSchema,
+  handleRoosyncValidateDiff
+} from './granular-diff.js';
+
+export {
+  roosync_export_diff,
+  ExportDiffArgsSchema,
+  handleRoosyncExportDiff
+} from './granular-diff.js';
+
 // Export des nouveaux outils de messagerie (Phase 1)
 export { sendMessage } from './send_message.js';
 export { readInbox } from './read_inbox.js';
@@ -138,25 +195,8 @@ export { replyMessage } from './reply_message.js';
 // Export des outils de messagerie Phase 3 - Advanced Features
 export { amendMessage } from './amend_message.js';
 
-// Export de l'outil de diagnostic debug dashboard
-export { debugDashboard, debugDashboardSchema } from './debug-dashboard-metadata.js';
-
-// Export de l'outil de réinitialisation du service
-export {
-  roosyncResetService,
-  ResetServiceArgsSchema,
-  ResetServiceResultSchema,
-  resetServiceToolMetadata
-} from './reset-service.js';
-
-export type {
-  ResetServiceArgs,
-  ResetServiceResult
-} from './reset-service.js';
-
 // Import des métadonnées pour l'array
 import { getStatusToolMetadata } from './get-status.js';
-import { readDashboardToolMetadata } from './read-dashboard.js';
 import { compareConfigToolMetadata } from './compare-config.js';
 import { listDiffsToolMetadata } from './list-diffs.js';
 import { approveDecisionToolMetadata } from './approve-decision.js';
@@ -165,8 +205,46 @@ import { applyDecisionToolMetadata } from './apply-decision.js';
 import { rollbackDecisionToolMetadata } from './rollback-decision.js';
 import { getDecisionDetailsToolMetadata } from './get-decision-details.js';
 import { initToolMetadata } from './init.js';
-import { debugDashboardToolMetadata } from './debug-dashboard-metadata.js';
-import { resetServiceToolMetadata } from './reset-service.js';
+import { updateBaselineToolMetadata } from './update-baseline.js';
+import { versionBaselineToolMetadata } from './version-baseline.js';
+import { restoreBaselineToolMetadata } from './restore-baseline.js';
+
+// Métadonnées pour l'outil export baseline
+const exportBaselineToolMetadata = {
+  name: 'roosync_export_baseline',
+  description: 'Exporte une baseline vers différents formats (JSON, YAML, CSV)',
+  inputSchema: {
+    type: 'object',
+    properties: {
+      format: {
+        type: 'string',
+        enum: ['json', 'yaml', 'csv'],
+        description: 'Format d\'exportation'
+      },
+      outputPath: {
+        type: 'string',
+        description: 'Chemin de sortie pour le fichier exporté (optionnel)'
+      },
+      machineId: {
+        type: 'string',
+        description: 'ID de la machine à exporter (optionnel, utilise la baseline actuelle si non spécifié)'
+      },
+      includeHistory: {
+        type: 'boolean',
+        description: 'Inclure l\'historique des modifications (défaut: false)'
+      },
+      includeMetadata: {
+        type: 'boolean',
+        description: 'Inclure les métadonnées complètes (défaut: true)'
+      },
+      prettyPrint: {
+        type: 'boolean',
+        description: 'Formater la sortie pour une meilleure lisibilité (défaut: true)'
+      }
+    },
+    required: ['format']
+  }
+};
 
 /**
  * Liste de tous les outils RooSync pour enregistrement MCP
@@ -175,7 +253,6 @@ import { resetServiceToolMetadata } from './reset-service.js';
 export const roosyncTools = [
   initToolMetadata,
   getStatusToolMetadata,
-  readDashboardToolMetadata,
   compareConfigToolMetadata,
   listDiffsToolMetadata,
   approveDecisionToolMetadata,
@@ -183,6 +260,11 @@ export const roosyncTools = [
   applyDecisionToolMetadata,
   rollbackDecisionToolMetadata,
   getDecisionDetailsToolMetadata,
-  debugDashboardToolMetadata,
-  resetServiceToolMetadata
+  updateBaselineToolMetadata,
+  versionBaselineToolMetadata,
+  restoreBaselineToolMetadata,
+  exportBaselineToolMetadata,
+  roosync_granular_diff,
+  roosync_validate_diff,
+  roosync_export_diff
 ];

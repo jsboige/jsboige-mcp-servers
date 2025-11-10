@@ -33,7 +33,7 @@ export function registerListToolsHandler(server: Server): void {
                 toolExports.buildSkeletonCacheDefinition,
                 toolExports.getTaskTreeTool,
                 toolExports.debugTaskParsingTool,
-                toolExports.searchTasksByContentTool.definition,
+                toolExports.searchTasksSemanticTool.definition,
                 toolExports.debugAnalyzeTool.definition,
                 {
                     name: toolExports.viewConversationTree.name,
@@ -236,15 +236,6 @@ export function registerListToolsHandler(server: Server): void {
                         },
                         required: ['message_id', 'body']
                     }
-                },
-                {
-                    name: 'debug_dashboard',
-                    description: 'Outil de diagnostic pour forcer la réinitialisation du service RooSync et contourner le cache',
-                    inputSchema: {
-                        type: 'object',
-                        properties: {},
-                        required: []
-                    }
                 }
             ] as any[],
         };
@@ -309,8 +300,8 @@ export function registerCallToolHandler(
             case toolExports.viewTaskDetailsTool.definition.name:
                 result = await toolExports.viewTaskDetailsTool.handler(args as any, state.conversationCache);
                 break;
-            case toolExports.searchTasksByContentTool.definition.name:
-                result = await toolExports.searchTasksByContentTool.handler(
+            case toolExports.searchTasksSemanticTool.definition.name:
+                result = await toolExports.searchTasksSemanticTool.handler(
                     args as any,
                     state.conversationCache,
                     ensureSkeletonCacheIsFresh,
@@ -420,14 +411,6 @@ export function registerCallToolHandler(
                   result = { content: [{ type: 'text', text: `Error: ${(error as Error).message}` }], isError: true };
               }
               break;
-          case 'roosync_read_dashboard':
-              try {
-                  const roosyncResult = await toolExports.roosyncReadDashboard(args as any);
-                  result = { content: [{ type: 'text', text: JSON.stringify(roosyncResult, null, 2) }] };
-              } catch (error) {
-                  result = { content: [{ type: 'text', text: `Error: ${(error as Error).message}` }], isError: true };
-              }
-              break;
           case 'roosync_compare_config':
               try {
                   const roosyncResult = await toolExports.roosyncCompareConfig(args as any);
@@ -492,6 +475,38 @@ export function registerCallToolHandler(
                   result = { content: [{ type: 'text', text: `Error: ${(error as Error).message}` }], isError: true };
               }
               break;
+          case 'roosync_update_baseline':
+              try {
+                  const roosyncResult = await toolExports.roosyncUpdateBaseline(args as any);
+                  result = { content: [{ type: 'text', text: JSON.stringify(roosyncResult, null, 2) }] };
+              } catch (error) {
+                  result = { content: [{ type: 'text', text: `Error: ${(error as Error).message}` }], isError: true };
+              }
+              break;
+          case 'roosync_version_baseline':
+              try {
+                  const roosyncResult = await toolExports.versionBaseline(args as any);
+                  result = { content: [{ type: 'text', text: JSON.stringify(roosyncResult, null, 2) }] };
+              } catch (error) {
+                  result = { content: [{ type: 'text', text: `Error: ${(error as Error).message}` }], isError: true };
+              }
+              break;
+          case 'roosync_restore_baseline':
+              try {
+                  const roosyncResult = await toolExports.restoreBaseline(args as any);
+                  result = { content: [{ type: 'text', text: JSON.stringify(roosyncResult, null, 2) }] };
+              } catch (error) {
+                  result = { content: [{ type: 'text', text: `Error: ${(error as Error).message}` }], isError: true };
+              }
+              break;
+          case 'roosync_export_baseline':
+              try {
+                  const roosyncResult = await import('./roosync/export-baseline.js').then(m => m.roosync_export_baseline(args as any));
+                  result = { content: [{ type: 'text', text: JSON.stringify(roosyncResult, null, 2) }] };
+              } catch (error) {
+                  result = { content: [{ type: 'text', text: `Error: ${(error as Error).message}` }], isError: true };
+              }
+              break;
            // RooSync Messaging tools - Phase 1
            case 'roosync_send_message':
                try {
@@ -536,17 +551,33 @@ export function registerCallToolHandler(
                    result = { content: [{ type: 'text', text: `Error: ${(error as Error).message}` }], isError: true };
                }
                break;
-           case 'debug_dashboard':
+           case 'roosync_granular_diff':
                try {
-                   const debugResult = await toolExports.debugDashboard(args as any);
-                   result = { content: [{ type: 'text', text: JSON.stringify(debugResult, null, 2) }] };
+                   const roosyncResult = await import('./roosync/granular-diff.js').then(m => m.handleRoosyncGranularDiff(args as any));
+                   result = { content: [{ type: 'text', text: JSON.stringify(roosyncResult, null, 2) }] };
+               } catch (error) {
+                   result = { content: [{ type: 'text', text: `Error: ${(error as Error).message}` }], isError: true };
+               }
+               break;
+           case 'roosync_validate_diff':
+               try {
+                   const roosyncResult = await import('./roosync/granular-diff.js').then(m => m.handleRoosyncValidateDiff(args as any));
+                   result = { content: [{ type: 'text', text: JSON.stringify(roosyncResult, null, 2) }] };
+               } catch (error) {
+                   result = { content: [{ type: 'text', text: `Error: ${(error as Error).message}` }], isError: true };
+               }
+               break;
+           case 'roosync_export_diff':
+               try {
+                   const roosyncResult = await import('./roosync/granular-diff.js').then(m => m.handleRoosyncExportDiff(args as any));
+                   result = { content: [{ type: 'text', text: JSON.stringify(roosyncResult, null, 2) }] };
                } catch (error) {
                    result = { content: [{ type: 'text', text: `Error: ${(error as Error).message}` }], isError: true };
                }
                break;
            default:
                throw new Error(`Tool not found: ${name}`);
-      }
+       }
 
         return result;
     });
