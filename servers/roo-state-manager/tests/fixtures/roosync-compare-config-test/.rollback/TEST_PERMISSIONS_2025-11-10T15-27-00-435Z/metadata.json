@@ -1,9 +1,0 @@
-{
-  "decisionId": "TEST_PERMISSIONS",
-  "timestamp": "2025-11-10T15-27-00-435Z",
-  "machine": "PC-PRINCIPAL",
-  "files": [
-    "sync-config.ref.json",
-    "sync-roadmap.md"
-  ]
-}
