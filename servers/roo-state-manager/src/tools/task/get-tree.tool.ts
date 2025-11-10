@@ -13,11 +13,11 @@ import {
     getMaxTreeDepth,
     type TaskTreeNode,
     type FormatAsciiTreeOptions
-} from './format-ascii-tree';
+} from './format-ascii-tree.js';
 import {
     formatTaskTreeHierarchical,
     type FormatHierarchicalTreeOptions
-} from './format-hierarchical-tree';
+} from './format-hierarchical-tree.js';
 import { globalTaskInstructionIndex } from '../../utils/task-instruction-index.js';
 
 export interface GetTaskTreeArgs {
