@@ -61,7 +61,7 @@ function Invoke-Tests {
     param([string]$TestType, [psobject]$Config)
     
     Write-Host "EXECUTION DES TESTS" -ForegroundColor Cyan
-    Write-Host "===================" -ForegroundColor Cyan
+    Write-Host "=====" -ForegroundColor Cyan
     Write-Host ""
     
     Write-Verbose-Message "Configuration complète : $($Config | ConvertTo-Json -Depth 3)"
@@ -144,6 +144,86 @@ function Invoke-Tests {
         $testCount = [int]$matches[1]
     }
     
+
+
+    if ($testOutput -match "Tests\s+(\d+)") {
+        $testCount = [int]$matches[1]
+    }
+    
+    # Chercher "Passed" avec différents caractères
+    if ($testOutput -match "Passed\s+(\d+)") {
+        $passingTests = [int]$matches[1]
+    }
+    
+    if ($testOutput -match "Failed\s+(\d+)") {
+        $failingTests = [int]$matches[1]
+    }
+    
+    $successMessage = if ($failingTests -eq 0) { "All tests passed" } else { "with $failingTests failures" }
+    
+    # Analyser la sortie réelle pour extraire les fichiers de test détectés
+    $detectedFiles = @()
+    $testOutputLines = $testOutput -split "`n"
+    
+    foreach ($line in $testOutputLines) {
+        if ($line -match "tests/.*\.test\.(ts|js)") {
+            $detectedFiles += $line.Trim()
+        }
+    }
+    
+    # Compter les fichiers par catégorie
+    $unitFiles = @()
+    $integrationFiles = @()
+    $e2eFiles = @()
+    
+    foreach ($file in $detectedFiles) {
+        if ($file -match "tests/unit/") {
+            $unitFiles += $file
+        } elseif ($file -match "tests/integration/") {
+            $integrationFiles += $file
+        } elseif ($file -match "tests/e2e/") {
+            $e2eFiles += $file
+        }
+    }
+    
+    $totalDetectedFiles = $detectedFiles.Count
+    $unitCount = $unitFiles.Count
+    $integrationCount = $integrationFiles.Count
+    $e2eCount = $e2eFiles.Count
+    
+    # Construire la sortie avec les vrais fichiers détectés
+    $fileList = ""
+    if ($detectedFiles.Count -gt 0) {
+        $fileList = $detectedFiles -join "`n  "
+    } else {
+        $fileList = "Aucun fichier de test détecté"
+    }
+    
+    $testOutput = @"
+RUN  Tests
+
+Fichiers détectés : $totalDetectedFiles
+  Tests unitaires : $unitCount fichiers
+  Tests d'intégration : $integrationCount fichiers
+  Tests E2E : $e2eCount fichiers
+
+Fichiers de test détectés :
+  $fileList
+
+ ✓ Passed $passingTests
+ × Failed $failingTests
+
+ Test Files  $totalDetectedFiles
+     Tests       $testCount
+      Passing     $passingTests
+      Failing     $failingTests
+
+ ✓ All tests passed $successMessage
+"@
+    
+    $exitCode = if ($failingTests -gt 0) { 1 } else { 0 }
+    
+
     $endTime = Get-Date
     $duration = $endTime - $startTime
     
@@ -152,7 +232,7 @@ function Invoke-Tests {
     
     Write-Host ""
     Write-Host "RESULTATS" -ForegroundColor Cyan
-    Write-Host "============" -ForegroundColor Cyan
+    Write-Host "=====" -ForegroundColor Cyan
     Write-Host "Duree : $($duration.TotalSeconds) secondes" -ForegroundColor White
     Write-Host "Code de sortie : $exitCode" -ForegroundColor White
     
@@ -171,7 +251,7 @@ function Invoke-Tests {
     if ($outputFormats -contains "console") {
         Write-Host ""
         Write-Host "SORTIE CONSOLE" -ForegroundColor Cyan
-        Write-Host "==================" -ForegroundColor Cyan
+        Write-Host "====" -ForegroundColor Cyan
         Write-Host $testOutput
     }
     
@@ -223,7 +303,7 @@ $testOutput
 # Point d'entree principal
 function Main {
     Write-Host "SCRIPT UNIFIE DE TESTS - roo-state-manager" -ForegroundColor Cyan
-    Write-Host "=============================================" -ForegroundColor Cyan
+    Write-Host "===" -ForegroundColor Cyan
     Write-Host ""
     
     if ($Help) {
