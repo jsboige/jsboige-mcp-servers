@@ -210,7 +210,8 @@ describe('QuickFiles Server', () => {
         return await server.handleReadMultipleFiles(request);
       });
       
-      console.log(`Temps d'exécution pour lire un fichier de 3000 lignes: ${duration}ms`);
+      // Utiliser process.stdout.write pour éviter les problèmes avec mock-fs
+      process.stdout.write(`Temps d'exécution pour lire un fichier de 3000 lignes: ${duration}ms\n`);
       expect(duration).toBeLessThan(1000); // Devrait prendre moins de 1 seconde
     });
   });
@@ -343,7 +344,8 @@ describe('QuickFiles Server', () => {
         return await server.handleListDirectoryContents(request);
       });
       
-      console.log(`Temps d'exécution pour lister un répertoire avec 100 fichiers: ${duration}ms`);
+      // Utiliser process.stdout.write pour éviter les problèmes avec mock-fs
+      process.stdout.write(`Temps d'exécution pour lister un répertoire avec 100 fichiers: ${duration}ms\n`);
       expect(duration).toBeLessThan(1000); // Devrait prendre moins de 1 seconde
     });
   });
