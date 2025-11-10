@@ -182,6 +182,9 @@ export {
   handleRoosyncExportDiff
 } from './granular-diff.js';
 
+// Import des schémas pour utilisation dans roosyncTools
+import { GranularDiffArgsSchema, ValidateDiffArgsSchema, ExportDiffArgsSchema } from './granular-diff.js';
+
 // Export des nouveaux outils de messagerie (Phase 1)
 export { sendMessage } from './send_message.js';
 export { readInbox } from './read_inbox.js';
@@ -264,7 +267,19 @@ export const roosyncTools = [
   versionBaselineToolMetadata,
   restoreBaselineToolMetadata,
   exportBaselineToolMetadata,
-  roosync_granular_diff,
-  roosync_validate_diff,
-  roosync_export_diff
+  {
+    name: 'roosync_granular_diff',
+    description: 'Effectue une comparaison granulaire entre deux configurations ou inventaires',
+    inputSchema: GranularDiffArgsSchema
+  },
+  {
+    name: 'roosync_validate_diff',
+    description: 'Valide de manière interactive les différences détectées par un diff granulaire',
+    inputSchema: ValidateDiffArgsSchema
+  },
+  {
+    name: 'roosync_export_diff',
+    description: 'Exporte un rapport de diff granulaire vers différents formats',
+    inputSchema: ExportDiffArgsSchema
+  }
 ];

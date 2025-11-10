@@ -24,6 +24,9 @@ const logger: Logger = createLogger('GranularDiffTool');
 /**
  * Schema de validation pour roosync_granular_diff
  */
+// Type pour les arguments de roosync_granular_diff
+export type GranularDiffArgs = z.infer<typeof GranularDiffArgsSchema>;
+
 export const GranularDiffArgsSchema = z.object({
   source: z.any()
     .describe('Configuration ou inventaire source (objet JSON ou chemin de fichier)'),

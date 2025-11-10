@@ -33,7 +33,7 @@ export function registerListToolsHandler(server: Server): void {
                 toolExports.buildSkeletonCacheDefinition,
                 toolExports.getTaskTreeTool,
                 toolExports.debugTaskParsingTool,
-                toolExports.searchTasksSemanticTool.definition,
+                toolExports.searchTasksByContentTool.definition,
                 toolExports.debugAnalyzeTool.definition,
                 {
                     name: toolExports.viewConversationTree.name,
@@ -300,8 +300,8 @@ export function registerCallToolHandler(
             case toolExports.viewTaskDetailsTool.definition.name:
                 result = await toolExports.viewTaskDetailsTool.handler(args as any, state.conversationCache);
                 break;
-            case toolExports.searchTasksSemanticTool.definition.name:
-                result = await toolExports.searchTasksSemanticTool.handler(
+            case toolExports.searchTasksByContentTool.definition.name:
+                result = await toolExports.searchTasksByContentTool.handler(
                     args as any,
                     state.conversationCache,
                     ensureSkeletonCacheIsFresh,
