@@ -153,7 +153,9 @@ function formatTaskNode(node: TaskTreeNode, indentLevel: number = 0): string {
     let output = '';
     
     // 🎯 CORRECTION : En-tête de la tâche avec ancre - utiliser le titre
-    output += `${indent}## ${node.title} ${modeEmoji} ${instruction} (${mode})\n`;
+    // Niveau 3 (###) pour les enfants, niveau 2 (##) pour le premier niveau
+    const headerLevel = indentLevel === 0 ? '##' : '###';
+    output += `${indent}${headerLevel} ${node.title} ${modeEmoji} ${instruction} (${mode})\n`;
     output += `${indent}{: #task-${node.taskIdShort} }\n`;
     
     // Métadonnées sur une ligne

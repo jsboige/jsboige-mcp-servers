@@ -75,6 +75,7 @@ export function formatTaskTreeAscii(
         
         // 🎯 CORRECTION : Pour un nœud seul, pas de connecteur
         const hasChildren = node.children && node.children.length > 0;
+        // 🎯 CORRECTION CRITIQUE : Pour un nœud seul SANS enfants directs, aucun connecteur
         const connector = isRoot ? rootSymbol + ' ' : (hasChildren ? (isLast ? '└─ ' : '├─ ') : '');
         
         // ID court (8 caractères)
@@ -99,7 +100,11 @@ export function formatTaskTreeAscii(
             : '';
         
         // 🎯 CORRECTION CRITIQUE : Ligne principale du nœud SANS métadonnées pour l'ASCII pur
-        result += `${prefix}${connector}${shortId} - ${instruction}`;
+        // 🎯 CORRECTION : Utiliser le titre pour le marquage de tâche actuelle
+        const displayName = highlightCurrent && node.metadata?.isCurrentTask
+            ? `${node.title} (TÂCHE ACTUELLE)`
+            : `${shortId} - ${instruction}`;
+        result += `${prefix}${connector}${displayName}`;
         if (status) {
             result += ` ${status}`;
         }
@@ -144,6 +149,12 @@ export function formatTaskTreeAscii(
             
             node.children.forEach((child, index) => {
                 const isLastChild = index === node.children!.length - 1;
+                // DEBUG: Ajout d'un log pour diagnostiquer le problème de connecteur
+                if (isLastChild) {
+                    console.log(`[DEBUG] Dernier enfant: ${child.taskId}, should use └─`);
+                } else {
+                    console.log(`[DEBUG] Enfant intermédiaire: ${child.taskId}, should use ├─`);
+                }
                 result += formatNode(child, childPrefix, isLastChild, false);
             });
         }

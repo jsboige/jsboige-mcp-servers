@@ -153,7 +153,7 @@ describe('🌳 get_task_tree - Génération d\'Arbre ASCII Corrigée', () => {
 
     test('should handle single node tree', async () => {
       const result = await handleGetTaskTree(
-        { conversation_id: 'great-grandchild1', output_format: 'ascii-tree' },
+        { conversation_id: 'great-grandchild1', output_format: 'ascii-tree', include_siblings: false },
         mockCache,
         vi.fn().mockResolvedValue(true)
       );
@@ -342,6 +342,8 @@ describe('🌳 get_task_tree - Génération d\'Arbre ASCII Corrigée', () => {
       circularCache.set('child1', childWithCircularParent);
       circularCache.set('root', rootWithCircularChild);
       
+      const consoleWarnSpy = vi.spyOn(console, 'warn');
+      
       const result = await handleGetTaskTree(
         { conversation_id: 'root', output_format: 'ascii-tree' },
         circularCache,
@@ -353,7 +355,9 @@ describe('🌳 get_task_tree - Génération d\'Arbre ASCII Corrigée', () => {
       // Devrait gérer la référence circulaire sans boucle infinie
       expect(textContent).toContain('Root Task');
       expect(textContent).toContain('Child 1');
-      expect(consoleLogSpy).toHaveBeenCalledWith(
+      
+      // 🎯 CORRECTION : Le warning de référence circulaire est dans console.warn, pas console.log
+      expect(consoleWarnSpy).toHaveBeenCalledWith(
         expect.stringContaining('Référence circulaire détectée')
       );
     });

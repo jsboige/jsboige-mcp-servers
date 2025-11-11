@@ -253,8 +253,8 @@ export class MessageManager {
           const content = await fs.readFile(join(this.inboxPath, file), 'utf-8');
           const message: Message = JSON.parse(content);
 
-          // Filtrer par destinataire
-          if (message.to !== machineId) {
+          // Filtrer par destinataire (inclure les messages broadcast "all")
+          if (message.to !== machineId && message.to !== 'all') {
             continue;
           }
 
