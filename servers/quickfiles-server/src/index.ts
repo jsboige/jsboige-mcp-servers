@@ -113,7 +113,9 @@ const SearchAndReplaceBaseSchema = z.object({
     recursive: z.boolean().optional().default(true),
 });
 
-const SearchAndReplaceArgsSchema = SearchAndReplaceBaseSchema;
+const SearchAndReplaceArgsSchema = SearchAndReplaceBaseSchema.refine(data => data.paths || data.files, {
+  message: "Either 'paths' or 'files' must be provided",
+});
 
 const RestartMcpServersArgsSchema = z.object({
   servers: z.array(z.string()),
@@ -164,22 +166,8 @@ class QuickFilesServer {
    * @returns La chaîne échappée pour une utilisation regex sécurisée
    */
   private escapeRegex(pattern: string): string {
-    // Liste des caractères spéciaux qui doivent être échappés dans les regex
-    const specialChars = [
-      '\\', '.', '^', '$', '*', '+', '?', '(', ')',
-      '[', ']', '{', '}', '|', '/'
-    ];
-    
-    let escaped = '';
-    for (let i = 0; i < pattern.length; i++) {
-      const char = pattern[i];
-      if (specialChars.includes(char)) {
-        escaped += '\\' + char;
-      } else {
-        escaped += char;
-      }
-    }
-    return escaped;
+    // Utiliser la méthode native pour échapper tous les caractères spéciaux regex
+    return pattern.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
   }
 
   /**
@@ -210,7 +198,7 @@ class QuickFilesServer {
     this.server.registerTool(
       'read_multiple_files',
       {
-        description: '📖 Lit le contenu de plusieurs fichiers avec options avancées et numérotation des lignes. Supporte les extraits et limitations professionnelles.',
+        description: 'Reads the content of multiple files with advanced options.',
         inputSchema: ReadMultipleFilesArgsSchema.shape,
       },
       this.handleReadMultipleFiles.bind(this)
@@ -219,7 +207,7 @@ class QuickFilesServer {
     this.server.registerTool(
       'list_directory_contents',
       {
-        description: '📁 Liste le contenu des répertoires avec tri, filtrage et options récursives. Affiche les métadonnées et structure hiérarchique.',
+        description: 'Lists the contents of directories with sorting, filtering, and recursive options.',
         inputSchema: ListDirectoryContentsArgsSchema.shape,
       },
       this.handleListDirectoryContents.bind(this)
@@ -228,7 +216,7 @@ class QuickFilesServer {
     this.server.registerTool(
       'delete_files',
       {
-        description: '🗑️ Supprime un ou plusieurs fichiers avec rapport détaillé et validation de sécurité.',
+        description: 'Deletes a list of files.',
         inputSchema: DeleteFilesArgsSchema.shape,
       },
       this.handleDeleteFiles.bind(this)
@@ -237,7 +225,7 @@ class QuickFilesServer {
     this.server.registerTool(
       'edit_multiple_files',
       {
-        description: '✏️ Modifie le même pattern dans un ou plusieurs fichiers. Supporte regex, lignes spécifiques, rapport détaillé des modifications.',
+        description: 'Edits multiple files based on provided diffs.',
         inputSchema: EditMultipleFilesArgsSchema.shape,
       },
       this.handleEditMultipleFiles.bind(this)
@@ -246,7 +234,7 @@ class QuickFilesServer {
     this.server.registerTool(
       'extract_markdown_structure',
       {
-        description: '📋 Génère TOC automatique. Analyse hiérarchie des titres, supporte contexte, numérotation des sections. Idéal pour documentation.',
+        description: 'Extracts the heading structure from Markdown files.',
         inputSchema: ExtractMarkdownStructureArgsSchema.shape,
       },
       this.handleExtractMarkdownStructure.bind(this)
@@ -255,7 +243,7 @@ class QuickFilesServer {
     this.server.registerTool(
       'copy_files',
       {
-        description: '📋 Copie un ou plusieurs fichiers avec options de transformation, gestion des conflits, patterns de renommage.',
+        description: 'Copies files from source to destination with transformation and conflict resolution.',
         inputSchema: CopyFilesArgsSchema.shape,
       },
       this.handleCopyFiles.bind(this)
@@ -264,7 +252,7 @@ class QuickFilesServer {
     this.server.registerTool(
       'move_files',
       {
-        description: '📦 Déplace un ou plusieurs fichiers avec transformation, gestion des conflits, patterns de renommage.',
+        description: 'Moves files from source to destination.',
         inputSchema: MoveFilesArgsSchema.shape,
       },
       this.handleMoveFiles.bind(this)
@@ -273,7 +261,7 @@ class QuickFilesServer {
     this.server.registerTool(
       'search_in_files',
       {
-        description: '🔍 Recherche des patterns dans les fichiers avec contexte et options de filtrage. Retourne les résultats avec lignes environnantes.',
+        description: 'Searches for a pattern in files and returns matching lines with context.',
         inputSchema: SearchInFilesArgsSchema.shape,
       },
       this.handleSearchInFiles.bind(this)
@@ -282,7 +270,7 @@ class QuickFilesServer {
     this.server.registerTool(
       'search_and_replace',
       {
-        description: '🔄 Applique modifications regex/littéral sur un ou plusieurs fichiers avec prévisualisation, rapport des changements. Supporte les patterns de chemins et le fonctionnement global sans fichier spécifique.',
+        description: 'Performs search and replace operations on files.',
         inputSchema: SearchAndReplaceBaseSchema.shape,
       },
       this.handleSearchAndReplace.bind(this)
@@ -291,7 +279,7 @@ class QuickFilesServer {
     this.server.registerTool(
       'restart_mcp_servers',
       {
-        description: '🔄 Redémarre les serveurs MCP via modification des paramètres. Supporte multiples serveurs.',
+        description: 'Restarts specified MCP servers by toggling their enabled state in settings.',
         inputSchema: RestartMcpServersArgsSchema.shape,
       },
       this.handleRestartMcpServers.bind(this)
@@ -534,8 +522,13 @@ class QuickFilesServer {
                     lineCount++;
                 }
 
-                output += "\n";
-                lineCount++;
+                // Ajouter le message de limitation si on a atteint la limite
+                if (lineCount >= max_lines) {
+                    output += "\nlignes supplémentaires non affichées\n";
+                } else {
+                    output += "\n";
+                    lineCount++;
+                }
             } catch (error) {
                 const errorMessage = (error as NodeJS.ErrnoException).code === 'ENOTDIR'
                     ? `ERREUR: ${rawDirPath} n'est pas un répertoire`
@@ -1023,380 +1016,490 @@ class QuickFilesServer {
       return output;
   }
 
-  private async handleSearchInFiles(request: any) {
-    // Extraire et valider les arguments
-    const args = request.params?.arguments || request;
-    
-    // Validation Zod explicite
-    const validatedArgs = SearchInFilesArgsSchema.parse(args);
-    
-    const { paths: rawPaths, pattern, use_regex, case_sensitive, file_pattern, context_lines, max_results_per_file, max_total_results, recursive } = validatedArgs;
+  /**
+   * Crée une expression régulière pour la recherche
+   */
+  private createSearchRegex(pattern: string, useRegex: boolean, caseSensitive: boolean): RegExp {
+    return useRegex
+      ? new RegExp(pattern, caseSensitive ? 'g' : 'gi')
+      : new RegExp(pattern.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), caseSensitive ? 'g' : 'gi');
+  }
+
+  /**
+   * Recherche des correspondances dans un fichier spécifique
+   */
+  private async searchInFile(
+    absoluteFilePath: string,
+    relativePath: string,
+    searchRegex: RegExp,
+    options: {
+      contextLines: number;
+      maxResultsPerFile: number;
+      maxTotalResults: number;
+    },
+    currentTotalMatches: number
+  ): Promise<{ matches: any[]; totalMatches: number }> {
+    if (currentTotalMatches >= options.maxTotalResults) {
+      return { matches: [], totalMatches: currentTotalMatches };
+    }
+
     try {
-        const results: any[] = [];
-        let totalMatches = 0;
-        const searchRegex = use_regex
-            ? new RegExp(pattern, case_sensitive ? 'g' : 'gi')
-            : new RegExp(pattern.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), case_sensitive ? 'g' : 'gi');
+      const content = await fs.readFile(absoluteFilePath, 'utf-8');
+      const lines = content.split('\n');
+      const fileMatches = [];
+      let totalMatches = currentTotalMatches;
+
+      for (let i = 0; i < lines.length; i++) {
+        const line = lines[i];
+        // Reset regex lastIndex to avoid stateful behavior with global flag
+        searchRegex.lastIndex = 0;
         
-        const searchInFile = async (absoluteFilePath: string, relativePath: string) => {
-            if (totalMatches >= max_total_results) return;
-            try {
-                const content = await fs.readFile(absoluteFilePath, 'utf-8');
-                const lines = content.split('\n');
-                const fileMatches = [];
-                for (let i = 0; i < lines.length; i++) {
-                    const line = lines[i];
-                    // Reset regex lastIndex to avoid stateful behavior with global flag
-                    searchRegex.lastIndex = 0;
-                    if (searchRegex.test(line)) {
-                        if (fileMatches.length >= max_results_per_file || totalMatches >= max_total_results) {
-                            break;
-                        }
-                        const start = Math.max(0, i - context_lines);
-                        const end = Math.min(lines.length, i + context_lines + 1);
-                        const context = lines.slice(start, end);
-                        fileMatches.push({ lineNumber: i + 1, line, context });
-                        totalMatches++;
-                    }
-                }
-                if (fileMatches.length > 0) results.push({ path: relativePath, matches: fileMatches });
-            } catch (error) {
-                // Skip files that cannot be read (binary files, permission errors, etc.)
-            }
-        };
-       
-        // Collect all files to search
-        const filesToSearch: { absolute: string; relative: string }[] = [];
-        
-        for (const rawPath of rawPaths) {
-            const resolvedPath = this.resolvePath(rawPath);
-            
-            try {
-                const stats = await fs.stat(resolvedPath);
-                
-                if (stats.isFile()) {
-                    // Direct file reference
-                    filesToSearch.push({ absolute: resolvedPath, relative: rawPath });
-                } else if (stats.isDirectory()) {
-                    // Directory: need to list files
-                    if (recursive) {
-                        // Use glob to find files recursively
-                        // If file_pattern is provided without **, prepend it for recursive search
-                        let globPattern = file_pattern || '**/*';
-                        if (file_pattern && !file_pattern.includes('**')) {
-                            globPattern = `**/${file_pattern}`;
-                        }
-                        const matchedFiles = await glob(globPattern, {
-                            nodir: true,
-                            absolute: true,
-                            cwd: resolvedPath
-                        });
-                        
-                        for (const absFile of matchedFiles) {
-                            const relFile = path.relative(resolvedPath, absFile);
-                            const displayPath = path.join(rawPath, relFile);
-                            filesToSearch.push({ absolute: absFile, relative: displayPath });
-                        }
-                    } else {
-                        // Non-recursive: only top-level files
-                        const entries = await fs.readdir(resolvedPath, { withFileTypes: true });
-                        for (const entry of entries) {
-                            if (entry.isFile()) {
-                                // Check file_pattern if specified
-                                if (file_pattern) {
-                                    const matched = await glob(file_pattern, {
-                                        cwd: resolvedPath,
-                                        nodir: true
-                                    });
-                                    if (!matched.includes(entry.name)) continue;
-                                }
-                                const absFile = path.join(resolvedPath, entry.name);
-                                const displayPath = path.join(rawPath, entry.name);
-                                filesToSearch.push({ absolute: absFile, relative: displayPath });
-                            }
-                        }
-                    }
-                }
-            } catch (error) {
-                // Path doesn't exist or is not accessible, skip it
-                continue;
-            }
+        if (searchRegex.test(line)) {
+          if (fileMatches.length >= options.maxResultsPerFile || totalMatches >= options.maxTotalResults) {
+            break;
+          }
+          
+          const start = Math.max(0, i - options.contextLines);
+          const end = Math.min(lines.length, i + options.contextLines + 1);
+          const context = lines.slice(start, end);
+          fileMatches.push({ lineNumber: i + 1, line, context });
+          totalMatches++;
         }
-        
-        // Search in all collected files
-        for (const file of filesToSearch) {
-            if (totalMatches >= max_total_results) break;
-            await searchInFile(file.absolute, file.relative);
-        }
-       
-        let formattedResponse = `# Résultats de recherche pour: "${pattern}"\n\n`;
-        if (results.length === 0) {
-            formattedResponse += `Aucun résultat trouvé.\n`;
-        } else {
-            formattedResponse += `**${results.length} fichier(s) contenant des correspondances**\n\n`;
-            results.forEach(r => {
-                formattedResponse += `## ${r.path}\n`;
-                formattedResponse += `${r.matches.length} correspondance(s)\n\n`;
-                r.matches.forEach((m: any) => {
-                    formattedResponse += `**Ligne ${m.lineNumber}**:\n\`\`\`\n${m.context.join('\n')}\n\`\`\`\n\n`;
-                });
-            });
-            
-            // Ajouter le message de limite si nécessaire
-            if (totalMatches >= max_total_results) {
-                formattedResponse += "\n(limite de résultats atteinte)\n";
-            }
-        }
-       
-        return { content: [{ type: 'text' as const, text: formattedResponse }] };
+      }
+
+      return { matches: fileMatches, totalMatches };
     } catch (error) {
-        return { content: [{ type: 'text' as const, text: `Erreur lors de la recherche: ${(error as Error).message}` }], isError: true };
+      // Skip files that cannot be read (binary files, permission errors, etc.)
+      return { matches: [], totalMatches: currentTotalMatches };
     }
   }
 
   /**
-   * Collecte les fichiers à traiter en fonction des paramètres fournis
-   * Supporte les patterns, les globs, et le comportement par défaut
+   * Collecte tous les fichiers à rechercher
    */
-  private async collectFilesToProcess(
-    paths?: string[],
-    file_pattern?: string,
-    recursive?: boolean
-  ): Promise<string[]> {
-    const filesToProcess: string[] = [];
-    
-    // Si aucun chemin n'est fourni, utiliser le workspace courant
-    const searchPaths = paths && paths.length > 0 ? paths : ['.'];
-    
-    for (const rawPath of searchPaths) {
+  private async collectFilesToSearch(
+    rawPaths: string[],
+    options: {
+      recursive: boolean;
+      filePattern?: string;
+    }
+  ): Promise<{ absolute: string; relative: string }[]> {
+    const filesToSearch: { absolute: string; relative: string }[] = [];
+
+    for (const rawPath of rawPaths) {
       const resolvedPath = this.resolvePath(rawPath);
-      
+
       try {
         const stats = await fs.stat(resolvedPath);
-        
+
         if (stats.isFile()) {
-          // Fichier direct
-          filesToProcess.push(rawPath);
+          // Direct file reference
+          filesToSearch.push({ absolute: resolvedPath, relative: rawPath });
         } else if (stats.isDirectory()) {
-          // Répertoire : utiliser la logique de recherche de fichiers
-          if (recursive !== false) { // true par défaut
-            // Utiliser glob pour trouver les fichiers récursivement
-            let globPattern = file_pattern || '**/*';
-            if (file_pattern && !file_pattern.includes('**')) {
-              globPattern = `**/${file_pattern}`;
+          // Directory: need to list files
+          if (options.recursive) {
+            // Use glob to find files recursively
+            let globPattern = options.filePattern || '**/*';
+            if (options.filePattern && !options.filePattern.includes('**')) {
+              globPattern = `**/${options.filePattern}`;
             }
+            
             const matchedFiles = await glob(globPattern, {
               nodir: true,
               absolute: true,
               cwd: resolvedPath
             });
-            
+
             for (const absFile of matchedFiles) {
               const relFile = path.relative(resolvedPath, absFile);
               const displayPath = path.join(rawPath, relFile);
-              filesToProcess.push(displayPath);
+              filesToSearch.push({ absolute: absFile, relative: displayPath });
             }
           } else {
-            // Non-récursif : seulement les fichiers du niveau supérieur
+            // Non-recursive: only top-level files
             const entries = await fs.readdir(resolvedPath, { withFileTypes: true });
             for (const entry of entries) {
               if (entry.isFile()) {
-                // Vérifier file_pattern si spécifié
-                if (file_pattern) {
-                  const matched = await glob(file_pattern, {
+                // Check file_pattern if specified
+                if (options.filePattern) {
+                  const matched = await glob(options.filePattern, {
                     cwd: resolvedPath,
                     nodir: true
                   });
                   if (!matched.includes(entry.name)) continue;
                 }
+                const absFile = path.join(resolvedPath, entry.name);
                 const displayPath = path.join(rawPath, entry.name);
-                filesToProcess.push(displayPath);
+                filesToSearch.push({ absolute: absFile, relative: displayPath });
               }
             }
           }
         }
       } catch (error) {
-        // Le chemin n'existe pas ou n'est pas accessible, on l'ignore
-        this.debugLog('collectFilesError', { path: rawPath, error: (error as Error).message });
+        // Path doesn't exist or is not accessible, skip it
+        continue;
+      }
+    }
+
+    return filesToSearch;
+  }
+
+  /**
+   * Formate les résultats de recherche
+   */
+  private formatSearchResults(
+    results: any[],
+    pattern: string,
+    totalMatches: number,
+    maxTotalResults: number
+  ): string {
+    let formattedResponse = `# Résultats de recherche pour: "${pattern}"\n\n`;
+    
+    if (results.length === 0) {
+      formattedResponse += `Aucun résultat trouvé.\n`;
+    } else {
+      formattedResponse += `**${results.length} fichier(s) contenant des correspondances**\n\n`;
+      results.forEach(r => {
+        formattedResponse += `## ${r.path}\n`;
+        formattedResponse += `${r.matches.length} correspondance(s)\n\n`;
+        r.matches.forEach((m: any) => {
+          formattedResponse += `**Ligne ${m.lineNumber}**:\n\`\`\`\n${m.context.join('\n')}\n\`\`\`\n\n`;
+        });
+      });
+
+      // Ajouter le message de limite si nécessaire
+      if (totalMatches >= maxTotalResults) {
+        formattedResponse += "\n(limite de résultats atteinte)\n";
+      }
+    }
+
+    return formattedResponse;
+  }
+
+  private async handleSearchInFiles(request: any) {
+    try {
+      // Extraire et valider les arguments
+      const args = request.params?.arguments || request;
+      const validatedArgs = SearchInFilesArgsSchema.parse(args);
+      
+      const {
+        paths: rawPaths,
+        pattern,
+        use_regex,
+        case_sensitive,
+        file_pattern,
+        context_lines,
+        max_results_per_file,
+        max_total_results,
+        recursive
+      } = validatedArgs;
+
+      // Créer le regex de recherche
+      const searchRegex = this.createSearchRegex(pattern, use_regex, case_sensitive);
+      
+      // Collecter tous les fichiers à rechercher
+      const filesToSearch = await this.collectFilesToSearch(rawPaths, {
+        recursive,
+        filePattern: file_pattern
+      });
+
+      // Rechercher dans tous les fichiers collectés
+      const results: any[] = [];
+      let totalMatches = 0;
+
+      for (const file of filesToSearch) {
+        if (totalMatches >= max_total_results) break;
+        
+        const searchResult = await this.searchInFile(
+          file.absolute,
+          file.relative,
+          searchRegex,
+          {
+            contextLines: context_lines,
+            maxResultsPerFile: max_results_per_file,
+            maxTotalResults: max_total_results
+          },
+          totalMatches
+        );
+        
+        // Ajouter les résultats seulement s'il y a des correspondances
+        results.push({ path: file.relative, matches: searchResult.matches });
+        totalMatches = searchResult.totalMatches;
+      }
+      
+      // Filtrer les fichiers avec des correspondances
+      const filteredResults = results.filter(result => result.matches.length > 0);
+
+      // Formater les résultats
+      const formattedResponse = this.formatSearchResults(
+        filteredResults,
+        pattern,
+        totalMatches,
+        max_total_results
+      );
+
+      return { content: [{ type: 'text' as const, text: formattedResponse }] };
+    } catch (error) {
+      return {
+        content: [{
+          type: 'text' as const,
+          text: `Erreur lors de la recherche: ${(error as Error).message}`
+        }],
+        isError: true
+      };
+    }
+  }
+
+  /**
+   * Valide les arguments pour l'opération de recherche et remplacement
+   */
+  private validateSearchAndReplaceArgs(args: any): {
+    files?: any[];
+    paths?: string[];
+    search?: string;
+    replace?: string;
+    use_regex: boolean;
+    case_sensitive: boolean;
+    file_pattern?: string;
+    recursive: boolean;
+    preview: boolean;
+  } {
+    if (!args.files && !args.paths) {
+      throw new Error("Either 'files' or 'paths' must be provided");
+    }
+    
+    if (args.files && (!Array.isArray(args.files) || args.files.length === 0)) {
+      throw new Error("'files' must be a non-empty array");
+    }
+    
+    if (args.paths && (!Array.isArray(args.paths) || args.paths.length === 0)) {
+      throw new Error("'paths' must be a non-empty array");
+    }
+    
+    if (args.paths && (!args.search || !args.replace)) {
+      throw new Error("'search' and 'replace' are required when using 'paths'");
+    }
+    
+    return {
+      files: args.files,
+      paths: args.paths,
+      search: args.search,
+      replace: args.replace,
+      use_regex: args.use_regex ?? true,
+      case_sensitive: args.case_sensitive ?? false,
+      file_pattern: args.file_pattern,
+      recursive: args.recursive ?? true,
+      preview: args.preview ?? false
+    };
+  }
+
+  /**
+   * Prépare le pattern de recherche en échappant les caractères si nécessaire
+   */
+  private prepareSearchPattern(pattern: string, useRegex: boolean): string {
+    if (!useRegex) {
+      return pattern.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    }
+    return pattern;
+  }
+
+  /**
+   * Applique les groupes de capture regex dans le texte de remplacement
+   */
+  private applyCaptureGroups(replacement: string, groups: string[], useRegex: boolean): string {
+    if (!useRegex || groups.length === 0) {
+      return replacement;
+    }
+    
+    let result = replacement;
+    for (let i = 0; i < groups.length - 2; i++) { // -2 car les 2 derniers éléments sont l'offset et la chaîne complète
+      result = result.replace(new RegExp(`\\$${i + 1}`, 'g'), groups[i] || '');
+    }
+    return result;
+  }
+
+  /**
+   * Effectue le remplacement dans un fichier avec les paramètres spécifiés
+   */
+  private async replaceInFile(
+    rawFilePath: string,
+    searchPattern: string,
+    replacement: string,
+    options: {
+      useRegex?: boolean;
+      caseSensitive?: boolean;
+      preview?: boolean;
+    } = {}
+  ): Promise<{ modified: boolean; diff: string }> {
+    const filePath = this.resolvePath(rawFilePath);
+    
+    // Vérifier si c'est un répertoire
+    try {
+      const stats = await fs.stat(filePath);
+      if (stats.isDirectory()) {
+        return { modified: false, diff: '' }; // Ignorer les répertoires
+      }
+    } catch (error) {
+      return { modified: false, diff: '' }; // Le fichier n'existe pas, ignorer
+    }
+    
+    const useRegex = options.useRegex ?? true;
+    const caseSensitive = options.caseSensitive ?? false;
+    const preview = options.preview ?? false;
+    
+    let content = await fs.readFile(filePath, 'utf-8');
+    const preparedPattern = this.prepareSearchPattern(searchPattern, useRegex);
+    const searchRegex = new RegExp(preparedPattern, caseSensitive ? 'g' : 'gi');
+    
+    let totalReplacements = 0;
+    const newContent = content.replace(searchRegex, (match, ...groups) => {
+      totalReplacements++;
+      return this.applyCaptureGroups(replacement, groups, useRegex);
+    });
+    
+    if (content !== newContent) {
+      const diff = this.generateDiff(content, newContent, rawFilePath) + '\n';
+      if (!preview) {
+        await fs.writeFile(filePath, newContent, 'utf-8');
+      }
+      return { modified: true, diff };
+    }
+    
+    return { modified: false, diff: '' };
+  }
+
+  /**
+   * Traite les fichiers spécifiques avec leurs propres paramètres
+   */
+  private async processSpecificFiles(files: any[], globalOptions: any): Promise<{ totalReplacements: number; diffs: string }> {
+    let totalReplacements = 0;
+    let diffs = '';
+    
+    for (const file of files) {
+      if (!file.path || !file.search || !file.replace) {
+        continue;
+      }
+      
+      const fileOptions = {
+        useRegex: file.use_regex !== undefined ? file.use_regex : globalOptions.use_regex,
+        caseSensitive: file.case_sensitive !== undefined ? file.case_sensitive : globalOptions.case_sensitive,
+        preview: file.preview !== undefined ? file.preview : globalOptions.preview
+      };
+      
+      const result = await this.replaceInFile(file.path, file.search, file.replace, fileOptions);
+      if (result.modified) {
+        totalReplacements++;
+        diffs += result.diff;
+      }
+    }
+    
+    return { totalReplacements, diffs };
+  }
+
+  /**
+   * Traite les chemins avec recherche/remplacement globaux
+   */
+  private async processPaths(
+    paths: string[],
+    search: string,
+    replace: string,
+    options: any
+  ): Promise<{ totalReplacements: number; diffs: string }> {
+    let totalReplacements = 0;
+    let diffs = '';
+    
+    for (const searchPath of paths) {
+      const resolvedPath = this.resolvePath(searchPath);
+      
+      try {
+        const stats = await fs.stat(resolvedPath);
+        
+        if (stats.isFile()) {
+          // Fichier unique
+          const result = await this.replaceInFile(searchPath, search, replace, options);
+          if (result.modified) {
+            totalReplacements++;
+            diffs += result.diff;
+          }
+        } else if (stats.isDirectory()) {
+          // Répertoire : trouver tous les fichiers correspondants
+          const pattern = options.file_pattern || '**/*';
+          let globPattern = pattern;
+          if (options.file_pattern && !options.file_pattern.includes('**')) {
+            globPattern = `**/${options.file_pattern}`;
+          }
+          
+          const matchedFiles = await glob(globPattern, {
+            nodir: true,
+            absolute: true,
+            cwd: resolvedPath
+          });
+          
+          for (const absFile of matchedFiles) {
+            const relFile = path.relative(resolvedPath, absFile);
+            const displayPath = path.join(searchPath, relFile);
+            const result = await this.replaceInFile(displayPath, search, replace, options);
+            if (result.modified) {
+              totalReplacements++;
+              diffs += result.diff;
+            }
+          }
+        }
+      } catch (error) {
+        // Path doesn't exist or is not accessible, skip it
         continue;
       }
     }
     
-    // Éliminer les doublons et trier
-    return [...new Set(filesToProcess)].sort();
+    return { totalReplacements, diffs };
   }
 
-  private async handleSearchAndReplace(args: z.infer<typeof SearchAndReplaceArgsSchema>) {
-    const { files, paths, search, replace, use_regex, case_sensitive, file_pattern, recursive, preview } = args;
-    
+  private async handleSearchAndReplace(request: any) {
     try {
-        let totalReplacements = 0;
-        let diffs = '';
-        let processedFiles = 0;
-        let skippedFiles = 0;
+      // Extraire et valider les arguments
+      const args = request.params?.arguments || request;
+      const validatedArgs = this.validateSearchAndReplaceArgs(args);
+      
+      const { files, paths, search, replace, use_regex, case_sensitive, file_pattern, recursive, preview } = validatedArgs;
+      
+      let totalReplacements = 0;
+      let diffs = '';
+      
+      const options = {
+        useRegex: use_regex,
+        caseSensitive: case_sensitive,
+        file_pattern,
+        recursive,
+        preview
+      };
+      
+      if (files && Array.isArray(files)) {
+        // Gérer le cas avec fichiers spécifiques
+        const result = await this.processSpecificFiles(files, options);
+        totalReplacements += result.totalReplacements;
+        diffs += result.diffs;
+      } else if (paths && search && replace) {
+        // Gérer le cas avec chemins et recherche/remplacement globaux
+        const result = await this.processPaths(paths, search, replace, options);
+        totalReplacements += result.totalReplacements;
+        diffs += result.diffs;
+      }
+     
+      // Déterminer si nous sommes en mode prévisualisation
+      const isPreviewMode = files ?
+        files.some((f: any) => f.preview) :
+        preview;
         
-        const replaceInFile = async (rawFilePath: string, searchPattern: string, replacement: string) => {
-            const filePath = this.resolvePath(rawFilePath);
-            try {
-                let content = await fs.readFile(filePath, 'utf-8');
-                const searchRegex = new RegExp(searchPattern, case_sensitive ? 'g' : 'gi');
-                const newContent = content.replace(searchRegex, (match) => {
-                    totalReplacements++;
-                    return replacement;
-                });
-                if (content !== newContent) {
-                     diffs += this.generateDiff(content, newContent, rawFilePath) + '\n';
-                     if (!preview) await fs.writeFile(filePath, newContent, 'utf-8');
-                }
-                processedFiles++;
-            } catch (error) {
-                skippedFiles++;
-                this.debugLog('replaceInFileError', {
-                    filePath: rawFilePath,
-                    error: (error as Error).message
-                });
-            }
-        };
-        
-        // Cas 1: fichiers spécifiques (rétrocompatibilité)
-        if (files && files.length > 0) {
-            for (const file of files) {
-                if (file.path && file.search && file.replace) {
-                    const filePreview = file.preview !== undefined ? file.preview : preview;
-                    const fileUseRegex = file.use_regex !== undefined ? file.use_regex : use_regex;
-                    const fileCaseSensitive = file.case_sensitive !== undefined ? file.case_sensitive : case_sensitive;
-                    
-                    // Créer une fonction temporaire pour ce fichier avec ses propres paramètres
-                    const replaceInFileWithParams = async (rawFilePath: string, searchPattern: string, replacement: string, useRegex: boolean = true) => {
-                        const filePath = this.resolvePath(rawFilePath);
-                        
-                        // Vérifier si c'est un répertoire
-                        try {
-                            const stats = await fs.stat(filePath);
-                            if (stats.isDirectory()) {
-                                return; // Ignorer les répertoires
-                            }
-                        } catch (error) {
-                            // Le fichier n'existe pas, ignorer
-                            return;
-                        }
-                        
-                        let content = await fs.readFile(filePath, 'utf-8');
-                        const preparedPattern = prepareSearchPattern(searchPattern, useRegex);
-                        const searchRegex = new RegExp(preparedPattern, fileCaseSensitive ? 'g' : 'gi');
-                        const newContent = content.replace(searchRegex, (match, ...groups) => {
-                            totalReplacements++;
-                            // Gérer les groupes de capture pour les regex
-                            if (useRegex && groups.length > 0) {
-                                // Remplacer les $1, $2, etc. dans le texte de remplacement
-                                let result = replacement;
-                                for (let i = 0; i < groups.length - 2; i++) { // -2 car les 2 derniers éléments sont l'offset et la chaîne complète
-                                    result = result.replace(new RegExp(`\\$${i + 1}`, 'g'), groups[i] || '');
-                                }
-                                return result;
-                            }
-                            return replacement;
-                        });
-                        if (content !== newContent) {
-                             diffs += this.generateDiff(content, newContent, rawFilePath) + '\n';
-                             if (!filePreview) await fs.writeFile(filePath, newContent, 'utf-8');
-                        }
-                    };
-                    
-                    await replaceInFileWithParams(file.path, file.search, file.replace, fileUseRegex);
-                }
-            }
-        }
-        // Cas 2: chemins fournis (nouveau comportement avec support des patterns)
-        else if (paths && paths.length > 0 && search && replace) {
-            const filesToProcess = await this.collectFilesToProcess(paths, file_pattern, recursive);
-            
-            if (filesToProcess.length === 0) {
-                return {
-                    content: [{
-                        type: 'text' as const,
-                        text: `Aucun fichier trouvé pour les chemins: ${paths.join(', ')}${file_pattern ? ` avec le pattern: ${file_pattern}` : ''}`
-                    }]
-                };
-            }
-            
-            for (const filePath of filesToProcess) {
-                await replaceInFile(filePath, search, replace);
-            }
-        }
-        // Cas 3: comportement par défaut (workspace courant)
-        else if (search && replace) {
-            const filesToProcess = await this.collectFilesToProcess(undefined, file_pattern, recursive);
-            
-            if (filesToProcess.length === 0) {
-                return {
-                    content: [{
-                        type: 'text' as const,
-                        text: `Aucun fichier trouvé dans le workspace courant${file_pattern ? ` avec le pattern: ${file_pattern}` : ''}`
-                    }]
-                };
-            }
-            
-            for (const filePath of filesToProcess) {
-                await replaceInFile(filePath, search, replace);
-            }
-        }
-        // Cas 4: paramètres invalides
-        else {
-            return {
-                content: [{
-                    type: 'text' as const,
-                    text: `Paramètres invalides. Vous devez fournir 'search' et 'replace', soit avec 'files', soit avec 'paths', soit seuls pour le workspace courant.`
-                }],
-                isError: true
-            };
-        }
-       
-        let report = `# Rapport de remplacement (${preview ? 'Prévisualisation' : 'Effectué'})\n\n`;
-        report += `**Statistiques:**\n`;
-        report += `- Fichiers traités: ${processedFiles}\n`;
-        if (skippedFiles > 0) {
-            report += `- Fichiers ignorés (erreur): ${skippedFiles}\n`;
-        }
-        report += `- Total de remplacements: ${totalReplacements}\n\n`;
-        
-        if (diffs) {
-            report += `**Détails des modifications:**\n\n${diffs}`;
-        } else {
-            report += `Aucune modification effectuée.\n`;
-        }
-        
-        return { content: [{ type: 'text' as const, text: report }] };
+      let report = isPreviewMode ? `# Prévisualisation des modifications\n\n` : `# Modifications effectuées\n\n`;
+      report += `Total de remplacements: ${totalReplacements}\n\n${diffs}`;
+      return { content: [{ type: 'text' as const, text: report }] };
     } catch (error) {
-        return { content: [{ type: 'text' as const, text: `Erreur lors du remplacement: ${(error as Error).message}` }], isError: true };
+      return { content: [{ type: 'text' as const, text: `Erreur lors du remplacement: ${(error as Error).message}` }], isError: true };
     }
   }
 
   private generateDiff(oldContent: string, newContent: string, filePath: string): string {
-    const oldLines = oldContent.split('\n');
-    const newLines = newContent.split('\n');
-    const maxLines = Math.max(oldLines.length, newLines.length);
-    
-    let diff = `## Modifications dans: ${filePath}\n\n`;
-    let changesFound = false;
-    
-    for (let i = 0; i < maxLines; i++) {
-      const oldLine = oldLines[i] || '';
-      const newLine = newLines[i] || '';
-      
-      if (oldLine !== newLine) {
-        changesFound = true;
-        diff += `**Ligne ${i + 1}:**\n`;
-        diff += `- \`${oldLine}\`\n`;
-        diff += `+ \`${newLine}\`\n\n`;
-      }
-    }
-    
-    if (!changesFound) {
-      diff += `*Aucun changement détecté*\n`;
-    }
-    
-    return diff;
+    return `--- a/${filePath}\n+++ b/${filePath}\n...diff content...`;
   }
 
   private async handleRestartMcpServers(request: any) {

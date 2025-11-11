@@ -132,7 +132,7 @@ describe('🚨 ANTI-RÉGRESSION: Détection des Stubs', () => {
       const response = await server.handleDeleteFiles(request);
       
       // Vérifier la réponse
-      expect(response.content[0].text).toContain('SUCCES');
+      expect(response.content[0].text).toContain('Fichier supprimé:');
       expect(response.content[0].text).toContain(filePath);
       
       // Vérifier que le fichier est vraiment supprimé
@@ -165,7 +165,7 @@ describe('🚨 ANTI-RÉGRESSION: Détection des Stubs', () => {
       const response = await server.handleEditMultipleFiles(request);
       
       // Vérifier la réponse
-      expect(response.content[0].text).toContain('SUCCES');
+      expect(response.content[0].text).toContain('modification(s) effectuée(s)');
       expect(response.content[0].text).toContain('1 modification');
       
       // Vérifier que le fichier est vraiment modifié

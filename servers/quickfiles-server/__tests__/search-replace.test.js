@@ -262,7 +262,9 @@ describe('QuickFiles Server - Recherche et remplacement', () => {
         invalid_param: 'value'
       });
       
-      await expect(server.handleSearchAndReplace(request)).rejects.toThrow();
+      const response = await server.handleSearchAndReplace(request);
+      expect(response.isError).toBe(true);
+      expect(response.content[0].text).toContain('Erreur lors du remplacement');
     });
   });
 });
