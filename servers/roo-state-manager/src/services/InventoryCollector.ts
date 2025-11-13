@@ -337,7 +337,7 @@ export class InventoryCollector {
       // Lire tous les fichiers d'inventaire pour cette machine
       const files = await fs.readdir(inventoriesDir);
       const machineFiles = files
-        .filter(f => f.startsWith(machineId.toLowerCase()) && f.endsWith('.json'))
+        .filter(f => f.toLowerCase().startsWith(machineId.toLowerCase()) && f.endsWith('.json'))
         .sort()
         .reverse(); // Plus récent en premier
 

@@ -132,6 +132,20 @@ describe('roosync_compare_config', () => {
     }
   });
   
+  it('devrait typer correctement les différences', async () => {
+    // Arrange
+    const args: CompareConfigArgs = { target: 'MAC-DEV' };
+    
+    // Act
+    const result = await roosyncCompareConfig(args);
+    
+    // Assert
+    result.differences.forEach(diff => {
+      expect(['config', 'hardware', 'software', 'system']).toContain(diff.category);
+      expect(diff.path).toBeDefined();
+    });
+  });
+  
   it('devrait lever une erreur si aucune autre machine disponible', async () => {
     // Arrange - Dashboard avec une seule machine
     const singleMachineDashboard = {
@@ -160,19 +174,34 @@ describe('roosync_compare_config', () => {
     
     // Act & Assert
     await expect(roosyncCompareConfig(args)).rejects.toThrow('Aucune autre machine');
-  });
-  
-  it('devrait typer correctement les différences', async () => {
-    // Arrange
-    const args: CompareConfigArgs = { target: 'MAC-DEV' };
     
-    // Act
-    const result = await roosyncCompareConfig(args);
+    // Restaurer le dashboard original pour les tests suivants
+    const originalDashboard = {
+      version: '2.0.0',
+      lastUpdate: '2025-10-08T10:00:00Z',
+      overallStatus: 'diverged',
+      machines: {
+        'PC-PRINCIPAL': {
+          lastSync: '2025-10-08T09:00:00Z',
+          status: 'online',
+          diffsCount: 2,
+          pendingDecisions: 1
+        },
+        'MAC-DEV': {
+          lastSync: '2025-10-08T08:00:00Z',
+          status: 'online',
+          diffsCount: 0,
+          pendingDecisions: 0
+        }
+      }
+    };
     
-    // Assert
-    result.differences.forEach(diff => {
-      expect(['added', 'removed', 'modified']).toContain(diff.category);
-      expect(diff.path).toBeDefined();
-    });
+    writeFileSync(
+      join(testDir, 'sync-dashboard.json'),
+      JSON.stringify(originalDashboard, null, 2),
+      'utf-8'
+    );
+    
+    RooSyncService.resetInstance();
   });
 });

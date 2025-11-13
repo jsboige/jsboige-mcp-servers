@@ -149,6 +149,8 @@ async function getDefaultTargetMachine(service: any, sourceMachineId: string): P
     );
   }
   
+  // Trier par nom pour garantir une sélection prévisible
+  machines.sort();
   return machines[0];
 }
 
@@ -157,7 +159,7 @@ async function getDefaultTargetMachine(service: any, sourceMachineId: string): P
  */
 function formatComparisonReport(report: any): CompareConfigResult {
   return {
-    source: report.baselineMachine,
+    source: report.sourceMachine,
     target: report.targetMachine,
     differences: report.differences.map((diff: any) => ({
       category: diff.category,

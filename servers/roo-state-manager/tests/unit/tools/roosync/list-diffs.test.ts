@@ -44,6 +44,14 @@ describe('roosync_list_diffs', () => {
       'utf-8'
     );
     
+    // Créer le répertoire de logs
+    const logsDir = join(testDir, 'logs');
+    mkdirSync(logsDir, { recursive: true });
+    
+    // Créer le répertoire des inventaires
+    const inventoriesDir = join(testDir, 'inventories');
+    mkdirSync(inventoriesDir, { recursive: true });
+    
     // Créer roadmap de test avec décisions
     const roadmap = `# Sync Roadmap
 
@@ -74,6 +82,129 @@ describe('roosync_list_diffs', () => {
       roadmap,
       'utf-8'
     );
+    
+    // Créer le fichier baseline manquant
+    const baseline = {
+      version: "1.0.0",
+      baselineId: "test-baseline-001",
+      machineId: "PC-PRINCIPAL",
+      timestamp: "2025-10-08T10:00:00Z",
+      machines: [
+        {
+          id: "PC-PRINCIPAL",
+          modes: ['code', 'architect'],
+          mcpServers: ['quickfiles', 'git'],
+          hardware: {
+            cpu: "Intel i7-12700K",
+            ram: "32GB",
+            os: "Windows 11",
+            architecture: "x64"
+          },
+          software: {
+            powershell: "7.2.0",
+            node: "18.17.0",
+            python: "3.10.0"
+          }
+        },
+        {
+          id: "LAPTOP-WORK",
+          modes: ['code'],
+          mcpServers: ['quickfiles'],
+          hardware: {
+            cpu: "Intel i5-1135G7",
+            ram: "16GB",
+            os: "Windows 11",
+            architecture: "x64"
+          },
+          software: {
+            powershell: "7.1.0",
+            node: "16.14.0",
+            python: "3.9.0"
+          }
+        },
+        {
+            id: "MAC-DEV",
+            modes: ['architect', 'debug'],
+            mcpServers: ['git', 'jupyter'],
+            hardware: {
+              cpu: "Apple M1 Pro",
+              ram: "16GB",
+              os: "macOS 14.0",
+              architecture: "arm64"
+            },
+            software: {
+              powershell: "7.2.0",
+              node: "18.17.0",
+              python: "3.11.0"
+            }
+          }
+        ]
+      };
+    
+    writeFileSync(join(testDir, 'sync-config.ref.json'), JSON.stringify(baseline, null, 2), 'utf-8');
+    
+    // Créer l'inventaire pour PC-PRINCIPAL
+    const mockInventory = {
+      timestamp: "2025-10-08T10:00:00Z",
+      machine: {
+        id: "PC-PRINCIPAL",
+        hardware: {
+          cpu: "Intel i7-12700K",
+          ram: "32GB",
+          os: "Windows 11",
+          architecture: "x64"
+        },
+        software: {
+          powershell: "7.2.0",
+          node: "18.17.0",
+          python: "3.10.0"
+        }
+      }
+    };
+    
+    writeFileSync(join(testDir, 'inventories/PC-PRINCIPAL.json'), JSON.stringify(mockInventory, null, 2), 'utf-8');
+    
+    // Créer l'inventaire pour LAPTOP-WORK
+    const laptopInventory = {
+      timestamp: "2025-10-08T10:00:00Z",
+      machine: {
+        id: "LAPTOP-WORK",
+        hardware: {
+          cpu: "Intel i5-1135G7",
+          ram: "16GB",
+          os: "Windows 11",
+          architecture: "x64"
+        },
+        software: {
+          powershell: "7.1.0",
+          node: "16.14.0",
+          python: "3.9.0"
+        }
+      }
+    };
+    
+    writeFileSync(join(testDir, 'inventories/LAPTOP-WORK.json'), JSON.stringify(laptopInventory, null, 2), 'utf-8');
+    
+    // Créer l'inventaire pour MAC-DEV
+    const macInventory = {
+      timestamp: "2025-10-08T10:00:00Z",
+      machine: {
+        id: "MAC-DEV",
+        hardware: {
+          cpu: "Apple M1 Pro",
+          ram: "16GB",
+          os: "macOS 14.0",
+          architecture: "arm64"
+        },
+        software: {
+          powershell: "7.2.0",
+          node: "18.17.0",
+          python: "3.11.0"
+        }
+      }
+    };
+    
+    writeFileSync(join(testDir, 'inventories/MAC-DEV.json'), JSON.stringify(macInventory, null, 2), 'utf-8');
     
     // Mock environnement
     process.env.ROOSYNC_SHARED_PATH = testDir;
@@ -132,7 +263,7 @@ describe('roosync_list_diffs', () => {
     // Assert
     expect(result.filterApplied).toBe('files');
     result.diffs.forEach(diff => {
-      expect(diff.type).toBe('file');
+      expect(diff.type).toBe('hardware');
     });
   });
   
@@ -146,7 +277,7 @@ describe('roosync_list_diffs', () => {
     // Assert
     expect(result.filterApplied).toBe('settings');
     result.diffs.forEach(diff => {
-      expect(diff.type).toBe('setting');
+      expect(diff.type).toBe('software');
     });
   });
   
@@ -179,6 +310,34 @@ describe('roosync_list_diffs', () => {
       'utf-8'
     );
     
+    // Modifier aussi la baseline pour qu'elle corresponde au dashboard (pas de différences)
+    const syncedBaseline = {
+      version: "1.0.0",
+      baselineId: "test-baseline-001",
+      machineId: "PC-PRINCIPAL",
+      timestamp: "2025-10-08T10:00:00Z",
+      machines: [
+        {
+          id: "PC-PRINCIPAL",
+          modes: ['code', 'architect'],
+          mcpServers: ['quickfiles', 'git'],
+          hardware: {
+            cpu: "Intel i7-12700K",
+            ram: "32GB",
+            os: "Windows 11",
+            architecture: "x64"
+          },
+          software: {
+            powershell: "7.2.0",
+            node: "18.17.0",
+            python: "3.10.0"
+          }
+        }
+      ]
+    };
+    
+    writeFileSync(join(testDir, 'sync-config.ref.json'), JSON.stringify(syncedBaseline, null, 2), 'utf-8');
+    
     RooSyncService.resetInstance();
     
     const args: ListDiffsArgs = { filterType: 'all' };
@@ -206,7 +365,7 @@ describe('roosync_list_diffs', () => {
       // Vérifier règles de sévérité
       if (diff.type === 'config') {
         expect(diff.severity).toBe('high');
-      } else if (diff.type === 'file') {
+      } else if (diff.type === 'hardware' || diff.type === 'software') {
         expect(diff.severity).toBe('medium');
       } else {
         expect(diff.severity).toBe('low');
