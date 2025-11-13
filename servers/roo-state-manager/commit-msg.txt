@@ -1,0 +1,9 @@
+feat: correction complete des tests RooSync - 100% reussite
+
+- 33/33 tests RooSync Core maintenant passants
+- Logger optimise : silenciation des erreurs ENOENT dans les tests
+- Verbosite reduite : plus de milliers de lignes de debug inutiles
+- rmSync ajoute pour nettoyer les residus dans list-diffs
+- Baseline mockees correctement dans compare-config
+- Detection automatique des environnements de test
+- Patterns de solutions etablis pour la production
