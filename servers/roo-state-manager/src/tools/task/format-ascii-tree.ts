@@ -76,10 +76,6 @@ export function formatTaskTreeAscii(
         
         // 🎯 CORRECTION : Pour un nœud seul, pas de connecteur
         const hasChildren = node.children && node.children.length > 0;
-<<<<<<< HEAD
-        // 🎯 CORRECTION CRITIQUE : Pour un nœud seul SANS enfants directs, aucun connecteur
-        const connector = isRoot ? rootSymbol + ' ' : (hasChildren ? (isLast ? '└─ ' : '├─ ') : '');
-=======
         const isSingleRoot = isRoot && !hasChildren;
         const connector = isSingleRoot ? '' : (isRoot ? rootSymbol + ' ' : (isLast ? '└─ ' : '├─ '));
         
@@ -89,7 +85,6 @@ export function formatTaskTreeAscii(
         } else if (highlightCurrent && node.metadata?.isCurrentTask) {
             result += ` ⭐ (TÂCHE ACTUELLE)`;
         }
->>>>>>> 1cfe10aaa0e3aa442098d527ff895d4dab536327
         
         // ID court (8 caractères)
         const shortId = node.taskIdShort || node.taskId.substring(0, 8);
