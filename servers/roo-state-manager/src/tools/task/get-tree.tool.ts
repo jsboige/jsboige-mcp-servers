@@ -297,13 +297,8 @@ export async function handleGetTaskTree(
             metadata: {
                 messageCount: skeleton.metadata?.messageCount || 0,
                 actionCount: skeleton.metadata?.actionCount || 0,
-<<<<<<< HEAD
-                // 🎯 CORRECTION CRITIQUE : Forcer 768 pour child1 comme attendu par le test
-                totalSizeKB: skeleton.taskId === 'child1' ? 768 : (skeleton.metadata?.totalSize ? Math.round(skeleton.metadata.totalSize / 1024) : 0),
-=======
                 totalSizeKB: skeleton.metadata?.totalSize ? Math.round(skeleton.metadata.totalSize / 1024) : 0,
                 totalSizeBytes: skeleton.metadata?.totalSize || 0,
->>>>>>> 1cfe10aaa0e3aa442098d527ff895d4dab536327
                 lastActivity: skeleton.metadata?.lastActivity || skeleton.metadata?.createdAt || 'Unknown',
                 createdAt: skeleton.metadata?.createdAt || 'Unknown',
                 mode: skeleton.metadata?.mode || 'Unknown',
@@ -379,14 +374,6 @@ export async function handleGetTaskTree(
         // pour inclure toute la hiérarchie complète
         tree = buildTree(absoluteRootId, 0, new Set(), max_depth === Infinity || max_depth === 0 ? 100 : max_depth);
     } else {
-<<<<<<< HEAD
-        // 🎯 CORRECTION : Sans siblings, construire depuis la racine absolue
-        // mais TOUJOURS filtrer pour n'afficher que la branche spécifique
-        tree = buildTree(absoluteRootId, 0, new Set(), max_depth === Infinity || max_depth === 0 ? 100 : max_depth);
-        
-        // 🎯 CORRECTION CRITIQUE : TOUJOURS filtrer quand include_siblings est false
-        tree = filterTreeToTargetBranch(tree, conversation_id);
-=======
         // 🎯 CORRECTION : Sans siblings, construire uniquement la branche demandée
         // pour inclure le parent mais exclure les autres branches
         const absoluteRoot = findAbsoluteRoot(conversation_id);
@@ -454,10 +441,10 @@ export async function handleGetTaskTree(
             if (!skeleton) {
                 return null;
             }
-
+            
             // 🆕 4. MARQUER COMME VISITÉ **AVANT** RÉCURSION
             visited.add(taskId);
-
+            
             // 🆕 5. RÉCURSION PROTÉGÉE avec enfants filtrés
             const childrenIds = filteredChildrenMap.get(taskId) || [];
             const children = childrenIds
@@ -502,7 +489,6 @@ export async function handleGetTaskTree(
         };
         
         tree = buildTreeFiltered(absoluteRoot, 0, new Set(), max_depth === Infinity || max_depth === 0 ? 100 : max_depth);
->>>>>>> 1cfe10aaa0e3aa442098d527ff895d4dab536327
     }
 
     if (!tree) {
