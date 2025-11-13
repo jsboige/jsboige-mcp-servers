@@ -374,6 +374,15 @@ export async function handleGetTaskTree(
         // pour inclure toute la hiérarchie complète
         tree = buildTree(absoluteRootId, 0, new Set(), max_depth === Infinity || max_depth === 0 ? 100 : max_depth);
     } else {
+
+        // 🎯 CORRECTION : Sans siblings, construire depuis la racine absolue
+        // mais TOUJOURS filtrer pour n'afficher que la branche spécifique
+        tree = buildTree(absoluteRootId, 0, new Set(), max_depth === Infinity || max_depth === 0 ? 100 : max_depth);
+        
+        // 🎯 CORRECTION CRITIQUE : TOUJOURS filtrer quand include_siblings est false
+        tree = filterTreeToTargetBranch(tree, conversation_id);
+
+
         // 🎯 CORRECTION : Sans siblings, construire uniquement la branche demandée
         // pour inclure le parent mais exclure les autres branches
         const absoluteRoot = findAbsoluteRoot(conversation_id);
