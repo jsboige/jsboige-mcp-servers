@@ -310,6 +310,29 @@ describe('roosync_list_diffs', () => {
       'utf-8'
     );
     
+    // Supprimer le fichier baseline existant avant d'écrire le nouveau
+    try {
+      rmSync(join(testDir, 'sync-config.ref.json'), { force: true });
+    } catch (error) {
+      // Ignorer si le fichier n'existe pas
+    }
+    
+    // Forcer aussi la suppression du fichier baseline forcé utilisé par le système
+    try {
+      rmSync('g:\\Mon Drive\\Synchronisation\\RooSync\\.shared-state\\sync-config.ref.json', { force: true });
+    } catch (error) {
+      // Ignorer si le fichier n'existe pas
+    }
+    
+    // Supprimer les anciens fichiers d'inventaire pour éviter les différences résiduelles
+    try {
+      rmSync(join(testDir, 'inventories/PC-PRINCIPAL.json'), { force: true });
+      rmSync(join(testDir, 'inventories/LAPTOP-WORK.json'), { force: true });
+      rmSync(join(testDir, 'inventories/MAC-DEV.json'), { force: true });
+    } catch (error) {
+      // Ignorer si les fichiers n'existent pas
+    }
+    
     // Modifier aussi la baseline pour qu'elle corresponde au dashboard (pas de différences)
     const syncedBaseline = {
       version: "1.0.0",

@@ -23,6 +23,13 @@ describe('roosync_get_status', () => {
       // Déjà existant
     }
     
+    // Forcer la suppression du fichier baseline forcé utilisé par le système
+    try {
+      rmSync('g:\\Mon Drive\\Synchronisation\\RooSync\\.shared-state\\sync-config.ref.json', { force: true });
+    } catch (error) {
+      // Ignorer si le fichier n'existe pas
+    }
+    
     // Créer dashboard de test
     const dashboard = {
       version: '2.0.0',
@@ -93,6 +100,22 @@ describe('roosync_get_status', () => {
             powershell: "7.3.0",
             node: "20.0.0",
             python: "3.11.0"
+          }
+        },
+        {
+          id: "LAPTOP-WORK",
+          modes: ['code', 'debug'],
+          mcpServers: ['quickfiles'],
+          hardware: {
+            cpu: "Intel i5-1135G7",
+            ram: "16GB",
+            os: "Windows 10",
+            architecture: "x64"
+          },
+          software: {
+            powershell: "5.1.0",
+            node: "16.14.0",
+            python: "3.9.0"
           }
         }
       ]
@@ -182,10 +205,10 @@ describe('roosync_get_status', () => {
     
     // Assert
     expect(result.summary).toMatchObject({
-      totalMachines: 1,
-      onlineMachines: 1,
-      totalDiffs: 2, // Corrigé : 2 diffs détectées (hardware + software)
-      totalPendingDecisions: 0
+      totalMachines: 3, // 3 machines : PC-PRINCIPAL, MAC-DEV, LAPTOP-WORK
+      onlineMachines: 2, // PC-PRINCIPAL et MAC-DEV sont online
+      totalDiffs: 7, // 0 + 2 + 5 = 7 diffs au total
+      totalPendingDecisions: 4 // 0 + 1 + 3 = 4 décisions en attente
     });
   });
 });

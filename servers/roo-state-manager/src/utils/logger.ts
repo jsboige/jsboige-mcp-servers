@@ -164,6 +164,10 @@ export class Logger {
         try {
             appendFileSync(this.currentLogFile, logEntry + '\n', 'utf-8');
         } catch (error) {
+            // Silently fail in test environments - logs are optional
+            if (this.logDir.includes('fixtures') || this.logDir.includes('test')) {
+                return;
+            }
             // Fallback: only console if file write fails
             console.error(`[Logger] Failed to write to log file: ${error}`);
         }
@@ -177,6 +181,10 @@ export class Logger {
             try {
                 mkdirSync(this.logDir, { recursive: true });
             } catch (error) {
+                // Silently fail in test environments - logs are optional
+                if (this.logDir.includes('fixtures') || this.logDir.includes('test')) {
+                    return;
+                }
                 console.error(`[Logger] Failed to create log directory ${this.logDir}:`, error);
             }
         }

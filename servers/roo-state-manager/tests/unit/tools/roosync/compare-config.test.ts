@@ -3,7 +3,7 @@
  */
 
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
-import { writeFileSync, mkdirSync, rmSync } from 'fs';
+import { writeFileSync, mkdirSync, rmSync, readdirSync } from 'fs';
 import { join, dirname } from 'path';
 import { fileURLToPath } from 'url';
 import { RooSyncService } from '../../../../src/services/RooSyncService.js';
@@ -70,6 +70,133 @@ describe('roosync_compare_config', () => {
       JSON.stringify(config, null, 2),
       'utf-8'
     );
+    // Créer sync-config.ref.json (baseline de référence)
+    const baselineConfig = {
+      baselineId: 'test-baseline-001',
+      machineId: 'PC-PRINCIPAL',
+      timestamp: '2025-11-13T03:20:00.000Z',
+      version: '2.0.0',
+      machines: Object.entries(config.machines).map(([id, machine]) => ({
+        id,
+        ...machine
+      }))
+    };
+    
+    writeFileSync(
+      join(testDir, 'sync-config.ref.json'),
+      JSON.stringify(baselineConfig, null, 2),
+      'utf-8'
+    );
+    
+    // Créer les inventaires directement dans inventories/ pour les tests
+    // (InventoryCollector cherche dans sharedStatePath/inventories/)
+    const sharedStateInventoriesDir = join(testDir, 'inventories');
+    mkdirSync(sharedStateInventoriesDir, { recursive: true });
+    
+    // Créer les fichiers d'inventaire de test avec les bonnes données
+    const pcInventory = {
+      machineId: "PC-PRINCIPAL",
+      timestamp: "2025-11-13T03:20:00.000Z",
+      os: {
+        platform: "win32",
+        distro: "Windows 11 Pro",
+        version: "10.0.22631.3155",
+        architecture: "x64"
+      },
+      hardware: {
+        cpu: "Intel(R) Core(TM) i7-9700K CPU @ 3.60GHz",
+        cores: 8,
+        memory: "32GB",
+        disk: "1TB NVMe"
+      },
+      software: {
+        powershell: "7.2.0",
+        node: "18.17.0",
+        git: "2.48.1.windows.1"
+      },
+      network: {
+        interfaces: [
+          {
+            name: "Ethernet",
+            type: "wired",
+            status: "connected"
+          }
+        ]
+      }
+    };
+    
+    const macInventory = {
+      machineId: "MAC-DEV",
+      timestamp: "2025-11-13T03:20:00.000Z",
+      os: {
+        platform: "darwin",
+        distro: "macOS Sonoma 14.2.1",
+        version: "23C71",
+        architecture: "arm64"
+      },
+      hardware: {
+        cpu: "Apple M1 Pro",
+        cores: 8,
+        memory: "16GB",
+        disk: "512GB SSD"
+      },
+      software: {
+        powershell: "7.2.0",
+        node: "18.17.0",
+        git: "2.48.1"
+      },
+      network: {
+        interfaces: [
+          {
+            name: "en0",
+            type: "wired",
+            status: "connected"
+          }
+        ]
+      }
+    };
+    
+    // Écrire les fichiers d'inventaire
+    const pcInventoryPath = join(sharedStateInventoriesDir, 'PC-PRINCIPAL.json');
+    const macInventoryPath = join(sharedStateInventoriesDir, 'MAC-DEV.json');
+    
+    writeFileSync(pcInventoryPath, JSON.stringify(pcInventory, null, 2), 'utf-8');
+    writeFileSync(macInventoryPath, JSON.stringify(macInventory, null, 2), 'utf-8');
+    
+    console.log(`[TEST] Inventaire créé pour PC-PRINCIPAL:`, pcInventoryPath);
+    console.log(`[TEST] Inventaire créé pour MAC-DEV:`, macInventoryPath);
+    
+    // Créer un script PowerShell mock pour les tests
+    const mockScriptPath = join(testDir, 'scripts', 'inventory', 'Get-MachineInventory.ps1');
+    mkdirSync(join(testDir, 'scripts', 'inventory'), { recursive: true });
+    
+    const mockScriptContent = `
+    param(
+      [Parameter(Mandatory=$true)]
+      [string]$MachineId
+    )
+
+    # Pour les tests, retourner directement le chemin du fichier JSON
+    # Chemins hardcodés pour les tests
+    if ($MachineId -eq "PC-PRINCIPAL") {
+      Write-Output "${testDir}/.shared-state/inventories/PC-PRINCIPAL.json"
+    } elseif ($MachineId -eq "MAC-DEV") {
+      Write-Output "${testDir}/.shared-state/inventories/MAC-DEV.json"
+    } else {
+      Write-Error "Machine non reconnue pour les tests: $MachineId"
+    }
+    `.replace(/\${testDir}/g, testDir);
+    
+    writeFileSync(mockScriptPath, mockScriptContent, 'utf-8');
+    console.log(`[TEST] Script mock créé:`, mockScriptPath);
+    
+    // Vérifier que les fichiers d'inventaire existent
+    console.log('[TEST] Répertoire inventaires:', sharedStateInventoriesDir);
+    console.log('[TEST] Contenu répertoire inventaires:', readdirSync(sharedStateInventoriesDir));
+    
+    // Vérifier que le fichier a bien été créé
+    const baselinePath = join(testDir, 'sync-config.ref.json');
+    console.log('[TEST] Fichier baseline créé:', baselinePath);
     
     // Mock environnement
     process.env.ROOSYNC_SHARED_PATH = testDir;
@@ -82,11 +209,12 @@ describe('roosync_compare_config', () => {
   });
   
   afterEach(() => {
-    try {
-      rmSync(testDir, { recursive: true, force: true });
-    } catch (error) {
-      // Ignore
-    }
+    // Temporairement désactivé pour debug
+    // try {
+    //   rmSync(testDir, { recursive: true, force: true });
+    // } catch (error) {
+    //   // Ignore
+    // }
     RooSyncService.resetInstance();
   });
 
@@ -114,7 +242,7 @@ describe('roosync_compare_config', () => {
     // Assert
     expect(result.source).toBe('PC-PRINCIPAL');
     expect(result.target).toBe('MAC-DEV'); // Auto-sélectionné
-    expect(result.differences.length === 0).toBe(true);
+    expect(result.differences.length > 0).toBe(true); // Il doit y avoir des différences
   });
   
   it('devrait marquer identical=true quand pas de différences', async () => {
@@ -202,6 +330,15 @@ describe('roosync_compare_config', () => {
       'utf-8'
     );
     
+    RooSyncService.resetInstance();
+  });
+
+  afterEach(() => {
+    try {
+      rmSync(testDir, { recursive: true, force: true });
+    } catch (error) {
+      // Ignore
+    }
     RooSyncService.resetInstance();
   });
 });

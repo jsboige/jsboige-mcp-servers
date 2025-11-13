@@ -52,9 +52,15 @@ export class BaselineService {
     
     console.log('[DEBUG] sharedStatePath:', sharedStatePath);
     
-    // Utiliser le chemin de la baseline depuis la configuration du service
-    this.baselinePath = this.config.baselinePath || join(sharedStatePath, 'sync-config.ref.json');
-    this.roadmapPath = this.config.roadmapPath || join(sharedStatePath, 'sync-roadmap.md');
+    // PRIORITÉ ABSOLUE : Forcer l'utilisation du chemin mocké en environnement de test
+    if (process.env.ROOSYNC_SHARED_PATH) {
+      this.baselinePath = join(process.env.ROOSYNC_SHARED_PATH, 'sync-config.ref.json');
+      this.roadmapPath = join(process.env.ROOSYNC_SHARED_PATH, 'sync-roadmap.md');
+    } else {
+      // Utiliser le chemin de la baseline depuis la configuration du service
+      this.baselinePath = this.config.baselinePath || join(sharedStatePath, 'sync-config.ref.json');
+      this.roadmapPath = this.config.roadmapPath || join(sharedStatePath, 'sync-roadmap.md');
+    }
     
     console.log('[DEBUG] this.baselinePath forcé:', this.baselinePath);
     console.log('[DEBUG] this.roadmapPath:', this.roadmapPath);
@@ -84,7 +90,7 @@ export class BaselineService {
   /**
    * Charge la configuration baseline depuis sync-config.ref.json
    */
-  public async loadBaseline(): Promise<BaselineConfig | null> {
+  public async loadBaseline(): Promise<BaselineFileConfig | null> {
     console.log('[DEBUG] BaselineService.loadBaseline() appelé');
     console.log('[DEBUG] this.baselinePath:', this.baselinePath);
     
