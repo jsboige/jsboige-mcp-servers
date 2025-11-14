@@ -115,6 +115,18 @@ export interface EnhancedConversationSkeleton extends ConversationSkeleton {
      * Différent de parentTaskId === undefined qui peut être une erreur
      */
     isRootTask?: boolean;
+    
+    /**
+     * Profondeur hiérarchique calculée (0 = racine)
+     * Utilisé pour la validation finale
+     */
+    depth?: number;
+    
+    /**
+     * ID du parent direct dans la hiérarchie reconstruite
+     * Utilisé pour la validation finale
+     */
+    parent?: string;
 }
 
 /**
@@ -146,6 +158,11 @@ export interface Phase2Result {
         error: string;
     }>;
     processingTimeMs: number;
+    /**
+     * Squelettes avec les propriétés depth et parent appliquées
+     * CRITIQUE pour la validation finale
+     */
+    skeletons: EnhancedConversationSkeleton[];
 }
 
 /**

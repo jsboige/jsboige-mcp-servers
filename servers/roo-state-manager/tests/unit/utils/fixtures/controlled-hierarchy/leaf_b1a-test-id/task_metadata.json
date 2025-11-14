@@ -1,0 +1,14 @@
+{
+  "taskId": "leaf_b1a-test-id",
+  "title": "LEAF_B1A: Final validation and documentation of SDDD protocol implementation",
+  "status": "completed",
+  "createdAt": "2025-01-01T10:00:00.000Z",
+  "updatedAt": "2025-01-01T10:05:00.000Z",
+  "metadata": {
+    "dataSource": "controlled-hierarchy",
+    "workspace": "./test",
+    "parentTaskId": "38948ef0-4a8b-40a2-ae29-b38d2aa9d5a7",
+    "depth": 3,
+    "hierarchyPath": "ROOT/BRANCH-A/NODE-B1/LEAF_B1A"
+  }
+}

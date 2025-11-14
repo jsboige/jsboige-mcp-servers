@@ -1,0 +1,26 @@
+[
+  {
+    "id": "msg-1",
+    "type": "user",
+    "timestamp": "2025-01-01T10:00:00.000Z",
+    "content": {
+      "text": "LEAF_B1A: Final validation and documentation of SDDD protocol implementation"
+    }
+  },
+  {
+    "id": "msg-2",
+    "type": "assistant",
+    "timestamp": "2025-01-01T10:01:00.000Z",
+    "content": {
+      "text": "I'll help you complete the final validation and documentation of the SDDD protocol implementation. This involves creating comprehensive documentation and validation reports."
+    }
+  },
+  {
+    "id": "msg-3",
+    "type": "assistant",
+    "timestamp": "2025-01-01T10:02:00.000Z",
+    "content": {
+      "text": "<new_task>\n<task_id>leaf_b1a-test-id</task_id>\n<instruction>LEAF_B1A: Final validation and documentation of SDDD protocol implementation</instruction>\n<metadata>{\"dataSource\": \"controlled-hierarchy\", \"workspace\": \"./test\", \"parentTaskId\": \"38948ef0-4a8b-40a2-ae29-b38d2aa9d5a7\", \"depth\": 3, \"hierarchyPath\": \"ROOT/BRANCH-A/NODE-B1/LEAF_B1A\"}</metadata>\n</new_task>"
+    }
+  }
+]

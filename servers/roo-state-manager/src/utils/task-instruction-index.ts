@@ -23,11 +23,13 @@ export class TaskInstructionIndex {
     private trie: Trie; // exact-trie pour longest-prefix match
     private prefixToEntry: Map<string, PrefixEntry>; // Map interne pour itération et statistiques
     private parentToInstructions: Map<string, string[]>; // Pour getInstructionsByParent()
+    private tempTruncatedInstructions: Map<string, string>; // 🎯 CORRECTION : Stocker les truncatedInstructions pour la Phase 2
     
     constructor() {
         this.trie = new Trie();
         this.prefixToEntry = new Map();
         this.parentToInstructions = new Map();
+        this.tempTruncatedInstructions = new Map();
     }
 
     /**
@@ -95,11 +97,36 @@ export class TaskInstructionIndex {
             indexedCount++;
         }
         
+        // 🎯 CORRECTION CRITIQUE : Mettre à jour truncatedInstruction pour la Phase 2
+        // La Phase 2 a besoin de truncatedInstruction pour chercher les parents
+        if (subInstructions.length > 0) {
+            // Utiliser la première sous-instruction comme truncatedInstruction
+            const firstSubInstruction = subInstructions[0];
+            if (firstSubInstruction) {
+                // Mettre à jour le skeleton via une référence globale ou un callback
+                // Pour l'instant, on stocke dans une map temporaire que la Phase 1 pourra récupérer
+                if (!this.tempTruncatedInstructions) {
+                    this.tempTruncatedInstructions = new Map<string, string>();
+                }
+                this.tempTruncatedInstructions.set(parentTaskId, firstSubInstruction);
+                
+                if (process.env.ROO_DEBUG_INSTRUCTIONS === '1') {
+                    console.log(`[SDDD-CORRECTION] truncatedInstruction mis à jour pour ${parentTaskId}: "${firstSubInstruction.substring(0, 80)}..."`);
+                }
+            }
+        }
+        
         // 3. Si aucune sous-instruction trouvée, utiliser l'ancienne méthode (fallback)
         if (indexedCount === 0) {
             const fallbackPrefix = computeInstructionPrefix(fullInstructionText, 192);
             this.addInstruction(parentTaskId, fallbackPrefix, fullInstructionText);
             indexedCount = 1;
+            
+            // 🎯 CORRECTION : Aussi mettre à jour truncatedInstruction pour le fallback
+            if (!this.tempTruncatedInstructions) {
+                this.tempTruncatedInstructions = new Map<string, string>();
+            }
+            this.tempTruncatedInstructions.set(parentTaskId, fallbackPrefix);
         }
         
         return indexedCount;
@@ -311,6 +338,22 @@ export class TaskInstructionIndex {
         }
     }
 
+    /**
+     * Obtient tous les parentTaskIds disponibles dans l'index
+     */
+    async getAllParentTaskIds(): Promise<string[]> {
+        const allParentIds = new Set<string>();
+        
+        // Parcourir toutes les entrées pour collecter les parentTaskIds
+        for (const [prefix, entry] of this.prefixToEntry.entries()) {
+            for (const parentId of entry.parentTaskIds) {
+                allParentIds.add(parentId);
+            }
+        }
+        
+        return Array.from(allParentIds);
+    }
+
     // Méthodes privées
 
     /**
@@ -452,6 +495,47 @@ export class TaskInstructionIndex {
         console.log(`[TaskInstructionIndex] SDDD: getParentsForInstruction found ${results.length} parents`);
         
         return results;
+    }
+
+    /**
+     * 🎯 SDDD: Recherche directe par taskId dans l'index des instructions
+     * @param taskId - ID de la tâche parente à rechercher
+     * @returns Array des entrées qui contiennent ce taskId comme parent
+     */
+    async searchByTaskId(taskId: string): Promise<Array<{ taskId: string, prefix: string }>> {
+        if (!taskId || taskId.trim() === '') return [];
+        
+        const results: Array<{ taskId: string, prefix: string }> = [];
+        
+        // Parcourir toutes les entrées pour trouver celles qui contiennent ce taskId comme parent
+        for (const [prefix, entry] of this.prefixToEntry.entries()) {
+            if (entry.parentTaskIds.includes(taskId)) {
+                results.push({
+                    taskId: taskId,
+                    prefix: prefix
+                });
+            }
+        }
+        
+        console.log(`[TaskInstructionIndex] SDDD: searchByTaskId found ${results.length} results for taskId: ${taskId}`);
+        
+        return results;
+    }
+
+    /**
+     * Obtient une instruction tronquée temporaire pour un parentTaskId
+     * @param parentTaskId - ID de la tâche parente
+     * @returns L'instruction tronquée ou undefined si non trouvée
+     */
+    getTruncatedInstruction(parentTaskId: string): string | undefined {
+        return this.tempTruncatedInstructions.get(parentTaskId);
+    }
+
+    /**
+     * Vide toutes les instructions tronquées temporaires
+     */
+    clearTempTruncatedInstructions(): void {
+        this.tempTruncatedInstructions.clear();
     }
 
 }

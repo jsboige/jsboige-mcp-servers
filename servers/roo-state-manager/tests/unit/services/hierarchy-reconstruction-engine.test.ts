@@ -5,28 +5,37 @@
 
 import {  describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 
-// Mock fs AVANT tous les autres imports pour ES modules
-const mockedFs = {
+// Mock fs avec factory function pour éviter le problème d'initialisation
+vi.mock('fs', () => ({
     existsSync: vi.fn(),
     readFileSync: vi.fn(),
     statSync: vi.fn(),
     mkdirSync: vi.fn(),
     writeFileSync: vi.fn()
-};
+}));
 
-// Mock fs avec ES modules - DOIT �tre avant les imports qui utilisent fs
-vi.mock('fs', () => mockedFs);
+// Mock path et os également
+vi.mock('path', () => ({
+    join: vi.fn((...args: string[]) => args.join('/')),
+    basename: vi.fn((p: string) => p.split('/').pop() || p),
+    dirname: vi.fn((p: string) => p.split('/').slice(0, -1).join('/') || '.')
+}));
+
+vi.mock('os', () => ({
+    tmpdir: vi.fn(() => '/tmp')
+}));
 
 import * as path from 'path';
 import * as os from 'os';
-import { HierarchyReconstructionEngine } from '../../../src/utils/hierarchy-reconstruction-engine.js';
-import { TaskInstructionIndex } from '../../../src/utils/task-instruction-index.js';
+import { HierarchyReconstructionEngine } from '../../../src/utils/hierarchy-reconstruction-engine';
+import * as fs from 'fs';
+import { TaskInstructionIndex } from '../../../src/utils/task-instruction-index';
 import type {
     EnhancedConversationSkeleton,
     Phase1Result,
     Phase2Result,
     ReconstructionConfig
-} from '../../../src/types/enhanced-hierarchy.js';
+} from '../../../src/types/enhanced-hierarchy';
 import {
     mockSkeletons,
     mockNewTaskInstructions,
@@ -41,8 +50,11 @@ import {
 describe('HierarchyReconstructionEngine', () => {
     let engine: HierarchyReconstructionEngine;
     let tempDir: string;
+    let mockedFs: any;
 
     beforeEach(() => {
+        // Récupérer le mock fs
+        mockedFs = vi.mocked(fs);
         // Cr�er un r�pertoire temporaire pour les tests
         tempDir = path.join(os.tmpdir(), 'hierarchy-tests', Date.now().toString());
         

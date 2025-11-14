@@ -1,0 +1,26 @@
+[
+  {
+    "id": "msg-1",
+    "type": "user",
+    "timestamp": "2025-01-01T11:00:00.000Z",
+    "content": {
+      "text": "LEAF_B1B: Performance optimization and benchmarking of hierarchy reconstruction"
+    }
+  },
+  {
+    "id": "msg-2",
+    "type": "assistant",
+    "timestamp": "2025-01-01T11:01:00.000Z",
+    "content": {
+      "text": "I'll help you optimize performance and create benchmarks for the hierarchy reconstruction system."
+    }
+  },
+  {
+    "id": "msg-3",
+    "type": "assistant",
+    "timestamp": "2025-01-01T11:02:00.000Z",
+    "content": {
+      "text": "<new_task>\n<task_id>leaf_b1b-test-id</task_id>\n<instruction>LEAF_B1B: Performance optimization and benchmarking of hierarchy reconstruction</instruction>\n<metadata>{\"dataSource\": \"controlled-hierarchy\", \"workspace\": \"./test\", \"parentTaskId\": \"38948ef0-4a8b-40a2-ae29-b38d2aa9d5a7\", \"depth\": 3, \"hierarchyPath\": \"ROOT/BRANCH-A/NODE-B1/LEAF_B1B\"}</metadata>\n</new_task>"
+    }
+  }
+]

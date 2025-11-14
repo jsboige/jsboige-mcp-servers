@@ -138,6 +138,9 @@ export class HierarchyReconstructionEngine {
             processingTimeMs: 0
         };
 
+        // Nettoyer l'état des truncatedInstructions temporaires
+        this.instructionIndex.clearTempTruncatedInstructions();
+
         // ========== LOGS AJOUTÉS POUR INVESTIGATION ==========
         console.log('[ENGINE-PHASE1-START] ====================================');
         console.log('[ENGINE-PHASE1-START] Extraction instructions...');
@@ -205,8 +208,17 @@ export class HierarchyReconstructionEngine {
                             parentText
                         );
                         
+                        // Récupérer la truncatedInstruction pour la Phase 2
+                        const truncatedInstruction = this.instructionIndex.getTruncatedInstruction(skeleton.taskId);
+                        if (truncatedInstruction) {
+                            skeleton.truncatedInstruction = truncatedInstruction;
+                        }
+                        
                         console.log(`[ENGINE-PHASE1-INDEX] Task ${skeleton.taskId.substring(0, 8)}: ${extractedCount} sub-instructions indexed`);
                         console.log(`[FIX-RÉGRESSION] Tâche ${skeleton.taskId}: ${extractedCount} sous-instructions extraites et indexées`);
+                        if (truncatedInstruction) {
+                            console.log(`[TRUNCATED-INSTRUCTION] Tâche ${skeleton.taskId.substring(0, 8)}: truncatedInstruction mise à jour`);
+                        }
                         
                         result.parsedCount++;
                         result.totalInstructionsExtracted += instructions.length;
@@ -267,7 +279,8 @@ export class HierarchyReconstructionEngine {
             resolutionMethods: {},
             averageConfidenceScore: 0,
             errors: [],
-            processingTimeMs: 0
+            processingTimeMs: 0,
+            skeletons: []
         };
 
         // ========== LOGS AJOUTÉS POUR INVESTIGATION ==========
@@ -309,8 +322,8 @@ export class HierarchyReconstructionEngine {
         for (const batch of batches) {
             for (const skeleton of batch) {
                 try {
-                    // Ne traiter que les tâches avec parentId manquant ou invalide
-                    if (skeleton.parentTaskId && skeletonMap.has(skeleton.parentTaskId)) {
+                    // Si la tâche a déjà un parent, valider d'abord cette relation
+                    if (skeleton.parentTaskId) {
                         const existingParentId = skeleton.parentTaskId;
                         const existingParent = skeletonMap.get(existingParentId)!;
 
@@ -337,16 +350,16 @@ export class HierarchyReconstructionEngine {
                                 `Invalidating existing parent for ${skeleton.taskId}: cycle=${createsCycle}, temporalInvalid=${temporalInvalid}, workspaceMismatch=${workspaceMismatch}`
                             );
                             skeleton.parentTaskId = undefined;
-                            // on ne continue pas: on va tenter de retrouver un parent sain plus bas
+                            // Continuer vers la recherche d'un nouveau parent
                         } else {
                             // Relation saine conservée
                             this.updateProcessingState(skeleton, 'phase2', true);
                             result.processedCount++;
-                            continue; // ParentId déjà valide
+                            continue; // ParentId déjà valide, passer à la tâche suivante
                         }
                     }
 
-                    // Rechercher le parent via différentes méthodes (TOUJOURS tenter la recherche)
+                    // Rechercher le parent via différentes méthodes (POUR LES TÂCHES SANS PARENT OU AVEC PARENT INVALIDÉ)
                     // console.log(`[ENGINE-PHASE2-SEARCH] Searching parent for child: ${skeleton.taskId.substring(0, 8)}`);
                     // console.log(`[ENGINE-PHASE2-SEARCH] Child truncatedInstruction: "${skeleton.truncatedInstruction?.substring(0, 80)}..."`);
                     

@@ -51,6 +51,7 @@ export interface ConversationSkeleton {
       workspace?: string;
       qdrantIndexedAt?: string; // DEPRECATED - utiliser indexingState.lastIndexedAt
       dataSource?: string; // Source des données pour le debug
+      parentTaskId?: string; // ID de la tâche parente pour reconstruction hiérarchique
       // NOUVEAU : État complet d'indexation avec mécanisme d'idempotence
       indexingState?: IndexingState;
     };
