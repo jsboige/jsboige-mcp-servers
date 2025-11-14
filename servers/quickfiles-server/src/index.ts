@@ -1320,6 +1320,7 @@ class QuickFilesServer {
 
   /**
    * Effectue le remplacement dans un fichier avec les paramètres spécifiés
+   * 🔒 VERSION CORRIGÉE - Protections anti-bug critiques ajoutées
    */
   private async replaceInFile(
     rawFilePath: string,
@@ -1330,17 +1331,45 @@ class QuickFilesServer {
       caseSensitive?: boolean;
       preview?: boolean;
     } = {}
-  ): Promise<{ modified: boolean; diff: string }> {
+  ): Promise<{ modified: boolean; diff: string; replacements?: number; warning?: string }> {
     const filePath = this.resolvePath(rawFilePath);
+    
+    // 🔒 PROTECTION 1 : Validation préventive des patterns identiques
+    if (searchPattern === replacement) {
+      this.debugLog('identicalPatterns', {
+        pattern: searchPattern,
+        filePath: rawFilePath
+      });
+      return {
+        modified: false,
+        diff: '',
+        warning: 'Search and replacement patterns are identical - no changes needed',
+        replacements: 0
+      };
+    }
+    
+    // 🔒 PROTECTION 2 : Validation des patterns vides
+    if (!searchPattern || searchPattern.trim() === '') {
+      throw new Error('Search pattern cannot be empty');
+    }
+    
+    // 🔒 PROTECTION 3 : Limites de sécurité
+    const MAX_REPLACEMENTS = 10000; // Protection anti-boucle infinie
+    const MAX_FILE_SIZE = 50 * 1024 * 1024; // 50MB max
     
     // Vérifier si c'est un répertoire
     try {
       const stats = await fs.stat(filePath);
       if (stats.isDirectory()) {
-        return { modified: false, diff: '' }; // Ignorer les répertoires
+        return { modified: false, diff: '', replacements: 0 }; // Ignorer les répertoires
+      }
+      
+      // 🔒 PROTECTION 4 : Taille de fichier maximale
+      if (stats.size > MAX_FILE_SIZE) {
+        throw new Error(`File too large: ${stats.size} bytes (max: ${MAX_FILE_SIZE})`);
       }
     } catch (error) {
-      return { modified: false, diff: '' }; // Le fichier n'existe pas, ignorer
+      return { modified: false, diff: '', replacements: 0 }; // Le fichier n'existe pas, ignorer
     }
     
     const useRegex = options.useRegex ?? true;
@@ -1348,24 +1377,74 @@ class QuickFilesServer {
     const preview = options.preview ?? false;
     
     let content = await fs.readFile(filePath, 'utf-8');
+    const originalContent = content;
     const preparedPattern = this.prepareSearchPattern(searchPattern, useRegex);
     const searchRegex = new RegExp(preparedPattern, caseSensitive ? 'g' : 'gi');
     
     let totalReplacements = 0;
+    let effectiveReplacements = 0; // 🎯 CORRECTION : Comptage EFFECTIF
+    
+    // 🔒 PROTECTION 5 : Remplacement avec comptage correct
     const newContent = content.replace(searchRegex, (match, ...groups) => {
       totalReplacements++;
-      return this.applyCaptureGroups(replacement, groups, useRegex);
+      
+      // 🎯 CORRECTION : Vérifier si le remplacement change réellement
+      const actualReplacement = this.applyCaptureGroups(replacement, groups, useRegex);
+      
+      if (match !== actualReplacement) {
+        effectiveReplacements++;
+        
+        // 🔒 PROTECTION 6 : Limite anti-boucle
+        if (effectiveReplacements > MAX_REPLACEMENTS) {
+          this.debugLog('tooManyReplacements', {
+            effectiveReplacements,
+            filePath: rawFilePath,
+            maxAllowed: MAX_REPLACEMENTS
+          });
+          throw new Error(`Too many replacements: ${effectiveReplacements} (max: ${MAX_REPLACEMENTS})`);
+        }
+        
+        return actualReplacement;
+      } else {
+        // Le remplacement est identique - ne pas compter
+        return match;
+      }
     });
     
-    if (content !== newContent) {
+    // 🎯 CORRECTION : Vérification basée sur les remplacements EFFECTIFS
+    const wasModified = (originalContent !== newContent) && (effectiveReplacements > 0);
+    
+    if (wasModified) {
       const diff = this.generateDiff(content, newContent, rawFilePath) + '\n';
       if (!preview) {
         await fs.writeFile(filePath, newContent, 'utf-8');
       }
-      return { modified: true, diff };
+      
+      this.debugLog('fileModified', {
+        filePath: rawFilePath,
+        effectiveReplacements,
+        totalMatches: totalReplacements
+      });
+      
+      return {
+        modified: true,
+        diff,
+        replacements: effectiveReplacements,
+        totalMatches: totalReplacements
+      };
     }
     
-    return { modified: false, diff: '' };
+    this.debugLog('noModificationsNeeded', {
+      filePath: rawFilePath,
+      totalMatches: totalReplacements
+    });
+    
+    return {
+      modified: false,
+      diff: '',
+      replacements: 0,
+      totalMatches: totalReplacements
+    };
   }
 
   /**
