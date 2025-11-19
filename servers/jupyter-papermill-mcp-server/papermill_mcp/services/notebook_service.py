@@ -64,8 +64,19 @@ class ExecutionJob:
         """Calcule la durée d'exécution en secondes."""
         if not self.started_at:
             return None
-        end_time = self.ended_at or datetime.now(timezone.utc)
-        return (end_time - self.started_at).total_seconds()
+        
+        # Ensure timezone awareness for calculation
+        start = self.started_at
+        if start.tzinfo is None:
+            start = start.replace(tzinfo=timezone.utc)
+            
+        end = self.ended_at
+        if end is None:
+            end = datetime.now(timezone.utc)
+        elif end.tzinfo is None:
+            end = end.replace(tzinfo=timezone.utc)
+            
+        return (end - start).total_seconds()
 
 
 class ExecutionManager:
@@ -197,7 +208,8 @@ class ExecutionManager:
         try:
             with self.lock:
                 job.status = JobStatus.RUNNING
-                job.started_at = datetime.now()
+                # Use UTC aware datetime
+                job.started_at = datetime.now(timezone.utc)
                 job.updated_at = job.started_at
             
             logger.info(f"Starting job {job.job_id}: {job.input_path}")
@@ -251,7 +263,8 @@ class ExecutionManager:
                 
                 with self.lock:
                     job.return_code = return_code
-                    job.ended_at = datetime.now()
+                    # Use UTC aware datetime
+                    job.ended_at = datetime.now(timezone.utc)
                     job.updated_at = job.ended_at
                     
                     if return_code == 0 and Path(job.output_path).exists():
@@ -271,7 +284,8 @@ class ExecutionManager:
             with self.lock:
                 job.status = JobStatus.FAILED
                 job.error_message = str(e)
-                job.ended_at = datetime.now()
+                # Use UTC aware datetime
+                job.ended_at = datetime.now(timezone.utc)
                 job.updated_at = job.ended_at
     
     def _capture_output_streams(self, job: ExecutionJob) -> None:
@@ -286,8 +300,10 @@ class ExecutionManager:
                 for line in iter(job.process.stdout.readline, ''):
                     if line:
                         with self.lock:
-                            job.stdout_buffer.append(f"[{datetime.now().isoformat()}] {line.rstrip()}")
-                            job.updated_at = datetime.now()
+                            # Use UTC aware datetime
+                            now = datetime.now(timezone.utc)
+                            job.stdout_buffer.append(f"[{now.isoformat()}] {line.rstrip()}")
+                            job.updated_at = now
             except Exception as e:
                 logger.warning(f"Error capturing stdout for job {job.job_id}: {e}")
         
@@ -296,8 +312,10 @@ class ExecutionManager:
                 for line in iter(job.process.stderr.readline, ''):
                     if line:
                         with self.lock:
-                            job.stderr_buffer.append(f"[{datetime.now().isoformat()}] {line.rstrip()}")
-                            job.updated_at = datetime.now()
+                            # Use UTC aware datetime
+                            now = datetime.now(timezone.utc)
+                            job.stderr_buffer.append(f"[{now.isoformat()}] {line.rstrip()}")
+                            job.updated_at = now
             except Exception as e:
                 logger.warning(f"Error capturing stderr for job {job.job_id}: {e}")
         
@@ -330,7 +348,8 @@ class ExecutionManager:
             with self.lock:
                 job.status = status
                 job.error_message = error_message
-                job.ended_at = datetime.now()
+                # Use UTC aware datetime
+                job.ended_at = datetime.now(timezone.utc)
                 job.updated_at = job.ended_at
                 
         except Exception as e:
@@ -2076,7 +2095,8 @@ class NotebookService:
         """
         try:
             import datetime
-            start_time = datetime.datetime.now()
+            # Use UTC aware datetime
+            start_time = datetime.datetime.now(timezone.utc)
             
             # Résoudre le path d'entrée
             resolved_input_path = Path(self.resolve_path(input_path))
@@ -2105,7 +2125,8 @@ class NotebookService:
             logger.info(f"Started async job {job_id}, waiting up to {sync_timeout_seconds}s for completion")
             
             # Polling avec timeout sync
-            poll_start = datetime.datetime.now()
+            # Use UTC aware datetime
+            poll_start = datetime.datetime.now(timezone.utc)
             poll_interval = 1.0  # 1 seconde entre polls
             
             while True:
@@ -2121,7 +2142,8 @@ class NotebookService:
                     }
                 
                 job_status = status_result["status"]
-                elapsed_time = (datetime.datetime.now() - poll_start).total_seconds()
+                # Use UTC aware datetime
+                elapsed_time = (datetime.datetime.now(timezone.utc) - poll_start).total_seconds()
                 
                 # Si terminé avec succès dans les temps : retour sync
                 if job_status == "SUCCEEDED":
@@ -2134,7 +2156,7 @@ class NotebookService:
                         "output_path": status_result["output_path"],
                         "execution_time_seconds": status_result["duration_seconds"],
                         "job_id": job_id,
-                        "timestamp": datetime.datetime.now().isoformat()
+                        "timestamp": datetime.datetime.now(timezone.utc).isoformat()
                     }
                 
                 # Si échec : retour sync avec erreur
@@ -2149,7 +2171,7 @@ class NotebookService:
                         "job_status": job_status,
                         "error": status_result.get("error_summary", f"Job {job_status}"),
                         "execution_time_seconds": status_result["duration_seconds"],
-                        "timestamp": datetime.datetime.now().isoformat()
+                        "timestamp": datetime.datetime.now(timezone.utc).isoformat()
                     }
                 
                 # Si timeout sync atteint : passage en mode async
@@ -2170,7 +2192,7 @@ class NotebookService:
                             "get_logs": f"get_job_logs('{job_id}')",
                             "cancel": f"cancel_job('{job_id}')"
                         },
-                        "timestamp": datetime.datetime.now().isoformat()
+                        "timestamp": datetime.datetime.now(timezone.utc).isoformat()
                     }
                 
                 # Continuer le polling
@@ -2184,7 +2206,7 @@ class NotebookService:
                 "input_path": str(input_path),
                 "error": str(e),
                 "error_type": type(e).__name__,
-                "timestamp": datetime.datetime.now().isoformat()
+                "timestamp": datetime.datetime.now(timezone.utc).isoformat()
             }
     
     # Méthodes wrapper pour ExecutionManager (exposition MCP)

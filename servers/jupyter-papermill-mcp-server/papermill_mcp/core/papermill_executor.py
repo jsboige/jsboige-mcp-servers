@@ -363,20 +363,29 @@ class PapermillExecutor:
                         self.logger.error(f"⚠️ CRITICAL: Failed to restore working directory: {restore_error}")
             
             with safe_working_directory(notebook_dir):
-                # SOLUTION DÉFINITIVE : Injection d'environnement .NET pour kernel
-                # Resout l'erreur "Value cannot be null. (Parameter 'path1')"
-                with inject_dotnet_environment() as injected_vars:
-                    if injected_vars:
-                        self.logger.info(f".NET environment injected: {len(injected_vars)} variables")
-                        # Log des variables critiques pour debug
-                        critical_vars = ['DOTNET_ROOT', 'MSBuildSDKsPath', 'NUGET_PACKAGES']
-                        for var in critical_vars:
-                            if var in injected_vars:
-                                self.logger.debug(f"  [OK] {var}={injected_vars[var]}")
-                    else:
-                        self.logger.warning("WARNING: No .NET environment variables injected")
-                    
-                    # Execution Papermill avec environnement .NET enrichi
+                # Optimisation : Injection .NET seulement si nécessaire ou si kernel inconnu
+                is_dotnet_kernel = kernel and ('.net' in kernel.lower() or 'csharp' in kernel.lower() or 'fsharp' in kernel.lower() or 'powershell' in kernel.lower())
+                
+                if is_dotnet_kernel:
+                    self.logger.info(f"🚀 .NET Kernel detected ({kernel}): Injecting .NET environment...")
+                    # SOLUTION DÉFINITIVE : Injection d'environnement .NET pour kernel
+                    # Resout l'erreur "Value cannot be null. (Parameter 'path1')"
+                    with inject_dotnet_environment() as injected_vars:
+                        if injected_vars:
+                            self.logger.info(f".NET environment injected: {len(injected_vars)} variables")
+                            # Log des variables critiques pour debug
+                            critical_vars = ['DOTNET_ROOT', 'MSBuildSDKsPath', 'NUGET_PACKAGES']
+                            for var in critical_vars:
+                                if var in injected_vars:
+                                    self.logger.debug(f"  [OK] {var}={injected_vars[var]}")
+                        else:
+                            self.logger.warning("WARNING: No .NET environment variables injected")
+                        
+                        # Execution Papermill avec environnement .NET enrichi
+                        result_nb = pm.execute_notebook(**pm_kwargs)
+                else:
+                    self.logger.info(f"🐍 Python/Other Kernel detected ({kernel}): Skipping .NET injection optimization")
+                    # Execution standard sans overhead .NET
                     result_nb = pm.execute_notebook(**pm_kwargs)
             
             end_exec = time.time()
