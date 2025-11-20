@@ -621,15 +621,15 @@ describe('Architecture consolidée - Tests d\'intégration', () => {
     });
   });
 
-  test('Couverture des 32 outils réels identifiés', () => {
+  test('Couverture des 22 outils réels identifiés', () => {
     // Compter tous les outils uniques dans les presets
     const allTools = new Set<string>();
     Object.values(INTELLIGENT_PRESETS).forEach(preset => {
       preset.tools.forEach(tool => allTools.add(tool));
     });
     
-    // Vérifier qu'on couvre bien un nombre significatif d'outils
-    expect(allTools.size).toBeGreaterThan(15); // Au minimum 15 outils distincts
+    // Vérifier qu'on couvre bien les 22 outils actuellement définis
+    expect(allTools.size).toBe(22); // 22 outils distincts dans les presets actuels
     
     // Vérifier la présence d'outils clés par catégorie
     expect(allTools.has('list_conversations')).toBe(true); // Display
