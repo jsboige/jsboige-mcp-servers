@@ -59,7 +59,7 @@ function Load-Config {
 # Fonction d'exécution des tests
 function Invoke-Tests {
     param([string]$TestType, [psobject]$Config)
-    
+    {
     Write-Host "EXECUTION DES TESTS" -ForegroundColor Cyan
     Write-Host "=====" -ForegroundColor Cyan
     Write-Host ""
@@ -135,28 +135,54 @@ function Invoke-Tests {
     
     # Extraire les informations des résultats de Vitest
     if ($testOutput -match "(\d+)\s+passing") {
-        $passingTests = [int]$matches[1]
+        if ($matches -and $matches.Count -gt 0) {
+            $passingTests = [int]$matches[1]
+        } else {
+            $passingTests = 0
+        }
     }
     if ($testOutput -match "(\d+)\s+failing") {
-        $failingTests = [int]$matches[1]
+        if ($matches -and $matches.Count -gt 0) {
+            $failingTests = [int]$matches[1]
+        } else {
+            $failingTests = 0
+        }
+    } else {
+        $failingTests = 0
     }
     if ($testOutput -match "Test Files\s+(\d+)") {
-        $testCount = [int]$matches[1]
+        if ($matches -and $matches.Count -gt 0) {
+            $testCount = [int]$matches[1]
+        } else {
+            $testCount = 0
+        }
     }
     
 
 
-    if ($testOutput -match "Tests\s+(\d+)") {
-        $testCount = [int]$matches[1]
+    if ($testOutput -match "Test Files\s+(\d+)") {
+        if ($matches -and $matches.Count -gt 0) {
+            $testCount = [int]$matches[1]
+        } else {
+            $testCount = 0
+        }
     }
     
     # Chercher "Passed" avec différents caractères
     if ($testOutput -match "Passed\s+(\d+)") {
-        $passingTests = [int]$matches[1]
+        if ($matches -and $matches.Count -gt 0) {
+            $passingTests = [int]$matches[1]
+        } else {
+            $passingTests = 0
+        }
     }
     
     if ($testOutput -match "Failed\s+(\d+)") {
-        $failingTests = [int]$matches[1]
+        if ($matches -and $matches.Count -gt 0) {
+            $failingTests = [int]$matches[1]
+        } else {
+            $failingTests = 0
+        }
     }
     
     $successMessage = if ($failingTests -eq 0) { "All tests passed" } else { "with $failingTests failures" }
@@ -193,7 +219,7 @@ function Invoke-Tests {
     
     # Construire la sortie avec les vrais fichiers détectés
     $fileList = ""
-    if ($detectedFiles.Count -gt 0) {
+    if ($detectedFiles -and $detectedFiles.Count -gt 0) {
         $fileList = $detectedFiles -join "`n  "
     } else {
         $fileList = "Aucun fichier de test détecté"
@@ -238,12 +264,20 @@ Fichiers de test détectés :
     
     # Analyse des resultats
     if ($testOutput -match "(\d+) passing") {
-        Write-Success "Tests passants : $($matches[1])"
+        if ($matches -and $matches.Count -gt 0) {
+            Write-Success "Tests passants : $($matches[1])"
+        } else {
+            Write-Success "Tests passants : 0"
+        }
     }
     
     if ($testOutput -match "(\d+) failing") {
-        Write-Error-Message "Tests echouants : $($matches[1])"
-    } else {
+        if ($matches -and $matches.Count -gt 0) {
+            Write-Error-Message "Tests echouants : $($matches[1])"
+        } else {
+            Write-Error-Message "Tests echouants : 0"
+        }
+    }
         Write-Success "Aucun echec detecte"
     }
     

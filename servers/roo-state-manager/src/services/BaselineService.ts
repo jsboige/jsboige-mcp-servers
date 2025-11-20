@@ -90,7 +90,7 @@ export class BaselineService {
   /**
    * Charge la configuration baseline depuis sync-config.ref.json
    */
-  public async loadBaseline(): Promise<BaselineFileConfig | null> {
+  public async loadBaseline(): Promise<BaselineConfig | null> {
     console.log('[DEBUG] BaselineService.loadBaseline() appelé');
     console.log('[DEBUG] this.baselinePath:', this.baselinePath);
     

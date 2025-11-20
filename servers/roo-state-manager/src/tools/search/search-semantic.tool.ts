@@ -163,7 +163,6 @@ export const searchTasksByContentTool = {
             
             // Obtenir l'identifiant de la machine actuelle pour l'en-tête
             const { TaskIndexer, getHostIdentifier } = await import('../../services/task-indexer.js');
-            const taskIndexer = new TaskIndexer();
             const currentHostId = getHostIdentifier();
             
             const results = searchResults.map(result => ({

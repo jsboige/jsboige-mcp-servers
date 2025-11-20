@@ -199,7 +199,28 @@ export async function versionBaseline(args: VersionBaselineArgs): Promise<Versio
       const updatedBaseline: BaselineConfig = {
         ...currentBaseline,
         version: args.version,
-        lastUpdated: new Date().toISOString()
+        lastUpdated: new Date().toISOString(),
+        config: currentBaseline.config || {
+          roo: {
+            modes: [],
+            mcpSettings: {},
+            userSettings: {}
+          },
+          hardware: {
+            cpu: { model: '', cores: 0, threads: 0 },
+            memory: { total: 0 },
+            disks: []
+          },
+          software: {
+            powershell: '',
+            node: '',
+            python: ''
+          },
+          system: {
+            os: '',
+            architecture: ''
+          }
+        }
       };
       
       await baselineService.updateBaseline(updatedBaseline, {

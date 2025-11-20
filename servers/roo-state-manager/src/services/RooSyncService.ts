@@ -344,14 +344,8 @@ export class RooSyncService {
         allMachines.add(baseline.machineId);
       }
       
-      // Ajouter toutes les machines depuis la baseline.machines (BaselineFileConfig)
-      if (baseline.machines && Array.isArray(baseline.machines)) {
-        baseline.machines.forEach(machine => {
-          if (machine.id) {
-            allMachines.add(machine.id);
-          }
-        });
-      }
+      // Note: Les machines individuelles ne sont plus accessibles directement depuis BaselineConfig
+      // Seule la machine principale est disponible via baseline.machineId
       
       // Ajouter la machine courante si différente
       if (this.config.machineId && !allMachines.has(this.config.machineId)) {

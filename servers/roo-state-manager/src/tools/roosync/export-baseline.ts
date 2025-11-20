@@ -12,7 +12,7 @@ import { existsSync, writeFileSync } from 'fs';
 import { join } from 'path';
 import { createLogger, Logger } from '../../utils/logger.js';
 import { BaselineService } from '../../services/BaselineService.js';
-import type { BaselineConfig } from '../../types/baseline.js';
+import type { BaselineConfig, BaselineFileConfig } from '../../types/baseline.js';
 
 // Logger instance for export baseline tool
 const logger: Logger = createLogger('ExportBaselineTool');

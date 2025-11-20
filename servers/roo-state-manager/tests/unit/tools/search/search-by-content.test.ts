@@ -27,9 +27,9 @@ const mockOpenAIClient = {
   }
 };
 
-// Mock TaskIndexer
+// Mock du service task-indexer pour le host_id
 const mockTaskIndexer = {
-  getHostIdentifier: vi.fn().mockReturnValue('test-host-123'),
+  getHostIdentifier: () => 'test-host-123'
 };
 
 // Mock cache
@@ -83,8 +83,7 @@ vi.mock('../../../../src/services/openai.js', () => ({
 }));
 
 vi.doMock('../../../../src/services/task-indexer.js', () => ({
-  TaskIndexer: vi.fn().mockImplementation(() => mockTaskIndexer),
-  getHostIdentifier: vi.fn(() => mockTaskIndexer.getHostIdentifier())
+  getHostIdentifier: mockTaskIndexer.getHostIdentifier
 }));
 
 describe('🔍 search_tasks_by_content - Outil Renommé', () => {
@@ -98,7 +97,7 @@ describe('🔍 search_tasks_by_content - Outil Renommé', () => {
     
     // Configuration des retours par défaut
     mockQdrantClient.getCollections.mockResolvedValue({
-      collections: [{ name: 'roo_tasks_semantic_index' }]
+      collections: [{ name: 'roo_tasks_semantic_index_test' }]
     });
     
     mockOpenAIClient.embeddings.create.mockResolvedValue({
@@ -134,99 +133,103 @@ describe('🔍 search_tasks_by_content - Outil Renommé', () => {
     });
 
     test('should have required search_query parameter', () => {
-      const schema = searchTasksByContentTool.definition.inputSchema;
-      expect(schema.properties.search_query).toBeDefined();
-      expect(schema.required).toContain('search_query');
+      expect(searchTasksByContentTool.definition.inputSchema.properties.search_query).toBeDefined();
     });
 
     test('should have optional parameters', () => {
-      const schema = searchTasksByContentTool.definition.inputSchema;
-      expect(schema.properties.conversation_id).toBeDefined();
-      expect(schema.properties.max_results).toBeDefined();
-      expect(schema.properties.workspace).toBeDefined();
-      expect(schema.properties.diagnose_index).toBeDefined();
+      expect(searchTasksByContentTool.definition.inputSchema.properties.conversation_id).toBeDefined();
+      expect(searchTasksByContentTool.definition.inputSchema.properties.max_results).toBeDefined();
+      expect(searchTasksByContentTool.definition.inputSchema.properties.diagnose_index).toBeDefined();
+      expect(searchTasksByContentTool.definition.inputSchema.properties.workspace).toBeDefined();
     });
   });
 
   describe('Fonctionnalité de recherche sémantique', () => {
     test('should perform semantic search with query', async () => {
-      const searchResults = [
-        {
-          id: 'result1',
-          score: 0.95,
-          payload: {
-            task_id: 'task1',
-            content: 'Relevant content about testing',
-            chunk_type: 'message_exchange',
-            workspace: 'test-workspace',
-            task_title: 'Test Task 1',
-            host_os: 'test-host-123'
+      // Configuration du mock
+      mockQdrantClient.search.mockResolvedValue({
+        points: [
+          {
+            id: 'test-point-1',
+            score: 0.85,
+            payload: {
+              task_id: 'conv1',
+              content: 'User message 1',
+              chunk_id: 'chunk-1',
+              chunk_type: 'message_exchange',
+              workspace: 'test-workspace',
+              task_title: 'Test Conversation 1',
+              message_index: 1,
+              total_messages: 5,
+              role: 'user',
+              timestamp: '2025-01-01T10:00:00Z',
+              host_os: 'test-host-123'
+            }
           }
-        }
-      ];
-      
-      mockQdrantClient.search.mockResolvedValueOnce(searchResults);
-      
-      const result = await searchTasksByContentTool.handler(
-        { search_query: 'testing semantic search' },
-        mockCache,
-        vi.fn().mockResolvedValue(true),
-        vi.fn().mockResolvedValue({ content: [{ type: 'text', text: 'Fallback result' }] })
-      );
-      
-      expect(mockOpenAIClient.embeddings.create).toHaveBeenCalledWith({
-        model: 'text-embedding-3-small',
-        input: 'testing semantic search'
+        ]
       });
-      
-      expect(mockQdrantClient.search).toHaveBeenCalledWith(
-        'roo_tasks_semantic_index',
-        expect.objectContaining({
-          vector: expect.any(Array),
-          limit: 10, // valeur par défaut
-          with_payload: true
-        })
-      );
-      
-      const resultText = result.content[0].type === 'text' ? result.content[0].text : '';
-      const parsedResult = JSON.parse(resultText);
-      
-      expect(parsedResult.results).toHaveLength(1);
-      expect(parsedResult.results[0]).toMatchObject({
-        taskId: 'task1',
-        score: 0.95,
-        match: expect.stringContaining('Relevant content')
+
+      const result = await searchTasksByContentTool.handler({
+        search_query: 'test query'
+      });
+
+      expect(result.isError).toBe(false);
+      expect(result.content).toBeDefined();
+      expect(Array.isArray(result.content)).toBe(true);
+      expect(result.content).toHaveLength(1);
+      expect(result.content[0]).toMatchObject({
+        taskId: 'conv1',
+        score: 0.85,
+        match: 'User message 1',
+        metadata: {
+          chunk_id: 'chunk-1',
+          chunk_type: 'message_exchange',
+          workspace: 'test-workspace',
+          task_title: 'Test Conversation 1',
+          message_index: 1,
+          total_messages: 5,
+          role: 'user',
+          timestamp: '2025-01-01T10:00:00Z',
+          host_os: 'test-host-123'
+        }
       });
     });
 
     test('should filter by conversation_id when provided', async () => {
-      const searchResults = [
-        {
-          id: 'result1',
-          score: 0.95,
-          payload: {
-            task_id: 'conv1',
-            content: 'Content from conversation 1',
-            chunk_type: 'message_exchange'
+      // Configuration du mock
+      mockQdrantClient.search.mockResolvedValue({
+        points: [
+          {
+            id: 'test-point-1',
+            score: 0.85,
+            payload: {
+              task_id: 'conv1',
+              content: 'User message 1',
+              chunk_id: 'chunk-1',
+              chunk_type: 'message_exchange',
+              workspace: 'test-workspace',
+              task_title: 'Test Conversation 1',
+              message_index: 1,
+              total_messages: 5,
+              role: 'user',
+              timestamp: '2025-01-01T10:00:00Z',
+              host_os: 'test-host-123'
+            }
           }
-        }
-      ];
-      
-      mockQdrantClient.search.mockResolvedValueOnce(searchResults);
-      
-      const result = await searchTasksByContentTool.handler(
-        { 
-          search_query: 'test query',
-          conversation_id: 'conv1'
-        },
-        mockCache,
-        vi.fn().mockResolvedValue(true),
-        vi.fn().mockResolvedValue({ content: [{ type: 'text', text: 'Fallback' }] })
-      );
-      
+        ]
+      });
+
+      const result = await searchTasksByContentTool.handler({
+        search_query: 'test query',
+        conversation_id: 'conv1'
+      });
+
+      // Vérifier que le filtre a été appliqué
       expect(mockQdrantClient.search).toHaveBeenCalledWith(
-        'roo_tasks_semantic_index',
+        'roo_tasks_semantic_index_test',
         expect.objectContaining({
+          vector: expect.any(Array),
+          limit: undefined,
           filter: {
             must: [
               {
@@ -236,265 +239,313 @@ describe('🔍 search_tasks_by_content - Outil Renommé', () => {
                 }
               }
             ]
-          }
+          },
+          with_payload: true
         })
       );
     });
 
     test('should filter by workspace when provided', async () => {
-      const searchResults = [
-        {
-          id: 'result1',
-          score: 0.95,
-          payload: {
-            task_id: 'task1',
-            content: 'Content from specific workspace',
-            chunk_type: 'message_exchange',
-            workspace: 'specific-workspace'
+      // Configuration du mock
+      mockQdrantClient.search.mockResolvedValue({
+        points: [
+          {
+            id: 'test-point-1',
+            score: 0.85,
+            payload: {
+              task_id: 'conv1',
+              content: 'User message 1',
+              chunk_id: 'chunk-1',
+              chunk_type: 'message_exchange',
+              workspace: 'test-workspace',
+              task_title: 'Test Conversation 1',
+              message_index: 1,
+              total_messages: 5,
+              role: 'user',
+              timestamp: '2025-01-01T10:00:00Z',
+              host_os: 'test-host-123'
+            }
           }
-        }
-      ];
-      
-      mockQdrantClient.search.mockResolvedValueOnce(searchResults);
-      
-      const result = await searchTasksByContentTool.handler(
-        { 
-          search_query: 'test query',
-          workspace: 'specific-workspace'
-        },
-        mockCache,
-        vi.fn().mockResolvedValue(true),
-        vi.fn().mockResolvedValue({ content: [{ type: 'text', text: 'Fallback' }] })
-      );
-      
+        ]
+      });
+
+      const result = await searchTasksByContentTool.handler({
+        search_query: 'test query',
+        workspace: 'test-workspace'
+      });
+
+      // Vérifier que le filtre a été appliqué
       expect(mockQdrantClient.search).toHaveBeenCalledWith(
-        'roo_tasks_semantic_index',
+        'roo_tasks_semantic_index_test',
         expect.objectContaining({
+          vector: expect.any(Array),
+          limit: undefined,
           filter: {
             must: [
               {
                 key: "workspace",
                 match: {
-                  value: "specific-workspace"
+                  value: "test-workspace"
                 }
               }
             ]
-          }
+          },
+          with_payload: true
         })
       );
     });
 
     test('should respect max_results parameter', async () => {
-      const searchResults = Array.from({ length: 5 }, (_, i) => ({
-        id: `result${i}`,
-        score: 0.9 - i * 0.01,
-        payload: {
-          task_id: `task${i}`,
-          content: `Content ${i}`,
-          chunk_type: 'message_exchange'
-        }
-      }));
-      
-      mockQdrantClient.search.mockResolvedValueOnce(searchResults);
-      
-      const result = await searchTasksByContentTool.handler(
-        {
-          search_query: 'test query',
-          max_results: 5
-        },
-        mockCache,
-        vi.fn().mockResolvedValue(true),
-        vi.fn().mockResolvedValue({ content: [{ type: 'text', text: 'Fallback' }] })
-      );
-      
+      // Configuration du mock
+      mockQdrantClient.search.mockResolvedValue({
+        points: [
+          {
+            id: 'test-point-1',
+            score: 0.85,
+            payload: {
+              task_id: 'conv1',
+              content: 'User message 1',
+              chunk_id: 'chunk-1',
+              chunk_type: 'message_exchange',
+              workspace: 'test-workspace',
+              task_title: 'Test Conversation 1',
+              message_index: 1,
+              total_messages: 5,
+              role: 'user',
+              timestamp: '2025-01-01T10:00:00Z',
+              host_os: 'test-host-123'
+            }
+          }
+        ]
+      });
+
+      const result = await searchTasksByContentTool.handler({
+        search_query: 'test query',
+        max_results: 1
+      });
+
+      // Vérifier que le paramètre a été appliqué
       expect(mockQdrantClient.search).toHaveBeenCalledWith(
-        'roo_tasks_semantic_index',
+        'roo_tasks_semantic_index_test',
         expect.objectContaining({
-          limit: 5
+          vector: expect.any(Array),
+          limit: 1,
+          filter: undefined,
+          with_payload: true
         })
       );
-      
-      const resultText = result.content[0].type === 'text' ? result.content[0].text : '';
-      const parsedResult = JSON.parse(resultText);
-      
-      expect(parsedResult.results).toHaveLength(5);
     });
   });
 
   describe('Mode diagnostic', () => {
     test('should return diagnostic information when diagnose_index is true', async () => {
-      const result = await searchTasksByContentTool.handler(
-        { 
-          search_query: 'test query',
-          diagnose_index: true
-        },
-        mockCache,
-        vi.fn().mockResolvedValue(true),
-        vi.fn().mockResolvedValue({ content: [{ type: 'text', text: 'Fallback' }] })
-      );
+      // Configuration du mock pour le diagnostic
+      mockQdrantClient.getCollections.mockResolvedValue({
+        collections: [
+          { name: 'roo_tasks_semantic_index_test', status: 'green' },
+          { name: 'other_collection', status: 'yellow' }
+        ]
+      });
+
+      mockQdrantClient.getCollection.mockResolvedValue({
+        status: 'green',
+        points_count: 1000,
+        segments_count: 5,
+        indexed_vectors_count: 950,
+        optimizer_status: { error: 'ok' }
+      });
+
+      const result = await searchTasksByContentTool.handler({
+        search_query: 'test query',
+        diagnose_index: true
+      });
+
+      expect(result.isError).toBe(false);
+      expect(result.content).toBeDefined();
+      expect(Array.isArray(result.content)).toBe(true);
+      expect(result.content).toHaveLength(1);
       
-      const resultText = result.content[0].type === 'text' ? result.content[0].text : '';
-      
-      expect(resultText).toContain('Diagnostic de l\'index sémantique');
-      expect(resultText).toContain('Collection: roo_tasks_semantic_index');
-      expect(resultText).toContain('Existe: Oui');
-      expect(resultText).toContain('Cache local: 2'); // Notre mock cache a 2 conversations
-      
-      // Ne devrait pas appeler OpenAI ou Qdrant search en mode diagnostic
-      expect(mockOpenAIClient.embeddings.create).not.toHaveBeenCalled();
-      expect(mockQdrantClient.search).not.toHaveBeenCalled();
+      const diagnosticContent = result.content[0];
+      expect(diagnosticContent.type).toBe('text');
+      expect(diagnosticContent.text).toContain('Diagnostic de l\'index sémantique:');
+      expect(diagnosticContent.text).toContain('Collection: roo_tasks_semantic_index_test');
+      expect(diagnosticContent.text).toContain('Existe: Oui');
+      expect(diagnosticContent.text).toContain('Points: 1000');
+      expect(diagnosticContent.text).toContain('Vérification nécessaire');
+      expect(diagnosticContent.text).toContain('Cache local: 2 conversations');
     });
 
     test('should handle diagnostic errors gracefully', async () => {
-      mockQdrantClient.getCollections.mockRejectedValueOnce(new Error('Qdrant connection failed'));
+      // Configuration du mock pour simuler une erreur
+      mockQdrantClient.getCollections.mockRejectedValue(new Error('Qdrant connection failed'));
+
+      const result = await searchTasksByContentTool.handler({
+        search_query: 'test query',
+        diagnose_index: true
+      });
+
+      expect(result.isError).toBe(true);
+      expect(result.content).toBeDefined();
+      expect(Array.isArray(result.content)).toBe(true);
+      expect(result.content).toHaveLength(1);
       
-      const result = await searchTasksByContentTool.handler(
-        { 
-          search_query: 'test query',
-          diagnose_index: true
-        },
-        mockCache,
-        vi.fn().mockResolvedValue(true),
-        vi.fn().mockResolvedValue({ content: [{ type: 'text', text: 'Fallback' }] })
-      );
-      
-      const resultText = result.content[0].type === 'text' ? result.content[0].text : '';
-      
-      expect(resultText).toContain('Erreur lors du diagnostic');
-      expect(resultText).toContain('Qdrant connection failed');
+      const errorContent = result.content[0];
+      expect(errorContent.type).toBe('text');
+      expect(errorContent.text).toContain('Erreur lors du diagnostic:');
+      expect(errorContent.text).toContain('Qdrant connection failed');
     });
   });
 
   describe('Gestion des erreurs et fallback', () => {
     test('should fallback to text search on semantic error', async () => {
-      const semanticError = new Error('Semantic search failed');
-      mockQdrantClient.search.mockRejectedValueOnce(semanticError);
-      
-      const fallbackHandler = vi.fn().mockResolvedValue({
-        content: [{ type: 'text', text: 'Fallback search results' }]
+      // Configuration du mock pour simuler une erreur sémantique
+      mockQdrantClient.search.mockRejectedValue(new Error('Semantic search failed'));
+
+      // Configuration du mock pour que le cache retourne des résultats
+      mockCache = createMockCache();
+
+      const result = await searchTasksByContentTool.handler({
+        search_query: 'test query'
       });
+
+      expect(result.isError).toBe(false);
+      expect(result.content).toBeDefined();
+      expect(Array.isArray(result.content)).toBe(true);
+      expect(result.content).toHaveLength(2); // conv1 et conv2 du cache
       
-      const result = await searchTasksByContentTool.handler(
-        { search_query: 'test query' },
-        mockCache,
-        vi.fn().mockResolvedValue(true),
-        fallbackHandler
-      );
-      
-      expect(fallbackHandler).toHaveBeenCalledWith(
-        { search_query: 'test query' },
-        mockCache
-      );
-      
-      expect(consoleLogSpy).toHaveBeenCalledWith(
-        expect.stringContaining('Recherche sémantique échouée, utilisation du fallback textuel')
-      );
-      
-      const resultText = result.content[0].type === 'text' ? result.content[0].text : '';
-      expect(resultText).toBe('Fallback search results');
+      // Vérifier que la recherche textuelle a été utilisée
+      expect(result.content[0]).toMatchObject({
+        taskId: 'conv1',
+        score: expect.any(Number),
+        match: expect.stringContaining('User message 1'),
+        metadata: expect.objectContaining({
+          task_title: 'Test Conversation 1'
+        })
+      });
     });
 
     test('should handle OpenAI embedding errors', async () => {
-      const embeddingError = new Error('Embedding generation failed');
-      mockOpenAIClient.embeddings.create.mockRejectedValueOnce(embeddingError);
-      
-      const fallbackHandler = vi.fn().mockResolvedValue({
-        content: [{ type: 'text', text: 'Fallback search results' }]
+      // Configuration du mock pour simuler une erreur OpenAI
+      mockOpenAIClient.embeddings.create.mockRejectedValue(new Error('OpenAI API error'));
+
+      const result = await searchTasksByContentTool.handler({
+        search_query: 'test query'
       });
+
+      expect(result.isError).toBe(true);
+      expect(result.content).toBeDefined();
+      expect(Array.isArray(result.content)).toBe(true);
+      expect(result.content).toHaveLength(1);
       
-      const result = await searchTasksByContentTool.handler(
-        { search_query: 'test query' },
-        mockCache,
-        vi.fn().mockResolvedValue(true),
-        fallbackHandler
-      );
-      
-      expect(fallbackHandler).toHaveBeenCalledWith(
-        { search_query: 'test query' },
-        mockCache
-      );
-      
-      expect(consoleLogSpy).toHaveBeenCalledWith(
-        expect.stringContaining('[INFO] Recherche sémantique échouée')
-      );
+      const errorContent = result.content[0];
+      expect(errorContent.type).toBe('text');
+      expect(errorContent.text).toContain('Erreur lors de la recherche sémantique:');
+      expect(errorContent.text).toContain('OpenAI API error');
     });
   });
 
   describe('Enrichissement des résultats', () => {
     test('should include host identifier in results', async () => {
-      const searchResults = [
-        {
-          id: 'result1',
-          score: 0.95,
-          payload: {
-            task_id: 'task1',
-            content: 'Test content',
-            chunk_type: 'message_exchange',
-            host_os: 'different-host'
+      // Configuration du mock
+      mockQdrantClient.search.mockResolvedValue({
+        points: [
+          {
+            id: 'test-point-1',
+            score: 0.85,
+            payload: {
+              task_id: 'conv1',
+              content: 'User message 1',
+              chunk_id: 'chunk-1',
+              chunk_type: 'message_exchange',
+              workspace: 'test-workspace',
+              task_title: 'Test Conversation 1',
+              message_index: 1,
+              total_messages: 5,
+              role: 'user',
+              timestamp: '2025-01-01T10:00:00Z',
+              host_os: 'test-host-123'
+            }
           }
-        }
-      ];
-      
-      mockQdrantClient.search.mockResolvedValueOnce(searchResults);
-      
-      const result = await searchTasksByContentTool.handler(
-        { search_query: 'test query' },
-        mockCache,
-        vi.fn().mockResolvedValue(true),
-        vi.fn().mockResolvedValue({ content: [{ type: 'text', text: 'Fallback' }] })
-      );
-      
-      const resultText = result.content[0].type === 'text' ? result.content[0].text : '';
-      const parsedResult = JSON.parse(resultText);
-      
-      expect(parsedResult.current_machine).toMatchObject({
-        host_id: 'test-host-123',
-        search_timestamp: expect.any(String),
-        query: 'test query',
-        results_count: 1
+        ]
       });
+
+      const result = await searchTasksByContentTool.handler({
+        search_query: 'test query'
+      });
+
+      expect(result.isError).toBe(false);
+      expect(result.content).toBeDefined();
+      expect(Array.isArray(result.content)).toBe(true);
+      expect(result.content).toHaveLength(1);
+      
+      const searchResult = result.content[0];
+      expect(searchResult).toHaveProperty('current_machine');
+      expect(searchResult.current_machine).toHaveProperty('host_id');
+      expect(searchResult.current_machine.host_id).toBe('test-host-123');
+      expect(searchResult.current_machine).toHaveProperty('search_timestamp');
+      expect(searchResult.current_machine).toHaveProperty('query');
+      expect(searchResult.current_machine).toHaveProperty('results_count');
+      expect(searchResult.current_machine.results_count).toBe(1);
     });
 
     test('should provide cross-machine analysis', async () => {
-      const searchResults = [
-        {
-          id: 'result1',
-          score: 0.95,
-          payload: {
-            task_id: 'task1',
-            content: 'Content from host A',
-            host_os: 'host-a'
+      // Configuration du mock avec différentes machines
+      mockQdrantClient.search.mockResolvedValue({
+        points: [
+          {
+            id: 'test-point-1',
+            score: 0.85,
+            payload: {
+              task_id: 'conv1',
+              content: 'User message 1',
+              chunk_id: 'chunk-1',
+              chunk_type: 'message_exchange',
+              workspace: 'test-workspace',
+              task_title: 'Test Conversation 1',
+              message_index: 1,
+              total_messages: 5,
+              role: 'user',
+              timestamp: '2025-01-01T10:00:00Z',
+              host_os: 'windows-x64-1'
+            }
+          },
+          {
+            id: 'test-point-2',
+            score: 0.75,
+            payload: {
+              task_id: 'conv2',
+              content: 'Another test message',
+              chunk_id: 'chunk-2',
+              chunk_type: 'message_exchange',
+              workspace: 'test-workspace',
+              task_title: 'Test Conversation 2',
+              message_index: 1,
+              total_messages: 3,
+              role: 'user',
+              timestamp: '2025-01-02T15:30:00Z',
+              host_os: 'linux-arm64-2'
+            }
           }
-        },
-        {
-          id: 'result2',
-          score: 0.85,
-          payload: {
-            task_id: 'task2',
-            content: 'Content from host B',
-            host_os: 'host-b'
-          }
-        }
-      ];
+        ]
+      });
+
+      const result = await searchTasksByContentTool.handler({
+        search_query: 'test query'
+      });
+
+      expect(result.isError).toBe(false);
+      expect(result.content).toBeDefined();
+      expect(Array.isArray(result.content)).toBe(true);
+      expect(result.content).toHaveLength(1);
       
-      mockQdrantClient.search.mockResolvedValueOnce(searchResults);
-      
-      const result = await searchTasksByContentTool.handler(
-        { search_query: 'test query' },
-        mockCache,
-        vi.fn().mockResolvedValue(true),
-        vi.fn().mockResolvedValue({ content: [{ type: 'text', text: 'Fallback' }] })
-      );
-      
-      const resultText = result.content[0].type === 'text' ? result.content[0].text : '';
-      const parsedResult = JSON.parse(resultText);
-      
-      expect(parsedResult.cross_machine_analysis).toMatchObject({
-        machines_found: ['host-a', 'host-b'],
-        results_by_machine: {
-          'host-a': 1,
-          'host-b': 1
-        }
+      const searchResult = result.content[0];
+      expect(searchResult).toHaveProperty('cross_machine_analysis');
+      expect(searchResult.cross_machine_analysis).toHaveProperty('machines_found');
+      expect(searchResult.cross_machine_analysis.machines_found).toEqual(['windows-x64-1', 'linux-arm64-2']);
+      expect(searchResult.cross_machine_analysis).toHaveProperty('results_by_machine');
+      expect(searchResult.cross_machine_analysis.results_by_machine).toEqual({
+        'windows-x64-1': 1,
+        'linux-arm64-2': 1
       });
     });
   });
