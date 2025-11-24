@@ -78,7 +78,9 @@ const INTELLIGENT_PRESETS = {
       'view_task_details',
       'debug_analyze_conversation',
       'get_raw_conversation',
-      'diagnose_conversation_bom'
+      'diagnose_conversation_bom',
+      'get_conversation_synthesis',
+      'debug_task_parsing'
     ],
     defaultOptions: {
       truncate: 0,
@@ -100,25 +102,25 @@ const INTELLIGENT_PRESETS = {
       diagnoseIndex: false
     }
   },
-
-  // EXPORT_FORMAT : 6 stratégies d'export identifiées (7 outils)
-  [DisplayPreset.EXPORT_FORMAT]: {
-    category: ToolCategory.EXPORT,
-    processingLevel: ProcessingLevel.BACKGROUND,
-    tools: [
-      'export_conversation_json',
-      'export_conversation_csv', 
-      'export_conversation_xml',
-      'generate_trace_summary',
-      'generate_cluster_summary'
-    ],
-    defaultOptions: {
-      outputFormat: 'json',
-      includeCss: true,
-      prettyPrint: true
-    }
-  },
-
+// EXPORT_FORMAT : 6 stratégies d'export identifiées (7 outils)
+[DisplayPreset.EXPORT_FORMAT]: {
+  category: ToolCategory.EXPORT,
+  processingLevel: ProcessingLevel.BACKGROUND,
+  tools: [
+    'export_conversation_json',
+    'export_conversation_csv',
+    'export_conversation_xml',
+    'generate_trace_summary',
+    'generate_cluster_summary',
+    'get_conversation_synthesis',
+    'export_task_tree_markdown'
+  ],
+  defaultOptions: {
+    outputFormat: 'json',
+    includeCss: true,
+    prettyPrint: true
+  }
+},
   // TREE_NAVIGATION : Navigation hiérarchique + maintenance (16 outils utility)
   [DisplayPreset.TREE_NAVIGATION]: {
     category: ToolCategory.UTILITY,
@@ -127,7 +129,8 @@ const INTELLIGENT_PRESETS = {
       'detect_roo_storage',
       'build_skeleton_cache',
       'manage_mcp_settings',
-      'rebuild_and_restart_mcp'
+      'rebuild_and_restart_mcp',
+      'view_conversation_tree'
     ],
     defaultOptions: {
       forceRebuild: false,

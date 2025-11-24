@@ -59,7 +59,7 @@ function Load-Config {
 # Fonction d'exécution des tests
 function Invoke-Tests {
     param([string]$TestType, [psobject]$Config)
-    {
+    
     Write-Host "EXECUTION DES TESTS" -ForegroundColor Cyan
     Write-Host "=====" -ForegroundColor Cyan
     Write-Host ""
@@ -277,7 +277,7 @@ Fichiers de test détectés :
         } else {
             Write-Error-Message "Tests echouants : 0"
         }
-    }
+    } else {
         Write-Success "Aucun echec detecte"
     }
     

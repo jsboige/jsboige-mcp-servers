@@ -19,13 +19,13 @@ import {
   UnifiedApiGateway,
   createUnifiedApiGateway,
   INTELLIGENT_PRESETS
-} from '../../../src/gateway/UnifiedApiGateway.js';
+} from '../../../src/gateway/UnifiedApiGateway';
 import {
   DisplayPreset,
   ToolCategory,
   ProcessingLevel,
   DisplayOptions
-} from '../../../src/interfaces/UnifiedToolInterface.js';
+} from '../../../src/interfaces/UnifiedToolInterface';
 
 describe('UnifiedApiGateway - Architecture consolidée', () => {
   
@@ -391,7 +391,7 @@ describe('UnifiedApiGateway - Architecture consolidée', () => {
       // Preset invalide - utiliser une valeur qui n'existe pas dans l'enum
       await expect(
         gateway.execute('non-existent-preset' as DisplayPreset)
-      ).rejects.toThrow('Validation failed');
+      ).rejects.toThrow('Validation failed: Invalid preset: non-existent-preset. Must be one of: quick, detailed, search, export, tree');
     });
 
     test('Validation des options par catégorie', async () => {
@@ -426,7 +426,7 @@ describe('UnifiedApiGateway - Architecture consolidée', () => {
         gateway.execute(DisplayPreset.SEARCH_RESULTS, {
           maxResults: 0 // Invalide
         })
-      ).rejects.toThrow('maxResults must be >= 1');
+      ).rejects.toThrow('Validation failed: maxResults must be >= 1');
     });
 
     test('Validation maxResults avec valeur limite valide', async () => {
@@ -444,7 +444,7 @@ describe('UnifiedApiGateway - Architecture consolidée', () => {
         gateway.execute(DisplayPreset.SEARCH_RESULTS, {
           maxResults: -5 // Invalide
         })
-      ).rejects.toThrow('maxResults must be >= 1');
+      ).rejects.toThrow('Validation failed: maxResults must be >= 1');
     });
 
     test('Validation des formats d\'export', async () => {
@@ -452,7 +452,7 @@ describe('UnifiedApiGateway - Architecture consolidée', () => {
         gateway.execute(DisplayPreset.EXPORT_FORMAT, {
           outputFormat: 'invalid-format' as any
         })
-      ).rejects.toThrow('outputFormat must be one of');
+      ).rejects.toThrow('Validation failed: outputFormat must be one of: json, csv, xml, markdown, html');
     });
 
     test('Validation outputFormat avec formats valides', async () => {
@@ -627,6 +627,9 @@ describe('Architecture consolidée - Tests d\'intégration', () => {
     Object.values(INTELLIGENT_PRESETS).forEach(preset => {
       preset.tools.forEach(tool => allTools.add(tool));
     });
+    
+    // Afficher les outils trouvés pour diagnostic
+    console.log('Outils trouvés dans les presets:', Array.from(allTools).sort());
     
     // Vérifier qu'on couvre bien les 22 outils actuellement définis
     expect(allTools.size).toBe(22); // 22 outils distincts dans les presets actuels

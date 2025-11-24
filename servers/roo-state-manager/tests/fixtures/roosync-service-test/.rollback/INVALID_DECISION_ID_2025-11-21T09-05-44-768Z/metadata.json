@@ -1,9 +1,0 @@
-{
-  "decisionId": "INVALID_DECISION_ID",
-  "timestamp": "2025-11-21T09-05-44-768Z",
-  "machine": "PC-PRINCIPAL",
-  "files": [
-    "sync-config.ref.json",
-    "sync-roadmap.md"
-  ]
-}
