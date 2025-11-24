@@ -423,9 +423,7 @@ describe('🔍 search_tasks_by_content - Outil Renommé', () => {
       mockCache = createMockCache();
 const result = await searchTasksByContentTool.handler({
   search_query: 'User message'
-}, mockCache, async () => true, async () => ({ isError: false, content: [] }), async (args: any, cache: Map<string, ConversationSkeleton>) => {
-  return await handleSearchTasksSemanticFallback(args, cache);
-});
+}, mockCache, async () => true, async () => ({ isError: false, content: [] }));
 
       expect(result.isError).toBe(false);
       expect(result.content).toBeDefined();
