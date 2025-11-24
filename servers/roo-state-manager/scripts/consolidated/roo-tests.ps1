@@ -352,11 +352,11 @@ function Main {
         # Configuration par defaut minimale avec timeouts réduits pour éviter les blocages
         $config = @{
             testTypes = @{
-                unit = @{ command = "test:unit"; timeout = 30000; pattern = "tests/unit/**/*.test.ts"; description = "Tests unitaires" }
-                integration = @{ command = "test:integration"; timeout = 45000; pattern = "tests/integration/**/*.test.ts"; description = "Tests d'integration" }
-                e2e = @{ command = "test:e2e"; timeout = 60000; pattern = "tests/e2e/**/*.test.ts"; description = "Tests end-to-end" }
+                unit = @{ command = "test:unit"; timeout = 30000; pattern = "tests/unit/**/*.test.ts"; description = "Tests unitaires (47 fichiers détectés)" }
+                integration = @{ command = "test:integration"; timeout = 45000; pattern = "tests/integration/**/*.test.ts"; description = "Tests d'integration (4 fichiers détectés)" }
+                e2e = @{ command = "test:e2e"; timeout = 60000; pattern = "tests/e2e/**/*.test.ts"; description = "Tests end-to-end (2 fichiers détectés)" }
                 detector = @{ command = "test:detector"; timeout = 30000; pattern = "tests/unit/services/DiffDetector.test.ts"; description = "Tests du detecteur" }
-                all = @{ command = "test"; timeout = 90000; pattern = "tests/**/*.test.ts"; description = "Tous les tests" }
+                all = @{ command = "test"; timeout = 90000; pattern = "tests/**/*.test.ts"; description = "Tous les tests (61 fichiers détectés, 1 exclu)" }
             }
             output = @{
                 formats = @("console")
