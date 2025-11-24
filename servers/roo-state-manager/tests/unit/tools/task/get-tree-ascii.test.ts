@@ -347,8 +347,8 @@ describe('🌳 get_task_tree - Génération d\'Arbre ASCII Corrigée', () => {
       const consoleWarnSpy = vi.spyOn(console, 'warn');
       
       const result = await handleGetTaskTree(
-        { conversation_id: 'nonexistent', output_format: 'ascii-tree' },
-        new Map(), // Cache vide pour éviter les logs de reconstruction
+        { conversation_id: 'root', output_format: 'ascii-tree' },
+        normalCache, // Utiliser le cache normal avec les données de test
         vi.fn().mockResolvedValue(true)
       );
       
@@ -357,15 +357,10 @@ describe('🌳 get_task_tree - Génération d\'Arbre ASCII Corrigée', () => {
       // Devrait gérer la référence circulaire sans boucle infinie
       expect(textContent).toContain('Root Task');
       expect(textContent).toContain('Child 1');
-<<<<<<< HEAD
-      
       // 🎯 CORRECTION : Le warning de référence circulaire est dans console.warn, pas console.log
       expect(consoleWarnSpy).toHaveBeenCalledWith(
         expect.stringContaining('Référence circulaire détectée')
       );
-=======
-      expect(consoleLogSpy).not.toHaveBeenCalled(); // Pas de log avec cache vide
->>>>>>> 1cfe10aaa0e3aa442098d527ff895d4dab536327
     });
 
     test('should handle very deep hierarchies efficiently', async () => {

@@ -79,13 +79,6 @@ export function formatTaskTreeAscii(
         const isSingleRoot = isRoot && !hasChildren;
         const connector = isSingleRoot ? '' : (isRoot ? rootSymbol + ' ' : (isLast ? '└─ ' : '├─ '));
         
-        // 🎯 CORRECTION : Marquage correct de la tâche actuelle
-        if (node.metadata?.isCurrentTask) {
-            result += ` ${node.title} (TÂCHE ACTUELLE)`;
-        } else if (highlightCurrent && node.metadata?.isCurrentTask) {
-            result += ` ⭐ (TÂCHE ACTUELLE)`;
-        }
-        
         // ID court (8 caractères)
         const shortId = node.taskIdShort || node.taskId.substring(0, 8);
         
@@ -102,22 +95,18 @@ export function formatTaskTreeAscii(
             ? '[In Progress]'
             : '';
         
-        // Marqueur tâche actuelle
-        const currentMarker = highlightCurrent && node.metadata?.isCurrentTask
-            ? ' (TÂCHE ACTUELLE)'
-            : '';
+        // 🎯 CORRECTION CRITIQUE : Construire la ligne principale correctement
+        let displayName = '';
+        if (highlightCurrent && node.metadata?.isCurrentTask) {
+            displayName = `${node.title} (TÂCHE ACTUELLE)`;
+        } else {
+            displayName = `${shortId} - ${instruction}`;
+        }
         
-        // 🎯 CORRECTION CRITIQUE : Ligne principale du nœud SANS métadonnées pour l'ASCII pur
-        // 🎯 CORRECTION : Utiliser le titre pour le marquage de tâche actuelle
-        const displayName = highlightCurrent && node.metadata?.isCurrentTask
-            ? `${node.title} (TÂCHE ACTUELLE)`
-            : `${shortId} - ${instruction}`;
+        // 🎯 CORRECTION : Construire la ligne principale en une seule fois
         result += `${prefix}${connector}${displayName}`;
         if (status) {
             result += ` ${status}`;
-        }
-        if (currentMarker) {
-            result += currentMarker;
         }
         result += '\n';
         
@@ -174,6 +163,7 @@ export function formatTaskTreeAscii(
     }
     
     // Commencer le formatage depuis la racine
+    // 🎯 CORRECTION : Pour la racine, isLast=true et isRoot=true
     return formatNode(node, '', true, true);
 }
 

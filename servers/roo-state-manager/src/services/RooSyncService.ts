@@ -1054,6 +1054,7 @@ export class RooSyncService {
       const report = {
         sourceMachine: sourceMachineId,
         targetMachine: targetMachineId,
+        hostId: this.config.machineId || 'unknown',
         differences: allDifferences,
         summary: {
           total: allDifferences.length,

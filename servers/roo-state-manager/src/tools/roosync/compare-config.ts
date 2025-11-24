@@ -31,6 +31,7 @@ export type CompareConfigArgs = z.infer<typeof CompareConfigArgsSchema>;
 export const CompareConfigResultSchema = z.object({
   source: z.string().describe('Machine source'),
   target: z.string().describe('Machine cible'),
+  host_id: z.string().optional().describe('Identifiant de l\'hôte local'),
   differences: z.array(z.object({
     category: z.string().describe('Catégorie de différence'),
     severity: z.string().describe('Niveau de sévérité'),
@@ -161,6 +162,7 @@ function formatComparisonReport(report: any): CompareConfigResult {
   return {
     source: report.sourceMachine,
     target: report.targetMachine,
+    host_id: report.hostId || 'unknown',
     differences: report.differences.map((diff: any) => ({
       category: diff.category,
       severity: diff.severity,
