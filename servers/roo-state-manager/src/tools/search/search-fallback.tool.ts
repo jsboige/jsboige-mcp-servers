@@ -1,96 +1,117 @@
-/**
- * Fallback de recherche sémantique
- * Utilisé quand Qdrant échoue ou n'est pas disponible
- */
-
+import { ConversationSkeleton } from '../../../types/conversation.js';
 import { CallToolResult } from '@modelcontextprotocol/sdk/types.js';
-import { ConversationSkeleton } from '../../types/conversation.js';
-
-export interface SearchFallbackArgs {
-    conversation_id?: string;
-    search_query: string;
-    max_results?: number;
-}
 
 /**
- * Helper pour tronquer les messages
+ * Outil de recherche textuel simple (fallback)
  */
-function truncateMessage(message: string, truncate: number): string {
-    if (!message || truncate === 0) {
-        return message;
-    }
-    const lines = message.split('\n');
-    if (lines.length <= truncate * 2) {
-        return message;
-    }
-    const start = lines.slice(0, truncate).join('\n');
-    const end = lines.slice(-truncate).join('\n');
-    return `${start}\n[...]\n${end}`;
-}
-
-/**
- * Handler de fallback pour la recherche sémantique
- * Recherche textuelle simple dans les instructions des conversations
- */
-export async function handleSearchTasksSemanticFallback(
-    args: SearchFallbackArgs,
-    conversationCache: Map<string, ConversationSkeleton>
+export async function searchFallbackTool(
+  args: { query: string; workspace?: string },
+  conversationCache: Map<string, ConversationSkeleton>
 ): Promise<CallToolResult> {
-    console.log(`[DEBUG] Fallback called with args:`, JSON.stringify(args));
+  try {
+    const { query, workspace } = args;
     
-    const { conversation_id, search_query, max_results = 10 } = args;
-    console.log(`[DEBUG] Extracted conversation_id: "${conversation_id}" (type: ${typeof conversation_id})`);
-
-    // Si pas de conversation_id spécifique, rechercher dans tout le cache
-    console.log(`[DEBUG] Fallback search - conversation_id: "${conversation_id}" (type: ${typeof conversation_id})`);
-    const isUndefinedString = conversation_id === 'undefined';
-    const isEmptyOrFalsy = !conversation_id;
-    console.log(`[DEBUG] isUndefinedString: ${isUndefinedString}, isEmptyOrFalsy: ${isEmptyOrFalsy}`);
-    
-    if (!conversation_id || conversation_id === 'undefined') {
-        const query = search_query.toLowerCase();
-        const results: any[] = [];
-
-        for (const [taskId, skeleton] of conversationCache.entries()) {
-            if (results.length >= max_results) break;
-            
-            for (const item of skeleton.sequence) {
-                if ('content' in item && typeof item.content === 'string' && item.content.toLowerCase().includes(query)) {
-                    results.push({
-                        taskId: taskId,
-                        score: 1.0,
-                        match: `Found in role '${item.role}': ${truncateMessage(item.content, 2)}`
-                    });
-                    break; // Une seule correspondance par tâche pour éviter la duplication
-                }
-            }
-        }
-
-        return { content: [{ type: 'text', text: JSON.stringify(results, null, 2) }] };
+    if (!query || query.trim().length === 0) {
+      return {
+        content: [{
+          type: 'text',
+          text: JSON.stringify({
+            success: false,
+            error: 'Query parameter is required and cannot be empty'
+          })
+        }]
+      };
     }
 
-    // Recherche dans une conversation spécifique
-    console.log(`[DEBUG] Specific search - conversation_id: "${conversation_id}" (type: ${typeof conversation_id})`);
-    const skeleton = conversationCache.get(conversation_id);
-    if (!skeleton) {
-        throw new Error(`Conversation with ID '${conversation_id}' not found in cache.`);
+    // Recherche textuelle simple dans le cache
+    const results: Array<{
+      taskId: string;
+      title: string;
+      instruction: string;
+      workspace: string;
+      lastActivity: string;
+      metadata: any;
+    }> = [];
+
+    for (const [taskId, skeleton] of conversationCache.entries()) {
+      // Filtrer par workspace si spécifié
+      if (workspace && skeleton.workspace !== workspace) {
+        continue;
+      }
+
+      // Recherche textuelle simple dans le titre et l'instruction
+      const searchText = query.toLowerCase();
+      const titleMatch = skeleton.title?.toLowerCase().includes(searchText);
+      const instructionMatch = skeleton.instruction?.toLowerCase().includes(searchText);
+
+      if (titleMatch || instructionMatch) {
+        results.push({
+          taskId,
+          title: skeleton.title || 'Untitled',
+          instruction: skeleton.instruction || '',
+          workspace: skeleton.workspace || 'unknown',
+          lastActivity: skeleton.lastActivity || new Date().toISOString(),
+          metadata: {
+            taskType: skeleton.taskType || 'unknown',
+            status: skeleton.status || 'unknown',
+            messageCount: skeleton.messageCount || 0,
+            hasChildren: skeleton.hasChildren || false,
+            parentTaskId: skeleton.parentTaskId || null
+          }
+        });
+      }
     }
 
-    const query = search_query.toLowerCase();
-    const results: any[] = [];
+    // Trier par pertinence (titre d'abord, puis instruction)
+    results.sort((a, b) => {
+      const queryLower = query.toLowerCase();
+      const aTitleScore = a.title.toLowerCase().includes(queryLower) ? 2 : 0;
+      const bTitleScore = b.title.toLowerCase().includes(queryLower) ? 2 : 0;
+      const aInstrScore = a.instruction.toLowerCase().includes(queryLower) ? 1 : 0;
+      const bInstrScore = b.instruction.toLowerCase().includes(queryLower) ? 1 : 0;
+      
+      const aScore = aTitleScore + aInstrScore;
+      const bScore = bTitleScore + bInstrScore;
+      
+      if (aScore !== bScore) {
+        return bScore - aScore; // Score décroissant
+      }
+      
+      // Même score : trier par dernière activité
+      return new Date(b.lastActivity).getTime() - new Date(a.lastActivity).getTime();
+    });
 
-    for (const item of skeleton.sequence) {
-        if (results.length >= max_results) {
-            break;
-        }
-        if ('content' in item && typeof item.content === 'string' && item.content.toLowerCase().includes(query)) {
-            results.push({
-                taskId: skeleton.taskId,
-                score: 1.0,
-                match: `Found in role '${item.role}': ${truncateMessage(item.content, 2)}`
-            });
-        }
-    }
+    return {
+      content: [{
+        type: 'text',
+        text: JSON.stringify({
+          success: true,
+          results,
+          query,
+          searchType: 'text',
+          totalFound: results.length,
+          metadata: {
+            searchMethod: 'text',
+            cacheSize: conversationCache.size,
+            workspace: workspace || 'all'
+          }
+        })
+      }]
+    };
 
-    return { content: [{ type: 'text', text: JSON.stringify(results, null, 2) }] };
+  } catch (error) {
+    return {
+      content: [{
+        type: 'text',
+        text: JSON.stringify({
+          success: false,
+          error: error instanceof Error ? error.message : 'Unknown error in search fallback',
+          query: args.query
+        })
+      }]
+    };
+  }
 }
+
+// Export pour compatibilité avec les tests
+export const handleSearchTasksSemanticFallback = searchFallbackTool;

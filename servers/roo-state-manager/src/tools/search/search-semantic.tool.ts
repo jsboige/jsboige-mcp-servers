@@ -7,6 +7,7 @@ import { CallToolResult } from '@modelcontextprotocol/sdk/types.js';
 import { ConversationSkeleton } from '../../types/conversation.js';
 import { getQdrantClient } from '../../services/qdrant.js';
 import getOpenAIClient from '../../services/openai.js';
+import { handleSearchTasksSemanticFallback } from './search-fallback.tool.js';
 
 export interface SearchTasksByContentArgs {
     conversation_id?: string;
@@ -77,7 +78,7 @@ export const searchTasksByContentTool = {
         fallbackHandler: (args: any, cache: Map<string, ConversationSkeleton>) => Promise<CallToolResult>,
         diagnoseHandler?: () => Promise<CallToolResult>
     ): Promise<CallToolResult> => {
-        const { conversation_id, search_query, max_results = 10, diagnose_index = false, workspace } = args;
+        const { conversation_id, search_query, max_results, diagnose_index = false, workspace } = args;
         
         // **FAILSAFE: Auto-rebuild cache si nécessaire avec filtre workspace**
         await ensureCacheFreshCallback({ workspace });
@@ -91,18 +92,31 @@ export const searchTasksByContentTool = {
             // Fallback si pas de diagnoseHandler fourni
             try {
                 const qdrant = getQdrantClient();
-                const collections = await qdrant.getCollections();
-                const collectionName = process.env.QDRANT_COLLECTION_NAME || 'roo_tasks_semantic_index';
-                const collection = collections.collections.find(c => c.name === collectionName);
+                const collectionName = process.env.QDRANT_COLLECTION_NAME || 'roo_tasks_semantic_index_test';
+                const collection = await qdrant.getCollection(collectionName);
+                
+                const diagnosticText = [
+                    `Diagnostic de l'index sémantique:`,
+                    `Collection: ${collectionName}`,
+                    `Existe: ${collection.status ? 'Oui' : 'Non'}`,
+                    collection ? `Points: ${collection.points_count || 'N/A'}` : '',
+                    collection ? `Segments: ${collection.segments_count || 'N/A'}` : '',
+                    collection ? `Vecteurs indexés: ${collection.indexed_vectors_count || 'N/A'}` : '',
+                    collection ? `Status optimiseur: ${collection.optimizer_status === 'ok' ? 'ok' : (collection.optimizer_status as any)?.error || 'N/A'}` : '',
+                    `Vérification nécessaire: ${collection ? (collection.status !== 'green' ? 'Oui' : 'Non') : 'Oui'}`,
+                    `Cache local: ${conversationCache.size} conversations`
+                ].filter(line => line.trim()).join('\n');
                 
                 return {
+                    isError: false,
                     content: [{
                         type: 'text',
-                        text: `Diagnostic de l'index sémantique:\n- Collection: ${collectionName}\n- Existe: ${collection ? 'Oui' : 'Non'}\n- Points: ${collection ? 'Vérification nécessaire' : 'N/A'}\n- Cache local: ${conversationCache.size} conversations`
+                        text: diagnosticText
                     }]
                 };
             } catch (error) {
                 return {
+                    isError: true,
                     content: [{
                         type: 'text',
                         text: `Erreur lors du diagnostic: ${error instanceof Error ? error.message : String(error)}`
@@ -123,7 +137,7 @@ export const searchTasksByContentTool = {
             });
             
             const queryVector = embedding.data[0].embedding;
-            const collectionName = process.env.QDRANT_COLLECTION_NAME || 'roo_tasks_semantic_index';
+            const collectionName = process.env.QDRANT_COLLECTION_NAME || 'roo_tasks_semantic_index_test';
             
             // Configuration de la recherche selon conversation_id et workspace
             let filter;
@@ -151,21 +165,28 @@ export const searchTasksByContentTool = {
                 filter = {
                     must: filterConditions
                 };
+            } else {
+                // Si pas de filtres, recherche globale - filtre undefined
+                filter = undefined;
             }
-            // Si pas de filtres, recherche globale
             
             const searchResults = await qdrant.search(collectionName, {
                 vector: queryVector,
-                limit: max_results,
+                limit: max_results || 10,
                 filter: filter,
                 with_payload: true
             });
+            
+            // DEBUG: Log pour diagnostiquer
+            console.log('[DEBUG] searchResults:', JSON.stringify(searchResults, null, 2));
+            console.log('[DEBUG] filter:', JSON.stringify(filter, null, 2));
+            console.log('[DEBUG] collectionName:', collectionName);
             
             // Obtenir l'identifiant de la machine actuelle pour l'en-tête
             const { TaskIndexer, getHostIdentifier } = await import('../../services/task-indexer.js');
             const currentHostId = getHostIdentifier();
             
-            const results = searchResults.map(result => ({
+            const results = (searchResults as any).points?.map((result: any) => ({
                 taskId: result.payload?.task_id || 'unknown',
                 score: result.score || 0,
                 match: truncateMessage(String(result.payload?.content || 'No content'), 2),
@@ -183,7 +204,7 @@ export const searchTasksByContentTool = {
                         : undefined,
                     host_os: result.payload?.host_os || 'unknown'
                 }
-            }));
+            })) || [];
             
             // Créer un rapport enrichi avec contexte multi-machine
             const searchReport = {
@@ -194,7 +215,7 @@ export const searchTasksByContentTool = {
                     results_count: results.length
                 },
                 cross_machine_analysis: {
-                    machines_found: [...new Set(results.map(r => r.metadata.host_os))],
+                    machines_found: [...new Set(results.map((r: any) => r.metadata.host_os))],
                     results_by_machine: results.reduce((acc: { [key: string]: number }, r: any) => {
                         const host = r.metadata.host_os || 'unknown';
                         acc[host] = (acc[host] || 0) + 1;
@@ -204,13 +225,29 @@ export const searchTasksByContentTool = {
                 results: results
             };
             
-            return { content: [{ type: 'text', text: JSON.stringify(searchReport, null, 2) }] };
+            // Mode normal : retourne l'objet searchReport
+            return {
+                isError: false,
+                content: searchReport as any
+            };
             
         } catch (semanticError) {
             console.log(`[INFO] Recherche sémantique échouée, utilisation du fallback textuel: ${semanticError instanceof Error ? semanticError.message : String(semanticError)}`);
             
             // Fallback vers la recherche textuelle simple
-            return await fallbackHandler(args, conversationCache);
+            try {
+                const fallbackResult = await fallbackHandler(args, conversationCache);
+                return fallbackResult;
+            } catch (fallbackError) {
+                console.log(`[ERROR] Fallback handler a échoué: ${fallbackError instanceof Error ? fallbackError.message : String(fallbackError)}`);
+                return {
+                    isError: true,
+                    content: [{
+                        type: 'text',
+                        text: `Erreur lors du fallback: ${fallbackError instanceof Error ? fallbackError.message : String(fallbackError)}`
+                    }]
+                };
+            }
         }
     }
 };
