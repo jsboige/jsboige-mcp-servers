@@ -279,7 +279,6 @@ Fichiers de test détectés :
         }
     } else {
         Write-Success "Aucun echec detecte"
-    }
     
     # Sauvegarder la sortie
     if ($outputFormats -contains "console") {
