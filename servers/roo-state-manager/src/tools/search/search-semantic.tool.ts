@@ -89,7 +89,7 @@ export const searchTasksByContentTool = {
                 return await diagnoseHandler();
             }
             
-            // Fallback si pas de diagnoseHandler fourni
+            // Utiliser le fallback même pour les erreurs de diagnostic
             try {
                 const qdrant = getQdrantClient();
                 const collectionName = process.env.QDRANT_COLLECTION_NAME || 'roo_tasks_semantic_index_test';
@@ -115,16 +115,25 @@ export const searchTasksByContentTool = {
                     }]
                 };
             } catch (error) {
-                return {
-                    isError: true,
-                    content: [{
-                        type: 'text',
-                        text: `Erreur lors du diagnostic: ${error instanceof Error ? error.message : String(error)}`
-                    }]
-                };
+                console.log(`[ERROR] Erreur lors du diagnostic: ${error instanceof Error ? error.message : String(error)}`);
+                
+                // Utiliser le fallback même pour les erreurs de diagnostic
+                try {
+                    const fallbackResult = await fallbackHandler(args, conversationCache);
+                    return fallbackResult;
+                } catch (fallbackError) {
+                    console.log(`[ERROR] Fallback handler a échoué: ${(fallbackError as any).message || String(fallbackError)}`);
+                    return {
+                        isError: true,
+                        content: [{
+                            type: 'text',
+                            text: `Erreur lors du fallback: ${(fallbackError as any).message || String(fallbackError)}`
+                        }]
+                    };
+                }
             }
         }
-
+        
         // Tentative de recherche sémantique via Qdrant/OpenAI
         try {
             const qdrant = getQdrantClient();
@@ -132,7 +141,7 @@ export const searchTasksByContentTool = {
             
             // Créer l'embedding de la requête
             const embedding = await openai.embeddings.create({
-                model: 'text-embedding-3-small',
+                model: "text-embedding-ada-002",
                 input: search_query
             });
             
