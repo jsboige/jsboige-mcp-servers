@@ -1006,7 +1006,9 @@ export class HierarchyReconstructionEngine {
             return false;
         }
         
-        return rootPatterns.some(p => p.test(skeleton.truncatedInstruction || ''));
+        // Vérifier si l'instruction correspond à un pattern de racine
+        const instruction = skeleton.truncatedInstruction || '';
+        return rootPatterns.some(p => p.test(instruction));
     }
 
     /**

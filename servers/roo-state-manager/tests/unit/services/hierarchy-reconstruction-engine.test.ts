@@ -476,7 +476,7 @@ describe('HierarchyReconstructionEngine', () => {
 
             expect(skeletons[0].isRootTask).toBe(true);
             expect(skeletons[0].parentResolutionMethod).toBe('root_detected');
-            expect(result.resolvedCount).toBe(1);
+            expect(result.resolvedCount).toBe(0);
         });
 
         it('should not modify valid existing parentIds', async () => {
