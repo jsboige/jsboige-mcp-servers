@@ -83,6 +83,52 @@ vi.mock('../../../../src/services/openai.js', () => ({
   default: vi.fn(() => mockOpenAIClient)
 }));
 
+// Mock du fallback handler
+vi.mock('../../../../src/tools/search-fallback.tool.js', () => ({
+  handleSearchTasksSemanticFallback: vi.fn().mockImplementation(async (args: any, cache: any) => {
+    console.log('[MOCK] Fallback called with args:', JSON.stringify(args));
+    console.log('[MOCK] Cache size:', cache.size);
+    
+    const { search_query } = args;
+    const query = search_query.toLowerCase();
+    const results: any[] = [];
+    
+    // Simuler la recherche textuelle pour le test
+    for (const [taskId, skeleton] of cache.entries()) {
+      if (results.length >= 2) break; // Limiter à 2 résultats pour le test
+      
+      let hasMatch = false;
+      for (const item of skeleton.sequence) {
+        if ('content' in item && typeof item.content === 'string') {
+          const content = item.content.toLowerCase();
+          if (content.includes(query)) {
+            hasMatch = true;
+            break;
+          }
+        }
+      }
+      
+      if (hasMatch) {
+        results.push({
+          taskId,
+          score: 1.0,
+          match: `Found in role '${skeleton.sequence?.[0]?.role || 'unknown'}': User message 1`,
+          metadata: {
+            task_title: skeleton.metadata?.title || `Task ${taskId}`,
+            message_count: skeleton.sequence ? skeleton.sequence.length : 0
+          }
+        });
+      }
+    }
+    
+    console.log('[MOCK] Fallback returning results:', results.length);
+    return {
+      isError: false,
+      content: results
+    };
+  })
+}));
+
 vi.doMock('../../../../src/services/task-indexer.js', () => ({
   getHostIdentifier: mockTaskIndexer.getHostIdentifier
 }));
@@ -418,12 +464,23 @@ describe('🔍 search_tasks_by_content - Outil Renommé', () => {
     test('should fallback to text search on semantic error', async () => {
       // Configuration du mock pour simuler une erreur sémantique
       mockQdrantClient.search.mockRejectedValue(new Error('Semantic search failed'));
-
+      
       // Configuration du mock pour que le cache retourne des résultats
       mockCache = createMockCache();
-const result = await searchTasksByContentTool.handler({
-  search_query: 'User message'
-}, mockCache, async () => true, async () => ({ isError: false, content: [] }));
+      
+      // Le module est déjà mocké avec vi.mock au début du fichier
+      const { handleSearchTasksSemanticFallback } = await import('../../../../build/tools/search-fallback.tool.js');
+      const fallbackSpy = vi.spyOn({ handleSearchTasksSemanticFallback }, 'handleSearchTasksSemanticFallback');
+      
+  const result = await searchTasksByContentTool.handler({
+    search_query: 'User message'
+  }, mockCache, async () => {
+    // Simuler une erreur sémantique pour déclencher le fallback
+    throw new Error('Semantic search error forced for testing');
+  }, async () => ({ isError: false, content: [] }));
+      
+      // Vérifier que le fallback a été appelé
+      expect(fallbackSpy).toHaveBeenCalled();
 
       expect(result.isError).toBe(false);
       expect(result.content).toBeDefined();
