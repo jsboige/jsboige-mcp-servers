@@ -225,6 +225,11 @@ export const searchTasksByContentTool = {
                 results: results
             };
             
+            // DEBUG: Log pour diagnostiquer
+            console.log('[DEBUG HANDLER] searchReport type:', typeof searchReport);
+            console.log('[DEBUG HANDLER] searchReport isArray:', Array.isArray(searchReport));
+            console.log('[DEBUG HANDLER] searchReport:', JSON.stringify(searchReport, null, 2));
+            
             // Mode normal : retourne l'objet searchReport
             return {
                 isError: false,

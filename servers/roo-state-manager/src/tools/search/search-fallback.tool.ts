@@ -1,5 +1,12 @@
-import { ConversationSkeleton } from '../../../types/conversation.js';
+import { ConversationSkeleton } from '../../types/conversation.js';
 import { CallToolResult } from '@modelcontextprotocol/sdk/types.js';
+
+export interface SearchFallbackArgs {
+    search_query: string;
+    max_results?: number;
+    conversation_id?: string;
+    workspace?: string;
+}
 
 /**
  * Outil de recherche textuel simple (fallback)
