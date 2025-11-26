@@ -1,12 +1,5 @@
-import { ConversationSkeleton } from '../../types/conversation.js';
+import { ConversationSkeleton } from '../../../types/conversation.js';
 import { CallToolResult } from '@modelcontextprotocol/sdk/types.js';
-
-export interface SearchFallbackArgs {
-    search_query: string;
-    max_results?: number;
-    conversation_id?: string;
-    workspace?: string;
-}
 
 /**
  * Outil de recherche textuel simple (fallback)
@@ -42,27 +35,36 @@ export async function searchFallbackTool(
 
     for (const [taskId, skeleton] of conversationCache.entries()) {
       // Filtrer par workspace si spécifié
-      if (workspace && skeleton.metadata.workspace !== workspace) {
+      if (workspace && skeleton.workspace !== workspace) {
         continue;
       }
 
-      // Recherche textuelle simple dans le titre et l'instruction
+      // Recherche textuelle simple dans le titre, l'instruction et les messages
       const searchText = query.toLowerCase();
-      const titleMatch = skeleton.metadata.title?.toLowerCase().includes(searchText);
-      const instructionMatch = skeleton.truncatedInstruction?.toLowerCase().includes(searchText);
+      const titleMatch = skeleton.metadata?.title?.toLowerCase().includes(searchText) ||
+                        skeleton.title?.toLowerCase().includes(searchText);
+      const instructionMatch = skeleton.instruction?.toLowerCase().includes(searchText);
+      
+      // Chercher aussi dans les messages de la séquence
+      let messageMatch = false;
+      if (skeleton.sequence && Array.isArray(skeleton.sequence)) {
+        messageMatch = skeleton.sequence.some(msg =>
+          msg.content && msg.content.toLowerCase().includes(searchText)
+        );
+      }
 
-      if (titleMatch || instructionMatch) {
+      if (titleMatch || instructionMatch || messageMatch) {
         results.push({
           taskId,
-          title: skeleton.metadata.title || 'Untitled',
-          instruction: skeleton.truncatedInstruction || '',
-          workspace: skeleton.metadata.workspace || 'unknown',
-          lastActivity: skeleton.metadata.lastActivity || new Date().toISOString(),
+          title: skeleton.title || 'Untitled',
+          instruction: skeleton.instruction || '',
+          workspace: skeleton.workspace || 'unknown',
+          lastActivity: skeleton.lastActivity || new Date().toISOString(),
           metadata: {
-            taskType: skeleton.metadata.mode || 'unknown',
-            status: skeleton.isCompleted ? 'completed' : 'unknown',
-            messageCount: skeleton.metadata.messageCount || 0,
-            hasChildren: (skeleton.childTaskInstructionPrefixes && skeleton.childTaskInstructionPrefixes.length > 0) || false,
+            taskType: skeleton.taskType || 'unknown',
+            status: skeleton.status || 'unknown',
+            messageCount: skeleton.messageCount || 0,
+            hasChildren: skeleton.hasChildren || false,
             parentTaskId: skeleton.parentTaskId || null
           }
         });

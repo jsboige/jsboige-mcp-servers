@@ -38,8 +38,8 @@ describe('roosync_amend_message', () => {
       }
     });
 
-    // NOTE: getLocalMachineId() utilise maintenant os.hostname() directement
-    // Plus besoin de créer sync-config.json pour les tests
+    // Définir la variable d'environnement pour les tests
+    process.env.ROOSYNC_MACHINE_ID = 'test-machine-01';
 
     messageManager = new MessageManager(testSharedStatePath);
 
@@ -52,6 +52,8 @@ describe('roosync_amend_message', () => {
     if (existsSync(testSharedStatePath)) {
       rmSync(testSharedStatePath, { recursive: true, force: true });
     }
+    // Nettoyer la variable d'environnement
+    delete process.env.ROOSYNC_MACHINE_ID;
   });
 
   test('should amend unread message successfully', async () => {

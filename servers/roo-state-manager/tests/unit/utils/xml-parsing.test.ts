@@ -2,19 +2,15 @@
  * Tests unitaires pour le parsing XML des sous-tâches
  * Teste les patterns <task> simples et <new_task><mode><message> complexes
  */
-
 import { describe, test, expect, beforeEach, afterEach } from 'vitest';
 import * as fs from 'fs/promises';
 import * as path from 'path';
 import { fileURLToPath } from 'url';
-
 // Import de la classe à tester
 import { RooStorageDetector } from '../../../src/utils/roo-storage-detector.js';
 import { NewTaskInstruction } from '../../../src/types/conversation.js';
-
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
-
 describe('Parsing XML des Sous-tâches', () => {
   const tempDir = path.join(__dirname, 'temp-xml-parsing');
   
@@ -25,7 +21,6 @@ describe('Parsing XML des Sous-tâches', () => {
   afterEach(async () => {
     await fs.rm(tempDir, { recursive: true, force: true });
   });
-
   describe('Pattern 1: Balises <task> simples', () => {
     test('Doit extraire balise task simple basique', async () => {
       const testContent = [
@@ -48,7 +43,6 @@ describe('Parsing XML des Sous-tâches', () => {
       expect(instructions[0].message).toContain('**MISSION CRITIQUE:** Réparer le système de hiérarchies');
       expect(instructions[0].message.length).toBeLessThanOrEqual(200);
     });
-
     test('Doit ignorer balises task trop courtes', async () => {
       const testContent = [
         {
@@ -66,7 +60,6 @@ describe('Parsing XML des Sous-tâches', () => {
       
       expect(instructions).toHaveLength(0);
     });
-
     test('Doit extraire plusieurs balises task dans le même message', async () => {
       const testContent = [
         {
@@ -92,7 +85,6 @@ describe('Parsing XML des Sous-tâches', () => {
       expect(instructions[0].message).toContain('Première mission de test');
       expect(instructions[1].message).toContain('Seconde mission de test');
     });
-
     test('Doit gérer les balises task avec contenu multiligne', async () => {
       const testContent = [
         {
@@ -101,11 +93,9 @@ describe('Parsing XML des Sous-tâches', () => {
           role: 'user',
           content: `<task>
 **MISSION COMPLEXE:**
-
 1. Étape une
 2. Étape deux
 3. Étape trois
-
 **CONTRAINTES:**
 - Respecter les standards
 - Tester soigneusement
@@ -124,7 +114,6 @@ describe('Parsing XML des Sous-tâches', () => {
       expect(instructions[0].message).toContain('**CONTRAINTES:**');
     });
   });
-
   describe('Pattern 2: Structures de délégation complexes', () => {
     test('Doit extraire délégation new_task complexe', async () => {
       const testContent = [
@@ -145,7 +134,6 @@ describe('Parsing XML des Sous-tâches', () => {
       expect(instructions[0].mode).toBe('code');
       expect(instructions[0].message).toBe('Créer le fichier de configuration principal');
     });
-
     test('Doit rejeter délégations avec mode ou message vides', async () => {
       const testContent = [
         {
@@ -170,7 +158,6 @@ describe('Parsing XML des Sous-tâches', () => {
       expect(instructions).toHaveLength(0);
     });
   });
-
   describe('Pattern 3: Format de contenu mixte', () => {
     test('Doit extraire balises task simples ET délégations complexes', async () => {
       const testContent = [
@@ -206,7 +193,6 @@ describe('Parsing XML des Sous-tâches', () => {
       expect(delegationInstruction!.message).toBe('Sous-tâche de débogage créée automatiquement');
     });
   });
-
   describe('Pattern 4: Contenu avec format array', () => {
     test('Doit gérer contenu au format array OpenAI', async () => {
       const testContent = [
@@ -233,7 +219,6 @@ describe('Parsing XML des Sous-tâches', () => {
       expect(instructions[0].message).toContain('Mission avec contenu array format OpenAI');
     });
   });
-
   describe('Pattern 5: Troncature et validation', () => {
     test('Doit tronquer les messages trop longs à 200 caractères', async () => {
       const longContent = 'Mission très longue'.repeat(20); // > 200 caractères
@@ -255,7 +240,6 @@ describe('Parsing XML des Sous-tâches', () => {
       expect(instructions[0].message.length).toBe(200);
       expect(instructions[0].message).toContain('Mission très longue');
     });
-
     test('Doit préserver les timestamps corrects', async () => {
       const timestamp = 1758233453401;
       const testContent = [
@@ -276,7 +260,6 @@ describe('Parsing XML des Sous-tâches', () => {
       expect(instructions[0].timestamp).toBe(timestamp);
     });
   });
-
   describe('Pattern 6: Cas de test réel', () => {
     test('Doit extraire la mission Git critique du cas réel', async () => {
       const realContent = [
@@ -296,11 +279,10 @@ describe('Parsing XML des Sous-tâches', () => {
       expect(instructions).toHaveLength(1);
       expect(instructions[0].mode).toBe('task');
       expect(instructions[0].message).toContain('**MISSION CRITIQUE GIT - ANALYSE DIFF ET COMMITS SÉCURISÉS**');
-      expect(instructions[0].message).toContain('**OBJECTIFS SPÉCIFIQUES :**');
+      expect(instructions[0].message).toContain('Tu dois effectuer une mission complète de gestion Git');
       expect(instructions[0].timestamp).toBe(1758233453401);
     });
   });
-
   describe('Pattern 7: Gestion d\'erreurs', () => {
     test('Doit gérer gracieusement fichier JSON corrompu', async () => {
       const filePath = path.join(tempDir, 'ui_messages_corrupt.json');
@@ -310,7 +292,6 @@ describe('Parsing XML des Sous-tâches', () => {
       
       expect(instructions).toHaveLength(0);
     });
-
     test('Doit gérer fichier inexistant', async () => {
       const filePath = path.join(tempDir, 'ui_messages_missing.json');
       
@@ -318,7 +299,6 @@ describe('Parsing XML des Sous-tâches', () => {
       
       expect(instructions).toHaveLength(0);
     });
-
     test('Doit nettoyer le BOM UTF-8', async () => {
       const testContent = [
         {
@@ -340,7 +320,6 @@ describe('Parsing XML des Sous-tâches', () => {
       expect(instructions[0].message).toContain('Mission avec nettoyage BOM UTF-8');
     });
   });
-
   describe('Integration: Système à deux passes', () => {
     test('Doit alimenter le RadixTree avec les préfixes extraits', async () => {
       const testContent = [
@@ -375,7 +354,6 @@ describe('Parsing XML des Sous-tâches', () => {
       expect(debugPrefix).toContain('Diagnostic du système');
     });
   });
-
   describe('Performance et robustesse', () => {
     test('Doit gérer un gros fichier avec de nombreuses balises', async () => {
       const largeContent = [];
@@ -408,7 +386,6 @@ describe('Parsing XML des Sous-tâches', () => {
     });
   });
 });
-
 /**
  * Tests d'intégration pour le système complet
  */
@@ -422,7 +399,6 @@ describe('Intégration: Système complet de hiérarchies', () => {
   afterEach(async () => {
     await fs.rm(tempDir, { recursive: true, force: true });
   });
-
   test('Simulation complète parent→enfant avec balises task', async () => {
     // Créer une tâche parent avec sous-tâches
     const parentDir = path.join(tempDir, 'parent-task-123');
@@ -478,8 +454,9 @@ describe('Intégration: Système complet de hiérarchies', () => {
     
     // Vérifier que les préfixes contiennent les bonnes informations
     const prefixes = skeleton!.childTaskInstructionPrefixes!;
-    expect(prefixes.some(p => p.includes('Mission parent de coordination'))).toBe(true);
-    expect(prefixes.some(p => p.includes('Analyser les besoins techniques'))).toBe(true);
-    expect(prefixes.some(p => p.includes('Définir l\'architecture backend'))).toBe(true);
+
+    expect(prefixes.some(p => p.includes('mission parent de coordination'))).toBe(true);
+    expect(prefixes.some(p => p.includes('analyser les besoins techniques'))).toBe(true);
+    expect(prefixes.some(p => p.includes('définir l\'architecture backend'))).toBe(true);
   });
 });

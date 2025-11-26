@@ -447,14 +447,14 @@ export class MessageManager {
       const content = await fs.readFile(sentFile, 'utf-8');
       const message: Message = JSON.parse(content);
 
+      // Validation : Vérifier que le message n'est pas lu/archivé (en premier)
+      if (message.status !== 'unread') {
+        throw new Error(`Impossible d'amender un message déjà lu ou archivé (status: ${message.status}).`);
+      }
+
       // Validation : Vérifier que l'émetteur correspond
       if (message.from !== senderId) {
         throw new Error(`Permission refusée : seul l'émetteur (${message.from}) peut amender ce message.`);
-      }
-
-      // Validation : Vérifier que le message n'est pas lu/archivé
-      if (message.status !== 'unread') {
-        throw new Error(`Impossible d'amender un message déjà lu ou archivé (status: ${message.status}).`);
       }
 
       // Préserver le contenu original si c'est le premier amendement

@@ -1,4 +1,4 @@
-import { defineConfig } from 'vitest/config';
+﻿import { defineConfig } from 'vitest/config';
 import path from 'path';
 
 export default defineConfig({
@@ -40,15 +40,15 @@ export default defineConfig({
     globalSetup: './tests/config/globalSetup.ts',
     
     // Timeout (30 secondes comme Jest)
-    testTimeout: 30000,
+    testTimeout: 15000,
     hookTimeout: 30000,
     
     // Pool configuration - utiliser 'forks' avec un seul worker
     // (équivalent à maxWorkers: 1 de Jest pour éviter les problèmes de mémoire)
-    pool: 'forks',
+    pool: 'threads',
     poolOptions: {
-      forks: {
-        singleFork: true  // Un seul processus fork (équivalent à maxWorkers: 1)
+      threads: {
+        maxThreads: Math.max(1, 4)  // Utiliser 4 threads fixes pour éviter le require('os')
       }
     },
     
@@ -84,10 +84,10 @@ export default defineConfig({
     },
     
     // Isolate pour éviter les fuites entre tests
-    isolate: true,
+    isolate: false,
     
     // Reporters
-    reporters: ['verbose']
+    reporters: ['basic']
   },
   
   // Résolution des modules (équivalent à moduleNameMapper)

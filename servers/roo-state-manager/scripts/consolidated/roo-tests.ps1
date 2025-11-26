@@ -1,4 +1,4 @@
-# Script unifié de tests pour roo-state-manager
+﻿# Script unifié de tests pour roo-state-manager
 # Ce script consolide toutes les fonctionnalités de test en un seul fichier
 
 param(
@@ -109,12 +109,12 @@ function Invoke-Tests {
     
     # Exécuter les tests avec Vitest selon le type (sans construction préalable)
     $testCommand = switch ($TestType) {
-        "unit" { "npx vitest run tests/unit --reporter=verbose --root `"$ProjectRoot`"" }
-        "integration" { "npx vitest run tests/integration --reporter=verbose --root `"$ProjectRoot`"" }
-        "e2e" { "npx vitest run tests/e2e --reporter=verbose --root `"$ProjectRoot`"" }
+        "unit" { "npx vitest run tests/unit --reporter=basic --root `"$ProjectRoot`"" }
+        "integration" { "npx vitest run tests/integration --reporter=basic --root `"$ProjectRoot`"" }
+        "e2e" { "npx vitest run tests/e2e --reporter=basic --root `"$ProjectRoot`"" }
         "detector" { "npm run test:detector" }
-        "all" { "npx vitest run tests --reporter=verbose --root `"$ProjectRoot`"" }
-        default { "npx vitest run tests/unit --reporter=verbose --root `"$ProjectRoot`"" }
+        "all" { "npx vitest run tests --reporter=basic --root `"$ProjectRoot`"" }
+        default { "npx vitest run tests/unit --reporter=basic --root `"$ProjectRoot`"" }
     }
     
     Write-Info "Execution des tests avec la commande: $testCommand"
@@ -351,10 +351,10 @@ function Main {
         # Configuration par defaut minimale avec timeouts réduits pour éviter les blocages
         $config = @{
             testTypes = @{
-                unit = @{ command = "test:unit"; timeout = 30000; pattern = "tests/unit/**/*.test.ts"; description = "Tests unitaires (47 fichiers détectés)" }
+                unit = @{ command = "test:unit"; timeout = 15000; pattern = "tests/unit/**/*.test.ts"; description = "Tests unitaires (47 fichiers détectés)" }
                 integration = @{ command = "test:integration"; timeout = 45000; pattern = "tests/integration/**/*.test.ts"; description = "Tests d'integration (4 fichiers détectés)" }
-                e2e = @{ command = "test:e2e"; timeout = 60000; pattern = "tests/e2e/**/*.test.ts"; description = "Tests end-to-end (2 fichiers détectés)" }
-                detector = @{ command = "test:detector"; timeout = 30000; pattern = "tests/unit/services/DiffDetector.test.ts"; description = "Tests du detecteur" }
+                e2e = @{ command = "test:e2e"; timeout = 45000; pattern = "tests/e2e/**/*.test.ts"; description = "Tests end-to-end (2 fichiers détectés)" }
+                detector = @{ command = "test:detector"; timeout = 15000; pattern = "tests/unit/services/DiffDetector.test.ts"; description = "Tests du detecteur" }
                 all = @{ command = "test"; timeout = 90000; pattern = "tests/**/*.test.ts"; description = "Tous les tests (61 fichiers détectés, 1 exclu)" }
             }
             output = @{
@@ -441,3 +441,4 @@ Write-Verbose-Message "Répertoire racine du projet: $ProjectRoot"
 
 # Lancer le point d'entree
 Main
+
