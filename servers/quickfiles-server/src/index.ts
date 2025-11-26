@@ -1635,7 +1635,9 @@ class QuickFilesServer {
 }
 
 // Main execution
-if (require.main === module) {
+import { fileURLToPath } from 'url';
+
+if (process.argv[1] === fileURLToPath(import.meta.url)) {
   const server = new QuickFilesServer();
   server.run().catch((error) => {
     console.error('Failed to start QuickFiles server:', error);
@@ -1643,5 +1645,4 @@ if (require.main === module) {
   });
 }
 
-// Export for CommonJS
-module.exports = { QuickFilesServer };
+export { QuickFilesServer };
