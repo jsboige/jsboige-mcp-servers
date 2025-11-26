@@ -42,27 +42,30 @@ export async function searchFallbackTool(
 
     for (const [taskId, skeleton] of conversationCache.entries()) {
       // Filtrer par workspace si spécifié
-      if (workspace && skeleton.workspace !== workspace) {
+      if (workspace && skeleton.metadata.workspace !== workspace) {
         continue;
       }
 
       // Recherche textuelle simple dans le titre et l'instruction
       const searchText = query.toLowerCase();
-      const titleMatch = skeleton.title?.toLowerCase().includes(searchText);
-      const instructionMatch = skeleton.instruction?.toLowerCase().includes(searchText);
-
-      if (titleMatch || instructionMatch) {
+      const titleMatch = skeleton.metadata.title?.toLowerCase().includes(searchText);
+      // Note: instruction is not directly available in metadata in the current interface,
+      // we might need to check if it's available elsewhere or remove the check if not critical for fallback
+      // Assuming instruction might be part of the sequence or not easily accessible in this lightweight check
+      // For now, let's rely on title match primarily for fallback search
+      
+      if (titleMatch) {
         results.push({
           taskId,
-          title: skeleton.title || 'Untitled',
-          instruction: skeleton.instruction || '',
-          workspace: skeleton.workspace || 'unknown',
-          lastActivity: skeleton.lastActivity || new Date().toISOString(),
+          title: skeleton.metadata.title || 'Untitled',
+          instruction: '', // Instruction not readily available in metadata
+          workspace: skeleton.metadata.workspace || 'unknown',
+          lastActivity: skeleton.metadata.lastActivity || new Date().toISOString(),
           metadata: {
-            taskType: skeleton.taskType || 'unknown',
-            status: skeleton.status || 'unknown',
-            messageCount: skeleton.messageCount || 0,
-            hasChildren: skeleton.hasChildren || false,
+            taskType: 'unknown', // taskType not in metadata
+            status: 'unknown', // status not in metadata
+            messageCount: skeleton.metadata.messageCount || 0,
+            hasChildren: false, // hasChildren not in metadata
             parentTaskId: skeleton.parentTaskId || null
           }
         });

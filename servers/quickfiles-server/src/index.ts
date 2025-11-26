@@ -1429,8 +1429,7 @@ class QuickFilesServer {
       return {
         modified: true,
         diff,
-        replacements: effectiveReplacements,
-        totalMatches: totalReplacements
+        replacements: effectiveReplacements
       };
     }
     
@@ -1442,8 +1441,7 @@ class QuickFilesServer {
     return {
       modified: false,
       diff: '',
-      replacements: 0,
-      totalMatches: totalReplacements
+      replacements: 0
     };
   }
 
