@@ -368,8 +368,8 @@ export class HierarchyReconstructionEngine {
                     let resolved = false;
 
                     if (parentCandidate) {
-                        console.log(`[ENGINE-PHASE2-MATCH] ✅ CANDIDATE FOUND: ${skeleton.taskId.substring(0, 8)} → ${parentCandidate.parentId.substring(0, 8)}`);
-                        console.log(`[ENGINE-PHASE2-MATCH] Confidence: ${parentCandidate.confidence}, Method: ${parentCandidate.method}`);
+                        // console.log(`[ENGINE-PHASE2-MATCH] ✅ CANDIDATE FOUND: ${skeleton.taskId.substring(0, 8)} → ${parentCandidate.parentId.substring(0, 8)}`);
+                        // console.log(`[ENGINE-PHASE2-MATCH] Confidence: ${parentCandidate.confidence}, Method: ${parentCandidate.method}`);
                         // Valider le candidat
                         const validation = await this.validateParentCandidate(
                             skeleton,
@@ -382,7 +382,7 @@ export class HierarchyReconstructionEngine {
                             skeleton.parentConfidenceScore = parentCandidate.confidence;
                             skeleton.parentResolutionMethod = parentCandidate.method;
 
-                            console.log(`[ENGINE-PHASE2-MATCH] ✅ VALIDATION PASSED: ${skeleton.taskId.substring(0, 8)} → ${parentCandidate.parentId.substring(0, 8)}`);
+                            // console.log(`[ENGINE-PHASE2-MATCH] ✅ VALIDATION PASSED: ${skeleton.taskId.substring(0, 8)} → ${parentCandidate.parentId.substring(0, 8)}`);
                             result.resolvedCount++;
                             confidenceScores.push(parentCandidate.confidence);
                             this.incrementResolutionMethod(result, parentCandidate.method);
@@ -595,7 +595,7 @@ export class HierarchyReconstructionEngine {
                     if (skeletonMap.has(candidate.taskId)) {
                         // Validation basique pour éviter l'auto-référence
                         if (candidate.taskId !== skeleton.taskId) {
-                            this.log(`🔍 [CANDIDATE TEST] Testing ${skeleton.taskId} → ${candidate.taskId} (score: ${candidate.similarity})`);
+                            // this.log(`🔍 [CANDIDATE TEST] Testing ${skeleton.taskId} → ${candidate.taskId} (score: ${candidate.similarity})`);
                             return {
                                 parentId: candidate.taskId,
                                 confidence: candidate.similarity,
