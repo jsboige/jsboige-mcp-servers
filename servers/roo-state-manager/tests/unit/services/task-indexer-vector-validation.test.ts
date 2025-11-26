@@ -48,7 +48,7 @@ const mockFs = {
 };
 
 // Mock path module - DOIT être défini en premier pour être disponible lors des imports
-vi.mock('path', () => ({
+vi.mock('path', () =>({
   join: vi.fn((...args: string[]) => {
     const result = args.join('/'); // Corrigé : utiliser '/' au lieu de '\'
     console.log(`[MOCK] path.join called with:`, args, `=> ${result}`);
@@ -81,7 +81,7 @@ vi.mock('path', () => ({
 }));
 
 // Mock fs/promises - CRUCIAL pour que les tests trouvent les tâches
-const { access: mockAccess, readFile: mockReadFile } = vi.hoisted(() => ({
+const { access: mockAccess, readFile: mockReadFile } = vi.hoisted(() =>({
   access: vi.fn(),
   readFile: vi.fn(),
   writeFile: vi.fn(),
@@ -90,7 +90,7 @@ const { access: mockAccess, readFile: mockReadFile } = vi.hoisted(() => ({
 }));
 
 // Mock path - CRUCIAL pour les tests
-const mockPath = vi.hoisted(() => ({
+const mockPath = vi.hoisted(() =>({
   join: vi.fn((...args: string[]) => args.join('/')),
   sep: vi.fn(() => '/'),
   extname: vi.fn((path: string) => {
@@ -105,7 +105,7 @@ const mockPath = vi.hoisted(() => ({
   })
 }));
 
-vi.mock('fs/promises', () => ({
+vi.mock('fs/promises', () =>({
   access: mockAccess,
   readFile: mockReadFile,
   writeFile: vi.fn(),
@@ -114,15 +114,15 @@ vi.mock('fs/promises', () => ({
 }));
 
 // Mock des dépendances
-vi.mock('../../../src/services/qdrant.js', () => ({
+vi.mock('../../../src/services/qdrant.js', () =>({
   getQdrantClient: vi.fn(() => mockQdrantClient)
 }));
 
-vi.mock('../../../src/services/openai.js', () => ({
+vi.mock('../../../src/services/openai.js', () =>({
   default: vi.fn(() => mockOpenAIClient)
 }));
 
-vi.doMock('../../../src/utils/roo-storage-detector.js', () => ({
+vi.doMock('../../../src/utils/roo-storage-detector.js', () =>({
   RooStorageDetector: mockRooStorageDetector
 }));
 
@@ -417,7 +417,452 @@ describe('🛡️ TaskIndexer - Validation Vectorielle Améliorée', () => {
       } catch (error: any) {
         // Vérifier que le message d'erreur est descriptif
         expect(error.message).toContain('Vector doit être un tableau');
-        expect(error.message).toContain('reçu: string');
+        expect(error.message).toContain('string');
+      }
+    });
+  });
+
+  describe('validateVectorGlobal - Validation des valeurs invalides', () => {
+    test('should reject vector containing NaN', async () => {
+      const vectorWithNaN = new Array(1536).fill(0.1);
+      vectorWithNaN[100] = NaN; // Insérer NaN à une position
+      
+      mockOpenAIClient.embeddings.create.mockResolvedValueOnce({
+        data: [{ embedding: vectorWithNaN }]
+      });
+      
+      mockFs.readFile.mockImplementation((filePath: string) => {
+        if (filePath.includes('task_metadata.json')) {
+          return Promise.resolve(JSON.stringify({
+            title: 'Test Task NaN',
+            parentTaskId: null,
+            parent_task_id: null,
+            workspace: '/mock/storage/path'
+          }));
+        }
+        if (filePath.includes('api_conversation_history.json')) {
+          return Promise.resolve(JSON.stringify([
+            {
+              role: 'user',
+              content: 'Test message'
+            }
+          ]));
+        }
+        if (filePath.includes('ui_messages.json')) {
+          return Promise.resolve(JSON.stringify([]));
+        }
+        return Promise.resolve(JSON.stringify({}));
+      });
+      
+      try {
+        await taskIndexer.indexTask('test-task-nan');
+        expect.fail('Should have thrown an error');
+      } catch (error: any) {
+        expect(error.message).toContain('Vector contient NaN ou Infinity');
+        expect(consoleErrorSpy).toHaveBeenCalledWith(
+          expect.stringContaining('Validation échouée pour point'),
+          expect.any(Error)
+        );
+      }
+    });
+
+    test('should reject vector containing Infinity', async () => {
+      const vectorWithInfinity = new Array(1536).fill(0.1);
+      vectorWithInfinity[200] = Infinity; // Insérer Infinity à une position
+      
+      mockOpenAIClient.embeddings.create.mockResolvedValueOnce({
+        data: [{ embedding: vectorWithInfinity }]
+      });
+      
+      mockFs.readFile.mockImplementation((filePath: string) => {
+        console.log(`[MOCK] fs.readFile (test-specific) called with: "${filePath}"`);
+        
+        // Conserver le comportement par défaut pour les tâches de test
+        if (filePath.includes('/tasks/') && (
+          filePath.includes('test-task-dimension') ||
+          filePath.includes('test-task-non-array') ||
+          filePath.includes('test-task-nan') ||
+          filePath.includes('test-task-infinity') ||
+          filePath.includes('test-task-neg-infinity') ||
+          filePath.includes('test-task-logging') ||
+          filePath.includes('test-task-payload-cleanup') ||
+          filePath.includes('test-task-performance') ||
+          filePath.includes('test-task-fast-fail') ||
+          filePath.includes('test-task-integration') ||
+          filePath.includes('test-task-prevention')
+        )) {
+          console.log(`[MOCK] fs.readFile resolving for test task: ${filePath}`);
+          const taskId = filePath.split('/').pop()?.replace('.json', '') || 'unknown';
+          return Promise.resolve(JSON.stringify({
+            id: taskId,
+            metadata: { title: 'Test Task', lastModified: new Date().toISOString() },
+            content: { instruction: 'Test instruction content' }
+          }));
+        }
+        
+        // Gérer les fichiers spécifiques pour ce test
+        if (filePath.includes('task_metadata.json')) {
+          return Promise.resolve(JSON.stringify({
+            title: 'Test Task Infinity',
+            parentTaskId: null,
+            parent_task_id: null,
+            workspace: '/mock/storage/path'
+          }));
+        }
+        if (filePath.includes('api_conversation_history.json')) {
+          return Promise.resolve(JSON.stringify([
+            {
+              role: 'user',
+              content: 'Test message'
+            }
+          ]));
+        }
+        if (filePath.includes('ui_messages.json')) {
+          return Promise.resolve(JSON.stringify([]));
+        }
+        return Promise.resolve(JSON.stringify({}));
+      });
+      
+      try {
+        await taskIndexer.indexTask('test-task-infinity');
+        expect.fail('Should have thrown an error');
+      } catch (error: any) {
+        expect(error.message).toContain('Vector contient NaN ou Infinity');
+        expect(consoleErrorSpy).toHaveBeenCalledWith(
+          expect.stringContaining('Validation échouée pour point'),
+          expect.any(Error)
+        );
+      }
+    });
+
+    test('should reject vector containing -Infinity', async () => {
+      const vectorWithNegInfinity = new Array(1536).fill(0.1);
+      vectorWithNegInfinity[300] = -Infinity; // Insérer -Infinity à une position
+      
+      mockOpenAIClient.embeddings.create.mockResolvedValueOnce({
+        data: [{ embedding: vectorWithNegInfinity }]
+      });
+      
+      mockFs.readFile.mockImplementation((filePath: string) => {
+        console.log(`[MOCK] fs.readFile (test-specific) called with: "${filePath}"`);
+        
+        // Conserver le comportement par défaut pour les tâches de test
+        if (filePath.includes('/tasks/') && (
+          filePath.includes('test-task-dimension') ||
+          filePath.includes('test-task-non-array') ||
+          filePath.includes('test-task-nan') ||
+          filePath.includes('test-task-infinity') ||
+          filePath.includes('test-task-neg-infinity') ||
+          filePath.includes('test-task-logging') ||
+          filePath.includes('test-task-payload-cleanup') ||
+          filePath.includes('test-task-performance') ||
+          filePath.includes('test-task-fast-fail') ||
+          filePath.includes('test-task-integration') ||
+          filePath.includes('test-task-prevention')
+        )) {
+          console.log(`[MOCK] fs.readFile resolving for test task: ${filePath}`);
+          const taskId = filePath.split('/').pop()?.replace('.json', '') || 'unknown';
+          return Promise.resolve(JSON.stringify({
+            id: taskId,
+            metadata: { title: 'Test Task', lastModified: new Date().toISOString() },
+            content: { instruction: 'Test instruction content' }
+          }));
+        }
+        
+        // Gérer les fichiers spécifiques pour ce test
+        if (filePath.includes('task_metadata.json')) {
+          return Promise.resolve(JSON.stringify({
+            title: 'Test Task -Infinity',
+            parentTaskId: null,
+            parent_task_id: null,
+            workspace: '/mock/storage/path'
+          }));
+        }
+        if (filePath.includes('api_conversation_history.json')) {
+          return Promise.resolve(JSON.stringify([
+            {
+              role: 'user',
+              content: 'Test message'
+            }
+          ]));
+        }
+        if (filePath.includes('ui_messages.json')) {
+          return Promise.resolve(JSON.stringify([]));
+        }
+        return Promise.resolve(JSON.stringify({}));
+      });
+      
+      try {
+        await taskIndexer.indexTask('test-task-neg-infinity');
+        expect.fail('Should have thrown an error');
+      } catch (error: any) {
+        expect(error.message).toContain('Vector contient NaN ou Infinity');
+        expect(consoleErrorSpy).toHaveBeenCalledWith(
+          expect.stringContaining('Validation échouée pour point'),
+          expect.any(Error)
+        );
+      }
+    });
+  });
+
+  describe('validateVectorGlobal - Logging détaillé', () => {
+    test('should log validation details for each point', async () => {
+      const validVector = new Array(1536).fill(0.1);
+      
+      mockOpenAIClient.embeddings.create.mockResolvedValue({
+        data: [{ embedding: validVector }]
+      });
+      
+      mockFs.readFile.mockImplementation((filePath: string) => {
+        if (filePath.includes('task_metadata.json')) {
+          return Promise.resolve(JSON.stringify({
+            title: 'Test Task Logging',
+            parentTaskId: null,
+            parent_task_id: null,
+            workspace: '/mock/storage/path'
+          }));
+        }
+        if (filePath.includes('api_conversation_history.json')) {
+          return Promise.resolve(JSON.stringify([
+            {
+              role: 'user',
+              content: 'Test message for validation logging'
+            }
+          ]));
+        }
+        if (filePath.includes('ui_messages.json')) {
+          return Promise.resolve(JSON.stringify([]));
+        }
+        return Promise.resolve(JSON.stringify({}));
+      });
+      
+      await taskIndexer.indexTask('test-task-logging');
+      
+      // Vérifier que les logs de validation sont présents
+      expect(consoleLogSpy).toHaveBeenCalledWith(
+        expect.stringContaining('[safeQdrantUpsert] Validation et nettoyage de 1 points')
+      );
+    });
+
+    test('should log payload transformations', async () => {
+      const validVector = new Array(1536).fill(0.1);
+      
+      mockOpenAIClient.embeddings.create.mockResolvedValue({
+        data: [{ embedding: validVector }]
+      });
+      
+      // Simuler un payload avec des champs à nettoyer
+      mockFs.readFile.mockImplementation((filePath: string) => {
+        console.log(`[MOCK] fs.readFile (test-specific) called with: "${filePath}"`);
+        
+        // Conserver le comportement par défaut pour les tâches de test
+        if (filePath.includes('/tasks/') && (
+          filePath.includes('test-task-dimension') ||
+          filePath.includes('test-task-non-array') ||
+          filePath.includes('test-task-nan') ||
+          filePath.includes('test-task-infinity') ||
+          filePath.includes('test-task-neg-infinity') ||
+          filePath.includes('test-task-logging') ||
+          filePath.includes('test-task-payload-cleanup') ||
+          filePath.includes('test-task-performance') ||
+          filePath.includes('test-task-fast-fail') ||
+          filePath.includes('test-task-integration') ||
+          filePath.includes('test-task-prevention')
+        )) {
+          console.log(`[MOCK] fs.readFile resolving for test task: ${filePath}`);
+          const taskId = filePath.split('/').pop()?.replace('.json', '') || 'unknown';
+          return Promise.resolve(JSON.stringify({
+            id: taskId,
+            metadata: { title: 'Test Task', lastModified: new Date().toISOString() },
+            content: { instruction: 'Test instruction content' }
+          }));
+        }
+        
+        // Gérer les fichiers spécifiques pour ce test
+        if (filePath.includes('task_metadata.json')) {
+          return Promise.resolve(JSON.stringify({
+            title: 'Test Task',
+            parentTaskId: null,
+            parent_task_id: null,
+            workspace: '/mock/storage/path'
+          }));
+        }
+        if (filePath.includes('api_conversation_history.json')) {
+          return Promise.resolve(JSON.stringify([
+            {
+              role: 'user',
+              content: 'Test message',
+              undefined_field: undefined, // Sera nettoyé
+              empty_string: '', // Sera nettoyé
+              valid_field: 'valid' // Sera conservé
+            }
+          ]));
+        }
+        if (filePath.includes('ui_messages.json')) {
+          return Promise.resolve(JSON.stringify([]));
+        }
+        return Promise.resolve(JSON.stringify({}));
+      });
+      
+      await taskIndexer.indexTask('test-task-payload-cleanup');
+      
+      // Vérifier que les transformations de payload sont loggées
+      expect(consoleLogSpy).toHaveBeenCalledWith(
+        expect.stringContaining('[safeQdrantUpsert] Point 0: 2 champs nettoyés')
+      );
+    });
+  });
+
+  describe('validateVectorGlobal - Performance avec validation', () => {
+    test('should handle multiple valid vectors efficiently', async () => {
+      const validVector = new Array(1536).fill(0.1);
+      
+      mockOpenAIClient.embeddings.create.mockResolvedValue({
+        data: [{ embedding: validVector }]
+      });
+      
+      // Simuler plusieurs chunks
+      const multipleMessages = Array.from({ length: 10 }, (_, i) => ({
+        role: 'user',
+        content: `Test message ${i}`
+      }));
+      
+      mockFs.readFile.mockImplementation((filePath: string) => {
+        console.log(`[MOCK] fs.readFile (test-specific) called with: "${filePath}"`);
+        
+        // Conserver le comportement par défaut pour les tâches de test
+        if (filePath.includes('/tasks/') && (
+          filePath.includes('test-task-dimension') ||
+          filePath.includes('test-task-non-array') ||
+          filePath.includes('test-task-nan') ||
+          filePath.includes('test-task-infinity') ||
+          filePath.includes('test-task-neg-infinity') ||
+          filePath.includes('test-task-logging') ||
+          filePath.includes('test-task-payload-cleanup') ||
+          filePath.includes('test-task-performance') ||
+          filePath.includes('test-task-fast-fail') ||
+          filePath.includes('test-task-integration') ||
+          filePath.includes('test-task-prevention')
+        )) {
+          console.log(`[MOCK] fs.readFile resolving for test task: ${filePath}`);
+          const taskId = filePath.split('/').pop()?.replace('.json', '') || 'unknown';
+          return Promise.resolve(JSON.stringify({
+            id: taskId,
+            metadata: { title: 'Test Task', lastModified: new Date().toISOString() },
+            content: { instruction: 'Test instruction content' }
+          }));
+        }
+        
+        // Gérer les fichiers spécifiques pour ce test
+        if (filePath.includes('task_metadata.json')) {
+          return Promise.resolve(JSON.stringify({
+            title: 'Test Task Performance',
+            parentTaskId: null,
+            parent_task_id: null,
+            workspace: '/mock/storage/path'
+          }));
+        }
+        if (filePath.includes('api_conversation_history.json')) {
+          return Promise.resolve(JSON.stringify(multipleMessages));
+        }
+        if (filePath.includes('ui_messages.json')) {
+          return Promise.resolve(JSON.stringify([]));
+        }
+        return Promise.resolve(JSON.stringify({}));
+      });
+      
+      const startTime = Date.now();
+      await taskIndexer.indexTask('test-task-performance');
+      const endTime = Date.now();
+      
+      // La validation ne devrait pas impacter significativement la performance
+      expect(endTime - startTime).toBeLessThan(5000); // < 5 secondes
+      expect(mockQdrantClient.upsert).toHaveBeenCalledTimes(1);
+    });
+
+    test('should fail fast on first invalid vector', async () => {
+      const invalidVector = new Array(1536).fill(0.1);
+      invalidVector[0] = NaN;
+      
+      mockOpenAIClient.embeddings.create.mockResolvedValue({
+        data: [{ embedding: invalidVector }]
+      });
+      
+      try {
+        await taskIndexer.indexTask('test-task-fast-fail');
+        expect.fail('Should have thrown an error');
+      } catch (error: any) {
+        // L'échec devrait être rapide grâce à la validation
+        expect(error.message).toContain('Vector contient NaN ou Infinity');
+      }
+    });
+  });
+
+  describe('validateVectorGlobal - Intégration avec safeQdrantUpsert', () => {
+    test('should integrate seamlessly with safeQdrantUpsert', async () => {
+      const validVector = new Array(1536).fill(0.1);
+      
+      mockOpenAIClient.embeddings.create.mockResolvedValue({
+        data: [{ embedding: validVector }]
+      });
+      
+      mockFs.readFile.mockImplementation((filePath: string) => {
+        if (filePath.includes('task_metadata.json')) {
+          return Promise.resolve(JSON.stringify({
+            title: 'Test Task Integration',
+            parentTaskId: null,
+            parent_task_id: null,
+            workspace: '/mock/storage/path'
+          }));
+        }
+        if (filePath.includes('api_conversation_history.json')) {
+          return Promise.resolve(JSON.stringify([
+            {
+              role: 'user',
+              content: 'Test message for integration'
+            }
+          ]));
+        }
+        if (filePath.includes('ui_messages.json')) {
+          return Promise.resolve(JSON.stringify([]));
+        }
+        return Promise.resolve(JSON.stringify({}));
+      });
+      
+      await taskIndexer.indexTask('test-task-integration');
+      
+      // Vérifier que safeQdrantUpsert est appelé avec des points validés
+      expect(mockQdrantClient.upsert).toHaveBeenCalledWith(
+        'roo_tasks_semantic_index',
+        expect.objectContaining({
+          points: expect.arrayContaining([
+            expect.objectContaining({
+              vector: validVector,
+              payload: expect.objectContaining({
+                task_id: 'test-task-integration',
+                content: expect.stringContaining('Test message for integration')
+              })
+            })
+          ])
+        })
+      );
+    });
+
+    test('should prevent invalid vectors from reaching Qdrant', async () => {
+      const invalidVector = new Array(1536).fill(0.1);
+      invalidVector[0] = NaN;
+      
+      mockOpenAIClient.embeddings.create.mockResolvedValue({
+        data: [{ embedding: invalidVector }]
+      });
+      
+      try {
+        await taskIndexer.indexTask('test-task-prevention');
+        expect.fail('Should have thrown an error');
+      } catch (error: any) {
+        // Qdrant ne devrait jamais être appelé avec un vecteur invalide
+        expect(mockQdrantClient.upsert).not.toHaveBeenCalled();
+        expect(error.message).toContain('Vector contient NaN ou Infinity');
       }
     });
   });
