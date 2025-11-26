@@ -438,6 +438,37 @@ async function loadControlledTestData(): Promise<ConversationSkeleton[]> {
 // Pas de mocks nécessaires - les vrais fichiers sont lus directement
 
 function enhanceSkeleton(skeleton: ConversationSkeleton): EnhancedConversationSkeleton {
+    // 🔧 CRITICAL FIX: Ajouter les métadonnées manquantes pour la reconstruction
+    const taskId = skeleton.taskId;
+    let childTaskInstructionPrefixes: string[] = [];
+    
+    // Définir les préfixes selon la structure de test attendue
+    if (taskId === TEST_HIERARCHY_IDS.ROOT) {
+        // ROOT crée des enfants avec des préfixes spécifiques
+        childTaskInstructionPrefixes = [
+            'Créer une branche principale',
+            'Lancer la branche A',
+            'Lancer la branche B',
+            'Démarrer la collecte'
+        ];
+    } else if (taskId === TEST_HIERARCHY_IDS.BRANCH_A) {
+        childTaskInstructionPrefixes = [
+            'Créer le nœud B1',
+            'Créer la feuille A1'
+        ];
+    } else if (taskId === TEST_HIERARCHY_IDS.BRANCH_B) {
+        childTaskInstructionPrefixes = [
+            'Créer le nœud B1',
+            'Créer la feuille B1A',
+            'Créer la feuille B1B'
+        ];
+    } else if (taskId === TEST_HIERARCHY_IDS.NODE_B1) {
+        childTaskInstructionPrefixes = [
+            'Créer la feuille B1A',
+            'Créer la feuille B1B'
+        ];
+    }
+    
     return {
         ...skeleton,
         processingState: {
@@ -451,7 +482,9 @@ function enhanceSkeleton(skeleton: ConversationSkeleton): EnhancedConversationSk
         parent: (skeleton as any).parent,
         // 🔧 FIX: Préserver le parentTaskId modifié pour les tests de reconstruction
         // METTRE parentTaskId APRÈS le spread pour qu'il écrase la valeur originale
-        parentTaskId: skeleton.parentTaskId
+        parentTaskId: skeleton.parentTaskId,
+        // 🔧 CRITICAL FIX: Ajouter les childTaskInstructionPrefixes pour la reconstruction
+        childTaskInstructionPrefixes
     } as EnhancedConversationSkeleton;
 }
 

@@ -65,7 +65,7 @@ function Invoke-Tests {
     Write-Host ""
     
     Write-Verbose-Message "Configuration complète : $($Config | ConvertTo-Json -Depth 3)"
-    $testConfig = $Config.testTypes.$TestMode
+    $testConfig = $Config.testTypes.$TestType
     Write-Verbose-Message "TestConfig trouvé : $($testConfig | ConvertTo-Json -Compress)"
     if (-not $testConfig) {
         Write-Error-Message "Type de test non configure : $TestType"
@@ -279,6 +279,7 @@ Fichiers de test détectés :
         }
     } else {
         Write-Success "Aucun echec detecte"
+    }
     
     # Sauvegarder la sortie
     if ($outputFormats -contains "console") {

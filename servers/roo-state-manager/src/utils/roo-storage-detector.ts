@@ -916,6 +916,17 @@ export class RooStorageDetector {
           if (!entry.isDirectory()) continue;
 
           const taskPath = path.join(tasksPath, entry.name);
+          
+          // 🔧 CRITICAL FIX : Filtrage par workspace AVANT d'ajouter à allTaskEntries
+          if (workspacePath !== undefined) {
+            // Détecter le workspace de cette tâche pour le filtrage
+            const taskWorkspace = await this.detectWorkspaceForTask(taskPath);
+            if (taskWorkspace !== workspacePath) {
+              console.log(`[buildHierarchicalSkeletonsLegacy] 🔄 Skip tâche ${entry.name} (workspace: ${taskWorkspace} != ${workspacePath})`);
+              continue;
+            }
+          }
+          
           allTaskEntries.push({
             taskId: entry.name,
             taskPath: taskPath,
