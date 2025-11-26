@@ -132,18 +132,34 @@ export async function handleExportTaskTreeMarkdown(
 
         // Sauvegarder dans un fichier si spécifié
         if (filePath) {
+            let resolvedPath = filePath;
+
+            // Résoudre le chemin relatif par rapport au workspace de la tâche
+            if (!path.isAbsolute(filePath) && conversationCache) {
+                const skeleton = conversationCache.get(conversation_id);
+                if (skeleton && skeleton.metadata && skeleton.metadata.workspace) {
+                    // Normaliser le chemin du workspace (gérer les ./ et ../)
+                    const workspacePath = path.resolve(skeleton.metadata.workspace);
+                    resolvedPath = path.join(workspacePath, filePath);
+                    console.log(`[export_task_tree_markdown] Chemin relatif résolu: ${filePath} -> ${resolvedPath} (Workspace: ${skeleton.metadata.workspace})`);
+                } else {
+                    console.warn(`[export_task_tree_markdown] Impossible de résoudre le chemin relatif: workspace non trouvé pour ${conversation_id}`);
+                    // Fallback: utiliser le CWD ou laisser tel quel (relatif au serveur)
+                }
+            }
+
             // Créer le répertoire parent si nécessaire
-            const dir = path.dirname(filePath);
+            const dir = path.dirname(resolvedPath);
             await fs.mkdir(dir, { recursive: true });
-            
+
             // Écrire le fichier
-            await fs.writeFile(filePath, formattedTree, 'utf8');
-            
+            await fs.writeFile(resolvedPath, formattedTree, 'utf8');
+
             // Extraire les premières lignes pour l'aperçu
             const lines = formattedTree.split('\n');
             const preview = lines.slice(0, 50).join('\n');
             const truncated = lines.length > 50 ? '\n\n... (fichier complet sauvegardé)' : '';
-            
+
             return {
                 content: [{
                     type: 'text',
