@@ -142,7 +142,6 @@ class QuickFilesServer {
     this.server = new McpServer({
       name: 'quickfiles-server',
       version: '1.0.0',
-      description: 'A server for quick file operations',
     });
 
     // Register all tools

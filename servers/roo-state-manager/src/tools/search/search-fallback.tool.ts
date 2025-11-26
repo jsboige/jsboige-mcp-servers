@@ -49,23 +49,20 @@ export async function searchFallbackTool(
       // Recherche textuelle simple dans le titre et l'instruction
       const searchText = query.toLowerCase();
       const titleMatch = skeleton.metadata.title?.toLowerCase().includes(searchText);
-      // Note: instruction is not directly available in metadata in the current interface,
-      // we might need to check if it's available elsewhere or remove the check if not critical for fallback
-      // Assuming instruction might be part of the sequence or not easily accessible in this lightweight check
-      // For now, let's rely on title match primarily for fallback search
-      
-      if (titleMatch) {
+      const instructionMatch = skeleton.truncatedInstruction?.toLowerCase().includes(searchText);
+
+      if (titleMatch || instructionMatch) {
         results.push({
           taskId,
           title: skeleton.metadata.title || 'Untitled',
-          instruction: '', // Instruction not readily available in metadata
+          instruction: skeleton.truncatedInstruction || '',
           workspace: skeleton.metadata.workspace || 'unknown',
           lastActivity: skeleton.metadata.lastActivity || new Date().toISOString(),
           metadata: {
-            taskType: 'unknown', // taskType not in metadata
-            status: 'unknown', // status not in metadata
+            taskType: skeleton.metadata.mode || 'unknown',
+            status: skeleton.isCompleted ? 'completed' : 'unknown',
             messageCount: skeleton.metadata.messageCount || 0,
-            hasChildren: false, // hasChildren not in metadata
+            hasChildren: (skeleton.childTaskInstructionPrefixes && skeleton.childTaskInstructionPrefixes.length > 0) || false,
             parentTaskId: skeleton.parentTaskId || null
           }
         });

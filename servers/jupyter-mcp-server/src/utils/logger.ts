@@ -1,6 +1,6 @@
 import fs from 'fs';
 
-const logPath = 'D:/dev/CoursIA/jupyter-mcp-debug.log';
+const logPath = './jupyter-mcp-debug.log';
 
 /**
  * Appends a message to the debug log file.
