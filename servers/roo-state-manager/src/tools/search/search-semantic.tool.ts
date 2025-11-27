@@ -234,7 +234,7 @@ export const searchTasksByContentTool = {
             // Mode normal : retourne l'objet searchReport directement
             return {
                 isError: false,
-                content: searchReport as any
+                content: [searchReport] as any
             };
             
         } catch (semanticError) {
@@ -242,36 +242,10 @@ export const searchTasksByContentTool = {
             
             // Fallback vers la recherche textuelle simple
             try {
-                // Transformer les paramètres pour le fallback (search_query -> query)
-                const fallbackArgs = {
-                    query: search_query,
-                    workspace: workspace
-                };
-                const fallbackResult = await fallbackHandler(fallbackArgs, conversationCache);
-                // S'assurer que le fallback retourne le bon format
-                if (fallbackResult.content && Array.isArray(fallbackResult.content)) {
-                    // Parser le JSON si c'est une chaîne
-                    let parsedContent;
-                    if (typeof fallbackResult.content[0]?.text === 'string') {
-                        try {
-                            parsedContent = JSON.parse(fallbackResult.content[0].text);
-                        } catch {
-                            parsedContent = { results: [] };
-                        }
-                    } else {
-                        parsedContent = { results: fallbackResult.content };
-                    }
-                    
-                    // Retourner les résultats du fallback dans le format attendu par les tests
-                    const results = parsedContent.results || parsedContent;
-                    return {
-                        isError: false,
-                        content: [{
-                            type: 'text',
-                            text: JSON.stringify(results)
-                        }]
-                    };
-                }
+                const fallbackResult = await fallbackHandler(args, conversationCache);
+                
+                // Le fallback handler retourne déjà le bon format : content: [objets avec taskId, score, match, etc.]
+                // Pas besoin de transformation, retourner directement le résultat
                 return fallbackResult;
             } catch (fallbackError) {
                 console.log(`[ERROR] Fallback handler a échoué: ${fallbackError instanceof Error ? fallbackError.message : String(fallbackError)}`);
