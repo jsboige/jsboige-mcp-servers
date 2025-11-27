@@ -141,12 +141,14 @@ export class HierarchyReconstructionEngine {
         // Nettoyer l'état des truncatedInstructions temporaires
         this.instructionIndex.clearTempTruncatedInstructions();
 
-        // ========== LOGS AJOUTÉS POUR INVESTIGATION ==========
-        console.log('[ENGINE-PHASE1-START] ====================================');
-        console.log('[ENGINE-PHASE1-START] Extraction instructions...');
-        console.log('[ENGINE-PHASE1-START] Skeletons count:', skeletons.length);
-        console.log('[ENGINE-PHASE1-START] Config:', JSON.stringify(mergedConfig, null, 2));
-        console.log('[ENGINE-PHASE1-START] ====================================');
+        // Logs uniquement en mode debug pour éviter l'explosion de contexte
+        if (this.config.debugMode) {
+            console.log('[ENGINE-PHASE1-START] ====================================');
+            console.log('[ENGINE-PHASE1-START] Extraction instructions...');
+            console.log('[ENGINE-PHASE1-START] Skeletons count:', skeletons.length);
+            console.log('[ENGINE-PHASE1-START] Config:', JSON.stringify(mergedConfig, null, 2));
+            console.log('[ENGINE-PHASE1-START] ====================================');
+        }
 
         // Traitement par batches
         const batches = this.createBatches(skeletons, mergedConfig.batchSize || 20);

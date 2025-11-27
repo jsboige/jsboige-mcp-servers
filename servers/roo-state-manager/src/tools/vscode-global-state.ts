@@ -416,11 +416,11 @@ export const rebuildTaskIndex = {
             // Afficher les détails des échecs si il y en a
             if (failedTasks > 0 && failureDetails.length > 0) {
                 report += `\n## Détails des échecs:\n`;
-                failureDetails.slice(0, 10).forEach(detail => {
+                failureDetails.forEach(detail => {
                     report += `- ${detail}\n`;
                 });
-                if (failureDetails.length > 10) {
-                    report += `... et ${failureDetails.length - 10} autres échecs.\n`;
+                if (failureDetails.length > 50) {
+                    report += `... et ${failureDetails.length - 50} autres échecs.\n`;
                 }
             }
 

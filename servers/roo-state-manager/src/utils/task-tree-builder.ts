@@ -563,7 +563,7 @@ export class TaskTreeBuilder {
         }
       }
     }
-    return Array.from(files).slice(0, 10); // Limite à 10 fichiers
+    return Array.from(files); // Suppression de la limitation artificielle
   }
 
   private findDominantTechnology(conversations: ConversationNode[]): string | undefined {

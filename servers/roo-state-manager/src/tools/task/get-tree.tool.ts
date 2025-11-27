@@ -137,8 +137,8 @@ export async function handleGetTaskTree(
 
     const targetSkeleton = findTaskById(conversation_id);
     if (!targetSkeleton) {
-        const availableIds = skeletons.slice(0, 10).map(s => `${s.taskId} (${s.metadata?.title || 'No title'})`).join(', ');
-        throw new Error(`Task ID '${conversation_id}' not found. Available tasks (first 10): ${availableIds}`);
+        const availableIds = skeletons.map(s => `${s.taskId} (${s.metadata?.title || 'No title'})`).join(', ');
+        throw new Error(`Task ID '${conversation_id}' not found. Available tasks: ${availableIds}`);
     }
 
     // 🎯 CORRECTION CRITIQUE : Reconstruction hybride robuste

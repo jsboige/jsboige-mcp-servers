@@ -230,7 +230,7 @@ class RooStateManagerServer {
                 try {
                     const conversationDirs = await fs.readdir(location, { withFileTypes: true });
                     
-                    for (const convDir of conversationDirs.slice(0, 10)) { // Limite à 10 pour performance
+                    for (const convDir of conversationDirs) { // Traitement de toutes les conversations
                         if (convDir.isDirectory() && convDir.name !== '.skeletons') {
                             const taskPath = path.join(location, convDir.name);
                             const metadataPath = path.join(taskPath, 'task_metadata.json');
