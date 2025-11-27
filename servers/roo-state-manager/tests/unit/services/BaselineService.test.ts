@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, vi } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { BaselineService } from '../../../src/services/BaselineService';
 import { BaselineConfig, MachineInventory, BaselineDifference, SyncDecision, BaselineServiceError, BaselineServiceErrorCode, BaselineComparisonReport } from '../../../src/types/baseline';
 import type { IConfigService, IInventoryCollector, IDiffDetector } from '../../../src/types/baseline';
@@ -8,19 +8,43 @@ import * as path from 'path';
 
 // Fonctions d'aide pour l'isolation des tests
 async function restoreTestBaseline(): Promise<void> {
-  const backupPath = path.join(process.cwd(), 'test-baseline-valid.json.backup');
   const testPath = path.join(process.cwd(), 'test-baseline-valid.json');
-  
-  if (existsSync(backupPath)) {
-    const backupContent = await fs.readFile(backupPath, 'utf-8');
-    await fs.writeFile(testPath, backupContent, 'utf-8');
-  }
+
+  const defaultBaseline = {
+    version: '2.1.0',
+    baselineId: 'baseline-1',
+    machineId: 'test-machine',
+    timestamp: '2025-11-04T01:00:00Z',
+    machines: [
+      {
+        machineId: 'test-machine',
+        os: 'Windows 11',
+        architecture: 'x64',
+        roo: {
+          modes: ['code', 'ask'],
+          mcpServers: [
+            { name: 'test-server', enabled: true }
+          ]
+        },
+        hardware: {
+          cpu: { cores: 16, threads: 32 },
+          memory: { total: 32000000000 }
+        },
+        software: {
+          node: '18.17.0',
+          python: '3.11.0'
+        }
+      }
+    ]
+  };
+
+  await fs.writeFile(testPath, JSON.stringify(defaultBaseline, null, 2), 'utf-8');
 }
 
 async function cleanupTestFiles(): Promise<void> {
   const testPath = path.join(process.cwd(), 'test-baseline-valid.json');
   const roadmapPath = path.join(process.cwd(), 'sync-roadmap.md');
-  
+
   // Nettoyer les fichiers de backup créés pendant les tests
   const files = await fs.readdir(process.cwd());
   for (const file of files) {
@@ -67,7 +91,7 @@ describe('BaselineService', () => {
     baselineService = new BaselineService(mockConfigService, mockInventoryCollector, mockDiffDetector);
     testBaselinePath = path.join(process.cwd(), 'test-baseline-valid.json');
     testRoadmapPath = path.join(process.cwd(), 'sync-roadmap.md');
-    
+
     // Restaurer le fichier de test à son état initial
     await restoreTestBaseline();
   });
@@ -80,7 +104,7 @@ describe('BaselineService', () => {
   describe('loadBaseline', () => {
     it('devrait charger une baseline valide', async () => {
       const result = await baselineService.loadBaseline();
-      
+
       // Vérifier que le résultat est un objet BaselineConfig valide
       expect(result).toBeDefined();
       expect(result).toHaveProperty('machineId', 'test-machine');
@@ -104,11 +128,11 @@ describe('BaselineService', () => {
           logLevel: 'INFO' as const
         })
       };
-      
+
       const baselineServiceWithInvalidPath = new BaselineService(configServiceWithInvalidPath, mockInventoryCollector, mockDiffDetector);
-      
+
       const result = await baselineServiceWithInvalidPath.loadBaseline();
-      
+
       // Le service retourne null quand le fichier n'existe pas
       expect(result).toBeNull();
     });
@@ -117,7 +141,7 @@ describe('BaselineService', () => {
       // Créer un fichier JSON invalide
       const invalidBaselinePath = path.join(process.cwd(), 'invalid-baseline.json');
       await fs.writeFile(invalidBaselinePath, '{ invalid json }');
-      
+
       // Créer un service avec ce chemin invalide
       const configServiceWithInvalidJson = {
         ...mockConfigService,
@@ -129,15 +153,15 @@ describe('BaselineService', () => {
           logLevel: 'INFO' as const
         })
       };
-      
+
       const baselineServiceWithInvalidJson = new BaselineService(configServiceWithInvalidJson, mockInventoryCollector, mockDiffDetector);
-      
+
       await expect(baselineServiceWithInvalidJson.loadBaseline()).rejects.toThrow(
         expect.objectContaining({
           code: BaselineServiceErrorCode.BASELINE_NOT_FOUND
         })
       );
-      
+
       // Nettoyer
       if (existsSync(invalidBaselinePath)) {
         rmSync(invalidBaselinePath);
@@ -149,7 +173,7 @@ describe('BaselineService', () => {
     it('devrait comparer une machine avec la baseline', async () => {
       // Charger la baseline existante
       await baselineService.loadBaseline();
-      
+
       const mockInventory: MachineInventory = {
         machineId: 'target-machine',
         timestamp: '2025-11-04T01:00:00Z',
@@ -225,7 +249,7 @@ describe('BaselineService', () => {
     it('devrait retourner null si aucune différence', async () => {
       // Charger la baseline existante
       await baselineService.loadBaseline();
-      
+
       const mockInventory: MachineInventory = {
         machineId: 'identical-machine',
         timestamp: '2025-11-04T01:00:00Z',
@@ -268,7 +292,7 @@ describe('BaselineService', () => {
       (mockDiffDetector.compareBaselineWithMachine as any).mockResolvedValue([]);
 
       const result = await baselineService.compareWithBaseline('identical-machine', false);
-      
+
       expect(result).toBeDefined();
       expect(result!.differences).toHaveLength(0);
     });
@@ -276,7 +300,7 @@ describe('BaselineService', () => {
     it('devrait détecter les différences critiques', async () => {
       // Charger la baseline existante
       await baselineService.loadBaseline();
-      
+
       const mockInventory: MachineInventory = {
         machineId: 'target-machine',
         timestamp: '2025-11-04T01:00:00Z',
@@ -352,7 +376,7 @@ describe('BaselineService', () => {
     it('devrait générer des décisions à partir des différences', async () => {
       // Charger la baseline existante
       await baselineService.loadBaseline();
-      
+
       const differences: BaselineDifference[] = [
         {
           category: 'hardware',
@@ -394,11 +418,11 @@ describe('BaselineService', () => {
 
       // Avec le seuil par défaut 'IMPORTANT', seule la différence CRITICAL est gardée
       expect(decisions).toHaveLength(1);
-      
+
       const cpuDecision = decisions.find(d => d.description.includes('CPU'));
       expect(cpuDecision).toBeDefined();
       expect(cpuDecision!.action).toBe('sync_to_baseline');
-      
+
       // La différence Node.js est WARNING donc filtrée avec le seuil IMPORTANT
       const nodeDecision = decisions.find(d => d.description.includes('Node.js'));
       expect(nodeDecision).toBeUndefined();
@@ -407,7 +431,7 @@ describe('BaselineService', () => {
     it('devrait filtrer selon le seuil de sévérité', async () => {
       // Charger la baseline existante
       await baselineService.loadBaseline();
-      
+
       const differences: BaselineDifference[] = [
         {
           category: 'hardware',
@@ -456,9 +480,9 @@ describe('BaselineService', () => {
     it('devrait appliquer une décision approuvée', async () => {
       // Charger la baseline existante
       await baselineService.loadBaseline();
-      
+
       const decisionId = 'test-decision-1';
-      
+
       // Créer une décision dans le roadmap avec le format exact attendu par le service
       const testDecision: SyncDecision = {
         id: decisionId,
@@ -513,9 +537,9 @@ ${testDecision.description}
     it('devrait rejeter une décision non approuvée', async () => {
       // Charger la baseline existante
       await baselineService.loadBaseline();
-      
+
       const decisionId = 'test-decision-2';
-      
+
       // Créer une décision non approuvée dans le roadmap
       const testDecision: SyncDecision = {
         id: decisionId,
@@ -530,7 +554,7 @@ ${testDecision.description}
         status: 'pending',
         createdAt: '2025-11-04T01:00:00Z'
       };
-      
+
       const roadmapContent = `# Sync Roadmap
 
 ## Décisions en Attente
@@ -552,10 +576,10 @@ ${testDecision.description}
   it('devrait mettre à jour la baseline avec sauvegarde', async () => {
     // Charger la baseline existante
     await baselineService.loadBaseline();
-    
+
     // Sauvegarder l'original pour restauration
     const originalTestBaseline = JSON.parse(await fs.readFile(testBaselinePath, 'utf-8'));
-      
+
       const newBaseline: BaselineConfig = {
         machineId: 'updated-machine',
         version: '2.2.0',
@@ -593,16 +617,16 @@ ${testDecision.description}
       const result = await baselineService.updateBaseline(newBaseline, { createBackup: true });
 
       expect(result).toBe(true);
-      
+
       const updatedContent = await fs.readFile(testBaselinePath, 'utf-8');
       const updatedBaseline = JSON.parse(updatedContent) as BaselineConfig;
       expect(updatedBaseline.machineId).toBe('updated-machine');
       expect(updatedBaseline.version).toBe('2.2.0');
       expect(updatedBaseline.lastUpdated).toBe('2025-11-04T01:00:00Z');
-      
+
       // Restaurer le fichier de test original pour les tests suivants
       await fs.writeFile(testBaselinePath, JSON.stringify(originalTestBaseline, null, 2));
-      
+
       // Nettoyer les fichiers de test créés
       const testRoadmapPath = path.join(path.dirname(testBaselinePath), 'sync-roadmap.md');
       if (existsSync(testRoadmapPath)) {
@@ -629,7 +653,7 @@ ${testDecision.description}
     it('devrait retourner l\'état actuel du service', async () => {
       // Charger la baseline existante
       await baselineService.loadBaseline();
-      
+
       const state = baselineService.getState();
 
       expect(state.isBaselineLoaded).toBe(true);
