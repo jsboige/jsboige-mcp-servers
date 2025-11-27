@@ -1,14 +1,3 @@
-/**
- * Tests unitaires pour l'outil search_tasks_by_content (anciennement search_tasks_semantic)
- *
- * Tests couvrant :
- * - Renommage de l'outil de search_tasks_semantic vers search_tasks_by_content
- * - Préservation de la fonctionnalité avec le nouveau nom
- * - Compatibilité des paramètres
- * - Gestion des erreurs
- * - Intégration avec le fallback textuel
- */
-
 import { describe, test, expect, beforeEach, afterEach, vi } from 'vitest';
 import { searchTasksByContentTool } from '../../../../src/tools/search/search-semantic.tool.js';
 import { ConversationSkeleton } from '../../../../src/types/conversation.js';
