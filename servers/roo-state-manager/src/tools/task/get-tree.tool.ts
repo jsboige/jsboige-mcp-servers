@@ -297,7 +297,13 @@ export async function handleGetTaskTree(
         const children = childrenIds
             .filter(childId => !visited.has(childId))
             .map(childId => buildTree(childId, depth + 1, visited, maxDepth))
-            .filter(child => child !== null);
+            .filter(child => child !== null)
+            // 🎯 CORRECTION : Tri chronologique des enfants
+            .sort((a: any, b: any) => {
+                const timeA = new Date(a.metadata?.createdAt || 0).getTime();
+                const timeB = new Date(b.metadata?.createdAt || 0).getTime();
+                return timeA - timeB;
+            });
 
         // 🎯 Marquer la tâche actuelle - Comparer les 8 premiers caractères (UUIDs courts)
         const nodeShortId = skeleton.taskId?.substring(0, 8) || '';

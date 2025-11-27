@@ -79,8 +79,8 @@ export function formatTaskTreeAscii(
         const isSingleRoot = isRoot && !hasChildren;
         const connector = isSingleRoot ? '' : (isRoot ? rootSymbol + ' ' : (isLast ? '└─ ' : '├─ '));
 
-        // ID court (8 caractères)
-        const shortId = node.taskIdShort || node.taskId.substring(0, 8);
+        // ID complet (UUID) pour traçabilité maximale
+        const shortId = node.taskId;
 
         // Instruction tronquée
         // 🎯 CORRECTION : Prioriser truncatedInstruction, sinon title, sinon fallback

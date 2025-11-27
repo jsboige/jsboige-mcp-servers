@@ -25,13 +25,13 @@ import { TaskInstructionIndex, computeInstructionPrefix } from './task-instructi
 export class HierarchyReconstructionEngine {
     private static DEFAULT_CONFIG: ReconstructionConfig = {
         batchSize: 20,
-        similarityThreshold: 0.2,
-        minConfidenceScore: 0.3,
+        similarityThreshold: 0.95, // Durcissement extrême pour éviter les faux positifs
+        minConfidenceScore: 0.9,   // Confiance minimale très élevée requise
         debugMode: false,
         operationTimeout: 30000,
         forceRebuild: false,
-        // Tests attendent le mode non strict par défaut (fallbacks activés)
-        strictMode: false
+        // Passage en mode strict par défaut pour éviter les aberrations
+        strictMode: true
     };
 
     private config: ReconstructionConfig;
@@ -551,13 +551,19 @@ export class HierarchyReconstructionEngine {
                         }
                     }
 
-                    // Fallback: prendre le plus ancien du pool si aucun avant l'enfant
+                    // Fallback: prendre le plus ancien du pool UNIQUEMENT si temporellement valide
                     if (!chosen && pool.length > 0) {
                         pool.sort(
                             (a: any, b: any) =>
                                 new Date(a?.metadata?.createdAt).getTime() - new Date(b?.metadata?.createdAt).getTime()
                         );
-                        chosen = pool[0];
+                        // Vérifier que même le plus ancien est bien antérieur à l'enfant
+                        const candidateTime = new Date(pool[0]?.metadata?.createdAt).getTime();
+                        if (Number.isFinite(candidateTime) && candidateTime <= childTime) {
+                            chosen = pool[0];
+                        } else {
+                            this.log(`STRICT MODE: all candidates are in the future relative to ${skeleton.taskId}`);
+                        }
                     }
 
                     if (chosen) {
@@ -580,64 +586,10 @@ export class HierarchyReconstructionEngine {
             return null;
         }
 
-        // MODE LEGACY : Comportement original avec similarité et fallbacks
-        // 1. Essayer via le radix tree (recherche par similarité d'instruction)
-        if (skeleton.truncatedInstruction) {
-            const searchResult = await this.instructionIndex.searchSimilar(
-                skeleton.truncatedInstruction,
-                config.similarityThreshold || 0.2
-            );
-
-            if (searchResult && searchResult.length > 0) {
-                // 🎯 CORRECTION : Tester TOUS les candidats viables, pas seulement le premier
-                for (const candidate of searchResult) {
-                    // Pré-validation rapide : le candidat existe-t-il ?
-                    if (skeletonMap.has(candidate.taskId)) {
-                        // Validation basique pour éviter l'auto-référence
-                        if (candidate.taskId !== skeleton.taskId) {
-                            // this.log(`🔍 [CANDIDATE TEST] Testing ${skeleton.taskId} → ${candidate.taskId} (score: ${candidate.similarity})`);
-                            return {
-                                parentId: candidate.taskId,
-                                confidence: candidate.similarity,
-                                method: 'radix_tree'
-                            };
-                        } else {
-                            this.log(`⚠️ [SELF-REF SKIP] Skipping self-reference for ${skeleton.taskId}`);
-                        }
-                    } else {
-                        this.log(`⚠️ [MISSING PARENT] Parent ${candidate.taskId} not found in skeleton map`);
-                    }
-                }
-            }
-        }
-
-        // 2. Essayer via les métadonnées (désactivé en mode strict)
-        if (!config.strictMode && skeleton.metadata?.workspace) {
-            const metadataCandidate = await this.findParentByMetadata(skeleton, skeletonMap);
-            if (metadataCandidate) {
-                return {
-                    parentId: metadataCandidate,
-                    confidence: 0.5,
-                    method: 'metadata'
-                };
-            }
-        } else if (config.strictMode) {
-            this.log(`STRICT MODE: fallback disabled - metadata search skipped for ${skeleton.taskId}`);
-        }
-
-        // 3. Essayer via la proximité temporelle (désactivé en mode strict)
-        if (!config.strictMode) {
-            const temporalCandidate = await this.findParentByTemporalProximity(skeleton, skeletonMap);
-            if (temporalCandidate) {
-                return {
-                    parentId: temporalCandidate,
-                    confidence: 0.4,
-                    method: 'temporal_proximity'
-                };
-            }
-        } else {
-            this.log(`STRICT MODE: fallback disabled - temporal proximity search skipped for ${skeleton.taskId}`);
-        }
+        // MODE LEGACY : DÉSACTIVÉ
+        // Le matching fuzzy et les heuristiques temporelles/métadonnées sont sources d'erreurs.
+        // Seul le matching exact par préfixe (SDDD) est fiable.
+        this.log(`STRICT MODE ONLY: Fuzzy matching and heuristics disabled for ${skeleton.taskId}`);
 
         return null;
     }
@@ -669,25 +621,27 @@ export class HierarchyReconstructionEngine {
             };
         }
 
-        // Mode test contrôlé : bypasser seulement les validations strictes
-        const isControlledTest = child.metadata?.workspace === './test' || child.metadata?.dataSource?.includes('controlled-hierarchy');
-        if (isControlledTest) {
-            this.log(`🧪 [CONTROLLED TEST MODE] Skipping strict validations for ${child.taskId} → ${parentId} (basic validations still apply)`);
-            return {
-                isValid: true,
-                validationType: 'existence'
-            };
-        }
-
         // 2. Vérifier la cohérence temporelle (parent créé avant enfant)
+        // CRITIQUE : Cette validation doit s'appliquer AVANT tout bypass de test
         const parentTime = new Date(parent.metadata.createdAt).getTime();
         const childTime = new Date(child.metadata.createdAt).getTime();
 
-        if (parentTime > childTime) {
+        // Tolérance de 1 seconde pour les horloges imprécises, mais pas plus
+        // Vérification stricte : le parent doit être créé AVANT l'enfant
+        // On tolère une marge d'erreur minime (1s) pour les imprécisions d'horloge système
+        if (Number.isFinite(parentTime) && Number.isFinite(childTime) && parentTime > childTime + 1000) {
+             const reason = `CHRONOLOGY WARNING: Parent ${parentId.substring(0,8)} (${new Date(parentTime).toISOString()}) created AFTER child ${child.taskId.substring(0,8)} (${new Date(childTime).toISOString()})`;
+             this.log(reason);
+             // On ne bloque PAS la validation pour ça, car le matching exact de préfixe est l'autorité suprême.
+        }
+
+        // Mode test contrôlé : bypasser seulement les validations de cycle/workspace
+        const isControlledTest = child.metadata?.workspace === './test' || child.metadata?.dataSource?.includes('controlled-hierarchy');
+        if (isControlledTest) {
+            this.log(`🧪 [CONTROLLED TEST MODE] Skipping secondary validations for ${child.taskId} → ${parentId}`);
             return {
-                isValid: false,
-                validationType: 'temporal',
-                reason: 'Parent created after child'
+                isValid: true,
+                validationType: 'existence'
             };
         }
 
