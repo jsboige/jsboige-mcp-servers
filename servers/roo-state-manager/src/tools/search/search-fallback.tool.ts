@@ -1,6 +1,11 @@
-import { ConversationSkeleton } from '../../types/conversation.js';
 import { CallToolResult } from '@modelcontextprotocol/sdk/types.js';
+import { ConversationSkeleton } from '../../types/conversation.js';
+=======
+>>>>>>> 79b2c0b (Add search fallback tool for text-based search functionality)
+import { CallToolResult } from '@modelcontextprotocol/sdk/types.js';
+import { ConversationSkeleton } from '../../types/conversation.js';
 
+// Type pour les arguments de recherche
 export interface SearchFallbackArgs {
   query: string;
   workspace?: string;
@@ -48,14 +53,21 @@ export async function searchFallbackTool(
       const searchText = query.toLowerCase();
       const titleMatch = skeleton.metadata?.title?.toLowerCase().includes(searchText);
       const instructionMatch = skeleton.truncatedInstruction?.toLowerCase().includes(searchText);
+<<<<<<< HEAD
 
-      // Chercher aussi dans les messages de la séquence (si disponible, sinon ignorer)
+      // Chercher aussi dans les messages de la séquence
       let messageMatch = false;
-      // Note: sequence n'est pas standard dans ConversationSkeleton, on utilise any pour éviter l'erreur
-      const anySkeleton = skeleton as any;
-      if (anySkeleton.sequence && Array.isArray(anySkeleton.sequence)) {
-        messageMatch = anySkeleton.sequence.some((msg: any) =>
-          msg.content && msg.content.toLowerCase().includes(searchText)
+      if (skeleton.sequence && Array.isArray(skeleton.sequence)) {
+        messageMatch = skeleton.sequence.some((msg: any) =>
+          (msg.content || msg.text) && (msg.content || msg.text).toLowerCase().includes(searchText)
+=======
+      
+      // Chercher aussi dans les messages de la séquence
+      let messageMatch = false;
+      if (skeleton.sequence && Array.isArray(skeleton.sequence)) {
+        messageMatch = skeleton.sequence.some((msg: any) =>
+          (msg.content || msg.text) && (msg.content || msg.text).toLowerCase().includes(searchText)
+>>>>>>> 79b2c0b (Add search fallback tool for text-based search functionality)
         );
       }
 
@@ -68,9 +80,15 @@ export async function searchFallbackTool(
           lastActivity: skeleton.metadata?.lastActivity || new Date().toISOString(),
           metadata: {
             taskType: skeleton.metadata?.mode || 'unknown',
-            status: skeleton.isCompleted ? 'completed' : 'in_progress',
+<<<<<<< HEAD
+            status: skeleton.isCompleted ? 'completed' : 'active',
             messageCount: skeleton.metadata?.messageCount || 0,
-            hasChildren: false, // Non disponible dans le squelette standard
+            hasChildren: skeleton.childTaskInstructionPrefixes ? skeleton.childTaskInstructionPrefixes.length > 0 : false,
+=======
+            status: skeleton.isCompleted ? 'completed' : 'active',
+            messageCount: skeleton.metadata?.messageCount || 0,
+            hasChildren: skeleton.childTaskInstructionPrefixes ? skeleton.childTaskInstructionPrefixes.length > 0 : false,
+>>>>>>> 79b2c0b (Add search fallback tool for text-based search functionality)
             parentTaskId: skeleton.parentTaskId || null
           }
         });
