@@ -46,7 +46,7 @@ export interface FormatAsciiTreeOptions {
 
 /**
  * Formate un nœud de tâche et ses enfants en arbre ASCII
- * 
+ *
  * @param node - Le nœud racine à formatter
  * @param options - Options de formatage
  * @returns String représentant l'arbre ASCII complet
@@ -73,43 +73,50 @@ export function formatTaskTreeAscii(
         isRoot: boolean = false
     ): string {
         let result = '';
-        
+
         // 🎯 CORRECTION : Pour un nœud seul, pas de connecteur
         const hasChildren = node.children && node.children.length > 0;
         const isSingleRoot = isRoot && !hasChildren;
         const connector = isSingleRoot ? '' : (isRoot ? rootSymbol + ' ' : (isLast ? '└─ ' : '├─ '));
-        
+
         // ID court (8 caractères)
         const shortId = node.taskIdShort || node.taskId.substring(0, 8);
-        
+
         // Instruction tronquée
-        let instruction = node.metadata?.truncatedInstruction || node.title || 'No instruction';
+        // 🎯 CORRECTION : Prioriser truncatedInstruction, sinon title, sinon fallback
+        let instruction = node.metadata?.truncatedInstruction;
+
+        if (!instruction || instruction.trim() === '') {
+            instruction = node.title || 'No instruction';
+        }
+
         if (instruction.length > truncateInstruction) {
             instruction = instruction.substring(0, truncateInstruction - 3) + '...';
         }
-        
+
         // Statut de complétion
         const status = showStatus && node.metadata?.isCompleted
-            ? '[Completed]'
+            ? '✅'
             : showStatus && !node.metadata?.isCompleted
-            ? '[In Progress]'
+            ? '⏳'
             : '';
-        
+
         // 🎯 CORRECTION CRITIQUE : Construire la ligne principale correctement
         let displayName = '';
         if (highlightCurrent && node.metadata?.isCurrentTask) {
-            displayName = `${node.title} (TÂCHE ACTUELLE)`;
+            // 🎯 FIX : Inclure l'instruction même pour la tâche actuelle
+            displayName = `${shortId} - ${instruction} (📍 TÂCHE ACTUELLE)`;
         } else {
             displayName = `${shortId} - ${instruction}`;
         }
-        
+
         // 🎯 CORRECTION : Construire la ligne principale en une seule fois
         result += `${prefix}${connector}${displayName}`;
         if (status) {
             result += ` ${status}`;
         }
         result += '\n';
-        
+
         // Métadonnées détaillées si demandées
         if (showMetadata && node.metadata) {
             const metaPrefix = prefix + (isLast ? '    ' : '│   ');
@@ -124,29 +131,29 @@ export function formatTaskTreeAscii(
                 }
                 result += '\n';
             }
-            
+
             // 🎯 CORRECTION : Ajouter l'icône de taille pour tous les nœuds avec métadonnées
             if (node.metadata.totalSizeBytes !== undefined) {
                 result += `${metaPrefix}    📊 ${node.metadata.totalSizeBytes < 1024 ? node.metadata.totalSizeBytes : node.metadata.totalSizeKB} KB\n`;
             }
-            
+
             if (node.metadata.mode) {
                 result += `${metaPrefix}    🔧 Mode: ${node.metadata.mode}\n`;
             }
-            
+
             if (node.metadata.workspace) {
                 result += `${metaPrefix}    📁 Workspace: ${node.metadata.workspace}\n`;
             }
-            
+
             if (node.metadata.lastActivity) {
                 result += `${metaPrefix}    📅 Last activity: ${node.metadata.lastActivity}\n`;
             }
         }
-        
+
         // Traiter les enfants
         if (node.children && node.children.length > 0) {
             const childPrefix = prefix + (isLast ? '    ' : '│   ');
-            
+
             node.children.forEach((child, index) => {
                 const isLastChild = index === node.children!.length - 1;
                 // DEBUG: Ajout d'un log pour diagnostiquer le problème de connecteur
@@ -158,10 +165,10 @@ export function formatTaskTreeAscii(
                 result += formatNode(child, childPrefix, isLastChild, false);
             });
         }
-        
+
         return result;
     }
-    
+
     // Commencer le formatage depuis la racine
     // 🎯 CORRECTION : Pour la racine, isLast=true et isRoot=true
     return formatNode(node, '', true, true);
@@ -178,7 +185,7 @@ export function generateTreeHeader(
 ): string {
     const date = new Date().toISOString().split('T')[0];
     const time = new Date().toISOString().split('T')[1].substring(0, 8);
-    
+
     let header = `# Arbre de Tâches - ${date} ${time}\n\n`;
     header += `**Conversation ID:** ${conversationId.substring(0, 8)}\n`;
     header += `**Profondeur max:** ${maxDepth === Infinity ? '∞' : maxDepth}\n`;
@@ -187,7 +194,7 @@ export function generateTreeHeader(
         header += `**Racine:** ${rootTitle}\n`;
     }
     header += '\n---\n\n';
-    
+
     return header;
 }
 
@@ -203,7 +210,7 @@ export function generateTreeFooter(
     footer += `- Nombre total de tâches: ${totalNodes}\n`;
     footer += `- Profondeur maximale atteinte: ${maxDepth}\n`;
     footer += `- Généré le: ${new Date().toISOString()}\n`;
-    
+
     return footer;
 }
 
@@ -227,7 +234,7 @@ export function getMaxTreeDepth(node: TaskTreeNode, currentDepth: number = 0): n
     if (!node.children || node.children.length === 0) {
         return currentDepth;
     }
-    
+
     let maxChildDepth = currentDepth;
     for (const child of node.children) {
         const childDepth = getMaxTreeDepth(child, currentDepth + 1);
@@ -235,6 +242,6 @@ export function getMaxTreeDepth(node: TaskTreeNode, currentDepth: number = 0): n
             maxChildDepth = childDepth;
         }
     }
-    
+
     return maxChildDepth;
 }
