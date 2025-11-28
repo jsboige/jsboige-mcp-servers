@@ -1635,8 +1635,13 @@ class QuickFilesServer {
 
 // Main execution
 import { fileURLToPath } from 'url';
+import { dirname } from 'path';
 
-if (process.argv[1] === fileURLToPath(import.meta.url)) {
+// Pour CommonJS, on utilise __filename directement
+const currentFile = __filename;
+const currentDir = dirname(__filename);
+
+if (process.argv[1] === currentFile) {
   const server = new QuickFilesServer();
   server.run().catch((error) => {
     console.error('Failed to start QuickFiles server:', error);

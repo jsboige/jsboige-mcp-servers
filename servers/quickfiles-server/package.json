@@ -5,7 +5,7 @@
   "type": "module",
   "main": "build/index.cjs",
   "scripts": {
-    "build": "tsc && mv build/index.js build/index.cjs && mv build/index.js.map build/index.cjs.map",
+    "build": "tsc && node -e \"require('fs').renameSync('build/index.js', 'build/index.cjs'); require('fs').renameSync('build/index.js.map', 'build/index.cjs.map');\"",
     "start": "node build/index.cjs",
     "start:debug": "node --inspect build/index.cjs",
     "dev": "tsc -w",
