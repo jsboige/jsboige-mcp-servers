@@ -151,22 +151,21 @@ export class TaskInstructionIndex {
         // jusqu'à trouver une correspondance. Cela garantit un match déterministe.
 
         const fullSearchPrefix = computeInstructionPrefix(childText, K);
-        if (process.env.ROO_DEBUG_INSTRUCTIONS === '1') {
-            console.log(`[EXACT PREFIX SEARCH] SDDD: Starting search with full prefix: "${fullSearchPrefix}" (K=${K})`);
-            // DEBUG: Afficher les clés disponibles dans le trie pour comparaison
-            console.log(`[EXACT PREFIX SEARCH] SDDD: Available keys in trie (matching prefix):`);
-            let count = 0;
-            const searchStart = fullSearchPrefix.substring(0, 20);
-            for (const key of this.prefixToEntry.keys()) {
-                if (key.startsWith(searchStart)) {
-                     console.log(`   - INDEXED: "${key}"`);
-                     console.log(`   - SEARCH : "${fullSearchPrefix}"`);
-                     if (key === fullSearchPrefix) console.log(`   - MATCH!`);
-                     else console.log(`   - NO MATCH (diff at char ${this.findFirstDiff(key, fullSearchPrefix)})`);
-                     count++;
-                }
-                if (count >= 5) break;
+        // FORCE LOGGING FOR DEBUG
+        console.log(`[EXACT PREFIX SEARCH] SDDD: Starting search with full prefix: "${fullSearchPrefix}" (K=${K})`);
+        // DEBUG: Afficher les clés disponibles dans le trie pour comparaison
+        console.log(`[EXACT PREFIX SEARCH] SDDD: Available keys in trie (matching prefix):`);
+        let count = 0;
+        const searchStart = fullSearchPrefix.substring(0, 20);
+        for (const key of this.prefixToEntry.keys()) {
+            if (key.startsWith(searchStart)) {
+                    console.log(`   - INDEXED: "${key}"`);
+                    console.log(`   - SEARCH : "${fullSearchPrefix}"`);
+                    if (key === fullSearchPrefix) console.log(`   - MATCH!`);
+                    else console.log(`   - NO MATCH (diff at char ${this.findFirstDiff(key, fullSearchPrefix)})`);
+                    count++;
             }
+            if (count >= 5) break;
         }
 
         // Stratégie SDDD : Essayer avec des préfixes de plus en plus courts
@@ -701,6 +700,10 @@ export function computeInstructionPrefix(raw: string, K: number = 192): string {
     // ATTENTION: Ne pas faire de trim() après substring() car cela change la longueur !
     // On fait le trim() AVANT pour normaliser, mais pas APRÈS pour préserver K
     const truncated = s.substring(0, K);
+
+    if (process.env.ROO_DEBUG_INSTRUCTIONS === '1') {
+        console.log(`[computeInstructionPrefix] raw="${raw.substring(0, 50)}..." -> normalized="${truncated}"`);
+    }
 
     // Si le dernier caractère est un espace, on peut le garder ou le supprimer
     // Pour cohérence avec les tests, on le supprime SEULEMENT si c'est le dernier

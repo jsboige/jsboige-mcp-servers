@@ -253,6 +253,7 @@ export class HierarchyReconstructionEngine {
     ): Promise<Phase2Result> {
         const startTime = Date.now();
         const mergedConfig = { ...this.config, ...config };
+        console.log('🔍 [DEBUG] executePhase2 mergedConfig:', JSON.stringify(mergedConfig, null, 2));
         const result: Phase2Result = {
             processedCount: 0,
             resolvedCount: 0,
