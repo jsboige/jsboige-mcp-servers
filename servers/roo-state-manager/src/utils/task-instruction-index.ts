@@ -153,6 +153,20 @@ export class TaskInstructionIndex {
         const fullSearchPrefix = computeInstructionPrefix(childText, K);
         if (process.env.ROO_DEBUG_INSTRUCTIONS === '1') {
             console.log(`[EXACT PREFIX SEARCH] SDDD: Starting search with full prefix: "${fullSearchPrefix}" (K=${K})`);
+            // DEBUG: Afficher les clés disponibles dans le trie pour comparaison
+            console.log(`[EXACT PREFIX SEARCH] SDDD: Available keys in trie (matching prefix):`);
+            let count = 0;
+            const searchStart = fullSearchPrefix.substring(0, 20);
+            for (const key of this.prefixToEntry.keys()) {
+                if (key.startsWith(searchStart)) {
+                     console.log(`   - INDEXED: "${key}"`);
+                     console.log(`   - SEARCH : "${fullSearchPrefix}"`);
+                     if (key === fullSearchPrefix) console.log(`   - MATCH!`);
+                     else console.log(`   - NO MATCH (diff at char ${this.findFirstDiff(key, fullSearchPrefix)})`);
+                     count++;
+                }
+                if (count >= 5) break;
+            }
         }
 
         // Stratégie SDDD : Essayer avec des préfixes de plus en plus courts
@@ -336,6 +350,12 @@ export class TaskInstructionIndex {
         } else {
             console.log('❌ 🚨 ÉCHEC VALIDATION SDDD : Algorithme nécessite ajustement !');
         }
+    }
+
+    private findFirstDiff(a: string, b: string): number {
+        let i = 0;
+        while (i < a.length && i < b.length && a[i] === b[i]) i++;
+        return i;
     }
 
     /**
@@ -576,12 +596,11 @@ export function computeInstructionPrefix(raw: string, K: number = 192): string {
     // 3) Décodage des entités HTML (nommées + numériques)
     // Ordre important pour éviter double-décodage
     s = s
-        .replace(/</gi, '<')
-        .replace(/>/gi, '>')
-        .replace(/"/gi, '"')
-        .replace(/'/gi, "'")
-        .replace(/'/gi, "'")
-        .replace(/&/gi, '&');
+        .replace(/&lt;/gi, '<')
+        .replace(/&gt;/gi, '>')
+        .replace(/&quot;/gi, '"')
+        .replace(/&apos;/gi, "'")
+        .replace(/&amp;/gi, '&'); // & en dernier pour éviter de recréer des entités
 
     // Entités numériques décimales
     s = s.replace(/&#(\d+);/g, (_m, d: string) => {

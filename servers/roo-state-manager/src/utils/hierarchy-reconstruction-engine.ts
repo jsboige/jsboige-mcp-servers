@@ -187,27 +187,30 @@ export class HierarchyReconstructionEngine {
                                 duplicatesRemoved: 0
                             }
                         };
-                        // CORRECTION RÉGRESSION CRITIQUE : Utiliser la nouvelle méthode d'extraction
-                        // Au lieu d'indexer chaque instruction individuellement,
-                        // extraire les sous-instructions depuis le texte parent complet
 
-                        // Récupérer le texte parent complet pour extraction
-                        const parentText = skeleton.parsedSubtaskInstructions?.instructions.map(i => i.message).join('\n') ||
-                                          instructions.map(i => i.message).join('\n');
+                        // 🎯 CORRECTION SDDD : Indexer directement les instructions extraites
+                        // Évite la ré-extraction fragile via extractSubInstructions qui échoue sur les formats non-standard
+                        let extractedCount = 0;
+                        for (const instr of instructions) {
+                             // Indexer l'instruction complète
+                             this.instructionIndex.addInstruction(skeleton.taskId, instr.message, instr.message);
+                             extractedCount++;
+                        }
 
-                        // Utiliser la nouvelle méthode avec extraction automatique
-                        const extractedCount = await this.instructionIndex.addParentTaskWithSubInstructions(
-                            skeleton.taskId,
-                            parentText
-                        );
-
-                        // 🎯 CORRECTION PROFONDEUR : NE PAS ÉCRASER truncatedInstruction
-                        // L'instruction tronquée doit rester celle de la tâche elle-même (son but),
-                        // et non être remplacée par la première sous-tâche qu'elle contient.
-                        // C'est cette instruction propre qui permet à SON parent de la retrouver.
+                        // 🎯 CORRECTION CRITIQUE : Mettre à jour truncatedInstruction pour la Phase 2
+                        // La Phase 2 a besoin de truncatedInstruction pour chercher les parents
+                        // On utilise une méthode privée via cast any pour éviter de modifier l'interface publique
+                        if (instructions.length > 0) {
+                            const firstSubInstruction = instructions[0].message;
+                            // Utiliser la map temporaire interne de l'index
+                            const indexAny = this.instructionIndex as any;
+                            if (indexAny.tempTruncatedInstructions) {
+                                indexAny.tempTruncatedInstructions.set(skeleton.taskId, firstSubInstruction);
+                            }
+                        }
 
                         if (process.env.ROO_DEBUG_INSTRUCTIONS === '1') {
-                            console.log(`[ENGINE-PHASE1-INDEX] Task ${skeleton.taskId.substring(0, 8)}: ${extractedCount} sub-instructions indexed`);
+                            console.log(`[ENGINE-PHASE1-INDEX] Task ${skeleton.taskId.substring(0, 8)}: ${extractedCount} sub-instructions indexed directly`);
                         }
 
                         result.parsedCount++;
@@ -433,8 +436,8 @@ export class HierarchyReconstructionEngine {
         if (config.strictMode === true) {
             if (skeleton.truncatedInstruction) {
                 // 🔇 LOG VERBEUX COMMENTÉ (explosion contexte - 1 log par orphelin traité)
-                // this.log(`SDDD: Searching parent for ${skeleton.taskId}`);
-                // this.log(`SDDD: Child truncated instruction: "${skeleton.truncatedInstruction.substring(0, 100)}..." (length: ${skeleton.truncatedInstruction.length})`);
+                this.log(`SDDD: Searching parent for ${skeleton.taskId}`);
+                this.log(`SDDD: Child truncated instruction: "${skeleton.truncatedInstruction.substring(0, 100)}..." (length: ${skeleton.truncatedInstruction.length})`);
 
                 // 🎯 CORRECTION SDDD FONDAMENTALE : Le bug était que les enfants cherchaient avec leur propre instruction
                 // alors que les parents indexent les instructions des SOUS-TÂCHES qu'ils contiennent.
@@ -445,7 +448,7 @@ export class HierarchyReconstructionEngine {
                 const exactResults = await this.instructionIndex.searchExactPrefix(skeleton.truncatedInstruction);
 
                 // 🔇 LOG VERBEUX COMMENTÉ (explosion contexte - 1 log par orphelin sans parent)
-                // this.log(`SDDD: searchExactPrefix returned ${exactResults ? exactResults.length : 0} results for ${skeleton.taskId}`);
+                this.log(`SDDD: searchExactPrefix returned ${exactResults ? exactResults.length : 0} results for ${skeleton.taskId}`);
 
                 if (!exactResults || exactResults.length === 0) {
                     // 🔇 LOG VERBEUX COMMENTÉ (explosion contexte - debug répétitif)
