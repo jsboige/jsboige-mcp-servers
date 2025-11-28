@@ -25,7 +25,8 @@ describe('manage_mcp_settings Tool', () => {
         mockWriteFile.mockResolvedValue(undefined);
         
         // Mock de l'environnement pour contrôler le chemin généré
-        vi.stubEnv('APPDATA', '/mock');
+        // Utiliser un chemin de test isolé pour ne pas écraser les vrais settings
+        vi.stubEnv('APPDATA', '/mock/test');
     });
 
     afterEach(() => {
@@ -38,8 +39,8 @@ describe('manage_mcp_settings Tool', () => {
         
         const result = await manageMcpSettings.handler({ action: 'read' });
         
-        // Vérifier que le chemin attendu est utilisé (format Windows)
-        const expectedPath = '\\mock\\Code\\User\\globalStorage\\rooveterinaryinc.roo-cline\\settings\\mcp_settings.json';
+        // Vérifier que le chemin attendu est utilisé (format Windows avec chemin de test isolé)
+        const expectedPath = '\\mock\\test\\Code\\User\\globalStorage\\rooveterinaryinc.roo-cline\\settings\\mcp_settings.json';
         expect(mockReadFile).toHaveBeenCalledWith(expectedPath, 'utf-8');
         
         // Vérifier le résultat
@@ -69,8 +70,8 @@ describe('manage_mcp_settings Tool', () => {
         const backupCall = mockWriteFile.mock.calls[0];
         expect(backupCall[0]).toMatch(/_backup_.*\.json$/);
         
-        // Vérifier le chemin du fichier principal (format Windows)
-        const expectedPath = '\\mock\\Code\\User\\globalStorage\\rooveterinaryinc.roo-cline\\settings\\mcp_settings.json';
+        // Vérifier le chemin du fichier principal (format Windows avec chemin de test isolé)
+        const expectedPath = '\\mock\\test\\Code\\User\\globalStorage\\rooveterinaryinc.roo-cline\\settings\\mcp_settings.json';
         const mainFileCall = mockWriteFile.mock.calls[1];
         expect(mainFileCall[0]).toBe(expectedPath);
         expect(mainFileCall[1]).toBe(JSON.stringify(newSettings, null, 2));
@@ -93,8 +94,8 @@ describe('manage_mcp_settings Tool', () => {
         // Vérifier que writeFile a été appelé une seule fois (pas de backup)
         expect(mockWriteFile).toHaveBeenCalledTimes(1);
         
-        // Vérifier le chemin du fichier principal (format Windows)
-        const expectedPath = '\\mock\\Code\\User\\globalStorage\\rooveterinaryinc.roo-cline\\settings\\mcp_settings.json';
+        // Vérifier le chemin du fichier principal (format Windows avec chemin de test isolé)
+        const expectedPath = '\\mock\\test\\Code\\User\\globalStorage\\rooveterinaryinc.roo-cline\\settings\\mcp_settings.json';
         const mainFileCall = mockWriteFile.mock.calls[0];
         expect(mainFileCall[0]).toBe(expectedPath);
     });
