@@ -12,52 +12,68 @@ export function extractSubInstructions(parentText: string): string[] {
     
     if (!parentText) return subInstructions;
     
-    // Pattern 1: Messages exacts avec guillemets
-    // "TEST-LEAF-A1: Crée le fichier..." ou 'TEST-LEAF-A1: Crée le fichier...'
-    const exactMessagePattern = /(?:message exact\s*:\s*)?["'](TEST-[^"']+)["']/gi;
+    // Pattern 1: new_task XML tags - VRAIS PATTERNS ROO
+    // <new_task mode="code"><message>Créer le composant...</message></new_task>
+    const newTaskPattern = /<new_task[^>]*>\s*<message>(.*?)<\/message>/gs;
     let match;
-    while ((match = exactMessagePattern.exec(parentText)) !== null) {
-        subInstructions.push(match[1]);
-    }
-    
-    // Pattern 2: Instructions en bloc avec **Créer XXX**
-    // **Créer TEST-LEAF-A1** en mode 'code' avec ce message exact :
-    const blockPattern = /\*\*Créer\s+(TEST-[^*]+)\*\*/gi;
-    while ((match = blockPattern.exec(parentText)) !== null) {
-        // Chercher l'instruction complète qui suit
-        const startPos = match.index;
-        const remainingText = parentText.substring(startPos);
-        
-        // Chercher jusqu'à la fin de la section ou le prochain **
-        const sectionMatch = remainingText.match(/["'](TEST-[^"']+)["']/);
-        if (sectionMatch) {
-            subInstructions.push(sectionMatch[1]);
-        }
-    }
-    
-    // Pattern 3: Listes numérotées avec instructions TEST-
-    // 1. **Créer TEST-LEAF-A1** en mode...
-    // 2. **Créer TEST-LEAF-A2** en mode...
-    const listPattern = /^\s*\d+\.\s*.*?["'](TEST-[^"']+)["']/gm;
-    while ((match = listPattern.exec(parentText)) !== null) {
-        subInstructions.push(match[1]);
-    }
-    
-    // Pattern 4: Direct TEST- instructions sans guillemets (backup)
-    const directPattern = /(?:^|\n)\s*(TEST-[A-Z0-9-]+[^.\n]*)/gm;
-    while ((match = directPattern.exec(parentText)) !== null) {
+    while ((match = newTaskPattern.exec(parentText)) !== null) {
         const instruction = match[1].trim();
-        // Éviter les doublons et s'assurer que c'est une instruction complète
-        if (instruction.includes(':') && !subInstructions.some(existing => existing.startsWith(instruction.split(':')[0]))) {
+        if (instruction.length > 10) {
             subInstructions.push(instruction);
         }
     }
     
-    // Pattern 5: XML-like tags <message>TEST-XXX: ...</message>
-    // <message>TEST-BRANCH-A: Crée le fichier...</message>
-    const xmlMessagePattern = /<message>(TEST-[^<]+)<\/message>/gi;
-    while ((match = xmlMessagePattern.exec(parentText)) !== null) {
-        subInstructions.push(match[1]);
+    // Pattern 2: Code blocks avec instructions
+    // ```typescript\n// Créer composant\nexport class Test {}\n```
+    const codeBlockPattern = /```(\w+)\s*(.*?)```/gs;
+    while ((match = codeBlockPattern.exec(parentText)) !== null) {
+        const codeContent = match[2].trim();
+        if (codeContent.length > 20) {
+            subInstructions.push(codeContent);
+        }
+    }
+    
+    // Pattern 3: Bullet points markdown
+    // - Créer le fichier de configuration
+    // - Implémenter la validation
+    const bulletPattern = /^[-*+]\s+(.+)$/gm;
+    while ((match = bulletPattern.exec(parentText)) !== null) {
+        const instruction = match[1].trim();
+        if (instruction.length > 10) {
+            subInstructions.push(instruction);
+        }
+    }
+    
+    // Pattern 4: Numbered lists
+    // 1. Analyser les exigences
+    // 2. Développer l'architecture
+    const numberedListPattern = /^\d+\.\s+(.+)$/gm;
+    while ((match = numberedListPattern.exec(parentText)) !== null) {
+        const instruction = match[1].trim();
+        if (instruction.length > 10) {
+            subInstructions.push(instruction);
+        }
+    }
+    
+    // Pattern 5: Task XML tags (alternative)
+    // <task>Créer le composant principal</task>
+    const taskPattern = /<task>(.*?)<\/task>/gs;
+    while ((match = taskPattern.exec(parentText)) !== null) {
+        const instruction = match[1].trim();
+        if (instruction.length > 10) {
+            subInstructions.push(instruction);
+        }
+    }
+    
+    // Pattern 6: Instructions imbriquées avec indentation
+    //   Analyser les dépendances
+    //   Créer les tests unitaires
+    const nestedPattern = /(?:^|\n)(?:\s{2,}|  )(.+)$/gm;
+    while ((match = nestedPattern.exec(parentText)) !== null) {
+        const instruction = match[1].trim();
+        if (instruction.length > 10 && !instruction.startsWith('//')) {
+            subInstructions.push(instruction);
+        }
     }
     
     // Déduplication et nettoyage
@@ -72,15 +88,27 @@ export function extractSubInstructions(parentText: string): string[] {
  * Teste l'extraction sur les données réelles des fixtures fonctionnelles
  */
 export function testSubInstructionExtraction(): void {
-    const testParentText = `TEST-HIERARCHY-A: Tu es une branche de test A dans une hiérarchie de test en cascade. Ta mission PRINCIPALE et UNIQUE est de créer exactement 2 sous-tâches pour valider la reconstruction hiérarchique du MCP roo-state-manager.
+    const testParentText = `Analyse l'architecture du système et prépare l'implémentation.
 
-### INSTRUCTIONS STRICTES :
+### TÂCHES À RÉALISER :
 
-1. **Créer TEST-LEAF-A1** en mode 'code' avec ce message exact :
-   "TEST-LEAF-A1: Crée le fichier mcp-debugging/test-data/test-a1.py contenant une fonction validate_email() qui vérifie si un email est valide. La fonction doit retourner True/False et inclure des tests basiques. Termine avec attempt_completion en rapportant le chemin du fichier créé."
+1. <new_task mode="code">
+<message>Créer le fichier src/components/UserManager.ts contenant une classe UserManager avec méthodes createUser, updateUser et deleteUser. Inclure la validation des entrées et la gestion des erreurs.</message>
+</new_task>
 
-2. **Créer TEST-LEAF-A2** en mode 'ask' avec ce message exact :
-   "TEST-LEAF-A2: Documente le processus de validation des emails en expliquant les étapes principales, les regex utilisés et les cas limites. Fournis une documentation technique complète. Termine avec attempt_completion en résumant ta documentation."`;
+2. <new_task mode="ask">
+<message>Documente l'API du UserManager en expliquant chaque méthode, les paramètres attendus et les codes d'erreur possibles. Fournis des exemples d'utilisation.</message>
+</new_task>
+
+3. Implémenter les tests unitaires :
+   - Créer le fichier tests/UserManager.test.ts
+   - Tester toutes les méthodes publiques
+   - Couvrir les cas limites et les erreurs
+
+4. Déployer la documentation :
+   - Mettre à jour README.md
+   - Ajouter les exemples d'utilisation
+   - Documenter l'installation`;
 
     console.log('🔬 TEST EXTRACTION DES SOUS-INSTRUCTIONS:\n');
     console.log('Texte parent (extrait):');
@@ -93,16 +121,20 @@ export function testSubInstructionExtraction(): void {
     });
     
     // Validation
-    const expectedCount = 2;
-    const hasTestLeafA1 = extracted.some(instr => instr.startsWith('TEST-LEAF-A1:'));
-    const hasTestLeafA2 = extracted.some(instr => instr.startsWith('TEST-LEAF-A2:'));
+    const expectedCount = 4;
+    const hasNewTask1 = extracted.some(instr => instr.includes('UserManager.ts'));
+    const hasNewTask2 = extracted.some(instr => instr.includes('Documente l\'API'));
+    const hasTestTask = extracted.some(instr => instr.includes('tests unitaires'));
+    const hasDeployTask = extracted.some(instr => instr.includes('Déployer la documentation'));
     
     console.log('\n✅ VALIDATION:');
     console.log(`   Nombre attendu: ${expectedCount}, trouvé: ${extracted.length}`);
-    console.log(`   TEST-LEAF-A1 trouvé: ${hasTestLeafA1}`);
-    console.log(`   TEST-LEAF-A2 trouvé: ${hasTestLeafA2}`);
+    console.log(`   UserManager.ts trouvé: ${hasNewTask1}`);
+    console.log(`   Documentation API trouvé: ${hasNewTask2}`);
+    console.log(`   Tests unitaires trouvé: ${hasTestTask}`);
+    console.log(`   Déploiement documentation trouvé: ${hasDeployTask}`);
     
-    if (extracted.length >= expectedCount && hasTestLeafA1 && hasTestLeafA2) {
+    if (extracted.length >= expectedCount && hasNewTask1 && hasNewTask2 && hasTestTask && hasDeployTask) {
         console.log('🎉 EXTRACTION RÉUSSIE!');
     } else {
         console.log('❌ EXTRACTION ÉCHOUÉE!');
