@@ -14,11 +14,11 @@ const __dirname = dirname(__filename);
 
 describe('roosync_get_decision_details', () => {
   const testDir = join(__dirname, '../../../fixtures/roosync-details-test');
-  
+
   beforeEach(() => {
     // Setup test environment
     mkdirSync(testDir, { recursive: true });
-    
+
     // Create test dashboard and roadmap
     const dashboard = {
       version: '2.0.0',
@@ -33,7 +33,7 @@ describe('roosync_get_decision_details', () => {
         }
       }
     };
-    
+
     const roadmap = `# Roadmap RooSync
 
 ## Décisions de Synchronisation
@@ -87,20 +87,38 @@ describe('roosync_get_decision_details', () => {
 **Raison:** Problème de compatibilité
 <!-- DECISION_BLOCK_END -->
 `;
-    
+
     writeFileSync(join(testDir, 'sync-dashboard.json'), JSON.stringify(dashboard), 'utf-8');
     writeFileSync(join(testDir, 'sync-roadmap.md'), roadmap, 'utf-8');
-    
+
+    // Create dummy baseline for BaselineService
+    const baseline = {
+      version: "1.0.0",
+      baselineId: "test-baseline-001",
+      machineId: "PC-PRINCIPAL",
+      timestamp: "2025-10-08T10:00:00Z",
+      machines: [
+        {
+          id: "PC-PRINCIPAL",
+          roo: { modes: [], mcpServers: [] },
+          hardware: { cpu: {}, memory: {} },
+          software: {},
+          system: {}
+        }
+      ]
+    };
+    writeFileSync(join(testDir, 'sync-config.ref.json'), JSON.stringify(baseline), 'utf-8');
+
     // Mock environment
     process.env.ROOSYNC_SHARED_PATH = testDir;
     process.env.ROOSYNC_MACHINE_ID = 'PC-PRINCIPAL';
     process.env.ROOSYNC_AUTO_SYNC = 'false';
     process.env.ROOSYNC_CONFLICT_STRATEGY = 'manual';
     process.env.ROOSYNC_LOG_LEVEL = 'info';
-    
+
     RooSyncService.resetInstance();
   });
-  
+
   afterEach(() => {
     try {
       rmSync(testDir, { recursive: true, force: true });
@@ -114,72 +132,72 @@ describe('roosync_get_decision_details', () => {
     const result = await roosyncGetDecisionDetails({
       decisionId: 'test-decision-complete'
     });
-    
+
     expect(result.decision).toBeDefined();
     expect(result.decision.id).toBe('test-decision-complete');
     expect(result.decision.status).toBe('applied');
     expect(result.decision.type).toBe('config');
   });
-  
+
   it('devrait inclure l\'historique par défaut', async () => {
     const result = await roosyncGetDecisionDetails({
       decisionId: 'test-decision-complete'
     });
-    
+
     expect(result.history).toBeDefined();
     expect(result.history?.created).toBeDefined();
     expect(result.history?.approved).toBeDefined();
     expect(result.history?.applied).toBeDefined();
   });
-  
+
   it('devrait exclure l\'historique si demandé', async () => {
     const result = await roosyncGetDecisionDetails({
       decisionId: 'test-decision-complete',
       includeHistory: false
     });
-    
+
     expect(result.history).toBeUndefined();
   });
-  
+
   it('devrait parser l\'historique de rejet', async () => {
     const result = await roosyncGetDecisionDetails({
       decisionId: 'test-decision-rejected'
     });
-    
+
     expect(result.history?.rejected).toBeDefined();
     expect(result.history?.rejected?.reason).toBe('Configuration incorrecte');
   });
-  
+
   it('devrait parser l\'historique de rollback', async () => {
     const result = await roosyncGetDecisionDetails({
       decisionId: 'test-decision-rolledback'
     });
-    
+
     expect(result.history?.rolledBack).toBeDefined();
     expect(result.history?.rolledBack?.reason).toBe('Problème de compatibilité');
   });
-  
+
   it('devrait inclure les informations de rollback pour décision appliquée', async () => {
     const result = await roosyncGetDecisionDetails({
       decisionId: 'test-decision-complete'
     });
-    
+
     expect(result.rollbackPoint).toBeDefined();
     expect(result.rollbackPoint?.available).toBe(true);
   });
-  
+
   it('devrait lever une erreur si décision introuvable', async () => {
     await expect(roosyncGetDecisionDetails({
       decisionId: 'nonexistent'
     })).rejects.toThrow('introuvable');
   });
-  
+
   it('devrait inclure les logs d\'exécution pour décisions appliquées', async () => {
     const result = await roosyncGetDecisionDetails({
       decisionId: 'test-decision-complete',
       includeLogs: true
     });
-    
+
     expect(result.executionLogs).toBeDefined();
     expect(Array.isArray(result.executionLogs)).toBe(true);
   });

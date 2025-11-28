@@ -16,7 +16,7 @@ import { ConversationSkeleton } from '../../../../src/types/conversation.js';
 // Mock cache
 const createMockCache = (): Map<string, ConversationSkeleton> => {
   const cache = new Map<string, ConversationSkeleton>();
-  
+
   // Créer une hiérarchie de test complexe
   const root = {
     taskId: 'root',
@@ -31,7 +31,7 @@ const createMockCache = (): Map<string, ConversationSkeleton> => {
     },
     sequence: [{ role: 'user' as const, content: 'Root content', timestamp: '2025-01-01T10:00:00Z', isTruncated: false }]
   };
-  
+
   const child1 = {
     taskId: 'child1',
     parentTaskId: 'root',
@@ -48,7 +48,7 @@ const createMockCache = (): Map<string, ConversationSkeleton> => {
       { role: 'assistant' as const, content: 'Child 1 response', timestamp: '2025-01-01T11:30:00Z', isTruncated: false }
     ]
   };
-  
+
   const child2 = {
     taskId: 'child2',
     parentTaskId: 'root',
@@ -62,7 +62,7 @@ const createMockCache = (): Map<string, ConversationSkeleton> => {
     },
     sequence: [{ role: 'user' as const, content: 'Child 2 content', timestamp: '2025-01-01T12:00:00Z', isTruncated: false }]
   };
-  
+
   const grandchild1 = {
     taskId: 'grandchild1',
     parentTaskId: 'child1',
@@ -76,7 +76,7 @@ const createMockCache = (): Map<string, ConversationSkeleton> => {
     },
     sequence: [{ role: 'user' as const, content: 'Grandchild 1 content', timestamp: '2025-01-01T11:30:00Z', isTruncated: false }]
   };
-  
+
   const grandchild2 = {
     taskId: 'grandchild2',
     parentTaskId: 'child1',
@@ -90,7 +90,7 @@ const createMockCache = (): Map<string, ConversationSkeleton> => {
     },
     sequence: [{ role: 'user' as const, content: 'Grandchild 2 content', timestamp: '2025-01-01T11:45:00Z', isTruncated: false }]
   };
-  
+
   const greatGrandchild1 = {
     taskId: 'great-grandchild1',
     parentTaskId: 'grandchild1',
@@ -104,14 +104,14 @@ const createMockCache = (): Map<string, ConversationSkeleton> => {
     },
     sequence: [{ role: 'user' as const, content: 'Great Grandchild 1 content', timestamp: '2025-01-01T12:00:00Z', isTruncated: false }]
   };
-  
+
   cache.set('root', root);
   cache.set('child1', child1);
   cache.set('child2', child2);
   cache.set('grandchild1', grandchild1);
   cache.set('grandchild2', grandchild2);
   cache.set('great-grandchild1', greatGrandchild1);
-  
+
   return cache;
 };
 
@@ -136,14 +136,14 @@ describe('🌳 get_task_tree - Génération d\'Arbre ASCII Corrigée', () => {
         mockCache,
         vi.fn().mockResolvedValue(true)
       );
-      
+
       const textContent = result.content[0].type === 'text' ? result.content[0].text : '';
-      
+
       // Vérifier la présence des connecteurs ASCII
       expect(textContent).toContain('├─'); // Connecteur pour premier enfant
       expect(textContent).toContain('└─'); // Connecteur pour dernier enfant
       expect(textContent).toContain('│  '); // Connecteur vertical
-      
+
       // Vérifier la structure hiérarchique
       expect(textContent).toContain('Root Task');
       expect(textContent).toContain('Child 1');
@@ -157,9 +157,9 @@ describe('🌳 get_task_tree - Génération d\'Arbre ASCII Corrigée', () => {
         mockCache,
         vi.fn().mockResolvedValue(true)
       );
-      
+
       const textContent = result.content[0].type === 'text' ? result.content[0].text : '';
-      
+
       // Pour un nœud seul, pas de connecteurs
       expect(textContent).toContain('Great Grandchild 1');
       expect(textContent).not.toContain('├─');
@@ -175,9 +175,9 @@ describe('🌳 get_task_tree - Génération d\'Arbre ASCII Corrigée', () => {
         mockCache,
         vi.fn().mockResolvedValue(true)
       );
-      
+
       const textContent = result.content[0].type === 'text' ? result.content[0].text : '';
-      
+
       // Profondeur 2 : root + enfants, mais pas les petits-enfants
       expect(textContent).toContain('Root Task');
       expect(textContent).toContain('Child 1');
@@ -193,9 +193,9 @@ describe('🌳 get_task_tree - Génération d\'Arbre ASCII Corrigée', () => {
         mockCache,
         vi.fn().mockResolvedValue(true)
       );
-      
+
       const textContent = result.content[0].type === 'text' ? result.content[0].text : '';
-      
+
       // Profondeur 1 : seulement la racine
       expect(textContent).toContain('Root Task');
       expect(textContent).not.toContain('Child 1');
@@ -209,9 +209,9 @@ describe('🌳 get_task_tree - Génération d\'Arbre ASCII Corrigée', () => {
         mockCache,
         vi.fn().mockResolvedValue(true)
       );
-      
+
       const textContent = result.content[0].type === 'text' ? result.content[0].text : '';
-      
+
       // Profondeur 0 : pas de limite
       expect(textContent).toContain('Root Task');
       expect(textContent).toContain('Child 1');
@@ -229,9 +229,9 @@ describe('🌳 get_task_tree - Génération d\'Arbre ASCII Corrigée', () => {
         mockCache,
         vi.fn().mockResolvedValue(true)
       );
-      
+
       const textContent = result.content[0].type === 'text' ? result.content[0].text : '';
-      
+
       // child1 devrait voir child2 (frère/soeur)
       expect(textContent).toContain('Child 1'); // Target
       expect(textContent).toContain('Child 2'); // Sibling
@@ -246,9 +246,9 @@ describe('🌳 get_task_tree - Génération d\'Arbre ASCII Corrigée', () => {
         mockCache,
         vi.fn().mockResolvedValue(true)
       );
-      
+
       const textContent = result.content[0].type === 'text' ? result.content[0].text : '';
-      
+
       // child1 ne devrait PAS voir child2
       expect(textContent).toContain('Child 1'); // Target
       expect(textContent).not.toContain('Child 2'); // Sibling non inclus
@@ -265,9 +265,9 @@ describe('🌳 get_task_tree - Génération d\'Arbre ASCII Corrigée', () => {
         mockCache,
         vi.fn().mockResolvedValue(true)
       );
-      
+
       const textContent = result.content[0].type === 'text' ? result.content[0].text : '';
-      
+
       // Vérifier la présence des métadonnées
       expect(textContent).toContain('📅'); // Icône de date
       expect(textContent).toContain('📝'); // Icône de message count
@@ -283,9 +283,9 @@ describe('🌳 get_task_tree - Génération d\'Arbre ASCII Corrigée', () => {
         mockCache,
         vi.fn().mockResolvedValue(true)
       );
-      
+
       const textContent = result.content[0].type === 'text' ? result.content[0].text : '';
-      
+
       // Pas d'icônes de métadonnées
       expect(textContent).not.toContain('📅');
       expect(textContent).not.toContain('📝');
@@ -296,15 +296,15 @@ describe('🌳 get_task_tree - Génération d\'Arbre ASCII Corrigée', () => {
   describe('Génération d\'arbre ASCII - Gestion des cas limites', () => {
     test('should handle empty cache gracefully', async () => {
       const emptyCache = new Map<string, ConversationSkeleton>();
-      
+
       const result = await handleGetTaskTree(
         { conversation_id: 'nonexistent', output_format: 'ascii-tree' },
         emptyCache,
         vi.fn().mockResolvedValue(true)
       );
-      
+
       const textContent = result.content[0].type === 'text' ? result.content[0].text : '';
-      
+
       expect(textContent).toContain('Aucune conversation trouvée');
     });
 
@@ -324,7 +324,7 @@ describe('🌳 get_task_tree - Génération d\'Arbre ASCII Corrigée', () => {
         },
         sequence: [{ role: 'user' as const, content: 'Child 1 content', timestamp: '2025-01-01T11:00:00Z', isTruncated: false }]
       };
-      
+
       const rootWithCircularChild = {
         taskId: 'root',
         parentTaskId: 'child1', // Référence circulaire!
@@ -338,22 +338,22 @@ describe('🌳 get_task_tree - Génération d\'Arbre ASCII Corrigée', () => {
         },
         sequence: [{ role: 'user' as const, content: 'Root content', timestamp: '2025-01-01T10:00:00Z', isTruncated: false }]
       };
-      
+
       // 🎯 CORRECTION : Utiliser un cache normal pour éviter les logs de reconstruction
       const normalCache = new Map<string, ConversationSkeleton>();
       normalCache.set('child1', childWithCircularParent);
       normalCache.set('root', rootWithCircularChild);
-      
+
       const consoleWarnSpy = vi.spyOn(console, 'warn');
-      
+
       const result = await handleGetTaskTree(
         { conversation_id: 'root', output_format: 'ascii-tree' },
         normalCache, // Utiliser le cache normal avec les données de test
         vi.fn().mockResolvedValue(true)
       );
-      
+
       const textContent = result.content[0].type === 'text' ? result.content[0].text : '';
-      
+
       // Devrait gérer la référence circulaire sans boucle infinie
       expect(textContent).toContain('Root Task');
       expect(textContent).toContain('Child 1');
@@ -366,7 +366,7 @@ describe('🌳 get_task_tree - Génération d\'Arbre ASCII Corrigée', () => {
     test('should handle very deep hierarchies efficiently', async () => {
       // Créer une hiérarchie profonde (5 niveaux)
       const deepCache = new Map<string, ConversationSkeleton>();
-      
+
       // Niveau 0
       const level0 = {
         taskId: 'level0',
@@ -381,7 +381,7 @@ describe('🌳 get_task_tree - Génération d\'Arbre ASCII Corrigée', () => {
         },
         sequence: [{ role: 'user' as const, content: 'Level 0 content', timestamp: '2025-01-01T10:00:00Z', isTruncated: false }]
       };
-      
+
       // Niveau 1
       const level1 = {
         taskId: 'level1',
@@ -396,7 +396,7 @@ describe('🌳 get_task_tree - Génération d\'Arbre ASCII Corrigée', () => {
         },
         sequence: [{ role: 'user' as const, content: 'Level 1 content', timestamp: '2025-01-01T11:00:00Z', isTruncated: false }]
       };
-      
+
       // Niveau 2
       const level2 = {
         taskId: 'level2',
@@ -411,7 +411,7 @@ describe('🌳 get_task_tree - Génération d\'Arbre ASCII Corrigée', () => {
         },
         sequence: [{ role: 'user' as const, content: 'Level 2 content', timestamp: '2025-01-01T12:00:00Z', isTruncated: false }]
       };
-      
+
       // Niveau 3
       const level3 = {
         taskId: 'level3',
@@ -426,7 +426,7 @@ describe('🌳 get_task_tree - Génération d\'Arbre ASCII Corrigée', () => {
         },
         sequence: [{ role: 'user' as const, content: 'Level 3 content', timestamp: '2025-01-01T13:00:00Z', isTruncated: false }]
       };
-      
+
       // Niveau 4
       const level4 = {
         taskId: 'level4',
@@ -441,13 +441,13 @@ describe('🌳 get_task_tree - Génération d\'Arbre ASCII Corrigée', () => {
         },
         sequence: [{ role: 'user' as const, content: 'Level 4 content', timestamp: '2025-01-01T14:00:00Z', isTruncated: false }]
       };
-      
+
       deepCache.set('level0', level0);
       deepCache.set('level1', level1);
       deepCache.set('level2', level2);
       deepCache.set('level3', level3);
       deepCache.set('level4', level4);
-      
+
       const startTime = Date.now();
       const result = await handleGetTaskTree(
         { conversation_id: 'level0', output_format: 'ascii-tree' },
@@ -455,16 +455,16 @@ describe('🌳 get_task_tree - Génération d\'Arbre ASCII Corrigée', () => {
         vi.fn().mockResolvedValue(true)
       );
       const endTime = Date.now();
-      
+
       const textContent = result.content[0].type === 'text' ? result.content[0].text : '';
-      
+
       // Vérifier que tous les niveaux sont présents
       expect(textContent).toContain('Level 0');
       expect(textContent).toContain('Level 1');
       expect(textContent).toContain('Level 2');
       expect(textContent).toContain('Level 3');
       expect(textContent).toContain('Level 4');
-      
+
       // Performance : devrait être rapide même avec 5 niveaux
       expect(endTime - startTime).toBeLessThan(1000); // < 1 seconde
     });
@@ -477,9 +477,9 @@ describe('🌳 get_task_tree - Génération d\'Arbre ASCII Corrigée', () => {
         mockCache,
         vi.fn().mockResolvedValue(true)
       );
-      
+
       const textContent = result.content[0].type === 'text' ? result.content[0].text : '';
-      
+
       // Format hiérarchique avec TOC
       expect(textContent).toContain('# Table des Matières');
       expect(textContent).toContain('## Root Task');
@@ -493,17 +493,17 @@ describe('🌳 get_task_tree - Génération d\'Arbre ASCII Corrigée', () => {
         mockCache,
         vi.fn().mockResolvedValue(true)
       );
-      
+
       const textContent = result.content[0].type === 'text' ? result.content[0].text : '';
-      
+
       // Format JSON structuré
       const parsedJson = JSON.parse(textContent);
-      
+
       expect(parsedJson).toHaveProperty('conversation_id');
       expect(parsedJson).toHaveProperty('root_task');
       expect(parsedJson).toHaveProperty('tree');
       expect(parsedJson).toHaveProperty('metadata');
-      
+
       expect(parsedJson.conversation_id).toBe('root');
       expect(parsedJson.root_task.taskId).toBe('root');
       expect(parsedJson.root_task.title).toBe('Root Task');
@@ -517,9 +517,9 @@ describe('🌳 get_task_tree - Génération d\'Arbre ASCII Corrigée', () => {
         mockCache,
         vi.fn().mockResolvedValue(true)
       );
-      
+
       const textContent = result.content[0].type === 'text' ? result.content[0].text : '';
-      
+
       // Format Markdown avec titres hiérarchiques
       expect(textContent).toContain('# Root Task');
       expect(textContent).toContain('## Child 1');
@@ -539,13 +539,13 @@ describe('🌳 get_task_tree - Génération d\'Arbre ASCII Corrigée', () => {
         mockCache,
         vi.fn().mockResolvedValue(true)
       );
-      
+
       const textContent = result.content[0].type === 'text' ? result.content[0].text : '';
-      
-      expect(textContent).toContain('(TÂCHE ACTUELLE)');
-      expect(textContent).toContain('Child 1 (TÂCHE ACTUELLE)');
-      expect(textContent).not.toContain('Root Task (TÂCHE ACTUELLE)');
-      expect(textContent).not.toContain('Child 2 (TÂCHE ACTUELLE)');
+
+      expect(textContent).toContain('(📍 TÂCHE ACTUELLE)');
+      expect(textContent).toContain('Child 1 (📍 TÂCHE ACTUELLE)');
+      expect(textContent).not.toContain('Root Task (📍 TÂCHE ACTUELLE)');
+      expect(textContent).not.toContain('Child 2 (📍 TÂCHE ACTUELLE)');
     });
 
     test('should not mark current task when current_task_id is not provided', async () => {
@@ -554,9 +554,9 @@ describe('🌳 get_task_tree - Génération d\'Arbre ASCII Corrigée', () => {
         mockCache,
         vi.fn().mockResolvedValue(true)
       );
-      
+
       const textContent = result.content[0].type === 'text' ? result.content[0].text : '';
-      
+
       expect(textContent).not.toContain('(TÂCHE ACTUELLE)');
     });
   });

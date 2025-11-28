@@ -7,6 +7,80 @@ import * as fs from 'fs/promises';
 import * as path from 'path';
 import * as mockFs from 'mock-fs';
 
+// Fonctions d'aide pour l'isolation des tests
+async function restoreTestBaseline(): Promise<void> {
+  const sharedPath = process.env.ROOSYNC_SHARED_PATH || process.cwd();
+  if (!existsSync(sharedPath)) {
+    await fs.mkdir(sharedPath, { recursive: true });
+  }
+  const testPath = path.join(sharedPath, 'sync-config.ref.json');
+
+  const defaultBaseline = {
+    version: '2.1.0',
+    baselineId: 'baseline-1',
+    machineId: 'test-machine',
+    timestamp: '2025-11-04T01:00:00Z',
+    machines: [
+      {
+        machineId: 'test-machine',
+        os: 'Windows 11',
+        architecture: 'x64',
+        roo: {
+          modes: ['code', 'ask'],
+          mcpServers: [
+            { name: 'test-server', enabled: true }
+          ]
+        },
+        hardware: {
+          cpu: { cores: 16, threads: 32 },
+          memory: { total: 32000000000 }
+        },
+        software: {
+          node: '18.17.0',
+          python: '3.11.0'
+        }
+      }
+    ]
+  };
+
+  await fs.writeFile(testPath, JSON.stringify(defaultBaseline, null, 2), 'utf-8');
+}
+
+async function cleanupTestFiles(): Promise<void> {
+  const sharedPath = process.env.ROOSYNC_SHARED_PATH || process.cwd();
+
+  // Ne pas supprimer les fichiers si on est dans le dossier partagé de test
+  // car ils peuvent être utilisés par d'autres tests
+  if (process.env.ROOSYNC_SHARED_PATH) {
+    // Nettoyer uniquement les backups
+    try {
+      const files = await fs.readdir(sharedPath);
+      for (const file of files) {
+        if (file.includes('.backup.')) {
+          await fs.unlink(path.join(sharedPath, file));
+        }
+      }
+    } catch (e) {
+      // Ignorer si le dossier n'existe pas
+    }
+    return;
+  }
+
+  const testPath = path.join(process.cwd(), 'test-baseline-valid.json');
+
+  // Nettoyer les fichiers de backup créés pendant les tests
+  const files = await fs.readdir(process.cwd());
+  for (const file of files) {
+    if (file.startsWith('test-baseline-valid.json.backup.') ||
+        file === 'sync-roadmap.md') {
+      try {
+        await fs.unlink(path.join(process.cwd(), file));
+      } catch (error) {
+        // Ignorer les erreurs de nettoyage
+      }
+    }
+  }
+}
 
 describe('BaselineService', () => {
   let mockConfigService: IConfigService;
@@ -17,112 +91,16 @@ describe('BaselineService', () => {
   let testRoadmapPath: string;
 
   beforeEach(async () => {
-    // Configurer mock-fs AVANT de créer le service
-    mockFs.default({
-      // Fichier de baseline de test valide
-      'test-baseline-valid.json': JSON.stringify({
-        version: '2.1.0',
-        baselineId: 'baseline-1',
-        machineId: 'test-machine',
-        timestamp: '2025-11-04T01:00:00Z',
-        machines: [
-          {
-            machineId: 'test-machine',
-            os: 'Windows 11',
-            architecture: 'x64',
-            roo: {
-              modes: ['code', 'ask'],
-              mcpServers: [
-                { name: 'test-server', enabled: true }
-              ]
-            },
-            hardware: {
-              cpu: { cores: 16, threads: 32 },
-              memory: { total: 32000000000 }
-            },
-            software: {
-              node: '18.17.0',
-              python: '3.11.0'
-            }
-          }
-        ]
-      }, null, 2),
-      
-      // Fichier de configuration de référence
-      'config/baselines/sync-config.ref.json': JSON.stringify({
-        version: "1.0.0",
-        baseline: {
-          machineId: "myia-po-2026",
-          timestamp: "2025-11-28T14:00:00Z",
-          config: {
-            roosync: {
-              enabled: true,
-              sharedPath: "/shared/roosync",
-              conflictStrategy: "manual"
-            },
-            mcp: {
-              timeout: 30000,
-              retryAttempts: 3
-            }
-          }
-        },
-        metadata: {
-          createdBy: "myia-po-2026",
-          description: "Configuration de référence pour synchronisation"
-        }
-      }, null, 2),
-      
-      // Fichier roadmap
-      'sync-roadmap.md': `# RooSync Roadmap
+    const sharedPath = process.env.ROOSYNC_SHARED_PATH || process.cwd();
+    testBaselinePath = path.join(sharedPath, 'sync-config.ref.json');
+    testRoadmapPath = path.join(sharedPath, 'sync-roadmap.md');
 
-## Version 1.0.0
-
-### Objectifs
-- Synchronisation des configurations Roo
-- Gestion des conflits automatique
-- Support multi-machines
-
-### Implémentations
-- [x] BaselineService
-- [x] SyncService
-- [ ] ConflictService
-- [ ] MonitoringService
-
-### Prochaines étapes
-1. Implémenter ConflictService
-2. Ajouter monitoring en temps réel
-3. Support des configurations complexes`,
-      
-      // Fichiers de décision pour les tests
-      'decisions/test-decision-1.json': JSON.stringify({
-        id: "test-decision-1",
-        type: "baseline_update",
-        status: "approved",
-        timestamp: "2025-11-28T15:00:00Z",
-        content: {
-          machineId: "test-machine",
-          changes: ["config.timeout"]
-        }
-      }, null, 2),
-      
-      'decisions/test-decision-2.json': JSON.stringify({
-        id: "test-decision-2",
-        type: "config_change",
-        status: "pending",
-        timestamp: "2025-11-28T15:00:00Z",
-        content: {
-          property: "roosync.conflictStrategy",
-          oldValue: "manual",
-          newValue: "auto"
-        }
-      }, null, 2)
-    });
-
+    // Mock des dépendances
     mockConfigService = {
-      getSharedStatePath: () => process.cwd(),
-      getBaselineServiceConfig: () =>({
-        baselinePath: path.join(process.cwd(), 'test-baseline-valid.json'),
-        roadmapPath: path.join(process.cwd(), 'sync-roadmap.md'),
+      getSharedStatePath: () => sharedPath,
+      getBaselineServiceConfig: () => ({
+        baselinePath: testBaselinePath,
+        roadmapPath: testRoadmapPath,
         cacheEnabled: false,
         cacheTTL: 300,
         logLevel: 'INFO' as const
@@ -137,9 +115,10 @@ describe('BaselineService', () => {
       compareBaselineWithMachine: vi.fn()
     } as IDiffDetector;
 
+    // Restaurer le fichier de test à son état initial AVANT de créer le service
+    await restoreTestBaseline();
+
     baselineService = new BaselineService(mockConfigService, mockInventoryCollector, mockDiffDetector);
-    testBaselinePath = path.join(process.cwd(), 'test-baseline-valid.json');
-    testRoadmapPath = path.join(process.cwd(), 'sync-roadmap.md');
   });
 
   afterEach(() => {
@@ -163,54 +142,74 @@ describe('BaselineService', () => {
     });
 
     it('devrait lever une erreur si le fichier n\'existe pas', async () => {
-      // Créer un service avec un chemin de fichier inexistant
-      const configServiceWithInvalidPath = {
-        ...mockConfigService,
-        getBaselineServiceConfig: () => ({
-          baselinePath: path.join(process.cwd(), 'non-existent-baseline.json'),
-          roadmapPath: path.join(process.cwd(), 'sync-roadmap.md'),
-          cacheEnabled: false,
-          cacheTTL: 300,
-          logLevel: 'INFO' as const
-        })
-      };
+      // Sauvegarder temporairement la variable d'environnement
+      const originalEnv = process.env.ROOSYNC_SHARED_PATH;
+      delete process.env.ROOSYNC_SHARED_PATH;
 
-      const baselineServiceWithInvalidPath = new BaselineService(configServiceWithInvalidPath, mockInventoryCollector, mockDiffDetector);
+      try {
+        // Créer un service avec un chemin de fichier inexistant
+        const configServiceWithInvalidPath = {
+          ...mockConfigService,
+          getSharedStatePath: () => process.cwd(),
+          getBaselineServiceConfig: () => ({
+            baselinePath: path.join(process.cwd(), 'non-existent-baseline.json'),
+            roadmapPath: path.join(process.cwd(), 'sync-roadmap.md'),
+            cacheEnabled: false,
+            cacheTTL: 300,
+            logLevel: 'INFO' as const
+          })
+        };
 
-      const result = await baselineServiceWithInvalidPath.loadBaseline();
+        const baselineServiceWithInvalidPath = new BaselineService(configServiceWithInvalidPath, mockInventoryCollector, mockDiffDetector);
 
-      // Le service retourne null quand le fichier n'existe pas
-      expect(result).toBeNull();
+        const result = await baselineServiceWithInvalidPath.loadBaseline();
+
+        // Le service retourne null quand le fichier n'existe pas
+        expect(result).toBeNull();
+      } finally {
+        // Restaurer la variable d'environnement
+        process.env.ROOSYNC_SHARED_PATH = originalEnv;
+      }
     });
 
     it('devrait lever une erreur si le JSON est invalide', async () => {
-      // Créer un fichier JSON invalide
-      const invalidBaselinePath = path.join(process.cwd(), 'invalid-baseline.json');
-      await fs.writeFile(invalidBaselinePath, '{ invalid json }');
+      // Sauvegarder temporairement la variable d'environnement
+      const originalEnv = process.env.ROOSYNC_SHARED_PATH;
+      delete process.env.ROOSYNC_SHARED_PATH;
 
-      // Créer un service avec ce chemin invalide
-      const configServiceWithInvalidJson = {
-        ...mockConfigService,
-        getBaselineServiceConfig: () => ({
-          baselinePath: invalidBaselinePath,
-          roadmapPath: path.join(process.cwd(), 'sync-roadmap.md'),
-          cacheEnabled: false,
-          cacheTTL: 300,
-          logLevel: 'INFO' as const
-        })
-      };
+      try {
+        // Créer un fichier JSON invalide
+        const invalidBaselinePath = path.join(process.cwd(), 'invalid-baseline.json');
+        await fs.writeFile(invalidBaselinePath, '{ invalid json }');
 
-      const baselineServiceWithInvalidJson = new BaselineService(configServiceWithInvalidJson, mockInventoryCollector, mockDiffDetector);
+        // Créer un service avec ce chemin invalide
+        const configServiceWithInvalidJson = {
+          ...mockConfigService,
+          getSharedStatePath: () => process.cwd(),
+          getBaselineServiceConfig: () => ({
+            baselinePath: invalidBaselinePath,
+            roadmapPath: path.join(process.cwd(), 'sync-roadmap.md'),
+            cacheEnabled: false,
+            cacheTTL: 300,
+            logLevel: 'INFO' as const
+          })
+        };
 
-      await expect(baselineServiceWithInvalidJson.loadBaseline()).rejects.toThrow(
-        expect.objectContaining({
-          code: BaselineServiceErrorCode.BASELINE_NOT_FOUND
-        })
-      );
+        const baselineServiceWithInvalidJson = new BaselineService(configServiceWithInvalidJson, mockInventoryCollector, mockDiffDetector);
 
-      // Nettoyer
-      if (existsSync(invalidBaselinePath)) {
-        rmSync(invalidBaselinePath);
+        await expect(baselineServiceWithInvalidJson.loadBaseline()).rejects.toThrow(
+          expect.objectContaining({
+            code: BaselineServiceErrorCode.BASELINE_INVALID
+          })
+        );
+
+        // Nettoyer
+        if (existsSync(invalidBaselinePath)) {
+          rmSync(invalidBaselinePath);
+        }
+      } finally {
+        // Restaurer la variable d'environnement
+        process.env.ROOSYNC_SHARED_PATH = originalEnv;
       }
     });
   });

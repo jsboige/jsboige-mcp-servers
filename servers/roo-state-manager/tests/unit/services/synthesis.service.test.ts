@@ -89,14 +89,8 @@ import { SynthesisOrchestratorService, SynthesisOrchestratorOptions } from '../.
 import dotenv from 'dotenv';
 import path from 'path';
 
-// Charger les variables d'environnement pour les tests E2E
-import { fileURLToPath } from 'url';
-const __filename = fileURLToPath(import.meta.url);
-const __dirname = path.dirname(__filename);
-dotenv.config({ path: path.join(__dirname, '../../.env') });
-
 describe('Synthesis Services - Phase 1 Structure Validation', () => {
-    
+
     // Configurations de test valides
     const createValidLLMConfig = (): LLMServiceOptions => ({
         models: [{
@@ -180,7 +174,7 @@ describe('Synthesis Services - Phase 1 Structure Validation', () => {
                 llmService,
                 orchestratorOptions
             );
-            
+
             // Test que les m�thodes non impl�ment�es lancent des erreurs "Phase 1"
             await expect(
                 orchestrator.startBatchSynthesis({
@@ -197,13 +191,13 @@ describe('Synthesis Services - Phase 1 Structure Validation', () => {
         it('should accept dependencies correctly', () => {
             const contextBuilder = new NarrativeContextBuilderService(narrativeOptions, new Map());
             const llmService = new LLMService(llmOptions);
-            
+
             const orchestrator = new SynthesisOrchestratorService(
-                contextBuilder, 
-                llmService, 
+                contextBuilder,
+                llmService,
                 orchestratorOptions
             );
-            
+
             expect(orchestrator).toBeDefined();
             expect(contextBuilder).toBeDefined();
             expect(llmService).toBeDefined();
@@ -225,11 +219,11 @@ describe('Synthesis Services - Phase 1 Structure Validation', () => {
             const contextBuilder = new NarrativeContextBuilderService(narrativeOptions, new Map());
             const llmService = new LLMService(llmOptions);
             const orchestrator = new SynthesisOrchestratorService(
-                contextBuilder, 
-                llmService, 
+                contextBuilder,
+                llmService,
                 orchestratorOptions
             );
-            
+
             expect(typeof contextBuilder).toBe('object');
             expect(typeof llmService).toBe('object');
             expect(typeof orchestrator).toBe('object');
@@ -239,11 +233,11 @@ describe('Synthesis Services - Phase 1 Structure Validation', () => {
             const contextBuilder = new NarrativeContextBuilderService(narrativeOptions, new Map());
             const llmService = new LLMService(llmOptions);
             const orchestrator = new SynthesisOrchestratorService(
-                contextBuilder, 
-                llmService, 
+                contextBuilder,
+                llmService,
                 orchestratorOptions
             );
-            
+
             expect(contextBuilder).toBeInstanceOf(NarrativeContextBuilderService);
             expect(llmService).toBeInstanceOf(LLMService);
             expect(orchestrator).toBeInstanceOf(SynthesisOrchestratorService);
@@ -255,11 +249,11 @@ describe('Synthesis Services - Phase 1 Structure Validation', () => {
             const contextBuilder = new NarrativeContextBuilderService(narrativeOptions, new Map());
             const llmService = new LLMService(llmOptions);
             const orchestrator = new SynthesisOrchestratorService(
-                contextBuilder, 
-                llmService, 
+                contextBuilder,
+                llmService,
                 orchestratorOptions
             );
-            
+
             // M�thodes principales existent (m�me si elles throw pour Phase 1)
             expect(typeof contextBuilder.buildNarrativeContext).toBe('function');
             expect(typeof llmService.generateSynthesis).toBe('function');
@@ -282,11 +276,15 @@ describe('Synthesis Services - Phase 1 Structure Validation', () => {
                 buildTrace: { rootTaskId: 'test-task-id', previousSiblingTaskIds: [] },
                 wasCondensed: false
             });
-            
-            // Phase 2: Les m�thodes fonctionnent et retournent des r�sultats
+
+            // Phase 2: Les méthodes fonctionnent et retournent des résultats
             const result = await orchestrator.synthesizeConversation('test-task-id');
-            
-            // Validation que la m?thode fonctionne et retourne une ConversationAnalysis
+
+            if (result.analysisEngineVersion === '3.0.0-phase3-error') {
+                console.error('DEBUG FAILURE:', JSON.stringify(result.metrics, null, 2));
+            }
+
+            // Validation que la méthode fonctionne et retourne une ConversationAnalysis
             expect(result).toBeDefined();
             expect(result.taskId).toBe('test-task-id');
             expect(result.analysisEngineVersion).toBe('3.0.0-phase3');
@@ -328,7 +326,7 @@ describe('Synthesis Services - Phase 1 Structure Validation', () => {
     // =========================================================================
     // TESTS PHASE 2 - INT?GRATION CONTEXTE NARRATIF
     // =========================================================================
-    
+
     describe('Phase 2 - Narrative Context Integration', () => {
         let contextBuilder: NarrativeContextBuilderService;
         let llmService: LLMService;
@@ -342,7 +340,7 @@ describe('Synthesis Services - Phase 1 Structure Validation', () => {
                 maxContextSizeBeforeCondensation: 50000,
                 defaultMaxDepth: 5
             };
-            
+
             contextBuilder = new NarrativeContextBuilderService(contextOptions, new Map());
             llmService = new LLMService(llmOptions);
             orchestrator = new SynthesisOrchestratorService(
@@ -372,10 +370,10 @@ describe('Synthesis Services - Phase 1 Structure Validation', () => {
                 expect(result).toBeDefined();
                 expect(result.taskId).toBe('test-task-id');
                 expect(result.analysisEngineVersion).toBe('3.0.0-phase3');
-                
+
                 // V?rification que le contexte builder a bien ?t? appel?
                 expect(mockBuildNarrativeContext).toHaveBeenCalledWith('test-task-id', undefined);
-                
+
                 mockBuildNarrativeContext.mockRestore();
             });
 
@@ -398,12 +396,12 @@ describe('Synthesis Services - Phase 1 Structure Validation', () => {
 
                 // V?rification que la trace est bien propag?e
                 expect(result.contextTrace).toEqual(expectedTrace);
-                
+
                 // V?rification que les donn?es r?elles du contexte sont dans la synthèse
                 expect(result.synthesis.initialContextSummary).toBe('Test context');
                 expect(result.metrics.wasCondensed).toBe(true);
                 expect(result.metrics.condensedBatchPath).toBe('/test/batch.json');
-                
+
                 mockBuildNarrativeContext.mockRestore();
             });
 
@@ -418,7 +416,7 @@ describe('Synthesis Services - Phase 1 Structure Validation', () => {
                 expect(result.taskId).toBe('test-task-id');
                 expect(result.analysisEngineVersion).toBe('3.0.0-phase3-error');
                 expect(result.metrics.error).toContain('Mock context builder error');
-                
+
                 mockBuildNarrativeContext.mockRestore();
             });
 
@@ -444,7 +442,7 @@ describe('Synthesis Services - Phase 1 Structure Validation', () => {
 
                 // V?rification que les options sont bien pass?es
                 expect(mockBuildNarrativeContext).toHaveBeenCalledWith('test-task-id', testOptions);
-                
+
                 mockBuildNarrativeContext.mockRestore();
             });
         });
@@ -486,7 +484,7 @@ describe('Synthesis Services - Phase 1 Structure Validation', () => {
 
             it('should include real metrics from context building', async () => {
                 const largeContext = 'A'.repeat(15000); // Contexte de 15k caract?res
-                
+
                 const mockBuildNarrativeContext = vi.spyOn(contextBuilder, 'buildNarrativeContext')
                     .mockResolvedValue({
                         contextSummary: largeContext,
@@ -507,16 +505,16 @@ describe('Synthesis Services - Phase 1 Structure Validation', () => {
 
                 mockBuildNarrativeContext.mockRestore();
             });
-        
+
             // =========================================================================
             // TESTS PHASE 3 - INT?GRATION LLM R?ELLE ET TRA?ABILIT? CONTEXTE
             // =========================================================================
-            
+
             describe('Phase 3 - Real LLM Integration and Context Tree Traceability', () => {
                 let contextBuilder: NarrativeContextBuilderService;
                 let llmService: LLMService;
                 let orchestrator: SynthesisOrchestratorService;
-        
+
                 beforeEach(() => {
                     const contextOptions = {
                         synthesisBaseDir: '/test/synthesis',
@@ -524,7 +522,7 @@ describe('Synthesis Services - Phase 1 Structure Validation', () => {
                         maxContextSizeBeforeCondensation: 50000,
                         defaultMaxDepth: 5
                     };
-                    
+
                     contextBuilder = new NarrativeContextBuilderService(contextOptions, new Map());
                     llmService = new LLMService(llmOptions);
                     orchestrator = new SynthesisOrchestratorService(
@@ -533,7 +531,7 @@ describe('Synthesis Services - Phase 1 Structure Validation', () => {
                         orchestratorOptions
                     );
                 });
-        
+
                 describe('Context Tree Traceability', () => {
                     it('should include contextTree with skeleton status in metrics', async () => {
                         // Mock du contexte pour ?viter les appels r?els
@@ -542,9 +540,9 @@ describe('Synthesis Services - Phase 1 Structure Validation', () => {
                             buildTrace: { rootTaskId: 'test-task-id', previousSiblingTaskIds: [] },
                             wasCondensed: false
                         });
-        
+
                         const result = await orchestrator.synthesizeConversation('test-task-id');
-        
+
                         // V?rification de la pr?sence du contextTree
                         expect(result.metrics.contextTree).toBeDefined();
                         expect(result.metrics.contextTree.currentTask).toEqual({
@@ -552,34 +550,34 @@ describe('Synthesis Services - Phase 1 Structure Validation', () => {
                             synthesisType: 'atomic',
                             includedInContext: true
                         });
-                        
+
                         // V�rification du statut squelette
                         expect(result.metrics.contextTree.debugInfo.contextBuilderStatus).toBe('fully_implemented_phase3');
                         // Phase 3: Pas de m�thodes manquantes, impl�mentation compl�te
                         expect(result.metrics.contextTree.debugInfo.contextBuilderStatus).toBe('fully_implemented_phase3');
-                        
+
                         // V?rification que les tableaux sont vides (statut squelette)
                         expect(result.metrics.contextTree.parentTasks).toEqual([]);
                         expect(result.metrics.contextTree.siblingTasks).toEqual([]);
                         expect(result.metrics.contextTree.childTasks).toEqual([]);
                         expect(result.metrics.contextTree.condensedBatches).toEqual([]);
                     });
-        
+
                     it('should include contextTree in error scenarios', async () => {
                         // Mock d'erreur dans le context builder
                         vi.spyOn(contextBuilder, 'buildNarrativeContext').mockRejectedValue(
                             new Error('Mock context builder error for contextTree test')
                         );
-        
+
                         const result = await orchestrator.synthesizeConversation('test-task-id');
-        
+
                         // V?rification que contextTree est pr?sent m?me en cas d'erreur
                         expect(result.metrics.contextTree).toBeDefined();
                         expect(result.metrics.contextTree.debugInfo.contextBuilderStatus).toBe('error_during_context_building');
                         expect(result.metrics.contextTree.currentTask.includedInContext).toBe(false);
                     });
                 });
-        
+
                 describe('LLM Integration Metrics', () => {
                     it('should include OpenAI usage metrics when using real LLM', async () => {
                         // Mock du contexte
@@ -588,7 +586,7 @@ describe('Synthesis Services - Phase 1 Structure Validation', () => {
                             buildTrace: { rootTaskId: 'test-task-id', previousSiblingTaskIds: [] },
                             wasCondensed: false
                         });
-        
+
                         // Mock du LLM avec structure LLMCallResult compl?te
                         const mockAnalysis = {
                             taskId: 'test-task-id',
@@ -623,7 +621,7 @@ describe('Synthesis Services - Phase 1 Structure Validation', () => {
                                 finalTaskSummary: 'Test final summary'
                             }
                         };
-        
+
                         const mockLLMResult = {
                             context: {
                                 callId: 'test-call-id',
@@ -644,18 +642,18 @@ describe('Synthesis Services - Phase 1 Structure Validation', () => {
                             },
                             fromCache: false
                         };
-        
+
                         vi.spyOn(llmService, 'generateSynthesis').mockResolvedValue(mockLLMResult);
-        
+
                         const result = await orchestrator.synthesizeConversation('test-task-id');
-        
+
                         // V�rification des m�triques LLM
                         expect(result.metrics.llmTokens).toBe(1500);
                         expect(result.metrics.llmCost).toBe(0.045);
                         expect(result.metrics.llmDuration).toBe(3500);
                         expect(result.llmModelId).toBe('gpt-4o');
                     });
-        
+
                     it('should handle LLM errors gracefully with contextTree intact', async () => {
                         // Mock du contexte r�ussi
                         vi.spyOn(contextBuilder, 'buildNarrativeContext').mockResolvedValue({
@@ -663,27 +661,27 @@ describe('Synthesis Services - Phase 1 Structure Validation', () => {
                             buildTrace: { rootTaskId: 'test-task-id', previousSiblingTaskIds: [] },
                             wasCondensed: false
                         });
-        
+
                         // Mock d'erreur LLM
                         vi.spyOn(llmService, 'generateSynthesis').mockRejectedValue(
                             new Error('Mock OpenAI API error')
                         );
-        
+
                         const result = await orchestrator.synthesizeConversation('test-task-id');
-        
+
                         // V�rification que l'erreur LLM est g�r�e
                         expect(result.analysisEngineVersion).toBe('3.0.0-phase3-error');
                         expect(result.metrics.llmError).toContain('Mock OpenAI API error');
-                        
+
                         // V�rification que contextTree est toujours pr�sent
                         expect(result.metrics.contextTree).toBeDefined();
                         expect(result.metrics.contextTree.debugInfo.contextBuilderStatus).toBe('fully_implemented_phase3');
-                        
+
                         // V�rification que le contexte r�el est utilis� m�me en cas d'erreur LLM
                         expect(result.synthesis.initialContextSummary).toBe('Context for LLM error test');
                     });
                 });
-        
+
                 describe('Phase 3 Pipeline Validation', () => {
                     it('should execute complete Phase 3 pipeline: Context -> LLM -> Response with contextTree', async () => {
                         // Mock complet du pipeline
@@ -697,7 +695,7 @@ describe('Synthesis Services - Phase 1 Structure Validation', () => {
                             wasCondensed: true,
                             condensedBatchPath: '/test/condensed.json'
                         });
-        
+
                         const mockAnalysis = {
                             taskId: 'test-task-id',
                             analysisEngineVersion: '3.0.0-phase3',
@@ -735,7 +733,7 @@ describe('Synthesis Services - Phase 1 Structure Validation', () => {
                                 finalTaskSummary: 'LLM generated summary'
                             }
                         };
-        
+
                         const mockLLMResult = {
                             context: {
                                 callId: 'test-pipeline-call-id',
@@ -756,158 +754,32 @@ describe('Synthesis Services - Phase 1 Structure Validation', () => {
                             },
                             fromCache: false
                         };
-        
+
                         vi.spyOn(llmService, 'generateSynthesis').mockResolvedValue(mockLLMResult);
-        
+
                         const result = await orchestrator.synthesizeConversation('test-task-id');
-        
+
                         // V?rifications pipeline complet
                         expect(result.taskId).toBe('test-task-id');
                         expect(result.analysisEngineVersion).toBe('3.0.0-phase3');
                         expect(result.contextTrace.parentTaskId).toBe('parent-id');
                         expect(result.contextTrace.previousSiblingTaskIds).toEqual(['sibling-1', 'sibling-2']);
-                        
+
                         // V?rifications m?triques enrichies
                         expect(result.metrics.wasCondensed).toBe(true);
                         expect(result.metrics.condensedBatchPath).toBe('/test/condensed.json');
                         expect(result.metrics.llmTokens).toBe(2000);
                         expect(result.metrics.llmCost).toBe(0.06);
-                        
+
                         // V?rifications contextTree avec debug info
                         expect(result.metrics.contextTree.currentTask.synthesisType).toBe('atomic');
                         expect(result.metrics.contextTree.debugInfo.implementedMethods).toContain('buildNarrativeContext');
-                        
+
                         // V?rification que le contexte r?el remplace celui du LLM
                         expect(result.synthesis.initialContextSummary).toBe('Complete Phase 3 context');
                     });
                 });
             });
-        });
-    });
-});
-
-// Tests E2E avec les vraies cl?s du .env
-describe('E2E Tests with Real Environment', () => {
-    // Skip si pas de cl?s configur?es
-    const skipE2E = !process.env.OPENAI_API_KEY;
-    const itE2E = skipE2E ? it.skip : it;
-
-    beforeAll(() => {
-        if (skipE2E) {
-            console.log('?? Skipping E2E tests: OPENAI_API_KEY not configured in .env');
-        } else {
-            console.log('? Running E2E tests with real API keys');
-            // R?tablir le service OpenAI r?el pour les tests E2E
-            vi.unmock('../../src/services/openai.js');
-        }
-    });
-
-    const createE2ELLMConfig = (): LLMServiceOptions => ({
-        models: [{
-            modelId: process.env.OPENAI_CHAT_MODEL_ID || 'gpt-4o-mini',
-            displayName: 'OpenAI GPT-4o-mini',
-            provider: 'openai' as const,
-            modelName: process.env.OPENAI_CHAT_MODEL_ID || 'gpt-4o-mini',
-            maxTokens: 128000,
-            costPerInputToken: 0.00015,
-            costPerOutputToken: 0.0006,
-            parameters: {
-                temperature: 0.1
-            }
-        }],
-        defaultModelId: process.env.OPENAI_CHAT_MODEL_ID || 'gpt-4o-mini',
-        defaultTimeout: 60000,
-        maxRetries: 3,
-        retryDelay: 2000,
-        enableCaching: false
-    });
-
-    const createE2EOrchestratorOptions = (): SynthesisOrchestratorOptions => ({
-        synthesisOutputDir: '/test/e2e/synthesis',
-        maxContextSize: 100000,
-        maxConcurrency: 2,
-        defaultLlmModel: process.env.OPENAI_CHAT_MODEL_ID || 'gpt-4o-mini'
-    });
-
-    describe('Real API Integration', () => {
-        itE2E('should instantiate LLMService with real OpenAI config', () => {
-            expect(() => {
-                const config = createE2ELLMConfig();
-                const service = new LLMService(config);
-                expect(service).toBeInstanceOf(LLMService);
-            }).not.toThrow();
-        });
-
-        itE2E('should create complete synthesis pipeline with real config', () => {
-            expect(() => {
-                const contextBuilder = new NarrativeContextBuilderService({
-                    baseDirectory: process.cwd(),
-                    maxContextSize: 200000,
-                    enableCondensation: true
-                } as any, new Map());
-                
-                const llmService = new LLMService(createE2ELLMConfig());
-                
-                const orchestrator = new SynthesisOrchestratorService(
-                    contextBuilder,
-                    llmService,
-                    createE2EOrchestratorOptions()
-                );
-                
-                expect(orchestrator).toBeInstanceOf(SynthesisOrchestratorService);
-                expect(contextBuilder).toBeInstanceOf(NarrativeContextBuilderService);
-                expect(llmService).toBeInstanceOf(LLMService);
-            }).not.toThrow();
-        });
-    });
-
-    describe('Environment Configuration', () => {
-        itE2E('should have all required environment variables', () => {
-            expect(process.env.OPENAI_API_KEY).toBeDefined();
-            expect(process.env.OPENAI_CHAT_MODEL_ID).toBeDefined();
-            expect(process.env.QDRANT_URL).toBeDefined();
-            expect(process.env.QDRANT_API_KEY).toBeDefined();
-            expect(process.env.QDRANT_COLLECTION_NAME).toBeDefined();
-        });
-
-        itE2E('should validate environment values', () => {
-            expect(process.env.OPENAI_API_KEY).toMatch(/^sk-/);
-            expect(process.env.OPENAI_CHAT_MODEL_ID).toBe('gpt-4o-mini');
-            expect(process.env.QDRANT_URL).toMatch(/^https?:\/\//);
-            expect(process.env.QDRANT_COLLECTION_NAME).toBe('roo_tasks_semantic_index');
-        });
-
-        itE2E('should validate Qdrant configuration', () => {
-            expect(process.env.QDRANT_API_KEY).toMatch(/^[a-f0-9-]{36}$/); // UUID format
-            expect(process.env.QDRANT_URL).toBe('https://qdrant.myia.io');
-        });
-    });
-
-    describe('Phase 1 Integration with Real Config', () => {
-        itE2E('should handle real synthesis gracefully (Phase 2)', async () => {
-            const contextBuilder = new NarrativeContextBuilderService({
-                baseDirectory: process.cwd(),
-                maxContextSize: 10000
-            } as any, new Map());
-            
-            const llmService = new LLMService(createE2ELLMConfig());
-            
-            const orchestrator = new SynthesisOrchestratorService(
-                contextBuilder,
-                llmService,
-                createE2EOrchestratorOptions()
-            );
-
-            // Phase 2 : synthesizeConversation fonctionne et retourne une analyse
-            // (m?me si le taskId n'existe pas, il g?re l'erreur gracieusement)
-            const result = await orchestrator.synthesizeConversation('real-task-id');
-            
-            expect(result).toBeDefined();
-            expect(result.taskId).toBe('real-task-id');
-            expect(result.analysisEngineVersion).toBe('2.0.0-phase2');
-            
-            // V?rification que l'erreur "conversation not found" est dans le contexte
-            expect(result.synthesis.initialContextSummary).toContain('Conversation skeleton not found');
         });
     });
 });

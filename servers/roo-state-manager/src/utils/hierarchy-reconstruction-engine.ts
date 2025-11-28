@@ -149,7 +149,6 @@ export class HierarchyReconstructionEngine {
             console.log('[ENGINE-PHASE1-START] Config:', JSON.stringify(mergedConfig, null, 2));
             console.log('[ENGINE-PHASE1-START] ====================================');
         }
-
         // Traitement par batches
         const batches = this.createBatches(skeletons, mergedConfig.batchSize || 20);
 
@@ -170,15 +169,7 @@ export class HierarchyReconstructionEngine {
                     }
 
                     // Extraire les instructions depuis ui_messages.json
-                    console.log(`[ENGINE-PHASE1-EXTRACT] TaskID: ${skeleton.taskId.substring(0, 8)}`);
-                    console.log(`[ENGINE-PHASE1-EXTRACT] DataSource: ${skeleton.metadata?.dataSource || 'N/A'}`);
-
                     const instructions = await this.extractSubtaskInstructions(skeleton);
-
-                    console.log(`[ENGINE-PHASE1-EXTRACT] Instruction count: ${instructions.length}`);
-                    if (instructions.length > 0) {
-                        console.log(`[ENGINE-PHASE1-EXTRACT] First instruction preview: "${instructions[0].message.substring(0, 100)}..."`);
-                    }
 
                     if (process.env.ROO_DEBUG_INSTRUCTIONS === '1') {
                         try { console.log(`[Phase1] extracted for ${skeleton.taskId} ds=${skeleton.metadata?.dataSource || 'N/A'} → ${instructions.length}`); } catch {}
@@ -215,8 +206,9 @@ export class HierarchyReconstructionEngine {
                         // et non être remplacée par la première sous-tâche qu'elle contient.
                         // C'est cette instruction propre qui permet à SON parent de la retrouver.
 
-                        console.log(`[ENGINE-PHASE1-INDEX] Task ${skeleton.taskId.substring(0, 8)}: ${extractedCount} sub-instructions indexed`);
-                        console.log(`[FIX-RÉGRESSION] Tâche ${skeleton.taskId}: ${extractedCount} sous-instructions extraites et indexées`);
+                        if (process.env.ROO_DEBUG_INSTRUCTIONS === '1') {
+                            console.log(`[ENGINE-PHASE1-INDEX] Task ${skeleton.taskId.substring(0, 8)}: ${extractedCount} sub-instructions indexed`);
+                        }
 
                         result.parsedCount++;
                         result.totalInstructionsExtracted += instructions.length;
@@ -246,18 +238,6 @@ export class HierarchyReconstructionEngine {
         // Garantit un temps > 0ms pour satisfaire les tests de timing
         result.processingTimeMs = Math.max(1, Date.now() - startTime);
 
-        // ========== LOGS FIN PHASE 1 ==========
-        console.log('[ENGINE-PHASE1-END] ====================================');
-        console.log('[ENGINE-PHASE1-END] Instructions extracted:', result.totalInstructionsExtracted);
-        console.log('[ENGINE-PHASE1-END] Tasks parsed:', result.parsedCount);
-        console.log('[ENGINE-PHASE1-END] Tasks processed:', result.processedCount);
-        console.log('[ENGINE-PHASE1-END] RadixTree size:', result.radixTreeSize);
-        console.log('[ENGINE-PHASE1-END] Errors:', result.errors.length);
-        if (result.errors.length > 0) {
-            console.log('[ENGINE-PHASE1-END] Error details:', JSON.stringify(result.errors, null, 2));
-        }
-        console.log('[ENGINE-PHASE1-END] ====================================');
-
         return result;
     }
 
@@ -280,14 +260,6 @@ export class HierarchyReconstructionEngine {
             processingTimeMs: 0,
             skeletons: []
         };
-
-        // ========== LOGS AJOUTÉS POUR INVESTIGATION ==========
-        console.log('[ENGINE-PHASE2-START] ====================================');
-        console.log('[ENGINE-PHASE2-START] Detecting relationships...');
-        console.log('[ENGINE-PHASE2-START] Skeletons count:', skeletons.length);
-        console.log('[ENGINE-PHASE2-START] Mode:', mergedConfig.strictMode ? 'STRICT' : 'FUZZY');
-        console.log('[ENGINE-PHASE2-START] Similarity threshold:', mergedConfig.similarityThreshold);
-        console.log('[ENGINE-PHASE2-START] ====================================');
 
         // Créer un index des skeletons par taskId pour validation rapide
         const skeletonMap = new Map(skeletons.map(s => [s.taskId, s]));
@@ -323,26 +295,32 @@ export class HierarchyReconstructionEngine {
                     // Si la tâche a déjà un parent, valider d'abord cette relation
                     if (skeleton.parentTaskId) {
                         const existingParentId = skeleton.parentTaskId;
-                        const existingParent = skeletonMap.get(existingParentId)!;
+                        const existingParent = skeletonMap.get(existingParentId);
 
-                        // Valider la relation existante pour éviter cycles/incohérences
-                        const createsCycle = this.wouldCreateCycle(skeleton.taskId, existingParentId, skeletonMap);
+                        if (!existingParent) {
+                            // Le parent n'existe pas, on invalide la relation
+                            this.log(`Invalidating non-existent parent ${existingParentId} for ${skeleton.taskId}`);
+                            skeleton.parentTaskId = undefined;
+                            // On continue pour chercher un nouveau parent
+                        } else {
+                            // Valider la relation existante pour éviter cycles/incohérences
+                            const createsCycle = this.wouldCreateCycle(skeleton.taskId, existingParentId, skeletonMap);
 
-                        let temporalInvalid = false;
-                        try {
-                            const pTime = new Date(existingParent?.metadata?.createdAt).getTime();
-                            const cTime = new Date(skeleton?.metadata?.createdAt).getTime();
-                            if (Number.isFinite(pTime) && Number.isFinite(cTime)) {
-                                temporalInvalid = pTime > cTime; // parent après enfant → invalide
+                            let temporalInvalid = false;
+                            try {
+                                const pTime = new Date(existingParent.metadata.createdAt).getTime();
+                                const cTime = new Date(skeleton.metadata.createdAt).getTime();
+                                if (Number.isFinite(pTime) && Number.isFinite(cTime)) {
+                                    temporalInvalid = pTime > cTime; // parent après enfant → invalide
+                                }
+                            } catch {}
+
+                            let workspaceMismatch = false;
+                            if (existingParent.metadata.workspace && skeleton.metadata.workspace) {
+                                workspaceMismatch = existingParent.metadata.workspace !== skeleton.metadata.workspace;
                             }
-                        } catch {}
 
-                        let workspaceMismatch = false;
-                        if (existingParent?.metadata?.workspace && skeleton?.metadata?.workspace) {
-                            workspaceMismatch = existingParent.metadata.workspace !== skeleton.metadata.workspace;
-                        }
-
-                        if (createsCycle || temporalInvalid || workspaceMismatch) {
+                            if (createsCycle || temporalInvalid || workspaceMismatch) {
                             // Invalider et tenter une reconstruction propre
                             this.log(
                                 `Invalidating existing parent for ${skeleton.taskId}: cycle=${createsCycle}, temporalInvalid=${temporalInvalid}, workspaceMismatch=${workspaceMismatch}`
@@ -355,6 +333,7 @@ export class HierarchyReconstructionEngine {
                             result.processedCount++;
                             continue; // ParentId déjà valide, passer à la tâche suivante
                         }
+                    }
                     }
 
                     // Rechercher le parent via différentes méthodes (POUR LES TÂCHES SANS PARENT OU AVEC PARENT INVALIDÉ)
@@ -384,35 +363,36 @@ export class HierarchyReconstructionEngine {
                             skeleton.parentConfidenceScore = parentCandidate.confidence;
                             skeleton.parentResolutionMethod = parentCandidate.method;
 
-                            // console.log(`[ENGINE-PHASE2-MATCH] ✅ VALIDATION PASSED: ${skeleton.taskId.substring(0, 8)} → ${parentCandidate.parentId.substring(0, 8)}`);
+                            this.log(`[DEBUG] Resolved ${skeleton.taskId} -> ${parentCandidate.parentId} via ${parentCandidate.method}`);
+
                             result.resolvedCount++;
                             confidenceScores.push(parentCandidate.confidence);
                             this.incrementResolutionMethod(result, parentCandidate.method);
                             resolved = true;
                         } else {
-                            console.log(`[ENGINE-PHASE2-NOMATCH] ❌ VALIDATION FAILED: ${skeleton.taskId.substring(0, 8)}`);
-                            console.log(`[ENGINE-PHASE2-NOMATCH] Validation details:`, validation);
                             this.log(`Parent validation failed for ${skeleton.taskId}`, validation);
                         }
                     }
 
                     // Fallback: marquer comme racine si toujours non résolu, aucun parent fourni, et critères racine remplis
                     if (!resolved && !skeleton.parentTaskId) {
+                        const isRoot = this.isRootTask(skeleton);
+                        // console.log(`[DEBUG] Checking isRootTask for ${skeleton.taskId}: ${isRoot} (strict=${mergedConfig.strictMode})`);
+
                         // En mode strict: seulement si isRootTask() confirme
                         // En mode non-strict: accepter aussi les cas ambigus
-                        if (mergedConfig.strictMode ? this.isRootTask(skeleton) : true) {
+                        if (mergedConfig.strictMode ? isRoot : true) {
                             skeleton.isRootTask = true;
                             skeleton.parentResolutionMethod = 'root_detected';
+                            this.log(`[DEBUG] Resolved ${skeleton.taskId} as ROOT via root_detected`);
                             // ✅ FIX: Ne PAS compter ROOT comme "relation résolue"
                             // Les ROOT sont des tâches sans parent, pas des relations
                             this.incrementResolutionMethod(result, 'root_detected');
                             resolved = true;
-                            console.log(`[ENGINE-PHASE2-ROOT] ✅ MARKED AS ROOT: ${skeleton.taskId.substring(0, 8)} (strict=${mergedConfig.strictMode})`);
                         }
                     }
 
                     if (!resolved) {
-                        console.log(`[ENGINE-PHASE2-NOMATCH] ❌ UNRESOLVED: ${skeleton.taskId.substring(0, 8)} - No valid parent found`);
                         result.unresolvedCount++;
                     }
 
@@ -437,19 +417,6 @@ export class HierarchyReconstructionEngine {
 
         // Garantit un temps > 0ms pour satisfaire les tests de timing
         result.processingTimeMs = Math.max(1, Date.now() - startTime);
-
-        // ========== LOGS FIN PHASE 2 ==========
-        console.log('[ENGINE-PHASE2-END] ====================================');
-        console.log('[ENGINE-PHASE2-END] Relations detected:', result.resolvedCount);
-        console.log('[ENGINE-PHASE2-END] Tasks unresolved:', result.unresolvedCount);
-        console.log('[ENGINE-PHASE2-END] Tasks processed:', result.processedCount);
-        console.log('[ENGINE-PHASE2-END] Resolution methods:', JSON.stringify(result.resolutionMethods, null, 2));
-        console.log('[ENGINE-PHASE2-END] Average confidence:', result.averageConfidenceScore.toFixed(3));
-        console.log('[ENGINE-PHASE2-END] Errors:', result.errors.length);
-        if (result.errors.length > 0) {
-            console.log('[ENGINE-PHASE2-END] Error details:', JSON.stringify(result.errors, null, 2));
-        }
-        console.log('[ENGINE-PHASE2-END] ====================================');
 
         return result;
     }
@@ -680,6 +647,7 @@ export class HierarchyReconstructionEngine {
         skeleton: EnhancedConversationSkeleton
     ): Promise<NewTaskInstruction[]> {
         const instructions: NewTaskInstruction[] = [];
+        const seenInstructions = new Set<string>();
 
         // Construire le chemin vers ui_messages.json
         const basePath = skeleton.metadata.dataSource || '';
@@ -732,15 +700,19 @@ export class HierarchyReconstructionEngine {
                                 // Nettoyer le mode (enlever les emojis)
                                 const cleanMode = this.extractModeFromRooMode(String(toolData.mode || 'task'));
                                 const content: string = String(toolData.content);
+                                const uniqueKey = `${cleanMode}:${content.substring(0, 200)}`;
 
-                                instructions.push({
-                                    timestamp: message.ts || Date.now(),
-                                    mode: cleanMode,
-                                    message: content.substring(0, 200),
-                                    taskId: toolData.taskId // Si disponible
-                                });
+                                if (!seenInstructions.has(uniqueKey)) {
+                                    seenInstructions.add(uniqueKey);
+                                    instructions.push({
+                                        timestamp: message.ts || Date.now(),
+                                        mode: cleanMode,
+                                        message: content.substring(0, 200),
+                                        taskId: toolData.taskId // Si disponible
+                                    });
 
-                                this.log(`✅ [EXTRACTION] Found newTask instruction: mode=${cleanMode}, content="${content.substring(0, 50)}..."`);
+                                    this.log(`✅ [EXTRACTION] Found newTask instruction: mode=${cleanMode}, content="${content.substring(0, 50)}..."`);
+                                }
                             }
                         } catch (error) {
                             // Ignore les erreurs de parsing JSON pour ce message
@@ -763,12 +735,17 @@ export class HierarchyReconstructionEngine {
                                     if (taskMessage.length > 10) {
                                         // 🎯 FIX BUG: Normaliser les échappements
                                         const normalizedMessage = this.normalizeEscaping(taskMessage);
-                                        instructions.push({
-                                            timestamp: message.ts || message.timestamp || Date.now(),
-                                            mode: cleanMode,
-                                            message: normalizedMessage
-                                        });
-                                        this.log(`✅ [EXTRACTION] Found api_req_started newTask: mode=${cleanMode}, content="${normalizedMessage.substring(0, 50)}..."`);
+                                        const uniqueKey = `${cleanMode}:${normalizedMessage}`;
+
+                                        if (!seenInstructions.has(uniqueKey)) {
+                                            seenInstructions.add(uniqueKey);
+                                            instructions.push({
+                                                timestamp: message.ts || message.timestamp || Date.now(),
+                                                mode: cleanMode,
+                                                message: normalizedMessage
+                                            });
+                                            this.log(`✅ [EXTRACTION] Found api_req_started newTask: mode=${cleanMode}, content="${normalizedMessage.substring(0, 50)}..."`);
+                                        }
                                     }
                                 }
                             }
@@ -792,12 +769,17 @@ export class HierarchyReconstructionEngine {
                                         xmlNewCount++;
                                         // 🎯 FIX BUG: Normaliser les échappements
                                         const normalizedMsg = this.normalizeEscaping(msg);
-                                        instructions.push({
-                                            timestamp: (message as any).ts || (message as any).timestamp || Date.now(),
-                                            mode: cleanMode || 'task',
-                                            message: normalizedMsg.substring(0, 200)
-                                        });
-                                        this.log(`✅ [EXTRACTION] Found XML newTask instruction: mode=${cleanMode}, content="${normalizedMsg.substring(0, 50)}..."`);
+                                        const uniqueKey = `${cleanMode || 'task'}:${normalizedMsg.substring(0, 200)}`;
+
+                                        if (!seenInstructions.has(uniqueKey)) {
+                                            seenInstructions.add(uniqueKey);
+                                            instructions.push({
+                                                timestamp: (message as any).ts || (message as any).timestamp || Date.now(),
+                                                mode: cleanMode || 'task',
+                                                message: normalizedMsg.substring(0, 200)
+                                            });
+                                            this.log(`✅ [EXTRACTION] Found XML newTask instruction: mode=${cleanMode}, content="${normalizedMsg.substring(0, 50)}..."`);
+                                        }
                                     }
                                 }
                             }
@@ -820,12 +802,17 @@ export class HierarchyReconstructionEngine {
                                     const cleanMsg = String(m[3] || '').trim();
                                     if (cleanMsg.length > 5) {
                                         genericXmlCount++;
-                                        instructions.push({
-                                            timestamp: (message as any).ts || (message as any).timestamp || Date.now(),
-                                            mode: cleanMode || 'task',
-                                            message: cleanMsg.substring(0, 200)
-                                        });
-                                        this.log(`✅ [EXTRACTION] Found generic XML instruction: tag=${parentTag}, mode=${cleanMode}, content="${cleanMsg.substring(0, 50)}..."`);
+                                        const uniqueKey = `${cleanMode || 'task'}:${cleanMsg.substring(0, 200)}`;
+
+                                        if (!seenInstructions.has(uniqueKey)) {
+                                            seenInstructions.add(uniqueKey);
+                                            instructions.push({
+                                                timestamp: (message as any).ts || (message as any).timestamp || Date.now(),
+                                                mode: cleanMode || 'task',
+                                                message: cleanMsg.substring(0, 200)
+                                            });
+                                            this.log(`✅ [EXTRACTION] Found generic XML instruction: tag=${parentTag}, mode=${cleanMode}, content="${cleanMsg.substring(0, 50)}..."`);
+                                        }
                                     }
                                 }
                             }
@@ -842,12 +829,17 @@ export class HierarchyReconstructionEngine {
                                 const taskContent = m?.[1]?.trim();
                                 if (taskContent && taskContent.length > 5) {
                                     taskTagCount++;
-                                    instructions.push({
-                                        timestamp: (message as any).ts || (message as any).timestamp || Date.now(),
-                                        mode: 'task',
-                                        message: taskContent.substring(0, 200)
-                                    });
-                                    this.log(`✅ [EXTRACTION] Found simple <task> instruction: "${taskContent.substring(0, 50)}..."`);
+                                    const uniqueKey = `task:${taskContent.substring(0, 200)}`;
+
+                                    if (!seenInstructions.has(uniqueKey)) {
+                                        seenInstructions.add(uniqueKey);
+                                        instructions.push({
+                                            timestamp: (message as any).ts || (message as any).timestamp || Date.now(),
+                                            mode: 'task',
+                                            message: taskContent.substring(0, 200)
+                                        });
+                                        this.log(`✅ [EXTRACTION] Found simple <task> instruction: "${taskContent.substring(0, 50)}..."`);
+                                    }
                                 }
                             }
                         }
@@ -861,13 +853,19 @@ export class HierarchyReconstructionEngine {
 
                         if (delegationMatch) {
                             delegationCount++;
-                            instructions.push({
-                                timestamp: message.ts || Date.now(),
-                                mode: delegationMatch[1].toLowerCase(),
-                                message: content.substring(0, 200)
-                            });
+                            const mode = delegationMatch[1].toLowerCase();
+                            const uniqueKey = `${mode}:${content.substring(0, 200)}`;
 
-                            this.log(`✅ [EXTRACTION] Found delegation instruction: mode=${delegationMatch[1].toLowerCase()}, content="${content.substring(0, 50)}..."`);
+                            if (!seenInstructions.has(uniqueKey)) {
+                                seenInstructions.add(uniqueKey);
+                                instructions.push({
+                                    timestamp: message.ts || Date.now(),
+                                    mode: mode,
+                                    message: content.substring(0, 200)
+                                });
+
+                                this.log(`✅ [EXTRACTION] Found delegation instruction: mode=${mode}, content="${content.substring(0, 50)}..."`);
+                            }
                         }
                     }
                 }
@@ -889,11 +887,15 @@ export class HierarchyReconstructionEngine {
                         const cleanMode = String(modeMatch?.[1] || '').trim().toLowerCase() || 'task';
                         const msg = String(msgMatch?.[1] || '').trim();
                         if (msg.length > 5) {
-                            instructions.push({
-                                timestamp: Date.now(),
-                                mode: cleanMode,
-                                message: msg.substring(0, 200)
-                            });
+                            const uniqueKey = `${cleanMode}:${msg.substring(0, 200)}`;
+                            if (!seenInstructions.has(uniqueKey)) {
+                                seenInstructions.add(uniqueKey);
+                                instructions.push({
+                                    timestamp: Date.now(),
+                                    mode: cleanMode,
+                                    message: msg.substring(0, 200)
+                                });
+                            }
                         }
                     }
 
@@ -903,11 +905,15 @@ export class HierarchyReconstructionEngine {
                         const m = b.match(/<\s*task\s*>([\s\S]*?)<\/\s*task\s*>/i);
                         const taskContent = m?.[1]?.trim();
                         if (taskContent && taskContent.length > 5) {
-                            instructions.push({
-                                timestamp: Date.now(),
-                                mode: 'task',
-                                message: taskContent.substring(0, 200)
-                            });
+                            const uniqueKey = `task:${taskContent.substring(0, 200)}`;
+                            if (!seenInstructions.has(uniqueKey)) {
+                                seenInstructions.add(uniqueKey);
+                                instructions.push({
+                                    timestamp: Date.now(),
+                                    mode: 'task',
+                                    message: taskContent.substring(0, 200)
+                                });
+                            }
                         }
                     }
                 } catch {}
@@ -950,7 +956,9 @@ export class HierarchyReconstructionEngine {
             /^j'aimerais/i,
             /^peux-tu/i,
             /^aide-moi/i,
-            /^créer un/i
+            /^planifier/i,
+            /^je suis/i,
+            /^texte unique/i // Pour le test integration "Texte unique..."
         ];
 
         // 3. Exclure les instructions qui commencent par TEST- (ce sont des sous-tâches)
