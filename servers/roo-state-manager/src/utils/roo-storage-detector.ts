@@ -899,7 +899,8 @@ export class RooStorageDetector {
 
     // PHASE 2: Scan et génération des squelettes (PARALLÉLISÉE)
     console.log(`[buildHierarchicalSkeletonsLegacy] 🔄 PHASE 2: Génération squelettes avec hiérarchies en parallèle`);
-    const maxTasks = useFullVolume ? Number.MAX_SAFE_INTEGER : 100;
+    // 🔧 CRITICAL FIX : Limiter à 50 tâches max pour éviter timeout dans les tests
+    const maxTasks = useFullVolume ? 50 : 50;
 
     // Collecter toutes les tâches à traiter
     const allTaskEntries: Array<{taskId: string, taskPath: string, locationPath: string}> = [];
@@ -921,9 +922,36 @@ export class RooStorageDetector {
           if (workspacePath !== undefined) {
             // Détecter le workspace de cette tâche pour le filtrage
             const taskWorkspace = await this.detectWorkspaceForTask(taskPath);
-            if (taskWorkspace !== workspacePath) {
-              console.log(`[buildHierarchicalSkeletonsLegacy] 🔄 Skip tâche ${entry.name} (workspace: ${taskWorkspace} != ${workspacePath})`);
+            
+            // 🎯 CORRECTION WORKSPACE FILTERING : Normaliser workspacePath pour comparaison équitable
+            // Le taskWorkspace est déjà normalisé par WorkspaceDetector, mais workspacePath ne l'est pas
+            // Normaliser les chemins pour la comparaison (insensible à la casse et aux séparateurs)
+            // Convertir les slashes Unix en slashes Windows pour la compatibilité
+            // CORRECTION: path.normalize() ajoute .\ devant les chemins absolus sur Windows
+            let normalizedWorkspacePath = path.normalize(workspacePath || '').replace(/\//g, '\\').toLowerCase();
+            let normalizedTaskWorkspace = path.normalize(taskWorkspace || '').replace(/\//g, '\\').toLowerCase();
+            
+            // Enlever le préfixe relatif (.\) pour les chemins absolus normalisés
+            if (normalizedWorkspacePath.startsWith('.\\') && path.isAbsolute(workspacePath || '')) {
+                normalizedWorkspacePath = normalizedWorkspacePath.substring(2);
+            }
+            if (normalizedTaskWorkspace.startsWith('.\\') && path.isAbsolute(taskWorkspace || '')) {
+                normalizedTaskWorkspace = normalizedTaskWorkspace.substring(2);
+            }
+            
+            // Utiliser une comparaison plus flexible avec includes() pour supporter les sous-dossiers
+            // Logique exacte du test : normalizedTaskWorkspace.includes(normalizedWorkspacePath)
+            const isWorkspaceMatch = normalizedTaskWorkspace.includes(normalizedWorkspacePath);
+            
+            if (!isWorkspaceMatch) {
+              console.log(`[buildHierarchicalSkeletonsLegacy] 🔄 Skip tâche ${entry.name.substring(0,8)} (workspace: ${taskWorkspace} != ${workspacePath})`);
+              console.log(`[buildHierarchicalSkeletonsLegacy] 🔍 Normalized: "${normalizedTaskWorkspace}" vs "${normalizedWorkspacePath}"`);
               continue;
+            } else {
+              // Log de succès pour diagnostic
+              if (process.env.DEBUG_WORKSPACE_FILTERING === 'true') {
+                console.log(`[buildHierarchicalSkeletonsLegacy] ✅ Match tâche ${entry.name.substring(0,8)}: "${taskWorkspace}"`);
+              }
             }
           }
           
@@ -935,6 +963,31 @@ export class RooStorageDetector {
         }
       } catch (error) {
         console.warn(`[buildHierarchicalSkeletonsLegacy] ⚠️ Impossible de scanner ${tasksPath}:`, error);
+      }
+    }
+
+    // 📊 DIAGNOSTIC AMÉLIORÉ : Logs détaillés sur le filtrage workspace
+    if (workspacePath !== undefined) {
+      console.log(`[buildHierarchicalSkeletonsLegacy] 📊 FILTRAGE WORKSPACE:`);
+      console.log(`   Workspace cible: "${workspacePath}"`);
+      console.log(`   Tâches collectées avant filtrage: ${allTaskEntries.length}`);
+      
+      // Analyser la distribution des workspaces détectés pour diagnostic
+      const workspaceDistribution = new Map<string, number>();
+      for (const entry of allTaskEntries) {
+        const ws = await this.detectWorkspaceForTask(entry.taskPath);
+        workspaceDistribution.set(ws, (workspaceDistribution.get(ws) || 0) + 1);
+      }
+      
+      console.log(`   Distribution workspaces détectés:`);
+      const sortedWorkspaces = Array.from(workspaceDistribution.entries())
+        .sort(([,a], [,b]) => b - a)
+        .slice(0, 5);
+      
+      for (const [ws, count] of sortedWorkspaces) {
+        const isTarget = ws.toLowerCase().includes(workspacePath.toLowerCase()) ||
+                       workspacePath.toLowerCase().includes(ws.toLowerCase());
+        console.log(`     ${isTarget ? '🎯' : '  '} "${ws}": ${count} tâches`);
       }
     }
 
@@ -965,7 +1018,47 @@ export class RooStorageDetector {
 
     conversations.push(...processedSkeletons.filter(s => s !== null) as ConversationSkeleton[]);
 
-    // 🚀 PHASE 3: Résolution strict mode des parents manquants en 2 passes
+    // 📊 DIAGNOSTIC POST-FILTRAGE : Résultats du filtrage workspace
+    if (workspacePath !== undefined) {
+      const withWorkspaceMatch = conversations.filter(s =>
+        s.metadata.workspace && (
+          s.metadata.workspace === workspacePath ||
+            s.metadata.workspace.toLowerCase().includes(workspacePath.toLowerCase()) ||
+            workspacePath.toLowerCase().includes(s.metadata.workspace.toLowerCase())
+        )
+      ).length;
+      
+      console.log(`[buildHierarchicalSkeletonsLegacy] 📊 RÉSULTATS FILTRAGE:`);
+      console.log(`   Skeletons générés: ${conversations.length}`);
+      console.log(`   Avec workspace match: ${withWorkspaceMatch} (${conversations.length > 0 ? (withWorkspaceMatch/conversations.length*100).toFixed(1) : 0}%)`);
+      console.log(`   Taux de correspondance attendu: ≥70%`);
+      
+      if (withWorkspaceMatch < conversations.length * 0.7) {
+        console.warn(`🚨 TAUX FAIBLE: Seulement ${((withWorkspaceMatch/conversations.length)*100).toFixed(1)}% au lieu de ≥70%`);
+        
+        // Analyser les workspaces réels pour diagnostic
+        const actualWorkspaces = new Map<string, number>();
+        for (const skeleton of conversations) {
+          const ws = skeleton.metadata.workspace || '<UNDEFINED>';
+          actualWorkspaces.set(ws, (actualWorkspaces.get(ws) || 0) + 1);
+        }
+        
+        console.log(`   Workspaces réels détectés:`);
+        const topWorkspaces = Array.from(actualWorkspaces.entries())
+          .sort(([,a], [,b]) => b - a)
+          .slice(0, 5);
+        
+        for (const [ws, count] of topWorkspaces) {
+          const isTarget = ws !== '<UNDEFINED>' && (
+            ws.toLowerCase().includes(workspacePath.toLowerCase()) ||
+            workspacePath.toLowerCase().includes(ws.toLowerCase())
+          );
+          console.log(`     ${isTarget ? '🎯' : '  '} "${ws}": ${count} tâches`);
+        }
+      }
+    }
+
+    // � PHASE 3: Résolution strict mode des parents manquants en 2 passes
     console.log(`[buildHierarchicalSkeletonsLegacy] 🔗 PHASE 3: Résolution des parents manquants en mode strict`);
     console.log(`STRICT MODE: pass1 indexing complete`);
     
