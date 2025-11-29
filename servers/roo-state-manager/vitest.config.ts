@@ -33,7 +33,7 @@ export default defineConfig({
     ],
     
     // Setup files (équivalent à setupFilesAfterEnv)
-    setupFiles: ['./tests/setup-env.ts'],
+    setupFiles: ['./tests/setup-env.ts', './tests/setup/jest.setup.js'],
     
     // Global setup (création du stockage temporaire)
     // Note: Dans Vitest v3, globalSetup retourne une fonction de teardown
