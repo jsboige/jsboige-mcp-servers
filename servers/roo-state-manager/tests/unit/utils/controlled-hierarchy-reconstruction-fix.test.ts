@@ -134,20 +134,6 @@ describe('Controlled Hierarchy Reconstruction - TEST-HIERARCHY Dataset', () => {
             // DEBUG: Vérifier l'état des instructions tronquées après Phase 1
             console.log(`[DEBUG-TEST] Checking skeletons after Phase 1. Count: ${enhancedSkeletons.length}`);
 
-            // 🔧 FORCE FIX AGRESSIF: Réappliquer enhanceSkeleton sur TOUS les éléments
-            // Car executePhase1 semble recharger les métadonnées depuis le disque et écraser nos patchs
-            enhancedSkeletons.forEach(s => {
-                const originalInstruction = s.truncatedInstruction;
-                // Ré-appliquer la logique de patch
-                const patched = enhanceSkeleton(s);
-                s.truncatedInstruction = patched.truncatedInstruction;
-                s.childTaskInstructionPrefixes = patched.childTaskInstructionPrefixes;
-
-                if (s.truncatedInstruction !== originalInstruction) {
-                    console.log(`⚠️ [DEBUG-TEST] Fixed instruction for ${s.taskId.substring(0, 8)}: "${originalInstruction?.substring(0, 20)}..." -> "${s.truncatedInstruction?.substring(0, 20)}..."`);
-                }
-            });
-
             // Supprimer artificiellement les parentIds pour forcer la reconstruction
             enhancedSkeletons.forEach(s => {
                 if (s.taskId !== TEST_HIERARCHY_IDS.ROOT && s.taskId !== TEST_HIERARCHY_IDS.COLLECTE) {

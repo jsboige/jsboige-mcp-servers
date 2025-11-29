@@ -197,15 +197,16 @@ export class HierarchyReconstructionEngine {
                              extractedCount++;
                         }
 
-                        // 🎯 CORRECTION CRITIQUE : Mettre à jour truncatedInstruction pour la Phase 2
-                        // La Phase 2 a besoin de truncatedInstruction pour chercher les parents
-                        // On utilise une méthode privée via cast any pour éviter de modifier l'interface publique
-                        if (instructions.length > 0) {
-                            const firstSubInstruction = instructions[0].message;
-                            // Utiliser la map temporaire interne de l'index
+                        // 🎯 CORRECTION CRITIQUE : Extraire l'instruction propre (prompt) pour la Phase 2
+                        // Ne PAS utiliser les sous-instructions (enfants) comme instruction propre !
+                        const selfInstruction = await this.extractSelfInstruction(skeleton);
+                        if (selfInstruction) {
                             const indexAny = this.instructionIndex as any;
                             if (indexAny.tempTruncatedInstructions) {
-                                indexAny.tempTruncatedInstructions.set(skeleton.taskId, firstSubInstruction);
+                                indexAny.tempTruncatedInstructions.set(skeleton.taskId, selfInstruction);
+                            }
+                            if (process.env.ROO_DEBUG_INSTRUCTIONS === '1') {
+                                console.log(`[Phase1] Self-instruction extracted for ${skeleton.taskId}: "${selfInstruction.substring(0, 50)}..."`);
                             }
                         }
 
@@ -273,6 +274,17 @@ export class HierarchyReconstructionEngine {
         // Cela permet aux tests Phase 2 d'utiliser la similarité sans exécuter la Phase 1
         for (const s of skeletons) {
             try {
+                // 🎯 CORRECTION CRITIQUE : Synchroniser truncatedInstruction depuis la Phase 1
+                // Si une instruction tronquée a été capturée en Phase 1, on l'utilise pour la Phase 2
+                const phase1Truncated = this.instructionIndex.getTruncatedInstruction(s.taskId);
+                if (phase1Truncated) {
+                    const oldTruncated = s.truncatedInstruction;
+                    s.truncatedInstruction = phase1Truncated;
+                    if (this.config.debugMode && oldTruncated !== phase1Truncated) {
+                        console.log(`[HierarchyEngine] Updated truncatedInstruction for ${s.taskId.substring(0, 8)} from Phase 1 extraction`);
+                    }
+                }
+
                 if (s.parsedSubtaskInstructions?.instructions?.length) {
                     for (const inst of s.parsedSubtaskInstructions.instructions) {
                         const prefix = computeInstructionPrefix(inst.message, 192);
@@ -643,6 +655,8 @@ export class HierarchyReconstructionEngine {
             validationType: 'existence'
         };
     }
+
+
 
     /**
      * Extrait les instructions de sous-tâches depuis ui_messages.json
@@ -1258,6 +1272,65 @@ export class HierarchyReconstructionEngine {
             }
         }
 
+        return null;
+    }
+
+    /**
+     * Extrait l'instruction propre de la tâche (le prompt initial)
+     */
+    private async extractSelfInstruction(
+        skeleton: EnhancedConversationSkeleton
+    ): Promise<string | null> {
+        const basePath = skeleton.metadata.dataSource || '';
+        const uiMessagesPath = path.join(basePath, 'ui_messages.json');
+        const fs = await import('fs');
+
+        if (!fs.existsSync(uiMessagesPath)) {
+            return null;
+        }
+
+        try {
+            const content = fs.readFileSync(uiMessagesPath, 'utf-8');
+            const data = JSON.parse(content);
+            const messages = Array.isArray(data) ? data : (Array.isArray((data as any).messages) ? (data as any).messages : []);
+
+            if (messages.length > 0) {
+                // Chercher le premier message significatif (User ou Task)
+                for (const message of messages) {
+                    // Ignorer les messages système vides ou techniques
+                    if (!message.text && !message.content) continue;
+
+                    // Si c'est un message utilisateur ou une instruction task explicite
+                    const text = message.text || message.content;
+
+                    // Nettoyer et normaliser
+                    if (text && typeof text === 'string' && text.length > 5) {
+                        // 🎯 CORRECTION SDDD : Ne PAS extraire le contenu des balises task imbriquées
+                        // car elles contiennent souvent les instructions pour les SOUS-TÂCHES.
+                        // On veut l'instruction PROPRE de la tâche (le prompt utilisateur).
+
+                        // Supprimer les blocs task et new_task pour ne garder que le prompt principal
+                        let cleanText = text
+                            .replace(/<\s*task\s*>[\s\S]*?<\/\s*task\s*>/gi, '')
+                            .replace(/<\s*new_task\b[^>]*>[\s\S]*?<\/\s*new_task\s*>/gi, '');
+
+                        if (process.env.ROO_DEBUG_INSTRUCTIONS === '1') {
+                            console.log(`[extractSelfInstruction] ${skeleton.taskId.substring(0,8)}: text len=${text.length}, cleanText len=${cleanText.length}`);
+                        }
+
+                        // Si le texte nettoyé est trop court (ex: juste "Bonjour"), on garde le texte original
+                        // mais on préfère le texte nettoyé s'il est substantiel
+                        if (cleanText.trim().length < 10) {
+                            cleanText = text;
+                        }
+
+                        return this.normalizeEscaping(cleanText);
+                    }
+                }
+            }
+        } catch (error) {
+            // Ignorer les erreurs de lecture
+        }
         return null;
     }
 

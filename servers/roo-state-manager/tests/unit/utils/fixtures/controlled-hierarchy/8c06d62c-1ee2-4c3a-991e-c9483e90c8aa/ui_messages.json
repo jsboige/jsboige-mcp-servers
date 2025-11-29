@@ -1,1 +1,20 @@
-[{"id":"msg-1","type":"user","content":"Message utilisateur 1 pour 8c06d62c-1ee2-4c3a-991e-c9483e90c8aa","timestamp":"2025-10-17T21:55:00.000Z"},{"id":"msg-2","type":"assistant","content":"Message assistant 1 pour 8c06d62c-1ee2-4c3a-991e-c9483e90c8aa","timestamp":"2025-10-17T21:55:30.000Z"},{"id":"msg-3","type":"user","content":"Message utilisateur 2 pour 8c06d62c-1ee2-4c3a-991e-c9483e90c8aa","timestamp":"2025-10-17T21:56:00.000Z"}]
+[
+  {
+    "id": "msg-1",
+    "type": "user",
+    "content": "TEST-LEAF-B1A: Crée le fichier leaf-b1a.js contenant une fonction processLeafB1a() qui traite les données de la feuille B1a. Termine avec attempt_completion.",
+    "timestamp": "2025-10-17T21:55:00.000Z"
+  },
+  {
+    "id": "msg-2",
+    "type": "assistant",
+    "content": "Message assistant 1 pour 8c06d62c-1ee2-4c3a-991e-c9483e90c8aa",
+    "timestamp": "2025-10-17T21:55:30.000Z"
+  },
+  {
+    "id": "msg-3",
+    "type": "user",
+    "content": "Message utilisateur 2 pour 8c06d62c-1ee2-4c3a-991e-c9483e90c8aa",
+    "timestamp": "2025-10-17T21:56:00.000Z"
+  }
+]
