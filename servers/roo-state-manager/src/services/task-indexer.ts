@@ -305,7 +305,7 @@ function validateVectorGlobal(vector: number[], expectedDim: number = 1536): voi
     // Vérifier NaN/Infinity qui causent erreurs 400
     const hasInvalidValues = vector.some(v => !Number.isFinite(v));
     if (hasInvalidValues) {
-        throw new Error(`Vector contient NaN ou Infinity - invalide pour Qdrant`);
+        throw new Error(`Vector contient NaN ou Infinity`);
     }
 }
 

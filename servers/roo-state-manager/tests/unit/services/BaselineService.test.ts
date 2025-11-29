@@ -5,59 +5,8 @@ import type { IConfigService, IInventoryCollector, IDiffDetector } from '../../.
 import { existsSync, rmSync } from 'fs';
 import * as fs from 'fs/promises';
 import * as path from 'path';
+import * as mockFs from 'mock-fs';
 
-// Fonctions d'aide pour l'isolation des tests
-async function restoreTestBaseline(): Promise<void> {
-  const testPath = path.join(process.cwd(), 'test-baseline-valid.json');
-
-  const defaultBaseline = {
-    version: '2.1.0',
-    baselineId: 'baseline-1',
-    machineId: 'test-machine',
-    timestamp: '2025-11-04T01:00:00Z',
-    machines: [
-      {
-        machineId: 'test-machine',
-        os: 'Windows 11',
-        architecture: 'x64',
-        roo: {
-          modes: ['code', 'ask'],
-          mcpServers: [
-            { name: 'test-server', enabled: true }
-          ]
-        },
-        hardware: {
-          cpu: { cores: 16, threads: 32 },
-          memory: { total: 32000000000 }
-        },
-        software: {
-          node: '18.17.0',
-          python: '3.11.0'
-        }
-      }
-    ]
-  };
-
-  await fs.writeFile(testPath, JSON.stringify(defaultBaseline, null, 2), 'utf-8');
-}
-
-async function cleanupTestFiles(): Promise<void> {
-  const testPath = path.join(process.cwd(), 'test-baseline-valid.json');
-  const roadmapPath = path.join(process.cwd(), 'sync-roadmap.md');
-
-  // Nettoyer les fichiers de backup créés pendant les tests
-  const files = await fs.readdir(process.cwd());
-  for (const file of files) {
-    if (file.startsWith('test-baseline-valid.json.backup.') ||
-        file === 'sync-roadmap.md' && file !== 'sync-roadmap.md') {
-      try {
-        await fs.unlink(path.join(process.cwd(), file));
-      } catch (error) {
-        // Ignorer les erreurs de nettoyage
-      }
-    }
-  }
-}
 
 describe('BaselineService', () => {
   let mockConfigService: IConfigService;
@@ -68,10 +17,110 @@ describe('BaselineService', () => {
   let testRoadmapPath: string;
 
   beforeEach(async () => {
-    // Mock des dépendances
+    // Configurer mock-fs AVANT de créer le service
+    mockFs.default({
+      // Fichier de baseline de test valide
+      'test-baseline-valid.json': JSON.stringify({
+        version: '2.1.0',
+        baselineId: 'baseline-1',
+        machineId: 'test-machine',
+        timestamp: '2025-11-04T01:00:00Z',
+        machines: [
+          {
+            machineId: 'test-machine',
+            os: 'Windows 11',
+            architecture: 'x64',
+            roo: {
+              modes: ['code', 'ask'],
+              mcpServers: [
+                { name: 'test-server', enabled: true }
+              ]
+            },
+            hardware: {
+              cpu: { cores: 16, threads: 32 },
+              memory: { total: 32000000000 }
+            },
+            software: {
+              node: '18.17.0',
+              python: '3.11.0'
+            }
+          }
+        ]
+      }, null, 2),
+      
+      // Fichier de configuration de référence
+      'config/baselines/sync-config.ref.json': JSON.stringify({
+        version: "1.0.0",
+        baseline: {
+          machineId: "myia-po-2026",
+          timestamp: "2025-11-28T14:00:00Z",
+          config: {
+            roosync: {
+              enabled: true,
+              sharedPath: "/shared/roosync",
+              conflictStrategy: "manual"
+            },
+            mcp: {
+              timeout: 30000,
+              retryAttempts: 3
+            }
+          }
+        },
+        metadata: {
+          createdBy: "myia-po-2026",
+          description: "Configuration de référence pour synchronisation"
+        }
+      }, null, 2),
+      
+      // Fichier roadmap
+      'sync-roadmap.md': `# RooSync Roadmap
+
+## Version 1.0.0
+
+### Objectifs
+- Synchronisation des configurations Roo
+- Gestion des conflits automatique
+- Support multi-machines
+
+### Implémentations
+- [x] BaselineService
+- [x] SyncService
+- [ ] ConflictService
+- [ ] MonitoringService
+
+### Prochaines étapes
+1. Implémenter ConflictService
+2. Ajouter monitoring en temps réel
+3. Support des configurations complexes`,
+      
+      // Fichiers de décision pour les tests
+      'decisions/test-decision-1.json': JSON.stringify({
+        id: "test-decision-1",
+        type: "baseline_update",
+        status: "approved",
+        timestamp: "2025-11-28T15:00:00Z",
+        content: {
+          machineId: "test-machine",
+          changes: ["config.timeout"]
+        }
+      }, null, 2),
+      
+      'decisions/test-decision-2.json': JSON.stringify({
+        id: "test-decision-2",
+        type: "config_change",
+        status: "pending",
+        timestamp: "2025-11-28T15:00:00Z",
+        content: {
+          property: "roosync.conflictStrategy",
+          oldValue: "manual",
+          newValue: "auto"
+        }
+      }, null, 2)
+    });
+
     mockConfigService = {
       getSharedStatePath: () => process.cwd(),
-      getBaselineServiceConfig: () => ({
+      getBaselineServiceConfig: () =>({
         baselinePath: path.join(process.cwd(), 'test-baseline-valid.json'),
         roadmapPath: path.join(process.cwd(), 'sync-roadmap.md'),
         cacheEnabled: false,
@@ -91,14 +140,11 @@ describe('BaselineService', () => {
     baselineService = new BaselineService(mockConfigService, mockInventoryCollector, mockDiffDetector);
     testBaselinePath = path.join(process.cwd(), 'test-baseline-valid.json');
     testRoadmapPath = path.join(process.cwd(), 'sync-roadmap.md');
-
-    // Restaurer le fichier de test à son état initial
-    await restoreTestBaseline();
   });
 
-  afterEach(async () => {
-    // Nettoyer les fichiers créés pendant les tests
-    await cleanupTestFiles();
+  afterEach(() => {
+    // Restaurer le système de fichiers réel
+    mockFs.default.restore();
   });
 
   describe('loadBaseline', () => {

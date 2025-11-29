@@ -48,7 +48,7 @@
     "langchain": "^0.3.10",
     "marked": "^14.1.0",
     "node-fetch": "^3.3.2",
-    "openai": "^4.78.1",
+    "openai": "^4.20.0",
     "pg": "^8.13.1",
     "pg-hstore": "^2.3.4",
     "sequelize": "^6.37.0",

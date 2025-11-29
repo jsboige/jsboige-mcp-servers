@@ -1,0 +1,22 @@
+{
+  "version": "1.0.0",
+  "baseline": {
+    "machineId": "myia-po-2026",
+    "timestamp": "2025-11-28T14:00:00Z",
+    "config": {
+      "roosync": {
+        "enabled": true,
+        "sharedPath": "/shared/roosync",
+        "conflictStrategy": "manual"
+      },
+      "mcp": {
+        "timeout": 30000,
+        "retryAttempts": 3
+      }
+    }
+  },
+  "metadata": {
+    "createdBy": "myia-po-2026",
+    "description": "Configuration de référence pour synchronisation"
+  }
+}
