@@ -74,10 +74,10 @@ export class RooStorageDetector {
         // Ignorer les erreurs de validation pour un seul chemin
       }
     }
-    
+
     // Garder en cache pendant 5 minutes
     await globalCacheManager.set(cacheKey, validatedPaths);
-    
+
     return validatedPaths;
   }
 
@@ -89,7 +89,7 @@ export class RooStorageDetector {
     let count = 0;
     let totalSize = 0;
     let lastActivity: Date | null = null;
-    
+
     const entries = await fs.readdir(storagePath, { withFileTypes: true });
 
     for (const entry of entries) {
@@ -109,7 +109,7 @@ export class RooStorageDetector {
     }
     return { conversationCount: count, totalSize, fileTypes: {} };
   }
-  
+
   /**
    * Scanne un répertoire de tâches et retourne une liste paginée de métadonnées de conversation.
    * Le scan du contenu est limité au strict nécessaire (ex: task_metadata.json).
@@ -168,7 +168,7 @@ export class RooStorageDetector {
 
         return conversations.slice(options.offset, options.offset + options.limit);
     }
-  
+
   /**
    * Trouve et analyse une seule conversation par son ID.
    * C'est la méthode la plus efficace pour obtenir les détails d'une conversation.
@@ -182,7 +182,7 @@ export class RooStorageDetector {
               if (stats.isDirectory()) {
                   const skeleton = await this.analyzeConversation(taskId, taskPath);
                   if (!skeleton) return null;
-                  
+
                   // Conversion pour l'ancienne interface
                   return {
                       taskId: skeleton.taskId,
@@ -205,7 +205,7 @@ export class RooStorageDetector {
       }
       return null;
   }
-  
+
   // Méthodes dépréciées ou internes
   /**
    * @deprecated Utiliser `detectStorageLocations` à la place.
@@ -221,7 +221,7 @@ export class RooStorageDetector {
     return result;
 }
 
-  
+
   /**
    * Recherche les emplacements potentiels de stockage Roo
    */
@@ -274,10 +274,10 @@ export class RooStorageDetector {
 
     try {
       const taskDirs = await fs.readdir(tasksPath);
-      
+
       for (const taskId of taskDirs) {
         const taskPath = path.join(tasksPath, taskId);
-        
+
         try {
           const stats = await fs.stat(taskPath);
           if (!stats.isDirectory()) continue;
@@ -323,11 +323,11 @@ export class RooStorageDetector {
     useProductionHierarchy: boolean = true
   ): Promise<ConversationSkeleton | null> {
     const config = getParsingConfig();
-    
+
     const metadataPath = path.join(taskPath, 'task_metadata.json');
     const apiHistoryPath = path.join(taskPath, 'api_conversation_history.json');
     const uiMessagesPath = path.join(taskPath, 'ui_messages.json');
-    
+
     // Mode comparaison : exécuter ancien + nouveau
     if (isComparisonMode()) {
       return await this.analyzeWithComparison(
@@ -337,7 +337,7 @@ export class RooStorageDetector {
         { metadataPath, apiHistoryPath, uiMessagesPath }
       );
     }
-    
+
     // Mode nouveau système uniquement
     if (shouldUseNewParsing()) {
       return await this.analyzeWithNewSystem(
@@ -347,7 +347,7 @@ export class RooStorageDetector {
         { metadataPath, apiHistoryPath, uiMessagesPath }
       );
     }
-    
+
     // Mode ancien système (défaut, legacy)
     return await this.analyzeWithOldSystem(
       taskId,
@@ -369,22 +369,22 @@ export class RooStorageDetector {
     try {
       // Charger les messages UI
       const messages = await this.loadUIMessages(paths.uiMessagesPath);
-      
+
       if (messages.length === 0) {
         console.warn(`[NEW PARSING] No messages found for ${taskId}`);
         return null;
       }
-      
+
       // STRATÉGIE DUAL : Utiliser WorkspaceDetector pour détection intelligente
       const workspaceDetector = new WorkspaceDetector({
         enableCache: true,
         validateExistence: false, // Performance
         normalizePaths: true,
       });
-      
+
       const workspaceResult = await workspaceDetector.detect(taskPath);
       const detectedWorkspace = workspaceResult.workspace;
-      
+
       // Logger la source de détection si mode debug
       if (process.env.DEBUG_PARSING === 'true') {
         console.log(`[NEW PARSING] Workspace pour ${taskId}:`, {
@@ -393,23 +393,23 @@ export class RooStorageDetector {
           confidence: workspaceResult.confidence
         });
       }
-      
+
       // Utiliser le transformer
       const transformer = new MessageToSkeletonTransformer({
         normalizePrefixes: true,
         strictValidation: true,
       });
-      
+
       const result = await transformer.transform(messages, taskId, detectedWorkspace || undefined);
-      
+
       // Logger les métadonnées si mode debug
       if (process.env.DEBUG_PARSING === 'true') {
         console.log('[NEW PARSING] Metadata:', result.metadata);
       }
-      
+
       // Mettre en cache
       await globalCacheManager.set(`conversation-skeleton:${taskId}`, result.skeleton);
-      
+
       return result.skeleton;
     } catch (error) {
       console.error(`[NEW PARSING] Error for ${taskId}:`, error);
@@ -460,33 +460,33 @@ export class RooStorageDetector {
         // 🚀 PRODUCTION : Logique de reconstruction hiérarchique en deux passes
         let parentTaskId = rawMetadata.parentTaskId || rawMetadata.parent_task_id;
         let childTaskInstructionPrefixes: string[] = [];
-        
+
         if (useProductionHierarchy) {
             // Phase 1: Extraire les préfixes d'instructions de cette tâche
             if (uiMessagesStats) {
                 const instructions = await this.extractNewTaskInstructionsFromUI(uiMessagesPath, 0); // Pas de limite
-                
-                childTaskInstructionPrefixes = instructions.map(inst => {
+
+                childTaskInstructionPrefixes = [...new Set(instructions.map(inst => {
                     // 🎯 CORRECTION SDDD Phase 2: Utiliser computeInstructionPrefix pour alignement strict
                     const prefix = computeInstructionPrefix(inst.message, 192);
                     return prefix;
-                }).filter(prefix => prefix.length > 10); // Filtrer les préfixes trop courts
-                
+                }).filter(prefix => prefix.length > 10))]; // Filtrer les préfixes trop courts et dédoublonner
+
                 // Log seulement si des instructions trouvées
                 if (childTaskInstructionPrefixes.length > 0) {
                     console.log(`[analyzeConversation] ✅ Extracted ${childTaskInstructionPrefixes.length} instruction prefixes for ${taskId.substring(0, 8)}`);
                 }
             }
-            
+
             // Phase 2: Recherche de parent déplacée après calcul de truncatedInstruction
         } else {
             // 🚨 FIX RÉCURSION : Quand useProductionHierarchy = false, pas d'inférence de parent
             // pour éviter la récursion infinie avec findParentByNewTaskInstructions
             console.log(`[analyzeConversation] 🛡️ useProductionHierarchy=false pour ${taskId}, pas d'inférence de parent (évite récursion)`);
         }
-        
+
         const sequence = await this.buildSequenceFromFiles(apiHistoryPath, uiMessagesPath);
-        
+
         const messageCount = sequence.filter(s => 'role' in s).length;
         const actionCount = sequence.length - messageCount;
         const totalSize = (metadataStats?.size || 0) + (apiHistoryStats?.size || 0) + (uiMessagesStats?.size || 0);
@@ -509,7 +509,7 @@ export class RooStorageDetector {
             if (mainInstruction) {
                 // Normaliser avec computeInstructionPrefix pour cohérence avec les sous-tâches
                 truncatedInstruction = computeInstructionPrefix(mainInstruction, 192);
-                
+
                 if (process.env.ROO_DEBUG_INSTRUCTIONS === '1') {
                     console.log(`[analyzeConversation] ✅ Instruction principale pour ${taskId}: "${truncatedInstruction}"`);
                 }
@@ -529,13 +529,13 @@ export class RooStorageDetector {
                 }
                 const apiData = JSON.parse(apiContent);
                 const messages = Array.isArray(apiData) ? apiData : (apiData?.messages || []);
-                
+
                 // Extraire le workspace en utilisant le regex sur tout le contenu
                 const workspaceMatch = apiContent.match(/Current Workspace Directory \(([^)]+)\)/);
                 if (workspaceMatch && workspaceMatch[1]) {
                     extractedWorkspace = workspaceMatch[1].trim();
                 }
-                
+
                 for (const message of messages) {
                     if (message.ts && typeof message.ts === 'number') {
                         timestamps.push(new Date(message.ts));
@@ -657,7 +657,7 @@ export class RooStorageDetector {
         } else {
             console.error(`❌ [analyzeConversation] Non-Error exception for ${taskId}:`, errorContext);
         }
-        
+
         return null;
     }
   }
@@ -671,7 +671,7 @@ export class RooStorageDetector {
     paths: { metadataPath: string; apiHistoryPath: string; uiMessagesPath: string }
   ): Promise<ConversationSkeleton | null> {
     const config = getParsingConfig();
-    
+
     try {
       // Exécuter l'ancien système
       const oldSkeleton = await this.analyzeWithOldSystem(
@@ -680,7 +680,7 @@ export class RooStorageDetector {
         useProductionHierarchy,
         paths
       );
-      
+
       // Exécuter le nouveau système
       const newSkeleton = await this.analyzeWithNewSystem(
         taskId,
@@ -688,7 +688,7 @@ export class RooStorageDetector {
         useProductionHierarchy,
         paths
       );
-      
+
       // Si l'un des deux a échoué, retourner celui qui a réussi
       if (!oldSkeleton && !newSkeleton) {
         return null;
@@ -701,11 +701,11 @@ export class RooStorageDetector {
         console.warn(`[COMPARISON] New system failed for ${taskId}, using old system`);
         return oldSkeleton;
       }
-      
+
       // Comparer avec validation des améliorations
       const comparator = new SkeletonComparator();
       const comparisonResult = comparator.compareWithImprovements(oldSkeleton, newSkeleton);
-      
+
       // Logger selon les nouveaux critères
       if (config.logDifferences || !comparisonResult.isValidUpgrade) {
         console.log(`[COMPARISON] Task ${taskId}:`);
@@ -713,13 +713,13 @@ export class RooStorageDetector {
         console.log(`Améliorations: ${comparisonResult.improvements.join(', ')}`);
         console.log(`Validation: ${comparisonResult.isValidUpgrade ? '✅ ACCEPTÉ' : '❌ REJETÉ'}`);
         console.log(`Raison: ${comparisonResult.validationReason}`);
-        
+
         if (!comparisonResult.isValidUpgrade) {
           console.log('--- Rapport détaillé ---');
           console.log(comparator.formatReport(comparisonResult));
         }
       }
-      
+
       // Retourner selon les critères validés
       if (comparisonResult.isValidUpgrade || config.useNewParsing) {
         return newSkeleton;
@@ -741,14 +741,14 @@ export class RooStorageDetector {
       if (!existsSync(uiMessagesPath)) {
         return [];
       }
-      
+
       let content = await fs.readFile(uiMessagesPath, 'utf8');
-      
+
       // Nettoyage BOM
       if (content.charCodeAt(0) === 0xFEFF) {
         content = content.slice(1);
       }
-      
+
       const messages = JSON.parse(content);
       return Array.isArray(messages) ? messages : [];
     } catch (error) {
@@ -783,22 +783,22 @@ export class RooStorageDetector {
     onProgress?: (processed: number, total: number) => void
   ): Promise<R[]> {
     const results: R[] = [];
-    
+
     for (let i = 0; i < items.length; i += batchSize) {
       const batch = items.slice(i, i + batchSize);
       const batchPromises = batch.map(item => processor(item).catch(error => {
         console.warn(`[processBatch] Erreur traitement item:`, error);
         return null;
       }));
-      
+
       const batchResults = await Promise.all(batchPromises);
       results.push(...batchResults.filter(r => r !== null) as R[]);
-      
+
       if (onProgress) {
         onProgress(Math.min(i + batchSize, items.length), items.length);
       }
     }
-    
+
     return results;
   }
 
@@ -815,10 +815,10 @@ export class RooStorageDetector {
     forceRebuild: boolean = false
   ): Promise<ConversationSkeleton[]> {
     console.log(`[buildHierarchicalSkeletons] 🏗️ DÉMARRAGE reconstruction hiérarchique ${workspacePath || 'TOUS WORKSPACES'}`);
-    
+
     // NOUVEAU : Utiliser le HierarchyReconstructionEngine pour la reconstruction en deux passes
     console.log(`[buildHierarchicalSkeletons] 🚀 Utilisation du nouveau HierarchyReconstructionEngine`);
-    
+
     try {
       // Lancer la reconstruction avec le nouveau moteur
       const reconstructedSkeletons = await HierarchyReconstructionEngine.reconstructHierarchy(
@@ -827,7 +827,7 @@ export class RooStorageDetector {
       );
 
       console.log(`[buildHierarchicalSkeletons] ✅ Reconstruction terminée avec ${reconstructedSkeletons.length} squelettes`);
-      
+
       // Statistiques de validation
       const orphanTasks = reconstructedSkeletons.filter((c: ConversationSkeleton) => !c.parentTaskId);
       const withParents = reconstructedSkeletons.filter((c: ConversationSkeleton) => c.parentTaskId);
@@ -845,7 +845,7 @@ export class RooStorageDetector {
 
     } catch (error) {
       console.error(`[buildHierarchicalSkeletons] ❌ Erreur lors de la reconstruction:`, error);
-      
+
       // Fallback vers l'ancienne méthode en cas d'erreur
       console.log(`[buildHierarchicalSkeletons] 🔄 Fallback vers l'ancienne méthode`);
       return this.buildHierarchicalSkeletonsLegacy(workspacePath, useFullVolume);
@@ -862,7 +862,7 @@ export class RooStorageDetector {
     }
 
     let maxDepth = 0;
-    
+
     const calculateDepth = (taskId: string, currentDepth: number = 0): number => {
       const task = taskMap.get(taskId);
       if (!task || !task.parentTaskId) {
@@ -889,10 +889,10 @@ export class RooStorageDetector {
     useFullVolume: boolean = true
   ): Promise<ConversationSkeleton[]> {
     console.log(`[buildHierarchicalSkeletonsLegacy] 📋 Utilisation de l'ancienne méthode`);
-    
+
     const conversations: ConversationSkeleton[] = [];
     const storageLocations = await this.detectStorageLocations();
-    
+
     // PHASE 1: Reconstruction de l'index à partir des squelettes existants
     console.log(`[buildHierarchicalSkeletonsLegacy] 📋 PHASE 1: Reconstruction index radix-tree`);
     await this.rebuildIndexFromExistingSkeletons();
@@ -907,22 +907,22 @@ export class RooStorageDetector {
 
     for (const locationPath of storageLocations) {
       const tasksPath = path.join(locationPath, 'tasks');
-      
+
       try {
         const taskDirs = await fs.readdir(tasksPath, { withFileTypes: true });
         console.log(`[buildHierarchicalSkeletonsLegacy] 📁 Collecte ${taskDirs.length} tâches dans ${locationPath}`);
-        
+
         for (const entry of taskDirs) {
           if (allTaskEntries.length >= maxTasks) break;
           if (!entry.isDirectory()) continue;
 
           const taskPath = path.join(tasksPath, entry.name);
-          
+
           // 🔧 CRITICAL FIX : Filtrage par workspace AVANT d'ajouter à allTaskEntries
           if (workspacePath !== undefined) {
             // Détecter le workspace de cette tâche pour le filtrage
             const taskWorkspace = await this.detectWorkspaceForTask(taskPath);
-            
+
             // 🎯 CORRECTION WORKSPACE FILTERING : Normaliser workspacePath pour comparaison équitable
             // Le taskWorkspace est déjà normalisé par WorkspaceDetector, mais workspacePath ne l'est pas
             // Normaliser les chemins pour la comparaison (insensible à la casse et aux séparateurs)
@@ -930,7 +930,7 @@ export class RooStorageDetector {
             // CORRECTION: path.normalize() ajoute .\ devant les chemins absolus sur Windows
             let normalizedWorkspacePath = path.normalize(workspacePath || '').replace(/\//g, '\\').toLowerCase();
             let normalizedTaskWorkspace = path.normalize(taskWorkspace || '').replace(/\//g, '\\').toLowerCase();
-            
+
             // Enlever le préfixe relatif (.\) pour les chemins absolus normalisés
             if (normalizedWorkspacePath.startsWith('.\\') && path.isAbsolute(workspacePath || '')) {
                 normalizedWorkspacePath = normalizedWorkspacePath.substring(2);
@@ -938,11 +938,11 @@ export class RooStorageDetector {
             if (normalizedTaskWorkspace.startsWith('.\\') && path.isAbsolute(taskWorkspace || '')) {
                 normalizedTaskWorkspace = normalizedTaskWorkspace.substring(2);
             }
-            
+
             // Utiliser une comparaison plus flexible avec includes() pour supporter les sous-dossiers
             // Logique exacte du test : normalizedTaskWorkspace.includes(normalizedWorkspacePath)
             const isWorkspaceMatch = normalizedTaskWorkspace.includes(normalizedWorkspacePath);
-            
+
             if (!isWorkspaceMatch) {
               console.log(`[buildHierarchicalSkeletonsLegacy] 🔄 Skip tâche ${entry.name.substring(0,8)} (workspace: ${taskWorkspace} != ${workspacePath})`);
               console.log(`[buildHierarchicalSkeletonsLegacy] 🔍 Normalized: "${normalizedTaskWorkspace}" vs "${normalizedWorkspacePath}"`);
@@ -954,7 +954,7 @@ export class RooStorageDetector {
               }
             }
           }
-          
+
           allTaskEntries.push({
             taskId: entry.name,
             taskPath: taskPath,
@@ -971,19 +971,19 @@ export class RooStorageDetector {
       console.log(`[buildHierarchicalSkeletonsLegacy] 📊 FILTRAGE WORKSPACE:`);
       console.log(`   Workspace cible: "${workspacePath}"`);
       console.log(`   Tâches collectées avant filtrage: ${allTaskEntries.length}`);
-      
+
       // Analyser la distribution des workspaces détectés pour diagnostic
       const workspaceDistribution = new Map<string, number>();
       for (const entry of allTaskEntries) {
         const ws = await this.detectWorkspaceForTask(entry.taskPath);
         workspaceDistribution.set(ws, (workspaceDistribution.get(ws) || 0) + 1);
       }
-      
+
       console.log(`   Distribution workspaces détectés:`);
       const sortedWorkspaces = Array.from(workspaceDistribution.entries())
         .sort(([,a], [,b]) => b - a)
         .slice(0, 5);
-      
+
       for (const [ws, count] of sortedWorkspaces) {
         const isTarget = ws.toLowerCase().includes(workspacePath.toLowerCase()) ||
                        workspacePath.toLowerCase().includes(ws.toLowerCase());
@@ -993,7 +993,7 @@ export class RooStorageDetector {
 
     // Traitement parallèle par batches de 20
     console.log(`[buildHierarchicalSkeletonsLegacy] 🚀 Traitement parallèle de ${allTaskEntries.length} tâches (batches de 20)`);
-    
+
     const processedSkeletons = await this.processBatch(
       allTaskEntries,
       async (taskEntry) => {
@@ -1027,27 +1027,27 @@ export class RooStorageDetector {
             workspacePath.toLowerCase().includes(s.metadata.workspace.toLowerCase())
         )
       ).length;
-      
+
       console.log(`[buildHierarchicalSkeletonsLegacy] 📊 RÉSULTATS FILTRAGE:`);
       console.log(`   Skeletons générés: ${conversations.length}`);
       console.log(`   Avec workspace match: ${withWorkspaceMatch} (${conversations.length > 0 ? (withWorkspaceMatch/conversations.length*100).toFixed(1) : 0}%)`);
       console.log(`   Taux de correspondance attendu: ≥70%`);
-      
+
       if (withWorkspaceMatch < conversations.length * 0.7) {
         console.warn(`🚨 TAUX FAIBLE: Seulement ${((withWorkspaceMatch/conversations.length)*100).toFixed(1)}% au lieu de ≥70%`);
-        
+
         // Analyser les workspaces réels pour diagnostic
         const actualWorkspaces = new Map<string, number>();
         for (const skeleton of conversations) {
           const ws = skeleton.metadata.workspace || '<UNDEFINED>';
           actualWorkspaces.set(ws, (actualWorkspaces.get(ws) || 0) + 1);
         }
-        
+
         console.log(`   Workspaces réels détectés:`);
         const topWorkspaces = Array.from(actualWorkspaces.entries())
           .sort(([,a], [,b]) => b - a)
           .slice(0, 5);
-        
+
         for (const [ws, count] of topWorkspaces) {
           const isTarget = ws !== '<UNDEFINED>' && (
             ws.toLowerCase().includes(workspacePath.toLowerCase()) ||
@@ -1061,26 +1061,26 @@ export class RooStorageDetector {
     // � PHASE 3: Résolution strict mode des parents manquants en 2 passes
     console.log(`[buildHierarchicalSkeletonsLegacy] 🔗 PHASE 3: Résolution des parents manquants en mode strict`);
     console.log(`STRICT MODE: pass1 indexing complete`);
-    
+
     const orphanTasks = conversations.filter(c => !c.parentTaskId);
     let resolvedCount = 0;
     console.log(`STRICT MODE: linking pass2 started`);
-    
+
     // File de liaisons différées pour les enfants sans parent trouvé en strict pendant passe 1
     const deferredLinkings: Array<{child: ConversationSkeleton, truncatedInstruction: string}> = [];
-    
+
     // Pass 2: Tentative de résolution strict uniquement via exact prefix matching
     for (const orphan of orphanTasks) {
         if (!orphan.truncatedInstruction) {
             continue; // Skip les tâches sans instruction
         }
-        
+
         // Utilisation du globalTaskInstructionIndex pour recherche exact prefix
         const exactMatches = globalTaskInstructionIndex.searchExactPrefix(orphan.truncatedInstruction);
-        
+
         if (exactMatches && exactMatches.length === 1) {
             const candidateParent = exactMatches[0];
-            
+
             // Validation basique : pas d'auto-référence
             if (candidateParent.taskId !== orphan.taskId) {
                 // Vérifier que le parent existe dans notre dataset
@@ -1100,11 +1100,11 @@ export class RooStorageDetector {
             deferredLinkings.push({ child: orphan, truncatedInstruction: orphan.truncatedInstruction });
         }
     }
-    
+
     console.log(`STRICT MODE: deferred linkings count: ${deferredLinkings.length}`);
     // Note: Pour cette phase de validation, on ne retraite pas les liaisons différées
     // car le strict mode doit être déterministe et utiliser uniquement exact prefix matching
-    
+
     const finalOrphansCount = conversations.filter(c => !c.parentTaskId).length;
     console.log(`STRICT MODE: final orphans count: ${finalOrphansCount}`);
 
@@ -1129,13 +1129,13 @@ export class RooStorageDetector {
 
     for (const locationPath of storageLocations) {
       const tasksPath = path.join(locationPath, 'tasks');
-      
+
       try {
         const taskDirs = await fs.readdir(tasksPath, { withFileTypes: true });
-        
+
         for (const entry of taskDirs) {
           if (!entry.isDirectory()) continue;
-          
+
           const skeletonPath = path.join(tasksPath, entry.name, '.skeleton');
           if (existsSync(skeletonPath)) {
             allSkeletonPaths.push(skeletonPath);
@@ -1155,7 +1155,7 @@ export class RooStorageDetector {
         try {
           const skeletonContent = await fs.readFile(skeletonPath, 'utf-8');
           const skeleton: ConversationSkeleton = JSON.parse(skeletonContent);
-          
+
           if (skeleton.childTaskInstructionPrefixes && skeleton.childTaskInstructionPrefixes.length > 0) {
             return { taskId: skeleton.taskId, prefixes: skeleton.childTaskInstructionPrefixes };
           }
@@ -1206,13 +1206,13 @@ export class RooStorageDetector {
     maxLines: number = 0
   ): Promise<NewTaskInstruction[]> {
     const instructions: NewTaskInstruction[] = [];
-    
+
     // 🎯 CORRECTION TESTS XML : Activer TOUS les patterns (XML + JSON)
     // Les tests unitaires prouvent que ui_messages.json contient des balises XML <task> et <new_task>
     // qui doivent être parsées. Le flag onlyJsonFormat=false active tous les patterns de parsing.
     // Cette méthode lit UNIQUEMENT ui_messages.json, donc pas de contamination depuis api_conversation_history.json
     await this.extractFromMessageFile(uiMessagesPath, instructions, maxLines, false);
-    
+
     if (process.env.ROO_DEBUG_INSTRUCTIONS === '1') {
       console.log(`[extractNewTaskInstructionsFromUI] ✅ ${instructions.length} instructions trouvées depuis ui_messages.json uniquement`);
     }
@@ -1233,14 +1233,14 @@ export class RooStorageDetector {
       }
 
       let content = await fs.readFile(uiMessagesPath, 'utf-8');
-      
+
       // Nettoyage BOM
       if (content.charCodeAt(0) === 0xFEFF) {
         content = content.slice(1);
       }
 
       const messages = JSON.parse(content);
-      
+
       if (!Array.isArray(messages) || messages.length === 0) {
         return undefined;
       }
@@ -1296,7 +1296,7 @@ export class RooStorageDetector {
       }
 
       let content = await fs.readFile(filePath, 'utf-8');
-      
+
       // Nettoyage BOM
       if (content.charCodeAt(0) === 0xFEFF) {
         content = content.slice(1);
@@ -1309,7 +1309,7 @@ export class RooStorageDetector {
         const lines = content.split('\n');
         processedContent = lines.slice(0, maxLines).join('\n');
       }
-      
+
       let messages: any[] = [];
       try {
         // Tentative 1: JSON standard (tableau)
@@ -1348,7 +1348,7 @@ export class RooStorageDetector {
 
       // 🎯 CORRECTION SDDD: Utilisation du coordinateur modulaire pour l'extraction
       const { messageExtractionCoordinator } = await import('./message-extraction-coordinator.js');
-      
+
       const result = messageExtractionCoordinator.extractFromMessages(messages, {
         maxLines,
         onlyJsonFormat,
@@ -1362,7 +1362,7 @@ export class RooStorageDetector {
       if (result.errors.length > 0 && process.env.ROO_DEBUG_INSTRUCTIONS === '1') {
         console.log(`[extractFromMessageFile] ⚠️ Extraction errors for ${filePath}:`, result.errors);
       }
-      
+
     } catch (error) {
       console.error(`[extractFromMessageFile] ❌ Erreur pour ${filePath}:`, error);
     }
@@ -1398,7 +1398,7 @@ export class RooStorageDetector {
    */
   private static async getTaskPathById(taskId: string): Promise<string | null> {
     const storageLocations = await this.detectStorageLocations();
-    
+
     for (const locationPath of storageLocations) {
       const taskPath = path.join(locationPath, 'tasks', taskId);
       try {
@@ -1432,7 +1432,7 @@ export class RooStorageDetector {
       const content = await fs.readFile(apiHistoryPath, 'utf-8');
       const data = JSON.parse(content);
       const messages = Array.isArray(data) ? data : (data?.messages || []);
-      
+
       // Chercher le premier message utilisateur
       const firstUserMessage = messages.find((msg: any) => msg.role === 'user');
       if (!firstUserMessage?.content) return undefined;
@@ -1456,7 +1456,7 @@ export class RooStorageDetector {
       const content = await fs.readFile(uiMessagesPath, 'utf-8');
       const data = JSON.parse(content);
       const messages = Array.isArray(data) ? data : [];
-      
+
       // Chercher le premier message utilisateur
       const firstMessage = messages.find((msg: any) => msg.type === 'user');
       if (!firstMessage?.content) return undefined;
@@ -1477,7 +1477,7 @@ export class RooStorageDetector {
     // Pattern 1: Rechercher des UUIDs v4 explicites
     const uuidPattern = /[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}/gi;
     const uuids = text.match(uuidPattern);
-    
+
     if (uuids && uuids.length > 0) {
       // Prendre le premier UUID trouvé comme potentiel parent
       console.log(`[extractTaskIdFromText] UUID trouvé: ${uuids[0]}`);
@@ -1597,12 +1597,12 @@ export class RooStorageDetector {
           const textElements = content
             .filter((c: any) => c.type === 'text' && c.text)
             .map((c: any) => c.text);
-          
+
           content = textElements.length > 0
             ? textElements.join('\n\n') // Séparer par double saut de ligne
             : '[contenu non textuel]';
         }
-        
+
         // Sécurité pour éviter la récursion : si le contenu ressemble à un squelette, on l'ignore.
         if (typeof content === 'string' && (content.includes('"sequence"') || content.includes('"taskId"'))) {
             content = '[Contenu suspect ignoré pour éviter une boucle]';
@@ -1636,18 +1636,18 @@ export class RooStorageDetector {
         const result = item.toolResult || {};
 
         if (input.path) action.file_path = input.path;
-        
+
         if (result.line_count) action.line_count = result.line_count;
         else if (input.content) action.line_count = String(input.content).split('\n').length;
 
         if (result.content_size) action.content_size = result.content_size;
         else if (item.toolResult) action.content_size = JSON.stringify(item.toolResult).length;
         else if (input.content) action.content_size = String(input.content).length;
-        
+
         sequence.push(action);
       }
     }
-    
+
     sequence.sort((a, b) => new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime());
 
     return sequence;
@@ -1694,24 +1694,24 @@ export class RooStorageDetector {
   public static async getWorkspaceBreakdown(): Promise<Record<string, {count: number, totalSize: number, lastActivity: string}>> {
     const locations = await this.detectStorageLocations();
     const workspaceBreakdown: Record<string, {count: number, totalSize: number, lastActivity: string}> = {};
-    
+
     for (const loc of locations) {
         const tasksPath = path.join(loc, 'tasks');
-        
+
         try {
             const entries = await fs.readdir(tasksPath, { withFileTypes: true });
-            
+
             for (const entry of entries) {
                 if (entry.isDirectory()) {
                     const taskPath = path.join(tasksPath, entry.name);
-                    
+
                     try {
                         // Détecter le workspace pour cette tâche
                         const workspace = await this.detectWorkspaceForTask(taskPath);
-                        
+
                         const stats = await fs.stat(taskPath);
                         const lastActivity = stats.mtime.toISOString();
-                        
+
                         // Initialiser ou mettre à jour les stats du workspace
                         if (!workspaceBreakdown[workspace]) {
                             workspaceBreakdown[workspace] = {
@@ -1720,15 +1720,15 @@ export class RooStorageDetector {
                                 lastActivity: lastActivity
                             };
                         }
-                        
+
                         workspaceBreakdown[workspace].count++;
                         workspaceBreakdown[workspace].totalSize += stats.size;
-                        
+
                         // Mettre à jour la dernière activité si plus récente
                         if (new Date(lastActivity) > new Date(workspaceBreakdown[workspace].lastActivity)) {
                             workspaceBreakdown[workspace].lastActivity = lastActivity;
                         }
-                        
+
                     } catch (taskError) {
                         // Ignorer les tâches non accessibles
                         console.warn(`Impossible d'analyser tâche ${entry.name}:`, (taskError as Error).message);
@@ -1739,7 +1739,7 @@ export class RooStorageDetector {
             console.warn(`Impossible de lire répertoire ${tasksPath}:`, (dirError as Error).message);
         }
     }
-    
+
     return workspaceBreakdown;
   }
 
@@ -1755,9 +1755,9 @@ export class RooStorageDetector {
         validateExistence: false, // Performance
         normalizePaths: true,
       });
-      
+
       const result = await workspaceDetector.detect(taskPath);
-      
+
       // Log détaillé si mode debug
       if (process.env.DEBUG_WORKSPACE === 'true') {
         console.log(`[detectWorkspaceForTask] ${taskPath}:`, {
@@ -1766,7 +1766,7 @@ export class RooStorageDetector {
           confidence: result.confidence
         });
       }
-      
+
       return result.workspace || 'UNKNOWN';
     } catch (error) {
       console.warn(`[detectWorkspaceForTask] Error for ${taskPath}:`, error);
@@ -1781,7 +1781,7 @@ export class RooStorageDetector {
     try {
       const normalizedPath = path.resolve(customPath);
       const tasksPath = path.join(normalizedPath, 'tasks');
-      
+
       return existsSync(tasksPath);
     } catch (error) {
       return false;
