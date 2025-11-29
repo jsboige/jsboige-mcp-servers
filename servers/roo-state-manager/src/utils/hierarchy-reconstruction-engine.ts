@@ -197,25 +197,26 @@ export class HierarchyReconstructionEngine {
                              extractedCount++;
                         }
 
-                        // 🎯 CORRECTION CRITIQUE : Extraire l'instruction propre (prompt) pour la Phase 2
-                        // Ne PAS utiliser les sous-instructions (enfants) comme instruction propre !
-                        const selfInstruction = await this.extractSelfInstruction(skeleton);
-                        if (selfInstruction) {
-                            const indexAny = this.instructionIndex as any;
-                            if (indexAny.tempTruncatedInstructions) {
-                                indexAny.tempTruncatedInstructions.set(skeleton.taskId, selfInstruction);
-                            }
-                            if (process.env.ROO_DEBUG_INSTRUCTIONS === '1') {
-                                console.log(`[Phase1] Self-instruction extracted for ${skeleton.taskId}: "${selfInstruction.substring(0, 50)}..."`);
-                            }
-                        }
-
                         if (process.env.ROO_DEBUG_INSTRUCTIONS === '1') {
                             console.log(`[ENGINE-PHASE1-INDEX] Task ${skeleton.taskId.substring(0, 8)}: ${extractedCount} sub-instructions indexed directly`);
                         }
 
                         result.parsedCount++;
                         result.totalInstructionsExtracted += instructions.length;
+                    }
+
+                    // 🎯 CORRECTION CRITIQUE : Extraire l'instruction propre (prompt) pour la Phase 2
+                    // DOIT ÊTRE FAIT MÊME SI AUCUNE SOUS-TÂCHE N'EST DÉTECTÉE (cas des feuilles)
+                    // Ne PAS utiliser les sous-instructions (enfants) comme instruction propre !
+                    const selfInstruction = await this.extractSelfInstruction(skeleton);
+                    if (selfInstruction) {
+                        const indexAny = this.instructionIndex as any;
+                        if (indexAny.tempTruncatedInstructions) {
+                            indexAny.tempTruncatedInstructions.set(skeleton.taskId, selfInstruction);
+                        }
+                        if (process.env.ROO_DEBUG_INSTRUCTIONS === '1') {
+                            console.log(`[Phase1] Self-instruction extracted for ${skeleton.taskId}: "${selfInstruction.substring(0, 50)}..."`);
+                        }
                     }
 
                     this.updateProcessingState(skeleton, 'phase1', true);
@@ -308,6 +309,10 @@ export class HierarchyReconstructionEngine {
         for (const batch of batches) {
             for (const skeleton of batch) {
                 try {
+                    if (this.config.debugMode) {
+                        console.log(`[Phase2] Processing ${skeleton.taskId.substring(0, 8)} parentTaskId=${skeleton.parentTaskId}`);
+                    }
+
                     // Si la tâche a déjà un parent, valider d'abord cette relation
                     if (skeleton.parentTaskId) {
                         const existingParentId = skeleton.parentTaskId;
@@ -433,6 +438,9 @@ export class HierarchyReconstructionEngine {
 
         // Garantit un temps > 0ms pour satisfaire les tests de timing
         result.processingTimeMs = Math.max(1, Date.now() - startTime);
+
+        // 🎯 FIX: Retourner les squelettes modifiés dans le résultat
+        result.skeletons = skeletons;
 
         return result;
     }
