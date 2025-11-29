@@ -3,14 +3,25 @@ import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 const mockReadFile = vi.fn();
 const mockWriteFile = vi.fn();
 
+// Mocks pour protéger la configuration réelle
+vi.mock('../../src/managers/McpSettingsManager');
+vi.mock('fs');
+
 // Mock fs/promises avec le bon format pour import * as fs
 vi.mock('fs/promises', () => ({
     readFile: mockReadFile,
     writeFile: mockWriteFile,
 }));
 
+// Mock du système de fichiers
+vi.mock('fs', () => ({
+  existsSync: vi.fn(() => true),
+  readFileSync: vi.fn(() => JSON.stringify({})),
+  writeFileSync: vi.fn()
+}));
+
 // Mock du MCP settings manager
-vi.mock('../../../src/services/mcp-settings-manager', () => ({
+vi.mock('../../src/managers/McpSettingsManager', () => ({
   McpSettingsManager: vi.fn().mockImplementation(() => ({
     readSettings: vi.fn().mockResolvedValue({
       mcpServers: {
@@ -23,13 +34,6 @@ vi.mock('../../../src/services/mcp-settings-manager', () => ({
     writeSettings: vi.fn().mockResolvedValue(true),
     validateSettings: vi.fn().mockReturnValue(true)
   }))
-}));
-
-// Mock du système de fichiers
-vi.mock('fs', () => ({
-  existsSync: vi.fn(() => true),
-  readFileSync: vi.fn(() => JSON.stringify({})),
-  writeFileSync: vi.fn()
 }));
 
 describe('manage_mcp_settings Tool', () => {
