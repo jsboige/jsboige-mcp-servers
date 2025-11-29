@@ -570,12 +570,12 @@ export function computeInstructionPrefix(raw: string, K: number = 192): string {
     // 3) Décodage des entités HTML (nommées + numériques)
     // Ordre important pour éviter double-décodage
     s = s
-        .replace(/</gi, '<')
-        .replace(/>/gi, '>')
-        .replace(/"/gi, '"')
-        .replace(/'/gi, "'")
-        .replace(/'/gi, "'")
-        .replace(/&/gi, '&');
+        .replace(/&lt;/gi, '<')
+        .replace(/&gt;/gi, '>')
+        .replace(/&quot;/gi, '"')
+        .replace(/&apos;/gi, "'")
+        .replace(/&#39;/gi, "'")
+        .replace(/&amp;/gi, '&');
 
     // Entités numériques décimales
     s = s.replace(/&#(\d+);/g, (_m, d: string) => {
