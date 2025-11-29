@@ -301,7 +301,7 @@ function boxClass(t: MsgType): string {
 
 // ---- Sanitizer étanche par section (PLAN BÉTON - équilibrage sans destruction) -----------
 
-function sanitizeSectionHtml(raw: string): string {
+export function sanitizeSectionHtml(raw: string): string {
     let html = raw ?? '';
 
     // CORRECTION CRITIQUE PHASE 0: Protéger les balises <details> contre l'interprétation Markdown

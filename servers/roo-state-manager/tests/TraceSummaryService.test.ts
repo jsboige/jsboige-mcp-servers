@@ -107,7 +107,7 @@ describe('TraceSummaryService - sanitizeSectionHtml', () => {
       
       // Vérifie que la déduplication fonctionne toujours
       const lines = result.split('\n');
-      const nonEmptyLines = lines.filter(line => line.trim() !== '');
+      const nonEmptyLines = lines.filter((line: string) => line.trim() !== '');
       const hasDuplicates = nonEmptyLines.length !== new Set(nonEmptyLines).size;
       expect(hasDuplicates).toBe(false);
     });

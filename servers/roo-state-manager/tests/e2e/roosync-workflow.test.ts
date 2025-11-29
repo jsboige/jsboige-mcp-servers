@@ -16,6 +16,9 @@ import { RooSyncService } from '../../src/services/RooSyncService.js';
 import { existsSync } from 'fs';
 import { join } from 'path';
 
+// Importer la configuration des mocks pour les tests E2E
+import './setup.js';
+
 describe('RooSync E2E Workflow', () => {
   let service: RooSyncService;
   let testDecisionId: string | null = null;

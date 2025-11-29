@@ -47,15 +47,15 @@ export class BaselineService {
     console.log('[DEBUG] BaselineService.constructor() appelé');
     
     this.config = configService.getBaselineServiceConfig();
-    // CORRECTION SDDD : Utiliser la variable d'environnement ROOSYNC_SHARED_PATH
-    const sharedStatePath = process.env.ROOSYNC_SHARED_PATH || configService.getSharedStatePath();
+    // CORRECTION SDDD : Utiliser la variable d'environnement SHARED_STATE_PATH
+    const sharedStatePath = process.env.SHARED_STATE_PATH || configService.getSharedStatePath();
     
     console.log('[DEBUG] sharedStatePath:', sharedStatePath);
     
     // PRIORITÉ ABSOLUE : Forcer l'utilisation du chemin mocké en environnement de test
-    if (process.env.ROOSYNC_SHARED_PATH) {
-      this.baselinePath = join(process.env.ROOSYNC_SHARED_PATH, 'sync-config.ref.json');
-      this.roadmapPath = join(process.env.ROOSYNC_SHARED_PATH, 'sync-roadmap.md');
+    if (process.env.SHARED_STATE_PATH) {
+      this.baselinePath = join(process.env.SHARED_STATE_PATH, 'sync-config.ref.json');
+      this.roadmapPath = join(process.env.SHARED_STATE_PATH, 'sync-roadmap.md');
     } else {
       // Utiliser le chemin de la baseline depuis la configuration du service
       this.baselinePath = this.config.baselinePath || join(sharedStatePath, 'sync-config.ref.json');

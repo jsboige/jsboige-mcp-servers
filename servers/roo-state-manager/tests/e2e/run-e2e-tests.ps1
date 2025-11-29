@@ -22,7 +22,7 @@ if (-not $env:SHARED_STATE_PATH) {
 }
 
 # Aller au répertoire du projet
-$projectRoot = Split-Path -Parent $PSScriptRoot | Split-Path -Parent | Split-Path -Parent
+$projectRoot = Split-Path -Parent $PSScriptRoot
 Set-Location $projectRoot
 
 Write-Host "📁 Répertoire projet : $projectRoot" -ForegroundColor Green
@@ -78,14 +78,11 @@ if ($Verbose) {
 Write-Host "🚀 Lancement des tests..." -ForegroundColor Green
 Write-Host ""
 
-$env:NODE_OPTIONS = "--experimental-vm-modules --max-old-space-size=4096"
-
+$env:NODE_OPTIONS = "--experimental-vm-modules --max-old-space-size=8192"
 if ($testPattern) {
-    & npm run test:setup
-    & npx jest $testPattern @jestOptions
+    & npx vitest run $testPattern @jestOptions
 } else {
-    & npm run test:setup
-    & npx jest "tests/e2e/" @jestOptions
+    & npx vitest run "tests/e2e/" @jestOptions
 }
 
 $testExitCode = $LASTEXITCODE

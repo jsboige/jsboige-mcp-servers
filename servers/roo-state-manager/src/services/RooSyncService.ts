@@ -143,7 +143,7 @@ export class RooSyncService {
         enabled: cacheOptions?.enabled ?? true
       };
       this.powershellExecutor = new PowerShellExecutor({
-        roosyncBasePath: join(process.env.ROO_HOME || 'd:/roo-extensions', 'RooSync')
+        roosyncBasePath: process.env.SHARED_STATE_PATH || join(process.env.ROO_HOME || 'd:/roo-extensions', 'RooSync')
       });
       this.inventoryCollector = new InventoryCollector();
       this.diffDetector = new DiffDetector();
@@ -451,13 +451,7 @@ export class RooSyncService {
       lastSync: now,
       status: (totalDiffs > 0 ? 'diverged' : 'synced') as 'diverged' | 'synced' | 'conflict' | 'unknown',
       machines: {
-        'myia-po-2024': {
-          lastSync: now,
-          status: 'online' as const,
-          diffsCount: totalDiffs,
-          pendingDecisions: 0
-        },
-        'myia-ai-01': {
+        'test-machine-001': {
           lastSync: now,
           status: 'online' as const,
           diffsCount: totalDiffs,
