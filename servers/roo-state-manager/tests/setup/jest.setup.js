@@ -130,6 +130,7 @@ vi.mock('../src/services/synthesis/SynthesisOrchestratorService.js', () => {
 
 // Mock du système de fichiers
 // Mock fs/promises avec toutes les méthodes nécessaires
+/*
 const mockFsPromises = {
   access: vi.fn().mockResolvedValue(undefined),
   readFile: vi.fn().mockResolvedValue(JSON.stringify({})),
@@ -167,6 +168,7 @@ vi.mock('fs', () => {
     ...mockFs
   };
 });
+*/
 
 // Mock du module path
 vi.mock('path', () => {
