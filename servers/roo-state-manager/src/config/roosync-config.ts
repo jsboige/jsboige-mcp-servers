@@ -52,8 +52,8 @@ export function loadRooSyncConfig(): RooSyncConfig {
   // Mode test : utiliser la configuration de test directement
   if (process.env.NODE_ENV === 'test') {
     return {
-      sharedPath: '/tmp/roosync-test',
-      machineId: 'test-machine-001',
+      sharedPath: process.env.ROOSYNC_SHARED_PATH || '/tmp/roosync-test',
+      machineId: process.env.ROOSYNC_MACHINE_ID || 'test-machine-001',
       autoSync: false,
       conflictStrategy: 'manual',
       logLevel: 'info'

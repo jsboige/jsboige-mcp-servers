@@ -115,11 +115,11 @@ export class ConfigService implements IConfigService {
    */
   private findSharedStatePath(): string {
     // Chercher dans plusieurs emplacements possibles
-    // PRIORITÉ ABSOLUE : Le chemin connu et validé
+    // PRIORITÉ ABSOLUE : Variables d'environnement (pour tests et surcharge)
     const possiblePaths = [
-      'g:/Mon Drive/Synchronisation/RooSync/.shared-state', // CHEMIN VALIDÉ - PRIORITÉ 1
-      process.env.ROOSYNC_SHARED_PATH,  // Priorité 2: variable du .env
-      process.env.SHARED_STATE_PATH,     // Priorité 3: compatibilité
+      process.env.ROOSYNC_SHARED_PATH,  // Priorité 1: variable du .env
+      process.env.SHARED_STATE_PATH,     // Priorité 2: compatibilité
+      'g:/Mon Drive/Synchronisation/RooSync/.shared-state', // Priorité 3: chemin par défaut connu
       join(process.env.USERPROFILE || '', '.roo', '.shared-state'),
       join(process.cwd(), '.shared-state'),
       join(_dirname, '../../../../.shared-state')
