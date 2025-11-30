@@ -170,29 +170,12 @@ vi.mock('fs', () => {
 });
 */
 
-// Mock du module path
-vi.mock('path', () => {
-  const mockPath = {
-    join: vi.fn((...args) => args.join('/')),
-    basename: vi.fn((path) => path.split('/').pop() || path),
-    dirname: vi.fn((path) => path.split('/').slice(0, -1).join('/') || '.'),
-    resolve: vi.fn((...args) => args.join('/')),
-    relative: vi.fn((from, to) => to),
-    sep: '/',
-    extname: vi.fn((path) => {
-      const lastDot = path.lastIndexOf('.');
-      return lastDot >= 0 ? path.slice(lastDot) : '';
-    }),
-    parse: vi.fn((path) => {
-      const base = path.split('/').pop() || '';
-      const ext = base.includes('.') ? base.split('.').pop() : '';
-      return { root: '', dir: base.split('.')[0], base, ext };
-    })
-  };
-  
+// Mock du module path - Utilisation de l'implémentation réelle pour la robustesse
+vi.mock('path', async (importOriginal) => {
+  const actual = await importOriginal();
   return {
-    default: mockPath,
-    ...mockPath
+    ...actual,
+    default: actual,
   };
 });
 
