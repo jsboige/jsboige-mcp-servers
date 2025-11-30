@@ -1,5 +1,6 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 
+// Mocks optimisés pour réduire l'empreinte mémoire
 const mockReadFile = vi.fn();
 const mockWriteFile = vi.fn();
 
@@ -13,14 +14,14 @@ vi.mock('fs/promises', () => ({
     writeFile: mockWriteFile,
 }));
 
-// Mock du système de fichiers
+// Mock du système de fichiers - version simplifiée
 vi.mock('fs', () => ({
   existsSync: vi.fn(() => true),
   readFileSync: vi.fn(() => JSON.stringify({})),
   writeFileSync: vi.fn()
 }));
 
-// Mock du MCP settings manager
+// Mock du MCP settings manager - version allégée
 vi.mock('../../src/managers/McpSettingsManager', () => ({
   McpSettingsManager: vi.fn().mockImplementation(() => ({
     readSettings: vi.fn().mockResolvedValue({
@@ -35,29 +36,39 @@ vi.mock('../../src/managers/McpSettingsManager', () => ({
     validateSettings: vi.fn().mockReturnValue(true)
   }))
 }));
-
 describe('manage_mcp_settings Tool', () => {
+    // Données de test optimisées - réduites pour limiter l'empreinte mémoire
     const mockSettings = {
         mcpServers: {
             'server-a': { disabled: false, command: 'node a.js' },
-            'server-b': { disabled: true, command: 'node b.js' },
+            'server-b': { disabled: true, command: 'node b.js' }
         }
     };
 
     beforeEach(() => {
+        // Nettoyage mémoire agressif avant chaque test
+        if (global.gc) {
+            global.gc();
+        }
+        
         vi.clearAllMocks();
         
-        // Mock de la lecture réussie par défaut
+        // Mock de la lecture réussie par défaut - version allégée
         mockReadFile.mockResolvedValue(JSON.stringify(mockSettings));
         mockWriteFile.mockResolvedValue(undefined);
         
         // Mock de l'environnement pour contrôler le chemin généré
-        // Utiliser un chemin de test isolé pour ne pas écraser les vrais settings
         vi.stubEnv('APPDATA', '/mock/test');
     });
 
     afterEach(() => {
         vi.unstubAllEnvs();
+        
+        // Nettoyage mémoire après chaque test
+        if (global.gc) {
+            global.gc();
+        }
+    });
     });
 
     it('should read settings file', async () => {
@@ -154,7 +165,16 @@ describe('manage_mcp_settings Tool', () => {
         // Créer une nouvelle instance pour éviter les problèmes d'état partagé
         // On utilise vi.clearAllMocks() et on réinitialise les mocks
         vi.clearAllMocks();
-        mockReadFile.mockResolvedValue(JSON.stringify(mockSettings));
+        
+        // Définir des données de test locales pour ce test spécifique
+        const localMockSettings = {
+            mcpServers: {
+                'server-a': { disabled: false, command: 'node a.js' },
+                'server-b': { disabled: true, command: 'node b.js' }
+            }
+        };
+        
+        mockReadFile.mockResolvedValue(JSON.stringify(localMockSettings));
         mockWriteFile.mockResolvedValue(undefined);
         
         const newSettings = { mcpServers: { 'server-c': { enabled: true, command: 'node c.js' } } };

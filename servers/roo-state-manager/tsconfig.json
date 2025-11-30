@@ -26,7 +26,6 @@
   ],
   "exclude": [
     "node_modules",
-    "build",
-    "src/tests/BaselineService.test.ts"
+    "build"
   ]
 }
