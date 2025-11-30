@@ -116,7 +116,7 @@ export class RooSyncService {
   /**
    * Constructeur privé (Singleton)
    */
-  private constructor(cacheOptions?: CacheOptions) {
+  private constructor(cacheOptions?: CacheOptions, config?: RooSyncConfig) {
     // SDDD Debug: Logging direct dans fichier pour contourner le problème de visibilité
     const debugLog = (message: string, data?: any) => {
       const timestamp = new Date().toISOString();
@@ -134,7 +134,8 @@ export class RooSyncService {
     debugLog('RooSyncService constructeur démarré');
 
     try {
-      this.config = loadRooSyncConfig();
+      this.config = config || loadRooSyncConfig();
+      console.log('[DEBUG] RooSyncService config loaded:', this.config);
       debugLog('Config chargée', { configLoaded: !!this.config });
 
       this.cache = new Map();
@@ -185,15 +186,16 @@ export class RooSyncService {
    * Obtenir l'instance du service (Singleton)
    *
    * @param cacheOptions Options de cache (utilisées seulement à la première création)
+   * @param config Configuration optionnelle (pour injection de dépendance/tests)
    * @returns Instance du service
    */
-  public static getInstance(cacheOptions?: CacheOptions): RooSyncService {
+  public static getInstance(cacheOptions?: CacheOptions, config?: RooSyncConfig): RooSyncService {
     console.log('[DEBUG] getInstance() appelé, instance existe:', !!RooSyncService.instance);
     if (!RooSyncService.instance) {
       console.log('[DEBUG] Création nouvelle instance RooSyncService...');
       try {
-        RooSyncService.instance = new RooSyncService(cacheOptions);
-        console.log('[DEBUG] Instance RooSyncService créée avec succès');
+        RooSyncService.instance = new RooSyncService(cacheOptions, config);
+        console.log('[DEBUG] Instance RooSyncService créée avec succès. Config sharedPath:', RooSyncService.instance.config.sharedPath);
       } catch (error) {
         console.error('[DEBUG] Erreur lors création instance RooSyncService:', error);
         throw error;
