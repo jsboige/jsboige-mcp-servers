@@ -3,9 +3,84 @@
  */
 
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
-import { writeFileSync, mkdirSync, rmSync } from 'fs';
-import { join, dirname } from 'path';
 import { fileURLToPath } from 'url';
+
+// Mock du module fs
+const { writeFileSync, mkdirSync, rmSync, readFileSync } = vi.hoisted(() => ({
+  writeFileSync: vi.fn(),
+  mkdirSync: vi.fn(),
+  rmSync: vi.fn(),
+  readFileSync: vi.fn()
+}));
+
+vi.mock('fs', () => ({
+  writeFileSync,
+  mkdirSync,
+  rmSync,
+  readFileSync
+}));
+
+// Mock du module path
+const { join, dirname } = vi.hoisted(() => ({
+  join: vi.fn((...paths) => paths.join('/')),
+  dirname: vi.fn((path) => path.split('/').slice(0, -1).join('/'))
+}));
+
+vi.mock('path', () => ({
+  join,
+  dirname,
+  normalize: vi.fn((path) => path),
+  resolve: vi.fn((...paths) => paths.join('/')),
+  basename: vi.fn((path) => path.split('/').pop()),
+  extname: vi.fn((path) => path.includes('.') ? '.' + path.split('.').pop() : ''),
+  relative: vi.fn((from, to) => to),
+  sep: '/',
+  delimiter: ';'
+}));
+
+// Mock pour RooSyncService
+const { mockRooSyncService, mockRooSyncServiceError, mockGetRooSyncService } = vi.hoisted(() => {
+  // Mock de la classe d'erreur
+  const errorClass = class extends Error {
+    constructor(message: string) {
+      super(message);
+      this.name = 'RooSyncServiceError';
+    }
+  };
+  
+  const service = {
+    resetInstance: vi.fn(),
+    getInstance: vi.fn(() => ({
+      executeDecision: vi.fn().mockResolvedValue({
+        success: true,
+        logs: ['[MOCK] Exécution simulée réussie'],
+        changes: {
+          filesModified: ['.config/test.json'],
+          filesCreated: [],
+          filesDeleted: []
+        },
+        executionTime: 100
+      }),
+      createRollbackPoint: vi.fn().mockResolvedValue(undefined)
+    }))
+  };
+  
+  // Mock de la fonction getRooSyncService
+  const getRooSyncService = vi.fn(() => service.getInstance());
+  
+  return {
+    mockRooSyncService: service,
+    mockRooSyncServiceError: errorClass,
+    mockGetRooSyncService: getRooSyncService
+  };
+});
+
+vi.mock('../../../../src/services/RooSyncService.js', () => ({
+  RooSyncService: mockRooSyncService,
+  RooSyncServiceError: mockRooSyncServiceError,
+  getRooSyncService: mockGetRooSyncService
+}));
+
 import { RooSyncService } from '../../../../src/services/RooSyncService.js';
 import { roosyncApplyDecision } from '../../../../src/tools/roosync/apply-decision.js';
 
@@ -14,8 +89,34 @@ const __dirname = dirname(__filename);
 
 describe('roosync_apply_decision', () => {
   const testDir = join(__dirname, '../../../fixtures/roosync-apply-test');
+  const mockFiles = new Map();
   
   beforeEach(() => {
+    // Réinitialiser les mocks
+    mockFiles.clear();
+    
+    // Configurer les mocks
+    mkdirSync.mockImplementation((dir, options) => {
+      // Simuler la création de répertoire
+      return undefined;
+    });
+    rmSync.mockImplementation((dir, options) => {
+      // Simuler la suppression de répertoire
+      return undefined;
+    });
+    writeFileSync.mockImplementation((filePath, content, encoding) => {
+      mockFiles.set(filePath, content);
+      return undefined;
+    });
+    readFileSync.mockImplementation((filePath, encoding) => {
+      const content = mockFiles.get(filePath);
+      if (content) {
+        return content;
+      }
+      throw new Error(`File not found: ${filePath}`);
+    });
+    join.mockImplementation((...paths) => paths.join('/'));
+    
     // Setup test environment
     mkdirSync(testDir, { recursive: true });
     

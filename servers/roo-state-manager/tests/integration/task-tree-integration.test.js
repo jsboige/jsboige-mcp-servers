@@ -3,6 +3,21 @@
  * Test simple en JavaScript pour validation rapide
  */
 
+import { vi } from 'vitest';
+
+// Mock du module path pour éviter les erreurs de mocking
+vi.mock('path', () => ({
+  normalize: vi.fn((path) => path),
+  join: vi.fn((...paths) => paths.join('/')),
+  resolve: vi.fn((...paths) => paths.join('/')),
+  dirname: vi.fn((path) => path.split('/').slice(0, -1).join('/')),
+  basename: vi.fn((path) => path.split('/').pop()),
+  extname: vi.fn((path) => path.includes('.') ? '.' + path.split('.').pop() : ''),
+  relative: vi.fn((from, to) => to),
+  sep: '/',
+  delimiter: ';'
+}));
+
 import { TaskTreeBuilder } from '../../src/utils/task-tree-builder.js';
 import { WorkspaceAnalyzer } from '../../src/utils/workspace-analyzer.js';
 import { RelationshipAnalyzer } from '../../src/utils/relationship-analyzer.js';

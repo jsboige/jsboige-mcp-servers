@@ -15,7 +15,8 @@
 
 import { describe, test, expect, beforeEach, afterEach } from 'vitest';
 import { MessageManager, type MessageListItem } from '../MessageManager.js';
-import { existsSync, promises as fs, rmSync, mkdirSync } from 'fs';
+import { existsSync, rmSync, mkdirSync } from 'fs';
+import { promises as fs } from 'fs';
 import { join } from 'path';
 
 describe('MessageManager', () => {

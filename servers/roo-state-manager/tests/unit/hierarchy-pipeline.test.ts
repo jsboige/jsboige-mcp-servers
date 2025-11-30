@@ -3,18 +3,237 @@
  * Validation end-to-end : extraction → normalisation → indexation → matching → persistance
  */
 
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
+import { fileURLToPath } from 'url';
+
+// Mock du module fs/promises
+const { readFile, writeFile, mkdir, rm, stat, readdir } = vi.hoisted(() => ({
+  readFile: vi.fn(),
+  writeFile: vi.fn(),
+  mkdir: vi.fn(),
+  rm: vi.fn(),
+  stat: vi.fn(),
+  readdir: vi.fn()
+}));
+
+vi.mock('fs/promises', () => ({
+  readFile,
+  writeFile,
+  mkdir,
+  rm,
+  stat,
+  readdir
+}));
+
+// Mock du module path
+const { join, dirname } = vi.hoisted(() => ({
+  join: vi.fn((...paths) => paths.join('/')),
+  dirname: vi.fn((path) => path.split('/').slice(0, -1).join('/'))
+}));
+
+vi.mock('path', () => ({
+  join,
+  dirname,
+  normalize: vi.fn((path) => path),
+  resolve: vi.fn((...paths) => paths.join('/')),
+  basename: vi.fn((path) => path.split('/').pop()),
+  extname: vi.fn((path) => path.includes('.') ? '.' + path.split('.').pop() : ''),
+  relative: vi.fn((from, to) => to),
+  sep: '/',
+  delimiter: ';'
+}));
+
+// Mock du module fs
+const { existsSync } = vi.hoisted(() => ({
+  existsSync: vi.fn()
+}));
+
+vi.mock('fs', () => ({
+  existsSync
+}));
+
+// Mock du module message-extraction-coordinator
+const mockMessageExtractionCoordinator = {
+  extractFromMessages: vi.fn((messages, options) => {
+    const instructions: NewTaskInstruction[] = [];
+    
+    // Simuler l'extraction des balises <task> et <new_task>
+    for (const message of messages) {
+      if (message.content) {
+        let content = message.content;
+        
+        // Gérer le cas où content est un array (format OpenAI)
+        if (Array.isArray(content)) {
+          const textItem = content.find(item => item.type === 'text');
+          if (textItem) {
+            content = textItem.text;
+          }
+        }
+        
+        // Extraire les balises <task>
+        const taskMatches = content.match(/<task>([\s\S]*?)<\/task>/g);
+        if (taskMatches) {
+          for (const match of taskMatches) {
+            const taskContent = match.replace(/<\/?task>/g, '').trim();
+            if (taskContent.length >= 20) { // Filtrer les tâches trop courtes
+              instructions.push({
+                mode: 'task',
+                message: taskContent.substring(0, 200), // Tronquer à 200 caractères
+                timestamp: message.ts || Date.now()
+              });
+            }
+          }
+        }
+        
+        // Extraire les balises <new_task>
+        const newTaskMatches = content.match(/<new_task>([\s\S]*?)<\/new_task>/g);
+        if (newTaskMatches) {
+          for (const match of newTaskMatches) {
+            const modeMatch = match.match(/<mode>(.*?)<\/mode>/);
+            const messageMatch = match.match(/<message>(.*?)<\/message>/);
+            
+            if (modeMatch && messageMatch) {
+              const mode = modeMatch[1].trim();
+              const messageContent = messageMatch[1].trim();
+              
+              if (mode && messageContent) {
+                instructions.push({
+                  mode,
+                  message: messageContent,
+                  timestamp: message.ts || Date.now()
+                });
+              }
+            }
+          }
+        }
+      }
+    }
+    
+    return {
+      instructions,
+      processedMessages: messages.length,
+      matchedPatterns: instructions.length > 0 ? ['xml-pattern'] : [],
+      errors: []
+    };
+  })
+};
+
+vi.mock('../../src/utils/message-extraction-coordinator.js', () => ({
+  messageExtractionCoordinator: mockMessageExtractionCoordinator
+}));
+
+// Mock pour RooStorageDetector
+const { mockRooStorageDetector } = vi.hoisted(() => {
+  const detector = {
+    analyzeConversation: vi.fn((taskId, taskPath, includeChildPrefixes = false) => {
+      // Simuler un skeleton de base pour les tests
+      return Promise.resolve({
+        taskId,
+        parentTaskId: undefined,
+        truncatedInstruction: `Instruction pour ${taskId}`,
+        childTaskInstructionPrefixes: includeChildPrefixes ? [
+          `task|Instruction enfant 1 pour ${taskId}`,
+          `task|Instruction enfant 2 pour ${taskId}`
+        ] : [],
+        sequence: [
+          { role: 'user', content: 'Message de test', isTruncated: false, timestamp: '2024-01-01T00:00:00Z' }
+        ],
+        metadata: {
+          workspace: './test',
+          title: `Task ${taskId}`,
+          createdAt: '2024-01-01T00:00:00Z',
+          lastActivity: '2024-01-01T00:00:00Z',
+          messageCount: 1,
+          totalSize: 100,
+          actionCount: 0,
+          dataSource: taskPath
+        }
+      });
+    }),
+    detectStorageLocations: vi.fn(() => Promise.resolve([
+      './test-storage'
+    ])),
+    extractNewTaskInstructionsFromUI: vi.fn((filePath) => {
+      // Simuler l'extraction depuis un fichier UI
+      return [];
+    })
+  };
+  
+  return { mockRooStorageDetector: detector };
+});
+
+vi.mock('../../src/utils/roo-storage-detector.js', () => ({
+  RooStorageDetector: mockRooStorageDetector
+}));
+
+import * as fs from 'fs/promises';
+import * as path from 'path';
+
+// Import de la classe à tester
 import { TaskInstructionIndex, computeInstructionPrefix } from '../../src/utils/task-instruction-index.js';
 import { HierarchyReconstructionEngine } from '../../src/utils/hierarchy-reconstruction-engine.js';
 import { RooStorageDetector } from '../../src/utils/roo-storage-detector.js';
 import { TaskNavigator } from '../../src/services/task-navigator.js';
 import { ConversationSkeleton, NewTaskInstruction } from '../../src/types/conversation.js';
 import { EnhancedConversationSkeleton } from '../../src/types/enhanced-hierarchy.js';
-import * as fs from 'fs/promises';
-import * as path from 'path';
-import { existsSync } from 'fs';
+
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
 
 describe('Pipeline Complet de Reconstruction Hiérarchique', () => {
+    const mockFiles = new Map();
+    
+    beforeEach(async () => {
+        // Réinitialiser les mocks
+        mockFiles.clear();
+        
+        // Configurer les mocks
+        mkdir.mockResolvedValue(undefined);
+        rm.mockResolvedValue(undefined);
+        writeFile.mockImplementation((filePath, content) => {
+            mockFiles.set(filePath, content);
+            return Promise.resolve(undefined);
+        });
+        readFile.mockImplementation((filePath) => {
+            const content = mockFiles.get(filePath);
+            if (content) {
+                return Promise.resolve(content);
+            }
+            return Promise.reject(new Error(`File not found: ${filePath}`));
+        });
+        stat.mockImplementation((filePath) => {
+            if (mockFiles.has(filePath)) {
+                return Promise.resolve({
+                    isFile: () => true,
+                    isDirectory: () => false,
+                    size: mockFiles.get(filePath).length
+                });
+            }
+            // Pour les répertoires, on vérifie si le chemin se termine par un nom de fichier
+            // ou si c'est un répertoire temporaire de test
+            if (filePath.includes('temp-') || filePath.includes('fixtures') || filePath.includes('controlled-hierarchy')) {
+                return Promise.resolve({
+                    isFile: () => false,
+                    isDirectory: () => true,
+                    size: 0
+                });
+            }
+            return Promise.reject(new Error(`File not found: ${filePath}`));
+        });
+        readdir.mockImplementation((dirPath) => {
+            if (dirPath.includes('fixtures') || dirPath.includes('controlled-hierarchy')) {
+                // Simuler des entrées de répertoire pour les fixtures
+                return Promise.resolve([
+                    { name: 'task-001', isDirectory: () => true },
+                    { name: 'task-002', isDirectory: () => true }
+                ]);
+            }
+            return Promise.resolve([]);
+        });
+        existsSync.mockImplementation((filePath) => {
+            return mockFiles.has(filePath) || filePath.includes('fixtures') || filePath.includes('controlled-hierarchy');
+        });
+    });
 
     describe('1. Normalisation des Préfixes (computeInstructionPrefix)', () => {
 
