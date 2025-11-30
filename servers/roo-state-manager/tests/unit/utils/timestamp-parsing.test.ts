@@ -1,7 +1,10 @@
-import { describe, it, expect, afterEach } from 'vitest';
+import { describe, it, expect, afterEach, vi } from 'vitest';
 import mock from 'mock-fs';
 import { RooStorageDetector } from '../../../src/utils/roo-storage-detector.js';
 import path from 'path';
+
+// Unmock path to ensure we use the real implementation with mock-fs
+vi.unmock('path');
 
 describe('Timestamp Parsing in RooStorageDetector', () => {
     const MOCK_TASKS_PATH = '/mock/tasks';

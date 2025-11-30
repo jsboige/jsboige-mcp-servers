@@ -199,20 +199,14 @@ export class HierarchyReconstructionEngine {
                         // Au lieu d'indexer chaque instruction individuellement,
                         // extraire les sous-instructions depuis le texte parent complet
 
-                        // Récupérer le texte parent complet pour extraction
-                        const parentText = skeleton.parsedSubtaskInstructions?.instructions.map(i => i.message).join('\n') ||
-                                          instructions.map(i => i.message).join('\n');
-
-                        // Utiliser la nouvelle méthode avec extraction automatique
-                        const extractedCount = await this.instructionIndex.addParentTaskWithSubInstructions(
-                            skeleton.taskId,
-                            parentText
-                        );
-
-                        // 🎯 CORRECTION PROFONDEUR : NE PAS ÉCRASER truncatedInstruction
-                        // L'instruction tronquée doit rester celle de la tâche elle-même (son but),
-                        // et non être remplacée par la première sous-tâche qu'elle contient.
-                        // C'est cette instruction propre qui permet à SON parent de la retrouver.
+                        // 🎯 FIX: Indexer directement les instructions extraites
+                        // La concaténation + ré-extraction échouait car les balises XML étaient déjà nettoyées
+                        // dans extractSubtaskInstructions, rendant extractSubInstructions inefficace.
+                        let extractedCount = 0;
+                        for (const instruction of instructions) {
+                            this.instructionIndex.addInstruction(skeleton.taskId, instruction.message, instruction.message);
+                            extractedCount++;
+                        }
 
                         console.log(`[ENGINE-PHASE1-INDEX] Task ${skeleton.taskId.substring(0, 8)}: ${extractedCount} sub-instructions indexed`);
                         result.totalInstructionsExtracted += extractedCount;
@@ -607,7 +601,10 @@ export class HierarchyReconstructionEngine {
         }
         // Respecter le mock existsSync des tests: si false, on ne lit pas le fichier et on retourne 0 instruction
         if (!fs.existsSync(uiMessagesPath)) {
+            console.error(`[DEBUG] ui_messages.json NOT FOUND at: ${uiMessagesPath}`);
             return instructions;
+        } else {
+            console.error(`[DEBUG] ui_messages.json FOUND at: ${uiMessagesPath}`);
         }
 
         try {

@@ -5,10 +5,10 @@ export default defineConfig({
   test: {
     // Globals pour avoir describe, it, expect disponibles sans import
     globals: true,
-    
+
     // Environnement Node.js (comme Jest)
     environment: 'node',
-    
+
     // Patterns de tests (équivalent à testMatch de Jest)
     include: [
       'tests/unit/**/*.test.ts',
@@ -20,7 +20,7 @@ export default defineConfig({
       'src/**/__tests__/**/*.test.ts',
       'src/**/__tests__/**/*.test.js'
     ],
-    
+
     // Exclusions (équivalent à testPathIgnorePatterns)
     exclude: [
       'node_modules',
@@ -31,18 +31,18 @@ export default defineConfig({
       '**/dist/**',
       'tests/unit/parent-child-validation.test.ts' // Temporairement exclu pour boucle infinie
     ],
-    
+
     // Setup files (équivalent à setupFilesAfterEnv)
     setupFiles: ['./tests/setup-env.ts', './tests/setup/jest.setup.js'],
-    
+
     // Global setup (création du stockage temporaire)
     // Note: Dans Vitest v3, globalSetup retourne une fonction de teardown
     globalSetup: './tests/config/globalSetup.ts',
-    
+
     // Timeout (30 secondes comme Jest)
     testTimeout: 15000,
     hookTimeout: 30000,
-    
+
     // Pool configuration - utiliser 'forks' avec un seul worker
     // (équivalent à maxWorkers: 1 de Jest pour éviter les problèmes de mémoire)
     pool: 'threads',
@@ -51,12 +51,12 @@ export default defineConfig({
         maxThreads: Math.max(1, 4)  // Utiliser 4 threads fixes pour éviter le require('os')
       }
     },
-    
+
     // Mocks
     clearMocks: true,
     restoreMocks: true,
     mockReset: true,
-    
+
     // Coverage configuration
     coverage: {
       provider: 'v8',
@@ -82,14 +82,14 @@ export default defineConfig({
         statements: 50
       }
     },
-    
+
     // Isolate pour éviter les fuites entre tests
-    isolate: false,
-    
+    isolate: true,
+
     // Reporters
     reporters: ['basic']
   },
-  
+
   // Résolution des modules (équivalent à moduleNameMapper)
   resolve: {
     alias: {
