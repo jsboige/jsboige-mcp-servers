@@ -1,4 +1,9 @@
 import { vi, beforeEach } from 'vitest';
+import dotenv from 'dotenv';
+import path from 'path';
+
+// Charger les variables d'environnement depuis le fichier .env
+dotenv.config({ path: path.resolve(__dirname, '../../.env') });
 
 // Configuration globale des mocks pour la console
 global.console = {
@@ -10,14 +15,16 @@ global.console = {
   debug: vi.fn()
 };
 
-// Mock des variables d'environnement pour les tests
+// Mock des variables d'environnement pour les tests (surcharge les valeurs du .env si nécessaire)
 process.env.NODE_ENV = 'test';
 process.env.ROOSYNC_TEST_MODE = 'true';
-process.env.QDRANT_URL = 'http://localhost:6333';
-process.env.QDRANT_API_KEY = 'test-key';
-process.env.OPENAI_API_KEY = 'sk-test-key';
-process.env.OPENAI_CHAT_MODEL_ID = 'gpt-4o-mini';
-process.env.QDRANT_COLLECTION_NAME = 'roo_tasks_semantic_index';
+
+// Si les variables ne sont pas dans le .env, utiliser des valeurs par défaut pour les tests
+if (!process.env.QDRANT_URL) process.env.QDRANT_URL = 'http://localhost:6333';
+if (!process.env.QDRANT_API_KEY) process.env.QDRANT_API_KEY = 'test-key';
+if (!process.env.OPENAI_API_KEY) process.env.OPENAI_API_KEY = 'sk-test-key';
+if (!process.env.OPENAI_CHAT_MODEL_ID) process.env.OPENAI_CHAT_MODEL_ID = 'gpt-4o-mini';
+if (!process.env.QDRANT_COLLECTION_NAME) process.env.QDRANT_COLLECTION_NAME = 'roo_tasks_semantic_index';
 
 // Mock des APIs externes
 vi.mock('openai', () => ({
@@ -122,53 +129,70 @@ vi.mock('../src/services/synthesis/SynthesisOrchestratorService.js', () => {
 });
 
 // Mock du système de fichiers
-vi.mock('fs', () => ({
-  existsSync: vi.fn(() => true),
-  readFileSync: vi.fn(() => JSON.stringify({})),
-  writeFileSync: vi.fn(),
-  mkdirSync: vi.fn(),
-  readdirSync: vi.fn(() => ['file1.json', 'file2.json']),
-  statSync: vi.fn(() => ({ isDirectory: () => true }))
-}));
-
 // Mock fs/promises avec toutes les méthodes nécessaires
+const mockFsPromises = {
+  access: vi.fn().mockResolvedValue(undefined),
+  readFile: vi.fn().mockResolvedValue(JSON.stringify({})),
+  writeFile: vi.fn().mockResolvedValue(undefined),
+  readdir: vi.fn().mockResolvedValue(['file1.json', 'file2.json']),
+  stat: vi.fn().mockResolvedValue({ isDirectory: () => true }),
+  mkdir: vi.fn().mockResolvedValue(undefined),
+  rm: vi.fn().mockResolvedValue(undefined),
+  copyFile: vi.fn().mockResolvedValue(undefined),
+  unlink: vi.fn().mockResolvedValue(undefined)
+};
+
 vi.mock('fs/promises', () => {
-  const mockFsPromises = {
-    access: vi.fn().mockResolvedValue(undefined),
-    readFile: vi.fn().mockResolvedValue(JSON.stringify({})),
-    writeFile: vi.fn().mockResolvedValue(undefined),
-    readdir: vi.fn().mockResolvedValue(['file1.json', 'file2.json']),
-    stat: vi.fn().mockResolvedValue({ isDirectory: () => true }),
-    mkdir: vi.fn().mockResolvedValue(undefined),
-    rm: vi.fn().mockResolvedValue(undefined),
-    copyFile: vi.fn().mockResolvedValue(undefined),
-    unlink: vi.fn().mockResolvedValue(undefined)
-  };
-  
   return {
     default: mockFsPromises,
     ...mockFsPromises
   };
 });
 
+// Mock du système de fichiers
+vi.mock('fs', () => {
+  const mockFs = {
+    existsSync: vi.fn(() => true),
+    readFileSync: vi.fn(() => JSON.stringify({})),
+    writeFileSync: vi.fn(),
+    mkdirSync: vi.fn(),
+    readdirSync: vi.fn(() => ['file1.json', 'file2.json']),
+    statSync: vi.fn(() => ({ isDirectory: () => true })),
+    rmSync: vi.fn(),
+    promises: mockFsPromises
+  };
+  
+  return {
+    default: mockFs,
+    ...mockFs
+  };
+});
+
 // Mock du module path
-vi.mock('path', () => ({
-  join: vi.fn((...args) => args.join('/')),
-  basename: vi.fn((path) => path.split('/').pop() || path),
-  dirname: vi.fn((path) => path.split('/').slice(0, -1).join('/') || '.'),
-  resolve: vi.fn((...args) => args.join('/')),
-  relative: vi.fn((from, to) => to),
-  sep: '/',
-  extname: vi.fn((path) => {
-    const lastDot = path.lastIndexOf('.');
-    return lastDot >= 0 ? path.slice(lastDot) : '';
-  }),
-  parse: vi.fn((path) => {
-    const base = path.split('/').pop() || '';
-    const ext = base.includes('.') ? base.split('.').pop() : '';
-    return { root: '', dir: base.split('.')[0], base, ext };
-  })
-}));
+vi.mock('path', () => {
+  const mockPath = {
+    join: vi.fn((...args) => args.join('/')),
+    basename: vi.fn((path) => path.split('/').pop() || path),
+    dirname: vi.fn((path) => path.split('/').slice(0, -1).join('/') || '.'),
+    resolve: vi.fn((...args) => args.join('/')),
+    relative: vi.fn((from, to) => to),
+    sep: '/',
+    extname: vi.fn((path) => {
+      const lastDot = path.lastIndexOf('.');
+      return lastDot >= 0 ? path.slice(lastDot) : '';
+    }),
+    parse: vi.fn((path) => {
+      const base = path.split('/').pop() || '';
+      const ext = base.includes('.') ? base.split('.').pop() : '';
+      return { root: '', dir: base.split('.')[0], base, ext };
+    })
+  };
+  
+  return {
+    default: mockPath,
+    ...mockPath
+  };
+});
 
 // Mock du module os
 vi.mock('os', () => ({
