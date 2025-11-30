@@ -1369,6 +1369,20 @@ export class RooStorageDetector {
   }
 
   /**
+   * Méthode interne pour extraire les instructions depuis un tableau de messages
+   * (Utilisée principalement par les tests unitaires)
+   */
+  private static async extractNewTaskInstructions(
+    messages: any[]
+  ): Promise<NewTaskInstruction[]> {
+    const { messageExtractionCoordinator } = await import('./message-extraction-coordinator.js');
+    const result = messageExtractionCoordinator.extractFromMessages(messages, {
+      enableDebug: process.env.ROO_DEBUG_INSTRUCTIONS === '1'
+    });
+    return result.instructions;
+  }
+
+  /**
    * @deprecated MÉTHODE CORROMPUE - Violait le principe architectural
    * Les relations parent-enfant sont définies par les parents, pas devinées
    */

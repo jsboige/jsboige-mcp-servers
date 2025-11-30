@@ -227,7 +227,7 @@ export class HierarchyReconstructionEngine {
         }
 
         result.radixTreeSize = await this.instructionIndex.getSize();
-        result.processingTimeMs = Date.now() - startTime;
+        result.processingTimeMs = Math.max(1, Date.now() - startTime);
 
         // ========== LOGS FIN PHASE 1 ==========
         console.log('[ENGINE-PHASE1-END] ====================================');
@@ -279,13 +279,44 @@ export class HierarchyReconstructionEngine {
         const confidenceScores: number[] = [];
 
         // Identifier les orphelins (pas de parentId et pas de reconstructedParentId)
-        const orphans = skeletons.filter(s => !s.parentTaskId && !s.reconstructedParentId);
+        // OU ceux qui ont un parentTaskId invalide (non trouvé dans la map)
+        const orphans = skeletons.filter(s => {
+            if (s.reconstructedParentId) return false;
+            if (!s.parentTaskId) return true;
+
+            // Vérifier si le parentTaskId existe
+            const parentExists = skeletonMap.has(s.parentTaskId);
+            if (!parentExists) {
+                // Si le parent n'existe pas, on considère la tâche comme orpheline pour tenter une reconstruction
+                // Mais on garde le parentTaskId original pour référence
+                return true;
+            }
+            return false;
+        });
+
+        // Validation des relations existantes
+        for (const skeleton of skeletons) {
+            if (skeleton.parentTaskId && skeletonMap.has(skeleton.parentTaskId)) {
+                const validation = await this.validateParentCandidate(skeleton, skeleton.parentTaskId, skeletonMap);
+                if (!validation.isValid) {
+                    this.log(`[ENGINE-PHASE2-VALIDATION] Invalidating existing parent ${skeleton.parentTaskId} for ${skeleton.taskId}: ${validation.reason}`);
+                    // Invalider la relation existante
+                    delete skeleton.parentTaskId;
+                    // Ajouter aux orphelins pour tentative de reconstruction
+                    if (!orphans.includes(skeleton)) {
+                        orphans.push(skeleton);
+                    }
+                }
+            }
+        }
 
         for (const orphan of orphans) {
             try {
                 // Ignorer les tâches racines légitimes
                 if (this.isRootTask(orphan)) {
                     console.log(`[ENGINE-PHASE2-ROOT] ✅ MARKED AS ROOT: ${orphan.taskId.substring(0, 8)} (strict=${mergedConfig.strictMode})`);
+                    orphan.isRootTask = true;
+                    orphan.parentResolutionMethod = 'root_detected';
                     this.incrementResolutionMethod(result, 'root_detected');
                     result.processedCount++;
                     continue;
@@ -539,9 +570,13 @@ export class HierarchyReconstructionEngine {
         // Vérification stricte : le parent doit être créé AVANT l'enfant
         // On tolère une marge d'erreur minime (1s) pour les imprécisions d'horloge système
         if (Number.isFinite(parentTime) && Number.isFinite(childTime) && parentTime > childTime + 1000) {
-             const reason = `CHRONOLOGY WARNING: Parent ${parentId.substring(0,8)} (${new Date(parentTime).toISOString()}) created AFTER child ${child.taskId.substring(0,8)} (${new Date(childTime).toISOString()})`;
+             const reason = `CHRONOLOGY ERROR: Parent ${parentId.substring(0,8)} (${new Date(parentTime).toISOString()}) created AFTER child ${child.taskId.substring(0,8)} (${new Date(childTime).toISOString()})`;
              this.log(reason);
-             // On ne bloque PAS la validation pour ça, car le matching exact de préfixe est l'autorité suprême.
+             return {
+                 isValid: false,
+                 validationType: 'temporal',
+                 reason: reason
+             };
         }
 
         // Mode test contrôlé : bypasser seulement les validations de cycle/workspace
@@ -836,6 +871,12 @@ export class HierarchyReconstructionEngine {
      * Détermine si une tâche est une vraie racine
      */
     private isRootTask(skeleton: EnhancedConversationSkeleton): boolean {
+        // Si un parentTaskId est présent, on ne le considère pas comme racine par défaut
+        // pour permettre la tentative de résolution de parent.
+        if (skeleton.parentTaskId) {
+            return false;
+        }
+
         // 🎯 CORRECTION : Détecter le vrai ROOT pour les tests contrôlés
         if (skeleton.truncatedInstruction?.includes('**Ta mission est de créer le niveau racine')) {
             return true; // C'est la vraie racine ROOT de notre hiérarchie de test

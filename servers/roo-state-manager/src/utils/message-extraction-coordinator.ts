@@ -14,6 +14,7 @@ import { ApiTextExtractor } from './extractors/api-message-extractor.js';
 import { UiAskToolExtractor } from './extractors/ui-message-extractor.js';
 import { UiObjectExtractor } from './extractors/ui-message-extractor.js';
 import { UiXmlPatternExtractor } from './extractors/ui-message-extractor.js';
+import { UiSimpleTaskExtractor } from './extractors/ui-message-extractor.js';
 import { UiLegacyExtractor } from './extractors/ui-message-extractor.js';
 
 /**
@@ -51,7 +52,7 @@ export class MessageExtractionCoordinator {
    * Extrait les instructions d'un tableau de messages
    */
   extractFromMessages(
-    messages: any[], 
+    messages: any[],
     options: MessageExtractionOptions = {}
   ): ExtractionResult {
     const result: ExtractionResult = {
@@ -80,7 +81,7 @@ export class MessageExtractionCoordinator {
    * Extrait les instructions d'un message unique
    */
   extractFromMessage(
-    message: any, 
+    message: any,
     options: MessageExtractionOptions = {}
   ): ExtractionResult {
     const result: ExtractionResult = {
@@ -104,11 +105,12 @@ export class MessageExtractionCoordinator {
       // Extracteurs API (priorité haute)
       new ApiContentExtractor(),
       new ApiTextExtractor(),
-      
+
       // Extracteurs UI
       new UiAskToolExtractor(),
       new UiObjectExtractor(),
       new UiXmlPatternExtractor(),
+      new UiSimpleTaskExtractor(),
       new UiLegacyExtractor()
     ];
 
@@ -131,16 +133,16 @@ export class MessageExtractionCoordinator {
       try {
         if (extractor.canHandle(message)) {
           const instructions = extractor.extract(message);
-          
+
           if (instructions.length > 0) {
             result.instructions.push(...instructions);
             result.matchedPatterns.push(extractor.getPatternName());
             matched = true;
-           
+
             if (this.debugEnabled) {
               console.log(`[MessageExtractionCoordinator] ✅ ${extractor.getPatternName()} matched: ${instructions.length} instructions`);
             }
-            
+
             // 🎯 CORRECTION SDDD: Arrêter après le premier extracteur qui trouve des instructions
             // pour éviter les doublons et respecter les attentes des tests
             break;
@@ -171,7 +173,7 @@ export class MessageExtractionCoordinator {
     console.log(`  - Instructions found: ${result.instructions.length}`);
     console.log(`  - Patterns matched: ${result.matchedPatterns.join(', ')}`);
     console.log(`  - Errors: ${result.errors.length}`);
-    
+
     if (result.errors.length > 0) {
       console.log(`  - Error details:`, result.errors);
     }
