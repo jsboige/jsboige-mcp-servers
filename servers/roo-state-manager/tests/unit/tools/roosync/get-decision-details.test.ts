@@ -2,10 +2,174 @@
  * Tests pour roosync_get_decision_details
  */
 
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { writeFileSync, mkdirSync, rmSync } from 'fs';
 import { join, dirname } from 'path';
 import { fileURLToPath } from 'url';
+
+// Mock pour RooSyncService
+const { mockRooSyncService, mockRooSyncServiceError, mockGetRooSyncService } = vi.hoisted(() => {
+  // Mock de la classe d'erreur
+  const errorClass = class extends Error {
+    constructor(message: string) {
+      super(message);
+      this.name = 'RooSyncServiceError';
+    }
+  };
+  
+  const service = {
+    resetInstance: vi.fn(),
+    getInstance: vi.fn(() => ({
+      getConfig: vi.fn().mockReturnValue({
+        version: '2.0.0',
+        sharedStatePath: '/mock/shared',
+        baselinePath: '/mock/baseline',
+        machines: {
+          'PC-PRINCIPAL': {
+            id: 'PC-PRINCIPAL',
+            name: 'PC Principal',
+            basePath: '/mock/pc-principal',
+            lastSync: '2025-10-08T09:00:00Z',
+            status: 'online'
+          }
+        }
+      }),
+      getDecision: vi.fn().mockImplementation((decisionId: string) => {
+        if (decisionId === 'test-decision-complete') {
+          return {
+            id: 'test-decision-complete',
+            type: 'config',
+            status: 'applied',
+            title: 'Décision complète avec historique',
+            description: 'Test decision with complete history',
+            files: ['.config/complete.json'],
+            sourceMachine: 'PC-PRINCIPAL',
+            targetMachines: ['MAC-DEV'],
+            createdAt: '2025-10-08T09:00:00Z',
+            approvedAt: '2025-10-08T09:30:00Z',
+            appliedAt: '2025-10-08T10:00:00Z',
+            rollbackPoint: {
+              backupPath: '/mock/backup',
+              files: ['.config/complete.json']
+            },
+            history: [
+              {
+                action: 'created',
+                timestamp: '2025-10-08T09:00:00Z',
+                details: 'Décision créée'
+              },
+              {
+                action: 'approved',
+                timestamp: '2025-10-08T09:30:00Z',
+                details: 'Décision approuvée'
+              },
+              {
+                action: 'applied',
+                timestamp: '2025-10-08T10:00:00Z',
+                details: 'Décision appliquée'
+              }
+            ]
+          };
+        }
+        if (decisionId === 'test-decision-rejected') {
+          return {
+            id: 'test-decision-rejected',
+            type: 'config',
+            status: 'rejected',
+            title: 'Décision rejetée',
+            description: 'Test rejected decision',
+            files: ['.config/rejected.json'],
+            sourceMachine: 'PC-PRINCIPAL',
+            targetMachines: ['MAC-DEV'],
+            createdAt: '2025-10-08T09:00:00Z',
+            rejectedAt: '2025-10-08T09:45:00Z',
+            rejectionReason: 'Configuration incompatible',
+            history: [
+              {
+                action: 'created',
+                timestamp: '2025-10-08T09:00:00Z',
+                details: 'Décision créée'
+              },
+              {
+                action: 'rejected',
+                timestamp: '2025-10-08T09:45:00Z',
+                details: 'Décision rejetée: Configuration incompatible'
+              }
+            ]
+          };
+        }
+        if (decisionId === 'test-decision-rolledback') {
+          return {
+            id: 'test-decision-rolledback',
+            type: 'config',
+            status: 'rolledback',
+            title: 'Décision avec rollback',
+            description: 'Test decision with rollback',
+            files: ['.config/rollback.json'],
+            sourceMachine: 'PC-PRINCIPAL',
+            targetMachines: ['MAC-DEV'],
+            createdAt: '2025-10-08T09:00:00Z',
+            appliedAt: '2025-10-08T10:00:00Z',
+            rolledbackAt: '2025-10-08T11:00:00Z',
+            rollbackPoint: {
+              backupPath: '/mock/backup',
+              files: ['.config/rollback.json']
+            },
+            history: [
+              {
+                action: 'created',
+                timestamp: '2025-10-08T09:00:00Z',
+                details: 'Décision créée'
+              },
+              {
+                action: 'applied',
+                timestamp: '2025-10-08T10:00:00Z',
+                details: 'Décision appliquée'
+              },
+              {
+                action: 'rolledback',
+                timestamp: '2025-10-08T11:00:00Z',
+                details: 'Décision annulée (rollback)'
+              }
+            ]
+          };
+        }
+        return null;
+      }),
+      loadDashboard: vi.fn().mockResolvedValue({
+        version: '2.0.0',
+        lastUpdate: '2025-10-08T10:00:00Z',
+        overallStatus: 'diverged',
+        machines: {
+          'PC-PRINCIPAL': {
+            id: 'PC-PRINCIPAL',
+            name: 'PC Principal',
+            lastSync: '2025-10-08T09:00:00Z',
+            status: 'online',
+            diffsCount: 2,
+            pendingDecisions: 1
+          }
+        }
+      })
+    }))
+  };
+  
+  // Mock de la fonction getRooSyncService
+  const getRooSyncService = vi.fn(() => service.getInstance());
+  
+  return {
+    mockRooSyncService: service,
+    mockRooSyncServiceError: errorClass,
+    mockGetRooSyncService: getRooSyncService
+  };
+});
+
+vi.mock('../../../../src/services/RooSyncService.js', () => ({
+  RooSyncService: mockRooSyncService,
+  RooSyncServiceError: mockRooSyncServiceError,
+  getRooSyncService: mockGetRooSyncService
+}));
+
 import { RooSyncService } from '../../../../src/services/RooSyncService.js';
 import { roosyncGetDecisionDetails } from '../../../../src/tools/roosync/get-decision-details.js';
 
@@ -90,7 +254,7 @@ describe('roosync_get_decision_details', () => {
 
     writeFileSync(join(testDir, 'sync-dashboard.json'), JSON.stringify(dashboard), 'utf-8');
     writeFileSync(join(testDir, 'sync-roadmap.md'), roadmap, 'utf-8');
-
+    
     // Create dummy baseline for BaselineService
     const baseline = {
       version: "1.0.0",
@@ -108,7 +272,90 @@ describe('roosync_get_decision_details', () => {
       ]
     };
     writeFileSync(join(testDir, 'sync-config.ref.json'), JSON.stringify(baseline), 'utf-8');
+    
+    // Mock fs pour utiliser les fichiers de test
+    vi.mock('fs', async () => ({
+      readFileSync: vi.fn((path: string) => {
+        if (path.includes('sync-roadmap.md')) {
+          return `# Roadmap RooSync
 
+## Décisions de Synchronisation
+
+<!-- DECISION_BLOCK_START -->
+**ID:** \`test-decision-001\`
+**Titre:** Décision de test
+**Statut:** pending
+**Type:** config
+**Chemin:** \`.config/test.json\`
+**Machine Source:** PC-PRINCIPAL
+**Machines Cibles:** MAC-DEV
+**Créé:** 2025-10-08T09:00:00Z
+**Détails:** Test de décision
+<!-- DECISION_BLOCK_END -->
+
+<!-- DECISION_BLOCK_START -->
+**ID:** \`test-decision-approved\`
+**Titre:** Décision approuvée
+**Statut:** approved
+**Type:** file
+**Chemin:** \`test.txt\`
+**Machine Source:** PC-PRINCIPAL
+**Machines Cibles:** all
+**Créé:** 2025-10-08T08:00:00Z
+**Approuvé le:** 2025-10-08T09:00:00Z
+**Approuvé par:** PC-PRINCIPAL
+<!-- DECISION_BLOCK_END -->
+
+<!-- DECISION_BLOCK_START -->
+**ID:** \`test-decision-applied\`
+**Titre:** Décision appliquée
+**Statut:** applied
+**Type:** config
+**Chemin:** \`.config/applied.json\`
+**Machine Source:** PC-PRINCIPAL
+**Machines Cibles:** MAC-DEV
+**Créé:** 2025-10-08T07:00:00Z
+**Appliqué le:** 2025-10-08T10:00:00Z
+**Appliqué par:** PC-PRINCIPAL
+<!-- DECISION_BLOCK_END -->
+
+<!-- DECISION_BLOCK_START -->
+**ID:** \`test-decision-rejected\`
+**Titre:** Décision rejetée
+**Statut:** rejected
+**Type:** file
+**Chemin:** \`rejected.txt\`
+**Machine Source:** PC-PRINCIPAL
+**Machines Cibles:** all
+**Créé:** 2025-10-08T06:00:00Z
+**Rejeté le:** 2025-10-08T11:00:00Z
+**Rejeté par:** PC-PRINCIPAL
+**Motif:** Test de rejet
+<!-- DECISION_BLOCK_END -->
+
+<!-- DECISION_BLOCK_START -->
+**ID:** \`test-decision-rolled-back\`
+**Titre:** Décision annulée
+**Statut:** rolled_back
+**Type:** config
+**Chemin:** \`.config/rollback.json\`
+**Machine Source:** PC-PRINCIPAL
+**Machines Cibles:** MAC-DEV
+**Créé:** 2025-10-08T05:00:00Z
+**Appliqué le:** 2025-10-08T09:00:00Z
+**Rollback le:** 2025-10-08T12:00:00Z
+**Rollback par:** PC-PRINCIPAL
+**Raison:** Problème de compatibilité
+<!-- DECISION_BLOCK_END -->
+`;
+        }
+        return '';
+      }),
+      writeFileSync: vi.fn(),
+      mkdirSync: vi.fn(),
+      rmSync: vi.fn()
+    }));
+    
     // Mock environment
     process.env.ROOSYNC_SHARED_PATH = testDir;
     process.env.ROOSYNC_MACHINE_ID = 'PC-PRINCIPAL';

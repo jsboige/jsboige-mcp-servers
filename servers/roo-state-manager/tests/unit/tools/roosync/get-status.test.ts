@@ -2,10 +2,130 @@
  * Tests pour roosync_get_status
  */
 
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { writeFileSync, mkdirSync, rmSync } from 'fs';
 import { join, dirname } from 'path';
 import { fileURLToPath } from 'url';
+
+// Mock pour RooSyncService
+const { mockRooSyncService, mockRooSyncServiceError, mockGetRooSyncService } = vi.hoisted(() => {
+  // Mock de la classe d'erreur
+  const errorClass = class extends Error {
+    constructor(message: string) {
+      super(message);
+      this.name = 'RooSyncServiceError';
+    }
+  };
+  
+  const service = {
+    resetInstance: vi.fn(),
+    getInstance: vi.fn(() => ({
+      getConfig: vi.fn().mockReturnValue({
+        version: '2.0.0',
+        sharedStatePath: '/mock/shared',
+        baselinePath: '/mock/baseline',
+        machines: {
+          'PC-PRINCIPAL': {
+            id: 'PC-PRINCIPAL',
+            name: 'PC Principal',
+            basePath: '/mock/pc-principal',
+            lastSync: '2025-10-08T09:00:00Z',
+            status: 'online',
+            diffsCount: 0,
+            pendingDecisions: 0
+          },
+          'MAC-DEV': {
+            id: 'MAC-DEV',
+            name: 'Mac Dev',
+            basePath: '/mock/mac-dev',
+            lastSync: '2025-10-08T08:00:00Z',
+            status: 'online',
+            diffsCount: 2,
+            pendingDecisions: 1
+          }
+        }
+      }),
+      getStatus: vi.fn().mockImplementation((filterMachine?: string) => {
+        const status = {
+          version: '2.0.0',
+          lastUpdate: '2025-10-08T10:00:00Z',
+          overallStatus: 'synced',
+          machines: {
+            'PC-PRINCIPAL': {
+              lastSync: '2025-10-08T09:00:00Z',
+              status: 'online',
+              diffsCount: 0,
+              pendingDecisions: 0
+            },
+            'MAC-DEV': {
+              lastSync: '2025-10-08T08:00:00Z',
+              status: 'online',
+              diffsCount: 2,
+              pendingDecisions: 1
+            }
+          },
+          statistics: {
+            totalMachines: 2,
+            onlineMachines: 2,
+            totalDifferences: 2,
+            pendingDecisions: 1,
+            lastSync: '2025-10-08T09:00:00Z'
+          }
+        };
+        if (filterMachine) {
+          if (!(filterMachine in status.machines)) {
+            throw new mockRooSyncServiceError(`Machine '${filterMachine}' non trouvée`);
+          }
+          return {
+            ...status,
+            machines: { [filterMachine]: status.machines[filterMachine as keyof typeof status.machines] }
+          };
+        }
+        
+        return status;
+      }),
+      loadDashboard: vi.fn().mockResolvedValue({
+        version: '2.0.0',
+        lastUpdate: '2025-10-08T10:00:00Z',
+        overallStatus: 'diverged',
+        machines: {
+          'PC-PRINCIPAL': {
+            id: 'PC-PRINCIPAL',
+            name: 'PC Principal',
+            lastSync: '2025-10-08T09:00:00Z',
+            status: 'online',
+            diffsCount: 0,
+            pendingDecisions: 0
+          },
+          'MAC-DEV': {
+            id: 'MAC-DEV',
+            name: 'Mac Dev',
+            lastSync: '2025-10-08T08:00:00Z',
+            status: 'online',
+            diffsCount: 2,
+            pendingDecisions: 1
+          }
+        }
+      })
+    }))
+  };
+  
+  // Mock de la fonction getRooSyncService
+  const getRooSyncService = vi.fn(() => service.getInstance());
+  
+  return {
+    mockRooSyncService: service,
+    mockRooSyncServiceError: errorClass,
+    mockGetRooSyncService: getRooSyncService
+  };
+});
+
+vi.mock('../../../../src/services/RooSyncService.js', () => ({
+  RooSyncService: mockRooSyncService,
+  RooSyncServiceError: mockRooSyncServiceError,
+  getRooSyncService: mockGetRooSyncService
+}));
+
 import { RooSyncService } from '../../../../src/services/RooSyncService.js';
 import { roosyncGetStatus, type GetStatusArgs } from '../../../../src/tools/roosync/get-status.js';
 

@@ -61,7 +61,48 @@ const { mockRooSyncService, mockRooSyncServiceError, mockGetRooSyncService } = v
         },
         executionTime: 100
       }),
-      createRollbackPoint: vi.fn().mockResolvedValue(undefined)
+      createRollbackPoint: vi.fn().mockResolvedValue(undefined),
+      getDecision: vi.fn().mockImplementation((decisionId: string) => {
+        if (decisionId === 'test-decision-approved') {
+          return {
+            id: 'test-decision-approved',
+            title: 'Décision approuvée prête',
+            status: 'approved',
+            type: 'config',
+            path: '.config/test.json',
+            sourceMachine: 'PC-PRINCIPAL',
+            targetMachines: ['MAC-DEV'],
+            createdAt: '2025-10-08T09:00:00Z',
+            approvedAt: '2025-10-08T09:30:00Z',
+            approvedBy: 'PC-PRINCIPAL'
+          };
+        } else if (decisionId === 'test-decision-pending') {
+          return {
+            id: 'test-decision-pending',
+            title: 'Décision pas encore approuvée',
+            status: 'pending',
+            type: 'file',
+            path: 'test.txt',
+            sourceMachine: 'PC-PRINCIPAL',
+            targetMachines: ['all'],
+            createdAt: '2025-10-08T09:00:00Z'
+          };
+        }
+        return null;
+      }),
+      getConfig: vi.fn().mockReturnValue({
+        version: '2.0.0',
+        sharedStatePath: '/mock/shared',
+        machines: {
+          'PC-PRINCIPAL': {
+            id: 'PC-PRINCIPAL',
+            name: 'PC Principal',
+            basePath: '/mock/pc-principal',
+            lastSync: '2025-10-08T09:00:00Z',
+            status: 'online'
+          }
+        }
+      })
     }))
   };
   

@@ -6,6 +6,98 @@ import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { writeFileSync, mkdirSync, rmSync } from 'fs';
 import { join, dirname } from 'path';
 import { fileURLToPath } from 'url';
+
+// Mock pour RooSyncService
+const { mockRooSyncService, mockRooSyncServiceError, mockGetRooSyncService } = vi.hoisted(() => {
+  // Mock de la classe d'erreur
+  const errorClass = class extends Error {
+    constructor(message: string) {
+      super(message);
+      this.name = 'RooSyncServiceError';
+    }
+  };
+  
+  const service = {
+    resetInstance: vi.fn(),
+    getInstance: vi.fn(() => ({
+      restoreFromRollbackPoint: vi.fn().mockResolvedValue({
+        success: true,
+        restoredFiles: ['.config/test.json'],
+        logs: [
+          '[ROLLBACK] Recherche du point de rollback...',
+          '[ROLLBACK] Point de rollback trouvé',
+          '[ROLLBACK] Restauration de .config/test.json',
+          '[ROLLBACK] Rollback terminé avec succès'
+        ]
+      }),
+      getDecisionStatus: vi.fn().mockReturnValue('applied'),
+      updateDecisionStatus: vi.fn().mockResolvedValue(undefined),
+      loadDashboard: vi.fn().mockResolvedValue({
+        version: '2.0.0',
+        lastUpdate: '2025-10-08T10:00:00Z',
+        overallStatus: 'diverged',
+        machines: {
+          'PC-PRINCIPAL': {
+            id: 'PC-PRINCIPAL',
+            name: 'PC Principal',
+            lastSync: '2025-10-08T09:00:00Z',
+            status: 'online',
+            diffsCount: 1,
+            pendingDecisions: 1
+          }
+        }
+      }),
+      getConfig: vi.fn().mockReturnValue({
+        version: '2.0.0',
+        sharedPath: '/mock/shared',
+        sharedStatePath: '/mock/shared',
+        baselinePath: '/mock/baseline',
+        machineId: 'PC-PRINCIPAL',
+        machines: {
+          'PC-PRINCIPAL': {
+            id: 'PC-PRINCIPAL',
+            name: 'PC Principal',
+            basePath: '/mock/pc-principal',
+            lastSync: '2025-10-08T09:00:00Z',
+            status: 'online',
+            diffsCount: 1,
+            pendingDecisions: 1
+          }
+        }
+      }),
+      getDecision: vi.fn().mockReturnValue({
+        id: 'test-decision-001',
+        type: 'config',
+        status: 'applied',
+        title: 'Test Decision',
+        description: 'Test decision for rollback',
+        files: ['.config/test.json'],
+        appliedAt: '2025-11-30T12:00:00.000Z',
+        rollbackPoint: {
+          backupPath: '/mock/backup',
+          files: ['.config/test.json']
+        }
+      }),
+      clearCache: vi.fn()
+    }))
+  };
+  
+  // Mock de la fonction getRooSyncService
+  const getRooSyncService = vi.fn(() => service.getInstance());
+  
+  return {
+    mockRooSyncService: service,
+    mockRooSyncServiceError: errorClass,
+    mockGetRooSyncService: getRooSyncService
+  };
+});
+
+vi.mock('../../../../src/services/RooSyncService.js', () => ({
+  RooSyncService: mockRooSyncService,
+  RooSyncServiceError: mockRooSyncServiceError,
+  getRooSyncService: mockGetRooSyncService
+}));
+
 import { RooSyncService } from '../../../../src/services/RooSyncService.js';
 import { roosyncRollbackDecision } from '../../../../src/tools/roosync/rollback-decision.js';
 
@@ -68,6 +160,46 @@ describe('roosync_rollback_decision', () => {
     
     writeFileSync(join(testDir, 'sync-dashboard.json'), JSON.stringify(dashboard), 'utf-8');
     writeFileSync(join(testDir, 'sync-roadmap.md'), roadmap, 'utf-8');
+    
+    // Mock fs pour utiliser les fichiers de test
+    vi.mock('fs', async () => ({
+      readFileSync: vi.fn((path: string) => {
+        if (path.includes('sync-roadmap.md')) {
+          return `# Roadmap RooSync
+
+## Décisions de Synchronisation
+
+<!-- DECISION_BLOCK_START -->
+**ID:** \`test-decision-applied\`
+**Titre:** Décision déjà appliquée
+**Statut:** applied
+**Type:** config
+**Chemin:** \`.config/test.json\`
+**Machine Source:** PC-PRINCIPAL
+**Machines Cibles:** MAC-DEV
+**Créé:** 2025-10-08T09:00:00Z
+**Appliqué le:** 2025-10-08T10:00:00Z
+**Appliqué par:** PC-PRINCIPAL
+<!-- DECISION_BLOCK_END -->
+
+<!-- DECISION_BLOCK_START -->
+**ID:** \`test-decision-pending\`
+**Titre:** Décision pas encore appliquée
+**Statut:** pending
+**Type:** file
+**Chemin:** \`test.txt\`
+**Machine Source:** PC-PRINCIPAL
+**Machines Cibles:** all
+**Créé:** 2025-10-08T09:00:00Z
+<!-- DECISION_BLOCK_END -->
+`;
+        }
+        return '';
+      }),
+      writeFileSync: vi.fn(),
+      mkdirSync: vi.fn(),
+      rmSync: vi.fn()
+    }));
     
     // Mock environment
     process.env.ROOSYNC_SHARED_PATH = testDir;

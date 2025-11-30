@@ -108,12 +108,16 @@ describe('RooStorageDetector - Timestamp Parsing Tests', () => {
     });
 
     it('should handle file system errors gracefully', async () => {
-      const { existsSync } = await import('fs');
-      const { readFile } = await import('fs/promises');
+      const mockReadFile = vi.fn().mockRejectedValue(new Error('Permission denied'));
+      const mockExistsSync = vi.fn().mockReturnValue(true);
       
-      (existsSync as any).mockReturnValue(true);
-      (readFile as any).mockRejectedValue(new Error('Permission denied'));
-
+      vi.doMock('fs/promises', () => ({
+        readFile: mockReadFile
+      }));
+      vi.doMock('fs', () => ({
+        existsSync: mockExistsSync
+      }));
+      
       const result = await RooStorageDetector.analyzeConversation('test-task', '/test/path');
       expect(result).toBeNull();
     });
@@ -130,16 +134,20 @@ describe('RooStorageDetector - Timestamp Parsing Tests', () => {
       // Le résultat peut être null pour diverses raisons (fichiers manquants, etc.)
       expect(result === null || typeof result === 'object').toBe(true);
     });
-
-    it('should handle malformed JSON gracefully', async () => {
-      const { existsSync } = await import('fs');
-      const { readFile } = await import('fs/promises');
-      
-      (existsSync as any).mockReturnValue(true);
-      (readFile as any).mockResolvedValue('invalid json content');
-
-      const result = await RooStorageDetector.analyzeConversation('test-task', '/test/path');
-      expect(result).toBeNull();
+it('should handle malformed JSON gracefully', async () => {
+  const mockReadFile = vi.fn().mockResolvedValue('invalid json content');
+  const mockExistsSync = vi.fn().mockReturnValue(true);
+  
+  vi.doMock('fs/promises', () => ({
+    readFile: mockReadFile
+  }));
+  vi.doMock('fs', () => ({
+    existsSync: mockExistsSync
+  }));
+  
+  const result = await RooStorageDetector.analyzeConversation('test-task', '/test/path');
+  expect(result).toBeNull();
+});
     });
   });
 
@@ -155,40 +163,51 @@ describe('RooStorageDetector - Timestamp Parsing Tests', () => {
     });
 
     it('should detect and validate storage locations', async () => {
-      const { globalCacheManager } = await import('../../../src/utils/cache-manager.js');
-      const { glob } = await import('glob');
-      const { access } = await import('fs/promises');
-      const { stat } = await import('fs/promises');
-      
-      (globalCacheManager.get as any).mockResolvedValue(null);
-      (glob as any).mockResolvedValue(['/home/user/.vscode/extensions/roo-extension']);
-      (access as any).mockResolvedValue(undefined);
-      (stat as any).mockResolvedValue({
+      const mockGlobalCacheManager = {
+        get: vi.fn().mockResolvedValue(null),
+        set: vi.fn()
+      };
+      const mockGlob = vi.fn().mockResolvedValue(['/home/user/.vscode/extensions/roo-extension']);
+      const mockAccess = vi.fn().mockResolvedValue(undefined);
+      const mockStat = vi.fn().mockResolvedValue({
         isDirectory: () => true
-      } as any);
-
+      });
+      
+      vi.doMock('../../../src/utils/cache-manager.js', () => ({
+        globalCacheManager: mockGlobalCacheManager
+      }));
+      vi.doMock('glob', () => ({
+        glob: mockGlob
+      }));
+      vi.doMock('fs/promises', () => ({
+        access: mockAccess,
+        stat: mockStat
+      }));
+      
       const result = await RooStorageDetector.detectStorageLocations();
       
       expect(Array.isArray(result)).toBe(true);
-      expect(globalCacheManager.set).toHaveBeenCalledWith('storage_locations', expect.any(Array));
+      expect(mockGlobalCacheManager.set).toHaveBeenCalledWith('storage_locations', expect.any(Array));
     });
   });
 
   describe('getStatsForPath', () => {
     it('should return storage statistics for valid path', async () => {
-      const { readdir } = await import('fs/promises');
-      const { stat } = await import('fs/promises');
-      
-      (readdir as any).mockResolvedValue([
+      const mockReaddir = vi.fn().mockResolvedValue([
         { name: 'task1', isDirectory: () => true },
         { name: 'task2', isDirectory: () => true }
-      ] as any);
-      (stat as any).mockResolvedValue({
+      ]);
+      const mockStat = vi.fn().mockResolvedValue({
         isDirectory: () => true,
         size: 2048,
         mtime: new Date('2025-11-30T12:00:00.000Z')
-      } as any);
-
+      });
+      
+      vi.doMock('fs/promises', () => ({
+        readdir: mockReaddir,
+        stat: mockStat
+      }));
+      
       const result = await RooStorageDetector.getStatsForPath('/test/storage/path');
       
       expect(result).toBeDefined();
@@ -197,9 +216,12 @@ describe('RooStorageDetector - Timestamp Parsing Tests', () => {
     });
 
     it('should handle empty directory', async () => {
-      const { readdir } = await import('fs/promises');
-      (readdir as any).mockResolvedValue([]);
-
+      const mockReaddir = vi.fn().mockResolvedValue([]);
+      
+      vi.doMock('fs/promises', () => ({
+        readdir: mockReaddir
+      }));
+      
       const result = await RooStorageDetector.getStatsForPath('/empty/path');
       
       expect(result).toBeDefined();
@@ -207,4 +229,3 @@ describe('RooStorageDetector - Timestamp Parsing Tests', () => {
       expect(result.totalSize).toBe(0);
     });
   });
-});

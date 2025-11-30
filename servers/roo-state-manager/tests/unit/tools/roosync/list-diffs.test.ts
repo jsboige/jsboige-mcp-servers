@@ -2,10 +2,120 @@
  * Tests pour roosync_list_diffs
  */
 
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { writeFileSync, mkdirSync, rmSync } from 'fs';
 import { join, dirname } from 'path';
 import { fileURLToPath } from 'url';
+
+// Mock pour RooSyncService
+const { mockRooSyncService, mockRooSyncServiceError, mockGetRooSyncService } = vi.hoisted(() => {
+  // Mock de la classe d'erreur
+  const errorClass = class extends Error {
+    constructor(message: string) {
+      super(message);
+      this.name = 'RooSyncServiceError';
+    }
+  };
+  
+  const service = {
+    resetInstance: vi.fn(),
+    getInstance: vi.fn(() => ({
+      getConfig: vi.fn().mockReturnValue({
+        version: '2.0.0',
+        sharedStatePath: '/mock/shared',
+        baselinePath: '/mock/baseline',
+        machines: {
+          'PC-PRINCIPAL': {
+            id: 'PC-PRINCIPAL',
+            name: 'PC Principal',
+            basePath: '/mock/pc-principal',
+            lastSync: '2025-10-08T09:00:00Z',
+            status: 'online',
+            diffsCount: 3,
+            pendingDecisions: 3
+          }
+        }
+      }),
+      listDiffs: vi.fn().mockImplementation((filterType?: string) => {
+        const allDiffs = [
+          {
+            id: 'diff-001',
+            type: 'config',
+            file: '.config/settings.json',
+            severity: 'medium',
+            description: 'Configuration différente',
+            machineA: 'PC-PRINCIPAL',
+            machineB: 'MAC-DEV',
+            createdAt: '2025-10-08T09:00:00Z'
+          },
+          {
+            id: 'diff-002',
+            type: 'hardware',
+            file: '.vscode/extensions.json',
+            severity: 'low',
+            description: 'Fichier d\'extensions différent',
+            machineA: 'PC-PRINCIPAL',
+            machineB: 'MAC-DEV',
+            createdAt: '2025-10-08T09:15:00Z'
+          },
+          {
+            id: 'diff-003',
+            type: 'software',
+            file: '.vscode/settings.json',
+            severity: 'high',
+            description: 'Paramètres critiques différents',
+            machineA: 'PC-PRINCIPAL',
+            machineB: 'MAC-DEV',
+            createdAt: '2025-10-08T09:30:00Z'
+          }
+        ];
+        
+        if (filterType) {
+          return {
+            totalDiffs: allDiffs.filter(diff => diff.type === filterType).length,
+            diffs: allDiffs.filter(diff => diff.type === filterType)
+          };
+        }
+        
+        return {
+          totalDiffs: 3,
+          diffs: allDiffs
+        };
+      }),
+      loadDashboard: vi.fn().mockResolvedValue({
+        version: '2.0.0',
+        lastUpdate: '2025-10-08T10:00:00Z',
+        overallStatus: 'diverged',
+        machines: {
+          'PC-PRINCIPAL': {
+            id: 'PC-PRINCIPAL',
+            name: 'PC Principal',
+            lastSync: '2025-10-08T09:00:00Z',
+            status: 'online',
+            diffsCount: 3,
+            pendingDecisions: 3
+          }
+        }
+      })
+    }))
+  };
+  
+  // Mock de la fonction getRooSyncService
+  const getRooSyncService = vi.fn(() => service.getInstance());
+  
+  return {
+    mockRooSyncService: service,
+    mockRooSyncServiceError: errorClass,
+    mockGetRooSyncService: getRooSyncService
+  };
+});
+
+vi.mock('../../../../src/services/RooSyncService.js', () => ({
+  RooSyncService: mockRooSyncService,
+  RooSyncServiceError: mockRooSyncServiceError,
+  getRooSyncService: mockGetRooSyncService
+}));
+
 import { RooSyncService } from '../../../../src/services/RooSyncService.js';
 import { roosyncListDiffs, type ListDiffsArgs } from '../../../../src/tools/roosync/list-diffs.js';
 
