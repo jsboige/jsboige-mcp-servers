@@ -184,27 +184,25 @@ describe('🔍 search_tasks_by_content - Outil Renommé', () => {
   describe('Fonctionnalité de recherche sémantique', () => {
     test('should perform semantic search with query', async () => {
       // Configuration du mock - structure Qdrant réelle
-      mocks.qdrantClient.search.mockResolvedValue({
-        points: [
-          {
-            id: 'test-point-1',
-            score: 0.85,
-            payload: {
-              task_id: 'conv1',
-              content: 'User message 1',
-              chunk_id: 'chunk-1',
-              chunk_type: 'message_exchange',
-              workspace: 'test-workspace',
-              task_title: 'Test Conversation 1',
-              message_index: 1,
-              total_messages: 5,
-              role: 'user',
-              timestamp: '2025-01-01T10:00:00Z',
-              host_os: 'test-host-123'
-            }
+      mocks.qdrantClient.search.mockResolvedValue([
+        {
+          id: 'test-point-1',
+          score: 0.85,
+          payload: {
+            task_id: 'conv1',
+            content: 'User message 1',
+            chunk_id: 'chunk-1',
+            chunk_type: 'message_exchange',
+            workspace: 'test-workspace',
+            task_title: 'Test Conversation 1',
+            message_index: 1,
+            total_messages: 5,
+            role: 'user',
+            timestamp: '2025-01-01T10:00:00Z',
+            host_os: 'test-host-123'
           }
-        ]
-      });
+        }
+      ]);
 
       const result = await searchTasksByContentTool.handler({
         search_query: 'test query'
@@ -248,27 +246,25 @@ describe('🔍 search_tasks_by_content - Outil Renommé', () => {
 
     test('should filter by conversation_id when provided', async () => {
       // Configuration du mock
-      mocks.qdrantClient.search.mockResolvedValue({
-        points: [
-          {
-            id: 'test-point-1',
-            score: 0.85,
-            payload: {
-              task_id: 'conv1',
-              content: 'User message 1',
-              chunk_id: 'chunk-1',
-              chunk_type: 'message_exchange',
-              workspace: 'test-workspace',
-              task_title: 'Test Conversation 1',
-              message_index: 1,
-              total_messages: 5,
-              role: 'user',
-              timestamp: '2025-01-01T10:00:00Z',
-              host_os: 'test-host-123'
-            }
+      mocks.qdrantClient.search.mockResolvedValue([
+        {
+          id: 'test-point-1',
+          score: 0.85,
+          payload: {
+            task_id: 'conv1',
+            content: 'User message 1',
+            chunk_id: 'chunk-1',
+            chunk_type: 'message_exchange',
+            workspace: 'test-workspace',
+            task_title: 'Test Conversation 1',
+            message_index: 1,
+            total_messages: 5,
+            role: 'user',
+            timestamp: '2025-01-01T10:00:00Z',
+            host_os: 'test-host-123'
           }
-        ]
-      });
+        }
+      ]);
 
       const result = await searchTasksByContentTool.handler({
         search_query: 'test query',
@@ -300,27 +296,25 @@ describe('🔍 search_tasks_by_content - Outil Renommé', () => {
 
     test('should filter by workspace when provided', async () => {
       // Configuration du mock
-      mocks.qdrantClient.search.mockResolvedValue({
-        points: [
-          {
-            id: 'test-point-1',
-            score: 0.85,
-            payload: {
-              task_id: 'conv1',
-              content: 'User message 1',
-              chunk_id: 'chunk-1',
-              chunk_type: 'message_exchange',
-              workspace: 'test-workspace',
-              task_title: 'Test Conversation 1',
-              message_index: 1,
-              total_messages: 5,
-              role: 'user',
-              timestamp: '2025-01-01T10:00:00Z',
-              host_os: 'test-host-123'
-            }
+      mocks.qdrantClient.search.mockResolvedValue([
+        {
+          id: 'test-point-1',
+          score: 0.85,
+          payload: {
+            task_id: 'conv1',
+            content: 'User message 1',
+            chunk_id: 'chunk-1',
+            chunk_type: 'message_exchange',
+            workspace: 'test-workspace',
+            task_title: 'Test Conversation 1',
+            message_index: 1,
+            total_messages: 5,
+            role: 'user',
+            timestamp: '2025-01-01T10:00:00Z',
+            host_os: 'test-host-123'
           }
-        ]
-      });
+        }
+      ]);
 
       const result = await searchTasksByContentTool.handler({
         search_query: 'test query',
@@ -352,27 +346,25 @@ describe('🔍 search_tasks_by_content - Outil Renommé', () => {
 
     test('should respect max_results parameter', async () => {
       // Configuration du mock
-      mocks.qdrantClient.search.mockResolvedValue({
-        points: [
-          {
-            id: 'test-point-1',
-            score: 0.85,
-            payload: {
-              task_id: 'conv1',
-              content: 'User message 1',
-              chunk_id: 'chunk-1',
-              chunk_type: 'message_exchange',
-              workspace: 'test-workspace',
-              task_title: 'Test Conversation 1',
-              message_index: 1,
-              total_messages: 5,
-              role: 'user',
-              timestamp: '2025-01-01T10:00:00Z',
-              host_os: 'test-host-123'
-            }
+      mocks.qdrantClient.search.mockResolvedValue([
+        {
+          id: 'test-point-1',
+          score: 0.85,
+          payload: {
+            task_id: 'conv1',
+            content: 'User message 1',
+            chunk_id: 'chunk-1',
+            chunk_type: 'message_exchange',
+            workspace: 'test-workspace',
+            task_title: 'Test Conversation 1',
+            message_index: 1,
+            total_messages: 5,
+            role: 'user',
+            timestamp: '2025-01-01T10:00:00Z',
+            host_os: 'test-host-123'
           }
-        ]
-      });
+        }
+      ]);
 
       const result = await searchTasksByContentTool.handler({
         search_query: 'test query',
@@ -543,27 +535,25 @@ describe('🔍 search_tasks_by_content - Outil Renommé', () => {
   describe('Enrichissement des résultats', () => {
     test('should include host identifier in results', async () => {
       // Configuration du mock
-      mocks.qdrantClient.search.mockResolvedValue({
-        points: [
-          {
-            id: 'test-point-1',
-            score: 0.85,
-            payload: {
-              task_id: 'conv1',
-              content: 'User message 1',
-              chunk_id: 'chunk-1',
-              chunk_type: 'message_exchange',
-              workspace: 'test-workspace',
-              task_title: 'Test Conversation 1',
-              message_index: 1,
-              total_messages: 5,
-              role: 'user',
-              timestamp: '2025-01-01T10:00:00Z',
-              host_os: 'test-host-123'
-            }
+      mocks.qdrantClient.search.mockResolvedValue([
+        {
+          id: 'test-point-1',
+          score: 0.85,
+          payload: {
+            task_id: 'conv1',
+            content: 'User message 1',
+            chunk_id: 'chunk-1',
+            chunk_type: 'message_exchange',
+            workspace: 'test-workspace',
+            task_title: 'Test Conversation 1',
+            message_index: 1,
+            total_messages: 5,
+            role: 'user',
+            timestamp: '2025-01-01T10:00:00Z',
+            host_os: 'test-host-123'
           }
-        ]
-      });
+        }
+      ]);
 
       const result = await searchTasksByContentTool.handler({
         search_query: 'test query'
@@ -604,44 +594,42 @@ describe('🔍 search_tasks_by_content - Outil Renommé', () => {
 
     test('should provide cross-machine analysis', async () => {
       // Configuration du mock avec différentes machines
-      mocks.qdrantClient.search.mockResolvedValue({
-        points: [
-          {
-            id: 'test-point-1',
-            score: 0.85,
-            payload: {
-              task_id: 'conv1',
-              content: 'User message 1',
-              chunk_id: 'chunk-1',
-              chunk_type: 'message_exchange',
-              workspace: 'test-workspace',
-              task_title: 'Test Conversation 1',
-              message_index: 1,
-              total_messages: 5,
-              role: 'user',
-              timestamp: '2025-01-01T10:00:00Z',
-              host_os: 'windows-x64-1'
-            }
-          },
-          {
-            id: 'test-point-2',
-            score: 0.75,
-            payload: {
-              task_id: 'conv2',
-              content: 'Another test message',
-              chunk_id: 'chunk-2',
-              chunk_type: 'message_exchange',
-              workspace: 'test-workspace',
-              task_title: 'Test Conversation 2',
-              message_index: 1,
-              total_messages: 3,
-              role: 'user',
-              timestamp: '2025-01-02T15:30:00Z',
-              host_os: 'linux-arm64-2'
-            }
+      mocks.qdrantClient.search.mockResolvedValue([
+        {
+          id: 'test-point-1',
+          score: 0.85,
+          payload: {
+            task_id: 'conv1',
+            content: 'User message 1',
+            chunk_id: 'chunk-1',
+            chunk_type: 'message_exchange',
+            workspace: 'test-workspace',
+            task_title: 'Test Conversation 1',
+            message_index: 1,
+            total_messages: 5,
+            role: 'user',
+            timestamp: '2025-01-01T10:00:00Z',
+            host_os: 'windows-x64-1'
           }
-        ]
-      });
+        },
+        {
+          id: 'test-point-2',
+          score: 0.75,
+          payload: {
+            task_id: 'conv2',
+            content: 'Another test message',
+            chunk_id: 'chunk-2',
+            chunk_type: 'message_exchange',
+            workspace: 'test-workspace',
+            task_title: 'Test Conversation 2',
+            message_index: 1,
+            total_messages: 3,
+            role: 'user',
+            timestamp: '2025-01-02T15:30:00Z',
+            host_os: 'linux-arm64-2'
+          }
+        }
+      ]);
 
       const result = await searchTasksByContentTool.handler({
         search_query: 'test query'

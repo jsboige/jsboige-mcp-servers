@@ -193,7 +193,12 @@ export const searchTasksByContentTool = {
             const { TaskIndexer, getHostIdentifier } = await import('../../services/task-indexer.js');
             const currentHostId = getHostIdentifier();
 
-            const results = (searchResults as any).points?.map((result: any) => ({
+            // Normalisation de la réponse Qdrant (supporte format tableau direct ou objet { result/points: [...] })
+            const rawPoints = Array.isArray(searchResults)
+                ? searchResults
+                : (searchResults as any).result || (searchResults as any).points || [];
+
+            const results = rawPoints.map((result: any) => ({
                 taskId: result.payload?.task_id || 'unknown',
                 score: result.score || 0,
                 match: truncateMessage(String(result.payload?.content || 'No content'), 2),
