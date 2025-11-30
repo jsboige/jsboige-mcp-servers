@@ -71,8 +71,8 @@ describe('BaselineService', () => {
             userSettings: { theme: 'dark' },
           },
           hardware: {
-            cpu: 'Intel i7',
-            ram: '16GB',
+            cpu: { model: 'Intel i7', cores: 8, threads: 16 },
+            memory: { total: 16384 },
             disks: [{ name: 'C:', size: '500GB' }],
           },
           software: {
@@ -154,8 +154,8 @@ describe('BaselineService', () => {
             userSettings: { theme: 'dark' },
           },
           hardware: {
-            cpu: 'Intel i7',
-            ram: '16GB',
+            cpu: { model: 'Intel i7', cores: 8, threads: 16 },
+            memory: { total: 16384 },
             disks: [{ name: 'C:', size: '500GB' }],
           },
           software: {
@@ -180,8 +180,8 @@ describe('BaselineService', () => {
             userSettings: { theme: 'light' },
           },
           hardware: {
-            cpu: 'Intel i7',
-            ram: '16GB',
+            cpu: { model: 'Intel i7', cores: 8, threads: 16 },
+            memory: { total: 16384 },
             disks: [{ name: 'C:', size: '500GB' }],
           },
           software: {
@@ -252,8 +252,8 @@ describe('BaselineService', () => {
             userSettings: {},
           },
           hardware: {
-            cpu: 'Intel i7',
-            ram: '16GB',
+            cpu: { model: 'Intel i7', cores: 8, threads: 16 },
+            memory: { total: 16384 },
             disks: [{ name: 'C:', size: '500GB' }],
           },
           software: {
