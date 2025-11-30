@@ -332,6 +332,7 @@ describe('Pipeline Complet de Reconstruction Hiérarchique', () => {
 
             // Charger les tâches depuis les fixtures
             const taskDirs = await fs.readdir(FIXTURES_DIR, { withFileTypes: true });
+            console.log('DEBUG: taskDirs type:', typeof taskDirs, 'isArray:', Array.isArray(taskDirs));
             const skeletons: ConversationSkeleton[] = [];
 
             for (const entry of taskDirs) {

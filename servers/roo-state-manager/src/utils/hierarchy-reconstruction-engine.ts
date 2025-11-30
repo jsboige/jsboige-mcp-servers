@@ -17,7 +17,7 @@ import {
     ParsedSubtaskInstructions
 } from '../types/enhanced-hierarchy.js';
 import { ConversationSkeleton, NewTaskInstruction } from '../types/conversation.js';
-import { TaskInstructionIndex, computeInstructionPrefix } from './task-instruction-index.js';
+import { TaskInstructionIndex, computeInstructionPrefix, normalizeInstruction } from './task-instruction-index.js';
 
 /**
  * Moteur principal de reconstruction hiérarchique
@@ -678,7 +678,6 @@ export class HierarchyReconstructionEngine {
         // Construire le chemin vers ui_messages.json
         const basePath = skeleton.metadata.dataSource || '';
         const uiMessagesPath = path.join(basePath, 'ui_messages.json');
-        const fs = await import('fs');
 
         // DEBUG: tracer le chemin et l'existence du fichier si activé
         if (process.env.ROO_DEBUG_INSTRUCTIONS === '1') {
@@ -760,7 +759,7 @@ export class HierarchyReconstructionEngine {
                                     const cleanMode = modeMatch ? modeMatch[1].trim().toLowerCase() : 'task';
                                     if (taskMessage.length > 10) {
                                         // 🎯 FIX BUG: Normaliser les échappements
-                                        const normalizedMessage = this.normalizeEscaping(taskMessage);
+                                        const normalizedMessage = normalizeInstruction(taskMessage);
                                         const uniqueKey = `${cleanMode}:${normalizedMessage}`;
 
                                         if (!seenInstructions.has(uniqueKey)) {
@@ -794,7 +793,7 @@ export class HierarchyReconstructionEngine {
                                     if (msg.length > 5) {
                                         xmlNewCount++;
                                         // 🎯 FIX BUG: Normaliser les échappements
-                                        const normalizedMsg = this.normalizeEscaping(msg);
+                                        const normalizedMsg = normalizeInstruction(msg);
                                         const uniqueKey = `${cleanMode || 'task'}:${normalizedMsg.substring(0, 200)}`;
 
                                         if (!seenInstructions.has(uniqueKey)) {
@@ -1235,18 +1234,6 @@ export class HierarchyReconstructionEngine {
     }
 
     /**
-     * Normalise les échappements JSON multiples pour le matching radix tree
-     * 🎯 FIX BUG: Gère les doubles/triples échappements \\\\n → \\n → \n
-     */
-    private normalizeEscaping(text: string): string {
-        return text
-            .replace(/\\\\n/g, '\n')    // Double échappement → simple
-            .replace(/\\"/g, '"')        // Guillemets échappés
-            .replace(/\\n/g, '\n')       // Simple échappement → natif
-            .trim();
-    }
-
-    /**
      * Détecte si l'instruction utilise le format JSON moderne ou XML ancien
      */
     private detectInstructionFormat(text: string): 'json' | 'xml' | 'unknown' {
@@ -1257,7 +1244,7 @@ export class HierarchyReconstructionEngine {
 
     /**
      * Extrait l'instruction normalisée depuis un message UI (supporte JSON + XML)
-     * 🎯 FIX BUG: Applique normalizeEscaping() pour uniformiser les formats
+     * 🎯 FIX BUG: Applique normalizeInstruction() pour uniformiser les formats
      */
     private extractNormalizedInstruction(message: any): string | null {
         const format = this.detectInstructionFormat(message.text || message.content || '');
@@ -1266,7 +1253,7 @@ export class HierarchyReconstructionEngine {
             try {
                 const parsed = JSON.parse(message.text || message.content);
                 if (parsed.tool === 'newTask' && parsed.content) {
-                    return this.normalizeEscaping(parsed.content);
+                    return normalizeInstruction(parsed.content);
                 }
             } catch (e) {
                 // JSON invalide, ignorer
@@ -1276,7 +1263,7 @@ export class HierarchyReconstructionEngine {
         if (format === 'xml') {
             const match = (message.text || message.content)?.match(/<message>(.*?)<\/message>/s);
             if (match && match[1]) {
-                return this.normalizeEscaping(match[1]);
+                return normalizeInstruction(match[1]);
             }
         }
 
@@ -1291,7 +1278,6 @@ export class HierarchyReconstructionEngine {
     ): Promise<string | null> {
         const basePath = skeleton.metadata.dataSource || '';
         const uiMessagesPath = path.join(basePath, 'ui_messages.json');
-        const fs = await import('fs');
 
         if (!fs.existsSync(uiMessagesPath)) {
             return null;
@@ -1332,7 +1318,7 @@ export class HierarchyReconstructionEngine {
                             cleanText = text;
                         }
 
-                        return this.normalizeEscaping(cleanText);
+                        return normalizeInstruction(cleanText);
                     }
                 }
             }

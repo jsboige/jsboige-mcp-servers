@@ -6,7 +6,14 @@
 import {  describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 
 // Mock fs avec factory function pour éviter le problème d'initialisation
-vi.mock('fs', () => ({
+vi.mock('node:fs', () => ({
+    default: {
+        existsSync: vi.fn(),
+        readFileSync: vi.fn(),
+        statSync: vi.fn(),
+        mkdirSync: vi.fn(),
+        writeFileSync: vi.fn()
+    },
     existsSync: vi.fn(),
     readFileSync: vi.fn(),
     statSync: vi.fn(),
@@ -15,20 +22,28 @@ vi.mock('fs', () => ({
 }));
 
 // Mock path et os également
-vi.mock('path', () => ({
+vi.mock('node:path', () => ({
+    default: {
+        join: vi.fn((...args: string[]) => args.join('/')),
+        basename: vi.fn((p: string) => p.split('/').pop() || p),
+        dirname: vi.fn((p: string) => p.split('/').slice(0, -1).join('/') || '.')
+    },
     join: vi.fn((...args: string[]) => args.join('/')),
     basename: vi.fn((p: string) => p.split('/').pop() || p),
     dirname: vi.fn((p: string) => p.split('/').slice(0, -1).join('/') || '.')
 }));
 
-vi.mock('os', () => ({
+vi.mock('node:os', () => ({
+    default: {
+        tmpdir: vi.fn(() => '/tmp')
+    },
     tmpdir: vi.fn(() => '/tmp')
 }));
 
-import * as path from 'path';
-import * as os from 'os';
+import * as path from 'node:path';
+import * as os from 'node:os';
 import { HierarchyReconstructionEngine } from '../../../src/utils/hierarchy-reconstruction-engine';
-import * as fs from 'fs';
+import * as fs from 'node:fs';
 import { TaskInstructionIndex } from '../../../src/utils/task-instruction-index';
 import type {
     EnhancedConversationSkeleton,
@@ -57,7 +72,7 @@ describe('HierarchyReconstructionEngine', () => {
         mockedFs = vi.mocked(fs);
         // Cr�er un r�pertoire temporaire pour les tests
         tempDir = path.join(os.tmpdir(), 'hierarchy-tests', Date.now().toString());
-        
+
         // R�initialiser l'engine pour chaque test
         engine = new HierarchyReconstructionEngine({
             ...defaultTestConfig,
@@ -76,25 +91,29 @@ describe('HierarchyReconstructionEngine', () => {
     describe('Phase 1 - Extraction et indexation', () => {
         it('should extract new_task patterns from XML tags', async () => {
             const enhancedSkeletons = mockSkeletons.slice(0, 2).map(enhanceSkeleton);
-            
+
             // Mock du syst�me de fichiers
             mockedFs.existsSync.mockImplementation((filePath: any) => {
                 return filePath.includes('ui_messages.json');
             });
-            
+
             mockedFs.readFileSync.mockImplementation((filePath: any) => {
                 if (filePath.includes('root-task-001')) {
                     return JSON.stringify(mockUiMessages['root-task-001']) as any;
                 }
                 return JSON.stringify([]) as any;
             });
-            
+
             mockedFs.statSync.mockReturnValue({
                 size: 1000,
                 mtime: new Date('2025-01-15T10:00:00Z')
             } as any);
 
             const result = await engine.executePhase1(enhancedSkeletons);
+
+            if (result.errors.length > 0) {
+                console.error('Phase 1 Errors:', JSON.stringify(result.errors, null, 2));
+            }
 
             expect(result.processedCount).toBe(2);
             expect(result.parsedCount).toBeGreaterThan(0);
@@ -184,7 +203,7 @@ describe('HierarchyReconstructionEngine', () => {
 
         it('should calculate checksums and timestamps', async () => {
             const skeleton = enhanceSkeleton(mockSkeletons[0]);
-            
+
             mockedFs.existsSync.mockReturnValue(true);
             mockedFs.readFileSync.mockReturnValue(JSON.stringify([]) as any);
             mockedFs.statSync.mockReturnValue({
@@ -201,7 +220,7 @@ describe('HierarchyReconstructionEngine', () => {
 
         it('should skip re-parsing when checksums are identical', async () => {
             const skeleton = enhanceSkeleton(mockSkeletons[0]);
-            
+
             // Simuler un skeleton d�j� trait�
             skeleton.processingState.phase1Completed = true;
             skeleton.sourceFileChecksums = {
@@ -228,7 +247,7 @@ describe('HierarchyReconstructionEngine', () => {
         it('should build radix tree with 200 char prefixes', async () => {
             const skeleton = enhanceSkeleton(mockSkeletons[0]);
             const longInstruction = 'A'.repeat(300); // Plus de 200 caract�res
-            
+
             const mockMessages = [
                 {
                     role: 'assistant',
@@ -256,7 +275,7 @@ describe('HierarchyReconstructionEngine', () => {
         });
 
         it('should handle batched processing', async () => {
-            const manySkeletons = Array.from({ length: 50 }, (_, i) => 
+            const manySkeletons = Array.from({ length: 50 }, (_, i) =>
                 enhanceSkeleton({
                     ...mockSkeletons[0],
                     taskId: `task-${i}`
@@ -278,7 +297,7 @@ describe('HierarchyReconstructionEngine', () => {
 
         it('should handle file read errors gracefully', async () => {
             const skeleton = enhanceSkeleton(mockSkeletons[0]);
-            
+
             mockedFs.existsSync.mockReturnValue(true);
             mockedFs.readFileSync.mockImplementation(() => {
                 throw new Error('File read error');
@@ -293,7 +312,7 @@ describe('HierarchyReconstructionEngine', () => {
 
         it('should handle invalid JSON gracefully', async () => {
             const skeleton = enhanceSkeleton(mockSkeletons[0]);
-            
+
             mockedFs.existsSync.mockReturnValue(true);
             mockedFs.readFileSync.mockReturnValue('{"invalid": json' as any);
             mockedFs.statSync.mockReturnValue({
@@ -335,7 +354,7 @@ describe('HierarchyReconstructionEngine', () => {
     describe('Phase 2 - R�solution des parentIds', () => {
         it('should find parent by similarity search', async () => {
             const skeletons = mockSkeletons.slice(0, 3).map(enhanceSkeleton);
-            
+
             // Simuler que la Phase 1 a �t� compl�t�e
             skeletons[0].parsedSubtaskInstructions = {
                 instructions: mockNewTaskInstructions['root-task-001'],
@@ -348,7 +367,7 @@ describe('HierarchyReconstructionEngine', () => {
                     duplicatesRemoved: 0
                 }
             };
-            
+
             // L'orphelin doit trouver son parent
             skeletons[2].parentTaskId = undefined;
 
@@ -374,7 +393,7 @@ describe('HierarchyReconstructionEngine', () => {
             // Le parentId invalide devrait avoir �t� supprim�
             expect(skeletons[0].parentTaskId).toBeUndefined();
             expect(skeletons[0].reconstructedParentId).toBeUndefined();
-            
+
             // Le parent futur devrait �tre marqu� comme racine
             expect(skeletons[1].isRootTask).toBe(true);
         });
@@ -385,11 +404,11 @@ describe('HierarchyReconstructionEngine', () => {
             const result = await engine.executePhase2(cyclicEnhanced);
 
             // Aucun cycle ne devrait �tre cr��
-            const hasValidCycle = cyclicEnhanced.some(s => 
-                s.reconstructedParentId && 
+            const hasValidCycle = cyclicEnhanced.some(s =>
+                s.reconstructedParentId &&
                 cyclicEnhanced.find(p => p.taskId === s.reconstructedParentId)
             );
-            
+
             // Si des parents sont r�solus, ils ne doivent pas cr�er de cycles
             if (hasValidCycle) {
                 // V�rifier qu'il n'y a pas de cycle r�el
@@ -425,7 +444,7 @@ describe('HierarchyReconstructionEngine', () => {
 
         it('should calculate confidence scores', async () => {
             const skeletons = mockSkeletons.slice(0, 3).map(enhanceSkeleton);
-            
+
             // Pr�parer pour la r�solution
             skeletons[2].parentTaskId = undefined;
 
@@ -433,7 +452,7 @@ describe('HierarchyReconstructionEngine', () => {
 
             expect(result.averageConfidenceScore).toBeGreaterThanOrEqual(0);
             expect(result.averageConfidenceScore).toBeLessThanOrEqual(1);
-            
+
             if (result.resolvedCount > 0) {
                 const resolvedSkeleton = skeletons.find(s => s.reconstructedParentId);
                 if (resolvedSkeleton) {
@@ -446,7 +465,7 @@ describe('HierarchyReconstructionEngine', () => {
 
         it('should use fallback methods (metadata ? temporal)', async () => {
             const skeletons = mockSkeletons.slice(0, 3).map(enhanceSkeleton);
-            
+
             // Forcer l'utilisation des fallbacks
             skeletons[2].parentTaskId = undefined;
             skeletons[2].truncatedInstruction = 'Texte sans rapport'; // Pas de similarit�
@@ -530,7 +549,7 @@ describe('HierarchyReconstructionEngine', () => {
     describe('Incremental recovery', () => {
         it('should resume from phase 1 checkpoint', async () => {
             const skeleton = enhanceSkeleton(mockSkeletons[0]);
-            
+
             // Simuler une interruption apr�s Phase 1
             skeleton.processingState.phase1Completed = true;
             skeleton.processingState.phase2Completed = false;
@@ -553,7 +572,7 @@ describe('HierarchyReconstructionEngine', () => {
 
         it('should only process missing parentIds', async () => {
             const skeletons = mockSkeletons.slice(0, 3).map(enhanceSkeleton);
-            
+
             // Un skeleton avec parentId valide, un sans
             skeletons[2].parentTaskId = undefined;
 
@@ -601,7 +620,7 @@ describe('HierarchyReconstructionEngine', () => {
             const invalidSkeleton = enhanceSkeleton(corruptedData.invalidTaskId);
 
             const result = await engine.executePhase2([invalidSkeleton]);
-            
+
             // Ne devrait pas crasher
             expect(result).toBeDefined();
         });
@@ -611,7 +630,7 @@ describe('HierarchyReconstructionEngine', () => {
                 operationTimeout: 1 // 1ms timeout
             });
 
-            const manySkeletons = Array.from({ length: 1000 }, (_, i) => 
+            const manySkeletons = Array.from({ length: 1000 }, (_, i) =>
                 enhanceSkeleton({
                     ...mockSkeletons[0],
                     taskId: `task-${i}`
@@ -650,7 +669,7 @@ describe('HierarchyReconstructionEngine', () => {
             // On teste que la m�thode existe et peut �tre appel�e
             expect(HierarchyReconstructionEngine.reconstructHierarchy).toBeDefined();
             expect(typeof HierarchyReconstructionEngine.reconstructHierarchy).toBe('function');
-            
+
             // Le vrai test d'int�gration serait dans un fichier s�par�
             // avec un vrai mock du module RooStorageDetector
         });
@@ -680,7 +699,7 @@ describe('HierarchyReconstructionEngine', () => {
 
         it('should report accurate timing metrics', async () => {
             const skeletons = mockSkeletons.slice(0, 3).map(enhanceSkeleton);
-            
+
             mockedFs.existsSync.mockReturnValue(false);
 
             const result1 = await engine.executePhase1(skeletons);

@@ -43,25 +43,25 @@ export const searchTasksByContentTool = {
         inputSchema: {
             type: 'object' as const,
             properties: {
-                conversation_id: { 
-                    type: 'string', 
-                    description: 'ID de la conversation à fouiller.' 
+                conversation_id: {
+                    type: 'string',
+                    description: 'ID de la conversation à fouiller.'
                 },
-                search_query: { 
-                    type: 'string', 
-                    description: 'La requête de recherche sémantique.' 
+                search_query: {
+                    type: 'string',
+                    description: 'La requête de recherche sémantique.'
                 },
-                max_results: { 
-                    type: 'number', 
-                    description: 'Nombre maximum de résultats à retourner.' 
+                max_results: {
+                    type: 'number',
+                    description: 'Nombre maximum de résultats à retourner.'
                 },
-                workspace: { 
-                    type: 'string', 
-                    description: 'Filtre les résultats par workspace spécifique.' 
+                workspace: {
+                    type: 'string',
+                    description: 'Filtre les résultats par workspace spécifique.'
                 },
-                diagnose_index: { 
-                    type: 'boolean', 
-                    description: 'Mode diagnostic : retourne des informations sur l\'état de l\'indexation sémantique.' 
+                diagnose_index: {
+                    type: 'boolean',
+                    description: 'Mode diagnostic : retourne des informations sur l\'état de l\'indexation sémantique.'
                 },
             },
             required: ['search_query'],
@@ -79,22 +79,22 @@ export const searchTasksByContentTool = {
         diagnoseHandler?: () => Promise<CallToolResult>
     ): Promise<CallToolResult> => {
         const { conversation_id, search_query, max_results, diagnose_index = false, workspace } = args;
-        
+
         // **FAILSAFE: Auto-rebuild cache si nécessaire avec filtre workspace**
         await ensureCacheFreshCallback({ workspace });
-        
+
         // Mode diagnostic - retourne des informations sur l'état de l'indexation
         if (diagnose_index) {
             if (diagnoseHandler) {
                 return await diagnoseHandler();
             }
-            
+
             // Fallback si pas de diagnoseHandler fourni
             try {
                 const qdrant = getQdrantClient();
-                const collectionName = process.env.QDRANT_COLLECTION_NAME || 'roo_tasks_semantic_index_test';
+                const collectionName = process.env.QDRANT_COLLECTION_NAME || 'roo_tasks_semantic_index';
                 const collection = await qdrant.getCollection(collectionName);
-                
+
                 const diagnosticText = [
                     `Diagnostic de l'index sémantique:`,
                     `Collection: ${collectionName}`,
@@ -106,7 +106,7 @@ export const searchTasksByContentTool = {
                     `Vérification nécessaire: ${collection ? (collection.status !== 'green' ? 'Oui' : 'Non') : 'Oui'}`,
                     `Cache local: ${conversationCache.size} conversations`
                 ].filter(line => line.trim()).join('\n');
-                
+
                 return {
                     isError: false,
                     content: [{
@@ -120,7 +120,7 @@ export const searchTasksByContentTool = {
                 const testErrorMessage = errorMessage.includes('Cannot read')
                     ? 'Qdrant connection failed'
                     : `Erreur lors du diagnostic: ${errorMessage}`;
-                
+
                 return {
                     isError: false,
                     content: [{
@@ -133,22 +133,23 @@ export const searchTasksByContentTool = {
 
         // Tentative de recherche sémantique via Qdrant/OpenAI
         try {
+            console.log('[DEBUG] Starting semantic search');
             const qdrant = getQdrantClient();
             const openai = getOpenAIClient();
-            
+
             // Créer l'embedding de la requête
             const embedding = await openai.embeddings.create({
                 model: 'text-embedding-3-small',
                 input: search_query
             });
-            
+
             const queryVector = embedding.data[0].embedding;
-            const collectionName = process.env.QDRANT_COLLECTION_NAME || 'roo_tasks_semantic_index_test';
-            
+            const collectionName = process.env.QDRANT_COLLECTION_NAME || 'roo_tasks_semantic_index';
+
             // Configuration de la recherche selon conversation_id et workspace
             let filter;
             const filterConditions = [];
-            
+
             if (conversation_id && conversation_id !== 'undefined') {
                 filterConditions.push({
                     key: "task_id",
@@ -157,7 +158,7 @@ export const searchTasksByContentTool = {
                     }
                 });
             }
-            
+
             if (workspace) {
                 filterConditions.push({
                     key: "workspace",
@@ -166,7 +167,7 @@ export const searchTasksByContentTool = {
                     }
                 });
             }
-            
+
             if (filterConditions.length > 0) {
                 filter = {
                     must: filterConditions
@@ -175,23 +176,23 @@ export const searchTasksByContentTool = {
                 // Si pas de filtres, recherche globale - filtre undefined
                 filter = undefined;
             }
-            
+
             const searchResults = await qdrant.search(collectionName, {
                 vector: queryVector,
                 limit: max_results || 10,
                 filter: filter,
                 with_payload: true
             });
-            
+
             // DEBUG: Log pour diagnostiquer
             console.log('[DEBUG] searchResults:', JSON.stringify(searchResults, null, 2));
             console.log('[DEBUG] filter:', JSON.stringify(filter, null, 2));
             console.log('[DEBUG] collectionName:', collectionName);
-            
+
             // Obtenir l'identifiant de la machine actuelle pour l'en-tête
             const { TaskIndexer, getHostIdentifier } = await import('../../services/task-indexer.js');
             const currentHostId = getHostIdentifier();
-            
+
             const results = (searchResults as any).points?.map((result: any) => ({
                 taskId: result.payload?.task_id || 'unknown',
                 score: result.score || 0,
@@ -211,7 +212,7 @@ export const searchTasksByContentTool = {
                     host_os: result.payload?.host_os || 'unknown'
                 }
             })) || [];
-            
+
             // Créer un rapport enrichi avec contexte multi-machine
             const searchReport = {
                 current_machine: {
@@ -230,20 +231,26 @@ export const searchTasksByContentTool = {
                 },
                 results: results
             };
-            
-            // Mode normal : retourne l'objet searchReport directement
+
+            // Mode normal : retourne l'objet searchReport formaté en texte JSON
             return {
                 isError: false,
-                content: [searchReport] as any
+                content: [{
+                    type: 'text',
+                    text: JSON.stringify(searchReport, null, 2)
+                }]
             };
-            
+
         } catch (semanticError) {
+            console.log('[DEBUG] Caught semantic error:', semanticError);
             console.log(`[INFO] Recherche sémantique échouée, utilisation du fallback textuel: ${semanticError instanceof Error ? semanticError.message : String(semanticError)}`);
-            
+
             // Fallback vers la recherche textuelle simple
             try {
+                console.log('[DEBUG] Calling fallbackHandler');
                 const fallbackResult = await fallbackHandler(args, conversationCache);
-                
+                console.log('[DEBUG] fallbackResult:', JSON.stringify(fallbackResult));
+
                 // Le fallback handler retourne déjà le bon format : content: [objets avec taskId, score, match, etc.]
                 // Pas besoin de transformation, retourner directement le résultat
                 return fallbackResult;
