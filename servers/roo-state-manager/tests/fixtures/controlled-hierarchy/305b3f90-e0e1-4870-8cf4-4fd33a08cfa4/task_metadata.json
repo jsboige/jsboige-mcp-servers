@@ -1,8 +1,22 @@
 {
-  "createdAt": "2025-09-25T15:15:37.211Z",
-  "lastActivity": "2025-09-25T15:17:28.624Z",
-  "messageCount": 15,
-  "actionCount": 0,
-  "totalSize": 18636,
-  "workspace": "d:/dev/2025-Epita-Intelligence-Symbolique"
+  "taskId": "305b3f90-e0e1-4870-8cf4-4fd33a08cfa4",
+  "title": "TEST-BRANCH-A",
+  "status": "completed",
+  "mode": "code",
+  "startTime": "2025-10-17T21:55:00.000Z",
+  "endTime": "2025-10-17T21:56:00.000Z",
+  "messageCount": 2,
+  "lastActivity": "2025-10-17T21:55:30.000Z",
+  "parentTaskId": "91e837de-a4b2-4c18-ab9b-6fcd36596e38",
+  "truncatedInstruction": "TEST-BRANCH-A: Tu es la branche A de la hiérarchie de test. Ta mission est de créer exactement 1 sous-tâche.",
+  "totalTokens": 0,
+  "hasApiHistory": false,
+  "hasUiMessages": true,
+  "workspace": "test-workspace",
+  "metadata": {
+    "testType": "controlled-hierarchy",
+    "level": 2,
+    "expectedChildren": 1,
+    "childIds": ["8a1b2c3d-e4f5-6789-0abc-def123456789"]
+  }
 }

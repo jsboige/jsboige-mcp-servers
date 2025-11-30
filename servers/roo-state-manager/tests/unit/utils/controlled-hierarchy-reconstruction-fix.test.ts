@@ -36,7 +36,12 @@ const TEST_HIERARCHY_IDS = {
 } as const;
 
 // Chemin vers les données de test contrôlées
-const CONTROLLED_DATA_PATH = path.join(__dirname, 'fixtures', 'controlled-hierarchy');
+// Utiliser process.cwd() pour garantir un chemin absolu correct
+const CONTROLLED_DATA_PATH = path.resolve(process.cwd(), 'tests/fixtures/controlled-hierarchy');
+
+console.error('[TEST-DEBUG] process.cwd():', process.cwd());
+console.error('[TEST-DEBUG] CONTROLLED_DATA_PATH (resolved):', CONTROLLED_DATA_PATH);
+console.error('[TEST-DEBUG] Exists:', fs.existsSync(CONTROLLED_DATA_PATH));
 
 describe('Controlled Hierarchy Reconstruction - TEST-HIERARCHY Dataset', () => {
     let engine: HierarchyReconstructionEngine;
@@ -55,6 +60,10 @@ describe('Controlled Hierarchy Reconstruction - TEST-HIERARCHY Dataset', () => {
         // Charger les données réelles de test
         realControlledSkeletons = await loadControlledTestData();
 
+        if (realControlledSkeletons.length === 0) {
+            throw new Error(`NO SKELETONS LOADED from ${CONTROLLED_DATA_PATH}`);
+        }
+
         // Plus de mocks à nettoyer
     });
 
@@ -65,9 +74,23 @@ describe('Controlled Hierarchy Reconstruction - TEST-HIERARCHY Dataset', () => {
     describe('Phase 1 - Extraction des instructions new_task descendantes', () => {
         it('should extract new_task instructions from all 7 parent tasks', async () => {
             const enhancedSkeletons = realControlledSkeletons.map(enhanceSkeleton);
+
+            // DEBUG: Throw error to see debug info
+            const debugInfo = enhancedSkeletons.slice(0, 3).map(s => {
+                const uiPath = path.join(s.metadata.dataSource || '', 'ui_messages.json');
+                return {
+                    id: s.taskId.substring(0, 8),
+                    ds: s.metadata.dataSource,
+                    uiPath,
+                    exists: fs.existsSync(uiPath)
+                };
+            });
+
+            throw new Error(`DEBUG INFO: ${JSON.stringify(debugInfo, null, 2)}`);
+
             const result = await engine.executePhase1(enhancedSkeletons);
 
-            console.log('✅ Phase 1 Results:', JSON.stringify({
+            console.error('✅ Phase 1 Results:', JSON.stringify({
                 processedCount: result.processedCount,
                 parsedCount: result.parsedCount,
                 totalInstructionsExtracted: result.totalInstructionsExtracted,

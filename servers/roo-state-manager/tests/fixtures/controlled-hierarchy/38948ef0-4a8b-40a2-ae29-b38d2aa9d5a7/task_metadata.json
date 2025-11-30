@@ -1,8 +1,1 @@
-{
-  "createdAt": "2025-09-25T16:59:43.617Z",
-  "lastActivity": "2025-09-25T17:08:42.867Z",
-  "messageCount": 19,
-  "actionCount": 0,
-  "totalSize": 26947,
-  "workspace": "d:/dev/2025-Epita-Intelligence-Symbolique"
-}
+{"workspace":"test-workspace","createdAt":"2025-10-17T21:56:00.000Z","parentTaskId":"","messageCount":6,"truncatedInstruction":"Phase 3D Hierarchy Reconstruction Execution SDDD - 38948ef0-4a8b-40a2-ae29-b38d2aa9d5a7","taskId":"38948ef0-4a8b-40a2-ae29-b38d2aa9d5a7","lastActivity":"2025-10-17T21:56:00.000Z","actionCount":4,"totalSize":1618,"title":"Tache Racine - 38948ef0-4a8b-40a2-ae29-b38d2aa9d5a7","depth":0,"lastMessageAt":"2025-10-17T21:56:00.000Z"}
