@@ -1,20 +1,23 @@
-[
+{
+  "messages": [
     {
-        "timestamp":  "2025-10-17T21:24:48.202Z",
-        "author":  "user",
-        "type":  "say",
-        "text":  "ETAPE 1 Diagnostic SDDD Precis. Executer les tests hierarchy avec mode verbose SDDD."
+      "timestamp": "2025-10-17T21:24:48.202Z",
+      "author": "user",
+      "type": "say",
+      "text": "**MISSION DEBUG CRITIQUE : Réparation du système hiérarchique pour résoudre les 47 tâches orphelines**"
     },
     {
-        "timestamp":  "2025-10-17T21:29:48.202Z",
-        "author":  "assistant",
-        "type":  "say",
-        "text":  "Analyse en cours pour la tache 305b3f90-e0e1-4870-8cf4-4fd33a08cfa4..."
+      "timestamp": "2025-10-17T21:29:48.202Z",
+      "author": "assistant",
+      "type": "ask",
+      "ask": "tool",
+      "text": "{\"tool\":\"newTask\",\"mode\":\"🏗️ architect\",\"content\":\"Créer une architecture modulaire pour le projet\",\"taskId\":\"arch-modular-002\"}"
     },
     {
-        "timestamp":  "2025-10-17T21:44:48.202Z",
-        "author":  "assistant",
-        "type":  "say",
-        "text":  "Tache 305b3f90-e0e1-4870-8cf4-4fd33a08cfa4 terminee avec succes"
+      "timestamp": "2025-10-17T21:44:48.202Z",
+      "author": "assistant",
+      "type": "say",
+      "text": "Tache 305b3f90-e0e1-4870-8cf4-4fd33a08cfa4 terminee avec succes"
     }
-]
+  ]
+}

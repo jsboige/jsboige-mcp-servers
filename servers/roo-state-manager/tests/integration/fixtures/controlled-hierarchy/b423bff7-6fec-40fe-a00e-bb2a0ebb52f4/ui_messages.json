@@ -1,1 +1,17 @@
-[{"id":"msg-1","type":"user","content":"Message utilisateur 1 pour b423bff7-6fec-40fe-a00e-bb2a0ebb52f4","timestamp":"2025-10-17T21:55:00.000Z"},{"id":"msg-2","type":"assistant","content":"Message assistant 1 pour b423bff7-6fec-40fe-a00e-bb2a0ebb52f4","timestamp":"2025-10-17T21:55:30.000Z"},{"id":"msg-3","type":"user","content":"Message utilisateur 2 pour b423bff7-6fec-40fe-a00e-bb2a0ebb52f4","timestamp":"2025-10-17T21:56:00.000Z"}]
+{
+  "messages": [
+    {
+      "timestamp": "2025-10-17T21:50:00.000Z",
+      "author": "user",
+      "type": "say",
+      "text": "**Validation finale des corrections**"
+    },
+    {
+      "timestamp": "2025-10-17T21:55:00.000Z",
+      "author": "assistant",
+      "type": "ask",
+      "ask": "tool",
+      "text": "{\"tool\":\"newTask\",\"mode\":\"🪲 debug\",\"content\":\"Valider la cohérence des données de test\",\"taskId\":\"validate-coherence-005\"}"
+    }
+  ]
+}

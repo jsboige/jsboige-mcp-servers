@@ -1,1 +1,17 @@
-[{"id":"msg-1","type":"user","content":"Message utilisateur 1 pour 03deadab-a06d-4b29-976d-3cc142add1d9","timestamp":"2025-10-17T21:55:00.000Z"},{"id":"msg-2","type":"assistant","content":"Message assistant 1 pour 03deadab-a06d-4b29-976d-3cc142add1d9","timestamp":"2025-10-17T21:55:30.000Z"},{"id":"msg-3","type":"user","content":"Message utilisateur 2 pour 03deadab-a06d-4b29-976d-3cc142add1d9","timestamp":"2025-10-17T21:56:00.000Z"}]
+{
+  "messages": [
+    {
+      "timestamp": "2025-10-17T21:30:00.000Z",
+      "author": "user",
+      "type": "say",
+      "text": "**MISSION CORRECTIVE FINALE : Validation et documentation du système de reconstruction**"
+    },
+    {
+      "timestamp": "2025-10-17T21:35:00.000Z",
+      "author": "assistant",
+      "type": "ask",
+      "ask": "tool",
+      "text": "{\"tool\":\"newTask\",\"mode\":\"💻 code\",\"content\":\"Valider les corrections apportées au système\",\"taskId\":\"validate-fixes-003\"}"
+    }
+  ]
+}
