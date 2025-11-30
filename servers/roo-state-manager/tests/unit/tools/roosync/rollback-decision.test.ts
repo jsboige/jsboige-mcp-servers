@@ -3,114 +3,37 @@
  */
 
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
-import { writeFileSync, mkdirSync, rmSync } from 'fs';
-import { join, dirname } from 'path';
-import { fileURLToPath } from 'url';
-
-// Mock pour RooSyncService
-const { mockRooSyncService, mockRooSyncServiceError, mockGetRooSyncService } = vi.hoisted(() => {
-  // Mock de la classe d'erreur
-  const errorClass = class extends Error {
-    constructor(message: string) {
-      super(message);
-      this.name = 'RooSyncServiceError';
-    }
-  };
-  
-  const service = {
-    resetInstance: vi.fn(),
-    getInstance: vi.fn(() => ({
-      restoreFromRollbackPoint: vi.fn().mockResolvedValue({
-        success: true,
-        restoredFiles: ['.config/test.json'],
-        logs: [
-          '[ROLLBACK] Recherche du point de rollback...',
-          '[ROLLBACK] Point de rollback trouvé',
-          '[ROLLBACK] Restauration de .config/test.json',
-          '[ROLLBACK] Rollback terminé avec succès'
-        ]
-      }),
-      getDecisionStatus: vi.fn().mockReturnValue('applied'),
-      updateDecisionStatus: vi.fn().mockResolvedValue(undefined),
-      loadDashboard: vi.fn().mockResolvedValue({
-        version: '2.0.0',
-        lastUpdate: '2025-10-08T10:00:00Z',
-        overallStatus: 'diverged',
-        machines: {
-          'PC-PRINCIPAL': {
-            id: 'PC-PRINCIPAL',
-            name: 'PC Principal',
-            lastSync: '2025-10-08T09:00:00Z',
-            status: 'online',
-            diffsCount: 1,
-            pendingDecisions: 1
-          }
-        }
-      }),
-      getConfig: vi.fn().mockReturnValue({
-        version: '2.0.0',
-        sharedPath: '/mock/shared',
-        sharedStatePath: '/mock/shared',
-        baselinePath: '/mock/baseline',
-        machineId: 'PC-PRINCIPAL',
-        machines: {
-          'PC-PRINCIPAL': {
-            id: 'PC-PRINCIPAL',
-            name: 'PC Principal',
-            basePath: '/mock/pc-principal',
-            lastSync: '2025-10-08T09:00:00Z',
-            status: 'online',
-            diffsCount: 1,
-            pendingDecisions: 1
-          }
-        }
-      }),
-      getDecision: vi.fn().mockReturnValue({
-        id: 'test-decision-001',
-        type: 'config',
-        status: 'applied',
-        title: 'Test Decision',
-        description: 'Test decision for rollback',
-        files: ['.config/test.json'],
-        appliedAt: '2025-11-30T12:00:00.000Z',
-        rollbackPoint: {
-          backupPath: '/mock/backup',
-          files: ['.config/test.json']
-        }
-      }),
-      clearCache: vi.fn()
-    }))
-  };
-  
-  // Mock de la fonction getRooSyncService
-  const getRooSyncService = vi.fn(() => service.getInstance());
-  
-  return {
-    mockRooSyncService: service,
-    mockRooSyncServiceError: errorClass,
-    mockGetRooSyncService: getRooSyncService
-  };
-});
-
-vi.mock('../../../../src/services/RooSyncService.js', () => ({
-  RooSyncService: mockRooSyncService,
-  RooSyncServiceError: mockRooSyncServiceError,
-  getRooSyncService: mockGetRooSyncService
-}));
-
+import { writeFileSync, mkdirSync, rmSync, readFileSync } from 'fs';
+import { join } from 'path';
+import { tmpdir } from 'os';
 import { RooSyncService } from '../../../../src/services/RooSyncService.js';
 import { roosyncRollbackDecision } from '../../../../src/tools/roosync/rollback-decision.js';
 
-const __filename = fileURLToPath(import.meta.url);
-const __dirname = dirname(__filename);
-
 describe('roosync_rollback_decision', () => {
-  const testDir = join(__dirname, '../../../fixtures/roosync-rollback-test');
-  
+  const testDir = join(tmpdir(), `roosync-rollback-test-${Date.now()}`);
+
   beforeEach(() => {
     // Setup test environment
-    mkdirSync(testDir, { recursive: true });
-    
+    try {
+      mkdirSync(testDir, { recursive: true });
+    } catch (error) {
+      // Déjà existant
+    }
+
+    // Mock environment
+    process.env.ROOSYNC_SHARED_PATH = testDir;
+    process.env.ROOSYNC_MACHINE_ID = 'PC-PRINCIPAL';
+
+    // Force reset et injection de config
+    RooSyncService.resetInstance();
+    const service = RooSyncService.getInstance(undefined, {
+      sharedPath: testDir,
+      machineId: 'PC-PRINCIPAL',
+      autoSync: false,
+      conflictStrategy: 'manual',
+      logLevel: 'info'
+    });
+
     // Create test dashboard and roadmap
     const dashboard = {
       version: '2.0.0',
@@ -125,7 +48,7 @@ describe('roosync_rollback_decision', () => {
         }
       }
     };
-    
+
     const roadmap = `# Roadmap RooSync
 
 ## Décisions de Synchronisation
@@ -157,63 +80,14 @@ describe('roosync_rollback_decision', () => {
 **Créé:** 2025-10-08T09:00:00Z
 <!-- DECISION_BLOCK_END -->
 `;
-    
+
     writeFileSync(join(testDir, 'sync-dashboard.json'), JSON.stringify(dashboard), 'utf-8');
     writeFileSync(join(testDir, 'sync-roadmap.md'), roadmap, 'utf-8');
-    
-    // Mock fs pour utiliser les fichiers de test
-    vi.mock('fs', async () => ({
-      readFileSync: vi.fn((path: string) => {
-        if (path.includes('sync-roadmap.md')) {
-          return `# Roadmap RooSync
 
-## Décisions de Synchronisation
-
-<!-- DECISION_BLOCK_START -->
-**ID:** \`test-decision-applied\`
-**Titre:** Décision déjà appliquée
-**Statut:** applied
-**Type:** config
-**Chemin:** \`.config/test.json\`
-**Machine Source:** PC-PRINCIPAL
-**Machines Cibles:** MAC-DEV
-**Créé:** 2025-10-08T09:00:00Z
-**Appliqué le:** 2025-10-08T10:00:00Z
-**Appliqué par:** PC-PRINCIPAL
-<!-- DECISION_BLOCK_END -->
-
-<!-- DECISION_BLOCK_START -->
-**ID:** \`test-decision-pending\`
-**Titre:** Décision pas encore appliquée
-**Statut:** pending
-**Type:** file
-**Chemin:** \`test.txt\`
-**Machine Source:** PC-PRINCIPAL
-**Machines Cibles:** all
-**Créé:** 2025-10-08T09:00:00Z
-<!-- DECISION_BLOCK_END -->
-`;
-        }
-        return '';
-      }),
-      writeFileSync: vi.fn(),
-      mkdirSync: vi.fn(),
-      rmSync: vi.fn()
-    }));
-    
-    // Mock environment
-    process.env.ROOSYNC_SHARED_PATH = testDir;
-    process.env.ROOSYNC_MACHINE_ID = 'PC-PRINCIPAL';
-    process.env.ROOSYNC_AUTO_SYNC = 'false';
-    process.env.ROOSYNC_CONFLICT_STRATEGY = 'manual';
-    process.env.ROOSYNC_LOG_LEVEL = 'info';
-    
-    RooSyncService.resetInstance();
-    
     // Créer répertoire .rollback avec backup simulé
     const rollbackDir = join(testDir, '.rollback');
     mkdirSync(rollbackDir, { recursive: true });
-    
+
     // Créer backup simulé pour test-decision-applied
     const backupPath = join(rollbackDir, `test-decision-applied_${Date.now()}`);
     mkdirSync(backupPath, { recursive: true });
@@ -222,9 +96,8 @@ describe('roosync_rollback_decision', () => {
       timestamp: new Date().toISOString(),
       files: ['.config/test.json']
     }), 'utf-8');
-    
+
     // Mock restoreFromRollbackPoint pour simuler succès du rollback
-    const service = RooSyncService.getInstance();
     vi.spyOn(service, 'restoreFromRollbackPoint').mockResolvedValue({
       success: true,
       restoredFiles: ['.config/test.json'],
@@ -236,7 +109,7 @@ describe('roosync_rollback_decision', () => {
       ]
     });
   });
-  
+
   afterEach(() => {
     try {
       rmSync(testDir, { recursive: true, force: true });
@@ -244,6 +117,7 @@ describe('roosync_rollback_decision', () => {
       // Ignore
     }
     RooSyncService.resetInstance();
+    vi.restoreAllMocks();
   });
 
   it('devrait annuler une décision appliquée', async () => {
@@ -251,70 +125,69 @@ describe('roosync_rollback_decision', () => {
       decisionId: 'test-decision-applied',
       reason: 'Problème détecté après application'
     });
-    
+
     expect(result.newStatus).toBe('rolled_back');
     expect(result.previousStatus).toBe('applied');
     expect(result.reason).toBe('Problème détecté après application');
     expect(result.rolledBackBy).toBe('PC-PRINCIPAL');
   });
-  
+
   it('devrait lever une erreur si décision pas appliquée', async () => {
     await expect(roosyncRollbackDecision({
       decisionId: 'test-decision-pending',
       reason: 'Test'
     })).rejects.toThrow('pas encore appliquée');
   });
-  
+
   it('devrait lever une erreur si décision introuvable', async () => {
     await expect(roosyncRollbackDecision({
       decisionId: 'nonexistent',
       reason: 'Test'
     })).rejects.toThrow('introuvable');
   });
-  
+
   it('devrait retourner la liste des fichiers restaurés', async () => {
     const result = await roosyncRollbackDecision({
       decisionId: 'test-decision-applied',
       reason: 'Restauration de test'
     });
-    
+
     expect(Array.isArray(result.restoredFiles)).toBe(true);
     expect(result.restoredFiles.length).toBeGreaterThanOrEqual(0);
   });
-  
+
   it('devrait inclure les logs d\'exécution', async () => {
     const result = await roosyncRollbackDecision({
       decisionId: 'test-decision-applied',
       reason: 'Test logs'
     });
-    
+
     expect(Array.isArray(result.executionLog)).toBe(true);
     expect(result.executionLog.length).toBeGreaterThan(0);
     expect(result.executionLog.some(log => log.includes('ROLLBACK'))).toBe(true);
   });
-  
+
   it('devrait mettre à jour sync-roadmap.md', async () => {
     const result = await roosyncRollbackDecision({
       decisionId: 'test-decision-applied',
       reason: 'Mise à jour roadmap'
     });
-    
+
     expect(result.newStatus).toBe('rolled_back');
-    
+
     // Vérifier que le fichier a été mis à jour
-    const { readFileSync } = await import('fs');
     const roadmapContent = readFileSync(join(testDir, 'sync-roadmap.md'), 'utf-8');
     expect(roadmapContent).toContain('**Statut:** rolled_back');
     expect(roadmapContent).toContain('**Rollback le:**');
     expect(roadmapContent).toContain('**Raison:** Mise à jour roadmap');
   });
-  
+
   it('devrait inclure la date du rollback au format ISO 8601', async () => {
     const result = await roosyncRollbackDecision({
       decisionId: 'test-decision-applied',
       reason: 'Test date'
     });
-    
+
     // Vérifier format ISO 8601
     expect(result.rolledBackAt).toMatch(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/);
   });
