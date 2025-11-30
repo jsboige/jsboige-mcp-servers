@@ -2,7 +2,6 @@
  * Moteur de reconstruction hiérarchique en deux passes
  * Résout le problème des 47 tâches orphelines en reconstruisant les parentIds manquants
  */
-
 import * as fs from 'fs';
 import * as path from 'path';
 import * as crypto from 'crypto';
@@ -17,7 +16,7 @@ import {
     ParsedSubtaskInstructions
 } from '../types/enhanced-hierarchy.js';
 import { ConversationSkeleton, NewTaskInstruction } from '../types/conversation.js';
-import { TaskInstructionIndex, computeInstructionPrefix, normalizeInstruction } from './task-instruction-index.js';
+import { TaskInstructionIndex, computeInstructionPrefix } from './task-instruction-index.js';
 
 /**
  * Moteur principal de reconstruction hiérarchique
@@ -149,6 +148,7 @@ export class HierarchyReconstructionEngine {
             console.log('[ENGINE-PHASE1-START] Config:', JSON.stringify(mergedConfig, null, 2));
             console.log('[ENGINE-PHASE1-START] ====================================');
         }
+
         // Traitement par batches
         const batches = this.createBatches(skeletons, mergedConfig.batchSize || 20);
 
@@ -169,7 +169,15 @@ export class HierarchyReconstructionEngine {
                     }
 
                     // Extraire les instructions depuis ui_messages.json
+                    console.log(`[ENGINE-PHASE1-EXTRACT] TaskID: ${skeleton.taskId.substring(0, 8)}`);
+                    console.log(`[ENGINE-PHASE1-EXTRACT] DataSource: ${skeleton.metadata?.dataSource || 'N/A'}`);
+
                     const instructions = await this.extractSubtaskInstructions(skeleton);
+
+                    console.log(`[ENGINE-PHASE1-EXTRACT] Instruction count: ${instructions.length}`);
+                    if (instructions.length > 0) {
+                        console.log(`[ENGINE-PHASE1-EXTRACT] First instruction preview: "${instructions[0].message.substring(0, 100)}..."`);
+                    }
 
                     if (process.env.ROO_DEBUG_INSTRUCTIONS === '1') {
                         try { console.log(`[Phase1] extracted for ${skeleton.taskId} ds=${skeleton.metadata?.dataSource || 'N/A'} → ${instructions.length}`); } catch {}
@@ -187,61 +195,57 @@ export class HierarchyReconstructionEngine {
                                 duplicatesRemoved: 0
                             }
                         };
+                        // CORRECTION RÉGRESSION CRITIQUE : Utiliser la nouvelle méthode d'extraction
+                        // Au lieu d'indexer chaque instruction individuellement,
+                        // extraire les sous-instructions depuis le texte parent complet
 
-                        // 🎯 CORRECTION SDDD : Indexer directement les instructions extraites
-                        // Évite la ré-extraction fragile via extractSubInstructions qui échoue sur les formats non-standard
-                        let extractedCount = 0;
-                        for (const instr of instructions) {
-                             // Indexer l'instruction complète
-                             this.instructionIndex.addInstruction(skeleton.taskId, instr.message, instr.message);
-                             extractedCount++;
-                        }
+                        // Récupérer le texte parent complet pour extraction
+                        const parentText = skeleton.parsedSubtaskInstructions?.instructions.map(i => i.message).join('\n') ||
+                                          instructions.map(i => i.message).join('\n');
 
-                        if (process.env.ROO_DEBUG_INSTRUCTIONS === '1') {
-                            console.log(`[ENGINE-PHASE1-INDEX] Task ${skeleton.taskId.substring(0, 8)}: ${extractedCount} sub-instructions indexed directly`);
-                        }
+                        // Utiliser la nouvelle méthode avec extraction automatique
+                        const extractedCount = await this.instructionIndex.addParentTaskWithSubInstructions(
+                            skeleton.taskId,
+                            parentText
+                        );
 
+                        // 🎯 CORRECTION PROFONDEUR : NE PAS ÉCRASER truncatedInstruction
+                        // L'instruction tronquée doit rester celle de la tâche elle-même (son but),
+                        // et non être remplacée par la première sous-tâche qu'elle contient.
+                        // C'est cette instruction propre qui permet à SON parent de la retrouver.
+
+                        console.log(`[ENGINE-PHASE1-INDEX] Task ${skeleton.taskId.substring(0, 8)}: ${extractedCount} sub-instructions indexed`);
+                        result.totalInstructionsExtracted += extractedCount;
                         result.parsedCount++;
-                        result.totalInstructionsExtracted += instructions.length;
-                    }
-
-                    // 🎯 CORRECTION CRITIQUE : Extraire l'instruction propre (prompt) pour la Phase 2
-                    // DOIT ÊTRE FAIT MÊME SI AUCUNE SOUS-TÂCHE N'EST DÉTECTÉE (cas des feuilles)
-                    // Ne PAS utiliser les sous-instructions (enfants) comme instruction propre !
-                    const selfInstruction = await this.extractSelfInstruction(skeleton);
-                    if (selfInstruction) {
-                        const indexAny = this.instructionIndex as any;
-                        if (indexAny.tempTruncatedInstructions) {
-                            indexAny.tempTruncatedInstructions.set(skeleton.taskId, selfInstruction);
-                        }
-                        if (process.env.ROO_DEBUG_INSTRUCTIONS === '1') {
-                            console.log(`[Phase1] Self-instruction extracted for ${skeleton.taskId}: "${selfInstruction.substring(0, 50)}..."`);
-                        }
+                    } else {
+                        console.log(`[ENGINE-PHASE1-EXTRACT] No instructions found for ${skeleton.taskId.substring(0, 8)}`);
                     }
 
                     this.updateProcessingState(skeleton, 'phase1', true);
                     result.processedCount++;
-                    if (process.env.ROO_DEBUG_INSTRUCTIONS === '1') {
-                        try { console.log(`[Phase1] done ${skeleton.taskId} processedCount=${result.processedCount}`); } catch {}
-                    }
 
-                } catch (error: any) {
-                    result.errors.push({
-                        taskId: skeleton.taskId,
-                        error: error.message
-                    });
-                    this.updateProcessingState(skeleton, 'phase1', false, error.message);
-                    result.processedCount++;
-                    if (process.env.ROO_DEBUG_INSTRUCTIONS === '1') {
-                        try { console.log(`[Phase1] error ${skeleton.taskId} processedCount=${result.processedCount} err=${error?.message}`); } catch {}
-                    }
+                } catch (error) {
+                    console.error(`[ENGINE-PHASE1-ERROR] Error processing ${skeleton.taskId}:`, error);
+                    this.updateProcessingState(skeleton, 'phase1', false, String(error));
+                    result.errors.push({ taskId: skeleton.taskId, error: String(error) });
                 }
             }));
         }
 
         result.radixTreeSize = await this.instructionIndex.getSize();
-        // Garantit un temps > 0ms pour satisfaire les tests de timing
-        result.processingTimeMs = Math.max(1, Date.now() - startTime);
+        result.processingTimeMs = Date.now() - startTime;
+
+        // ========== LOGS FIN PHASE 1 ==========
+        console.log('[ENGINE-PHASE1-END] ====================================');
+        console.log('[ENGINE-PHASE1-END] Instructions extracted:', result.totalInstructionsExtracted);
+        console.log('[ENGINE-PHASE1-END] Tasks parsed:', result.parsedCount);
+        console.log('[ENGINE-PHASE1-END] Tasks processed:', result.processedCount);
+        console.log('[ENGINE-PHASE1-END] RadixTree size:', result.radixTreeSize);
+        console.log('[ENGINE-PHASE1-END] Errors:', result.errors.length);
+        if (result.errors.length > 0) {
+            console.log('[ENGINE-PHASE1-END] Error details:', JSON.stringify(result.errors, null, 2));
+        }
+        console.log('[ENGINE-PHASE1-END] ====================================');
 
         return result;
     }
@@ -255,182 +259,90 @@ export class HierarchyReconstructionEngine {
     ): Promise<Phase2Result> {
         const startTime = Date.now();
         const mergedConfig = { ...this.config, ...config };
-        console.log('🔍 [DEBUG] executePhase2 mergedConfig:', JSON.stringify(mergedConfig, null, 2));
         const result: Phase2Result = {
             processedCount: 0,
             resolvedCount: 0,
             unresolvedCount: 0,
+            errors: [],
             resolutionMethods: {},
             averageConfidenceScore: 0,
-            errors: [],
             processingTimeMs: 0,
-            skeletons: []
+            skeletons: skeletons // Ajout de la propriété manquante
         };
 
-        // Créer un index des skeletons par taskId pour validation rapide
+        // Logs uniquement en mode debug
+        if (this.config.debugMode) {
+            console.log('[ENGINE-PHASE2-START] ====================================');
+            console.log('[ENGINE-PHASE2-START] Detecting relationships...');
+            console.log('[ENGINE-PHASE2-START] Skeletons count:', skeletons.length);
+            console.log('[ENGINE-PHASE2-START] Mode:', mergedConfig.strictMode ? 'STRICT' : 'FUZZY');
+            console.log('[ENGINE-PHASE2-START] Similarity threshold:', mergedConfig.similarityThreshold);
+            console.log('[ENGINE-PHASE2-START] ====================================');
+        }
+
+        // Indexer les skeletons par ID pour accès rapide
         const skeletonMap = new Map(skeletons.map(s => [s.taskId, s]));
         const confidenceScores: number[] = [];
 
-        // Amorcer l'index d'instructions à partir des instructions déjà parsées sur les squelettes
-        // Cela permet aux tests Phase 2 d'utiliser la similarité sans exécuter la Phase 1
-        for (const s of skeletons) {
+        // Identifier les orphelins (pas de parentId et pas de reconstructedParentId)
+        const orphans = skeletons.filter(s => !s.parentTaskId && !s.reconstructedParentId);
+
+        for (const orphan of orphans) {
             try {
-                // 🎯 CORRECTION CRITIQUE : Synchroniser truncatedInstruction depuis la Phase 1
-                // Si une instruction tronquée a été capturée en Phase 1, on l'utilise pour la Phase 2
-                const phase1Truncated = this.instructionIndex.getTruncatedInstruction(s.taskId);
-                if (phase1Truncated) {
-                    const oldTruncated = s.truncatedInstruction;
-                    s.truncatedInstruction = phase1Truncated;
-                    if (this.config.debugMode && oldTruncated !== phase1Truncated) {
-                        console.log(`[HierarchyEngine] Updated truncatedInstruction for ${s.taskId.substring(0, 8)} from Phase 1 extraction`);
-                    }
+                // Ignorer les tâches racines légitimes
+                if (this.isRootTask(orphan)) {
+                    console.log(`[ENGINE-PHASE2-ROOT] ✅ MARKED AS ROOT: ${orphan.taskId.substring(0, 8)} (strict=${mergedConfig.strictMode})`);
+                    this.incrementResolutionMethod(result, 'root_detected');
+                    result.processedCount++;
+                    continue;
                 }
 
-                if (s.parsedSubtaskInstructions?.instructions?.length) {
-                    for (const inst of s.parsedSubtaskInstructions.instructions) {
-                        const prefix = computeInstructionPrefix(inst.message, 192);
-                        await this.instructionIndex.addInstruction(s.taskId, prefix, inst.message);
-                    }
+                console.log(`[ENGINE-PHASE2-SEARCH] Searching parent for child: ${orphan.taskId.substring(0, 8)}`);
+                if (orphan.truncatedInstruction) {
+                    console.log(`[ENGINE-PHASE2-SEARCH] Child truncatedInstruction: "${orphan.truncatedInstruction.substring(0, 80)}..."`);
                 }
-                if (s.childTaskInstructionPrefixes?.length) {
-                    for (const prefix of s.childTaskInstructionPrefixes) {
-                        await this.instructionIndex.addInstruction(s.taskId, prefix);
-                    }
-                }
-            } catch (e) {
-                // Ne pas bloquer la Phase 2 si l'amorçage échoue
-            }
-        }
 
-        // Traitement par batches
-        const batches = this.createBatches(skeletons, mergedConfig.batchSize || 20);
+                // Chercher un parent candidat
+                const candidate = await this.findParentCandidate(orphan, skeletonMap, mergedConfig);
 
-        // Traiter séquentiellement pour éviter les courses conduisant à des cycles
-        for (const batch of batches) {
-            for (const skeleton of batch) {
-                try {
-                    if (this.config.debugMode) {
-                        console.log(`[Phase2] Processing ${skeleton.taskId.substring(0, 8)} parentTaskId=${skeleton.parentTaskId}`);
-                    }
+                if (candidate) {
+                    console.log(`[ENGINE-PHASE2-MATCH] ✅ CANDIDATE FOUND: ${orphan.taskId.substring(0, 8)} → ${candidate.parentId.substring(0, 8)}`);
+                    console.log(`[ENGINE-PHASE2-MATCH] Confidence: ${candidate.confidence}, Method: ${candidate.method}`);
 
-                    // Si la tâche a déjà un parent, valider d'abord cette relation
-                    if (skeleton.parentTaskId) {
-                        const existingParentId = skeleton.parentTaskId;
-                        const existingParent = skeletonMap.get(existingParentId);
+                    // Valider le candidat
+                    const validation = await this.validateParentCandidate(orphan, candidate.parentId, skeletonMap);
 
-                        if (!existingParent) {
-                            // Le parent n'existe pas, on invalide la relation
-                            this.log(`Invalidating non-existent parent ${existingParentId} for ${skeleton.taskId}`);
-                            skeleton.parentTaskId = undefined;
-                            // On continue pour chercher un nouveau parent
-                        } else {
-                            // Valider la relation existante pour éviter cycles/incohérences
-                            const createsCycle = this.wouldCreateCycle(skeleton.taskId, existingParentId, skeletonMap);
+                    if (validation.isValid) {
+                        console.log(`[ENGINE-PHASE2-MATCH] ✅ VALIDATION PASSED: ${orphan.taskId.substring(0, 8)} → ${candidate.parentId.substring(0, 8)}`);
+                        orphan.reconstructedParentId = candidate.parentId;
+                        (orphan as any).reconstructionConfidence = candidate.confidence;
+                        (orphan as any).reconstructionMethod = candidate.method;
 
-                            let temporalInvalid = false;
-                            try {
-                                const pTime = new Date(existingParent.metadata.createdAt).getTime();
-                                const cTime = new Date(skeleton.metadata.createdAt).getTime();
-                                if (Number.isFinite(pTime) && Number.isFinite(cTime)) {
-                                    temporalInvalid = pTime > cTime; // parent après enfant → invalide
-                                }
-                            } catch {}
-
-                            let workspaceMismatch = false;
-                            if (existingParent.metadata.workspace && skeleton.metadata.workspace) {
-                                workspaceMismatch = existingParent.metadata.workspace !== skeleton.metadata.workspace;
-                            }
-
-                            if (createsCycle || temporalInvalid || workspaceMismatch) {
-                            // Invalider et tenter une reconstruction propre
-                            this.log(
-                                `Invalidating existing parent for ${skeleton.taskId}: cycle=${createsCycle}, temporalInvalid=${temporalInvalid}, workspaceMismatch=${workspaceMismatch}`
-                            );
-                            skeleton.parentTaskId = undefined;
-                            // Continuer vers la recherche d'un nouveau parent
-                        } else {
-                            // Relation saine conservée
-                            this.updateProcessingState(skeleton, 'phase2', true);
-                            result.processedCount++;
-                            continue; // ParentId déjà valide, passer à la tâche suivante
-                        }
-                    }
-                    }
-
-                    // Rechercher le parent via différentes méthodes (POUR LES TÂCHES SANS PARENT OU AVEC PARENT INVALIDÉ)
-                    // console.log(`[ENGINE-PHASE2-SEARCH] Searching parent for child: ${skeleton.taskId.substring(0, 8)}`);
-                    // console.log(`[ENGINE-PHASE2-SEARCH] Child truncatedInstruction: "${skeleton.truncatedInstruction?.substring(0, 80)}..."`);
-
-                    const parentCandidate = await this.findParentCandidate(
-                        skeleton,
-                        skeletonMap,
-                        mergedConfig
-                    );
-
-                    let resolved = false;
-
-                    if (parentCandidate) {
-                        // console.log(`[ENGINE-PHASE2-MATCH] ✅ CANDIDATE FOUND: ${skeleton.taskId.substring(0, 8)} → ${parentCandidate.parentId.substring(0, 8)}`);
-                        // console.log(`[ENGINE-PHASE2-MATCH] Confidence: ${parentCandidate.confidence}, Method: ${parentCandidate.method}`);
-                        // Valider le candidat
-                        const validation = await this.validateParentCandidate(
-                            skeleton,
-                            parentCandidate.parentId,
-                            skeletonMap
-                        );
-
-                        if (validation.isValid && parentCandidate.confidence >= (mergedConfig.minConfidenceScore || 0.3)) {
-                            skeleton.reconstructedParentId = parentCandidate.parentId;
-                            skeleton.parentConfidenceScore = parentCandidate.confidence;
-                            skeleton.parentResolutionMethod = parentCandidate.method;
-
-                            this.log(`[DEBUG] Resolved ${skeleton.taskId} -> ${parentCandidate.parentId} via ${parentCandidate.method}`);
-
-                            result.resolvedCount++;
-                            confidenceScores.push(parentCandidate.confidence);
-                            this.incrementResolutionMethod(result, parentCandidate.method);
-                            resolved = true;
-                        } else {
-                            this.log(`Parent validation failed for ${skeleton.taskId}`, validation);
-                        }
-                    }
-
-                    // Fallback: marquer comme racine si toujours non résolu, aucun parent fourni, et critères racine remplis
-                    if (!resolved && !skeleton.parentTaskId) {
-                        const isRoot = this.isRootTask(skeleton);
-                        // console.log(`[DEBUG] Checking isRootTask for ${skeleton.taskId}: ${isRoot} (strict=${mergedConfig.strictMode})`);
-
-                        // En mode strict: seulement si isRootTask() confirme
-                        // En mode non-strict: accepter aussi les cas ambigus
-                        if (mergedConfig.strictMode ? isRoot : true) {
-                            skeleton.isRootTask = true;
-                            skeleton.parentResolutionMethod = 'root_detected';
-                            this.log(`[DEBUG] Resolved ${skeleton.taskId} as ROOT via root_detected`);
-                            // ✅ FIX: Ne PAS compter ROOT comme "relation résolue"
-                            // Les ROOT sont des tâches sans parent, pas des relations
-                            this.incrementResolutionMethod(result, 'root_detected');
-                            resolved = true;
-                        }
-                    }
-
-                    if (!resolved) {
+                        result.resolvedCount++;
+                        confidenceScores.push(candidate.confidence);
+                        this.incrementResolutionMethod(result, candidate.method);
+                    } else {
+                        console.log(`[ENGINE-PHASE2-NOMATCH] ❌ VALIDATION FAILED: ${orphan.taskId.substring(0, 8)}`);
+                        console.log(`[ENGINE-PHASE2-NOMATCH] Validation details:`, JSON.stringify(validation, null, 2));
                         result.unresolvedCount++;
                     }
-
-                    // Mettre à jour l'état de traitement
-                    this.updateProcessingState(skeleton, 'phase2', true);
-                    result.processedCount++;
-                } catch (error: any) {
-                    result.errors.push({
-                        taskId: skeleton.taskId,
-                        error: error.message
-                    });
-                    this.updateProcessingState(skeleton, 'phase2', false, error.message);
+                } else {
+                    // Si aucun parent trouvé, c'est peut-être une racine non détectée
+                    // En mode strict, on ne force pas le rattachement
+                    console.log(`[ENGINE-PHASE2-NOMATCH] No candidate found for ${orphan.taskId.substring(0, 8)}`);
+                    result.unresolvedCount++;
                 }
+
+                this.updateProcessingState(orphan, 'phase2', true);
+                result.processedCount++;
+
+            } catch (error) {
+                console.error(`[ENGINE-PHASE2-ERROR] Error processing ${orphan.taskId}:`, error);
+                this.updateProcessingState(orphan, 'phase2', false, String(error));
+                result.errors.push({ taskId: orphan.taskId, error: String(error) });
             }
         }
 
-        // Calculer le score de confiance moyen
         if (confidenceScores.length > 0) {
             result.averageConfidenceScore =
                 confidenceScores.reduce((a, b) => a + b, 0) / confidenceScores.length;
@@ -439,8 +351,18 @@ export class HierarchyReconstructionEngine {
         // Garantit un temps > 0ms pour satisfaire les tests de timing
         result.processingTimeMs = Math.max(1, Date.now() - startTime);
 
-        // 🎯 FIX: Retourner les squelettes modifiés dans le résultat
-        result.skeletons = skeletons;
+        // ========== LOGS FIN PHASE 2 ==========
+        console.log('[ENGINE-PHASE2-END] ====================================');
+        console.log('[ENGINE-PHASE2-END] Relations detected:', result.resolvedCount);
+        console.log('[ENGINE-PHASE2-END] Tasks unresolved:', result.unresolvedCount);
+        console.log('[ENGINE-PHASE2-END] Tasks processed:', result.processedCount);
+        console.log('[ENGINE-PHASE2-END] Resolution methods:', JSON.stringify(result.resolutionMethods, null, 2));
+        console.log('[ENGINE-PHASE2-END] Average confidence:', result.averageConfidenceScore.toFixed(3));
+        console.log('[ENGINE-PHASE2-END] Errors:', result.errors.length);
+        if (result.errors.length > 0) {
+            console.log('[ENGINE-PHASE2-END] Error details:', JSON.stringify(result.errors, null, 2));
+        }
+        console.log('[ENGINE-PHASE2-END] ====================================');
 
         return result;
     }
@@ -457,8 +379,8 @@ export class HierarchyReconstructionEngine {
         if (config.strictMode === true) {
             if (skeleton.truncatedInstruction) {
                 // 🔇 LOG VERBEUX COMMENTÉ (explosion contexte - 1 log par orphelin traité)
-                this.log(`SDDD: Searching parent for ${skeleton.taskId}`);
-                this.log(`SDDD: Child truncated instruction: "${skeleton.truncatedInstruction.substring(0, 100)}..." (length: ${skeleton.truncatedInstruction.length})`);
+                // this.log(`SDDD: Searching parent for ${skeleton.taskId}`);
+                // this.log(`SDDD: Child truncated instruction: "${skeleton.truncatedInstruction.substring(0, 100)}..." (length: ${skeleton.truncatedInstruction.length})`);
 
                 // 🎯 CORRECTION SDDD FONDAMENTALE : Le bug était que les enfants cherchaient avec leur propre instruction
                 // alors que les parents indexent les instructions des SOUS-TÂCHES qu'ils contiennent.
@@ -469,7 +391,7 @@ export class HierarchyReconstructionEngine {
                 const exactResults = await this.instructionIndex.searchExactPrefix(skeleton.truncatedInstruction);
 
                 // 🔇 LOG VERBEUX COMMENTÉ (explosion contexte - 1 log par orphelin sans parent)
-                this.log(`SDDD: searchExactPrefix returned ${exactResults ? exactResults.length : 0} results for ${skeleton.taskId}`);
+                // this.log(`SDDD: searchExactPrefix returned ${exactResults ? exactResults.length : 0} results for ${skeleton.taskId}`);
 
                 if (!exactResults || exactResults.length === 0) {
                     // 🔇 LOG VERBEUX COMMENTÉ (explosion contexte - debug répétitif)
@@ -664,8 +586,6 @@ export class HierarchyReconstructionEngine {
         };
     }
 
-
-
     /**
      * Extrait les instructions de sous-tâches depuis ui_messages.json
      */
@@ -673,11 +593,11 @@ export class HierarchyReconstructionEngine {
         skeleton: EnhancedConversationSkeleton
     ): Promise<NewTaskInstruction[]> {
         const instructions: NewTaskInstruction[] = [];
-        const seenInstructions = new Set<string>();
 
         // Construire le chemin vers ui_messages.json
         const basePath = skeleton.metadata.dataSource || '';
         const uiMessagesPath = path.join(basePath, 'ui_messages.json');
+        const fs = await import('fs');
 
         // DEBUG: tracer le chemin et l'existence du fichier si activé
         if (process.env.ROO_DEBUG_INSTRUCTIONS === '1') {
@@ -725,19 +645,15 @@ export class HierarchyReconstructionEngine {
                                 // Nettoyer le mode (enlever les emojis)
                                 const cleanMode = this.extractModeFromRooMode(String(toolData.mode || 'task'));
                                 const content: string = String(toolData.content);
-                                const uniqueKey = `${cleanMode}:${content.substring(0, 200)}`;
 
-                                if (!seenInstructions.has(uniqueKey)) {
-                                    seenInstructions.add(uniqueKey);
-                                    instructions.push({
-                                        timestamp: message.ts || Date.now(),
-                                        mode: cleanMode,
-                                        message: content.substring(0, 200),
-                                        taskId: toolData.taskId // Si disponible
-                                    });
+                                instructions.push({
+                                    timestamp: message.ts || Date.now(),
+                                    mode: cleanMode,
+                                    message: content.substring(0, 200),
+                                    taskId: toolData.taskId // Si disponible
+                                });
 
-                                    this.log(`✅ [EXTRACTION] Found newTask instruction: mode=${cleanMode}, content="${content.substring(0, 50)}..."`);
-                                }
+                                this.log(`✅ [EXTRACTION] Found newTask instruction: mode=${cleanMode}, content="${content.substring(0, 50)}..."`);
                             }
                         } catch (error) {
                             // Ignore les erreurs de parsing JSON pour ce message
@@ -759,18 +675,13 @@ export class HierarchyReconstructionEngine {
                                     const cleanMode = modeMatch ? modeMatch[1].trim().toLowerCase() : 'task';
                                     if (taskMessage.length > 10) {
                                         // 🎯 FIX BUG: Normaliser les échappements
-                                        const normalizedMessage = normalizeInstruction(taskMessage);
-                                        const uniqueKey = `${cleanMode}:${normalizedMessage}`;
-
-                                        if (!seenInstructions.has(uniqueKey)) {
-                                            seenInstructions.add(uniqueKey);
-                                            instructions.push({
-                                                timestamp: message.ts || message.timestamp || Date.now(),
-                                                mode: cleanMode,
-                                                message: normalizedMessage
-                                            });
-                                            this.log(`✅ [EXTRACTION] Found api_req_started newTask: mode=${cleanMode}, content="${normalizedMessage.substring(0, 50)}..."`);
-                                        }
+                                        const normalizedMessage = this.normalizeEscaping(taskMessage);
+                                        instructions.push({
+                                            timestamp: message.ts || message.timestamp || Date.now(),
+                                            mode: cleanMode,
+                                            message: normalizedMessage
+                                        });
+                                        this.log(`✅ [EXTRACTION] Found api_req_started newTask: mode=${cleanMode}, content="${normalizedMessage.substring(0, 50)}..."`);
                                     }
                                 }
                             }
@@ -793,18 +704,13 @@ export class HierarchyReconstructionEngine {
                                     if (msg.length > 5) {
                                         xmlNewCount++;
                                         // 🎯 FIX BUG: Normaliser les échappements
-                                        const normalizedMsg = normalizeInstruction(msg);
-                                        const uniqueKey = `${cleanMode || 'task'}:${normalizedMsg.substring(0, 200)}`;
-
-                                        if (!seenInstructions.has(uniqueKey)) {
-                                            seenInstructions.add(uniqueKey);
-                                            instructions.push({
-                                                timestamp: (message as any).ts || (message as any).timestamp || Date.now(),
-                                                mode: cleanMode || 'task',
-                                                message: normalizedMsg.substring(0, 200)
-                                            });
-                                            this.log(`✅ [EXTRACTION] Found XML newTask instruction: mode=${cleanMode}, content="${normalizedMsg.substring(0, 50)}..."`);
-                                        }
+                                        const normalizedMsg = this.normalizeEscaping(msg);
+                                        instructions.push({
+                                            timestamp: (message as any).ts || (message as any).timestamp || Date.now(),
+                                            mode: cleanMode || 'task',
+                                            message: normalizedMsg.substring(0, 200)
+                                        });
+                                        this.log(`✅ [EXTRACTION] Found XML newTask instruction: mode=${cleanMode}, content="${normalizedMsg.substring(0, 50)}..."`);
                                     }
                                 }
                             }
@@ -812,7 +718,7 @@ export class HierarchyReconstructionEngine {
                     }
 
                     // Pattern additionnel : XML générique (balises non-standard) tolérant aux espaces/casse
-                    // Exemple: &lt;orchestrator_complex&gt;&lt;mode&gt;debug&lt;/mode&gt;&lt;message&gt;...&lt;/message&gt;&lt;/orchestrator_complex&gt;
+                    // Exemple: <orchestrator_complex><mode>debug</mode><message>...</message></orchestrator_complex>
                     if (message.text || message.content) {
                         const contentAny = message.text || message.content;
                         const genericXmlMatches = contentAny?.match(/<\s*([a-z_][\w\-]*)\b[^>]*>[\s\S]*?<\s*mode\s*>([\s\S]*?)<\/\s*mode\s*>[\s\S]*?<\s*message\s*>([\s\S]*?)<\/\s*message\s*>[\s\S]*?<\/\s*\1\s*>/gi);
@@ -821,23 +727,18 @@ export class HierarchyReconstructionEngine {
                                 const m = block.match(/<\s*([a-z_][\w\-]*)\b[^>]*>[\s\S]*?<\s*mode\s*>([\s\S]*?)<\/\s*mode\s*>[\s\S]*?<\s*message\s*>([\s\S]*?)<\/\s*message\s*>[\s\S]*?<\/\s*\1\s*>/i);
                                 if (m) {
                                     const parentTag = String(m[1] || '').trim().toLowerCase();
-                                    // Évite les doublons avec le pattern dédié &lt;new_task&gt;
+                                    // Évite les doublons avec le pattern dédié <new_task>
                                     if (parentTag === 'new_task') continue;
                                     const cleanMode = String(m[2] || '').trim().toLowerCase();
                                     const cleanMsg = String(m[3] || '').trim();
                                     if (cleanMsg.length > 5) {
                                         genericXmlCount++;
-                                        const uniqueKey = `${cleanMode || 'task'}:${cleanMsg.substring(0, 200)}`;
-
-                                        if (!seenInstructions.has(uniqueKey)) {
-                                            seenInstructions.add(uniqueKey);
-                                            instructions.push({
-                                                timestamp: (message as any).ts || (message as any).timestamp || Date.now(),
-                                                mode: cleanMode || 'task',
-                                                message: cleanMsg.substring(0, 200)
-                                            });
-                                            this.log(`✅ [EXTRACTION] Found generic XML instruction: tag=${parentTag}, mode=${cleanMode}, content="${cleanMsg.substring(0, 50)}..."`);
-                                        }
+                                        instructions.push({
+                                            timestamp: (message as any).ts || (message as any).timestamp || Date.now(),
+                                            mode: cleanMode || 'task',
+                                            message: cleanMsg.substring(0, 200)
+                                        });
+                                        this.log(`✅ [EXTRACTION] Found generic XML instruction: tag=${parentTag}, mode=${cleanMode}, content="${cleanMsg.substring(0, 50)}..."`);
                                     }
                                 }
                             }
@@ -854,17 +755,12 @@ export class HierarchyReconstructionEngine {
                                 const taskContent = m?.[1]?.trim();
                                 if (taskContent && taskContent.length > 5) {
                                     taskTagCount++;
-                                    const uniqueKey = `task:${taskContent.substring(0, 200)}`;
-
-                                    if (!seenInstructions.has(uniqueKey)) {
-                                        seenInstructions.add(uniqueKey);
-                                        instructions.push({
-                                            timestamp: (message as any).ts || (message as any).timestamp || Date.now(),
-                                            mode: 'task',
-                                            message: taskContent.substring(0, 200)
-                                        });
-                                        this.log(`✅ [EXTRACTION] Found simple <task> instruction: "${taskContent.substring(0, 50)}..."`);
-                                    }
+                                    instructions.push({
+                                        timestamp: (message as any).ts || (message as any).timestamp || Date.now(),
+                                        mode: 'task',
+                                        message: taskContent.substring(0, 200)
+                                    });
+                                    this.log(`✅ [EXTRACTION] Found simple <task> instruction: "${taskContent.substring(0, 50)}..."`);
                                 }
                             }
                         }
@@ -878,19 +774,13 @@ export class HierarchyReconstructionEngine {
 
                         if (delegationMatch) {
                             delegationCount++;
-                            const mode = delegationMatch[1].toLowerCase();
-                            const uniqueKey = `${mode}:${content.substring(0, 200)}`;
+                            instructions.push({
+                                timestamp: message.ts || Date.now(),
+                                mode: delegationMatch[1].toLowerCase(),
+                                message: content.substring(0, 200)
+                            });
 
-                            if (!seenInstructions.has(uniqueKey)) {
-                                seenInstructions.add(uniqueKey);
-                                instructions.push({
-                                    timestamp: message.ts || Date.now(),
-                                    mode: mode,
-                                    message: content.substring(0, 200)
-                                });
-
-                                this.log(`✅ [EXTRACTION] Found delegation instruction: mode=${mode}, content="${content.substring(0, 50)}..."`);
-                            }
+                            this.log(`✅ [EXTRACTION] Found delegation instruction: mode=${delegationMatch[1].toLowerCase()}, content="${content.substring(0, 50)}..."`);
                         }
                     }
                 }
@@ -912,15 +802,11 @@ export class HierarchyReconstructionEngine {
                         const cleanMode = String(modeMatch?.[1] || '').trim().toLowerCase() || 'task';
                         const msg = String(msgMatch?.[1] || '').trim();
                         if (msg.length > 5) {
-                            const uniqueKey = `${cleanMode}:${msg.substring(0, 200)}`;
-                            if (!seenInstructions.has(uniqueKey)) {
-                                seenInstructions.add(uniqueKey);
-                                instructions.push({
-                                    timestamp: Date.now(),
-                                    mode: cleanMode,
-                                    message: msg.substring(0, 200)
-                                });
-                            }
+                            instructions.push({
+                                timestamp: Date.now(),
+                                mode: cleanMode,
+                                message: msg.substring(0, 200)
+                            });
                         }
                     }
 
@@ -930,15 +816,11 @@ export class HierarchyReconstructionEngine {
                         const m = b.match(/<\s*task\s*>([\s\S]*?)<\/\s*task\s*>/i);
                         const taskContent = m?.[1]?.trim();
                         if (taskContent && taskContent.length > 5) {
-                            const uniqueKey = `task:${taskContent.substring(0, 200)}`;
-                            if (!seenInstructions.has(uniqueKey)) {
-                                seenInstructions.add(uniqueKey);
-                                instructions.push({
-                                    timestamp: Date.now(),
-                                    mode: 'task',
-                                    message: taskContent.substring(0, 200)
-                                });
-                            }
+                            instructions.push({
+                                timestamp: Date.now(),
+                                mode: 'task',
+                                message: taskContent.substring(0, 200)
+                            });
                         }
                     }
                 } catch {}
@@ -981,9 +863,7 @@ export class HierarchyReconstructionEngine {
             /^j'aimerais/i,
             /^peux-tu/i,
             /^aide-moi/i,
-            /^planifier/i,
-            /^je suis/i,
-            /^texte unique/i // Pour le test integration "Texte unique..."
+            /^créer un/i
         ];
 
         // 3. Exclure les instructions qui commencent par TEST- (ce sont des sous-tâches)
@@ -1234,6 +1114,18 @@ export class HierarchyReconstructionEngine {
     }
 
     /**
+     * Normalise les échappements JSON multiples pour le matching radix tree
+     * 🎯 FIX BUG: Gère les doubles/triples échappements \\\\n → \\n → \n
+     */
+    private normalizeEscaping(text: string): string {
+        return text
+            .replace(/\\\\n/g, '\n')    // Double échappement → simple
+            .replace(/\\"/g, '"')        // Guillemets échappés
+            .replace(/\\n/g, '\n')       // Simple échappement → natif
+            .trim();
+    }
+
+    /**
      * Détecte si l'instruction utilise le format JSON moderne ou XML ancien
      */
     private detectInstructionFormat(text: string): 'json' | 'xml' | 'unknown' {
@@ -1244,7 +1136,7 @@ export class HierarchyReconstructionEngine {
 
     /**
      * Extrait l'instruction normalisée depuis un message UI (supporte JSON + XML)
-     * 🎯 FIX BUG: Applique normalizeInstruction() pour uniformiser les formats
+     * 🎯 FIX BUG: Applique normalizeEscaping() pour uniformiser les formats
      */
     private extractNormalizedInstruction(message: any): string | null {
         const format = this.detectInstructionFormat(message.text || message.content || '');
@@ -1253,7 +1145,7 @@ export class HierarchyReconstructionEngine {
             try {
                 const parsed = JSON.parse(message.text || message.content);
                 if (parsed.tool === 'newTask' && parsed.content) {
-                    return normalizeInstruction(parsed.content);
+                    return this.normalizeEscaping(parsed.content);
                 }
             } catch (e) {
                 // JSON invalide, ignorer
@@ -1263,74 +1155,13 @@ export class HierarchyReconstructionEngine {
         if (format === 'xml') {
             const match = (message.text || message.content)?.match(/<message>(.*?)<\/message>/s);
             if (match && match[1]) {
-                return normalizeInstruction(match[1]);
+                return this.normalizeEscaping(match[1]);
             }
         }
 
         return null;
     }
 
-    /**
-     * Extrait l'instruction propre de la tâche (le prompt initial)
-     */
-    private async extractSelfInstruction(
-        skeleton: EnhancedConversationSkeleton
-    ): Promise<string | null> {
-        const basePath = skeleton.metadata.dataSource || '';
-        const uiMessagesPath = path.join(basePath, 'ui_messages.json');
-
-        if (!fs.existsSync(uiMessagesPath)) {
-            return null;
-        }
-
-        try {
-            const content = fs.readFileSync(uiMessagesPath, 'utf-8');
-            const data = JSON.parse(content);
-            const messages = Array.isArray(data) ? data : (Array.isArray((data as any).messages) ? (data as any).messages : []);
-
-            if (messages.length > 0) {
-                // Chercher le premier message significatif (User ou Task)
-                for (const message of messages) {
-                    // Ignorer les messages système vides ou techniques
-                    if (!message.text && !message.content) continue;
-
-                    // Si c'est un message utilisateur ou une instruction task explicite
-                    const text = message.text || message.content;
-
-                    // Nettoyer et normaliser
-                    if (text && typeof text === 'string' && text.length > 5) {
-                        // 🎯 CORRECTION SDDD : Ne PAS extraire le contenu des balises task imbriquées
-                        // car elles contiennent souvent les instructions pour les SOUS-TÂCHES.
-                        // On veut l'instruction PROPRE de la tâche (le prompt utilisateur).
-
-                        // Supprimer les blocs task et new_task pour ne garder que le prompt principal
-                        let cleanText = text
-                            .replace(/<\s*task\s*>[\s\S]*?<\/\s*task\s*>/gi, '')
-                            .replace(/<\s*new_task\b[^>]*>[\s\S]*?<\/\s*new_task\s*>/gi, '');
-
-                        if (process.env.ROO_DEBUG_INSTRUCTIONS === '1') {
-                            console.log(`[extractSelfInstruction] ${skeleton.taskId.substring(0,8)}: text len=${text.length}, cleanText len=${cleanText.length}`);
-                        }
-
-                        // Si le texte nettoyé est trop court (ex: juste "Bonjour"), on garde le texte original
-                        // mais on préfère le texte nettoyé s'il est substantiel
-                        if (cleanText.trim().length < 10) {
-                            cleanText = text;
-                        }
-
-                        return normalizeInstruction(cleanText);
-                    }
-                }
-            }
-        } catch (error) {
-            // Ignorer les erreurs de lecture
-        }
-        return null;
-    }
-
-    /**
-     * Log avec mode debug optionnel
-     */
     /**
      * Extrait le mode propre depuis un mode Roo avec emojis
      */

@@ -3,11 +3,11 @@
  * Optimisé pour la recherche rapide de relations parent-enfant
  * Utilise exact-trie pour le matching longest-prefix robuste
  */
-
+ 
 import { NewTaskInstruction } from '../types/conversation.js';
 import Trie from 'exact-trie';
 import { extractSubInstructions } from './sub-instruction-extractor.js';
-
+ 
 /**
  * Structure pour stocker plusieurs parents par préfixe
  */
@@ -542,23 +542,20 @@ export class TaskInstructionIndex {
 }
 
 /**
- * SDDD Phase 2 - API de normalisation standardisée
- * Fonction utilitaire unifiée pour la normalisation des instructions
+ * SDDD Phase 2 - API de préfixe unifiée
+ * Fonction utilitaire unifiée pour la normalisation des préfixes d'instructions
  * @param raw - Texte brut de l'instruction
- * @returns Instruction normalisée (sans troncature)
+ * @param K - Longueur maximale du préfixe (défaut: 192)
+ * @returns Préfixe normalisé et tronqué
  */
-export function normalizeInstruction(raw: string): string {
+export function computeInstructionPrefix(raw: string, K: number = 192): string {
     if (!raw) return '';
 
-    // Normalisations robustes
+    // Normalisations robustes avant troncature
     let s = String(raw);
-    // console.log(`[DEBUG] normalizeInstruction input: "${s}"`);
 
     // 1) Retirer un éventuel BOM UTF-8 en tête
     s = s.replace(/^\uFEFF/, '');
-
-    // 1.5) Supprimer les balises techniques non pertinentes pour le préfixe sémantique
-    s = s.replace(/<\s*mode\b[^>]*>[\s\S]*?<\s*\/\s*mode\s*>/gi, '');
 
     // 2) Dé-échappements simples courants (contenus provenant de JSON échappé)
     //    Ne pas faire de parsing JSON ici pour rester ultra-robuste
@@ -570,20 +567,21 @@ export function normalizeInstruction(raw: string): string {
         .replace(/\\"/g, '"')
         .replace(/\\'/g, "'");
 
-    // 3) Décodage des entités HTML
+    // 3) Décodage des entités HTML (nommées + numériques)
+    // Ordre important pour éviter double-décodage
     s = s
         .replace(/</gi, '<')
         .replace(/>/gi, '>')
         .replace(/"/gi, '"')
         .replace(/'/gi, "'")
-        .replace(/'/gi, "'")
         .replace(/&/gi, '&');
 
-    // Entités numériques
+    // Entités numériques décimales
     s = s.replace(/&#(\d+);/g, (_m, d: string) => {
         const code = parseInt(d, 10);
         return Number.isFinite(code) ? String.fromCharCode(code) : _m;
     });
+    // Entités numériques hexadécimales
     s = s.replace(/&#x([0-9a-fA-F]+);/g, (_m, h: string) => {
         const code = parseInt(h, 16);
         return Number.isFinite(code) ? String.fromCharCode(code) : _m;
@@ -611,7 +609,7 @@ export function normalizeInstruction(raw: string): string {
                 console.log(`SDDD: Extracted parent instruction: "${cleanedContent.substring(0, 50)}..."`);
             }
         }
-        return ' ';
+        return ' '; // Remplacer la balise par un espace pour préserver la structure
     });
 
     // Si des instructions parentes ont été extraites, les ajouter à newTaskContents
@@ -628,28 +626,31 @@ export function normalizeInstruction(raw: string): string {
     s.replace(messageRegex, (match, content) => {
         // Nettoyer le contenu extrait pour le contexte
         const cleanedContent = content
-            .replace(/<[^>]+>/g, ' ')
+            .replace(/<[^>]+>/g, ' ') // Nettoyer les autres balises à l'intérieur
             .replace(/\s+/g, ' ')
             .trim();
 
         if (cleanedContent) {
             messageContents.push(cleanedContent);
+            if (process.env.ROO_DEBUG_INSTRUCTIONS === '1') {
+                console.log(`SDDD: Extracted message context: "${cleanedContent.substring(0, 50)}..."`);
+            }
         }
-        return ' ';
+        return ' '; // Remplacer la balise par un espace pour préserver la structure
     });
 
-    // 5) Nettoyer les restes de JSON
+    // 5) Nettoyer les restes de JSON du parsing parent (content:", etc.)
     s = s
-        .replace(/^["']?content["']?\s*:\s*["']?/i, '')
-        .replace(/["']$/,'' );
+        .replace(/^["']?content["']?\s*:\s*["']?/i, '')  // Enlever "content": ou 'content': au début
+        .replace(/["']$/,'' );  // Enlever guillemet final éventuel
 
-    // 6) Supprimer les balises restantes
+    // 6) Supprimer explicitement les balises de délégation fréquemment vues
+    //    et les wrappers <task> (new_task déjà traité)
     s = s
         .replace(/<\s*task\s*>/gi, ' ')
         .replace(/<\s*\/\s*task\s*>/gi, ' ')
-        .replace(/<\s*new_task\b[^>]*>/gi, ' ')
-        .replace(/<\s*\/\s*new_task\s*>/gi, ' ')
-        .replace(/<[^>]+>/g, ' ');
+        .replace(/<\s*new_task\b[^>]*>/gi, ' ') // Pour les balises non fermées restantes
+        .replace(/<\s*\/\s*new_task\s*>/gi, ' ');
 
     // 7) Purge générique de toutes les balises HTML/XML restantes
     s = s.replace(/<[^>]+>/g, ' ');
@@ -661,35 +662,21 @@ export function normalizeInstruction(raw: string): string {
         console.log(`SDDD: Re-injected ${extractedParentInstructions.length} parent instructions + ${messageContents.length} message contents for indexing`);
     }
 
-    // 7) Normalisations finales
+    // 7) Normalisations finales, minuscules + espaces
     s = s
         .toLowerCase()
         .replace(/\s+/g, ' ')
         .trim();
 
-    return s;
-}
+    // 8) Troncature à K
+    // ATTENTION: Ne pas faire de trim() après substring() car cela change la longueur !
+    // On fait le trim() AVANT pour normaliser, mais pas APRÈS pour préserver K
+    const truncated = s.substring(0, K);
 
-/**
- * SDDD Phase 2 - API de préfixe unifiée
- * Fonction utilitaire unifiée pour la normalisation des préfixes d'instructions
- * @param raw - Texte brut de l'instruction
- * @param K - Longueur maximale du préfixe (défaut: 192)
- * @returns Préfixe normalisé et tronqué
- */
-export function computeInstructionPrefix(raw: string, K: number = 192): string {
-    const normalized = normalizeInstruction(raw);
-
-    // Troncature à K
-    const truncated = normalized.substring(0, K);
-
-    if (process.env.ROO_DEBUG_INSTRUCTIONS === '1') {
-        console.log(`[computeInstructionPrefix] raw="${raw.substring(0, 50)}..." -> normalized="${truncated}"`);
-    }
-
+    // Si le dernier caractère est un espace, on peut le garder ou le supprimer
+    // Pour cohérence avec les tests, on le supprime SEULEMENT si c'est le dernier
     return truncated.trimEnd();
 }
-
 /**
  * Instance globale du système d'index des instructions
  */
