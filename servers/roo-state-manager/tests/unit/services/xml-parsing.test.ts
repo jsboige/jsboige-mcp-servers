@@ -41,75 +41,8 @@ vi.mock('path', () => ({
   delimiter: ';'
 }));
 
-// Mock du module message-extraction-coordinator
-const mockMessageExtractionCoordinator = {
-  extractFromMessages: vi.fn((messages, options) => {
-    const instructions: NewTaskInstruction[] = [];
-    
-    // Simuler l'extraction des balises <task> et <new_task>
-    for (const message of messages) {
-      if (message.content) {
-        let content = message.content;
-        
-        // Gérer le cas où content est un array (format OpenAI)
-        if (Array.isArray(content)) {
-          const textItem = content.find(item => item.type === 'text');
-          if (textItem) {
-            content = textItem.text;
-          }
-        }
-        
-        // Extraire les balises <task>
-        const taskMatches = content.match(/<task>([\s\S]*?)<\/task>/g);
-        if (taskMatches) {
-          for (const match of taskMatches) {
-            const taskContent = match.replace(/<\/?task>/g, '').trim();
-            if (taskContent.length >= 20) { // Filtrer les tâches trop courtes
-              instructions.push({
-                mode: 'task',
-                message: taskContent.substring(0, 200), // Tronquer à 200 caractères
-                timestamp: message.ts || Date.now()
-              });
-            }
-          }
-        }
-        
-        // Extraire les balises <new_task>
-        const newTaskMatches = content.match(/<new_task>([\s\S]*?)<\/new_task>/g);
-        if (newTaskMatches) {
-          for (const match of newTaskMatches) {
-            const modeMatch = match.match(/<mode>(.*?)<\/mode>/);
-            const messageMatch = match.match(/<message>(.*?)<\/message>/);
-            
-            if (modeMatch && messageMatch) {
-              const mode = modeMatch[1].trim();
-              const messageContent = messageMatch[1].trim();
-              
-              if (mode && messageContent) {
-                instructions.push({
-                  mode,
-                  message: messageContent,
-                  timestamp: message.ts || Date.now()
-                });
-              }
-            }
-          }
-        }
-      }
-    }
-    
-    return {
-      instructions,
-      processedMessages: messages.length,
-      matchedPatterns: instructions.length > 0 ? ['xml-pattern'] : [],
-      errors: []
-    };
-  })
-};
-
-vi.mock('../../../src/utils/message-extraction-coordinator.js', () => ({
-  messageExtractionCoordinator: mockMessageExtractionCoordinator
-}));
+// Suppression du mock de message-extraction-coordinator pour utiliser l'implémentation réelle
+// Cela permet de tester l'intégration complète et évite les problèmes de chemin d'import dynamique
 
 import * as fs from 'fs/promises';
 import * as path from 'path';
