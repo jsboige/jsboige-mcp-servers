@@ -1,9 +1,0 @@
-{
-  "decisionId": "TEST_NO_ROLLBACK",
-  "timestamp": "2025-11-30T16-18-37-167Z",
-  "machine": "PC-PRINCIPAL",
-  "files": [
-    "sync-config.ref.json",
-    "sync-roadmap.md"
-  ]
-}

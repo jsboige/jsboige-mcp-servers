@@ -22,7 +22,7 @@ const { mockRooSyncService, mockRooSyncServiceError, mockGetRooSyncService } = v
     getInstance: vi.fn(() => ({
       getConfig: vi.fn().mockReturnValue({
         version: '2.0.0',
-        sharedStatePath: '/mock/shared',
+        sharedPath: '/mock/shared',
         baselinePath: '/mock/baseline',
         machines: {
           'PC-PRINCIPAL': {
@@ -282,39 +282,17 @@ describe('roosync_get_decision_details', () => {
 ## Décisions de Synchronisation
 
 <!-- DECISION_BLOCK_START -->
-**ID:** \`test-decision-001\`
-**Titre:** Décision de test
-**Statut:** pending
+**ID:** \`test-decision-complete\`
+**Titre:** Décision complète avec historique
+**Statut:** applied
 **Type:** config
-**Chemin:** \`.config/test.json\`
+**Chemin:** \`.config/complete.json\`
 **Machine Source:** PC-PRINCIPAL
 **Machines Cibles:** MAC-DEV
 **Créé:** 2025-10-08T09:00:00Z
-**Détails:** Test de décision
-<!-- DECISION_BLOCK_END -->
-
-<!-- DECISION_BLOCK_START -->
-**ID:** \`test-decision-approved\`
-**Titre:** Décision approuvée
-**Statut:** approved
-**Type:** file
-**Chemin:** \`test.txt\`
-**Machine Source:** PC-PRINCIPAL
-**Machines Cibles:** all
-**Créé:** 2025-10-08T08:00:00Z
-**Approuvé le:** 2025-10-08T09:00:00Z
+**Approuvé le:** 2025-10-08T09:30:00Z
 **Approuvé par:** PC-PRINCIPAL
-<!-- DECISION_BLOCK_END -->
-
-<!-- DECISION_BLOCK_START -->
-**ID:** \`test-decision-applied\`
-**Titre:** Décision appliquée
-**Statut:** applied
-**Type:** config
-**Chemin:** \`.config/applied.json\`
-**Machine Source:** PC-PRINCIPAL
-**Machines Cibles:** MAC-DEV
-**Créé:** 2025-10-08T07:00:00Z
+**Commentaire:** Validation complète
 **Appliqué le:** 2025-10-08T10:00:00Z
 **Appliqué par:** PC-PRINCIPAL
 <!-- DECISION_BLOCK_END -->
@@ -330,11 +308,11 @@ describe('roosync_get_decision_details', () => {
 **Créé:** 2025-10-08T06:00:00Z
 **Rejeté le:** 2025-10-08T11:00:00Z
 **Rejeté par:** PC-PRINCIPAL
-**Motif:** Test de rejet
+**Motif:** Configuration incorrecte
 <!-- DECISION_BLOCK_END -->
 
 <!-- DECISION_BLOCK_START -->
-**ID:** \`test-decision-rolled-back\`
+**ID:** \`test-decision-rolledback\`
 **Titre:** Décision annulée
 **Statut:** rolled_back
 **Type:** config
