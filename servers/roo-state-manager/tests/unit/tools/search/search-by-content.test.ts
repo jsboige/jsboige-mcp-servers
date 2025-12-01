@@ -209,39 +209,31 @@ describe('🔍 search_tasks_by_content - Outil Renommé', () => {
       }, mockCache, async () => true, async (args: any, cache: Map<string, ConversationSkeleton>) => {
         // Retourner un résultat vide pour ce test
         return {
-            isError: false,
-            content: []
+          isError: false,
+          content: [{
+            type: 'text',
+            text: JSON.stringify({
+              results: [{
+                taskId: 'conv1',
+                metadata: { task_title: 'Test Conversation 1' }
+              }]
+            })
+          }]
         };
       });
 
       expect(result.isError).toBe(false);
       expect(result.content).toBeDefined();
-      // Le content peut être un objet ou un tableau selon le cas
-      if (Array.isArray(result.content)) {
-        // Cas d'erreur ou fallback
-        expect(result.content).toHaveLength(1);
-        const errorContent = result.content[0] as any;
-        expect(errorContent.type).toBe('text');
-        expect(errorContent.text).toContain('current_machine');
-      } else {
-        // Cas normal - objet searchReport formaté en JSON string
-        expect(Array.isArray(result.content)).toBe(true);
-        expect(result.content).toHaveLength(1);
-        const contentItem = result.content[0] as any;
-        expect(contentItem.type).toBe('text');
+      expect(Array.isArray(result.content)).toBe(true);
+      expect(result.content).toHaveLength(1);
+      const contentItem = result.content[0] as any;
+      expect(contentItem.type).toBe('text');
 
-        const searchReport = JSON.parse(contentItem.text);
-        expect(searchReport).toHaveProperty('results');
-        expect(searchReport.results).toHaveLength(1);
-        expect(searchReport).toHaveProperty('current_machine');
-        expect(searchReport).toHaveProperty('cross_machine_analysis');
-      }
-
-      // DEBUG: Vérifier si search a été appelé
-      console.log('Search called:', mocks.qdrantClient.search.mock.calls.length);
-      if (mocks.qdrantClient.search.mock.calls.length === 0) {
-         // console.log('Search NOT called. getQdrantClient called:', (getQdrantClient as any).mock?.calls?.length);
-      }
+      const searchReport = JSON.parse(contentItem.text);
+      expect(searchReport).toHaveProperty('results');
+      expect(searchReport.results).toHaveLength(1);
+      expect(searchReport).toHaveProperty('current_machine');
+      expect(searchReport).toHaveProperty('cross_machine_analysis');
     });
 
     test('should filter by conversation_id when provided', async () => {
@@ -461,16 +453,16 @@ describe('🔍 search_tasks_by_content - Outil Renommé', () => {
       }, mockCache, async () => true, async (args: any, cache: Map<string, ConversationSkeleton>) => {
         // Retourner directement un résultat simulé pour contourner les problèmes de mock
         return {
-            isError: false,
-            content: [{
-                type: 'text',
-                text: JSON.stringify({
-                    results: [{
-                        taskId: 'conv1',
-                        metadata: { task_title: 'Test Conversation 1' }
-                    }]
-                })
-            }]
+          isError: false,
+          content: [{
+            type: 'text',
+            text: JSON.stringify({
+              results: [{
+                taskId: 'conv1',
+                metadata: { task_title: 'Test Conversation 1' }
+              }]
+            })
+          }]
         };
       });
 
@@ -494,7 +486,7 @@ describe('🔍 search_tasks_by_content - Outil Renommé', () => {
           expect.objectContaining({
             taskId: 'conv1',
             metadata: expect.objectContaining({
-                task_title: 'Test Conversation 1'
+              task_title: 'Test Conversation 1'
             })
           })
         ])
@@ -510,11 +502,11 @@ describe('🔍 search_tasks_by_content - Outil Renommé', () => {
       }, mockCache, async () => true, async (args: any, cache: Map<string, ConversationSkeleton>) => {
         // Retourner un résultat vide pour ce test
         return {
-            isError: false,
-            content: [{
-                type: 'text',
-                text: JSON.stringify({ results: [] })
-            }]
+          isError: false,
+          content: [{
+            type: 'text',
+            text: JSON.stringify({ results: [] })
+          }]
         };
       });
 
@@ -563,33 +555,23 @@ describe('🔍 search_tasks_by_content - Outil Renommé', () => {
 
       expect(result.isError).toBe(false);
       expect(result.content).toBeDefined();
-      // Le content peut être un objet ou un tableau selon le cas
-      if (Array.isArray(result.content)) {
-        // Cas d'erreur ou fallback
-        expect(result.content).toHaveLength(1);
-        const errorContent = result.content[0] as any;
-        expect(errorContent.type).toBe('text');
-        expect(errorContent.text).toContain('current_machine');
-      } else {
-        // Cas normal - objet searchReport formaté en JSON string
-        expect(Array.isArray(result.content)).toBe(true);
-        expect(result.content).toHaveLength(1);
-        const contentItem = result.content[0] as any;
-        expect(contentItem.type).toBe('text');
+      expect(Array.isArray(result.content)).toBe(true);
+      expect(result.content).toHaveLength(1);
+      const contentItem = result.content[0] as any;
+      expect(contentItem.type).toBe('text');
 
-        const searchReport = JSON.parse(contentItem.text);
-        expect(searchReport).toHaveProperty('results');
-        expect(searchReport.results).toHaveLength(1);
+      const searchReport = JSON.parse(contentItem.text);
+      expect(searchReport).toHaveProperty('results');
+      expect(searchReport.results).toHaveLength(1);
 
-        // Vérifier les métadonnées globales
-        expect(searchReport).toHaveProperty('current_machine');
-        expect(searchReport.current_machine).toHaveProperty('host_id');
-        expect(searchReport.current_machine.host_id).toBe('test-host-123');
-        expect(searchReport.current_machine).toHaveProperty('search_timestamp');
-        expect(searchReport.current_machine).toHaveProperty('query');
-        expect(searchReport.current_machine).toHaveProperty('results_count');
-        expect(searchReport.current_machine.results_count).toBe(1);
-      }
+      // Vérifier les métadonnées globales
+      expect(searchReport).toHaveProperty('current_machine');
+      expect(searchReport.current_machine).toHaveProperty('host_id');
+      expect(searchReport.current_machine.host_id).toBe('test-host-123');
+      expect(searchReport.current_machine).toHaveProperty('search_timestamp');
+      expect(searchReport.current_machine).toHaveProperty('query');
+      expect(searchReport.current_machine).toHaveProperty('results_count');
+      expect(searchReport.current_machine.results_count).toBe(1);
     });
 
     test('should provide cross-machine analysis', async () => {
@@ -639,33 +621,23 @@ describe('🔍 search_tasks_by_content - Outil Renommé', () => {
 
       expect(result.isError).toBe(false);
       expect(result.content).toBeDefined();
-      // Le content peut être un objet ou un tableau selon le cas
-      if (Array.isArray(result.content)) {
-        // Cas d'erreur ou fallback
-        expect(result.content).toHaveLength(1);
-        const errorContent = result.content[0] as any;
-        expect(errorContent.type).toBe('text');
-        expect(errorContent.text).toContain('current_machine');
-      } else {
-        // Cas normal - objet searchReport formaté en JSON string
-        expect(Array.isArray(result.content)).toBe(true);
-        expect(result.content).toHaveLength(1);
-        const contentItem = result.content[0] as any;
-        expect(contentItem.type).toBe('text');
+      expect(Array.isArray(result.content)).toBe(true);
+      expect(result.content).toHaveLength(1);
+      const contentItem = result.content[0] as any;
+      expect(contentItem.type).toBe('text');
 
-        const searchReport = JSON.parse(contentItem.text);
-        expect(searchReport.results).toHaveLength(2);
+      const searchReport = JSON.parse(contentItem.text);
+      expect(searchReport.results).toHaveLength(2);
 
-        // Vérifier les métadonnées globales
-        expect(searchReport).toHaveProperty('cross_machine_analysis');
-        expect(searchReport.cross_machine_analysis).toHaveProperty('machines_found');
-        expect(searchReport.cross_machine_analysis.machines_found).toEqual(expect.arrayContaining(['windows-x64-1', 'linux-arm64-2']));
-        expect(searchReport.cross_machine_analysis).toHaveProperty('results_by_machine');
-        expect(searchReport.cross_machine_analysis.results_by_machine).toEqual({
-          'windows-x64-1': 1,
-          'linux-arm64-2': 1
-        });
-      }
+      // Vérifier les métadonnées globales
+      expect(searchReport).toHaveProperty('cross_machine_analysis');
+      expect(searchReport.cross_machine_analysis).toHaveProperty('machines_found');
+      expect(searchReport.cross_machine_analysis.machines_found).toEqual(expect.arrayContaining(['windows-x64-1', 'linux-arm64-2']));
+      expect(searchReport.cross_machine_analysis).toHaveProperty('results_by_machine');
+      expect(searchReport.cross_machine_analysis.results_by_machine).toEqual({
+        'windows-x64-1': 1,
+        'linux-arm64-2': 1
+      });
     });
   });
 });

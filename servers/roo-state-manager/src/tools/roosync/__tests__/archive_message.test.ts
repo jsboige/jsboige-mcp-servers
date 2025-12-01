@@ -13,18 +13,22 @@
  */
 
 import { describe, test, expect, beforeEach, afterEach, vi } from 'vitest';
-import { archiveMessage } from '../archive_message.js';
-import { MessageManager } from '../../../services/MessageManager.js';
-import { existsSync, rmSync, mkdirSync } from 'fs';
+import { existsSync, rmSync, mkdirSync, promises as fs } from 'fs';
 import { join } from 'path';
-import * as serverHelpers from '../../../utils/server-helpers.js';
+
+// Pas de mock - utilisation directe de la variable d'environnement
+
+// Importer les modules après le mock
+import { MessageManager } from '../../../services/MessageManager.js';
+import { archiveMessage } from '../archive_message.js';
 
 describe('roosync_archive_message', () => {
   let testSharedStatePath: string;
   let messageManager: MessageManager;
+  let originalEnv: NodeJS.ProcessEnv;
 
-  beforeEach(() => {
-    testSharedStatePath = join(__dirname, '../../../__test-data__/shared-state-archive');
+  beforeEach(async () => {
+    testSharedStatePath = join(__dirname, '../../../../__test-data__/shared-state-archive');
     
     const dirs = [
       join(testSharedStatePath, 'messages/inbox'),
@@ -39,8 +43,20 @@ describe('roosync_archive_message', () => {
 
     messageManager = new MessageManager(testSharedStatePath);
 
-    // Mock getSharedStatePath pour pointer vers le répertoire de test
-    vi.spyOn(serverHelpers, 'getSharedStatePath').mockReturnValue(testSharedStatePath);
+    // Mock l'environnement pour que getSharedStatePath() utilise notre chemin de test
+    originalEnv = { ...process.env };
+    process.env.ROOSYNC_SHARED_PATH = testSharedStatePath;
+    
+    // Pas de mock - utilisation directe de la variable d'environnement
+    
+    // Définir la variable d'environnement pour le code de production
+    process.env.ROOSYNC_TEST_PATH = testSharedStatePath;
+    
+    // Logs de débogage
+    console.error('🔍 [TEST] Répertoire de test:', testSharedStatePath);
+    console.error('🔍 [TEST] Variable ROOSYNC_TEST_PATH:', process.env.ROOSYNC_TEST_PATH);
+    console.error('🔍 [TEST] Contenu du répertoire messages:', existsSync(join(testSharedStatePath, 'messages')) ? 'EXISTS' : 'MISSING');
+    console.error('🔍 [TEST] Contenu du répertoire inbox:', existsSync(join(testSharedStatePath, 'messages/inbox')) ? 'EXISTS' : 'MISSING');
   });
 
   afterEach(() => {
@@ -48,6 +64,8 @@ describe('roosync_archive_message', () => {
     if (existsSync(testSharedStatePath)) {
       rmSync(testSharedStatePath, { recursive: true, force: true });
     }
+    // Restaurer l'environnement original
+    process.env = originalEnv;
   });
 
   test('should archive message from inbox', async () => {
@@ -58,6 +76,13 @@ describe('roosync_archive_message', () => {
       'Body',
       'MEDIUM'
     );
+
+    // Forcer l'utilisation du même chemin pour les deux MessageManagers
+    const archiveMessageManager = new MessageManager(testSharedStatePath);
+    
+    // Créer un message directement dans inbox pour l'outil
+    const inboxPath = join(testSharedStatePath, 'messages/inbox', `${message.id}.json`);
+    await fs.writeFile(inboxPath, JSON.stringify(message, null, 2));
 
     const result = await archiveMessage({ message_id: message.id });
 

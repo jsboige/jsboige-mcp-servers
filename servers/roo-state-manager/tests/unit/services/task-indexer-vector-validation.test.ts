@@ -1,21 +1,36 @@
-import { TaskIndexer } from '../../../src/services/task-indexer';
-import getOpenAIClient from '../../../src/services/openai';
+import { TaskIndexer } from '../../../src/services/task-indexer.js';
+import getOpenAIClient from '../../../src/services/openai.js';
 import * as fs from 'fs/promises';
 import * as path from 'path';
 import { vi } from 'vitest';
 
+// Mock Qdrant client
+const mockQdrantClient = {
+  upsert: vi.fn(),
+  getCollections: vi.fn(),
+  createCollection: vi.fn(),
+  getCollection: vi.fn(),
+  deleteCollection: vi.fn(),
+};
+
+// Mock OpenAI client
+const mockOpenAIClient = {
+  embeddings: {
+    create: vi.fn()
+  }
+};
+
 // Mocks
 vi.mock('fs/promises');
-vi.mock('../../../src/services/openai', () => ({
-  default: vi.fn(() => ({
-    embeddings: {
-      create: vi.fn()
-    }
-  }))
+vi.mock('../../../src/services/openai.js', () => ({
+  default: vi.fn(() => mockOpenAIClient)
+}));
+
+vi.mock('../../../src/services/qdrant.js', () => ({
+  getQdrantClient: vi.fn(() => mockQdrantClient)
 }));
 
 const mockFs = vi.mocked(fs);
-const mockOpenAIClient = getOpenAIClient();
 
 describe('🛡️ TaskIndexer - Validation Vectorielle Améliorée', () => {
   let taskIndexer: TaskIndexer;
@@ -64,7 +79,7 @@ describe('🛡️ TaskIndexer - Validation Vectorielle Améliorée', () => {
     const mockEmbeddingsCreate = vi.fn().mockResolvedValue({
       data: [{ embedding: validVector }]
     });
-    (mockOpenAIClient.embeddings.create as any) = mockEmbeddingsCreate;
+    mockOpenAIClient.embeddings.create = mockEmbeddingsCreate;
 
     // Créer une instance de TaskIndexer
     taskIndexer = new TaskIndexer();
@@ -118,7 +133,7 @@ describe('🛡️ TaskIndexer - Validation Vectorielle Améliorée', () => {
 
   describe('validateVectorGlobal - Validation globale', () => {
     test('should accept valid vector through global validation', async () => {
-      (mockOpenAIClient.embeddings.create as any).mockResolvedValue({
+      mockOpenAIClient.embeddings.create.mockResolvedValue({
         data: [{ embedding: validVector }]
       });
 

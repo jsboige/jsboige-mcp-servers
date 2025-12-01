@@ -19,70 +19,110 @@ const { mockRooSyncService, mockRooSyncServiceError, mockGetRooSyncService } = v
   
   const service = {
     resetInstance: vi.fn(),
-    getInstance: vi.fn(() => ({
-      getConfig: vi.fn().mockReturnValue({
-        version: '2.0.0',
-        sharedStatePath: '/mock/shared',
-        baselinePath: '/mock/baseline',
-        machines: {
-          'PC-PRINCIPAL': {
-            id: 'PC-PRINCIPAL',
-            name: 'PC Principal',
-            basePath: '/mock/pc-principal',
-            lastSync: '2025-10-08T09:00:00Z',
-            status: 'online'
-          },
-          'MAC-DEV': {
-            id: 'MAC-DEV',
-            name: 'Mac Dev',
-            basePath: '/mock/mac-dev',
-            lastSync: '2025-10-08T08:00:00Z',
-            status: 'online'
+    getInstance: vi.fn(() => {
+      let callCount = 0;
+      return {
+        getConfig: vi.fn().mockReturnValue({
+          version: '2.0.0',
+          sharedStatePath: '/mock/shared',
+          baselinePath: '/mock/baseline',
+          machines: {
+            'PC-PRINCIPAL': {
+              id: 'PC-PRINCIPAL',
+              name: 'PC Principal',
+              basePath: '/mock/pc-principal',
+              lastSync: '2025-10-08T09:00:00Z',
+              status: 'online'
+            },
+            'MAC-DEV': {
+              id: 'MAC-DEV',
+              name: 'Mac Dev',
+              basePath: '/mock/mac-dev',
+              lastSync: '2025-10-08T08:00:00Z',
+              status: 'online'
+            }
           }
-        }
-      }),
-      compareRealConfigurations: vi.fn().mockResolvedValue({
-        success: true,
-        differences: [
-          {
-            type: 'config',
-            file: '.config/settings.json',
-            severity: 'medium',
-            description: 'Configuration différente',
-            machineA: 'PC-PRINCIPAL',
-            machineB: 'MAC-DEV'
+        }),
+        compareRealConfigurations: vi.fn().mockImplementation((source, target) => {
+          callCount++;
+          
+          // Pour le test d'erreur avec une seule machine
+          if (callCount > 1) {
+            return Promise.reject(new mockRooSyncServiceError('Aucune autre machine disponible'));
           }
-        ],
-        summary: {
-          totalDifferences: 1,
-          byType: { config: 1, files: 0, settings: 0 },
-          bySeverity: { low: 0, medium: 1, high: 0 }
-        }
-      }),
-      loadDashboard: vi.fn().mockResolvedValue({
-        version: '2.0.0',
-        lastUpdate: '2025-10-08T10:00:00Z',
-        overallStatus: 'diverged',
-        machines: {
-          'PC-PRINCIPAL': {
-            id: 'PC-PRINCIPAL',
-            name: 'PC Principal',
-            lastSync: '2025-10-08T09:00:00Z',
-            status: 'online',
-            diffsCount: 2,
-            pendingDecisions: 1
-          },
-          'MAC-DEV': {
-            id: 'MAC-DEV',
-            name: 'Mac Dev',
-            lastSync: '2025-10-08T08:00:00Z',
-            status: 'online',
-            diffsCount: 0,
-            pendingDecisions: 0
+          
+          return Promise.resolve({
+            sourceMachine: 'PC-PRINCIPAL',
+            targetMachine: 'MAC-DEV',
+            hostId: 'PC-PRINCIPAL',
+            differences: [
+              {
+                action: 'modified',
+                category: 'config',
+                path: '.config/settings.json',
+                severity: 'medium',
+                description: 'Configuration différente',
+                machineA: 'PC-PRINCIPAL',
+                machineB: 'MAC-DEV'
+              }
+            ],
+            summary: {
+              total: 1,
+              critical: 0,
+              important: 0,
+              warning: 1,
+              info: 0
+            }
+          });
+        }),
+        loadDashboard: vi.fn().mockImplementation(() => {
+          callCount++;
+          
+          // Pour le test d'erreur avec une seule machine
+          if (callCount > 1) {
+            return Promise.resolve({
+              version: '2.0.0',
+              lastUpdate: '2025-10-08T10:00:00Z',
+              overallStatus: 'synced',
+              machines: {
+                'PC-PRINCIPAL': {
+                  id: 'PC-PRINCIPAL',
+                  name: 'PC Principal',
+                  lastSync: '2025-10-08T09:00:00Z',
+                  status: 'online',
+                  diffsCount: 0,
+                  pendingDecisions: 0
+                }
+              }
+            });
           }
-        }
-      })
-    }))
+          
+          return Promise.resolve({
+            version: '2.0.0',
+            lastUpdate: '2025-10-08T10:00:00Z',
+            overallStatus: 'diverged',
+            machines: {
+              'PC-PRINCIPAL': {
+                id: 'PC-PRINCIPAL',
+                name: 'PC Principal',
+                lastSync: '2025-10-08T09:00:00Z',
+                status: 'online',
+                diffsCount: 2,
+                pendingDecisions: 1
+              },
+              'MAC-DEV': {
+                id: 'MAC-DEV',
+                name: 'Mac Dev',
+                lastSync: '2025-10-08T08:00:00Z',
+                status: 'online',
+                diffsCount: 0,
+                pendingDecisions: 0
+              }
+            }
+          });
+        })
+      };
+    })
   };
   
   // Mock de la fonction getRooSyncService

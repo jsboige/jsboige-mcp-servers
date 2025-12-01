@@ -52,23 +52,35 @@ const { mockRooSyncService, mockRooSyncServiceError, mockGetRooSyncService } = v
           overallStatus: 'synced',
           machines: {
             'PC-PRINCIPAL': {
+              id: 'PC-PRINCIPAL',
+              name: 'PC Principal',
               lastSync: '2025-10-08T09:00:00Z',
               status: 'online',
               diffsCount: 0,
               pendingDecisions: 0
             },
             'MAC-DEV': {
+              id: 'MAC-DEV',
+              name: 'Mac Dev',
               lastSync: '2025-10-08T08:00:00Z',
               status: 'online',
               diffsCount: 2,
               pendingDecisions: 1
+            },
+            'LAPTOP-WORK': {
+              id: 'LAPTOP-WORK',
+              name: 'Laptop Work',
+              lastSync: '2025-10-07T18:00:00Z',
+              status: 'offline',
+              diffsCount: 5,
+              pendingDecisions: 3
             }
           },
           statistics: {
-            totalMachines: 2,
+            totalMachines: 3,
             onlineMachines: 2,
-            totalDifferences: 2,
-            pendingDecisions: 1,
+            totalDifferences: 7,
+            pendingDecisions: 4,
             lastSync: '2025-10-08T09:00:00Z'
           }
         };
@@ -87,7 +99,7 @@ const { mockRooSyncService, mockRooSyncServiceError, mockGetRooSyncService } = v
       loadDashboard: vi.fn().mockResolvedValue({
         version: '2.0.0',
         lastUpdate: '2025-10-08T10:00:00Z',
-        overallStatus: 'diverged',
+        overallStatus: 'synced',
         machines: {
           'PC-PRINCIPAL': {
             id: 'PC-PRINCIPAL',
@@ -104,6 +116,14 @@ const { mockRooSyncService, mockRooSyncServiceError, mockGetRooSyncService } = v
             status: 'online',
             diffsCount: 2,
             pendingDecisions: 1
+          },
+          'LAPTOP-WORK': {
+            id: 'LAPTOP-WORK',
+            name: 'Laptop Work',
+            lastSync: '2025-10-07T18:00:00Z',
+            status: 'offline',
+            diffsCount: 5,
+            pendingDecisions: 3
           }
         }
       })
