@@ -69,20 +69,16 @@ describe('roosync_archive_message', () => {
   });
 
   test('should archive message from inbox', async () => {
-    const message = await messageManager.sendMessage(
+    // Utiliser le même MessageManager que celui utilisé par l'outil
+    const archiveMessageManager = new MessageManager(testSharedStatePath);
+    
+    const message = await archiveMessageManager.sendMessage(
       'machine1',
       'machine2',
       'Archive Test',
       'Body',
       'MEDIUM'
     );
-
-    // Forcer l'utilisation du même chemin pour les deux MessageManagers
-    const archiveMessageManager = new MessageManager(testSharedStatePath);
-    
-    // Créer un message directement dans inbox pour l'outil
-    const inboxPath = join(testSharedStatePath, 'messages/inbox', `${message.id}.json`);
-    await fs.writeFile(inboxPath, JSON.stringify(message, null, 2));
 
     const result = await archiveMessage({ message_id: message.id });
 
@@ -97,7 +93,10 @@ describe('roosync_archive_message', () => {
   });
 
   test('should handle already archived message', async () => {
-    const message = await messageManager.sendMessage(
+    // Utiliser le même MessageManager que celui utilisé par l'outil
+    const archiveMessageManager = new MessageManager(testSharedStatePath);
+    
+    const message = await archiveMessageManager.sendMessage(
       'machine1',
       'machine2',
       'Already Archived',
@@ -106,10 +105,10 @@ describe('roosync_archive_message', () => {
     );
 
     // Archiver d'abord le message
-    await messageManager.archiveMessage(message.id);
+    await archiveMessageManager.archiveMessage(message.id);
     
     // Récupérer le message archivé pour vérifier son statut
-    const archivedMsg = await messageManager.getMessage(message.id);
+    const archivedMsg = await archiveMessageManager.getMessage(message.id);
     
     // Si le message est trouvé dans archive avec statut 'archived', l'outil devrait détecter cela
     // Sinon, le comportement observé est qu'il archive à nouveau (message déjà dans archive)
@@ -131,7 +130,10 @@ describe('roosync_archive_message', () => {
   });
 
   test('should physically move file from inbox to archive', async () => {
-    const message = await messageManager.sendMessage(
+    // Utiliser le même MessageManager que celui utilisé par l'outil
+    const archiveMessageManager = new MessageManager(testSharedStatePath);
+    
+    const message = await archiveMessageManager.sendMessage(
       'machine1',
       'machine2',
       'Move Test',
@@ -152,7 +154,10 @@ describe('roosync_archive_message', () => {
   });
 
   test('should include archived_at timestamp', async () => {
-    const message = await messageManager.sendMessage(
+    // Utiliser le même MessageManager que celui utilisé par l'outil
+    const archiveMessageManager = new MessageManager(testSharedStatePath);
+    
+    const message = await archiveMessageManager.sendMessage(
       'machine1',
       'machine2',
       'Timestamp Test',
