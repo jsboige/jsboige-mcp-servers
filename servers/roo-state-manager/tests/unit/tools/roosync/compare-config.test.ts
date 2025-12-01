@@ -8,7 +8,7 @@ import { join, dirname } from 'path';
 import { fileURLToPath } from 'url';
 
 // Mock pour RooSyncService
-const { mockRooSyncService, mockRooSyncServiceError, mockGetRooSyncService } = vi.hoisted(() => {
+const { mockRooSyncService, mockRooSyncServiceError, mockGetRooSyncService, mockLoadDashboard, mockCompareRealConfigurations } = vi.hoisted(() => {
   // Mock de la classe d'erreur
   const errorClass = class extends Error {
     constructor(message: string) {
@@ -16,14 +16,17 @@ const { mockRooSyncService, mockRooSyncServiceError, mockGetRooSyncService } = v
       this.name = 'RooSyncServiceError';
     }
   };
-  
+
+  const loadDashboard = vi.fn();
+  const compareRealConfigurations = vi.fn();
+
   const service = {
     resetInstance: vi.fn(),
     getInstance: vi.fn(() => {
-      let callCount = 0;
       return {
         getConfig: vi.fn().mockReturnValue({
           version: '2.0.0',
+          machineId: 'PC-PRINCIPAL',
           sharedStatePath: '/mock/shared',
           baselinePath: '/mock/baseline',
           machines: {
@@ -43,95 +46,21 @@ const { mockRooSyncService, mockRooSyncServiceError, mockGetRooSyncService } = v
             }
           }
         }),
-        compareRealConfigurations: vi.fn().mockImplementation((source, target) => {
-          callCount++;
-          
-          // Pour le test d'erreur avec une seule machine
-          if (callCount > 1) {
-            return Promise.reject(new mockRooSyncServiceError('Aucune autre machine disponible'));
-          }
-          
-          return Promise.resolve({
-            sourceMachine: 'PC-PRINCIPAL',
-            targetMachine: 'MAC-DEV',
-            hostId: 'PC-PRINCIPAL',
-            differences: [
-              {
-                action: 'modified',
-                category: 'config',
-                path: '.config/settings.json',
-                severity: 'medium',
-                description: 'Configuration différente',
-                machineA: 'PC-PRINCIPAL',
-                machineB: 'MAC-DEV'
-              }
-            ],
-            summary: {
-              total: 1,
-              critical: 0,
-              important: 0,
-              warning: 1,
-              info: 0
-            }
-          });
-        }),
-        loadDashboard: vi.fn().mockImplementation(() => {
-          callCount++;
-          
-          // Pour le test d'erreur avec une seule machine
-          if (callCount > 1) {
-            return Promise.resolve({
-              version: '2.0.0',
-              lastUpdate: '2025-10-08T10:00:00Z',
-              overallStatus: 'synced',
-              machines: {
-                'PC-PRINCIPAL': {
-                  id: 'PC-PRINCIPAL',
-                  name: 'PC Principal',
-                  lastSync: '2025-10-08T09:00:00Z',
-                  status: 'online',
-                  diffsCount: 0,
-                  pendingDecisions: 0
-                }
-              }
-            });
-          }
-          
-          return Promise.resolve({
-            version: '2.0.0',
-            lastUpdate: '2025-10-08T10:00:00Z',
-            overallStatus: 'diverged',
-            machines: {
-              'PC-PRINCIPAL': {
-                id: 'PC-PRINCIPAL',
-                name: 'PC Principal',
-                lastSync: '2025-10-08T09:00:00Z',
-                status: 'online',
-                diffsCount: 2,
-                pendingDecisions: 1
-              },
-              'MAC-DEV': {
-                id: 'MAC-DEV',
-                name: 'Mac Dev',
-                lastSync: '2025-10-08T08:00:00Z',
-                status: 'online',
-                diffsCount: 0,
-                pendingDecisions: 0
-              }
-            }
-          });
-        })
+        compareRealConfigurations: compareRealConfigurations,
+        loadDashboard: loadDashboard
       };
     })
   };
-  
+
   // Mock de la fonction getRooSyncService
   const getRooSyncService = vi.fn(() => service.getInstance());
-  
+
   return {
     mockRooSyncService: service,
     mockRooSyncServiceError: errorClass,
-    mockGetRooSyncService: getRooSyncService
+    mockGetRooSyncService: getRooSyncService,
+    mockLoadDashboard: loadDashboard,
+    mockCompareRealConfigurations: compareRealConfigurations
   };
 });
 
@@ -149,42 +78,74 @@ const __dirname = dirname(__filename);
 
 describe('roosync_compare_config', () => {
   const testDir = join(__dirname, '../../../fixtures/roosync-compare-config-test');
-  
+
+  const defaultDashboard = {
+    version: '2.0.0',
+    lastUpdate: '2025-10-08T10:00:00Z',
+    overallStatus: 'diverged',
+    machines: {
+      'PC-PRINCIPAL': {
+        id: 'PC-PRINCIPAL',
+        name: 'PC Principal',
+        lastSync: '2025-10-08T09:00:00Z',
+        status: 'online',
+        diffsCount: 2,
+        pendingDecisions: 1
+      },
+      'MAC-DEV': {
+        id: 'MAC-DEV',
+        name: 'Mac Dev',
+        lastSync: '2025-10-08T08:00:00Z',
+        status: 'online',
+        diffsCount: 0,
+        pendingDecisions: 0
+      }
+    }
+  };
+
+  const defaultReport = {
+    sourceMachine: 'PC-PRINCIPAL',
+    targetMachine: 'MAC-DEV',
+    hostId: 'PC-PRINCIPAL',
+    differences: [
+      {
+        action: 'modified',
+        category: 'config',
+        path: '.config/settings.json',
+        severity: 'medium',
+        description: 'Configuration différente',
+        machineA: 'PC-PRINCIPAL',
+        machineB: 'MAC-DEV'
+      }
+    ],
+    summary: {
+      total: 1,
+      critical: 0,
+      important: 0,
+      warning: 1,
+      info: 0
+    }
+  };
+
   beforeEach(() => {
+    // Configurer les mocks par défaut
+    mockLoadDashboard.mockResolvedValue(defaultDashboard);
+    mockCompareRealConfigurations.mockResolvedValue(defaultReport);
+
     // Créer répertoire de test
     try {
       mkdirSync(testDir, { recursive: true });
     } catch (error) {
       // Déjà existant
     }
-    
+
     // Créer dashboard de test
-    const dashboard = {
-      version: '2.0.0',
-      lastUpdate: '2025-10-08T10:00:00Z',
-      overallStatus: 'diverged',
-      machines: {
-        'PC-PRINCIPAL': {
-          lastSync: '2025-10-08T09:00:00Z',
-          status: 'online',
-          diffsCount: 2,
-          pendingDecisions: 1
-        },
-        'MAC-DEV': {
-          lastSync: '2025-10-08T08:00:00Z',
-          status: 'online',
-          diffsCount: 0,
-          pendingDecisions: 0
-        }
-      }
-    };
-    
     writeFileSync(
       join(testDir, 'sync-dashboard.json'),
-      JSON.stringify(dashboard, null, 2),
+      JSON.stringify(defaultDashboard, null, 2),
       'utf-8'
     );
-    
+
     // Créer sync-config.json de test
     const config = {
       version: '2.0.0',
@@ -199,7 +160,7 @@ describe('roosync_compare_config', () => {
         }
       }
     };
-    
+
     writeFileSync(
       join(testDir, 'sync-config.json'),
       JSON.stringify(config, null, 2),
@@ -216,18 +177,18 @@ describe('roosync_compare_config', () => {
         ...machine
       }))
     };
-    
+
     writeFileSync(
       join(testDir, 'sync-config.ref.json'),
       JSON.stringify(baselineConfig, null, 2),
       'utf-8'
     );
-    
+
     // Créer les inventaires directement dans inventories/ pour les tests
     // (InventoryCollector cherche dans sharedStatePath/inventories/)
     const sharedStateInventoriesDir = join(testDir, 'inventories');
     mkdirSync(sharedStateInventoriesDir, { recursive: true });
-    
+
     // Créer les fichiers d'inventaire de test avec les bonnes données
     const pcInventory = {
       machineId: "PC-PRINCIPAL",
@@ -259,7 +220,7 @@ describe('roosync_compare_config', () => {
         ]
       }
     };
-    
+
     const macInventory = {
       machineId: "MAC-DEV",
       timestamp: "2025-11-13T03:20:00.000Z",
@@ -290,21 +251,21 @@ describe('roosync_compare_config', () => {
         ]
       }
     };
-    
+
     // Écrire les fichiers d'inventaire
     const pcInventoryPath = join(sharedStateInventoriesDir, 'PC-PRINCIPAL.json');
     const macInventoryPath = join(sharedStateInventoriesDir, 'MAC-DEV.json');
-    
+
     writeFileSync(pcInventoryPath, JSON.stringify(pcInventory, null, 2), 'utf-8');
     writeFileSync(macInventoryPath, JSON.stringify(macInventory, null, 2), 'utf-8');
-    
+
     console.log(`[TEST] Inventaire créé pour PC-PRINCIPAL:`, pcInventoryPath);
     console.log(`[TEST] Inventaire créé pour MAC-DEV:`, macInventoryPath);
-    
+
     // Créer un script PowerShell mock pour les tests
     const mockScriptPath = join(testDir, 'scripts', 'inventory', 'Get-MachineInventory.ps1');
     mkdirSync(join(testDir, 'scripts', 'inventory'), { recursive: true });
-    
+
     const mockScriptContent = `
     param(
       [Parameter(Mandatory=$true)]
@@ -321,28 +282,28 @@ describe('roosync_compare_config', () => {
       Write-Error "Machine non reconnue pour les tests: $MachineId"
     }
     `.replace(/\${testDir}/g, testDir);
-    
+
     writeFileSync(mockScriptPath, mockScriptContent, 'utf-8');
     console.log(`[TEST] Script mock créé:`, mockScriptPath);
-    
+
     // Vérifier que les fichiers d'inventaire existent
     console.log('[TEST] Répertoire inventaires:', sharedStateInventoriesDir);
     console.log('[TEST] Contenu répertoire inventaires:', readdirSync(sharedStateInventoriesDir));
-    
+
     // Vérifier que le fichier a bien été créé
     const baselinePath = join(testDir, 'sync-config.ref.json');
     console.log('[TEST] Fichier baseline créé:', baselinePath);
-    
+
     // Mock environnement
     process.env.ROOSYNC_SHARED_PATH = testDir;
     process.env.ROOSYNC_MACHINE_ID = 'PC-PRINCIPAL';
     process.env.ROOSYNC_AUTO_SYNC = 'false';
     process.env.ROOSYNC_CONFLICT_STRATEGY = 'manual';
     process.env.ROOSYNC_LOG_LEVEL = 'info';
-    
+
     RooSyncService.resetInstance();
   });
-  
+
   afterEach(() => {
     // Temporairement désactivé pour debug
     // try {
@@ -356,37 +317,37 @@ describe('roosync_compare_config', () => {
   it('devrait comparer avec une machine spécifiée', async () => {
     // Arrange
     const args: CompareConfigArgs = { target: 'MAC-DEV' };
-    
+
     // Act
     const result = await roosyncCompareConfig(args);
-    
+
     // Assert
     expect(result.source).toBe('PC-PRINCIPAL');
     expect(result.target).toBe('MAC-DEV');
     expect(result.differences).toBeDefined();
     expect(Array.isArray(result.differences)).toBe(true);
   });
-  
+
   it('devrait auto-sélectionner une machine si non spécifiée', async () => {
     // Arrange
     const args: CompareConfigArgs = {};
-    
+
     // Act
     const result = await roosyncCompareConfig(args);
-    
+
     // Assert
     expect(result.source).toBe('PC-PRINCIPAL');
     expect(result.target).toBe('MAC-DEV'); // Auto-sélectionné
     expect(result.differences.length > 0).toBe(true); // Il doit y avoir des différences
   });
-  
+
   it('devrait marquer identical=true quand pas de différences', async () => {
     // Arrange
     const args: CompareConfigArgs = { target: 'MAC-DEV' };
-    
+
     // Act
     const result = await roosyncCompareConfig(args);
-    
+
     // Assert
     if (result.differences.length === 0) {
       expect(result.differences.length === 0).toBe(true);
@@ -394,21 +355,21 @@ describe('roosync_compare_config', () => {
       expect(result.differences.length === 0).toBe(false);
     }
   });
-  
+
   it('devrait typer correctement les différences', async () => {
     // Arrange
     const args: CompareConfigArgs = { target: 'MAC-DEV' };
-    
+
     // Act
     const result = await roosyncCompareConfig(args);
-    
+
     // Assert
     result.differences.forEach(diff => {
       expect(['config', 'hardware', 'software', 'system']).toContain(diff.category);
       expect(diff.path).toBeDefined();
     });
   });
-  
+
   it('devrait lever une erreur si aucune autre machine disponible', async () => {
     // Arrange - Dashboard avec une seule machine
     const singleMachineDashboard = {
@@ -424,47 +385,35 @@ describe('roosync_compare_config', () => {
         }
       }
     };
-    
+
     writeFileSync(
       join(testDir, 'sync-dashboard.json'),
       JSON.stringify(singleMachineDashboard, null, 2),
       'utf-8'
     );
-    
+
     RooSyncService.resetInstance();
-    
-    const args: CompareConfigArgs = {};
-    
-    // Act & Assert
-    await expect(roosyncCompareConfig(args)).rejects.toThrow('Aucune autre machine');
-    
-    // Restaurer le dashboard original pour les tests suivants
-    const originalDashboard = {
+
+    // Configurer le mock pour retourner un dashboard avec une seule machine
+    mockLoadDashboard.mockResolvedValueOnce({
       version: '2.0.0',
       lastUpdate: '2025-10-08T10:00:00Z',
-      overallStatus: 'diverged',
+      overallStatus: 'synced',
       machines: {
         'PC-PRINCIPAL': {
           lastSync: '2025-10-08T09:00:00Z',
-          status: 'online',
-          diffsCount: 2,
-          pendingDecisions: 1
-        },
-        'MAC-DEV': {
-          lastSync: '2025-10-08T08:00:00Z',
           status: 'online',
           diffsCount: 0,
           pendingDecisions: 0
         }
       }
-    };
-    
-    writeFileSync(
-      join(testDir, 'sync-dashboard.json'),
-      JSON.stringify(originalDashboard, null, 2),
-      'utf-8'
-    );
-    
+    });
+
+    const args: CompareConfigArgs = {};
+
+    // Act & Assert
+    await expect(roosyncCompareConfig(args)).rejects.toThrow('Aucune autre machine');
+
     RooSyncService.resetInstance();
   });
 
