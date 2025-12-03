@@ -130,52 +130,51 @@ vi.mock('../src/services/synthesis/SynthesisOrchestratorService.js', () => {
 
 // Mock du système de fichiers
 // Mock fs/promises avec toutes les méthodes nécessaires
-/*
 const mockFsPromises = {
   access: vi.fn().mockResolvedValue(undefined),
   readFile: vi.fn().mockResolvedValue(JSON.stringify({})),
   writeFile: vi.fn().mockResolvedValue(undefined),
   readdir: vi.fn().mockResolvedValue(['file1.json', 'file2.json']),
-  stat: vi.fn().mockResolvedValue({ isDirectory: () => true }),
+  stat: vi.fn().mockResolvedValue({ isDirectory: () => true, size: 100, mtime: new Date() }),
   mkdir: vi.fn().mockResolvedValue(undefined),
   rm: vi.fn().mockResolvedValue(undefined),
   copyFile: vi.fn().mockResolvedValue(undefined),
   unlink: vi.fn().mockResolvedValue(undefined)
 };
 
-vi.mock('fs/promises', () => {
-  return {
-    default: mockFsPromises,
-    ...mockFsPromises
-  };
-});
-
 // Mock du système de fichiers
-vi.mock('fs', () => {
-  const mockFs = {
-    existsSync: vi.fn(() => true),
-    readFileSync: vi.fn(() => JSON.stringify({})),
-    writeFileSync: vi.fn(),
-    mkdirSync: vi.fn(),
-    readdirSync: vi.fn(() => ['file1.json', 'file2.json']),
-    statSync: vi.fn(() => ({ isDirectory: () => true })),
-    rmSync: vi.fn(),
-    promises: mockFsPromises
-  };
-  
-  return {
-    default: mockFs,
-    ...mockFs
-  };
-});
-*/
+const mockFs = {
+  existsSync: vi.fn(() => true),
+  readFileSync: vi.fn(() => JSON.stringify({})),
+  writeFileSync: vi.fn(),
+  mkdirSync: vi.fn(),
+  readdirSync: vi.fn(() => ['file1.json', 'file2.json']),
+  statSync: vi.fn(() => ({ isDirectory: () => true, size: 100, mtime: new Date() })),
+  rmSync: vi.fn(),
+  promises: mockFsPromises
+};
+
+// Mock global de fs et fs/promises
+// Note: Certains tests peuvent surcharger ces mocks avec vi.mock('fs', ...) localement
+vi.mock('fs', () => ({
+  default: mockFs,
+  ...mockFs
+}));
+
+vi.mock('fs/promises', () => ({
+  default: mockFsPromises,
+  ...mockFsPromises
+}));
 
 // Mock du module path - Utilisation de l'implémentation réelle pour la robustesse
+// MAIS avec normalisation forcée pour les tests cross-platform
 vi.mock('path', async (importOriginal) => {
   const actual = await importOriginal();
   return {
     ...actual,
     default: actual,
+    // Surcharge optionnelle si nécessaire pour normaliser les séparateurs
+    // normalize: (p) => actual.normalize(p).replace(/\\/g, '/')
   };
 });
 

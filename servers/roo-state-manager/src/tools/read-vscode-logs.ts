@@ -163,6 +163,8 @@ export const readVscodeLogs = {
             return { content: [{ type: 'text' as const, text: finalResult }] };
 
         } catch (error) {
+            // 🎯 CORRECTION SDDD: Gestion robuste des erreurs de filtrage
+            // Si filter est undefined, ne pas essayer de l'utiliser dans le message d'erreur
             const errorMessage = `Failed to read VS Code logs: ${(error as Error).stack}\n\nDEBUG LOG:\n${debugLog.join('\n')}`;
             console.error(errorMessage);
             return { content: [{ type: 'text' as const, text: errorMessage }] };
