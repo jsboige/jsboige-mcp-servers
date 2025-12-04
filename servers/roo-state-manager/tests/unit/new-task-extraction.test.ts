@@ -3,7 +3,7 @@
  * Valide la correction du bug de parsing incomplet (6 newTask dans une seule ligne)
  */
 
-import { describe, it, expect, beforeAll, beforeEach } from 'vitest';
+import { describe, it, expect, beforeAll, beforeEach, vi } from 'vitest';
 import * as path from 'path';
 import * as fs from 'fs/promises';
 import { RooStorageDetector } from '../../src/utils/roo-storage-detector.js';
@@ -14,6 +14,10 @@ describe.skip('NewTask Extraction - Ligne Unique Géante (DISABLED: ESM singleto
     const testTaskPath = path.join(fixturesPath, testTaskId);
 
     beforeAll(async () => {
+        // Désactiver les mocks fs pour ce test afin de pouvoir lire de vrais fichiers
+        vi.unmock('fs/promises');
+        vi.unmock('fs');
+        
         // Vérifier que le fichier de test existe
         const uiMessagesPath = path.join(testTaskPath, 'ui_messages.json');
         try {

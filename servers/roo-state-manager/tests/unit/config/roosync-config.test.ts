@@ -74,7 +74,8 @@ describe('RooSync Configuration', () => {
     it('devrait retourner null si la configuration est invalide', () => {
       // Arrange
       process.env.ROOSYNC_MACHINE_ID = 'PC-PRINCIPAL';
-      // ROOSYNC_SHARED_PATH manquant
+      // Supprimer explicitement ROOSYNC_SHARED_PATH
+      delete process.env.ROOSYNC_SHARED_PATH;
 
       // Act
       const config = tryLoadRooSyncConfig();
@@ -105,7 +106,8 @@ describe('RooSync Configuration', () => {
     it('devrait retourner false si la configuration est invalide', () => {
       // Arrange
       process.env.ROOSYNC_MACHINE_ID = 'PC-PRINCIPAL';
-      // Configuration incomplète
+      // Supprimer explicitement les variables requises
+      delete process.env.ROOSYNC_SHARED_PATH;
 
       // Act
       const enabled = isRooSyncEnabled();

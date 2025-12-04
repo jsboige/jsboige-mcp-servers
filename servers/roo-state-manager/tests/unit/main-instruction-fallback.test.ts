@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeAll, afterAll } from 'vitest';
+import { describe, it, expect, beforeAll, afterAll, vi } from 'vitest';
 import { RooStorageDetector } from '../../src/utils/roo-storage-detector.js';
 import * as fs from 'fs/promises';
 import * as path from 'path';
@@ -7,6 +7,10 @@ describe('extractMainInstructionFromUI - Fallback Logic', () => {
   const testDataDir = path.join(__dirname, '../test-data/main-instruction-fallback');
 
   beforeAll(async () => {
+    // Désactiver les mocks fs pour ce test afin de pouvoir créer/lire de vrais fichiers
+    vi.unmock('fs/promises');
+    vi.unmock('fs');
+    
     // Créer le répertoire de test
     await fs.mkdir(testDataDir, { recursive: true });
   });

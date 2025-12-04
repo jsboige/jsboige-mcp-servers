@@ -3,14 +3,195 @@
  */
 
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
-import { writeFileSync, mkdirSync, rmSync, readFileSync } from 'fs';
-import { join } from 'path';
 import { RooSyncService, getRooSyncService, RooSyncServiceError } from '../../../src/services/RooSyncService.js';
+
+// Variables globales pour les mocks (accessibles depuis les fonctions mock)
+declare global {
+  var __mockFiles: Map<string, string> | undefined;
+  var __mockDirs: Set<string> | undefined;
+}
+
+// Initialiser les variables globales
+if (!global.__mockFiles) {
+  global.__mockFiles = new Map<string, string>();
+}
+if (!global.__mockDirs) {
+  global.__mockDirs = new Set<string>();
+}
+
+// Mock du module fs
+vi.mock('fs', () => ({
+  existsSync: vi.fn((path: string) => {
+    return global.__mockDirs!.has(path) || global.__mockFiles!.has(path);
+  }),
+  mkdirSync: vi.fn((path: string, options?: any) => {
+    if (options?.recursive) {
+      // Créer les répertoires parents récursivement
+      const parts = path.split('/');
+      let currentPath = '';
+      for (const part of parts) {
+        currentPath += (currentPath ? '/' : '') + part;
+        if (!global.__mockDirs!.has(currentPath)) {
+          global.__mockDirs!.add(currentPath);
+        }
+      }
+    } else {
+      global.__mockDirs!.add(path);
+    }
+  }),
+  rmSync: vi.fn((path: string, options?: any) => {
+    if (options?.recursive) {
+      // Supprimer récursivement
+      const keysToDelete: string[] = [];
+      for (const key of global.__mockFiles!.keys()) {
+        if (key.startsWith(path)) {
+          keysToDelete.push(key);
+        }
+      }
+      for (const key of keysToDelete) {
+        global.__mockFiles!.delete(key);
+      }
+      for (const dir of global.__mockDirs!) {
+        if (dir.startsWith(path)) {
+          global.__mockDirs!.delete(dir);
+        }
+      }
+    } else {
+      global.__mockFiles!.delete(path);
+      global.__mockDirs!.delete(path);
+    }
+  }),
+  readFileSync: vi.fn((path: string, encoding?: string) => {
+    if (global.__mockFiles!.has(path)) {
+      return global.__mockFiles!.get(path)!;
+    }
+    throw new Error(`File not found: ${path}`);
+  }),
+  writeFileSync: vi.fn((path: string, content: string, encoding?: string) => {
+    // S'assurer que le répertoire parent existe
+    const dir = path.substring(0, path.lastIndexOf('/'));
+    if (dir && !global.__mockDirs!.has(dir)) {
+      global.__mockDirs!.add(dir);
+    }
+    global.__mockFiles!.set(path, content);
+  }),
+  promises: {
+    readFile: vi.fn(async (path: string, encoding?: string) => {
+      if (global.__mockFiles!.has(path)) {
+        return global.__mockFiles!.get(path)!;
+      }
+      throw new Error(`File not found: ${path}`);
+    }),
+    writeFile: vi.fn(async (path: string, content: string, encoding?: string) => {
+      // S'assurer que le répertoire parent existe
+      const dir = path.substring(0, path.lastIndexOf('/'));
+      if (dir && !global.__mockDirs!.has(dir)) {
+        global.__mockDirs!.add(dir);
+      }
+      global.__mockFiles!.set(path, content);
+    }),
+    mkdir: vi.fn(async (path: string, options?: any) => {
+      if (options?.recursive) {
+        // Créer les répertoires parents récursivement
+        const parts = path.split('/');
+        let currentPath = '';
+        for (const part of parts) {
+          currentPath += (currentPath ? '/' : '') + part;
+          if (!global.__mockDirs!.has(currentPath)) {
+            global.__mockDirs!.add(currentPath);
+          }
+        }
+      } else {
+        global.__mockDirs!.add(path);
+      }
+    }),
+    readdir: vi.fn(async (path: string) => {
+      const items: string[] = [];
+      const prefix = path.endsWith('/') ? path : path + '/';
+      
+      for (const file of global.__mockFiles!.keys()) {
+        if (file.startsWith(prefix)) {
+          const relativePath = file.substring(prefix.length);
+          const firstPart = relativePath.includes('/') ? relativePath.split('/')[0] : relativePath;
+          if (!items.includes(firstPart)) {
+            items.push(firstPart);
+          }
+        }
+      }
+      
+      for (const dir of global.__mockDirs!) {
+        if (dir.startsWith(prefix) && dir !== prefix) {
+          const relativePath = dir.substring(prefix.length);
+          const firstPart = relativePath.includes('/') ? relativePath.split('/')[0] : relativePath;
+          if (!items.includes(firstPart)) {
+            items.push(firstPart);
+          }
+        }
+      }
+      
+      return items;
+    }),
+    copyFile: vi.fn(async (source: string, dest: string) => {
+      if (global.__mockFiles!.has(source)) {
+        const content = global.__mockFiles!.get(source)!;
+        // S'assurer que le répertoire de destination existe
+        const dir = dest.substring(0, dest.lastIndexOf('/'));
+        if (dir && !global.__mockDirs!.has(dir)) {
+          global.__mockDirs!.add(dir);
+        }
+        global.__mockFiles!.set(dest, content);
+      } else {
+        throw new Error(`Source file not found: ${source}`);
+      }
+    })
+  }
+}));
+
+// Mock du module path
+vi.mock('path', () => ({
+  join: vi.fn((...paths: string[]) => {
+    return paths.join('/').replace(/\/+/g, '/');
+  }),
+  normalize: vi.fn((path: string) => {
+    return path.replace(/\/+/g, '/');
+  }),
+  dirname: vi.fn((path: string) => {
+    const parts = path.split('/');
+    parts.pop();
+    return parts.join('/');
+  }),
+  resolve: vi.fn((...paths: string[]) => {
+    return paths.join('/').replace(/\/+/g, '/');
+  }),
+  default: {
+    join: vi.fn((...paths: string[]) => {
+      return paths.join('/').replace(/\/+/g, '/');
+    }),
+    normalize: vi.fn((path: string) => {
+      return path.replace(/\/+/g, '/');
+    }),
+    dirname: vi.fn((path: string) => {
+      const parts = path.split('/');
+      parts.pop();
+      return parts.join('/');
+    }),
+    resolve: vi.fn((...paths: string[]) => {
+      return paths.join('/').replace(/\/+/g, '/');
+    })
+  }
+}));
+
+// Importer les fonctions après les mocks
+import { existsSync, mkdirSync, rmSync, readFileSync, writeFileSync } from 'fs';
+import { join } from 'path';
 
 describe('RooSyncService', () => {
   const testDir = join(__dirname, '../../fixtures/roosync-service-test');
 
   beforeEach(() => {
+    // Réinitialiser l'état des mocks avant chaque test
+    global.__mockFiles!.clear();
+    global.__mockDirs!.clear();
     // Créer le répertoire de test
     try {
       mkdirSync(testDir, { recursive: true });

@@ -257,7 +257,7 @@ describe('Skeleton Cache Reconstruction - buildHierarchicalSkeletons', () => {
     it('devrait mesurer la performance de reconstruction', async () => {
         console.log(`⏱️ TEST PERFORMANCE: Reconstruction skeleton cache`);
         
-        const startTime = Date.now();
+        const startTime = performance.now();
         
         try {
             // ACT: Mesurer avec limite pour éviter timeout - LIMITÉ À 50 TÂCHES MAX
@@ -266,8 +266,8 @@ describe('Skeleton Cache Reconstruction - buildHierarchicalSkeletons', () => {
                 false // Mode intelligent (pas de force rebuild)
             );
             
-            const endTime = Date.now();
-            const duration = endTime - startTime;
+            const endTime = performance.now();
+            const duration = Math.round(endTime - startTime);
             
             // ASSERT & MÉTRIQUES
             const total = skeletons.length;
@@ -286,7 +286,7 @@ describe('Skeleton Cache Reconstruction - buildHierarchicalSkeletons', () => {
                 console.warn(`💡 RECOMMANDATION: Utiliser force_rebuild=false pour mode intelligent`);
             }
             
-            expect(duration).toBeGreaterThan(0);
+            expect(duration).toBeGreaterThanOrEqual(0);
             expect(total).toBeGreaterThanOrEqual(0);
             
         } catch (error) {

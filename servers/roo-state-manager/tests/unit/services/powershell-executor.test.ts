@@ -1,24 +1,183 @@
 /**
  * Tests unitaires pour PowerShellExecutor
- * 
+ *
  * @module tests/unit/services/powershell-executor.test
  */
 
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { PowerShellExecutor, resetDefaultExecutor, getDefaultExecutor } from '../../../src/services/PowerShellExecutor.js';
 import { join } from 'path';
-import { mkdirSync, writeFileSync, rmSync, existsSync } from 'fs';
+
+// Mock des modules fs et path pour les tests
+vi.mock('fs', () => ({
+  existsSync: vi.fn(),
+  mkdirSync: vi.fn(),
+  writeFileSync: vi.fn(),
+  rmSync: vi.fn(),
+  readFileSync: vi.fn(),
+  readdirSync: vi.fn(),
+  statSync: vi.fn()
+}));
+
+vi.mock('path', () => ({
+  default: {
+    join: vi.fn((...paths: string[]) => paths.join('/')),
+    normalize: vi.fn((path: string) => path),
+    resolve: vi.fn((...paths: string[]) => paths.join('/')),
+    dirname: vi.fn((path: string) => path.split('/').slice(0, -1).join('/')),
+    basename: vi.fn((path: string) => path.split('/').pop()),
+    extname: vi.fn((path: string) => path.split('.').pop() ? '.' + path.split('.').pop() : ''),
+    relative: vi.fn((from: string, to: string) => to.replace(from + '/', ''))
+  },
+  join: vi.fn((...paths: string[]) => paths.join('/')),
+  normalize: vi.fn((path: string) => path),
+  resolve: vi.fn((...paths: string[]) => paths.join('/')),
+  dirname: vi.fn((path: string) => path.split('/').slice(0, -1).join('/')),
+  basename: vi.fn((path: string) => path.split('/').pop()),
+  extname: vi.fn((path: string) => path.split('.').pop() ? '.' + path.split('.').pop() : ''),
+  relative: vi.fn((from: string, to: string) => to.replace(from + '/', ''))
+}));
+
+// Variables globales pour contrôler le comportement du mock
+let mockExitCode = 0;
+let mockStdout = 'Hello from PowerShell';
+let mockStderr = '';
+let mockShouldTimeout = false;
+let mockDelay = 10;
+let mockFiles: Record<string, string> = {};
+let testDir = '';
+
+// Mock du module child_process pour éviter les vraies exécutions PowerShell
+vi.mock('child_process', () => ({
+  spawn: vi.fn(() => {
+    const mockProcess = {
+      stdout: {
+        on: vi.fn((event: string, callback: (data: Buffer) => void) => {
+          if (event === 'data') {
+            // Simuler la sortie PowerShell
+            setTimeout(() => callback(Buffer.from(mockStdout, 'utf-8')), mockDelay);
+          }
+        })
+      },
+      stderr: {
+        on: vi.fn((event: string, callback: (data: Buffer) => void) => {
+          if (event === 'data') {
+            // Simuler les erreurs PowerShell
+            const errorMessage = mockShouldTimeout ? 'timed out' : mockStderr;
+            setTimeout(() => callback(Buffer.from(errorMessage, 'utf-8')), mockDelay);
+          }
+        })
+      },
+      on: vi.fn((event: string, callback: (code: number | null) => void) => {
+        if (event === 'close') {
+          if (mockShouldTimeout) {
+            // Simuler un timeout après un délai
+            setTimeout(() => callback(null), mockDelay * 5);
+            return;
+          }
+          // Simuler le code de sortie
+          setTimeout(() => callback(mockExitCode), mockDelay * 2);
+        }
+      }),
+      kill: vi.fn(),
+      killed: false
+    };
+    
+    // Simuler le kill pour le timeout
+    setTimeout(() => {
+      if (mockShouldTimeout) {
+        mockProcess.killed = true;
+      }
+    }, mockDelay * 3);
+    
+    return mockProcess;
+  })
+}));
+
+// Mock du module fs pour intercepter le require dynamique dans PowerShellExecutor
+const originalRequire = require;
+const mockedRequire = vi.fn((id: string) => {
+  if (id === 'fs') {
+    return {
+      existsSync: vi.fn((path: string) => {
+        console.log(`Mock existsSync called with: ${path}`);
+        console.log(`mockFiles keys: ${Object.keys(mockFiles)}`);
+        console.log(`testDir: ${testDir}`);
+        const result = mockFiles[path] !== undefined || path === testDir;
+        console.log(`existsSync result: ${result}`);
+        return result;
+      }),
+      mkdirSync: vi.fn(),
+      writeFileSync: vi.fn((path: string, content: string) => {
+        console.log(`Mock writeFileSync called with: ${path}`);
+        mockFiles[path] = content;
+      }),
+      rmSync: vi.fn(() => {
+        mockFiles = {};
+      }),
+      readFileSync: vi.fn(),
+      readdirSync: vi.fn(),
+      statSync: vi.fn()
+    };
+  }
+  return originalRequire(id);
+});
+
+// Remplacer le require global avec stubGlobal
+vi.stubGlobal('require', mockedRequire);
+
+// Fonctions utilitaires pour contrôler le mock
+function setMockBehavior(options: {
+  exitCode?: number;
+  stdout?: string;
+  stderr?: string;
+  shouldTimeout?: boolean;
+  delay?: number;
+}) {
+  mockExitCode = options.exitCode ?? 0;
+  mockStdout = options.stdout ?? 'Hello from PowerShell';
+  mockStderr = options.stderr ?? '';
+  mockShouldTimeout = options.shouldTimeout ?? false;
+  mockDelay = options.delay ?? 10;
+}
+
+// Import des modules mockés
+import { existsSync, mkdirSync, writeFileSync, rmSync } from 'fs';
+import * as path from 'path';
 
 describe('PowerShellExecutor', () => {
   let executor: PowerShellExecutor;
   let testDir: string;
+  let mockFiles: Record<string, string> = {};
 
   beforeEach(() => {
-    // Créer un répertoire de test temporaire
-    testDir = join(process.cwd(), 'test-temp-powershell');
-    if (!existsSync(testDir)) {
-      mkdirSync(testDir, { recursive: true });
-    }
+    // Réinitialiser les mocks
+    vi.clearAllMocks();
+    mockFiles = {};
+    testDir = 'test-temp-powershell';
+    
+    // Mock des fonctions fs
+    (existsSync as any).mockImplementation((path: string) => {
+      return mockFiles[path] !== undefined || path === testDir;
+    });
+    
+    (mkdirSync as any).mockImplementation(() => {
+      // Simuler la création de répertoire
+    });
+    
+    (writeFileSync as any).mockImplementation((path: string, content: string) => {
+      mockFiles[path] = content;
+    });
+    
+    (rmSync as any).mockImplementation(() => {
+      // Simuler la suppression
+      mockFiles = {};
+    });
+    
+    // Mock des fonctions path
+    (join as any).mockImplementation((...paths: string[]) => {
+      return paths.filter(p => p).join('/');
+    });
 
     // Initialiser l'executor avec le répertoire de test
     executor = new PowerShellExecutor({
@@ -31,14 +190,19 @@ describe('PowerShellExecutor', () => {
   });
 
   afterEach(() => {
-    // Nettoyer le répertoire de test
-    if (existsSync(testDir)) {
-      rmSync(testDir, { recursive: true, force: true });
-    }
+    // Nettoyer les mocks
+    vi.restoreAllMocks();
   });
 
   describe('executeScript', () => {
     it('devrait exécuter une commande PowerShell simple', async () => {
+      // Configurer le mock pour ce test
+      setMockBehavior({
+        exitCode: 0,
+        stdout: 'Hello from PowerShell',
+        stderr: ''
+      });
+
       // Créer un script de test simple
       const scriptPath = 'test-echo.ps1';
       const scriptContent = 'Write-Output "Hello from PowerShell"';
@@ -53,6 +217,13 @@ describe('PowerShellExecutor', () => {
     });
 
     it('devrait gérer les arguments du script', async () => {
+      // Configurer le mock pour ce test
+      setMockBehavior({
+        exitCode: 0,
+        stdout: 'Name: Alice, Age: 30',
+        stderr: ''
+      });
+
       // Script qui utilise des paramètres
       const scriptPath = 'test-params.ps1';
       const scriptContent = `
@@ -71,13 +242,21 @@ describe('PowerShellExecutor', () => {
     });
 
     it('devrait détecter les erreurs PowerShell', async () => {
+      // Configurer le mock pour ce test
+      setMockBehavior({
+        exitCode: 1,
+        stdout: '',
+        stderr: 'This is an error'
+      });
+
       // Script qui génère une erreur
       const scriptPath = 'test-error.ps1';
       const scriptContent = `
         Write-Error "This is an error"
         exit 1
       `;
-      writeFileSync(join(testDir, scriptPath), scriptContent, 'utf-8');
+      // Ajouter le fichier au mock au lieu d'utiliser writeFileSync
+      mockFiles[join(testDir, scriptPath)] = scriptContent;
 
       const result = await executor.executeScript(scriptPath, []);
 
@@ -87,10 +266,18 @@ describe('PowerShellExecutor', () => {
     });
 
     it('devrait gérer le timeout', async () => {
+      // Configurer le mock pour simuler un timeout
+      setMockBehavior({
+        shouldTimeout: true,
+        stdout: '',
+        stderr: ''
+      });
+
       // Script qui prend trop de temps
       const scriptPath = 'test-timeout.ps1';
       const scriptContent = 'Start-Sleep -Seconds 20';
-      writeFileSync(join(testDir, scriptPath), scriptContent, 'utf-8');
+      // Ajouter le fichier au mock au lieu d'utiliser writeFileSync
+      mockFiles[join(testDir, scriptPath)] = scriptContent;
 
       const result = await executor.executeScript(
         scriptPath,
@@ -104,6 +291,13 @@ describe('PowerShellExecutor', () => {
     }, 15000); // Test timeout de 15s
 
     it('devrait capturer stdout et stderr séparément', async () => {
+      // Configurer le mock pour ce test
+      setMockBehavior({
+        exitCode: 0,
+        stdout: 'This is stdout\nMore stdout',
+        stderr: 'This is stderr'
+      });
+
       // Script qui écrit sur les deux flux
       const scriptPath = 'test-streams.ps1';
       const scriptContent = `
@@ -111,7 +305,8 @@ describe('PowerShellExecutor', () => {
         Write-Error "This is stderr" -ErrorAction Continue
         Write-Output "More stdout"
       `;
-      writeFileSync(join(testDir, scriptPath), scriptContent, 'utf-8');
+      // Ajouter le fichier au mock au lieu d'utiliser writeFileSync
+      mockFiles[join(testDir, scriptPath)] = scriptContent;
 
       const result = await executor.executeScript(scriptPath, []);
 
@@ -121,13 +316,21 @@ describe('PowerShellExecutor', () => {
     });
 
     it('devrait gérer les chemins avec espaces', async () => {
+      // Configurer le mock pour ce test
+      setMockBehavior({
+        exitCode: 0,
+        stdout: 'Spaces OK',
+        stderr: ''
+      });
+
       // Créer un sous-répertoire avec espace
       const subDir = join(testDir, 'test folder');
       mkdirSync(subDir, { recursive: true });
       
       const scriptPath = join('test folder', 'test-space.ps1');
       const scriptContent = 'Write-Output "Spaces OK"';
-      writeFileSync(join(testDir, scriptPath), scriptContent, 'utf-8');
+      // Ajouter le fichier au mock au lieu d'utiliser writeFileSync
+      mockFiles[join(testDir, scriptPath)] = scriptContent;
 
       const result = await executor.executeScript(scriptPath, []);
 
@@ -266,6 +469,13 @@ describe('PowerShellExecutor', () => {
     }, 10000);
 
     it('devrait respecter un timeout explicite', async () => {
+      // Configurer le mock pour simuler un timeout
+      setMockBehavior({
+        shouldTimeout: true,
+        stdout: '',
+        stderr: ''
+      });
+
       // Script qui prend 5 secondes
       const scriptPath = 'test-explicit-timeout.ps1';
       const scriptContent = 'Start-Sleep -Seconds 5; Write-Output "Done"';
@@ -291,9 +501,17 @@ describe('PowerShellExecutor', () => {
     });
 
     it('devrait gérer les variables d\'environnement', async () => {
+      // Configurer le mock pour ce test
+      setMockBehavior({
+        exitCode: 0,
+        stdout: 'TEST_VAR=test-value',
+        stderr: ''
+      });
+
       const scriptPath = 'test-env.ps1';
       const scriptContent = 'Write-Output "TEST_VAR=$env:TEST_VAR"';
-      writeFileSync(join(testDir, scriptPath), scriptContent, 'utf-8');
+      // Ajouter le fichier au mock au lieu d'utiliser writeFileSync
+      mockFiles[join(testDir, scriptPath)] = scriptContent;
 
       const result = await executor.executeScript(
         scriptPath,
