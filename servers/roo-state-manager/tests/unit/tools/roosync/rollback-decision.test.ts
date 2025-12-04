@@ -9,31 +9,23 @@ import { tmpdir } from 'os';
 import { RooSyncService } from '../../../../src/services/RooSyncService.js';
 import { roosyncRollbackDecision } from '../../../../src/tools/roosync/rollback-decision.js';
 
+// Mock fs module pour contourner le bug Vitest
+vi.mock('fs', () => ({
+  readFileSync: vi.fn(),
+  writeFileSync: vi.fn(),
+  mkdirSync: vi.fn(),
+  rmSync: vi.fn(),
+  existsSync: vi.fn(() => true)
+}));
+
 describe('roosync_rollback_decision', () => {
   const testDir = join(tmpdir(), `roosync-rollback-test-${Date.now()}`);
 
-  beforeEach(() => {
-    // Setup test environment
-    try {
-      mkdirSync(testDir, { recursive: true });
-    } catch (error) {
-      // Déjà existant
-    }
-
-    // Mock environment
-    process.env.ROOSYNC_SHARED_PATH = testDir;
-    process.env.ROOSYNC_MACHINE_ID = 'PC-PRINCIPAL';
-
-    // Force reset et injection de config
-    RooSyncService.resetInstance();
-    const service = RooSyncService.getInstance(undefined, {
-      sharedPath: testDir,
-      machineId: 'PC-PRINCIPAL',
-      autoSync: false,
-      conflictStrategy: 'manual',
-      logLevel: 'info'
-    });
-
+  beforeEach(async () => {
+    // Configurer les mocks fs avant toute utilisation
+    const fs = await import('fs');
+    const path = await import('path');
+    
     // Create test dashboard and roadmap
     const dashboard = {
       version: '2.0.0',
@@ -81,17 +73,51 @@ describe('roosync_rollback_decision', () => {
 <!-- DECISION_BLOCK_END -->
 `;
 
-    writeFileSync(join(testDir, 'sync-dashboard.json'), JSON.stringify(dashboard), 'utf-8');
-    writeFileSync(join(testDir, 'sync-roadmap.md'), roadmap, 'utf-8');
+    // Mock readFileSync pour retourner le contenu du roadmap
+    (fs.readFileSync as any) = vi.fn().mockImplementation((filePath: string) => {
+      if (filePath.includes('sync-roadmap.md')) {
+        return roadmap;
+      }
+      return '';
+    });
+    
+    // Mock writeFileSync pour capturer les écritures
+    (fs.writeFileSync as any) = vi.fn().mockImplementation(() => {});
+    
+    // Mock mkdirSync et rmSync pour éviter les erreurs
+    (fs.mkdirSync as any) = vi.fn().mockImplementation(() => {});
+    (fs.rmSync as any) = vi.fn().mockImplementation(() => {});
+    (path.join as any) = vi.fn().mockImplementation((...args: string[]) => args.join('/'));
+
+    // Setup test environment
+    try {
+      fs.mkdirSync(testDir, { recursive: true });
+    } catch (error) {
+      // Déjà existant
+    }
+
+    // Mock environment
+    process.env.ROOSYNC_SHARED_PATH = testDir;
+    process.env.ROOSYNC_MACHINE_ID = 'PC-PRINCIPAL';
+
+    // Force reset et injection de config
+    RooSyncService.resetInstance();
+    const service = RooSyncService.getInstance(undefined, {
+      sharedPath: testDir,
+      machineId: 'PC-PRINCIPAL',
+      autoSync: false,
+      conflictStrategy: 'manual',
+      logLevel: 'info'
+    });
 
     // Créer répertoire .rollback avec backup simulé
     const rollbackDir = join(testDir, '.rollback');
-    mkdirSync(rollbackDir, { recursive: true });
+    fs.mkdirSync(rollbackDir, { recursive: true });
 
     // Créer backup simulé pour test-decision-applied
     const backupPath = join(rollbackDir, `test-decision-applied_${Date.now()}`);
-    mkdirSync(backupPath, { recursive: true });
-    writeFileSync(join(backupPath, 'backup-info.json'), JSON.stringify({
+    fs.mkdirSync(backupPath, { recursive: true });
+    fs.writeFileSync(join(backupPath, 'backup-info.json'), JSON.stringify({
       decisionId: 'test-decision-applied',
       timestamp: new Date().toISOString(),
       files: ['.config/test.json']
@@ -175,11 +201,22 @@ describe('roosync_rollback_decision', () => {
 
     expect(result.newStatus).toBe('rolled_back');
 
-    // Vérifier que le fichier a été mis à jour
-    const roadmapContent = readFileSync(join(testDir, 'sync-roadmap.md'), 'utf-8');
-    expect(roadmapContent).toContain('**Statut:** rolled_back');
-    expect(roadmapContent).toContain('**Rollback le:**');
-    expect(roadmapContent).toContain('**Raison:** Mise à jour roadmap');
+    // Vérifier que writeFileSync a été appelé avec le bon contenu
+    expect(writeFileSync).toHaveBeenCalledWith(
+      join(testDir, 'sync-roadmap.md'),
+      expect.stringContaining('**Statut:** rolled_back'),
+      'utf-8'
+    );
+    expect(writeFileSync).toHaveBeenCalledWith(
+      join(testDir, 'sync-roadmap.md'),
+      expect.stringContaining('**Rollback le:**'),
+      'utf-8'
+    );
+    expect(writeFileSync).toHaveBeenCalledWith(
+      join(testDir, 'sync-roadmap.md'),
+      expect.stringContaining('**Raison:** Mise à jour roadmap'),
+      'utf-8'
+    );
   });
 
   it('devrait inclure la date du rollback au format ISO 8601', async () => {
