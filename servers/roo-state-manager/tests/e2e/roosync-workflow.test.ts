@@ -1,36 +1,38 @@
 /**
  * Tests End-to-End RooSync - Workflow Complet
- * 
+ *
  * Tests du workflow complet de synchronisation RooSync :
  * - Détection décisions
  * - Approbation décision
  * - Création rollback point
  * - Application décision
  * - Restauration depuis rollback
- * 
+ *
  * @module tests/e2e/roosync-workflow.test
  */
+
+// CORRECTION SDDD CRITIQUE : Importer setup AVANT tout autre module
+// pour garantir que les variables d'environnement soient définies
+// avant le chargement de RooSyncService et de sa configuration
+import './setup.js';
 
 import { describe, it, expect, beforeAll, afterAll, beforeEach } from 'vitest';
 import { RooSyncService } from '../../src/services/RooSyncService.js';
 import { existsSync } from 'fs';
 import { join } from 'path';
 
-// Importer la configuration des mocks pour les tests E2E
-import './setup.js';
-
 describe('RooSync E2E Workflow', () => {
   let service: RooSyncService;
   let testDecisionId: string | null = null;
 
   beforeAll(() => {
-    // S'assurer que l'environnement est configuré
-    const sharedPath = process.env.SHARED_STATE_PATH;
+    // CORRECTION SDDD: Utiliser la bonne variable d'environnement RooSync
+    const sharedPath = process.env.ROOSYNC_SHARED_PATH || process.env.SHARED_STATE_PATH;
     
     if (!sharedPath || !existsSync(sharedPath)) {
-      console.warn('⚠️ SHARED_STATE_PATH non configuré ou inaccessible');
+      console.warn('⚠️ ROOSYNC_SHARED_PATH non configuré ou inaccessible');
       console.warn('   Les tests E2E nécessitent un environnement RooSync configuré');
-      console.warn('   Configurez SHARED_STATE_PATH dans .env');
+      console.warn('   Configurez ROOSYNC_SHARED_PATH dans .env');
     }
 
     service = RooSyncService.getInstance();
@@ -58,6 +60,7 @@ describe('RooSync E2E Workflow', () => {
 
         console.log('📊 Statut RooSync :', JSON.stringify(status, null, 2));
       } catch (error) {
+        console.error('❌ Erreur lors de l\'obtention du statut:', error);
         if (error instanceof Error && error.message.includes('introuvable')) {
           console.warn('⚠️ Fichiers RooSync non trouvés - environnement non initialisé');
         } else {

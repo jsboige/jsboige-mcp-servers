@@ -1,3 +1,13 @@
+// CORRECTION SDDD: Forcer les variables d'environnement de test AVANT tout autre chose
+// S'assurer que les variables sont disponibles pour loadRooSyncConfig()
+process.env.NODE_ENV = 'test';
+process.env.SHARED_STATE_PATH = '/tmp/roosync-test';
+process.env.ROOSYNC_SHARED_PATH = '/tmp/roosync-test';
+process.env.ROOSYNC_MACHINE_ID = 'myia-po-2024';
+process.env.ROOSYNC_AUTO_SYNC = 'false';
+process.env.ROOSYNC_CONFLICT_STRATEGY = 'manual';
+process.env.ROOSYNC_LOG_LEVEL = 'debug';
+
 import { vi } from 'vitest';
 import fs from 'fs';
 import path from 'path';
@@ -36,11 +46,17 @@ vi.mock('fs', () => {
     }
     
     // CORRECTION SDDD : Gérer les chemins de test normalisés
-    if (normalizedPath.includes('tmp/roosync-test') || 
+    if (normalizedPath.includes('tmp/roosync-test') ||
         path.includes('\\tmp\\roosync-test') ||
         path.includes('/tmp/roosync-test') ||
         path.includes('C:\\tmp\\roosync-test')) {
       console.log(`[MOCK] existsSync retourne true pour chemin test: ${path}`);
+      return true;
+    }
+    
+    // CORRECTION SDDD: Gérer le chemin ROOSYNC_SHARED_PATH pour la validation de config
+    if (normalizedPath === '/tmp/roosync-test' || path === '/tmp/roosync-test') {
+      console.log(`[MOCK] existsSync retourne true pour ROOSYNC_SHARED_PATH: ${path}`);
       return true;
     }
     
@@ -50,7 +66,8 @@ vi.mock('fs', () => {
         path.includes('/tmp/roosync-test/r') ||
         normalizedPath.includes('tmp/roosync-test/r') ||
         path.includes('d:\\roo-extensions\\RooSync') ||
-        path.includes('d:/roo-extensions/RooSync')) {
+        path.includes('d:/roo-extensions/RooSync') ||
+        path.includes('sync-dashboard.json')) {
       console.log(`[MOCK] existsSync retourne true pour RooSync (test): ${path}`);
       return true;
     }
@@ -131,6 +148,37 @@ vi.mock('fs', () => {
 `;
       console.log(`[MOCK] readFileSync retourne roadmap mock: ${path}`);
       return mockRoadmap;
+    }
+    
+    // CORRECTION SDDD: Ajouter le mock pour sync-dashboard.json
+    if (path.includes('sync-dashboard.json')) {
+      const mockDashboard = {
+        version: "1.0.0",
+        lastUpdated: "2025-11-30T23:00:00.000Z",
+        machines: {
+          "myia-po-2024": {
+            id: "myia-po-2024",
+            name: "MYIA-PO-2024",
+            status: "online",
+            lastSeen: "2025-11-30T23:00:00.000Z",
+            pendingDecisions: 0,
+            diffsCount: 0,
+            conflictsCount: 0,
+            lastSync: "2025-11-30T22:00:00.000Z"
+          }
+        },
+        overallStatus: "healthy",
+        totalMachines: 1,
+        onlineMachines: 1,
+        totalDecisions: 0,
+        pendingDecisions: 0,
+        appliedDecisions: 0,
+        rejectedDecisions: 0,
+        totalDiffs: 0,
+        conflictsCount: 0
+      };
+      console.log(`[MOCK] readFileSync retourne dashboard mock: ${path}`);
+      return JSON.stringify(mockDashboard, null, 2);
     }
     
     // CORRECTION SDDD : Gérer les chemins de test normalisés
@@ -244,6 +292,14 @@ vi.mock('os', () => ({
 
 // Mock du module child_process
 vi.mock('child_process', () => ({
+  exec: vi.fn().mockImplementation((command: string, callback: Function) => {
+    console.log(`[MOCK] exec appelé avec: ${command}`);
+    // Simuler un appel exec réussi
+    if (callback) {
+      callback(null, { stdout: '', stderr: '' });
+    }
+    return { on: vi.fn(), kill: vi.fn() };
+  }),
   spawn: vi.fn().mockImplementation((command: string, args: string[], options: any) => {
     console.log(`[MOCK] spawn appelé avec: ${command} ${args.join(' ')}`);
     return {
@@ -259,10 +315,11 @@ vi.mock('child_process', () => ({
   })
 }));
 
-// CORRECTION SDDD: Mock complet pour PowerShellExecutor.executeScript
+// CORRECTION SDDD: Mock complet pour PowerShellExecutor en tant que constructeur
 vi.doMock('../../src/services/PowerShellExecutor.js', () => ({
-  PowerShellExecutor: {
-    getInstance: vi.fn(() => ({
+  PowerShellExecutor: vi.fn().mockImplementation((config: any) => {
+    console.log(`[MOCK] PowerShellExecutor constructeur appelé avec config:`, config);
+    return {
       executeScript: vi.fn().mockImplementation((scriptPath: string, args = []) => {
         console.log(`[MOCK] PowerShellExecutor.executeScript appelé avec: ${scriptPath}, args:`, args);
         
@@ -309,15 +366,21 @@ vi.doMock('../../src/services/PowerShellExecutor.js', () => ({
           exitCode: 0
         });
       })
-    }))
-  }
+    };
+  })
 }));
 
 // Mock du module process
 vi.mock('process', () => ({
   env: {
     NODE_ENV: 'test',
-    SHARED_STATE_PATH: '/tmp/roosync-test'
+    SHARED_STATE_PATH: '/tmp/roosync-test',
+    // CORRECTION SDDD: Ajouter les variables d'environnement RooSync requises
+    ROOSYNC_SHARED_PATH: '/tmp/roosync-test',
+    ROOSYNC_MACHINE_ID: 'myia-po-2024',
+    ROOSYNC_AUTO_SYNC: 'false',
+    ROOSYNC_CONFLICT_STRATEGY: 'manual',
+    ROOSYNC_LOG_LEVEL: 'debug'
   },
   cwd: () => 'c:\\dev\\roo-extensions\\mcps\\internal\\servers\\roo-state-manager'
 }));
@@ -327,9 +390,7 @@ beforeAll(() => {
   // S'assurer que l'environnement de test est propre
   vi.clearAllMocks();
   
-  // CORRECTION SDDD: Forcer les variables d'environnement de test
-  process.env.NODE_ENV = 'test';
-  process.env.SHARED_STATE_PATH = '/tmp/roosync-test';
+  // Les variables d'environnement sont déjà définies au début du fichier
   
   console.log('[SETUP] Configuration de test E2E initialisée');
 });
