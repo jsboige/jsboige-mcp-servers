@@ -313,6 +313,24 @@ export class RooSyncService {
           const dashboardContent = readFileSync(dashboardPath, 'utf-8');
           const dashboard = JSON.parse(dashboardContent);
           console.log('[RooSyncService] Dashboard chargé avec succès depuis le fichier existant');
+          
+          // S'assurer que le dashboard a bien la propriété machines
+          if (!dashboard.machines) {
+            console.log('[RooSyncService] Dashboard existant sans propriété machines, ajout de la machine courante');
+            dashboard.machines = {};
+          }
+          
+          // S'assurer que la machine courante existe dans le dashboard
+          if (!dashboard.machines[this.config.machineId]) {
+            console.log(`[RooSyncService] Ajout de la machine ${this.config.machineId} au dashboard existant`);
+            dashboard.machines[this.config.machineId] = {
+              lastSync: new Date().toISOString(),
+              status: 'online',
+              diffsCount: 0,
+              pendingDecisions: 0
+            };
+          }
+          
           return dashboard as RooSyncDashboard;
         } catch (error) {
           console.warn('[RooSyncService] Erreur lecture dashboard existant, recalcule depuis baseline:', error);
@@ -327,6 +345,7 @@ export class RooSyncService {
    * Calcule le dashboard à partir de la baseline (logique extraite de loadDashboard)
    */
   private async calculateDashboardFromBaseline(): Promise<RooSyncDashboard> {
+    console.log('[RooSyncService] calculateDashboardFromBaseline - début de la méthode');
     const dashboardPath = this.getRooSyncFilePath('sync-dashboard.json');
 
     // CORRECTION SDDD: Ne plus vider le cache agressivement
@@ -414,12 +433,28 @@ export class RooSyncService {
 
     const now = new Date().toISOString();
 
-    // Si un dashboard existe déjà, l'utiliser directement
+    // Si un dashboard existe déjà, l'utiliser et s'assurer que la machine courante est présente
     if (existsSync(dashboardPath)) {
       try {
         const dashboardContent = readFileSync(dashboardPath, 'utf-8');
         const existingDashboard = JSON.parse(dashboardContent);
-        console.log('[RooSyncService] Dashboard existant utilisé directement');
+        console.log('[RooSyncService] Dashboard existant trouvé, vérification de la machine courante');
+        
+        // S'assurer que la machine courante existe dans le dashboard
+        if (!existingDashboard.machines) {
+          existingDashboard.machines = {};
+        }
+        
+        if (!existingDashboard.machines[this.config.machineId]) {
+          console.log(`[RooSyncService] Ajout de la machine ${this.config.machineId} au dashboard existant`);
+          existingDashboard.machines[this.config.machineId] = {
+            lastSync: now,
+            status: 'online',
+            diffsCount: totalDiffs,
+            pendingDecisions: 0
+          };
+        }
+        
         return existingDashboard as RooSyncDashboard;
       } catch (error) {
         console.warn('[RooSyncService] Erreur lecture dashboard existant, fallback sur calcul:', error);
@@ -453,7 +488,7 @@ export class RooSyncService {
       lastSync: now,
       status: (totalDiffs > 0 ? 'diverged' : 'synced') as 'diverged' | 'synced' | 'conflict' | 'unknown',
       machines: {
-        'test-machine-001': {
+        [this.config.machineId]: {
           lastSync: now,
           status: 'online' as const,
           diffsCount: totalDiffs,
@@ -472,6 +507,12 @@ export class RooSyncService {
     };
 
     console.log('[RooSyncService] loadDashboard - RESULTAT FINAL:', JSON.stringify(result, null, 2));
+
+    // S'assurer que le résultat a bien la propriété machines
+    if (!result.machines) {
+      console.error('[RooSyncService] ERREUR: Le résultat n\'a pas de propriété machines !');
+      result.machines = {};
+    }
 
     return result as RooSyncDashboard;
   }
@@ -514,6 +555,17 @@ export class RooSyncService {
     diffsCount: number;
   }> {
     const dashboard = await this.loadDashboard();
+    console.log('[RooSyncService] getStatus - dashboard reçu:', JSON.stringify(dashboard, null, 2));
+    console.log('[RooSyncService] getStatus - machineId recherché:', this.config.machineId);
+    console.log('[RooSyncService] getStatus - dashboard.machines:', dashboard?.machines);
+    
+    if (!dashboard || !dashboard.machines) {
+      throw new RooSyncServiceError(
+        `Dashboard invalide ou sans propriété machines`,
+        'INVALID_DASHBOARD'
+      );
+    }
+    
     const machineInfo = dashboard.machines[this.config.machineId];
 
     if (!machineInfo) {
@@ -523,13 +575,16 @@ export class RooSyncService {
       );
     }
 
-    return {
+    const result = {
       machineId: this.config.machineId,
       overallStatus: dashboard.overallStatus,
       lastSync: machineInfo.lastSync,
       pendingDecisions: machineInfo.pendingDecisions,
       diffsCount: machineInfo.diffsCount
     };
+    
+    console.log('[RooSyncService] getStatus - résultat à retourner:', JSON.stringify(result, null, 2));
+    return result;
   }
 
   /**

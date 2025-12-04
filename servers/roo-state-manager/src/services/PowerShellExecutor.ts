@@ -14,6 +14,7 @@
 
 import { spawn, ChildProcess } from 'child_process';
 import path from 'path';
+import * as fs from 'fs';
 
 /**
  * Résultat d'une exécution PowerShell
@@ -120,7 +121,6 @@ export class PowerShellExecutor {
       const fullScriptPath = path.join(this.roosyncBasePath, scriptPath);
       
       // Vérifier si le script existe avant de l'exécuter
-      const fs = require('fs');
       if (!fs.existsSync(fullScriptPath)) {
         reject(new Error(`Script not found: ${fullScriptPath}`));
         return;
