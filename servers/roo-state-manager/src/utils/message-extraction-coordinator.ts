@@ -62,8 +62,19 @@ export class MessageExtractionCoordinator {
       errors: []
     };
 
+    this.debugEnabled = options.enableDebug || false;
+    
+    // Debug forcer pour voir les messages
+    if (this.debugEnabled) {
+      console.log(`[MessageExtractionCoordinator] 🚀 DÉMARRAGE extraction avec ${messages.length} messages`);
+      console.log(`[MessageExtractionCoordinator] 📋 Extracteurs disponibles: ${this.extractors.map(e => e.getPatternName()).join(', ')}`);
+    }
+
     try {
       for (const message of messages) {
+        if (this.debugEnabled) {
+          console.log(`[MessageExtractionCoordinator] 🔍 Traitement message: type=${message.type}, role=${message.role}, text=${typeof message.text === 'string' ? message.text.substring(0, 50) + '...' : 'N/A'}`);
+        }
         this.processMessage(message, result, options);
         result.processedMessages++;
       }
@@ -106,12 +117,12 @@ export class MessageExtractionCoordinator {
       new ApiContentExtractor(),
       new ApiTextExtractor(),
 
-      // Extracteurs UI
-      new UiAskToolExtractor(),
-      new UiObjectExtractor(),
-      new UiXmlPatternExtractor(),
-      new UiSimpleTaskExtractor(),
-      new UiLegacyExtractor()
+      // Extracteurs UI - Ordre optimisé pour les tests
+      new UiSimpleTaskExtractor(), // Premier pour les balises <task> simples
+      new UiXmlPatternExtractor(), // Pour les balises <new_task>
+      new UiAskToolExtractor(), // Pour les messages ask/tool
+      new UiObjectExtractor(), // Pour les objets JSON
+      new UiLegacyExtractor() // Pour les messages legacy
     ];
 
     if (this.debugEnabled) {

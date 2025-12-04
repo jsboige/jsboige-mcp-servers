@@ -139,6 +139,12 @@ export class RooSyncParseError extends Error {
 export function parseRoadmapMarkdown(filePath: string): RooSyncDecision[] {
   try {
     const content = readFileSync(resolve(filePath), 'utf-8');
+    
+    // Guard contre le bug Vitest où readFileSync retourne undefined
+    if (!content || typeof content !== 'string') {
+      return [];
+    }
+    
     const decisions: RooSyncDecision[] = [];
     
     // Regex pour extraire les blocs de décisions
@@ -241,6 +247,12 @@ function parseDecisionBlock(blockContent: string): RooSyncDecision | null {
 export function parseDashboardJson(filePath: string): RooSyncDashboard {
   try {
     const content = readFileSync(resolve(filePath), 'utf-8');
+    
+    // Guard contre le bug Vitest où readFileSync retourne undefined
+    if (!content || typeof content !== 'string') {
+      throw new Error('Contenu du fichier vide ou invalide');
+    }
+    
     const data = JSON.parse(content);
     
     // Validation basique de la structure
@@ -268,6 +280,12 @@ export function parseDashboardJson(filePath: string): RooSyncDashboard {
 export function parseConfigJson(filePath: string): any {
   try {
     const content = readFileSync(resolve(filePath), 'utf-8');
+    
+    // Guard contre le bug Vitest où readFileSync retourne undefined
+    if (!content || typeof content !== 'string') {
+      throw new Error('Contenu du fichier vide ou invalide');
+    }
+    
     return JSON.parse(content);
   } catch (error) {
     const errorMessage = error instanceof Error ? error.message : String(error);
@@ -322,4 +340,73 @@ export function findDecisionById(
   id: string
 ): RooSyncDecision | undefined {
   return decisions.find(d => d.id === id);
+}
+
+/**
+ * Parse le contenu Markdown d'une roadmap RooSync (version sans système de fichiers pour les tests)
+ *
+ * @param content Contenu Markdown du fichier
+ * @returns Tableau de décisions parsées
+ */
+export function parseRoadmapMarkdownContent(content: string): RooSyncDecision[] {
+  const decisions: RooSyncDecision[] = [];
+  
+  // Regex pour extraire les blocs de décisions
+  const blockRegex = /<!-- DECISION_BLOCK_START -->([\s\S]*?)<!-- DECISION_BLOCK_END -->/g;
+  
+  let match;
+  while ((match = blockRegex.exec(content)) !== null) {
+    const blockContent = match[1].trim();
+    
+    // Parser le contenu du bloc
+    const decision = parseDecisionBlock(blockContent);
+    if (decision) {
+      decisions.push(decision);
+    }
+  }
+  
+  return decisions;
+}
+
+/**
+ * Parse le contenu JSON d'un dashboard RooSync (version sans système de fichiers pour les tests)
+ *
+ * @param content Contenu JSON du fichier
+ * @returns Dashboard parsé
+ * @throws {RooSyncParseError} Si le parsing échoue
+ */
+export function parseDashboardJsonContent(content: string): RooSyncDashboard {
+  try {
+    const data = JSON.parse(content);
+    
+    // Validation basique de la structure
+    if (!data.version || !data.machines) {
+      throw new Error('Structure de dashboard invalide (version ou machines manquant)');
+    }
+    
+    return data as RooSyncDashboard;
+  } catch (error) {
+    const errorMessage = error instanceof Error ? error.message : String(error);
+    throw new RooSyncParseError(
+      `Erreur lors du parsing du dashboard: ${errorMessage}`
+    );
+  }
+}
+
+/**
+ * Parse le contenu JSON d'une configuration RooSync (version sans système de fichiers pour les tests)
+ *
+ * @param content Contenu JSON du fichier
+ * @returns Configuration parsée
+ * @throws {RooSyncParseError} Si le parsing échoue
+ */
+export function parseConfigJsonContent(content: string): any {
+  try {
+    return JSON.parse(content);
+  } catch (error) {
+    const errorMessage = error instanceof Error ? error.message : String(error);
+    throw new RooSyncParseError(
+      `Erreur lors du parsing de la config: ${errorMessage}`
+    );
+  }
 }

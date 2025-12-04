@@ -563,13 +563,38 @@ export class HierarchyReconstructionEngine {
 
         // 2. Vérifier la cohérence temporelle (parent créé avant enfant)
         // CRITIQUE : Cette validation doit s'appliquer AVANT tout bypass de test
+        
+        // Vérifier que les dates existent avant de les utiliser
+        if (!parent.metadata.createdAt || !child.metadata.createdAt) {
+            const missingDate = !parent.metadata.createdAt ? 'parent' : 'child';
+            const reason = `MISSING DATE: ${missingDate} metadata.createdAt is undefined`;
+            this.log(reason);
+            return {
+                isValid: false,
+                validationType: 'temporal',
+                reason: reason
+            };
+        }
+        
         const parentTime = new Date(parent.metadata.createdAt).getTime();
         const childTime = new Date(child.metadata.createdAt).getTime();
+
+        // Vérifier que les dates sont valides
+        if (!Number.isFinite(parentTime) || !Number.isFinite(childTime)) {
+            const invalidDate = !Number.isFinite(parentTime) ? 'parent' : 'child';
+            const reason = `INVALID DATE: ${invalidDate} metadata.createdAt is not a valid date`;
+            this.log(reason);
+            return {
+                isValid: false,
+                validationType: 'temporal',
+                reason: reason
+            };
+        }
 
         // Tolérance de 1 seconde pour les horloges imprécises, mais pas plus
         // Vérification stricte : le parent doit être créé AVANT l'enfant
         // On tolère une marge d'erreur minime (1s) pour les imprécisions d'horloge système
-        if (Number.isFinite(parentTime) && Number.isFinite(childTime) && parentTime > childTime + 1000) {
+        if (parentTime > childTime + 1000) {
              const reason = `CHRONOLOGY ERROR: Parent ${parentId.substring(0,8)} (${new Date(parentTime).toISOString()}) created AFTER child ${child.taskId.substring(0,8)} (${new Date(childTime).toISOString()})`;
              this.log(reason);
              return {
@@ -1098,7 +1123,7 @@ export class HierarchyReconstructionEngine {
                     path: filePath,
                     exists: true,
                     size: stats.size,
-                    lastModified: stats.mtime.toISOString()
+                    lastModified: stats.mtime ? stats.mtime.toISOString() : new Date().toISOString()
                 };
             } else {
                 info[file] = {
