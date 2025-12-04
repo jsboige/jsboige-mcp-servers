@@ -322,3 +322,13 @@ export class InvalidStoragePathError extends RooStorageError {
         super(`Invalid storage path: ${path}`, 'INVALID_STORAGE_PATH');
     }
 }
+
+/**
+ * Options pour l'extraction de messages
+ */
+export interface MessageExtractionOptions {
+    patterns?: string[];
+    minLength?: number;
+    maxLength?: number;
+    includeMetadata?: boolean;
+}
