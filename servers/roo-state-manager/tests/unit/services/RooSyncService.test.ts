@@ -5,6 +5,9 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { writeFileSync, mkdirSync, rmSync, readFileSync } from 'fs';
 import { join } from 'path';
+
+// Désactiver le mock global de fs pour ces tests qui utilisent le système de fichiers réel
+vi.unmock('fs');
 import { RooSyncService, getRooSyncService, RooSyncServiceError } from '../../../src/services/RooSyncService.js';
 
 describe('RooSyncService', () => {

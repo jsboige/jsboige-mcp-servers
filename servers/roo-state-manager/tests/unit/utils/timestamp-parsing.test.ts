@@ -176,31 +176,22 @@ it('should handle malformed JSON gracefully', async () => {
     });
 
     it('should detect and validate storage locations', async () => {
-      const mockGlobalCacheManager = {
-        get: vi.fn().mockResolvedValue(null),
-        set: vi.fn()
-      };
-      const mockGlob = vi.fn().mockResolvedValue(['/home/user/.vscode/extensions/roo-extension']);
-      const mockAccess = vi.fn().mockResolvedValue(undefined);
-      const mockStat = vi.fn().mockResolvedValue({
+      const { globalCacheManager } = await import('../../../src/utils/cache-manager.js');
+      const { glob } = await import('glob');
+
+      // Réinitialiser les mocks
+      (globalCacheManager.get as any).mockResolvedValue(null);
+      (glob as any).mockResolvedValue(['/home/user/.vscode/extensions/roo-extension']);
+
+      mockFsPromises.access.mockResolvedValue(undefined);
+      mockFsPromises.stat.mockResolvedValue({
         isDirectory: () => true
       });
-
-      vi.doMock('../../../src/utils/cache-manager.js', () => ({
-        globalCacheManager: mockGlobalCacheManager
-      }));
-      vi.doMock('glob', () => ({
-        glob: mockGlob
-      }));
-      vi.doMock('fs/promises', () => ({
-        access: mockAccess,
-        stat: mockStat
-      }));
 
       const result = await RooStorageDetector.detectStorageLocations();
 
       expect(Array.isArray(result)).toBe(true);
-      expect(mockGlobalCacheManager.set).toHaveBeenCalledWith('storage_locations', expect.any(Array));
+      expect(globalCacheManager.set).toHaveBeenCalledWith('storage_locations', expect.any(Array));
     });
   });
 

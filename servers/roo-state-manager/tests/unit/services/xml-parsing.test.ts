@@ -9,6 +9,10 @@ import { fileURLToPath } from 'url';
 import * as fs from 'fs/promises';
 import * as path from 'path';
 
+// Désactiver le mock global de fs pour éviter les conflits avec les mocks locaux
+vi.unmock('fs');
+vi.unmock('fs/promises');
+
 // Import de types uniquement
 import { NewTaskInstruction } from '../../../src/types/conversation.js';
 
@@ -503,7 +507,7 @@ describe('Parsing XML des Sous-tâches', () => {
           ts: Date.now() + i,
           type: 'say',
           role: i % 2 === 0 ? 'user' : 'assistant',
-          content: `<task>Tâche de test ${i}</task>`
+          content: `<task>Tâche de test ${i} avec suffisamment de contenu pour passer la validation de longueur minimale (20 chars)</task>`
         });
       }
 
@@ -520,7 +524,7 @@ describe('Parsing XML des Sous-tâches', () => {
       // Vérifier que toutes les instructions sont correctes
       instructions.forEach((instruction: any, index: number) => {
         expect(instruction.mode).toBe('task');
-        expect(instruction.message).toBe(`Tâche de test ${index}`);
+        expect(instruction.message).toContain(`Tâche de test ${index}`);
       });
     });
   });

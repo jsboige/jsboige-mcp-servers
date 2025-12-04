@@ -419,8 +419,13 @@ export class RooSyncService {
       try {
         const dashboardContent = readFileSync(dashboardPath, 'utf-8');
         const existingDashboard = JSON.parse(dashboardContent);
-        console.log('[RooSyncService] Dashboard existant utilisé directement');
-        return existingDashboard as RooSyncDashboard;
+
+        // Validation basique de la structure
+        if (existingDashboard && existingDashboard.machines) {
+          console.log('[RooSyncService] Dashboard existant utilisé directement');
+          return existingDashboard as RooSyncDashboard;
+        }
+        console.warn('[RooSyncService] Dashboard existant invalide (pas de machines), recalcul...');
       } catch (error) {
         console.warn('[RooSyncService] Erreur lecture dashboard existant, fallback sur calcul:', error);
       }
@@ -452,14 +457,15 @@ export class RooSyncService {
       overallStatus: (totalDiffs > 0 ? 'diverged' : 'synced') as 'diverged' | 'synced' | 'conflict' | 'unknown',
       lastSync: now,
       status: (totalDiffs > 0 ? 'diverged' : 'synced') as 'diverged' | 'synced' | 'conflict' | 'unknown',
-      machines: {
-        'test-machine-001': {
-          lastSync: now,
-          status: 'online' as const,
-          diffsCount: totalDiffs,
-          pendingDecisions: 0
-        }
-      },
+      machines: machinesArray.reduce((acc, machine) => {
+        acc[machine.id] = {
+          lastSync: machine.lastSync,
+          status: machine.status,
+          diffsCount: machine.diffsCount,
+          pendingDecisions: machine.pendingDecisions
+        };
+        return acc;
+      }, {} as Record<string, any>),
       stats: {
         totalDiffs: totalDiffs,
         totalDecisions: totalDiffs,
@@ -514,6 +520,16 @@ export class RooSyncService {
     diffsCount: number;
   }> {
     const dashboard = await this.loadDashboard();
+    console.log(`[DEBUG] getStatus - machineId: ${this.config.machineId}`);
+    if (!dashboard) console.error('[DEBUG] DASHBOARD IS NULL/UNDEFINED');
+    else if (!dashboard.machines) console.error('[DEBUG] DASHBOARD.MACHINES IS NULL/UNDEFINED');
+    else console.log(`[DEBUG] getStatus - dashboard machines keys:`, Object.keys(dashboard.machines));
+
+    // Protection contre le crash pour le test
+    if (!dashboard || !dashboard.machines) {
+        throw new Error('Dashboard invalid structure');
+    }
+
     const machineInfo = dashboard.machines[this.config.machineId];
 
     if (!machineInfo) {

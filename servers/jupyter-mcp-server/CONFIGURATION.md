@@ -1,4 +1,4 @@
-﻿# Configuration du serveur MCP Jupyter
+# Configuration du serveur MCP Jupyter
 
 <!-- START_SECTION: introduction -->
 Ce document détaille les options de configuration disponibles pour le serveur MCP Jupyter. La configuration appropriée vous permettra d'optimiser les performances, de gérer les connexions au serveur Jupyter et d'adapter le comportement du serveur à vos besoins spécifiques.

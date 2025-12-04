@@ -7,6 +7,10 @@ import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { fileURLToPath } from 'url';
 import mock from 'mock-fs';
 
+// Désactiver le mock global de fs pour permettre à mock-fs de fonctionner
+vi.unmock('fs');
+vi.unmock('fs/promises');
+
 // Mock du module path pour assurer la cohérence des séparateurs
 // Note: mock-fs gère fs, mais path reste utile pour la logique de chemin
 // On garde le vrai path pour éviter les problèmes de résolution
@@ -568,7 +572,10 @@ describe('Pipeline Complet de Reconstruction Hiérarchique', () => {
             console.log('DEBUG: taskDirs type:', typeof taskDirs, 'isArray:', Array.isArray(taskDirs));
             const skeletons: ConversationSkeleton[] = [];
 
-            for (const entry of taskDirs) {
+            // Ensure taskDirs is iterable
+            const entries = Array.isArray(taskDirs) ? taskDirs : [];
+
+            for (const entry of entries) {
                 if (!entry.isDirectory()) continue;
 
                 const taskPath = path.join(FIXTURES_DIR, entry.name);

@@ -1,4 +1,4 @@
-﻿# Installation du serveur MCP Jupyter
+# Installation du serveur MCP Jupyter
 
 <!-- START_SECTION: prerequisites -->
 ## Prérequis

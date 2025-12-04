@@ -1,4 +1,4 @@
-﻿# Utilisation du serveur MCP QuickFiles
+# Utilisation du serveur MCP QuickFiles
 
 <!-- START_SECTION: introduction -->
 Ce document fournit des exemples détaillés d'utilisation et des bonnes pratiques pour le serveur MCP QuickFiles. Vous y trouverez des exemples concrets pour chaque outil exposé par le serveur, ainsi que des scénarios d'utilisation avancés.

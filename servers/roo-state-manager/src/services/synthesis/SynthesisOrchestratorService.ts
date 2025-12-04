@@ -1,11 +1,11 @@
 /**
  * SynthesisOrchestratorService - Service orchestrateur principal pour la synthèse de conversations
- * 
- * Ce service porte la logique de coordination et d'orchestration de l'ensemble 
+ *
+ * Ce service porte la logique de coordination et d'orchestration de l'ensemble
  * du processus de synthèse, en utilisant les services spécialisés pour chaque étape.
- * 
+ *
  * Architecture inspirée du TraceSummaryService existant avec injection de dépendances.
- * 
+ *
  * SDDD Phase 3 : Orchestration complète avec intégration LLM réelle
  *
  * @author Roo Code v4 - SDDD Phase 3
@@ -32,33 +32,33 @@ import { LLMService } from './LLMService.js';
 export interface SynthesisOrchestratorOptions {
     /** Répertoire de base pour stocker les fichiers de synthèse */
     synthesisOutputDir: string;
-    
+
     /** Taille maximale du contexte avant condensation */
     maxContextSize: number;
-    
+
     /** Nombre maximum de synthèses en parallèle */
     maxConcurrency: number;
-    
+
     /** Modèle LLM par défaut à utiliser */
     defaultLlmModel: string;
 }
 
 /**
  * Service orchestrateur principal pour la synthèse de conversations.
- * 
+ *
  * Ce service coordonne l'ensemble du processus de synthèse :
  * - Construction du contexte narratif via NarrativeContextBuilderService
  * - Appel aux LLM via LLMService
  * - Gestion des lots de traitement
  * - Export des résultats
- * 
+ *
  * Pattern de service singleton avec injection de dépendances.
  */
 export class SynthesisOrchestratorService {
     private narrativeContextBuilder: NarrativeContextBuilderService;
     private llmService: LLMService;
     private options: SynthesisOrchestratorOptions;
-    
+
     /**
      * File d'attente des tâches de synthèse en cours.
      * Utilisée pour gérer la concurrence et le statut des opérations.
@@ -67,7 +67,7 @@ export class SynthesisOrchestratorService {
 
     /**
      * Constructeur avec injection de dépendances.
-     * 
+     *
      * @param narrativeContextBuilder Service de construction de contexte narratif
      * @param llmService Service d'interface avec les LLM
      * @param options Options de configuration du service
@@ -88,10 +88,10 @@ export class SynthesisOrchestratorService {
 
     /**
      * Génère la synthèse pour une conversation individuelle.
-     * 
+     *
      * Phase 1 : Méthode squelette qui retournera une analyse mock.
      * Phase 3 : Intégrera la logique complète LLM.
-     * 
+     *
      * @param taskId ID de la tâche à analyser
      * @param options Options de construction de contexte (optionnelles)
      * @returns Promise de l'analyse complète de la conversation
@@ -102,31 +102,31 @@ export class SynthesisOrchestratorService {
     ): Promise<ConversationAnalysis> {
         try {
             console.log(`🚀 [SynthesisOrchestrator] Début synthèse conversation: ${taskId}`);
-            
+
             // ÉTAPE 1: Construction du contexte narratif via NarrativeContextBuilderService
             console.log(`📖 [SynthesisOrchestrator] Construction contexte narratif pour ${taskId}...`);
             const contextResult = await this.narrativeContextBuilder.buildNarrativeContext(taskId, options);
-            
+
             console.log(`✅ [SynthesisOrchestrator] Contexte construit (${contextResult.contextSummary.length} chars, condensé: ${contextResult.wasCondensed})`);
-            
+
             // ÉTAPE 2: Phase 3 - Appel LLM réel pour générer la synthèse
             console.log(`🤖 [SynthesisOrchestrator] Génération synthèse LLM pour ${taskId}...`);
-            
+
             try {
                 const llmResult = await this.llmService.generateSynthesis(
                     contextResult.contextSummary,
                     taskId
                 );
-                
+
                 console.log(`💰 [SynthesisOrchestrator] LLM cost: $${llmResult.usage.estimatedCost.toFixed(4)} (${llmResult.usage.totalTokens} tokens)`);
-                
+
                 // Parser la réponse JSON du LLM en ConversationAnalysis
                 let llmAnalysis: ConversationAnalysis;
                 try {
                     llmAnalysis = JSON.parse(llmResult.response) as ConversationAnalysis;
                 } catch (parseError) {
                     console.warn(`⚠️ [SynthesisOrchestrator] Échec parsing JSON LLM, utilisation fallback`);
-                    
+
                     // Fallback si parsing échoue - structure minimale avec réponse brute
                     llmAnalysis = {
                         taskId,
@@ -149,14 +149,14 @@ export class SynthesisOrchestratorService {
                         }
                     };
                 }
-                
+
                 // Assurer la cohérence des métadonnées critiques
                 llmAnalysis.taskId = taskId;
                 llmAnalysis.analysisTimestamp = new Date().toISOString();
                 llmAnalysis.analysisEngineVersion = "3.0.0-phase3";
                 llmAnalysis.llmModelId = llmResult.context.modelId; // Forcer le vrai nom de modèle
                 llmAnalysis.contextTrace = contextResult.buildTrace;
-                
+
                 // Enrichir les métriques avec données du contexte et LLM
                 llmAnalysis.metrics = {
                     ...llmAnalysis.metrics,
@@ -166,7 +166,7 @@ export class SynthesisOrchestratorService {
                     llmTokens: llmResult.usage.totalTokens,
                     llmCost: llmResult.usage.estimatedCost,
                     llmDuration: llmResult.duration,
-                    
+
                     // Phase 3 : Arbre de contexte hiérarchique réel - DONNÉES CORRECTES
                     contextTree: {
                         currentTask: {
@@ -194,17 +194,20 @@ export class SynthesisOrchestratorService {
                         }
                     }
                 };
-                
+
                 // Garantir que la synthèse narrative utilise le contexte réel
                 llmAnalysis.synthesis.initialContextSummary = contextResult.contextSummary;
-                
+
                 console.log(`🎯 [SynthesisOrchestrator] Synthèse LLM terminée pour ${taskId} (${llmResult.usage.totalTokens} tokens, $${llmResult.usage.estimatedCost.toFixed(4)})`);
-                
+
                 return llmAnalysis;
-                
+
             } catch (llmError) {
                 console.error(`❌ [SynthesisOrchestrator] Erreur LLM pour ${taskId}:`, llmError);
-                
+                if (llmError instanceof Error) {
+                    console.error(`❌ [SynthesisOrchestrator] Stack:`, llmError.stack);
+                }
+
                 // Fallback avec contexte réel mais analyse d'erreur
                 const fallbackAnalysis: ConversationAnalysis = {
                     taskId,
@@ -219,7 +222,7 @@ export class SynthesisOrchestratorService {
                         contextLength: contextResult.contextSummary.length,
                         wasCondensed: contextResult.wasCondensed,
                         llmError: llmError instanceof Error ? llmError.message : 'Unknown LLM error',
-                        
+
                         // Phase 3 : Arbre de contexte pour traçabilité (même en cas d'erreur LLM)
                         contextTree: {
                             currentTask: {
@@ -252,13 +255,13 @@ export class SynthesisOrchestratorService {
                         finalTaskSummary: `Erreur LLM lors de la synthèse: ${llmError instanceof Error ? llmError.message : 'Unknown LLM error'}`
                     }
                 };
-                
+
                 return fallbackAnalysis;
             }
-            
+
         } catch (error) {
             console.error(`❌ [SynthesisOrchestrator] Erreur synthèse ${taskId}:`, error);
-            
+
             // Retour d'une analyse d'erreur conforme au contrat
             const errorAnalysis: ConversationAnalysis = {
                 taskId,
@@ -275,7 +278,7 @@ export class SynthesisOrchestratorService {
                 quality: { error: true },
                 metrics: {
                     error: error instanceof Error ? error.message : 'Unknown error',
-                    
+
                     // Phase 3 : Arbre de contexte pour traçabilité (cas d'erreur critique)
                     contextTree: {
                         currentTask: {
@@ -301,17 +304,17 @@ export class SynthesisOrchestratorService {
                     finalTaskSummary: `Erreur lors de la synthèse: ${error instanceof Error ? error.message : 'Unknown error'}`
                 }
             };
-            
+
             return errorAnalysis;
         }
     }
 
     /**
      * Met à jour les métadonnées de synthèse dans un ConversationSkeleton.
-     * 
+     *
      * Phase 1 : Méthode squelette pour la structure.
      * Phase 2 : Implémentera la logique de mise à jour des métadonnées.
-     * 
+     *
      * @param skeleton Squelette de conversation à mettre à jour
      * @param analysis Analyse de conversation générée
      * @returns Promise du squelette mis à jour
@@ -330,10 +333,10 @@ export class SynthesisOrchestratorService {
 
     /**
      * Lance un traitement de synthèse par lots.
-     * 
+     *
      * Phase 1 : Méthode squelette pour la structure.
      * Phase 4 : Implémentera la logique complète de traitement par lots.
-     * 
+     *
      * @param config Configuration du lot de traitement
      * @returns Promise de la tâche de traitement créée
      */
@@ -344,7 +347,7 @@ export class SynthesisOrchestratorService {
 
     /**
      * Récupère le statut d'une tâche de traitement par lots.
-     * 
+     *
      * @param batchId ID du lot à vérifier
      * @returns Promise de la tâche de traitement ou null si non trouvée
      */
@@ -354,9 +357,9 @@ export class SynthesisOrchestratorService {
 
     /**
      * Annule un traitement par lots en cours.
-     * 
+     *
      * Phase 4 : Méthode pour l'annulation propre des traitements.
-     * 
+     *
      * @param batchId ID du lot à annuler
      * @returns Promise<boolean> true si annulé avec succès
      */
@@ -376,9 +379,9 @@ export class SynthesisOrchestratorService {
 
     /**
      * Exporte les résultats de synthèse selon les options spécifiées.
-     * 
+     *
      * Phase 4 : Méthode pour l'export dans différents formats.
-     * 
+     *
      * @param taskIds Liste des IDs de tâches à exporter
      * @param options Options d'export
      * @returns Promise du chemin du fichier d'export généré
@@ -394,7 +397,7 @@ export class SynthesisOrchestratorService {
     /**
      * Nettoie les ressources et arrête les traitements en cours.
      * Appelé lors de l'arrêt du serveur MCP.
-     * 
+     *
      * @returns Promise<void>
      */
     async cleanup(): Promise<void> {
@@ -413,7 +416,7 @@ export class SynthesisOrchestratorService {
 
     /**
      * Génère un ID unique pour un nouveau lot de traitement.
-     * 
+     *
      * @returns string ID unique du lot
      */
     private generateBatchId(): string {
@@ -422,7 +425,7 @@ export class SynthesisOrchestratorService {
 
     /**
      * Valide la configuration d'un lot de traitement.
-     * 
+     *
      * @param config Configuration à valider
      * @throws Error si la configuration est invalide
      */
@@ -430,11 +433,11 @@ export class SynthesisOrchestratorService {
         if (!config.llmModelId) {
             throw new Error('llmModelId est requis dans la configuration du lot');
         }
-        
+
         if (config.maxConcurrency <= 0) {
             throw new Error('maxConcurrency doit être supérieur à 0');
         }
-        
+
         if (!config.taskFilter || (!config.taskFilter.taskIds && !config.taskFilter.workspace)) {
             throw new Error('taskFilter doit spécifier soit taskIds soit workspace');
         }
@@ -447,7 +450,7 @@ export class SynthesisOrchestratorService {
     /**
      * Retourne les statistiques d'utilisation du service.
      * Utile pour le monitoring et le debug.
-     * 
+     *
      * @returns Statistiques d'utilisation
      */
     getServiceStats(): {

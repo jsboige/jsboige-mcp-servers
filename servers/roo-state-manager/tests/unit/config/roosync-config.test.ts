@@ -1,6 +1,6 @@
 /**
  * Tests pour roosync-config.ts
- * 
+ *
  * Ces tests vérifient la validation de la configuration RooSync
  */
 
@@ -75,6 +75,7 @@ describe('RooSync Configuration', () => {
       // Arrange
       process.env.ROOSYNC_MACHINE_ID = 'PC-PRINCIPAL';
       // ROOSYNC_SHARED_PATH manquant
+      delete process.env.ROOSYNC_SHARED_PATH;
 
       // Act
       const config = tryLoadRooSyncConfig();
@@ -106,6 +107,7 @@ describe('RooSync Configuration', () => {
       // Arrange
       process.env.ROOSYNC_MACHINE_ID = 'PC-PRINCIPAL';
       // Configuration incomplète
+      delete process.env.ROOSYNC_SHARED_PATH;
 
       // Act
       const enabled = isRooSyncEnabled();

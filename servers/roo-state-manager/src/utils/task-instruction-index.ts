@@ -3,11 +3,11 @@
  * Optimisé pour la recherche rapide de relations parent-enfant
  * Utilise exact-trie pour le matching longest-prefix robuste
  */
- 
+
 import { NewTaskInstruction } from '../types/conversation.js';
 import Trie from 'exact-trie';
 import { extractSubInstructions } from './sub-instruction-extractor.js';
- 
+
 /**
  * Structure pour stocker plusieurs parents par préfixe
  */
@@ -152,7 +152,7 @@ export class TaskInstructionIndex {
         // jusqu'à trouver une correspondance. Cela garantit un match déterministe.
 
         const fullSearchPrefix = computeInstructionPrefix(childText, K);
-        if (process.env.ROO_DEBUG_INSTRUCTIONS === '1' || true) { // Forcer le debug pour ce test
+        if (process.env.ROO_DEBUG_INSTRUCTIONS === '1') {
             console.log(`[EXACT PREFIX SEARCH] SDDD: Starting search with full prefix: "${fullSearchPrefix}" (K=${K})`);
         }
 
@@ -196,7 +196,7 @@ export class TaskInstructionIndex {
                         });
                     }
 
-                    if (process.env.ROO_DEBUG_INSTRUCTIONS === '1' || true) { // Forcer le debug pour ce test
+                    if (process.env.ROO_DEBUG_INSTRUCTIONS === '1') {
                         console.log(`[EXACT PREFIX SEARCH] SDDD: ✅ Found match with length ${len}: "${matchedKey}" → ${entry.parentTaskIds.length} parent(s)`);
                     }
 
@@ -205,7 +205,7 @@ export class TaskInstructionIndex {
             }
         }
 
-        if (process.env.ROO_DEBUG_INSTRUCTIONS === '1' || true) { // Forcer le debug pour ce test
+        if (process.env.ROO_DEBUG_INSTRUCTIONS === '1') {
             console.log(`[EXACT PREFIX SEARCH] SDDD: ❌ No match found for any prefix length`);
         }
 

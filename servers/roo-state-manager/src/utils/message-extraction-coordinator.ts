@@ -24,6 +24,9 @@ export interface MessageExtractionOptions {
   maxLines?: number;
   onlyJsonFormat?: boolean;
   enableDebug?: boolean;
+  patterns?: string[];
+  minLength?: number;
+  maxLength?: number;
 }
 
 /**

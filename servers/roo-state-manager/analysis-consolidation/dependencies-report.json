@@ -1,4 +1,4 @@
-﻿{
+{
     "topDependencies":  {
                             "incomingDependencies":  1,
                             "module":  "types/task-tree.js"

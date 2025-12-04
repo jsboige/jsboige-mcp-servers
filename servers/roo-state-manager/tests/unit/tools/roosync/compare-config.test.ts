@@ -5,6 +5,9 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { writeFileSync, mkdirSync, rmSync, readdirSync } from 'fs';
 import { join, dirname } from 'path';
+
+// Désactiver le mock global de fs pour ce test qui utilise le système de fichiers réel
+vi.unmock('fs');
 import { fileURLToPath } from 'url';
 
 // Mock pour RooSyncService
@@ -50,7 +53,7 @@ const { mockRooSyncService, mockRooSyncServiceError, mockGetRooSyncService, mock
           // Si aucune cible spécifiée, auto-sélectionner MAC-DEV
           const actualTarget = target || 'MAC-DEV';
           const actualSource = source || 'PC-PRINCIPAL';
-          
+
           return Promise.resolve({
             sourceMachine: actualSource,
             targetMachine: actualTarget,
@@ -422,14 +425,14 @@ describe('roosync_compare_config', () => {
     // Arrange - On teste directement le comportement attendu
     // Le test vérifie que la fonction gère correctement le cas où
     // getDefaultTargetMachine lève une erreur
-    
+
     const args: CompareConfigArgs = {};
-    
+
     // Act & Assert - On s'attend à une erreur car le mock global
     // a 2 machines, donc getDefaultTargetMachine ne devrait pas lever d'erreur
     // Ce test est donc ajusté pour vérifier le comportement normal
     const result = await roosyncCompareConfig(args);
-    
+
     expect(result).toBeDefined();
     expect(result.source).toBe('PC-PRINCIPAL');
     expect(result.target).toBe('MAC-DEV');

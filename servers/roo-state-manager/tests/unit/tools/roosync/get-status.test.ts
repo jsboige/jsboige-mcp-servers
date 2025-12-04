@@ -5,6 +5,9 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { writeFileSync, mkdirSync, rmSync } from 'fs';
 import { join, dirname } from 'path';
+
+// Désactiver le mock global de fs pour ce test qui utilise le système de fichiers réel
+vi.unmock('fs');
 import { fileURLToPath } from 'url';
 
 // Mock pour RooSyncService
@@ -16,7 +19,7 @@ const { mockRooSyncService, mockRooSyncServiceError, mockGetRooSyncService } = v
       this.name = 'RooSyncServiceError';
     }
   };
-  
+
   const service = {
     resetInstance: vi.fn(),
     getInstance: vi.fn(() => ({
@@ -49,7 +52,7 @@ const { mockRooSyncService, mockRooSyncServiceError, mockGetRooSyncService } = v
         const status = {
           version: '2.0.0',
           lastUpdate: '2025-10-08T10:00:00Z',
-          overallStatus: 'synced',
+          overallStatus: 'diverged',
           machines: {
             'PC-PRINCIPAL': {
               id: 'PC-PRINCIPAL',
@@ -66,21 +69,13 @@ const { mockRooSyncService, mockRooSyncServiceError, mockGetRooSyncService } = v
               status: 'online',
               diffsCount: 2,
               pendingDecisions: 1
-            },
-            'LAPTOP-WORK': {
-              id: 'LAPTOP-WORK',
-              name: 'Laptop Work',
-              lastSync: '2025-10-07T18:00:00Z',
-              status: 'offline',
-              diffsCount: 5,
-              pendingDecisions: 3
             }
           },
           statistics: {
-            totalMachines: 3,
+            totalMachines: 2,
             onlineMachines: 2,
-            totalDifferences: 7,
-            pendingDecisions: 4,
+            totalDifferences: 2,
+            pendingDecisions: 1,
             lastSync: '2025-10-08T09:00:00Z'
           }
         };
@@ -93,13 +88,13 @@ const { mockRooSyncService, mockRooSyncServiceError, mockGetRooSyncService } = v
             machines: { [filterMachine]: status.machines[filterMachine as keyof typeof status.machines] }
           };
         }
-        
+
         return status;
       }),
       loadDashboard: vi.fn().mockResolvedValue({
         version: '2.0.0',
         lastUpdate: '2025-10-08T10:00:00Z',
-        overallStatus: 'synced',
+        overallStatus: 'diverged',
         machines: {
           'PC-PRINCIPAL': {
             id: 'PC-PRINCIPAL',
@@ -116,23 +111,15 @@ const { mockRooSyncService, mockRooSyncServiceError, mockGetRooSyncService } = v
             status: 'online',
             diffsCount: 2,
             pendingDecisions: 1
-          },
-          'LAPTOP-WORK': {
-            id: 'LAPTOP-WORK',
-            name: 'Laptop Work',
-            lastSync: '2025-10-07T18:00:00Z',
-            status: 'offline',
-            diffsCount: 5,
-            pendingDecisions: 3
           }
         }
       })
     }))
   };
-  
+
   // Mock de la fonction getRooSyncService
   const getRooSyncService = vi.fn(() => service.getInstance());
-  
+
   return {
     mockRooSyncService: service,
     mockRooSyncServiceError: errorClass,
@@ -154,7 +141,7 @@ const __dirname = dirname(__filename);
 
 describe('roosync_get_status', () => {
   const testDir = join(__dirname, '../../../fixtures/roosync-get-status-test');
-  
+
   beforeEach(() => {
     // Créer répertoire de test
     try {
@@ -162,14 +149,14 @@ describe('roosync_get_status', () => {
     } catch (error) {
       // Déjà existant
     }
-    
+
     // Forcer la suppression du fichier baseline forcé utilisé par le système
     try {
       rmSync('g:\\Mon Drive\\Synchronisation\\RooSync\\.shared-state\\sync-config.ref.json', { force: true });
     } catch (error) {
       // Ignorer si le fichier n'existe pas
     }
-    
+
     // Créer dashboard de test
     const dashboard = {
       version: '2.0.0',
@@ -191,13 +178,13 @@ describe('roosync_get_status', () => {
         // LAPTOP-WORK retiré pour correspondre aux données du mock
       }
     };
-    
+
     writeFileSync(
       join(testDir, 'sync-dashboard.json'),
       JSON.stringify(dashboard, null, 2),
       'utf-8'
     );
-    
+
     // Créer le fichier baseline manquant
     const baseline = {
       version: "1.0.0",
@@ -255,19 +242,19 @@ describe('roosync_get_status', () => {
         }
       ]
     };
-    
+
     writeFileSync(join(testDir, 'sync-config.ref.json'), JSON.stringify(baseline, null, 2), 'utf-8');
-    
+
     // Mock environnement
     process.env.ROOSYNC_SHARED_PATH = testDir;
     process.env.ROOSYNC_MACHINE_ID = 'PC-PRINCIPAL';
     process.env.ROOSYNC_AUTO_SYNC = 'false';
     process.env.ROOSYNC_CONFLICT_STRATEGY = 'manual';
     process.env.ROOSYNC_LOG_LEVEL = 'info';
-    
+
     RooSyncService.resetInstance();
   });
-  
+
   afterEach(() => {
     try {
       rmSync(testDir, { recursive: true, force: true });
@@ -280,10 +267,10 @@ describe('roosync_get_status', () => {
   it('devrait retourner le statut complet sans filtre', async () => {
     // Arrange
     const args: GetStatusArgs = {};
-    
+
     // Act
     const result = await roosyncGetStatus(args);
-    
+
     // Assert
     expect(result.status).toBe('diverged'); // Aligné avec le mock
     expect(result.lastSync).toBe('2025-10-08T10:00:00Z');
@@ -294,14 +281,14 @@ describe('roosync_get_status', () => {
     expect(result.summary?.totalDiffs).toBe(2); // 0 + 2 = 2 (aligné avec le mock)
     expect(result.summary?.totalPendingDecisions).toBe(1); // 0 + 1 = 1 (aligné avec le mock)
   });
-  
+
   it('devrait filtrer par machine spécifique', async () => {
     // Arrange
     const args: GetStatusArgs = { machineFilter: 'MAC-DEV' };
-    
+
     // Act
     const result = await roosyncGetStatus(args);
-    
+
     // Assert
     expect(result.machines).toHaveLength(1);
     expect(result.machines[0].id).toBe('MAC-DEV');
@@ -310,34 +297,34 @@ describe('roosync_get_status', () => {
     expect(result.summary?.totalMachines).toBe(1);
     expect(result.summary?.totalDiffs).toBe(2);
   });
-  
+
   it('devrait lever une erreur si la machine filtrée n\'existe pas', async () => {
     // Arrange
     const args: GetStatusArgs = { machineFilter: 'NONEXISTENT' };
-    
+
     // Act & Assert
     await expect(roosyncGetStatus(args)).rejects.toThrow('Machine \'NONEXISTENT\' non trouvée');
   });
-  
+
   it('devrait inclure toutes les machines dans le résultat', async () => {
     // Arrange
     const args: GetStatusArgs = {};
-    
+
     // Act
     const result = await roosyncGetStatus(args);
-    
+
     // Assert
     const machineIds = result.machines.map(m => m.id).sort();
     expect(machineIds).toEqual(['MAC-DEV', 'PC-PRINCIPAL']); // Aligné avec le mock
   });
-  
+
   it('devrait calculer correctement les statistiques', async () => {
     // Arrange
     const args: GetStatusArgs = {};
-    
+
     // Act
     const result = await roosyncGetStatus(args);
-    
+
     // Assert
     expect(result.summary).toMatchObject({
       totalMachines: 2, // 2 machines : PC-PRINCIPAL, MAC-DEV (aligné avec le mock)

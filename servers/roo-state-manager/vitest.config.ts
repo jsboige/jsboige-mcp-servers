@@ -1,4 +1,4 @@
-﻿import { defineConfig } from 'vitest/config';
+import { defineConfig } from 'vitest/config';
 import path from 'path';
 
 export default defineConfig({
@@ -87,7 +87,7 @@ export default defineConfig({
     isolate: true,
 
     // Reporters
-    reporters: ['basic']
+    reporters: ['default']
   },
 
   // Résolution des modules (équivalent à moduleNameMapper)

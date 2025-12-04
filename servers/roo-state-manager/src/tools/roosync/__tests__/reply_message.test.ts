@@ -1,6 +1,6 @@
 /**
  * Tests unitaires pour roosync_reply_message
- * 
+ *
  * Couvre les scénarios :
  * - Répondre à un message (succès)
  * - Message original inexistant (erreur)
@@ -9,7 +9,7 @@
  * - Vérifier ajout automatique tag "reply"
  * - Vérifier héritage/override priorité
  * - Vérifier sujet "Re:"
- * 
+ *
  * Framework: Vitest
  * Coverage cible: >80%
  */
@@ -19,6 +19,9 @@ import { replyMessage } from '../reply_message.js';
 import { MessageManager } from '../../../services/MessageManager.js';
 import { existsSync, rmSync, mkdirSync } from 'fs';
 import { join } from 'path';
+
+// Désactiver le mock global de fs pour ce test qui utilise le système de fichiers réel
+vi.unmock('fs');
 import * as serverHelpers from '../../../utils/server-helpers.js';
 
 describe('roosync_reply_message', () => {
@@ -27,7 +30,7 @@ describe('roosync_reply_message', () => {
 
   beforeEach(() => {
     testSharedStatePath = join(__dirname, '../../../__test-data__/shared-state-reply');
-    
+
     const dirs = [
       join(testSharedStatePath, 'messages/inbox'),
       join(testSharedStatePath, 'messages/sent'),

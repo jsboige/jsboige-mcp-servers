@@ -1,13 +1,13 @@
 /**
  * Tests unitaires pour roosync_archive_message
- * 
+ *
  * Couvre les scénarios :
  * - Archiver un message depuis inbox (succès)
  * - Message déjà archivé (info)
  * - Message inexistant (erreur)
  * - Vérifier déplacement physique du fichier
  * - Timestamp archived_at présent
- * 
+ *
  * Framework: Vitest
  * Coverage cible: >80%
  */
@@ -15,6 +15,9 @@
 import { describe, test, expect, beforeEach, afterEach, vi } from 'vitest';
 import { existsSync, rmSync, mkdirSync, promises as fs } from 'fs';
 import { join } from 'path';
+
+// Désactiver le mock global de fs pour ce test qui utilise le système de fichiers réel
+vi.unmock('fs');
 
 // Pas de mock - utilisation directe de la variable d'environnement
 
@@ -29,7 +32,7 @@ describe('roosync_archive_message', () => {
 
   beforeEach(async () => {
     testSharedStatePath = join(__dirname, '../../../../__test-data__/shared-state-archive');
-    
+
     const dirs = [
       join(testSharedStatePath, 'messages/inbox'),
       join(testSharedStatePath, 'messages/sent'),
@@ -46,12 +49,12 @@ describe('roosync_archive_message', () => {
     // Mock l'environnement pour que getSharedStatePath() utilise notre chemin de test
     originalEnv = { ...process.env };
     process.env.ROOSYNC_SHARED_PATH = testSharedStatePath;
-    
+
     // Pas de mock - utilisation directe de la variable d'environnement
-    
+
     // Définir la variable d'environnement pour le code de production
     process.env.ROOSYNC_TEST_PATH = testSharedStatePath;
-    
+
     // Logs de débogage
     console.error('🔍 [TEST] Répertoire de test:', testSharedStatePath);
     console.error('🔍 [TEST] Variable ROOSYNC_TEST_PATH:', process.env.ROOSYNC_TEST_PATH);
@@ -71,7 +74,7 @@ describe('roosync_archive_message', () => {
   test('should archive message from inbox', async () => {
     // Utiliser le même MessageManager que celui utilisé par l'outil
     const archiveMessageManager = new MessageManager(testSharedStatePath);
-    
+
     const message = await archiveMessageManager.sendMessage(
       'machine1',
       'machine2',
@@ -95,7 +98,7 @@ describe('roosync_archive_message', () => {
   test('should handle already archived message', async () => {
     // Utiliser le même MessageManager que celui utilisé par l'outil
     const archiveMessageManager = new MessageManager(testSharedStatePath);
-    
+
     const message = await archiveMessageManager.sendMessage(
       'machine1',
       'machine2',
@@ -106,10 +109,10 @@ describe('roosync_archive_message', () => {
 
     // Archiver d'abord le message
     await archiveMessageManager.archiveMessage(message.id);
-    
+
     // Récupérer le message archivé pour vérifier son statut
     const archivedMsg = await archiveMessageManager.getMessage(message.id);
-    
+
     // Si le message est trouvé dans archive avec statut 'archived', l'outil devrait détecter cela
     // Sinon, le comportement observé est qu'il archive à nouveau (message déjà dans archive)
     const result = await archiveMessage({ message_id: message.id });
@@ -132,7 +135,7 @@ describe('roosync_archive_message', () => {
   test('should physically move file from inbox to archive', async () => {
     // Utiliser le même MessageManager que celui utilisé par l'outil
     const archiveMessageManager = new MessageManager(testSharedStatePath);
-    
+
     const message = await archiveMessageManager.sendMessage(
       'machine1',
       'machine2',
@@ -156,7 +159,7 @@ describe('roosync_archive_message', () => {
   test('should include archived_at timestamp', async () => {
     // Utiliser le même MessageManager que celui utilisé par l'outil
     const archiveMessageManager = new MessageManager(testSharedStatePath);
-    
+
     const message = await archiveMessageManager.sendMessage(
       'machine1',
       'machine2',
@@ -170,7 +173,7 @@ describe('roosync_archive_message', () => {
     expect(result.content).toBeDefined();
     expect(result.content[0].type).toBe('text');
     expect(result.content[0].text).toContain("Date d'archivage");
-    
+
     // Vérifier que le texte contient une date plausible (l'outil formate la date dans le résultat)
     const datePattern = /\d{4}/; // Au minimum l'année devrait être présente
     expect(result.content[0].text).toMatch(datePattern);
