@@ -21,11 +21,50 @@ import { existsSync, rmSync, mkdirSync } from 'fs';
 import { join } from 'path';
 import * as serverHelpers from '../../../utils/server-helpers.js';
 
+// Mock fs module
+vi.mock('fs', () => ({
+  readFileSync: vi.fn(),
+  writeFileSync: vi.fn(),
+  existsSync: vi.fn(),
+  mkdirSync: vi.fn(),
+  rmSync: vi.fn(),
+  readdirSync: vi.fn(),
+  statSync: vi.fn(),
+  unlinkSync: vi.fn(),
+  promises: {
+    readFile: vi.fn(),
+    writeFile: vi.fn(),
+    readdir: vi.fn(),
+    stat: vi.fn(),
+    mkdir: vi.fn(),
+    rm: vi.fn(),
+    unlink: vi.fn()
+  }
+}));
+
+vi.mock('fs/promises', () => ({
+  readFile: vi.fn(),
+  writeFile: vi.fn(),
+  readdir: vi.fn(),
+  stat: vi.fn(),
+  mkdir: vi.fn(),
+  rm: vi.fn(),
+  unlink: vi.fn(),
+  mkdtemp: vi.fn(),
+  rmdir: vi.fn()
+}));
+
 describe('roosync_reply_message', () => {
   let testSharedStatePath: string;
   let messageManager: MessageManager;
+  let mockFiles: Map<string, string>;
+  let mockDirs: Set<string>;
 
-  beforeEach(() => {
+  beforeEach(async () => {
+    // Initialiser les mocks
+    mockFiles = new Map<string, string>();
+    mockDirs = new Set<string>();
+    
     testSharedStatePath = join(__dirname, '../../../__test-data__/shared-state-reply');
     
     const dirs = [
@@ -34,9 +73,86 @@ describe('roosync_reply_message', () => {
       join(testSharedStatePath, 'messages/archive')
     ];
     dirs.forEach(dir => {
-      if (!existsSync(dir)) {
-        mkdirSync(dir, { recursive: true });
+      mockDirs.add(dir);
+    });
+
+    // Configurer les mocks fs
+    const fs = await import('fs');
+    (fs.existsSync as any).mockImplementation((path: string) => {
+      return mockDirs.has(path) || mockFiles.has(path);
+    });
+    
+    (fs.mkdirSync as any).mockImplementation((path: string, options?: any) => {
+      mockDirs.add(path);
+    });
+    
+    (fs.readFileSync as any).mockImplementation((path: string) => {
+      if (mockFiles.has(path)) {
+        return mockFiles.get(path)!;
       }
+      throw new Error(`ENOENT: no such file or directory, open '${path}'`);
+    });
+    
+    (fs.writeFileSync as any).mockImplementation((path: string, content: string) => {
+      mockFiles.set(path, content);
+    });
+    
+    (fs.readdirSync as any).mockImplementation((path: string) => {
+      const files: string[] = [];
+      for (const [filePath] of mockFiles) {
+        if (filePath.startsWith(path)) {
+          const fileName = filePath.substring(path.length + 1);
+          if (fileName.includes('/')) continue;
+          files.push(fileName);
+        }
+      }
+      return files;
+    });
+    
+    (fs.rmSync as any).mockImplementation((path: string, options?: any) => {
+      if (options?.recursive) {
+        // Supprimer récursivement
+        for (const [filePath] of mockFiles) {
+          if (filePath.startsWith(path)) {
+            mockFiles.delete(filePath);
+          }
+        }
+        mockDirs.delete(path);
+      } else {
+        mockFiles.delete(path);
+        mockDirs.delete(path);
+      }
+    });
+
+    // Configurer les mocks fs.promises
+    const fsPromises = fs.promises as any;
+    fsPromises.readFile.mockImplementation((path: string) => {
+      if (mockFiles.has(path)) {
+        return Promise.resolve(mockFiles.get(path)!);
+      }
+      return Promise.reject(new Error(`ENOENT: no such file or directory, open '${path}'`));
+    });
+    
+    fsPromises.writeFile.mockImplementation((path: string, content: string) => {
+      mockFiles.set(path, content);
+      return Promise.resolve();
+    });
+    
+    fsPromises.readdir.mockImplementation((path: string) => {
+      const files: string[] = [];
+      for (const [filePath] of mockFiles) {
+        if (filePath.startsWith(path)) {
+          const fileName = filePath.substring(path.length + 1);
+          if (fileName.includes('/')) continue;
+          files.push(fileName);
+        }
+      }
+      return Promise.resolve(files);
+    });
+    
+    fsPromises.unlink.mockImplementation((path: string) => {
+      mockFiles.delete(path);
+      return Promise.resolve();
     });
 
     messageManager = new MessageManager(testSharedStatePath);
@@ -47,9 +163,6 @@ describe('roosync_reply_message', () => {
 
   afterEach(() => {
     vi.restoreAllMocks();
-    if (existsSync(testSharedStatePath)) {
-      rmSync(testSharedStatePath, { recursive: true, force: true });
-    }
   });
 
   test('should reply to message successfully', async () => {

@@ -65,7 +65,7 @@ export const readVscodeLogs = {
         }
 
         try {
-            const sessionDirs = (await fs.readdir(rootLogsPath, { withFileTypes: true }))
+            const sessionDirs = (await fs.readdir(rootLogsPath, { withFileTypes: true }) || [])
                 .filter(d => d.isDirectory() && /^\d{8}T\d{6}$/.test(d.name))
                 .sort((a, b) => b.name.localeCompare(a.name)); // Sort descending to get latest first
 
@@ -79,7 +79,7 @@ export const readVscodeLogs = {
             for (const sessionDir of sessionDirs) {
                 if (sessionsProcessed >= maxSessions) break;
                 const sessionPath = path.join(rootLogsPath, sessionDir.name);
-                const windowDirs = (await fs.readdir(sessionPath, { withFileTypes: true }).catch(() => []))
+                const windowDirs = (await fs.readdir(sessionPath, { withFileTypes: true }).catch(() => []) || [])
                     .filter(d => d.isDirectory() && d.name.startsWith('window'))
                     .sort((a, b) => b.name.localeCompare(a.name));
 
@@ -117,13 +117,13 @@ export const readVscodeLogs = {
                         foundLogs = true;
                     } catch (e) { /* ignore if not present */ }
 
-                    const outputDirs = (await fs.readdir(exthostPath, { withFileTypes: true }).catch(() => []))
+                    const outputDirs = (await fs.readdir(exthostPath, { withFileTypes: true }).catch(() => []) || [])
                         .filter(d => d.isDirectory() && d.name.startsWith('output_logging_'));
 
                     let latestRooLog = { path: '', mtime: new Date(0) };
                     for (const outputDir of outputDirs) {
                         const logFilesPath = path.join(exthostPath, outputDir.name);
-                        const logFiles = await fs.readdir(logFilesPath, { withFileTypes: true }).catch(() => []);
+                        const logFiles = await fs.readdir(logFilesPath, { withFileTypes: true }).catch(() => []) || [];
                         for (const logFile of logFiles) {
                             if (logFile.isFile() && /\d+-Roo-Code\.log$/.test(logFile.name)) {
                                 const rooLogPath = path.join(logFilesPath, logFile.name);
