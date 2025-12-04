@@ -6,6 +6,14 @@
 
 import { describe, test, expect, beforeEach, afterEach, vi } from 'vitest';
 import { fileURLToPath } from 'url';
+import * as fs from 'fs/promises';
+import * as path from 'path';
+
+// Import de types uniquement
+import { NewTaskInstruction } from '../../../src/types/conversation.js';
+
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
 
 // Mock du module fs/promises
 const { readFile, writeFile, mkdir, rm, stat } = vi.hoisted(() => ({
@@ -42,14 +50,14 @@ vi.mock('fs', () => {
 });
 
 // Mock du module path
-const { join, dirname } = vi.hoisted(() => ({
+const { join, dirname: pathDirname } = vi.hoisted(() => ({
   join: vi.fn((...paths) => paths.join('/')),
   dirname: vi.fn((path) => path.split('/').slice(0, -1).join('/'))
 }));
 
 vi.mock('path', () => ({
   join,
-  dirname,
+  dirname: pathDirname,
   normalize: vi.fn((path) => path),
   resolve: vi.fn((...paths) => paths.join('/')),
   basename: vi.fn((path) => path.split('/').pop()),
@@ -59,89 +67,8 @@ vi.mock('path', () => ({
   delimiter: ';'
 }));
 
-<<<<<<< Updated upstream
 // Suppression du mock de message-extraction-coordinator pour utiliser l'implémentation réelle
 // Cela permet de tester l'intégration complète et évite les problèmes de chemin d'import dynamique
-=======
-// Mock du module message-extraction-coordinator
-const mockMessageExtractionCoordinator = {
-  extractFromMessages: vi.fn((messages, options) => {
-    const instructions = [];
-    
-    // Simuler l'extraction des balises <task> et <new_task>
-    for (const message of messages) {
-      if (message.content) {
-        let content = message.content;
-        
-        // Gérer le cas où content est un array (format OpenAI)
-        if (Array.isArray(content)) {
-          const textItem = content.find(item => item.type === 'text');
-          if (textItem) {
-            content = textItem.text;
-          }
-        }
-        
-        // Extraire les balises <task>
-        const taskMatches = content.match(/<task>([\s\S]*?)<\/task>/g);
-        if (taskMatches) {
-          for (const match of taskMatches) {
-            const taskContent = match.replace(/<\/?task>/g, '').trim();
-            if (taskContent.length >= 20) { // Filtrer les tâches trop courtes
-              instructions.push({
-                mode: 'task',
-                message: taskContent.substring(0, 200), // Tronquer à 200 caractères
-                timestamp: message.ts || Date.now()
-              });
-            }
-          }
-        }
-        
-        // Extraire les balises <new_task>
-        const newTaskMatches = content.match(/<new_task>([\s\S]*?)<\/new_task>/g);
-        if (newTaskMatches) {
-          for (const match of newTaskMatches) {
-            const modeMatch = match.match(/<mode>(.*?)<\/mode>/);
-            const messageMatch = match.match(/<message>(.*?)<\/message>/);
-            
-            if (modeMatch && messageMatch) {
-              const mode = modeMatch[1].trim();
-              const messageContent = messageMatch[1].trim();
-              
-              if (mode && messageContent) {
-                instructions.push({
-                  mode,
-                  message: messageContent,
-                  timestamp: message.ts || Date.now()
-                });
-              }
-            }
-          }
-        }
-      }
-    }
-    
-    return {
-      instructions,
-      processedMessages: messages.length,
-      matchedPatterns: instructions.length > 0 ? ['xml-pattern'] : [],
-      errors: []
-    };
-  })
-};
-
-vi.mock('../../../src/utils/message-extraction-coordinator.js', () => ({
-  messageExtractionCoordinator: mockMessageExtractionCoordinator
-}));
->>>>>>> Stashed changes
-
-import * as fs from 'fs/promises';
-import * as path from 'path';
-
-// Import de types uniquement
-import { NewTaskInstruction } from '../../../src/types/conversation.js';
-
-const __filename = fileURLToPath(import.meta.url);
-const __dirname = path.dirname(__filename);
 
 // Variable globale pour la classe importée dynamiquement
 let RooStorageDetector: any;
@@ -149,13 +76,11 @@ let RooStorageDetector: any;
 describe('Parsing XML des Sous-tâches', () => {
   const tempDir = path.join(__dirname, 'temp-xml-parsing');
   const mockFiles = new Map();
+  const longContent = 'a'.repeat(250);
 
   beforeEach(async () => {
     // Réinitialiser les modules pour garantir que les mocks sont pris en compte
     vi.resetModules();
-
-    // Suppression du mock dynamique du coordinateur
-    // On utilise le vrai coordinateur, mais on s'assure que fs.existsSync fonctionne
 
     // Importer dynamiquement la classe à tester
     const module = await import('../../../src/utils/roo-storage-detector.js');
@@ -188,7 +113,6 @@ describe('Parsing XML des Sous-tâches', () => {
           birthtime: new Date()
         });
       }
-<<<<<<< Updated upstream
       // Pour les répertoires, on vérifie si le chemin se termine par un nom de fichier
       // ou si c'est un répertoire temporaire de test
       if (filePath.includes('temp-') || filePath.endsWith('-task-123')) {
@@ -200,8 +124,6 @@ describe('Parsing XML des Sous-tâches', () => {
           birthtime: new Date()
         });
       }
-=======
->>>>>>> Stashed changes
       return Promise.reject(new Error(`File not found: ${filePath}`));
     });
 
@@ -231,13 +153,12 @@ describe('Parsing XML des Sous-tâches', () => {
           ts: Date.now(),
           type: 'say',
           role: 'user',
-          content: '<task>Analyser les performances du système</task>'
+          content: '<task>**MISSION CRITIQUE:** Réparer le système de hiérarchies</task>'
         }
       ];
 
       const filePath = path.join(tempDir, 'ui_messages_simple.json');
       await fs.writeFile(filePath, JSON.stringify(testContent));
-<<<<<<< Updated upstream
 
       // Test de la méthode d'extraction privée via reflection
       const instructions = await (RooStorageDetector as any).extractNewTaskInstructionsFromUI(filePath);
@@ -246,18 +167,6 @@ describe('Parsing XML des Sous-tâches', () => {
       expect(instructions[0].mode).toBe('task');
       expect(instructions[0].message).toContain('**MISSION CRITIQUE:** Réparer le système de hiérarchies');
       expect(instructions[0].message.length).toBeLessThanOrEqual(200);
-=======
-      
-      const result = await mockMessageExtractionCoordinator.extractFromMessages(testContent, {
-        patterns: ['task'],
-        minLength: 20,
-        maxLength: 500
-      });
-      
-      expect(result.instructions).toHaveLength(1);
-      expect(result.instructions[0].mode).toBe('task');
-      expect(result.instructions[0].message).toBe('Analyser les performances du système');
->>>>>>> Stashed changes
     });
 
     test('Doit extraire les balises <new_task> complexes', async () => {
@@ -269,29 +178,15 @@ describe('Parsing XML des Sous-tâches', () => {
           content: '<new_task>\n<mode>debug</mode>\n<message>Créer un fichier de configuration principal</message>\n</new_task>'
         }
       ];
-<<<<<<< Updated upstream
 
       const filePath = path.join(tempDir, 'ui_messages_short.json');
       await fs.writeFile(filePath, JSON.stringify(testContent));
 
       const instructions = await (RooStorageDetector as any).extractNewTaskInstructionsFromUI(filePath);
 
-      expect(instructions).toHaveLength(0);
-=======
-      
-      const filePath = path.join(tempDir, 'ui_messages_complex.json');
-      await fs.writeFile(filePath, JSON.stringify(testContent));
-      
-      const result = await mockMessageExtractionCoordinator.extractFromMessages(testContent, {
-        patterns: ['new_task'],
-        minLength: 20,
-        maxLength: 500
-      });
-      
-      expect(result.instructions).toHaveLength(1);
-      expect(result.instructions[0].mode).toBe('debug');
-      expect(result.instructions[0].message).toBe('Créer un fichier de configuration principal');
->>>>>>> Stashed changes
+      expect(instructions).toHaveLength(1);
+      expect(instructions[0].mode).toBe('debug');
+      expect(instructions[0].message).toBe('Créer un fichier de configuration principal');
     });
 
     test('Doit ignorer les contenus sans balises XML', async () => {
@@ -300,7 +195,6 @@ describe('Parsing XML des Sous-tâches', () => {
           ts: Date.now(),
           type: 'say',
           role: 'user',
-<<<<<<< Updated upstream
           content: `
             <task>Première mission de test pour valider le parsing</task>
 
@@ -436,57 +330,26 @@ describe('Parsing XML des Sous-tâches', () => {
   });
 
   describe('Pattern 4: Contenu avec format array', () => {
-    test('Doit gérer contenu au format array OpenAI', async () => {
-=======
-          content: 'Message sans balises XML'
-        }
-      ];
-      
-      const filePath = path.join(tempDir, 'ui_messages_no_tags.json');
-      await fs.writeFile(filePath, JSON.stringify(testContent));
-      
-      const result = await mockMessageExtractionCoordinator.extractFromMessages(testContent, {
-        patterns: ['task', 'new_task'],
-        minLength: 20,
-        maxLength: 500
-      });
-      
-      expect(result.instructions).toHaveLength(0);
-    });
-
     test('Doit gérer les contenus au format array OpenAI', async () => {
->>>>>>> Stashed changes
       const testContent = [
         {
           ts: Date.now(),
           type: 'say',
           role: 'user',
           content: [
-            { type: 'text', text: '<task>Tâche dans un format array</task>' }
+            { type: 'text', text: '<task>Mission avec contenu array format OpenAI</task>' }
           ]
         }
       ];
 
       const filePath = path.join(tempDir, 'ui_messages_array.json');
       await fs.writeFile(filePath, JSON.stringify(testContent));
-<<<<<<< Updated upstream
 
       const instructions = await (RooStorageDetector as any).extractNewTaskInstructionsFromUI(filePath);
 
       expect(instructions).toHaveLength(1);
       expect(instructions[0].mode).toBe('task');
       expect(instructions[0].message).toContain('Mission avec contenu array format OpenAI');
-=======
-      
-      const result = await mockMessageExtractionCoordinator.extractFromMessages(testContent, {
-        patterns: ['task'],
-        minLength: 20,
-        maxLength: 500
-      });
-      
-      expect(result.instructions).toHaveLength(1);
-      expect(result.instructions[0].message).toBe('Tâche dans un format array');
->>>>>>> Stashed changes
     });
 
     test('Doit filtrer les tâches trop courtes', async () => {
@@ -495,7 +358,6 @@ describe('Parsing XML des Sous-tâches', () => {
           ts: Date.now(),
           type: 'say',
           role: 'user',
-<<<<<<< Updated upstream
           content: `<task>${longContent}</task>`
         }
       ];
@@ -507,7 +369,7 @@ describe('Parsing XML des Sous-tâches', () => {
 
       expect(instructions).toHaveLength(1);
       expect(instructions[0].message.length).toBe(200);
-      expect(instructions[0].message).toContain('Mission très longue');
+      expect(instructions[0].message).toContain('aaaaa');
     });
 
     test('Doit préserver les timestamps corrects', async () => {
@@ -604,18 +466,14 @@ describe('Parsing XML des Sous-tâches', () => {
           type: 'say',
           role: 'user',
           content: '<task>Mission de test pour alimenter le RadixTree avec un contenu spécifique</task>'
-=======
-          content: '<task>Court</task>'
->>>>>>> Stashed changes
         },
         {
           ts: Date.now(),
           type: 'say',
           role: 'user',
-          content: '<task>Tâche suffisamment longue pour être extraite</task>'
+          content: '<task>Diagnostic du système et analyse des logs</task>'
         }
       ];
-<<<<<<< Updated upstream
 
       const filePath = path.join(tempDir, 'ui_messages_radix.json');
       await fs.writeFile(filePath, JSON.stringify(testContent));
@@ -626,89 +484,20 @@ describe('Parsing XML des Sous-tâches', () => {
 
       // Vérifier que les préfixes seraient corrects pour le RadixTree
       const taskPrefix = `task|${instructions[0].message}`.substring(0, 200);
-      const debugPrefix = `debug|${instructions[1].message}`.substring(0, 200);
+      const debugPrefix = `task|${instructions[1].message}`.substring(0, 200);
 
       expect(taskPrefix.length).toBeGreaterThan(10);
       expect(debugPrefix.length).toBeGreaterThan(10);
       expect(taskPrefix).toContain('Mission de test pour alimenter');
       expect(debugPrefix).toContain('Diagnostic du système');
-=======
-      
-      const filePath = path.join(tempDir, 'ui_messages_length_filter.json');
-      await fs.writeFile(filePath, JSON.stringify(testContent));
-      
-      const result = await mockMessageExtractionCoordinator.extractFromMessages(testContent, {
-        patterns: ['task'],
-        minLength: 20,
-        maxLength: 500
-      });
-      
-      expect(result.instructions).toHaveLength(1);
-      expect(result.instructions[0].message).toBe('Tâche suffisamment longue pour être extraite');
-    });
-  });
-
-  describe('Gestion des erreurs', () => {
-    test('Doit gérer les messages vides', async () => {
-      const result = await mockMessageExtractionCoordinator.extractFromMessages([], {
-        patterns: ['task'],
-        minLength: 20,
-        maxLength: 500
-      });
-      
-      expect(result.instructions).toHaveLength(0);
-      expect(result.processedMessages).toBe(0);
-    });
-
-    test('Doit gérer les contenus null', async () => {
-      const testContent = [
-        { ts: Date.now(), type: 'say', role: 'user', content: null }
-      ];
-      
-      const result = await mockMessageExtractionCoordinator.extractFromMessages(testContent, {
-        patterns: ['task'],
-        minLength: 20,
-        maxLength: 500
-      });
-      
-      expect(result.instructions).toHaveLength(0);
-    });
-
-    test('Doit respecter la limite de longueur maximale', async () => {
-      const testContent = [
-        {
-          ts: Date.now(),
-          type: 'say',
-          role: 'user',
-          content: '<task>' + 'a'.repeat(600) + '</task>'
-        }
-      ];
-      
-      const filePath = path.join(tempDir, 'ui_messages_max_length.json');
-      await fs.writeFile(filePath, JSON.stringify(testContent));
-      
-      const result = await mockMessageExtractionCoordinator.extractFromMessages(testContent, {
-        patterns: ['task'],
-        minLength: 20,
-        maxLength: 500
-      });
-      
-      expect(result.instructions).toHaveLength(1);
-      expect(result.instructions[0].message.length).toBeLessThanOrEqual(500);
->>>>>>> Stashed changes
     });
   });
 
   describe('Performance et robustesse', () => {
     test('Doit traiter efficacement un grand nombre de messages', async () => {
       const largeContent = [];
-<<<<<<< Updated upstream
 
       // Créer 100 messages avec balises task
-=======
-      
-      // Créer 100 messages avec des balises XML
->>>>>>> Stashed changes
       for (let i = 0; i < 100; i++) {
         largeContent.push({
           ts: Date.now() + i,
@@ -722,31 +511,19 @@ describe('Parsing XML des Sous-tâches', () => {
       await fs.writeFile(filePath, JSON.stringify(largeContent));
 
       const startTime = Date.now();
-      const result = await mockMessageExtractionCoordinator.extractFromMessages(largeContent, {
-        patterns: ['task'],
-        minLength: 20,
-        maxLength: 500
-      });
+      const instructions = await (RooStorageDetector as any).extractNewTaskInstructionsFromUI(filePath);
       const duration = Date.now() - startTime;
-<<<<<<< Updated upstream
 
       expect(instructions).toHaveLength(100);
       expect(duration).toBeLessThan(5000); // Moins de 5 secondes
 
-=======
-      
-      expect(result.instructions).toHaveLength(100);
-      expect(duration).toBeLessThan(1000); // Moins de 1 seconde
-      
->>>>>>> Stashed changes
       // Vérifier que toutes les instructions sont correctes
-      result.instructions.forEach((instruction, index) => {
+      instructions.forEach((instruction: any, index: number) => {
         expect(instruction.mode).toBe('task');
         expect(instruction.message).toBe(`Tâche de test ${index}`);
       });
     });
   });
-<<<<<<< Updated upstream
 });
 
 /**
@@ -755,6 +532,7 @@ describe('Parsing XML des Sous-tâches', () => {
 describe('Intégration: Système complet de hiérarchies', () => {
   const tempDir = path.join(__dirname, 'temp-integration');
   const mockFiles = new Map();
+  let RooStorageDetector: any;
 
   beforeEach(async () => {
     // Réinitialiser les modules pour garantir que les mocks sont pris en compte
@@ -879,6 +657,4 @@ describe('Intégration: Système complet de hiérarchies', () => {
     );
     expect(hasMissionContent).toBe(true);
   });
-=======
->>>>>>> Stashed changes
 });
