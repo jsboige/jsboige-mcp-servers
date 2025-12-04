@@ -125,11 +125,12 @@ describe('MessageExtractionCoordinator', () => {
       
       expect(extractors).toContain('API Content Extractor');
       expect(extractors).toContain('API Text Extractor');
+      expect(extractors).toContain('UI Simple Task Extractor'); // Ajouté
       expect(extractors).toContain('UI Ask/Tool Extractor');
       expect(extractors).toContain('UI Object Extractor');
       expect(extractors).toContain('UI XML Pattern Extractor');
       expect(extractors).toContain('UI Legacy Extractor');
-      expect(extractors).toHaveLength(6);
+      expect(extractors).toHaveLength(7); // Corrigé de 6 à 7
     });
   });
 
