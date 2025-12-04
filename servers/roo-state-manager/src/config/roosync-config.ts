@@ -49,11 +49,21 @@ export class RooSyncConfigError extends Error {
  * @returns {RooSyncConfig} Configuration validée
  */
 export function loadRooSyncConfig(): RooSyncConfig {
-  // Mode test : utiliser la configuration de test directement
+  // Mode test : validation plus stricte pour les tests
   if (process.env.NODE_ENV === 'test') {
+    // Vérifier que les variables requises sont présentes même en mode test
+    const requiredTestVars = ['ROOSYNC_SHARED_PATH', 'ROOSYNC_MACHINE_ID'];
+    const missingTestVars = requiredTestVars.filter(varName => !process.env[varName]);
+    
+    if (missingTestVars.length > 0) {
+      throw new RooSyncConfigError(
+        `Variables d'environnement manquantes pour les tests: ${missingTestVars.join(', ')}`
+      );
+    }
+    
     return {
-      sharedPath: process.env.ROOSYNC_SHARED_PATH || '/tmp/roosync-test',
-      machineId: process.env.ROOSYNC_MACHINE_ID || 'test-machine-001',
+      sharedPath: process.env.ROOSYNC_SHARED_PATH!,
+      machineId: process.env.ROOSYNC_MACHINE_ID!,
       autoSync: false,
       conflictStrategy: 'manual',
       logLevel: 'info'
