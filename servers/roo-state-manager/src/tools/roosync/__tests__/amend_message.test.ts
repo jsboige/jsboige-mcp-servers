@@ -18,6 +18,8 @@ import { amendMessage } from '../amend_message.js';
 import { MessageManager } from '../../../services/MessageManager.js';
 import { existsSync, rmSync, mkdirSync, writeFileSync, readFileSync } from 'fs';
 import { join } from 'path';
+
+vi.unmock('fs');
 import * as serverHelpers from '../../../utils/server-helpers.js';
 
 describe('roosync_amend_message', () => {

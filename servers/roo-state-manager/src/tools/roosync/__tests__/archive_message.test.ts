@@ -16,6 +16,8 @@ import { describe, test, expect, beforeEach, afterEach, vi } from 'vitest';
 import { existsSync, rmSync, mkdirSync, promises as fs } from 'fs';
 import { join } from 'path';
 
+vi.unmock('fs');
+
 // Pas de mock - utilisation directe de la variable d'environnement
 
 // Importer les modules après le mock

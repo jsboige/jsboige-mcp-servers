@@ -13,11 +13,14 @@
  * Coverage cible: >80%
  */
 
-import { describe, test, expect, beforeEach, afterEach } from 'vitest';
+import { describe, test, expect, beforeEach, afterEach, vi } from 'vitest';
 import { MessageManager, type MessageListItem } from '../MessageManager.js';
 import { existsSync, rmSync, mkdirSync } from 'fs';
 import { promises as fs } from 'fs';
 import { join } from 'path';
+
+vi.unmock('fs');
+vi.unmock('fs/promises');
 
 describe('MessageManager', () => {
   let messageManager: MessageManager;

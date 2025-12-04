@@ -4,7 +4,11 @@
  * @module tests/unit/services/powershell-executor.test
  */
 
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
+// Unmock fs and PowerShellExecutor to ensure we test the real implementation
+vi.unmock('fs');
+vi.unmock('../../../src/services/PowerShellExecutor.js');
+
 import { PowerShellExecutor, resetDefaultExecutor, getDefaultExecutor } from '../../../src/services/PowerShellExecutor.js';
 import { join } from 'path';
 import { mkdirSync, writeFileSync, rmSync, existsSync } from 'fs';

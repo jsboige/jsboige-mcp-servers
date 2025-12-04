@@ -5,6 +5,8 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { writeFileSync, mkdirSync, rmSync, readFileSync } from 'fs';
 import { join } from 'path';
+
+vi.unmock('fs');
 import { tmpdir } from 'os';
 import { RooSyncService } from '../../../../src/services/RooSyncService.js';
 import { roosyncRollbackDecision } from '../../../../src/tools/roosync/rollback-decision.js';

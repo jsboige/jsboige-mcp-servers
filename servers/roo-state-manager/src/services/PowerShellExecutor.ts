@@ -14,6 +14,7 @@
 
 import { spawn, ChildProcess } from 'child_process';
 import path from 'path';
+import fs from 'fs';
 
 /**
  * Résultat d'une exécution PowerShell
@@ -73,6 +74,8 @@ export class PowerShellExecutor {
     'RooSync'
   );
   private static readonly DEFAULT_TIMEOUT = 30000; // 30 secondes
+  private static resolvedPowerShellPath: string | null = null;
+  private static mockPowerShellPath: string | null = null;
 
   private readonly powershellPath: string;
   private readonly roosyncBasePath: string;
@@ -83,9 +86,56 @@ export class PowerShellExecutor {
    * @param config Configuration optionnelle
    */
   constructor(config?: PowerShellExecutorConfig) {
-    this.powershellPath = config?.powershellPath || PowerShellExecutor.DEFAULT_POWERSHELL_PATH;
+    this.powershellPath = config?.powershellPath || PowerShellExecutor.getSystemPowerShellPath();
     this.roosyncBasePath = config?.roosyncBasePath || PowerShellExecutor.DEFAULT_ROOSYNC_BASE_PATH;
     this.defaultTimeout = config?.defaultTimeout || PowerShellExecutor.DEFAULT_TIMEOUT;
+  }
+
+  /**
+   * Définit un chemin PowerShell mocké pour les tests
+   * @param path Chemin mocké ou null pour désactiver
+   */
+  public static setMockPowerShellPath(path: string | null): void {
+    PowerShellExecutor.mockPowerShellPath = path;
+    PowerShellExecutor.resolvedPowerShellPath = null; // Forcer la redétection
+  }
+
+  /**
+   * Résout le chemin de PowerShell sur le système
+   * Cherche dans les emplacements standards si pwsh.exe n'est pas dans le PATH
+   */
+  public static getSystemPowerShellPath(): string {
+    if (PowerShellExecutor.mockPowerShellPath) {
+      return PowerShellExecutor.mockPowerShellPath;
+    }
+
+    if (PowerShellExecutor.resolvedPowerShellPath) {
+      return PowerShellExecutor.resolvedPowerShellPath;
+    }
+
+    // Liste des chemins candidats pour PowerShell Core
+    const candidates = [
+      'C:\\Program Files\\PowerShell\\7\\pwsh.exe',
+      'C:\\Program Files\\PowerShell\\7-preview\\pwsh.exe',
+      process.env.POWERSHELL_PATH, // Support variable d'environnement
+      // Ajouter d'autres chemins si nécessaire
+    ].filter(Boolean) as string[];
+
+    // Vérifier les chemins absolus
+    for (const candidate of candidates) {
+      try {
+        if (fs.existsSync(candidate)) {
+          PowerShellExecutor.resolvedPowerShellPath = candidate;
+          return candidate;
+        }
+      } catch {
+        // Ignorer les erreurs d'accès
+      }
+    }
+
+    // Fallback sur le défaut (espérant qu'il soit dans le PATH)
+    PowerShellExecutor.resolvedPowerShellPath = PowerShellExecutor.DEFAULT_POWERSHELL_PATH;
+    return PowerShellExecutor.DEFAULT_POWERSHELL_PATH;
   }
 
   /**
@@ -120,7 +170,6 @@ export class PowerShellExecutor {
       const fullScriptPath = path.join(this.roosyncBasePath, scriptPath);
       
       // Vérifier si le script existe avant de l'exécuter
-      const fs = require('fs');
       if (!fs.existsSync(fullScriptPath)) {
         reject(new Error(`Script not found: ${fullScriptPath}`));
         return;

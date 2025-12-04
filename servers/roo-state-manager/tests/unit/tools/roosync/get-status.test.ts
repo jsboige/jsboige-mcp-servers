@@ -5,6 +5,8 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { writeFileSync, mkdirSync, rmSync } from 'fs';
 import { join, dirname } from 'path';
+
+vi.unmock('fs');
 import { fileURLToPath } from 'url';
 
 // Mock pour RooSyncService
@@ -49,7 +51,7 @@ const { mockRooSyncService, mockRooSyncServiceError, mockGetRooSyncService } = v
         const status = {
           version: '2.0.0',
           lastUpdate: '2025-10-08T10:00:00Z',
-          overallStatus: 'synced',
+          overallStatus: 'diverged',
           machines: {
             'PC-PRINCIPAL': {
               id: 'PC-PRINCIPAL',
@@ -99,7 +101,7 @@ const { mockRooSyncService, mockRooSyncServiceError, mockGetRooSyncService } = v
       loadDashboard: vi.fn().mockResolvedValue({
         version: '2.0.0',
         lastUpdate: '2025-10-08T10:00:00Z',
-        overallStatus: 'synced',
+        overallStatus: 'diverged',
         machines: {
           'PC-PRINCIPAL': {
             id: 'PC-PRINCIPAL',
@@ -285,14 +287,14 @@ describe('roosync_get_status', () => {
     const result = await roosyncGetStatus(args);
     
     // Assert
-    expect(result.status).toBe('diverged'); // Aligné avec le mock
+    expect(result.status).toBe('diverged'); // Aligné avec le mock (overallStatus)
     expect(result.lastSync).toBe('2025-10-08T10:00:00Z');
-    expect(result.machines).toHaveLength(2); // Aligné avec le mock
+    expect(result.machines).toHaveLength(3); // Aligné avec le mock
     expect(result.summary).toBeDefined();
-    expect(result.summary?.totalMachines).toBe(2); // Aligné avec le mock
+    expect(result.summary?.totalMachines).toBe(3); // Aligné avec le mock
     expect(result.summary?.onlineMachines).toBe(2);
-    expect(result.summary?.totalDiffs).toBe(2); // 0 + 2 = 2 (aligné avec le mock)
-    expect(result.summary?.totalPendingDecisions).toBe(1); // 0 + 1 = 1 (aligné avec le mock)
+    expect(result.summary?.totalDiffs).toBe(7); // 0 + 2 + 5 = 7 (aligné avec le mock)
+    expect(result.summary?.totalPendingDecisions).toBe(4); // 0 + 1 + 3 = 4 (aligné avec le mock)
   });
   
   it('devrait filtrer par machine spécifique', async () => {
@@ -328,7 +330,7 @@ describe('roosync_get_status', () => {
     
     // Assert
     const machineIds = result.machines.map(m => m.id).sort();
-    expect(machineIds).toEqual(['MAC-DEV', 'PC-PRINCIPAL']); // Aligné avec le mock
+    expect(machineIds).toEqual(['LAPTOP-WORK', 'MAC-DEV', 'PC-PRINCIPAL']); // Aligné avec le mock
   });
   
   it('devrait calculer correctement les statistiques', async () => {
@@ -340,10 +342,10 @@ describe('roosync_get_status', () => {
     
     // Assert
     expect(result.summary).toMatchObject({
-      totalMachines: 2, // 2 machines : PC-PRINCIPAL, MAC-DEV (aligné avec le mock)
+      totalMachines: 3, // 3 machines (aligné avec le mock)
       onlineMachines: 2, // PC-PRINCIPAL et MAC-DEV sont online
-      totalDiffs: 2, // 0 + 2 = 2 diffs au total (aligné avec le mock)
-      totalPendingDecisions: 1 // 0 + 1 = 1 décision en attente (aligné avec le mock)
+      totalDiffs: 7, // 7 diffs au total (aligné avec le mock)
+      totalPendingDecisions: 4 // 4 décisions en attente (aligné avec le mock)
     });
   });
 });

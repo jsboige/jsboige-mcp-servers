@@ -30,6 +30,8 @@ import { SkeletonComparator } from './skeleton-comparator.js';
 import { getParsingConfig, isComparisonMode, shouldUseNewParsing } from './parsing-config.js';
 import { WorkspaceDetector } from './workspace-detector.js';
 
+console.log('[DEBUG] RooStorageDetector module loaded');
+
 export class RooStorageDetector {
   private static readonly COMMON_ROO_PATHS = [
     // Chemins VSCode typiques
@@ -48,6 +50,16 @@ export class RooStorageDetector {
     '**/roo*',
     '**/cline*'
   ];
+
+  // Override pour les tests unitaires (injection de dépendance)
+  private static _coordinatorOverride: any = null;
+
+  /**
+   * Permet d'injecter un coordinateur mocké pour les tests
+   */
+  public static setCoordinatorOverride(coordinator: any) {
+    this._coordinatorOverride = coordinator;
+  }
 
   /**
    * Détecte les chemins de stockage Roo et les met en cache.
@@ -1347,9 +1359,15 @@ export class RooStorageDetector {
       }
 
       // 🎯 CORRECTION SDDD: Utilisation du coordinateur modulaire pour l'extraction
-      const { messageExtractionCoordinator } = await import('./message-extraction-coordinator.js');
+      let coordinator;
+      if (this._coordinatorOverride) {
+        coordinator = this._coordinatorOverride;
+      } else {
+        const module = await import('./message-extraction-coordinator.js');
+        coordinator = module.messageExtractionCoordinator;
+      }
 
-      const result = messageExtractionCoordinator.extractFromMessages(messages, {
+      const result = coordinator.extractFromMessages(messages, {
         maxLines,
         onlyJsonFormat,
         enableDebug: process.env.ROO_DEBUG_INSTRUCTIONS === '1'
@@ -1375,8 +1393,15 @@ export class RooStorageDetector {
   private static async extractNewTaskInstructions(
     messages: any[]
   ): Promise<NewTaskInstruction[]> {
-    const { messageExtractionCoordinator } = await import('./message-extraction-coordinator.js');
-    const result = messageExtractionCoordinator.extractFromMessages(messages, {
+    let coordinator;
+    if (this._coordinatorOverride) {
+      coordinator = this._coordinatorOverride;
+    } else {
+      const module = await import('./message-extraction-coordinator.js');
+      coordinator = module.messageExtractionCoordinator;
+    }
+
+    const result = coordinator.extractFromMessages(messages, {
       enableDebug: process.env.ROO_DEBUG_INSTRUCTIONS === '1'
     });
     return result.instructions;

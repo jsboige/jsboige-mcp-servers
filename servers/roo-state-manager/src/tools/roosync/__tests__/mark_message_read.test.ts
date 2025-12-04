@@ -16,6 +16,8 @@ import { markMessageRead } from '../mark_message_read.js';
 import { MessageManager } from '../../../services/MessageManager.js';
 import { existsSync, rmSync, mkdirSync } from 'fs';
 import { join } from 'path';
+
+vi.unmock('fs');
 import * as serverHelpers from '../../../utils/server-helpers.js';
 
 describe('roosync_mark_message_read', () => {

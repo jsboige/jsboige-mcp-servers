@@ -2,9 +2,11 @@
  * Tests pour roosync-parsers.ts
  */
 
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { writeFileSync, mkdirSync, rmSync, readFileSync } from 'fs';
 import { join } from 'path';
+
+vi.unmock('fs');
 import {
   parseRoadmapMarkdown,
   parseDashboardJson,

@@ -2,9 +2,11 @@
  * Tests pour roosync_approve_decision
  */
 
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { writeFileSync, mkdirSync, rmSync, readFileSync } from 'fs';
 import { join } from 'path';
+
+vi.unmock('fs');
 import { tmpdir } from 'os';
 import { RooSyncService } from '../../../../src/services/RooSyncService.js';
 import { roosyncApproveDecision, ApproveDecisionArgs } from '../../../../src/tools/roosync/approve-decision.js';
