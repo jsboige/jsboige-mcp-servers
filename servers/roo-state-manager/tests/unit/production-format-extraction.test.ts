@@ -7,10 +7,13 @@
  * PROBLÈME IDENTIFIÉ: 0 instructions extraites sur 37 tâches workspace d:/dev/roo-extensions
  */
 
-import { describe, it, expect, beforeAll, beforeEach } from 'vitest';
+import { describe, it, expect, beforeAll, beforeEach, vi } from 'vitest';
 import * as path from 'path';
-import * as fs from 'fs/promises';
+import * as fs from 'fs';
 import { RooStorageDetector } from '../../src/utils/roo-storage-detector.js';
+
+vi.unmock('fs');
+vi.unmock('fs/promises');
 import { globalTaskInstructionIndex } from '../../src/utils/task-instruction-index.js';
 
 describe('Production Format Extraction - PATTERN 5', () => {
@@ -20,12 +23,10 @@ describe('Production Format Extraction - PATTERN 5', () => {
     const testTaskId = 'ac8aa7b4-319c-4925-a139-4f4adca81921';
     const testTaskPath = path.join(fixturesPath, testTaskId);
 
-    beforeAll(async () => {
+    beforeAll(() => {
         // Vérifier que les fixtures existent
         const uiMessagesPath = path.join(testTaskPath, 'ui_messages.json');
-        try {
-            await fs.access(uiMessagesPath);
-        } catch (error) {
+        if (!fs.existsSync(uiMessagesPath)) {
             throw new Error(`Fixture PATTERN 5 manquante: ${uiMessagesPath}`);
         }
     });
@@ -74,9 +75,12 @@ describe('Production Format Extraction - PATTERN 5', () => {
     it('devrait parser correctement le JSON stringifié dans message.text', async () => {
         // ARRANGE
         const uiMessagesPath = path.join(testTaskPath, 'ui_messages.json');
+        console.log('DEBUG TEST: uiMessagesPath:', uiMessagesPath);
         
         // Lire directement le fichier pour examiner la structure
-        const content = await fs.readFile(uiMessagesPath, 'utf-8');
+        const content = fs.readFileSync(uiMessagesPath, 'utf-8');
+        console.log('DEBUG TEST: content length:', content.length);
+        console.log('DEBUG TEST: content start:', content.substring(0, 100));
         const messages = JSON.parse(content);
         
         // ACT: Trouver les messages api_req_started
