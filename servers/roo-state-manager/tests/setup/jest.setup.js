@@ -130,7 +130,6 @@ vi.mock('../src/services/synthesis/SynthesisOrchestratorService.js', () => {
 
 // Mock du système de fichiers
 // Mock fs/promises avec toutes les méthodes nécessaires
-/*
 const mockFsPromises = {
   access: vi.fn().mockResolvedValue(undefined),
   readFile: vi.fn().mockResolvedValue(JSON.stringify({})),
@@ -140,7 +139,9 @@ const mockFsPromises = {
   mkdir: vi.fn().mockResolvedValue(undefined),
   rm: vi.fn().mockResolvedValue(undefined),
   copyFile: vi.fn().mockResolvedValue(undefined),
-  unlink: vi.fn().mockResolvedValue(undefined)
+  unlink: vi.fn().mockResolvedValue(undefined),
+  mkdtemp: vi.fn().mockResolvedValue('/tmp/test-XXXXXX'),
+  rmdir: vi.fn().mockResolvedValue(undefined)
 };
 
 vi.mock('fs/promises', () => {
@@ -168,7 +169,6 @@ vi.mock('fs', () => {
     ...mockFs
   };
 });
-*/
 
 // Mock du module path - Utilisation de l'implémentation réelle pour la robustesse
 vi.mock('path', async (importOriginal) => {
@@ -176,6 +176,7 @@ vi.mock('path', async (importOriginal) => {
   return {
     ...actual,
     default: actual,
+    normalize: actual.normalize || vi.fn((path) => path),
   };
 });
 
