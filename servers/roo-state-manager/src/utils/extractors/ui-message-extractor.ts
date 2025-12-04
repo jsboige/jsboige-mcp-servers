@@ -119,14 +119,25 @@ export class UiXmlPatternExtractor implements PatternExtractor {
   canHandle(message: any): boolean {
     // Supporte tool_result ET les messages textuels standards (say/user/assistant)
     if (message.type === 'tool_result' && typeof message.content === 'string') return true;
-    if ((message.type === 'say' || message.role === 'user' || message.role === 'assistant') &&
-        (typeof message.text === 'string' || typeof message.content === 'string')) return true;
+    if (message.type === 'say' || message.role === 'user' || message.role === 'assistant') {
+        if (typeof message.text === 'string' || typeof message.content === 'string') return true;
+        // Support pour le format array (OpenAI/Claude)
+        if (Array.isArray(message.content)) return true;
+    }
     return false;
   }
 
   extract(message: any): NewTaskInstruction[] {
     const instructions: NewTaskInstruction[] = [];
-    const contentText = message.text || message.content;
+    let contentText = message.text || message.content;
+
+    // Gestion du format array
+    if (Array.isArray(contentText)) {
+        contentText = contentText
+            .filter((c: any) => c.type === 'text' && c.text)
+            .map((c: any) => c.text)
+            .join('\n');
+    }
 
     if (!contentText || typeof contentText !== 'string') {
       return instructions;
@@ -203,13 +214,25 @@ export class UiXmlPatternExtractor implements PatternExtractor {
  */
 export class UiSimpleTaskExtractor implements PatternExtractor {
   canHandle(message: any): boolean {
-    return (message.type === 'say' || message.role === 'user' || message.role === 'assistant') &&
-           (typeof message.text === 'string' || typeof message.content === 'string');
+    if (message.type === 'say' || message.role === 'user' || message.role === 'assistant') {
+        if (typeof message.text === 'string' || typeof message.content === 'string') return true;
+        // Support pour le format array (OpenAI/Claude)
+        if (Array.isArray(message.content)) return true;
+    }
+    return false;
   }
 
   extract(message: any): NewTaskInstruction[] {
     const instructions: NewTaskInstruction[] = [];
-    const contentText = message.text || message.content;
+    let contentText = message.text || message.content;
+
+    // Gestion du format array
+    if (Array.isArray(contentText)) {
+        contentText = contentText
+            .filter((c: any) => c.type === 'text' && c.text)
+            .map((c: any) => c.text)
+            .join('\n');
+    }
 
     if (!contentText || typeof contentText !== 'string') {
       return instructions;

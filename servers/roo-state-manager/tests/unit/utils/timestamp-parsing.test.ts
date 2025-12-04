@@ -2,22 +2,35 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { RooStorageDetector } from '../../../src/utils/roo-storage-detector.js';
 
 // Mock du module fs avec des fonctions inline
-vi.mock('fs', () => ({
-  existsSync: vi.fn(),
-  statSync: vi.fn(),
-  readFileSync: vi.fn(),
-  createReadStream: vi.fn(),
-  promises: {
-    readFile: vi.fn(),
-    stat: vi.fn(),
-    access: vi.fn(),
-    readdir: vi.fn()
-  }
+const mockFsPromises = vi.hoisted(() => ({
+  readFile: vi.fn(),
+  stat: vi.fn(),
+  access: vi.fn(),
+  readdir: vi.fn()
 }));
+
+vi.mock('fs', () => {
+  return {
+    default: {
+      existsSync: vi.fn(),
+      statSync: vi.fn(),
+      readFileSync: vi.fn(),
+      createReadStream: vi.fn(),
+      promises: mockFsPromises
+    },
+    existsSync: vi.fn(),
+    statSync: vi.fn(),
+    readFileSync: vi.fn(),
+    createReadStream: vi.fn(),
+    promises: mockFsPromises
+  };
+});
+
+vi.mock('fs/promises', () => mockFsPromises);
 
 // Mock du module path
 vi.mock('path', () => ({
-  default: { 
+  default: {
     join: vi.fn((...args: string[]) => args.join('/')),
     basename: vi.fn((p: string) => p.split('/').pop() || ''),
     dirname: vi.fn((p: string) => p.split('/').slice(0, -1).join('/'))
@@ -110,14 +123,14 @@ describe('RooStorageDetector - Timestamp Parsing Tests', () => {
     it('should handle file system errors gracefully', async () => {
       const mockReadFile = vi.fn().mockRejectedValue(new Error('Permission denied'));
       const mockExistsSync = vi.fn().mockReturnValue(true);
-      
+
       vi.doMock('fs/promises', () => ({
         readFile: mockReadFile
       }));
       vi.doMock('fs', () => ({
         existsSync: mockExistsSync
       }));
-      
+
       const result = await RooStorageDetector.analyzeConversation('test-task', '/test/path');
       expect(result).toBeNull();
     });
@@ -127,9 +140,9 @@ describe('RooStorageDetector - Timestamp Parsing Tests', () => {
     it('should handle valid conversation parsing attempt', async () => {
       // Test simple pour valider que la fonction peut être appelée
       // et que les mocks sont correctement configurés
-      
+
       const result = await RooStorageDetector.analyzeConversation('test-task', '/test/path');
-      
+
       // Le test valide principalement que la fonction s'exécute sans erreur
       // Le résultat peut être null pour diverses raisons (fichiers manquants, etc.)
       expect(result === null || typeof result === 'object').toBe(true);
@@ -137,14 +150,14 @@ describe('RooStorageDetector - Timestamp Parsing Tests', () => {
 it('should handle malformed JSON gracefully', async () => {
   const mockReadFile = vi.fn().mockResolvedValue('invalid json content');
   const mockExistsSync = vi.fn().mockReturnValue(true);
-  
+
   vi.doMock('fs/promises', () => ({
     readFile: mockReadFile
   }));
   vi.doMock('fs', () => ({
     existsSync: mockExistsSync
   }));
-  
+
   const result = await RooStorageDetector.analyzeConversation('test-task', '/test/path');
   expect(result).toBeNull();
 });
@@ -157,7 +170,7 @@ it('should handle malformed JSON gracefully', async () => {
       (globalCacheManager.get as any).mockResolvedValue(['/cached/path1', '/cached/path2']);
 
       const result = await RooStorageDetector.detectStorageLocations();
-      
+
       expect(result).toEqual(['/cached/path1', '/cached/path2']);
       expect(globalCacheManager.get).toHaveBeenCalledWith('storage_locations');
     });
@@ -172,7 +185,7 @@ it('should handle malformed JSON gracefully', async () => {
       const mockStat = vi.fn().mockResolvedValue({
         isDirectory: () => true
       });
-      
+
       vi.doMock('../../../src/utils/cache-manager.js', () => ({
         globalCacheManager: mockGlobalCacheManager
       }));
@@ -183,9 +196,9 @@ it('should handle malformed JSON gracefully', async () => {
         access: mockAccess,
         stat: mockStat
       }));
-      
+
       const result = await RooStorageDetector.detectStorageLocations();
-      
+
       expect(Array.isArray(result)).toBe(true);
       expect(mockGlobalCacheManager.set).toHaveBeenCalledWith('storage_locations', expect.any(Array));
     });
@@ -193,37 +206,28 @@ it('should handle malformed JSON gracefully', async () => {
 
   describe('getStatsForPath', () => {
     it('should return storage statistics for valid path', async () => {
-      const mockReaddir = vi.fn().mockResolvedValue([
-        { name: 'task1', isDirectory: () => true },
-        { name: 'task2', isDirectory: () => true }
+      mockFsPromises.readdir.mockResolvedValue([
+        { name: 'task1', isDirectory: () => true, isFile: () => false },
+        { name: 'task2', isDirectory: () => true, isFile: () => false }
       ]);
-      const mockStat = vi.fn().mockResolvedValue({
+      mockFsPromises.stat.mockResolvedValue({
         isDirectory: () => true,
         size: 2048,
         mtime: new Date('2025-11-30T12:00:00.000Z')
       });
-      
-      vi.doMock('fs/promises', () => ({
-        readdir: mockReaddir,
-        stat: mockStat
-      }));
-      
+
       const result = await RooStorageDetector.getStatsForPath('/test/storage/path');
-      
+
       expect(result).toBeDefined();
       expect(result.conversationCount).toBe(2);
       expect(result.totalSize).toBeGreaterThan(0);
     });
 
     it('should handle empty directory', async () => {
-      const mockReaddir = vi.fn().mockResolvedValue([]);
-      
-      vi.doMock('fs/promises', () => ({
-        readdir: mockReaddir
-      }));
-      
+      mockFsPromises.readdir.mockResolvedValue([]);
+
       const result = await RooStorageDetector.getStatsForPath('/empty/path');
-      
+
       expect(result).toBeDefined();
       expect(result.conversationCount).toBe(0);
       expect(result.totalSize).toBe(0);

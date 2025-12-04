@@ -30,7 +30,7 @@ describe('BaselineService', () => {
 
   beforeEach(() => {
     vi.clearAllMocks();
-    
+
     // Mock des dépendances
     mockConfigService = {
       get: vi.fn(),
@@ -81,7 +81,7 @@ describe('BaselineService', () => {
 
     // Mock des variables d'environnement avec ROOSYNC_SHARED_PATH
     vi.stubEnv('ROOSYNC_SHARED_PATH', testSharedStatePath);
-    
+
     // Forcer les chemins pour les tests
     process.env.ROOSYNC_SHARED_PATH = testSharedStatePath;
     process.env.SHARED_STATE_PATH = testSharedStatePath;
@@ -100,16 +100,16 @@ describe('BaselineService', () => {
   it('should initialize with correct paths when ROOSYNC_SHARED_PATH is set', () => {
     const expectedBaselinePath = path.join(testSharedStatePath, 'sync-config.ref.json');
     const expectedRoadmapPath = path.join(testSharedStatePath, 'sync-roadmap.md');
-    
+
     expect((service as any).baselinePath).toBe(expectedBaselinePath);
     expect((service as any).roadmapPath).toBe(expectedRoadmapPath);
   });
 
   it('should fallback to default when ROOSYNC_SHARED_PATH is not set', () => {
     vi.unstubAllEnvs();
-    
+
     const fallbackService = new BaselineService(mockConfigService, mockInventoryCollector, mockDiffDetector);
-    
+
     expect((fallbackService as any).baselinePath).toBeDefined();
     expect((fallbackService as any).roadmapPath).toBeDefined();
   });
