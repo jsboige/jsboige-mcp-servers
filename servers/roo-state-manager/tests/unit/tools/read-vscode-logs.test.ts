@@ -26,7 +26,7 @@ describe('read_vscode_logs Tool', () => {
 
   beforeEach(() => {
     process.env.APPDATA = APPDATA;
-    
+
     // Reset all mocks
     vi.clearAllMocks();
   });
@@ -239,7 +239,7 @@ describe('read_vscode_logs Tool', () => {
 
   it('should return a message if no session directory is found', async () => {
     mockReaddir.mockResolvedValue([]);
-    
+
     const result = await readVscodeLogs.handler({});
     const textContent = result.content[0].type === 'text' ? result.content[0].text : '';
     expect(textContent).toContain('No session log directory found');
@@ -253,6 +253,44 @@ describe('read_vscode_logs Tool', () => {
   });
 
   it('should handle undefined args gracefully', async () => {
+    // Setup mocks similar to the first test to ensure logs are found
+    const createMockDirent = (name: string, isDir: boolean) => ({
+      name,
+      isDirectory: () => isDir,
+      isFile: () => !isDir,
+      isBlockDevice: () => false,
+      isCharacterDevice: () => false,
+      isSymbolicLink: () => false,
+      isFIFO: () => false,
+      isSocket: () => false
+    });
+
+    mockReaddir.mockImplementation((dirPath: any, options: any) => {
+      const dirStr = String(dirPath);
+      if (dirStr === LOGS_PATH) {
+        return Promise.resolve([
+          createMockDirent('20250101T120000', true)
+        ] as any);
+      }
+      if (dirStr.includes('20250101T120000') && !dirStr.includes('exthost')) {
+        return Promise.resolve([
+          createMockDirent('window1', true)
+        ] as any);
+      }
+      return Promise.resolve([]);
+    });
+
+    mockAccess.mockResolvedValue(undefined as any);
+    mockStat.mockResolvedValue({ mtime: new Date() } as any);
+
+    mockReadFile.mockImplementation((filePath: any) => {
+      const pathStr = String(filePath);
+      if (pathStr.includes('renderer.log')) {
+        return Promise.resolve('some renderer line 1');
+      }
+      return Promise.resolve('');
+    });
+
     // @ts-ignore - Testing runtime robustness
     const result = await readVscodeLogs.handler(undefined);
     const textContent = result.content[0].type === 'text' ? result.content[0].text : '';
