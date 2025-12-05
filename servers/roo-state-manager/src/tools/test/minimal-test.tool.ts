@@ -24,7 +24,7 @@ export const minimalTestTool = {
                 description: 'Message de test personnalisé à retourner.'
             }
         },
-        required: [] as string[]
+        required: [] as string[],
     };
 };
 
