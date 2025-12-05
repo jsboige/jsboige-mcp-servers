@@ -125,7 +125,12 @@ export async function handleExportTaskTreeMarkdown(
             throw new Error("Impossible de récupérer l'arbre des tâches");
         }
 
-        const formattedTree = treeResult.content[0].text;
+        const contentItem = treeResult.content[0];
+        if (contentItem.type !== 'text') {
+             throw new Error("Le format retourné n'est pas du texte");
+        }
+
+        const formattedTree = contentItem.text;
         if (typeof formattedTree !== 'string') {
             throw new Error("Format de données invalide retourné par get_task_tree");
         }

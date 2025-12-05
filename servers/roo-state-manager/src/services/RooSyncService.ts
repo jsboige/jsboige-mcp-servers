@@ -27,6 +27,7 @@ import { DiffDetector } from './DiffDetector.js';
 import { BaselineService } from './BaselineService.js';
 import { ConfigService } from './ConfigService.js';
 import { InventoryCollectorWrapper } from './InventoryCollectorWrapper.js';
+import { ConfigSharingService } from './ConfigSharingService.js';
 
 /**
  * Options de cache pour RooSyncService
@@ -112,6 +113,7 @@ export class RooSyncService {
   private diffDetector: DiffDetector;
   private baselineService: BaselineService;
   private configService: ConfigService;
+  private configSharingService: ConfigSharingService;
 
   /**
    * Constructeur privé (Singleton)
@@ -171,6 +173,11 @@ export class RooSyncService {
         error: null
       });
 
+      this.configSharingService = new ConfigSharingService(
+        this.configService,
+        this.inventoryCollector as any
+      );
+
     } catch (error) {
       debugLog('ERREUR dans constructeur RooSyncService', {
         errorType: typeof error,
@@ -216,6 +223,27 @@ export class RooSyncService {
    */
   public getConfig(): RooSyncConfig {
     return this.config;
+  }
+
+  /**
+   * Obtenir le service de configuration
+   */
+  public getConfigService(): ConfigService {
+    return this.configService;
+  }
+
+  /**
+   * Obtenir le collecteur d'inventaire
+   */
+  public getInventoryCollector(): InventoryCollector {
+    return this.inventoryCollector;
+  }
+
+  /**
+   * Obtenir le service de partage de configuration
+   */
+  public getConfigSharingService(): ConfigSharingService {
+    return this.configSharingService;
   }
 
   /**

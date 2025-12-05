@@ -38,7 +38,7 @@ export async function handleDiagnoseSemanticIndex(
                 // Obtenir des informations sur la collection
                 const collectionInfo = await qdrant.getCollection(collectionName);
                 diagnostics.details.collection_info = {
-                    vectors_count: collectionInfo.vectors_count,
+                    vectors_count: (collectionInfo as any).vectors_count,
                     indexed_vectors_count: collectionInfo.indexed_vectors_count || 0,
                     points_count: collectionInfo.points_count,
                     config: {

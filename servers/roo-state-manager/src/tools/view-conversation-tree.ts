@@ -378,7 +378,8 @@ async function handleLegacyTruncationAsync(
         currentTaskId
     );
 
-    const treeOutput = result.content[0].text as string;
+    const contentItem = result.content[0];
+    const treeOutput = (contentItem.type === 'text' ? contentItem.text : '') as string;
 
     // Sauvegarder dans un fichier si demandé
     const saveResult = await saveToFileIfRequested(args.output_file, treeOutput);
@@ -472,7 +473,8 @@ async function handleSmartTruncationAsync(
         currentTaskId
     );
 
-    const treeOutput = result.content[0].text as string;
+    const contentItem = result.content[0];
+    const treeOutput = (contentItem.type === 'text' ? contentItem.text : '') as string;
 
     // Sauvegarder dans un fichier si demandé
     const saveResult = await saveToFileIfRequested(args.output_file, treeOutput);

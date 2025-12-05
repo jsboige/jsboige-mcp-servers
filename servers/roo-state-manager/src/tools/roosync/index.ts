@@ -185,6 +185,11 @@ export {
 // Import des schémas pour utilisation dans roosyncTools
 import { GranularDiffArgsSchema, ValidateDiffArgsSchema, ExportDiffArgsSchema } from './granular-diff.js';
 
+// Export des outils de configuration partagée (Cycle 6)
+export { roosyncCollectConfig, collectConfigToolMetadata } from './collect-config.js';
+export { roosyncPublishConfig, publishConfigToolMetadata } from './publish-config.js';
+export { roosyncApplyConfig, applyConfigToolMetadata } from './apply-config.js';
+
 // Export des nouveaux outils de messagerie (Phase 1)
 export { sendMessage } from './send_message.js';
 export { readInbox } from './read_inbox.js';
@@ -211,6 +216,9 @@ import { initToolMetadata } from './init.js';
 import { updateBaselineToolMetadata } from './update-baseline.js';
 import { versionBaselineToolMetadata } from './version-baseline.js';
 import { restoreBaselineToolMetadata } from './restore-baseline.js';
+import { collectConfigToolMetadata } from './collect-config.js';
+import { publishConfigToolMetadata } from './publish-config.js';
+import { applyConfigToolMetadata } from './apply-config.js';
 
 // Métadonnées pour l'outil export baseline
 const exportBaselineToolMetadata = {
@@ -267,6 +275,9 @@ export const roosyncTools = [
   versionBaselineToolMetadata,
   restoreBaselineToolMetadata,
   exportBaselineToolMetadata,
+  collectConfigToolMetadata,
+  publishConfigToolMetadata,
+  applyConfigToolMetadata,
   {
     name: 'roosync_granular_diff',
     description: 'Effectue une comparaison granulaire entre deux configurations ou inventaires',

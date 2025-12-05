@@ -507,6 +507,31 @@ export function registerCallToolHandler(
                   result = { content: [{ type: 'text', text: `Error: ${(error as Error).message}` }], isError: true };
               }
               break;
+          // RooSync Config Sharing tools - Cycle 6
+          case 'roosync_collect_config':
+              try {
+                  const roosyncResult = await toolExports.roosyncCollectConfig(args as any);
+                  result = { content: [{ type: 'text', text: JSON.stringify(roosyncResult, null, 2) }] };
+              } catch (error) {
+                  result = { content: [{ type: 'text', text: `Error: ${(error as Error).message}` }], isError: true };
+              }
+              break;
+          case 'roosync_publish_config':
+              try {
+                  const roosyncResult = await toolExports.roosyncPublishConfig(args as any);
+                  result = { content: [{ type: 'text', text: JSON.stringify(roosyncResult, null, 2) }] };
+              } catch (error) {
+                  result = { content: [{ type: 'text', text: `Error: ${(error as Error).message}` }], isError: true };
+              }
+              break;
+          case 'roosync_apply_config':
+              try {
+                  const roosyncResult = await toolExports.roosyncApplyConfig(args as any);
+                  result = { content: [{ type: 'text', text: JSON.stringify(roosyncResult, null, 2) }] };
+              } catch (error) {
+                  result = { content: [{ type: 'text', text: `Error: ${(error as Error).message}` }], isError: true };
+              }
+              break;
            // RooSync Messaging tools - Phase 1
            case 'roosync_send_message':
                try {
