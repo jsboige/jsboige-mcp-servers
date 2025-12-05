@@ -457,8 +457,8 @@ async function loadControlledTestData(): Promise<ConversationSkeleton[]> {
                     parentTaskId: metadata.parentTaskId, // 🔧 CRITICAL: parentTaskId au niveau racine du skeleton
                     metadata: {
                         title: metadata.title,
-                        createdAt: metadata.createdAt,
-                        lastActivity: metadata.lastActivity || metadata.lastMessageAt || metadata.createdAt,
+                        createdAt: metadata.createdAt || (metadata as any).startTime || new Date().toISOString(),
+                        lastActivity: metadata.lastActivity || metadata.lastMessageAt || metadata.createdAt || (metadata as any).startTime || new Date().toISOString(),
                         messageCount: metadata.messageCount || 0,
                         actionCount: metadata.actionCount || 0,
                         totalSize: metadata.totalSize || 0,
@@ -534,6 +534,7 @@ function enhanceSkeleton(skeleton: ConversationSkeleton): EnhancedConversationSk
     return {
         ...skeleton,
         truncatedInstruction: patchedTruncatedInstruction, // 🎯 PATCH APPLIQUÉ
+        metadata: skeleton.metadata, // 🔧 CRITICAL: Préserver explicitement les métadonnées (createdAt, etc.)
         processingState: {
             phase1Completed: false,
             phase2Completed: false,

@@ -58,9 +58,33 @@ describe('RooSyncService', () => {
       sharedStatePath: testDir
     };
 
+    const baseline = {
+      version: '2.1.0',
+      baselineId: 'test-baseline-001',
+      machineId: 'PC-PRINCIPAL',
+      timestamp: '2025-10-07T10:00:00Z',
+      autoSync: false,
+      conflictStrategy: 'manual',
+      logLevel: 'info',
+      sharedStatePath: testDir,
+      machines: [{
+        id: 'PC-PRINCIPAL',
+        name: 'PC Principal',
+        hostname: 'test-hostname',
+        os: 'Windows 11',
+        architecture: 'x64',
+        lastSeen: '2025-10-07T10:00:00Z',
+        roo: { modes: [], mcpServers: [], sdddSpecs: [] },
+        hardware: { cpu: { cores: 8, threads: 16 }, memory: { total: 16 } },
+        software: { node: '20.0.0', python: '3.10' }
+      }],
+      syncTargets: []
+    };
+
     writeFileSync(join(testDir, 'sync-dashboard.json'), JSON.stringify(dashboard), 'utf-8');
     writeFileSync(join(testDir, 'sync-roadmap.md'), roadmap, 'utf-8');
     writeFileSync(join(testDir, 'sync-config.json'), JSON.stringify(config), 'utf-8');
+    writeFileSync(join(testDir, 'sync-baseline.json'), JSON.stringify(baseline), 'utf-8');
 
     // Mock de l'environnement
     process.env.ROOSYNC_SHARED_PATH = testDir;
@@ -143,6 +167,8 @@ describe('RooSyncService', () => {
     it('devrait retourner un dashboard par défaut si le fichier n\'existe pas', async () => {
       // Arrange
       rmSync(join(testDir, 'sync-dashboard.json'));
+      // Réinitialiser le service APRÈS suppression pour éviter le cache
+      RooSyncService.resetInstance();
       const service = getRooSyncService();
 
       // Act
