@@ -2,6 +2,23 @@
 
 import { QuickFilesServer } from './core/QuickFilesServer.js';
 
+// Export des schémas Zod pour les tests d'anti-régression
+export {
+  ReadMultipleFilesArgsSchema,
+  ListDirectoryContentsArgsSchema,
+  DeleteFilesArgsSchema,
+  EditMultipleFilesArgsSchema,
+  ExtractMarkdownStructureArgsSchema,
+  CopyFilesArgsSchema,
+  MoveFilesArgsSchema,
+  SearchInFilesArgsSchema,
+  SearchAndReplaceArgsSchema,
+  RestartMcpServersArgsSchema
+} from './validation/schemas.js';
+
+// Export pour les tests
+export { QuickFilesServer };
+
 /**
  * Point d'entrée principal pour le serveur QuickFiles MCP
  * Utilise l'architecture modulaire refactorisée

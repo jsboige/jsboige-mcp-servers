@@ -134,9 +134,9 @@ export class CopyFilesTool {
                   }
               })
           );
-          return { source, destination, success: true, files: fileResults };
+          return { path: source, source, destination, success: true, files: fileResults as any[] } as any;
       } catch (error) {
-          return { source, destination, success: false, error: (error as Error).message, files: [] };
+          return { path: source, source, destination, success: false, error: (error as Error).message, files: [] as any[] } as any;
       }
   }
 
