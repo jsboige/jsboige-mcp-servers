@@ -4,12 +4,20 @@ import mock from 'mock-fs';
 import { promises as fs, existsSync, copyFileSync } from 'fs';
 import { BaselineService } from '../../../src/services/BaselineService';
 
-// Mock fs module pour copyFileSync qui n'est pas géré par mock-fs pour les imports nommés
+// Mock fs module de manière cohérente avec l'import utilisé
 vi.mock('fs', async () => {
   const actual = await vi.importActual('fs');
   return {
     ...actual,
     copyFileSync: vi.fn(),
+    // Mock cohérent avec l'import { promises as fs }
+    promises: {
+      readFile: vi.fn(),
+      writeFile: vi.fn(),
+      mkdir: vi.fn(),
+      access: vi.fn(),
+      stat: vi.fn()
+    }
   };
 });
 
