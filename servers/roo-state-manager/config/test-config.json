@@ -66,13 +66,27 @@
     "filename": "test-results-{timestamp}"
   },
   "summary": {
-    "totalFiles": 47,
+    "totalFiles": 61,
+    "totalFilesExecuted": 56,
+    "totalFilesExcluded": 5,
     "unitFiles": 39,
-    "integrationFiles": 3,
-    "e2eFiles": 5,
+    "integrationFiles": 1,
+    "e2eFiles": 6,
     "serviceFiles": 12,
     "toolFiles": 10,
-    "roosyncFiles": 8
+    "roosyncFiles": 8,
+    "totalTests": 729,
+    "passingTests": 704,
+    "failingTests": 11,
+    "skippedTests": 14,
+    "excludedFiles": [
+      "tests/unit/parent-child-validation.test.ts",
+      "tests/unit/skeleton-cache-reconstruction.test.ts",
+      "tests/unit/workspace-filtering-diagnosis.test.ts",
+      "tests/integration/hierarchy-real-data.test.ts",
+      "tests/integration/integration.test.ts"
+    ],
+    "executionTime": "13.10s"
   },
   "optimization": {
     "parallelExecution": true,
