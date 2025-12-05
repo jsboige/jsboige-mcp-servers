@@ -1,21 +1,16 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import * as path from 'path';
+import * as fs from 'fs';
+import mock from 'mock-fs';
 
-// Mock fs/promises with hoisted variables
-const { mockReaddir, mockReadFile, mockAccess, mockStat } = vi.hoisted(() => {
-  const mockReaddir = vi.fn();
-  const mockReadFile = vi.fn();
-  const mockAccess = vi.fn();
-  const mockStat = vi.fn();
-  return { mockReaddir, mockReadFile, mockAccess, mockStat };
+// Mock fs/promises to use the fs.promises implementation which mock-fs patches
+vi.mock('fs/promises', async () => {
+  const actualFs = await vi.importActual<typeof import('fs')>('fs');
+  return {
+    ...actualFs.promises,
+    default: actualFs.promises,
+  };
 });
-
-vi.mock('fs/promises', () => ({
-  readdir: mockReaddir,
-  readFile: mockReadFile,
-  access: mockAccess,
-  stat: mockStat
-}));
 
 // Import after mocking
 import { readVscodeLogs } from '../../../src/tools/read-vscode-logs.js';
@@ -26,78 +21,41 @@ describe('read_vscode_logs Tool', () => {
 
   beforeEach(() => {
     process.env.APPDATA = APPDATA;
-
-    // Reset all mocks
     vi.clearAllMocks();
   });
 
   afterEach(() => {
+    mock.restore();
     vi.restoreAllMocks();
     delete process.env.APPDATA;
   });
 
   it('should read latest logs from all relevant files', async () => {
-    // Create mock Dirent-like objects
-    const createMockDirent = (name: string, isDir: boolean) => ({
-      name,
-      isDirectory: () => isDir,
-      isFile: () => !isDir,
-      isBlockDevice: () => false,
-      isCharacterDevice: () => false,
-      isSymbolicLink: () => false,
-      isFIFO: () => false,
-      isSocket: () => false
+    // mock-fs ne gère pas bien les dates de modification par défaut, ce qui affecte le tri
+    // On doit s'assurer que les dossiers sont créés de manière à ce que le tri fonctionne
+    // ou mocker fs.stat pour retourner des dates correctes si nécessaire.
+    // Ici, le tri est alphabétique inverse sur le nom (20250102T120000 > 20250101T120000), donc ça devrait aller.
+
+    mock({
+      [LOGS_PATH]: {
+        '20250101T120000': {},
+        '20250102T120000': {
+          'window2': {
+            'renderer.log': 'some renderer line 1\nsome renderer line 2',
+            'exthost': {
+              'exthost.log': 'exthost line 1\nroo line 2\nexthost line 3',
+              'output_logging_20250102T120000': {
+                '1-Roo-Code.log': mock.file({
+                    content: 'roo log line 1\nroo log line 2',
+                    mtime: new Date('2025-01-02T12:00:00Z')
+                })
+              }
+            }
+          }
+        },
+        '20250103T120000': {}
+      }
     });
-
-    // Mock session directories
-    mockReaddir.mockImplementation((dirPath: any, options: any) => {
-      const dirStr = String(dirPath);
-      if (dirStr === LOGS_PATH) {
-        return Promise.resolve([
-          createMockDirent('20250101T120000', true),
-          createMockDirent('20250102T120000', true),
-          createMockDirent('20250103T120000', true)
-        ] as any);
-      }
-      if (dirStr.includes('20250102T120000') && !dirStr.includes('exthost')) {
-        return Promise.resolve([
-          createMockDirent('window1', true),
-          createMockDirent('window2', true)
-        ] as any);
-      }
-      if (dirStr.includes('window2') && dirStr.includes('exthost') && !dirStr.includes('output_logging')) {
-        return Promise.resolve([
-          createMockDirent('output_logging_20250102T120000', true)
-        ] as any);
-      }
-      if (dirStr.includes('output_logging_20250102T120000')) {
-        return Promise.resolve([
-          createMockDirent('1-Roo-Code.log', false)
-        ] as any);
-      }
-      return Promise.resolve([]);
-    });
-
-    // Mock file access - all files exist
-    mockAccess.mockResolvedValue(undefined as any);
-
-    // Mock file reading
-    mockReadFile.mockImplementation((filePath: any) => {
-      const pathStr = String(filePath);
-      if (pathStr.includes('renderer.log')) {
-        return Promise.resolve('some renderer line 1\nsome renderer line 2');
-      }
-      if (pathStr.includes('exthost.log')) {
-        return Promise.resolve('exthost line 1\nroo line 2\nexthost line 3');
-      }
-      if (pathStr.includes('Roo-Code.log')) {
-        return Promise.resolve('roo log line 1\nroo log line 2');
-      }
-      return Promise.resolve('');
-    });
-
-    // Mock file stats
-    mockStat.mockResolvedValue({ mtime: new Date() } as any);
 
     const result = await readVscodeLogs.handler({});
     const textContent = result.content[0].type === 'text' ? result.content[0].text : '';
@@ -111,57 +69,23 @@ describe('read_vscode_logs Tool', () => {
   });
 
   it('should read a specific number of lines', async () => {
-    const createMockDirent = (name: string, isDir: boolean) => ({
-      name,
-      isDirectory: () => isDir,
-      isFile: () => !isDir,
-      isBlockDevice: () => false,
-      isCharacterDevice: () => false,
-      isSymbolicLink: () => false,
-      isFIFO: () => false,
-      isSocket: () => false
-    });
-
-    mockReaddir.mockImplementation((dirPath: any, options: any) => {
-      const dirStr = String(dirPath);
-      if (dirStr === LOGS_PATH) {
-        return Promise.resolve([
-          createMockDirent('20250102T120000', true)
-        ] as any);
+    mock({
+      [LOGS_PATH]: {
+        '20250102T120000': {
+          'window2': {
+            'renderer.log': 'some renderer line 1\nsome renderer line 2',
+            'exthost': {
+              'exthost.log': 'exthost line 1\nroo line 2\nexthost line 3',
+              'output_logging_20250102T120000': {
+                '1-Roo-Code.log': mock.file({
+                    content: 'roo log line 1\nroo log line 2',
+                    mtime: new Date('2025-01-02T12:00:00Z')
+                })
+              }
+            }
+          }
+        }
       }
-      if (dirStr.includes('20250102T120000') && !dirStr.includes('exthost')) {
-        return Promise.resolve([
-          createMockDirent('window2', true)
-        ] as any);
-      }
-      if (dirStr.includes('window2') && dirStr.includes('exthost') && !dirStr.includes('output_logging')) {
-        return Promise.resolve([
-          createMockDirent('output_logging_20250102T120000', true)
-        ] as any);
-      }
-      if (dirStr.includes('output_logging_20250102T120000')) {
-        return Promise.resolve([
-          createMockDirent('1-Roo-Code.log', false)
-        ] as any);
-      }
-      return Promise.resolve([]);
-    });
-
-    mockAccess.mockResolvedValue(undefined as any);
-    mockStat.mockResolvedValue({ mtime: new Date() } as any);
-
-    mockReadFile.mockImplementation((filePath: any) => {
-      const pathStr = String(filePath);
-      if (pathStr.includes('renderer.log')) {
-        return Promise.resolve('some renderer line 1\nsome renderer line 2');
-      }
-      if (pathStr.includes('exthost.log')) {
-        return Promise.resolve('exthost line 1\nroo line 2\nexthost line 3');
-      }
-      if (pathStr.includes('Roo-Code.log')) {
-        return Promise.resolve('roo log line 1\nroo log line 2');
-      }
-      return Promise.resolve('');
     });
 
     const result = await readVscodeLogs.handler({ lines: 1 });
@@ -176,57 +100,23 @@ describe('read_vscode_logs Tool', () => {
   });
 
   it('should filter logs by a keyword', async () => {
-    const createMockDirent = (name: string, isDir: boolean) => ({
-      name,
-      isDirectory: () => isDir,
-      isFile: () => !isDir,
-      isBlockDevice: () => false,
-      isCharacterDevice: () => false,
-      isSymbolicLink: () => false,
-      isFIFO: () => false,
-      isSocket: () => false
-    });
-
-    mockReaddir.mockImplementation((dirPath: any, options: any) => {
-      const dirStr = String(dirPath);
-      if (dirStr === LOGS_PATH) {
-        return Promise.resolve([
-          createMockDirent('20250102T120000', true)
-        ] as any);
+    mock({
+      [LOGS_PATH]: {
+        '20250102T120000': {
+          'window2': {
+            'renderer.log': 'some renderer line 1\nsome renderer line 2',
+            'exthost': {
+              'exthost.log': 'exthost line 1\nroo line 2\nexthost line 3',
+              'output_logging_20250102T120000': {
+                '1-Roo-Code.log': mock.file({
+                    content: 'roo log line 1\nroo log line 2',
+                    mtime: new Date('2025-01-02T12:00:00Z')
+                })
+              }
+            }
+          }
+        }
       }
-      if (dirStr.includes('20250102T120000') && !dirStr.includes('exthost')) {
-        return Promise.resolve([
-          createMockDirent('window2', true)
-        ] as any);
-      }
-      if (dirStr.includes('window2') && dirStr.includes('exthost') && !dirStr.includes('output_logging')) {
-        return Promise.resolve([
-          createMockDirent('output_logging_20250102T120000', true)
-        ] as any);
-      }
-      if (dirStr.includes('output_logging_20250102T120000')) {
-        return Promise.resolve([
-          createMockDirent('1-Roo-Code.log', false)
-        ] as any);
-      }
-      return Promise.resolve([]);
-    });
-
-    mockAccess.mockResolvedValue(undefined as any);
-    mockStat.mockResolvedValue({ mtime: new Date() } as any);
-
-    mockReadFile.mockImplementation((filePath: any) => {
-      const pathStr = String(filePath);
-      if (pathStr.includes('renderer.log')) {
-        return Promise.resolve('some renderer line 1\nsome renderer line 2');
-      }
-      if (pathStr.includes('exthost.log')) {
-        return Promise.resolve('exthost line 1\nroo line 2\nexthost line 3');
-      }
-      if (pathStr.includes('Roo-Code.log')) {
-        return Promise.resolve('roo log line 1\nroo log line 2');
-      }
-      return Promise.resolve('');
     });
 
     const result = await readVscodeLogs.handler({ filter: 'roo' });
@@ -238,7 +128,9 @@ describe('read_vscode_logs Tool', () => {
   });
 
   it('should return a message if no session directory is found', async () => {
-    mockReaddir.mockResolvedValue([]);
+    mock({
+      [LOGS_PATH]: {}
+    });
 
     const result = await readVscodeLogs.handler({});
     const textContent = result.content[0].type === 'text' ? result.content[0].text : '';
@@ -253,42 +145,14 @@ describe('read_vscode_logs Tool', () => {
   });
 
   it('should handle undefined args gracefully', async () => {
-    // Setup mocks similar to the first test to ensure logs are found
-    const createMockDirent = (name: string, isDir: boolean) => ({
-      name,
-      isDirectory: () => isDir,
-      isFile: () => !isDir,
-      isBlockDevice: () => false,
-      isCharacterDevice: () => false,
-      isSymbolicLink: () => false,
-      isFIFO: () => false,
-      isSocket: () => false
-    });
-
-    mockReaddir.mockImplementation((dirPath: any, options: any) => {
-      const dirStr = String(dirPath);
-      if (dirStr === LOGS_PATH) {
-        return Promise.resolve([
-          createMockDirent('20250101T120000', true)
-        ] as any);
+    mock({
+      [LOGS_PATH]: {
+        '20250101T120000': {
+          'window1': {
+            'renderer.log': 'some renderer line 1'
+          }
+        }
       }
-      if (dirStr.includes('20250101T120000') && !dirStr.includes('exthost')) {
-        return Promise.resolve([
-          createMockDirent('window1', true)
-        ] as any);
-      }
-      return Promise.resolve([]);
-    });
-
-    mockAccess.mockResolvedValue(undefined as any);
-    mockStat.mockResolvedValue({ mtime: new Date() } as any);
-
-    mockReadFile.mockImplementation((filePath: any) => {
-      const pathStr = String(filePath);
-      if (pathStr.includes('renderer.log')) {
-        return Promise.resolve('some renderer line 1');
-      }
-      return Promise.resolve('');
     });
 
     // @ts-ignore - Testing runtime robustness

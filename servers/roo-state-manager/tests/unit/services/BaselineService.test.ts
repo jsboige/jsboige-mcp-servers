@@ -1,25 +1,17 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import path from 'path';
+import mock from 'mock-fs';
+import { promises as fs, existsSync, copyFileSync } from 'fs';
+import { BaselineService } from '../../../src/services/BaselineService';
 
-// Mock fs module
+// Mock fs module pour copyFileSync qui n'est pas géré par mock-fs pour les imports nommés
 vi.mock('fs', async () => {
   const actual = await vi.importActual('fs');
   return {
     ...actual,
-    existsSync: vi.fn(),
     copyFileSync: vi.fn(),
-    promises: {
-      readFile: vi.fn(),
-      writeFile: vi.fn(),
-      mkdir: vi.fn(),
-      access: vi.fn(),
-      stat: vi.fn()
-    }
   };
 });
-
-import { promises as fs, existsSync, copyFileSync } from 'fs';
-import { BaselineService } from '../../../src/services/BaselineService';
 
 describe('BaselineService', () => {
   let service: any;
@@ -30,7 +22,10 @@ describe('BaselineService', () => {
   const testSharedStatePath = path.join(process.cwd(), 'test-shared-state');
 
   beforeEach(() => {
-    vi.clearAllMocks();
+    // Initialiser mock-fs
+    mock({
+      [testSharedStatePath]: {}
+    });
 
     // Mock des dépendances
     mockConfigService = {
@@ -91,6 +86,7 @@ describe('BaselineService', () => {
   });
 
   afterEach(() => {
+    mock.restore();
     vi.unstubAllEnvs();
   });
 
@@ -143,8 +139,12 @@ describe('BaselineService', () => {
     };
 
     // Configuration du mock fs
-    vi.mocked(existsSync).mockReturnValue(true);
-    vi.mocked(fs.readFile).mockResolvedValue(JSON.stringify(mockBaseline));
+    const baselinePath = path.join(testSharedStatePath, 'sync-config.ref.json');
+    mock({
+      [testSharedStatePath]: {
+        'sync-config.ref.json': JSON.stringify(mockBaseline)
+      }
+    });
 
     // loadBaseline transforme le résultat, donc on ne peut pas comparer directement avec mockBaseline
     // On vérifie juste que ça ne plante pas et que ça retourne quelque chose
@@ -152,20 +152,20 @@ describe('BaselineService', () => {
 
     expect(result).toBeDefined();
     expect(result?.machineId).toBe(mockBaseline.machineId);
-    expect(existsSync).toHaveBeenCalled();
-    expect(fs.readFile).toHaveBeenCalled();
   });
 
   it('should return null if baseline file does not exist', async () => {
-    vi.mocked(existsSync).mockReturnValue(false);
-
+    // mock-fs est vide par défaut pour ce test (reset dans beforeEach)
     const result = await service.loadBaseline();
     expect(result).toBeNull();
   });
 
   it('should throw error if baseline JSON is invalid', async () => {
-    vi.mocked(existsSync).mockReturnValue(true);
-    vi.mocked(fs.readFile).mockResolvedValue('invalid json');
+    mock({
+      [testSharedStatePath]: {
+        'sync-config.ref.json': 'invalid json'
+      }
+    });
 
     await expect(service.loadBaseline()).rejects.toThrow();
   });
@@ -197,16 +197,16 @@ describe('BaselineService', () => {
       ]
     };
 
-    // Le mock fs est déjà appliqué globalement via vi.hoisted
-    vi.mocked(existsSync).mockReturnValue(true);
-    vi.mocked(fs.readFile).mockResolvedValue(JSON.stringify(mockBaseline));
+    mock({
+      [testSharedStatePath]: {
+        'sync-config.ref.json': JSON.stringify(mockBaseline)
+      }
+    });
 
     const result = await service.compareWithBaseline('test-machine');
 
     expect(result).toBeDefined();
     expect(result?.differences).toEqual([]);
-    expect(existsSync).toHaveBeenCalled();
-    expect(fs.readFile).toHaveBeenCalled();
   });
 
   it('should return null if no differences', async () => {
@@ -236,16 +236,16 @@ describe('BaselineService', () => {
       ]
     };
 
-    // Le mock fs est déjà appliqué globalement via vi.hoisted
-    vi.mocked(existsSync).mockReturnValue(true);
-    vi.mocked(fs.readFile).mockResolvedValue(JSON.stringify(mockBaseline));
+    mock({
+      [testSharedStatePath]: {
+        'sync-config.ref.json': JSON.stringify(mockBaseline)
+      }
+    });
 
     const result = await service.compareWithBaseline('test-machine');
 
     expect(result).toBeDefined();
     expect(result?.differences).toEqual([]);
-    expect(existsSync).toHaveBeenCalled();
-    expect(fs.readFile).toHaveBeenCalled();
   });
 
   it('should detect critical differences', async () => {
@@ -275,9 +275,11 @@ describe('BaselineService', () => {
       ]
     };
 
-    // Le mock fs est déjà appliqué globalement via vi.hoisted
-    vi.mocked(existsSync).mockReturnValue(true);
-    vi.mocked(fs.readFile).mockResolvedValue(JSON.stringify(mockBaseline));
+    mock({
+      [testSharedStatePath]: {
+        'sync-config.ref.json': JSON.stringify(mockBaseline)
+      }
+    });
 
     // On mock le diffDetector pour retourner des différences
     mockDiffDetector.compareBaselineWithMachine.mockResolvedValue([
@@ -287,8 +289,6 @@ describe('BaselineService', () => {
     const result = await service.compareWithBaseline('test-machine');
 
     expect(result?.differences).toHaveLength(1);
-    expect(existsSync).toHaveBeenCalled();
-    expect(fs.readFile).toHaveBeenCalled();
   });
 
   it('should generate decisions from differences', async () => {
@@ -310,8 +310,7 @@ describe('BaselineService', () => {
     };
 
     // Mock fs pour addDecisionsToRoadmap
-    vi.mocked(existsSync).mockReturnValue(false); // Pas de roadmap existant
-    vi.mocked(fs.writeFile).mockResolvedValue(undefined);
+    // mock-fs gère l'écriture
 
     const result = await service.createSyncDecisions(mockReport);
 
@@ -339,10 +338,6 @@ describe('BaselineService', () => {
       summary: mockDifferences.summary,
       generatedAt: new Date().toISOString()
     };
-
-    // Mock fs pour addDecisionsToRoadmap
-    vi.mocked(existsSync).mockReturnValue(false);
-    vi.mocked(fs.writeFile).mockResolvedValue(undefined);
 
     const result = await service.createSyncDecisions(mockReport, 'CRITICAL');
 
@@ -395,16 +390,18 @@ describe('BaselineService', () => {
       }
     };
 
-    // Le mock fs est déjà appliqué globalement via vi.hoisted
-    vi.mocked(existsSync).mockReturnValue(true);
-    vi.mocked(fs.writeFile).mockResolvedValue(undefined);
-    vi.mocked(copyFileSync).mockReturnValue(undefined);
+    mock({
+      [testSharedStatePath]: {
+        'sync-config.ref.json': '{}'
+      }
+    });
+
+    // Mock copyFileSync implementation
+    vi.mocked(copyFileSync).mockImplementation(() => {});
 
     const result = await service.updateBaseline(mockBaseline, { createBackup: true });
 
     expect(result).toBe(true);
-    expect(existsSync).toHaveBeenCalled();
-    expect(fs.writeFile).toHaveBeenCalled();
   });
 
   it('should reject invalid baseline update', async () => {
