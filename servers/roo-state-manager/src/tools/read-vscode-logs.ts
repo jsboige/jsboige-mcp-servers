@@ -54,9 +54,10 @@ export const readVscodeLogs = {
         },
     },
     async handler(args: { lines?: number; filter?: string; maxSessions?: number }): Promise<CallToolResult> {
-        const lineCount = args.lines || 100;
-        const { filter } = args;
-        const maxSessions = args.maxSessions || 1;
+        const safeArgs = args || {};
+        const lineCount = safeArgs.lines || 100;
+        const { filter } = safeArgs;
+        const maxSessions = safeArgs.maxSessions || 1;
         const rootLogsPath = path.join(process.env.APPDATA || '', 'Code', 'logs');
         const debugLog: string[] = [`[DEBUG] Smart Log Search starting in: ${rootLogsPath}`];
 
@@ -141,11 +142,11 @@ export const readVscodeLogs = {
                         allLogsContent.push({ title: 'Roo-Code Output', path: latestRooLog.path, content });
                         foundLogs = true;
                     }
-                    
+
                     // Continue to next session (removed break for multi-session search)
                 }
             }
-            
+
             if (sessionDirs.length === 0) {
                  return { content: [{ type: 'text' as const, text: 'No session log directory found' }] };
             }

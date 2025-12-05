@@ -53,8 +53,9 @@ describe('BOM Handling Tools', () => {
         await repairConversationBomTool.handler({ dry_run: false });
 
         const repairedContent = await fs.readFile(CORRUPTED_FILE_PATH, 'utf-8');
-        expect(repairedContent.charCodeAt(0)).not.toBe(0xFEFF);
-        expect(JSON.parse(repairedContent).message).toBe('test');
+        const contentStr = Buffer.isBuffer(repairedContent) ? repairedContent.toString('utf-8') : repairedContent;
+        expect(contentStr.charCodeAt(0)).not.toBe(0xFEFF);
+        expect(JSON.parse(contentStr).message).toBe('test');
     });
 
     it('repair_conversation_bom should not modify clean files', async () => {

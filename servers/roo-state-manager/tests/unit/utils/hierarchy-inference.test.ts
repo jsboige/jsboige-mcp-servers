@@ -20,7 +20,7 @@ describe('Hierarchy Inference System', () => {
 
     afterAll(async () => {
         // Nettoyer après les tests
-        await fs.rmdir(tempDir, { recursive: true });
+        await fs.rm(tempDir, { recursive: true, force: true });
     });
 
     // === TEST 1 : EXTRACTION D'UUID BASIQUE ===

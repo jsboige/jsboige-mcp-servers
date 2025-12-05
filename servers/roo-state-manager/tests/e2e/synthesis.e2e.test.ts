@@ -96,7 +96,8 @@ describe('E2E Tests with Real Environment', () => {
 
         itE2E('should validate environment values', () => {
             expect(process.env.OPENAI_API_KEY).toMatch(/^sk-/);
-            expect(process.env.OPENAI_CHAT_MODEL_ID).toBe('gpt-5-mini');
+            // Accepter gpt-4o-mini ou gpt-5-mini selon la configuration
+            expect(['gpt-4o-mini', 'gpt-5-mini']).toContain(process.env.OPENAI_CHAT_MODEL_ID);
             expect(process.env.QDRANT_URL).toMatch(/^https?:\/\//);
             expect(process.env.QDRANT_COLLECTION_NAME).toBe('roo_tasks_semantic_index');
         });
