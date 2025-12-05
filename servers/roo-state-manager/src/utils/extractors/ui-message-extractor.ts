@@ -81,13 +81,45 @@ export class UiAskToolExtractor implements PatternExtractor {
  */
 export class UiObjectExtractor implements PatternExtractor {
   canHandle(message: any): boolean {
-    return (typeof message.text === 'object' || typeof message.content === 'object');
+    return (typeof message.text === 'object' || typeof message.content === 'object' ||
+            (Array.isArray(message.content) && message.content.some((item: any) => item.type === 'text')));
   }
 
   extract(message: any): NewTaskInstruction[] {
     const instructions: NewTaskInstruction[] = [];
 
     try {
+      // Gérer le format array OpenAI
+      if (Array.isArray(message.content)) {
+        for (const item of message.content) {
+          if (item.type === 'text' && typeof item.text === 'string') {
+            // Parser les balises <task> dans le texte
+            const taskPattern = /<task>([\s\S]*?)<\/task>/gi;
+            let match;
+            
+            while ((match = taskPattern.exec(item.text)) !== null) {
+              const taskContent = match[1].trim();
+              
+              if (taskContent.length >= 20) { // Ignorer si trop court
+                const instruction = createInstruction(
+                  extractTimestamp(message),
+                  'task',
+                  taskContent.substring(0, 200), // Troncature à 200 caractères
+                  20
+                );
+                
+                if (instruction) {
+                  instructions.push(instruction);
+                  this.debugLog('UI array OpenAI', instruction.mode, instruction.message.length);
+                }
+              }
+            }
+          }
+        }
+        return instructions;
+      }
+
+      // Gérer le format objet standard
       const obj = typeof message.text === 'object' && message.text
         ? message.text
         : (typeof message.content === 'object' && message.content ? message.content : null);
@@ -249,7 +281,7 @@ export class UiSimpleTaskExtractor implements PatternExtractor {
         const instruction = createInstruction(
           extractTimestamp(message),
           'task',
-          taskContent,
+          taskContent.substring(0, 200), // Troncature à 200 caractères
           20
         );
 

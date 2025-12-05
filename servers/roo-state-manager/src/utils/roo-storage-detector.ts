@@ -104,6 +104,15 @@ export class RooStorageDetector {
 
     const entries = await fs.readdir(storagePath, { withFileTypes: true });
 
+    // Protection contre le bug de l'environnement Vitest où fs.readdir peut retourner undefined
+    if (!entries || !Array.isArray(entries)) {
+        return {
+            conversationCount: 0,
+            totalSize: 0,
+            fileTypes: {}
+        };
+    }
+
     for (const entry of entries) {
         if (entry.isDirectory()) {
             const taskPath = path.join(storagePath, entry.name);
@@ -1372,6 +1381,12 @@ export class RooStorageDetector {
         onlyJsonFormat,
         enableDebug: process.env.ROO_DEBUG_INSTRUCTIONS === '1'
       });
+
+      // Debug forcer pour voir le résultat
+      if (process.env.ROO_DEBUG_INSTRUCTIONS === '1') {
+        console.log(`[extractFromMessageFile] 📊 RÉSULTAT extraction: ${result.instructions.length} instructions trouvées`);
+        console.log(`[extractFromMessageFile] 📋 Instructions:`, JSON.stringify(result.instructions, null, 2));
+      }
 
       // Ajouter les instructions extraites au tableau fourni
       instructions.push(...result.instructions);

@@ -10,6 +10,10 @@ describe('extractMainInstructionFromUI - Fallback Logic', () => {
   const testDataDir = path.join(__dirname, '../test-data/main-instruction-fallback');
 
   beforeAll(async () => {
+    // Désactiver les mocks fs pour ce test afin de pouvoir créer/lire de vrais fichiers
+    vi.unmock('fs/promises');
+    vi.unmock('fs');
+    
     // Créer le répertoire de test
     await fs.mkdir(testDataDir, { recursive: true });
   });

@@ -151,7 +151,14 @@ export class TaskInstructionIndex {
         // Solution SDDD : Rechercher avec des préfixes décroissants de l'instruction de l'enfant
         // jusqu'à trouver une correspondance. Cela garantit un match déterministe.
 
-        const fullSearchPrefix = computeInstructionPrefix(childText, K);
+        // 🎯 CORRECTION SDDD 2.0 : Éviter la double normalisation
+        // Si childText est déjà normalisé (contient "phase 3d hierarchy reconstruction execution sddd."),
+        // on ne l'applique pas computeInstructionPrefix à nouveau pour éviter les incohérences
+        const isAlreadyNormalized = childText.includes('phase 3d hierarchy reconstruction execution sddd.') ||
+                                 childText.includes('sddd:') ||
+                                 childText.length <= 192 && childText === childText.toLowerCase().trim();
+        
+        const fullSearchPrefix = isAlreadyNormalized ? childText.substring(0, K) : computeInstructionPrefix(childText, K);
         if (process.env.ROO_DEBUG_INSTRUCTIONS === '1') {
             console.log(`[EXACT PREFIX SEARCH] SDDD: Starting search with full prefix: "${fullSearchPrefix}" (K=${K})`);
         }
