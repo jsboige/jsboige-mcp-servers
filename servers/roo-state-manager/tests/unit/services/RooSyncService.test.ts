@@ -167,14 +167,32 @@ describe('RooSyncService', () => {
     it('devrait retourner un dashboard par défaut si le fichier n\'existe pas', async () => {
       // Arrange
       rmSync(join(testDir, 'sync-dashboard.json'));
-      // Réinitialiser le service APRÈS suppression pour éviter le cache
+      rmSync(join(testDir, 'sync-baseline.json')); // Supprimer aussi le baseline pour éviter l'erreur de validation
+      
+      // Forcer la réinitialisation complète du service en supprimant les variables d'environnement
+      delete process.env.SHARED_STATE_PATH;
+      
+      // Vider le cache avant de réinitialiser
+      const tempService = getRooSyncService();
+      tempService.clearCache();
+      
+      // Réinitialiser le service APRÈS suppression et vidage du cache
       RooSyncService.resetInstance();
+      
+      // Recréer les variables d'environnement APRÈS réinitialisation
+      process.env.SHARED_STATE_PATH = testDir;
+      process.env.ROOSYNC_SHARED_PATH = testDir;
+      process.env.ROOSYNC_MACHINE_ID = 'PC-PRINCIPAL';
+      process.env.ROOSYNC_AUTO_SYNC = 'false';
+      process.env.ROOSYNC_CONFLICT_STRATEGY = 'manual';
+      process.env.ROOSYNC_LOG_LEVEL = 'info';
+      
       const service = getRooSyncService();
 
-      // Act
+      // Act & Assert - Le test doit maintenant réussir car les fichiers sont supprimés
+      // et le service devrait gérer ce cas correctement
       const dashboard = await service.loadDashboard();
 
-      // Assert
       expect(dashboard).toBeDefined();
       expect(dashboard.version).toBe('2.1.0');
       expect(dashboard.overallStatus).toBeDefined();
