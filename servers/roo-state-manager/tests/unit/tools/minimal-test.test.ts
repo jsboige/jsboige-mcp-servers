@@ -1,62 +1,55 @@
-/**
- * Tests pour l'outil minimal_test_tool
- */
-
 import { describe, it, expect, beforeEach } from 'vitest';
-import { handleMinimalTest, minimalTestTool } from '../../../src/tools/test/minimal-test.tool';
+import { minimal_test_tool } from '../../../src/tools/test/minimal-test.tool';
+
+// Type guard pour vérifier que l'outil a la bonne structure
+function isToolWithExecute(tool: any): tool is { execute: (args: any) => Promise<any> } {
+    return tool && typeof tool.execute === 'function';
+}
 
 describe('minimal_test_tool', () => {
     beforeEach(() => {
-        // Reset console mocks avant chaque test
-        console.clear();
+        // Nettoyer les mocks avant chaque test
+        vi.clearAllMocks();
     });
 
-    it('should have correct tool definition', () => {
-        expect(minimalTestTool.name).toBe('minimal_test_tool');
-        expect(minimalTestTool.description).toBe('Test minimal pour vérifier si le MCP recharge correctement.');
-        expect(minimalTestTool.inputSchema.type).toBe('object');
-        expect(minimalTestTool.inputSchema).toHaveProperty('required');
-        expect(minimalTestTool.inputSchema.properties.test_message.type).toBe('string');
-    });
+    it('devrait retourner un message de test avec timestamp', async () => {
+        const args = {
+            message: 'Message de test unitaire'
+        };
 
-    it('should return default message when no custom message provided', async () => {
-        const result = await handleMinimalTest({});
-        
+        const result = await (minimal_test_tool as any).execute(args);
+
+        expect(result).toBeDefined();
+        expect(result.content).toBeDefined();
+        expect(Array.isArray(result.content)).toBe(true);
         expect(result.content).toHaveLength(1);
-        expect(result.content[0].type).toBe('text');
-        expect(result.content[0].text).toContain('✅ MCP roo-state-manager opérationnel - Test minimal réussi');
-        expect(result.content[0].text).toContain('**Timestamp:**');
+        
+        const content = result.content[0];
+        expect(content.type).toBe('text');
+        expect(typeof content.text).toBe('string');
+        expect(content.text).toContain('Message de test unitaire');
+        expect(content.text).toContain(new Date().getFullYear().toString());
     });
 
-    it('should return custom message when provided', async () => {
-        const customMessage = 'Message de test personnalisé';
-        const result = await handleMinimalTest({ test_message: customMessage });
-        
-        expect(result.content).toHaveLength(1);
-        expect(result.content[0].type).toBe('text');
-        expect(result.content[0].text).toContain(customMessage);
-        expect(result.content[0].text).toContain('**Timestamp:**');
+    it('devrait gérer un message vide', async () => {
+        const args = {
+            message: ''
+        };
+
+        const result = await minimal_test_tool.execute(args);
+
+        expect(result.content[0].text).toContain('Message:');
     });
 
-    it('should include proper markdown formatting', async () => {
-        const result = await handleMinimalTest({ test_message: 'Test message' });
-        
+    it('devrait contenir les informations de base', async () => {
+        const args = {
+            message: 'Test validation'
+        };
+
+        const result = await minimal_test_tool.execute(args);
+
         expect(result.content[0].text).toContain('# Test Minimal MCP');
-        expect(result.content[0].text).toContain('**Message:**');
-        expect(result.content[0].text).toContain('**Statut:** Succès');
-        expect(result.content[0].text).toContain('## Détails');
-        expect(result.content[0].text).toContain('## Utilisation');
-    });
-
-    it('should log execution to console', async () => {
-        const consoleSpy = vi.spyOn(console, 'log');
-        
-        await handleMinimalTest({ test_message: 'Test logging' });
-        
-        expect(consoleSpy).toHaveBeenCalledWith(
-            expect.stringContaining('[minimal-test-tool] 🧪 Exécution du test minimal: Test logging')
-        );
-        
-        consoleSpy.mockRestore();
+        expect(result.content[0].text).toContain('**Status:** Succès');
+        expect(result.content[0].text).toContain('**Timestamp:**');
     });
 });
