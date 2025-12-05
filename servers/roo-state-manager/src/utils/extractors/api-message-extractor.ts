@@ -73,7 +73,7 @@ export class ApiContentExtractor implements PatternExtractor {
  */
 export class ApiTextExtractor implements PatternExtractor {
   canHandle(message: any): boolean {
-    return message.type === 'api_req_started' && 
+    return (message.type === 'api_req_started' || (message.type === 'say' && message.say === 'api_req_started')) &&
            typeof message.text === 'string';
   }
 
@@ -83,7 +83,29 @@ export class ApiTextExtractor implements PatternExtractor {
     try {
       const toolData = JSON.parse(message.text);
       
-      if (toolData && toolData.tool === 'newTask') {
+      // Support pour le format direct {request: "..."} dans ui_messages.json
+      if (toolData.request && typeof toolData.request === 'string') {
+        // Essayer d'extraire le pattern [new_task in X: 'Y'] depuis la requête
+        const pattern = /\[new_task in ([^:]+):\s*['"](.+?)['"]\]/s;
+        const match = toolData.request.match(pattern);
+        
+        if (match) {
+          const mode = match[1].trim();
+          const content = match[2].trim();
+          
+          const instruction = createInstruction(
+            extractTimestamp(message),
+            mode,
+            content,
+            20
+          );
+          
+          if (instruction) {
+            instructions.push(instruction);
+            this.debugLog('API text (request)', instruction.mode, instruction.message.length);
+          }
+        }
+      } else if (toolData && toolData.tool === 'newTask') {
         const instruction = createInstruction(
           extractTimestamp(message),
           toolData.mode || 'task',

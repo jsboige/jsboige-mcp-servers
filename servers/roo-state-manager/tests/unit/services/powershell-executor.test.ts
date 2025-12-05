@@ -5,12 +5,13 @@
  */
 
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
+// Unmock fs and PowerShellExecutor to ensure we test the real implementation
+vi.unmock('fs');
+vi.unmock('../../../src/services/PowerShellExecutor.js');
+
 import { PowerShellExecutor, resetDefaultExecutor, getDefaultExecutor } from '../../../src/services/PowerShellExecutor.js';
 import { join } from 'path';
 import { mkdirSync, writeFileSync, rmSync, existsSync } from 'fs';
-
-// Désactiver le mock global de fs pour ces tests qui utilisent le système de fichiers réel
-vi.unmock('fs');
 
 describe('PowerShellExecutor', () => {
   let executor: PowerShellExecutor;

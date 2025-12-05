@@ -7,6 +7,23 @@ import { PatternExtractor, createInstruction, extractTimestamp } from '../messag
 import { NewTaskInstruction } from '../../types/conversation.js';
 
 /**
+ * Helper pour extraire le texte d'un message (string ou array OpenAI)
+ */
+function extractTextFromMessage(message: any): string | null {
+  if (typeof message.text === 'string') return message.text;
+  if (typeof message.content === 'string') return message.content;
+  
+  if (Array.isArray(message.content)) {
+    return message.content
+      .filter((part: any) => part.type === 'text' && typeof part.text === 'string')
+      .map((part: any) => part.text)
+      .join('\n');
+  }
+  
+  return null;
+}
+
+/**
  * Extracteur pour les messages UI avec champ ask/tool
  */
 export class UiAskToolExtractor implements PatternExtractor {
@@ -120,26 +137,18 @@ export class UiXmlPatternExtractor implements PatternExtractor {
     // Supporte tool_result ET les messages textuels standards (say/user/assistant)
     if (message.type === 'tool_result' && typeof message.content === 'string') return true;
     if (message.type === 'say' || message.role === 'user' || message.role === 'assistant') {
-        if (typeof message.text === 'string' || typeof message.content === 'string') return true;
-        // Support pour le format array (OpenAI/Claude)
-        if (Array.isArray(message.content)) return true;
+      return typeof message.text === 'string' ||
+             typeof message.content === 'string' ||
+             Array.isArray(message.content);
     }
     return false;
   }
 
   extract(message: any): NewTaskInstruction[] {
     const instructions: NewTaskInstruction[] = [];
-    let contentText = message.text || message.content;
+    const contentText = extractTextFromMessage(message);
 
-    // Gestion du format array
-    if (Array.isArray(contentText)) {
-        contentText = contentText
-            .filter((c: any) => c.type === 'text' && c.text)
-            .map((c: any) => c.text)
-            .join('\n');
-    }
-
-    if (!contentText || typeof contentText !== 'string') {
+    if (!contentText) {
       return instructions;
     }
 
@@ -214,27 +223,15 @@ export class UiXmlPatternExtractor implements PatternExtractor {
  */
 export class UiSimpleTaskExtractor implements PatternExtractor {
   canHandle(message: any): boolean {
-    if (message.type === 'say' || message.role === 'user' || message.role === 'assistant') {
-        if (typeof message.text === 'string' || typeof message.content === 'string') return true;
-        // Support pour le format array (OpenAI/Claude)
-        if (Array.isArray(message.content)) return true;
-    }
-    return false;
+    return (message.type === 'say' || message.role === 'user' || message.role === 'assistant') &&
+           (typeof message.text === 'string' || typeof message.content === 'string' || Array.isArray(message.content));
   }
 
   extract(message: any): NewTaskInstruction[] {
     const instructions: NewTaskInstruction[] = [];
-    let contentText = message.text || message.content;
+    const contentText = extractTextFromMessage(message);
 
-    // Gestion du format array
-    if (Array.isArray(contentText)) {
-        contentText = contentText
-            .filter((c: any) => c.type === 'text' && c.text)
-            .map((c: any) => c.text)
-            .join('\n');
-    }
-
-    if (!contentText || typeof contentText !== 'string') {
+    if (!contentText) {
       return instructions;
     }
 

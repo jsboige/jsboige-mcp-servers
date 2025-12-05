@@ -21,6 +21,7 @@ import { join } from 'path';
 
 // Désactiver le mock global de fs pour ce test qui utilise le système de fichiers réel
 vi.unmock('fs');
+vi.unmock('fs/promises');
 
 describe('MessageManager', () => {
   let messageManager: MessageManager;

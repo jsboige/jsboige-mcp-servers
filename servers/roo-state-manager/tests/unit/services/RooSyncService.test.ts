@@ -3,6 +3,10 @@
  */
 
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
+// Unmock fs to ensure we use the real filesystem for tests
+vi.unmock('fs');
+vi.unmock('../../../src/services/RooSyncService.js');
+
 import { writeFileSync, mkdirSync, rmSync, readFileSync } from 'fs';
 import { join } from 'path';
 

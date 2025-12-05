@@ -58,6 +58,12 @@ export class MessageExtractionCoordinator {
     messages: any[],
     options: MessageExtractionOptions = {}
   ): ExtractionResult {
+    // Force debug for diagnosis
+    if (process.env.ROO_DEBUG_INSTRUCTIONS === '1') {
+        this.debugEnabled = true;
+        console.log(`[MessageExtractionCoordinator] Processing ${messages.length} messages with ${this.extractors.length} extractors`);
+    }
+
     const result: ExtractionResult = {
       instructions: [],
       processedMessages: 0,
