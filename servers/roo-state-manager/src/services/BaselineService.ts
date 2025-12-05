@@ -27,7 +27,7 @@ import {
   IDiffDetector,
   IConfigService,
   MachineInventory
-} from '../types/baseline';
+} from '../types/baseline.js';
 
 /**
  * Service BaselineService - Cœur de l'architecture baseline-driven
