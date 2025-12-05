@@ -2,7 +2,6 @@
   "name": "quickfiles-server",
   "version": "1.0.0",
   "description": "MCP server for file operations",
-  "type": "module",
   "main": "build/index.cjs",
   "scripts": {
     "build": "esbuild src/index.ts --bundle --platform=node --target=node18 --outfile=build/index.cjs --format=cjs",
