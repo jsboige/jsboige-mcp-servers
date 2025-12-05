@@ -46,10 +46,9 @@ export function createInstruction(
   if (typeof message !== 'string' || message.trim().length < minLength) {
     return null;
   }
-
   let processedMessage = message.trim();
   if (maxLength > 0 && processedMessage.length > maxLength) {
-    processedMessage = processedMessage.substring(0, maxLength);
+    processedMessage = processedMessage.substring(0, maxLength - 3) + '...';
   }
 
   return {

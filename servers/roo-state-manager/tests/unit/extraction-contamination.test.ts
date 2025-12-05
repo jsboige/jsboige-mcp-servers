@@ -4,10 +4,13 @@
  * CAUSE: Extraction depuis api_conversation_history.json qui contient des balises XML condensées
  */
 
-import { describe, it, expect, beforeAll } from 'vitest';
+import { describe, it, expect, beforeAll, vi } from 'vitest';
 import * as path from 'path';
-import * as fs from 'fs/promises';
 import { fileURLToPath } from 'url';
+
+// Désactiver le mock global de fs pour ce test
+vi.unmock('fs/promises');
+import * as fs from 'fs/promises';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);

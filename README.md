@@ -1,4 +1,4 @@
-﻿# jsboige-mcp-servers
+# jsboige-mcp-servers
 
 Collection de serveurs MCP (Model Context Protocol) pour étendre les capacités des modèles de langage (LLM).
 

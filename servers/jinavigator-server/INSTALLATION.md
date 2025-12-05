@@ -1,4 +1,4 @@
-﻿# Installation du serveur MCP JinaNavigator
+# Installation du serveur MCP JinaNavigator
 
 <!-- START_SECTION: prerequisites -->
 ## Prérequis

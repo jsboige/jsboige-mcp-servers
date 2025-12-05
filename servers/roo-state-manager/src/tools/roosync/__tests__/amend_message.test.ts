@@ -1,6 +1,6 @@
 /**
  * Tests unitaires pour roosync_amend_message
- * 
+ *
  * Couvre les scénarios :
  * - Amender un message non lu (succès)
  * - Refuser amendement message déjà lu
@@ -8,7 +8,7 @@
  * - Refuser amendement par non-émetteur
  * - Message inexistant (erreur)
  * - Préservation contenu original lors amendements multiples
- * 
+ *
  * Framework: Vitest
  * Coverage cible: >90%
  */
@@ -18,6 +18,9 @@ import { amendMessage } from '../amend_message.js';
 import { MessageManager } from '../../../services/MessageManager.js';
 import { existsSync, rmSync, mkdirSync, writeFileSync, readFileSync } from 'fs';
 import { join } from 'path';
+
+// Désactiver le mock global de fs pour ce test qui utilise le système de fichiers réel
+vi.unmock('fs');
 import * as serverHelpers from '../../../utils/server-helpers.js';
 
 describe('roosync_amend_message', () => {
@@ -26,7 +29,7 @@ describe('roosync_amend_message', () => {
 
   beforeEach(() => {
     testSharedStatePath = join(__dirname, '../../../__test-data__/shared-state-amend');
-    
+
     const dirs = [
       join(testSharedStatePath, 'messages/inbox'),
       join(testSharedStatePath, 'messages/sent'),
@@ -85,7 +88,7 @@ describe('roosync_amend_message', () => {
     // Vérifier fichier sent/ mis à jour
     const sentPath = join(testSharedStatePath, 'messages/sent', `${message.id}.json`);
     const sentContent = JSON.parse(readFileSync(sentPath, 'utf-8'));
-    
+
     expect(sentContent.body).toBe('Corrected content without typo');
     expect(sentContent.metadata.amended).toBe(true);
     expect(sentContent.metadata.original_content).toBe('Original content with typo');
@@ -95,7 +98,7 @@ describe('roosync_amend_message', () => {
     // Vérifier fichier inbox/ également mis à jour
     const inboxPath = join(testSharedStatePath, 'messages/inbox', `${message.id}.json`);
     const inboxContent = JSON.parse(readFileSync(inboxPath, 'utf-8'));
-    
+
     expect(inboxContent.body).toBe('Corrected content without typo');
     expect(inboxContent.metadata.amended).toBe(true);
   });
@@ -237,7 +240,7 @@ describe('roosync_amend_message', () => {
 
     const sentPath = join(testSharedStatePath, 'messages/sent', `${message.id}.json`);
     const sentContent = JSON.parse(readFileSync(sentPath, 'utf-8'));
-    
+
     expect(sentContent.metadata.amendment_reason).toBe('Aucune raison fournie');
   });
 });

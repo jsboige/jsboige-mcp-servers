@@ -1,4 +1,4 @@
-﻿# Guide de dépannage du serveur MCP JinaNavigator
+# Guide de dépannage du serveur MCP JinaNavigator
 
 <!-- START_SECTION: introduction -->
 Ce guide de dépannage vous aidera à résoudre les problèmes courants rencontrés lors de l'utilisation du serveur MCP JinaNavigator. Il couvre les problèmes d'installation, de configuration, de connexion, et d'utilisation des différents outils.

@@ -1,4 +1,4 @@
-﻿# Script unifié de tests pour roo-state-manager
+# Script unifié de tests pour roo-state-manager
 # Ce script consolide toutes les fonctionnalités de test en un seul fichier
 
 param(

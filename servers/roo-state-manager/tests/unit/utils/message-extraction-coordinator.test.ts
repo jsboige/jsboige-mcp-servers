@@ -128,8 +128,8 @@ describe('MessageExtractionCoordinator', () => {
       expect(extractors).toContain('UI Ask/Tool Extractor');
       expect(extractors).toContain('UI Object Extractor');
       expect(extractors).toContain('UI XML Pattern Extractor');
+      expect(extractors).toContain('UI Simple Task Extractor');
       expect(extractors).toContain('UI Legacy Extractor');
-      // Un nouvel extracteur a été ajouté (probablement UI Message Extractor ou similaire)
       expect(extractors).toHaveLength(7);
     });
   });

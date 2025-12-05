@@ -2,6 +2,10 @@ import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import mock from 'mock-fs';
 import path from 'path';
 import fs from 'fs/promises';
+
+// Désactiver le mock global de fs pour permettre à mock-fs de fonctionner correctement
+vi.unmock('fs');
+vi.unmock('fs/promises');
 import { diagnoseConversationBomTool } from '../../../src/tools/repair/diagnose-conversation-bom.tool.js';
 import { repairConversationBomTool } from '../../../src/tools/repair/repair-conversation-bom.tool.js';
 
@@ -47,7 +51,7 @@ describe('BOM Handling Tools', () => {
 
     it('repair_conversation_bom should fix file with BOM', async () => {
         await repairConversationBomTool.handler({ dry_run: false });
-        
+
         const repairedContent = await fs.readFile(CORRUPTED_FILE_PATH, 'utf-8');
         expect(repairedContent.charCodeAt(0)).not.toBe(0xFEFF);
         expect(JSON.parse(repairedContent).message).toBe('test');

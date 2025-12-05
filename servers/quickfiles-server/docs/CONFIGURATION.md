@@ -1,4 +1,4 @@
-﻿<!-- START_SECTION: metadata -->
+<!-- START_SECTION: metadata -->
 ---
 title: "Configuration du serveur MCP QuickFiles"
 description: "Options de configuration détaillées pour le serveur MCP QuickFiles"

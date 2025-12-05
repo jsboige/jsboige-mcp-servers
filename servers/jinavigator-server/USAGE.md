@@ -1,4 +1,4 @@
-﻿# Utilisation du serveur MCP JinaNavigator
+# Utilisation du serveur MCP JinaNavigator
 
 <!-- START_SECTION: introduction -->
 Ce document fournit des exemples détaillés d'utilisation et des bonnes pratiques pour le serveur MCP JinaNavigator. Vous y trouverez des exemples concrets pour chaque outil exposé par le serveur, ainsi que des scénarios d'utilisation avancés.

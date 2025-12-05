@@ -1,4 +1,4 @@
-﻿# UI Snippets Extraction
+# UI Snippets Extraction
 
 | TaskId | Length | Head | Tail |
 |--------|--------|------|------|

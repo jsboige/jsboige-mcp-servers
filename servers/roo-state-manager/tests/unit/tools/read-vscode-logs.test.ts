@@ -3,6 +3,10 @@ import mock from 'mock-fs';
 import { readVscodeLogs } from '../../../src/tools/read-vscode-logs.js';
 import path from 'path';
 
+// Désactiver le mock global de fs pour permettre à mock-fs de fonctionner correctement
+vi.unmock('fs');
+vi.unmock('fs/promises');
+
 describe('read_vscode_logs Tool', () => {
   const APPDATA = process.platform === 'win32' ? 'C:\\Users\\test\\AppData\\Roaming' : '/home/test/.config';
   const LOGS_PATH = path.join(APPDATA, 'Code', 'logs');

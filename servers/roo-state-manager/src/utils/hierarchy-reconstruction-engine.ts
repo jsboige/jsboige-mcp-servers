@@ -642,10 +642,10 @@ export class HierarchyReconstructionEngine {
         }
         // Respecter le mock existsSync des tests: si false, on ne lit pas le fichier et on retourne 0 instruction
         if (!fs.existsSync(uiMessagesPath)) {
-            console.error(`[DEBUG] ui_messages.json NOT FOUND at: ${uiMessagesPath}`);
+            // console.error(`[DEBUG] ui_messages.json NOT FOUND at: ${uiMessagesPath}`);
             return instructions;
         } else {
-            console.error(`[DEBUG] ui_messages.json FOUND at: ${uiMessagesPath}`);
+            // console.error(`[DEBUG] ui_messages.json FOUND at: ${uiMessagesPath}`);
         }
 
         try {

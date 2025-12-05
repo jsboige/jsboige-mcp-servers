@@ -2,9 +2,12 @@
  * Tests pour roosync_approve_decision
  */
 
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { writeFileSync, mkdirSync, rmSync, readFileSync } from 'fs';
 import { join } from 'path';
+
+// Désactiver le mock global de fs pour ce test qui utilise le système de fichiers réel
+vi.unmock('fs');
 import { tmpdir } from 'os';
 import { RooSyncService } from '../../../../src/services/RooSyncService.js';
 import { roosyncApproveDecision, ApproveDecisionArgs } from '../../../../src/tools/roosync/approve-decision.js';
@@ -95,6 +98,20 @@ describe('roosync_approve_decision', () => {
       decisionId: 'test-decision-001',
       comment: 'Approuvé pour test'
     };
+
+    // Debug
+    const service = RooSyncService.getInstance();
+    process.stdout.write(`DEBUG TEST: Service Config sharedPath: ${service.getConfig().sharedPath}\n`);
+    process.stdout.write(`DEBUG TEST: Expected testDir: ${testDir}\n`);
+
+    try {
+        const decisions = await service.loadDecisions();
+        process.stdout.write(`DEBUG TEST: Decisions loaded: ${JSON.stringify(decisions, null, 2)}\n`);
+    } catch (e) {
+        process.stdout.write(`DEBUG TEST: Error loading decisions: ${e}\n`);
+    }
+
+    process.stdout.write(`DEBUG TEST: File content:\n${readFileSync(join(testDir, 'sync-roadmap.md'), 'utf-8')}\n`);
 
     // Act
     const result = await roosyncApproveDecision(args);

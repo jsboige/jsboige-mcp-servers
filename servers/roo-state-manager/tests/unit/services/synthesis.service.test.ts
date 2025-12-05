@@ -1,4 +1,4 @@
-﻿/**
+/**
  * Tests unitaires pour les services de synthèse - Phase 1 SDDD
  *
  * Tests structurels avec configurations valides et patterns existants

@@ -1,4 +1,4 @@
-﻿<!-- START_SECTION: metadata -->
+<!-- START_SECTION: metadata -->
 ---
 title: "Documentation des MCPs Internes"
 description: "Point d'entrée pour la documentation des serveurs MCP internes"

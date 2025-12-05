@@ -3,9 +3,11 @@
  * Utilise les vraies données de test contrôlées sans mocks
  */
 
-import { describe, it, expect, beforeEach } from 'vitest';
+import { describe, it, expect, beforeEach, vi } from 'vitest';
 import * as fs from 'fs';
 import * as path from 'path';
+
+vi.unmock('fs');
 import { fileURLToPath } from 'url';
 import { HierarchyReconstructionEngine } from '../../src/utils/hierarchy-reconstruction-engine.js';
 import type { ConversationSkeleton } from '../../src/types/conversation.js';
@@ -28,7 +30,7 @@ const TEST_HIERARCHY_IDS = {
 };
 
 // Chemin vers les données de test contrôlées
-const CONTROLLED_DATA_PATH = path.join(__dirname, 'fixtures', 'controlled-hierarchy');
+const CONTROLLED_DATA_PATH = path.join(__dirname, '..', 'fixtures', 'controlled-hierarchy');
 
 describe('Hierarchy Reconstruction - Real Data Tests', () => {
     let engine: HierarchyReconstructionEngine;
@@ -39,7 +41,7 @@ describe('Hierarchy Reconstruction - Real Data Tests', () => {
         engine = new HierarchyReconstructionEngine({
             batchSize: 10,
             strictMode: true,
-            debugMode: false, // Réduire les logs pour Jest
+            debugMode: true, // Enable logs for debugging
             forceRebuild: true
         });
 
@@ -49,12 +51,12 @@ describe('Hierarchy Reconstruction - Real Data Tests', () => {
 
     it('should reconstruct 100% of parent-child relationships', async () => {
         const enhancedSkeletons = realControlledSkeletons.map(enhanceSkeleton);
-        
+
         // Phase 1
         const result1 = await engine.executePhase1(enhancedSkeletons);
         expect(result1.processedCount).toBeGreaterThan(0);
         expect(result1.totalInstructionsExtracted).toBeGreaterThan(0);
-        
+
         // Supprimer parentIds pour forcer reconstruction
         enhancedSkeletons.forEach(s => {
             if (s.taskId !== TEST_HIERARCHY_IDS.ROOT) {
@@ -64,7 +66,7 @@ describe('Hierarchy Reconstruction - Real Data Tests', () => {
 
         // Phase 2
         const result2 = await engine.executePhase2(enhancedSkeletons);
-        
+
         // Vérifier relations attendues
         const expectedRelations = {
             [TEST_HIERARCHY_IDS.BRANCH_A]: TEST_HIERARCHY_IDS.ROOT,
@@ -78,10 +80,13 @@ describe('Hierarchy Reconstruction - Real Data Tests', () => {
         let correctRelations = 0;
         for (const [childId, expectedParentId] of Object.entries(expectedRelations)) {
             const childSkeleton = enhancedSkeletons.find(s => s.taskId === childId);
-            if (childSkeleton && 
-                (childSkeleton.reconstructedParentId === expectedParentId || 
+            if (childSkeleton &&
+                (childSkeleton.reconstructedParentId === expectedParentId ||
                  childSkeleton.parentTaskId === expectedParentId)) {
                 correctRelations++;
+                process.stdout.write(`[TEST DEBUG] ✅ Correct relation: ${childId.substring(0,8)} -> ${expectedParentId.substring(0,8)}\n`);
+            } else {
+                process.stdout.write(`[TEST DEBUG] ❌ Missing relation: ${childId.substring(0,8)} -> ${expectedParentId.substring(0,8)}. Found: ${childSkeleton?.reconstructedParentId || childSkeleton?.parentTaskId || 'null'}\n`);
             }
         }
 
@@ -92,10 +97,10 @@ describe('Hierarchy Reconstruction - Real Data Tests', () => {
 
     it('should use only radix_tree_exact method in strict mode', async () => {
         const enhancedSkeletons = realControlledSkeletons.map(enhanceSkeleton);
-        
+
         // Phase 1
         await engine.executePhase1(enhancedSkeletons);
-        
+
         // Supprimer parentIds
         enhancedSkeletons.forEach(s => {
             if (s.taskId !== TEST_HIERARCHY_IDS.ROOT) {
@@ -105,10 +110,10 @@ describe('Hierarchy Reconstruction - Real Data Tests', () => {
 
         // Phase 2
         const result2 = await engine.executePhase2(enhancedSkeletons);
-        
+
         // Vérifier que seule radix_tree_exact est utilisée
         expect(result2.resolutionMethods['radix_tree_exact']).toBeGreaterThan(0);
-        
+
         // Vérifier qu'aucun fallback n'est utilisé
         expect(result2.resolutionMethods['metadata']).toBeUndefined();
         expect(result2.resolutionMethods['temporal_proximity']).toBeUndefined();
@@ -117,23 +122,23 @@ describe('Hierarchy Reconstruction - Real Data Tests', () => {
 
     it('should build correct depth hierarchy', async () => {
         const enhancedSkeletons = realControlledSkeletons.map(enhanceSkeleton);
-        
+
         // Phase 1
         await engine.executePhase1(enhancedSkeletons);
-        
+
         // Supprimer parentIds pour forcer reconstruction
         enhancedSkeletons.forEach(s => {
             if (s.taskId !== TEST_HIERARCHY_IDS.ROOT) {
                 s.parentTaskId = undefined;
             }
         });
-        
+
         // Phase 2
         await engine.executePhase2(enhancedSkeletons);
-        
+
         // Calculer profondeurs
         const depths = calculateDepths(enhancedSkeletons);
-        
+
         // Vérifications spécifiques
         expect(depths[TEST_HIERARCHY_IDS.ROOT]).toBe(0);
         expect(depths[TEST_HIERARCHY_IDS.BRANCH_A]).toBe(1);
@@ -149,7 +154,7 @@ describe('Hierarchy Reconstruction - Real Data Tests', () => {
 
 async function loadRealControlledData(): Promise<ConversationSkeleton[]> {
     const skeletons: ConversationSkeleton[] = [];
-    
+
     // Exclure la tâche de collecte
     const taskIds = Object.values(TEST_HIERARCHY_IDS).filter(id => id !== TEST_HIERARCHY_IDS.COLLECTE);
 
@@ -157,36 +162,42 @@ async function loadRealControlledData(): Promise<ConversationSkeleton[]> {
         const taskDir = path.join(CONTROLLED_DATA_PATH, taskId);
         const metadataPath = path.join(taskDir, 'task_metadata.json');
         const uiMessagesPath = path.join(taskDir, 'ui_messages.json');
-        
+
         if (fs.existsSync(metadataPath)) {
             try {
                 const metadata = JSON.parse(fs.readFileSync(metadataPath, 'utf-8'));
-                
+
                 // Extraire l'instruction initiale depuis ui_messages.json
                 let truncatedInstruction = '';
                 let title = '';
-                
+
                 if (fs.existsSync(uiMessagesPath)) {
                     const uiMessagesData = JSON.parse(fs.readFileSync(uiMessagesPath, 'utf-8'));
-                    
+
                     // SDDD: Vérifier la structure des données et extraire le tableau de messages
                     const uiMessages = uiMessagesData.messages || uiMessagesData || [];
-                    
+
                     if (Array.isArray(uiMessages)) {
-                        // Chercher le premier message "say" avec texte significatif
+                        // Chercher le premier message "say" ou "user" avec texte significatif
                         const firstSayMessage = uiMessages.find((msg: any) =>
-                            msg.type === 'say' && msg.text && msg.text.length > 20
+                            (msg.type === 'say' || msg.type === 'user') &&
+                            (msg.text || msg.content) &&
+                            (msg.text || msg.content).length > 20
                         );
-                        
+
                         if (firstSayMessage) {
-                            truncatedInstruction = firstSayMessage.text.substring(0, 200);
-                            title = firstSayMessage.text.substring(0, 100);
+                            const text = firstSayMessage.text || firstSayMessage.content;
+                            truncatedInstruction = text.substring(0, 200);
+                            title = text.substring(0, 100);
+                            process.stdout.write(`[TEST DEBUG] Loaded ${taskId.substring(0,8)} instruction: "${truncatedInstruction.substring(0,50)}..."\n`);
+                        } else {
+                            process.stdout.write(`[TEST DEBUG] No instruction found for ${taskId.substring(0,8)}\n`);
                         }
                     } else {
                         console.warn(`SDDD: uiMessages n'est pas un tableau pour ${taskId}:`, typeof uiMessages);
                     }
                 }
-                
+
                 skeletons.push({
                     taskId: taskId,
                     truncatedInstruction: truncatedInstruction || '',

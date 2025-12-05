@@ -1,4 +1,4 @@
-﻿<!-- START_SECTION: metadata -->
+<!-- START_SECTION: metadata -->
 ---
 title: "Installation du serveur MCP QuickFiles"
 description: "Guide d'installation complet pour le serveur MCP QuickFiles"

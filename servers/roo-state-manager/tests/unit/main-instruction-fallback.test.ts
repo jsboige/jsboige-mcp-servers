@@ -1,7 +1,10 @@
-import { describe, it, expect, beforeAll, afterAll } from 'vitest';
+import { describe, it, expect, beforeAll, afterAll, vi } from 'vitest';
 import { RooStorageDetector } from '../../src/utils/roo-storage-detector.js';
-import * as fs from 'fs/promises';
 import * as path from 'path';
+
+// Désactiver le mock global de fs pour ce test
+vi.unmock('fs/promises');
+import * as fs from 'fs/promises';
 
 describe('extractMainInstructionFromUI - Fallback Logic', () => {
   const testDataDir = path.join(__dirname, '../test-data/main-instruction-fallback');
@@ -18,7 +21,7 @@ describe('extractMainInstructionFromUI - Fallback Logic', () => {
 
   it('devrait extraire depuis say/text si l\'instruction est complète', async () => {
     const uiMessagesPath = path.join(testDataDir, 'complete-instruction.json');
-    
+
     const messages = [
       {
         ts: 1759082704597,
@@ -39,7 +42,7 @@ describe('extractMainInstructionFromUI - Fallback Logic', () => {
 
   it('devrait utiliser le fallback api_req_started si say/text est trop court', async () => {
     const uiMessagesPath = path.join(testDataDir, 'truncated-instruction.json');
-    
+
     const messages = [
       {
         ts: 1759082704597,
@@ -73,7 +76,7 @@ describe('extractMainInstructionFromUI - Fallback Logic', () => {
 
   it('devrait utiliser le fallback api_req_started si say/text se termine par ...', async () => {
     const uiMessagesPath = path.join(testDataDir, 'ellipsis-instruction.json');
-    
+
     const messages = [
       {
         ts: 1759082704597,
@@ -103,7 +106,7 @@ describe('extractMainInstructionFromUI - Fallback Logic', () => {
 
   it('devrait retourner say/text si api_req_started n\'existe pas', async () => {
     const uiMessagesPath = path.join(testDataDir, 'no-api-req.json');
-    
+
     const messages = [
       {
         ts: 1759082704597,
@@ -122,7 +125,7 @@ describe('extractMainInstructionFromUI - Fallback Logic', () => {
 
   it('devrait retourner undefined si aucun message say/text n\'existe', async () => {
     const uiMessagesPath = path.join(testDataDir, 'no-say-text.json');
-    
+
     const messages = [
       {
         ts: 1759082711779,
@@ -144,7 +147,7 @@ describe('extractMainInstructionFromUI - Fallback Logic', () => {
 
   it('devrait gérer le cas où le JSON de api_req_started est invalide', async () => {
     const uiMessagesPath = path.join(testDataDir, 'invalid-json.json');
-    
+
     const messages = [
       {
         ts: 1759082704597,

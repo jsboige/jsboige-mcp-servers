@@ -1,4 +1,4 @@
-﻿# Guide de dépannage du serveur MCP Jupyter
+# Guide de dépannage du serveur MCP Jupyter
 
 <!-- START_SECTION: introduction -->
 Ce guide de dépannage vous aidera à résoudre les problèmes courants rencontrés lors de l'utilisation du serveur MCP Jupyter. Il couvre les problèmes d'installation, de configuration, de connexion au serveur Jupyter, et d'utilisation des différents outils.

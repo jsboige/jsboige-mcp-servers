@@ -1,6 +1,6 @@
 /**
  * Tests unitaires pour MessageManager
- * 
+ *
  * Couvre toutes les méthodes publiques et privées exposées :
  * - generateMessageId() : Génération ID unique
  * - sendMessage() : Création et envoi de messages
@@ -8,16 +8,20 @@
  * - getMessage() : Récupération par ID
  * - markAsRead() : Changement statut (Phase 2)
  * - archiveMessage() : Archivage (Phase 2)
- * 
+ *
  * Framework: Vitest
  * Coverage cible: >80%
  */
 
-import { describe, test, expect, beforeEach, afterEach } from 'vitest';
+import { describe, test, expect, beforeEach, afterEach, vi } from 'vitest';
 import { MessageManager, type MessageListItem } from '../MessageManager.js';
 import { existsSync, rmSync, mkdirSync } from 'fs';
 import { promises as fs } from 'fs';
 import { join } from 'path';
+
+// Désactiver le mock global de fs pour ce test qui utilise le système de fichiers réel
+vi.unmock('fs');
+vi.unmock('fs/promises');
 
 describe('MessageManager', () => {
   let messageManager: MessageManager;
@@ -26,7 +30,7 @@ describe('MessageManager', () => {
   beforeEach(async () => {
     // Setup : créer répertoire temporaire pour tests isolés
     testSharedStatePath = join(__dirname, '../../__test-data__/shared-state');
-    
+
     // Créer structure répertoires de messagerie
     const dirs = [
       testSharedStatePath,
@@ -35,7 +39,7 @@ describe('MessageManager', () => {
       join(testSharedStatePath, 'messages/sent'),
       join(testSharedStatePath, 'messages/archive')
     ];
-    
+
     for (const dir of dirs) {
       if (!existsSync(dir)) {
         mkdirSync(dir, { recursive: true });
@@ -56,12 +60,12 @@ describe('MessageManager', () => {
   describe('constructor', () => {
     test('should initialize with correct paths', () => {
       expect(messageManager).toBeDefined();
-      
+
       // Vérifier que les répertoires ont été créés
       const inboxPath = join(testSharedStatePath, 'messages/inbox');
       const sentPath = join(testSharedStatePath, 'messages/sent');
       const archivePath = join(testSharedStatePath, 'messages/archive');
-      
+
       expect(existsSync(inboxPath)).toBe(true);
       expect(existsSync(sentPath)).toBe(true);
       expect(existsSync(archivePath)).toBe(true);
@@ -136,7 +140,7 @@ describe('MessageManager', () => {
       // Vérifier contenu des fichiers
       const inboxContent = JSON.parse(await fs.readFile(inboxPath, 'utf-8'));
       const sentContent = JSON.parse(await fs.readFile(sentPath, 'utf-8'));
-      
+
       expect(inboxContent.id).toBe(message.id);
       expect(sentContent.id).toBe(message.id);
     });
@@ -173,7 +177,7 @@ describe('MessageManager', () => {
       const msg2 = await messageManager.sendMessage(
         'machine1', 'machine2', 'Read', 'Body'
       );
-      
+
       // Marquer msg2 comme lu
       await messageManager.markAsRead(msg2.id);
 
@@ -191,7 +195,7 @@ describe('MessageManager', () => {
       const msg2 = await messageManager.sendMessage(
         'machine1', 'machine2', 'Read', 'Body'
       );
-      
+
       // Marquer msg2 comme lu
       await messageManager.markAsRead(msg2.id);
 
@@ -205,7 +209,7 @@ describe('MessageManager', () => {
     test('should return all messages when status is "all"', async () => {
       await messageManager.sendMessage('machine1', 'machine2', 'Msg1', 'Body1');
       const msg2 = await messageManager.sendMessage('machine1', 'machine2', 'Msg2', 'Body2');
-      
+
       await messageManager.markAsRead(msg2.id);
 
       const all = await messageManager.readInbox('machine2', 'all');
@@ -349,7 +353,7 @@ describe('MessageManager', () => {
       // Lire directement le fichier pour vérifier
       const inboxPath = join(testSharedStatePath, 'messages/inbox', `${message.id}.json`);
       const fileContent = JSON.parse(await fs.readFile(inboxPath, 'utf-8'));
-      
+
       expect(fileContent.status).toBe('read');
     });
   });
@@ -425,7 +429,7 @@ describe('MessageManager', () => {
     });
 
     test('should handle messages with all priority levels', async () => {
-      const priorities: Array<'LOW' | 'MEDIUM' | 'HIGH' | 'URGENT'> = 
+      const priorities: Array<'LOW' | 'MEDIUM' | 'HIGH' | 'URGENT'> =
         ['LOW', 'MEDIUM', 'HIGH', 'URGENT'];
 
       for (const priority of priorities) {
@@ -463,7 +467,7 @@ describe('MessageManager', () => {
       }
 
       const messages = await Promise.all(promises);
-      
+
       // Vérifier que tous les IDs sont uniques
       const ids = messages.map((m) => m.id);
       const uniqueIds = new Set(ids);

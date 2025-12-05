@@ -27,7 +27,8 @@ describe('BaselineService', () => {
   let mockConfigService: any;
   let mockInventoryCollector: any;
   let mockDiffDetector: any;
-  const testSharedStatePath = 'C:\\dev\\roo-extensions';
+  // Utiliser un chemin compatible multi-plateforme pour les tests
+  const testSharedStatePath = path.join(process.cwd(), 'test-shared-state');
 
   beforeEach(() => {
     vi.clearAllMocks();

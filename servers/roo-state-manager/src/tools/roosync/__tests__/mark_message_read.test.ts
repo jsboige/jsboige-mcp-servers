@@ -1,12 +1,12 @@
 /**
  * Tests unitaires pour roosync_mark_message_read
- * 
+ *
  * Couvre les scénarios :
  * - Marquer un message unread comme read (succès)
  * - Message déjà marqué read (info)
  * - Message inexistant (erreur)
  * - Persistance du changement de statut
- * 
+ *
  * Framework: Vitest
  * Coverage cible: >80%
  */
@@ -16,6 +16,9 @@ import { markMessageRead } from '../mark_message_read.js';
 import { MessageManager } from '../../../services/MessageManager.js';
 import { existsSync, rmSync, mkdirSync } from 'fs';
 import { join } from 'path';
+
+// Désactiver le mock global de fs pour ce test qui utilise le système de fichiers réel
+vi.unmock('fs');
 import * as serverHelpers from '../../../utils/server-helpers.js';
 
 describe('roosync_mark_message_read', () => {
@@ -24,7 +27,7 @@ describe('roosync_mark_message_read', () => {
 
   beforeEach(() => {
     testSharedStatePath = join(__dirname, '../../../__test-data__/shared-state-mark-read');
-    
+
     const dirs = [
       join(testSharedStatePath, 'messages/inbox'),
       join(testSharedStatePath, 'messages/sent'),
@@ -116,7 +119,7 @@ describe('roosync_mark_message_read', () => {
     // Vérifier persistence via MessageManager
     const updatedMessage = await messageManager.getMessage(message.id);
     expect(updatedMessage?.status).toBe('read');
-    
+
     // Vérifier que le fichier existe toujours dans inbox avec le bon statut
     const inboxPath = join(testSharedStatePath, 'messages/inbox', `${message.id}.json`);
     expect(existsSync(inboxPath)).toBe(true);

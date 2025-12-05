@@ -1,10 +1,14 @@
 /**
  * Tests unitaires pour PowerShellExecutor
- * 
+ *
  * @module tests/unit/services/powershell-executor.test
  */
 
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
+// Unmock fs and PowerShellExecutor to ensure we test the real implementation
+vi.unmock('fs');
+vi.unmock('../../../src/services/PowerShellExecutor.js');
+
 import { PowerShellExecutor, resetDefaultExecutor, getDefaultExecutor } from '../../../src/services/PowerShellExecutor.js';
 import { join } from 'path';
 import { mkdirSync, writeFileSync, rmSync, existsSync } from 'fs';
@@ -124,7 +128,7 @@ describe('PowerShellExecutor', () => {
       // Créer un sous-répertoire avec espace
       const subDir = join(testDir, 'test folder');
       mkdirSync(subDir, { recursive: true });
-      
+
       const scriptPath = join('test folder', 'test-space.ps1');
       const scriptContent = 'Write-Output "Spaces OK"';
       writeFileSync(join(testDir, scriptPath), scriptContent, 'utf-8');
@@ -177,7 +181,7 @@ describe('PowerShellExecutor', () => {
 
     it('devrait rejeter une sortie non-JSON', () => {
       const output = 'This is not JSON';
-      
+
       expect(() => {
         PowerShellExecutor.parseJsonOutput(output);
       }).toThrow();
@@ -185,7 +189,7 @@ describe('PowerShellExecutor', () => {
 
     it('devrait rejeter une sortie JSON malformée', () => {
       const output = '{"incomplete": ';
-      
+
       expect(() => {
         PowerShellExecutor.parseJsonOutput(output);
       }).toThrow();
@@ -195,7 +199,7 @@ describe('PowerShellExecutor', () => {
   describe('isPowerShellAvailable', () => {
     it('devrait détecter si PowerShell est disponible', async () => {
       const isAvailable = await PowerShellExecutor.isPowerShellAvailable();
-      
+
       // Sur Windows avec PowerShell 7+, devrait être true
       // Sur d'autres systèmes, pourrait être false
       expect(typeof isAvailable).toBe('boolean');
@@ -203,7 +207,7 @@ describe('PowerShellExecutor', () => {
 
     it('devrait retourner false pour un chemin PowerShell invalide', async () => {
       const isAvailable = await PowerShellExecutor.isPowerShellAvailable('invalid-pwsh.exe');
-      
+
       expect(isAvailable).toBe(false);
     }, 10000);
   });
@@ -211,7 +215,7 @@ describe('PowerShellExecutor', () => {
   describe('getPowerShellVersion', () => {
     it('devrait obtenir la version de PowerShell', async () => {
       const version = await PowerShellExecutor.getPowerShellVersion();
-      
+
       if (version) {
         // Vérifier format version (ex: "7.4.0")
         expect(version).toMatch(/^\d+\.\d+\.\d+/);
@@ -226,7 +230,7 @@ describe('PowerShellExecutor', () => {
     it('devrait retourner la même instance', () => {
       const instance1 = getDefaultExecutor();
       const instance2 = getDefaultExecutor();
-      
+
       expect(instance1).toBe(instance2);
     });
 
@@ -234,7 +238,7 @@ describe('PowerShellExecutor', () => {
       const instance1 = getDefaultExecutor();
       resetDefaultExecutor();
       const instance2 = getDefaultExecutor();
-      
+
       expect(instance1).not.toBe(instance2);
     });
   });
@@ -244,7 +248,7 @@ describe('PowerShellExecutor', () => {
       const customExecutor = new PowerShellExecutor({
         powershellPath: 'custom-pwsh.exe'
       });
-      
+
       expect(customExecutor).toBeInstanceOf(PowerShellExecutor);
     });
 
@@ -260,7 +264,7 @@ describe('PowerShellExecutor', () => {
       writeFileSync(join(testDir, scriptPath), scriptContent, 'utf-8');
 
       const result = await customExecutor.executeScript(scriptPath, []);
-      
+
       // Devrait réussir car 3s < 5s (timeout par défaut)
       expect(result.success).toBe(true);
     }, 10000);
@@ -276,7 +280,7 @@ describe('PowerShellExecutor', () => {
         [],
         { timeout: 2000 } // 2 secondes explicites
       );
-      
+
       // Devrait échouer par timeout car 5s > 2s
       expect(result.success).toBe(false);
       expect(result.stderr).toContain('timed out');

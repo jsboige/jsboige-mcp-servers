@@ -1,4 +1,4 @@
-﻿# MCP Jupyter pour Roo
+# MCP Jupyter pour Roo
 
 Ce document explique l'architecture, la configuration et l'utilisation du serveur MCP Jupyter pour Roo.
 

@@ -27,7 +27,7 @@ import {
   IDiffDetector,
   IConfigService,
   MachineInventory
-} from '../types/baseline';
+} from '../types/baseline.js';
 
 /**
  * Service BaselineService - Cœur de l'architecture baseline-driven
@@ -191,7 +191,7 @@ export class BaselineService {
       }
 
       console.error('DEBUG: Fichier trouvé, lecture du contenu...');
-      const content = await fs.promises.readFile(this.baselinePath, 'utf-8');
+      const content = await fs.readFile(this.baselinePath, 'utf-8');
       console.error('DEBUG: Contenu lu, longueur:', content.length);
       console.error('DEBUG: Début du contenu:', content.substring(0, 100));
 
