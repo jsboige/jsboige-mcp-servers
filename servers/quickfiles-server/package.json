@@ -5,7 +5,7 @@
   "type": "module",
   "main": "build/index.cjs",
   "scripts": {
-    "build": "tsc && node -e \"require('fs').renameSync('build/index.js', 'build/index.cjs'); require('fs').renameSync('build/index.js.map', 'build/index.cjs.map');\"",
+    "build": "esbuild src/index.ts --bundle --platform=node --target=node18 --outfile=build/index.cjs --format=cjs",
     "start": "node build/index.cjs",
     "start:debug": "node --inspect build/index.cjs",
     "dev": "tsc -w",
@@ -50,6 +50,7 @@
     "@types/jest": "^29.5.12",
     "@types/node": "^22.15.3",
     "cross-env": "^10.0.0",
+    "esbuild": "^0.27.1",
     "jest": "^29.7.0",
     "jest-html-reporters": "^3.1.7",
     "jest-json-reporter": "^1.2.2",
