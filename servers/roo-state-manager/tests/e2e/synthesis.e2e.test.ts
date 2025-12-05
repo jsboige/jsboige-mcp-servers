@@ -28,10 +28,10 @@ describe('E2E Tests with Real Environment', () => {
 
     const createE2ELLMConfig = (): LLMServiceOptions => ({
         models: [{
-            modelId: process.env.OPENAI_CHAT_MODEL_ID || 'gpt-4o-mini',
-            displayName: 'OpenAI GPT-4o-mini',
+            modelId: process.env.OPENAI_MODEL_ID || 'gpt-4o',
+            displayName: 'OpenAI GPT-4o',
             provider: 'openai' as const,
-            modelName: process.env.OPENAI_CHAT_MODEL_ID || 'gpt-4o-mini',
+            modelName: process.env.OPENAI_MODEL_ID || 'gpt-4o',
             maxTokens: 128000,
             costPerInputToken: 0.00015,
             costPerOutputToken: 0.0006,
@@ -39,7 +39,7 @@ describe('E2E Tests with Real Environment', () => {
                 temperature: 0.1
             }
         }],
-        defaultModelId: process.env.OPENAI_CHAT_MODEL_ID || 'gpt-4o-mini',
+        defaultModelId: process.env.OPENAI_MODEL_ID || 'gpt-4o',
         defaultTimeout: 60000,
         maxRetries: 3,
         retryDelay: 2000,
@@ -50,7 +50,7 @@ describe('E2E Tests with Real Environment', () => {
         synthesisOutputDir: '/test/e2e/synthesis',
         maxContextSize: 100000,
         maxConcurrency: 2,
-        defaultLlmModel: process.env.OPENAI_CHAT_MODEL_ID || 'gpt-4o-mini'
+        defaultLlmModel: process.env.OPENAI_MODEL_ID || 'gpt-4o'
     });
 
     describe('Real API Integration', () => {
@@ -88,7 +88,7 @@ describe('E2E Tests with Real Environment', () => {
     describe('Environment Configuration', () => {
         itE2E('should have all required environment variables', () => {
             expect(process.env.OPENAI_API_KEY).toBeDefined();
-            expect(process.env.OPENAI_CHAT_MODEL_ID).toBeDefined();
+            expect(process.env.OPENAI_MODEL_ID).toBeDefined();
             expect(process.env.QDRANT_URL).toBeDefined();
             expect(process.env.QDRANT_API_KEY).toBeDefined();
             expect(process.env.QDRANT_COLLECTION_NAME).toBeDefined();
@@ -96,7 +96,7 @@ describe('E2E Tests with Real Environment', () => {
 
         itE2E('should validate environment values', () => {
             expect(process.env.OPENAI_API_KEY).toMatch(/^sk-/);
-            expect(process.env.OPENAI_CHAT_MODEL_ID).toBe('gpt-4o-mini');
+            expect(process.env.OPENAI_MODEL_ID).toBe('gpt-4o');
             expect(process.env.QDRANT_URL).toMatch(/^https?:\/\//);
             expect(process.env.QDRANT_COLLECTION_NAME).toBe('roo_tasks_semantic_index');
         });
