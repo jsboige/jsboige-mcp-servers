@@ -82,4 +82,11 @@ describe('read_vscode_logs Tool', () => {
     const textContent = result.content[0].type === 'text' ? result.content[0].text : '';
     expect(textContent).toContain('APPDATA environment variable not set');
   });
+
+  it('should handle undefined args gracefully', async () => {
+    // @ts-ignore - Testing runtime robustness
+    const result = await readVscodeLogs.handler(undefined);
+    const textContent = result.content[0].type === 'text' ? result.content[0].text : '';
+    expect(textContent).toContain('--- LOG: renderer ---');
+  });
 });
