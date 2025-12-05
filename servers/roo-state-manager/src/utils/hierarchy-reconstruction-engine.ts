@@ -24,13 +24,13 @@ import { TaskInstructionIndex, computeInstructionPrefix } from './task-instructi
 export class HierarchyReconstructionEngine {
     private static DEFAULT_CONFIG: ReconstructionConfig = {
         batchSize: 20,
-        similarityThreshold: 0.95, // Durcissement extrême pour éviter les faux positifs
-        minConfidenceScore: 0.9,   // Confiance minimale très élevée requise
-        debugMode: false,
+        similarityThreshold: 0.85, // Assouplissement temporaire pour débloquer
+        minConfidenceScore: 0.8,   // Réduction pour permettre plus de détections
+        debugMode: true,              // Activation logging pour debugging
         operationTimeout: 30000,
         forceRebuild: false,
-        // Passage en mode strict par défaut pour éviter les aberrations
-        strictMode: true
+        // Désactivation temporaire du mode strict pour débloquer
+        strictMode: false
     };
 
     private config: ReconstructionConfig;
