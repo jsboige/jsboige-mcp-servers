@@ -45,6 +45,15 @@ const { mockRooSyncService, mockRooSyncServiceError, mockGetRooSyncService } = v
             status: 'online',
             diffsCount: 2,
             pendingDecisions: 1
+          },
+          'LAPTOP-WORK': {
+            id: 'LAPTOP-WORK',
+            name: 'Laptop Work',
+            basePath: '/mock/laptop-work',
+            lastSync: '2025-10-08T07:00:00Z',
+            status: 'offline',
+            diffsCount: 5,
+            pendingDecisions: 3
           }
         }
       }),
@@ -69,13 +78,21 @@ const { mockRooSyncService, mockRooSyncServiceError, mockGetRooSyncService } = v
               status: 'online',
               diffsCount: 2,
               pendingDecisions: 1
+            },
+            'LAPTOP-WORK': {
+              id: 'LAPTOP-WORK',
+              name: 'Laptop Work',
+              lastSync: '2025-10-08T07:00:00Z',
+              status: 'offline',
+              diffsCount: 5,
+              pendingDecisions: 3
             }
           },
           statistics: {
-            totalMachines: 2,
+            totalMachines: 3,
             onlineMachines: 2,
-            totalDifferences: 2,
-            pendingDecisions: 1,
+            totalDifferences: 7,
+            pendingDecisions: 4,
             lastSync: '2025-10-08T09:00:00Z'
           }
         };
@@ -111,6 +128,14 @@ const { mockRooSyncService, mockRooSyncServiceError, mockGetRooSyncService } = v
             status: 'online',
             diffsCount: 2,
             pendingDecisions: 1
+          },
+          'LAPTOP-WORK': {
+            id: 'LAPTOP-WORK',
+            name: 'Laptop Work',
+            lastSync: '2025-10-08T07:00:00Z',
+            status: 'offline',
+            diffsCount: 5,
+            pendingDecisions: 3
           }
         }
       })
