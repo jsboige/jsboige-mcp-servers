@@ -157,13 +157,14 @@ describe('read_vscode_logs Tool', () => {
       isSocket: () => false
     });
 
-    // Mock empty logs directory - no session directories found
+    // Mock readdir to throw ENOENT error (directory doesn't exist)
     const mockReaddir = vi.mocked(fs.promises.readdir);
-    mockReaddir.mockResolvedValue([] as any);
+    mockReaddir.mockRejectedValue(new Error('ENOENT: no such file or directory, scandir \'C:\\Users\\test\\AppData\\Roaming\\Code\\logs\'') as any);
 
     // @ts-ignore - Testing runtime robustness
     const result = await readVscodeLogs.handler(undefined);
     const textContent = result.content[0].type === 'text' ? result.content[0].text : '';
-    expect(textContent).toContain('No session log directory found');
+    expect(textContent).toContain('Failed to read VS Code logs:');
+    expect(textContent).toContain('ENOENT: no such file or directory');
   });
 });
