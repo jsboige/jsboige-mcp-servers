@@ -1,8 +1,8 @@
-import { promises as fs } from 'fs';
+import { promises as fs, writeFileSync } from 'fs';
 import * as path from 'path';
 import * as crypto from 'crypto';
 import * as os from 'os';
-import { v4 as uuidv4 } from 'uuid';
+import { v4 as uuidv4, v5 as uuidv5 } from 'uuid';
 import getOpenAIClient from './openai.js';
 import { getQdrantClient } from './qdrant.js';
 import { Schemas } from '@qdrant/js-client-rest';
@@ -11,6 +11,8 @@ type PointStruct = Schemas['PointStruct'];
 
 const COLLECTION_NAME = process.env.QDRANT_COLLECTION_NAME || 'roo_tasks_semantic_index';
 const EMBEDDING_MODEL = 'text-embedding-3-small';
+// Namespace pour UUID v5 (généré aléatoirement une fois, constant pour le projet)
+const UUID_NAMESPACE = '6ba7b810-9dad-11d1-80b4-00c04fd430c8';
 
 // --- Circuit Breaker Configuration ---
 const MAX_RETRY_ATTEMPTS = 3;
@@ -65,7 +67,7 @@ class QdrantRateLimiter {
     private processing = false;
     private lastExecution = 0;
     private minInterval = 100; // 100ms entre requêtes = max 10 req/s
-    
+
     async execute<T>(fn: () => Promise<T>): Promise<T> {
         return new Promise((resolve, reject) => {
             this.queue.push(async () => {
@@ -76,7 +78,7 @@ class QdrantRateLimiter {
                     if (elapsed < this.minInterval) {
                         await new Promise(r => setTimeout(r, this.minInterval - elapsed));
                     }
-                    
+
                     const result = await fn();
                     this.lastExecution = Date.now();
                     resolve(result);
@@ -84,13 +86,13 @@ class QdrantRateLimiter {
                     reject(error);
                 }
             });
-            
+
             if (!this.processing) {
                 this.processQueue();
             }
         });
     }
-    
+
     private async processQueue() {
         this.processing = true;
         while (this.queue.length > 0) {
@@ -110,7 +112,7 @@ async function retryWithBackoff<T>(
     maxRetries: number = MAX_RETRY_ATTEMPTS
 ): Promise<T> {
     let lastError: Error = new Error('Aucune tentative effectuée');
-    
+
     for (let attempt = 1; attempt <= maxRetries; attempt++) {
         try {
             const result = await operation();
@@ -121,7 +123,7 @@ async function retryWithBackoff<T>(
         } catch (error: any) {
             lastError = error;
             console.warn(`⚠️ ${operationName} échoué (tentative ${attempt}/${maxRetries}):`, error.message);
-            
+
             if (attempt < maxRetries) {
                 const delay = RETRY_DELAY_MS * Math.pow(2, attempt - 1); // Backoff exponentiel
                 console.log(`🔄 Retry dans ${delay}ms...`);
@@ -129,7 +131,7 @@ async function retryWithBackoff<T>(
             }
         }
     }
-    
+
     console.error(`❌ ${operationName} échoué définitivement après ${maxRetries} tentatives`);
     throw lastError;
 }
@@ -138,7 +140,7 @@ async function retryWithBackoff<T>(
 function logNetworkMetrics(): void {
     const now = Date.now();
     const elapsedHours = (now - networkMetrics.lastReset) / (1000 * 60 * 60);
-    
+
     console.log(`📊 [METRICS] Utilisation réseau (dernières ${elapsedHours.toFixed(1)}h):`);
     console.log(`   - Appels Qdrant: ${networkMetrics.qdrantCalls}`);
     console.log(`   - Appels OpenAI: ${networkMetrics.openaiCalls}`);
@@ -181,6 +183,7 @@ interface Chunk {
   // Nouveaux champs pour la traçabilité du chunking
   chunk_index?: number;  // Index de ce chunk (commence à 1)
   total_chunks?: number; // Nombre total de chunks pour ce message
+  original_chunk_id?: string; // ID original avant split (pour traçabilité)
 }
 
 // Fichiers de conversation bruts
@@ -208,7 +211,7 @@ async function ensureCollectionExists() {
 
         if (!collectionExists) {
             console.log(`Collection "${COLLECTION_NAME}" not found. Creating...`);
-            
+
             // 🚨 FIX CRITIQUE: Spécifier max_indexing_threads > 0 lors de la création
             // Sans cela, Qdrant peut utiliser 0 par défaut, causant des deadlocks avec wait=true
             // Référence: diagnostics/20251013_DIAGNOSTIC_FINAL.md - "max_indexing_threads: 0"
@@ -236,7 +239,7 @@ function canMakeRequest(): boolean {
     if (circuitBreakerState === 'CLOSED') {
         return true;
     }
-    
+
     if (circuitBreakerState === 'OPEN') {
         const timeSinceLastFailure = Date.now() - lastFailureTime;
         if (timeSinceLastFailure > CIRCUIT_BREAKER_TIMEOUT_MS) {
@@ -246,7 +249,7 @@ function canMakeRequest(): boolean {
         }
         return false;
     }
-    
+
     // HALF_OPEN: permettre une tentative
     return circuitBreakerState === 'HALF_OPEN';
 }
@@ -260,7 +263,7 @@ function recordSuccess(): void {
 function recordFailure(): void {
     failureCount++;
     lastFailureTime = Date.now();
-    
+
     if (failureCount >= MAX_RETRY_ATTEMPTS) {
         circuitBreakerState = 'OPEN';
         console.error(`🔴 Circuit breaker: OPEN - trop d'échecs (${failureCount}), arrêt pendant ${CIRCUIT_BREAKER_TIMEOUT_MS}ms`);
@@ -272,7 +275,7 @@ function recordFailure(): void {
  */
 function sanitizePayload(payload: any): any {
     const cleaned = { ...payload };
-    
+
     // Nettoyer les valeurs problématiques
     Object.keys(cleaned).forEach(key => {
         if (cleaned[key] === undefined) {
@@ -286,7 +289,7 @@ function sanitizePayload(payload: any): any {
             delete cleaned[key];
         }
     });
-    
+
     return cleaned;
 }
 
@@ -297,11 +300,11 @@ function validateVectorGlobal(vector: number[], expectedDim: number = 1536): voi
     if (!Array.isArray(vector)) {
         throw new Error(`Vector doit être un tableau, reçu: ${typeof vector}`);
     }
-    
+
     if (vector.length !== expectedDim) {
         throw new Error(`Dimension invalide: ${vector.length}, attendu: ${expectedDim}`);
     }
-    
+
     // Vérifier NaN/Infinity qui causent erreurs 400
     const hasInvalidValues = vector.some(v => !Number.isFinite(v));
     if (hasInvalidValues) {
@@ -314,25 +317,25 @@ function validateVectorGlobal(vector: number[], expectedDim: number = 1536): voi
  */
 async function safeQdrantUpsert(points: PointStruct[]): Promise<boolean> {
     const startTime = Date.now();
-    
+
     // 📊 LOGGING DÉTAILLÉ - État initial
     console.log(`🔍 [safeQdrantUpsert] DÉBUT - Circuit: ${circuitBreakerState}, Échecs: ${failureCount}, Points: ${points.length}`);
     console.log(`📈 [safeQdrantUpsert] Métadonnées: Endpoint=${process.env.QDRANT_URL}, Collection=${COLLECTION_NAME}`);
-    
+
     if (!canMakeRequest()) {
         console.warn(`🚫 [safeQdrantUpsert] Circuit breaker: Requête bloquée - état ${circuitBreakerState}`);
         console.warn(`🚫 [safeQdrantUpsert] Dernière erreur il y a ${Date.now() - lastFailureTime}ms`);
         return false;
     }
-    
+
     // 🔍 LOGGING DÉTAILLÉ - Validation des payloads
     console.log(`🔍 [safeQdrantUpsert] Validation et nettoyage de ${points.length} points`);
-    
+
     // Valider et nettoyer tous les payloads
     const sanitizedPoints = points.map((point, index) => {
         const originalPayload = point.payload;
         const sanitizedPayload = sanitizePayload(originalPayload);
-        
+
         // Valider le vecteur
         try {
             validateVectorGlobal(point.vector as number[]);
@@ -340,19 +343,19 @@ async function safeQdrantUpsert(points: PointStruct[]): Promise<boolean> {
             console.error(`❌ [safeQdrantUpsert] Validation vecteur échouée pour point ${index}:`, error.message);
             throw error;
         }
-        
+
         // Log des transformations critiques
         const payloadChanges = Object.keys(originalPayload || {}).length - Object.keys(sanitizedPayload).length;
         if (payloadChanges > 0) {
             console.log(`🧹 [safeQdrantUpsert] Point ${index}: ${payloadChanges} champs nettoyés`);
         }
-        
+
         return {
             ...point,
             payload: sanitizedPayload
         };
     });
-    
+
     // 🔍 LOGGING DÉTAILLÉ - Informations sur la requête
     const payloadSample = sanitizedPoints[0]?.payload || {};
     console.log(`📤 [safeQdrantUpsert] Échantillon payload:`, {
@@ -363,107 +366,154 @@ async function safeQdrantUpsert(points: PointStruct[]): Promise<boolean> {
         content_length: payloadSample.content?.length || 0,
         host_os: payloadSample.host_os
     });
-    
+
     // 🚀 BATCHING INTELLIGENT: Si plus de 100 points, découper en batches
-    const batchSize = 100;
+    // DEBUG: Réduit à 1 pour diagnostic précis
+    const batchSize = 1;
     const totalBatches = Math.ceil(sanitizedPoints.length / batchSize);
-    
+
     if (totalBatches > 1) {
         console.log(`📦 [safeQdrantUpsert] Batching activé: ${sanitizedPoints.length} points en ${totalBatches} batches`);
     }
-    
+
     for (let batchIdx = 0; batchIdx < totalBatches; batchIdx++) {
         const batchStart = batchIdx * batchSize;
         const batch = sanitizedPoints.slice(batchStart, batchStart + batchSize);
         const isLastBatch = batchIdx === totalBatches - 1;
-        
+
         // wait=true seulement sur le dernier batch pour garantir indexation
         const shouldWait = isLastBatch;
-        
+
         let attempt = 0;
         let batchSuccess = false;
-        
+
         while (attempt < MAX_RETRY_ATTEMPTS && !batchSuccess) {
             const attemptStartTime = Date.now();
-            
+
             try {
                 console.log(`🔄 [safeQdrantUpsert] Batch ${batchIdx + 1}/${totalBatches}, Tentative ${attempt + 1}/${MAX_RETRY_ATTEMPTS} (${batch.length} points, wait=${shouldWait})`);
-                
+
+                // DEBUG: Logger le premier point pour diagnostic 400
+                if (attempt === 0) {
+                    const sample = batch[0];
+                    console.log(`🔍 [safeQdrantUpsert] Sample Point ID: ${sample.id}`);
+                    console.log(`🔍 [safeQdrantUpsert] Sample Payload Keys: ${Object.keys(sample.payload || {}).join(', ')}`);
+                    console.log(`🔍 [safeQdrantUpsert] Sample Vector Length: ${Array.isArray(sample.vector) ? sample.vector.length : 'Not array'}`);
+
+                    // DUMP COMPLET DU PAYLOAD AVANT ENVOI
+                    // console.error(`🔍 [safeQdrantUpsert] FULL PAYLOAD DUMP:`, JSON.stringify(sample.payload, null, 2));
+
+                    // DEBUG EXTRÊME: Écrire le payload dans un fichier
+                    try {
+                        // Utiliser un chemin absolu sûr dans le dossier temporaire ou workspace
+                        const dumpPath = path.join('d:/roo-extensions/debug_payload_dump.json');
+                        const vecLen = Array.isArray(sample.vector) ? sample.vector.length : 'NOT_ARRAY';
+                        const dumpData = {
+                            payload: sample.payload,
+                            vectorLength: vecLen,
+                            pointId: sample.id
+                        };
+                        writeFileSync(dumpPath, JSON.stringify(dumpData, null, 2));
+                        console.error(`🔥 DUMP ÉCRIT DANS: ${dumpPath}`);
+                    } catch (err: any) {
+                        console.error('❌ Erreur écriture dump:', err);
+                    }
+
+                    // On laisse l'erreur pour arrêter le processus et voir le log
+                    throw new Error(`DEBUG_PAYLOAD_DUMP attempted`);
+                }
+
                 await getQdrantClient().upsert(COLLECTION_NAME, {
                     wait: shouldWait,
                     points: batch,
                 });
-                
+
                 const attemptDuration = Date.now() - attemptStartTime;
-                
+
                 batchSuccess = true;
-                
+
                 // 📊 Mise à jour métriques réseau
                 networkMetrics.qdrantCalls++;
                 networkMetrics.bytesTransferred += batch.length * 6144; // 1536 dims * 4 bytes
-                
+
                 console.log(`✅ [safeQdrantUpsert] Batch ${batchIdx + 1}/${totalBatches} réussi - ${batch.length} points (${attemptDuration}ms)`);
-                
+
             } catch (error: any) {
                 attempt++;
                 const attemptDuration = Date.now() - attemptStartTime;
-                
+
                 // 📊 LOGGING CRITIQUE - Erreurs détaillées
                 console.error(`❌ [safeQdrantUpsert] ÉCHEC batch ${batchIdx + 1}/${totalBatches}, tentative ${attempt}/${MAX_RETRY_ATTEMPTS} après ${attemptDuration}ms`);
                 console.error(`🔍 [safeQdrantUpsert] Type erreur: ${error?.constructor?.name || 'Unknown'}`);
                 console.error(`🔍 [safeQdrantUpsert] Message erreur: ${error?.message || 'No message'}`);
                 console.error(`🔍 [safeQdrantUpsert] Code erreur: ${error?.code || error?.status || 'No code'}`);
-                
+
                 // Logging des détails de requête pour reproduction
                 if (error?.response) {
                     console.error(`🔍 [safeQdrantUpsert] Réponse HTTP: ${error.response.status} - ${error.response.statusText}`);
                     console.error(`🔍 [safeQdrantUpsert] Headers réponse:`, JSON.stringify(error.response.headers, null, 2));
                 }
-                
+
                 // 🚨 FIX CRITIQUE: Ne JAMAIS retry les erreurs HTTP 400 (Bad Request)
                 const httpStatus = error?.response?.status || error?.status;
                 if (httpStatus === 400) {
                     recordFailure();
                     const totalDuration = Date.now() - startTime;
-                    
+
                     console.error(`🔴 [safeQdrantUpsert] ERREUR HTTP 400 - NE PAS RETRY - Abandon immédiat`);
                     console.error(`🔴 [safeQdrantUpsert] Les erreurs 400 indiquent un problème avec les données envoyées`);
+
+                    // Log détaillé de la réponse d'erreur Qdrant si disponible
+                    if (error?.response) {
+                         console.error(`🔴 [safeQdrantUpsert] Response Status: ${error.response.status}`);
+                         console.error(`🔴 [safeQdrantUpsert] Response Data:`, JSON.stringify(error.response.data, null, 2));
+                    } else {
+                        console.error(`🔴 [safeQdrantUpsert] Pas de réponse HTTP détaillée disponible.`);
+                        console.error(`🔴 [safeQdrantUpsert] Erreur brute:`, JSON.stringify(error, Object.getOwnPropertyNames(error), 2));
+                    }
+
+                    // Dumper le premier point du batch pour analyse
+                    if (batch.length > 0) {
+                        console.error(`🔴 [safeQdrantUpsert] DUMP DU PREMIER POINT (pour debug):`);
+                        console.error(JSON.stringify(batch[0], null, 2));
+                    }
+
                     console.error(`🔴 [safeQdrantUpsert] Durée totale: ${totalDuration}ms`);
                     console.error(`🔴 [safeQdrantUpsert] Circuit breaker activé - État: ${circuitBreakerState}`);
-                    
+
                     return false;
                 }
-                
+
                 if (attempt >= MAX_RETRY_ATTEMPTS) {
                     recordFailure();
-                    
+
                     console.error(`🔴 [safeQdrantUpsert] ÉCHEC DÉFINITIF batch ${batchIdx + 1} après ${MAX_RETRY_ATTEMPTS} tentatives`);
                     console.error(`🔴 [safeQdrantUpsert] Circuit breaker activé - État: ${circuitBreakerState}`);
-                    
+
                     return false;
                 }
-                
+
                 // Délai exponentiel : 2s, 4s, 8s
                 const delay = RETRY_DELAY_MS * Math.pow(2, attempt - 1);
                 console.log(`⏳ [safeQdrantUpsert] Attente ${delay}ms avant retry batch ${batchIdx + 1}...`);
                 await new Promise(resolve => setTimeout(resolve, delay));
             }
         }
-        
+
         // Pause entre batches pour éviter surcharge (sauf dernier)
         if (!isLastBatch) {
             await new Promise(resolve => setTimeout(resolve, 100));
         }
     }
-    
+
     const totalDuration = Date.now() - startTime;
     recordSuccess();
-    
+
     // 📊 LOGGING DÉTAILLÉ - Succès complet
     console.log(`✅ [safeQdrantUpsert] Upsert Qdrant COMPLET - ${sanitizedPoints.length} points indexés en ${totalBatches} batch(es)`);
     console.log(`⏱️ [safeQdrantUpsert] Durée totale: ${totalDuration}ms`);
     console.log(`🔄 [safeQdrantUpsert] Circuit breaker réinitialisé - État: CLOSED`);
-    
+
     return true;
 }
 
@@ -486,7 +536,7 @@ async function extractChunksFromTask(taskId: string, taskPath: string): Promise<
     const apiHistoryPath = path.join(taskPath, 'api_conversation_history.json');
     const metadataPath = path.join(taskPath, 'task_metadata.json');
     let sequenceOrder = 0;
-    
+
     // Variables pour les métadonnées extraites
     let messageIndex = 0;
     let parentTaskId : string | undefined;
@@ -503,19 +553,19 @@ async function extractChunksFromTask(taskId: string, taskPath: string): Promise<
             ? metadataContent.slice(1)
             : metadataContent;
         const rawMetadata = JSON.parse(cleanMetadata);
-        
+
         // ✅ LOGIQUE UNIFIÉE : Même extraction que roo-storage-detector.ts:426
         parentTaskId = rawMetadata.parentTaskId || rawMetadata.parent_task_id;
-        
+
         // 🚫 SUPPRIMÉ : inferParentTaskIdFromContent - impasse remontante
         // Le parentId doit être enregistré de façon descendante au moment de la création
         if (!parentTaskId) {
             console.log(`[extractChunksFromTask] Task ${taskId} sans parentTaskId - normal pour tâche racine ou parentId non encore enregistré`);
         }
-        
+
         workspace = rawMetadata.workspace;
         taskTitle = rawMetadata.title;
-        
+
         console.log(`📊 [extractChunksFromTask] Extracted metadata for ${taskId}: parentTaskId=${parentTaskId}, workspace=${workspace}`);
     } catch (error) {
         console.warn(`⚠️ [extractChunksFromTask] Could not read metadata for ${taskId}:`, error);
@@ -531,7 +581,7 @@ async function extractChunksFromTask(taskId: string, taskPath: string): Promise<
             if (msg.role === 'system') continue;
             if (msg.content) {
                 messageIndex++;
-                
+
                 // Handle both string and array content (OpenAI format) with improved safety
                 let contentText: string = '';
                 if (typeof msg.content === 'string') {
@@ -610,7 +660,7 @@ async function extractChunksFromTask(taskId: string, taskPath: string): Promise<
         console.error('Stack trace:', error instanceof Error ? error.stack : 'No stack');
         console.error(`Fichier problématique: ${apiHistoryPath}`);
         console.error(`Task ID: ${taskId}`);
-        
+
         // Propager l'erreur pour éviter faux succès silencieux
         throw new Error(`Extraction chunks échouée pour ${taskId}: ${error instanceof Error ? error.message : String(error)}`);
     }
@@ -671,18 +721,24 @@ function splitChunk(chunk: Chunk, maxSize: number): Chunk[] {
         const contentPart = content.substring(0, maxSize);
         content = content.substring(maxSize);
 
+        // 🚨 FIX CRITIQUE: Qdrant exige des UUIDs valides pour les IDs
+        // On utilise uuidv5 pour générer un UUID déterministe à partir de l'ID composite
+        const compositeId = `${chunk.chunk_id}_part_${chunkIndex}`;
+        const deterministicUuid = uuidv5(compositeId, UUID_NAMESPACE);
+
         subChunks.push({
             ...chunk,
-            chunk_id: `${chunk.chunk_id}_part_${chunkIndex}`,
+            chunk_id: deterministicUuid, // UUID valide au lieu de string arbitraire
             content: contentPart,
             content_summary: `Chunk ${chunkIndex}/${totalChunks}: ${contentPart.substring(0, 100)}...`,
             // Nouveaux champs de traçabilité
             chunk_index: chunkIndex,
-            total_chunks: totalChunks
+            total_chunks: totalChunks,
+            original_chunk_id: chunk.chunk_id // Garder trace de l'ID original
         });
         chunkIndex++;
     }
-    
+
     console.log(`🔪 Split large chunk into ${totalChunks} parts (original size: ${chunk.content.length} chars)`);
     return subChunks;
 }
@@ -698,9 +754,15 @@ export async function indexTask(taskId: string, taskPath: string): Promise<Point
     console.log(`Starting granular indexing for task: ${taskId}`);
 
     try {
+        // DEBUG TRACE
+        const tracePath = path.join('d:/roo-extensions/debug_trace.txt');
+        try { writeFileSync(tracePath, `\n[${new Date().toISOString()}] START indexTask ${taskId}\n`, { flag: 'a' }); } catch(e) { console.error('TRACE WRITE FAILED', e); }
+
         await ensureCollectionExists();
+        try { writeFileSync(tracePath, `[${new Date().toISOString()}] Collection ensured\n`, { flag: 'a' }); } catch(e) {}
 
         const chunks = await extractChunksFromTask(taskId, taskPath);
+        try { writeFileSync(tracePath, `[${new Date().toISOString()}] Chunks extracted: ${chunks.length}\n`, { flag: 'a' }); } catch(e) {}
 
         if (chunks.length === 0) {
             console.log(`No chunks found for task ${taskId}. Skipping.`);
@@ -718,7 +780,7 @@ export async function indexTask(taskId: string, taskPath: string): Promise<Point
                     if(!subChunk.content || subChunk.content.trim() === '') continue;
 
                     console.log(`📝 Processing subchunk: ${subChunk.content.length} characters (estimated ~${Math.ceil(subChunk.content.length / 4)} tokens)`);
-                    
+
                     // 🛡️ PROTECTION ANTI-FUITE: Rate limiting
                     const now = Date.now();
                     operationTimestamps = operationTimestamps.filter(ts => now - ts < RATE_LIMIT_WINDOW);
@@ -731,8 +793,13 @@ export async function indexTask(taskId: string, taskPath: string): Promise<Point
                     // 🛡️ CACHE EMBEDDINGS pour éviter appels OpenAI répétés
                     const contentHash = crypto.createHash('sha256').update(subChunk.content).digest('hex');
                     let vector: number[];
-                    
+
                     const cached = embeddingCache.get(contentHash);
+                    try {
+                        const tracePath = path.join('d:/roo-extensions/debug_trace.txt');
+                        writeFileSync(tracePath, `[${new Date().toISOString()}] Processing subchunk ${subChunk.chunk_id}, cached: ${!!cached}\n`, { flag: 'a' });
+                    } catch(e) {}
+
                     if (cached && (now - cached.timestamp < EMBEDDING_CACHE_TTL)) {
                         console.log(`[CACHE] Embedding trouvé en cache pour subchunk ${subChunk.chunk_id}`);
                         vector = cached.vector;
@@ -743,7 +810,7 @@ export async function indexTask(taskId: string, taskPath: string): Promise<Point
                             input: subChunk.content,
                         });
                         vector = embeddingResponse.data[0].embedding;
-                       
+
                         // 🔧 FIX CRITIQUE: Validation améliorée avec logging détaillé
                         // Ajout de logs détaillés pour diagnostiquer les problèmes d'embedding
                         console.log(`[DEBUG] Embedding response reçu:`, {
@@ -768,7 +835,7 @@ export async function indexTask(taskId: string, taskPath: string): Promise<Point
                             // Qdrant pourrait accepter des dimensions variables ou on ajustera plus tard
                             console.log(`[INFO] Tentative d'indexation avec dimension ${vector.length} pour chunk ${subChunk.chunk_id}`);
                         }
-                       
+
                         // Stocker en cache
                         embeddingCache.set(contentHash, { vector, timestamp: now });
                         operationTimestamps.push(now);
@@ -789,11 +856,15 @@ export async function indexTask(taskId: string, taskPath: string): Promise<Point
          * ✅ CORRECTION P0 (2025-10-15) - Amélioration logging succès
          * Vérifier si des chunks valides ont été extraits avant de déclarer succès
          */
+        try {
+            const tracePath = path.join('d:/roo-extensions/debug_trace.txt');
+            writeFileSync(tracePath, `[${new Date().toISOString()}] Points to index: ${pointsToIndex.length}\n`, { flag: 'a' });
+        } catch(e) {}
+
         if (pointsToIndex.length > 0) {
             console.log(`📤 Préparation upsert Qdrant: ${pointsToIndex.length} points (de ${chunks.length} chunks originaux) pour tâche ${taskId}`);
-            
             const success = await safeQdrantUpsert(pointsToIndex);
-            
+
             if (success) {
                 console.log(`✅ Indexation réussie: ${pointsToIndex.length} points pour tâche ${taskId}`);
             } else {
@@ -815,7 +886,7 @@ export async function indexTask(taskId: string, taskPath: string): Promise<Point
 
     } catch (error) {
         console.error(`Failed to index task ${taskId}:`, error);
-        
+
         // 🚨 CORRECTION CRITIQUE: Ne plus re-throw l'erreur qui cause la boucle infernale
         // À la place, log l'erreur et retourner un résultat vide
         console.error(`🔴 ERREUR CRITIQUE INTERCEPTÉE pour tâche ${taskId}: Circuit breaker activé`);
@@ -846,11 +917,11 @@ export class TaskIndexer {
         if (!Array.isArray(vector)) {
             throw new Error(`Vector doit être un tableau, reçu: ${typeof vector}`);
         }
-        
+
         if (vector.length !== expectedDim) {
             throw new Error(`Dimension invalide: ${vector.length}, attendu: ${expectedDim}`);
         }
-        
+
         // Vérifier NaN/Infinity qui causent erreurs 400
         const hasInvalidValues = vector.some(v => !Number.isFinite(v));
         if (hasInvalidValues) {
@@ -870,7 +941,7 @@ export class TaskIndexer {
     }> {
         try {
             const collectionInfo = await this.qdrantClient.getCollection(COLLECTION_NAME);
-            
+
             const metrics = {
                 status: collectionInfo.status || 'unknown',
                 points_count: collectionInfo.points_count || 0,
@@ -880,7 +951,7 @@ export class TaskIndexer {
                     ? collectionInfo.optimizer_status
                     : (collectionInfo.optimizer_status as any)?.error || 'ok'
             };
-            
+
             // Log si status != 'green'
             if (metrics.status !== 'green') {
                 console.error('⚠️ Collection Qdrant unhealthy:', {
@@ -897,9 +968,9 @@ export class TaskIndexer {
                     indexed_vectors: metrics.indexed_vectors_count
                 });
             }
-            
+
             return metrics;
-            
+
         } catch (error: any) {
             console.error('✗ Échec health check collection:', error.message);
             throw error;
@@ -922,20 +993,20 @@ export class TaskIndexer {
         const batchSize = options?.batchSize || 100;
         const waitOnLast = options?.waitOnLast ?? true;
         const maxRetries = options?.maxRetries || 3;
-        
+
         const totalBatches = Math.ceil(points.length / batchSize);
-        
+
         for (let i = 0; i < points.length; i += batchSize) {
             const batch = points.slice(i, i + batchSize);
             const batchNumber = Math.floor(i / batchSize) + 1;
             const isLastBatch = i + batchSize >= points.length;
-            
+
             // wait=true seulement sur le dernier batch pour garantir indexation
             const shouldWait = isLastBatch && waitOnLast;
-            
+
             let retryCount = 0;
             let success = false;
-            
+
             while (!success && retryCount < maxRetries) {
                 try {
                     // Valider tous les vecteurs avant l'upsert
@@ -958,20 +1029,20 @@ export class TaskIndexer {
                             wait: shouldWait
                         });
                     });
-                    
+
                     success = true;
                     console.log(`✓ Batch ${batchNumber}/${totalBatches} inséré (${batch.length} points, wait=${shouldWait})`);
-                    
+
                     networkMetrics.qdrantCalls++;
                     networkMetrics.bytesTransferred += batch.length * 6144; // Approximation: 1536 dims * 4 bytes
-                    
+
                 } catch (error: any) {
                     // Ne pas retry sur HTTP 400 (erreur client)
                     if (error.response?.status === 400 || error.status === 400) {
                         console.error(`✗ HTTP 400 sur batch ${batchNumber} - Abandon:`, error.response?.data || error.message);
                         throw error; // Propagate l'erreur
                     }
-                    
+
                     // Retry sur autres erreurs (timeout, 500, etc.)
                     retryCount++;
                     if (retryCount < maxRetries) {
@@ -984,7 +1055,7 @@ export class TaskIndexer {
                     }
                 }
             }
-            
+
             // Pause entre batches pour éviter surcharge (sauf dernier)
             if (!isLastBatch) {
                 await new Promise(resolve => setTimeout(resolve, 100));
@@ -1030,22 +1101,22 @@ export class TaskIndexer {
         try {
             const { RooStorageDetector } = await import('../utils/roo-storage-detector.js');
             const locations = await RooStorageDetector.detectStorageLocations();
-            
+
             for (const location of locations) {
                 const taskPath = path.join(location, 'tasks', taskId);
                 try {
                     await fs.access(taskPath);
                     const points = await indexTask(taskId, taskPath);
-                    
+
                     // FIX ARCHITECTURAL: Mettre à jour le squelette ICI, pas dans index.ts
                     await this.updateSkeletonIndexTimestamp(taskId, location);
-                    
+
                     return points;
                 } catch {
                     // Tâche pas dans ce location, on continue
                 }
             }
-            
+
             throw new Error(`Task ${taskId} not found in any storage location`);
         } catch (error) {
             console.error(`Error indexing task ${taskId}:`, error);
@@ -1060,18 +1131,18 @@ export class TaskIndexer {
     async updateSkeletonIndexTimestamp(taskId: string, storageLocation: string): Promise<void> {
         try {
             const skeletonPath = path.join(storageLocation, '.skeletons', `${taskId}.json`);
-            
+
             // Lire le squelette existant
             const skeletonContent = await fs.readFile(skeletonPath, 'utf8');
             const skeleton = JSON.parse(skeletonContent);
-            
+
             // Mettre à jour le timestamp
             skeleton.metadata = skeleton.metadata || {};
             skeleton.metadata.qdrantIndexedAt = new Date().toISOString();
-            
+
             // Sauvegarder le squelette mis à jour
             await fs.writeFile(skeletonPath, JSON.stringify(skeleton, null, 2), 'utf8');
-            
+
             console.log(`✅ Squelette ${taskId} mis à jour avec timestamp d'indexation`);
         } catch (error) {
             console.warn(`⚠️ Impossible de mettre à jour le squelette ${taskId}:`, error);
@@ -1085,14 +1156,14 @@ export class TaskIndexer {
     async resetCollection(): Promise<void> {
         try {
             const qdrant = getQdrantClient();
-            
+
             try {
                 await qdrant.deleteCollection(COLLECTION_NAME);
                 console.log(`Collection ${COLLECTION_NAME} supprimée`);
             } catch (error) {
                 console.log(`Collection ${COLLECTION_NAME} n'existait pas, continuer...`);
             }
-            
+
             // 🚨 FIX CRITIQUE: Spécifier max_indexing_threads > 0 lors de la recréation
             await qdrant.createCollection(COLLECTION_NAME, {
                 vectors: {
@@ -1103,7 +1174,7 @@ export class TaskIndexer {
                     max_indexing_threads: 2  // ✅ DOIT être > 0 pour éviter deadlock avec wait=true
                 }
             });
-            
+
             console.log(`Collection ${COLLECTION_NAME} recréée avec succès`);
         } catch (error) {
             console.error('Erreur lors de la réinitialisation de la collection Qdrant:', error);
@@ -1119,7 +1190,7 @@ export class TaskIndexer {
             const qdrant = getQdrantClient();
             const result = await qdrant.getCollections();
             const collectionExists = result.collections.some((collection) => collection.name === COLLECTION_NAME);
-            
+
             if (collectionExists) {
                 const info = await qdrant.getCollection(COLLECTION_NAME);
                 return {
@@ -1156,7 +1227,7 @@ export class TaskIndexer {
                     exact: true
                 });
             }, `Qdrant count pour host_os=${hostOs}`);
-            
+
             networkMetrics.qdrantCalls++;
             networkMetrics.bytesTransferred += 1024; // Approximation pour l'appel count
             return result.count;

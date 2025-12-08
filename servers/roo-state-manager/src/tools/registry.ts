@@ -1,6 +1,6 @@
 /**
  * Registre central des outils MCP
- * 
+ *
  * Ce fichier centralise l'enregistrement de tous les outils du serveur MCP.
  * Il gère le mapping entre les noms d'outils et leurs handlers.
  */
@@ -265,15 +265,15 @@ export function registerCallToolHandler(
                 const timestamp = new Date().toISOString();
                 console.log('🔍 [STDOUT-SEARCH] console.log test - Heure:', timestamp);
                 console.error('🔍 [STDERR-CONFIRMED] console.error test - Heure:', timestamp);
-                
+
                 // Tests de tous les canaux possibles
                 process.stdout.write(`🔍 [STDOUT-SEARCH] process.stdout.write test - ${timestamp}\n`);
                 process.stderr.write(`🔍 [STDERR-CONFIRMED] process.stderr.write test - ${timestamp}\n`);
-                
+
                 // Test avec console.info et console.warn
                 console.info('🔍 [INFO-SEARCH] console.info test - Heure:', timestamp);
                 console.warn('🔍 [WARN-SEARCH] console.warn test - Heure:', timestamp);
-                
+
                 result = { content: [{ type: 'text', text: `INVESTIGATION DES CANAUX DE LOGS - ${timestamp} - Vérifiez tous les logs maintenant!` }] };
                 break;
            case toolExports.detectStorageTool.definition.name:
@@ -289,7 +289,7 @@ export function registerCallToolHandler(
                 result = await handleTouchMcpSettings();
                 break;
             case 'build_skeleton_cache':
-                result = await toolExports.handleBuildSkeletonCache(args as any, state.conversationCache);
+                result = await toolExports.handleBuildSkeletonCache(args as any, state.conversationCache, state);
                 break;
             case 'get_task_tree':
                 result = await toolExports.handleGetTaskTree(args as any, state.conversationCache, async () => { await ensureSkeletonCacheIsFresh(); });

@@ -10,6 +10,7 @@ import { RooStorageDetector } from '../../utils/roo-storage-detector.js';
 import { ConversationSkeleton } from '../../types/conversation.js';
 import { promises as fs, existsSync } from 'fs';
 import path from 'path';
+import { ServerState } from '../../services/state-manager.service.js';
 
 const SKELETON_CACHE_DIR_NAME = '.skeletons';
 
@@ -195,7 +196,8 @@ export const buildSkeletonCacheDefinition = {
  */
 export async function handleBuildSkeletonCache(
     args: BuildSkeletonCacheArgs,
-    conversationCache: Map<string, ConversationSkeleton>
+    conversationCache: Map<string, ConversationSkeleton>,
+    state?: ServerState // Optionnel pour rétrocompatibilité, mais recommandé pour l'indexation
 ): Promise<CallToolResult> {
         conversationCache.clear();
         const { force_rebuild = false, workspace_filter, task_ids } = args;
@@ -371,6 +373,13 @@ export async function handleBuildSkeletonCache(
                                         const skeleton: ConversationSkeleton = JSON.parse(skeletonContent);
                                         if (skeleton && skeleton.taskId) {
                                             conversationCache.set(skeleton.taskId, skeleton);
+
+                                            // 🚀 INDEXATION QDRANT: Ajouter à la queue si le state est disponible
+                                            if (state && state.isQdrantIndexingEnabled) {
+                                                state.qdrantIndexQueue.add(skeleton.taskId);
+                                                // console.log(`[INDEX-QUEUE] Added ${skeleton.taskId} to Qdrant indexing queue (from cache)`);
+                                            }
+
                                             // 🚀 PHASE 1: Alimenter l'index avec les préfixes de ce squelette existant
                                             if (skeleton.childTaskInstructionPrefixes && skeleton.childTaskInstructionPrefixes.length > 0) {
                                                 skeletonsWithPrefixes.push({ skeleton, prefixes: skeleton.childTaskInstructionPrefixes });
@@ -402,6 +411,13 @@ export async function handleBuildSkeletonCache(
                                     await fs.writeFile(skeletonPath, JSON.stringify(skeleton, null, 2));
                                     // BUG FIX: Utiliser skeleton.taskId et non conversationId
                                     conversationCache.set(skeleton.taskId, skeleton);
+
+                                    // 🚀 INDEXATION QDRANT: Ajouter à la queue si le state est disponible
+                                    if (state && state.isQdrantIndexingEnabled) {
+                                        state.qdrantIndexQueue.add(skeleton.taskId);
+                                        // console.log(`[INDEX-QUEUE] Added ${skeleton.taskId} to Qdrant indexing queue`);
+                                    }
+
                                     // 🚀 PHASE 1: Collecter les préfixes pour l'index RadixTree
                                     if (skeleton.childTaskInstructionPrefixes && skeleton.childTaskInstructionPrefixes.length > 0) {
                                         skeletonsWithPrefixes.push({ skeleton, prefixes: skeleton.childTaskInstructionPrefixes });

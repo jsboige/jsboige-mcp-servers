@@ -1,0 +1,6 @@
+{
+  "id": "test-task-123",
+  "title": "Test Task for Semantic Indexing",
+  "workspace": "test-workspace",
+  "parentTaskId": null
+}
