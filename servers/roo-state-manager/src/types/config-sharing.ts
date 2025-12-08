@@ -56,8 +56,31 @@ export interface ApplyConfigResult {
   errors?: string[];
 }
 
+export interface ConfigChange {
+  id: string;
+  path: string[];
+  type: 'add' | 'modify' | 'delete';
+  oldValue?: any;
+  newValue?: any;
+  severity: 'info' | 'warning' | 'critical';
+}
+
+export interface DiffResult {
+  timestamp: string;
+  sourceVersion: string;
+  targetVersion: string;
+  changes: ConfigChange[];
+  summary: {
+    added: number;
+    modified: number;
+    deleted: number;
+    conflicts: number;
+  };
+}
+
 export interface IConfigSharingService {
   collectConfig(options: CollectConfigOptions): Promise<CollectConfigResult>;
   publishConfig(options: PublishConfigOptions): Promise<PublishConfigResult>;
   applyConfig(options: ApplyConfigOptions): Promise<ApplyConfigResult>;
+  compareWithBaseline(config: any): Promise<DiffResult>;
 }

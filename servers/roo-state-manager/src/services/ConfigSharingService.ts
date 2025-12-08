@@ -3,6 +3,7 @@ import { join, dirname, basename } from 'path';
 import { existsSync, mkdirSync } from 'fs';
 import { createHash } from 'crypto';
 import { ConfigNormalizationService } from './ConfigNormalizationService.js';
+import { ConfigDiffService } from './ConfigDiffService.js';
 import {
   IConfigSharingService,
   CollectConfigOptions,
@@ -12,7 +13,8 @@ import {
   ApplyConfigOptions,
   ApplyConfigResult,
   ConfigManifest,
-  ConfigManifestFile
+  ConfigManifestFile,
+  DiffResult
 } from '../types/config-sharing.js';
 import { IInventoryCollector, IConfigService } from '../types/baseline.js';
 import { createLogger, Logger } from '../utils/logger.js';
@@ -20,6 +22,7 @@ import { createLogger, Logger } from '../utils/logger.js';
 export class ConfigSharingService implements IConfigSharingService {
   private logger: Logger;
   private normalizationService: ConfigNormalizationService;
+  private diffService: ConfigDiffService;
 
   constructor(
     private configService: IConfigService,
@@ -27,6 +30,7 @@ export class ConfigSharingService implements IConfigSharingService {
   ) {
     this.logger = createLogger('ConfigSharingService');
     this.normalizationService = new ConfigNormalizationService();
+    this.diffService = new ConfigDiffService();
   }
 
   /**
@@ -138,6 +142,31 @@ export class ConfigSharingService implements IConfigSharingService {
       filesApplied: 0,
       errors: ['Not implemented yet']
     };
+  }
+
+  /**
+   * Compare la configuration locale avec une baseline
+   */
+  public async compareWithBaseline(config: any): Promise<DiffResult> {
+    this.logger.info('Comparaison avec la baseline');
+
+    // 1. Charger la baseline (si elle existe)
+    // Pour l'instant, on simule une baseline vide ou on pourrait la charger depuis le shared state
+    // Dans une implémentation réelle, on récupérerait la dernière baseline publiée
+    const baseline = {};
+
+    // 2. Normaliser la config locale
+    // On suppose que 'config' est déjà un objet de configuration (ex: mcp_settings)
+    // Il faudrait idéalement savoir quel type de config on compare pour appliquer la bonne normalisation
+    // Pour simplifier ici, on normalise comme 'mcp_config' par défaut si structure correspond, sinon générique
+    
+    let normalizedConfig = config;
+    if (config.mcpServers) {
+        normalizedConfig = await this.normalizationService.normalize(config, 'mcp_config');
+    }
+
+    // 3. Appeler ConfigDiffService.compare
+    return this.diffService.compare(baseline, normalizedConfig);
   }
 
   // Méthodes privées de collecte

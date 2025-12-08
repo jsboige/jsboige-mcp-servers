@@ -1,26 +1,5 @@
 import { v4 as uuidv4 } from 'uuid';
-
-export interface ConfigChange {
-  id: string;
-  path: string[];
-  type: 'add' | 'modify' | 'delete';
-  oldValue?: any;
-  newValue?: any;
-  severity: 'info' | 'warning' | 'critical';
-}
-
-export interface DiffReport {
-  timestamp: string;
-  sourceVersion: string; // Version locale
-  targetVersion: string; // Version distante (baseline)
-  changes: ConfigChange[];
-  summary: {
-    added: number;
-    modified: number;
-    deleted: number;
-    conflicts: number; // Réservé pour future implémentation
-  };
-}
+import { ConfigChange, DiffResult } from '../types/config-sharing.js';
 
 export class ConfigDiffService {
   /**
@@ -30,7 +9,7 @@ export class ConfigDiffService {
    * @param sourceVersion Version de la source (ex: "local").
    * @param targetVersion Version de la cible (ex: "baseline-v1").
    */
-  public compare(baseline: any, current: any, sourceVersion: string = 'local', targetVersion: string = 'baseline'): DiffReport {
+  public compare(baseline: any, current: any, sourceVersion: string = 'local', targetVersion: string = 'baseline'): DiffResult {
     const changes: ConfigChange[] = [];
     this.deepCompare(baseline, current, [], changes);
 
