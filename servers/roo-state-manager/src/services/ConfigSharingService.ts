@@ -2,6 +2,7 @@ import { promises as fs } from 'fs';
 import { join, dirname, basename } from 'path';
 import { existsSync, mkdirSync } from 'fs';
 import { createHash } from 'crypto';
+import { ConfigNormalizationService } from './ConfigNormalizationService.js';
 import {
   IConfigSharingService,
   CollectConfigOptions,
@@ -18,12 +19,14 @@ import { createLogger, Logger } from '../utils/logger.js';
 
 export class ConfigSharingService implements IConfigSharingService {
   private logger: Logger;
+  private normalizationService: ConfigNormalizationService;
 
   constructor(
     private configService: IConfigService,
     private inventoryCollector: IInventoryCollector
   ) {
     this.logger = createLogger('ConfigSharingService');
+    this.normalizationService = new ConfigNormalizationService();
   }
 
   /**
@@ -163,7 +166,13 @@ export class ConfigSharingService implements IConfigSharingService {
           const srcPath = join(rooModesPath, entry);
           const destPath = join(modesDir, entry);
           
-          await fs.copyFile(srcPath, destPath);
+          // Lecture et normalisation
+          const content = JSON.parse(await fs.readFile(srcPath, 'utf-8'));
+          const normalized = await this.normalizationService.normalize(content, 'mode_definition');
+          
+          // Écriture du fichier normalisé
+          await fs.writeFile(destPath, JSON.stringify(normalized, null, 2));
+          
           const hash = await this.calculateHash(destPath);
           const stats = await fs.stat(destPath);
           
@@ -200,7 +209,14 @@ export class ConfigSharingService implements IConfigSharingService {
 
     if (existsSync(mcpSettingsPath)) {
       const destPath = join(mcpDir, 'mcp_settings.json');
-      await fs.copyFile(mcpSettingsPath, destPath);
+      
+      // Lecture et normalisation
+      const content = JSON.parse(await fs.readFile(mcpSettingsPath, 'utf-8'));
+      const normalized = await this.normalizationService.normalize(content, 'mcp_config');
+      
+      // Écriture du fichier normalisé
+      await fs.writeFile(destPath, JSON.stringify(normalized, null, 2));
+
       const hash = await this.calculateHash(destPath);
       const stats = await fs.stat(destPath);
       
