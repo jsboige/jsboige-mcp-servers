@@ -14,7 +14,7 @@ const path = require('path');
 const os = require('os');
 
 // Simuler le serveur QuickFiles pour les tests unitaires
-const { QuickFilesServer } = require('../build/index.js');
+const { QuickFilesServer } = require('../build/index.cjs');
 
 // Chemin vers le dossier de test temporaire (utilise un vrai répertoire temporaire)
 const TEST_DIR = fsSync.mkdtempSync(path.join(os.tmpdir(), 'quickfiles-perf-'));

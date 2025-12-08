@@ -15,7 +15,7 @@ const path = require('path');
 const mockFs = require('mock-fs');
 
 // Simuler le serveur QuickFiles pour les tests unitaires
-const { QuickFilesServer } = require('../build/index.js');
+const { QuickFilesServer } = require('../build/index.cjs');
 
 // Obtenir le chemin du répertoire actuel
 const currentFilename = __filename;

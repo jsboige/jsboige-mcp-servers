@@ -9,7 +9,7 @@
  * @date 2025-10-30
  */
 
-export default {
+module.exports = {
   // Configuration CommonJS pour les fichiers TypeScript et JavaScript
   preset: 'ts-jest',
   
@@ -19,9 +19,9 @@ export default {
   // Pas de traitement spécial ESM - utiliser CommonJS partout
   // extensionsToTreatAsEsm: ['.ts'],
   
-  // Mapping des modules pour résoudre les imports .js vers .ts
+  // Mapping des modules pour les imports sans extension
   moduleNameMapper: {
-    '^(\\.{1,2}/.*)\\.js$': '$1',
+    '^../../build/(.*)$': '<rootDir>/build/$1.js',
   },
   
   // Configuration de transformation - TypeScript uniquement
@@ -39,7 +39,6 @@ export default {
   // Fichiers à exclure
   testPathIgnorePatterns: [
     '/node_modules/',
-    '/build/',
     '/dist/',
     '/legacy-tests/',
     '/test-temp/'
@@ -48,9 +47,12 @@ export default {
   // Configuration de la couverture de code
   collectCoverageFrom: [
     'src/**/*.ts',
+    'build/**/*.js',
     '!src/**/*.d.ts',
     '!src/**/*.test.ts',
-    '!src/**/types.ts'
+    '!src/**/types.ts',
+    '!build/**/*.d.ts',
+    '!build/**/*.test.js'
   ],
   
   // Seuils de couverture minimum

@@ -14,7 +14,7 @@ const path = require('path');
 const mockFs = require('mock-fs');
 
 // Simuler le serveur QuickFiles pour les tests unitaires
-const { QuickFilesServer } = require('../build/index.js');
+const { QuickFilesServer } = require('../build/index.cjs');
 
 // Chemin vers le dossier de test temporaire
 const TEST_DIR = path.join(path.dirname(__filename), '..', 'test-temp-errors');
