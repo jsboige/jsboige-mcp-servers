@@ -345,13 +345,13 @@ export class RooSyncService {
           const dashboardContent = readFileSync(dashboardPath, 'utf-8');
           const dashboard = JSON.parse(dashboardContent);
           console.log('[RooSyncService] Dashboard chargé avec succès depuis le fichier existant');
-          
+
           // S'assurer que le dashboard a bien la propriété machines
           if (!dashboard.machines) {
             console.log('[RooSyncService] Dashboard existant sans propriété machines, ajout de la machine courante');
             dashboard.machines = {};
           }
-          
+
           // S'assurer que la machine courante existe dans le dashboard
           if (!dashboard.machines[this.config.machineId]) {
             console.log(`[RooSyncService] Ajout de la machine ${this.config.machineId} au dashboard existant`);
@@ -362,7 +362,7 @@ export class RooSyncService {
               pendingDecisions: 0
             };
           }
-          
+
           return dashboard as RooSyncDashboard;
         } catch (error) {
           console.warn('[RooSyncService] Erreur lecture dashboard existant, recalcule depuis baseline:', error);
@@ -471,12 +471,12 @@ export class RooSyncService {
         const dashboardContent = readFileSync(dashboardPath, 'utf-8');
         const existingDashboard = JSON.parse(dashboardContent);
         console.log('[RooSyncService] Dashboard existant trouvé, vérification de la machine courante');
-        
+
         // S'assurer que la machine courante existe dans le dashboard
         if (!existingDashboard.machines) {
           existingDashboard.machines = {};
         }
-        
+
         if (!existingDashboard.machines[this.config.machineId]) {
           console.log(`[RooSyncService] Ajout de la machine ${this.config.machineId} au dashboard existant`);
           existingDashboard.machines[this.config.machineId] = {
@@ -486,7 +486,7 @@ export class RooSyncService {
             pendingDecisions: 0
           };
         }
-        
+
         return existingDashboard as RooSyncDashboard;
       } catch (error) {
         console.warn('[RooSyncService] Erreur lecture dashboard existant, fallback sur calcul:', error);
@@ -591,14 +591,14 @@ export class RooSyncService {
     console.log('[RooSyncService] getStatus - dashboard reçu:', JSON.stringify(dashboard, null, 2));
     console.log('[RooSyncService] getStatus - machineId recherché:', this.config.machineId);
     console.log('[RooSyncService] getStatus - dashboard.machines:', dashboard?.machines);
-    
+
     if (!dashboard || !dashboard.machines) {
       throw new RooSyncServiceError(
         `Dashboard invalide ou sans propriété machines`,
         'INVALID_DASHBOARD'
       );
     }
-    
+
     const machineInfo = dashboard.machines[this.config.machineId];
 
     if (!machineInfo) {
@@ -615,7 +615,7 @@ export class RooSyncService {
       pendingDecisions: machineInfo.pendingDecisions,
       diffsCount: machineInfo.diffsCount
     };
-    
+
     console.log('[RooSyncService] getStatus - résultat à retourner:', JSON.stringify(result, null, 2));
     return result;
   }
@@ -876,8 +876,8 @@ export class RooSyncService {
   /**
    * Approuve une décision dans sync-roadmap.md
    *
-   * Remplace `- [ ] **Approuver & Fusionner**` par `- [x] **Approuver & Fusionner**`
-   * pour la décision spécifiée.
+   * Met à jour le statut à 'approved' pour la décision spécifiée.
+   * Supporte l'ancien format (checkbox) et le nouveau format (champ Statut).
    *
    * @param decisionId ID de la décision
    */
@@ -885,28 +885,61 @@ export class RooSyncService {
     const roadmapPath = this.getRooSyncFilePath('sync-roadmap.md');
     let content = await fs.readFile(roadmapPath, 'utf-8');
 
-    // Trouver le bloc de décision
-    const decisionBlockRegex = new RegExp(
+    // 1. Essayer le nouveau format (**ID:** `id` ... **Statut:** pending)
+    const newFormatRegex = new RegExp(
+      `(<!-- DECISION_BLOCK_START -->[\\s\\S]*?\\*\\*ID:\\*\\*\\s*\`${decisionId}\`[\\s\\S]*?)<!-- DECISION_BLOCK_END -->`,
+      'm'
+    );
+
+    const newMatch = newFormatRegex.exec(content);
+    if (newMatch) {
+      let block = newMatch[1];
+      // Vérifier si déjà approuvé
+      if (block.includes('**Statut:** approved')) {
+        return; // Déjà approuvé, rien à faire
+      }
+
+      // Mettre à jour le statut
+      if (block.includes('**Statut:**')) {
+        block = block.replace(/\*\*Statut:\*\*\s*\w+/, '**Statut:** approved');
+      } else {
+        // Ajouter le statut s'il manque (cas hybride)
+        block = block.replace(/(\*\*ID:\*\*.*)/, '$1\n**Statut:** approved');
+      }
+
+      // Ajouter métadonnées d'approbation si absentes
+      if (!block.includes('**Approuvé par:**')) {
+        const now = new Date().toISOString();
+        block += `\n**Approuvé le:** ${now}\n**Approuvé par:** ${this.config.machineId}`;
+      }
+
+      content = content.replace(newMatch[1], block);
+      await fs.writeFile(roadmapPath, content, 'utf-8');
+      return;
+    }
+
+    // 2. Essayer l'ancien format (checkbox)
+    const oldFormatRegex = new RegExp(
       `(<!-- DECISION_BLOCK_START -->.*?### DECISION ID: ${decisionId}.*?)- \\[ \\] \\*\\*Approuver & Fusionner\\*\\*(.*?<!-- DECISION_BLOCK_END -->)`,
       'gs'
     );
 
-    const match = decisionBlockRegex.exec(content);
-    if (!match) {
-      throw new RooSyncServiceError(
-        `Impossible de trouver la décision ${decisionId} dans sync-roadmap.md`,
-        'DECISION_NOT_FOUND_IN_ROADMAP'
+    const oldMatch = oldFormatRegex.exec(content);
+    if (oldMatch) {
+      // Remplacer la checkbox
+      content = content.replace(
+        oldFormatRegex,
+        '$1- [x] **Approuver & Fusionner**$2'
       );
+      await fs.writeFile(roadmapPath, content, 'utf-8');
+      return;
     }
 
-    // Remplacer la checkbox
-    content = content.replace(
-      decisionBlockRegex,
-      '$1- [x] **Approuver & Fusionner**$2'
+    // Si aucun format ne correspond
+    throw new RooSyncServiceError(
+      `Impossible de trouver la décision ${decisionId} dans sync-roadmap.md (format inconnu)`,
+      'DECISION_NOT_FOUND_IN_ROADMAP'
     );
-
-    // Réécrire le fichier
-    await fs.writeFile(roadmapPath, content, 'utf-8');
   }
 
   /**
