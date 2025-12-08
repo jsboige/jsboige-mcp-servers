@@ -127,11 +127,11 @@ interface FileWithExcerpts { path: string; excerpts?: LineRange[]; }
 interface FileDiff { search: string; replace: string; start_line?: number; }
 interface FileEdit { path: string; diffs: FileDiff[]; }
 interface MarkdownHeading { text: string; level: number; line: number; context?: string[]; }
-interface FileCopyOperation { 
-  source: string; 
-  destination: string; 
-  transform?: { pattern: string; replacement: string; }; 
-  conflict_strategy?: 'overwrite' | 'ignore' | 'rename'; 
+interface FileCopyOperation {
+  source: string;
+  destination: string;
+  transform?: { pattern: string; replacement: string; };
+  conflict_strategy?: 'overwrite' | 'ignore' | 'rename';
 }
 class QuickFilesServer {
   private server: McpServer;
@@ -191,7 +191,22 @@ class QuickFilesServer {
       console.error(`[QUICKFILES DEBUG] ${operation}:`, details);
     }
   }
-  
+
+
+  /**
+   * Récupère la configuration depuis les variables d'environnement
+   */
+  private getEnvConfig() {
+    const excludes = process.env.QUICKFILES_EXCLUDES
+      ? process.env.QUICKFILES_EXCLUDES.split(',').map(s => s.trim())
+      : ['node_modules', '.git', '.DS_Store', 'Thumbs.db'];
+
+    const maxDepth = process.env.QUICKFILES_MAX_DEPTH
+      ? parseInt(process.env.QUICKFILES_MAX_DEPTH, 10)
+      : undefined;
+
+    return { excludes, maxDepth };
+  }
 
   private registerTools(): void {
     this.server.registerTool(
@@ -292,12 +307,12 @@ class QuickFilesServer {
   private async handleReadMultipleFiles(request: any) {
     // Extraire et valider les arguments
     const args = request.params?.arguments || request;
-    
+
     // Validation manuelle pour gérer les cas null/undefined que Zod ne gère pas bien
     if (!args.paths || !Array.isArray(args.paths) || args.paths.length === 0) {
         throw new Error("Le paramètre 'paths' doit être un tableau non vide");
     }
-    
+
     // Validation Zod explicite mais en contournant la validation stricte pour les tests
     let validatedArgs;
     try {
@@ -306,7 +321,7 @@ class QuickFilesServer {
         // Si Zod échoue, utiliser les arguments bruts pour gérer les cas invalides
         validatedArgs = { ...args, show_line_numbers: args.show_line_numbers ?? true, max_lines_per_file: args.max_lines_per_file ?? 2000 };
     }
-    
+
     const {
         paths,
         show_line_numbers,
@@ -332,7 +347,7 @@ class QuickFilesServer {
                 });
                 continue;
             }
-            
+
             const rawFilePath = typeof file === 'string' ? file : file.path;
             const filePath = this.resolvePath(rawFilePath);
             const excerpts = typeof file === 'string' ? undefined : file.excerpts;
@@ -361,7 +376,7 @@ class QuickFilesServer {
                         const excerpt = excerpts[i];
                         const excerptLines = lines.slice(excerpt.start - 1, excerpt.end);
                         extractedLines.push(...excerptLines);
-                        
+
                         // Ajouter "..." entre les extraits multiples
                         if (i < excerpts.length - 1) {
                             extractedLines.push('...');
@@ -387,25 +402,25 @@ class QuickFilesServer {
                     ? lines.map((line, index) => {
                         // Calculer le numéro de ligne réel
                         let realLineNumber = index + 1;
-                        
+
                         // Si des extraits ont été utilisés, calculer le numéro de ligne original
                         if (excerpts && excerpts.length > 0) {
                             // Parcourir les extraits pour trouver celui qui contient cette ligne
                             let currentIndex = 0;
                             for (const excerpt of excerpts) {
                                 const excerptLength = excerpt.end - excerpt.start + 1;
-                                
+
                                 if (index < currentIndex + excerptLength) {
                                     // Cette ligne appartient à l'extrait actuel
                                     const positionInExcerpt = index - currentIndex;
                                     realLineNumber = excerpt.start + positionInExcerpt;
                                     break;
                                 }
-                                
+
                                 currentIndex += excerptLength;
                             }
                         }
-                        
+
                         return `${realLineNumber} | ${line}`;
                     }).join('\n')
                     : lines.join('\n'));
@@ -443,12 +458,12 @@ class QuickFilesServer {
 
         return { content: [{ type: 'text' as const, text: formattedResponse }] };
     } catch (error) {
-        return { 
-            content: [{ 
-                type: 'text' as const, 
-                text: `Erreur lors de la lecture des fichiers: ${(error as Error).message}` 
-            }], 
-            isError: true 
+        return {
+            content: [{
+                type: 'text' as const,
+                text: `Erreur lors de la lecture des fichiers: ${(error as Error).message}`
+            }],
+            isError: true
         };
     }
   }
@@ -459,10 +474,13 @@ class QuickFilesServer {
   private async handleListDirectoryContents(request: any) {
     // Extraire et valider les arguments
     const args = request.params?.arguments || request;
-    
+
     // Validation Zod explicite
     const validatedArgs = ListDirectoryContentsArgsSchema.parse(args);
-    
+
+    // Récupérer la config par défaut depuis l'environnement
+    const envConfig = this.getEnvConfig();
+
     // Implementation similar to original but with improved error handling
     const {
         paths,
@@ -480,9 +498,10 @@ class QuickFilesServer {
 
         for (const dir of paths) {
             const rawDirPath = typeof dir === 'string' ? dir : dir.path;
+            // Utiliser max_depth de l'env si non spécifié dans la requête
             const {
                 recursive = global_recursive,
-                max_depth = global_max_depth,
+                max_depth = global_max_depth ?? envConfig.maxDepth,
                 file_pattern = global_file_pattern,
                 sort_by = global_sort_by,
                 sort_order = global_sort_order,
@@ -539,12 +558,12 @@ class QuickFilesServer {
 
         return { content: [{ type: 'text' as const, text: output }] };
     } catch (error) {
-        return { 
-            content: [{ 
-                type: 'text' as const, 
-                text: `Erreur lors du listage des répertoires: ${(error as Error).message}` 
-            }], 
-            isError: true 
+        return {
+            content: [{
+                type: 'text' as const,
+                text: `Erreur lors du listage des répertoires: ${(error as Error).message}`
+            }],
+            isError: true
         };
     }
   }
@@ -555,10 +574,16 @@ class QuickFilesServer {
           return [];
       }
 
+      const envConfig = this.getEnvConfig();
       const entries = await fs.readdir(absolutePath, { withFileTypes: true });
       let files: any[] = [];
 
       for (const entry of entries) {
+          // Appliquer les exclusions globales
+          if (envConfig.excludes.some(exclude => entry.name === exclude || entry.name.match(new RegExp(`^${exclude.replace(/\*/g, '.*')}$`)))) {
+              continue;
+          }
+
           const fullPath = path.join(absolutePath, entry.name);
           const relativeName = path.join(originalPath, entry.name);
 
@@ -608,10 +633,10 @@ class QuickFilesServer {
   private async handleDeleteFiles(request: any) {
     // Extraire et valider les arguments
     const args = request.params?.arguments || request;
-    
+
     // Validation Zod explicite
     const validatedArgs = DeleteFilesArgsSchema.parse(args);
-    
+
     const { paths } = validatedArgs;
     try {
         const results = await Promise.all(
@@ -620,12 +645,12 @@ class QuickFilesServer {
                 try {
                     // Vérifier d'abord si le fichier existe
                     await fs.access(filePath);
-                    
+
                     // Pour les tests, vérifier si le nom du fichier contient "no-permission"
                     if (rawFilePath.includes('no-permission')) {
                         throw new Error('Permission refusée');
                     }
-                    
+
                     await fs.unlink(filePath);
                     return { path: rawFilePath, success: true };
                 } catch (error) {
@@ -657,35 +682,35 @@ class QuickFilesServer {
   private async handleEditMultipleFiles(request: any) {
     // Extraire et valider les arguments
     const args = request.params?.arguments || request;
-    
+
     // Validation Zod explicite
     const validatedArgs = EditMultipleFilesArgsSchema.parse(args);
-    
+
     const { files } = validatedArgs;
     this.debugLog('handleEditMultipleFiles', { filesCount: files.length });
-    
+
     try {
         const results = await Promise.all(
             files.map(async ({ path: rawFilePath, diffs }) => {
                 const filePath = this.resolvePath(rawFilePath);
                 this.debugLog('editFile', { filePath, diffsCount: diffs.length });
-                
+
                 try {
                     let content = await fs.readFile(filePath, 'utf-8');
                     let modificationsCount = 0;
                     const errors: string[] = [];
-                    
+
                     for (const diff of diffs) {
                         const { search, replace, start_line } = diff;
-                        
+
                         // Normaliser les sauts de ligne dans les chaînes
                         const normalizedSearch = this.normalizeLineBreaks(search);
                         const normalizedReplace = this.normalizeLineBreaks(replace);
                         const normalizedContent = this.normalizeLineBreaks(content);
-                        
+
                         let lines = normalizedContent.split('\n');
                         let found = false;
-                        
+
                         if (start_line) {
                            const targetIndex = start_line - 1;
                            if (lines[targetIndex] && lines[targetIndex].includes(normalizedSearch)) {
@@ -701,7 +726,7 @@ class QuickFilesServer {
                                  escapedSearch,
                                  filePath
                              });
-                             
+
                              const searchRegex = new RegExp(escapedSearch, 'g');
                              const newContent = normalizedContent.replace(searchRegex, (match) => {
                                  found = true;
@@ -764,10 +789,10 @@ class QuickFilesServer {
   private async handleExtractMarkdownStructure(request: any) {
     // Extraire et valider les arguments
     const args = request.params?.arguments || request;
-    
+
     // Validation Zod explicite
     const validatedArgs = ExtractMarkdownStructureArgsSchema.parse(args);
-    
+
     const { paths: filePaths, max_depth, include_context, context_lines } = validatedArgs;
     try {
         const allFilesHeadings = await Promise.all(
@@ -830,10 +855,10 @@ class QuickFilesServer {
   private async handleCopyFiles(request: any) {
     // Extraire et valider les arguments
     const args = request.params?.arguments || request;
-    
+
     // Validation Zod explicite
     const validatedArgs = CopyFilesArgsSchema.parse(args);
-    
+
     const { operations } = validatedArgs;
     try {
         const results = await Promise.all(operations.map(op => this.processFileCopyOperation(op, 'copy')));
@@ -847,10 +872,10 @@ class QuickFilesServer {
   private async handleMoveFiles(request: any) {
     // Extraire et valider les arguments
     const args = request.params?.arguments || request;
-    
+
     // Validation Zod explicite
     const validatedArgs = MoveFilesArgsSchema.parse(args);
-    
+
     const { operations } = validatedArgs;
     try {
         const results = await Promise.all(operations.map(op => this.processFileCopyOperation(op, 'move')));
@@ -869,28 +894,28 @@ class QuickFilesServer {
       try {
           // Pour les tests avec mock-fs, nous devons implémenter notre propre glob
           let sourcePaths: string[] = [];
-          
+
           // Toujours utiliser notre implémentation manuelle pour compatibilité avec mock-fs
           if (source.includes('*')) {
               // Extraire le répertoire et le motif
               const lastSlashIndex = Math.max(source.lastIndexOf('/'), source.lastIndexOf(path.sep));
               const dir = lastSlashIndex >= 0 ? source.substring(0, lastSlashIndex) : '.';
               const pattern = lastSlashIndex >= 0 ? source.substring(lastSlashIndex + 1) : source;
-              
+
               try {
                   // Vérifier si dir est déjà un chemin absolu
                   const dirPath = path.isAbsolute(dir) ? dir : this.resolvePath(dir);
                   const entries = await fs.readdir(dirPath, { withFileTypes: true });
-                  
+
                   // Simple pattern matching pour * et les extensions
                   let regexPattern = pattern.replace(/\*/g, '.*');
                   const regex = new RegExp('^' + regexPattern + '$');
-                  
+
                   // Filtrer les entrées qui correspondent au motif
                   sourcePaths = entries
                       .filter(entry => entry.isFile() && regex.test(entry.name))
                       .map(entry => path.join(dirPath, entry.name));
-                      
+
               } catch (dirError) {
                   // Si le répertoire n'existe pas, sourcePaths reste vide
                   console.error('Erreur lors de la lecture du répertoire:', dirError);
@@ -904,7 +929,7 @@ class QuickFilesServer {
                   // Le fichier n'existe pas
               }
           }
-          
+
           if (sourcePaths.length === 0) {
               return { source, destination, success: false, error: `Aucun fichier ne correspond au motif: ${source}`, files: [] };
           }
@@ -931,7 +956,7 @@ class QuickFilesServer {
                       fileName = fileName.replace(new RegExp(transform.pattern), transform.replacement);
                   }
                   let destPath = isDestDir ? path.join(destination, fileName) : destination;
-                 
+
                   try {
                       let fileExists = false;
                       try { await fs.access(destPath); fileExists = true; } catch (e) { }
@@ -947,7 +972,7 @@ class QuickFilesServer {
                       }
                       if (mode === 'copy') await fs.copyFile(sourcePath, destPath);
                       else await fs.rename(sourcePath, destPath);
-                      
+
                       // Message spécifique selon la stratégie de conflit
                       let message = `Fichier ${mode === 'copy' ? 'copié' : 'déplacé'}`;
                       if (fileExists) {
@@ -957,7 +982,7 @@ class QuickFilesServer {
                               message = `Fichier copié avec succès`;
                           }
                       }
-                      
+
                       return { source: sourcePath, destination: destPath, success: true, message };
                   } catch (error) {
                       return { source: sourcePath, destination: destPath, success: false, error: (error as Error).message };
@@ -974,14 +999,14 @@ class QuickFilesServer {
       let output = `## Opération: ${operationName}\n`;
       let totalFiles = 0;
       let successCount = 0;
-      
+
       for (const result of results) {
           output += `### Source: ${result.source} -> Destination: ${result.destination}\n`;
-          
+
           // S'assurer que files est toujours un tableau
           const files = result.files || [];
           totalFiles += files.length;
-          
+
           if (files.length === 0) {
               if (result.error) {
                   output += `- ✗ Erreur: ${result.error}\n`;
@@ -1003,15 +1028,15 @@ class QuickFilesServer {
               });
           }
       }
-      
+
       output += `\n### Résumé\n`;
       output += `- Total des fichiers traités: ${totalFiles}\n`;
       output += `- Opérations réussies: ${successCount}\n`;
       output += `- Opérations échouées: ${totalFiles - successCount}\n`;
-      
+
       // Ajouter le texte attendu par les tests
       output += `\n${totalFiles} fichier(s) traité(s)\n`;
-      
+
       return output;
   }
 
@@ -1052,12 +1077,12 @@ class QuickFilesServer {
         const line = lines[i];
         // Reset regex lastIndex to avoid stateful behavior with global flag
         searchRegex.lastIndex = 0;
-        
+
         if (searchRegex.test(line)) {
           if (fileMatches.length >= options.maxResultsPerFile || totalMatches >= options.maxTotalResults) {
             break;
           }
-          
+
           const start = Math.max(0, i - options.contextLines);
           const end = Math.min(lines.length, i + options.contextLines + 1);
           const context = lines.slice(start, end);
@@ -1084,6 +1109,14 @@ class QuickFilesServer {
     }
   ): Promise<{ absolute: string; relative: string }[]> {
     const filesToSearch: { absolute: string; relative: string }[] = [];
+    const envConfig = this.getEnvConfig();
+
+    // Construire le pattern d'exclusion pour glob
+    const ignorePatterns = envConfig.excludes.map(ex =>
+      ex.includes('/') ? `**/${ex}` : `**/${ex}/**`
+    );
+    // Ajouter aussi les exclusions directes de fichiers/dossiers
+    ignorePatterns.push(...envConfig.excludes.map(ex => `**/${ex}`));
 
     for (const rawPath of rawPaths) {
       const resolvedPath = this.resolvePath(rawPath);
@@ -1102,11 +1135,12 @@ class QuickFilesServer {
             if (options.filePattern && !options.filePattern.includes('**')) {
               globPattern = `**/${options.filePattern}`;
             }
-            
+
             const matchedFiles = await glob(globPattern, {
               nodir: true,
               absolute: true,
-              cwd: resolvedPath
+              cwd: resolvedPath,
+              ignore: ignorePatterns // Appliquer les exclusions
             });
 
             for (const absFile of matchedFiles) {
@@ -1118,6 +1152,11 @@ class QuickFilesServer {
             // Non-recursive: only top-level files
             const entries = await fs.readdir(resolvedPath, { withFileTypes: true });
             for (const entry of entries) {
+              // Appliquer les exclusions
+              if (envConfig.excludes.some(exclude => entry.name === exclude || entry.name.match(new RegExp(`^${exclude.replace(/\*/g, '.*')}$`)))) {
+                  continue;
+              }
+
               if (entry.isFile()) {
                 // Check file_pattern if specified
                 if (options.filePattern) {
@@ -1153,7 +1192,7 @@ class QuickFilesServer {
     maxTotalResults: number
   ): string {
     let formattedResponse = `# Résultats de recherche pour: "${pattern}"\n\n`;
-    
+
     if (results.length === 0) {
       formattedResponse += `Aucun résultat trouvé.\n`;
     } else {
@@ -1180,7 +1219,7 @@ class QuickFilesServer {
       // Extraire et valider les arguments
       const args = request.params?.arguments || request;
       const validatedArgs = SearchInFilesArgsSchema.parse(args);
-      
+
       const {
         paths: rawPaths,
         pattern,
@@ -1195,7 +1234,7 @@ class QuickFilesServer {
 
       // Créer le regex de recherche
       const searchRegex = this.createSearchRegex(pattern, use_regex, case_sensitive);
-      
+
       // Collecter tous les fichiers à rechercher
       const filesToSearch = await this.collectFilesToSearch(rawPaths, {
         recursive,
@@ -1208,7 +1247,7 @@ class QuickFilesServer {
 
       for (const file of filesToSearch) {
         if (totalMatches >= max_total_results) break;
-        
+
         const searchResult = await this.searchInFile(
           file.absolute,
           file.relative,
@@ -1220,12 +1259,12 @@ class QuickFilesServer {
           },
           totalMatches
         );
-        
+
         // Ajouter les résultats seulement s'il y a des correspondances
         results.push({ path: file.relative, matches: searchResult.matches });
         totalMatches = searchResult.totalMatches;
       }
-      
+
       // Filtrer les fichiers avec des correspondances
       const filteredResults = results.filter(result => result.matches.length > 0);
 
@@ -1266,19 +1305,19 @@ class QuickFilesServer {
     if (!args.files && !args.paths) {
       throw new Error("Either 'files' or 'paths' must be provided");
     }
-    
+
     if (args.files && (!Array.isArray(args.files) || args.files.length === 0)) {
       throw new Error("'files' must be a non-empty array");
     }
-    
+
     if (args.paths && (!Array.isArray(args.paths) || args.paths.length === 0)) {
       throw new Error("'paths' must be a non-empty array");
     }
-    
+
     if (args.paths && (!args.search || !args.replace)) {
       throw new Error("'search' and 'replace' are required when using 'paths'");
     }
-    
+
     return {
       files: args.files,
       paths: args.paths,
@@ -1309,7 +1348,7 @@ class QuickFilesServer {
     if (!useRegex || groups.length === 0) {
       return replacement;
     }
-    
+
     let result = replacement;
     for (let i = 0; i < groups.length - 2; i++) { // -2 car les 2 derniers éléments sont l'offset et la chaîne complète
       result = result.replace(new RegExp(`\\$${i + 1}`, 'g'), groups[i] || '');
@@ -1332,7 +1371,7 @@ class QuickFilesServer {
     } = {}
   ): Promise<{ modified: boolean; diff: string; replacements?: number; warning?: string }> {
     const filePath = this.resolvePath(rawFilePath);
-    
+
     // 🔒 PROTECTION 1 : Validation préventive des patterns identiques
     if (searchPattern === replacement) {
       this.debugLog('identicalPatterns', {
@@ -1346,23 +1385,23 @@ class QuickFilesServer {
         replacements: 0
       };
     }
-    
+
     // 🔒 PROTECTION 2 : Validation des patterns vides
     if (!searchPattern || searchPattern.trim() === '') {
       throw new Error('Search pattern cannot be empty');
     }
-    
+
     // 🔒 PROTECTION 3 : Limites de sécurité
     const MAX_REPLACEMENTS = 10000; // Protection anti-boucle infinie
     const MAX_FILE_SIZE = 50 * 1024 * 1024; // 50MB max
-    
+
     // Vérifier si c'est un répertoire
     try {
       const stats = await fs.stat(filePath);
       if (stats.isDirectory()) {
         return { modified: false, diff: '', replacements: 0 }; // Ignorer les répertoires
       }
-      
+
       // 🔒 PROTECTION 4 : Taille de fichier maximale
       if (stats.size > MAX_FILE_SIZE) {
         throw new Error(`File too large: ${stats.size} bytes (max: ${MAX_FILE_SIZE})`);
@@ -1370,29 +1409,29 @@ class QuickFilesServer {
     } catch (error) {
       return { modified: false, diff: '', replacements: 0 }; // Le fichier n'existe pas, ignorer
     }
-    
+
     const useRegex = options.useRegex ?? true;
     const caseSensitive = options.caseSensitive ?? false;
     const preview = options.preview ?? false;
-    
+
     let content = await fs.readFile(filePath, 'utf-8');
     const originalContent = content;
     const preparedPattern = this.prepareSearchPattern(searchPattern, useRegex);
     const searchRegex = new RegExp(preparedPattern, caseSensitive ? 'g' : 'gi');
-    
+
     let totalReplacements = 0;
     let effectiveReplacements = 0; // 🎯 CORRECTION : Comptage EFFECTIF
-    
+
     // 🔒 PROTECTION 5 : Remplacement avec comptage correct
     const newContent = content.replace(searchRegex, (match, ...groups) => {
       totalReplacements++;
-      
+
       // 🎯 CORRECTION : Vérifier si le remplacement change réellement
       const actualReplacement = this.applyCaptureGroups(replacement, groups, useRegex);
-      
+
       if (match !== actualReplacement) {
         effectiveReplacements++;
-        
+
         // 🔒 PROTECTION 6 : Limite anti-boucle
         if (effectiveReplacements > MAX_REPLACEMENTS) {
           this.debugLog('tooManyReplacements', {
@@ -1402,41 +1441,41 @@ class QuickFilesServer {
           });
           throw new Error(`Too many replacements: ${effectiveReplacements} (max: ${MAX_REPLACEMENTS})`);
         }
-        
+
         return actualReplacement;
       } else {
         // Le remplacement est identique - ne pas compter
         return match;
       }
     });
-    
+
     // 🎯 CORRECTION : Vérification basée sur les remplacements EFFECTIFS
     const wasModified = (originalContent !== newContent) && (effectiveReplacements > 0);
-    
+
     if (wasModified) {
       const diff = this.generateDiff(content, newContent, rawFilePath) + '\n';
       if (!preview) {
         await fs.writeFile(filePath, newContent, 'utf-8');
       }
-      
+
       this.debugLog('fileModified', {
         filePath: rawFilePath,
         effectiveReplacements,
         totalMatches: totalReplacements
       });
-      
+
       return {
         modified: true,
         diff,
         replacements: effectiveReplacements
       };
     }
-    
+
     this.debugLog('noModificationsNeeded', {
       filePath: rawFilePath,
       totalMatches: totalReplacements
     });
-    
+
     return {
       modified: false,
       diff: '',
@@ -1450,25 +1489,25 @@ class QuickFilesServer {
   private async processSpecificFiles(files: any[], globalOptions: any): Promise<{ totalReplacements: number; diffs: string }> {
     let totalReplacements = 0;
     let diffs = '';
-    
+
     for (const file of files) {
       if (!file.path || !file.search || !file.replace) {
         continue;
       }
-      
+
       const fileOptions = {
         useRegex: file.use_regex !== undefined ? file.use_regex : globalOptions.use_regex,
         caseSensitive: file.case_sensitive !== undefined ? file.case_sensitive : globalOptions.case_sensitive,
         preview: file.preview !== undefined ? file.preview : globalOptions.preview
       };
-      
+
       const result = await this.replaceInFile(file.path, file.search, file.replace, fileOptions);
       if (result.modified) {
         totalReplacements++;
         diffs += result.diff;
       }
     }
-    
+
     return { totalReplacements, diffs };
   }
 
@@ -1483,13 +1522,13 @@ class QuickFilesServer {
   ): Promise<{ totalReplacements: number; diffs: string }> {
     let totalReplacements = 0;
     let diffs = '';
-    
+
     for (const searchPath of paths) {
       const resolvedPath = this.resolvePath(searchPath);
-      
+
       try {
         const stats = await fs.stat(resolvedPath);
-        
+
         if (stats.isFile()) {
           // Fichier unique
           const result = await this.replaceInFile(searchPath, search, replace, options);
@@ -1504,13 +1543,13 @@ class QuickFilesServer {
           if (options.file_pattern && !options.file_pattern.includes('**')) {
             globPattern = `**/${options.file_pattern}`;
           }
-          
+
           const matchedFiles = await glob(globPattern, {
             nodir: true,
             absolute: true,
             cwd: resolvedPath
           });
-          
+
           for (const absFile of matchedFiles) {
             const relFile = path.relative(resolvedPath, absFile);
             const displayPath = path.join(searchPath, relFile);
@@ -1526,7 +1565,7 @@ class QuickFilesServer {
         continue;
       }
     }
-    
+
     return { totalReplacements, diffs };
   }
 
@@ -1535,12 +1574,12 @@ class QuickFilesServer {
       // Extraire et valider les arguments
       const args = request.params?.arguments || request;
       const validatedArgs = this.validateSearchAndReplaceArgs(args);
-      
+
       const { files, paths, search, replace, use_regex, case_sensitive, file_pattern, recursive, preview } = validatedArgs;
-      
+
       let totalReplacements = 0;
       let diffs = '';
-      
+
       const options = {
         useRegex: use_regex,
         caseSensitive: case_sensitive,
@@ -1548,7 +1587,7 @@ class QuickFilesServer {
         recursive,
         preview
       };
-      
+
       if (files && Array.isArray(files)) {
         // Gérer le cas avec fichiers spécifiques
         const result = await this.processSpecificFiles(files, options);
@@ -1560,12 +1599,12 @@ class QuickFilesServer {
         totalReplacements += result.totalReplacements;
         diffs += result.diffs;
       }
-     
+
       // Déterminer si nous sommes en mode prévisualisation
       const isPreviewMode = files ?
         files.some((f: any) => f.preview) :
         preview;
-        
+
       let report = isPreviewMode ? `# Prévisualisation des modifications\n\n` : `# Modifications effectuées\n\n`;
       report += `Total de remplacements: ${totalReplacements}\n\n${diffs}`;
       return { content: [{ type: 'text' as const, text: report }] };
@@ -1581,10 +1620,10 @@ class QuickFilesServer {
   private async handleRestartMcpServers(request: any) {
     // Extraire et valider les arguments
     const args = request.params?.arguments || request;
-    
+
     // Validation Zod explicite
     const validatedArgs = RestartMcpServersArgsSchema.parse(args);
-    
+
     const { servers } = validatedArgs;
     // Détection automatique du chemin utilisateur en utilisant la variable d'environnement ou os.homedir()
     const userHome = process.env.USERPROFILE || process.env.HOME || os.homedir();
@@ -1596,21 +1635,21 @@ class QuickFilesServer {
         // Lire l'état actuel du fichier
         let settingsRaw = await fs.readFile(settingsPath, 'utf-8');
         let settings = JSON.parse(settingsRaw);
-        
+
         if (!settings.mcpServers) {
           throw new Error("La section 'mcpServers' est manquante dans le fichier de configuration.");
         }
-        
+
         if (settings.mcpServers[serverName]) {
             // Désactiver le serveur
             settings.mcpServers[serverName].enabled = false;
             await fs.writeFile(settingsPath, JSON.stringify(settings, null, 2), 'utf-8');
             await new Promise(resolve => setTimeout(resolve, 1000));
-            
+
             // ✅ FIX: Relire à nouveau avant de réactiver pour avoir l'état le plus récent
             settingsRaw = await fs.readFile(settingsPath, 'utf-8');
             settings = JSON.parse(settingsRaw);
-            
+
             // Réactiver le serveur
             settings.mcpServers[serverName].enabled = true;
             await fs.writeFile(settingsPath, JSON.stringify(settings, null, 2), 'utf-8');
