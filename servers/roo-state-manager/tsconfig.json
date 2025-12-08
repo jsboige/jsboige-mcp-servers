@@ -17,7 +17,8 @@
     "resolveJsonModule": true,
     "allowSyntheticDefaultImports": true,
     "isolatedModules": true,
-    "allowImportingTsExtensions": false,
+    "allowImportingTsExtensions": true,
+    "emitDeclarationOnly": true,
     "noEmit": false,
     "types": ["jest", "node"]
   },

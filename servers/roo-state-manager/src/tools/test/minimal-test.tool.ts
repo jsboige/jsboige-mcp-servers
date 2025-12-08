@@ -5,6 +5,7 @@ import { z } from 'zod';
  * Schéma pour les paramètres d'entrée du tool minimal_test_tool
  */
 export const MinimalTestToolSchema = z.object({
+    type: z.literal('object'),
     message: z.string().describe('Message de test personnalisé')
 });
 
@@ -19,7 +20,8 @@ export type MinimalTestToolArgs = z.infer<typeof MinimalTestToolSchema>;
 export const minimal_test_tool: Tool = {
     name: 'minimal_test_tool',
     description: 'Tool de test minimal pour vérifier le fonctionnement de base',
-    inputSchema: MinimalTestToolSchema,
+    type: 'object',
+    inputSchema: MinimalTestToolSchema as any,
     async execute(args: MinimalTestToolArgs) {
         console.log(`[minimal-test-tool] 🧪 Exécution du test minimal: ${args.message}`);
         
