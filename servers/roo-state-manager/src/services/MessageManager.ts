@@ -186,6 +186,12 @@ export class MessageManager {
   ): Promise<Message> {
     console.error('🚀 [MessageManager] Sending message from', from, 'to', to);
 
+    // CORRECTION ROOSYNC PHASE 3 : Validation anti-auto-messages
+    // Empêcher une machine d'envoyer des messages à elle-même
+    if (from === to) {
+      throw new Error(`Auto-message interdit : une machine (${from}) ne peut pas envoyer de message à elle-même (${to})`);
+    }
+
     const message: Message = {
       id: this.generateMessageId(),
       from,
