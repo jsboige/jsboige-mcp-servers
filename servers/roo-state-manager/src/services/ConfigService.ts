@@ -1,9 +1,9 @@
 /**
  * ConfigService - Service de gestion de la configuration
- * 
+ *
  * Service responsable de la gestion des configurations RooSync,
  * y compris les chemins, les paramètres et la configuration du service.
- * 
+ *
  * @module ConfigService
  * @version 2.1.0
  */
@@ -30,7 +30,7 @@ export class ConfigService implements IConfigService {
     // Déterminer le chemin de configuration
     this.configPath = configPath || this.findConfigPath();
     this.sharedStatePath = this.findSharedStatePath();
-    
+
     this.baselineServiceConfig = {
       baselinePath: join(this.sharedStatePath, 'sync-config.ref.json'),
       roadmapPath: join(this.sharedStatePath, 'sync-roadmap.md'),
@@ -62,7 +62,7 @@ export class ConfigService implements IConfigService {
       if (!existsSync(this.configPath)) {
         return {};
       }
-      
+
       const content = await fs.readFile(this.configPath, 'utf-8');
       return JSON.parse(content);
     } catch (error) {
@@ -93,7 +93,7 @@ export class ConfigService implements IConfigService {
       join(process.env.USERPROFILE || '', '.roo', 'config'),
       join(process.cwd(), 'roo-config'),
       join(_dirname, '../../../../roo-config'),
-      'C:/dev/roo-extensions/roo-config'
+      process.env.ROO_ROOT ? join(process.env.ROO_ROOT, 'roo-config') : join(process.cwd(), 'roo-config')
     ];
 
     for (const path of possiblePaths) {
@@ -107,7 +107,7 @@ export class ConfigService implements IConfigService {
     }
 
     // Retourner le chemin par défaut
-    return join(possiblePaths[3], 'settings.json');
+    return join(possiblePaths[1], 'settings.json');
   }
 
   /**
@@ -119,7 +119,7 @@ export class ConfigService implements IConfigService {
     const possiblePaths = [
       process.env.ROOSYNC_SHARED_PATH,  // Priorité 1: variable du .env
       process.env.SHARED_STATE_PATH,     // Priorité 2: compatibilité
-      'g:/Mon Drive/Synchronisation/RooSync/.shared-state', // Priorité 3: chemin par défaut connu
+      // 'g:/Mon Drive/Synchronisation/RooSync/.shared-state', // SUPPRIMÉ: Chemin en dur
       join(process.env.USERPROFILE || '', '.roo', '.shared-state'),
       join(process.cwd(), '.shared-state'),
       join(_dirname, '../../../../.shared-state')

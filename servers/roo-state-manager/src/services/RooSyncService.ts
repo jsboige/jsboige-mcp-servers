@@ -127,7 +127,8 @@ export class RooSyncService {
       // Écrire directement dans un fichier de log
       try {
         const fs = require('fs');
-        fs.appendFileSync('c:/dev/roo-extensions/debug-roosync-compare.log', logEntry);
+        const logPath = process.env.ROOSYNC_LOG_PATH || join(process.cwd(), 'debug-roosync-compare.log');
+        fs.appendFileSync(logPath, logEntry);
       } catch (e) {
         // Ignorer les erreurs de logging
       }
@@ -146,7 +147,7 @@ export class RooSyncService {
         enabled: cacheOptions?.enabled ?? true
       };
       this.powershellExecutor = new PowerShellExecutor({
-        roosyncBasePath: process.env.SHARED_STATE_PATH || join(process.env.ROO_HOME || 'd:/roo-extensions', 'RooSync')
+        roosyncBasePath: process.env.ROOSYNC_SHARED_PATH || process.env.SHARED_STATE_PATH || join(process.env.ROO_ROOT || process.cwd(), 'RooSync')
       });
       this.inventoryCollector = new InventoryCollector();
       this.diffDetector = new DiffDetector();
@@ -185,10 +186,10 @@ export class RooSyncService {
         errorStack: error instanceof Error ? error.stack : null,
         errorName: error instanceof Error ? error.name : null
       });
-      
+
       // S'assurer que l'instance n'est pas créée en cas d'erreur
       RooSyncService.instance = null;
-      
+
       throw error;
     }
   }
