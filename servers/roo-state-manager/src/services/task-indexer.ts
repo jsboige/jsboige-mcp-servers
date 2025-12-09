@@ -403,21 +403,6 @@ async function safeQdrantUpsert(points: PointStruct[]): Promise<boolean> {
                     // DUMP COMPLET DU PAYLOAD AVANT ENVOI
                     // console.error(`🔍 [safeQdrantUpsert] FULL PAYLOAD DUMP:`, JSON.stringify(sample.payload, null, 2));
 
-                    // DEBUG EXTRÊME: Écrire le payload dans un fichier
-                    try {
-                        // Utiliser un chemin absolu sûr dans le dossier temporaire ou workspace
-                        const dumpPath = path.join('d:/roo-extensions/debug_payload_dump.json');
-                        const vecLen = Array.isArray(sample.vector) ? sample.vector.length : 'NOT_ARRAY';
-                        const dumpData = {
-                            payload: sample.payload,
-                            vectorLength: vecLen,
-                            pointId: sample.id
-                        };
-                        writeFileSync(dumpPath, JSON.stringify(dumpData, null, 2));
-                        console.error(`🔥 DUMP ÉCRIT DANS: ${dumpPath}`);
-                    } catch (err: any) {
-                        console.error('❌ Erreur écriture dump:', err);
-                    }
 
                     // On laisse l'erreur pour arrêter le processus et voir le log
                     throw new Error(`DEBUG_PAYLOAD_DUMP attempted`);
@@ -754,15 +739,8 @@ export async function indexTask(taskId: string, taskPath: string): Promise<Point
     console.log(`Starting granular indexing for task: ${taskId}`);
 
     try {
-        // DEBUG TRACE
-        const tracePath = path.join('d:/roo-extensions/debug_trace.txt');
-        try { writeFileSync(tracePath, `\n[${new Date().toISOString()}] START indexTask ${taskId}\n`, { flag: 'a' }); } catch(e) { console.error('TRACE WRITE FAILED', e); }
-
         await ensureCollectionExists();
-        try { writeFileSync(tracePath, `[${new Date().toISOString()}] Collection ensured\n`, { flag: 'a' }); } catch(e) {}
-
         const chunks = await extractChunksFromTask(taskId, taskPath);
-        try { writeFileSync(tracePath, `[${new Date().toISOString()}] Chunks extracted: ${chunks.length}\n`, { flag: 'a' }); } catch(e) {}
 
         if (chunks.length === 0) {
             console.log(`No chunks found for task ${taskId}. Skipping.`);
@@ -795,10 +773,6 @@ export async function indexTask(taskId: string, taskPath: string): Promise<Point
                     let vector: number[];
 
                     const cached = embeddingCache.get(contentHash);
-                    try {
-                        const tracePath = path.join('d:/roo-extensions/debug_trace.txt');
-                        writeFileSync(tracePath, `[${new Date().toISOString()}] Processing subchunk ${subChunk.chunk_id}, cached: ${!!cached}\n`, { flag: 'a' });
-                    } catch(e) {}
 
                     if (cached && (now - cached.timestamp < EMBEDDING_CACHE_TTL)) {
                         console.log(`[CACHE] Embedding trouvé en cache pour subchunk ${subChunk.chunk_id}`);
@@ -856,11 +830,6 @@ export async function indexTask(taskId: string, taskPath: string): Promise<Point
          * ✅ CORRECTION P0 (2025-10-15) - Amélioration logging succès
          * Vérifier si des chunks valides ont été extraits avant de déclarer succès
          */
-        try {
-            const tracePath = path.join('d:/roo-extensions/debug_trace.txt');
-            writeFileSync(tracePath, `[${new Date().toISOString()}] Points to index: ${pointsToIndex.length}\n`, { flag: 'a' });
-        } catch(e) {}
-
         if (pointsToIndex.length > 0) {
             console.log(`📤 Préparation upsert Qdrant: ${pointsToIndex.length} points (de ${chunks.length} chunks originaux) pour tâche ${taskId}`);
             const success = await safeQdrantUpsert(pointsToIndex);
