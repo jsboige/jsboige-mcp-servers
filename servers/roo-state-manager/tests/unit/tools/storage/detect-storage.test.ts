@@ -1,9 +1,9 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { detectStorageTool } from '@/tools/storage/detect-storage.tool';
-import { RooStorageDetector } from '@/utils/roo-storage-detector';
+import { detectStorageTool } from '../../../../src/tools/storage/detect-storage.tool';
+import { RooStorageDetector } from '../../../../src/utils/roo-storage-detector';
 
 // Mock RooStorageDetector
-vi.mock('@/utils/roo-storage-detector');
+vi.mock('../../../../src/utils/roo-storage-detector');
 
 describe('detect_roo_storage tool', () => {
     beforeEach(() => {
@@ -25,7 +25,8 @@ describe('detect_roo_storage tool', () => {
             globalStoragePath: '/mock/path',
             tasksPath: '/mock/path/tasks',
             tasksFound: 10,
-            workspacesFound: 2
+            workspacesFound: 2,
+            locations: []
         };
 
         vi.mocked(RooStorageDetector.detectRooStorage).mockResolvedValue(mockResult);

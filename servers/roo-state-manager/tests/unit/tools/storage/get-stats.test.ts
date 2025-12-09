@@ -1,9 +1,9 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { getStorageStatsTool } from '@/tools/storage/get-stats.tool';
-import { RooStorageDetector } from '@/utils/roo-storage-detector';
+import { getStorageStatsTool } from '../../../../src/tools/storage/get-stats.tool';
+import { RooStorageDetector } from '../../../../src/utils/roo-storage-detector';
 
 // Mock RooStorageDetector
-vi.mock('@/utils/roo-storage-detector');
+vi.mock('../../../../src/utils/roo-storage-detector');
 
 describe('get_storage_stats tool', () => {
     beforeEach(() => {
@@ -24,12 +24,13 @@ describe('get_storage_stats tool', () => {
         const mockStats = {
             totalConversations: 100,
             totalSize: 1024000,
-            lastUpdate: '2023-01-01T00:00:00Z'
+            lastUpdate: '2023-01-01T00:00:00Z',
+            totalLocations: 2
         };
 
         const mockBreakdown = {
-            '/workspace/a': { count: 60, size: 600000 },
-            '/workspace/b': { count: 40, size: 424000 }
+            '/workspace/a': { count: 60, totalSize: 600000, lastActivity: '' },
+            '/workspace/b': { count: 40, totalSize: 424000, lastActivity: '' }
         };
 
         vi.mocked(RooStorageDetector.getStorageStats).mockResolvedValue(mockStats);

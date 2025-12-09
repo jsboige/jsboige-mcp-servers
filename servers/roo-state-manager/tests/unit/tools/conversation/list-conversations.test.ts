@@ -1,7 +1,7 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { listConversationsTool } from '@/tools/conversation/list-conversations.tool';
-import { ConversationSkeleton } from '@/types/conversation';
-import { normalizePath } from '@/utils/path-normalizer';
+import { listConversationsTool } from '../../../../src/tools/conversation/list-conversations.tool';
+import { ConversationSkeleton } from '../../../../src/types/conversation';
+import { normalizePath } from '../../../../src/utils/path-normalizer';
 import { promises as fs } from 'fs';
 import path from 'path';
 import os from 'os';
@@ -25,6 +25,7 @@ describe('list_conversations tool', () => {
         // Setup mock data
         const task1: ConversationSkeleton = {
             taskId: 'task-1',
+            sequence: [],
             metadata: {
                 lastActivity: '2023-01-02T00:00:00Z',
                 messageCount: 10,
@@ -37,6 +38,7 @@ describe('list_conversations tool', () => {
         
         const task2: ConversationSkeleton = {
             taskId: 'task-2',
+            sequence: [],
             metadata: {
                 lastActivity: '2023-01-01T00:00:00Z',
                 messageCount: 5,

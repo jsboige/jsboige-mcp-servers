@@ -1,10 +1,10 @@
 import { describe, it, expect, vi, beforeEach, Mock } from 'vitest';
-import { getTaskTreeTool, handleGetTaskTree } from '@/tools/task/get-tree.tool';
-import { ConversationSkeleton } from '@/types/conversation';
-import { globalTaskInstructionIndex } from '@/utils/task-instruction-index';
+import { getTaskTreeTool, handleGetTaskTree } from '../../../../src/tools/task/get-tree.tool';
+import { ConversationSkeleton } from '../../../../src/types/conversation';
+import { globalTaskInstructionIndex } from '../../../../src/utils/task-instruction-index';
 
 // Mock globalTaskInstructionIndex
-vi.mock('@/utils/task-instruction-index', () => ({
+vi.mock('../../../../src/utils/task-instruction-index', () => ({
     globalTaskInstructionIndex: {
         getStats: vi.fn().mockReturnValue({ totalInstructions: 0 }),
         addInstruction: vi.fn(),
@@ -24,6 +24,7 @@ describe('get_task_tree tool', () => {
         // Setup mock data
         const rootTask: ConversationSkeleton = {
             taskId: 'root-task',
+            sequence: [],
             metadata: {
                 title: 'Root Task',
                 createdAt: '2023-01-01T00:00:00Z',
@@ -37,6 +38,7 @@ describe('get_task_tree tool', () => {
         const childTask: ConversationSkeleton = {
             taskId: 'child-task',
             parentTaskId: 'root-task',
+            sequence: [],
             metadata: {
                 title: 'Child Task',
                 createdAt: '2023-01-02T00:00:00Z',
