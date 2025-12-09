@@ -10,7 +10,9 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
 // Charger les variables d'environnement pour les tests E2E
-dotenv.config({ path: path.join(__dirname, '../../.env') });
+const envPath = path.join(__dirname, '../../.env');
+// console.log('Loading .env from:', envPath); // DEBUG
+dotenv.config({ path: envPath });
 
 // Tests E2E avec les vraies clés du .env
 describe('E2E Tests with Real Environment', () => {
@@ -88,7 +90,8 @@ describe('E2E Tests with Real Environment', () => {
     describe('Environment Configuration', () => {
         itE2E('should have all required environment variables', () => {
             expect(process.env.OPENAI_API_KEY).toBeDefined();
-            expect(process.env.OPENAI_MODEL_ID).toBeDefined();
+            // Accepter OPENAI_MODEL_ID ou OPENAI_CHAT_MODEL_ID
+            expect(process.env.OPENAI_MODEL_ID || process.env.OPENAI_CHAT_MODEL_ID).toBeDefined();
             expect(process.env.QDRANT_URL).toBeDefined();
             expect(process.env.QDRANT_API_KEY).toBeDefined();
             expect(process.env.QDRANT_COLLECTION_NAME).toBeDefined();

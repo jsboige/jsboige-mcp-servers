@@ -5,16 +5,18 @@ import { BaselineService } from '../../../src/services/BaselineService';
 
 // Mock fs module
 vi.mock('fs', async () => {
+  const actual = await vi.importActual<typeof import('fs')>('fs');
   return {
+    ...actual,
+    existsSync: vi.fn(),
+    copyFileSync: vi.fn(),
     promises: {
       readFile: vi.fn(),
       writeFile: vi.fn(),
       mkdir: vi.fn(),
       access: vi.fn(),
       stat: vi.fn()
-    },
-    existsSync: vi.fn(),
-    copyFileSync: vi.fn()
+    }
   };
 });
 
@@ -27,7 +29,14 @@ describe('BaselineService', () => {
   const testSharedStatePath = path.join(process.cwd(), 'test-shared-state');
 
   beforeEach(() => {
+    // Reset mocks
     vi.clearAllMocks();
+
+    // Setup default fs mocks
+    (fs.readFile as any).mockResolvedValue('{}');
+    (fs.access as any).mockResolvedValue(undefined);
+    (fs.mkdir as any).mockResolvedValue(undefined);
+    (existsSync as any).mockReturnValue(true);
 
     // Mock des dépendances
     mockConfigService = {
@@ -107,7 +116,7 @@ describe('BaselineService', () => {
     vi.unstubAllEnvs();
     delete process.env.ROOSYNC_SHARED_PATH;
     delete process.env.SHARED_STATE_PATH;
-    
+
     // On doit mocker getSharedStatePath pour qu'il lance une erreur comme la vraie implémentation
     mockConfigService.getSharedStatePath.mockImplementation(() => {
         throw new Error("Configuration manquante : ROOSYNC_SHARED_PATH n'est pas définie.");
@@ -145,8 +154,9 @@ describe('BaselineService', () => {
       ]
     };
 
-    (existsSync as Mock).mockReturnValue(true);
-    (fs.readFile as Mock).mockResolvedValue(JSON.stringify(mockBaseline));
+    // Configuration du mock fs
+    (fs.readFile as any).mockResolvedValue(JSON.stringify(mockBaseline));
+    (existsSync as any).mockReturnValue(true);
 
     const result = await service.loadBaseline();
 
@@ -155,14 +165,14 @@ describe('BaselineService', () => {
   });
 
   it('should return null if baseline file does not exist', async () => {
-    (existsSync as Mock).mockReturnValue(false);
+    (fs.readFile as any).mockRejectedValue({ code: 'ENOENT', message: 'ENOENT: no such file or directory' });
+    (existsSync as any).mockReturnValue(false); // Important: simuler que le fichier n'existe pas pour que loadBaseline retourne null tôt
     const result = await service.loadBaseline();
     expect(result).toBeNull();
   });
 
   it('should throw error if baseline JSON is invalid', async () => {
-    (existsSync as Mock).mockReturnValue(true);
-    (fs.readFile as Mock).mockResolvedValue('invalid json');
+    (fs.readFile as any).mockResolvedValue('invalid json');
 
     await expect(service.loadBaseline()).rejects.toThrow();
   });
@@ -194,8 +204,7 @@ describe('BaselineService', () => {
       ]
     };
 
-    (existsSync as Mock).mockReturnValue(true);
-    (fs.readFile as Mock).mockResolvedValue(JSON.stringify(mockBaseline));
+    (fs.readFile as any).mockResolvedValue(JSON.stringify(mockBaseline));
 
     const result = await service.compareWithBaseline('test-machine');
 
@@ -230,8 +239,7 @@ describe('BaselineService', () => {
       ]
     };
 
-    (existsSync as Mock).mockReturnValue(true);
-    (fs.readFile as Mock).mockResolvedValue(JSON.stringify(mockBaseline));
+    (fs.readFile as any).mockResolvedValue(JSON.stringify(mockBaseline));
 
     const result = await service.compareWithBaseline('test-machine');
 
@@ -266,8 +274,7 @@ describe('BaselineService', () => {
       ]
     };
 
-    (existsSync as Mock).mockReturnValue(true);
-    (fs.readFile as Mock).mockResolvedValue(JSON.stringify(mockBaseline));
+    (fs.readFile as any).mockResolvedValue(JSON.stringify(mockBaseline));
 
     // On mock le diffDetector pour retourner des différences
     mockDiffDetector.compareBaselineWithMachine.mockResolvedValue([
@@ -297,8 +304,8 @@ describe('BaselineService', () => {
       generatedAt: new Date().toISOString()
     };
 
-    (existsSync as Mock).mockReturnValue(true);
-    (fs.readFile as Mock).mockResolvedValue(''); // Roadmap vide
+    // Mock fs pour addDecisionsToRoadmap
+    (fs.readFile as any).mockResolvedValue(''); // Roadmap vide
 
     const result = await service.createSyncDecisions(mockReport);
 
@@ -327,8 +334,7 @@ describe('BaselineService', () => {
       generatedAt: new Date().toISOString()
     };
 
-    (existsSync as Mock).mockReturnValue(true);
-    (fs.readFile as Mock).mockResolvedValue(''); // Roadmap vide
+    (fs.readFile as any).mockResolvedValue(''); // Roadmap vide
 
     const result = await service.createSyncDecisions(mockReport, 'CRITICAL');
 
@@ -381,9 +387,11 @@ describe('BaselineService', () => {
       }
     };
 
-    (existsSync as Mock).mockReturnValue(true);
-    (copyFileSync as Mock).mockImplementation(() => {});
-    (fs.writeFile as Mock).mockResolvedValue(undefined);
+    (fs.readFile as any).mockResolvedValue('{}');
+    (existsSync as any).mockReturnValue(true);
+
+    // Mock copyFileSync implementation
+    vi.mocked(copyFileSync).mockImplementation(() => {});
 
     const result = await service.updateBaseline(mockBaseline, { createBackup: true });
 

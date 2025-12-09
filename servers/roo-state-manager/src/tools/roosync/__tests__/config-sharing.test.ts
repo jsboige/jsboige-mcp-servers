@@ -1,7 +1,10 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { ConfigSharingService } from '../../../services/ConfigSharingService.js';
+// S'assurer que fs et fs/promises ne sont pas mockés pour ce test qui utilise le vrai FS
+vi.unmock('fs');
+vi.unmock('fs/promises');
 import { mkdtemp, mkdir, writeFile, readFile, rm, unlink } from 'fs/promises';
-import { join } from 'path';
+import { join, dirname } from 'path';
 import { tmpdir } from 'os';
 import { existsSync } from 'fs';
 
@@ -28,6 +31,11 @@ describe('ConfigSharingService', () => {
     await mkdir(sharedPath, { recursive: true });
     await mkdir(join(sharedPath, 'configs'), { recursive: true });
 
+    // Créer un répertoire source factice dans tempDir pour éviter de polluer le projet
+    const sourceModesDir = join(tempDir, 'source-modes');
+    await mkdir(sourceModesDir, { recursive: true });
+    await writeFile(join(sourceModesDir, 'test-mode.json'), JSON.stringify({ name: 'test' }));
+
     // Mock des services
     const mockConfigService = {
       getSharedStatePath: vi.fn().mockReturnValue(sharedPath),
@@ -35,28 +43,35 @@ describe('ConfigSharingService', () => {
     };
 
     const mockInventoryCollector = {
-      collectInventory: vi.fn()
+      collectInventory: vi.fn().mockResolvedValue({
+        paths: {
+          rooExtensions: dirname(sourceModesDir) // Pour que join(..., 'roo-modes') fonctionne, il faut ruser ou mocker différemment
+        }
+      })
     };
 
+    // On va plutôt mocker le chemin retourné par l'inventaire pour qu'il pointe vers notre dossier source
+    // ConfigSharingService fait: rooModesPath = join(inventory.paths.rooExtensions, 'roo-modes');
+    // Donc si on veut que rooModesPath = sourceModesDir, il faut que inventory.paths.rooExtensions soit le parent de sourceModesDir
+    // ET que sourceModesDir s'appelle 'roo-modes'.
+
+    const fakeRooExtensions = join(tempDir, 'fake-extensions');
+    const fakeRooModes = join(fakeRooExtensions, 'roo-modes');
+    await mkdir(fakeRooModes, { recursive: true });
+    await writeFile(join(fakeRooModes, 'test-mode.json'), JSON.stringify({ name: 'test' }));
+
+    mockInventoryCollector.collectInventory.mockResolvedValue({
+        paths: {
+            rooExtensions: fakeRooExtensions
+        }
+    });
+
     service = new ConfigSharingService(mockConfigService as any, mockInventoryCollector as any);
-    
-    // Créer des fichiers de config factices pour le test
-    // On simule que le workspace courant contient roo-modes
-    const modesDir = join(process.cwd(), 'roo-modes');
-    if (!existsSync(modesDir)) {
-        await mkdir(modesDir, { recursive: true });
-    }
-    await writeFile(join(modesDir, 'test-mode.json'), JSON.stringify({ name: 'test' }));
   });
 
   afterEach(async () => {
     // Nettoyage
     await rm(tempDir, { recursive: true, force: true });
-    // Nettoyage des fichiers factices
-    const modesDir = join(process.cwd(), 'roo-modes');
-    if (existsSync(join(modesDir, 'test-mode.json'))) {
-        await unlink(join(modesDir, 'test-mode.json'));
-    }
   });
 
   it('should collect configuration files', async () => {
@@ -70,11 +85,11 @@ describe('ConfigSharingService', () => {
     expect(result.manifest).toBeDefined();
     // L'auteur est pris de process.env.COMPUTERNAME
     expect(result.manifest.author).toBeDefined();
-    
+
     // Vérifier que le package a été créé
     const packageExists = existsSync(result.packagePath);
     expect(packageExists).toBe(true);
-    
+
     // Vérifier le manifeste
     const manifestPath = join(result.packagePath, 'manifest.json');
     const manifestContent = JSON.parse(await readFile(manifestPath, 'utf-8'));
@@ -87,11 +102,11 @@ describe('ConfigSharingService', () => {
       targets: ['modes'],
       dryRun: false
     });
-    
+
     // Ensuite publier
     const version = '1.0.0-test';
     const description = 'Test publication';
-    
+
     const result = await service.publishConfig({
       packagePath: collectResult.packagePath,
       version,
