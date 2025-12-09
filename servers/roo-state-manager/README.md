@@ -1469,10 +1469,11 @@ Les variables suivantes doivent être définies dans le fichier `.env` :
 
 #### ROOSYNC_SHARED_PATH
 - **Type :** Chemin absolu
-- **Requis :** Oui
+- **Requis :** **OBLIGATOIRE** (Pas de valeur par défaut)
 - **Description :** Chemin vers le répertoire Google Drive partagé contenant les états synchronisés
 - **Exemple Windows :** `G:/Mon Drive/Synchronisation/RooSync/.shared-state`
 - **Exemple Mac/Linux :** `~/Google Drive/Synchronisation/RooSync/.shared-state`
+- **Note :** Depuis la version 2.2.0, le chemin par défaut codé en dur a été supprimé. Vous DEVEZ définir cette variable.
 
 #### ROOSYNC_MACHINE_ID
 - **Type :** String (alphanumeric + tirets/underscores)

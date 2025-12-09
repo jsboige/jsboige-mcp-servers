@@ -1,23 +1,20 @@
-import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi, type Mock } from 'vitest';
 import path from 'path';
-import mock from 'mock-fs';
 import { promises as fs, existsSync, copyFileSync } from 'fs';
 import { BaselineService } from '../../../src/services/BaselineService';
 
-// Mock fs module de manière cohérente avec l'import utilisé
+// Mock fs module
 vi.mock('fs', async () => {
-  const actual = await vi.importActual('fs');
   return {
-    ...actual,
-    copyFileSync: vi.fn(),
-    // Mock cohérent avec l'import { promises as fs }
     promises: {
       readFile: vi.fn(),
       writeFile: vi.fn(),
       mkdir: vi.fn(),
       access: vi.fn(),
       stat: vi.fn()
-    }
+    },
+    existsSync: vi.fn(),
+    copyFileSync: vi.fn()
   };
 });
 
@@ -30,10 +27,7 @@ describe('BaselineService', () => {
   const testSharedStatePath = path.join(process.cwd(), 'test-shared-state');
 
   beforeEach(() => {
-    // Initialiser mock-fs
-    mock({
-      [testSharedStatePath]: {}
-    });
+    vi.clearAllMocks();
 
     // Mock des dépendances
     mockConfigService = {
@@ -94,7 +88,6 @@ describe('BaselineService', () => {
   });
 
   afterEach(() => {
-    mock.restore();
     vi.unstubAllEnvs();
   });
 
@@ -110,13 +103,19 @@ describe('BaselineService', () => {
     expect((service as any).roadmapPath).toBe(expectedRoadmapPath);
   });
 
-  it('should fallback to default when ROOSYNC_SHARED_PATH is not set', () => {
+  it('should throw error when ROOSYNC_SHARED_PATH is not set', () => {
     vi.unstubAllEnvs();
+    delete process.env.ROOSYNC_SHARED_PATH;
+    delete process.env.SHARED_STATE_PATH;
+    
+    // On doit mocker getSharedStatePath pour qu'il lance une erreur comme la vraie implémentation
+    mockConfigService.getSharedStatePath.mockImplementation(() => {
+        throw new Error("Configuration manquante : ROOSYNC_SHARED_PATH n'est pas définie.");
+    });
 
-    const fallbackService = new BaselineService(mockConfigService, mockInventoryCollector, mockDiffDetector);
-
-    expect((fallbackService as any).baselinePath).toBeDefined();
-    expect((fallbackService as any).roadmapPath).toBeDefined();
+    expect(() => {
+        new BaselineService(mockConfigService, mockInventoryCollector, mockDiffDetector);
+    }).toThrow("Configuration manquante");
   });
 
   it('should load baseline', async () => {
@@ -146,16 +145,9 @@ describe('BaselineService', () => {
       ]
     };
 
-    // Configuration du mock fs
-    const baselinePath = path.join(testSharedStatePath, 'sync-config.ref.json');
-    mock({
-      [testSharedStatePath]: {
-        'sync-config.ref.json': JSON.stringify(mockBaseline)
-      }
-    });
+    (existsSync as Mock).mockReturnValue(true);
+    (fs.readFile as Mock).mockResolvedValue(JSON.stringify(mockBaseline));
 
-    // loadBaseline transforme le résultat, donc on ne peut pas comparer directement avec mockBaseline
-    // On vérifie juste que ça ne plante pas et que ça retourne quelque chose
     const result = await service.loadBaseline();
 
     expect(result).toBeDefined();
@@ -163,17 +155,14 @@ describe('BaselineService', () => {
   });
 
   it('should return null if baseline file does not exist', async () => {
-    // mock-fs est vide par défaut pour ce test (reset dans beforeEach)
+    (existsSync as Mock).mockReturnValue(false);
     const result = await service.loadBaseline();
     expect(result).toBeNull();
   });
 
   it('should throw error if baseline JSON is invalid', async () => {
-    mock({
-      [testSharedStatePath]: {
-        'sync-config.ref.json': 'invalid json'
-      }
-    });
+    (existsSync as Mock).mockReturnValue(true);
+    (fs.readFile as Mock).mockResolvedValue('invalid json');
 
     await expect(service.loadBaseline()).rejects.toThrow();
   });
@@ -205,11 +194,8 @@ describe('BaselineService', () => {
       ]
     };
 
-    mock({
-      [testSharedStatePath]: {
-        'sync-config.ref.json': JSON.stringify(mockBaseline)
-      }
-    });
+    (existsSync as Mock).mockReturnValue(true);
+    (fs.readFile as Mock).mockResolvedValue(JSON.stringify(mockBaseline));
 
     const result = await service.compareWithBaseline('test-machine');
 
@@ -244,11 +230,8 @@ describe('BaselineService', () => {
       ]
     };
 
-    mock({
-      [testSharedStatePath]: {
-        'sync-config.ref.json': JSON.stringify(mockBaseline)
-      }
-    });
+    (existsSync as Mock).mockReturnValue(true);
+    (fs.readFile as Mock).mockResolvedValue(JSON.stringify(mockBaseline));
 
     const result = await service.compareWithBaseline('test-machine');
 
@@ -283,11 +266,8 @@ describe('BaselineService', () => {
       ]
     };
 
-    mock({
-      [testSharedStatePath]: {
-        'sync-config.ref.json': JSON.stringify(mockBaseline)
-      }
-    });
+    (existsSync as Mock).mockReturnValue(true);
+    (fs.readFile as Mock).mockResolvedValue(JSON.stringify(mockBaseline));
 
     // On mock le diffDetector pour retourner des différences
     mockDiffDetector.compareBaselineWithMachine.mockResolvedValue([
@@ -317,8 +297,8 @@ describe('BaselineService', () => {
       generatedAt: new Date().toISOString()
     };
 
-    // Mock fs pour addDecisionsToRoadmap
-    // mock-fs gère l'écriture
+    (existsSync as Mock).mockReturnValue(true);
+    (fs.readFile as Mock).mockResolvedValue(''); // Roadmap vide
 
     const result = await service.createSyncDecisions(mockReport);
 
@@ -346,6 +326,9 @@ describe('BaselineService', () => {
       summary: mockDifferences.summary,
       generatedAt: new Date().toISOString()
     };
+
+    (existsSync as Mock).mockReturnValue(true);
+    (fs.readFile as Mock).mockResolvedValue(''); // Roadmap vide
 
     const result = await service.createSyncDecisions(mockReport, 'CRITICAL');
 
@@ -398,14 +381,9 @@ describe('BaselineService', () => {
       }
     };
 
-    mock({
-      [testSharedStatePath]: {
-        'sync-config.ref.json': '{}'
-      }
-    });
-
-    // Mock copyFileSync implementation
-    vi.mocked(copyFileSync).mockImplementation(() => {});
+    (existsSync as Mock).mockReturnValue(true);
+    (copyFileSync as Mock).mockImplementation(() => {});
+    (fs.writeFile as Mock).mockResolvedValue(undefined);
 
     const result = await service.updateBaseline(mockBaseline, { createBackup: true });
 
