@@ -18,7 +18,13 @@ vi.mock('fs', () => ({
   writeFileSync: vi.fn(),
   mkdirSync: vi.fn(),
   rmSync: vi.fn(),
-  existsSync: vi.fn(() => true)
+  existsSync: vi.fn(() => true),
+  promises: {
+    readFile: vi.fn(),
+    writeFile: vi.fn(),
+    access: vi.fn(),
+    mkdir: vi.fn()
+  }
 }));
 
 describe('roosync_reject_decision', () => {
@@ -30,16 +36,23 @@ describe('roosync_reject_decision', () => {
     const path = await import('path');
     
     // Mock readFileSync pour retourner le contenu du roadmap
-    (fs.readFileSync as any) = vi.fn().mockImplementation((filePath: string) => {
+    const readFileMock = vi.fn().mockImplementation((filePath: string) => {
       if (filePath.includes('sync-roadmap.md')) {
         return roadmap;
       }
       return '';
     });
+    (fs.readFileSync as any) = readFileMock;
+    (fs.promises.readFile as any) = readFileMock; // Pour SyncDecisionManager
     
     // Mock writeFileSync pour capturer les écritures
-    (fs.writeFileSync as any) = vi.fn().mockImplementation(() => {});
+    const writeFileMock = vi.fn().mockImplementation(() => {});
+    (fs.writeFileSync as any) = writeFileMock;
+    (fs.promises.writeFile as any) = writeFileMock; // Pour SyncDecisionManager
     
+    // Mock access pour SyncDecisionManager
+    (fs.promises.access as any) = vi.fn().mockResolvedValue(undefined);
+
     // Mock mkdirSync et rmSync pour éviter les erreurs
     (fs.mkdirSync as any) = vi.fn().mockImplementation(() => {});
     (fs.rmSync as any) = vi.fn().mockImplementation(() => {});
