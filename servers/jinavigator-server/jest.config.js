@@ -1,10 +1,13 @@
 /**
  * Configuration Jest pour les tests du serveur JinaNavigator MCP
  */
-
-module.exports = {
+ 
+export default {
   // Utiliser ts-jest pour la transformation des fichiers TypeScript
   preset: 'ts-jest',
+  
+  // Extensions à considérer comme des modules
+  extensionsToTreatAsEsm: ['.ts', '.tsx'],
   
   // Environnement de test Node.js
   testEnvironment: 'node',
@@ -56,5 +59,15 @@ module.exports = {
   },
   
   // Afficher un résumé de la couverture après les tests
-  verbose: true
+  verbose: true,
+  
+  // Configuration pour les globals Jest
+  globals: {
+    'ts-jest': {
+      useESM: true
+    }
+  },
+  
+  // Setup pour les modules ES6
+  setupFilesAfterEnv: ['<rootDir>/jest.setup.js']
 };
