@@ -14,16 +14,16 @@ export class EditMultipleFilesTool {
   }
 
   async handle(request: any): Promise<{ content: Array<{ type: string; text: string }>; isError?: boolean }> {
-    // Extraire et valider les arguments
-    const args = request.params?.arguments || request;
-    
-    // Validation Zod explicite
-    const validatedArgs = EditMultipleFilesArgsSchema.parse(args);
-    
-    const { files } = validatedArgs;
-    this.utils.debugLog('handleEditMultipleFiles', { filesCount: files.length });
-    
     try {
+        // Extraire et valider les arguments
+        const args = request.params?.arguments || request;
+        
+        // Validation Zod explicite
+        const validatedArgs = EditMultipleFilesArgsSchema.parse(args);
+        
+        const { files } = validatedArgs;
+        this.utils.debugLog('handleEditMultipleFiles', { filesCount: files.length });
+    
         const results = await Promise.all(
             files.map(async ({ path: rawFilePath, diffs }) => {
                 const filePath = this.utils.resolvePath(rawFilePath);
@@ -53,15 +53,22 @@ export class EditMultipleFilesTool {
                                found = true;
                            }
                         } else {
-                             // Utiliser escapeRegex pour échapper les caractères spéciaux
-                             const escapedSearch = this.utils.escapeRegex(normalizedSearch);
-                             this.utils.debugLog('regexReplace', {
-                                 originalSearch: normalizedSearch,
-                                 escapedSearch,
-                                 filePath
-                             });
+                             let searchRegex: RegExp;
+                             
+                             if (diff.use_regex) {
+                                 // Utiliser la regex fournie directement
+                                 searchRegex = new RegExp(normalizedSearch, 'g');
+                             } else {
+                                 // Utiliser escapeRegex pour échapper les caractères spéciaux
+                                 const escapedSearch = this.utils.escapeRegex(normalizedSearch);
+                                 this.utils.debugLog('regexReplace', {
+                                     originalSearch: normalizedSearch,
+                                     escapedSearch,
+                                     filePath
+                                 });
+                                 searchRegex = new RegExp(escapedSearch, 'g');
+                             }
                               
-                             const searchRegex = new RegExp(escapedSearch, 'g');
                              const newContent = normalizedContent.replace(searchRegex, (match) => {
                                  found = true;
                                  return normalizedReplace;

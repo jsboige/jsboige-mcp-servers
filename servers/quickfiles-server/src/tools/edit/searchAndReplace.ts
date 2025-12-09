@@ -122,7 +122,7 @@ export class SearchAndReplaceTool {
       
       const result = await this.replaceInFile(file.path, file.search, file.replace, fileOptions);
       if (result.modified) {
-        totalReplacements++;
+        totalReplacements += result.replacements || 0;
         diffs += result.diff;
       }
     }
@@ -152,7 +152,7 @@ export class SearchAndReplaceTool {
           // Fichier unique
           const result = await this.replaceInFile(searchPath, search, replace, options);
           if (result.modified) {
-            totalReplacements++;
+            totalReplacements += result.replacements || 0;
             diffs += result.diff;
           }
         } else if (stats.isDirectory()) {
@@ -174,7 +174,7 @@ export class SearchAndReplaceTool {
             const displayPath = path.join(searchPath, relFile);
             const result = await this.replaceInFile(displayPath, search, replace, options);
             if (result.modified) {
-              totalReplacements++;
+              totalReplacements += result.replacements || 0;
               diffs += result.diff;
             }
           }

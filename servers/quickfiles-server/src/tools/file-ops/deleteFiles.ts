@@ -14,14 +14,15 @@ export class DeleteFilesTool {
   }
 
   async handle(request: any): Promise<{ content: Array<{ type: string; text: string }>; isError?: boolean }> {
-    // Extraire et valider les arguments
-    const args = request.params?.arguments || request;
-    
-    // Validation Zod explicite
-    const validatedArgs = DeleteFilesArgsSchema.parse(args);
-    
-    const { paths } = validatedArgs;
     try {
+      // Extraire et valider les arguments
+      const args = request.params?.arguments || request;
+      
+      // Validation Zod explicite
+      const validatedArgs = DeleteFilesArgsSchema.parse(args);
+      
+      const { paths } = validatedArgs;
+      
         const results = await Promise.all(
             paths.map(async (rawFilePath) => {
                 const filePath = this.utils.resolvePath(rawFilePath);

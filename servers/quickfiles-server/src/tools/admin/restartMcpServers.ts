@@ -22,7 +22,7 @@ export class RestartMcpServersTool {
       const { servers } = validatedArgs;
       
       // Chemin vers le fichier de paramètres MCP
-      const mcpSettingsPath = path.join(process.cwd(), 'mcp_settings.json');
+      const mcpSettingsPath = this.utils.resolvePath('mcp_settings.json');
       
       try {
         // Lire le fichier de paramètres actuel
@@ -48,7 +48,7 @@ export class RestartMcpServersTool {
             // Si le serveur a des watchPaths, toucher le premier fichier
             if (serverConfig.watchPaths && Array.isArray(serverConfig.watchPaths) && serverConfig.watchPaths.length > 0) {
               const watchPath = serverConfig.watchPaths[0];
-              const fullPath = path.resolve(process.cwd(), watchPath);
+              const fullPath = this.utils.resolvePath(watchPath);
               
               try {
                 // Créer le répertoire s'il n'existe pas

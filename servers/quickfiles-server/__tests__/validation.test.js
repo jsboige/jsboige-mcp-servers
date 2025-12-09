@@ -20,16 +20,16 @@ const { z } = require('zod');
 const schemasModule = require('../../build/validation/schemas');
 
 const {
-  ReadMultipleFilesSchema,
-  ListDirectoryContentsSchema,
-  EditMultipleFilesSchema,
-  SearchAndReplaceSchema,
-  DeleteFilesSchema,
-  CopyFilesSchema,
-  MoveFilesSchema,
-  ExtractMarkdownStructureSchema,
-  SearchInFilesSchema,
-  RestartMcpServersSchema
+  ReadMultipleFilesArgsSchema: ReadMultipleFilesSchema,
+  ListDirectoryContentsArgsSchema: ListDirectoryContentsSchema,
+  EditMultipleFilesArgsSchema: EditMultipleFilesSchema,
+  SearchAndReplaceArgsSchema: SearchAndReplaceSchema,
+  DeleteFilesArgsSchema: DeleteFilesSchema,
+  CopyFilesArgsSchema: CopyFilesSchema,
+  MoveFilesArgsSchema: MoveFilesSchema,
+  ExtractMarkdownStructureArgsSchema: ExtractMarkdownStructureSchema,
+  SearchInFilesArgsSchema: SearchInFilesSchema,
+  RestartMcpServersArgsSchema: RestartMcpServersSchema
 } = schemasModule;
 
 // Helper function pour utiliser safeParse de Zod

@@ -318,7 +318,8 @@ describe('QuickFiles Server - Opérations de fichiers avancées', () => {
         invalid_param: 'value'
       });
       
-      await expect(server.handleMoveFiles(request)).rejects.toThrow();
+      const response = await server.handleMoveFiles(request);
+      expect(response.isError).toBe(true);
     });
   });
 });
