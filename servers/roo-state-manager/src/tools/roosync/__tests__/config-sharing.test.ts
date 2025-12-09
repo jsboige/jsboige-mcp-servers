@@ -1,4 +1,7 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
+// S'assurer que fs/promises et fs ne sont pas mockés par un setup global
+vi.unmock('fs/promises');
+vi.unmock('fs');
 import { ConfigSharingService } from '../../../services/ConfigSharingService.js';
 import { mkdtemp, mkdir, writeFile, readFile, rm, unlink } from 'fs/promises';
 import { join } from 'path';
@@ -15,20 +18,29 @@ vi.mock('../../../services/RooSyncService.js', () => {
   };
 });
 
+
 describe('ConfigSharingService', () => {
   let service: ConfigSharingService;
-  let mockRooSyncService: any;
   let tempDir: string;
   let sharedPath: string;
 
   beforeEach(async () => {
     // Créer un environnement de test temporaire
-    tempDir = await mkdtemp(join(tmpdir(), 'roosync-test-'));
+    // Le mock de mkdtemp sera utilisé ici
+    tempDir = await mkdtemp('roosync-test-');
+    
+    // Vérifier que tempDir est bien défini
+    if (!tempDir) {
+        throw new Error('mkdtemp returned undefined');
+    }
+    
     sharedPath = join(tempDir, 'shared');
+    
+    // Utiliser les fonctions importées (qui sont soit mockées soit originales)
     await mkdir(sharedPath, { recursive: true });
     await mkdir(join(sharedPath, 'configs'), { recursive: true });
 
-    // Mock des services
+    // Mock des services injectés
     const mockConfigService = {
       getSharedStatePath: vi.fn().mockReturnValue(sharedPath),
       getBaselineServiceConfig: vi.fn()
@@ -43,19 +55,21 @@ describe('ConfigSharingService', () => {
     // Créer des fichiers de config factices pour le test
     // On simule que le workspace courant contient roo-modes
     const modesDir = join(process.cwd(), 'roo-modes');
-    if (!existsSync(modesDir)) {
-        await mkdir(modesDir, { recursive: true });
-    }
+    // Utiliser mkdir de fs/promises (unmocked) pour créer le dossier réel
+    await mkdir(modesDir, { recursive: true });
     await writeFile(join(modesDir, 'test-mode.json'), JSON.stringify({ name: 'test' }));
   });
 
   afterEach(async () => {
     // Nettoyage
-    await rm(tempDir, { recursive: true, force: true });
+    if (tempDir && existsSync(tempDir)) {
+        await rm(tempDir, { recursive: true, force: true });
+    }
     // Nettoyage des fichiers factices
     const modesDir = join(process.cwd(), 'roo-modes');
-    if (existsSync(join(modesDir, 'test-mode.json'))) {
-        await unlink(join(modesDir, 'test-mode.json'));
+    const testFile = join(modesDir, 'test-mode.json');
+    if (existsSync(testFile)) {
+        await unlink(testFile);
     }
   });
 
@@ -68,7 +82,6 @@ describe('ConfigSharingService', () => {
     expect(result).toBeDefined();
     expect(result.filesCount).toBeGreaterThan(0);
     expect(result.manifest).toBeDefined();
-    // L'auteur est pris de process.env.COMPUTERNAME
     expect(result.manifest.author).toBeDefined();
     
     // Vérifier que le package a été créé
