@@ -1,11 +1,19 @@
-module.exports = {
+export default {
   presets: [
     [
       '@babel/preset-env',
       {
         targets: {
           node: 'current'
-        }
+        },
+        modules: 'commonjs'
+      }
+    ],
+    [
+      '@babel/preset-typescript',
+      {
+        allowDeclareFields: true,
+        onlyRemoveTypeImports: true
       }
     ]
   ]

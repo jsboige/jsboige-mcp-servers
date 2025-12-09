@@ -9,9 +9,9 @@
  * @version 1.0.0
  */
 
-import { JinaTool, ToolInput, ToolOutput, AccessJinaResourceInput, AccessResourceResult } from '../types/index.js';
-import { accessJinaResourceSchema } from '../schemas/index.js';
-import { convertUrlToMarkdown, handleJinaErrors } from '../utils/index.js';
+import { JinaTool, ToolInput, ToolOutput, AccessJinaResourceInput, AccessResourceResult } from '../types/index';
+import { accessJinaResourceSchema } from '../schemas/index';
+import { convertUrlToMarkdown, handleJinaErrors } from '../utils/index';
 
 /**
  * Outil d'accès aux ressources via URI Jina
@@ -43,13 +43,13 @@ export const accessJinaResourceTool: JinaTool = {
       // Conversion de l'URL en Markdown
       const markdownContent = await convertUrlToMarkdown(url, start_line, end_line);
       
-      const result: AccessResourceResult = {
-        content: markdownContent,
-        contentType: 'text/markdown'
-      };
-      
       return {
-        result
+        content: [
+          {
+            type: 'text',
+            text: markdownContent
+          }
+        ]
       };
     } catch (error) {
       return {

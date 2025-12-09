@@ -9,9 +9,9 @@
  * @version 1.0.0
  */
 
-import { JinaTool, ToolInput, ToolOutput, ExtractMarkdownOutlineInput, OutlineResult } from '../types/index.js';
-import { extractMarkdownOutlineSchema } from '../schemas/index.js';
-import { convertUrlToMarkdown, handleJinaErrors } from '../utils/index.js';
+import { JinaTool, ToolInput, ToolOutput, ExtractMarkdownOutlineInput, OutlineResult } from '../types/index';
+import { extractMarkdownOutlineSchema } from '../schemas/index';
+import { convertUrlToMarkdown, handleJinaErrors } from '../utils/index';
 
 /**
  * Outil d'extraction du plan des titres Markdown
@@ -32,12 +32,26 @@ export const extractMarkdownOutlineTool: JinaTool = {
     try {
       const { urls, max_depth = 3 } = input as ExtractMarkdownOutlineInput;
       
+      if (!urls) {
+        throw new Error('urls is required');
+      }
+
+      if (!Array.isArray(urls)) {
+        throw new Error('urls must be an array');
+      }
+
       // Validation de la profondeur maximale
       const validatedMaxDepth = Math.min(Math.max(1, max_depth), 6); // Entre 1 et 6
       
       // Traitement de chaque URL en parallèle
       const results = await Promise.all(
         urls.map(async ({ url }) => {
+          if (!url) {
+             throw new Error('url is required');
+          }
+          if (typeof url !== 'string' || url.trim() === '') {
+             throw new Error('url must be a non-empty string');
+          }
           try {
             // Conversion de l'URL en Markdown
             const markdown = await convertUrlToMarkdown(url);
@@ -81,7 +95,7 @@ export const extractMarkdownOutlineTool: JinaTool = {
  * Note: Cette fonction est importée depuis utils/index.js mais nous devons
  * la réexporter ici pour éviter les dépendances circulaires
  */
-import { extractMarkdownOutline as extractMarkdownOutlineUtil } from '../utils/markdown-parser.js';
+import { extractMarkdownOutline as extractMarkdownOutlineUtil } from '../utils/markdown-parser';
 
 /**
  * Alias local pour la fonction d'extraction de plan

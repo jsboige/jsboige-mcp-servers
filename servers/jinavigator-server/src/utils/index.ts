@@ -9,7 +9,7 @@
  */
 
 // Export du client Jina
-export * from './jina-client.js';
+export * from './jina-client';
 
 // Export du parser Markdown
-export * from './markdown-parser.js';
+export * from './markdown-parser';

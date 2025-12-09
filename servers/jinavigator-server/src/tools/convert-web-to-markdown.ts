@@ -10,9 +10,9 @@
  */
 
 import axios from 'axios';
-import { JinaTool, ToolInput, ToolOutput, ConvertWebToMarkdownInput } from '../types/index.js';
-import { convertWebToMarkdownSchema } from '../schemas/index.js';
-import { convertUrlToMarkdown, handleJinaErrors } from '../utils/index.js';
+import { JinaTool, ToolInput, ToolOutput, ConvertWebToMarkdownInput } from '../types/index';
+import { convertWebToMarkdownSchema } from '../schemas/index';
+import { convertUrlToMarkdown, handleJinaErrors } from '../utils/index';
 
 /**
  * Outil de conversion de pages web en Markdown
@@ -34,7 +34,12 @@ export const convertWebToMarkdownTool: JinaTool = {
       
       // Retourne le contenu Markdown filtré
       return {
-        result: markdownContent
+        content: [
+          {
+            type: 'text',
+            text: markdownContent
+          }
+        ]
       };
     } catch (error) {
       // Gestion des erreurs

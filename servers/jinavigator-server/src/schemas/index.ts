@@ -8,4 +8,4 @@
  * @version 1.0.0
  */
 
-export * from './tool-schemas.js';
+export * from './tool-schemas';

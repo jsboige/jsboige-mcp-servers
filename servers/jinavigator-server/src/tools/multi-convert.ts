@@ -9,9 +9,9 @@
  * @version 1.0.0
  */
 
-import { JinaTool, ToolInput, ToolOutput, ConvertMultipleWebsToMarkdownInput, MultiConvertResult } from '../types/index.js';
-import { convertMultipleWebsToMarkdownSchema } from '../schemas/index.js';
-import { convertUrlToMarkdown, handleJinaErrors } from '../utils/index.js';
+import { JinaTool, ToolInput, ToolOutput, ConvertMultipleWebsToMarkdownInput, MultiConvertResult } from '../types/index';
+import { convertMultipleWebsToMarkdownSchema } from '../schemas/index';
+import { convertUrlToMarkdown, handleJinaErrors } from '../utils/index';
 
 /**
  * Outil de conversion multiple de pages web en Markdown
@@ -28,9 +28,23 @@ export const convertMultipleWebsToMarkdownTool: JinaTool = {
     try {
       const { urls } = input as ConvertMultipleWebsToMarkdownInput;
       
+      if (!urls) {
+        throw new Error('urls is required');
+      }
+
+      if (!Array.isArray(urls)) {
+        throw new Error('urls must be an array');
+      }
+
       // Traitement de chaque URL en parallèle
       const results = await Promise.all(
         urls.map(async ({ url, start_line, end_line }) => {
+          if (!url) {
+             throw new Error('url is required');
+          }
+          if (typeof url !== 'string' || url.trim() === '') {
+             throw new Error('url must be a non-empty string');
+          }
           try {
             const markdown = await convertUrlToMarkdown(url, start_line, end_line);
             const result: MultiConvertResult = {

@@ -23,20 +23,25 @@ import axios from 'axios';
  * @returns {Promise<string>} Contenu Markdown de la page web, éventuellement filtré
  * @throws {Error} En cas d'erreur lors de la conversion
  */
-export async function convertUrlToMarkdown(url: string, startLine?: number, endLine?: number): Promise<string> {
+export async function convertUrlToMarkdown(url: string, startLine?: number, endLine?: number, config?: any): Promise<string> {
   try {
     // Construction de l'URL Jina
     const jinaUrl = `https://r.jina.ai/${url}`;
     
-    // Appel à l'API Jina
-    const response = await axios.get(jinaUrl, {
+    // Préparation de la configuration Axios
+    const axiosConfig = {
       headers: {
-        'Accept': 'text/markdown'
-      }
-    });
+        'Accept': 'text/markdown',
+        ...(config?.headers || {})
+      },
+      timeout: config?.timeout
+    };
+
+    // Appel à l'API Jina
+    const response = await axios.get(jinaUrl, axiosConfig);
     
     // Récupération du contenu Markdown
-    let markdownContent = response.data;
+    let markdownContent = typeof response.data === 'string' ? response.data : String(response.data || '');
     
     // Filtrage du contenu si des bornes sont spécifiées
     if (startLine !== undefined || endLine !== undefined) {

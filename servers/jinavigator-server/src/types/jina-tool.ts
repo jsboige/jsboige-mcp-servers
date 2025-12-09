@@ -8,8 +8,8 @@
  * @version 1.0.0
  */
 
-import { ToolInput } from './tool-inputs.js';
-import { ToolOutput } from './tool-outputs.js';
+import { ToolInput } from './tool-inputs';
+import { ToolOutput } from './tool-outputs';
 
 /**
  * Interface pour les outils JinaNavigator

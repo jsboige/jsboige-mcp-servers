@@ -5,10 +5,10 @@
  * pour faciliter leur importation dans d'autres modules.
  */
 
-import { convertWebToMarkdownTool } from './convert-web-to-markdown.js';
-import { accessJinaResourceTool } from './access-jina-resource.js';
-import { convertMultipleWebsToMarkdownTool } from './multi-convert.js';
-import { extractMarkdownOutlineTool } from './extract-markdown-outline.js';
+import { convertWebToMarkdownTool } from './convert-web-to-markdown';
+import { accessJinaResourceTool } from './access-jina-resource';
+import { convertMultipleWebsToMarkdownTool } from './multi-convert';
+import { extractMarkdownOutlineTool } from './extract-markdown-outline';
 
 /**
  * Liste des outils JinaNavigator disponibles

@@ -9,10 +9,10 @@
  */
 
 // Export des types d'entrées
-export * from './tool-inputs.js';
+export * from './tool-inputs';
 
 // Export des types de sorties
-export * from './tool-outputs.js';
+export * from './tool-outputs';
 
 // Export du type d'outil
-export * from './jina-tool.js';
+export * from './jina-tool';

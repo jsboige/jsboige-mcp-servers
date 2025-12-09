@@ -8,7 +8,7 @@
  * @version 1.0.0
  */
 
-import { HeadingNode } from '../types/index.js';
+import { HeadingNode } from '../types/index';
 
 /**
  * Fonction utilitaire pour extraire le plan des titres d'un contenu Markdown
@@ -21,6 +21,9 @@ import { HeadingNode } from '../types/index.js';
  * @returns {Array<HeadingNode>} Structure hiérarchique des titres avec leur niveau, texte et numéro de ligne
  */
 export function extractMarkdownOutline(markdownContent: string, maxDepth: number = 3): Array<HeadingNode> {
+  if (!markdownContent) {
+    return [];
+  }
   const lines = markdownContent.split('\n');
   const flatHeadings: Array<HeadingNode> = [];
   

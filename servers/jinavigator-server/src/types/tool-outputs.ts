@@ -19,6 +19,10 @@
  * @property {any} [error.details] - Détails supplémentaires sur l'erreur
  */
 export interface ToolOutput {
+  content?: Array<{
+    type: string;
+    text: string;
+  }>;
   result?: any;
   error?: {
     message: string;
