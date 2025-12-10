@@ -46,13 +46,10 @@ module.exports = {
   
   // Configuration de la couverture de code
   collectCoverageFrom: [
-    'src/**/*.ts',
     'build/**/*.js',
-    '!src/**/*.d.ts',
-    '!src/**/*.test.ts',
-    '!src/**/types.ts',
     '!build/**/*.d.ts',
-    '!build/**/*.test.js'
+    '!build/**/*.test.js',
+    '!build/index.js'
   ],
   
   // Seuils de couverture minimum
