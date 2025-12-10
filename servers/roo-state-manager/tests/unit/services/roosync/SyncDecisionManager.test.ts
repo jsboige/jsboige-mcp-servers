@@ -12,7 +12,8 @@ vi.mock('fs', () => ({
         readFile: vi.fn(),
         writeFile: vi.fn(),
     },
-    readFileSync: vi.fn()
+    readFileSync: vi.fn(),
+    existsSync: vi.fn()
 }));
 
 vi.mock('../../../../src/services/PowerShellExecutor.js');
