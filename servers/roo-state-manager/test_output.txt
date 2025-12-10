@@ -1,0 +1,36 @@
+
+[1m[46m RUN [49m[22m [36mv3.2.4 [39m[90mc:/dev/roo-extensions/mcps/internal/servers/roo-state-manager[39m
+
+[90mstdout[2m | tests/integration/phase3-comprehensive.test.ts
+[22m[39m[dotenv@17.2.3] injecting env (0) from .env.test -- tip: 👥 sync secrets across teammates & machines: https://dotenvx.com/ops
+[dotenv@17.2.3] injecting env (10) from .env -- tip: 👥 sync secrets across teammates & machines: https://dotenvx.com/ops
+
+[90mstdout[2m | tests/integration/phase3-comprehensive.test.ts
+[22m[39m[dotenv@17.2.3] injecting env (0) from .env -- tip: ⚙️  suppress all logs with { quiet: true }
+
+ [31m❯[39m tests/integration/phase3-comprehensive.test.ts [2m([22m[2m3 tests[22m[2m | [22m[31m1 failed[39m[2m)[22m[32m 220[2mms[22m[39m
+   [32m✓[39m Phase 3 Comprehensive Integration[2m > [22mTraceSummaryService Integration[2m > [22mshould generate a summary from a task structure[32m 17[2mms[22m[39m
+[31m   [31m×[31m Phase 3 Comprehensive Integration[2m > [22mTaskIndexer Integration (Vector Search)[2m > [22mshould index a task and interact with Qdrant client[39m[32m 135[2mms[22m[39m
+[31m     → extractTaskData does not exist[39m
+   [32m✓[39m Phase 3 Comprehensive Integration[2m > [22mRooSyncService Full Workflow[2m > [22mshould detect changes and propose sync decisions[32m 62[2mms[22m[39m
+
+[31m⎯⎯⎯⎯⎯⎯⎯[39m[1m[41m Failed Tests 1 [49m[22m[31m⎯⎯⎯⎯⎯⎯⎯[39m
+
+[41m[1m FAIL [22m[49m tests/integration/phase3-comprehensive.test.ts[2m > [22mPhase 3 Comprehensive Integration[2m > [22mTaskIndexer Integration (Vector Search)[2m > [22mshould index a task and interact with Qdrant client
+[31m[1mError[22m: extractTaskData does not exist[39m
+[36m [2m❯[22m tests/integration/phase3-comprehensive.test.ts:[2m84:16[22m[39m
+    [90m 82| [39m
+    [90m 83| [39m            [90m// Mock the internal extraction to avoid FS dependency[39m
+    [90m 84| [39m            vi.spyOn(indexer as any, 'extractTaskData').mockResolvedVa…
+    [90m   | [39m               [31m^[39m
+    [90m 85| [39m            
+    [90m 86| [39m            [90m// Mock embedding generation[39m
+
+[31m[2m⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[1/1]⎯[22m[39m
+
+
+[2m Test Files [22m [1m[31m1 failed[39m[22m[90m (1)[39m
+[2m      Tests [22m [1m[31m1 failed[39m[22m[2m | [22m[1m[32m2 passed[39m[22m[90m (3)[39m
+[2m   Start at [22m 15:09:58
+[2m   Duration [22m 6.74s[2m (transform 3.86s, setup 226ms, collect 5.50s, tests 220ms, environment 1ms, prepare 282ms)[22m
+
