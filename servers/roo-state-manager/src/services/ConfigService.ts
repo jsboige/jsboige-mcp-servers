@@ -13,6 +13,7 @@ import { existsSync } from 'fs';
 import { join, dirname } from 'path';
 import { fileURLToPath } from 'url';
 import { IConfigService, BaselineServiceConfig } from '../types/baseline.js';
+import { getSharedStatePath } from '../utils/server-helpers.js';
 
 // Utiliser une approche compatible avec les tests
 // En environnement de test, nous utilisons process.cwd() comme fallback
@@ -114,28 +115,7 @@ export class ConfigService implements IConfigService {
    * Trouve le chemin du répertoire d'état partagé
    */
   private findSharedStatePath(): string {
-    // Chercher dans plusieurs emplacements possibles
-    // PRIORITÉ ABSOLUE : Variables d'environnement (pour tests et surcharge)
-    const possiblePaths = [
-      process.env.ROOSYNC_SHARED_PATH,  // Priorité 1: variable du .env
-      process.env.SHARED_STATE_PATH,     // Priorité 2: compatibilité
-      // 'g:/Mon Drive/Synchronisation/RooSync/.shared-state', // SUPPRIMÉ: Chemin en dur
-      join(process.env.USERPROFILE || '', '.roo', '.shared-state'),
-      join(process.cwd(), '.shared-state'),
-      join(_dirname, '../../../../.shared-state')
-    ].filter(Boolean);
-
-    for (const path of possiblePaths) {
-      try {
-        if (existsSync(path as string)) {
-          return path as string;
-        }
-      } catch {
-        continue;
-      }
-    }
-
-    // Retourner le chemin par défaut (le dernier chemin connu)
-    return possiblePaths[possiblePaths.length - 1] as string;
+    // Utiliser la fonction centralisée qui gère la priorité et lève une erreur si non configuré
+    return getSharedStatePath();
   }
 }

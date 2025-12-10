@@ -164,18 +164,23 @@ export async function handleGetTaskTree(
     console.log(`[get-task-tree] 📊 ${tasksWithoutParent.length} tâches sans parent, tentative radix tree...`);
 
     // 🎯 CORRECTION CRITIQUE : S'assurer que l'index est peuplé
-    const indexStats = globalTaskInstructionIndex.getStats();
-    if (indexStats.totalInstructions === 0 && skeletons.length > 0) {
-        console.log(`[get-task-tree] ⚠️ Index vide détecté, peuplement à la volée depuis le cache (${skeletons.length} squelettes)...`);
-        for (const s of skeletons) {
-            if (s.childTaskInstructionPrefixes && s.childTaskInstructionPrefixes.length > 0) {
-                for (const prefix of s.childTaskInstructionPrefixes) {
-                    globalTaskInstructionIndex.addInstruction(s.taskId, prefix);
+    // Vérifier si globalTaskInstructionIndex est défini et a la méthode getStats
+    if (globalTaskInstructionIndex && typeof globalTaskInstructionIndex.getStats === 'function') {
+        const indexStats = globalTaskInstructionIndex.getStats();
+        if (indexStats && indexStats.totalInstructions === 0 && skeletons.length > 0) {
+            console.log(`[get-task-tree] ⚠️ Index vide détecté, peuplement à la volée depuis le cache (${skeletons.length} squelettes)...`);
+            for (const s of skeletons) {
+                if (s.childTaskInstructionPrefixes && s.childTaskInstructionPrefixes.length > 0) {
+                    for (const prefix of s.childTaskInstructionPrefixes) {
+                        globalTaskInstructionIndex.addInstruction(s.taskId, prefix);
+                    }
                 }
             }
+            const newStats = globalTaskInstructionIndex.getStats();
+            console.log(`[get-task-tree] ✅ Index peuplé: ${newStats.totalInstructions} instructions`);
         }
-        const newStats = globalTaskInstructionIndex.getStats();
-        console.log(`[get-task-tree] ✅ Index peuplé: ${newStats.totalInstructions} instructions`);
+    } else {
+        console.warn('[get-task-tree] ⚠️ globalTaskInstructionIndex non disponible ou invalide');
     }
 
     for (const skeleton of tasksWithoutParent) {

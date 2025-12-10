@@ -20,7 +20,11 @@
     "allowImportingTsExtensions": true,
     "emitDeclarationOnly": true,
     "noEmit": false,
-    "types": ["jest", "node"]
+    "types": ["jest", "node"],
+    "baseUrl": ".",
+    "paths": {
+      "@/*": ["src/*"]
+    }
   },
   "include": [
     "src/**/*.ts"

@@ -13,6 +13,7 @@ import { IInventoryCollector, MachineInventory as BaselineMachineInventory } fro
 import { promises as fs } from 'fs';
 import { join } from 'path';
 import { existsSync } from 'fs';
+import { getSharedStatePath } from '../utils/server-helpers.js';
 
 /**
  * Wrapper implémentant IInventoryCollector
@@ -77,8 +78,8 @@ export class InventoryCollectorWrapper implements IInventoryCollector {
    */
   private async loadFromSharedState(machineId: string): Promise<BaselineMachineInventory | null> {
     try {
-      // CORRECTION SDDD : Utiliser la variable d'environnement ROOSYNC_SHARED_PATH
-      const baseSharedPath = process.env.ROOSYNC_SHARED_PATH || 'g:/Mon Drive/Synchronisation/RooSync/.shared-state';
+      // CORRECTION SDDD : Utiliser la variable d'environnement ROOSYNC_SHARED_PATH via helper centralisé
+      const baseSharedPath = getSharedStatePath();
       const sharedStatePath = join(baseSharedPath, 'inventories');
       
       console.log('[DEBUG] ROOSYNC_SHARED_PATH:', process.env.ROOSYNC_SHARED_PATH);

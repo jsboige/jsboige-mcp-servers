@@ -302,9 +302,10 @@ vi.mock('path', () => ({
 
 // Mock du module os
 vi.mock('os', () => ({
-  platform: 'win32',
-  arch: 'x64',
-  tmpdir: () => '/tmp'
+  platform: () => 'win32',
+  arch: () => 'x64',
+  tmpdir: () => '/tmp',
+  homedir: () => '/home/user'
 }));
 
 // Mock du module child_process

@@ -18,20 +18,29 @@ vi.mock('../../../services/RooSyncService.js', () => {
   };
 });
 
+
 describe('ConfigSharingService', () => {
   let service: ConfigSharingService;
-  let mockRooSyncService: any;
   let tempDir: string;
   let sharedPath: string;
 
   beforeEach(async () => {
     // Créer un environnement de test temporaire
-    tempDir = await mkdtemp(join(tmpdir(), 'roosync-test-'));
+    // Le mock de mkdtemp sera utilisé ici
+    tempDir = await mkdtemp('roosync-test-');
+    
+    // Vérifier que tempDir est bien défini
+    if (!tempDir) {
+        throw new Error('mkdtemp returned undefined');
+    }
+    
     sharedPath = join(tempDir, 'shared');
+    
+    // Utiliser les fonctions importées (qui sont soit mockées soit originales)
     await mkdir(sharedPath, { recursive: true });
     await mkdir(join(sharedPath, 'configs'), { recursive: true });
 
-    // Mock des services
+    // Mock des services injectés
     const mockConfigService = {
       getSharedStatePath: vi.fn().mockReturnValue(sharedPath),
       getBaselineServiceConfig: vi.fn()
@@ -69,7 +78,6 @@ describe('ConfigSharingService', () => {
     expect(result).toBeDefined();
     expect(result.filesCount).toBeGreaterThan(0);
     expect(result.manifest).toBeDefined();
-    // L'auteur est pris de process.env.COMPUTERNAME
     expect(result.manifest.author).toBeDefined();
     
     // Vérifier que le package a été créé

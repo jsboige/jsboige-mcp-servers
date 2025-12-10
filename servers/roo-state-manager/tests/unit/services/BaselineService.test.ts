@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi, type Mock } from 'vitest';
 import path from 'path';
 import { promises as fs, existsSync, copyFileSync } from 'fs';
 import { BaselineService } from '../../../src/services/BaselineService';
@@ -109,13 +109,19 @@ describe('BaselineService', () => {
     expect((service as any).roadmapPath).toBe(roadmapPath);
   });
 
-  it('should fallback to default when ROOSYNC_SHARED_PATH is not set', () => {
+  it('should throw error when ROOSYNC_SHARED_PATH is not set', () => {
     vi.unstubAllEnvs();
+    delete process.env.ROOSYNC_SHARED_PATH;
+    delete process.env.SHARED_STATE_PATH;
+    
+    // On doit mocker getSharedStatePath pour qu'il lance une erreur comme la vraie implémentation
+    mockConfigService.getSharedStatePath.mockImplementation(() => {
+        throw new Error("Configuration manquante : ROOSYNC_SHARED_PATH n'est pas définie.");
+    });
 
-    const fallbackService = new BaselineService(mockConfigService, mockInventoryCollector, mockDiffDetector);
-
-    expect((fallbackService as any).baselinePath).toBeDefined();
-    expect((fallbackService as any).roadmapPath).toBeDefined();
+    expect(() => {
+        new BaselineService(mockConfigService, mockInventoryCollector, mockDiffDetector);
+    }).toThrow("Configuration manquante");
   });
 
   it('should load baseline', async () => {
