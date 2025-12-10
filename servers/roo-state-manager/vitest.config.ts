@@ -15,6 +15,8 @@ export default defineConfig({
       'tests/unit/**/*.test.js',
       'tests/integration/**/*.test.ts',
       'tests/integration/**/*.test.js',
+      'tests/performance/**/*.test.ts',
+      'tests/performance/**/*.test.js',
       'tests/e2e/**/*.test.ts',
       'tests/e2e/**/*.test.js',
       'src/**/__tests__/**/*.test.ts',
