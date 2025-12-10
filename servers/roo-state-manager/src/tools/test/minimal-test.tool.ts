@@ -17,10 +17,9 @@ export type MinimalTestToolArgs = z.infer<typeof MinimalTestToolSchema>;
 /**
  * Tool de test minimal pour vérifier le fonctionnement de base du MCP roo-state-manager
  */
-export const minimal_test_tool: Tool = {
+export const minimal_test_tool = {
     name: 'minimal_test_tool',
     description: 'Tool de test minimal pour vérifier le fonctionnement de base',
-    type: 'object',
     inputSchema: MinimalTestToolSchema as any,
     async execute(args: MinimalTestToolArgs) {
         console.log(`[minimal-test-tool] 🧪 Exécution du test minimal: ${args.message}`);
