@@ -25,7 +25,6 @@ vi.mock('fs/promises', () => ({
 }));
 
 // Mock du module path
-import * as path from 'path';
 const { join, dirname } = vi.hoisted(() => ({
   join: vi.fn((...paths) => paths.join('/')),
   dirname: vi.fn((path) => path.split('/').slice(0, -1).join('/'))
@@ -191,7 +190,7 @@ import * as fs from 'fs/promises';
 import * as path from 'path';
 
 // Import de la classe à tester
-import { HierarchyPipeline } from '../../../src/utils/hierarchy-pipeline.ts';
+import { HierarchyPipeline } from '../../../src/utils/hierarchy-pipeline.js';
 import { NewTaskInstruction } from '../../../src/types/conversation.ts';
 
 const __filename = fileURLToPath(import.meta.url);
@@ -260,7 +259,7 @@ describe('Pipeline de Hiérarchies', () => {
       const filePath = path.join(tempDir, 'ui_messages_delegation.json');
       await fs.writeFile(filePath, JSON.stringify(testContent));
       
-      const pipeline = new HierarchyPipeline(mockMessageExtractionCoordinator);
+      const pipeline = new HierarchyPipeline(mockMessageExtractionCoordinator as any);
       const instructions = await pipeline.extractNewTaskInstructionsFromUI(filePath);
       
       expect(instructions).toHaveLength(1);
@@ -283,7 +282,7 @@ describe('Pipeline de Hiérarchies', () => {
       const filePath = path.join(tempDir, 'ui_messages_orchestration.json');
       await fs.writeFile(filePath, JSON.stringify(testContent));
       
-      const pipeline = new HierarchyPipeline(mockMessageExtractionCoordinator);
+      const pipeline = new HierarchyPipeline(mockMessageExtractionCoordinator as any);
       const instructions = await pipeline.extractNewTaskInstructionsFromUI(filePath);
       
       expect(instructions).toHaveLength(1);
@@ -297,7 +296,7 @@ describe('Pipeline de Hiérarchies', () => {
       const filePath = path.join(tempDir, 'ui_messages_corrupt.json');
       await fs.writeFile(filePath, '{ "invalid": json content }');
       
-      const pipeline = new HierarchyPipeline(mockMessageExtractionCoordinator);
+      const pipeline = new HierarchyPipeline(mockMessageExtractionCoordinator as any);
       const instructions = await pipeline.extractNewTaskInstructionsFromUI(filePath);
       
       expect(instructions).toHaveLength(0);
@@ -306,7 +305,7 @@ describe('Pipeline de Hiérarchies', () => {
     test('Doit gérer fichier inexistant', async () => {
       const filePath = path.join(tempDir, 'ui_messages_missing.json');
       
-      const pipeline = new HierarchyPipeline(mockMessageExtractionCoordinator);
+      const pipeline = new HierarchyPipeline(mockMessageExtractionCoordinator as any);
       const instructions = await pipeline.extractNewTaskInstructionsFromUI(filePath);
       
       expect(instructions).toHaveLength(0);
@@ -361,7 +360,7 @@ describe('Pipeline de Hiérarchies', () => {
       );
       
       // Tester l'extraction des instructions directement (plus simple et plus fiable)
-      const pipeline = new HierarchyPipeline(mockMessageExtractionCoordinator);
+      const pipeline = new HierarchyPipeline(mockMessageExtractionCoordinator as any);
       const instructions = await pipeline.extractNewTaskInstructionsFromUI(
         path.join(parentDir, 'ui_messages.json')
       );
@@ -405,7 +404,7 @@ describe('Pipeline de Hiérarchies', () => {
       const filePath = path.join(tempDir, 'ui_messages_large.json');
       await fs.writeFile(filePath, JSON.stringify(largeContent));
       
-      const pipeline = new HierarchyPipeline(mockMessageExtractionCoordinator);
+      const pipeline = new HierarchyPipeline(mockMessageExtractionCoordinator as any);
       const startTime = Date.now();
       const instructions = await pipeline.extractNewTaskInstructionsFromUI(filePath);
       const duration = Date.now() - startTime;

@@ -1,4 +1,7 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
+// Unmock fs et fs/promises pour utiliser le vrai système de fichiers
+vi.unmock('fs');
+vi.unmock('fs/promises');
 import { ConfigSharingService } from '../../../services/ConfigSharingService.js';
 import { mkdtemp, mkdir, writeFile, readFile, rm, unlink } from 'fs/promises';
 import { join } from 'path';
@@ -42,21 +45,19 @@ describe('ConfigSharingService', () => {
     
     // Créer des fichiers de config factices pour le test
     // On simule que le workspace courant contient roo-modes
-    const modesDir = join(process.cwd(), 'roo-modes');
-    if (!existsSync(modesDir)) {
-        await mkdir(modesDir, { recursive: true });
-    }
+    // Utiliser un mock pour process.cwd() ou modifier le comportement du service pour accepter un chemin racine
+    // Ici on va mocker process.cwd() pour pointer vers tempDir
+    vi.spyOn(process, 'cwd').mockReturnValue(tempDir);
+
+    const modesDir = join(tempDir, 'roo-modes');
+    await mkdir(modesDir, { recursive: true });
     await writeFile(join(modesDir, 'test-mode.json'), JSON.stringify({ name: 'test' }));
   });
 
   afterEach(async () => {
     // Nettoyage
     await rm(tempDir, { recursive: true, force: true });
-    // Nettoyage des fichiers factices
-    const modesDir = join(process.cwd(), 'roo-modes');
-    if (existsSync(join(modesDir, 'test-mode.json'))) {
-        await unlink(join(modesDir, 'test-mode.json'));
-    }
+    vi.restoreAllMocks();
   });
 
   it('should collect configuration files', async () => {
