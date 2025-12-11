@@ -1,10 +1,11 @@
 /**
  * Outil MCP : roosync_compare_config
- * 
- * Compare la configuration locale avec une autre machine.
- * 
+ *
+ * Compare la configuration locale avec une autre machine ou un profil.
+ * Supporte implicitement le mode "profils" via l'ID de cible.
+ *
  * @module tools/roosync/compare-config
- * @version 2.0.0
+ * @version 2.1.0
  */
 
 import { z } from 'zod';
@@ -56,7 +57,8 @@ export type CompareConfigResult = z.infer<typeof CompareConfigResultSchema>;
  * Compare la configuration locale avec une autre machine spécifiée.
  * Si aucune machine n'est spécifiée, sélectionne automatiquement la première
  * machine disponible différente de la machine locale.
- * 
+ * Supporte la comparaison avec des profils (ex: 'profile:dev', 'profile:prod').
+ *
  * @param args Arguments validés
  * @returns Résultat de la comparaison
  * @throws {RooSyncServiceError} En cas d'erreur
@@ -188,6 +190,7 @@ Détection multi-niveaux :
 - Software (PowerShell, Node, Python) - WARNING
 - System (OS, architecture) - INFO
 
+Supporte également la comparaison avec des profils (ex: target='profile:dev').
 Utilise Get-MachineInventory.ps1 pour collecte d'inventaire complet avec cache TTL 1h.`,
   inputSchema: {
     type: 'object' as const,
@@ -198,7 +201,7 @@ Utilise Get-MachineInventory.ps1 pour collecte d'inventaire complet avec cache T
       },
       target: {
         type: 'string',
-        description: 'ID de la machine cible (optionnel, défaut: remote_machine)'
+        description: 'ID de la machine cible ou du profil (optionnel, défaut: remote_machine)'
       },
       force_refresh: {
         type: 'boolean',

@@ -14,12 +14,70 @@ import { BaselineService } from '../BaselineService.js';
 import { RooSyncConfig } from '../../config/roosync-config.js';
 import { RooSyncServiceError } from '../RooSyncService.js';
 import { RooSyncDashboard } from '../../utils/roosync-parsers.js';
+import { ConfigurationProfile } from '../../types/non-nominative-baseline.js';
 
 export class ConfigComparator {
   constructor(
     private config: RooSyncConfig,
     private baselineService: BaselineService
   ) {}
+
+  /**
+   * Compare un inventaire machine avec des profils de configuration
+   */
+  public compareWithProfiles(
+    machineInventory: any,
+    profiles: ConfigurationProfile[]
+  ): Array<{
+    category: string;
+    expectedValue: any;
+    actualValue: any;
+    severity: string;
+  }> {
+    const deviations: Array<{
+      category: string;
+      expectedValue: any;
+      actualValue: any;
+      severity: string;
+    }> = [];
+
+    for (const profile of profiles) {
+      // Extraction de la valeur actuelle selon la catégorie du profil
+      const actualValue = this.extractValueForCategory(machineInventory, profile.category);
+      
+      if (actualValue === undefined) continue;
+
+      // Comparaison basique (à améliorer pour objets complexes)
+      if (JSON.stringify(actualValue) !== JSON.stringify(profile.configuration)) {
+        deviations.push({
+          category: profile.category,
+          expectedValue: profile.configuration,
+          actualValue: actualValue,
+          severity: 'WARNING' // Par défaut
+        });
+      }
+    }
+
+    return deviations;
+  }
+
+  private extractValueForCategory(inventory: any, category: string): any {
+    // Logique d'extraction similaire à NonNominativeBaselineService
+    // Adaptation pour accéder aux propriétés de l'inventaire
+    // TODO: Centraliser cette logique d'extraction
+    switch (category) {
+      case 'roo-core':
+        return {
+          modes: inventory.config?.roo?.modes,
+          mcpSettings: inventory.config?.roo?.mcpSettings
+        };
+      case 'hardware-cpu':
+        return inventory.config?.hardware?.cpu;
+      // Ajouter les autres cas...
+      default:
+        return undefined;
+    }
+  }
 
   /**
    * Obtenir le chemin complet d'un fichier RooSync

@@ -5,6 +5,7 @@ vi.unmock('fs/promises');
 vi.unmock('fs');
 
 import { BaselineService } from '../../src/services/BaselineService.js';
+import { BaselineFileConfig } from '../../src/types/baseline.js';
 import { ConfigService } from '../../src/services/ConfigService.js';
 import { InventoryCollectorWrapper } from '../../src/services/InventoryCollectorWrapper.js';
 import { InventoryCollector } from '../../src/services/InventoryCollector.js';
@@ -58,7 +59,7 @@ describe('Performance & Concurrency', () => {
         const baselineService = new BaselineService(configService, inventoryCollector, diffDetector);
 
         // Create baseline
-        const baselineConfig = {
+        const baselineConfig: BaselineFileConfig = {
             version: '1.0.0',
             baselineId: 'baseline-1',
             timestamp: new Date().toISOString(),
@@ -85,7 +86,10 @@ describe('Performance & Concurrency', () => {
                         cpu: { cores: 8, threads: 16 },
                         memory: { total: 16000000000 }
                     },
-                    software: {}
+                    software: {
+                        node: '18.0.0',
+                        python: '3.10.0'
+                    }
                 }
             ],
             syncTargets: [],

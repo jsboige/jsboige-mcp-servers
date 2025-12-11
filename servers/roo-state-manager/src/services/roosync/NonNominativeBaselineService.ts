@@ -875,7 +875,9 @@ export class NonNominativeBaselineService {
       
       if (existsSync(this.mappingsPath)) {
         const content = await fs.readFile(this.mappingsPath, 'utf-8');
-        mappings = JSON.parse(content);
+        if (content && content.trim() !== '') {
+          mappings = JSON.parse(content);
+        }
       }
 
       // Remplacer ou ajouter le mapping

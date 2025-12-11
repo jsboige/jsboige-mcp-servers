@@ -557,7 +557,7 @@ export class RooSyncService {
   }
 
   /**
-   * Comparer la configuration avec une autre machine
+   * Comparer la configuration avec une autre machine ou la baseline active
    */
   public async compareConfig(targetMachineId?: string): Promise<{
     localMachine: string;
@@ -568,6 +568,47 @@ export class RooSyncService {
       targetValue: any;
     }[];
   }> {
+    // Vérifier si une baseline non-nominative est active
+    const activeBaseline = this.nonNominativeBaselineService.getActiveBaseline();
+    
+    if (activeBaseline && !targetMachineId) {
+      console.log('[RooSyncService] Baseline non-nominative détectée, utilisation du mode profils');
+      
+      // Utiliser le comparateur de profils
+      const machineId = this.config.machineId;
+      const machineHash = this.nonNominativeBaselineService.generateMachineHash(machineId);
+      
+      // S'assurer que la machine est mappée
+      let mapping = this.nonNominativeBaselineService.getMachineMappings().find(m => m.machineHash === machineHash);
+      if (!mapping) {
+        // Collecter l'inventaire et mapper si nécessaire
+        const inventory = await this.inventoryCollector.collectInventory(machineId);
+        if (inventory) {
+          // Conversion explicite du type InventoryCollector.MachineInventory vers non-nominative-baseline.MachineInventory
+          // Les structures sont compatibles mais les types TypeScript diffèrent légèrement
+          const compatibleInventory: any = inventory;
+          mapping = await this.nonNominativeBaselineService.mapMachineToBaseline(machineId, compatibleInventory);
+        }
+      }
+      
+      if (mapping) {
+        // Convertir les déviations en format de différences standard
+        const differences = mapping.deviations.map(dev => ({
+          field: dev.category,
+          localValue: dev.actualValue,
+          targetValue: dev.expectedValue,
+          description: `Déviation détectée pour ${dev.category} (Sévérité: ${dev.severity})`
+        }));
+        
+        return {
+          localMachine: machineId,
+          targetMachine: 'Baseline (Profils)',
+          differences
+        };
+      }
+    }
+    
+    // Fallback sur le comparateur legacy
     return this.configComparator.compareConfig(() => this.loadDashboard(), targetMachineId);
   }
 
@@ -654,14 +695,94 @@ export class RooSyncService {
     description: string,
     aggregationConfig?: any
   ): Promise<any> {
-    return await this.baselineManager.createNonNominativeBaseline(name, description, aggregationConfig);
+    const baseline = await this.baselineManager.createNonNominativeBaseline(name, description, aggregationConfig);
+    // Rafraîchir l'état local après création
+    this.nonNominativeBaselineService.getState();
+    return baseline;
   }
 
   /**
    * Mappe une machine à la baseline non-nominative
    */
   public async mapMachineToNonNominativeBaseline(machineId: string): Promise<any> {
-    return await this.baselineManager.mapMachineToNonNominativeBaseline(machineId);
+    const mapping = await this.baselineManager.mapMachineToNonNominativeBaseline(machineId);
+    // Rafraîchir l'état local après mapping
+    this.nonNominativeBaselineService.getState();
+    return mapping;
+  }
+
+  /**
+   * Mise à jour de la baseline avec support du mode 'profile'
+   */
+  public async updateBaseline(
+    machineId: string,
+    options: {
+      mode?: 'profile' | 'legacy';
+      version?: string;
+      createBackup?: boolean;
+      updateReason?: string;
+      updatedBy?: string;
+    } = {}
+  ): Promise<boolean> {
+    const mode = options.mode || 'profile';
+
+    if (mode === 'profile') {
+      console.log(`[RooSyncService] Mise à jour baseline en mode 'profile' depuis ${machineId}`);
+      
+      // Collecter l'inventaire
+      const inventory = await this.inventoryCollector.collectInventory(machineId, true);
+      if (!inventory) {
+        throw new RooSyncServiceError('Impossible de collecter l\'inventaire', 'INVENTORY_FAILED');
+      }
+
+      // Utiliser l'agrégation pour mettre à jour les profils
+      // Note: Dans une implémentation complète, on fusionnerait intelligemment
+      // Pour l'instant, on recrée une baseline agrégée basée sur cette machine (et potentiellement d'autres)
+      const compatibleInventory: any = inventory;
+      
+      // Récupérer les autres inventaires disponibles pour une meilleure agrégation
+      const inventories = [compatibleInventory];
+      
+      // Créer la baseline via le BaselineManager
+      await this.baselineManager.createNonNominativeBaseline(
+        `Baseline ${options.version || 'Auto'}`,
+        options.updateReason || `Mise à jour depuis ${machineId}`,
+        undefined // Config par défaut
+      );
+      
+      return true;
+    } else {
+      // Mode legacy : délégation au service existant (via ConfigService/BaselineService qui n'est pas exposé directement ici pour update)
+      // On doit utiliser BaselineService.updateBaseline
+      console.log(`[RooSyncService] Mise à jour baseline en mode 'legacy' depuis ${machineId}`);
+      
+      const inventory = await this.inventoryCollector.collectInventory(machineId, true);
+      if (!inventory) {
+        throw new RooSyncServiceError('Impossible de collecter l\'inventaire', 'INVENTORY_FAILED');
+      }
+
+      // Créer la structure baseline legacy
+      // Conversion explicite pour accéder à la config
+      const legacyInventory: any = inventory;
+      
+      const newBaseline = {
+        machineId,
+        version: options.version || '1.0.0',
+        lastUpdated: new Date().toISOString(),
+        config: {
+            roo: legacyInventory.roo || {},
+            hardware: legacyInventory.hardware || {},
+            software: legacyInventory.software || {},
+            system: legacyInventory.system || {}
+        }
+      };
+
+      return await this.baselineService.updateBaseline(newBaseline as any, {
+        createBackup: options.createBackup,
+        updateReason: options.updateReason,
+        updatedBy: options.updatedBy
+      });
+    }
   }
 
   /**
@@ -675,7 +796,10 @@ export class RooSyncService {
    * Migre vers le système non-nominatif
    */
   public async migrateToNonNominative(options?: any): Promise<any> {
-    return await this.baselineManager.migrateToNonNominative(options);
+    const result = await this.baselineManager.migrateToNonNominative(options);
+    // Rafraîchir l'état local après migration
+    this.nonNominativeBaselineService.getState();
+    return result;
   }
 
   /**

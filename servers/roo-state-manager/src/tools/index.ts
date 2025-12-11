@@ -27,9 +27,6 @@ export * from './summary/index.js';
 // RooSync tools - Batch 6 synchronization
 export * from './roosync/index.js';
 
-// Non-nominative baseline tools - RooSync v2.2
-export * from './non-nominative-baseline-tools.js';
-
 // Cache & Repair tools - Batch 8 refactoring
 export * from './cache/index.js';
 export * from './repair/index.js';

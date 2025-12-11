@@ -5,6 +5,7 @@ vi.unmock('fs/promises');
 vi.unmock('fs');
 
 import { BaselineService } from '../../src/services/BaselineService.js';
+import { BaselineFileConfig } from '../../src/types/baseline.js';
 import { RooSyncService } from '../../src/services/RooSyncService.js';
 import { ConfigService } from '../../src/services/ConfigService.js';
 import { InventoryCollectorWrapper } from '../../src/services/InventoryCollectorWrapper.js';
@@ -59,7 +60,7 @@ describe('New Modules Integration', () => {
             const baselineService = new BaselineService(configService, inventoryCollector, diffDetector);
 
             // 2. Create a baseline file
-            const baselineConfig = {
+            const baselineConfig: BaselineFileConfig = {
                 version: '1.0.0',
                 baselineId: 'baseline-1',
                 timestamp: new Date().toISOString(),
@@ -86,7 +87,10 @@ describe('New Modules Integration', () => {
                             cpu: { cores: 8, threads: 16 },
                             memory: { total: 16000000000 }
                         },
-                        software: {}
+                        software: {
+                            node: '18.0.0',
+                            python: '3.10.0'
+                        }
                     }
                 ],
                 syncTargets: [],

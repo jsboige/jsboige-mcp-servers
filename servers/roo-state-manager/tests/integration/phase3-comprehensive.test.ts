@@ -60,7 +60,14 @@ describe('Phase 3 Comprehensive Integration', () => {
     });
 
     afterEach(async () => {
-        await rm(tempDir, { recursive: true, force: true });
+        try {
+            await rm(tempDir, { recursive: true, force: true });
+        } catch (error: any) {
+            // Ignore ENOTEMPTY/EPERM issues on Windows during test cleanup
+            if (error.code !== 'ENOTEMPTY' && error.code !== 'EPERM' && error.code !== 'EBUSY') {
+                console.warn('Failed to cleanup temp dir:', error.message);
+            }
+        }
         vi.restoreAllMocks();
     });
 

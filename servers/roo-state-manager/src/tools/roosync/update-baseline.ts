@@ -1,10 +1,13 @@
 /**
  * Outil MCP : roosync_update_baseline
- * 
- * Met à jour la configuration baseline avec une nouvelle machine cible.
- * 
+ *
+ * Met à jour la configuration baseline.
+ * Supporte deux modes :
+ * 1. Mode standard : utilise une machine spécifique comme référence
+ * 2. Mode profil : utilise une agrégation de configurations (non-nominatif)
+ *
  * @module tools/roosync/update-baseline
- * @version 2.1.0
+ * @version 2.2.0
  */
 
 import { z } from 'zod';
@@ -26,7 +29,14 @@ const logger: Logger = createLogger('UpdateBaselineTool');
  */
 export const UpdateBaselineArgsSchema = z.object({
   machineId: z.string()
-    .describe('ID de la machine à utiliser comme nouvelle baseline'),
+    .describe('ID de la machine à utiliser comme nouvelle baseline (ou nom du profil en mode profile)'),
+  mode: z.enum(['standard', 'profile']).optional().default('standard')
+    .describe('Mode de mise à jour: standard (machine) ou profile (agrégation)'),
+  aggregationConfig: z.object({
+    sources: z.array(z.any()).optional(),
+    categoryRules: z.record(z.any()).optional(),
+    thresholds: z.record(z.any()).optional()
+  }).optional().describe('Configuration d\'agrégation (uniquement pour mode=profile)'),
   version: z.string().optional()
     .describe('Version de la baseline (défaut: auto-généré)'),
   createBackup: z.boolean().optional()
@@ -123,10 +133,11 @@ function createBaselineFromInventory(
  */
 export async function roosyncUpdateBaseline(args: UpdateBaselineArgs): Promise<UpdateBaselineResult> {
   try {
-    logger.info('🔄 Starting baseline update', { 
+    logger.info('🔄 Starting baseline update', {
       machineId: args.machineId,
+      mode: args.mode,
       version: args.version,
-      createBackup: args.createBackup 
+      createBackup: args.createBackup
     });
 
     const service = getRooSyncService();
@@ -166,25 +177,56 @@ export async function roosyncUpdateBaseline(args: UpdateBaselineArgs): Promise<U
       }
     }
     
-    // 4. Collecter l'inventaire de la machine cible
-    logger.info('📊 Collecting inventory for target machine', { machineId: args.machineId });
-    const inventory = await inventoryCollector.collectInventory(args.machineId, true);
-    
-    if (!inventory) {
-      throw new RooSyncServiceError(
-        `Impossible de collecter l'inventaire pour la machine ${args.machineId}`,
-        'INVENTORY_COLLECTION_FAILED'
+    let newBaseline;
+    const version = args.version || generateBaselineVersion();
+
+    // 4. Créer la nouvelle baseline selon le mode
+    if (args.mode === 'profile') {
+      logger.info('📊 Creating non-nominative baseline', { name: args.machineId });
+      
+      // En mode profile, on utilise createNonNominativeBaseline du service
+      const nonNominativeBaseline = await service.createNonNominativeBaseline(
+        args.machineId, // Utilisé comme nom de la baseline
+        args.updateReason || 'Baseline créée par agrégation',
+        args.aggregationConfig
       );
+
+      // Adapter le format pour BaselineService
+      // Note: BaselineService attend un format spécifique, ici on simule une structure compatible
+      newBaseline = {
+        machineId: `profile:${nonNominativeBaseline.baselineId}`, // ID virtuel pour le profil
+        version: nonNominativeBaseline.version,
+        lastUpdated: new Date().toISOString(),
+        config: {
+          // Structure minimale pour compatibilité, les vraies données sont dans les profils
+          roo: { modes: [], mcpSettings: {}, userSettings: {} },
+          hardware: { cpu: 'Profile', ram: 'Profile', disks: [] },
+          software: { powershell: 'N/A', node: 'N/A', python: 'N/A' },
+          system: { os: 'Profile', architecture: 'N/A' }
+        },
+        // Attacher les métadonnées non-nominatives
+        isNonNominative: true,
+        profiles: nonNominativeBaseline.profiles
+      };
+    } else {
+      // Mode standard (machine)
+      logger.info('📊 Collecting inventory for target machine', { machineId: args.machineId });
+      const inventory = await inventoryCollector.collectInventory(args.machineId, true);
+      
+      if (!inventory) {
+        throw new RooSyncServiceError(
+          `Impossible de collecter l'inventaire pour la machine ${args.machineId}`,
+          'INVENTORY_COLLECTION_FAILED'
+        );
+      }
+      
+      newBaseline = createBaselineFromInventory(args.machineId, inventory, version);
     }
     
-    // 5. Créer la nouvelle baseline
-    const version = args.version || generateBaselineVersion();
-    const newBaseline = createBaselineFromInventory(args.machineId, inventory, version);
-    
-    // 6. Mettre à jour la baseline via le service
+    // 5. Mettre à jour la baseline via le service
     const updateSuccess = await baselineService.updateBaseline(newBaseline, {
       createBackup: false, // Déjà géré manuellement
-      updateReason: args.updateReason || `Baseline mise à jour depuis ${args.machineId}`,
+      updateReason: args.updateReason || `Baseline mise à jour (${args.mode})`,
       updatedBy: args.updatedBy || config.machineId
     });
     
@@ -304,13 +346,27 @@ export async function roosyncUpdateBaseline(args: UpdateBaselineArgs): Promise<U
  */
 export const updateBaselineToolMetadata = {
   name: 'roosync_update_baseline',
-  description: 'Met à jour la configuration baseline avec une nouvelle machine cible',
+  description: 'Met à jour la configuration baseline avec une nouvelle machine cible ou un profil',
   inputSchema: {
     type: 'object' as const,
     properties: {
       machineId: {
         type: 'string',
-        description: 'ID de la machine à utiliser comme nouvelle baseline'
+        description: 'ID de la machine ou nom du profil'
+      },
+      mode: {
+        type: 'string',
+        enum: ['standard', 'profile'],
+        description: 'Mode de mise à jour (défaut: standard)'
+      },
+      aggregationConfig: {
+        type: 'object',
+        description: 'Configuration d\'agrégation (mode profile uniquement)',
+        properties: {
+          sources: { type: 'array', items: { type: 'any' } },
+          categoryRules: { type: 'object' },
+          thresholds: { type: 'object' }
+        }
       },
       version: {
         type: 'string',
