@@ -17,13 +17,11 @@ jobs:
     - uses: actions/checkout@v3
     
     - name: Set up Node.js
-      run: |
-        curl -fsSL https://nodejs.org/dist/v20.18.0/node-v20.18.0-linux-x64.tar.xz | tar -xzf -
-        cd node-v20.18.0-linux-x64
-        sudo cp -R * /usr/local/
-        cd ..
-        node --version
-        npm --version
+      uses: actions/setup-node@v3
+      with:
+        node-version: '20.18.0'
+        cache: 'npm'
+        cache-dependency-path: 'servers/*/package-lock.json'
     
     - name: Install dependencies
       run: |
@@ -61,35 +59,12 @@ jobs:
 
     steps:
     - uses: actions/checkout@v3
-    
     - name: Set up Node.js
-      run: |
-        # Detect Ubuntu version and use appropriate installation method
-        if [ -f /etc/os-release ]; then
-          . /etc/os-release
-          UBUNTU_VERSION=$(echo $VERSION_ID | cut -d. -f1)
-        else
-          UBUNTU_VERSION="20.04"
-        fi
-        
-        echo "Detected Ubuntu version: $UBUNTU_VERSION"
-        
-        # Use Node.js v20.18.0 for consistency
-        NODE_VERSION="20.18.0"
-        
-        # Download and extract Node.js
-        curl -fsSL https://nodejs.org/dist/v${NODE_VERSION}/node-v${NODE_VERSION}-linux-x64.tar.xz | tar -xzf -
-        
-        # Install Node.js to standard location
-        cd node-v${NODE_VERSION}-linux-x64
-        sudo cp -R * /usr/local/
-        cd ..
-        
-        # Verify installation
-        node --version
-        
-        # Verify Node.js is working
-        npm --version
+      uses: actions/setup-node@v3
+      with:
+        node-version: '20.18.0'
+        cache: 'npm'
+        cache-dependency-path: 'servers/*/package-lock.json'
     
     - name: Install dependencies
       run: |
