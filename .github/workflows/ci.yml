@@ -24,7 +24,7 @@ jobs:
     - name: Install dependencies
       run: |
         cd servers/${{ matrix.server }}
-        npm ci
+        npm install
     
     - name: Build
       run: |
@@ -65,7 +65,7 @@ jobs:
     - name: Install dependencies
       run: |
         cd servers/${{ matrix.server }}
-        npm ci
+        npm install
     
     - name: Check README.md exists
       run: |
