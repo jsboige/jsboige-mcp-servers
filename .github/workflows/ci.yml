@@ -20,8 +20,6 @@ jobs:
       uses: actions/setup-node@v3
       with:
         node-version: '20.18.0'
-        cache: 'npm'
-        cache-dependency-path: 'servers/*/package-lock.json'
     
     - name: Install dependencies
       run: |
@@ -63,8 +61,6 @@ jobs:
       uses: actions/setup-node@v3
       with:
         node-version: '20.18.0'
-        cache: 'npm'
-        cache-dependency-path: 'servers/*/package-lock.json'
     
     - name: Install dependencies
       run: |
