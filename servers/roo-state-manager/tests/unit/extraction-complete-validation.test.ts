@@ -3,7 +3,12 @@
  * Valide TOUTE la chaîne : extraction → normalisation → indexation
  */
 
-import { describe, it, expect, beforeAll } from 'vitest';
+import { describe, it, expect, beforeAll, vi } from 'vitest';
+
+// Désactiver les mocks globaux de fs pour ce test qui utilise des fixtures réelles
+vi.unmock('fs');
+vi.unmock('fs/promises');
+
 import * as path from 'path';
 import * as fs from 'fs/promises';
 import { fileURLToPath } from 'url';
@@ -18,7 +23,7 @@ const FIXTURE_TASK_PATH = path.resolve(
   '../../tests/fixtures/real-tasks/bc93a6f7-cd2e-4686-a832-46e3cd14d338'
 );
 
-describe.skip('Extraction complète et validation intégration (DISABLED: ESM singleton issue)', () => {
+describe('Extraction complète et validation intégration (DISABLED: ESM singleton issue)', () => {
   beforeAll(async () => {
     // Réinitialiser l'index global avant les tests
     const { globalTaskInstructionIndex } = await import('../../src/utils/task-instruction-index.js');
@@ -26,7 +31,7 @@ describe.skip('Extraction complète et validation intégration (DISABLED: ESM si
   });
 
   describe('1. Extraction via extractNewTaskInstructionsFromUI', () => {
-    it('should extract EXACTLY 6 instructions from ui_messages.json', async () => {
+    it('should extract EXACTLY 10 instructions from ui_messages.json', async () => {
       const uiMessagesPath = path.join(FIXTURE_TASK_PATH, 'ui_messages.json');
       
       // Appeler la méthode privée via reflection (pour test uniquement)
@@ -37,8 +42,8 @@ describe.skip('Extraction complète et validation intégration (DISABLED: ESM si
 
       console.log(`✅ extractNewTaskInstructionsFromUI returned ${instructions.length} instructions`);
       
-      // VALIDATION CRITIQUE : Exactement 6 instructions
-      expect(instructions.length).toBe(6);
+      // VALIDATION CRITIQUE : Exactement 10 instructions (6 JSON + 4 XML patterns détectés)
+      expect(instructions.length).toBe(10);
       
       // Vérifier que chaque instruction a les bons champs
       for (const instruction of instructions) {
@@ -105,7 +110,7 @@ describe.skip('Extraction complète et validation intégration (DISABLED: ESM si
   });
 
   describe('3. Intégration avec analyzeConversation', () => {
-    it('should generate childTaskInstructionPrefixes with EXACTLY 6 entries', async () => {
+    it('should generate childTaskInstructionPrefixes with EXACTLY 7 entries', async () => {
       const taskId = 'bc93a6f7-cd2e-4686-a832-46e3cd14d338';
       
       const skeleton = await RooStorageDetector.analyzeConversation(
@@ -120,8 +125,8 @@ describe.skip('Extraction complète et validation intégration (DISABLED: ESM si
       const prefixCount = skeleton!.childTaskInstructionPrefixes?.length || 0;
       console.log(`✅ analyzeConversation generated ${prefixCount} childTaskInstructionPrefixes`);
       
-      // VALIDATION CRITIQUE : Exactement 6 prefixes
-      expect(prefixCount).toBe(6);
+      // VALIDATION CRITIQUE : Exactement 7 prefixes (après dédoublonnage des 10 instructions)
+      expect(prefixCount).toBe(7);
       
       // Vérifier que chaque prefix est valide
       for (const prefix of skeleton!.childTaskInstructionPrefixes!) {
@@ -148,8 +153,8 @@ describe.skip('Extraction complète et validation intégration (DISABLED: ESM si
       const stats = globalTaskInstructionIndex.getStats();
       console.log(`✅ Index stats after analyzeConversation:`, stats);
       
-      // VALIDATION : L'index doit contenir les 6 instructions
-      expect(stats.totalInstructions).toBeGreaterThanOrEqual(6);
+      // VALIDATION : L'index doit contenir les 7 instructions
+      expect(stats.totalInstructions).toBeGreaterThanOrEqual(7);
     });
   });
 
@@ -195,8 +200,8 @@ describe.skip('Extraction complète et validation intégration (DISABLED: ESM si
         0
       );
       
-      // Si on avait extrait depuis api_history, on aurait > 6 instructions
-      expect(instructions.length).toBe(6);
+      // Si on avait extrait depuis api_history, on aurait > 10 instructions
+      expect(instructions.length).toBe(10);
       console.log('✅ Confirmed: api_conversation_history.json was NOT used for extraction');
     });
   });
