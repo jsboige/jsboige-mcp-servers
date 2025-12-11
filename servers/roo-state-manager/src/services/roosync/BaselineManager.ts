@@ -14,6 +14,36 @@ import { RooSyncServiceError } from '../RooSyncService.js';
 import { RooSyncDashboard } from '../../utils/roosync-parsers.js';
 import { BaselineService } from '../BaselineService.js';
 import { ConfigComparator } from './ConfigComparator.js';
+import { NonNominativeBaselineService } from './NonNominativeBaselineService.js';
+import { NonNominativeBaseline, MachineConfigurationMapping, NonNominativeComparisonReport, AggregationConfig, MigrationOptions } from '../../types/non-nominative-baseline.js';
+
+/**
+ * Registre central des machines pour éviter les conflits d'identité
+ */
+interface MachineRegistry {
+  /** Map des machineId vers leurs métadonnées */
+  machines: Map<string, {
+    machineId: string;
+    firstSeen: string;
+    lastSeen: string;
+    source: 'dashboard' | 'presence' | 'baseline' | 'config';
+    status: 'online' | 'offline' | 'conflict';
+  }>;
+  
+  /** Fichier de sauvegarde du registre */
+  registryPath: string;
+}
+
+/**
+ * État de validation d'unicité
+ */
+interface UniquenessValidationResult {
+  isValid: boolean;
+  conflictDetected: boolean;
+  conflictingMachineId?: string;
+  conflictSource?: string;
+  warningMessage?: string;
+}
 
 /**
  * Résultat de restauration rollback
@@ -33,11 +63,164 @@ export interface RollbackRestoreResult {
 }
 
 export class BaselineManager {
+  private machineRegistry: MachineRegistry;
+
   constructor(
     private config: RooSyncConfig,
     private baselineService: BaselineService,
-    private configComparator: ConfigComparator
-  ) {}
+    private configComparator: ConfigComparator,
+    private nonNominativeService?: NonNominativeBaselineService
+  ) {
+    // Initialiser le registre central des machines
+    this.machineRegistry = {
+      machines: new Map(),
+      registryPath: join(this.config.sharedPath, '.machine-registry.json')
+    };
+    
+    // Initialiser le service non-nominatif si non fourni
+    if (!this.nonNominativeService) {
+      this.nonNominativeService = new NonNominativeBaselineService(this.config.sharedPath);
+    }
+    
+    // Charger le registre existant s'il y en a un
+    this.loadMachineRegistry();
+  }
+
+  /**
+   * Charger le registre des machines depuis le disque
+   */
+  private loadMachineRegistry(): void {
+    try {
+      if (existsSync(this.machineRegistry.registryPath)) {
+        const registryContent = readFileSync(this.machineRegistry.registryPath, 'utf-8');
+        const registryData = JSON.parse(registryContent);
+        
+        // Reconstruire la Map depuis les données JSON
+        this.machineRegistry.machines = new Map(
+          Object.entries(registryData.machines || {})
+        );
+        
+        console.log(`[BaselineManager] Registre des machines chargé: ${this.machineRegistry.machines.size} machines`);
+      }
+    } catch (error) {
+      console.warn('[BaselineManager] Erreur chargement registre des machines:', error);
+      // Continuer avec un registre vide
+      this.machineRegistry.machines = new Map();
+    }
+  }
+
+  /**
+   * Sauvegarder le registre des machines sur le disque
+   */
+  private async saveMachineRegistry(): Promise<void> {
+    try {
+      const registryData = {
+        machines: Object.fromEntries(this.machineRegistry.machines),
+        lastUpdated: new Date().toISOString()
+      };
+      
+      await fs.writeFile(
+        this.machineRegistry.registryPath,
+        JSON.stringify(registryData, null, 2),
+        'utf-8'
+      );
+      
+      console.log('[BaselineManager] Registre des machines sauvegardé');
+    } catch (error) {
+      console.error('[BaselineManager] Erreur sauvegarde registre des machines:', error);
+    }
+  }
+
+  /**
+   * Valider l'unicité d'un machineId avant ajout
+   */
+  private validateMachineUniqueness(machineId: string, source: string): UniquenessValidationResult {
+    const existingMachine = this.machineRegistry.machines.get(machineId);
+    
+    if (!existingMachine) {
+      return {
+        isValid: true,
+        conflictDetected: false
+      };
+    }
+
+    // Vérifier si c'est la même source (mise à jour normale)
+    if (existingMachine.source === source) {
+      return {
+        isValid: true,
+        conflictDetected: false
+      };
+    }
+
+    // Conflit détecté : même machineId depuis des sources différentes
+    const warningMessage = `⚠️ CONFLIT D'IDENTITÉ DÉTECTÉ: MachineId "${machineId}" déjà utilisé par la source "${existingMachine.source}" (première vue: ${existingMachine.firstSeen}). Tentative d'ajout depuis la source "${source}".`;
+    
+    console.warn(warningMessage);
+    
+    return {
+      isValid: false,
+      conflictDetected: true,
+      conflictingMachineId: machineId,
+      conflictSource: existingMachine.source,
+      warningMessage
+    };
+  }
+
+  /**
+   * Ajouter une machine au registre avec validation d'unicité
+   */
+  private async addMachineToRegistry(
+    machineId: string,
+    source: 'dashboard' | 'presence' | 'baseline' | 'config',
+    status: 'online' | 'offline' | 'conflict' = 'online'
+  ): Promise<UniquenessValidationResult> {
+    const validation = this.validateMachineUniqueness(machineId, source);
+    
+    if (!validation.isValid) {
+      // Ne pas ajouter la machine en conflit, mais logger l'avertissement
+      console.error(`[BaselineManager] REFUS D'AJOUT: ${validation.warningMessage}`);
+      return validation;
+    }
+
+    const now = new Date().toISOString();
+    const existingMachine = this.machineRegistry.machines.get(machineId);
+    
+    if (existingMachine) {
+      // Mise à jour d'une machine existante
+      existingMachine.lastSeen = now;
+      existingMachine.status = status;
+      console.log(`[BaselineManager] Machine ${machineId} mise à jour dans le registre`);
+    } else {
+      // Nouvelle machine
+      this.machineRegistry.machines.set(machineId, {
+        machineId,
+        firstSeen: now,
+        lastSeen: now,
+        source,
+        status
+      });
+      console.log(`[BaselineManager] Nouvelle machine ${machineId} ajoutée au registre depuis la source ${source}`);
+    }
+
+    // Sauvegarder le registre
+    await this.saveMachineRegistry();
+    
+    return validation;
+  }
+
+  /**
+   * Vérifier si une machine existe dans le registre
+   */
+  private machineExistsInRegistry(machineId: string): boolean {
+    return this.machineRegistry.machines.has(machineId);
+  }
+
+  /**
+   * Obtenir les informations d'une machine depuis le registre
+   */
+  private getMachineFromRegistry(machineId: string) {
+    return this.machineRegistry.machines.get(machineId);
+  }
 
   /**
    * Obtenir le chemin complet d'un fichier RooSync
@@ -70,15 +253,34 @@ export class BaselineManager {
             dashboard.machines = {};
           }
 
-          // S'assurer que la machine courante existe dans le dashboard
+          // S'assurer que la machine courante existe dans le dashboard avec validation d'unicité
           if (!dashboard.machines[this.config.machineId]) {
-            console.log(`[BaselineManager] Ajout de la machine ${this.config.machineId} au dashboard existant`);
-            dashboard.machines[this.config.machineId] = {
-              lastSync: new Date().toISOString(),
-              status: 'online',
-              diffsCount: 0,
-              pendingDecisions: 0
-            };
+            console.log(`[BaselineManager] Tentative d'ajout de la machine ${this.config.machineId} au dashboard existant`);
+            
+            // Valider l'unicité avant d'ajouter
+            const validation = await this.addMachineToRegistry(this.config.machineId, 'dashboard');
+            
+            if (validation.isValid) {
+              dashboard.machines[this.config.machineId] = {
+                lastSync: new Date().toISOString(),
+                status: 'online',
+                diffsCount: 0,
+                pendingDecisions: 0
+              };
+              console.log(`[BaselineManager] Machine ${this.config.machineId} ajoutée avec succès au dashboard`);
+            } else {
+              console.error(`[BaselineManager] ÉCHEC AJOUT DASHBOARD: ${validation.warningMessage}`);
+              // Ne pas écraser la machine existante, mais logger le conflit
+              if (validation.conflictingMachineId && dashboard.machines[validation.conflictingMachineId]) {
+                console.warn(`[BaselineManager] Préservation de la machine existante ${validation.conflictingMachineId} dans le dashboard`);
+              }
+            }
+          } else {
+            // La machine existe déjà, valider que ce n'est pas un conflit
+            const existingMachine = this.getMachineFromRegistry(this.config.machineId);
+            if (existingMachine && existingMachine.source !== 'dashboard') {
+              console.warn(`[BaselineManager] ATTENTION: Machine ${this.config.machineId} existe dans le dashboard mais provient de la source ${existingMachine.source}`);
+            }
           }
 
           return dashboard as RooSyncDashboard;
@@ -132,13 +334,32 @@ export class BaselineManager {
         }
 
         if (!existingDashboard.machines[this.config.machineId]) {
-          console.log(`[BaselineManager] Ajout de la machine ${this.config.machineId} au dashboard existant`);
-          existingDashboard.machines[this.config.machineId] = {
-            lastSync: now,
-            status: 'online',
-            diffsCount: totalDiffs,
-            pendingDecisions: 0
-          };
+          console.log(`[BaselineManager] Tentative d'ajout de la machine ${this.config.machineId} au dashboard existant (calculateDashboardFromBaseline)`);
+          
+          // Valider l'unicité avant d'ajouter
+          const validation = await this.addMachineToRegistry(this.config.machineId, 'dashboard');
+          
+          if (validation.isValid) {
+            existingDashboard.machines[this.config.machineId] = {
+              lastSync: now,
+              status: 'online',
+              diffsCount: totalDiffs,
+              pendingDecisions: 0
+            };
+            console.log(`[BaselineManager] Machine ${this.config.machineId} ajoutée avec succès au dashboard (calculateDashboardFromBaseline)`);
+          } else {
+            console.error(`[BaselineManager] ÉCHEC AJOUT DASHBOARD (calculate): ${validation.warningMessage}`);
+            // Ne pas écraser la machine existante, mais logger le conflit
+            if (validation.conflictingMachineId && existingDashboard.machines[validation.conflictingMachineId]) {
+              console.warn(`[BaselineManager] Préservation de la machine existante ${validation.conflictingMachineId} dans le dashboard (calculate)`);
+            }
+          }
+        } else {
+          // La machine existe déjà, valider que ce n'est pas un conflit
+          const existingMachine = this.getMachineFromRegistry(this.config.machineId);
+          if (existingMachine && existingMachine.source !== 'dashboard') {
+            console.warn(`[BaselineManager] ATTENTION (calculate): Machine ${this.config.machineId} existe dans le dashboard mais provient de la source ${existingMachine.source}`);
+          }
         }
 
         return existingDashboard as RooSyncDashboard;
@@ -362,5 +583,188 @@ export class BaselineManager {
         error: error instanceof Error ? error.message : String(error)
       };
     }
+  }
+
+  /**
+   * Crée une baseline non-nominative par agrégation
+   */
+  public async createNonNominativeBaseline(
+    name: string,
+    description: string,
+    aggregationConfig?: AggregationConfig
+  ): Promise<NonNominativeBaseline> {
+    if (!this.nonNominativeService) {
+      throw new RooSyncServiceError(
+        'Service non-nominatif non disponible',
+        'SERVICE_NOT_AVAILABLE'
+      );
+    }
+
+    // Collecter les inventaires de toutes les machines connues
+    const machineIds = Array.from(this.machineRegistry.machines.keys());
+    const inventories = [];
+
+    for (const machineId of machineIds) {
+      try {
+        const inventory = await this.baselineService['inventoryCollector'].collectInventory(machineId);
+        if (inventory) {
+          inventories.push(inventory);
+        }
+      } catch (error) {
+        console.warn(`[BaselineManager] Impossible de collecter l'inventaire pour ${machineId}:`, error);
+      }
+    }
+
+    // Configuration d'agrégation par défaut
+    const defaultAggregationConfig: AggregationConfig = {
+      sources: [
+        { type: 'machine_inventory', weight: 1.0, enabled: true },
+        { type: 'existing_baseline', weight: 0.5, enabled: true }
+      ],
+      categoryRules: {
+        'roo-core': { strategy: 'majority', confidenceThreshold: 0.7, autoApply: true },
+        'roo-advanced': { strategy: 'majority', confidenceThreshold: 0.6, autoApply: true },
+        'hardware-cpu': { strategy: 'latest', confidenceThreshold: 0.8, autoApply: true },
+        'hardware-memory': { strategy: 'latest', confidenceThreshold: 0.8, autoApply: true },
+        'hardware-storage': { strategy: 'latest', confidenceThreshold: 0.8, autoApply: true },
+        'hardware-gpu': { strategy: 'latest', confidenceThreshold: 0.8, autoApply: true },
+        'software-powershell': { strategy: 'majority', confidenceThreshold: 0.9, autoApply: true },
+        'software-node': { strategy: 'majority', confidenceThreshold: 0.9, autoApply: true },
+        'software-python': { strategy: 'majority', confidenceThreshold: 0.9, autoApply: true },
+        'system-os': { strategy: 'majority', confidenceThreshold: 0.8, autoApply: true },
+        'system-architecture': { strategy: 'majority', confidenceThreshold: 0.9, autoApply: true }
+      },
+      thresholds: {
+        deviationThreshold: 0.3,
+        complianceThreshold: 0.8,
+        outlierDetection: true
+      }
+    };
+
+    const config = aggregationConfig || defaultAggregationConfig;
+    return await this.nonNominativeService.aggregateBaseline(inventories, config);
+  }
+
+  /**
+   * Mappe une machine à la baseline non-nominative
+   */
+  public async mapMachineToNonNominativeBaseline(
+    machineId: string
+  ): Promise<MachineConfigurationMapping> {
+    if (!this.nonNominativeService) {
+      throw new RooSyncServiceError(
+        'Service non-nominatif non disponible',
+        'SERVICE_NOT_AVAILABLE'
+      );
+    }
+
+    // Collecter l'inventaire de la machine
+    const inventory = await this.baselineService['inventoryCollector'].collectInventory(machineId);
+    if (!inventory) {
+      throw new RooSyncServiceError(
+        `Impossible de collecter l'inventaire pour ${machineId}`,
+        'INVENTORY_COLLECTION_FAILED'
+      );
+    }
+
+    return await this.nonNominativeService.mapMachineToBaseline(machineId, inventory);
+  }
+
+  /**
+   * Compare plusieurs machines avec la baseline non-nominative
+   */
+  public async compareMachinesNonNominative(
+    machineIds: string[]
+  ): Promise<NonNominativeComparisonReport> {
+    if (!this.nonNominativeService) {
+      throw new RooSyncServiceError(
+        'Service non-nominatif non disponible',
+        'SERVICE_NOT_AVAILABLE'
+      );
+    }
+
+    // Convertir les machineIds en hashes
+    const machineHashes = machineIds.map(id => this.nonNominativeService!.generateMachineHash(id));
+    
+    return await this.nonNominativeService.compareMachines(machineHashes);
+  }
+
+  /**
+   * Migre depuis l'ancien système de baseline
+   */
+  public async migrateToNonNominative(
+    options: MigrationOptions = {
+      keepLegacyReferences: true,
+      machineMappingStrategy: 'hash',
+      autoValidate: true,
+      createBackup: true,
+      priorityCategories: ['roo-core', 'software-powershell', 'software-node', 'software-python']
+    }
+  ): Promise<any> {
+    if (!this.nonNominativeService) {
+      throw new RooSyncServiceError(
+        'Service non-nominatif non disponible',
+        'SERVICE_NOT_AVAILABLE'
+      );
+    }
+
+    try {
+      // Charger la baseline actuelle
+      const legacyBaseline = await this.baselineService.readBaselineFile();
+      if (!legacyBaseline) {
+        throw new RooSyncServiceError(
+          'Aucune baseline legacy trouvée pour la migration',
+          'BASELINE_NOT_FOUND'
+        );
+      }
+
+      // Effectuer la migration
+      const migrationResult = await this.nonNominativeService.migrateFromLegacy(legacyBaseline, options);
+
+      // Mettre à jour le registre des machines si nécessaire
+      if (migrationResult.success && options.keepLegacyReferences) {
+        console.log('[BaselineManager] Références legacy préservées lors de la migration');
+      }
+
+      return migrationResult;
+    } catch (error) {
+      throw new RooSyncServiceError(
+        `Échec de la migration: ${(error as Error).message}`,
+        'MIGRATION_FAILED'
+      );
+    }
+  }
+
+  /**
+   * Obtient l'état du système non-nominatif
+   */
+  public getNonNominativeState(): any {
+    if (!this.nonNominativeService) {
+      return null;
+    }
+
+    return this.nonNominativeService.getState();
+  }
+
+  /**
+   * Obtient la baseline non-nominative active
+   */
+  public getActiveNonNominativeBaseline(): NonNominativeBaseline | undefined {
+    if (!this.nonNominativeService) {
+      return undefined;
+    }
+
+    return this.nonNominativeService.getActiveBaseline();
+  }
+
+  /**
+   * Obtient tous les mappings de machines non-nominatives
+   */
+  public getNonNominativeMachineMappings(): MachineConfigurationMapping[] {
+    if (!this.nonNominativeService) {
+      return [];
+    }
+
+    return this.nonNominativeService.getMachineMappings();
   }
 }

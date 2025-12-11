@@ -236,7 +236,13 @@ export function registerListToolsHandler(server: Server): void {
                         },
                         required: ['message_id', 'body']
                     }
-                }
+                },
+                // Non-nominative baseline tools - RooSync v2.2
+                ...toolExports.nonNominativeBaselineTools.map(tool => ({
+                    name: tool.name,
+                    description: tool.description,
+                    inputSchema: tool.inputSchema
+                }))
             ] as any[],
         };
     });
@@ -600,6 +606,56 @@ export function registerCallToolHandler(
                    result = { content: [{ type: 'text', text: `Error: ${(error as Error).message}` }], isError: true };
                }
                break;
+           // Non-nominative baseline tools - RooSync v2.2
+           case toolExports.nonNominativeBaselineTools[0].name: // create_non_nominative_baseline
+               try {
+                   const result = await toolExports.nonNominativeBaselineTools[0].handler(args as any);
+                   return { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }] };
+               } catch (error) {
+                   return { content: [{ type: 'text', text: `Error: ${(error as Error).message}` }], isError: true };
+               }
+           case toolExports.nonNominativeBaselineTools[1].name: // map_machine_to_non_nominative_baseline
+               try {
+                   const result = await toolExports.nonNominativeBaselineTools[1].handler(args as any);
+                   return { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }] };
+               } catch (error) {
+                   return { content: [{ type: 'text', text: `Error: ${(error as Error).message}` }], isError: true };
+               }
+           case toolExports.nonNominativeBaselineTools[2].name: // compare_machines_non_nominative
+               try {
+                   const result = await toolExports.nonNominativeBaselineTools[2].handler(args as any);
+                   return { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }] };
+               } catch (error) {
+                   return { content: [{ type: 'text', text: `Error: ${(error as Error).message}` }], isError: true };
+               }
+           case toolExports.nonNominativeBaselineTools[3].name: // migrate_to_non_nominative
+               try {
+                   const result = await toolExports.nonNominativeBaselineTools[3].handler(args as any);
+                   return { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }] };
+               } catch (error) {
+                   return { content: [{ type: 'text', text: `Error: ${(error as Error).message}` }], isError: true };
+               }
+           case toolExports.nonNominativeBaselineTools[4].name: // get_non_nominative_baseline_state
+               try {
+                   const result = await toolExports.nonNominativeBaselineTools[4].handler(args as any);
+                   return { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }] };
+               } catch (error) {
+                   return { content: [{ type: 'text', text: `Error: ${(error as Error).message}` }], isError: true };
+               }
+           case toolExports.nonNominativeBaselineTools[5].name: // validate_non_nominative_baseline
+               try {
+                   const result = await toolExports.nonNominativeBaselineTools[5].handler(args as any);
+                   return { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }] };
+               } catch (error) {
+                   return { content: [{ type: 'text', text: `Error: ${(error as Error).message}` }], isError: true };
+               }
+           case toolExports.nonNominativeBaselineTools[6].name: // export_non_nominative_baseline
+               try {
+                   const result = await toolExports.nonNominativeBaselineTools[6].handler(args as any);
+                   return { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }] };
+               } catch (error) {
+                   return { content: [{ type: 'text', text: `Error: ${(error as Error).message}` }], isError: true };
+               }
            default:
                throw new Error(`Tool not found: ${name}`);
        }

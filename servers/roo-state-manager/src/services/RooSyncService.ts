@@ -10,7 +10,7 @@
 
 import { existsSync } from 'fs';
 import { join } from 'path';
-import { loadRooSyncConfig, RooSyncConfig } from '../config/roosync-config.js';
+import { loadRooSyncConfig, RooSyncConfig, validateMachineIdUniqueness, registerMachineId } from '../config/roosync-config.js';
 import {
   type RooSyncDecision,
   type RooSyncDashboard
@@ -28,6 +28,9 @@ import { SyncDecisionManager, DecisionExecutionResult } from './roosync/SyncDeci
 import { ConfigComparator } from './roosync/ConfigComparator.js';
 import { BaselineManager, RollbackRestoreResult } from './roosync/BaselineManager.js';
 import { MessageHandler } from './roosync/MessageHandler.js';
+import { PresenceManager } from './roosync/PresenceManager.js';
+import { IdentityManager } from './roosync/IdentityManager.js';
+import { NonNominativeBaselineService } from './roosync/NonNominativeBaselineService.js';
 
 // Re-export des types pour compatibilité
 export type { DecisionExecutionResult, RollbackRestoreResult };
@@ -82,33 +85,41 @@ export class RooSyncService {
   private configComparator: ConfigComparator;
   private baselineManager: BaselineManager;
   private messageHandler: MessageHandler;
+  private presenceManager: PresenceManager;
+  private identityManager: IdentityManager;
+  private nonNominativeBaselineService: NonNominativeBaselineService;
 
   /**
-   * Constructeur privé (Singleton)
-   */
-  private constructor(cacheOptions?: CacheOptions, config?: RooSyncConfig) {
-    // SDDD Debug: Logging direct dans fichier pour contourner le problème de visibilité
-    const debugLog = (message: string, data?: any) => {
-      const timestamp = new Date().toISOString();
-      const logEntry = `[${timestamp}] ${message}${data ? ` | ${JSON.stringify(data)}` : ''}\n`;
-
-      // Écrire directement dans un fichier de log
-      try {
-        const fs = require('fs');
-        const logPath = process.env.ROOSYNC_LOG_PATH || join(process.cwd(), 'debug-roosync-compare.log');
-        fs.appendFileSync(logPath, logEntry);
-      } catch (e) {
-        // Ignorer les erreurs de logging
-      }
-    };
-
-    debugLog('RooSyncService constructeur démarré');
-
-    try {
-      this.config = config || loadRooSyncConfig();
-      console.log('[DEBUG] RooSyncService config loaded:', this.config);
-      debugLog('Config chargée', { configLoaded: !!this.config });
-
+   /**
+    * Constructeur privé (Singleton)
+    */
+   private constructor(cacheOptions?: CacheOptions, config?: RooSyncConfig) {
+     // SDDD Debug: Logging direct dans fichier pour contourner le problème de visibilité
+     const debugLog = (message: string, data?: any) => {
+       const timestamp = new Date().toISOString();
+       const logEntry = `[${timestamp}] ${message}${data ? ` | ${JSON.stringify(data)}` : ''}\n`;
+ 
+       // Écrire directement dans un fichier de log
+       try {
+         const fs = require('fs');
+         const logPath = process.env.ROOSYNC_LOG_PATH || join(process.cwd(), 'debug-roosync-compare.log');
+         fs.appendFileSync(logPath, logEntry);
+       } catch (e) {
+         // Ignorer les erreurs de logging
+       }
+     };
+ 
+     debugLog('RooSyncService constructeur démarré');
+ 
+     try {
+       this.config = config || loadRooSyncConfig();
+       console.log('[DEBUG] RooSyncService config loaded:', this.config);
+       debugLog('Config chargée', { configLoaded: !!this.config });
+ 
+       // Validation d'unicité au démarrage du service (non bloquant)
+       this.validateServiceStartup().catch(error => {
+         console.error('[RooSyncService] Erreur validation démarrage (non bloquant):', error);
+       });
       this.cache = new Map();
       this.cacheOptions = {
         ttl: cacheOptions?.ttl ?? 30000, // 30 secondes par défaut
@@ -152,6 +163,9 @@ export class RooSyncService {
       this.configComparator = new ConfigComparator(this.config, this.baselineService);
       this.baselineManager = new BaselineManager(this.config, this.baselineService, this.configComparator);
       this.messageHandler = new MessageHandler(this.config);
+      this.presenceManager = new PresenceManager(this.config);
+      this.identityManager = new IdentityManager(this.config, this.presenceManager);
+      this.nonNominativeBaselineService = new NonNominativeBaselineService(this.config.sharedPath);
 
     } catch (error) {
       debugLog('ERREUR dans constructeur RooSyncService', {
@@ -165,6 +179,198 @@ export class RooSyncService {
       RooSyncService.instance = null;
 
       throw error;
+    }
+  }
+
+  /**
+   * Validation d'unicité au démarrage du service RooSync
+   */
+  private async validateServiceStartup(): Promise<void> {
+    try {
+      console.log(`[RooSyncService] Validation d'unicité pour machineId: ${this.config.machineId}`);
+      
+      // Valider l'unicité du machineId
+      const uniquenessValidation = await validateMachineIdUniqueness(
+        this.config.machineId,
+        this.config.sharedPath
+      );
+      
+      if (uniquenessValidation.conflictDetected) {
+        console.error(`[RooSyncService] ⚠️ CONFLIT D'IDENTITÉ DÉTECTÉ AU DÉMARRAGE:`);
+        console.error(`[RooSyncService] MachineId: ${this.config.machineId}`);
+        console.error(`[RooSyncService] Conflit avec: ${uniquenessValidation.existingEntry?.source} (première vue: ${uniquenessValidation.existingEntry?.firstSeen})`);
+        console.error(`[RooSyncService] ${uniquenessValidation.warningMessage}`);
+        
+        // Ne pas bloquer le démarrage mais logger clairement le conflit
+        console.warn(`[RooSyncService] Le service continue avec un conflit d'identité potentiel. Veuillez résoudre ce conflit manuellement.`);
+      } else {
+        console.log(`[RooSyncService] ✅ MachineId ${this.config.machineId} validé comme unique`);
+        
+        // Enregistrer la machine dans le registre
+        const registrationSuccess = await registerMachineId(
+          this.config.machineId,
+          this.config.sharedPath,
+          'service'
+        );
+        
+        if (registrationSuccess) {
+          console.log(`[RooSyncService] MachineId ${this.config.machineId} enregistré avec succès au démarrage`);
+        } else {
+          console.warn(`[RooSyncService] Échec d'enregistrement du machineId ${this.config.machineId} au démarrage`);
+        }
+      }
+      
+      // Validation supplémentaire des fichiers de présence avec PresenceManager
+      await this.validatePresenceFiles();
+      
+      // Mettre à jour la présence de la machine courante
+      const presenceUpdate = await this.presenceManager.updateCurrentPresence('online', 'code');
+      if (!presenceUpdate.success) {
+        console.warn(`[RooSyncService] Échec mise à jour présence: ${presenceUpdate.warningMessage}`);
+        if (presenceUpdate.conflictDetected) {
+          console.error(`[RooSyncService] Conflit de présence détecté: ${presenceUpdate.warningMessage}`);
+        }
+      }
+
+      // Synchroniser le registre d'identité central
+      try {
+        await this.identityManager.syncIdentityRegistry();
+      } catch (error) {
+        console.warn('[RooSyncService] Erreur synchronisation registre d\'identité (non bloquant):', error);
+      }
+      
+    } catch (error) {
+      console.error('[RooSyncService] Erreur lors validation démarrage:', error);
+      // Continuer le démarrage même en cas d'erreur de validation
+    }
+  }
+
+  /**
+   * Validation des fichiers de présence pour détecter les conflits avec PresenceManager
+   */
+  private async validatePresenceFiles(): Promise<void> {
+    try {
+      console.log(`[RooSyncService] Validation des fichiers de présence avec PresenceManager`);
+      
+      // Valider l'unicité des fichiers de présence
+      const uniquenessValidation = await this.presenceManager.validatePresenceUniqueness();
+      
+      if (!uniquenessValidation.isValid) {
+        console.error(`[RooSyncService] ⚠️ CONFLITS DE PRÉSENCE DÉTECTÉS:`);
+        for (const conflict of uniquenessValidation.conflicts) {
+          console.error(`[RooSyncService] ${conflict.warningMessage}`);
+        }
+        console.warn(`[RooSyncService] Des conflits de présence ont été détectés. Veuillez résoudre ces conflits manuellement.`);
+      } else {
+        console.log(`[RooSyncService] ✅ Aucun conflit de présence détecté`);
+      }
+      
+      // Vérifier le fichier de présence de la machine courante
+      const currentPresence = await this.presenceManager.readPresence(this.config.machineId);
+      if (currentPresence) {
+        if (currentPresence.id !== this.config.machineId) {
+          console.warn(`[RooSyncService] ⚠️ INCOHÉRENCE DÉTECTÉE: Le fichier de présence contient l'ID ${currentPresence.id} mais le service utilise ${this.config.machineId}`);
+        } else {
+          console.log(`[RooSyncService] ✅ Fichier de présence cohérent pour ${this.config.machineId}`);
+        }
+      } else {
+        console.log(`[RooSyncService] Aucun fichier de présence trouvé pour ${this.config.machineId}, création prévue`);
+      }
+      
+    } catch (error) {
+      console.warn('[RooSyncService] Erreur validation fichiers de présence:', error);
+    }
+  }
+
+  /**
+   * Obtenir le gestionnaire de présence
+   */
+  public getPresenceManager(): PresenceManager {
+    return this.presenceManager;
+  }
+
+  /**
+   * Obtenir le gestionnaire d'identité
+   */
+  public getIdentityManager(): IdentityManager {
+    return this.identityManager;
+  }
+
+  /**
+   * Valider toutes les identités du système
+   */
+  public async validateAllIdentities(): Promise<{
+    isValid: boolean;
+    conflicts: Array<{
+      machineId: string;
+      sources: string[];
+      warningMessage: string;
+    }>;
+    recommendations: string[];
+  }> {
+    try {
+      const validation = await this.identityManager.validateIdentities();
+      
+      if (!validation.isValid) {
+        console.error('[RooSyncService] ⚠️ VALIDATION IDENTITÉS - PROBLÈMES DÉTECTÉS:');
+        for (const conflict of validation.conflicts) {
+          console.error(`[RooSyncService] ${conflict.warningMessage}`);
+        }
+        for (const recommendation of validation.recommendations) {
+          console.info(`[RooSyncService] 💡 ${recommendation}`);
+        }
+      } else {
+        console.log('[RooSyncService] ✅ VALIDATION IDENTITÉS - Aucun problème détecté');
+      }
+      
+      return validation;
+    } catch (error) {
+      console.error('[RooSyncService] Erreur validation identités:', error);
+      return {
+        isValid: false,
+        conflicts: [],
+        recommendations: ['Erreur lors de la validation des identités']
+      };
+    }
+  }
+
+  /**
+   * Nettoyer les identités orphelines ou en conflit
+   */
+  public async cleanupIdentities(options: {
+    removeOrphaned?: boolean;
+    resolveConflicts?: boolean;
+    dryRun?: boolean;
+  } = {}): Promise<{
+    removed: string[];
+    resolved: string[];
+    errors: string[];
+  }> {
+    try {
+      console.log('[RooSyncService] Nettoyage des identités avec options:', options);
+      
+      const result = await this.identityManager.cleanupIdentities(options);
+      
+      if (result.removed.length > 0) {
+        console.log(`[RooSyncService] ${options.dryRun ? '[DRY RUN] ' : ''}Identités orphelines supprimées: ${result.removed.join(', ')}`);
+      }
+      
+      if (result.resolved.length > 0) {
+        console.log(`[RooSyncService] ${options.dryRun ? '[DRY RUN] ' : ''}Conflits d'identité résolus: ${result.resolved.join(', ')}`);
+      }
+      
+      if (result.errors.length > 0) {
+        console.error('[RooSyncService] Erreurs lors du nettoyage:', result.errors);
+      }
+      
+      return result;
+    } catch (error) {
+      console.error('[RooSyncService] Erreur nettoyage identités:', error);
+      return {
+        removed: [],
+        resolved: [],
+        errors: [`Erreur nettoyage: ${error instanceof Error ? error.message : String(error)}`]
+      };
     }
   }
 
@@ -249,7 +455,7 @@ export class RooSyncService {
 
     // Mettre à jour les références dans les modules
     this.configComparator = new ConfigComparator(this.config, this.baselineService);
-    this.baselineManager = new BaselineManager(this.config, this.baselineService, this.configComparator);
+    this.baselineManager = new BaselineManager(this.config, this.baselineService, this.configComparator, this.nonNominativeBaselineService);
 
     // Vider le cache de l'InventoryCollector aussi
     this.inventoryCollector.clearCache();
@@ -431,6 +637,66 @@ export class RooSyncService {
    */
   async generateDecisionsFromReport(report: any): Promise<number> {
     return this.syncDecisionManager.generateDecisionsFromReport(report);
+  }
+
+  /**
+   * Obtient le service de baseline non-nominatif
+   */
+  public getNonNominativeBaselineService(): NonNominativeBaselineService {
+    return this.nonNominativeBaselineService;
+  }
+
+  /**
+   * Crée une baseline non-nominative par agrégation
+   */
+  public async createNonNominativeBaseline(
+    name: string,
+    description: string,
+    aggregationConfig?: any
+  ): Promise<any> {
+    return await this.baselineManager.createNonNominativeBaseline(name, description, aggregationConfig);
+  }
+
+  /**
+   * Mappe une machine à la baseline non-nominative
+   */
+  public async mapMachineToNonNominativeBaseline(machineId: string): Promise<any> {
+    return await this.baselineManager.mapMachineToNonNominativeBaseline(machineId);
+  }
+
+  /**
+   * Compare plusieurs machines avec la baseline non-nominative
+   */
+  public async compareMachinesNonNominative(machineIds: string[]): Promise<any> {
+    return await this.baselineManager.compareMachinesNonNominative(machineIds);
+  }
+
+  /**
+   * Migre vers le système non-nominatif
+   */
+  public async migrateToNonNominative(options?: any): Promise<any> {
+    return await this.baselineManager.migrateToNonNominative(options);
+  }
+
+  /**
+   * Obtient l'état du système non-nominatif
+   */
+  public getNonNominativeState(): any {
+    return this.baselineManager.getNonNominativeState();
+  }
+
+  /**
+   * Obtient la baseline non-nominative active
+   */
+  public getActiveNonNominativeBaseline(): any {
+    return this.baselineManager.getActiveNonNominativeBaseline();
+  }
+
+  /**
+   * Obtient tous les mappings de machines non-nominatives
+   */
+  public getNonNominativeMachineMappings(): any[] {
+    return this.baselineManager.getNonNominativeMachineMappings();
   }
 }
 
