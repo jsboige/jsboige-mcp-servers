@@ -19,10 +19,11 @@ jobs:
     - name: Set up Node.js
       run: |
         curl -fsSL https://nodejs.org/dist/v20.18.0/node-v20.18.0-linux-x64.tar.xz | tar -xzf -
-        sudo mv node-v20.18.0-linux-x64 /usr/local/bin/node
-        echo "export PATH=/usr/local/bin:$PATH" >> $GITHUB_ENV
-        echo "/usr/local/bin/node --version" >> $GITHUB_ENV
+        cd node-v20.18.0-linux-x64
+        sudo cp -R * /usr/local/
+        cd ..
         node --version
+        npm --version
     
     - name: Install dependencies
       run: |
@@ -80,11 +81,11 @@ jobs:
         curl -fsSL https://nodejs.org/dist/v${NODE_VERSION}/node-v${NODE_VERSION}-linux-x64.tar.xz | tar -xzf -
         
         # Install Node.js to standard location
-        sudo mv node-v${NODE_VERSION}-linux-x64 /usr/local/bin/node
+        cd node-v${NODE_VERSION}-linux-x64
+        sudo cp -R * /usr/local/
+        cd ..
         
-        # Set up PATH and verify installation
-        echo "export PATH=/usr/local/bin:$PATH" >> $GITHUB_ENV
-        echo "/usr/local/bin/node --version" >> $GITHUB_ENV
+        # Verify installation
         node --version
         
         # Verify Node.js is working
