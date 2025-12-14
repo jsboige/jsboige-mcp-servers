@@ -101,6 +101,11 @@ export function registerListToolsHandler(server: Server): void {
                     inputSchema: toolExports.getConversationSynthesisTool.inputSchema,
                 },
                 toolExports.exportTaskTreeMarkdownTool,
+                
+                // Diagnostic Tools - WP4
+                toolExports.analyze_roosync_problems,
+                toolExports.diagnose_env,
+
                 // RooSync tools - Batch 6 synchronization
                 ...toolExports.roosyncTools,
                 // RooSync Messaging tools - Phase 1
@@ -402,6 +407,15 @@ export function registerCallToolHandler(
                   state.conversationCache
               );
               break;
+
+          // Diagnostic Tools - WP4
+          case toolExports.analyze_roosync_problems.name:
+              result = await toolExports.analyzeRooSyncProblems(args as any);
+              break;
+          case toolExports.diagnose_env.name:
+              result = await toolExports.diagnoseEnv(args as any);
+              break;
+
           // RooSync tools - Batch 6 synchronization
           case 'roosync_get_status':
               try {
