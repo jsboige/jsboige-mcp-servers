@@ -10,11 +10,11 @@
     "test": "npm run test:all",
     "test:all": "npm run test:quickfiles && npm run test:jupyter && npm run test:jinavigator",
     "test:quickfiles": "cd servers/quickfiles-server && npm test",
-    "test:jupyter": "cd servers/jupyter-mcp-server && npm test",
+    "test:jupyter": "cd servers/jupyter-papermill-mcp-server && python -m pytest",
     "test:jinavigator": "cd servers/jinavigator-server && npm test",
     "test:coverage": "npm run test:quickfiles:coverage && npm run test:jupyter:coverage && npm run test:jinavigator:coverage",
     "test:quickfiles:coverage": "cd servers/quickfiles-server && npm run test:coverage",
-    "test:jupyter:coverage": "cd servers/jupyter-mcp-server && npm run test:coverage",
+    "test:jupyter:coverage": "cd servers/jupyter-papermill-mcp-server && python -m pytest --cov=papermill_mcp",
     "test:jinavigator:coverage": "cd servers/jinavigator-server && npm run test:coverage",
     "commit": "node scripts/commit-and-push.js"
   },
