@@ -36,7 +36,7 @@ describe('minimal_test_tool', () => {
             message: ''
         };
 
-        const result = await minimal_test_tool.execute(args);
+        const result = await (minimal_test_tool as any).execute(args);
 
         expect(result.content[0].text).toContain('Message:');
     });
@@ -46,7 +46,7 @@ describe('minimal_test_tool', () => {
             message: 'Test validation'
         };
 
-        const result = await minimal_test_tool.execute(args);
+        const result = await (minimal_test_tool as any).execute(args);
 
         expect(result.content[0].text).toContain('# Test Minimal MCP');
         expect(result.content[0].text).toContain('**Status:** Succès');

@@ -8,26 +8,32 @@
  * @version 2.0.0
  */
 
-import { existsSync, readFileSync, promises as fs } from 'fs';
+import { existsSync } from 'fs';
 import { join } from 'path';
-import { loadRooSyncConfig, RooSyncConfig } from '../config/roosync-config.js';
+import { loadRooSyncConfig, RooSyncConfig, validateMachineIdUniqueness, registerMachineId } from '../config/roosync-config.js';
 import {
-  parseRoadmapMarkdown,
-  parseDashboardJson,
-  parseConfigJson,
-  filterDecisionsByStatus,
-  filterDecisionsByMachine,
-  findDecisionById,
   type RooSyncDecision,
   type RooSyncDashboard
 } from '../utils/roosync-parsers.js';
-import { PowerShellExecutor, type PowerShellExecutionResult } from './PowerShellExecutor.js';
+import { PowerShellExecutor } from './PowerShellExecutor.js';
 import { InventoryCollector, type MachineInventory } from './InventoryCollector.js';
 import { DiffDetector } from './DiffDetector.js';
 import { BaselineService } from './BaselineService.js';
 import { ConfigService } from './ConfigService.js';
 import { InventoryCollectorWrapper } from './InventoryCollectorWrapper.js';
 import { ConfigSharingService } from './ConfigSharingService.js';
+
+// Nouveaux modules
+import { SyncDecisionManager, DecisionExecutionResult } from './roosync/SyncDecisionManager.js';
+import { ConfigComparator } from './roosync/ConfigComparator.js';
+import { BaselineManager, RollbackRestoreResult } from './roosync/BaselineManager.js';
+import { MessageHandler } from './roosync/MessageHandler.js';
+import { PresenceManager } from './roosync/PresenceManager.js';
+import { IdentityManager } from './roosync/IdentityManager.js';
+import { NonNominativeBaselineService } from './roosync/NonNominativeBaselineService.js';
+
+// Re-export des types pour compatibilité
+export type { DecisionExecutionResult, RollbackRestoreResult };
 
 /**
  * Options de cache pour RooSyncService
@@ -46,47 +52,6 @@ export interface CacheOptions {
 interface CacheEntry<T> {
   data: T;
   timestamp: number;
-}
-
-/**
- * Résultat d'exécution de décision
- */
-export interface DecisionExecutionResult {
-  /** Succès de l'exécution */
-  success: boolean;
-
-  /** Logs d'exécution */
-  logs: string[];
-
-  /** Changements appliqués */
-  changes: {
-    filesModified: string[];
-    filesCreated: string[];
-    filesDeleted: string[];
-  };
-
-  /** Temps d'exécution en millisecondes */
-  executionTime: number;
-
-  /** Message d'erreur si échec */
-  error?: string;
-}
-
-/**
- * Résultat de restauration rollback
- */
-export interface RollbackRestoreResult {
-  /** Succès de la restauration */
-  success: boolean;
-
-  /** Fichiers restaurés */
-  restoredFiles: string[];
-
-  /** Logs de restauration */
-  logs: string[];
-
-  /** Message d'erreur si échec */
-  error?: string;
 }
 
 /**
@@ -115,32 +80,46 @@ export class RooSyncService {
   private configService: ConfigService;
   private configSharingService: ConfigSharingService;
 
+  // Modules délégués
+  private syncDecisionManager: SyncDecisionManager;
+  private configComparator: ConfigComparator;
+  private baselineManager: BaselineManager;
+  private messageHandler: MessageHandler;
+  private presenceManager: PresenceManager;
+  private identityManager: IdentityManager;
+  private nonNominativeBaselineService: NonNominativeBaselineService;
+
   /**
-   * Constructeur privé (Singleton)
-   */
-  private constructor(cacheOptions?: CacheOptions, config?: RooSyncConfig) {
-    // SDDD Debug: Logging direct dans fichier pour contourner le problème de visibilité
-    const debugLog = (message: string, data?: any) => {
-      const timestamp = new Date().toISOString();
-      const logEntry = `[${timestamp}] ${message}${data ? ` | ${JSON.stringify(data)}` : ''}\n`;
-
-      // Écrire directement dans un fichier de log
-      try {
-        const fs = require('fs');
-        const logPath = process.env.ROOSYNC_LOG_PATH || join(process.cwd(), 'debug-roosync-compare.log');
-        fs.appendFileSync(logPath, logEntry);
-      } catch (e) {
-        // Ignorer les erreurs de logging
-      }
-    };
-
-    debugLog('RooSyncService constructeur démarré');
-
-    try {
-      this.config = config || loadRooSyncConfig();
-      console.log('[DEBUG] RooSyncService config loaded:', this.config);
-      debugLog('Config chargée', { configLoaded: !!this.config });
-
+   /**
+    * Constructeur privé (Singleton)
+    */
+   private constructor(cacheOptions?: CacheOptions, config?: RooSyncConfig) {
+     // SDDD Debug: Logging direct dans fichier pour contourner le problème de visibilité
+     const debugLog = (message: string, data?: any) => {
+       const timestamp = new Date().toISOString();
+       const logEntry = `[${timestamp}] ${message}${data ? ` | ${JSON.stringify(data)}` : ''}\n`;
+ 
+       // Écrire directement dans un fichier de log
+       try {
+         const fs = require('fs');
+         const logPath = process.env.ROOSYNC_LOG_PATH || join(process.cwd(), 'debug-roosync-compare.log');
+         fs.appendFileSync(logPath, logEntry);
+       } catch (e) {
+         // Ignorer les erreurs de logging
+       }
+     };
+ 
+     debugLog('RooSyncService constructeur démarré');
+ 
+     try {
+       this.config = config || loadRooSyncConfig();
+       console.log('[DEBUG] RooSyncService config loaded:', this.config);
+       debugLog('Config chargée', { configLoaded: !!this.config });
+ 
+       // Validation d'unicité au démarrage du service (non bloquant)
+       this.validateServiceStartup().catch(error => {
+         console.error('[RooSyncService] Erreur validation démarrage (non bloquant):', error);
+       });
       this.cache = new Map();
       this.cacheOptions = {
         ttl: cacheOptions?.ttl ?? 30000, // 30 secondes par défaut
@@ -179,6 +158,15 @@ export class RooSyncService {
         this.inventoryCollector as any
       );
 
+      // Initialisation des nouveaux modules
+      this.syncDecisionManager = new SyncDecisionManager(this.config, this.powershellExecutor);
+      this.configComparator = new ConfigComparator(this.config, this.baselineService);
+      this.baselineManager = new BaselineManager(this.config, this.baselineService, this.configComparator);
+      this.messageHandler = new MessageHandler(this.config);
+      this.presenceManager = new PresenceManager(this.config);
+      this.identityManager = new IdentityManager(this.config, this.presenceManager);
+      this.nonNominativeBaselineService = new NonNominativeBaselineService(this.config.sharedPath);
+
     } catch (error) {
       debugLog('ERREUR dans constructeur RooSyncService', {
         errorType: typeof error,
@@ -191,6 +179,198 @@ export class RooSyncService {
       RooSyncService.instance = null;
 
       throw error;
+    }
+  }
+
+  /**
+   * Validation d'unicité au démarrage du service RooSync
+   */
+  private async validateServiceStartup(): Promise<void> {
+    try {
+      console.log(`[RooSyncService] Validation d'unicité pour machineId: ${this.config.machineId}`);
+      
+      // Valider l'unicité du machineId
+      const uniquenessValidation = await validateMachineIdUniqueness(
+        this.config.machineId,
+        this.config.sharedPath
+      );
+      
+      if (uniquenessValidation.conflictDetected) {
+        console.error(`[RooSyncService] ⚠️ CONFLIT D'IDENTITÉ DÉTECTÉ AU DÉMARRAGE:`);
+        console.error(`[RooSyncService] MachineId: ${this.config.machineId}`);
+        console.error(`[RooSyncService] Conflit avec: ${uniquenessValidation.existingEntry?.source} (première vue: ${uniquenessValidation.existingEntry?.firstSeen})`);
+        console.error(`[RooSyncService] ${uniquenessValidation.warningMessage}`);
+        
+        // Ne pas bloquer le démarrage mais logger clairement le conflit
+        console.warn(`[RooSyncService] Le service continue avec un conflit d'identité potentiel. Veuillez résoudre ce conflit manuellement.`);
+      } else {
+        console.log(`[RooSyncService] ✅ MachineId ${this.config.machineId} validé comme unique`);
+        
+        // Enregistrer la machine dans le registre
+        const registrationSuccess = await registerMachineId(
+          this.config.machineId,
+          this.config.sharedPath,
+          'service'
+        );
+        
+        if (registrationSuccess) {
+          console.log(`[RooSyncService] MachineId ${this.config.machineId} enregistré avec succès au démarrage`);
+        } else {
+          console.warn(`[RooSyncService] Échec d'enregistrement du machineId ${this.config.machineId} au démarrage`);
+        }
+      }
+      
+      // Validation supplémentaire des fichiers de présence avec PresenceManager
+      await this.validatePresenceFiles();
+      
+      // Mettre à jour la présence de la machine courante
+      const presenceUpdate = await this.presenceManager.updateCurrentPresence('online', 'code');
+      if (!presenceUpdate.success) {
+        console.warn(`[RooSyncService] Échec mise à jour présence: ${presenceUpdate.warningMessage}`);
+        if (presenceUpdate.conflictDetected) {
+          console.error(`[RooSyncService] Conflit de présence détecté: ${presenceUpdate.warningMessage}`);
+        }
+      }
+
+      // Synchroniser le registre d'identité central
+      try {
+        await this.identityManager.syncIdentityRegistry();
+      } catch (error) {
+        console.warn('[RooSyncService] Erreur synchronisation registre d\'identité (non bloquant):', error);
+      }
+      
+    } catch (error) {
+      console.error('[RooSyncService] Erreur lors validation démarrage:', error);
+      // Continuer le démarrage même en cas d'erreur de validation
+    }
+  }
+
+  /**
+   * Validation des fichiers de présence pour détecter les conflits avec PresenceManager
+   */
+  private async validatePresenceFiles(): Promise<void> {
+    try {
+      console.log(`[RooSyncService] Validation des fichiers de présence avec PresenceManager`);
+      
+      // Valider l'unicité des fichiers de présence
+      const uniquenessValidation = await this.presenceManager.validatePresenceUniqueness();
+      
+      if (!uniquenessValidation.isValid) {
+        console.error(`[RooSyncService] ⚠️ CONFLITS DE PRÉSENCE DÉTECTÉS:`);
+        for (const conflict of uniquenessValidation.conflicts) {
+          console.error(`[RooSyncService] ${conflict.warningMessage}`);
+        }
+        console.warn(`[RooSyncService] Des conflits de présence ont été détectés. Veuillez résoudre ces conflits manuellement.`);
+      } else {
+        console.log(`[RooSyncService] ✅ Aucun conflit de présence détecté`);
+      }
+      
+      // Vérifier le fichier de présence de la machine courante
+      const currentPresence = await this.presenceManager.readPresence(this.config.machineId);
+      if (currentPresence) {
+        if (currentPresence.id !== this.config.machineId) {
+          console.warn(`[RooSyncService] ⚠️ INCOHÉRENCE DÉTECTÉE: Le fichier de présence contient l'ID ${currentPresence.id} mais le service utilise ${this.config.machineId}`);
+        } else {
+          console.log(`[RooSyncService] ✅ Fichier de présence cohérent pour ${this.config.machineId}`);
+        }
+      } else {
+        console.log(`[RooSyncService] Aucun fichier de présence trouvé pour ${this.config.machineId}, création prévue`);
+      }
+      
+    } catch (error) {
+      console.warn('[RooSyncService] Erreur validation fichiers de présence:', error);
+    }
+  }
+
+  /**
+   * Obtenir le gestionnaire de présence
+   */
+  public getPresenceManager(): PresenceManager {
+    return this.presenceManager;
+  }
+
+  /**
+   * Obtenir le gestionnaire d'identité
+   */
+  public getIdentityManager(): IdentityManager {
+    return this.identityManager;
+  }
+
+  /**
+   * Valider toutes les identités du système
+   */
+  public async validateAllIdentities(): Promise<{
+    isValid: boolean;
+    conflicts: Array<{
+      machineId: string;
+      sources: string[];
+      warningMessage: string;
+    }>;
+    recommendations: string[];
+  }> {
+    try {
+      const validation = await this.identityManager.validateIdentities();
+      
+      if (!validation.isValid) {
+        console.error('[RooSyncService] ⚠️ VALIDATION IDENTITÉS - PROBLÈMES DÉTECTÉS:');
+        for (const conflict of validation.conflicts) {
+          console.error(`[RooSyncService] ${conflict.warningMessage}`);
+        }
+        for (const recommendation of validation.recommendations) {
+          console.info(`[RooSyncService] 💡 ${recommendation}`);
+        }
+      } else {
+        console.log('[RooSyncService] ✅ VALIDATION IDENTITÉS - Aucun problème détecté');
+      }
+      
+      return validation;
+    } catch (error) {
+      console.error('[RooSyncService] Erreur validation identités:', error);
+      return {
+        isValid: false,
+        conflicts: [],
+        recommendations: ['Erreur lors de la validation des identités']
+      };
+    }
+  }
+
+  /**
+   * Nettoyer les identités orphelines ou en conflit
+   */
+  public async cleanupIdentities(options: {
+    removeOrphaned?: boolean;
+    resolveConflicts?: boolean;
+    dryRun?: boolean;
+  } = {}): Promise<{
+    removed: string[];
+    resolved: string[];
+    errors: string[];
+  }> {
+    try {
+      console.log('[RooSyncService] Nettoyage des identités avec options:', options);
+      
+      const result = await this.identityManager.cleanupIdentities(options);
+      
+      if (result.removed.length > 0) {
+        console.log(`[RooSyncService] ${options.dryRun ? '[DRY RUN] ' : ''}Identités orphelines supprimées: ${result.removed.join(', ')}`);
+      }
+      
+      if (result.resolved.length > 0) {
+        console.log(`[RooSyncService] ${options.dryRun ? '[DRY RUN] ' : ''}Conflits d'identité résolus: ${result.resolved.join(', ')}`);
+      }
+      
+      if (result.errors.length > 0) {
+        console.error('[RooSyncService] Erreurs lors du nettoyage:', result.errors);
+      }
+      
+      return result;
+    } catch (error) {
+      console.error('[RooSyncService] Erreur nettoyage identités:', error);
+      return {
+        removed: [],
+        resolved: [],
+        errors: [`Erreur nettoyage: ${error instanceof Error ? error.message : String(error)}`]
+      };
     }
   }
 
@@ -273,6 +453,10 @@ export class RooSyncService {
       this.diffDetector
     );
 
+    // Mettre à jour les références dans les modules
+    this.configComparator = new ConfigComparator(this.config, this.baselineService);
+    this.baselineManager = new BaselineManager(this.config, this.baselineService, this.configComparator, this.nonNominativeBaselineService);
+
     // Vider le cache de l'InventoryCollector aussi
     this.inventoryCollector.clearCache();
 
@@ -335,247 +519,28 @@ export class RooSyncService {
    * Charger le dashboard RooSync
    */
   public async loadDashboard(): Promise<RooSyncDashboard> {
-    return this.getOrCache('dashboard', async () => {
-      console.log('[RooSyncService] loadDashboard appelée à', new Date().toISOString());
-
-      // Vérifier d'abord si le dashboard existe déjà
-      const dashboardPath = this.getRooSyncFilePath('sync-dashboard.json');
-      if (existsSync(dashboardPath)) {
-        console.log('[RooSyncService] Dashboard existant trouvé, chargement depuis:', dashboardPath);
-        try {
-          const dashboardContent = readFileSync(dashboardPath, 'utf-8');
-          const dashboard = JSON.parse(dashboardContent);
-          console.log('[RooSyncService] Dashboard chargé avec succès depuis le fichier existant');
-
-          // S'assurer que le dashboard a bien la propriété machines
-          if (!dashboard.machines) {
-            console.log('[RooSyncService] Dashboard existant sans propriété machines, ajout de la machine courante');
-            dashboard.machines = {};
-          }
-
-          // S'assurer que la machine courante existe dans le dashboard
-          if (!dashboard.machines[this.config.machineId]) {
-            console.log(`[RooSyncService] Ajout de la machine ${this.config.machineId} au dashboard existant`);
-            dashboard.machines[this.config.machineId] = {
-              lastSync: new Date().toISOString(),
-              status: 'online',
-              diffsCount: 0,
-              pendingDecisions: 0
-            };
-          }
-
-          return dashboard as RooSyncDashboard;
-        } catch (error) {
-          console.warn('[RooSyncService] Erreur lecture dashboard existant, recalcule depuis baseline:', error);
-        }
-      }
-
-      return this.calculateDashboardFromBaseline();
-    });
-  }
-
-  /**
-   * Calcule le dashboard à partir de la baseline (logique extraite de loadDashboard)
-   */
-  private async calculateDashboardFromBaseline(): Promise<RooSyncDashboard> {
-    console.log('[RooSyncService] calculateDashboardFromBaseline - début de la méthode');
-    const dashboardPath = this.getRooSyncFilePath('sync-dashboard.json');
-
-    // CORRECTION SDDD: Ne plus vider le cache agressivement
-    // Le cache clearing systématique causait l'incohérence entre loadDashboard() et listDiffs()
-    // Maintenant on utilise le même BaselineService que les autres méthodes
-
-    // S'assurer que la baseline est chargée (sans forcer la recréation du service)
-    await this.baselineService.loadBaseline();
-
-    // CORRECTION SDDD: Utiliser exactement la même logique que listDiffs()
-    // pour garantir la cohérence baseline-driven
-    console.log('[RooSyncService] loadDashboard - Utilisation logique baseline-driven comme listDiffs()');
-
-    let totalDiffs = 0; // Initialiser pour éviter les erreurs TypeScript
-
-    // Récupérer la baseline (sans recréer le service)
-    const baseline = await this.baselineService.loadBaseline();
-
-    // Identifier toutes les machines comme dans listDiffs()
-    const allMachines = new Set<string>();
-
-    if (!baseline) {
-      console.log('[RooSyncService] loadDashboard - Aucune baseline trouvée');
-      totalDiffs = 0;
-    } else {
-      // Ajouter la machine principale de la baseline
-      if (baseline.machineId) {
-        allMachines.add(baseline.machineId);
-      }
-
-      // Note: Les machines individuelles ne sont plus accessibles directement depuis BaselineConfig
-      // Seule la machine principale est disponible via baseline.machineId
-
-      // Ajouter la machine courante si différente
-      if (this.config.machineId && !allMachines.has(this.config.machineId)) {
-        allMachines.add(this.config.machineId);
-      }
-
-      console.log('[RooSyncService] loadDashboard - allMachines trouvées:', Array.from(allMachines));
-
-      const allDiffs: Array<{
-        type: string;
-        path: string;
-        description: string;
-        machines: string[];
-      }> = [];
-
-      // Comparer chaque machine avec la baseline (exactement comme listDiffs)
-      for (const machineId of Array.from(allMachines)) {
-        try {
-          const comparisonReport = await this.baselineService.compareWithBaseline(machineId);
-
-          if (comparisonReport && comparisonReport.differences.length > 0) {
-            comparisonReport.differences.forEach(d => {
-              const existingDiff = allDiffs.find(existing =>
-                existing.type === d.category && existing.path === d.path
-              );
-
-              if (existingDiff) {
-                if (!existingDiff.machines.includes(machineId)) {
-                  existingDiff.machines.push(machineId);
-                }
-              } else {
-                allDiffs.push({
-                  type: d.category,
-                  path: d.path,
-                  description: d.description,
-                  machines: [machineId]
-                });
-              }
-            });
-          }
-        } catch (error) {
-          console.warn(`[RooSyncService] Impossible de comparer la machine ${machineId} avec la baseline`, error);
-        }
-      }
-
-      totalDiffs = allDiffs.length;
-
-      console.log('[RooSyncService] loadDashboard - différences détectées:', {
-        totalDiffs,
-        diffs: allDiffs.map(d => ({ type: d.type, machines: d.machines }))
-      });
-    }
-
-    const now = new Date().toISOString();
-
-    // Si un dashboard existe déjà, l'utiliser et s'assurer que la machine courante est présente
-    if (existsSync(dashboardPath)) {
-      try {
-        const dashboardContent = readFileSync(dashboardPath, 'utf-8');
-        const existingDashboard = JSON.parse(dashboardContent);
-        console.log('[RooSyncService] Dashboard existant trouvé, vérification de la machine courante');
-
-        // S'assurer que la machine courante existe dans le dashboard
-        if (!existingDashboard.machines) {
-          existingDashboard.machines = {};
-        }
-
-        if (!existingDashboard.machines[this.config.machineId]) {
-          console.log(`[RooSyncService] Ajout de la machine ${this.config.machineId} au dashboard existant`);
-          existingDashboard.machines[this.config.machineId] = {
-            lastSync: now,
-            status: 'online',
-            diffsCount: totalDiffs,
-            pendingDecisions: 0
-          };
-        }
-
-        return existingDashboard as RooSyncDashboard;
-      } catch (error) {
-        console.warn('[RooSyncService] Erreur lecture dashboard existant, fallback sur calcul:', error);
-      }
-    }
-
-    // Créer le résultat basé sur les données réelles de listDiffs
-    // Utiliser les machines depuis la baseline pour les tests
-    const machinesArray = Array.from(allMachines).map(machineId => ({
-      id: machineId,
-      status: 'online' as const,
-      lastSync: now,
-      pendingDecisions: 0,
-      diffsCount: totalDiffs // Utiliser le nombre réel de différences
-    }));
-
-    const summary = {
-      totalMachines: allMachines.size,
-      onlineMachines: allMachines.size, // Pour les tests, on considère tout comme online
-      totalDiffs: totalDiffs, // Utiliser directement le nombre réel
-      totalPendingDecisions: 0
-    };
-
-    console.log('[RooSyncService] loadDashboard - machinesArray:', JSON.stringify(machinesArray, null, 2));
-    console.log('[RooSyncService] loadDashboard - summary:', JSON.stringify(summary, null, 2));
-
-    const result = {
-      version: '2.1.0',
-      lastUpdate: now,
-      overallStatus: (totalDiffs > 0 ? 'diverged' : 'synced') as 'diverged' | 'synced' | 'conflict' | 'unknown',
-      lastSync: now,
-      status: (totalDiffs > 0 ? 'diverged' : 'synced') as 'diverged' | 'synced' | 'conflict' | 'unknown',
-      machines: machinesArray.reduce((acc, machine) => {
-        acc[machine.id] = {
-          lastSync: machine.lastSync,
-          status: machine.status,
-          diffsCount: machine.diffsCount,
-          pendingDecisions: machine.pendingDecisions
-        };
-        return acc;
-      }, {} as Record<string, any>),
-      stats: {
-        totalDiffs: totalDiffs,
-        totalDecisions: totalDiffs,
-        appliedDecisions: 0,
-        pendingDecisions: 0
-      },
-      // Ajouter les champs utilisés par get-status.ts
-      machinesArray,
-      summary
-    };
-
-    console.log('[RooSyncService] loadDashboard - RESULTAT FINAL:', JSON.stringify(result, null, 2));
-
-    // S'assurer que le résultat a bien la propriété machines
-    if (!result.machines) {
-      console.error('[RooSyncService] ERREUR: Le résultat n\'a pas de propriété machines !');
-      result.machines = {};
-    }
-
-    return result as RooSyncDashboard;
+    return this.baselineManager.loadDashboard(this.getOrCache.bind(this));
   }
 
   /**
    * Charger toutes les décisions de la roadmap
    */
   public async loadDecisions(): Promise<RooSyncDecision[]> {
-    return this.getOrCache('decisions', () => {
-      this.checkFileExists('sync-roadmap.md');
-      return parseRoadmapMarkdown(this.getRooSyncFilePath('sync-roadmap.md'));
-    });
+    return this.getOrCache('decisions', () => this.syncDecisionManager.loadDecisions());
   }
 
   /**
    * Charger les décisions en attente pour cette machine
    */
   public async loadPendingDecisions(): Promise<RooSyncDecision[]> {
-    const allDecisions = await this.loadDecisions();
-    const pending = filterDecisionsByStatus(allDecisions, 'pending');
-    return filterDecisionsByMachine(pending, this.config.machineId);
+    return this.syncDecisionManager.loadPendingDecisions();
   }
 
   /**
    * Obtenir une décision par ID
    */
   public async getDecision(id: string): Promise<RooSyncDecision | null> {
-    const decisions = await this.loadDecisions();
-    return findDecisionById(decisions, id) || null;
+    return this.syncDecisionManager.getDecision(id);
   }
 
   /**
@@ -588,41 +553,11 @@ export class RooSyncService {
     pendingDecisions: number;
     diffsCount: number;
   }> {
-    const dashboard = await this.loadDashboard();
-    console.log('[RooSyncService] getStatus - dashboard reçu:', JSON.stringify(dashboard, null, 2));
-    console.log('[RooSyncService] getStatus - machineId recherché:', this.config.machineId);
-    console.log('[RooSyncService] getStatus - dashboard.machines:', dashboard?.machines);
-
-    if (!dashboard || !dashboard.machines) {
-      throw new RooSyncServiceError(
-        `Dashboard invalide ou sans propriété machines`,
-        'INVALID_DASHBOARD'
-      );
-    }
-
-    const machineInfo = dashboard.machines[this.config.machineId];
-
-    if (!machineInfo) {
-      throw new RooSyncServiceError(
-        `Machine ${this.config.machineId} non trouvée dans le dashboard`,
-        'MACHINE_NOT_FOUND'
-      );
-    }
-
-    const result = {
-      machineId: this.config.machineId,
-      overallStatus: dashboard.overallStatus,
-      lastSync: machineInfo.lastSync,
-      pendingDecisions: machineInfo.pendingDecisions,
-      diffsCount: machineInfo.diffsCount
-    };
-
-    console.log('[RooSyncService] getStatus - résultat à retourner:', JSON.stringify(result, null, 2));
-    return result;
+    return this.baselineManager.getStatus(() => this.loadDashboard());
   }
 
   /**
-   * Comparer la configuration avec une autre machine
+   * Comparer la configuration avec une autre machine ou la baseline active
    */
   public async compareConfig(targetMachineId?: string): Promise<{
     localMachine: string;
@@ -633,36 +568,48 @@ export class RooSyncService {
       targetValue: any;
     }[];
   }> {
-    this.checkFileExists('sync-config.json');
-
-    const localConfigPath = this.getRooSyncFilePath('sync-config.json');
-    const localConfig = parseConfigJson(localConfigPath);
-
-    // Si pas de machine cible spécifiée, comparer avec toutes
-    if (!targetMachineId) {
-      const dashboard = await this.loadDashboard();
-      const machines = Object.keys(dashboard.machines).filter(
-        m => m !== this.config.machineId
-      );
-
-      if (machines.length === 0) {
-        throw new RooSyncServiceError(
-          'Aucune autre machine trouvée pour la comparaison',
-          'NO_TARGET_MACHINE'
-        );
+    // Vérifier si une baseline non-nominative est active
+    const activeBaseline = this.nonNominativeBaselineService.getActiveBaseline();
+    
+    if (activeBaseline && !targetMachineId) {
+      console.log('[RooSyncService] Baseline non-nominative détectée, utilisation du mode profils');
+      
+      // Utiliser le comparateur de profils
+      const machineId = this.config.machineId;
+      const machineHash = this.nonNominativeBaselineService.generateMachineHash(machineId);
+      
+      // S'assurer que la machine est mappée
+      let mapping = this.nonNominativeBaselineService.getMachineMappings().find(m => m.machineHash === machineHash);
+      if (!mapping) {
+        // Collecter l'inventaire et mapper si nécessaire
+        const inventory = await this.inventoryCollector.collectInventory(machineId);
+        if (inventory) {
+          // Conversion explicite du type InventoryCollector.MachineInventory vers non-nominative-baseline.MachineInventory
+          // Les structures sont compatibles mais les types TypeScript diffèrent légèrement
+          const compatibleInventory: any = inventory;
+          mapping = await this.nonNominativeBaselineService.mapMachineToBaseline(machineId, compatibleInventory);
+        }
       }
-
-      // Prendre la première machine par défaut
-      targetMachineId = machines[0];
+      
+      if (mapping) {
+        // Convertir les déviations en format de différences standard
+        const differences = mapping.deviations.map(dev => ({
+          field: dev.category,
+          localValue: dev.actualValue,
+          targetValue: dev.expectedValue,
+          description: `Déviation détectée pour ${dev.category} (Sévérité: ${dev.severity})`
+        }));
+        
+        return {
+          localMachine: machineId,
+          targetMachine: 'Baseline (Profils)',
+          differences
+        };
+      }
     }
-
-    // Pour l'instant, retourne une structure de base
-    // L'implémentation complète viendra avec les outils MCP
-    return {
-      localMachine: this.config.machineId,
-      targetMachine: targetMachineId,
-      differences: []
-    };
+    
+    // Fallback sur le comparateur legacy
+    return this.configComparator.compareConfig(() => this.loadDashboard(), targetMachineId);
   }
 
   /**
@@ -677,463 +624,39 @@ export class RooSyncService {
       machines: string[];
     }[];
   }> {
-    const startTime = Date.now();
-
-    try {
-      // Récupérer la configuration pour obtenir la liste de toutes les machines
-      const baseline = await this.baselineService.loadBaseline();
-      if (!baseline) {
-        return {
-          totalDiffs: 0,
-          diffs: []
-        };
-      }
-
-      // Identifier toutes les machines connues (baseline + machines enregistrées)
-      const allMachines = new Set<string>();
-
-      // Pour l'ancienne structure BaselineConfig, on n'a pas de tableau de machines
-      // On ajoute juste la machine baseline
-      allMachines.add(baseline.machineId);
-
-      // Ajouter la machine baseline si elle n'est pas déjà incluse
-      if (baseline.machineId && !allMachines.has(baseline.machineId)) {
-        allMachines.add(baseline.machineId);
-      }
-
-      // Ajouter les machines de la configuration locale
-      if (this.config.machineId && !allMachines.has(this.config.machineId)) {
-        allMachines.add(this.config.machineId);
-      }
-
-      console.log('[DEBUG] listDiffs - allMachines trouvées:', Array.from(allMachines));
-
-      const allDiffs: Array<{
-        type: string;
-        path: string;
-        description: string;
-        machines: string[];
-      }> = [];
-
-      // Comparer chaque machine avec la baseline
-      for (const machineId of Array.from(allMachines)) {
-        try {
-          const comparisonReport = await this.baselineService.compareWithBaseline(machineId);
-
-          if (comparisonReport && comparisonReport.differences.length > 0) {
-            // Filtrer les différences selon le type
-            let filteredDiffs = comparisonReport.differences;
-
-            // Filtrer par type si nécessaire
-            if (filterByType && filterByType !== 'all') {
-              const typeMap: Record<string, string> = {
-                'config': 'config',
-                'files': 'hardware',
-                'settings': 'software'
-              };
-              const targetCategory = typeMap[filterByType];
-              if (targetCategory) {
-                filteredDiffs = comparisonReport.differences.filter(d => d.category === targetCategory);
-              }
-            }
-
-            // Ajouter les différences de cette machine
-            filteredDiffs.forEach(d => {
-              // Vérifier si cette différence existe déjà (même chemin sur plusieurs machines)
-              const existingDiff = allDiffs.find(existing =>
-                existing.type === d.category && existing.path === d.path
-              );
-
-              if (existingDiff) {
-                // Ajouter cette machine à la différence existante
-                if (!existingDiff.machines.includes(machineId)) {
-                  existingDiff.machines.push(machineId);
-                }
-              } else {
-                // Créer une nouvelle différence
-                allDiffs.push({
-                  type: d.category,
-                  path: d.path,
-                  description: d.description,
-                  machines: [machineId]
-                });
-              }
-            });
-          }
-        } catch (error) {
-          console.warn(`[RooSyncService] Impossible de comparer la machine ${machineId} avec la baseline`, error);
-          // Continuer avec les autres machines
-        }
-      }
-
-      const duration = Date.now() - startTime;
-      console.log(`[RooSyncService] Liste des différences système générée en ${duration}ms`, {
-        totalMachines: allMachines.size,
-        totalDiffs: allDiffs.length,
-        filterType: filterByType || 'all'
-      });
-
-      return {
-        totalDiffs: allDiffs.length,
-        diffs: allDiffs
-      };
-    } catch (error) {
-      console.error('[RooSyncService] Erreur lors de la liste des différences système', error);
-      throw new RooSyncServiceError(
-        `Erreur liste différences: ${(error as Error).message}`,
-        'DIFF_LISTING_FAILED'
-      );
-    }
+    return this.configComparator.listDiffs(filterByType);
   }
 
   /**
    * Exécute une décision de synchronisation via PowerShell
-   *
-   * Workflow :
-   * 1. Vérifie que la décision existe
-   * 2. Approuve la décision dans sync-roadmap.md (si pas déjà fait)
-   * 3. Invoque sync-manager.ps1 -Action Apply-Decisions
-   * 4. Parse la sortie pour extraire logs et changements
-   *
-   * @param decisionId ID de la décision à exécuter
-   * @param options Options d'exécution
-   * @returns Résultat de l'exécution
    */
   public async executeDecision(
     decisionId: string,
     options?: { dryRun?: boolean; force?: boolean }
   ): Promise<DecisionExecutionResult> {
-    try {
-      // 1. Vérifier que la décision existe
-      const decision = await this.getDecision(decisionId);
-      if (!decision) {
-        return {
-          success: false,
-          logs: [`Décision ${decisionId} introuvable`],
-          changes: { filesModified: [], filesCreated: [], filesDeleted: [] },
-          executionTime: 0,
-          error: `Decision ${decisionId} not found`
-        };
-      }
-
-      // 2. Approuver la décision dans roadmap si pas déjà fait
-      await this.approveDecisionInRoadmap(decisionId);
-
-      // 3. Gestion dryRun : Backup roadmap si dryRun activé
-      const roadmapPath = this.getRooSyncFilePath('sync-roadmap.md');
-      let roadmapBackup: string | null = null;
-
-      if (options?.dryRun) {
-        roadmapBackup = await fs.readFile(roadmapPath, 'utf-8');
-      }
-
-      // 4. Exécuter Apply-Decisions via PowerShell
-      const result = await this.powershellExecutor.executeScript(
-        'src/sync-manager.ps1',
-        ['-Action', 'Apply-Decisions'],
-        { timeout: 60000 } // 60s pour les opérations de fichiers
-      );
-
-      // 5. Restaurer roadmap si dryRun
-      if (options?.dryRun && roadmapBackup) {
-        await fs.writeFile(roadmapPath, roadmapBackup, 'utf-8');
-      }
-
-      // 6. Parser la sortie
-      if (!result.success) {
-        return {
-          success: false,
-          logs: this.parseLogsFromOutput(result.stderr || result.stdout),
-          changes: { filesModified: [], filesCreated: [], filesDeleted: [] },
-          executionTime: result.executionTime,
-          error: `PowerShell execution failed: ${result.stderr}`
-        };
-      }
-
-      // Extraire les informations de la sortie console
-      const logs = this.parseLogsFromOutput(result.stdout);
-      const changes = this.parseChangesFromOutput(result.stdout);
-
-      // Invalider le cache après modification
+    const result = await this.syncDecisionManager.executeDecision(decisionId, options);
+    if (result.success) {
       this.clearCache();
-
-      return {
-        success: true,
-        logs,
-        changes,
-        executionTime: result.executionTime
-      };
-    } catch (error) {
-      return {
-        success: false,
-        logs: [`Execution error: ${error instanceof Error ? error.message : String(error)}`],
-        changes: { filesModified: [], filesCreated: [], filesDeleted: [] },
-        executionTime: 0,
-        error: error instanceof Error ? error.message : String(error)
-      };
     }
-  }
-
-  /**
-   * Approuve une décision dans sync-roadmap.md
-   *
-   * Met à jour le statut à 'approved' pour la décision spécifiée.
-   * Supporte l'ancien format (checkbox) et le nouveau format (champ Statut).
-   *
-   * @param decisionId ID de la décision
-   */
-  private async approveDecisionInRoadmap(decisionId: string): Promise<void> {
-    const roadmapPath = this.getRooSyncFilePath('sync-roadmap.md');
-    let content = await fs.readFile(roadmapPath, 'utf-8');
-
-    // 1. Essayer le nouveau format (**ID:** `id` ... **Statut:** pending)
-    const newFormatRegex = new RegExp(
-      `(<!-- DECISION_BLOCK_START -->[\\s\\S]*?\\*\\*ID:\\*\\*\\s*\`${decisionId}\`[\\s\\S]*?)<!-- DECISION_BLOCK_END -->`,
-      'm'
-    );
-
-    const newMatch = newFormatRegex.exec(content);
-    if (newMatch) {
-      let block = newMatch[1];
-      // Vérifier si déjà approuvé
-      if (block.includes('**Statut:** approved')) {
-        return; // Déjà approuvé, rien à faire
-      }
-
-      // Mettre à jour le statut
-      if (block.includes('**Statut:**')) {
-        block = block.replace(/\*\*Statut:\*\*\s*\w+/, '**Statut:** approved');
-      } else {
-        // Ajouter le statut s'il manque (cas hybride)
-        block = block.replace(/(\*\*ID:\*\*.*)/, '$1\n**Statut:** approved');
-      }
-
-      // Ajouter métadonnées d'approbation si absentes
-      if (!block.includes('**Approuvé par:**')) {
-        const now = new Date().toISOString();
-        block += `\n**Approuvé le:** ${now}\n**Approuvé par:** ${this.config.machineId}`;
-      }
-
-      content = content.replace(newMatch[1], block);
-      await fs.writeFile(roadmapPath, content, 'utf-8');
-      return;
-    }
-
-    // 2. Essayer l'ancien format (checkbox)
-    const oldFormatRegex = new RegExp(
-      `(<!-- DECISION_BLOCK_START -->.*?### DECISION ID: ${decisionId}.*?)- \\[ \\] \\*\\*Approuver & Fusionner\\*\\*(.*?<!-- DECISION_BLOCK_END -->)`,
-      'gs'
-    );
-
-    const oldMatch = oldFormatRegex.exec(content);
-    if (oldMatch) {
-      // Remplacer la checkbox
-      content = content.replace(
-        oldFormatRegex,
-        '$1- [x] **Approuver & Fusionner**$2'
-      );
-      await fs.writeFile(roadmapPath, content, 'utf-8');
-      return;
-    }
-
-    // Si aucun format ne correspond
-    throw new RooSyncServiceError(
-      `Impossible de trouver la décision ${decisionId} dans sync-roadmap.md (format inconnu)`,
-      'DECISION_NOT_FOUND_IN_ROADMAP'
-    );
-  }
-
-  /**
-   * Parse les logs depuis la sortie PowerShell
-   */
-  private parseLogsFromOutput(output: string): string[] {
-    return output
-      .split('\n')
-      .map(line => line.trim())
-      .filter(line => line.length > 0);
-  }
-
-  /**
-   * Parse les changements depuis la sortie PowerShell
-   *
-   * Détecte les mentions de fichiers modifiés/créés/supprimés
-   * dans la sortie console.
-   */
-  private parseChangesFromOutput(output: string): {
-    filesModified: string[];
-    filesCreated: string[];
-    filesDeleted: string[];
-  } {
-    const changes = {
-      filesModified: [] as string[],
-      filesCreated: [] as string[],
-      filesDeleted: [] as string[]
-    };
-
-    // Patterns de détection
-    const patterns = {
-      modified: /Configuration.*mise à jour|updated|modifié|modified/i,
-      created: /créé|created|nouveau|new file/i,
-      deleted: /supprimé|deleted|removed/i
-    };
-
-    const lines = output.split('\n');
-
-    // Détection basique : si Apply-Decisions réussit, sync-config.ref.json est modifié
-    if (output.includes('Configuration de référence mise à jour avec succès')) {
-      changes.filesModified.push('sync-config.ref.json');
-    }
-
-    return changes;
+    return result;
   }
 
   /**
    * Crée un point de rollback pour une décision
-   *
-   * Stratégie Phase 1 : Backup manuel dans .rollback/
-   * - Sauvegarde sync-config.ref.json
-   * - Sauvegarde sync-roadmap.md
-   * - Crée metadata.json avec timestamp et decisionId
-   *
-   * @param decisionId ID de la décision
    */
   public async createRollbackPoint(decisionId: string): Promise<void> {
-    try {
-      const sharedPath = this.config.sharedPath;
-      const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
-      const rollbackPath = join(sharedPath, '.rollback', `${decisionId}_${timestamp}`);
-
-      // Créer le répertoire rollback
-      await fs.mkdir(rollbackPath, { recursive: true });
-
-      // Backup des fichiers critiques
-      const filesToBackup = [
-        'sync-config.ref.json',
-        'sync-roadmap.md'
-      ];
-
-      for (const file of filesToBackup) {
-        const sourcePath = this.getRooSyncFilePath(file);
-        const targetPath = join(rollbackPath, file);
-
-        if (existsSync(sourcePath)) {
-          await fs.copyFile(sourcePath, targetPath);
-        }
-      }
-
-      // Créer metadata
-      const metadata = {
-        decisionId,
-        timestamp,
-        machine: this.config.machineId,
-        files: filesToBackup
-      };
-
-      await fs.writeFile(
-        join(rollbackPath, 'metadata.json'),
-        JSON.stringify(metadata, null, 2),
-        'utf-8'
-      );
-    } catch (error) {
-      throw new RooSyncServiceError(
-        `Échec création rollback point: ${error instanceof Error ? error.message : String(error)}`,
-        'ROLLBACK_CREATION_FAILED'
-      );
-    }
+    return this.baselineManager.createRollbackPoint(decisionId);
   }
 
   /**
    * Restaure depuis un point de rollback
-   *
-   * Stratégie Phase 1 : Restore manuel depuis .rollback/
-   * - Trouve le dernier rollback pour decisionId
-   * - Restaure sync-config.ref.json
-   * - Restaure sync-roadmap.md
-   *
-   * @param decisionId ID de la décision
-   * @returns Résultat de la restauration
    */
   public async restoreFromRollbackPoint(decisionId: string): Promise<RollbackRestoreResult> {
-    try {
-      const sharedPath = this.config.sharedPath;
-      const rollbackDir = join(sharedPath, '.rollback');
-
-      // Vérifier que le répertoire rollback existe
-      if (!existsSync(rollbackDir)) {
-        return {
-          success: false,
-          restoredFiles: [],
-          logs: [`Aucun répertoire rollback trouvé dans ${rollbackDir}`],
-          error: 'No rollback directory found'
-        };
-      }
-
-      // Lister les rollbacks pour cette décision
-      const allBackups = await fs.readdir(rollbackDir);
-      const matchingBackups = allBackups
-        .filter(name => name.startsWith(decisionId))
-        .sort()
-        .reverse(); // Plus récent en premier
-
-      if (matchingBackups.length === 0) {
-        return {
-          success: false,
-          restoredFiles: [],
-          logs: [`Aucun rollback trouvé pour la décision ${decisionId}`],
-          error: `No rollback found for decision ${decisionId}`
-        };
-      }
-
-      // Restaurer depuis le plus récent
-      const backupPath = join(rollbackDir, matchingBackups[0]);
-      const restoredFiles: string[] = [];
-      const logs: string[] = [];
-
-      // Lire metadata
-      const metadataPath = join(backupPath, 'metadata.json');
-      let filesToRestore: string[] = ['sync-config.ref.json', 'sync-roadmap.md'];
-
-      if (existsSync(metadataPath)) {
-        const metadata = JSON.parse(await fs.readFile(metadataPath, 'utf-8'));
-        filesToRestore = metadata.files || filesToRestore;
-        logs.push(`Rollback depuis ${metadata.timestamp}`);
-      }
-
-      // Restaurer les fichiers
-      for (const file of filesToRestore) {
-        const sourcePath = join(backupPath, file);
-        const targetPath = this.getRooSyncFilePath(file);
-
-        if (existsSync(sourcePath)) {
-          await fs.copyFile(sourcePath, targetPath);
-          restoredFiles.push(file);
-          logs.push(`Restauré: ${file}`);
-        }
-      }
-
-      // Invalider le cache
-      this.clearCache();
-
-      return {
-        success: true,
-        restoredFiles,
-        logs,
-      };
-    } catch (error) {
-      return {
-        success: false,
-        restoredFiles: [],
-        logs: [`Erreur restauration: ${error instanceof Error ? error.message : String(error)}`],
-        error: error instanceof Error ? error.message : String(error)
-      };
-    }
+    return this.baselineManager.restoreFromRollbackPoint(decisionId, () => this.clearCache());
   }
 
   /**
    * Collecte l'inventaire d'une machine
-   * @param machineId - ID de la machine
-   * @param forceRefresh - Forcer la collecte
-   * @returns Inventaire ou null
    */
   async getInventory(machineId: string, forceRefresh = false): Promise<MachineInventory | null> {
     return this.inventoryCollector.collectInventory(machineId, forceRefresh);
@@ -1141,106 +664,169 @@ export class RooSyncService {
 
   /**
    * Compare 2 machines et génère un rapport de différences réelles
-   * @param sourceMachineId - ID machine source
-   * @param targetMachineId - ID machine cible
-   * @param forceRefresh - Forcer collecte inventaires
-   * @returns Rapport de comparaison ou null
    */
   async compareRealConfigurations(
     sourceMachineId: string,
     targetMachineId: string,
     forceRefresh = false
   ): Promise<any | null> {
-    console.log(`[RooSyncService] 🔍 Comparaison réelle : ${sourceMachineId} vs ${targetMachineId}`);
-
-    try {
-      // CORRECTION SDDD: Utiliser la logique baseline-driven cohérente
-      // Charger la baseline une seule fois pour éviter les incohérences
-      await this.baselineService.loadBaseline();
-
-      // Comparer chaque machine avec la baseline (comme listDiffs et loadDashboard)
-      const sourceComparison = await this.baselineService.compareWithBaseline(sourceMachineId);
-      const targetComparison = await this.baselineService.compareWithBaseline(targetMachineId);
-
-      if (!sourceComparison || !targetComparison) {
-        console.error('[RooSyncService] ❌ Échec comparaison avec baseline');
-        return null;
-      }
-
-    // Combiner les différences des deux machines
-    const allDifferences = [
-      ...sourceComparison.differences.map(d => ({
-        ...d,
-        machineId: sourceMachineId
-      })),
-      ...targetComparison.differences.map(d => ({
-        ...d,
-        machineId: targetMachineId
-      }))
-    ];
-
-      // Créer le rapport de comparaison
-      const report = {
-        sourceMachine: sourceMachineId,
-        targetMachine: targetMachineId,
-        hostId: this.config.machineId || 'unknown',
-        differences: allDifferences,
-        summary: {
-          total: allDifferences.length,
-          critical: allDifferences.filter(d => d.severity === 'CRITICAL').length,
-          important: allDifferences.filter(d => d.severity === 'IMPORTANT').length,
-          warning: allDifferences.filter(d => d.severity === 'WARNING').length,
-          info: allDifferences.filter(d => d.severity === 'INFO').length
-        }
-      };
-
-      console.log(`[RooSyncService] ✅ Comparaison terminée : ${allDifferences.length} différences`);
-      return report;
-    } catch (error) {
-      // CORRECTION SDDD: Capturer l'erreur détaillée du BaselineService
-      const originalError = error as Error;
-      console.error('[DEBUG] Erreur originale dans compareRealConfigurations:', originalError);
-      console.error('[DEBUG] Stack trace:', originalError.stack);
-
-      throw new RooSyncServiceError(
-        `Erreur lors de la comparaison réelle: ${originalError.message}`,
-        'ROOSYNC_COMPARE_REAL_ERROR'
-      );
-    }
+    return this.configComparator.compareRealConfigurations(sourceMachineId, targetMachineId, forceRefresh);
   }
 
   /**
    * Génère des décisions RooSync depuis un rapport de comparaison
-   * @param report - Rapport de comparaison
-   * @returns Nombre de décisions créées
    */
   async generateDecisionsFromReport(report: any): Promise<number> {
-    console.log(`[RooSyncService] 📝 Génération décisions depuis rapport (${report.sourceMachine} vs ${report.targetMachine})`);
+    return this.syncDecisionManager.generateDecisionsFromReport(report);
+  }
 
-    let createdCount = 0;
+  /**
+   * Obtient le service de baseline non-nominatif
+   */
+  public getNonNominativeBaselineService(): NonNominativeBaselineService {
+    return this.nonNominativeBaselineService;
+  }
 
-    // Pour chaque différence CRITICAL ou IMPORTANT, créer une décision
-    for (const diff of report.differences) {
-      if (diff.severity === 'CRITICAL' || diff.severity === 'IMPORTANT') {
-        // Créer décision dans roadmap
-        // TODO: Implémenter logique de création décision
-        // Pour l'instant, juste un placeholder
-        console.log(`[RooSyncService] 📋 Décision à créer : ${diff.description}`);
-        createdCount++;
+  /**
+   * Crée une baseline non-nominative par agrégation
+   */
+  public async createNonNominativeBaseline(
+    name: string,
+    description: string,
+    aggregationConfig?: any
+  ): Promise<any> {
+    const baseline = await this.baselineManager.createNonNominativeBaseline(name, description, aggregationConfig);
+    // Rafraîchir l'état local après création
+    this.nonNominativeBaselineService.getState();
+    return baseline;
+  }
+
+  /**
+   * Mappe une machine à la baseline non-nominative
+   */
+  public async mapMachineToNonNominativeBaseline(machineId: string): Promise<any> {
+    const mapping = await this.baselineManager.mapMachineToNonNominativeBaseline(machineId);
+    // Rafraîchir l'état local après mapping
+    this.nonNominativeBaselineService.getState();
+    return mapping;
+  }
+
+  /**
+   * Mise à jour de la baseline avec support du mode 'profile'
+   */
+  public async updateBaseline(
+    machineId: string,
+    options: {
+      mode?: 'profile' | 'legacy';
+      version?: string;
+      createBackup?: boolean;
+      updateReason?: string;
+      updatedBy?: string;
+    } = {}
+  ): Promise<boolean> {
+    const mode = options.mode || 'profile';
+
+    if (mode === 'profile') {
+      console.log(`[RooSyncService] Mise à jour baseline en mode 'profile' depuis ${machineId}`);
+      
+      // Collecter l'inventaire
+      const inventory = await this.inventoryCollector.collectInventory(machineId, true);
+      if (!inventory) {
+        throw new RooSyncServiceError('Impossible de collecter l\'inventaire', 'INVENTORY_FAILED');
       }
-    }
 
-    console.log(`[RooSyncService] ✅ ${createdCount} décisions créées`);
-    return createdCount;
+      // Utiliser l'agrégation pour mettre à jour les profils
+      // Note: Dans une implémentation complète, on fusionnerait intelligemment
+      // Pour l'instant, on recrée une baseline agrégée basée sur cette machine (et potentiellement d'autres)
+      const compatibleInventory: any = inventory;
+      
+      // Récupérer les autres inventaires disponibles pour une meilleure agrégation
+      const inventories = [compatibleInventory];
+      
+      // Créer la baseline via le BaselineManager
+      await this.baselineManager.createNonNominativeBaseline(
+        `Baseline ${options.version || 'Auto'}`,
+        options.updateReason || `Mise à jour depuis ${machineId}`,
+        undefined // Config par défaut
+      );
+      
+      return true;
+    } else {
+      // Mode legacy : délégation au service existant (via ConfigService/BaselineService qui n'est pas exposé directement ici pour update)
+      // On doit utiliser BaselineService.updateBaseline
+      console.log(`[RooSyncService] Mise à jour baseline en mode 'legacy' depuis ${machineId}`);
+      
+      const inventory = await this.inventoryCollector.collectInventory(machineId, true);
+      if (!inventory) {
+        throw new RooSyncServiceError('Impossible de collecter l\'inventaire', 'INVENTORY_FAILED');
+      }
+
+      // Créer la structure baseline legacy
+      // Conversion explicite pour accéder à la config
+      const legacyInventory: any = inventory;
+      
+      const newBaseline = {
+        machineId,
+        version: options.version || '1.0.0',
+        lastUpdated: new Date().toISOString(),
+        config: {
+            roo: legacyInventory.roo || {},
+            hardware: legacyInventory.hardware || {},
+            software: legacyInventory.software || {},
+            system: legacyInventory.system || {}
+        }
+      };
+
+      return await this.baselineService.updateBaseline(newBaseline as any, {
+        createBackup: options.createBackup,
+        updateReason: options.updateReason,
+        updatedBy: options.updatedBy
+      });
+    }
+  }
+
+  /**
+   * Compare plusieurs machines avec la baseline non-nominative
+   */
+  public async compareMachinesNonNominative(machineIds: string[]): Promise<any> {
+    return await this.baselineManager.compareMachinesNonNominative(machineIds);
+  }
+
+  /**
+   * Migre vers le système non-nominatif
+   */
+  public async migrateToNonNominative(options?: any): Promise<any> {
+    const result = await this.baselineManager.migrateToNonNominative(options);
+    // Rafraîchir l'état local après migration
+    this.nonNominativeBaselineService.getState();
+    return result;
+  }
+
+  /**
+   * Obtient l'état du système non-nominatif
+   */
+  public getNonNominativeState(): any {
+    return this.baselineManager.getNonNominativeState();
+  }
+
+  /**
+   * Obtient la baseline non-nominative active
+   */
+  public getActiveNonNominativeBaseline(): any {
+    return this.baselineManager.getActiveNonNominativeBaseline();
+  }
+
+  /**
+   * Obtient tous les mappings de machines non-nominatives
+   */
+  public getNonNominativeMachineMappings(): any[] {
+    return this.baselineManager.getNonNominativeMachineMappings();
   }
 }
 
 /**
- * Helper pour obtenir l'instance du service RooSync
+ * Helper pour obtenir l'instance du service
  */
-export function getRooSyncService(cacheOptions?: CacheOptions): RooSyncService {
-  return RooSyncService.getInstance(cacheOptions);
+export function getRooSyncService(): RooSyncService {
+  return RooSyncService.getInstance();
 }
-
-// Exports pour utilisation externe
-export type { MachineInventory } from './InventoryCollector.js';

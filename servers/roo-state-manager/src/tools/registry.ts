@@ -236,7 +236,7 @@ export function registerListToolsHandler(server: Server): void {
                         },
                         required: ['message_id', 'body']
                     }
-                }
+                },
             ] as any[],
         };
     });
@@ -572,30 +572,6 @@ export function registerCallToolHandler(
            case 'roosync_reply_message':
                try {
                    result = await toolExports.replyMessage(args as any) as CallToolResult;
-               } catch (error) {
-                   result = { content: [{ type: 'text', text: `Error: ${(error as Error).message}` }], isError: true };
-               }
-               break;
-           case 'roosync_granular_diff':
-               try {
-                   const roosyncResult = await import('./roosync/granular-diff.js').then(m => m.handleRoosyncGranularDiff(args as any));
-                   result = { content: [{ type: 'text', text: JSON.stringify(roosyncResult, null, 2) }] };
-               } catch (error) {
-                   result = { content: [{ type: 'text', text: `Error: ${(error as Error).message}` }], isError: true };
-               }
-               break;
-           case 'roosync_validate_diff':
-               try {
-                   const roosyncResult = await import('./roosync/granular-diff.js').then(m => m.handleRoosyncValidateDiff(args as any));
-                   result = { content: [{ type: 'text', text: JSON.stringify(roosyncResult, null, 2) }] };
-               } catch (error) {
-                   result = { content: [{ type: 'text', text: `Error: ${(error as Error).message}` }], isError: true };
-               }
-               break;
-           case 'roosync_export_diff':
-               try {
-                   const roosyncResult = await import('./roosync/granular-diff.js').then(m => m.handleRoosyncExportDiff(args as any));
-                   result = { content: [{ type: 'text', text: JSON.stringify(roosyncResult, null, 2) }] };
                } catch (error) {
                    result = { content: [{ type: 'text', text: `Error: ${(error as Error).message}` }], isError: true };
                }

@@ -12,6 +12,7 @@
 
 import { existsSync, mkdirSync, appendFileSync, readdirSync, statSync, unlinkSync } from 'fs';
 import { join, dirname } from 'path';
+import { tmpdir } from 'os';
 
 export type LogLevel = 'DEBUG' | 'INFO' | 'WARN' | 'ERROR';
 
@@ -48,9 +49,10 @@ export class Logger {
 
     constructor(options: LoggerOptions = {}) {
         // Determine default log directory
+        // FIX: Use temp dir instead of cwd to avoid polluting project root when env var is missing
         const defaultLogDir = process.env.ROOSYNC_SHARED_PATH
             ? join(process.env.ROOSYNC_SHARED_PATH, 'logs')
-            : join(process.cwd(), '.shared-state', 'logs');
+            : join(tmpdir(), 'roo-state-manager-logs');
 
         this.logDir = options.logDir || defaultLogDir;
         this.filePrefix = options.filePrefix || 'roosync';

@@ -17,7 +17,11 @@ dotenv.config({ path: envPath });
 // Tests E2E avec les vraies clés du .env
 describe('E2E Tests with Real Environment', () => {
     // Skip si pas de clés configurées
-    const skipE2E = !process.env.OPENAI_API_KEY;
+    const hasRequiredEnv = process.env.OPENAI_API_KEY &&
+                          process.env.OPENAI_MODEL_ID &&
+                          process.env.QDRANT_URL &&
+                          process.env.QDRANT_API_KEY;
+    const skipE2E = !hasRequiredEnv;
     const itE2E = skipE2E ? it.skip : it;
 
     beforeAll(() => {

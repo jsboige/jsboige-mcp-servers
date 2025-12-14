@@ -147,7 +147,7 @@ describe('RooSyncService', () => {
 
     it('devrait utiliser le cache', async () => {
       // Arrange
-      const service = getRooSyncService({ ttl: 60000 });
+      const service = getRooSyncService();
 
       // Act
       const dashboard1 = await service.loadDashboard();

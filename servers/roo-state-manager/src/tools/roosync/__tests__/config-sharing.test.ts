@@ -1,4 +1,7 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
+// Unmock fs et fs/promises pour utiliser le vrai système de fichiers
+vi.unmock('fs');
+vi.unmock('fs/promises');
 import { ConfigSharingService } from '../../../services/ConfigSharingService.js';
 // S'assurer que fs et fs/promises ne sont pas mockés pour ce test qui utilise le vrai FS
 vi.unmock('fs');
@@ -18,16 +21,25 @@ vi.mock('../../../services/RooSyncService.js', () => {
   };
 });
 
+
 describe('ConfigSharingService', () => {
   let service: ConfigSharingService;
-  let mockRooSyncService: any;
   let tempDir: string;
   let sharedPath: string;
 
   beforeEach(async () => {
     // Créer un environnement de test temporaire
-    tempDir = await mkdtemp(join(tmpdir(), 'roosync-test-'));
+    // Le mock de mkdtemp sera utilisé ici
+    tempDir = await mkdtemp('roosync-test-');
+
+    // Vérifier que tempDir est bien défini
+    if (!tempDir) {
+        throw new Error('mkdtemp returned undefined');
+    }
+
     sharedPath = join(tempDir, 'shared');
+
+    // Utiliser les fonctions importées (qui sont soit mockées soit originales)
     await mkdir(sharedPath, { recursive: true });
     await mkdir(join(sharedPath, 'configs'), { recursive: true });
 
@@ -36,7 +48,7 @@ describe('ConfigSharingService', () => {
     await mkdir(sourceModesDir, { recursive: true });
     await writeFile(join(sourceModesDir, 'test-mode.json'), JSON.stringify({ name: 'test' }));
 
-    // Mock des services
+    // Mock des services injectés
     const mockConfigService = {
       getSharedStatePath: vi.fn().mockReturnValue(sharedPath),
       getBaselineServiceConfig: vi.fn()
@@ -67,11 +79,22 @@ describe('ConfigSharingService', () => {
     });
 
     service = new ConfigSharingService(mockConfigService as any, mockInventoryCollector as any);
+
+    // Créer des fichiers de config factices pour le test
+    // On simule que le workspace courant contient roo-modes
+    // Utiliser un mock pour process.cwd() ou modifier le comportement du service pour accepter un chemin racine
+    // Ici on va mocker process.cwd() pour pointer vers tempDir
+    vi.spyOn(process, 'cwd').mockReturnValue(tempDir);
+
+    const modesDir = join(tempDir, 'roo-modes');
+    await mkdir(modesDir, { recursive: true });
+    await writeFile(join(modesDir, 'test-mode.json'), JSON.stringify({ name: 'test' }));
   });
 
   afterEach(async () => {
     // Nettoyage
     await rm(tempDir, { recursive: true, force: true });
+    vi.restoreAllMocks();
   });
 
   it('should collect configuration files', async () => {
@@ -83,7 +106,6 @@ describe('ConfigSharingService', () => {
     expect(result).toBeDefined();
     expect(result.filesCount).toBeGreaterThan(0);
     expect(result.manifest).toBeDefined();
-    // L'auteur est pris de process.env.COMPUTERNAME
     expect(result.manifest.author).toBeDefined();
 
     // Vérifier que le package a été créé

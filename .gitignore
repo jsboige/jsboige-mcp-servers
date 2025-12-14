@@ -76,3 +76,4 @@ test-results/
 build-test-results.txt
 servers/roo-state-manager/build-errors.txt
 servers/quickfiles-server/.jest-cache/
+servers/jinavigator-server/.jest-cache/

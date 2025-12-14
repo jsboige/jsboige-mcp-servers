@@ -15,7 +15,6 @@
 
 # Logs
 *.log
-.shared-state/logs/*.log
 
 # Temporary files
 *.tmp
