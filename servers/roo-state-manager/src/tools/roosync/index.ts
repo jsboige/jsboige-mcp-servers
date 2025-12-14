@@ -2,7 +2,7 @@
  * Export centralisé des outils RooSync
  *
  * @module tools/roosync
- * @version 2.0.0
+ * @version 2.1.0
  */
 
 export {
@@ -180,6 +180,9 @@ export { replyMessage } from './reply_message.js';
 // Export des outils de messagerie Phase 3 - Advanced Features
 export { amendMessage } from './amend_message.js';
 
+// NOUVEAU: Outil d'inventaire
+export { getMachineInventoryTool } from './get-machine-inventory.js';
+
 // Import des métadonnées pour l'array
 import { getStatusToolMetadata } from './get-status.js';
 import { compareConfigToolMetadata } from './compare-config.js';
@@ -196,6 +199,7 @@ import { restoreBaselineToolMetadata } from './restore-baseline.js';
 import { collectConfigToolMetadata } from './collect-config.js';
 import { publishConfigToolMetadata } from './publish-config.js';
 import { applyConfigToolMetadata } from './apply-config.js';
+import { getMachineInventoryTool } from './get-machine-inventory.js';
 
 // Métadonnées pour l'outil export baseline
 const exportBaselineToolMetadata = {
@@ -254,5 +258,6 @@ export const roosyncTools = [
   exportBaselineToolMetadata,
   collectConfigToolMetadata,
   publishConfigToolMetadata,
-  applyConfigToolMetadata
+  applyConfigToolMetadata,
+  getMachineInventoryTool
 ];

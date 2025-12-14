@@ -576,6 +576,19 @@ export function registerCallToolHandler(
                    result = { content: [{ type: 'text', text: `Error: ${(error as Error).message}` }], isError: true };
                }
                break;
+           // NOUVEAU: Outil d'inventaire
+           case 'roosync_get_machine_inventory':
+               try {
+                   const invResult = await toolExports.getMachineInventoryTool.execute(args as any, {} as any);
+                   if (invResult.success) {
+                       result = { content: [{ type: 'text', text: JSON.stringify(invResult.data, null, 2) }] };
+                   } else {
+                       result = { content: [{ type: 'text', text: `Error: ${invResult.error?.message}` }], isError: true };
+                   }
+               } catch (error) {
+                   result = { content: [{ type: 'text', text: `Error: ${(error as Error).message}` }], isError: true };
+               }
+               break;
            default:
                throw new Error(`Tool not found: ${name}`);
        }
