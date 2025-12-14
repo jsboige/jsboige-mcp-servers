@@ -4,6 +4,7 @@ import { existsSync, mkdirSync } from 'fs';
 import { createHash } from 'crypto';
 import { ConfigNormalizationService } from './ConfigNormalizationService.js';
 import { ConfigDiffService } from './ConfigDiffService.js';
+import { JsonMerger } from '../utils/JsonMerger.js';
 import {
   IConfigSharingService,
   CollectConfigOptions,
@@ -132,15 +133,119 @@ export class ConfigSharingService implements IConfigSharingService {
   public async applyConfig(options: ApplyConfigOptions): Promise<ApplyConfigResult> {
     this.logger.info('Application de la configuration', options);
     
-    // TODO: Implémenter la logique d'application
-    // 1. Localiser la version source
-    // 2. Créer un backup
-    // 3. Appliquer les fichiers
-    
+    const errors: string[] = [];
+    let filesApplied = 0;
+    const details: any[] = []; // Pour stocker les détails des changements
+
+    try {
+      // 1. Localiser la version source
+      if (!options.version) {
+        throw new Error('La version de configuration est requise');
+      }
+
+      const sharedStatePath = this.configService.getSharedStatePath();
+      const configDir = join(sharedStatePath, 'configs', `baseline-v${options.version}`);
+      const manifestPath = join(configDir, 'manifest.json');
+
+      if (!existsSync(manifestPath)) {
+        throw new Error(`Configuration non trouvée: ${options.version}`);
+      }
+
+      const manifestContent = await fs.readFile(manifestPath, 'utf-8');
+      const manifest: ConfigManifest = JSON.parse(manifestContent);
+
+      this.logger.info(`Configuration chargée: ${manifest.description} (v${manifest.version})`);
+
+      // Récupérer l'inventaire pour résoudre les chemins locaux
+      const inventory = await this.inventoryCollector.collectInventory(process.env.COMPUTERNAME || 'localhost') as any;
+
+      // 2. Itérer sur les fichiers
+      for (const file of manifest.files) {
+        try {
+          // Résolution du chemin source et destination
+          const sourcePath = join(configDir, file.path);
+          let destPath: string | null = null;
+
+          if (file.path.startsWith('roo-modes/')) {
+            const fileName = basename(file.path);
+            const rooModesPath = inventory?.paths?.rooExtensions
+              ? join(inventory.paths.rooExtensions, 'roo-modes')
+              : join(process.cwd(), 'roo-modes');
+            destPath = join(rooModesPath, fileName);
+          } else if (file.path === 'mcp-settings/mcp_settings.json') {
+            destPath = inventory?.paths?.mcpSettings || join(process.cwd(), 'config', 'mcp_settings.json');
+          } else {
+            this.logger.warn(`Type de fichier non supporté ou chemin inconnu: ${file.path}`);
+            continue;
+          }
+
+          if (!destPath) continue;
+
+          // Lecture du contenu source
+          const sourceContent = JSON.parse(await fs.readFile(sourcePath, 'utf-8'));
+
+          // Gestion du contenu local existant
+          let finalContent = sourceContent;
+          let action = 'create';
+
+          if (existsSync(destPath)) {
+            action = 'update';
+            const localContent = JSON.parse(await fs.readFile(destPath, 'utf-8'));
+            
+            // Fusion
+            finalContent = JsonMerger.merge(sourceContent, localContent, { arrayStrategy: 'replace' });
+
+            // Backup si non dryRun
+            if (!options.dryRun) {
+                const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
+                const backupPath = `${destPath}.backup_${timestamp}`;
+                await fs.copyFile(destPath, backupPath);
+                this.logger.info(`Backup créé: ${backupPath}`);
+            }
+          }
+
+          details.push({
+            file: file.path,
+            dest: destPath,
+            action,
+            size: JSON.stringify(finalContent).length
+          });
+
+          // Écriture ou simulation
+          if (!options.dryRun) {
+            // S'assurer que le répertoire parent existe
+            await fs.mkdir(dirname(destPath), { recursive: true });
+            await fs.writeFile(destPath, JSON.stringify(finalContent, null, 2));
+            filesApplied++;
+          }
+
+        } catch (err: any) {
+          const errorMsg = `Erreur lors du traitement de ${file.path}: ${err.message}`;
+          this.logger.error(errorMsg);
+          errors.push(errorMsg);
+        }
+      }
+
+    } catch (err: any) {
+      const errorMsg = `Erreur globale applyConfig: ${err.message}`;
+      this.logger.error(errorMsg);
+      errors.push(errorMsg);
+    }
+
+    if (options.dryRun) {
+        this.logger.info('DryRun terminé', { details });
+        return {
+            success: errors.length === 0,
+            filesApplied: 0, // 0 car rien n'a été écrit
+            errors,
+            dryRunDetails: details // Champ hypothétique ajouté au résultat pour le rapport
+        } as any;
+    }
+
     return {
-      success: false,
-      filesApplied: 0,
-      errors: ['Not implemented yet']
+      success: errors.length === 0,
+      filesApplied,
+      errors
     };
   }
 
