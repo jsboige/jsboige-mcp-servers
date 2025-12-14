@@ -10,10 +10,54 @@ from pathlib import Path
 import sys
 
 # Add the papermill_mcp module to path
-sys.path.insert(0, str(Path(__file__).parent / "papermill_mcp"))
+sys.path.insert(0, str(Path(__file__).parent / "../../papermill_mcp"))
 
 try:
-    from papermill_mcp.main_fastmcp import create_notebook, execute_notebook_solution_a
+    # Simuler l'enregistrement des outils pour pouvoir appeler les fonctions décorées
+    from mcp.server.fastmcp import FastMCP
+    from papermill_mcp.tools.notebook_tools import register_notebook_tools
+    from papermill_mcp.tools.execution_tools import register_execution_tools
+    from papermill_mcp.config import MCPConfig
+    from papermill_mcp.tools.notebook_tools import initialize_notebook_tools
+    from papermill_mcp.tools.execution_tools import initialize_execution_tools
+    
+    # Initialiser les services
+    config = MCPConfig()
+    initialize_notebook_tools(config)
+    initialize_execution_tools(config)
+    
+    # Créer une app dummy pour récupérer les fonctions décorées
+    app = FastMCP("test_app")
+    register_notebook_tools(app)
+    register_execution_tools(app)
+    
+    # Récupérer les fonctions depuis l'app (ce sont maintenant des méthodes de l'app)
+    # Note: FastMCP enregistre les outils, mais pour les tests unitaires on a besoin d'accéder aux fonctions
+    # Dans ce script de test d'intégration, nous allons utiliser une approche différente
+    # en instanciant directement les services
+    from papermill_mcp.tools.notebook_tools import get_notebook_service
+    from papermill_mcp.services.notebook_service import NotebookService
+    
+    notebook_service = get_notebook_service()
+    
+    # Wrapper pour create_notebook
+    async def create_notebook(path, kernel="python3"):
+        return await notebook_service.create_notebook(path, kernel)
+        
+    # Wrapper pour execute_notebook (remplace execute_notebook_solution_a)
+    async def execute_notebook_solution_a(notebook_path, output_path=""):
+        return await notebook_service.execute_notebook_consolidated(
+            input_path=notebook_path,
+            output_path=output_path if output_path else None,
+            mode="sync"
+        )
+    
+    import asyncio
+    
+    # Helper pour exécuter les fonctions async de manière synchrone pour ce script
+    def run_sync(coro):
+        return asyncio.run(coro)
+
     print("[OK] Import des modules reussi")
 except ImportError as e:
     print(f"[ERREUR] Erreur d'import: {e}")
@@ -32,10 +76,10 @@ def test_path_consistency():
         
         # Créer un notebook simple
         try:
-            result = create_notebook(
-                notebook_path=str(notebook_path),
-                kernel_name="python3"
-            )
+            result = run_sync(create_notebook(
+                path=str(notebook_path),
+                kernel="python3"
+            ))
             print(f"[OK] Notebook cree: {result.get('status')}")
             
             # Vérifier que le working directory n'a pas changé
@@ -98,10 +142,10 @@ def test_execution_paths():
         
         try:
             # Tester l'exécution (note: peut échouer si conda env pas disponible, mais les chemins doivent rester cohérents)
-            result = execute_notebook_solution_a(
+            result = run_sync(execute_notebook_solution_a(
                 notebook_path=str(abs_notebook_path),
                 output_path=""  # Auto-généré
-            )
+            ))
             
             print(f"📊 Résultat: {result.get('status', 'unknown')}")
             

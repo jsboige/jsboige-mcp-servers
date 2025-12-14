@@ -8,7 +8,7 @@ ensuring backward compatibility and correct mode-based execution.
 import pytest
 import asyncio
 from pathlib import Path
-from unittest.mock import Mock, AsyncMock, patch, MagicMock
+from unittest.mock import Mock, AsyncMock, patch, MagicMock, mock_open
 from typing import Dict, Any
 
 from papermill_mcp.services.notebook_service import NotebookService
@@ -24,7 +24,22 @@ from papermill_mcp.config import MCPConfig
 def mock_config():
     """Mock configuration for tests."""
     config = Mock(spec=MCPConfig)
-    config.workspace_dir = "/test/workspace"
+    
+    # Configure nested configuration objects
+    config.papermill = Mock()
+    config.papermill.output_dir = "/test/workspace"
+    config.papermill.timeout = 120
+    config.papermill.kernel_name = "python3"
+    
+    config.logging = Mock()
+    config.logging.level = "INFO"
+    
+    config.jupyter_server = Mock()
+    config.jupyter_server.base_url = "http://localhost:8888"
+    config.jupyter_server.token = ""
+    
+    config.offline_mode = False
+    
     return config
 
 
@@ -33,8 +48,14 @@ def notebook_service(mock_config):
     """Create a NotebookService instance with mocked dependencies."""
     service = NotebookService(mock_config)
     
-    # Mock resolve_path to return predictable paths
-    service.resolve_path = Mock(side_effect=lambda x: f"/resolved/{x}")
+    # Mock resolve_path to return predictable paths without prefix for absolute paths
+    def resolve_side_effect(path):
+        str_path = str(path).replace("\\", "/")
+        if str_path.startswith("/") or ":" in str_path:
+            return str_path
+        return f"/resolved/{str_path}"
+        
+    service.resolve_path = Mock(side_effect=resolve_side_effect)
     
     # Mock internal methods
     service.execute_notebook_solution_a = AsyncMock()
@@ -545,6 +566,7 @@ async def test_execute_notebook_kernel_not_found(consolidated_executor, notebook
     """Test avec kernel inexistant."""
     notebook_service.execute_notebook_solution_a = AsyncMock(return_value={
         "success": False,
+        "execution_mode": "error",
         "error": "Kernel not found"
     })
     
@@ -555,8 +577,8 @@ async def test_execute_notebook_kernel_not_found(consolidated_executor, notebook
             kernel_name="nonexistent_kernel"
         )
     
-    # Le résultat peut varier, mais devrait indiquer un problème
-    assert "error" in result or result.get("success") == False
+    # Le résultat doit propager le statut d'erreur
+    assert result.get("status") == "error" or "error" in result
 
 
 @pytest.mark.asyncio
@@ -655,7 +677,7 @@ def test_analyze_notebook_output_success():
         Mock(cell_type="markdown")
     ]
     
-    with patch('builtins.open', mock_open := Mock()), \
+    with patch('builtins.open', new_callable=mock_open, read_data="{}"), \
          patch('nbformat.read', return_value=mock_notebook):
         
         result = executor._analyze_notebook_output("/test/output.ipynb")
