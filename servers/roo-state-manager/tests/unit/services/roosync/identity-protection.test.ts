@@ -12,8 +12,8 @@
  * @version 1.0.0
  */
 
-import { RooSyncService } from '../services/RooSyncService.js';
-import { loadRooSyncConfig } from '../config/roosync-config.js';
+import { RooSyncService } from '@/services/RooSyncService';
+import { loadRooSyncConfig } from '@/config/roosync-config';
 
 /**
  * Résultats de test
@@ -327,22 +327,16 @@ class IdentityProtectionTest {
 /**
  * Point d'entrée principal
  */
-async function main(): Promise<void> {
-  try {
-    const test = new IdentityProtectionTest();
-    await test.runAllTests();
-  } catch (error) {
-    console.error('💥 Erreur critique lors des tests:', error);
-    process.exit(1);
-  }
-}
+describe('IdentityProtectionTest', () => {
+  let test: IdentityProtectionTest;
 
-// Exécuter les tests si ce fichier est lancé directement
-if (require.main === module) {
-  main().catch(error => {
-    console.error('💥 Erreur non gérée:', error);
-    process.exit(1);
+  beforeEach(() => {
+    test = new IdentityProtectionTest();
   });
-}
+
+  it('should run all identity protection tests', async () => {
+    await test.runAllTests();
+  });
+});
 
 export { IdentityProtectionTest };
