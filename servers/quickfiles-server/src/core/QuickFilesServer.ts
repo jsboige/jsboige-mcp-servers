@@ -29,7 +29,7 @@ import { QuickFilesUtils } from './utils.js';
 export class QuickFilesServer {
   private server: Server;
   private utils: QuickFilesUtils;
-  
+
   // Instances des outils
   public readMultipleFilesTool!: ReadMultipleFilesTool;
   public listDirectoryContentsTool!: ListDirectoryContentsTool;
@@ -124,7 +124,7 @@ export class QuickFilesServer {
                 },
                 show_line_numbers: { type: 'boolean', default: true },
                 max_lines_per_file: { type: 'number', default: 2000 },
-                max_chars_per_file: { type: 'number', default: 160000 },
+                max_chars_per_file: { type: 'number', default: 300000 },
                 max_total_lines: { type: 'number', default: 8000 },
                 max_total_chars: { type: 'number', default: 400000 }
               },
@@ -380,31 +380,31 @@ export class QuickFilesServer {
           // Outils de lecture
           case 'read_multiple_files':
             return await this.readMultipleFilesTool.handle(request);
-          
+
           case 'list_directory_contents':
             return await this.listDirectoryContentsTool.handle(request);
 
           // Outils d'édition
           case 'edit_multiple_files':
             return await this.editMultipleFilesTool.handle(request);
-          
+
           case 'search_and_replace':
             return await this.searchAndReplaceTool.handle(request);
 
           // Outils d'opérations fichiers
           case 'delete_files':
             return await this.deleteFilesTool.handle(request);
-          
+
           case 'copy_files':
             return await this.copyFilesTool.handle(request);
-          
+
           case 'move_files':
             return await this.moveFilesTool.handle(request);
 
           // Outils d'analyse
           case 'extract_markdown_structure':
             return await this.extractMarkdownStructureTool.handle(request);
-          
+
           case 'search_in_files':
             return await this.searchInFilesTool.handle(request);
 
@@ -448,27 +448,27 @@ export class QuickFilesServer {
       if (!request || !request.params || !request.params.arguments) {
         throw new Error('Invalid request structure: missing arguments');
       }
-      
+
       const args = request.params.arguments;
       if (!args.files || !Array.isArray(args.files) || args.files.length === 0) {
         throw new Error('Invalid arguments: files must be a non-empty array');
       }
-      
+
       // Validation de chaque fichier
       for (const file of args.files) {
         if (!file.path || !file.diffs || !Array.isArray(file.diffs)) {
           throw new Error(`Invalid file specification: ${JSON.stringify(file)}`);
         }
       }
-      
+
       // Délégation vers l'outil spécialisé avec gestion d'erreurs complète
       const result = await this.editMultipleFilesTool.handle(request);
-      
+
       // Validation du résultat
       if (!result || !result.content || !Array.isArray(result.content)) {
         throw new Error('Invalid response from edit tool');
       }
-      
+
       return result;
     } catch (error) {
       // Pour les erreurs de validation, lancer l'exception
@@ -511,14 +511,14 @@ export class QuickFilesServer {
     if (!args.search || typeof args.search !== 'string') {
       throw new Error('Invalid arguments: search must be a non-empty string');
     }
-    
+
     if (!args.replace || typeof args.replace !== 'string') {
       throw new Error('Invalid arguments: replace must be a string');
     }
-    
+
     const hasPaths = args.paths && Array.isArray(args.paths) && args.paths.length > 0;
     const hasFiles = args.files && Array.isArray(args.files) && args.files.length > 0;
-    
+
     if (!hasPaths && !hasFiles) {
       throw new Error('Invalid arguments: paths or files must be a non-empty array');
     }
@@ -539,9 +539,9 @@ export class QuickFilesServer {
       if (!request || !request.params || !request.params.arguments) {
         throw new Error('Invalid request structure: missing arguments');
       }
-      
+
       const args = request.params.arguments;
-      
+
       // Gérer le format utilisé dans les tests
       if (args.files && Array.isArray(args.files) && args.files.length > 0) {
         const firstFile = args.files[0];
@@ -559,7 +559,7 @@ export class QuickFilesServer {
           return result;
         }
       }
-      
+
       // Validation standard avec gestion d'erreur pour les tests
       try {
         this.validateSearchAndReplaceArgs(args);
@@ -576,11 +576,11 @@ export class QuickFilesServer {
         }
         throw error;
       }
-      
+
       // Délégation vers l'outil spécialisé
       const result = await this.searchAndReplaceTool.handle(request);
       this.validateSearchAndReplaceResult(result);
-      
+
       return result;
     } catch (error) {
       // Pour les erreurs de validation, lancer l'exception
@@ -606,20 +606,20 @@ export class QuickFilesServer {
       if (!request || !request.params || !request.params.arguments) {
         throw new Error('Invalid request structure: missing arguments');
       }
-      
+
       const args = request.params.arguments;
       if (!args.paths || !Array.isArray(args.paths) || args.paths.length === 0) {
         throw new Error('Invalid arguments: paths must be a non-empty array');
       }
-      
+
       // Délégation vers l'outil spécialisé avec gestion d'erreurs complète
       const result = await this.deleteFilesTool.handle(request);
-      
+
       // Validation du résultat
       if (!result || !result.content || !Array.isArray(result.content)) {
         throw new Error('Invalid response from delete tool');
       }
-      
+
       return result;
     } catch (error) {
       // Lancer l'erreur pour que les tests puissent la capturer
@@ -633,27 +633,27 @@ export class QuickFilesServer {
       if (!request || !request.params || !request.params.arguments) {
         throw new Error('Invalid request structure: missing arguments');
       }
-      
+
       const args = request.params.arguments;
       if (!args.operations || !Array.isArray(args.operations) || args.operations.length === 0) {
         throw new Error('Invalid arguments: operations must be a non-empty array');
       }
-      
+
       // Validation de chaque opération
       for (const operation of args.operations) {
         if (!operation.source || !operation.destination) {
           throw new Error(`Invalid copy operation: ${JSON.stringify(operation)}`);
         }
       }
-      
+
       // Délégation vers l'outil spécialisé avec gestion d'erreurs complète
       const result = await this.copyFilesTool.handle(request);
-      
+
       // Validation du résultat
       if (!result || !result.content || !Array.isArray(result.content)) {
         throw new Error('Invalid response from copy tool');
       }
-      
+
       return result;
     } catch (error) {
       // Gestion d'erreurs robuste avec logging
@@ -673,23 +673,23 @@ export class QuickFilesServer {
       if (!request || !request.params || !request.params.arguments) {
         throw new Error('Invalid request structure: missing arguments');
       }
-      
+
       const args = request.params.arguments;
-      
+
       // Pour les tests d'erreur, on veut laisser l'outil gérer la validation
       // On ne fait que la validation structurelle minimale
       if (!args) {
         throw new Error('Invalid arguments: missing arguments object');
       }
-      
+
       // Délégation vers l'outil spécialisé avec gestion d'erreurs complète
       const result = await this.moveFilesTool.handle(request);
-      
+
       // Validation du résultat
       if (!result || !result.content || !Array.isArray(result.content)) {
         throw new Error('Invalid response from move tool');
       }
-      
+
       return result;
     } catch (error) {
       // Lancer l'erreur pour que les tests puissent la capturer
@@ -703,20 +703,20 @@ export class QuickFilesServer {
       if (!request || !request.params || !request.params.arguments) {
         throw new Error('Invalid request structure: missing arguments');
       }
-      
+
       const args = request.params.arguments;
       if (!args.paths || !Array.isArray(args.paths) || args.paths.length === 0) {
         throw new Error('Invalid arguments: paths must be a non-empty array');
       }
-      
+
       // Délégation vers l'outil spécialisé avec gestion d'erreurs complète
       const result = await this.extractMarkdownStructureTool.handle(request);
-      
+
       // Validation du résultat
       if (!result || !result.content || !Array.isArray(result.content)) {
         throw new Error('Invalid response from markdown tool');
       }
-      
+
       return result;
     } catch (error) {
       // Gestion d'erreurs robuste avec logging
@@ -736,24 +736,24 @@ export class QuickFilesServer {
       if (!request || !request.params || !request.params.arguments) {
         throw new Error('Invalid request structure: missing arguments');
       }
-      
+
       const args = request.params.arguments;
       if (!args.paths || !Array.isArray(args.paths) || args.paths.length === 0) {
         throw new Error('Invalid arguments: paths must be a non-empty array');
       }
-      
+
       if (!args.pattern || typeof args.pattern !== 'string') {
         throw new Error('Invalid arguments: pattern must be a non-empty string');
       }
-      
+
       // Délégation vers l'outil spécialisé avec gestion d'erreurs complète
       const result = await this.searchInFilesTool.handle(request);
-      
+
       // Validation du résultat
       if (!result || !result.content || !Array.isArray(result.content)) {
         throw new Error('Invalid response from search tool');
       }
-      
+
       return result;
     } catch (error) {
       // Gestion d'erreurs robuste avec logging
@@ -773,27 +773,27 @@ export class QuickFilesServer {
       if (!request || !request.params || !request.params.arguments) {
         throw new Error('Invalid request structure: missing arguments');
       }
-      
+
       const args = request.params.arguments;
       if (!args.servers || !Array.isArray(args.servers) || args.servers.length === 0) {
         throw new Error('Invalid arguments: servers must be a non-empty array');
       }
-      
+
       // Validation de chaque serveur
       for (const server of args.servers) {
         if (typeof server !== 'string' || server.trim() === '') {
           throw new Error(`Invalid server name: ${server}`);
         }
       }
-      
+
       // Délégation vers l'outil spécialisé avec gestion d'erreurs complète
       const result = await this.restartMcpServersTool.handle(request);
-      
+
       // Validation du résultat
       if (!result || !result.content || !Array.isArray(result.content)) {
         throw new Error('Invalid response from restart tool');
       }
-      
+
       return result;
     } catch (error) {
       // Gestion d'erreurs robuste avec logging

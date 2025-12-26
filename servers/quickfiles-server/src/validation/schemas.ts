@@ -18,7 +18,7 @@ export const ReadMultipleFilesArgsSchema = z.object({
   paths: z.array(z.union([z.string(), FileWithExcerptsSchema])).min(1),
   show_line_numbers: z.boolean().optional().default(true),
   max_lines_per_file: z.number().min(1).optional().default(2000),
-  max_chars_per_file: z.number().min(1).optional().default(160000),
+  max_chars_per_file: z.number().min(1).optional().default(300000),
   max_total_lines: z.number().min(1).optional().default(8000),
   max_total_chars: z.number().min(1).optional().default(400000),
 });
