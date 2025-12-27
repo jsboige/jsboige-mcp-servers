@@ -103,8 +103,16 @@ export function registerListToolsHandler(server: Server): void {
                 toolExports.exportTaskTreeMarkdownTool,
                 
                 // Diagnostic Tools - WP4
-                toolExports.analyze_roosync_problems,
-                toolExports.diagnose_env,
+                {
+                    name: toolExports.analyze_roosync_problems.name,
+                    description: toolExports.analyze_roosync_problems.description,
+                    inputSchema: toolExports.analyze_roosync_problems.inputSchema,
+                },
+                {
+                    name: toolExports.diagnose_env.name,
+                    description: toolExports.diagnose_env.description,
+                    inputSchema: toolExports.diagnose_env.inputSchema,
+                },
 
                 // RooSync tools - Batch 6 synchronization
                 ...toolExports.roosyncTools,
