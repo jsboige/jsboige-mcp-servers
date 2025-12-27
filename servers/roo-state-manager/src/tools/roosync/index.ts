@@ -201,6 +201,21 @@ import { publishConfigToolMetadata } from './publish-config.js';
 import { applyConfigToolMetadata } from './apply-config.js';
 import { getMachineInventoryTool } from './get-machine-inventory.js';
 
+// Métadonnées pour l'outil d'inventaire (format JSON Schema standard)
+const getMachineInventoryToolMetadata = {
+  name: 'roosync_get_machine_inventory',
+  description: 'Collecte l\'inventaire complet de configuration de la machine courante pour RooSync.',
+  inputSchema: {
+    type: 'object',
+    properties: {
+      machineId: {
+        type: 'string',
+        description: 'Identifiant optionnel de la machine (défaut: hostname)'
+      }
+    }
+  }
+};
+
 // Métadonnées pour l'outil export baseline
 const exportBaselineToolMetadata = {
   name: 'roosync_export_baseline',
@@ -259,5 +274,5 @@ export const roosyncTools = [
   collectConfigToolMetadata,
   publishConfigToolMetadata,
   applyConfigToolMetadata,
-  getMachineInventoryTool
+  getMachineInventoryToolMetadata
 ];
