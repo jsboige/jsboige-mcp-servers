@@ -6,7 +6,7 @@ import { PowerShellExecutor } from '../PowerShellExecutor';
 
 export class InventoryService {
   private static instance: InventoryService;
-  private readonly ROO_EXTENSIONS_PATH = 'c:/dev/roo-extensions';
+  private readonly ROO_EXTENSIONS_PATH: string;
   private readonly MCP_SETTINGS_PATH: string;
   private readonly ROO_CONFIG_PATH: string;
   private readonly SCRIPTS_PATH: string;
@@ -15,6 +15,7 @@ export class InventoryService {
     // Define paths relative to the assumed workspace root or user home
     // In a real scenario, these might be configurable or auto-detected
     const userHome = os.homedir();
+    this.ROO_EXTENSIONS_PATH = process.env.ROO_EXTENSIONS_PATH || process.cwd();
     this.MCP_SETTINGS_PATH = path.join(userHome, 'AppData/Roaming/Code/User/globalStorage/rooveterinaryinc.roo-cline/settings/mcp_settings.json');
     this.ROO_CONFIG_PATH = path.join(this.ROO_EXTENSIONS_PATH, 'roo-config');
     this.SCRIPTS_PATH = path.join(this.ROO_EXTENSIONS_PATH, 'scripts');
@@ -28,38 +29,88 @@ export class InventoryService {
   }
 
   public async getMachineInventory(machineId?: string): Promise<FullInventory> {
-    const finalMachineId = machineId || os.hostname();
-    
-    const inventoryData: InventoryData = {
-      mcpServers: await this.collectMcpServers(),
-      slashCommands: [], // Not implemented in script
-      terminalCommands: { allowed: [], restricted: [] }, // Not implemented in script
-      rooModes: await this.collectRooModes(),
-      sdddSpecs: await this.collectSdddSpecs(),
-      scripts: await this.collectScripts(),
-      tools: {}, // Skipped in script
-      systemInfo: {
-        os: `${os.type()} ${os.release()}`,
-        hostname: os.hostname(),
-        username: os.userInfo().username,
-        powershellVersion: await this.getPowershellVersion()
-      }
-    };
+  const finalMachineId = machineId || os.hostname();
+  const localHostname = os.hostname();
 
-    return {
-      machineId: finalMachineId,
-      timestamp: new Date().toISOString(),
-      inventory: inventoryData,
-      paths: {
-        rooExtensions: this.ROO_EXTENSIONS_PATH,
-        mcpSettings: this.MCP_SETTINGS_PATH,
-        rooConfig: this.ROO_CONFIG_PATH,
-        scripts: this.SCRIPTS_PATH
-      }
-    };
+  // Si machineId est fourni et différent de l'hôte local, charger l'inventaire distant
+  if (machineId && machineId !== localHostname) {
+    return await this.loadRemoteInventory(machineId);
   }
 
-  private async collectMcpServers(): Promise<McpServerInfo[]> {
+  // Sinon, collecter l'inventaire local
+  const inventoryData: InventoryData = {
+    mcpServers: await this.collectMcpServers(),
+    slashCommands: [], // Not implemented in script
+    terminalCommands: { allowed: [], restricted: [] }, // Not implemented in script
+    rooModes: await this.collectRooModes(),
+    sdddSpecs: await this.collectSdddSpecs(),
+    scripts: await this.collectScripts(),
+    tools: {}, // Skipped in script
+    systemInfo: {
+      os: `${os.type()} ${os.release()}`,
+      hostname: os.hostname(),
+      username: os.userInfo().username,
+      powershellVersion: await this.getPowershellVersion()
+    }
+  };
+
+  return {
+    machineId: finalMachineId,
+    timestamp: new Date().toISOString(),
+    inventory: inventoryData,
+    paths: {
+      rooExtensions: this.ROO_EXTENSIONS_PATH,
+      mcpSettings: this.MCP_SETTINGS_PATH,
+      rooConfig: this.ROO_CONFIG_PATH,
+      scripts: this.SCRIPTS_PATH
+    }
+  };
+}
+
+/**
+ * Charge l'inventaire d'une machine distante depuis le partage RooSync
+ * @param machineId - Identifiant de la machine distante
+ * @returns L'inventaire complet de la machine distante
+ * @throws Error si l'inventaire n'existe pas ou si le chemin de partage n'est pas configuré
+ */
+private async loadRemoteInventory(machineId: string): Promise<FullInventory> {
+  const sharedPath = process.env.ROOSYNC_SHARED_PATH;
+
+  if (!sharedPath) {
+    throw new Error(
+      'ROOSYNC_SHARED_PATH n\'est pas configuré. Impossible de charger l\'inventaire distant.'
+    );
+  }
+
+  const inventoryPath = path.join(sharedPath, 'inventories', `${machineId}.json`);
+
+  try {
+    const content = await fs.readFile(inventoryPath, 'utf-8');
+    const inventory: FullInventory = JSON.parse(content);
+
+    // Vérifier que l'inventaire chargé correspond bien au machineId demandé
+    if (inventory.machineId !== machineId) {
+      throw new Error(
+        `Incohérence dans l'inventaire: machineId du fichier (${inventory.machineId}) ` +
+        `diffère du machineId demandé (${machineId})`
+      );
+    }
+
+    return inventory;
+  } catch (error: any) {
+    if (error.code === 'ENOENT') {
+      throw new Error(
+        `L'inventaire pour la machine '${machineId}' n'existe pas dans le partage RooSync. ` +
+        `Chemin recherché: ${inventoryPath}`
+      );
+    }
+    throw new Error(
+      `Erreur lors du chargement de l'inventaire distant pour '${machineId}': ${error.message}`
+    );
+  }
+}
+
+private async collectMcpServers(): Promise<McpServerInfo[]> {
     try {
       if (await this.fileExists(this.MCP_SETTINGS_PATH)) {
         const content = await fs.readFile(this.MCP_SETTINGS_PATH, 'utf-8');
@@ -139,14 +190,14 @@ export class InventoryService {
           if (await this.fileExists(this.SCRIPTS_PATH)) {
               // Get directories (categories)
               const items = await fs.readdir(this.SCRIPTS_PATH, { withFileTypes: true });
-              
+
               for (const item of items) {
                   if (item.isDirectory()) {
                       const category = item.name;
                       result.categories[category] = [];
                       const dirPath = path.join(this.SCRIPTS_PATH, category);
                       const files = await this.getFilesRecursively(dirPath, '.ps1');
-                      
+
                       for (const file of files) {
                           const scriptInfo: ScriptInfo = {
                               name: path.basename(file),
