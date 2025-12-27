@@ -281,15 +281,8 @@ export class ConfigSharingService implements IConfigSharingService {
     const modesDir = join(tempDir, 'roo-modes');
     await fs.mkdir(modesDir, { recursive: true });
 
-    // Récupérer l'inventaire pour trouver les chemins
-    const inventory = await this.inventoryCollector.collectInventory(process.env.COMPUTERNAME || 'localhost') as any;
-    
-    // Essayer de trouver le chemin des modes
-    let rooModesPath = join(process.cwd(), 'roo-modes');
-    
-    if (inventory?.paths?.rooExtensions) {
-      rooModesPath = join(inventory.paths.rooExtensions, 'roo-modes');
-    }
+    // Utiliser le chemin direct du workspace (sous-répertoire configs/)
+    const rooModesPath = join(process.cwd(), 'roo-modes', 'configs');
 
     this.logger.info(`Collecte des modes depuis: ${rooModesPath}`);
 
@@ -319,7 +312,7 @@ export class ConfigSharingService implements IConfigSharingService {
         }
       }
     } else {
-        this.logger.warn(`Répertoire roo-modes non trouvé: ${rooModesPath}`);
+        this.logger.warn(`Répertoire roo-modes/configs non trouvé: ${rooModesPath}`);
     }
 
     return files;
@@ -330,14 +323,8 @@ export class ConfigSharingService implements IConfigSharingService {
     const mcpDir = join(tempDir, 'mcp-settings');
     await fs.mkdir(mcpDir, { recursive: true });
 
-    // Récupérer l'inventaire pour trouver les chemins
-    const inventory = await this.inventoryCollector.collectInventory(process.env.COMPUTERNAME || 'localhost') as any;
-    
-    let mcpSettingsPath = join(process.cwd(), 'config', 'mcp_settings.json');
-    
-    if (inventory?.paths?.mcpSettings) {
-      mcpSettingsPath = inventory.paths.mcpSettings;
-    }
+    // Utiliser le chemin direct du workspace
+    const mcpSettingsPath = join(process.cwd(), 'config', 'mcp_settings.json');
 
     this.logger.info(`Collecte des settings MCP depuis: ${mcpSettingsPath}`);
 
