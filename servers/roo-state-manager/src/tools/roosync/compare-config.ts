@@ -84,13 +84,14 @@ export async function roosyncCompareConfig(args: CompareConfigArgs): Promise<Com
   debugLog('roosyncCompareConfig appelé avec args', args);
   try {
     debugLog('Avant getRooSyncService()');
-    const service = getRooSyncService();
-    debugLog('Après getRooSyncService(), service obtenu', { serviceExists: !!service });
-    const config = service.getConfig();
-    
-    // Déterminer machines source et cible
-    const sourceMachineId = args.source || config.machineId;
-    const targetMachineId = args.target || await getDefaultTargetMachine(service, sourceMachineId);
+      const service = getRooSyncService();
+      debugLog('Après getRooSyncService(), service obtenu', { serviceExists: !!service });
+      const config = service.getConfig();
+      
+      // Déterminer machines source et cible
+      // Gérer l'alias 'local-machine' qui doit être mappé vers le vrai machineId
+      const sourceMachineId = (args.source === 'local-machine') ? config.machineId : (args.source || config.machineId);
+      const targetMachineId = (args.target === 'local-machine') ? config.machineId : (args.target || await getDefaultTargetMachine(service, sourceMachineId));
     
     // Comparaison réelle
     const report = await service.compareRealConfigurations(

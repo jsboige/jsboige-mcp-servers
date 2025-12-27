@@ -103,10 +103,27 @@ export class BaselineService {
 
   /**
    * Charge la configuration baseline depuis sync-config.ref.json
+   * Crée une baseline par défaut si le fichier n'existe pas
    */
   public async loadBaseline(): Promise<BaselineConfig | null> {
     try {
       this.logInfo('Chargement de la baseline', { path: this.baselinePath });
+      
+      // Vérifier si le fichier existe, sinon créer une baseline par défaut
+      if (!existsSync(this.baselinePath)) {
+        this.logWarn('Fichier baseline non trouvé, création d\'une baseline par défaut', {
+          path: this.baselinePath
+        });
+        
+        const defaultBaselineFile = this.createDefaultBaseline();
+        await fs.writeFile(this.baselinePath, JSON.stringify(defaultBaselineFile, null, 2), 'utf-8');
+        
+        this.logInfo('Baseline par défaut créée avec succès', {
+          path: this.baselinePath,
+          machineId: defaultBaselineFile.machineId,
+          version: defaultBaselineFile.version
+        });
+      }
       
       const baseline = await this.baselineLoader.loadBaseline(this.baselinePath);
 
@@ -133,9 +150,31 @@ export class BaselineService {
 
   /**
    * Lit le fichier baseline de configuration (format BaselineFileConfig)
+   * Crée une baseline par défaut si le fichier n'existe pas
    */
   public async readBaselineFile(): Promise<BaselineFileConfig | null> {
     try {
+      // Vérifier si le fichier existe
+      if (!existsSync(this.baselinePath)) {
+        this.logWarn('Fichier baseline non trouvé, création d\'une baseline par défaut', {
+          path: this.baselinePath
+        });
+        
+        // Créer une baseline par défaut
+        const defaultBaseline = this.createDefaultBaseline();
+        
+        // Sauvegarder la baseline par défaut
+        await fs.writeFile(this.baselinePath, JSON.stringify(defaultBaseline, null, 2), 'utf-8');
+        
+        this.logInfo('Baseline par défaut créée avec succès', {
+          path: this.baselinePath,
+          machineId: defaultBaseline.machineId,
+          version: defaultBaseline.version
+        });
+        
+        return defaultBaseline;
+      }
+      
       const baselineFile = await this.baselineLoader.readBaselineFile(this.baselinePath);
       
       if (baselineFile) {
@@ -151,6 +190,58 @@ export class BaselineService {
       this.logError('Erreur lors de la lecture du fichier baseline', error);
       throw error;
     }
+  }
+
+  /**
+   * Crée une configuration baseline par défaut
+   */
+  private createDefaultBaseline(): BaselineFileConfig {
+    const now = new Date().toISOString();
+    const machineId = process.env.ROOSYNC_MACHINE_ID || 'default-machine';
+    
+    return {
+      version: '2.1.0',
+      baselineId: `baseline-${now.replace(/[:.]/g, '-')}`,
+      timestamp: now,
+      lastUpdated: now,
+      machineId,
+      autoSync: false,
+      conflictStrategy: 'manual',
+      logLevel: 'info',
+      sharedStatePath: this.config.baselinePath || process.env.ROOSYNC_SHARED_PATH || '',
+      machines: [
+        {
+          id: machineId,
+          name: machineId,
+          hostname: machineId,
+          os: 'Unknown',
+          architecture: 'Unknown',
+          lastSeen: now,
+          roo: {
+            modes: [],
+            mcpServers: [],
+            sdddSpecs: []
+          },
+          hardware: {
+            cpu: {
+              cores: 0,
+              threads: 0
+            },
+            memory: {
+              total: 0
+            }
+          },
+          software: {
+            node: 'Unknown',
+            python: 'Unknown'
+          }
+        }
+      ],
+      syncTargets: [],
+      syncPaths: [],
+      decisions: [],
+      messages: []
+    };
   }
 
   /**
