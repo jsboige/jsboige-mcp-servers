@@ -12,6 +12,25 @@ import * as fs from 'fs/promises';
 
 import { RooStorageDetector } from '../../src/utils/roo-storage-detector.js';
 
+/**
+ * TEST NON RÉINTÉGRABLE - Problème ESM singleton
+ *
+ * Ce test est désactivé en raison d'un problème avec les singletons ESM qui cause
+ * l'erreur "module is already linked" lors de l'exécution des tests.
+ *
+ * Problème identifié :
+ * - Le module task-instruction-index.js utilise un singleton globalTaskInstructionIndex
+ * - Lors de l'exécution multiple des tests, le module est déjà lié et ne peut pas être réinitialisé
+ * - Les tentatives de nettoyage dans beforeEach ne suffisent pas
+ *
+ * Pour réintégrer ce test :
+ * 1. Refactoriser task-instruction-index.js pour ne plus utiliser de singleton
+ * 2. Utiliser l'injection de dépendances ou un pattern factory
+ * 3. Permettre la création d'instances isolées pour chaque test
+ * 4. Tester la refactorisation avec les tests unitaires existants
+ *
+ * Voir aussi : https://github.com/vitest-dev/vitest/issues/4043
+ */
 describe.skip('NewTask Extraction - Ligne Unique Géante (DISABLED: ESM singleton issue)', () => {
     const fixturesPath = path.join(__dirname, '..', 'fixtures', 'real-tasks');
     const testTaskId = 'bc93a6f7-cd2e-4686-a832-46e3cd14d338';

@@ -174,9 +174,23 @@ describe('RooSync E2E Workflow', () => {
       }
     }, 120000);
 
+    /**
+     * TEST MANUEL - À exécuter uniquement dans un environnement de test isolé
+     *
+     * Ce test modifie réellement l'état du système RooSync en appliquant une décision.
+     * Il doit être exécuté manuellement avec les précautions suivantes :
+     *
+     * 1. Utiliser un environnement de test isolé (pas de production)
+     * 2. Avoir une décision de test disponible (testDecisionId)
+     * 3. Avoir un rollback point créé avant l'exécution
+     * 4. Être prêt à restaurer manuellement si nécessaire
+     *
+     * Pour exécuter ce test :
+     * - Retirer le .skip
+     * - S'assurer que testDecisionId est défini
+     * - Exécuter avec npm test -- tests/e2e/roosync-workflow.test.ts
+     */
     it.skip('devrait appliquer une décision en mode réel (SKIP par défaut)', async () => {
-      // Ce test est skippé par défaut car il modifie réellement l'état
-      // Pour l'exécuter : Retirer le .skip et s'assurer d'avoir une décision de test
 
       if (!testDecisionId) {
         console.log('⏭️ Test skipped : Aucune décision pending disponible');
@@ -233,8 +247,23 @@ describe('RooSync E2E Workflow', () => {
       }
     }, 30000);
 
+    /**
+     * TEST MANUEL - À exécuter uniquement dans un environnement de test isolé
+     *
+     * Ce test modifie réellement l'état du système RooSync en restaurant depuis un rollback point.
+     * Il doit être exécuté manuellement avec les précautions suivantes :
+     *
+     * 1. Utiliser un environnement de test isolé (pas de production)
+     * 2. Avoir une décision avec rollback point disponible (testDecisionId)
+     * 3. Avoir exécuté préalablement le test d'application de décision
+     * 4. Être prêt à restaurer manuellement si nécessaire
+     *
+     * Pour exécuter ce test :
+     * - Retirer le .skip
+     * - S'assurer que testDecisionId est défini et a un rollback point
+     * - Exécuter avec npm test -- tests/e2e/roosync-workflow.test.ts
+     */
     it.skip('devrait restaurer depuis un rollback point (SKIP par défaut)', async () => {
-      // Ce test est skippé par défaut car il modifie réellement l'état
 
       if (!testDecisionId) {
         console.log('⏭️ Test skipped : Aucune décision avec rollback disponible');

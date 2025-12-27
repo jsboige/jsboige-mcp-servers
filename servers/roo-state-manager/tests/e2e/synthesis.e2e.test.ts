@@ -16,17 +16,16 @@ dotenv.config({ path: envPath });
 
 // Tests E2E avec les vraies clés du .env
 describe('E2E Tests with Real Environment', () => {
-    // Skip si pas de clés configurées
+    // Les tests E2E sont maintenant activés car les variables d'environnement sont configurées
+    // dans .env (OPENAI_API_KEY, OPENAI_CHAT_MODEL_ID, QDRANT_URL, QDRANT_API_KEY, QDRANT_COLLECTION_NAME)
     const hasRequiredEnv = process.env.OPENAI_API_KEY &&
-                          process.env.OPENAI_MODEL_ID &&
+                          (process.env.OPENAI_MODEL_ID || process.env.OPENAI_CHAT_MODEL_ID) &&
                           process.env.QDRANT_URL &&
                           process.env.QDRANT_API_KEY;
-    const skipE2E = !hasRequiredEnv;
-    const itE2E = skipE2E ? it.skip : it;
-
+    
     beforeAll(() => {
-        if (skipE2E) {
-            console.log('⚠️ Skipping E2E tests: OPENAI_API_KEY not configured in .env');
+        if (!hasRequiredEnv) {
+            console.log('⚠️ Skipping E2E tests: Required environment variables not configured in .env');
         } else {
             console.log('🚀 Running E2E tests with real API keys');
         }
@@ -60,7 +59,7 @@ describe('E2E Tests with Real Environment', () => {
     });
 
     describe('Real API Integration', () => {
-        itE2E('should instantiate LLMService with real OpenAI config', () => {
+        it('should instantiate LLMService with real OpenAI config', () => {
             expect(() => {
                 const config = createE2ELLMConfig();
                 const service = new LLMService(config);
@@ -68,7 +67,7 @@ describe('E2E Tests with Real Environment', () => {
             }).not.toThrow();
         });
 
-        itE2E('should create complete synthesis pipeline with real config', () => {
+        it('should create complete synthesis pipeline with real config', () => {
             expect(() => {
                 const contextBuilder = new NarrativeContextBuilderService({
                     baseDirectory: process.cwd(),
@@ -92,7 +91,7 @@ describe('E2E Tests with Real Environment', () => {
     });
 
     describe('Environment Configuration', () => {
-        itE2E('should have all required environment variables', () => {
+        it('should have all required environment variables', () => {
             expect(process.env.OPENAI_API_KEY).toBeDefined();
             // Accepter OPENAI_MODEL_ID ou OPENAI_CHAT_MODEL_ID
             expect(process.env.OPENAI_MODEL_ID || process.env.OPENAI_CHAT_MODEL_ID).toBeDefined();
@@ -101,7 +100,7 @@ describe('E2E Tests with Real Environment', () => {
             expect(process.env.QDRANT_COLLECTION_NAME).toBeDefined();
         });
 
-        itE2E('should validate environment values', () => {
+        it('should validate environment values', () => {
             expect(process.env.OPENAI_API_KEY).toMatch(/^sk-/);
             // Accepter gpt-4o-mini ou gpt-5-mini selon la configuration
             expect(['gpt-4o', 'gpt-4o-mini', 'gpt-5-mini']).toContain(process.env.OPENAI_MODEL_ID || process.env.OPENAI_CHAT_MODEL_ID);
@@ -109,14 +108,14 @@ describe('E2E Tests with Real Environment', () => {
             expect(process.env.QDRANT_COLLECTION_NAME).toBe('roo_tasks_semantic_index');
         });
 
-        itE2E('should validate Qdrant configuration', () => {
+        it('should validate Qdrant configuration', () => {
             expect(process.env.QDRANT_API_KEY).toMatch(/^[a-f0-9-]{36}$/); // UUID format
             expect(process.env.QDRANT_URL).toBe('https://qdrant.myia.io');
         });
     });
 
     describe('Phase 1 Integration with Real Config', () => {
-        itE2E('should handle real synthesis gracefully (Phase 2)', async () => {
+        it('should handle real synthesis gracefully (Phase 2)', async () => {
             const contextBuilder = new NarrativeContextBuilderService({
                 baseDirectory: process.cwd(),
                 maxContextSize: 10000
