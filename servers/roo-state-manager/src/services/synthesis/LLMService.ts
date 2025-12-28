@@ -16,7 +16,8 @@
 import { ConversationAnalysis, CondensedSynthesisBatch, ContextTrace, SynthesisNarrative } from '../../models/synthesis/SynthesisModels.js';
 import getOpenAIClient from '../openai.js';
 import OpenAI from 'openai';
-import { zodResponseFormat } from 'openai/helpers/zod';
+// CORRECTION: Utiliser la méthode native d'OpenAI pour response_format
+// L'import zodResponseFormat a été remplacé par l'utilisation directe de response_format
 import { z } from 'zod';
 import * as crypto from 'crypto';
 
@@ -350,7 +351,7 @@ export class LLMService {
                 synthesisPrompt,
                 activeModelId,
                 {
-                    response_format: zodResponseFormat(ConversationAnalysisSchema, 'conversation_analysis')
+                    response_format: { type: "json_object" }
                 },
                 { taskId, operation: 'synthesis' }
             );
@@ -399,7 +400,7 @@ export class LLMService {
                 condensationPrompt,
                 activeModelId,
                 {
-                    response_format: zodResponseFormat(CondensedSynthesisBatchSchema, 'condensed_batch')
+                    response_format: { type: "json_object" }
                 },
                 {
                     operation: 'condensation',

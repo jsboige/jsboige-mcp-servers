@@ -1,0 +1,12 @@
+[
+  {
+    "author": "user",
+    "text": "Can you help me understand how semantic search works?",
+    "timestamp": "2023-12-05T10:00:00.000Z"
+  },
+  {
+    "author": "agent",
+    "text": "Semantic search uses vector embeddings to find content based on meaning rather than just keyword matching.",
+    "timestamp": "2023-12-05T10:00:05.000Z"
+  }
+]

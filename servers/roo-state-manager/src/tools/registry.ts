@@ -1,6 +1,6 @@
 /**
  * Registre central des outils MCP
- * 
+ *
  * Ce fichier centralise l'enregistrement de tous les outils du serveur MCP.
  * Il gère le mapping entre les noms d'outils et leurs handlers.
  */
@@ -33,7 +33,7 @@ export function registerListToolsHandler(server: Server): void {
                 toolExports.buildSkeletonCacheDefinition,
                 toolExports.getTaskTreeTool,
                 toolExports.debugTaskParsingTool,
-                toolExports.searchTasksSemanticTool.definition,
+                toolExports.searchTasksByContentTool.definition,
                 toolExports.debugAnalyzeTool.definition,
                 {
                     name: toolExports.viewConversationTree.name,
@@ -101,6 +101,19 @@ export function registerListToolsHandler(server: Server): void {
                     inputSchema: toolExports.getConversationSynthesisTool.inputSchema,
                 },
                 toolExports.exportTaskTreeMarkdownTool,
+                
+                // Diagnostic Tools - WP4
+                {
+                    name: toolExports.analyze_roosync_problems.name,
+                    description: toolExports.analyze_roosync_problems.description,
+                    inputSchema: toolExports.analyze_roosync_problems.inputSchema,
+                },
+                {
+                    name: toolExports.diagnose_env.name,
+                    description: toolExports.diagnose_env.description,
+                    inputSchema: toolExports.diagnose_env.inputSchema,
+                },
+
                 // RooSync tools - Batch 6 synchronization
                 ...toolExports.roosyncTools,
                 // RooSync Messaging tools - Phase 1
@@ -237,15 +250,6 @@ export function registerListToolsHandler(server: Server): void {
                         required: ['message_id', 'body']
                     }
                 },
-                {
-                    name: 'debug_dashboard',
-                    description: 'Outil de diagnostic pour forcer la réinitialisation du service RooSync et contourner le cache',
-                    inputSchema: {
-                        type: 'object',
-                        properties: {},
-                        required: []
-                    }
-                }
             ] as any[],
         };
     });
@@ -274,15 +278,15 @@ export function registerCallToolHandler(
                 const timestamp = new Date().toISOString();
                 console.log('🔍 [STDOUT-SEARCH] console.log test - Heure:', timestamp);
                 console.error('🔍 [STDERR-CONFIRMED] console.error test - Heure:', timestamp);
-                
+
                 // Tests de tous les canaux possibles
                 process.stdout.write(`🔍 [STDOUT-SEARCH] process.stdout.write test - ${timestamp}\n`);
                 process.stderr.write(`🔍 [STDERR-CONFIRMED] process.stderr.write test - ${timestamp}\n`);
-                
+
                 // Test avec console.info et console.warn
                 console.info('🔍 [INFO-SEARCH] console.info test - Heure:', timestamp);
                 console.warn('🔍 [WARN-SEARCH] console.warn test - Heure:', timestamp);
-                
+
                 result = { content: [{ type: 'text', text: `INVESTIGATION DES CANAUX DE LOGS - ${timestamp} - Vérifiez tous les logs maintenant!` }] };
                 break;
            case toolExports.detectStorageTool.definition.name:
@@ -298,7 +302,7 @@ export function registerCallToolHandler(
                 result = await handleTouchMcpSettings();
                 break;
             case 'build_skeleton_cache':
-                result = await toolExports.handleBuildSkeletonCache(args as any, state.conversationCache);
+                result = await toolExports.handleBuildSkeletonCache(args as any, state.conversationCache, state);
                 break;
             case 'get_task_tree':
                 result = await toolExports.handleGetTaskTree(args as any, state.conversationCache, async () => { await ensureSkeletonCacheIsFresh(); });
@@ -309,8 +313,8 @@ export function registerCallToolHandler(
             case toolExports.viewTaskDetailsTool.definition.name:
                 result = await toolExports.viewTaskDetailsTool.handler(args as any, state.conversationCache);
                 break;
-            case toolExports.searchTasksSemanticTool.definition.name:
-                result = await toolExports.searchTasksSemanticTool.handler(
+            case toolExports.searchTasksByContentTool.definition.name:
+                result = await toolExports.searchTasksByContentTool.handler(
                     args as any,
                     state.conversationCache,
                     ensureSkeletonCacheIsFresh,
@@ -411,18 +415,19 @@ export function registerCallToolHandler(
                   state.conversationCache
               );
               break;
+
+          // Diagnostic Tools - WP4
+          case toolExports.analyze_roosync_problems.name:
+              result = await toolExports.analyzeRooSyncProblems(args as any);
+              break;
+          case toolExports.diagnose_env.name:
+              result = await toolExports.diagnoseEnv(args as any);
+              break;
+
           // RooSync tools - Batch 6 synchronization
           case 'roosync_get_status':
               try {
                   const roosyncResult = await toolExports.roosyncGetStatus(args as any);
-                  result = { content: [{ type: 'text', text: JSON.stringify(roosyncResult, null, 2) }] };
-              } catch (error) {
-                  result = { content: [{ type: 'text', text: `Error: ${(error as Error).message}` }], isError: true };
-              }
-              break;
-          case 'roosync_read_dashboard':
-              try {
-                  const roosyncResult = await toolExports.roosyncReadDashboard(args as any);
                   result = { content: [{ type: 'text', text: JSON.stringify(roosyncResult, null, 2) }] };
               } catch (error) {
                   result = { content: [{ type: 'text', text: `Error: ${(error as Error).message}` }], isError: true };
@@ -492,6 +497,63 @@ export function registerCallToolHandler(
                   result = { content: [{ type: 'text', text: `Error: ${(error as Error).message}` }], isError: true };
               }
               break;
+          case 'roosync_update_baseline':
+              try {
+                  const roosyncResult = await toolExports.roosyncUpdateBaseline(args as any);
+                  result = { content: [{ type: 'text', text: JSON.stringify(roosyncResult, null, 2) }] };
+              } catch (error) {
+                  result = { content: [{ type: 'text', text: `Error: ${(error as Error).message}` }], isError: true };
+              }
+              break;
+          case 'roosync_version_baseline':
+              try {
+                  const roosyncResult = await toolExports.versionBaseline(args as any);
+                  result = { content: [{ type: 'text', text: JSON.stringify(roosyncResult, null, 2) }] };
+              } catch (error) {
+                  result = { content: [{ type: 'text', text: `Error: ${(error as Error).message}` }], isError: true };
+              }
+              break;
+          case 'roosync_restore_baseline':
+              try {
+                  const roosyncResult = await toolExports.restoreBaseline(args as any);
+                  result = { content: [{ type: 'text', text: JSON.stringify(roosyncResult, null, 2) }] };
+              } catch (error) {
+                  result = { content: [{ type: 'text', text: `Error: ${(error as Error).message}` }], isError: true };
+              }
+              break;
+          case 'roosync_export_baseline':
+              try {
+                  const roosyncResult = await import('./roosync/export-baseline.js').then(m => m.roosync_export_baseline(args as any));
+                  result = { content: [{ type: 'text', text: JSON.stringify(roosyncResult, null, 2) }] };
+              } catch (error) {
+                  result = { content: [{ type: 'text', text: `Error: ${(error as Error).message}` }], isError: true };
+              }
+              break;
+          // RooSync Config Sharing tools - Cycle 6
+          case 'roosync_collect_config':
+              try {
+                  const roosyncResult = await toolExports.roosyncCollectConfig(args as any);
+                  result = { content: [{ type: 'text', text: JSON.stringify(roosyncResult, null, 2) }] };
+              } catch (error) {
+                  result = { content: [{ type: 'text', text: `Error: ${(error as Error).message}` }], isError: true };
+              }
+              break;
+          case 'roosync_publish_config':
+              try {
+                  const roosyncResult = await toolExports.roosyncPublishConfig(args as any);
+                  result = { content: [{ type: 'text', text: JSON.stringify(roosyncResult, null, 2) }] };
+              } catch (error) {
+                  result = { content: [{ type: 'text', text: `Error: ${(error as Error).message}` }], isError: true };
+              }
+              break;
+          case 'roosync_apply_config':
+              try {
+                  const roosyncResult = await toolExports.roosyncApplyConfig(args as any);
+                  result = { content: [{ type: 'text', text: JSON.stringify(roosyncResult, null, 2) }] };
+              } catch (error) {
+                  result = { content: [{ type: 'text', text: `Error: ${(error as Error).message}` }], isError: true };
+              }
+              break;
            // RooSync Messaging tools - Phase 1
            case 'roosync_send_message':
                try {
@@ -536,17 +598,22 @@ export function registerCallToolHandler(
                    result = { content: [{ type: 'text', text: `Error: ${(error as Error).message}` }], isError: true };
                }
                break;
-           case 'debug_dashboard':
+           // NOUVEAU: Outil d'inventaire
+           case 'roosync_get_machine_inventory':
                try {
-                   const debugResult = await toolExports.debugDashboard(args as any);
-                   result = { content: [{ type: 'text', text: JSON.stringify(debugResult, null, 2) }] };
+                   const invResult = await toolExports.getMachineInventoryTool.execute(args as any, {} as any);
+                   if (invResult.success) {
+                       result = { content: [{ type: 'text', text: JSON.stringify(invResult.data, null, 2) }] };
+                   } else {
+                       result = { content: [{ type: 'text', text: `Error: ${invResult.error?.message}` }], isError: true };
+                   }
                } catch (error) {
                    result = { content: [{ type: 'text', text: `Error: ${(error as Error).message}` }], isError: true };
                }
                break;
            default:
                throw new Error(`Tool not found: ${name}`);
-      }
+       }
 
         return result;
     });

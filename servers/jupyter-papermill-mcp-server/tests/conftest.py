@@ -39,9 +39,22 @@ def temp_dir():
 def mock_config():
     """Fixture pour une configuration MCP mockée."""
     config = Mock(spec=MCPConfig)
-    config.working_directory = "/tmp/test"
-    config.timeout = 60
-    config.kernel_name = "python3"
+    
+    # Configure nested configuration objects
+    config.papermill = Mock()
+    config.papermill.output_dir = "/tmp/test"
+    config.papermill.timeout = 60
+    config.papermill.kernel_name = "python3"
+    
+    config.logging = Mock()
+    config.logging.level = "INFO"
+    
+    config.jupyter_server = Mock()
+    config.jupyter_server.base_url = "http://localhost:8888"
+    config.jupyter_server.token = ""
+    
+    config.offline_mode = False
+    
     return config
 
 

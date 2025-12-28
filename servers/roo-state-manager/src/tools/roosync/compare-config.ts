@@ -1,10 +1,11 @@
 /**
  * Outil MCP : roosync_compare_config
- * 
- * Compare la configuration locale avec une autre machine.
- * 
+ *
+ * Compare la configuration locale avec une autre machine ou un profil.
+ * Supporte implicitement le mode "profils" via l'ID de cible.
+ *
  * @module tools/roosync/compare-config
- * @version 2.0.0
+ * @version 2.1.0
  */
 
 import { z } from 'zod';
@@ -31,6 +32,7 @@ export type CompareConfigArgs = z.infer<typeof CompareConfigArgsSchema>;
 export const CompareConfigResultSchema = z.object({
   source: z.string().describe('Machine source'),
   target: z.string().describe('Machine cible'),
+  host_id: z.string().optional().describe('Identifiant de l\'hôte local'),
   differences: z.array(z.object({
     category: z.string().describe('Catégorie de différence'),
     severity: z.string().describe('Niveau de sévérité'),
@@ -55,7 +57,8 @@ export type CompareConfigResult = z.infer<typeof CompareConfigResultSchema>;
  * Compare la configuration locale avec une autre machine spécifiée.
  * Si aucune machine n'est spécifiée, sélectionne automatiquement la première
  * machine disponible différente de la machine locale.
- * 
+ * Supporte la comparaison avec des profils (ex: 'profile:dev', 'profile:prod').
+ *
  * @param args Arguments validés
  * @returns Résultat de la comparaison
  * @throws {RooSyncServiceError} En cas d'erreur
@@ -81,13 +84,14 @@ export async function roosyncCompareConfig(args: CompareConfigArgs): Promise<Com
   debugLog('roosyncCompareConfig appelé avec args', args);
   try {
     debugLog('Avant getRooSyncService()');
-    const service = getRooSyncService();
-    debugLog('Après getRooSyncService(), service obtenu', { serviceExists: !!service });
-    const config = service.getConfig();
-    
-    // Déterminer machines source et cible
-    const sourceMachineId = args.source || config.machineId;
-    const targetMachineId = args.target || await getDefaultTargetMachine(service, sourceMachineId);
+      const service = getRooSyncService();
+      debugLog('Après getRooSyncService(), service obtenu', { serviceExists: !!service });
+      const config = service.getConfig();
+      
+      // Déterminer machines source et cible
+      // Gérer l'alias 'local-machine' qui doit être mappé vers le vrai machineId
+      const sourceMachineId = (args.source === 'local-machine') ? config.machineId : (args.source || config.machineId);
+      const targetMachineId = (args.target === 'local-machine') ? config.machineId : (args.target || await getDefaultTargetMachine(service, sourceMachineId));
     
     // Comparaison réelle
     const report = await service.compareRealConfigurations(
@@ -149,6 +153,8 @@ async function getDefaultTargetMachine(service: any, sourceMachineId: string): P
     );
   }
   
+  // Trier par nom pour garantir une sélection prévisible
+  machines.sort();
   return machines[0];
 }
 
@@ -157,8 +163,9 @@ async function getDefaultTargetMachine(service: any, sourceMachineId: string): P
  */
 function formatComparisonReport(report: any): CompareConfigResult {
   return {
-    source: report.baselineMachine,
+    source: report.sourceMachine,
     target: report.targetMachine,
+    host_id: report.hostId || 'unknown',
     differences: report.differences.map((diff: any) => ({
       category: diff.category,
       severity: diff.severity,
@@ -184,6 +191,7 @@ Détection multi-niveaux :
 - Software (PowerShell, Node, Python) - WARNING
 - System (OS, architecture) - INFO
 
+Supporte également la comparaison avec des profils (ex: target='profile:dev').
 Utilise Get-MachineInventory.ps1 pour collecte d'inventaire complet avec cache TTL 1h.`,
   inputSchema: {
     type: 'object' as const,
@@ -194,7 +202,7 @@ Utilise Get-MachineInventory.ps1 pour collecte d'inventaire complet avec cache T
       },
       target: {
         type: 'string',
-        description: 'ID de la machine cible (optionnel, défaut: remote_machine)'
+        description: 'ID de la machine cible ou du profil (optionnel, défaut: remote_machine)'
       },
       force_refresh: {
         type: 'boolean',

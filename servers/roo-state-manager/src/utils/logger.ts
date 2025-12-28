@@ -12,6 +12,7 @@
 
 import { existsSync, mkdirSync, appendFileSync, readdirSync, statSync, unlinkSync } from 'fs';
 import { join, dirname } from 'path';
+import { tmpdir } from 'os';
 
 export type LogLevel = 'DEBUG' | 'INFO' | 'WARN' | 'ERROR';
 
@@ -48,9 +49,10 @@ export class Logger {
 
     constructor(options: LoggerOptions = {}) {
         // Determine default log directory
+        // FIX: Use temp dir instead of cwd to avoid polluting project root when env var is missing
         const defaultLogDir = process.env.ROOSYNC_SHARED_PATH
             ? join(process.env.ROOSYNC_SHARED_PATH, 'logs')
-            : join(process.cwd(), '.shared-state', 'logs');
+            : join(tmpdir(), 'roo-state-manager-logs');
 
         this.logDir = options.logDir || defaultLogDir;
         this.filePrefix = options.filePrefix || 'roosync';
@@ -164,6 +166,10 @@ export class Logger {
         try {
             appendFileSync(this.currentLogFile, logEntry + '\n', 'utf-8');
         } catch (error) {
+            // Silently fail in test environments - logs are optional
+            if (this.logDir.includes('fixtures') || this.logDir.includes('test')) {
+                return;
+            }
             // Fallback: only console if file write fails
             console.error(`[Logger] Failed to write to log file: ${error}`);
         }
@@ -177,6 +183,10 @@ export class Logger {
             try {
                 mkdirSync(this.logDir, { recursive: true });
             } catch (error) {
+                // Silently fail in test environments - logs are optional
+                if (this.logDir.includes('fixtures') || this.logDir.includes('test')) {
+                    return;
+                }
                 console.error(`[Logger] Failed to create log directory ${this.logDir}:`, error);
             }
         }

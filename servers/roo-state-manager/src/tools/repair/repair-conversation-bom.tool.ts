@@ -20,10 +20,10 @@ export const repairConversationBomTool: Tool<RepairConversationBomArgs> = {
         inputSchema: {
             type: 'object',
             properties: {
-                dry_run: { 
-                    type: 'boolean', 
-                    description: 'Si true, simule la réparation sans modifier les fichiers.', 
-                    default: false 
+                dry_run: {
+                    type: 'boolean',
+                    description: 'Si true, simule la réparation sans modifier les fichiers.',
+                    default: false
                 },
             },
             required: [],
@@ -31,7 +31,7 @@ export const repairConversationBomTool: Tool<RepairConversationBomArgs> = {
     },
     handler: async (args: RepairConversationBomArgs): Promise<CallToolResult> => {
         const { dry_run = false } = args;
-        
+
         const locations = await RooStorageDetector.detectStorageLocations();
         if (locations.length === 0) {
             return { content: [{ type: 'text', text: 'Aucun emplacement de stockage Roo trouvé.' }] };
@@ -42,26 +42,29 @@ export const repairConversationBomTool: Tool<RepairConversationBomArgs> = {
         let repairedFiles = 0;
         let failedRepairs = 0;
         const repairResults: { file: string, status: string, error?: string }[] = [];
-        
+
         for (const location of locations) {
             try {
                 const tasksPath = path.join(location, 'tasks');
                 const conversationDirs = await fs.readdir(tasksPath, { withFileTypes: true });
-                
+
                 for (const convDir of conversationDirs) {
                     if (convDir.isDirectory()) {
                         const apiHistoryPath = path.join(tasksPath, convDir.name, 'api_conversation_history.json');
-                        
+
                         try {
                             await fs.access(apiHistoryPath);
                             totalFiles++;
-                            
-                            const content = await fs.readFile(apiHistoryPath, 'utf-8');
-                            const hasBOM = content.charCodeAt(0) === 0xFEFF;
-                            
+
+                            const buffer = await fs.readFile(apiHistoryPath);
+                            const hasBOM = buffer.length >= 3 &&
+                                         buffer[0] === 0xEF &&
+                                         buffer[1] === 0xBB &&
+                                         buffer[2] === 0xBF;
+
                             if (hasBOM) {
                                 corruptedFiles++;
-                                
+
                                 if (dry_run) {
                                     repairResults.push({
                                         file: apiHistoryPath,
@@ -70,7 +73,9 @@ export const repairConversationBomTool: Tool<RepairConversationBomArgs> = {
                                 } else {
                                     // Effectuer la réparation
                                     try {
-                                        const cleanContent = content.slice(1);
+                                        const cleanBuffer = buffer.subarray(3);
+                                        const cleanContent = cleanBuffer.toString('utf-8');
+
                                         JSON.parse(cleanContent); // Vérifier que c'est du JSON valide
                                         await fs.writeFile(apiHistoryPath, cleanContent, 'utf-8');
                                         repairedFiles++;
@@ -97,16 +102,16 @@ export const repairConversationBomTool: Tool<RepairConversationBomArgs> = {
                 console.error(`Erreur lors du scan de ${location}/tasks:`, dirError);
             }
         }
-        
+
         let report = `# Réparation BOM des conversations\n\n`;
         report += `**Mode:** ${dry_run ? 'Simulation (dry-run)' : 'Réparation réelle'}\n`;
         report += `**Fichiers analysés:** ${totalFiles}\n`;
         report += `**Fichiers corrompus (BOM):** ${corruptedFiles}\n`;
-        
+
         if (!dry_run) {
             report += `**Fichiers réparés:** ${repairedFiles}\n`;
             report += `**Échecs de réparation:** ${failedRepairs}\n\n`;
-            
+
             if (repairedFiles > 0) {
                 report += `✅ ${repairedFiles} fichier(s) réparé(s) avec succès.\n`;
             }
@@ -116,7 +121,7 @@ export const repairConversationBomTool: Tool<RepairConversationBomArgs> = {
         } else {
             report += `\n🔍 Simulation terminée. ${corruptedFiles} fichier(s) seraient réparés.\n`;
         }
-        
+
         if (repairResults.length > 0 && repairResults.length <= 30) {
             report += `\n## Détails des opérations:\n`;
             repairResults.forEach(result => {
@@ -137,7 +142,7 @@ export const repairConversationBomTool: Tool<RepairConversationBomArgs> = {
             });
             report += `\n... et ${repairResults.length - 30} autres résultats.\n`;
         }
-        
+
         return { content: [{ type: 'text', text: report }] };
     }
 };

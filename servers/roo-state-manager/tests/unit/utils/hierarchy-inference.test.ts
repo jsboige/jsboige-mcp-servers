@@ -1,6 +1,8 @@
-import { describe, test, expect, beforeAll, afterAll } from 'vitest';
+import { describe, test, expect, beforeAll, afterAll, vi } from 'vitest';
 import * as fs from 'fs/promises';
 import * as path from 'path';
+
+vi.unmock('fs/promises');
 import * as os from 'os';
 
 // Tests pour le système d'inférence hiérarchique
@@ -18,7 +20,7 @@ describe('Hierarchy Inference System', () => {
 
     afterAll(async () => {
         // Nettoyer après les tests
-        await fs.rmdir(tempDir, { recursive: true });
+        await fs.rm(tempDir, { recursive: true, force: true });
     });
 
     // === TEST 1 : EXTRACTION D'UUID BASIQUE ===
@@ -74,7 +76,7 @@ describe('Hierarchy Inference System', () => {
                 role: 'user',
                 content: `<task>
                 **SOUS-TÂCHE : Exploration Exemples OpenAI-Node**
-                
+
                 **CONTEXTE HÉRITÉ**
                 Tu hérites d'un travail de 0bd0c95e-37ca-4aab-873a-edf72672351a concernant...
                 </task>`
@@ -194,7 +196,7 @@ describe('Hierarchy Inference System', () => {
         const start = Date.now();
         const result = extractTaskIdFromText(longText);
         const duration = Date.now() - start;
-        
+
         expect(result).toBe('7a1d20ca-3d90-45d1-8aca-de1573c430bb');
         expect(duration).toBeLessThan(100); // Moins de 100ms
     });
@@ -207,7 +209,7 @@ function extractTaskIdFromText(text: string): string | undefined {
     // Pattern 1: UUID version 4 basique
     const uuidRegex = /([0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12})/gi;
     const uuids = text.match(uuidRegex);
-    
+
     if (uuids && uuids.length > 0) {
         console.log(`[extractTaskIdFromText] UUID trouvé: ${uuids[0]}`);
         return uuids[0];
@@ -236,7 +238,7 @@ async function extractParentFromApiHistory(apiHistoryPath: string): Promise<stri
         const content = await fs.readFile(apiHistoryPath, 'utf-8');
         const data = JSON.parse(content);
         const messages = Array.isArray(data) ? data : (data?.messages || []);
-        
+
         const firstUserMessage = messages.find((msg: any) => msg.role === 'user');
         if (!firstUserMessage?.content) return undefined;
 
@@ -255,7 +257,7 @@ async function extractParentFromUiMessages(uiMessagesPath: string): Promise<stri
         const content = await fs.readFile(uiMessagesPath, 'utf-8');
         const data = JSON.parse(content);
         const messages = Array.isArray(data) ? data : (data?.messages || []);
-        
+
         const firstUserMessage = messages.find((msg: any) => msg.role === 'user');
         if (!firstUserMessage?.content) return undefined;
 

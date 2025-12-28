@@ -51,6 +51,7 @@ export interface ConversationSkeleton {
       workspace?: string;
       qdrantIndexedAt?: string; // DEPRECATED - utiliser indexingState.lastIndexedAt
       dataSource?: string; // Source des données pour le debug
+      parentTaskId?: string; // ID de la tâche parente pour reconstruction hiérarchique
       // NOUVEAU : État complet d'indexation avec mécanisme d'idempotence
       indexingState?: IndexingState;
     };
@@ -320,4 +321,14 @@ export class InvalidStoragePathError extends RooStorageError {
     constructor(path: string) {
         super(`Invalid storage path: ${path}`, 'INVALID_STORAGE_PATH');
     }
+}
+
+/**
+ * Options pour l'extraction de messages
+ */
+export interface MessageExtractionOptions {
+    patterns?: string[];
+    minLength?: number;
+    maxLength?: number;
+    includeMetadata?: boolean;
 }

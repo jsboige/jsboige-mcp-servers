@@ -1,0 +1,19 @@
+import { getMachineInventoryTool } from './build/tools/roosync/get-machine-inventory.js';
+
+async function run() {
+    console.log('Testing roosync_get_machine_inventory tool (ESM compiled) directly...');
+    try {
+        const result = await getMachineInventoryTool.execute({}, {});
+        console.log('Success:', result.success);
+        if (result.success) {
+            console.log('Data Preview:', JSON.stringify(result.data, null, 2).substring(0, 500) + '...');
+            console.log('Inventory Keys:', Object.keys(result.data.inventory));
+        } else {
+            console.error('Error:', result.error);
+        }
+    } catch (error) {
+        console.error('Execution Error:', error);
+    }
+}
+
+run();

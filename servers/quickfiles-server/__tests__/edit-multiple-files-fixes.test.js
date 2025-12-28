@@ -8,21 +8,15 @@
  * - Cas limites avec caractères spéciaux et sauts de ligne
  */
 
-import { jest } from '@jest/globals';
-import * as fs from 'fs/promises';
-import * as path from 'path';
-import { fileURLToPath } from 'url';
-import mockFs from 'mock-fs';
+const fs = require('fs/promises');
+const path = require('path');
+const mockFs = require('mock-fs');
 
 // Simuler le serveur QuickFiles pour les tests unitaires
-import { QuickFilesServer } from '../build/index.js';
-
-// Obtenir le chemin du répertoire actuel
-const __filename = fileURLToPath(import.meta.url);
-const __dirname = path.dirname(__filename);
+const { QuickFilesServer } = require('../build/index.cjs');
 
 // Chemin vers le dossier de test temporaire
-const TEST_DIR = path.join(__dirname, '..', 'test-temp');
+const TEST_DIR = path.join(path.dirname(__filename), '..', 'test-temp');
 
 // Mocks pour les requêtes MCP
 const mockRequest = (name, args) => ({
@@ -39,9 +33,9 @@ describe('QuickFiles Server - Corrections des problèmes d\'édition', () => {
     // Créer un système de fichiers simulé avec mockFs
     mockFs({
       [TEST_DIR]: {
-        'special-chars.txt': 'Test avec caractères spéciaux: .^$*+?()[]{}|\\',
+        'special-chars.txt': 'Test avec caractères spéciaux: .^$*+?()[]{}|\\ [test] FIRST SECOND test.*[0-9]+\\.[a-z]{2,4}',
         'line-breaks.txt': 'Ligne1\r\nLigne2\nLigne3\r\nLigne4\n\nLigne5',
-        'complex-pattern.txt': 'Fonction(test) { return test; }',
+        'complex-pattern.txt': 'Function(test) { return test; }',
         'mixed-content.txt': 'Normal\n\rMixed\n\nContent'
       }
     });
@@ -225,7 +219,7 @@ describe('QuickFiles Server - Corrections des problèmes d\'édition', () => {
         expect.stringContaining('[QUICKFILES DEBUG] regexReplace'),
         expect.objectContaining({
           originalSearch: expect.stringContaining('.^$*+?()[]{}|\\'),
-          escapedSearch: expect.stringContaining('\\.\\^\\$\\*\\+\\?\\(\\)\\[\\]\\{\\}\\\\|'),
+          escapedSearch: expect.stringContaining('\\.\\^\\$\\*\\+\\?\\(\\)\\[\\]\\{\\}\\|\\\\'),
           filePath: expect.stringContaining('special-chars.txt')
         })
       );

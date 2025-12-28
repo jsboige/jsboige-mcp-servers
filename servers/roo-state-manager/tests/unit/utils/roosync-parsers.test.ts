@@ -2,9 +2,11 @@
  * Tests pour roosync-parsers.ts
  */
 
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { writeFileSync, mkdirSync, rmSync, readFileSync } from 'fs';
 import { join } from 'path';
+
+vi.unmock('fs');
 import {
   parseRoadmapMarkdown,
   parseDashboardJson,
@@ -17,9 +19,12 @@ import {
   type RooSyncDashboard
 } from '../../../src/utils/roosync-parsers';
 
+// Désactiver le mock global de fs pour ces tests qui utilisent le système de fichiers réel
+vi.unmock('fs');
+
 describe('RooSync Parsers', () => {
   const testDir = join(__dirname, '../../fixtures/roosync-test');
-  
+
   beforeEach(() => {
     // Créer le répertoire de test
     try {
@@ -28,7 +33,7 @@ describe('RooSync Parsers', () => {
       // Déjà existant
     }
   });
-  
+
   afterEach(() => {
     // Nettoyer le répertoire de test
     try {
@@ -68,16 +73,16 @@ Texte entre les décisions
 **Créé:** 2025-10-07T11:00:00Z
 <!-- DECISION_BLOCK_END -->
 `;
-      
+
       const filePath = join(testDir, 'test-roadmap.md');
       writeFileSync(filePath, markdown, 'utf-8');
-      
+
       // Act
       const decisions = parseRoadmapMarkdown(filePath);
-      
+
       // Assert
       expect(decisions).toHaveLength(2);
-      
+
       expect(decisions[0].id).toBe('decision-001');
       expect(decisions[0].title).toBe('Mise à jour configuration');
       expect(decisions[0].status).toBe('pending');
@@ -86,29 +91,29 @@ Texte entre les décisions
       expect(decisions[0].sourceMachine).toBe('PC-PRINCIPAL');
       expect(decisions[0].targetMachines).toEqual(['MAC-DEV', 'LAPTOP-WORK']);
       expect(decisions[0].createdBy).toBe('user@example.com');
-      
+
       expect(decisions[1].id).toBe('decision-002');
       expect(decisions[1].status).toBe('approved');
       expect(decisions[1].targetMachines).toEqual(['all']);
     });
-    
+
     it('devrait retourner un tableau vide si aucune décision', () => {
       // Arrange
       const markdown = '# Roadmap vide\n\nPas de décisions ici.';
       const filePath = join(testDir, 'empty-roadmap.md');
       writeFileSync(filePath, markdown, 'utf-8');
-      
+
       // Act
       const decisions = parseRoadmapMarkdown(filePath);
-      
+
       // Assert
       expect(decisions).toHaveLength(0);
     });
-    
+
     it('devrait lever une erreur si le fichier n\'existe pas', () => {
       // Arrange
       const filePath = join(testDir, 'nonexistent.md');
-      
+
       // Act & Assert
       expect(() => parseRoadmapMarkdown(filePath)).toThrow(RooSyncParseError);
     });
@@ -120,7 +125,9 @@ Texte entre les décisions
       const dashboard: RooSyncDashboard = {
         version: '2.0.0',
         lastUpdate: '2025-10-07T12:00:00Z',
+        lastSync: '2025-10-07T12:00:00Z',
         overallStatus: 'synced',
+        status: 'synced',
         machines: {
           'PC-PRINCIPAL': {
             lastSync: '2025-10-07T11:00:00Z',
@@ -142,13 +149,13 @@ Texte entre les décisions
           pendingDecisions: 1
         }
       };
-      
+
       const filePath = join(testDir, 'dashboard.json');
       writeFileSync(filePath, JSON.stringify(dashboard, null, 2), 'utf-8');
-      
+
       // Act
       const parsed = parseDashboardJson(filePath);
-      
+
       // Assert
       expect(parsed.version).toBe('2.0.0');
       expect(parsed.overallStatus).toBe('synced');
@@ -157,12 +164,12 @@ Texte entre les décisions
       expect(parsed.machines['MAC-DEV'].pendingDecisions).toBe(1);
       expect(parsed.stats?.totalDiffs).toBe(2);
     });
-    
+
     it('devrait lever une erreur si le JSON est invalide', () => {
       // Arrange
       const filePath = join(testDir, 'invalid.json');
       writeFileSync(filePath, '{ invalid json }', 'utf-8');
-      
+
       // Act & Assert
       expect(() => parseDashboardJson(filePath)).toThrow(RooSyncParseError);
     });
@@ -175,13 +182,13 @@ Texte entre les décisions
         version: '2.0.0',
         sharedStatePath: '/path/to/shared'
       };
-      
+
       const filePath = join(testDir, 'config.json');
       writeFileSync(filePath, JSON.stringify(config), 'utf-8');
-      
+
       // Act
       const parsed = parseConfigJson(filePath);
-      
+
       // Assert
       expect(parsed.version).toBe('2.0.0');
       expect(parsed.sharedStatePath).toBe('/path/to/shared');
@@ -220,11 +227,11 @@ Texte entre les décisions
           createdAt: '2025-10-07T12:00:00Z'
         }
       ];
-      
+
       // Act
       const pending = filterDecisionsByStatus(decisions, 'pending');
       const approved = filterDecisionsByStatus(decisions, 'approved');
-      
+
       // Assert
       expect(pending).toHaveLength(2);
       expect(pending[0].id).toBe('d1');
@@ -266,16 +273,16 @@ Texte entre les décisions
           createdAt: '2025-10-07T12:00:00Z'
         }
       ];
-      
+
       // Act
       const forM2 = filterDecisionsByMachine(decisions, 'M2');
       const forM4 = filterDecisionsByMachine(decisions, 'M4');
-      
+
       // Assert
       expect(forM2).toHaveLength(2); // d1 (ciblé) + d2 (all)
       expect(forM2.map(d => d.id)).toContain('d1');
       expect(forM2.map(d => d.id)).toContain('d2');
-      
+
       expect(forM4).toHaveLength(2); // d2 (all) + d3 (ciblé)
       expect(forM4.map(d => d.id)).toContain('d2');
       expect(forM4.map(d => d.id)).toContain('d3');
@@ -305,11 +312,11 @@ Texte entre les décisions
           createdAt: '2025-10-07T11:00:00Z'
         }
       ];
-      
+
       // Act
       const found = findDecisionById(decisions, 'd2');
       const notFound = findDecisionById(decisions, 'd999');
-      
+
       // Assert
       expect(found).toBeDefined();
       expect(found?.id).toBe('d2');

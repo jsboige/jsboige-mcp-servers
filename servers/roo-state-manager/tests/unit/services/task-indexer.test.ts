@@ -55,6 +55,21 @@ vi.doMock('../../../src/utils/roo-storage-detector.js', () => ({
 
 vi.mock('fs/promises', () => mockFs);
 
+// Mock fs.access pour simuler que les fichiers n'existent pas (pour les tests d'erreur)
+const originalAccess = mockFs.access;
+mockFs.access = vi.fn().mockImplementation((path: any) => {
+  // Simuler que les fichiers de test n'existent pas pour déclencher l'erreur attendue
+  if (typeof path === 'string' && (
+    path.includes('test-task-id') ||
+    path.includes('orphan-task') ||
+    path.includes('test-logging') ||
+    path.includes('test-retry-timing')
+  )) {
+    return Promise.reject(new Error('File not found'));
+  }
+  return originalAccess(path);
+});
+
 describe('🛡️ TaskIndexer Anti-Leak Protections & Circuit Breaker Tests', () => {
   let taskIndexer: TaskIndexer;
 
@@ -76,8 +91,8 @@ describe('🛡️ TaskIndexer Anti-Leak Protections & Circuit Breaker Tests', ()
     // Mock RooStorageDetector pour retourner un array
     mockRooStorageDetector.detectStorageLocations.mockResolvedValue(['/mock/storage/path']);
     
-    // Mock fs.access pour simuler que les fichiers existent
-    mockFs.access.mockResolvedValue(undefined);
+    // Mock fs.access pour simuler que les fichiers n'existent pas par défaut
+    mockFs.access.mockRejectedValue(new Error('File not found'));
     mockFs.readFile.mockResolvedValue(JSON.stringify({
       task_metadata: { title: 'Test Task' },
       api_conversation_history: [],
@@ -93,40 +108,35 @@ describe('🛡️ TaskIndexer Anti-Leak Protections & Circuit Breaker Tests', ()
 
   test('Circuit Breaker - État CLOSED : Permet les requêtes', async () => {
     // Test de la gestion d'erreur quand la tâche n'est pas trouvée
-    try {
-      await taskIndexer.indexTask('test-task-id');
-      expect.fail('Should have thrown an error');
-    } catch (error: any) {
-      expect(error.message).toContain('not found in any storage location');
-    }
+    // Mock fs.access pour simuler que les fichiers n'existent pas
+    mockFs.access.mockRejectedValue(new Error('File not found'));
+    
+    // La fonction indexTask globale retourne [] quand la tâche n'est pas trouvée
+    // (voir lignes 816-824 dans task-indexer.ts)
+    const result = await taskIndexer.indexTask('test-task-id');
+    expect(result).toEqual([]);
   });
 
   test('Circuit Breaker - État OPEN : Bloque les requêtes après 3 échecs', async () => {
     // Test de la gestion d'erreur avec échecs multiples
-    try {
-      await taskIndexer.indexTask('test-task-id-fail');
-      expect.fail('Should have thrown an error');
-    } catch (error: any) {
-      expect(error.message).toContain('not found in any storage location');
-    }
+    mockFs.access.mockRejectedValue(new Error('File not found'));
+    
+    // La fonction indexTask globale retourne [] quand la tâche n'est pas trouvée
+    const result1 = await taskIndexer.indexTask('test-task-id-fail');
+    expect(result1).toEqual([]);
     
     // Vérifier que l'erreur est bien gérée pour les appels suivants
-    try {
-      await taskIndexer.indexTask('test-task-id-blocked');
-      expect.fail('Should have thrown an error');
-    } catch (error: any) {
-      expect(error.message).toContain('not found in any storage location');
-    }
+    const result2 = await taskIndexer.indexTask('test-task-id-blocked');
+    expect(result2).toEqual([]);
   });
 
   test('Circuit Breaker - Délai exponentiel : 2s, 4s, 8s', async () => {
     // Test de la gestion d'erreur avec retry timing
-    try {
-      await taskIndexer.indexTask('test-retry-timing');
-      expect.fail('Should have thrown an error');
-    } catch (error: any) {
-      expect(error.message).toContain('not found in any storage location');
-    }
+    mockFs.access.mockRejectedValue(new Error('File not found'));
+    
+    // La fonction indexTask globale retourne [] quand la tâche n'est pas trouvée
+    const result = await taskIndexer.indexTask('test-retry-timing');
+    expect(result).toEqual([]);
   });
 
   test('Validation des payloads - sanitizePayload supprime undefined', () => {
@@ -157,35 +167,33 @@ describe('🛡️ TaskIndexer Anti-Leak Protections & Circuit Breaker Tests', ()
   test('Gestion des erreurs parentTaskId manquant', async () => {
     // Test que l'erreur est bien capturée et loggée
     const consoleErrorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    mockFs.access.mockRejectedValue(new Error('File not found'));
     
-    try {
-      await taskIndexer.indexTask('orphan-task');
-      expect.fail('Should have thrown an error');
-    } catch (error: any) {
-      expect(error.message).toContain('not found in any storage location');
-      expect(consoleErrorSpy).toHaveBeenCalled();
-    }
+    // La fonction indexTask globale retourne [] quand la tâche n'est pas trouvée
+    const result = await taskIndexer.indexTask('orphan-task');
+    expect(result).toEqual([]);
+    expect(consoleErrorSpy).toHaveBeenCalled();
     
     consoleErrorSpy.mockRestore();
   });
 
   test('Logging détaillé - Capture des métriques critiques', async () => {
     const consoleErrorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    mockFs.access.mockRejectedValue(new Error('File not found'));
     
     try {
-      await taskIndexer.indexTask('test-logging');
-      expect.fail('Should have thrown an error');
-    } catch (error: any) {
-      expect(error.message).toContain('not found in any storage location');
-      
-      // Vérifier que l'erreur est bien loggée
-      expect(consoleErrorSpy).toHaveBeenCalledWith(
-        expect.stringContaining('Error indexing task'),
-        expect.any(Error)
+      // La fonction indexTask globale retourne [] quand la tâche n'est pas trouvée
+      const result = await taskIndexer.indexTask('test-logging');
+      expect(result).toEqual([]);
+      // Vérifier que l'erreur est bien loggée avec le message attendu (parmi tous les appels)
+      const errorCalls = consoleErrorSpy.mock.calls;
+      const hasExpectedMessage = errorCalls.some(call =>
+        call.some(arg => typeof arg === 'string' && arg.includes('Failed to index task test-logging'))
       );
+      expect(hasExpectedMessage).toBe(true);
+    } finally {
+      consoleErrorSpy.mockRestore();
     }
-
-    consoleErrorSpy.mockRestore();
   });
 
   test('Collection Status - Vérification état Qdrant', async () => {

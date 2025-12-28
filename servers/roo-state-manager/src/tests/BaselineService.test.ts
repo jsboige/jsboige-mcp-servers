@@ -4,6 +4,7 @@
  * Tests des fonctionnalités du service de gestion des configurations de référence
  */
 
+import { describe, it, expect, beforeEach, vi, Mocked } from 'vitest';
 import { BaselineService } from '../services/BaselineService.js';
 import { ConfigService } from '../services/ConfigService.js';
 import { DiffDetector } from '../services/DiffDetector.js';
@@ -11,35 +12,35 @@ import { InventoryCollectorWrapper } from '../services/InventoryCollectorWrapper
 import { BaselineConfig, SyncDecision, MachineInventory, BaselineDifference, BaselineComparisonReport } from '../types/baseline.js';
 import { BaselineServiceError } from '../types/baseline.js';
 
-// Mock des dépendances avec Jest
-jest.mock('../services/ConfigService');
-jest.mock('../services/DiffDetector');
-jest.mock('../services/InventoryCollectorWrapper');
+// Mock des dépendances avec Vitest
+vi.mock('../services/ConfigService');
+vi.mock('../services/DiffDetector');
+vi.mock('../services/InventoryCollectorWrapper');
 
 // Le mock fs est déjà configuré dans setup.js
 
 describe('BaselineService', () => {
   let baselineService: BaselineService;
-  let mockConfigService: jest.Mocked<ConfigService>;
-  let mockDiffDetector: jest.Mocked<DiffDetector>;
-  let mockInventoryCollector: jest.Mocked<InventoryCollectorWrapper>;
+  let mockConfigService: Mocked<ConfigService>;
+  let mockDiffDetector: Mocked<DiffDetector>;
+  let mockInventoryCollector: Mocked<InventoryCollectorWrapper>;
 
   beforeEach(() => {
     // Réinitialisation des mocks
-    jest.clearAllMocks();
+    vi.clearAllMocks();
     
     // Récupérer le mock fs depuis le global
     const { mockFs } = global as any;
     
     // Création des mocks
-    mockConfigService = new ConfigService() as jest.Mocked<ConfigService>;
-    mockDiffDetector = new DiffDetector() as jest.Mocked<DiffDetector>;
+    mockConfigService = new ConfigService() as Mocked<ConfigService>;
+    mockDiffDetector = new DiffDetector() as Mocked<DiffDetector>;
     mockInventoryCollector = {
-      collectInventory: jest.fn(),
+      collectInventory: vi.fn(),
     } as any;
 
     // Configuration des mocks par défaut
-    mockConfigService.getBaselineServiceConfig = jest.fn().mockReturnValue({
+    mockConfigService.getBaselineServiceConfig = vi.fn().mockReturnValue({
       baselinePath: '\\test\\path\\sync-config.ref.json',
       roadmapPath: '\\test\\path\\sync-roadmap.md',
       cacheEnabled: true,
@@ -47,7 +48,7 @@ describe('BaselineService', () => {
       logLevel: 'INFO',
     });
     
-    mockConfigService.getSharedStatePath = jest.fn().mockReturnValue('\\test\\path');
+    mockConfigService.getSharedStatePath = vi.fn().mockReturnValue('\\test\\path');
 
     // Création du service avec les mocks
     baselineService = new BaselineService(
@@ -71,8 +72,8 @@ describe('BaselineService', () => {
             userSettings: { theme: 'dark' },
           },
           hardware: {
-            cpu: 'Intel i7',
-            ram: '16GB',
+            cpu: { model: 'Intel i7', cores: 8, threads: 16 },
+            memory: { total: 16384 },
             disks: [{ name: 'C:', size: '500GB' }],
           },
           software: {
@@ -154,8 +155,8 @@ describe('BaselineService', () => {
             userSettings: { theme: 'dark' },
           },
           hardware: {
-            cpu: 'Intel i7',
-            ram: '16GB',
+            cpu: { model: 'Intel i7', cores: 8, threads: 16 },
+            memory: { total: 16384 },
             disks: [{ name: 'C:', size: '500GB' }],
           },
           software: {
@@ -180,8 +181,8 @@ describe('BaselineService', () => {
             userSettings: { theme: 'light' },
           },
           hardware: {
-            cpu: 'Intel i7',
-            ram: '16GB',
+            cpu: { model: 'Intel i7', cores: 8, threads: 16 },
+            memory: { total: 16384 },
             disks: [{ name: 'C:', size: '500GB' }],
           },
           software: {
@@ -214,7 +215,7 @@ describe('BaselineService', () => {
       ];
 
       // Mock du chargement du baseline
-      jest.spyOn(baselineService as any, 'loadBaseline').mockResolvedValue(mockBaselineConfig);
+      vi.spyOn(baselineService as any, 'loadBaseline').mockResolvedValue(mockBaselineConfig);
       
       mockInventoryCollector.collectInventory.mockResolvedValue(mockMachineInventory);
       mockDiffDetector.compareBaselineWithMachine.mockResolvedValue(mockDifferences);
@@ -233,7 +234,7 @@ describe('BaselineService', () => {
 
     it('devrait retourner null si aucun baseline n\'est trouvé', async () => {
       // Arrange
-      jest.spyOn(baselineService as any, 'loadBaseline').mockResolvedValue(null);
+      vi.spyOn(baselineService as any, 'loadBaseline').mockResolvedValue(null);
 
       // Act & Assert
       await expect(baselineService.compareWithBaseline('test-machine')).rejects.toThrow('Configuration baseline non disponible');
@@ -252,8 +253,8 @@ describe('BaselineService', () => {
             userSettings: {},
           },
           hardware: {
-            cpu: 'Intel i7',
-            ram: '16GB',
+            cpu: { model: 'Intel i7', cores: 8, threads: 16 },
+            memory: { total: 16384 },
             disks: [{ name: 'C:', size: '500GB' }],
           },
           software: {
@@ -268,7 +269,7 @@ describe('BaselineService', () => {
         },
       };
 
-      jest.spyOn(baselineService as any, 'loadBaseline').mockResolvedValue(mockBaselineConfig);
+      vi.spyOn(baselineService as any, 'loadBaseline').mockResolvedValue(mockBaselineConfig);
       mockInventoryCollector.collectInventory.mockResolvedValue(null);
 
       // Act & Assert
@@ -414,9 +415,9 @@ describe('BaselineService', () => {
       };
 
       // Mock des méthodes internes
-      jest.spyOn(baselineService as any, 'loadDecisionsFromRoadmap').mockResolvedValue([decision]);
-      jest.spyOn(baselineService as any, 'updateDecisionInRoadmap').mockResolvedValue(undefined);
-      jest.spyOn(baselineService as any, 'applyChangesToMachine').mockResolvedValue(true);
+      vi.spyOn(baselineService as any, 'loadDecisionsFromRoadmap').mockResolvedValue([decision]);
+      vi.spyOn(baselineService as any, 'updateDecisionInRoadmap').mockResolvedValue(undefined);
+      vi.spyOn(baselineService as any, 'applyChangesToMachine').mockResolvedValue(true);
 
       // Act
       const result = await baselineService.applyDecision(decision.id);
@@ -429,7 +430,7 @@ describe('BaselineService', () => {
 
     it('devrait retourner une erreur si la décision n\'existe pas', async () => {
       // Arrange
-      jest.spyOn(baselineService as any, 'loadDecisionsFromRoadmap').mockResolvedValue([]);
+      vi.spyOn(baselineService as any, 'loadDecisionsFromRoadmap').mockResolvedValue([]);
 
       // Act & Assert
       await expect(baselineService.applyDecision('non-existent-decision')).rejects.toThrow('non trouvée');
@@ -451,7 +452,7 @@ describe('BaselineService', () => {
         createdAt: new Date().toISOString(),
       };
 
-      jest.spyOn(baselineService as any, 'loadDecisionsFromRoadmap').mockResolvedValue([decision]);
+      vi.spyOn(baselineService as any, 'loadDecisionsFromRoadmap').mockResolvedValue([decision]);
 
       // Act & Assert
       await expect(baselineService.applyDecision(decision.id)).rejects.toThrow('n\'est pas approuvée');
@@ -473,8 +474,8 @@ describe('BaselineService', () => {
         createdAt: new Date().toISOString(),
       };
 
-      jest.spyOn(baselineService as any, 'loadDecisionsFromRoadmap').mockResolvedValue([decision]);
-      jest.spyOn(baselineService as any, 'applyChangesToMachine').mockResolvedValue(false);
+      vi.spyOn(baselineService as any, 'loadDecisionsFromRoadmap').mockResolvedValue([decision]);
+      vi.spyOn(baselineService as any, 'applyChangesToMachine').mockResolvedValue(false);
 
       // Act
       const result = await baselineService.applyDecision(decision.id);

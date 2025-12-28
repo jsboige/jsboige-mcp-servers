@@ -87,7 +87,7 @@ async function scanMcpDirectory(mcpPath: string): Promise<string> {
                     if (['src', 'build', 'dist', 'lib', 'test', 'tests', '__tests__'].includes(keyPath.replace('/', ''))) {
                         try {
                             const contents = await fs.readdir(fullPath);
-                            for (const item of contents.slice(0, 10)) {
+                            for (const item of contents) {
                                 const itemPath = path.join(fullPath, item);
                                 const itemStat = await fs.stat(itemPath);
                                 const icon = itemStat.isDirectory() ? '📁' : '📄';
@@ -130,7 +130,7 @@ async function getPackageInfo(mcpPath: string): Promise<string> {
 
         if (packageJson.dependencies) {
             info += `• Dépendances principales (${Object.keys(packageJson.dependencies).length}):\n`;
-            Object.keys(packageJson.dependencies).slice(0, 10).forEach(dep => {
+            Object.keys(packageJson.dependencies).forEach(dep => {
                 info += `  - ${dep}@${packageJson.dependencies[dep]}\n`;
             });
         }

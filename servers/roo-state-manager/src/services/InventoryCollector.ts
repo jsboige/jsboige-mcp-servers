@@ -17,6 +17,7 @@ import { fileURLToPath } from 'url';
 import os from 'os';
 import { createLogger, Logger } from '../utils/logger.js';
 import { getGitHelpers, type GitHelpers } from '../utils/git-helpers.js';
+import { getSharedStatePath } from '../utils/server-helpers.js';
 
 const execAsync = promisify(exec);
 const __filename = fileURLToPath(import.meta.url);
@@ -324,8 +325,7 @@ export class InventoryCollector {
    */
   private async loadFromSharedState(machineId: string): Promise<MachineInventory | null> {
     try {
-      const sharedStatePath = process.env.ROOSYNC_SHARED_PATH ||
-        'G:/Mon Drive/Synchronisation/RooSync/.shared-state';
+      const sharedStatePath = getSharedStatePath();
       const inventoriesDir = join(sharedStatePath, 'inventories');
 
       if (!existsSync(inventoriesDir)) {
@@ -336,7 +336,7 @@ export class InventoryCollector {
       // Lire tous les fichiers d'inventaire pour cette machine
       const files = await fs.readdir(inventoriesDir);
       const machineFiles = files
-        .filter(f => f.startsWith(machineId.toLowerCase()) && f.endsWith('.json'))
+        .filter(f => f.toLowerCase().startsWith(machineId.toLowerCase()) && f.endsWith('.json'))
         .sort()
         .reverse(); // Plus récent en premier
 
@@ -382,8 +382,7 @@ export class InventoryCollector {
   private async saveToSharedState(inventory: MachineInventory): Promise<void> {
     try {
       // Construire le chemin .shared-state/inventories/
-      const sharedStatePath = process.env.ROOSYNC_SHARED_PATH ||
-        'G:/Mon Drive/Synchronisation/RooSync/.shared-state';
+      const sharedStatePath = getSharedStatePath();
       const inventoriesDir = join(sharedStatePath, 'inventories');
 
       // Créer le répertoire s'il n'existe pas

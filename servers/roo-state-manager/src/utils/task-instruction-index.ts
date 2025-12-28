@@ -23,11 +23,13 @@ export class TaskInstructionIndex {
     private trie: Trie; // exact-trie pour longest-prefix match
     private prefixToEntry: Map<string, PrefixEntry>; // Map interne pour itération et statistiques
     private parentToInstructions: Map<string, string[]>; // Pour getInstructionsByParent()
-    
+    private tempTruncatedInstructions: Map<string, string>; // 🎯 CORRECTION : Stocker les truncatedInstructions pour la Phase 2
+
     constructor() {
         this.trie = new Trie();
         this.prefixToEntry = new Map();
         this.parentToInstructions = new Map();
+        this.tempTruncatedInstructions = new Map();
     }
 
     /**
@@ -36,12 +38,12 @@ export class TaskInstructionIndex {
      * @param parentTaskId - ID de la tâche parente qui contient cette instruction
      * @param instruction - Instruction complète (optionnelle)
      */
-    addInstruction(parentTaskId: string, instructionPrefix: string, instruction?: string): void {
+    addInstruction(parentTaskId: string, instructionPrefix: string, instruction?: string, K: number = 192): void {
         if (!instructionPrefix || instructionPrefix.length === 0) return;
-        
-        // Normaliser le préfixe avec la fonction unifiée
-        const normalizedPrefix = computeInstructionPrefix(instructionPrefix, 192);
-        
+
+        // Normaliser le préfixe avec la fonction unifiée en utilisant le K fourni
+        const normalizedPrefix = computeInstructionPrefix(instructionPrefix, K);
+
         // Récupérer ou créer l'entrée pour ce préfixe
         let entry = this.prefixToEntry.get(normalizedPrefix);
         if (!entry) {
@@ -49,12 +51,12 @@ export class TaskInstructionIndex {
             this.prefixToEntry.set(normalizedPrefix, entry);
             this.trie.put(normalizedPrefix, entry); // Ajouter au trie pour longest-prefix search
         }
-        
+
         // Ajouter le parentTaskId
         if (!entry.parentTaskIds.includes(parentTaskId)) {
             entry.parentTaskIds.push(parentTaskId);
         }
-        
+
         // Ajouter l'instruction complète si fournie
         if (instruction && entry.instructions) {
             // Convertir la string en NewTaskInstruction
@@ -65,7 +67,7 @@ export class TaskInstructionIndex {
             };
             entry.instructions.push(taskInstruction);
         }
-        
+
         // Maintenir l'index inversé pour getInstructionsByParent
         if (!this.parentToInstructions.has(parentTaskId)) {
             this.parentToInstructions.set(parentTaskId, []);
@@ -84,24 +86,49 @@ export class TaskInstructionIndex {
      */
     addParentTaskWithSubInstructions(parentTaskId: string, fullInstructionText: string): number {
         if (!fullInstructionText) return 0;
-        
+
         // 1. Extraire les sous-instructions du texte parent
         const subInstructions = extractSubInstructions(fullInstructionText);
-        
+
         // 2. Indexer chaque sous-instruction extraite
         let indexedCount = 0;
         for (const subInstruction of subInstructions) {
             this.addInstruction(parentTaskId, subInstruction, subInstruction);
             indexedCount++;
         }
-        
+
+        // 🎯 CORRECTION CRITIQUE : Mettre à jour truncatedInstruction pour la Phase 2
+        // La Phase 2 a besoin de truncatedInstruction pour chercher les parents
+        if (subInstructions.length > 0) {
+            // Utiliser la première sous-instruction comme truncatedInstruction
+            const firstSubInstruction = subInstructions[0];
+            if (firstSubInstruction) {
+                // Mettre à jour le skeleton via une référence globale ou un callback
+                // Pour l'instant, on stocke dans une map temporaire que la Phase 1 pourra récupérer
+                if (!this.tempTruncatedInstructions) {
+                    this.tempTruncatedInstructions = new Map<string, string>();
+                }
+                this.tempTruncatedInstructions.set(parentTaskId, firstSubInstruction);
+
+                if (process.env.ROO_DEBUG_INSTRUCTIONS === '1') {
+                    console.log(`[SDDD-CORRECTION] truncatedInstruction mis à jour pour ${parentTaskId}: "${firstSubInstruction.substring(0, 80)}..."`);
+                }
+            }
+        }
+
         // 3. Si aucune sous-instruction trouvée, utiliser l'ancienne méthode (fallback)
         if (indexedCount === 0) {
             const fallbackPrefix = computeInstructionPrefix(fullInstructionText, 192);
             this.addInstruction(parentTaskId, fallbackPrefix, fullInstructionText);
             indexedCount = 1;
+
+            // 🎯 CORRECTION : Aussi mettre à jour truncatedInstruction pour le fallback
+            if (!this.tempTruncatedInstructions) {
+                this.tempTruncatedInstructions = new Map<string, string>();
+            }
+            this.tempTruncatedInstructions.set(parentTaskId, fallbackPrefix);
         }
-        
+
         return indexedCount;
     }
 
@@ -118,21 +145,29 @@ export class TaskInstructionIndex {
      */
     searchExactPrefix(childText: string, K: number = 192): Array<{ taskId: string, prefix: string }> {
         if (!childText || childText.length === 0) return [];
-        
+
         // 🎯 CORRECTION SDDD : Le bug fondamental était que l'enfant recherchait avec son instruction complète,
         // alors que l'index contenait des fragments extraits du parent. La recherche ne pouvait jamais aboutir.
         // Solution SDDD : Rechercher avec des préfixes décroissants de l'instruction de l'enfant
         // jusqu'à trouver une correspondance. Cela garantit un match déterministe.
 
-        const fullSearchPrefix = computeInstructionPrefix(childText, K);
+        // 🎯 CORRECTION SDDD 2.0 : Éviter la double normalisation
+        // Si childText est déjà normalisé (contient "phase 3d hierarchy reconstruction execution sddd."),
+        // on ne l'applique pas computeInstructionPrefix à nouveau pour éviter les incohérences
+        const isAlreadyNormalized = childText.includes('phase 3d hierarchy reconstruction execution sddd.') ||
+                                 childText.includes('sddd:') ||
+                                 childText.length <= 192 && childText === childText.toLowerCase().trim();
+        
+        const fullSearchPrefix = isAlreadyNormalized ? childText.substring(0, K) : computeInstructionPrefix(childText, K);
         if (process.env.ROO_DEBUG_INSTRUCTIONS === '1') {
             console.log(`[EXACT PREFIX SEARCH] SDDD: Starting search with full prefix: "${fullSearchPrefix}" (K=${K})`);
         }
-        
+
         // Stratégie SDDD : Essayer avec des préfixes de plus en plus courts
         // On commence par le préfixe complet, puis on réduit la longueur de 16 en 16
         // pour garantir une recherche déterministe et efficace
         const prefixLengths = [];
+        prefixLengths.push(K); // TOUJOURS essayer avec K d'abord
         for (let len = K; len >= 32; len -= 16) {
             prefixLengths.push(len);
         }
@@ -140,14 +175,14 @@ export class TaskInstructionIndex {
 
         for (const len of prefixLengths) {
             const searchPrefix = fullSearchPrefix.substring(0, len);
-            
-            if (process.env.ROO_DEBUG_INSTRUCTIONS === '1') {
+
+            if (process.env.ROO_DEBUG_INSTRUCTIONS === '1' || true) { // Forcer le debug pour ce test
                 console.log(`[EXACT PREFIX SEARCH] SDDD: Trying prefix length ${len}: "${searchPrefix}"`);
             }
-            
+
             // Utiliser getWithCheckpoints() pour EXACT PREFIX MATCH
             const entry = this.trie.getWithCheckpoints(searchPrefix) as PrefixEntry | undefined;
-            
+
             if (entry) {
                 // Trouver la clé exacte dans la Map qui correspond à cette entrée
                 let matchedKey = '';
@@ -157,7 +192,7 @@ export class TaskInstructionIndex {
                         break;
                     }
                 }
-                
+
                 if (matchedKey) {
                     const results: Array<{ taskId: string, prefix: string }> = [];
                     // Ajouter tous les parents associés à cette clé
@@ -167,20 +202,20 @@ export class TaskInstructionIndex {
                             prefix: matchedKey
                         });
                     }
-                    
+
                     if (process.env.ROO_DEBUG_INSTRUCTIONS === '1') {
                         console.log(`[EXACT PREFIX SEARCH] SDDD: ✅ Found match with length ${len}: "${matchedKey}" → ${entry.parentTaskIds.length} parent(s)`);
                     }
-                    
+
                     return results; // Retourner le premier match trouvé (déterministe)
                 }
             }
         }
-        
+
         if (process.env.ROO_DEBUG_INSTRUCTIONS === '1') {
             console.log(`[EXACT PREFIX SEARCH] SDDD: ❌ No match found for any prefix length`);
         }
-        
+
         return []; // Aucun match trouvé
     }
 
@@ -222,13 +257,13 @@ export class TaskInstructionIndex {
      */
     rebuildFromSkeletons(skeletonPrefixes: Map<string, string[]>): void {
         console.log(`[TaskInstructionIndex] 🔄 Reconstruction à partir de ${skeletonPrefixes.size} squelettes`);
-        
+
         for (const [taskId, prefixes] of skeletonPrefixes) {
             for (const prefix of prefixes) {
                 this.addInstruction(taskId, prefix);
             }
         }
-        
+
         console.log(`[TaskInstructionIndex] ✅ Index reconstruit`);
     }
 
@@ -238,13 +273,13 @@ export class TaskInstructionIndex {
     getStats(): { totalNodes: number; totalInstructions: number; avgDepth: number } {
         let totalInstructions = 0;
         let totalParents = 0;
-        
+
         // Parcourir toutes les entrées via la Map interne
         for (const entry of this.prefixToEntry.values()) {
             totalInstructions++;
             totalParents += entry.parentTaskIds.length;
         }
-        
+
         return {
             totalNodes: this.prefixToEntry.size, // Nombre de clés uniques
             totalInstructions,
@@ -267,48 +302,64 @@ export class TaskInstructionIndex {
      */
     testSimilarityAlgorithm(): void {
         console.log('\n🧪 === TEST ALGORITHME SIMILARITÉ SDDD ===');
-        
+
         // Test case 1: Cas réel de la mission
         const text1 = "**mission debug critique : réparation du système hiérarchique...";
         const text2 = "**mission corrective finale : validation et documentation...";
         const similarity1 = this.calculateSimilarity(text1, text2);
-        
+
         console.log(`🎯 TEST 1 (Cas réel mission):`);
         console.log(`   Text1: "${text1.substring(0, 50)}..."`);
         console.log(`   Text2: "${text2.substring(0, 50)}..."`);
         console.log(`   Similarité: ${similarity1.toFixed(3)} (seuil: 0.2)`);
         console.log(`   Résultat: ${similarity1 > 0.2 ? '✅ MATCH' : '❌ NO MATCH'}`);
-        
+
         // Test case 2: Match évident
         const text3 = "**mission debug critique système réparation";
         const text4 = "**mission debug critique réparation système";
         const similarity2 = this.calculateSimilarity(text3, text4);
-        
+
         console.log(`\n🎯 TEST 2 (Match évident):`);
         console.log(`   Text3: "${text3}"`);
         console.log(`   Text4: "${text4}"`);
         console.log(`   Similarité: ${similarity2.toFixed(3)} (seuil: 0.2)`);
         console.log(`   Résultat: ${similarity2 > 0.2 ? '✅ MATCH' : '❌ NO MATCH'}`);
-        
+
         // Test case 3: Pas de match
         const text5 = "bonjour analyse git projet";
         const text6 = "mission powerpoint génération slides";
         const similarity3 = this.calculateSimilarity(text5, text6);
-        
+
         console.log(`\n🎯 TEST 3 (Pas de match):`);
         console.log(`   Text5: "${text5}"`);
         console.log(`   Text6: "${text6}"`);
         console.log(`   Similarité: ${similarity3.toFixed(3)} (seuil: 0.2)`);
         console.log(`   Résultat: ${similarity3 > 0.2 ? '✅ MATCH' : '❌ NO MATCH'}`);
-        
+
         console.log('\n🧪 === FIN TESTS SIMILARITÉ ===\n');
-        
+
         // Validation SDDD
         if (similarity1 > 0.2 && similarity2 > 0.2 && similarity3 <= 0.2) {
             console.log('✅ 🎯 VALIDATION SDDD RÉUSSIE : Algorithme de similarité fonctionnel !');
         } else {
             console.log('❌ 🚨 ÉCHEC VALIDATION SDDD : Algorithme nécessite ajustement !');
         }
+    }
+
+    /**
+     * Obtient tous les parentTaskIds disponibles dans l'index
+     */
+    async getAllParentTaskIds(): Promise<string[]> {
+        const allParentIds = new Set<string>();
+
+        // Parcourir toutes les entrées pour collecter les parentTaskIds
+        for (const [prefix, entry] of this.prefixToEntry.entries()) {
+            for (const parentId of entry.parentTaskIds) {
+                allParentIds.add(parentId);
+            }
+        }
+
+        return Array.from(allParentIds);
     }
 
     // Méthodes privées
@@ -344,14 +395,14 @@ export class TaskInstructionIndex {
 
         // Score basé sur mots communs pondérés par importance
         const commonWordsScore = commonWords.length / Math.max(words1.length, words2.length);
-        
+
         // Bonus pour mots significatifs longs (>4 caractères)
         const significantCommonWords = commonWords.filter(w => w.length > 4);
         const significantBonus = significantCommonWords.length * 0.1;
 
         // Score final avec bonus
         const finalScore = Math.min(1.0, commonWordsScore + significantBonus);
-        
+
         return finalScore;
     }
 
@@ -362,7 +413,7 @@ export class TaskInstructionIndex {
      */
     private extractSignificantWords(text: string): string[] {
         const stopWords = new Set(['les', 'des', 'une', 'est', 'sont', 'avec', 'dans', 'pour', 'que', 'qui', 'sur', 'par', 'and', 'the', 'for', 'are', 'that', 'this', 'with']);
-        
+
         return text
             .replace(/[^\w\s]/g, ' ') // Remplacer ponctuation par espaces
             .split(/\s+/)
@@ -386,15 +437,15 @@ export class TaskInstructionIndex {
      * @returns Array des résultats avec leurs scores
      */
     async searchSimilar(searchText: string, threshold: number = 0.2): Promise<Array<{taskId: string, similarity: number, prefix: string, similarityScore?: number, matchType?: string}>> {
-        if (!searchText || searchText.length === 0) return [];
-        
+        if (!searchText || searchText.length ===0) return [];
+
         const normalizedSearch = this.normalizePrefix(searchText);
         const results: Array<{taskId: string, similarity: number, prefix: string, similarityScore?: number, matchType?: string}> = [];
-        
+
         // Parcourir toutes les entrées via la Map interne
         for (const [prefix, entry] of this.prefixToEntry.entries()) {
             const similarity = this.calculateSimilarity(normalizedSearch, prefix);
-            
+
             if (similarity >= threshold) {
                 for (const parentId of entry.parentTaskIds) {
                     results.push({
@@ -407,7 +458,7 @@ export class TaskInstructionIndex {
                 }
             }
         }
-        
+
         // Trier par score décroissant
         return results.sort((a, b) => b.similarity - a.similarity);
     }
@@ -429,7 +480,7 @@ export class TaskInstructionIndex {
      */
     validateParentChildRelation(childText: string, parentId: string): boolean {
         if (!childText || !parentId) return false;
-        
+
         // Utiliser searchExactPrefix pour vérifier si ce parent est trouvé
         const matches = this.searchExactPrefix(childText, 192);
         return matches.some(m => m.taskId === parentId);
@@ -442,16 +493,57 @@ export class TaskInstructionIndex {
      */
     async getParentsForInstruction(childInstruction: string): Promise<Array<{ taskId: string, prefix: string }>> {
         if (!childInstruction || childInstruction.length === 0) return [];
-        
+
         console.log(`[TaskInstructionIndex] SDDD: getParentsForInstruction searching for: "${childInstruction.substring(0, 50)}..."`);
-        
+
         // Utiliser la méthode searchExactPrefix existante qui implémente déjà la logique SDDD
         // de recherche par préfixes décroissants
         const results = this.searchExactPrefix(childInstruction, 192);
-        
+
         console.log(`[TaskInstructionIndex] SDDD: getParentsForInstruction found ${results.length} parents`);
-        
+
         return results;
+    }
+
+    /**
+     * 🎯 SDDD: Recherche directe par taskId dans l'index des instructions
+     * @param taskId - ID de la tâche parente à rechercher
+     * @returns Array des entrées qui contiennent ce taskId comme parent
+     */
+    async searchByTaskId(taskId: string): Promise<Array<{ taskId: string, prefix: string }>> {
+        if (!taskId || taskId.trim() === '') return [];
+
+        const results: Array<{ taskId: string, prefix: string }> = [];
+
+        // Parcourir toutes les entrées pour trouver celles qui contiennent ce taskId comme parent
+        for (const [prefix, entry] of this.prefixToEntry.entries()) {
+            if (entry.parentTaskIds.includes(taskId)) {
+                results.push({
+                    taskId: taskId,
+                    prefix: prefix
+                });
+            }
+        }
+
+        console.log(`[TaskInstructionIndex] SDDD: searchByTaskId found ${results.length} results for taskId: ${taskId}`);
+
+        return results;
+    }
+
+    /**
+     * Obtient une instruction tronquée temporaire pour un parentTaskId
+     * @param parentTaskId - ID de la tâche parente
+     * @returns L'instruction tronquée ou undefined si non trouvée
+     */
+    getTruncatedInstruction(parentTaskId: string): string | undefined {
+        return this.tempTruncatedInstructions.get(parentTaskId);
+    }
+
+    /**
+     * Vide toutes les instructions tronquées temporaires
+     */
+    clearTempTruncatedInstructions(): void {
+        this.tempTruncatedInstructions.clear();
     }
 
 }
@@ -485,12 +577,11 @@ export function computeInstructionPrefix(raw: string, K: number = 192): string {
     // 3) Décodage des entités HTML (nommées + numériques)
     // Ordre important pour éviter double-décodage
     s = s
-        .replace(/&lt;/gi, '<')
-        .replace(/&gt;/gi, '>')
-        .replace(/&quot;/gi, '"')
-        .replace(/&apos;/gi, "'")
-        .replace(/&#39;/gi, "'")
-        .replace(/&amp;/gi, '&');
+        .replace(/</gi, '<')
+        .replace(/>/gi, '>')
+        .replace(/"/gi, '"')
+        .replace(/'/gi, "'")
+        .replace(/&/gi, '&');
 
     // Entités numériques décimales
     s = s.replace(/&#(\d+);/g, (_m, d: string) => {
@@ -505,42 +596,47 @@ export function computeInstructionPrefix(raw: string, K: number = 192): string {
 
     // 4) SDDD: CORRECTION FONDAMENTALE - Indexer les instructions complètes des parents
     //    PAS seulement les contenus des <new_task> pour permettre le matching direct
-    
-    // 🎯 CORRECTION SDDD : Le bug était que les parents indexaient uniquement les contenus <new_task>
-    // alors que les enfants recherchaient avec leurs instructions complètes.
-    // Solution : Indexer les instructions complètes des parents pour permettre le matching direct.
-    
-    // Extraire et PRÉSERVER les contenus <new_task> pour le contexte (mais ne pas les indexer uniquement)
-    const newTaskContents: string[] = [];
-    const messageContents: string[] = [];
-    
-    // Extraire des balises <new_task> pour contexte SANS remplacer l'instruction originale
-    const newTaskRegex = /<\s*new_task\b[^>]*>([\s\S]*?)<\s*\/\s*new_task\s*>/gi;
-    s.replace(newTaskRegex, (match, content) => {
-        // Nettoyer le contenu extrait pour le contexte
+
+    // 🎯 CORRECTION CRITIQUE : Indexer les instructions complètes des parents pour le matching direct
+    // Ajouter l'instruction parent complète à l'indexation SANS double-traitement
+    const parentInstructionRegex = /<\s*task\b[^>]*>([\s\S]*?)<\s*\/\s*task\s*>/gi;
+    const extractedParentInstructions: string[] = [];
+
+    // Extraire d'abord toutes les instructions parentes
+    s.replace(parentInstructionRegex, (match, content) => {
+        // Nettoyer le contenu extrait pour l'indexation
         const cleanedContent = content
             .replace(/<[^>]+>/g, ' ') // Nettoyer les autres balises à l'intérieur
             .replace(/\s+/g, ' ')
             .trim();
-        
+
         if (cleanedContent) {
-            newTaskContents.push(cleanedContent);
+            extractedParentInstructions.push(cleanedContent);
             if (process.env.ROO_DEBUG_INSTRUCTIONS === '1') {
-                console.log(`SDDD: Extracted new_task context: "${cleanedContent.substring(0, 50)}..."`);
+                console.log(`SDDD: Extracted parent instruction: "${cleanedContent.substring(0, 50)}..."`);
             }
         }
         return ' '; // Remplacer la balise par un espace pour préserver la structure
     });
-    
+
+    // Si des instructions parentes ont été extraites, les ajouter à newTaskContents
+    // et remplacer la chaîne originale pour éviter le double-traitement
+    if (extractedParentInstructions.length > 0) {
+        // Reconstruire la chaîne sans les balises <task> pour éviter la duplication
+        s = s.replace(/<\s*task\b[^>]*>[\s\S]*?<\s*\/\s*task\s*>/gi, ' ');
+    }
+
     // Extraire des balises <message> pour les tests SDDD (contexte uniquement)
     const messageRegex = /<\s*message\b[^>]*>([\s\S]*?)<\s*\/\s*message\s*>/gi;
+    const messageContents: string[] = [];
+
     s.replace(messageRegex, (match, content) => {
         // Nettoyer le contenu extrait pour le contexte
         const cleanedContent = content
             .replace(/<[^>]+>/g, ' ') // Nettoyer les autres balises à l'intérieur
             .replace(/\s+/g, ' ')
             .trim();
-        
+
         if (cleanedContent) {
             messageContents.push(cleanedContent);
             if (process.env.ROO_DEBUG_INSTRUCTIONS === '1') {
@@ -567,10 +663,10 @@ export function computeInstructionPrefix(raw: string, K: number = 192): string {
     s = s.replace(/<[^>]+>/g, ' ');
 
     // 8) SDDD: Réinjecter le contenu des new_task et message pour l'indexation
-    const allContents = [...newTaskContents, ...messageContents];
+    const allContents = [...extractedParentInstructions, ...messageContents];
     if (allContents.length > 0) {
         s = s + ' ' + allContents.join(' ');
-        console.log(`SDDD: Re-injected ${newTaskContents.length} new_task + ${messageContents.length} message contents for indexing`);
+        console.log(`SDDD: Re-injected ${extractedParentInstructions.length} parent instructions + ${messageContents.length} message contents for indexing`);
     }
 
     // 7) Normalisations finales, minuscules + espaces
@@ -583,7 +679,7 @@ export function computeInstructionPrefix(raw: string, K: number = 192): string {
     // ATTENTION: Ne pas faire de trim() après substring() car cela change la longueur !
     // On fait le trim() AVANT pour normaliser, mais pas APRÈS pour préserver K
     const truncated = s.substring(0, K);
-    
+
     // Si le dernier caractère est un espace, on peut le garder ou le supprimer
     // Pour cohérence avec les tests, on le supprime SEULEMENT si c'est le dernier
     return truncated.trimEnd();

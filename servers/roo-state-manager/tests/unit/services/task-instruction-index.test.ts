@@ -3,7 +3,7 @@
  * Valide le fonctionnement du radix-tree et de la recherche par similarité
  */
 
-import {  describe, it, expect, beforeEach, afterEach, jest , vi } from 'vitest';
+import {  describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { TaskInstructionIndex, computeInstructionPrefix } from '../../../src/utils/task-instruction-index.js';
 import type { NewTaskInstruction } from '../../../src/types/conversation.js';
 
@@ -69,7 +69,7 @@ describe('TaskInstructionIndex', () => {
                 message: instruction
             };
             
-            index.addInstruction(parentId, instruction, taskInstruction);
+            index.addInstruction(parentId, instruction, taskInstruction.message);
             
             return index.getSize().then(size => {
                 expect(size).toBeGreaterThan(0);
@@ -129,10 +129,20 @@ describe('TaskInstructionIndex', () => {
             // To make it work, we need to explicitly index with K=20
             // Let's test this properly by indexing a SHORT text that fits in K=20
             index.clear();
-            const shortParentText = 'Implémenter la fo'; // Fits in 20 chars after normalization
-            index.addInstruction('task-006', shortParentText);
+            
+            // Debug : Vérifier ce que computeInstructionPrefix génère
+            const computedPrefix = computeInstructionPrefix(childText, shortK);
+            console.log(`DEBUG: computedPrefix for K=${shortK}: "${computedPrefix}" (length: ${computedPrefix.length})`);
+            
+            // Utiliser le préfixe exact que computeInstructionPrefix va générer avec le bon K
+            index.addInstruction('task-006', computedPrefix, undefined, shortK);
             
             const results2 = index.searchExactPrefix(childText, shortK);
+            
+            console.log(`DEBUG: searchExactPrefix returned ${results2.length} results`);
+            if (results2.length > 0) {
+                console.log(`DEBUG: First result: taskId=${results2[0].taskId}, prefix="${results2[0].prefix}"`);
+            }
             
             expect(results2).toHaveLength(1);
             expect(results2[0].taskId).toBe('task-006');

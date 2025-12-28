@@ -83,7 +83,8 @@ export async function roosyncListDiffs(args: ListDiffsArgs): Promise<ListDiffsRe
 function determineSeverity(type: string): 'low' | 'medium' | 'high' {
   // Mappage type -> sévérité selon spécifications
   if (type === 'config') return 'high';
-  if (type === 'file') return 'medium';
+  if (type === 'hardware') return 'medium';
+  if (type === 'software') return 'medium';
   return 'low';
 }
 

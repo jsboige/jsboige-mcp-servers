@@ -19,13 +19,13 @@ import {
   UnifiedApiGateway,
   createUnifiedApiGateway,
   INTELLIGENT_PRESETS
-} from '../../../src/gateway/UnifiedApiGateway.js';
+} from '../../../src/gateway/UnifiedApiGateway';
 import {
   DisplayPreset,
   ToolCategory,
   ProcessingLevel,
   DisplayOptions
-} from '../../../src/interfaces/UnifiedToolInterface.js';
+} from '../../../src/interfaces/UnifiedToolInterface';
 
 describe('UnifiedApiGateway - Architecture consolidée', () => {
   
@@ -45,7 +45,7 @@ describe('UnifiedApiGateway - Architecture consolidée', () => {
         }))
       },
       searchService: {
-        searchTasksSemantic: vi.fn(() => Promise.resolve({
+        searchTasksByContent: vi.fn(() => Promise.resolve({
           results: [],
           total: 0
         }))
@@ -257,13 +257,141 @@ describe('UnifiedApiGateway - Architecture consolidée', () => {
     });
   });
 
+  describe('Tests de validation - Cas limites et valeurs valides', () => {
+    
+    test('Validation de tous les presets valides', async () => {
+      // Tester que tous les presets de l'enum sont valides
+      const validPresets = [
+        DisplayPreset.QUICK_OVERVIEW,
+        DisplayPreset.DETAILED_ANALYSIS,
+        DisplayPreset.SEARCH_RESULTS,
+        DisplayPreset.EXPORT_FORMAT,
+        DisplayPreset.TREE_NAVIGATION
+      ];
+
+      for (const preset of validPresets) {
+        const result = await gateway.execute(preset);
+        expect(result.success).toBe(true);
+        expect(result.data?.preset).toBeDefined();
+      }
+    });
+
+    test('Cas limite truncate - valeur zéro', async () => {
+      // truncate: 0 est valide (pas de troncature)
+      const result = await gateway.execute(DisplayPreset.QUICK_OVERVIEW, {
+        truncate: 0
+      });
+
+      expect(result.success).toBe(true);
+      expect(result.data?.preset).toBe(ToolCategory.DISPLAY);
+    });
+
+    test('Cas limite truncate - grande valeur', async () => {
+      // Test avec une grande valeur valide
+      const result = await gateway.execute(DisplayPreset.QUICK_OVERVIEW, {
+        truncate: 10000
+      });
+
+      expect(result.success).toBe(true);
+    });
+
+    test('Cas limite maxResults - valeur minimale', async () => {
+      // maxResults: 1 est la valeur minimale valide
+      const result = await gateway.execute(DisplayPreset.SEARCH_RESULTS, {
+        maxResults: 1
+      });
+
+      expect(result.success).toBe(true);
+      expect(result.data?.preset).toBe(ToolCategory.SEARCH);
+    });
+
+    test('Cas limite maxResults - grande valeur', async () => {
+      // Test avec une grande valeur valide
+      const result = await gateway.execute(DisplayPreset.SEARCH_RESULTS, {
+        maxResults: 1000
+      });
+
+      expect(result.success).toBe(true);
+    });
+
+    test('Validation outputFormat - tous les formats supportés', async () => {
+      // Tester chaque format individuellement
+      const formats = ['json', 'csv', 'xml', 'markdown', 'html'] as const;
+      
+      for (const format of formats) {
+        const result = await gateway.execute(DisplayPreset.EXPORT_FORMAT, {
+          outputFormat: format
+        });
+
+        expect(result.success).toBe(true);
+        expect(result.data?.preset).toBe(ToolCategory.EXPORT);
+      }
+    });
+
+    test('Validation combinée - options valides multiples', async () => {
+      // Tester plusieurs options valides ensemble
+      const result = await gateway.execute(DisplayPreset.QUICK_OVERVIEW, {
+        truncate: 50,
+        maxResults: 20,
+        detailLevel: 'skeleton'
+      });
+
+      expect(result.success).toBe(true);
+      expect(result.data?.preset).toBe(ToolCategory.DISPLAY);
+      expect(result.metadata?.processingLevel).toBe(ProcessingLevel.IMMEDIATE);
+    });
+
+    test('Validation options par défaut - sans options personnalisées', async () => {
+      // Tester que les options par défaut fonctionnent
+      const result = await gateway.execute(DisplayPreset.DETAILED_ANALYSIS);
+
+      expect(result.success).toBe(true);
+      expect(result.data?.preset).toBe(ToolCategory.DISPLAY);
+      expect(result.metadata?.processingLevel).toBe(ProcessingLevel.BACKGROUND);
+    });
+
+    test('Cas limite detailLevel - toutes les valeurs valides', async () => {
+      // Tester tous les niveaux de détail valides
+      const detailLevels = ['skeleton', 'summary', 'full'] as const;
+      
+      for (const detailLevel of detailLevels) {
+        const result = await gateway.execute(DisplayPreset.QUICK_OVERVIEW, {
+          detailLevel
+        });
+
+        expect(result.success).toBe(true);
+      }
+    });
+
+    test('Validation booléens - toutes les combinaisons', async () => {
+      // Tester les options booléennes dans toutes les combinaisons
+      const booleanOptions = [
+        { includeContent: true },
+        { includeContent: false },
+        { prettyPrint: true },
+        { prettyPrint: false },
+        { includeCss: true },
+        { includeCss: false },
+        { backup: true },
+        { backup: false },
+        { forceRebuild: true },
+        { forceRebuild: false }
+      ];
+
+      for (const options of booleanOptions) {
+        const result = await gateway.execute(DisplayPreset.TREE_NAVIGATION, options);
+        expect(result.success).toBe(true);
+      }
+    });
+  });
+
   describe('ValidationEngine - Schémas JSON pour 32 outils', () => {
     
     test('Validation des presets', async () => {
-      // Preset invalide
+      // Preset invalide - utiliser une valeur qui n'existe pas dans l'enum
       await expect(
-        gateway.execute('invalid-preset' as DisplayPreset)
-      ).rejects.toThrow('Validation failed');
+        gateway.execute('non-existent-preset' as DisplayPreset)
+      ).rejects.toThrow('Validation failed: Invalid preset: non-existent-preset. Must be one of: quick, detailed, search, export, tree');
     });
 
     test('Validation des options par catégorie', async () => {
@@ -275,12 +403,48 @@ describe('UnifiedApiGateway - Architecture consolidée', () => {
       ).rejects.toThrow('truncate must be >= 0');
     });
 
+    test('Validation truncate avec valeur valide', async () => {
+      // Test avec une valeur valide pour truncate
+      const result = await gateway.execute(DisplayPreset.QUICK_OVERVIEW, {
+        truncate: 0 // Valide (limite inférieure)
+      });
+
+      expect(result.success).toBe(true);
+    });
+
+    test('Validation truncate avec valeur positive', async () => {
+      // Test avec une valeur positive valide
+      const result = await gateway.execute(DisplayPreset.QUICK_OVERVIEW, {
+        truncate: 100 // Valide
+      });
+
+      expect(result.success).toBe(true);
+    });
+
     test('Validation des options Search', async () => {
       await expect(
         gateway.execute(DisplayPreset.SEARCH_RESULTS, {
           maxResults: 0 // Invalide
         })
-      ).rejects.toThrow('maxResults must be >= 1');
+      ).rejects.toThrow('Validation failed: maxResults must be >= 1');
+    });
+
+    test('Validation maxResults avec valeur limite valide', async () => {
+      // Test avec la valeur minimale valide
+      const result = await gateway.execute(DisplayPreset.SEARCH_RESULTS, {
+        maxResults: 1 // Valide (limite inférieure)
+      });
+
+      expect(result.success).toBe(true);
+    });
+
+    test('Validation maxResults avec valeur négative', async () => {
+      // Test avec une valeur négative
+      await expect(
+        gateway.execute(DisplayPreset.SEARCH_RESULTS, {
+          maxResults: -5 // Invalide
+        })
+      ).rejects.toThrow('Validation failed: maxResults must be >= 1');
     });
 
     test('Validation des formats d\'export', async () => {
@@ -288,7 +452,20 @@ describe('UnifiedApiGateway - Architecture consolidée', () => {
         gateway.execute(DisplayPreset.EXPORT_FORMAT, {
           outputFormat: 'invalid-format' as any
         })
-      ).rejects.toThrow('outputFormat must be one of');
+      ).rejects.toThrow('Validation failed: outputFormat must be one of: json, csv, xml, markdown, html');
+    });
+
+    test('Validation outputFormat avec formats valides', async () => {
+      // Tester tous les formats valides
+      const validFormats = ['json', 'csv', 'xml', 'markdown', 'html'];
+      
+      for (const format of validFormats) {
+        const result = await gateway.execute(DisplayPreset.EXPORT_FORMAT, {
+          outputFormat: format as any
+        });
+
+        expect(result.success).toBe(true);
+      }
     });
   });
 
@@ -444,19 +621,22 @@ describe('Architecture consolidée - Tests d\'intégration', () => {
     });
   });
 
-  test('Couverture des 32 outils réels identifiés', () => {
+  test('Couverture des 22 outils réels identifiés', () => {
     // Compter tous les outils uniques dans les presets
     const allTools = new Set<string>();
     Object.values(INTELLIGENT_PRESETS).forEach(preset => {
       preset.tools.forEach(tool => allTools.add(tool));
     });
     
-    // Vérifier qu'on couvre bien un nombre significatif d'outils
-    expect(allTools.size).toBeGreaterThan(15); // Au minimum 15 outils distincts
+    // Afficher les outils trouvés pour diagnostic
+    console.log('Outils trouvés dans les presets:', Array.from(allTools).sort());
+    
+    // Vérifier qu'on couvre bien les 22 outils actuellement définis
+    expect(allTools.size).toBe(22); // 22 outils distincts dans les presets actuels
     
     // Vérifier la présence d'outils clés par catégorie
     expect(allTools.has('list_conversations')).toBe(true); // Display
-    expect(allTools.has('search_tasks_semantic')).toBe(true); // Search  
+    expect(allTools.has('search_tasks_semantic')).toBe(true); // Search
     expect(allTools.has('export_conversation_json')).toBe(true); // Export
     expect(allTools.has('detect_roo_storage')).toBe(true); // Utility
   });

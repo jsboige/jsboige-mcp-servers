@@ -9,10 +9,12 @@
 
 # Environment variables (contains secrets)
 .env
+.env.test
+.env.local
+.env.*.local
 
 # Logs
 *.log
-.shared-state/logs/*.log
 
 # Temporary files
 *.tmp

@@ -54,9 +54,10 @@ export const readVscodeLogs = {
         },
     },
     async handler(args: { lines?: number; filter?: string; maxSessions?: number }): Promise<CallToolResult> {
-        const lineCount = args.lines || 100;
-        const { filter } = args;
-        const maxSessions = args.maxSessions || 1;
+        const safeArgs = args || {};
+        const lineCount = safeArgs.lines || 100;
+        const { filter } = safeArgs;
+        const maxSessions = safeArgs.maxSessions || 1;
         const rootLogsPath = path.join(process.env.APPDATA || '', 'Code', 'logs');
         const debugLog: string[] = [`[DEBUG] Smart Log Search starting in: ${rootLogsPath}`];
 
@@ -65,7 +66,7 @@ export const readVscodeLogs = {
         }
 
         try {
-            const sessionDirs = (await fs.readdir(rootLogsPath, { withFileTypes: true }))
+            const sessionDirs = (await fs.readdir(rootLogsPath, { withFileTypes: true }) || [])
                 .filter(d => d.isDirectory() && /^\d{8}T\d{6}$/.test(d.name))
                 .sort((a, b) => b.name.localeCompare(a.name)); // Sort descending to get latest first
 
@@ -79,7 +80,7 @@ export const readVscodeLogs = {
             for (const sessionDir of sessionDirs) {
                 if (sessionsProcessed >= maxSessions) break;
                 const sessionPath = path.join(rootLogsPath, sessionDir.name);
-                const windowDirs = (await fs.readdir(sessionPath, { withFileTypes: true }).catch(() => []))
+                const windowDirs = (await fs.readdir(sessionPath, { withFileTypes: true }).catch(() => []) || [])
                     .filter(d => d.isDirectory() && d.name.startsWith('window'))
                     .sort((a, b) => b.name.localeCompare(a.name));
 
@@ -117,13 +118,13 @@ export const readVscodeLogs = {
                         foundLogs = true;
                     } catch (e) { /* ignore if not present */ }
 
-                    const outputDirs = (await fs.readdir(exthostPath, { withFileTypes: true }).catch(() => []))
+                    const outputDirs = (await fs.readdir(exthostPath, { withFileTypes: true }).catch(() => []) || [])
                         .filter(d => d.isDirectory() && d.name.startsWith('output_logging_'));
 
                     let latestRooLog = { path: '', mtime: new Date(0) };
                     for (const outputDir of outputDirs) {
                         const logFilesPath = path.join(exthostPath, outputDir.name);
-                        const logFiles = await fs.readdir(logFilesPath, { withFileTypes: true }).catch(() => []);
+                        const logFiles = await fs.readdir(logFilesPath, { withFileTypes: true }).catch(() => []) || [];
                         for (const logFile of logFiles) {
                             if (logFile.isFile() && /\d+-Roo-Code\.log$/.test(logFile.name)) {
                                 const rooLogPath = path.join(logFilesPath, logFile.name);
@@ -141,11 +142,11 @@ export const readVscodeLogs = {
                         allLogsContent.push({ title: 'Roo-Code Output', path: latestRooLog.path, content });
                         foundLogs = true;
                     }
-                    
+
                     // Continue to next session (removed break for multi-session search)
                 }
             }
-            
+
             if (sessionDirs.length === 0) {
                  return { content: [{ type: 'text' as const, text: 'No session log directory found' }] };
             }
@@ -163,6 +164,8 @@ export const readVscodeLogs = {
             return { content: [{ type: 'text' as const, text: finalResult }] };
 
         } catch (error) {
+            // 🎯 CORRECTION SDDD: Gestion robuste des erreurs de filtrage
+            // Si filter est undefined, ne pas essayer de l'utiliser dans le message d'erreur
             const errorMessage = `Failed to read VS Code logs: ${(error as Error).stack}\n\nDEBUG LOG:\n${debugLog.join('\n')}`;
             console.error(errorMessage);
             return { content: [{ type: 'text' as const, text: errorMessage }] };

@@ -58,7 +58,11 @@ export async function archiveMessage(
     }
 
     // Initialiser le MessageManager
-    const sharedStatePath = getSharedStatePath();
+    // Pour les tests, utiliser le chemin d'environnement si disponible
+    const sharedStatePath = process.env.ROOSYNC_TEST_PATH || getSharedStatePath();
+    console.error('🔍 [archiveMessage] ROOSYNC_TEST_PATH:', process.env.ROOSYNC_TEST_PATH);
+    console.error('🔍 [archiveMessage] getSharedStatePath():', getSharedStatePath());
+    console.error('🔍 [archiveMessage] sharedStatePath utilisé:', sharedStatePath);
     const messageManager = new MessageManager(sharedStatePath);
 
     // Vérifier existence du message

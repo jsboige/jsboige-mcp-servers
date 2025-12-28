@@ -1,0 +1,364 @@
+/**
+ * Extracteur pour les messages UI (ui_messages.json)
+ * Gère les patterns spécifiques aux messages de type UI
+ */
+
+import { PatternExtractor, createInstruction, extractTimestamp } from '../message-pattern-extractors.js';
+import { NewTaskInstruction } from '../../types/conversation.js';
+
+/**
+ * Helper pour extraire le texte d'un message (string ou array OpenAI)
+ */
+function extractTextFromMessage(message: any): string | null {
+  if (typeof message.text === 'string') return message.text;
+  if (typeof message.content === 'string') return message.content;
+  
+  if (Array.isArray(message.content)) {
+    return message.content
+      .filter((part: any) => part.type === 'text' && typeof part.text === 'string')
+      .map((part: any) => part.text)
+      .join('\n');
+  }
+  
+  return null;
+}
+
+/**
+ * Extracteur pour les messages UI avec champ ask/tool
+ */
+export class UiAskToolExtractor implements PatternExtractor {
+  canHandle(message: any): boolean {
+    return message.type === 'ask' &&
+           message.ask === 'tool' &&
+           typeof message.text === 'string';
+  }
+
+  extract(message: any): NewTaskInstruction[] {
+    const instructions: NewTaskInstruction[] = [];
+
+    try {
+      const toolData = JSON.parse(message.text);
+
+      if (toolData && toolData.tool === 'newTask') {
+        const instruction = createInstruction(
+          extractTimestamp(message),
+          toolData.mode || 'task',
+          toolData.content,
+          20
+        );
+
+        if (instruction) {
+          instructions.push(instruction);
+          this.debugLog('UI ask/tool', instruction.mode, instruction.message.length);
+        }
+      }
+    } catch (error) {
+      this.debugError('UI ask/tool', error);
+    }
+
+    return instructions;
+  }
+
+  getPatternName(): string {
+    return 'UI Ask/Tool Extractor';
+  }
+
+  private debugLog(source: string, mode: string, length: number): void {
+    if (process.env.ROO_DEBUG_INSTRUCTIONS === '1') {
+      console.log(`[extractFromMessageFile] ✅ ${source}: mode=${mode}, len=${length}`);
+    }
+  }
+
+  private debugError(source: string, error: any): void {
+    if (process.env.ROO_DEBUG_INSTRUCTIONS === '1') {
+      console.log(`[extractFromMessageFile] ⚠️ Failed to parse ${source} message:`, error);
+    }
+  }
+}
+
+/**
+ * Extracteur pour les messages UI avec objet direct dans text/content
+ */
+export class UiObjectExtractor implements PatternExtractor {
+  canHandle(message: any): boolean {
+    return (typeof message.text === 'object' || typeof message.content === 'object' ||
+            (Array.isArray(message.content) && message.content.some((item: any) => item.type === 'text')));
+  }
+
+  extract(message: any): NewTaskInstruction[] {
+    const instructions: NewTaskInstruction[] = [];
+
+    try {
+      // Gérer le format array OpenAI
+      if (Array.isArray(message.content)) {
+        for (const item of message.content) {
+          if (item.type === 'text' && typeof item.text === 'string') {
+            // Parser les balises <task> dans le texte
+            const taskPattern = /<task>([\s\S]*?)<\/task>/gi;
+            let match;
+            
+            while ((match = taskPattern.exec(item.text)) !== null) {
+              const taskContent = match[1].trim();
+              
+              if (taskContent.length >= 20) { // Ignorer si trop court
+                const instruction = createInstruction(
+                  extractTimestamp(message),
+                  'task',
+                  taskContent.substring(0, 200), // Troncature à 200 caractères
+                  20
+                );
+                
+                if (instruction) {
+                  instructions.push(instruction);
+                  this.debugLog('UI array OpenAI', instruction.mode, instruction.message.length);
+                }
+              }
+            }
+          }
+        }
+        return instructions;
+      }
+
+      // Gérer le format objet standard
+      const obj = typeof message.text === 'object' && message.text
+        ? message.text
+        : (typeof message.content === 'object' && message.content ? message.content : null);
+
+      if (obj && obj.tool === 'newTask') {
+        const instruction = createInstruction(
+          extractTimestamp(message),
+          obj.mode || 'task',
+          obj.content,
+          20
+        );
+
+        if (instruction) {
+          instructions.push(instruction);
+          this.debugLog('UI object', instruction.mode, instruction.message.length);
+        }
+      }
+    } catch (error) {
+      this.debugError('UI object', error);
+    }
+
+    return instructions;
+  }
+
+  getPatternName(): string {
+    return 'UI Object Extractor';
+  }
+
+  private debugLog(source: string, mode: string, length: number): void {
+    if (process.env.ROO_DEBUG_INSTRUCTIONS === '1') {
+      console.log(`[extractFromMessageFile] ✅ ${source}: mode=${mode}, len=${length}`);
+    }
+  }
+
+  private debugError(source: string, error: any): void {
+    if (process.env.ROO_DEBUG_INSTRUCTIONS === '1') {
+      console.log(`[extractFromMessageFile] ⚠️ Failed to parse ${source} message:`, error);
+    }
+  }
+}
+
+/**
+ * Extracteur pour les messages UI avec pattern XML/HTML
+ */
+export class UiXmlPatternExtractor implements PatternExtractor {
+  canHandle(message: any): boolean {
+    // Supporte tool_result ET les messages textuels standards (say/user/assistant)
+    if (message.type === 'tool_result' && typeof message.content === 'string') return true;
+    if (message.type === 'say' || message.role === 'user' || message.role === 'assistant') {
+      return typeof message.text === 'string' ||
+             typeof message.content === 'string' ||
+             Array.isArray(message.content);
+    }
+    return false;
+  }
+
+  extract(message: any): NewTaskInstruction[] {
+    const instructions: NewTaskInstruction[] = [];
+    const contentText = extractTextFromMessage(message);
+
+    if (!contentText) {
+      return instructions;
+    }
+
+    try {
+      // Pattern pour new_task avec balises fermées
+      const newTaskPattern = /<new_task>\s*<mode>([^<]+)<\/mode>\s*<message>([\s\S]*?)<\/message>\s*<\/new_task>/gi;
+      let match;
+
+      while ((match = newTaskPattern.exec(contentText)) !== null) {
+        const mode = match[1].trim();
+        const taskMessage = match[2].trim();
+
+        const instruction = createInstruction(
+          extractTimestamp(message),
+          mode,
+          taskMessage,
+          10
+        );
+
+        if (instruction) {
+          instructions.push(instruction);
+          this.debugLog('UI XML closed', instruction.mode, instruction.message.length);
+        }
+      }
+
+      // Pattern pour new_task avec balises non fermées (legacy)
+      const unClosedNewTaskPattern = /<new_task>\s*<mode>([^<]+)<\/mode>\s*<message>([\s\S]*?)<\/message>\s*$/gi;
+      let unClosedMatch;
+
+      while ((unClosedMatch = unClosedNewTaskPattern.exec(contentText)) !== null) {
+        const mode = unClosedMatch[1].trim();
+        const taskMessage = unClosedMatch[2].trim();
+
+        const instruction = createInstruction(
+          extractTimestamp(message),
+          mode,
+          taskMessage,
+          10
+        );
+
+        if (instruction) {
+          instructions.push(instruction);
+          this.debugLog('UI XML unclosed', instruction.mode, instruction.message.length);
+        }
+      }
+    } catch (error) {
+      this.debugError('UI XML pattern', error);
+    }
+
+    return instructions;
+  }
+
+  getPatternName(): string {
+    return 'UI XML Pattern Extractor';
+  }
+
+  private debugLog(source: string, mode: string, length: number): void {
+    if (process.env.ROO_DEBUG_INSTRUCTIONS === '1') {
+      console.log(`[extractFromMessageFile] ✅ ${source}: mode=${mode}, len=${length}`);
+    }
+  }
+
+  private debugError(source: string, error: any): void {
+    if (process.env.ROO_DEBUG_INSTRUCTIONS === '1') {
+      console.log(`[extractFromMessageFile] ⚠️ Failed to parse ${source} message:`, error);
+    }
+  }
+}
+
+/**
+ * Extracteur pour les balises <task> simples
+ */
+export class UiSimpleTaskExtractor implements PatternExtractor {
+  canHandle(message: any): boolean {
+    return (message.type === 'say' || message.role === 'user' || message.role === 'assistant') &&
+           (typeof message.text === 'string' || typeof message.content === 'string' || Array.isArray(message.content));
+  }
+
+  extract(message: any): NewTaskInstruction[] {
+    const instructions: NewTaskInstruction[] = [];
+    const contentText = extractTextFromMessage(message);
+
+    if (!contentText) {
+      return instructions;
+    }
+
+    try {
+      // Pattern pour balises <task> simples
+      const taskPattern = /<task>([\s\S]*?)<\/task>/gi;
+      let match;
+
+      while ((match = taskPattern.exec(contentText)) !== null) {
+        const taskContent = match[1].trim();
+
+        // Ignorer si trop court
+        if (taskContent.length < 20) continue;
+
+        const instruction = createInstruction(
+          extractTimestamp(message),
+          'task',
+          taskContent.substring(0, 200), // Troncature à 200 caractères
+          20
+        );
+
+        if (instruction) {
+          instructions.push(instruction);
+          this.debugLog('UI Simple Task', instruction.mode, instruction.message.length);
+        }
+      }
+    } catch (error) {
+      this.debugError('UI Simple Task', error);
+    }
+
+    return instructions;
+  }
+
+  getPatternName(): string {
+    return 'UI Simple Task Extractor';
+  }
+
+  private debugLog(source: string, mode: string, length: number): void {
+    if (process.env.ROO_DEBUG_INSTRUCTIONS === '1') {
+      console.log(`[extractFromMessageFile] ✅ ${source}: mode=${mode}, len=${length}`);
+    }
+  }
+
+  private debugError(source: string, error: any): void {
+    if (process.env.ROO_DEBUG_INSTRUCTIONS === '1') {
+      console.log(`[extractFromMessageFile] ⚠️ Failed to parse ${source} message:`, error);
+    }
+  }
+}
+
+/**
+ * Extracteur pour les messages UI legacy (tool_call)
+ */
+export class UiLegacyExtractor implements PatternExtractor {
+  canHandle(message: any): boolean {
+    return message.type === 'tool_call' &&
+           message.content &&
+           message.content.tool === 'new_task';
+  }
+
+  extract(message: any): NewTaskInstruction[] {
+    const instructions: NewTaskInstruction[] = [];
+
+    try {
+      const instruction = createInstruction(
+        extractTimestamp(message),
+        message.content.mode || 'legacy',
+        message.content.message || '',
+        1 // Minimum plus bas pour le legacy
+      );
+
+      if (instruction) {
+        instructions.push(instruction);
+        this.debugLog('UI legacy', instruction.mode, instruction.message.length);
+      }
+    } catch (error) {
+      this.debugError('UI legacy', error);
+    }
+
+    return instructions;
+  }
+
+  getPatternName(): string {
+    return 'UI Legacy Extractor';
+  }
+
+  private debugLog(source: string, mode: string, length: number): void {
+    if (process.env.ROO_DEBUG_INSTRUCTIONS === '1') {
+      console.log(`[extractFromMessageFile] ✅ ${source}: mode=${mode}, len=${length}`);
+    }
+  }
+
+  private debugError(source: string, error: any): void {
+    if (process.env.ROO_DEBUG_INSTRUCTIONS === '1') {
+      console.log(`[extractFromMessageFile] ⚠️ Failed to parse ${source} message:`, error);
+    }
+  }
+}

@@ -13,32 +13,60 @@ export interface GitHubAccount {
  * @returns Une instance d'Octokit authentifiée.
  */
 export function getGitHubClient(owner: string, accounts: GitHubAccount[]): Octokit {
-    console.log('[GP-MCP][GITHUB] Appel de getGitHubClient avec owner:', owner, 'et accounts:', JSON.stringify(accounts));
-    let token: string | undefined;
-    let account: GitHubAccount | undefined;
+  console.log('[GP-MCP][GITHUB] Appel de getGitHubClient avec owner:', owner, 'et accounts:', JSON.stringify(accounts));
+  let token: string | undefined;
+  let account: GitHubAccount | undefined;
 
-    if (owner && typeof owner === 'string' && accounts) {
-        account = accounts.find(acc => acc.owner && acc.owner.toLowerCase() === owner.toLowerCase());
+  // 1. Support du format JSON (GITHUB_ACCOUNTS_JSON) en priorité
+  if (accounts && accounts.length > 0) {
+    // Vérifier si le format JSON est utilisé
+    const jsonAccountsString = process.env.GITHUB_ACCOUNTS_JSON;
+    if (jsonAccountsString) {
+      try {
+        const jsonAccounts = JSON.parse(jsonAccountsString);
+        if (Array.isArray(jsonAccounts)) {
+          // Chercher dans le format JSON
+          account = jsonAccounts.find(acc => {
+            const ownerValue = acc.owner || acc.user; // Support both formats
+            return ownerValue && ownerValue.toLowerCase() === owner.toLowerCase();
+          });
+          if (account) {
+            console.log(`[GP-MCP][GITHUB] Compte trouvé depuis JSON: ${owner}`);
+          }
+        }
+      } catch (error) {
+        console.error('[GP-MCP][GITHUB] Erreur parsing GITHUB_ACCOUNTS_JSON:', error);
+      }
     }
+  }
 
-    if (!account && accounts && accounts.length > 0) {
-        console.log(`[GP-MCP][GITHUB] Aucun compte trouvé pour '${owner}', utilisation du premier compte disponible.`);
-        account = accounts[0];
-    }
-    
-    if (!account) {
-        throw new Error('[GP-MCP][CONFIG_ERROR] Aucun compte GitHub n\'est configuré ou trouvé.');
-    }
+  // 2. Fallback au format indexé si JSON ne fonctionne pas
+  if (!account && owner && typeof owner === 'string' && accounts) {
+    account = accounts.find(acc => acc.owner && acc.owner.toLowerCase() === owner.toLowerCase());
+  }
 
-    token = account.token;
+  // 3. Fallback au format simple si aucun des formats précédents n'a fonctionné
+  if (!account && accounts && accounts.length > 0) {
+    console.log(`[GP-MCP][GITHUB] Aucun compte trouvé pour '${owner}', utilisation du premier compte disponible.`);
+    account = accounts[0];
+  }
 
-  // Tenter de résoudre la variable d'environnement si le token est sous la forme ${env:VAR}
-  const envVarMatch = token.match(/^\${env:(.*)}$/);
+  if (!account) {
+    throw new Error('[GP-MCP][CONFIG_ERROR] Aucun compte GitHub n\'est configuré ou trouvé.');
+  }
+
+  token = account.token;
+
+  // Résolution robuste des variables d'environnement
+  const envVarMatch = token ? token.match(/^\${env:(.*)}$/) : null;
   if (envVarMatch && envVarMatch[1]) {
     const envVarName = envVarMatch[1];
-    token = process.env[envVarName];
-    if (!token) {
-      throw new Error(`[GP-MCP][CONFIG_ERROR] La variable d'environnement '${envVarName}' spécifiée dans la configuration n'est pas définie.`);
+    const resolvedToken = process.env[envVarName];
+    if (resolvedToken) {
+      console.log(`[GP-MCP][GITHUB] Variable d'environnement résolue: ${envVarName} = ${resolvedToken.substring(0, 10)}...`);
+      token = resolvedToken;
+    } else {
+      console.warn(`[GP-MCP][GITHUB] Variable d'environnement '${envVarName}' non définie, utilisation du token brut`);
     }
   }
 
@@ -46,7 +74,7 @@ export function getGitHubClient(owner: string, accounts: GitHubAccount[]): Octok
     throw new Error('[GP-MCP][CONFIG_ERROR] Le token GitHub est vide ou non défini après résolution.');
   }
 
-  console.log(`[GP-MCP][GITHUB] Utilisation du token: ${token}`);
+  console.log(`[GP-MCP][GITHUB] Utilisation du token: ${token.substring(0, 10)}...`);
 
   return new Octokit({
     auth: token,

@@ -1,9 +1,12 @@
 /**
  * Point d'entrée du serveur MCP roo-state-manager
- * 
+ *
  * Ce fichier orchestre l'initialisation et le démarrage du serveur.
  * Toute la logique métier est dans src/tools/, src/services/, src/config/
  */
+
+// FIX: Ignorer les erreurs SSL pour Qdrant (certificat auto-signé ou invalide)
+process.env.NODE_TLS_REJECT_UNAUTHORIZED = '0';
 
 import dotenv from 'dotenv';
 import { fileURLToPath } from 'url';
@@ -68,7 +71,7 @@ class RooStateManagerServer {
     constructor() {
         // Initialisation de l'état global via StateManager
         this.stateManager = new StateManager();
-        
+
         // Création du serveur MCP
         this.server = createMcpServer(SERVER_CONFIG);
 
@@ -78,7 +81,7 @@ class RooStateManagerServer {
 
         // Enregistrement des handlers
         this.registerHandlers();
-        
+
         // Initialisation des services background
         this.initializeBackgroundServices().catch((error: Error) => {
             console.error("Error during background services initialization:", error);
@@ -125,8 +128,8 @@ class RooStateManagerServer {
 
             // Créer l'intercepteur d'outils
             const state = this.stateManager.getState();
-            const machineId = process.env.MACHINE_ID || 'local_machine';
-            
+            const machineId = process.env.ROOSYNC_MACHINE_ID || 'local_machine';
+
             this.toolInterceptor = new ToolUsageInterceptor(
                 this.notificationService,
                 messageManager,
@@ -201,9 +204,9 @@ class RooStateManagerServer {
     private async ensureSkeletonCacheIsFresh(args?: { workspace?: string }): Promise<boolean> {
         try {
             console.log('[FAILSAFE] Checking skeleton cache freshness...');
-            
+
             const state = this.stateManager.getState();
-            
+
             // Vérifier si le cache est vide - reconstruction nécessaire
             if (state.conversationCache.size === 0) {
                 console.log('[FAILSAFE] Cache empty, triggering differential rebuild...');
@@ -213,32 +216,32 @@ class RooStateManagerServer {
                 }, state.conversationCache);
                 return true;
             }
-            
+
             // Vérifier si des nouvelles conversations existent depuis la dernière mise à jour
             const storageLocations = await RooStorageDetector.detectStorageLocations();
             if (storageLocations.length === 0) {
                 console.log('[FAILSAFE] No storage locations found');
                 return false;
             }
-            
+
             let needsUpdate = false;
             const now = Date.now();
             const CACHE_VALIDITY_MS = 5 * 60 * 1000; // 5 minutes
-            
+
             // Vérifier les modifications récentes dans chaque emplacement
             for (const location of storageLocations) {
                 try {
                     const conversationDirs = await fs.readdir(location, { withFileTypes: true });
-                    
-                    for (const convDir of conversationDirs.slice(0, 10)) { // Limite à 10 pour performance
+
+                    for (const convDir of conversationDirs) { // Traitement de toutes les conversations
                         if (convDir.isDirectory() && convDir.name !== '.skeletons') {
                             const taskPath = path.join(location, convDir.name);
                             const metadataPath = path.join(taskPath, 'task_metadata.json');
-                            
+
                             try {
                                 const metadataStat = await fs.stat(metadataPath);
                                 const ageMs = now - metadataStat.mtime.getTime();
-                                
+
                                 // Si metadata récent ET pas dans le cache
                                 if (ageMs < CACHE_VALIDITY_MS && !state.conversationCache.has(convDir.name)) {
                                     console.log(`[FAILSAFE] New task detected: ${convDir.name}, age: ${Math.round(ageMs/1000)}s`);
@@ -250,13 +253,13 @@ class RooStateManagerServer {
                             }
                         }
                     }
-                    
+
                     if (needsUpdate) break;
                 } catch (readdirError) {
                     console.warn(`[FAILSAFE] Could not read directory ${location}:`, readdirError);
                 }
             }
-            
+
             // Déclencher reconstruction différentielle si nécessaire
             if (needsUpdate) {
                 console.log('[FAILSAFE] Cache outdated, triggering differential rebuild...');
@@ -266,10 +269,10 @@ class RooStateManagerServer {
                 }, state.conversationCache);
                 return true;
             }
-            
+
             console.log('[FAILSAFE] Skeleton cache is fresh');
             return false;
-            
+
         } catch (error) {
             console.error('[FAILSAFE] Error checking skeleton cache freshness:', error);
             return false;
@@ -290,13 +293,13 @@ class RooStateManagerServer {
      */
     async stop(): Promise<void> {
         const state = this.stateManager.getState();
-        
+
         // Arrêter le service d'indexation Qdrant
         if (state.qdrantIndexInterval) {
             clearInterval(state.qdrantIndexInterval);
             state.qdrantIndexInterval = null;
         }
-        
+
         if (this.server && (this.server as any).transport) {
             (this.server as any).transport.close();
         }

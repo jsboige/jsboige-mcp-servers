@@ -3,7 +3,7 @@
  * Génère un format markdown conforme aux spécifications SDDD Mission 4/4
  */
 
-import { TaskTreeNode } from './format-ascii-tree.js';
+import { TaskTreeNode } from './format-ascii-tree';
 
 export interface FormatHierarchicalTreeOptions {
     includeToC?: boolean;
@@ -115,7 +115,7 @@ function generateHeader(rootNode: TaskTreeNode, options: FormatHierarchicalTreeO
     }
     
     if (options.includeToC !== false) {
-        header += `## Navigation Rapide\n`;
+        header += `## Table des Matières\n\n`;
         header += `- [Racine ${rootNode.taskIdShort}](#task-${rootNode.taskIdShort}) - ${truncateInstruction(rootNode.metadata?.truncatedInstruction)}\n\n`;
     }
     
@@ -152,8 +152,10 @@ function formatTaskNode(node: TaskTreeNode, indentLevel: number = 0): string {
     
     let output = '';
     
-    // En-tête de la tâche avec ancre
-    output += `${indent}## [${node.taskIdShort}] ${modeEmoji} ${instruction} (${mode})\n`;
+    // 🎯 CORRECTION : En-tête de la tâche avec ancre - utiliser le titre
+    // Niveau 0 (racine) : ##, Niveau 1 : ###, Niveau 2 : ####, etc.
+    const headerLevel = indentLevel === 0 ? '##' : '#'.repeat(indentLevel + 2);
+    output += `${indent}${headerLevel} ${node.title} ${modeEmoji} ${instruction} (${mode})\n`;
     output += `${indent}{: #task-${node.taskIdShort} }\n`;
     
     // Métadonnées sur une ligne

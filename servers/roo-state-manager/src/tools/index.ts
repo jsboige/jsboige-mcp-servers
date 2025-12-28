@@ -30,3 +30,6 @@ export * from './roosync/index.js';
 // Cache & Repair tools - Batch 8 refactoring
 export * from './cache/index.js';
 export * from './repair/index.js';
+
+// Diagnostic Tools - WP4 (Cycle 7)
+export * from './diagnostic/index.js';

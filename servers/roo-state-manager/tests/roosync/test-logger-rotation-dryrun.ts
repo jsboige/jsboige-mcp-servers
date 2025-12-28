@@ -10,7 +10,7 @@
  * CONTRAINTE : DRY-RUN ONLY - Aucune modification logs production
  */
 
-import { Logger } from '../../mcps/internal/servers/roo-state-manager/src/utils/logger.js';
+import { Logger } from '../../src/utils/logger';
 import { TestLogger, TestResult, generateTestReport } from './helpers/test-logger';
 import { existsSync, mkdirSync, writeFileSync, statSync, readdirSync, unlinkSync } from 'fs';
 import { join, normalize } from 'path';

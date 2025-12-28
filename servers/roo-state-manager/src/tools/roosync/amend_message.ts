@@ -31,11 +31,18 @@ interface AmendMessageArgs {
 }
 
 /**
- * Récupère l'ID de la machine locale depuis le hostname OS
+ * Récupère l'ID de la machine locale depuis la variable d'environnement
+ * ou depuis le hostname OS en fallback
  *
  * @returns ID de la machine locale (hostname normalisé)
  */
 function getLocalMachineId(): string {
+  // Priorité à la variable d'environnement (pour les tests)
+  if (process.env.ROOSYNC_MACHINE_ID) {
+    return process.env.ROOSYNC_MACHINE_ID;
+  }
+  
+  // Fallback vers le hostname OS
   return os.hostname().toLowerCase().replace(/[^a-z0-9-]/g, '-');
 }
 

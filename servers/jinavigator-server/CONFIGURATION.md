@@ -1,4 +1,4 @@
-﻿# Configuration du serveur MCP JinaNavigator
+# Configuration du serveur MCP JinaNavigator
 
 <!-- START_SECTION: introduction -->
 Ce document détaille les options de configuration disponibles pour le serveur MCP JinaNavigator. La configuration appropriée vous permettra d'optimiser les performances, de gérer les connexions à l'API Jina et d'adapter le comportement du serveur à vos besoins spécifiques.

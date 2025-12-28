@@ -8,7 +8,7 @@ on:
 
 jobs:
   test:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-22.04
     strategy:
       matrix:
         server: [quickfiles-server, jupyter-mcp-server, jinavigator-server]
@@ -19,14 +19,12 @@ jobs:
     - name: Set up Node.js
       uses: actions/setup-node@v3
       with:
-        node-version: '16'
-        cache: 'npm'
-        cache-dependency-path: servers/${{ matrix.server }}/package-lock.json
+        node-version: '20.18.0'
     
     - name: Install dependencies
       run: |
         cd servers/${{ matrix.server }}
-        npm ci
+        npm install
     
     - name: Build
       run: |
@@ -52,25 +50,22 @@ jobs:
         fail_ci_if_error: false
 
   lint:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-22.04
     strategy:
       matrix:
         server: [quickfiles-server, jupyter-mcp-server, jinavigator-server]
 
     steps:
     - uses: actions/checkout@v3
-    
     - name: Set up Node.js
       uses: actions/setup-node@v3
       with:
-        node-version: '16'
-        cache: 'npm'
-        cache-dependency-path: servers/${{ matrix.server }}/package-lock.json
+        node-version: '20.18.0'
     
     - name: Install dependencies
       run: |
         cd servers/${{ matrix.server }}
-        npm ci
+        npm install
     
     - name: Check README.md exists
       run: |

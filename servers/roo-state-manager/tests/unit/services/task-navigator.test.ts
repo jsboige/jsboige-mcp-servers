@@ -1,4 +1,4 @@
-import {  jest, describe, it, expect, beforeEach , vi } from 'vitest';
+import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { TaskNavigator, TreeNode } from '../../../src/services/task-navigator.js';
 import { globalCacheManager } from '../../../src/utils/cache-manager.js';
 import { ConversationSkeleton } from '../../../src/types/conversation.js';

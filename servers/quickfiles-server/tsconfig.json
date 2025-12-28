@@ -1,8 +1,8 @@
 {
   "compilerOptions": {
-    "target": "ES2020",
-    "module": "ESNext",
-    "moduleResolution": "bundler",
+    "target": "ES2022",
+    "module": "CommonJS",
+    "moduleResolution": "Node",
     "baseUrl": "./",
     "paths": {
       "*": [
@@ -16,8 +16,8 @@
     "skipLibCheck": true,
     "forceConsistentCasingInFileNames": true,
     "resolveJsonModule": true,
-    "declaration": true,
-    "sourceMap": true,
+    "declaration": false,
+    "sourceMap": false,
     "isolatedModules": true
   },
   "include": ["src/**/*"],

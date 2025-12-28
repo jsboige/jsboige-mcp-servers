@@ -2,27 +2,83 @@
  * Tests pour roosync_reject_decision
  */
 
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { writeFileSync, mkdirSync, rmSync, readFileSync } from 'fs';
-import { join, dirname } from 'path';
-import { fileURLToPath } from 'url';
+import { join } from 'path';
+
+// Désactiver le mock global de fs pour ce test qui utilise le système de fichiers réel
+vi.unmock('fs');
+import { tmpdir } from 'os';
 import { RooSyncService } from '../../../../src/services/RooSyncService.js';
 import { roosyncRejectDecision, RejectDecisionArgs } from '../../../../src/tools/roosync/reject-decision.js';
 
-const __filename = fileURLToPath(import.meta.url);
-const __dirname = dirname(__filename);
+// Mock fs module pour contourner le bug Vitest
+vi.mock('fs', () => ({
+  readFileSync: vi.fn(),
+  writeFileSync: vi.fn(),
+  mkdirSync: vi.fn(),
+  rmSync: vi.fn(),
+  existsSync: vi.fn(() => true),
+  promises: {
+    readFile: vi.fn(),
+    writeFile: vi.fn(),
+    access: vi.fn(),
+    mkdir: vi.fn()
+  }
+}));
 
 describe('roosync_reject_decision', () => {
-  const testDir = join(__dirname, '../../../fixtures/roosync-reject-test');
-  
-  beforeEach(() => {
+  const testDir = join(tmpdir(), `roosync-reject-test-${Date.now()}`);
+
+  beforeEach(async () => {
+    // Configurer les mocks fs avant toute utilisation
+    const fs = await import('fs');
+    const path = await import('path');
+    
+    // Mock readFileSync pour retourner le contenu du roadmap
+    const readFileMock = vi.fn().mockImplementation((filePath: string) => {
+      if (filePath.includes('sync-roadmap.md')) {
+        return roadmap;
+      }
+      return '';
+    });
+    (fs.readFileSync as any) = readFileMock;
+    (fs.promises.readFile as any) = readFileMock; // Pour SyncDecisionManager
+    
+    // Mock writeFileSync pour capturer les écritures
+    const writeFileMock = vi.fn().mockImplementation(() => {});
+    (fs.writeFileSync as any) = writeFileMock;
+    (fs.promises.writeFile as any) = writeFileMock; // Pour SyncDecisionManager
+    
+    // Mock access pour SyncDecisionManager
+    (fs.promises.access as any) = vi.fn().mockResolvedValue(undefined);
+
+    // Mock mkdirSync et rmSync pour éviter les erreurs
+    (fs.mkdirSync as any) = vi.fn().mockImplementation(() => {});
+    (fs.rmSync as any) = vi.fn().mockImplementation(() => {});
+    (path.join as any) = vi.fn().mockImplementation((...args: string[]) => args.join('/'));
+
     // Créer répertoire de test
     try {
-      mkdirSync(testDir, { recursive: true });
+      fs.mkdirSync(testDir, { recursive: true });
     } catch (error) {
       // Déjà existant
     }
-    
+
+    // Mock environnement
+    process.env.ROOSYNC_SHARED_PATH = testDir;
+    process.env.ROOSYNC_MACHINE_ID = 'PC-PRINCIPAL';
+
+    // Force reset et injection de config
+    RooSyncService.resetInstance();
+    RooSyncService.getInstance(undefined, {
+      sharedPath: testDir,
+      machineId: 'PC-PRINCIPAL',
+      autoSync: false,
+      conflictStrategy: 'manual',
+      logLevel: 'info'
+    });
+
     // Créer dashboard de test
     const dashboard = {
       version: '2.0.0',
@@ -37,8 +93,8 @@ describe('roosync_reject_decision', () => {
         }
       }
     };
-    
-    // Créer roadmap avec décisions
+
+    // Créer roadmap avec décision pending
     const roadmap = `# Roadmap RooSync
 
 ## Décisions de Synchronisation
@@ -65,20 +121,11 @@ describe('roosync_reject_decision', () => {
 **Créé:** 2025-10-08T08:00:00Z
 <!-- DECISION_BLOCK_END -->
 `;
-    
+
     writeFileSync(join(testDir, 'sync-dashboard.json'), JSON.stringify(dashboard), 'utf-8');
     writeFileSync(join(testDir, 'sync-roadmap.md'), roadmap, 'utf-8');
-    
-    // Mock environnement
-    process.env.ROOSYNC_SHARED_PATH = testDir;
-    process.env.ROOSYNC_MACHINE_ID = 'PC-PRINCIPAL';
-    process.env.ROOSYNC_AUTO_SYNC = 'false';
-    process.env.ROOSYNC_CONFLICT_STRATEGY = 'manual';
-    process.env.ROOSYNC_LOG_LEVEL = 'info';
-    
-    RooSyncService.resetInstance();
   });
-  
+
   afterEach(() => {
     try {
       rmSync(testDir, { recursive: true, force: true });
@@ -94,10 +141,10 @@ describe('roosync_reject_decision', () => {
       decisionId: 'test-decision-001',
       reason: 'Configuration incompatible avec environnement de test'
     };
-    
+
     // Act
     const result = await roosyncRejectDecision(args);
-    
+
     // Assert
     expect(result.decisionId).toBe('test-decision-001');
     expect(result.previousStatus).toBe('pending');
@@ -105,62 +152,77 @@ describe('roosync_reject_decision', () => {
     expect(result.rejectedBy).toBe('PC-PRINCIPAL');
     expect(result.reason).toBe('Configuration incompatible avec environnement de test');
     expect(result.nextSteps).toHaveLength(3);
-    
-    // Vérifier que le fichier a été modifié
-    const roadmapContent = readFileSync(join(testDir, 'sync-roadmap.md'), 'utf-8');
-    expect(roadmapContent).toContain('**Statut:** rejected');
-    expect(roadmapContent).toContain('**Rejeté par:** PC-PRINCIPAL');
-    expect(roadmapContent).toContain('**Motif:** Configuration incompatible avec environnement de test');
+
+    // Vérifier que writeFileSync a été appelé avec le bon contenu
+    expect(writeFileSync).toHaveBeenCalledWith(
+      join(testDir, 'sync-roadmap.md'),
+      expect.stringContaining('**Statut:** rejected'),
+      'utf-8'
+    );
+    expect(writeFileSync).toHaveBeenCalledWith(
+      join(testDir, 'sync-roadmap.md'),
+      expect.stringContaining('**Rejeté par:** PC-PRINCIPAL'),
+      'utf-8'
+    );
+    expect(writeFileSync).toHaveBeenCalledWith(
+      join(testDir, 'sync-roadmap.md'),
+      expect.stringContaining('**Motif:** Configuration incompatible avec environnement de test'),
+      'utf-8'
+    );
   });
-  
+
   it('devrait lever une erreur si la décision n\'existe pas', async () => {
     // Arrange
     const args: RejectDecisionArgs = {
       decisionId: 'nonexistent',
       reason: 'Test'
     };
-    
+
     // Act & Assert
     await expect(roosyncRejectDecision(args)).rejects.toThrow('Décision \'nonexistent\' introuvable');
   });
-  
+
   it('devrait lever une erreur si la décision est déjà traitée', async () => {
     // Arrange
     const args: RejectDecisionArgs = {
       decisionId: 'test-decision-002',
       reason: 'Test'
     };
-    
+
     // Act & Assert
     await expect(roosyncRejectDecision(args)).rejects.toThrow('Décision déjà traitée');
   });
-  
+
   it('devrait inclure la date de rejet au format ISO', async () => {
     // Arrange
     const args: RejectDecisionArgs = {
       decisionId: 'test-decision-001',
       reason: 'Test de format date'
     };
-    
+
     // Act
     const result = await roosyncRejectDecision(args);
-    
+
     // Assert
     expect(result.rejectedAt).toMatch(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/);
   });
-  
+
   it('devrait inclure le motif dans le fichier roadmap', async () => {
     // Arrange
     const args: RejectDecisionArgs = {
       decisionId: 'test-decision-001',
       reason: 'Motif spécifique de rejet'
     };
-    
+
     // Act
     await roosyncRejectDecision(args);
-    
+
     // Assert
-    const roadmapContent = readFileSync(join(testDir, 'sync-roadmap.md'), 'utf-8');
-    expect(roadmapContent).toContain('**Motif:** Motif spécifique de rejet');
+    // Vérifier que writeFileSync a été appelé avec le motif
+    expect(writeFileSync).toHaveBeenCalledWith(
+      join(testDir, 'sync-roadmap.md'),
+      expect.stringContaining('**Motif:** Motif spécifique de rejet'),
+      'utf-8'
+    );
   });
 });

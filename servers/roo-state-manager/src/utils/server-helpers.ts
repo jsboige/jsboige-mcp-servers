@@ -16,14 +16,18 @@ import * as toolExports from '../tools/index.js';
  * Obtenir le chemin du répertoire shared-state RooSync
  */
 export function getSharedStatePath(): string {
-    // Priorité 1 : Variable d'environnement
+    // Priorité UNIQUE : Variable d'environnement ROOSYNC_SHARED_PATH
+    // Nous ne supportons plus de fallback ou de chemin par défaut pour garantir la cohérence.
     if (process.env.ROOSYNC_SHARED_PATH) {
         return process.env.ROOSYNC_SHARED_PATH;
     }
     
-    // Priorité 2 : Chemin par défaut (G:/Mon Drive/Synchronisation/RooSync/.shared-state)
-    const defaultPath = 'G:/Mon Drive/Synchronisation/RooSync/.shared-state';
-    return defaultPath;
+    // ERREUR : Aucun chemin configuré
+    throw new Error(
+        "Configuration CRITIQUE manquante : ROOSYNC_SHARED_PATH n'est pas définie. " +
+        "Le système RooSync nécessite un chemin de stockage externe explicite. " +
+        "Veuillez définir cette variable d'environnement dans votre fichier .env ou votre configuration système."
+    );
 }
 
 /**

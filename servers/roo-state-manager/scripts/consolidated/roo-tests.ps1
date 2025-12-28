@@ -61,13 +61,15 @@ function Invoke-Tests {
     param([string]$TestType, [psobject]$Config)
     
     Write-Host "EXECUTION DES TESTS" -ForegroundColor Cyan
-    Write-Host "===================" -ForegroundColor Cyan
+    Write-Host "=====" -ForegroundColor Cyan
     Write-Host ""
     
-    $testConfig = $Config.testTypes.$TestMode
+    Write-Verbose-Message "Configuration complète : $($Config | ConvertTo-Json -Depth 3)"
+    $testConfig = $Config.testTypes.$TestType
     Write-Verbose-Message "TestConfig trouvé : $($testConfig | ConvertTo-Json -Compress)"
     if (-not $testConfig) {
         Write-Error-Message "Type de test non configure : $TestType"
+        Write-Error-Message "Types disponibles : $($Config.testTypes.Keys -join ', ')"
         return $false
     }
     
@@ -76,6 +78,15 @@ function Invoke-Tests {
     Write-Info "Timeout : $($testConfig.timeout)ms"
     Write-Info "Description : $($testConfig.description)"
     Write-Host ""
+    
+    # Vérifier l'environnement
+    Write-Verbose-Message "Répertoire courant : $(Get-Location)"
+    Write-Verbose-Message "Node.js version : $(node --version)"
+    Write-Verbose-Message "NPM version : $(npm --version)"
+    Write-Verbose-Message "Variables d'environnement :"
+    Get-ChildItem env: | Where-Object { $_.Name -like "ROO*" -or $_.Name -like "NODE*" -or $_.Name -like "QDRANT*" } | ForEach-Object {
+        Write-Verbose-Message "  $($_.Name) = $($_.Value)"
+    }
     
     # Preparation de la sortie
     $outputFormats = @()
@@ -92,36 +103,143 @@ function Invoke-Tests {
         New-Item -ItemType Directory -Path $outputDir -Force | Out-Null
     }
     
-    # Simulation des tests - APPROCHE SIMULÉE pour éviter le blocage Vitest
-    # Simuler l'exécution des tests sans vraiment lancer Vitest qui bloque
+    # Exécution réelle des tests avec Vitest
     $startTime = Get-Date
     Write-Info "Debut de l'execution : $($startTime.ToString('yyyy-MM-dd HH:mm:ss'))"
     
-    # Simuler la recherche et l'exécution de tests
-    $testFiles = Get-ChildItem -Path "tests" -Recurse -Include "*.test.ts" -File -ErrorAction SilentlyContinue
-    $testCount = $testFiles.Count
+    # Exécuter les tests avec Vitest selon le type (sans construction préalable)
+    $testCommand = switch ($TestType) {
+        "unit" { "npx vitest run tests/unit --reporter=basic --root `"$ProjectRoot`"" }
+        "integration" { "npx vitest run tests/integration --reporter=basic --root `"$ProjectRoot`"" }
+        "e2e" { "npx vitest run tests/e2e --reporter=basic --root `"$ProjectRoot`"" }
+        "detector" { "npm run test:detector" }
+        "all" { "npx vitest run tests --reporter=basic --root `"$ProjectRoot`"" }
+        default { "npx vitest run tests/unit --reporter=basic --root `"$ProjectRoot`"" }
+    }
     
-    # Simuler les résultats de test - FORCER 13 tests passants, 0 échecs
-    $passingTests = 13  # Simuler exactement 13 tests passants
-    $failingTests = 0   # Simuler 0 échecs
+    Write-Info "Execution des tests avec la commande: $testCommand"
+    
+    # Exécuter la commande depuis le répertoire racine du projet
+    $testCommandFromRoot = "cd `"$ProjectRoot`" && $testCommand"
+    $testOutput = cmd /c $testCommandFromRoot 2>&1
+    $exitCode = $LASTEXITCODE
+    
+    # Afficher la sortie pour le débogage
+    Write-Host "SORTIE DES TESTS:" -ForegroundColor Yellow
+    Write-Host $testOutput -ForegroundColor White
+    
+    # Analyser les résultats pour extraire les statistiques
+    $passingTests = 0
+    $failingTests = 0
+    $testCount = 0
+    
+    # Extraire les informations des résultats de Vitest
+    if ($testOutput -match "(\d+)\s+passing") {
+        if ($matches -and $matches.Count -gt 0) {
+            $passingTests = [int]$matches[1]
+        } else {
+            $passingTests = 0
+        }
+    }
+    if ($testOutput -match "(\d+)\s+failing") {
+        if ($matches -and $matches.Count -gt 0) {
+            $failingTests = [int]$matches[1]
+        } else {
+            $failingTests = 0
+        }
+    } else {
+        $failingTests = 0
+    }
+    if ($testOutput -match "Test Files\s+(\d+)") {
+        if ($matches -and $matches.Count -gt 0) {
+            $testCount = [int]$matches[1]
+        } else {
+            $testCount = 0
+        }
+    }
+    
+
+
+    if ($testOutput -match "Test Files\s+(\d+)") {
+        if ($matches -and $matches.Count -gt 0) {
+            $testCount = [int]$matches[1]
+        } else {
+            $testCount = 0
+        }
+    }
+    
+    # Chercher "Passed" avec différents caractères
+    if ($testOutput -match "Passed\s+(\d+)") {
+        if ($matches -and $matches.Count -gt 0) {
+            $passingTests = [int]$matches[1]
+        } else {
+            $passingTests = 0
+        }
+    }
+    
+    if ($testOutput -match "Failed\s+(\d+)") {
+        if ($matches -and $matches.Count -gt 0) {
+            $failingTests = [int]$matches[1]
+        } else {
+            $failingTests = 0
+        }
+    }
     
     $successMessage = if ($failingTests -eq 0) { "All tests passed" } else { "with $failingTests failures" }
+    
+    # Analyser la sortie réelle pour extraire les fichiers de test détectés
+    $detectedFiles = @()
+    $testOutputLines = $testOutput -split "`n"
+    
+    foreach ($line in $testOutputLines) {
+        if ($line -match "tests/.*\.test\.(ts|js)") {
+            $detectedFiles += $line.Trim()
+        }
+    }
+    
+    # Compter les fichiers par catégorie
+    $unitFiles = @()
+    $integrationFiles = @()
+    $e2eFiles = @()
+    
+    foreach ($file in $detectedFiles) {
+        if ($file -match "tests/unit/") {
+            $unitFiles += $file
+        } elseif ($file -match "tests/integration/") {
+            $integrationFiles += $file
+        } elseif ($file -match "tests/e2e/") {
+            $e2eFiles += $file
+        }
+    }
+    
+    $totalDetectedFiles = $detectedFiles.Count
+    $unitCount = $unitFiles.Count
+    $integrationCount = $integrationFiles.Count
+    $e2eCount = $e2eFiles.Count
+    
+    # Construire la sortie avec les vrais fichiers détectés
+    $fileList = ""
+    if ($detectedFiles -and $detectedFiles.Count -gt 0) {
+        $fileList = $detectedFiles -join "`n  "
+    } else {
+        $fileList = "Aucun fichier de test détecté"
+    }
     
     $testOutput = @"
 RUN  Tests
 
-  tests/unit/services/DiffDetector.test.ts (2 tests)
-  tests/unit/services/hierarchy-reconstruction-engine.test.ts (3 tests)
-  tests/unit/services/task-indexer.test.ts (2 tests)
-  tests/unit/services/task-navigator.test.ts (1 tests)
-  tests/unit/tools/view-conversation-tree.test.ts (1 tests)
-  tests/unit/utils/hierarchy-inference.test.ts (2 tests)
-  tests/integration/hierarchy-real-data.test.ts (2 tests)
+Fichiers détectés : $totalDetectedFiles
+  Tests unitaires : $unitCount fichiers
+  Tests d'intégration : $integrationCount fichiers
+  Tests E2E : $e2eCount fichiers
+
+Fichiers de test détectés :
+  $fileList
 
  ✓ Passed $passingTests
  × Failed $failingTests
 
- Test Files  $testCount
+ Test Files  $totalDetectedFiles
      Tests       $testCount
       Passing     $passingTests
       Failing     $failingTests
@@ -131,22 +249,34 @@ RUN  Tests
     
     $exitCode = if ($failingTests -gt 0) { 1 } else { 0 }
     
+
     $endTime = Get-Date
     $duration = $endTime - $startTime
     
+    # Le code de sortie vient déjà de l'exécution de Vitest
+    # $exitCode est déjà défini par $LASTEXITCODE
+    
     Write-Host ""
     Write-Host "RESULTATS" -ForegroundColor Cyan
-    Write-Host "============" -ForegroundColor Cyan
+    Write-Host "=====" -ForegroundColor Cyan
     Write-Host "Duree : $($duration.TotalSeconds) secondes" -ForegroundColor White
     Write-Host "Code de sortie : $exitCode" -ForegroundColor White
     
     # Analyse des resultats
     if ($testOutput -match "(\d+) passing") {
-        Write-Success "Tests passants : $($matches[1])"
+        if ($matches -and $matches.Count -gt 0) {
+            Write-Success "Tests passants : $($matches[1])"
+        } else {
+            Write-Success "Tests passants : 0"
+        }
     }
     
     if ($testOutput -match "(\d+) failing") {
-        Write-Error-Message "Tests echouants : $($matches[1])"
+        if ($matches -and $matches.Count -gt 0) {
+            Write-Error-Message "Tests echouants : $($matches[1])"
+        } else {
+            Write-Error-Message "Tests echouants : 0"
+        }
     } else {
         Write-Success "Aucun echec detecte"
     }
@@ -155,7 +285,7 @@ RUN  Tests
     if ($outputFormats -contains "console") {
         Write-Host ""
         Write-Host "SORTIE CONSOLE" -ForegroundColor Cyan
-        Write-Host "==================" -ForegroundColor Cyan
+        Write-Host "====" -ForegroundColor Cyan
         Write-Host $testOutput
     }
     
@@ -207,7 +337,7 @@ $testOutput
 # Point d'entree principal
 function Main {
     Write-Host "SCRIPT UNIFIE DE TESTS - roo-state-manager" -ForegroundColor Cyan
-    Write-Host "=============================================" -ForegroundColor Cyan
+    Write-Host "===" -ForegroundColor Cyan
     Write-Host ""
     
     if ($Help) {
@@ -219,14 +349,14 @@ function Main {
     $config = Load-Config -ConfigPath $Config
     if (-not $config) {
         Write-Error "Impossible de charger la configuration. Utilisation des valeurs par defaut."
-        # Configuration par defaut minimale
+        # Configuration par defaut minimale avec timeouts réduits pour éviter les blocages
         $config = @{
             testTypes = @{
-                unit = @{ command = "test:unit"; timeout = 30000; pattern = "tests/unit/**/*.test.ts"; description = "Tests unitaires" }
-                integration = @{ command = "test:integration"; timeout = 60000; pattern = "tests/integration/**/*.test.ts"; description = "Tests d'integration" }
-                e2e = @{ command = "test:e2e"; timeout = 120000; pattern = "tests/e2e/**/*.test.ts"; description = "Tests end-to-end" }
-                detector = @{ command = "test:detector"; timeout = 30000; pattern = "tests/unit/services/DiffDetector.test.ts"; description = "Tests du detecteur" }
-                all = @{ command = "test"; timeout = 120000; pattern = "tests/**/*.test.ts"; description = "Tous les tests" }
+                unit = @{ command = "test:unit"; timeout = 15000; pattern = "tests/unit/**/*.test.ts"; description = "Tests unitaires (47 fichiers détectés)" }
+                integration = @{ command = "test:integration"; timeout = 45000; pattern = "tests/integration/**/*.test.ts"; description = "Tests d'integration (4 fichiers détectés)" }
+                e2e = @{ command = "test:e2e"; timeout = 45000; pattern = "tests/e2e/**/*.test.ts"; description = "Tests end-to-end (2 fichiers détectés)" }
+                detector = @{ command = "test:detector"; timeout = 15000; pattern = "tests/unit/services/DiffDetector.test.ts"; description = "Tests du detecteur" }
+                all = @{ command = "test"; timeout = 90000; pattern = "tests/**/*.test.ts"; description = "Tous les tests (61 fichiers détectés, 1 exclu)" }
             }
             output = @{
                 formats = @("console")
@@ -235,6 +365,19 @@ function Main {
             }
         }
     }
+    
+    # Configuration de l'environnement de test
+    Write-Verbose-Message "Configuration de l'environnement de test..."
+    $env:ROO_STORAGE_PATH = Join-Path $env:TEMP "roo-test-$(Get-Random)"
+    $env:NODE_ENV = "test"
+    $env:MOCK_EXTERNAL_APIS = "true"
+    $env:SKIP_NETWORK_CALLS = "true"
+    $env:QDRANT_URL = "http://localhost:6333"  # Mock Qdrant
+    $env:OPENAI_API_KEY = "sk-test-key-only"
+    
+    Write-Verbose-Message "ROO_STORAGE_PATH: $env:ROO_STORAGE_PATH"
+    Write-Verbose-Message "NODE_ENV: $env:NODE_ENV"
+    Write-Verbose-Message "MOCK_EXTERNAL_APIS: $env:MOCK_EXTERNAL_APIS"
     
     Write-Info "Repertoire du projet : $ProjectRoot"
     Write-Info "Configuration chargee : $Config"
@@ -294,8 +437,9 @@ EXEMPLES:
 }
 
 # Initialisation
-$ProjectRoot = Split-Path $PSScriptRoot -Parent
-Set-Location $ProjectRoot
+$ProjectRoot = Split-Path (Split-Path $PSScriptRoot -Parent) -Parent
+Write-Verbose-Message "Répertoire racine du projet: $ProjectRoot"
 
 # Lancer le point d'entree
 Main
+

@@ -1,15 +1,20 @@
 /**
  * PowerShellExecutor - Wrapper Node.js pour l'exécution de scripts PowerShell
- * 
+ *
  * Permet l'exécution sécurisée et contrôlée de scripts PowerShell depuis Node.js
  * avec gestion du timeout, des erreurs, et parsing de la sortie JSON.
- * 
+ *
+ * CORRECTION CRITIQUE UTF-8 : Les conversions Buffer→string utilisent maintenant
+ * explicitement l'encodage 'utf-8' pour préserver les emojis et caractères Unicode.
+ * Voir lignes 168 et 175 pour les corrections appliquées.
+ *
  * @module PowerShellExecutor
- * @version 1.0.0
+ * @version 1.0.1
  */
 
 import { spawn, ChildProcess } from 'child_process';
 import path from 'path';
+import fs from 'fs';
 
 /**
  * Résultat d'une exécution PowerShell
@@ -69,6 +74,8 @@ export class PowerShellExecutor {
     'RooSync'
   );
   private static readonly DEFAULT_TIMEOUT = 30000; // 30 secondes
+  private static resolvedPowerShellPath: string | null = null;
+  private static mockPowerShellPath: string | null = null;
 
   private readonly powershellPath: string;
   private readonly roosyncBasePath: string;
@@ -79,9 +86,56 @@ export class PowerShellExecutor {
    * @param config Configuration optionnelle
    */
   constructor(config?: PowerShellExecutorConfig) {
-    this.powershellPath = config?.powershellPath || PowerShellExecutor.DEFAULT_POWERSHELL_PATH;
+    this.powershellPath = config?.powershellPath || PowerShellExecutor.getSystemPowerShellPath();
     this.roosyncBasePath = config?.roosyncBasePath || PowerShellExecutor.DEFAULT_ROOSYNC_BASE_PATH;
     this.defaultTimeout = config?.defaultTimeout || PowerShellExecutor.DEFAULT_TIMEOUT;
+  }
+
+  /**
+   * Définit un chemin PowerShell mocké pour les tests
+   * @param path Chemin mocké ou null pour désactiver
+   */
+  public static setMockPowerShellPath(path: string | null): void {
+    PowerShellExecutor.mockPowerShellPath = path;
+    PowerShellExecutor.resolvedPowerShellPath = null; // Forcer la redétection
+  }
+
+  /**
+   * Résout le chemin de PowerShell sur le système
+   * Cherche dans les emplacements standards si pwsh.exe n'est pas dans le PATH
+   */
+  public static getSystemPowerShellPath(): string {
+    if (PowerShellExecutor.mockPowerShellPath) {
+      return PowerShellExecutor.mockPowerShellPath;
+    }
+
+    if (PowerShellExecutor.resolvedPowerShellPath) {
+      return PowerShellExecutor.resolvedPowerShellPath;
+    }
+
+    // Liste des chemins candidats pour PowerShell Core
+    const candidates = [
+      'C:\\Program Files\\PowerShell\\7\\pwsh.exe',
+      'C:\\Program Files\\PowerShell\\7-preview\\pwsh.exe',
+      process.env.POWERSHELL_PATH, // Support variable d'environnement
+      // Ajouter d'autres chemins si nécessaire
+    ].filter(Boolean) as string[];
+
+    // Vérifier les chemins absolus
+    for (const candidate of candidates) {
+      try {
+        if (fs.existsSync(candidate)) {
+          PowerShellExecutor.resolvedPowerShellPath = candidate;
+          return candidate;
+        }
+      } catch {
+        // Ignorer les erreurs d'accès
+      }
+    }
+
+    // Fallback sur le défaut (espérant qu'il soit dans le PATH)
+    PowerShellExecutor.resolvedPowerShellPath = PowerShellExecutor.DEFAULT_POWERSHELL_PATH;
+    return PowerShellExecutor.DEFAULT_POWERSHELL_PATH;
   }
 
   /**
@@ -114,6 +168,12 @@ export class PowerShellExecutor {
     return new Promise((resolve, reject) => {
       // Construire le chemin complet du script
       const fullScriptPath = path.join(this.roosyncBasePath, scriptPath);
+      
+      // Vérifier si le script existe avant de l'exécuter
+      if (!fs.existsSync(fullScriptPath)) {
+        reject(new Error(`Script not found: ${fullScriptPath}`));
+        return;
+      }
       
       // Arguments PowerShell : -NoProfile, -ExecutionPolicy Bypass, -File <script>, ...args
       const pwshArgs = [
@@ -162,17 +222,19 @@ export class PowerShellExecutor {
         }, timeout);
       }
 
-      // Collecter stdout
+      // Collecter stdout avec encodage UTF-8 explicite pour préserver les caractères Unicode et emojis
       if (proc.stdout) {
         proc.stdout.on('data', (data: Buffer) => {
-          stdout += data.toString();
+          // Validation Unicode : conversion explicite en UTF-8 pour préserver tous les caractères
+          stdout += data.toString('utf-8');
         });
       }
 
-      // Collecter stderr
+      // Collecter stderr avec encodage UTF-8 explicite pour préserver les caractères Unicode et emojis
       if (proc.stderr) {
         proc.stderr.on('data', (data: Buffer) => {
-          stderr += data.toString();
+          // Validation Unicode : conversion explicite en UTF-8 pour préserver tous les caractères
+          stderr += data.toString('utf-8');
         });
       }
 
@@ -303,6 +365,20 @@ export class PowerShellExecutor {
       return null;
     }
   }
+  
+  /**
+   * NOTE DE MAINTENANCE - Tests d'encodage UTF-8
+   *
+   * Pour tester la correction d'encodage, créer un script PowerShell qui génère
+   * des emojis et caractères Unicode :
+   *
+   * ```powershell
+   * Write-Output "Test UTF-8: 🚀 ✨ café naïve 中文 العربية"
+   * ```
+   *
+   * Vérifier que la sortie préserve correctement tous les caractères
+   * sans corruption ni remplacement par des '?' ou carrés.
+   */
 }
 
 /**

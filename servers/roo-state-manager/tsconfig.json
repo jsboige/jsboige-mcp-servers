@@ -18,15 +18,19 @@
     "allowSyntheticDefaultImports": true,
     "isolatedModules": true,
     "allowImportingTsExtensions": false,
+    "emitDeclarationOnly": false,
     "noEmit": false,
-    "types": ["jest", "node"]
+    "types": ["jest", "node"],
+    "baseUrl": ".",
+    "paths": {
+      "@/*": ["src/*"]
+    }
   },
   "include": [
     "src/**/*.ts"
   ],
   "exclude": [
     "node_modules",
-    "build",
-    "src/tests/BaselineService.test.ts"
+    "build"
   ]
 }

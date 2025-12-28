@@ -190,35 +190,207 @@ export const mockNewTaskInstructions: Record<string, NewTaskInstruction[]> = {
 
 /**
  * Messages UI mockés pour extraction d'instructions
+ * Format réaliste avec les 5 patterns attendus par le moteur d'extraction
  */
 export const mockUiMessages = {
     'root-task-001': [
+        // Message utilisateur standard
         {
-            role: 'user',
-            content: 'Bonjour, je voudrais créer un système de tests',
-            timestamp: 1705315200000
+            type: 'ask',
+            ask: 'user',
+            text: 'Bonjour, je voudrais créer un système de tests',
+            ts: 1705315200000
         },
+        
+        // PATTERN 1: Messages "ask" avec tool "newTask" (format JSON)
         {
-            role: 'assistant',
-            content: 'Je vais créer une sous-tâche pour le debug. <new_task><mode>code</mode><message>**MISSION DEBUG CRITIQUE : Réparation du système hiérarchique pour résoudre les 47 tâches orphelines**</message></new_task>',
-            timestamp: 1705315500000
+            type: 'ask',
+            ask: 'tool',
+            text: JSON.stringify({
+                tool: 'newTask',
+                mode: '💻 code',
+                content: '**MISSION DEBUG CRITIQUE : Réparation du système hiérarchique pour résoudre les 47 tâches orphelines**',
+                taskId: 'debug-hierarchy-001'
+            }),
+            ts: 1705315500000
         },
+        
+        // PATTERN 2: Messages "say/api_req_started" avec "[new_task in X mode: '...']"
         {
-            role: 'assistant',
-            content: 'Je te passe en mode code pour la validation. <new_task><mode>code</mode><message>**MISSION CORRECTIVE FINALE : Validation et documentation du système de reconstruction**</message></new_task>',
-            timestamp: 1705315800000
+            type: 'say',
+            say: 'api_req_started',
+            text: JSON.stringify({
+                request: "Creating new task: [new_task in 💻 code mode: '**MISSION CORRECTIVE FINALE : Validation et documentation du système de reconstruction**']",
+                timestamp: 1705315800000
+            }),
+            ts: 1705315800000
+        },
+        
+        // PATTERN 3: Messages avec balises XML <new_task>
+        {
+            type: 'say',
+            say: 'text',
+            text: 'Je vais créer une tâche de validation : <new_task><mode>code</mode><message>Valider les corrections apportées au système</message></new_task>',
+            ts: 1705316100000
+        },
+        
+        // PATTERN 4: XML générique avec balises personnalisées
+        {
+            type: 'say',
+            say: 'text',
+            text: 'Délégation complexe : <orchestrator_complex><mode>orchestrator</mode><message>Orchestrer les sous-tâches de validation finale</message></orchestrator_complex>',
+            ts: 1705316400000
+        },
+        
+        // PATTERN 5: Balises <task> simples
+        {
+            type: 'say',
+            say: 'text',
+            text: 'Petite tâche rapide : <task>Vérifier la cohérence des données de test</task>',
+            ts: 1705316700000
         }
     ],
+    
     'child-task-002': [
+        // Message utilisateur avec instruction
         {
-            role: 'user',
-            content: '**MISSION DEBUG CRITIQUE : Réparation du système hiérarchique pour résoudre les 47 tâches orphelines**',
-            timestamp: 1705315800000
+            type: 'ask',
+            ask: 'user',
+            text: '**MISSION DEBUG CRITIQUE : Réparation du système hiérarchique pour résoudre les 47 tâches orphelines**',
+            ts: 1705315800000
         },
+        
+        // PATTERN 1: Tool newTask avec mode architect
         {
-            role: 'assistant',
-            content: 'Je délègue la partie architecture. <new_task><mode>architect</mode><message>Créer une architecture modulaire pour le projet</message></new_task>',
-            timestamp: 1705316100000
+            type: 'ask',
+            ask: 'tool',
+            text: JSON.stringify({
+                tool: 'newTask',
+                mode: '🏗️ architect',
+                content: 'Créer une architecture modulaire pour le projet',
+                taskId: 'arch-modular-002'
+            }),
+            ts: 1705316100000
+        },
+        
+        // PATTERN 3: XML new_task avec espaces et sauts de ligne
+        {
+            type: 'say',
+            say: 'text',
+            text: `<new_task>
+    <mode>debug</mode>
+    <message>
+        Debugger le système de cache mémoire
+    </message>
+</new_task>`,
+            ts: 1705316400000
+        },
+        
+        // PATTERN 5: Multiple task tags
+        {
+            type: 'say',
+            say: 'text',
+            text: 'Actions requises : <task>Analyser les dépendances</task> puis <task>Implémenter les tests unitaires</task>',
+            ts: 1705316700000
+        }
+    ],
+    
+    'orphan-task-003': [
+        // Messages avec patterns variés pour une tâche orpheline
+        {
+            type: 'ask',
+            ask: 'user',
+            text: '**MISSION CORRECTIVE FINALE : Validation et documentation du système de reconstruction**',
+            ts: 1705316200000
+        },
+        
+        // PATTERN 2: API request avec new_task
+        {
+            type: 'say',
+            say: 'api_req_started',
+            text: JSON.stringify({
+                request: "Initiating validation: [new_task in 📝 ask mode: 'Documenter les patterns d\\'extraction utilisés']",
+                timestamp: 1705316500000
+            }),
+            ts: 1705316500000
+        },
+        
+        // PATTERN 4: XML personnalisé complexe
+        {
+            type: 'say',
+            say: 'text',
+            text: 'Validation avancée : <validation_complex><mode>code</mode><message>Valider tous les patterns d\\\'extraction XML</message></validation_complex>',
+            ts: 1705316800000
+        }
+    ],
+    
+    'invalid-parent-004': [
+        // Messages pour tester la robustesse avec parentId invalide
+        {
+            type: 'ask',
+            ask: 'user',
+            text: 'Créer une architecture modulaire pour le projet',
+            ts: 1705316300000
+        },
+        
+        // PATTERN avec JSON malformé (doit être ignoré)
+        {
+            type: 'ask',
+            ask: 'tool',
+            text: '{"tool": "newTask", "mode": "code", "content": "JSON incomplet',
+            ts: 1705316600000
+        },
+        
+        // PATTERN 3 valide
+        {
+            type: 'say',
+            say: 'text',
+            text: '<new_task><mode>architect</mode><message>Créer une architecture modulaire pour le projet</message></new_task>',
+            ts: 1705316900000
+        }
+    ],
+    
+    'time-paradox-006': [
+        // Messages pour tester la validation temporelle
+        {
+            type: 'ask',
+            ask: 'user',
+            text: 'Implémenter la fonctionnalité X',
+            ts: 1705315400000
+        },
+        
+        // PATTERN 1 avec timestamp antérieur au parent
+        {
+            type: 'ask',
+            ask: 'tool',
+            text: JSON.stringify({
+                tool: 'newTask',
+                mode: '💻 code',
+                content: 'Implémenter la fonctionnalité X avant la planification',
+                taskId: 'impl-x-006'
+            }),
+            ts: 1705315700000
+        }
+    ],
+    
+    'future-parent-007': [
+        // Messages pour le parent créé après l'enfant
+        {
+            type: 'ask',
+            ask: 'user',
+            text: 'Planifier le développement',
+            ts: 1705320000000
+        },
+        
+        // PATTERN 2: API request pour planification
+        {
+            type: 'say',
+            say: 'api_req_started',
+            text: JSON.stringify({
+                request: "Planning phase: [new_task in 🏗️ architect mode: 'Planifier le développement de la fonctionnalité X']",
+                timestamp: 1705320300000
+            }),
+            ts: 1705320300000
         }
     ]
 };

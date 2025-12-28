@@ -1,41 +1,38 @@
 {
-  "machineId": "updated-machine",
-  "version": "2.2.0",
-  "config": {
-    "roo": {
-      "modes": [
-        "code",
-        "ask"
-      ],
-      "mcpSettings": {
-        "updated-server": {
-          "enabled": true
+  "version": "2.1.0",
+  "baselineId": "baseline-1",
+  "machineId": "test-machine",
+  "timestamp": "2025-11-04T01:00:00Z",
+  "machines": [
+    {
+      "machineId": "test-machine",
+      "os": "Windows 11",
+      "architecture": "x64",
+      "roo": {
+        "modes": [
+          "code",
+          "ask"
+        ],
+        "mcpServers": [
+          {
+            "name": "test-server",
+            "enabled": true
+          }
+        ]
+      },
+      "hardware": {
+        "cpu": {
+          "cores": 16,
+          "threads": 32
+        },
+        "memory": {
+          "total": 32000000000
         }
       },
-      "userSettings": {
-        "theme": "light"
+      "software": {
+        "node": "18.17.0",
+        "python": "3.11.0"
       }
-    },
-    "hardware": {
-      "cpu": "Intel Core i9-12900K",
-      "ram": "32GB",
-      "disks": [
-        {
-          "name": "C:",
-          "size": "2TB"
-        }
-      ],
-      "gpu": "NVIDIA RTX 4090"
-    },
-    "software": {
-      "powershell": "7.3.0",
-      "node": "20.0.0",
-      "python": "3.12.0"
-    },
-    "system": {
-      "os": "Windows 11",
-      "architecture": "x64"
     }
-  },
-  "lastUpdated": "2025-11-04T01:00:00Z"
+  ]
 }

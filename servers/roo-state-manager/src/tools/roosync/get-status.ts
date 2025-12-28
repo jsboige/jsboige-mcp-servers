@@ -1,10 +1,11 @@
 /**
  * Outil MCP : roosync_get_status
- * 
+ *
  * Obtient l'état de synchronisation actuel du système RooSync.
- * 
+ * Fusionné avec roosync_read_dashboard pour inclure les détails des différences.
+ *
  * @module tools/roosync/get-status
- * @version 2.0.0
+ * @version 2.3.0
  */
 
 import { z } from 'zod';
@@ -18,7 +19,9 @@ export const GetStatusArgsSchema = z.object({
   machineFilter: z.string().optional()
     .describe('ID de machine pour filtrer les résultats (optionnel)'),
   resetCache: z.boolean().optional()
-    .describe('Forcer la réinitialisation du cache du service (défaut: false)')
+    .describe('Forcer la réinitialisation du cache du service (défaut: false)'),
+  includeDetails: z.boolean().optional()
+    .describe('Inclure les détails complets des différences (défaut: false)')
 });
 
 export type GetStatusArgs = z.infer<typeof GetStatusArgsSchema>;
@@ -46,7 +49,15 @@ export const GetStatusResultSchema = z.object({
     onlineMachines: z.number().describe('Machines en ligne'),
     totalDiffs: z.number().describe('Total des différences'),
     totalPendingDecisions: z.number().describe('Total des décisions en attente')
-  }).optional().describe('Résumé statistique')
+  }).optional().describe('Résumé statistique'),
+  
+  diffs: z.array(z.object({
+    type: z.enum(['added', 'modified', 'deleted']).describe('Type de différence'),
+    path: z.string().describe('Chemin du fichier concerné'),
+    machineId: z.string().describe('ID de la machine source'),
+    baselinePath: z.string().optional().describe('Chemin dans la baseline'),
+    details: z.any().optional().describe('Détails supplémentaires')
+  })).optional().describe('Liste des différences détectées (si includeDetails=true)')
 });
 
 export type GetStatusResult = z.infer<typeof GetStatusResultSchema>;
@@ -109,11 +120,31 @@ export async function roosyncGetStatus(args: GetStatusArgs): Promise<GetStatusRe
       totalPendingDecisions: machines.reduce((sum, m) => sum + m.pendingDecisions, 0)
     };
     
+    // Récupérer les différences si demandé (fusion avec read-dashboard)
+    let diffs = undefined;
+    if (args.includeDetails) {
+      try {
+        console.log('[STATUS] Récupération des détails des différences...');
+        const diffsResult = await service.listDiffs('all');
+        diffs = diffsResult.diffs.map(d => ({
+          type: d.type as 'added' | 'modified' | 'deleted',
+          path: d.path,
+          machineId: d.machines[0] || 'unknown',
+          baselinePath: d.path,
+          details: { description: d.description, machines: d.machines }
+        }));
+        console.log('[STATUS] Différences récupérées:', diffs.length);
+      } catch (diffError) {
+        console.warn('[STATUS] Impossible de récupérer les détails des différences:', diffError);
+      }
+    }
+    
     return {
       status: dashboard.overallStatus,
       lastSync: dashboard.lastUpdate,
       machines,
-      summary
+      summary,
+      diffs
     };
   } catch (error) {
     if (error instanceof RooSyncServiceError) {
@@ -133,7 +164,7 @@ export async function roosyncGetStatus(args: GetStatusArgs): Promise<GetStatusRe
  */
 export const getStatusToolMetadata = {
   name: 'roosync_get_status',
-  description: 'Obtenir l\'état de synchronisation actuel du système RooSync',
+  description: 'Obtenir l\'état de synchronisation actuel du système RooSync (fusionné avec read-dashboard)',
   inputSchema: {
     type: 'object' as const,
     properties: {
@@ -144,6 +175,10 @@ export const getStatusToolMetadata = {
       resetCache: {
         type: 'boolean',
         description: 'Forcer la réinitialisation du cache du service (défaut: false)'
+      },
+      includeDetails: {
+        type: 'boolean',
+        description: 'Inclure les détails complets des différences (défaut: false)'
       }
     },
     additionalProperties: false

@@ -1,4 +1,4 @@
-﻿# Rapport de Configuration des Tokens GitHub pour les MCPs
+# Rapport de Configuration des Tokens GitHub pour les MCPs
 
 ## Résumé Exécutif
 

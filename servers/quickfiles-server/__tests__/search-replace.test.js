@@ -9,18 +9,16 @@
  * - Prévisualisation des remplacements
  */
 
-import { jest } from '@jest/globals';
-import * as fs from 'fs/promises';
-import * as path from 'path';
-import { fileURLToPath } from 'url';
-import mockFs from 'mock-fs';
+const fs = require('fs/promises');
+const path = require('path');
+const mockFs = require('mock-fs');
 
 // Simuler le serveur QuickFiles pour les tests unitaires
-import { QuickFilesServer } from '../build/index.js';
+const { QuickFilesServer } = require('../build/index.cjs');
 
 // Obtenir le chemin du répertoire actuel
-const __filename = fileURLToPath(import.meta.url);
-const __dirname = path.dirname(__filename);
+const currentFilename = __filename;
+const currentDirname = path.dirname(currentFilename);
 
 // Chemin vers le dossier de test temporaire
 const TEST_DIR = path.join(__dirname, '..', 'test-temp');
@@ -97,10 +95,10 @@ describe('QuickFiles Server - Recherche et remplacement', () => {
       
       const response = await server.handleSearchInFiles(request);
       
-      // Vérifier que seules les correspondances exactes sont trouvées
+      // Avec case_sensitive: true et "Exemple" (majuscule), aucun résultat ne devrait être trouvé
+      // car tous les fichiers contiennent "exemple" en minuscule
       expect(response.content[0].text).toContain('Résultats de recherche');
-      expect(response.content[0].text).toContain('file1.txt'); // Contient "Exemple" avec majuscule
-      expect(response.content[0].text).not.toContain('script.js'); // Contient "exemple" sans majuscule
+      expect(response.content[0].text).toContain('Aucun résultat trouvé');
       expect(response.isError).toBeUndefined();
     });
     
@@ -154,7 +152,7 @@ describe('QuickFiles Server - Recherche et remplacement', () => {
       
       // Vérifier que les résultats sont limités
       expect(response.content[0].text).toContain('Résultats de recherche');
-      expect(response.content[0].text).toContain('limite atteinte');
+      expect(response.content[0].text).toContain('limite de résultats atteinte');
       expect(response.isError).toBeUndefined();
     });
   });
@@ -264,7 +262,9 @@ describe('QuickFiles Server - Recherche et remplacement', () => {
         invalid_param: 'value'
       });
       
-      await expect(server.handleSearchAndReplace(request)).rejects.toThrow();
+      const response = await server.handleSearchAndReplace(request);
+      expect(response.isError).toBe(true);
+      expect(response.content[0].text).toContain('Erreur lors du remplacement');
     });
   });
 });

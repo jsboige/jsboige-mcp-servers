@@ -156,6 +156,9 @@ export class ConfigSharingService implements IConfigSharingService {
 
       this.logger.info(`Configuration chargée: ${manifest.description} (v${manifest.version})`);
 
+      // Récupérer l'inventaire pour résoudre les chemins locaux
+      const inventory = await this.inventoryCollector.collectInventory(process.env.COMPUTERNAME || 'localhost') as any;
+
       // 2. Itérer sur les fichiers
       for (const file of manifest.files) {
         try {
@@ -165,12 +168,12 @@ export class ConfigSharingService implements IConfigSharingService {
 
           if (file.path.startsWith('roo-modes/')) {
             const fileName = basename(file.path);
-            // Utiliser le chemin direct du workspace (sous-répertoire configs/)
-            const rooModesPath = join(process.cwd(), 'roo-modes', 'configs');
+            const rooModesPath = inventory?.paths?.rooExtensions
+              ? join(inventory.paths.rooExtensions, 'roo-modes')
+              : join(process.cwd(), 'roo-modes');
             destPath = join(rooModesPath, fileName);
           } else if (file.path === 'mcp-settings/mcp_settings.json') {
-            // Utiliser le chemin direct du workspace
-            destPath = join(process.cwd(), 'config', 'mcp_settings.json');
+            destPath = inventory?.paths?.mcpSettings || join(process.cwd(), 'config', 'mcp_settings.json');
           } else {
             this.logger.warn(`Type de fichier non supporté ou chemin inconnu: ${file.path}`);
             continue;

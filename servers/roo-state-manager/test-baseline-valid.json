@@ -1,162 +1,38 @@
 {
   "version": "2.1.0",
-  "baselineId": "test-baseline-001",
-  "timestamp": "2025-11-04T07:00:00Z",
-  "lastUpdated": "2025-11-04T07:00:00Z",
+  "baselineId": "baseline-1",
   "machineId": "test-machine",
-  "autoSync": true,
-  "conflictStrategy": "manual",
-  "logLevel": "info",
-  "sharedStatePath": "/shared/state",
+  "timestamp": "2025-11-04T01:00:00Z",
   "machines": [
     {
-      "id": "test-machine",
-      "name": "Test Machine",
-      "hostname": "test-host",
+      "machineId": "test-machine",
       "os": "Windows 11",
       "architecture": "x64",
-      "lastSeen": "2025-11-04T07:00:00Z",
       "roo": {
         "modes": [
           "code",
-          "ask",
-          "architect"
+          "ask"
         ],
         "mcpServers": [
-          "roo-state-manager",
-          "quickfiles"
-        ],
-        "sdddSpecs": [
-          "baseline-driven",
-          "semantic-validation"
+          {
+            "name": "test-server",
+            "enabled": true
+          }
         ]
       },
       "hardware": {
         "cpu": {
-          "cores": 8,
-          "threads": 16
+          "cores": 16,
+          "threads": 32
         },
         "memory": {
-          "total": 16777216000,
-          "available": 8388608000
-        },
-        "disk": {
-          "total": 1000000000000,
-          "free": 500000000000
-        },
-        "gpu": {
-          "name": "NVIDIA RTX 3080",
-          "memory": 10737418240
+          "total": 32000000000
         }
       },
       "software": {
-        "node": {
-          "version": "18.17.0",
-          "path": "C:\\Program Files\\nodejs\\node.exe"
-        },
-        "npm": {
-          "version": "9.6.7",
-          "path": "C:\\Program Files\\nodejs\\npm.cmd"
-        },
-        "git": {
-          "version": "2.42.0",
-          "path": "C:\\Program Files\\Git\\bin\\git.exe"
-        },
-        "powershell": {
-          "version": "7.3.0",
-          "path": "C:\\Program Files\\PowerShell\\7\\pwsh.exe"
-        }
-      },
-      "paths": {
-        "workspace": "C:\\dev\\roo-extensions",
-        "sharedState": "C:\\dev\\roo-extensions\\.shared-state",
-        "logs": "C:\\dev\\roo-extensions\\logs",
-        "temp": "C:\\dev\\roo-extensions\\temp"
-      },
-      "network": {
-        "interfaces": [
-          {
-            "name": "Ethernet",
-            "type": "wired",
-            "status": "connected",
-            "ip": "192.168.1.100",
-            "mac": "00:11:22:33:44:55"
-          }
-        ],
-        "dns": [
-          "8.8.8.8",
-          "8.8.4.4"
-        ],
-        "proxy": null
-      },
-      "security": {
-        "antivirus": {
-          "name": "Windows Defender",
-          "version": "4.18.21051.0",
-          "enabled": true
-        },
-        "firewall": {
-          "name": "Windows Firewall",
-          "enabled": true
-        },
-        "encryption": {
-          "bitlocker": {
-            "enabled": false,
-            "encrypted": false
-          }
-        }
-      },
-      "performance": {
-        "cpu": {
-          "usage": 25.5,
-          "temperature": 45.2
-        },
-        "memory": {
-          "usage": 60.3,
-          "pressure": "normal"
-        },
-        "disk": {
-          "usage": 45.8,
-          "readSpeed": 550.2,
-          "writeSpeed": 420.1
-        }
-      },
-      "services": {
-        "running": [
-          {
-            "name": "roo-state-manager",
-            "pid": 1234,
-            "status": "running",
-            "uptime": 3600
-          }
-        ],
-        "stopped": []
-      },
-      "environment": {
-        "variables": {
-          "NODE_ENV": "development",
-          "ROO_SYNC_MODE": "baseline-driven",
-          "ROO_LOG_LEVEL": "info"
-        },
-        "registry": {
-          "roo": {
-            "installationPath": "C:\\dev\\roo-extensions",
-            "version": "2.1.0",
-            "lastUpdate": "2025-11-04T07:00:00Z"
-          }
-        }
+        "node": "18.17.0",
+        "python": "3.11.0"
       }
     }
-  ],
-  "metadata": {
-    "createdBy": "test-suite",
-    "createdAt": "2025-11-04T07:00:00Z",
-    "lastModified": "2025-11-04T07:00:00Z",
-    "checksum": "abc123def456",
-    "tags": [
-      "test",
-      "baseline",
-      "validation"
-    ]
-  }
+  ]
 }

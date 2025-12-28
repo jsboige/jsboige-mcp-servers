@@ -261,7 +261,7 @@ Pour les opérations sur de gros fichiers, le serveur implémente:
 - **Streaming** : Lecture par chunks pour fichiers volumineux (à venir)
 - **Limits par défaut** :
   - `max_lines_per_file`: 2000 lignes
-  - `max_chars_per_file`: 160000 caractères
+  - `max_chars_per_file: 300000 caractères
   - `max_total_lines`: 8000 lignes totales
   - `max_total_chars`: 400000 caractères totaux
 

@@ -186,6 +186,12 @@ export class MessageManager {
   ): Promise<Message> {
     console.error('🚀 [MessageManager] Sending message from', from, 'to', to);
 
+    // CORRECTION ROOSYNC PHASE 3 : Validation anti-auto-messages
+    // Empêcher une machine d'envoyer des messages à elle-même
+    if (from === to) {
+      throw new Error(`Auto-message interdit : une machine (${from}) ne peut pas envoyer de message à elle-même (${to})`);
+    }
+
     const message: Message = {
       id: this.generateMessageId(),
       from,
@@ -253,8 +259,8 @@ export class MessageManager {
           const content = await fs.readFile(join(this.inboxPath, file), 'utf-8');
           const message: Message = JSON.parse(content);
 
-          // Filtrer par destinataire
-          if (message.to !== machineId) {
+          // Filtrer par destinataire (supporte "All" et "all" pour les messages broadcast)
+          if (message.to !== machineId && message.to !== 'All' && message.to !== 'all') {
             continue;
           }
 
@@ -447,14 +453,14 @@ export class MessageManager {
       const content = await fs.readFile(sentFile, 'utf-8');
       const message: Message = JSON.parse(content);
 
+      // Validation : Vérifier que le message n'est pas lu/archivé (en premier)
+      if (message.status !== 'unread') {
+        throw new Error(`Impossible d'amender un message déjà lu ou archivé (status: ${message.status}).`);
+      }
+
       // Validation : Vérifier que l'émetteur correspond
       if (message.from !== senderId) {
         throw new Error(`Permission refusée : seul l'émetteur (${message.from}) peut amender ce message.`);
-      }
-
-      // Validation : Vérifier que le message n'est pas lu/archivé
-      if (message.status !== 'unread') {
-        throw new Error(`Impossible d'amender un message déjà lu ou archivé (status: ${message.status}).`);
       }
 
       // Préserver le contenu original si c'est le premier amendement

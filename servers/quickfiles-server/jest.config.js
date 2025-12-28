@@ -9,26 +9,24 @@
  * @date 2025-10-30
  */
 
-export default {
-  // Utiliser ts-jest pour les fichiers TypeScript avec support ESM
-  preset: 'ts-jest/presets/default-esm',
+module.exports = {
+  // Configuration CommonJS pour les fichiers TypeScript et JavaScript
+  preset: 'ts-jest',
   
   // Environnement Node.js
   testEnvironment: 'node',
   
-  // Support des modules ES
-  extensionsToTreatAsEsm: ['.ts'],
+  // Pas de traitement spécial ESM - utiliser CommonJS partout
+  // extensionsToTreatAsEsm: ['.ts'],
   
-  // Mapping des modules pour résoudre les imports .js vers .ts
+  // Mapping des modules pour les imports sans extension
   moduleNameMapper: {
-    '^(\\.{1,2}/.*)\\.js$': '$1',
+    '^../../build/(.*)$': '<rootDir>/build/$1.js',
   },
   
-  // Configuration de transformation
+  // Configuration de transformation - TypeScript uniquement
   transform: {
-    '^.+\\.tsx?$': ['ts-jest', {
-      useESM: true,
-    }],
+    '^.+\\.(ts|tsx?)$': 'ts-jest',
   },
   
   // Patterns de fichiers de test
@@ -41,7 +39,6 @@ export default {
   // Fichiers à exclure
   testPathIgnorePatterns: [
     '/node_modules/',
-    '/build/',
     '/dist/',
     '/legacy-tests/',
     '/test-temp/'
@@ -49,10 +46,10 @@ export default {
   
   // Configuration de la couverture de code
   collectCoverageFrom: [
-    'src/**/*.ts',
-    '!src/**/*.d.ts',
-    '!src/**/*.test.ts',
-    '!src/**/types.ts'
+    'build/**/*.js',
+    '!build/**/*.d.ts',
+    '!build/**/*.test.js',
+    '!build/index.js'
   ],
   
   // Seuils de couverture minimum
@@ -90,7 +87,7 @@ export default {
   },
   
   // Setup files à exécuter avant les tests
-  setupFilesAfterEnv: ['<rootDir>/__tests__/setup.js'],
+  setupFilesAfterEnv: ['<rootDir>/__tests__/global-setup.js'],
   
   // Fichiers de configuration globaux pour Jest
   globalSetup: '<rootDir>/__tests__/global-setup.js',
@@ -98,25 +95,7 @@ export default {
   
   // Rapports de test étendus
   reporters: [
-    'default',
-    ['jest-junit', {
-      outputDirectory: './test-results',
-      outputName: 'junit.xml',
-      classNameTemplate: '{classname}',
-      titleTemplate: '{title}',
-      ancestorSeparator: ' › ',
-      usePathForSuiteName: true
-    }],
-    // Rapport de couverture en HTML détaillé
-    ['html', {
-      outputPath: './coverage/html',
-      filename: 'coverage-report.html'
-    }],
-    // Rapport JSON pour l'intégration CI/CD
-    ['json', {
-      outputDirectory: './test-results',
-      filename: 'test-results.json'
-    }]
+    'default'
   ],
   
   // Configuration maximale pour la détection des problèmes
@@ -129,6 +108,6 @@ export default {
   
   // Transformation des modules pour éviter les problèmes ESM
   transformIgnorePatterns: [
-    'node_modules/(?!(quickfiles-server)/'
+    'node_modules/(?!(quickfiles-server))/'
   ],
 };

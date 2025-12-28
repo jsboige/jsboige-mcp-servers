@@ -1,19 +1,30 @@
 /**
  * Tests unitaires pour PowerShellExecutor
- * 
+ *
  * @module tests/unit/services/powershell-executor.test
  */
 
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { PowerShellExecutor, resetDefaultExecutor, getDefaultExecutor } from '../../../src/services/PowerShellExecutor.js';
 import { join } from 'path';
 import { mkdirSync, writeFileSync, rmSync, existsSync } from 'fs';
+import { EventEmitter } from 'events';
+
+// Mock child_process
+vi.mock('child_process', () => {
+  return {
+    spawn: vi.fn()
+  };
+});
+
+import { spawn } from 'child_process';
 
 describe('PowerShellExecutor', () => {
   let executor: PowerShellExecutor;
   let testDir: string;
 
   beforeEach(() => {
+    vi.useFakeTimers();
     // Créer un répertoire de test temporaire
     testDir = join(process.cwd(), 'test-temp-powershell');
     if (!existsSync(testDir)) {
@@ -28,58 +39,88 @@ describe('PowerShellExecutor', () => {
 
     // Réinitialiser l'instance par défaut
     resetDefaultExecutor();
+    
+    // Reset mocks
+    vi.clearAllMocks();
   });
 
   afterEach(() => {
+    vi.useRealTimers();
     // Nettoyer le répertoire de test
     if (existsSync(testDir)) {
       rmSync(testDir, { recursive: true, force: true });
     }
   });
 
+  // Helper to mock spawn process
+  const mockSpawnProcess = (stdout = '', stderr = '', exitCode = 0, delay = 0) => {
+    const mockProcess = new EventEmitter() as any;
+    mockProcess.stdout = new EventEmitter();
+    mockProcess.stderr = new EventEmitter();
+    mockProcess.kill = vi.fn();
+    
+    (spawn as any).mockReturnValue(mockProcess);
+
+    // Use setTimeout to simulate async behavior, but controlled by fake timers
+    setTimeout(() => {
+      if (stdout) mockProcess.stdout.emit('data', Buffer.from(stdout));
+      if (stderr) mockProcess.stderr.emit('data', Buffer.from(stderr));
+      mockProcess.emit('close', exitCode);
+    }, delay);
+
+    return mockProcess;
+  };
+
   describe('executeScript', () => {
     it('devrait exécuter une commande PowerShell simple', async () => {
-      // Créer un script de test simple
+      mockSpawnProcess('Hello from PowerShell\n');
+      
       const scriptPath = 'test-echo.ps1';
       const scriptContent = 'Write-Output "Hello from PowerShell"';
       writeFileSync(join(testDir, scriptPath), scriptContent, 'utf-8');
 
-      const result = await executor.executeScript(scriptPath, []);
+      const promise = executor.executeScript(scriptPath, []);
+      vi.runAllTimers();
+      const result = await promise;
 
       expect(result.success).toBe(true);
       expect(result.exitCode).toBe(0);
       expect(result.stdout).toContain('Hello from PowerShell');
-      expect(result.executionTime).toBeGreaterThan(0);
+      expect(spawn).toHaveBeenCalled();
     });
 
     it('devrait gérer les arguments du script', async () => {
-      // Script qui utilise des paramètres
+      mockSpawnProcess('Name: Alice, Age: 30\n');
+      
       const scriptPath = 'test-params.ps1';
-      const scriptContent = `
-        param([string]$Name, [int]$Age)
-        Write-Output "Name: $Name, Age: $Age"
-      `;
+      const scriptContent = '...'; // Content doesn't matter for mock
       writeFileSync(join(testDir, scriptPath), scriptContent, 'utf-8');
 
-      const result = await executor.executeScript(
+      const promise = executor.executeScript(
         scriptPath,
         ['-Name', 'Alice', '-Age', '30']
       );
+      vi.runAllTimers();
+      const result = await promise;
 
       expect(result.success).toBe(true);
       expect(result.stdout).toContain('Name: Alice, Age: 30');
+      
+      // Verify arguments passed to spawn
+      const spawnArgs = (spawn as any).mock.calls[0][1];
+      expect(spawnArgs).toContain('-Name');
+      expect(spawnArgs).toContain('Alice');
     });
 
     it('devrait détecter les erreurs PowerShell', async () => {
-      // Script qui génère une erreur
+      mockSpawnProcess('', 'This is an error\n', 1);
+      
       const scriptPath = 'test-error.ps1';
-      const scriptContent = `
-        Write-Error "This is an error"
-        exit 1
-      `;
-      writeFileSync(join(testDir, scriptPath), scriptContent, 'utf-8');
+      writeFileSync(join(testDir, scriptPath), '...', 'utf-8');
 
-      const result = await executor.executeScript(scriptPath, []);
+      const promise = executor.executeScript(scriptPath, []);
+      vi.runAllTimers();
+      const result = await promise;
 
       expect(result.success).toBe(false);
       expect(result.exitCode).toBe(1);
@@ -87,33 +128,47 @@ describe('PowerShellExecutor', () => {
     });
 
     it('devrait gérer le timeout', async () => {
-      // Script qui prend trop de temps
-      const scriptPath = 'test-timeout.ps1';
-      const scriptContent = 'Start-Sleep -Seconds 20';
-      writeFileSync(join(testDir, scriptPath), scriptContent, 'utf-8');
+      // Mock process that doesn't emit close immediately
+      const mockProcess = new EventEmitter() as any;
+      mockProcess.stdout = new EventEmitter();
+      mockProcess.stderr = new EventEmitter();
+      mockProcess.kill = vi.fn();
+      (spawn as any).mockReturnValue(mockProcess);
 
-      const result = await executor.executeScript(
+      const scriptPath = 'test-timeout.ps1';
+      writeFileSync(join(testDir, scriptPath), '...', 'utf-8');
+
+      const promise = executor.executeScript(
         scriptPath,
         [],
-        { timeout: 1000 } // 1 seconde seulement
+        { timeout: 1000 } // 1 second timeout
       );
+
+      // Advance time past timeout
+      vi.advanceTimersByTime(1500);
+      
+      // We need to manually emit close because the process was killed
+      // In real implementation, killing process eventually emits close
+      // Here we simulate it
+      mockProcess.emit('close', null);
+
+      const result = await promise;
 
       expect(result.success).toBe(false);
       expect(result.exitCode).toBe(-1);
       expect(result.stderr).toContain('timed out');
-    }, 15000); // Test timeout de 15s
+      expect(mockProcess.kill).toHaveBeenCalled();
+    });
 
     it('devrait capturer stdout et stderr séparément', async () => {
-      // Script qui écrit sur les deux flux
+      mockSpawnProcess('This is stdout\nMore stdout\n', 'This is stderr\n');
+      
       const scriptPath = 'test-streams.ps1';
-      const scriptContent = `
-        Write-Output "This is stdout"
-        Write-Error "This is stderr" -ErrorAction Continue
-        Write-Output "More stdout"
-      `;
-      writeFileSync(join(testDir, scriptPath), scriptContent, 'utf-8');
+      writeFileSync(join(testDir, scriptPath), '...', 'utf-8');
 
-      const result = await executor.executeScript(scriptPath, []);
+      const promise = executor.executeScript(scriptPath, []);
+      vi.runAllTimers();
+      const result = await promise;
 
       expect(result.stdout).toContain('This is stdout');
       expect(result.stdout).toContain('More stdout');
@@ -121,15 +176,16 @@ describe('PowerShellExecutor', () => {
     });
 
     it('devrait gérer les chemins avec espaces', async () => {
-      // Créer un sous-répertoire avec espace
+      mockSpawnProcess('Spaces OK\n');
+      
       const subDir = join(testDir, 'test folder');
       mkdirSync(subDir, { recursive: true });
-      
       const scriptPath = join('test folder', 'test-space.ps1');
-      const scriptContent = 'Write-Output "Spaces OK"';
-      writeFileSync(join(testDir, scriptPath), scriptContent, 'utf-8');
+      writeFileSync(join(testDir, scriptPath), '...', 'utf-8');
 
-      const result = await executor.executeScript(scriptPath, []);
+      const promise = executor.executeScript(scriptPath, []);
+      vi.runAllTimers();
+      const result = await promise;
 
       expect(result.success).toBe(true);
       expect(result.stdout).toContain('Spaces OK');
@@ -177,7 +233,7 @@ describe('PowerShellExecutor', () => {
 
     it('devrait rejeter une sortie non-JSON', () => {
       const output = 'This is not JSON';
-      
+
       expect(() => {
         PowerShellExecutor.parseJsonOutput(output);
       }).toThrow();
@@ -185,7 +241,7 @@ describe('PowerShellExecutor', () => {
 
     it('devrait rejeter une sortie JSON malformée', () => {
       const output = '{"incomplete": ';
-      
+
       expect(() => {
         PowerShellExecutor.parseJsonOutput(output);
       }).toThrow();
@@ -194,39 +250,46 @@ describe('PowerShellExecutor', () => {
 
   describe('isPowerShellAvailable', () => {
     it('devrait détecter si PowerShell est disponible', async () => {
-      const isAvailable = await PowerShellExecutor.isPowerShellAvailable();
-      
-      // Sur Windows avec PowerShell 7+, devrait être true
-      // Sur d'autres systèmes, pourrait être false
-      expect(typeof isAvailable).toBe('boolean');
-    }, 10000);
+      mockSpawnProcess('test\n'); // Correct output for isPowerShellAvailable
+      const promise = PowerShellExecutor.isPowerShellAvailable();
+      vi.runAllTimers();
+      const isAvailable = await promise;
+      expect(isAvailable).toBe(true);
+    });
 
     it('devrait retourner false pour un chemin PowerShell invalide', async () => {
-      const isAvailable = await PowerShellExecutor.isPowerShellAvailable('invalid-pwsh.exe');
-      
+      // Mock spawn error
+      (spawn as any).mockImplementation(() => {
+        const mockProcess = new EventEmitter() as any;
+        mockProcess.stdout = new EventEmitter();
+        mockProcess.stderr = new EventEmitter();
+        mockProcess.kill = vi.fn();
+        setTimeout(() => mockProcess.emit('error', new Error('ENOENT')), 10);
+        return mockProcess;
+      });
+
+      const promise = PowerShellExecutor.isPowerShellAvailable('invalid-pwsh.exe');
+      vi.runAllTimers();
+      const isAvailable = await promise;
       expect(isAvailable).toBe(false);
-    }, 10000);
+    });
   });
 
   describe('getPowerShellVersion', () => {
     it('devrait obtenir la version de PowerShell', async () => {
-      const version = await PowerShellExecutor.getPowerShellVersion();
-      
-      if (version) {
-        // Vérifier format version (ex: "7.4.0")
-        expect(version).toMatch(/^\d+\.\d+\.\d+/);
-      } else {
-        // PowerShell non disponible sur ce système
-        expect(version).toBeNull();
-      }
-    }, 10000);
+      mockSpawnProcess('7.4.0\n');
+      const promise = PowerShellExecutor.getPowerShellVersion();
+      vi.runAllTimers();
+      const version = await promise;
+      expect(version).toBe('7.4.0');
+    });
   });
 
   describe('Singleton par défaut', () => {
     it('devrait retourner la même instance', () => {
       const instance1 = getDefaultExecutor();
       const instance2 = getDefaultExecutor();
-      
+
       expect(instance1).toBe(instance2);
     });
 
@@ -234,7 +297,7 @@ describe('PowerShellExecutor', () => {
       const instance1 = getDefaultExecutor();
       resetDefaultExecutor();
       const instance2 = getDefaultExecutor();
-      
+
       expect(instance1).not.toBe(instance2);
     });
   });
@@ -244,43 +307,56 @@ describe('PowerShellExecutor', () => {
       const customExecutor = new PowerShellExecutor({
         powershellPath: 'custom-pwsh.exe'
       });
-      
+
       expect(customExecutor).toBeInstanceOf(PowerShellExecutor);
     });
 
     it('devrait accepter un timeout par défaut personnalisé', async () => {
+      mockSpawnProcess('Done\n', '', 0, 100); // 100ms delay
+      
       const customExecutor = new PowerShellExecutor({
         roosyncBasePath: testDir,
         defaultTimeout: 5000
       });
 
-      // Script qui prend 3 secondes
       const scriptPath = 'test-custom-timeout.ps1';
-      const scriptContent = 'Start-Sleep -Seconds 3; Write-Output "Done"';
-      writeFileSync(join(testDir, scriptPath), scriptContent, 'utf-8');
+      writeFileSync(join(testDir, scriptPath), '...', 'utf-8');
 
-      const result = await customExecutor.executeScript(scriptPath, []);
-      
-      // Devrait réussir car 3s < 5s (timeout par défaut)
+      const promise = customExecutor.executeScript(scriptPath, []);
+      vi.runAllTimers();
+      const result = await promise;
+
       expect(result.success).toBe(true);
-    }, 10000);
+    });
 
     it('devrait respecter un timeout explicite', async () => {
-      // Script qui prend 5 secondes
-      const scriptPath = 'test-explicit-timeout.ps1';
-      const scriptContent = 'Start-Sleep -Seconds 5; Write-Output "Done"';
-      writeFileSync(join(testDir, scriptPath), scriptContent, 'utf-8');
+      // Mock process that hangs
+      const mockProcess = new EventEmitter() as any;
+      mockProcess.stdout = new EventEmitter();
+      mockProcess.stderr = new EventEmitter();
+      mockProcess.kill = vi.fn();
+      (spawn as any).mockReturnValue(mockProcess);
 
-      const result = await executor.executeScript(
+      const scriptPath = 'test-explicit-timeout.ps1';
+      writeFileSync(join(testDir, scriptPath), '...', 'utf-8');
+
+      const promise = executor.executeScript(
         scriptPath,
         [],
-        { timeout: 2000 } // 2 secondes explicites
+        { timeout: 2000 } // 2 seconds explicit
       );
+
+      // Advance time past timeout
+      vi.advanceTimersByTime(2500);
       
-      // Devrait échouer par timeout car 5s > 2s
+      // Simulate process close after kill
+      mockProcess.emit('close', null);
+
+      const result = await promise;
+
       expect(result.success).toBe(false);
       expect(result.stderr).toContain('timed out');
-    }, 10000);
+    });
   });
 
   describe('Gestion des erreurs', () => {
@@ -291,18 +367,25 @@ describe('PowerShellExecutor', () => {
     });
 
     it('devrait gérer les variables d\'environnement', async () => {
+      mockSpawnProcess('TEST_VAR=test-value\n');
+      
       const scriptPath = 'test-env.ps1';
-      const scriptContent = 'Write-Output "TEST_VAR=$env:TEST_VAR"';
-      writeFileSync(join(testDir, scriptPath), scriptContent, 'utf-8');
+      writeFileSync(join(testDir, scriptPath), '...', 'utf-8');
 
-      const result = await executor.executeScript(
+      const promise = executor.executeScript(
         scriptPath,
         [],
         { env: { TEST_VAR: 'test-value' } }
       );
+      vi.runAllTimers();
+      const result = await promise;
 
       expect(result.success).toBe(true);
       expect(result.stdout).toContain('TEST_VAR=test-value');
+      
+      // Verify env passed to spawn
+      const spawnOptions = (spawn as any).mock.calls[0][2];
+      expect(spawnOptions.env).toMatchObject({ TEST_VAR: 'test-value' });
     });
   });
 });

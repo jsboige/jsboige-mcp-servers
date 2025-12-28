@@ -1,0 +1,30 @@
+{
+  "id": "test-task-123",
+  "name": "Test Task for Semantic Indexing",
+  "instructions": "This is a test task to verify semantic indexing capabilities.",
+  "status": "completed",
+  "createdAt": 1701792000000,
+  "updatedAt": 1701795600000,
+  "messages": [
+    {
+      "role": "user",
+      "content": "Can you help me understand how semantic search works?",
+      "timestamp": 1701792000000
+    },
+    {
+      "role": "assistant",
+      "content": "Semantic search uses vector embeddings to find content based on meaning rather than just keyword matching.",
+      "timestamp": 1701792005000
+    },
+    {
+      "role": "user",
+      "content": "That sounds interesting. How is it implemented in this project?",
+      "timestamp": 1701792010000
+    },
+    {
+      "role": "assistant",
+      "content": "We use OpenAI embeddings and Qdrant as a vector database.",
+      "timestamp": 1701792015000
+    }
+  ]
+}
