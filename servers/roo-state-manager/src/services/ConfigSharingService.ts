@@ -91,16 +91,24 @@ export class ConfigSharingService implements IConfigSharingService {
 
   /**
    * Publie la configuration vers le shared state
+   * CORRECTION SDDD : Stocke les configs par machineId pour éviter les écrasements
    */
   public async publishConfig(options: PublishConfigOptions): Promise<PublishConfigResult> {
     this.logger.info('Publication de la configuration', options);
 
     const sharedStatePath = this.configService.getSharedStatePath();
     const configsDir = join(sharedStatePath, 'configs');
-    const versionDir = join(configsDir, `baseline-v${options.version}`);
+    
+    // CORRECTION SDDD : Utiliser machineId au lieu de version pour le répertoire
+    const machineId = options.machineId || process.env.ROOSYNC_MACHINE_ID || process.env.COMPUTERNAME || 'unknown';
+    const machineConfigDir = join(configsDir, machineId);
+    
+    // Créer un sous-répertoire versionné pour l'historique
+    const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
+    const versionDir = join(machineConfigDir, `v${options.version}-${timestamp}`);
 
     if (existsSync(versionDir)) {
-      this.logger.warn(`La version ${options.version} existe déjà, elle sera écrasée.`);
+      this.logger.warn(`La version ${options.version} existe déjà pour ${machineId}, elle sera écrasée.`);
     }
 
     await fs.mkdir(versionDir, { recursive: true });
@@ -108,31 +116,43 @@ export class ConfigSharingService implements IConfigSharingService {
     // Copie des fichiers depuis le package temporaire
     await this.copyRecursive(options.packagePath, versionDir);
 
-    // Mise à jour du manifeste avec la version finale
+    // Mise à jour du manifeste avec la version finale et le machineId
     const manifestPath = join(versionDir, 'manifest.json');
     const manifestContent = await fs.readFile(manifestPath, 'utf-8');
     const manifest: ConfigManifest = JSON.parse(manifestContent);
-
+    
     manifest.version = options.version;
     manifest.description = options.description;
-
+    manifest.author = machineId; // CORRECTION SDDD : Utiliser machineId explicite
+    
     await fs.writeFile(manifestPath, JSON.stringify(manifest, null, 2));
 
-    this.logger.info('Publication terminée', { path: versionDir });
+    // CORRECTION SDDD : Créer un lien symbolique ou fichier latest pour accès facile
+    const latestPath = join(machineConfigDir, 'latest.json');
+    await fs.writeFile(latestPath, JSON.stringify({
+      version: options.version,
+      timestamp,
+      path: versionDir,
+      manifest
+    }, null, 2));
+
+    this.logger.info('Publication terminée', { machineId, version: options.version, path: versionDir });
 
     return {
       success: true,
       version: options.version,
-      path: versionDir
+      path: versionDir,
+      machineId // CORRECTION SDDD : Retourner le machineId utilisé
     };
   }
 
   /**
    * Applique une configuration depuis le shared state
+   * CORRECTION SDDD : Supporte les configs par machineId
    */
   public async applyConfig(options: ApplyConfigOptions): Promise<ApplyConfigResult> {
     this.logger.info('Application de la configuration', options);
-
+    
     const errors: string[] = [];
     let filesApplied = 0;
     const details: any[] = []; // Pour stocker les détails des changements
@@ -144,20 +164,60 @@ export class ConfigSharingService implements IConfigSharingService {
       }
 
       const sharedStatePath = this.configService.getSharedStatePath();
-      const configDir = join(sharedStatePath, 'configs', `baseline-v${options.version}`);
-      const manifestPath = join(configDir, 'manifest.json');
+      const configsDir = join(sharedStatePath, 'configs');
+      
+      // CORRECTION SDDD : Supporter le format {machineId}/v{version}-{timestamp}
+      let configDir: string | null = null;
+      let manifestPath: string | null = null;
+      
+      // Essayer d'abord le nouveau format par machineId
+      const machineId = options.machineId || process.env.ROOSYNC_MACHINE_ID || process.env.COMPUTERNAME || 'unknown';
+      const machineConfigDir = join(configsDir, machineId);
+      
+      if (existsSync(machineConfigDir)) {
+        // Chercher le fichier latest.json
+        const latestPath = join(machineConfigDir, 'latest.json');
+        if (existsSync(latestPath) && options.version === 'latest') {
+          const latestContent = await fs.readFile(latestPath, 'utf-8');
+          const latestData = JSON.parse(latestContent);
+          configDir = latestData.path;
+          manifestPath = join(latestData.path, 'manifest.json');
+        } else {
+          // Chercher la version spécifique
+          const entries = await fs.readdir(machineConfigDir);
+          const versionEntry = entries.find(e => e.startsWith(`v${options.version}-`));
+          if (versionEntry) {
+            configDir = join(machineConfigDir, versionEntry);
+            manifestPath = join(configDir, 'manifest.json');
+          }
+        }
+      }
+      
+      // Fallback vers l'ancien format baseline-v{version}
+      if (!configDir || !manifestPath) {
+        const legacyDir = join(configsDir, `baseline-v${options.version}`);
+        if (existsSync(legacyDir)) {
+          configDir = legacyDir;
+          manifestPath = join(configDir, 'manifest.json');
+        }
+      }
+
+      if (!configDir || !manifestPath) {
+        throw new Error(`Configuration non trouvée: ${options.version} (machineId: ${machineId})`);
+      }
 
       if (!existsSync(manifestPath)) {
-        throw new Error(`Configuration non trouvée: ${options.version}`);
+        throw new Error(`Manifeste non trouvé: ${manifestPath}`);
       }
 
       const manifestContent = await fs.readFile(manifestPath, 'utf-8');
       const manifest: ConfigManifest = JSON.parse(manifestContent);
 
-      this.logger.info(`Configuration chargée: ${manifest.description} (v${manifest.version})`);
+      this.logger.info(`Configuration chargée: ${manifest.description} (v${manifest.version}, machineId: ${manifest.author})`);
 
       // Récupérer l'inventaire pour résoudre les chemins locaux
-      const inventory = await this.inventoryCollector.collectInventory(process.env.COMPUTERNAME || 'localhost') as any;
+      // CORRECTION SDDD : Forcer le rechargement de l'inventaire pour avoir les chemins à jour
+      const inventory = await this.inventoryCollector.collectInventory(process.env.COMPUTERNAME || 'localhost', true) as any;
 
       // 2. Itérer sur les fichiers
       for (const file of manifest.files) {
@@ -191,7 +251,7 @@ export class ConfigSharingService implements IConfigSharingService {
           if (existsSync(destPath)) {
             action = 'update';
             const localContent = JSON.parse(await fs.readFile(destPath, 'utf-8'));
-
+            
             // Fusion
             finalContent = JsonMerger.merge(sourceContent, localContent, { arrayStrategy: 'replace' });
 
@@ -264,7 +324,7 @@ export class ConfigSharingService implements IConfigSharingService {
     // On suppose que 'config' est déjà un objet de configuration (ex: mcp_settings)
     // Il faudrait idéalement savoir quel type de config on compare pour appliquer la bonne normalisation
     // Pour simplifier ici, on normalise comme 'mcp_config' par défaut si structure correspond, sinon générique
-
+    
     let normalizedConfig = config;
     if (config.mcpServers) {
         normalizedConfig = await this.normalizationService.normalize(config, 'mcp_config');
@@ -281,8 +341,18 @@ export class ConfigSharingService implements IConfigSharingService {
     const modesDir = join(tempDir, 'roo-modes');
     await fs.mkdir(modesDir, { recursive: true });
 
-    // Utiliser le chemin direct du workspace (sous-répertoire configs/)
-    const rooModesPath = join(process.cwd(), 'roo-modes', 'configs');
+    // Récupérer l'inventaire pour trouver les chemins
+    // CORRECTION SDDD : Force refresh pour s'assurer d'avoir les chemins à jour
+    // CORRECTION SDDD : Utiliser ROOSYNC_MACHINE_ID au lieu de COMPUTERNAME
+    const machineId = process.env.ROOSYNC_MACHINE_ID || process.env.COMPUTERNAME || 'localhost';
+    const inventory = await this.inventoryCollector.collectInventory(machineId, true) as any;
+    
+    // CORRECTION SDDD : Utiliser uniquement l'inventaire, pas de fallback process.cwd()
+    if (!inventory?.paths?.rooExtensions) {
+      throw new Error('Inventaire incomplet: paths.rooExtensions non disponible. Impossible de collecter les modes.');
+    }
+    
+    const rooModesPath = join(inventory.paths.rooExtensions, 'roo-modes');
 
     this.logger.info(`Collecte des modes depuis: ${rooModesPath}`);
 
@@ -292,17 +362,17 @@ export class ConfigSharingService implements IConfigSharingService {
         if (entry.endsWith('.json')) {
           const srcPath = join(rooModesPath, entry);
           const destPath = join(modesDir, entry);
-
+          
           // Lecture et normalisation
           const content = JSON.parse(await fs.readFile(srcPath, 'utf-8'));
           const normalized = await this.normalizationService.normalize(content, 'mode_definition');
-
+          
           // Écriture du fichier normalisé
           await fs.writeFile(destPath, JSON.stringify(normalized, null, 2));
-
+          
           const hash = await this.calculateHash(destPath);
           const stats = await fs.stat(destPath);
-
+          
           files.push({
             path: `roo-modes/${entry}`,
             hash,
@@ -312,7 +382,7 @@ export class ConfigSharingService implements IConfigSharingService {
         }
       }
     } else {
-        this.logger.warn(`Répertoire roo-modes/configs non trouvé: ${rooModesPath}`);
+        this.logger.warn(`Répertoire roo-modes non trouvé: ${rooModesPath}`);
     }
 
     return files;
@@ -323,24 +393,34 @@ export class ConfigSharingService implements IConfigSharingService {
     const mcpDir = join(tempDir, 'mcp-settings');
     await fs.mkdir(mcpDir, { recursive: true });
 
-    // Utiliser le chemin direct du workspace
-    const mcpSettingsPath = join(process.cwd(), 'config', 'mcp_settings.json');
+    // Récupérer l'inventaire pour trouver les chemins
+    // CORRECTION SDDD : Force refresh pour s'assurer d'avoir les chemins à jour
+    // CORRECTION SDDD : Utiliser ROOSYNC_MACHINE_ID au lieu de COMPUTERNAME
+    const machineId = process.env.ROOSYNC_MACHINE_ID || process.env.COMPUTERNAME || 'localhost';
+    const inventory = await this.inventoryCollector.collectInventory(machineId, true) as any;
+    
+    // CORRECTION SDDD : Utiliser uniquement l'inventaire, pas de fallback process.cwd()
+    if (!inventory?.paths?.mcpSettings) {
+      throw new Error('Inventaire incomplet: paths.mcpSettings non disponible. Impossible de collecter les settings MCP.');
+    }
+    
+    const mcpSettingsPath = inventory.paths.mcpSettings;
 
     this.logger.info(`Collecte des settings MCP depuis: ${mcpSettingsPath}`);
 
     if (existsSync(mcpSettingsPath)) {
       const destPath = join(mcpDir, 'mcp_settings.json');
-
+      
       // Lecture et normalisation
       const content = JSON.parse(await fs.readFile(mcpSettingsPath, 'utf-8'));
       const normalized = await this.normalizationService.normalize(content, 'mcp_config');
-
+      
       // Écriture du fichier normalisé
       await fs.writeFile(destPath, JSON.stringify(normalized, null, 2));
 
       const hash = await this.calculateHash(destPath);
       const stats = await fs.stat(destPath);
-
+      
       files.push({
         path: 'mcp-settings/mcp_settings.json',
         hash,

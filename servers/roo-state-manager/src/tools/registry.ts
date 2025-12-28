@@ -101,7 +101,7 @@ export function registerListToolsHandler(server: Server): void {
                     inputSchema: toolExports.getConversationSynthesisTool.inputSchema,
                 },
                 toolExports.exportTaskTreeMarkdownTool,
-                
+
                 // Diagnostic Tools - WP4
                 {
                     name: toolExports.analyze_roosync_problems.name,
@@ -529,7 +529,6 @@ export function registerCallToolHandler(
                   result = { content: [{ type: 'text', text: `Error: ${(error as Error).message}` }], isError: true };
               }
               break;
-          // RooSync Config Sharing tools - Cycle 6
           case 'roosync_collect_config':
               try {
                   const roosyncResult = await toolExports.roosyncCollectConfig(args as any);
@@ -554,7 +553,7 @@ export function registerCallToolHandler(
                   result = { content: [{ type: 'text', text: `Error: ${(error as Error).message}` }], isError: true };
               }
               break;
-           // RooSync Messaging tools - Phase 1
+          // RooSync Messaging tools - Phase 1
            case 'roosync_send_message':
                try {
                    result = await toolExports.sendMessage(args as any) as CallToolResult;

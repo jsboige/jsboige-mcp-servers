@@ -2,7 +2,8 @@ import { z } from 'zod';
 import { getRooSyncService } from '../../services/RooSyncService.js';
 
 export const ApplyConfigArgsSchema = z.object({
-  version: z.string().optional().describe('Version à appliquer (défaut: latest baseline)'),
+  version: z.string().optional().describe('Version à appliquer (défaut: latest)'),
+  machineId: z.string().optional().describe('ID de la machine source (optionnel, utilise ROOSYNC_MACHINE_ID par défaut)'),
   targets: z.array(z.string()).optional().describe('Filtre optionnel des cibles (modes, mcp, profiles)'),
   backup: z.boolean().optional().describe('Créer un backup local avant application (défaut: true)'),
   dryRun: z.boolean().optional().describe('Si true, simule l\'application sans modifier les fichiers')
@@ -11,7 +12,7 @@ export const ApplyConfigArgsSchema = z.object({
 export type ApplyConfigArgs = z.infer<typeof ApplyConfigArgsSchema>;
 
 export async function roosyncApplyConfig(args: ApplyConfigArgs) {
-  const { version, targets, backup = true, dryRun = false } = args;
+  const { version, machineId, targets, backup = true, dryRun = false } = args;
   
   try {
     const rooSyncService = getRooSyncService();
@@ -19,6 +20,7 @@ export async function roosyncApplyConfig(args: ApplyConfigArgs) {
     
     const result = await configSharingService.applyConfig({
       version,
+      machineId, // CORRECTION SDDD : Passer le machineId au service
       targets: targets as ('modes' | 'mcp' | 'profiles')[],
       backup,
       dryRun
@@ -38,13 +40,17 @@ export async function roosyncApplyConfig(args: ApplyConfigArgs) {
 
 export const applyConfigToolMetadata = {
   name: 'roosync_apply_config',
-  description: 'Applique une configuration partagée sur la machine locale.',
+  description: 'Applique une configuration partagée sur la machine locale. CORRECTION SDDD : Supporte les configs par machineId.',
   inputSchema: {
     type: 'object' as const,
     properties: {
       version: {
         type: 'string',
-        description: 'Version à appliquer (défaut: latest baseline)'
+        description: 'Version à appliquer (défaut: latest)'
+      },
+      machineId: {
+        type: 'string',
+        description: 'ID de la machine source (optionnel, utilise ROOSYNC_MACHINE_ID par défaut)'
       },
       targets: {
         type: 'array',

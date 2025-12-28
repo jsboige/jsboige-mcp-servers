@@ -34,16 +34,19 @@ export interface PublishConfigOptions {
   packagePath: string;
   version: string;
   description: string;
+  machineId?: string; // CORRECTION SDDD : Optionnel, utilise ROOSYNC_MACHINE_ID par défaut
 }
 
 export interface PublishConfigResult {
   success: boolean;
   version: string;
   path: string;
+  machineId?: string; // CORRECTION SDDD : Retourne le machineId utilisé
 }
 
 export interface ApplyConfigOptions {
   version?: string; // Défaut: latest
+  machineId?: string; // CORRECTION SDDD : Optionnel, utilise ROOSYNC_MACHINE_ID par défaut
   targets?: ('modes' | 'mcp' | 'profiles')[];
   backup?: boolean; // Défaut: true
   dryRun?: boolean;
