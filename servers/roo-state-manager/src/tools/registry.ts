@@ -505,17 +505,17 @@ export function registerCallToolHandler(
                   result = { content: [{ type: 'text', text: `Error: ${(error as Error).message}` }], isError: true };
               }
               break;
-          case 'roosync_version_baseline':
+          case 'roosync_manage_baseline':
               try {
-                  const roosyncResult = await toolExports.versionBaseline(args as any);
+                  const roosyncResult = await toolExports.roosync_manage_baseline(args as any);
                   result = { content: [{ type: 'text', text: JSON.stringify(roosyncResult, null, 2) }] };
               } catch (error) {
                   result = { content: [{ type: 'text', text: `Error: ${(error as Error).message}` }], isError: true };
               }
               break;
-          case 'roosync_restore_baseline':
+          case 'roosync_debug_reset':
               try {
-                  const roosyncResult = await toolExports.restoreBaseline(args as any);
+                  const roosyncResult = await toolExports.roosync_debug_reset(args as any);
                   result = { content: [{ type: 'text', text: JSON.stringify(roosyncResult, null, 2) }] };
               } catch (error) {
                   result = { content: [{ type: 'text', text: `Error: ${(error as Error).message}` }], isError: true };
