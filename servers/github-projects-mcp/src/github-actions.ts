@@ -426,52 +426,62 @@ export async function executeDeleteProjectField(
   }
 }
 /**
- * Convertit une note (draft issue) d'un projet en une issue GitHub standard.
- * @param {any} octokit - L'instance du client Octokit.
- * @param {object} params - Les paramètres pour la conversion.
- * @param {string} params.projectId - L'ID du projet contenant la note.
- * @param {string} params.draftId - L'ID de la note (draft issue) à convertir.
- * @returns {Promise<object>} Une promesse qui résout avec les informations de l'issue nouvellement créée.
- */
-export async function executeConvertDraftToIssue(
-  octokit: any,
-  { projectId, draftId }: { projectId: string; draftId: string }
-) {
-  checkReadOnlyMode();
-  try {
-    const mutation = `
-      mutation($projectId: ID!, $draftId: ID!) {
-        convertProjectV2DraftIssueToIssue(input: {
-          projectId: $projectId,
-          draftIssueId: $draftId
-        }) {
-          issue {
-            id
-            number
-            url
-          }
-        }
-      }
-    `;
-
-    const result = await octokit.graphql(mutation, {
-      projectId,
-      draftId,
-    });
-
-    const issue = result.convertProjectV2DraftIssueToIssue?.issue;
-    if (!issue) {
-      throw new Error("La conversion de la note en issue a échoué ou n'a pas retourné les informations attendues.");
-    }
-
-    return { success: true, issue: { id: issue.id, number: issue.number, url: issue.url } };
-
-  } catch (e) {
-    console.error('GitHub API call failed:', e);
-    throw new Error(`GitHub API Error: ${(e as Error).message}`);
-  }
-}
-
+ /**
+  * Convertit une note (draft issue) d'un projet en une issue GitHub standard.
+  * @param {any} octokit - L'instance du client Octokit.
+  * @param {object} params - Les paramètres pour la conversion.
+  * @param {string} params.itemId - L'ID de l'item draft issue ProjectV2Item à convertir.
+  * @param {string} params.repositoryId - L'ID du dépôt où créer l'issue.
+  * @returns {Promise<object>} Une promesse qui résout avec les informations de l'item mis à jour.
+  */
+ export async function executeConvertDraftToIssue(
+   octokit: any,
+   { itemId, repositoryId }: { itemId: string; repositoryId: string }
+ ) {
+   checkReadOnlyMode();
+   try {
+     const mutation = `
+       mutation($itemId: ID!, $repositoryId: ID!) {
+         convertProjectV2DraftIssueItemToIssue(input: {
+           itemId: $itemId,
+           repositoryId: $repositoryId
+         }) {
+           item {
+             id
+             content {
+               ... on Issue {
+                 id
+                 number
+                 url
+               }
+             }
+           }
+         }
+       }
+     `;
+ 
+     const result = await octokit.graphql(mutation, {
+       itemId,
+       repositoryId,
+     });
+ 
+     const item = result.convertProjectV2DraftIssueItemToIssue?.item;
+     if (!item) {
+       throw new Error("La conversion de la note en issue a échoué ou n'a pas retourné les informations attendues.");
+     }
+ 
+     const issue = item.content;
+     if (!issue || !issue.id) {
+       throw new Error("L'issue créée n'a pas été retournée dans la réponse.");
+     }
+ 
+     return { success: true, issue: { id: issue.id, number: issue.number, url: issue.url } };
+ 
+   } catch (e) {
+     console.error('GitHub API call failed:', e);
+     throw new Error(`GitHub API Error: ${(e as Error).message}`);
+   }
+ }
 /**
  * Archive un projet GitHub en le passant à l'état "CLOSED".
  * @param {any} octokit - L'instance du client Octokit.

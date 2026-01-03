@@ -730,8 +730,8 @@ export function setupTools(server: any, accounts: GitHubAccount[]): Tool[] {
      * @tool convert_draft_to_issue
      * @description Convertit une note en issue.
      * @param {string} owner - Le propriétaire du projet.
-     * @param {string} projectId - L'ID du projet.
-     * @param {string} draftId - L'ID de la note.
+     * @param {string} itemId - L'ID de l'item draft issue ProjectV2Item à convertir.
+     * @param {string} repositoryId - L'ID du dépôt où créer l'issue.
      * @returns {Promise<object>} Le résultat.
      */
     {
@@ -741,15 +741,15 @@ export function setupTools(server: any, accounts: GitHubAccount[]): Tool[] {
         type: 'object',
         properties: {
           owner: { type: 'string', description: "Propriétaire du projet." },
-          projectId: { type: 'string', description: "The ID of the project." },
-          draftId: { type: 'string', description: "The ID of the draft issue to convert." },
+          itemId: { type: 'string', description: "The ID of the draft issue ProjectV2Item to convert." },
+          repositoryId: { type: 'string', description: "The ID of the repository where to create the issue." },
         },
-        required: ['owner', 'projectId', 'draftId']
+        required: ['owner', 'itemId', 'repositoryId']
       },
-      execute: async ({ owner, projectId, draftId }: { owner: string, projectId: string, draftId: string }) => {
+      execute: async ({ owner, itemId, repositoryId }: { owner: string, itemId: string, repositoryId: string }) => {
         const octokit = getGitHubClient(owner, accounts);
         checkReadOnlyMode();
-        return await executeConvertDraftToIssue(octokit, { projectId, draftId });
+        return await executeConvertDraftToIssue(octokit, { itemId, repositoryId });
       }
     },
     /**
