@@ -171,3 +171,129 @@ Obtient le statut détaillé d'une exécution de workflow spécifique.
 - `timed_out` : L'exécution a expiré
 - `action_required` : Une action manuelle est requise
 - `neutral` : L'exécution s'est terminée de manière neutre
+
+### Gestion des Issues de Dépôt
+
+Cette section décrit les outils disponibles pour gérer les issues (issues classiques) d'un dépôt GitHub.
+
+#### `list_repository_issues`
+
+Liste toutes les issues d'un dépôt GitHub avec support de pagination et filtrage par état.
+
+**Paramètres :**
+- `owner` (string) : Nom du propriétaire du dépôt (utilisateur ou organisation)
+- `repo` (string) : Nom du dépôt
+- `state` (string, optionnel) : État des issues à récupérer (`open`, `closed`, ou `all`). Par défaut : `open`
+- `per_page` (number, optionnel) : Nombre d'issues par page. Par défaut : 30
+- `page` (number, optionnel) : Numéro de page. Par défaut : 1
+
+**Exemple de retour en cas de succès :**
+```json
+{
+  "success": true,
+  "issues": [
+    {
+      "id": 1,
+      "number": 1,
+      "title": "Issue de test",
+      "state": "open",
+      "html_url": "https://github.com/owner/repo/issues/1",
+      "user": {
+        "login": "owner"
+      },
+      "created_at": "2024-01-01T00:00:00Z",
+      "updated_at": "2024-01-01T00:00:00Z"
+    }
+  ],
+  "total_count": 1
+}
+```
+
+#### `get_repository_issue`
+
+Récupère les détails complets d'une issue spécifique d'un dépôt.
+
+**Paramètres :**
+- `owner` (string) : Nom du propriétaire du dépôt
+- `repo` (string) : Nom du dépôt
+- `issue_number` (number) : Numéro de l'issue
+
+**Exemple de retour en cas de succès :**
+```json
+{
+  "success": true,
+  "issue": {
+    "id": 1,
+    "number": 1,
+    "title": "Issue de test",
+    "body": "Description de l'issue",
+    "state": "open",
+    "html_url": "https://github.com/owner/repo/issues/1",
+    "user": {
+      "login": "owner"
+    },
+    "created_at": "2024-01-01T00:00:00Z",
+    "updated_at": "2024-01-01T00:00:00Z",
+    "comments": 0
+  }
+}
+```
+
+#### `delete_repository_issue`
+
+Supprime (ferme) une issue d'un dépôt. **Note :** GitHub ne permet pas de supprimer directement les issues. L'outil ferme l'issue à la place.
+
+**Paramètres :**
+- `owner` (string) : Nom du propriétaire du dépôt
+- `repo` (string) : Nom du dépôt
+- `issue_number` (number) : Numéro de l'issue à supprimer
+- `comment` (string, optionnel) : Commentaire à ajouter avant la fermeture
+
+**Exemple de retour en cas de succès :**
+```json
+{
+  "success": true,
+  "issue": {
+    "number": 1,
+    "state": "closed",
+    "html_url": "https://github.com/owner/repo/issues/1"
+  },
+  "note": "GitHub ne permet pas de supprimer directement les issues. L'issue a été fermée à la place."
+}
+```
+
+#### `delete_repository_issues_bulk`
+
+Supprime (ferme) plusieurs issues d'un dépôt en une seule opération. Idéal pour nettoyer un grand nombre d'issues de test.
+
+**Paramètres :**
+- `owner` (string) : Nom du propriétaire du dépôt
+- `repo` (string) : Nom du dépôt
+- `issueNumbers` (number[]) : Liste des numéros d'issues à supprimer
+- `comment` (string, optionnel) : Commentaire à ajouter avant la fermeture de chaque issue
+
+**Exemple de retour en cas de succès :**
+```json
+{
+  "success": true,
+  "deleted": [
+    { "number": 1, "url": "https://github.com/owner/repo/issues/1" },
+    { "number": 2, "url": "https://github.com/owner/repo/issues/2" }
+  ],
+  "failed": [],
+  "note": "GitHub ne permet pas de supprimer directement les issues. Les issues ont été fermées à la place."
+}
+```
+
+**Exemple d'utilisation pour nettoyer des issues de test :**
+```javascript
+// Supprimer 246 issues de test en une seule opération
+{
+  "owner": "jsboige",
+  "repo": "roo-extensions",
+  "issueNumbers": [1, 2, 3, ..., 246],
+  "comment": "Issue de test supprimée automatiquement"
+}
+```
+
+**Note importante :** GitHub ne permet pas de supprimer directement les issues via l'API. Ces outils ferment les issues à la place. Les issues fermées restent visibles dans l'historique du dépôt mais ne sont plus actives.

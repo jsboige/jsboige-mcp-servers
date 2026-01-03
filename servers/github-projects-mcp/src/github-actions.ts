@@ -189,7 +189,7 @@ export async function executeUpdateIssueState(
     if (!issue) {
       throw new Error("La mise à jour de l'issue a échoué ou n'a pas retourné les informations attendues.");
     }
-    
+
     return { success: true, issue: { id: issue.id, number: issue.number, state: issue.state } };
 
   } catch (e) {
@@ -316,29 +316,29 @@ export async function executeUpdateProjectItemField(
   try {
     let queryValue;
     let variables: any = { projectId: projectId, itemId: itemId, fieldId: fieldId };
-    
+
     switch (fieldType) {
       case 'text':
         if (typeof value !== 'string') throw new Error("La 'value' est requise pour le type 'text'.");
-        queryValue = 'value: { text: $text }'; 
-        variables.text = value; 
+        queryValue = 'value: { text: $text }';
+        variables.text = value;
         break;
       case 'date':
         if (typeof value !== 'string') throw new Error("La 'value' est requise pour le type 'date'.");
-        queryValue = 'value: { date: $date }'; 
-        variables.date = value; 
+        queryValue = 'value: { date: $date }';
+        variables.date = value;
         break;
       case 'single_select':
         if (!optionId) throw new Error("L''option_id' est requis pour le type 'single_select'.");
-        queryValue = 'value: { singleSelectOptionId: $optionId }'; 
-        variables.optionId = optionId; 
+        queryValue = 'value: { singleSelectOptionId: $optionId }';
+        variables.optionId = optionId;
         break;
       case 'number':
         if (typeof value !== 'string') throw new Error("La 'value' est requise pour le type 'number'.");
         const numValue = parseFloat(value);
         if(isNaN(numValue)) throw new Error("La valeur pour 'number' est invalide.");
-        queryValue = 'value: { number: $number }'; 
-        variables.number = numValue; 
+        queryValue = 'value: { number: $number }';
+        variables.number = numValue;
         break;
       default:
         throw new Error(`Type de champ non pris en charge: ${fieldType}`);
@@ -353,12 +353,12 @@ export async function executeUpdateProjectItemField(
             case 'number': varType = '$number: Float!'; break;
         }
         return `mutation($projectId: ID!, $itemId: ID!, $fieldId: ID!, ${varType}) {
-          updateProjectV2ItemFieldValue(input: { projectId: $projectId, itemId: $itemId, fieldId: $fieldId, ${queryValue} }) { 
-            projectV2Item { id } 
+          updateProjectV2ItemFieldValue(input: { projectId: $projectId, itemId: $itemId, fieldId: $fieldId, ${queryValue} }) {
+            projectV2Item { id }
           }
         }`;
     }
-    
+
     const mutation = getMutationString();
     const result = await octokit.graphql(mutation, variables);
 
@@ -577,12 +577,12 @@ export async function executeGetProjectItems(
       id: projectId,
       first: 100,
     };
-    
+
     let queryDef = `query GetProjectWithItems($id: ID!, $first: Int!, $after: String`;
     let itemsArgs = `first: $first, after: $after`;
 
     // GraphQL ne supportant pas le filtrage direct, nous récupérons tout et filtrons côté client.
-    
+
     queryDef += `)`;
 
     const query = `
@@ -744,9 +744,9 @@ export async function analyze_task_complexity(
 
   const { title, body } = itemDetails.item;
   const fullText = `${title}\n${body || ''}`.toLowerCase();
-  
+
   const keywords = ["investigate", "refactor", "security", "bug critique"];
-  
+
   let complexity: 'faible' | 'moyenne' | 'élevée' = 'moyenne';
   let reasoning = 'La complexité est jugée moyenne par défaut.';
 
@@ -763,12 +763,12 @@ export async function analyze_task_complexity(
     }
   }
 
-  return { 
-    success: true, 
-    result: { 
-      complexity, 
-      reasoning 
-    } 
+  return {
+    success: true,
+    result: {
+      complexity,
+      reasoning
+    }
   };
 }
 /**
@@ -862,6 +862,49 @@ export async function unarchiveProjectItem(
 }
 
 /**
+ * Supprime un élément d'un projet GitHub.
+ * @param {any} octokit - L'instance du client Octokit.
+ * @param {object} params - Les paramètres pour la suppression.
+ * @param {string} params.projectId - L'ID du projet.
+ * @param {string} params.itemId - L'ID de l'élément à supprimer.
+ * @returns {Promise<object>} Une promesse qui résout avec l'ID de l'élément supprimé.
+ */
+export async function deleteProjectItem(
+  octokit: any,
+  { projectId, itemId }: { projectId: string; itemId: string }
+) {
+  checkReadOnlyMode();
+  try {
+    const mutation = `
+      mutation($projectId: ID!, $itemId: ID!) {
+        deleteProjectV2Item(input: {
+          projectId: $projectId,
+          itemId: $itemId
+        }) {
+          deletedItemId
+        }
+      }
+    `;
+
+    const result = await octokit.graphql(mutation, {
+      projectId,
+      itemId,
+    });
+
+    const deletedItemId = result.deleteProjectV2Item?.deletedItemId;
+    if (!deletedItemId) {
+      throw new Error("La suppression de l'élément a échoué ou n'a pas retourné les informations attendues.");
+    }
+
+    return { success: true, deleted_item_id: deletedItemId };
+
+  } catch (e) {
+    logger.error('GitHub API call failed in deleteProjectItem', { error: e });
+    throw new Error(`GitHub API Error: ${(e as Error).message}`);
+  }
+}
+
+/**
  * Récupère les détails d'un projet V2 par son Node ID.
  * @param octokit Le client Octokit.
  * @param projectId L'ID global du projet (node_id).
@@ -890,4 +933,224 @@ export async function getProjectDetails(octokit: any, projectId: string): Promis
     logger.error(`Erreur lors de la récupération des détails du projet ${projectId}`, { error });
     throw new Error(`Impossible de récupérer les détails du projet : ${error.message}`);
   }
+}
+
+/**
+ * Liste les issues d'un dépôt GitHub.
+ * @param {any} octokit - L'instance du client Octokit.
+ * @param {object} params - Les paramètres pour la liste des issues.
+ * @param {string} params.owner - Le propriétaire du dépôt.
+ * @param {string} params.repo - Le nom du dépôt.
+ * @param {'open' | 'closed' | 'all'} [params.state] - L'état des issues à récupérer.
+ * @param {number} [params.perPage] - Nombre d'issues par page (max 100).
+ * @param {number} [params.page] - Numéro de page.
+ * @returns {Promise<object>} Une promesse qui résout avec la liste des issues.
+ */
+export async function executeListRepositoryIssues(
+  octokit: any,
+  { owner, repo, state = 'open', perPage = 30, page = 1 }:
+  { owner: string; repo: string; state?: 'open' | 'closed' | 'all'; perPage?: number; page?: number; }
+) {
+  checkRepoPermissions(owner, repo);
+  try {
+    const response = await octokit.rest.issues.listForRepo({
+      owner,
+      repo,
+      state,
+      per_page: Math.min(perPage, 100),
+      page,
+    });
+
+    const issues = response.data.map((issue: any) => ({
+      id: issue.id,
+      nodeId: issue.node_id,
+      number: issue.number,
+      title: issue.title,
+      state: issue.state,
+      url: issue.html_url,
+      createdAt: issue.created_at,
+      updatedAt: issue.updated_at,
+      user: issue.user?.login,
+      labels: issue.labels?.map((label: any) => label.name) || [],
+    }));
+
+    return {
+      success: true,
+      issues,
+      totalCount: response.data.length,
+      pagination: {
+        page,
+        perPage: Math.min(perPage, 100),
+      }
+    };
+  } catch (e) {
+    console.error('GitHub API call failed:', e);
+    throw new Error(`GitHub API Error: ${(e as Error).message}`);
+  }
+}
+
+/**
+ * Récupère les détails d'une issue spécifique d'un dépôt GitHub.
+ * @param {any} octokit - L'instance du client Octokit.
+ * @param {object} params - Les paramètres pour récupérer l'issue.
+ * @param {string} params.owner - Le propriétaire du dépôt.
+ * @param {string} params.repo - Le nom du dépôt.
+ * @param {number} params.issueNumber - Le numéro de l'issue.
+ * @returns {Promise<object>} Une promesse qui résout avec les détails de l'issue.
+ */
+export async function executeGetRepositoryIssue(
+  octokit: any,
+  { owner, repo, issueNumber }: { owner: string; repo: string; issueNumber: number; }
+) {
+  checkRepoPermissions(owner, repo);
+  try {
+    const response = await octokit.rest.issues.get({
+      owner,
+      repo,
+      issue_number: issueNumber,
+    });
+
+    const issue = response.data;
+    return {
+      success: true,
+      issue: {
+        id: issue.id,
+        nodeId: issue.node_id,
+        number: issue.number,
+        title: issue.title,
+        body: issue.body,
+        state: issue.state,
+        url: issue.html_url,
+        createdAt: issue.created_at,
+        updatedAt: issue.updated_at,
+        closedAt: issue.closed_at,
+        user: issue.user?.login,
+        labels: issue.labels?.map((label: any) => label.name) || [],
+        assignees: issue.assignees?.map((assignee: any) => assignee.login) || [],
+      }
+    };
+  } catch (e) {
+    console.error('GitHub API call failed:', e);
+    throw new Error(`GitHub API Error: ${(e as Error).message}`);
+  }
+}
+
+/**
+ * Supprime une issue d'un dépôt GitHub.
+ * Note: GitHub ne permet pas de supprimer directement une issue.
+ * Cette fonction ferme l'issue avec un commentaire indiquant la suppression.
+ * @param {any} octokit - L'instance du client Octokit.
+ * @param {object} params - Les paramètres pour la suppression.
+ * @param {string} params.owner - Le propriétaire du dépôt.
+ * @param {string} params.repo - Le nom du dépôt.
+ * @param {number} params.issueNumber - Le numéro de l'issue à supprimer.
+ * @param {string} [params.comment] - Commentaire à ajouter avant la fermeture.
+ * @returns {Promise<object>} Une promesse qui résout avec le résultat de l'opération.
+ */
+export async function executeDeleteRepositoryIssue(
+  octokit: any,
+  { owner, repo, issueNumber, comment = 'Issue supprimée automatiquement' }:
+  { owner: string; repo: string; issueNumber: number; comment?: string; }
+) {
+  checkReadOnlyMode();
+  checkRepoPermissions(owner, repo);
+  try {
+    // Ajouter un commentaire si fourni
+    if (comment) {
+      await octokit.rest.issues.createComment({
+        owner,
+        repo,
+        issue_number: issueNumber,
+        body: comment,
+      });
+    }
+
+    // Fermer l'issue (GitHub ne permet pas de supprimer directement les issues)
+    const response = await octokit.rest.issues.update({
+      owner,
+      repo,
+      issue_number: issueNumber,
+      state: 'closed',
+    });
+
+    return {
+      success: true,
+      issue: {
+        id: response.data.id,
+        number: response.data.number,
+        state: response.data.state,
+        url: response.data.html_url,
+      },
+      note: "GitHub ne permet pas de supprimer directement les issues. L'issue a été fermée à la place."
+    };
+  } catch (e) {
+    console.error('GitHub API call failed:', e);
+    throw new Error(`GitHub API Error: ${(e as Error).message}`);
+  }
+}
+
+/**
+ * Supprime plusieurs issues d'un dépôt GitHub en lot.
+ * Note: GitHub ne permet pas de supprimer directement les issues.
+ * Cette fonction ferme les issues avec un commentaire indiquant la suppression.
+ * @param {any} octokit - L'instance du client Octokit.
+ * @param {object} params - Les paramètres pour la suppression en lot.
+ * @param {string} params.owner - Le propriétaire du dépôt.
+ * @param {string} params.repo - Le nom du dépôt.
+ * @param {number[]} params.issueNumbers - Les numéros des issues à supprimer.
+ * @param {string} [params.comment] - Commentaire à ajouter avant la fermeture.
+ * @returns {Promise<object>} Une promesse qui résout avec le résultat de l'opération.
+ */
+export async function executeDeleteRepositoryIssuesBulk(
+  octokit: any,
+  { owner, repo, issueNumbers, comment = 'Issue supprimée automatiquement' }:
+  { owner: string; repo: string; issueNumbers: number[]; comment?: string; }
+) {
+  checkReadOnlyMode();
+  checkRepoPermissions(owner, repo);
+
+  const results = {
+    success: true,
+    deleted: [] as { number: number; url: string; }[],
+    failed: [] as { number: number; error: string; }[],
+    note: "GitHub ne permet pas de supprimer directement les issues. Les issues ont été fermées à la place."
+  };
+
+  for (const issueNumber of issueNumbers) {
+    try {
+      // Ajouter un commentaire si fourni
+      if (comment) {
+        await octokit.rest.issues.createComment({
+          owner,
+          repo,
+          issue_number: issueNumber,
+          body: comment,
+        });
+      }
+
+      // Fermer l'issue
+      const response = await octokit.rest.issues.update({
+        owner,
+        repo,
+        issue_number: issueNumber,
+        state: 'closed',
+      });
+
+      results.deleted.push({
+        number: response.data.number,
+        url: response.data.html_url,
+      });
+    } catch (e: any) {
+      results.failed.push({
+        number: issueNumber,
+        error: e.message || 'Erreur inconnue',
+      });
+    }
+  }
+
+  if (results.failed.length > 0) {
+    results.success = false;
+  }
+
+  return results;
 }

@@ -2,7 +2,7 @@
  * Export centralisé des outils RooSync
  *
  * @module tools/roosync
- * @version 2.1.0
+ * @version 2.3.0
  */
 
 export {
@@ -125,29 +125,30 @@ export type {
   UpdateBaselineResult
 } from './update-baseline.js';
 
+// Outils consolidés v2.3 - Remplacent version-baseline et restore-baseline
 export {
-  versionBaseline,
-  VersionBaselineArgsSchema,
-  VersionBaselineResultSchema,
-  versionBaselineToolMetadata
-} from './version-baseline.js';
+  roosync_manage_baseline,
+  ManageBaselineArgsSchema,
+  ManageBaselineResultSchema,
+  manageBaselineToolMetadata
+} from './manage-baseline.js';
 
 export type {
-  VersionBaselineArgs,
-  VersionBaselineResult
-} from './version-baseline.js';
+  ManageBaselineArgs,
+  ManageBaselineResult
+} from './manage-baseline.js';
 
 export {
-  restoreBaseline,
-  RestoreBaselineArgsSchema,
-  RestoreBaselineResultSchema,
-  restoreBaselineToolMetadata
-} from './restore-baseline.js';
+  roosync_debug_reset,
+  DebugResetArgsSchema,
+  DebugResetResultSchema,
+  debugResetToolMetadata
+} from './debug-reset.js';
 
 export type {
-  RestoreBaselineArgs,
-  RestoreBaselineResult
-} from './restore-baseline.js';
+  DebugResetArgs,
+  DebugResetResult
+} from './debug-reset.js';
 
 export {
   roosync_export_baseline,
@@ -194,8 +195,8 @@ import { rollbackDecisionToolMetadata } from './rollback-decision.js';
 import { getDecisionDetailsToolMetadata } from './get-decision-details.js';
 import { initToolMetadata } from './init.js';
 import { updateBaselineToolMetadata } from './update-baseline.js';
-import { versionBaselineToolMetadata } from './version-baseline.js';
-import { restoreBaselineToolMetadata } from './restore-baseline.js';
+import { manageBaselineToolMetadata } from './manage-baseline.js';
+import { debugResetToolMetadata } from './debug-reset.js';
 import { collectConfigToolMetadata } from './collect-config.js';
 import { publishConfigToolMetadata } from './publish-config.js';
 import { applyConfigToolMetadata } from './apply-config.js';
@@ -255,7 +256,12 @@ const exportBaselineToolMetadata = {
 
 /**
  * Liste de tous les outils RooSync pour enregistrement MCP
- * Phase 5 : 9 outils complets (Configuration + Services + Présentation + Décision + Exécution + Initialisation)
+ * Version 2.3 : 16 outils consolidés
+ * - Configuration: init, compare-config, update-baseline, manage-baseline, export-baseline
+ * - Services: collect-config, publish-config, apply-config, get-machine-inventory
+ * - Présentation: get-status (fusionné avec read-dashboard), list-diffs
+ * - Décision: approve-decision, reject-decision, apply-decision, rollback-decision, get-decision-details
+ * - Debug: debug-reset (fusionné avec debug-dashboard et reset-service)
  */
 export const roosyncTools = [
   initToolMetadata,
@@ -268,11 +274,11 @@ export const roosyncTools = [
   rollbackDecisionToolMetadata,
   getDecisionDetailsToolMetadata,
   updateBaselineToolMetadata,
-  versionBaselineToolMetadata,
-  restoreBaselineToolMetadata,
+  manageBaselineToolMetadata,
   exportBaselineToolMetadata,
   collectConfigToolMetadata,
   publishConfigToolMetadata,
   applyConfigToolMetadata,
-  getMachineInventoryToolMetadata
+  getMachineInventoryToolMetadata,
+  debugResetToolMetadata
 ];

@@ -101,7 +101,7 @@ export function registerListToolsHandler(server: Server): void {
                     inputSchema: toolExports.getConversationSynthesisTool.inputSchema,
                 },
                 toolExports.exportTaskTreeMarkdownTool,
-                
+
                 // Diagnostic Tools - WP4
                 {
                     name: toolExports.analyze_roosync_problems.name,
@@ -505,17 +505,17 @@ export function registerCallToolHandler(
                   result = { content: [{ type: 'text', text: `Error: ${(error as Error).message}` }], isError: true };
               }
               break;
-          case 'roosync_version_baseline':
+          case 'roosync_manage_baseline':
               try {
-                  const roosyncResult = await toolExports.versionBaseline(args as any);
+                  const roosyncResult = await toolExports.roosync_manage_baseline(args as any);
                   result = { content: [{ type: 'text', text: JSON.stringify(roosyncResult, null, 2) }] };
               } catch (error) {
                   result = { content: [{ type: 'text', text: `Error: ${(error as Error).message}` }], isError: true };
               }
               break;
-          case 'roosync_restore_baseline':
+          case 'roosync_debug_reset':
               try {
-                  const roosyncResult = await toolExports.restoreBaseline(args as any);
+                  const roosyncResult = await toolExports.roosync_debug_reset(args as any);
                   result = { content: [{ type: 'text', text: JSON.stringify(roosyncResult, null, 2) }] };
               } catch (error) {
                   result = { content: [{ type: 'text', text: `Error: ${(error as Error).message}` }], isError: true };
@@ -529,7 +529,6 @@ export function registerCallToolHandler(
                   result = { content: [{ type: 'text', text: `Error: ${(error as Error).message}` }], isError: true };
               }
               break;
-          // RooSync Config Sharing tools - Cycle 6
           case 'roosync_collect_config':
               try {
                   const roosyncResult = await toolExports.roosyncCollectConfig(args as any);
@@ -554,7 +553,7 @@ export function registerCallToolHandler(
                   result = { content: [{ type: 'text', text: `Error: ${(error as Error).message}` }], isError: true };
               }
               break;
-           // RooSync Messaging tools - Phase 1
+          // RooSync Messaging tools - Phase 1
            case 'roosync_send_message':
                try {
                    result = await toolExports.sendMessage(args as any) as CallToolResult;

@@ -140,13 +140,18 @@ export class InventoryCollector {
       return this.cache.get(machineId)!.data;
     }
 
-    // STRATÉGIE 1 : Charger depuis .shared-state/inventories/ (prioritaire)
-    this.logger.info(`📂 Tentative de chargement depuis .shared-state/inventories/`);
-    const sharedInventory = await this.loadFromSharedState(machineId);
-    
-    if (sharedInventory) {
-      this.logger.info(`✅ Inventaire chargé depuis .shared-state pour ${machineId}`);
-      return sharedInventory;
+    // CORRECTION SDDD : Si forceRefresh, sauter le chargement depuis .shared-state pour forcer l'exécution du script
+    if (!forceRefresh) {
+      // STRATÉGIE 1 : Charger depuis .shared-state/inventories/ (prioritaire)
+      this.logger.info(`📂 Tentative de chargement depuis .shared-state/inventories/`);
+      const sharedInventory = await this.loadFromSharedState(machineId);
+      
+      if (sharedInventory) {
+        this.logger.info(`✅ Inventaire chargé depuis .shared-state pour ${machineId}`);
+        return sharedInventory;
+      }
+    } else {
+      this.logger.info(`🔄 ForceRefresh activé : bypass du chargement .shared-state pour forcer l'exécution du script`);
     }
 
     // STRATÉGIE 2 : Si pas trouvé, vérifier si machine locale et exécuter script PowerShell

@@ -1,7 +1,7 @@
 import { Tool } from '@modelcontextprotocol/sdk/types.js';
 import { CallToolRequestSchema, ListToolsRequestSchema, ErrorCode, McpError } from '@modelcontextprotocol/sdk/types.js';
 import { getGitHubClient, GitHubAccount } from './utils/github.js';
-import { analyze_task_complexity, executeGetProjectItems, executeArchiveProject, executeUnarchiveProject, executeConvertDraftToIssue, executeCreateProjectField, executeDeleteProject, executeDeleteProjectField, executeUpdateIssueState, getRepositoryId, executeCreateIssue, executeUpdateProjectField, executeUpdateProjectItemField, archiveProjectItem, unarchiveProjectItem } from './github-actions.js';
+import { analyze_task_complexity, executeGetProjectItems, executeArchiveProject, executeUnarchiveProject, executeConvertDraftToIssue, executeCreateProjectField, executeDeleteProject, executeDeleteProjectField, executeUpdateIssueState, getRepositoryId, executeCreateIssue, executeUpdateProjectField, executeUpdateProjectItemField, archiveProjectItem, unarchiveProjectItem, deleteProjectItem, executeDeleteRepositoryIssuesBulk, executeListRepositoryIssues, executeGetRepositoryIssue } from './github-actions.js';
 import { checkReadOnlyMode, checkRepoPermissions } from './security.js';
 import logger from './logger.js';
 import {
@@ -491,45 +491,26 @@ export function setupTools(server: any, accounts: GitHubAccount[]): Tool[] {
      * @tool delete_project_item
      * @description Supprime un élément d'un projet.
      * @param {string} owner - Le propriétaire du projet.
-     * @param {string} project_id - L'ID du projet.
-     * @param {string} item_id - L'ID de l'élément à supprimer.
-     * @returns {Promise<object>} L'ID de l'élément supprimé.
+     * @param {string} projectId - L'ID du projet.
+     * @param {string} itemId - L'ID de l'élément.
+     * @returns {Promise<object>} Le résultat.
      */
     {
       name: 'delete_project_item',
-      description: "Supprime un élément d'un projet GitHub",
+      description: "Supprime un élément d'un projet GitHub.",
       inputSchema: {
         type: 'object',
         properties: {
-          owner: { type: 'string', description: "Propriétaire du projet" },
-          project_id: { type: 'string', description: "ID du projet" },
-          item_id: { type: 'string', description: "ID de l'élément à supprimer" },
+          owner: { type: 'string', description: "Propriétaire du projet." },
+          projectId: { type: 'string', description: "The ID of project." },
+          itemId: { type: 'string', description: "The ID of item to delete." },
         },
-        required: ['owner', 'project_id', 'item_id'],
+        required: ['owner', 'projectId', 'itemId'],
       },
-      execute: async ({ owner, project_id, item_id }: { owner: string, project_id: string, item_id: string }) => {
-        try {
-          const octokit = getGitHubClient(owner, accounts);
-          checkReadOnlyMode();
-          const mutation = `
-            mutation($projectId: ID!, $itemId: ID!) {
-              deleteProjectV2Item(input: {projectId: $projectId, itemId: $itemId}) {
-                deletedItemId
-              }
-            }
-          `;
-          const result = await octokit.graphql<GraphQLDeleteProjectItemResponse>(mutation, {
-            projectId: project_id,
-            itemId: item_id,
-          });
-
-          const deletedItemId = result.deleteProjectV2Item?.deletedItemId;
-          if (!deletedItemId) throw new Error("La réponse de l'API n'a pas retourné d'ID d'élément supprimé.");
-          return { success: true, deleted_item_id: deletedItemId };
-        } catch (error: any) {
-          logger.error('Erreur dans delete_project_item', { error });
-          return { success: false, error: error.message || "Une erreur est survenue lors de la suppression de l'élément." };
-        }
+      execute: async ({ owner, projectId, itemId }: { owner: string, projectId: string, itemId: string }) => {
+        const octokit = getGitHubClient(owner, accounts);
+        checkReadOnlyMode();
+        return await deleteProjectItem(octokit, { projectId, itemId });
       }
     },
     /**
@@ -590,7 +571,7 @@ export function setupTools(server: any, accounts: GitHubAccount[]): Tool[] {
           const input: any = { projectId: project_id };
           if (title !== undefined) input.title = title;
           if (description !== undefined) input.shortDescription = description;
-          
+
           const response = await octokit.graphql<any>(mutation, { input });
           if (!response?.updateProjectV2?.projectV2?.id) throw new Error("La mise à jour a échoué.");
           return { success: true, projectId: response.updateProjectV2.projectV2.id };
@@ -923,7 +904,7 @@ export function setupTools(server: any, accounts: GitHubAccount[]): Tool[] {
             owner,
             repo
           });
-          
+
           return {
             success: true,
             workflows: response.data.workflows
@@ -965,7 +946,7 @@ export function setupTools(server: any, accounts: GitHubAccount[]): Tool[] {
             repo,
             workflow_id
           });
-          
+
           const summarized_runs: SummarizedWorkflowRun[] = (response.data.workflow_runs as WorkflowRun[]).map(run => ({
             id: run.id,
             name: run.name || "Unnamed Workflow",
@@ -1017,7 +998,7 @@ export function setupTools(server: any, accounts: GitHubAccount[]): Tool[] {
             repo,
             run_id
           });
-          
+
           return {
             success: true,
             workflow_run: response.data as WorkflowRun
@@ -1059,7 +1040,7 @@ export function setupTools(server: any, accounts: GitHubAccount[]): Tool[] {
             repo,
             run_id
           });
-          
+
           const jobs = response.data.jobs.map((job: any) => ({
             id: job.id,
             name: job.name,
@@ -1077,7 +1058,7 @@ export function setupTools(server: any, accounts: GitHubAccount[]): Tool[] {
               completed_at: step.completed_at
             }))
           }));
-          
+
           return {
             success: true,
             jobs,
@@ -1121,7 +1102,127 @@ export function setupTools(server: any, accounts: GitHubAccount[]): Tool[] {
           return { success: false, error: error.message || 'Erreur lors de la recherche de dépôts' };
         }
       }
-    }
+    },
+    /**
+     * @tool delete_repository_issues
+     * @description Supprime plusieurs issues d'un dépôt en une seule opération.
+     * @param {string} owner - Nom d'utilisateur ou d'organisation propriétaire du dépôt.
+     * @param {string} repo - Nom du dépôt.
+     * @param {number[]} issueNumbers - Liste des numéros d'issues à supprimer.
+     * @param {string} [comment] - Commentaire à ajouter avant la fermeture (optionnel).
+     * @returns {Promise<object>} Un objet contenant les résultats de la suppression.
+     */
+    {
+      name: 'delete_repository_issues',
+      description: "Supprime plusieurs issues d'un dépôt en une seule opération (ferme les issues avec un commentaire optionnel)",
+      inputSchema: {
+        type: 'object',
+        properties: {
+          owner: { type: 'string', description: "Nom d'utilisateur ou d'organisation propriétaire du dépôt" },
+          repo: { type: 'string', description: 'Nom du dépôt' },
+          issueNumbers: {
+            type: 'array',
+            items: { type: 'number' },
+            description: 'Liste des numéros d\'issues à supprimer'
+          },
+          comment: { type: 'string', description: 'Commentaire à ajouter avant la fermeture (optionnel)' }
+        },
+        required: ['owner', 'repo', 'issueNumbers']
+      },
+      execute: async ({ owner, repo, issueNumbers, comment }: {
+        owner: string;
+        repo: string;
+        issueNumbers: number[];
+        comment?: string;
+      }) => {
+        try {
+          const octokit = getGitHubClient(owner, accounts);
+          return await executeDeleteRepositoryIssuesBulk(octokit, { owner, repo, issueNumbers, comment });
+        } catch (error: any) {
+          logger.error('Erreur dans delete_repository_issues', { error });
+          return {
+            success: false,
+            error: error.message || 'Erreur lors de la suppression des issues'
+          };
+        }
+      }
+    },
+    /**
+     * @tool list_repository_issues
+     * @description Liste les issues d'un dépôt GitHub.
+     * @param {string} owner - Nom d'utilisateur ou d'organisation propriétaire du dépôt.
+     * @param {string} repo - Nom du dépôt.
+     * @param {'open' | 'closed' | 'all'} [state='open'] - État des issues à récupérer.
+     * @param {number} [perPage=30] - Nombre d'issues par page (max 100).
+     * @param {number} [page=1] - Numéro de page.
+     * @returns {Promise<object>} Un objet contenant la liste des issues.
+     */
+    {
+      name: 'list_repository_issues',
+      description: "Liste les issues d'un dépôt GitHub",
+      inputSchema: {
+        type: 'object',
+        properties: {
+          owner: { type: 'string', description: "Nom d'utilisateur ou d'organisation propriétaire du dépôt" },
+          repo: { type: 'string', description: 'Nom du dépôt' },
+          state: { type: 'string', enum: ['open', 'closed', 'all'], default: 'open', description: "État des issues à récupérer" },
+          perPage: { type: 'number', default: 30, description: "Nombre d'issues par page (max 100)" },
+          page: { type: 'number', default: 1, description: 'Numéro de page' }
+        },
+        required: ['owner', 'repo']
+      },
+      execute: async ({ owner, repo, state = 'open', perPage = 30, page = 1 }: {
+        owner: string;
+        repo: string;
+        state?: 'open' | 'closed' | 'all';
+        perPage?: number;
+        page?: number;
+      }) => {
+        try {
+          const octokit = getGitHubClient(owner, accounts);
+          return await executeListRepositoryIssues(octokit, { owner, repo, state, perPage, page });
+        } catch (error: any) {
+          logger.error('Erreur dans list_repository_issues', { error });
+          return {
+            success: false,
+            error: error.message || 'Erreur lors de la récupération des issues'
+          };
+        }
+      }
+    },
+    /**
+     * @tool get_repository_issue
+     * @description Récupère les détails d'une issue spécifique d'un dépôt GitHub.
+     * @param {string} owner - Nom d'utilisateur ou d'organisation propriétaire du dépôt.
+     * @param {string} repo - Nom du dépôt.
+     * @param {number} issueNumber - Le numéro de l'issue.
+     * @returns {Promise<object>} Un objet contenant les détails de l'issue.
+     */
+    {
+      name: 'get_repository_issue',
+      description: "Récupère les détails d'une issue spécifique d'un dépôt GitHub",
+      inputSchema: {
+        type: 'object',
+        properties: {
+          owner: { type: 'string', description: "Nom d'utilisateur ou d'organisation propriétaire du dépôt" },
+          repo: { type: 'string', description: 'Nom du dépôt' },
+          issueNumber: { type: 'number', description: 'Le numéro de l\'issue' }
+        },
+        required: ['owner', 'repo', 'issueNumber']
+      },
+      execute: async ({ owner, repo, issueNumber }: { owner: string; repo: string; issueNumber: number }) => {
+        try {
+          const octokit = getGitHubClient(owner, accounts);
+          return await executeGetRepositoryIssue(octokit, { owner, repo, issueNumber });
+        } catch (error: any) {
+          logger.error('Erreur dans get_repository_issue', { error });
+          return {
+            success: false,
+            error: error.message || 'Erreur lors de la récupération de l\'issue'
+          };
+        }
+      }
+    },
   ];
 
   if (server) {
