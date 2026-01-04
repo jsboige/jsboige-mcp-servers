@@ -93,8 +93,7 @@ describe('E2E Tests with Real Environment', () => {
     describe('Environment Configuration', () => {
         it('should have all required environment variables', () => {
             expect(process.env.OPENAI_API_KEY).toBeDefined();
-            // Accepter OPENAI_MODEL_ID ou OPENAI_CHAT_MODEL_ID
-            expect(process.env.OPENAI_MODEL_ID || process.env.OPENAI_CHAT_MODEL_ID).toBeDefined();
+            expect(process.env.OPENAI_MODEL_ID).toBeDefined();
             expect(process.env.QDRANT_URL).toBeDefined();
             expect(process.env.QDRANT_API_KEY).toBeDefined();
             expect(process.env.QDRANT_COLLECTION_NAME).toBeDefined();
@@ -102,8 +101,7 @@ describe('E2E Tests with Real Environment', () => {
 
         it('should validate environment values', () => {
             expect(process.env.OPENAI_API_KEY).toMatch(/^sk-/);
-            // Accepter gpt-4o-mini ou gpt-5-mini selon la configuration
-            expect(['gpt-4o', 'gpt-4o-mini', 'gpt-5-mini']).toContain(process.env.OPENAI_MODEL_ID || process.env.OPENAI_CHAT_MODEL_ID);
+            expect(process.env.OPENAI_MODEL_ID).toBe('gpt-4o');
             expect(process.env.QDRANT_URL).toMatch(/^https?:\/\//);
             expect(process.env.QDRANT_COLLECTION_NAME).toBe('roo_tasks_semantic_index');
         });

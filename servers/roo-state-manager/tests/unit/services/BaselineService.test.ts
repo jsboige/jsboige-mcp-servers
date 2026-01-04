@@ -3,13 +3,14 @@ import path from 'path';
 import { promises as fs, existsSync, copyFileSync } from 'fs';
 import { BaselineService } from '../../../src/services/BaselineService';
 
-// Mock fs module
+// Mock fs module de manière cohérente avec l'import utilisé
 vi.mock('fs', async () => {
   const actual = await vi.importActual<typeof import('fs')>('fs');
   return {
     ...actual,
     existsSync: vi.fn(),
     copyFileSync: vi.fn(),
+    // Mock cohérent avec l'import { promises as fs }
     promises: {
       readFile: vi.fn(),
       writeFile: vi.fn(),

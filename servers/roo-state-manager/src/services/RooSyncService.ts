@@ -174,10 +174,10 @@ export class RooSyncService {
         errorStack: error instanceof Error ? error.stack : null,
         errorName: error instanceof Error ? error.name : null
       });
-
+      
       // S'assurer que l'instance n'est pas créée en cas d'erreur
       RooSyncService.instance = null;
-
+      
       throw error;
     }
   }
