@@ -1,6 +1,11 @@
 import { Tool } from '@modelcontextprotocol/sdk/types.js';
 import { CallToolRequestSchema, ListToolsRequestSchema, ErrorCode, McpError } from '@modelcontextprotocol/sdk/types.js';
 import { getGitHubClient, GitHubAccount } from './utils/github.js';
+
+// Type personnalisé pour les outils avec fonction execute
+interface ToolWithExecute extends Tool {
+  execute: (args: any) => Promise<any>;
+}
 import { analyze_task_complexity, executeGetProjectItems, executeArchiveProject, executeUnarchiveProject, executeConvertDraftToIssue, executeCreateProjectField, executeDeleteProject, executeDeleteProjectField, executeUpdateIssueState, getRepositoryId, executeCreateIssue, executeUpdateProjectField, executeUpdateProjectItemField, archiveProjectItem, unarchiveProjectItem, deleteProjectItem, executeDeleteRepositoryIssuesBulk, executeListRepositoryIssues, executeGetRepositoryIssue } from './github-actions.js';
 import { checkReadOnlyMode, checkRepoPermissions } from './security.js';
 import logger from './logger.js';
@@ -132,8 +137,8 @@ interface GraphQLDeleteProjectItemResponse {
  * @param server Instance du serveur MCP
  * @param accounts Liste des comptes GitHub configurés
  */
-export function setupTools(server: any, accounts: GitHubAccount[]): Tool[] {
-  const allTools: Tool[] = [
+export function setupTools(server: any, accounts: GitHubAccount[]): ToolWithExecute[] {
+  const allTools: ToolWithExecute[] = [
     /**
      * @tool list_projects
      * @description Liste les projets GitHub d'un utilisateur ou d'une organisation.
