@@ -1,7 +1,7 @@
 import { Tool } from '@modelcontextprotocol/sdk/types.js';
 import { CallToolRequestSchema, ListToolsRequestSchema, ErrorCode, McpError } from '@modelcontextprotocol/sdk/types.js';
 import { getGitHubClient, GitHubAccount } from './utils/github.js';
-import { analyze_task_complexity, executeGetProjectItems, executeArchiveProject, executeUnarchiveProject, executeConvertDraftToIssue, executeCreateProjectField, executeDeleteProject, executeDeleteProjectField, executeUpdateIssueState, getRepositoryId, executeCreateIssue, executeUpdateProjectField, executeUpdateProjectItemField, archiveProjectItem, unarchiveProjectItem, deleteProjectItem, executeDeleteRepositoryIssuesBulk, executeListRepositoryIssues, executeGetRepositoryIssue } from './github-actions.js';
+import { analyze_task_complexity, executeGetProjectItems, executeArchiveProject, executeUnarchiveProject, executeConvertDraftToIssue, executeCreateProjectField, executeDeleteProject, executeDeleteProjectField, executeUpdateIssueState, getRepositoryId, executeCreateIssue, executeUpdateProjectField, executeUpdateProjectItemField, archiveProjectItem, unarchiveProjectItem, deleteProjectItem, executeDeleteRepositoryIssuesBulk, executeListRepositoryIssues, executeGetRepositoryIssue, executeAddIssueComment } from './github-actions.js';
 import { checkReadOnlyMode, checkRepoPermissions } from './security.js';
 import logger from './logger.js';
 import {
@@ -1219,6 +1219,41 @@ export function setupTools(server: any, accounts: GitHubAccount[]): Tool[] {
           return {
             success: false,
             error: error.message || 'Erreur lors de la récupération de l\'issue'
+          };
+        }
+      }
+    },
+    /**
+     * @tool add_issue_comment
+     * @description Ajoute un commentaire à une issue GitHub.
+     * @param {string} owner - Nom d'utilisateur ou d'organisation propriétaire du dépôt.
+     * @param {string} repo - Nom du dépôt.
+     * @param {number} issueNumber - Le numéro de l'issue.
+     * @param {string} body - Le contenu du commentaire.
+     * @returns {Promise<object>} Un objet contenant les détails du commentaire créé.
+     */
+    {
+      name: 'add_issue_comment',
+      description: "Ajoute un commentaire à une issue GitHub",
+      inputSchema: {
+        type: 'object',
+        properties: {
+          owner: { type: 'string', description: "Nom d'utilisateur ou d'organisation propriétaire du dépôt" },
+          repo: { type: 'string', description: 'Nom du dépôt' },
+          issueNumber: { type: 'number', description: 'Le numéro de l\'issue' },
+          body: { type: 'string', description: 'Le contenu du commentaire' }
+        },
+        required: ['owner', 'repo', 'issueNumber', 'body']
+      },
+      execute: async ({ owner, repo, issueNumber, body }: { owner: string; repo: string; issueNumber: number; body: string }) => {
+        try {
+          const octokit = getGitHubClient(owner, accounts);
+          return await executeAddIssueComment(octokit, { owner, repo, issueNumber, body });
+        } catch (error: any) {
+          logger.error('Erreur dans l\'outil add_issue_comment', { error });
+          return {
+            success: false,
+            error: error.message || 'Erreur lors de l\'ajout du commentaire'
           };
         }
       }

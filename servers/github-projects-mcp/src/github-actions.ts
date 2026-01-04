@@ -1164,3 +1164,43 @@ export async function executeDeleteRepositoryIssuesBulk(
 
   return results;
 }
+
+/**
+ * Ajoute un commentaire à une issue GitHub.
+ * @param {any} octokit - L'instance du client Octokit.
+ * @param {object} params - Les paramètres pour l'ajout de commentaire.
+ * @param {string} params.owner - Le propriétaire du dépôt.
+ * @param {string} params.repo - Le nom du dépôt.
+ * @param {number} params.issueNumber - Le numéro de l'issue.
+ * @param {string} params.body - Le contenu du commentaire.
+ * @returns {Promise<object>} Une promesse qui résout avec les détails du commentaire créé.
+ */
+export async function executeAddIssueComment(
+  octokit: any,
+  { owner, repo, issueNumber, body }: { owner: string; repo: string; issueNumber: number; body: string }
+) {
+  checkRepoPermissions(owner, repo);
+  try {
+    const response = await octokit.rest.issues.createComment({
+      owner,
+      repo,
+      issue_number: issueNumber,
+      body,
+    });
+
+    return {
+      success: true,
+      comment: {
+        id: response.data.id,
+        nodeId: response.data.node_id,
+        body: response.data.body,
+        url: response.data.html_url,
+        createdAt: response.data.created_at,
+        user: response.data.user?.login,
+      }
+    };
+  } catch (e) {
+    console.error('GitHub API call failed:', e);
+    throw new Error(`GitHub API Error: ${(e as Error).message}`);
+  }
+}
