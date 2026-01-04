@@ -56,7 +56,27 @@ describe('Orphan Robustness Tests - Mission WEB', () => {
     });
 
     describe('Gestion des Orphelins Massifs', () => {
-        // TODO: Réactiver ce test après la refonte du mocking FS. Le taux de résolution est artificiellement bas (0.25) à cause des mocks.
+        /**
+         * TEST NON RÉINTÉGRABLE - Problème de mocking FS
+         *
+         * Ce test est désactivé car le taux de résolution est artificiellement bas (0.25)
+         * à cause des mocks du système de fichiers.
+         *
+         * Problème identifié :
+         * - Les mocks fs/fs/promises ne simulent pas correctement le comportement réel
+         * - Le moteur de reconstruction hiérarchique dépend de la lecture de fichiers réels
+         * - Les mocks retournent des données statiques qui ne reflètent pas la complexité réelle
+         *
+         * Pour réintégrer ce test :
+         * 1. Refondre le système de mocking FS pour être plus réaliste
+         * 2. Utiliser un système de fichiers virtuel (memfs) au lieu de mocks simples
+         * 3. Simuler correctement les opérations de lecture/écriture avec des données dynamiques
+         * 4. Tester avec des fixtures réelles dans un environnement isolé
+         *
+         * Alternatives :
+         * - Exécuter ce test en mode intégration avec de vrais fichiers de test
+         * - Créer un sandbox de fichiers temporaires pour chaque test
+         */
         it.skip('should handle 20 orphan tasks with 70% resolution rate', async () => {
             // Créer 20 orphelines + 2 parents potentiels
             const orphans: ConversationSkeleton[] = [];
