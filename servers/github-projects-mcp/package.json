@@ -29,8 +29,11 @@
     "winston": "^3.17.0"
   },
   "devDependencies": {
+    "@types/connect": "^3.4.38",
     "@types/jest": "^29.5.0",
+    "@types/mime": "^3.0.4",
     "@types/node": "^18.15.11",
+    "@types/range-parser": "^1.2.7",
     "axios": "^1.10.0",
     "cross-env": "^7.0.3",
     "jest": "^29.5.0",
