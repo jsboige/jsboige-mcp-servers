@@ -5,12 +5,13 @@
  * contre l'écrasement d'identités et validation d'unicité.
  * 
  * @module PresenceManager
- * @version 1.0.0
+ * @version 2.0.0
  */
 
-import { promises as fs, existsSync, readFileSync, writeFileSync } from 'fs';
+import { promises as fs, existsSync } from 'fs';
 import { join } from 'path';
 import { RooSyncConfig } from '../../config/roosync-config.js';
+import { getFileLockManager, LockOptions } from './FileLockManager.simple.js';
 
 /**
  * Interface pour les données de présence
@@ -49,7 +50,10 @@ export class PresenceManagerError extends Error {
  * Gestionnaire de présence avec protection contre l'écrasement
  */
 export class PresenceManager {
-  constructor(private config: RooSyncConfig) {}
+  constructor(
+    private config: RooSyncConfig,
+    private lockManager = getFileLockManager()
+  ) {}
 
   /**
    * Obtenir le chemin du fichier de présence pour une machine
@@ -115,58 +119,56 @@ export class PresenceManager {
       const presenceFile = this.getPresenceFilePath(machineId);
       const now = new Date().toISOString();
       
-      // Vérifier si le fichier existe déjà
-      let existingData: PresenceData | null = null;
-      if (existsSync(presenceFile)) {
-        const content = await fs.readFile(presenceFile, 'utf-8');
-        existingData = JSON.parse(content) as PresenceData;
-        
-        // Vérifier l'incohérence d'identité
-        if (existingData.id !== machineId) {
-          const warningMessage = `⚠️ INCOHÉRENCE D'IDENTITÉ: Le fichier ${presenceFile} contient l'ID ${existingData.id} mais on tente de mettre à jour ${machineId}`;
-          console.error(`[PresenceManager] ${warningMessage}`);
-          
-          return {
-            success: false,
-            conflictDetected: true,
-            warningMessage,
-            existingData
-          };
-        }
-        
-        // Vérifier le conflit de source
-        if (updates.source && existingData.source && updates.source !== existingData.source && !force) {
-          const warningMessage = `⚠️ CONFLIT DE SOURCE: MachineId ${machineId} déjà utilisé par la source ${existingData.source}. Tentative de mise à jour depuis ${updates.source}`;
-          console.error(`[PresenceManager] ${warningMessage}`);
-          
-          return {
-            success: false,
-            conflictDetected: true,
-            warningMessage,
-            existingData
-          };
-        }
-      }
-
-      // Créer ou mettre à jour les données de présence
-      const presenceData: PresenceData = {
-        id: machineId,
-        status: 'online',
-        lastSeen: now,
-        version: '1.0.0',
-        mode: 'code',
-        ...existingData,
-        ...updates,
-        firstSeen: existingData?.firstSeen || now
+      // Options de verrouillage avec retries
+      const lockOptions: LockOptions = {
+        retries: 10,
+        minTimeout: 100,
+        maxTimeout: 1000,
+        stale: 30000
       };
-
-      // Écrire le fichier de manière sécurisée
-      await fs.writeFile(
+      
+      // Utiliser le verrouillage pour la mise à jour
+      const result = await this.lockManager.updateJsonWithLock<PresenceData>(
         presenceFile,
-        JSON.stringify(presenceData, null, 2),
-        'utf-8'
+        (existingData) => {
+          // Vérifier l'incohérence d'identité
+          if (existingData && existingData.id !== machineId) {
+            const warningMessage = `⚠️ INCOHÉRENCE D'IDENTITÉ: Le fichier ${presenceFile} contient l'ID ${existingData.id} mais on tente de mettre à jour ${machineId}`;
+            console.error(`[PresenceManager] ${warningMessage}`);
+            throw new PresenceManagerError(warningMessage, 'IDENTITY_MISMATCH');
+          }
+          
+          // Vérifier le conflit de source
+          if (existingData && updates.source && existingData.source && updates.source !== existingData.source && !force) {
+            const warningMessage = `⚠️ CONFLIT DE SOURCE: MachineId ${machineId} déjà utilisé par la source ${existingData.source}. Tentative de mise à jour depuis ${updates.source}`;
+            console.error(`[PresenceManager] ${warningMessage}`);
+            throw new PresenceManagerError(warningMessage, 'SOURCE_CONFLICT');
+          }
+          
+          // Créer ou mettre à jour les données de présence
+          const presenceData: PresenceData = {
+            ...existingData,
+            ...updates,
+            id: machineId,
+            status: updates.status || existingData?.status || 'online',
+            lastSeen: now,
+            version: updates.version || existingData?.version || '1.0.0',
+            mode: updates.mode || existingData?.mode || 'code',
+            firstSeen: existingData?.firstSeen || now
+          };
+          
+          return presenceData;
+        },
+        lockOptions
       );
-
+      
+      if (!result.success) {
+        return {
+          success: false,
+          warningMessage: result.error?.message || 'Erreur inconnue lors de la mise à jour de présence'
+        };
+      }
+      
       console.log(`[PresenceManager] Présence mise à jour pour ${machineId} (source: ${updates.source || 'inconnue'})`);
       
       return {
@@ -210,9 +212,16 @@ export class PresenceManager {
       const presenceFile = this.getPresenceFilePath(machineId);
       
       if (existsSync(presenceFile)) {
-        await fs.unlink(presenceFile);
-        console.log(`[PresenceManager] Fichier de présence supprimé pour ${machineId}`);
-        return true;
+        // Utiliser le verrouillage pour la suppression
+        const result = await this.lockManager.withLock<void>(
+          presenceFile,
+          async () => {
+            await fs.unlink(presenceFile);
+            console.log(`[PresenceManager] Fichier de présence supprimé pour ${machineId}`);
+          }
+        );
+        
+        return result.success;
       }
       
       return false;

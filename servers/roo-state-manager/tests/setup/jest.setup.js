@@ -139,7 +139,28 @@ const mockFsPromises = {
   mkdir: vi.fn().mockResolvedValue(undefined),
   rm: vi.fn().mockResolvedValue(undefined),
   copyFile: vi.fn().mockResolvedValue(undefined),
-  unlink: vi.fn().mockResolvedValue(undefined)
+  unlink: vi.fn().mockResolvedValue(undefined),
+  // Méthodes supplémentaires nécessaires pour proper-lockfile
+  open: vi.fn().mockResolvedValue({ fd: 1 }),
+  close: vi.fn().mockResolvedValue(undefined),
+  read: vi.fn().mockResolvedValue({ bytesRead: 0, buffer: Buffer.alloc(0) }),
+  write: vi.fn().mockResolvedValue({ bytesWritten: 0, buffer: Buffer.alloc(0) }),
+  rename: vi.fn().mockResolvedValue(undefined),
+  fstat: vi.fn().mockResolvedValue({ isDirectory: () => true, size: 100, mtime: new Date() }),
+  fchmod: vi.fn().mockResolvedValue(undefined),
+  fchown: vi.fn().mockResolvedValue(undefined),
+  ftruncate: vi.fn().mockResolvedValue(undefined),
+  futimes: vi.fn().mockResolvedValue(undefined),
+  lstat: vi.fn().mockResolvedValue({ isDirectory: () => true, size: 100, mtime: new Date() }),
+  link: vi.fn().mockResolvedValue(undefined),
+  symlink: vi.fn().mockResolvedValue(undefined),
+  readlink: vi.fn().mockResolvedValue('/mock/link'),
+  realpath: vi.fn().mockResolvedValue('/mock/realpath'),
+  utimes: vi.fn().mockResolvedValue(undefined),
+  chmod: vi.fn().mockResolvedValue(undefined),
+  chown: vi.fn().mockResolvedValue(undefined),
+  appendFile: vi.fn().mockResolvedValue(undefined),
+  rmdir: vi.fn().mockResolvedValue(undefined)
 };
 
 // Mock du système de fichiers
@@ -151,20 +172,76 @@ const mockFs = {
   readdirSync: vi.fn(() => ['file1.json', 'file2.json']),
   statSync: vi.fn(() => ({ isDirectory: () => true, size: 100, mtime: new Date() })),
   rmSync: vi.fn(),
-  promises: mockFsPromises
+  promises: mockFsPromises,
+  // Méthodes supplémentaires nécessaires pour proper-lockfile
+  openSync: vi.fn(() => ({ fd: 1 })),
+  closeSync: vi.fn(),
+  readSync: vi.fn(() => ({ bytesRead: 0, buffer: Buffer.alloc(0) })),
+  writeSync: vi.fn(() => ({ bytesWritten: 0, buffer: Buffer.alloc(0) })),
+  renameSync: vi.fn(),
+  fstatSync: vi.fn(() => ({ isDirectory: () => true, size: 100, mtime: new Date() })),
+  fchmodSync: vi.fn(),
+  fchownSync: vi.fn(),
+  ftruncateSync: vi.fn(),
+  futimesSync: vi.fn(),
+  lstatSync: vi.fn(() => ({ isDirectory: () => true, size: 100, mtime: new Date() })),
+  linkSync: vi.fn(),
+  symlinkSync: vi.fn(),
+  readlinkSync: vi.fn(() => '/mock/link'),
+  realpathSync: vi.fn(() => '/mock/realpath'),
+  utimesSync: vi.fn(),
+  chmodSync: vi.fn(),
+  chownSync: vi.fn(),
+  appendFileSync: vi.fn(),
+  rmdirSync: vi.fn(),
+  accessSync: vi.fn(),
+  unlinkSync: vi.fn(),
+  copyFileSync: vi.fn(),
+  // Rendre l'objet extensible pour proper-lockfile
+  constants: {
+    O_RDONLY: 0,
+    O_WRONLY: 1,
+    O_RDWR: 2,
+    O_CREAT: 64,
+    O_EXCL: 128,
+    O_NOCTTY: 256,
+    O_TRUNC: 512,
+    O_APPEND: 1024,
+    O_DIRECTORY: 65536,
+    O_NOATIME: 262144,
+    O_NOFOLLOW: 131072,
+    O_SYNC: 1052672,
+    O_DSYNC: 4096,
+    O_SYMLINK: 2097152,
+    O_NONBLOCK: 2048,
+    F_OK: 0,
+    R_OK: 4,
+    W_OK: 2,
+    X_OK: 1
+  }
 };
 
 // Mock global de fs et fs/promises
 // Note: Certains tests peuvent surcharger ces mocks avec vi.mock('fs', ...) localement
-vi.mock('fs', () => ({
-  default: mockFs,
-  ...mockFs
-}));
+vi.mock('fs', () => {
+  const fsMock = {
+    default: mockFs,
+    ...mockFs
+  };
+  // Rendre l'objet extensible
+  Object.setPrototypeOf(fsMock, Object.prototype);
+  return fsMock;
+});
 
-vi.mock('fs/promises', () => ({
-  default: mockFsPromises,
-  ...mockFsPromises
-}));
+vi.mock('fs/promises', () => {
+  const fsPromisesMock = {
+    default: mockFsPromises,
+    ...mockFsPromises
+  };
+  // Rendre l'objet extensible
+  Object.setPrototypeOf(fsPromisesMock, Object.prototype);
+  return fsPromisesMock;
+});
 
 // Mock du module path - Utilisation de l'implémentation réelle pour la robustesse
 // MAIS avec normalisation forcée pour les tests cross-platform
