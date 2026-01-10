@@ -8,7 +8,7 @@
  * @version 1.0.0
  */
 
-import { existsSync, promises as fs } from 'fs';
+import { existsSync, promises as fs, mkdirSync } from 'fs';
 import { join } from 'path';
 
 /**
@@ -133,7 +133,7 @@ export class MessageManager {
     for (const dir of dirs) {
       if (!existsSync(dir)) {
         try {
-          require('fs').mkdirSync(dir, { recursive: true });
+          mkdirSync(dir, { recursive: true });
           console.error(`✅ [MessageManager] Répertoire créé: ${dir}`);
         } catch (error) {
           console.error(`❌ [MessageManager] Erreur création répertoire ${dir}:`, error);

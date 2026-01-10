@@ -69,10 +69,6 @@ export interface PowerShellExecutorConfig {
  */
 export class PowerShellExecutor {
   private static readonly DEFAULT_POWERSHELL_PATH = 'pwsh.exe';
-  private static readonly DEFAULT_ROOSYNC_BASE_PATH = path.join(
-    process.env.ROO_HOME || 'd:/roo-extensions',
-    'RooSync'
-  );
   private static readonly DEFAULT_TIMEOUT = 30000; // 30 secondes
   private static resolvedPowerShellPath: string | null = null;
   private static mockPowerShellPath: string | null = null;
@@ -87,7 +83,18 @@ export class PowerShellExecutor {
    */
   constructor(config?: PowerShellExecutorConfig) {
     this.powershellPath = config?.powershellPath || PowerShellExecutor.getSystemPowerShellPath();
-    this.roosyncBasePath = config?.roosyncBasePath || PowerShellExecutor.DEFAULT_ROOSYNC_BASE_PATH;
+    
+    // CORRECTION SDDD : Utiliser ROOSYNC_SHARED_PATH depuis .env, pas de fallback local
+    if (config?.roosyncBasePath) {
+      this.roosyncBasePath = config.roosyncBasePath;
+    } else if (process.env.ROOSYNC_SHARED_PATH) {
+      this.roosyncBasePath = process.env.ROOSYNC_SHARED_PATH;
+    } else {
+      throw new Error(
+        'ROOSYNC_SHARED_PATH non défini. Le système RooSync nécessite un chemin de stockage externe explicite.'
+      );
+    }
+    
     this.defaultTimeout = config?.defaultTimeout || PowerShellExecutor.DEFAULT_TIMEOUT;
   }
 

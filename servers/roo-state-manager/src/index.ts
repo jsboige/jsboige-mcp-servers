@@ -19,7 +19,14 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
 
 // Charger les variables d'environnement AVANT tout autre import
-dotenv.config({ path: path.join(__dirname, '..', '.env') });
+const envPath = path.join(__dirname, '..', '.env');
+console.log('🔧 [DEBUG] Chargement .env depuis:', envPath);
+console.log('🔧 [DEBUG] __dirname:', __dirname);
+const envResult = dotenv.config({ path: envPath, override: true });
+console.log('🔧 [DEBUG] dotenv.config result:', envResult.error ? 'ERROR' : 'SUCCESS');
+if (envResult.error) {
+  console.error('🔧 [DEBUG] dotenv.config error:', envResult.error);
+}
 
 // VALIDATION STRICTE DES CONFIGURATIONS CRITIQUES AU STARTUP
 const REQUIRED_ENV_VARS = [

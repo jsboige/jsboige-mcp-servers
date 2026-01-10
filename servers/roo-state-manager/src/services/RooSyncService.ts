@@ -126,7 +126,7 @@ export class RooSyncService {
         enabled: cacheOptions?.enabled ?? true
       };
       this.powershellExecutor = new PowerShellExecutor({
-        roosyncBasePath: process.env.ROOSYNC_SHARED_PATH || process.env.SHARED_STATE_PATH || join(process.env.ROO_ROOT || process.cwd(), 'RooSync')
+        roosyncBasePath: process.env.ROOSYNC_SHARED_PATH
       });
       this.inventoryCollector = new InventoryCollector();
       this.diffDetector = new DiffDetector();
