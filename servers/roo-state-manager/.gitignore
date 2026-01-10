@@ -54,4 +54,7 @@ vitest-migration/
 
 # Test outputs
 synthesis-test-output.txt
-"test-results.txt" 
+"test-results.txt"
+
+# Test fixtures (generated during tests)
+tests/fixtures/roosync-service-test/ 
