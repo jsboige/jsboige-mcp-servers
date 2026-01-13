@@ -159,9 +159,9 @@ export class ConfigSharingService implements IConfigSharingService {
 
     try {
       // 1. Localiser la version source
-      if (!options.version) {
-        throw new Error('La version de configuration est requise');
-      }
+      // Fix Bug #296: Utiliser "latest" par défaut si version non spécifiée
+      const version = options.version || 'latest';
+      options = { ...options, version };
 
       const sharedStatePath = this.configService.getSharedStatePath();
       const configsDir = join(sharedStatePath, 'configs');
