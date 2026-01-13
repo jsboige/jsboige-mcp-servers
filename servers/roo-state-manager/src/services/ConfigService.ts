@@ -7,6 +7,9 @@
  * @module ConfigService
  * @version 2.1.0
  */
+import { createLogger } from '../utils/logger.js';
+
+const logger = createLogger('config-service');
 
 import { promises as fs } from 'fs';
 import { existsSync } from 'fs';
@@ -67,7 +70,7 @@ export class ConfigService implements IConfigService {
       const content = await fs.readFile(this.configPath, 'utf-8');
       return JSON.parse(content);
     } catch (error) {
-      console.error('Erreur lors du chargement de la configuration:', error);
+      logger.error('Erreur lors du chargement de la configuration', error);
       return {};
     }
   }
@@ -80,7 +83,7 @@ export class ConfigService implements IConfigService {
       await fs.writeFile(this.configPath, JSON.stringify(config, null, 2));
       return true;
     } catch (error) {
-      console.error('Erreur lors de la sauvegarde de la configuration:', error);
+      logger.error('Erreur lors de la sauvegarde de la configuration', error);
       return false;
     }
   }
@@ -115,7 +118,14 @@ export class ConfigService implements IConfigService {
    * Trouve le chemin du répertoire d'état partagé
    */
   private findSharedStatePath(): string {
-    // Utiliser la fonction centralisée qui gère la priorité et lève une erreur si non configuré
-    return getSharedStatePath();
+    // Essayer d'utiliser la variable d'environnement ROOSYNC_SHARED_PATH
+    if (process.env.ROOSYNC_SHARED_PATH) {
+      return process.env.ROOSYNC_SHARED_PATH;
+    }
+
+    // Fallback : utiliser le chemin par défaut dans le workspace
+    // Cela évite une erreur critique lors de l'instanciation du service
+    const defaultPath = join(process.cwd(), 'roo-config');
+    return defaultPath;
   }
 }

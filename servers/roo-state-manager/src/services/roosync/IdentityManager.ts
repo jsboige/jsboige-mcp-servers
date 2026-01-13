@@ -1,9 +1,9 @@
-/**
+u/**
  * Gestionnaire central d'identité pour RooSync
- * 
+ *
  * Responsable d'unifier toutes les sources d'identité en une seule
  * source de vérité et de prévenir les conflits d'écrasement.
- * 
+ *
  * @module IdentityManager
  * @version 1.0.0
  */
@@ -82,23 +82,23 @@ export class IdentityManager {
   private async loadIdentityRegistry(): Promise<Map<string, IdentityInfo>> {
     try {
       const registryPath = this.getIdentityRegistryPath();
-      
+
       if (existsSync(registryPath)) {
         const content = await fs.readFile(registryPath, 'utf-8');
         const data = JSON.parse(content);
-        
+
         const registry = new Map<string, IdentityInfo>();
         for (const [machineId, info] of Object.entries(data.identities || {})) {
           registry.set(machineId, info as IdentityInfo);
         }
-        
+
         console.log(`[IdentityManager] Registre d'identité chargé: ${registry.size} identités`);
         return registry;
       }
     } catch (error) {
       console.warn('[IdentityManager] Erreur chargement registre d\'identité:', error);
     }
-    
+
     return new Map<string, IdentityInfo>();
   }
 
@@ -113,13 +113,13 @@ export class IdentityManager {
         lastUpdated: new Date().toISOString(),
         version: '1.0.0'
       };
-      
+
       await fs.writeFile(
         registryPath,
         JSON.stringify(data, null, 2),
         'utf-8'
       );
-      
+
       console.log(`[IdentityManager] Registre d'identité sauvegardé: ${registry.size} identités`);
     } catch (error) {
       console.error('[IdentityManager] Erreur sauvegarde registre d\'identité:', error);
@@ -164,7 +164,7 @@ export class IdentityManager {
             presencePath: join(this.config.sharedPath, 'presence', `${presence.id}.json`)
           }
         };
-        
+
         // Fusionner avec l'identité existante si déjà présente
         const existing = identities.get(presence.id);
         if (existing) {
@@ -172,7 +172,7 @@ export class IdentityManager {
           presenceIdentity.firstSeen = existing.firstSeen;
           presenceIdentity.status = 'conflict'; // Marquer comme conflit
         }
-        
+
         identities.set(presence.id, presenceIdentity);
       }
 
@@ -182,7 +182,7 @@ export class IdentityManager {
         try {
           const baselineContent = readFileSync(baselinePath, 'utf-8');
           const baselineData = JSON.parse(baselineContent);
-          
+
           if (baselineData.machineId) {
             const baselineIdentity: IdentityInfo = {
               machineId: baselineData.machineId,
@@ -194,14 +194,14 @@ export class IdentityManager {
                 baselinePath
               }
             };
-            
+
             // Fusionner avec l'identité existante si déjà présente
             const existing = identities.get(baselineData.machineId);
             if (existing) {
               baselineIdentity.firstSeen = existing.firstSeen;
               baselineIdentity.status = 'conflict'; // Marquer comme conflit
             }
-            
+
             identities.set(baselineData.machineId, baselineIdentity);
           }
         } catch (error) {
@@ -215,7 +215,7 @@ export class IdentityManager {
         try {
           const dashboardContent = readFileSync(dashboardPath, 'utf-8');
           const dashboardData = JSON.parse(dashboardContent);
-          
+
           if (dashboardData.machines) {
             for (const [machineId, machineInfo] of Object.entries(dashboardData.machines)) {
               const dashboardIdentity: IdentityInfo = {
@@ -228,14 +228,14 @@ export class IdentityManager {
                   dashboardPath
                 }
               };
-              
+
               // Fusionner avec l'identité existante si déjà présente
               const existing = identities.get(machineId);
               if (existing) {
                 dashboardIdentity.firstSeen = existing.firstSeen;
                 dashboardIdentity.status = 'conflict'; // Marquer comme conflit
               }
-              
+
               identities.set(machineId, dashboardIdentity);
             }
           }
@@ -246,7 +246,7 @@ export class IdentityManager {
 
       console.log(`[IdentityManager] Collecte terminée: ${identities.size} identités trouvées`);
       return identities;
-      
+
     } catch (error) {
       console.error('[IdentityManager] Erreur collecte identités:', error);
       throw new IdentityManagerError(
@@ -267,22 +267,22 @@ export class IdentityManager {
         sources: IdentitySource[];
         warningMessage: string;
       }> = [];
-      
+
       const machineIdMap = new Map<string, IdentitySource[]>();
-      
+
       // Grouper les identités par machineId
       for (const identity of identities.values()) {
         const sources = machineIdMap.get(identity.machineId) || [];
         sources.push(identity.source);
         machineIdMap.set(identity.machineId, sources);
       }
-      
+
       // Détecter les conflits
       for (const [machineId, sources] of machineIdMap) {
         if (sources.length > 1) {
           const warningMessage = `⚠️ CONFLIT D'IDENTITÉ: MachineId "${machineId}" trouvé dans ${sources.length} sources: ${sources.join(', ')}`;
           console.error(`[IdentityManager] ${warningMessage}`);
-          
+
           conflicts.push({
             machineId,
             sources,
@@ -290,7 +290,7 @@ export class IdentityManager {
           });
         }
       }
-      
+
       // Identifier les identités orphelines
       const orphaned: IdentityInfo[] = [];
       for (const identity of identities.values()) {
@@ -298,7 +298,7 @@ export class IdentityManager {
           orphaned.push(identity);
         }
       }
-      
+
       // Générer des recommandations
       const recommendations: string[] = [];
       if (conflicts.length > 0) {
@@ -306,22 +306,22 @@ export class IdentityManager {
         recommendations.push('Utiliser des machineId uniques pour chaque machine');
         recommendations.push('Nettoyer les fichiers de présence obsolètes');
       }
-      
+
       if (orphaned.length > 0) {
         recommendations.push(`Nettoyer les ${orphaned.length} identités orphelines`);
       }
-      
+
       if (recommendations.length === 0) {
         recommendations.push('✅ Aucun problème d\'identité détecté');
       }
-      
+
       return {
         isValid: conflicts.length === 0 && orphaned.length === 0,
         conflicts,
         orphaned,
         recommendations
       };
-      
+
     } catch (error) {
       console.error('[IdentityManager] Erreur validation identités:', error);
       return {
@@ -355,13 +355,13 @@ export class IdentityManager {
   public async syncIdentityRegistry(): Promise<void> {
     try {
       console.log('[IdentityManager] Synchronisation du registre d\'identité');
-      
+
       const currentIdentities = await this.collectAllIdentities();
       await this.saveIdentityRegistry(currentIdentities);
-      
+
       // Valider après synchronisation
       const validation = await this.validateIdentities();
-      
+
       if (!validation.isValid) {
         console.warn('[IdentityManager] ⚠️ Problèmes d\'identité détectés après synchronisation:');
         for (const conflict of validation.conflicts) {
@@ -373,7 +373,7 @@ export class IdentityManager {
       } else {
         console.log('[IdentityManager] ✅ Registre d\'identité synchronisé sans conflits');
       }
-      
+
     } catch (error) {
       console.error('[IdentityManager] Erreur synchronisation registre:', error);
       throw error;
@@ -393,16 +393,16 @@ export class IdentityManager {
     errors: string[];
   }> {
     const { removeOrphaned = false, resolveConflicts = false, dryRun = false } = options;
-    
+
     const result = {
       removed: [] as string[],
       resolved: [] as string[],
       errors: [] as string[]
     };
-    
+
     try {
       const validation = await this.validateIdentities();
-      
+
       // Nettoyer les identités orphelines
       if (removeOrphaned) {
         for (const orphan of validation.orphaned) {
@@ -420,7 +420,7 @@ export class IdentityManager {
           }
         }
       }
-      
+
       // Résoudre les conflits
       if (resolveConflicts) {
         for (const conflict of validation.conflicts) {
@@ -438,12 +438,69 @@ export class IdentityManager {
           }
         }
       }
-      
+
       return result;
-      
+
     } catch (error) {
       result.errors.push(`Erreur nettoyage identités: ${error}`);
       return result;
+    }
+  }
+  /**
+   * Vérifier s'il y a un conflit d'identité au démarrage
+   *
+   * Cette méthode détecte si une autre instance avec le même ROOSYNC_MACHINE_ID
+   * est déjà active. Si c'est le cas, elle lève une erreur pour bloquer le démarrage.
+   *
+   * @throws {IdentityManagerError} Si un conflit d'identité est détecté
+   */
+  public async checkIdentityConflict(): Promise<void> {
+    try {
+      console.log(`[IdentityManager] Vérification des conflits d'identité pour machineId: ${this.config.machineId}`);
+
+      // Lire les données de présence pour le machineId courant
+      const presence = await this.presenceManager.readPresence(this.config.machineId);
+
+      if (!presence) {
+        // Aucune présence existante, pas de conflit
+        console.log(`[IdentityManager] ✅ Aucune présence existante pour ${this.config.machineId}`);
+        return;
+      }
+
+      // Vérifier si l'instance est récemment active
+      const now = new Date();
+      const lastSeen = new Date(presence.lastSeen);
+      const timeSinceLastSeen = now.getTime() - lastSeen.getTime();
+      const ACTIVE_THRESHOLD_MS = 5 * 60 * 1000; // 5 minutes
+
+      if (presence.status === 'online' && timeSinceLastSeen < ACTIVE_THRESHOLD_MS) {
+        // Conflit détecté: une autre instance est active
+        const errorMessage = `⛔ CONFLIT D'IDENTITÉ DÉTECTÉ:\n` +
+          `Une autre instance avec le machineId "${this.config.machineId}" est déjà active.\n` +
+          `Dernière activité: ${presence.lastSeen} (${Math.round(timeSinceLastSeen / 1000)}s)\n` +
+          `Source: ${presence.source || 'inconnue'}\n` +
+          `Mode: ${presence.mode || 'inconnu'}\n\n` +
+          `Solutions possibles:\n` +
+          `1. Arrêtez l'autre instance avant de démarrer celle-ci\n` +
+          `2. Utilisez un ROOSYNC_MACHINE_ID différent pour cette instance\n` +
+          `3. Attendez ${ACTIVE_THRESHOLD_MS / 1000}s que l'autre instance expire`;
+
+        console.error(`[IdentityManager] ${errorMessage}`);
+        throw new IdentityManagerError(errorMessage, 'IDENTITY_CONFLICT');
+      }
+
+      // L'instance précédente est expirée ou hors ligne, pas de conflit
+      console.log(`[IdentityManager] ✅ Présence existante mais expirée ou hors ligne pour ${this.config.machineId}`);
+
+    } catch (error) {
+      // Si l'erreur est déjà une IdentityManagerError, la relancer
+      if (error instanceof IdentityManagerError) {
+        throw error;
+      }
+
+      // Sinon, logger l'erreur mais ne pas bloquer le démarrage
+      console.warn('[IdentityManager] Erreur lors de la vérification des conflits d\'identité:', error);
+      console.warn('[IdentityManager] ⚠️ Le démarrage continue malgré l\'erreur de vérification');
     }
   }
 }

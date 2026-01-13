@@ -4,22 +4,19 @@
  * Ce fichier orchestre l'initialisation et le démarrage du serveur.
  * Toute la logique métier est dans src/tools/, src/services/, src/config/
  */
-
 // FIX: Ignorer les erreurs SSL pour Qdrant (certificat auto-signé ou invalide)
 process.env.NODE_TLS_REJECT_UNAUTHORIZED = '0';
-
 import dotenv from 'dotenv';
 import { fileURLToPath } from 'url';
 import { dirname } from 'path';
 import path from 'path';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
-
 // Obtenir le répertoire du fichier actuel
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
-
 // Charger les variables d'environnement AVANT tout autre import
 const envPath = path.join(__dirname, '..', '.env');
+// Note: console.log utilisé ici car le logger n'est pas encore initialisé
 console.log('🔧 [DEBUG] Chargement .env depuis:', envPath);
 console.log('🔧 [DEBUG] __dirname:', __dirname);
 const envResult = dotenv.config({ path: envPath, override: true });
@@ -27,7 +24,6 @@ console.log('🔧 [DEBUG] dotenv.config result:', envResult.error ? 'ERROR' : 'S
 if (envResult.error) {
   console.error('🔧 [DEBUG] dotenv.config error:', envResult.error);
 }
-
 // VALIDATION STRICTE DES CONFIGURATIONS CRITIQUES AU STARTUP
 const REQUIRED_ENV_VARS = [
     'QDRANT_URL',
@@ -36,7 +32,6 @@ const REQUIRED_ENV_VARS = [
     'OPENAI_API_KEY',
     'ROOSYNC_SHARED_PATH'
 ];
-
 const missingVars = REQUIRED_ENV_VARS.filter(varName => !process.env[varName]);
 if (missingVars.length > 0) {
     console.error('🚨 ERREUR CRITIQUE: Variables d\'environnement manquantes:');
@@ -48,6 +43,31 @@ if (missingVars.length > 0) {
 
 console.log('✅ Toutes les variables d\'environnement critiques sont présentes');
 console.log('🔧 [DEBUG] ROOSYNC_SHARED_PATH =', process.env.ROOSYNC_SHARED_PATH);
+
+// Vérification des conflits d'identité au démarrage
+async function checkIdentityConflictAtStartup(): Promise<void> {
+  try {
+    const { loadRooSyncConfig } = await import('./config/roosync-config.js');
+    const { IdentityManager } = await import('./services/roosync/IdentityManager.js');
+    const { PresenceManager } = await import('./services/roosync/PresenceManager.js');
+
+    const config = loadRooSyncConfig();
+    const presenceManager = new PresenceManager(config);
+    const identityManager = new IdentityManager(config, presenceManager);
+
+    await identityManager.checkIdentityConflict();
+    console.log('✅ Vérification des conflits d\'identité réussie');
+  } catch (error) {
+    if (error instanceof Error && error.name === 'IdentityManagerError') {
+      console.error('🚨 ERREUR CRITIQUE: Conflit d\'identité détecté');
+      console.error(error.message);
+      console.error('🔥 ARRÊT IMMÉDIAT DU SERVEUR');
+      process.exit(1);
+    }
+    // Pour les autres erreurs, logger mais ne pas bloquer le démarrage
+    console.warn('⚠️ Erreur lors de la vérification des conflits d\'identité:', error);
+  }
+}
 
 // Imports des modules après validation des env vars
 import { createMcpServer, SERVER_CONFIG } from './config/server-config.js';
@@ -62,6 +82,9 @@ import { handleBuildSkeletonCache } from './tools/index.js';
 import { NotificationService } from './notifications/NotificationService.js';
 import { ToolUsageInterceptor } from './notifications/ToolUsageInterceptor.js';
 import { MessageManager } from './services/MessageManager.js';
+import { createLogger } from './utils/logger.js';
+
+const logger = createLogger('RooStateManagerServer');
 
 const require = createRequire(import.meta.url);
 const packageJson = require('../package.json');
@@ -78,20 +101,16 @@ class RooStateManagerServer {
     constructor() {
         // Initialisation de l'état global via StateManager
         this.stateManager = new StateManager();
-
         // Création du serveur MCP
         this.server = createMcpServer(SERVER_CONFIG);
-
         // Initialiser le système de notifications
         this.notificationService = new NotificationService();
         this.initializeNotificationSystem();
-
         // Enregistrement des handlers
         this.registerHandlers();
-
         // Initialisation des services background
         this.initializeBackgroundServices().catch((error: Error) => {
-            console.error("Error during background services initialization:", error);
+            logger.error("Error during background services initialization:", { error });
         });
     }
 
@@ -103,19 +122,16 @@ class RooStateManagerServer {
             // Vérifier si les notifications sont activées
             const notificationsEnabled = process.env.NOTIFICATIONS_ENABLED !== 'false';
             if (!notificationsEnabled) {
-                console.log('📴 [Notifications] Système désactivé via NOTIFICATIONS_ENABLED=false');
+                logger.info('📴 [Notifications] Système désactivé via NOTIFICATIONS_ENABLED=false');
                 return;
             }
-
             // Initialiser le MessageManager
             const sharedStatePath = process.env.ROOSYNC_SHARED_PATH;
             if (!sharedStatePath) {
-                console.warn('⚠️ [Notifications] ROOSYNC_SHARED_PATH non défini, notifications push désactivées');
+                logger.warn('⚠️ [Notifications] ROOSYNC_SHARED_PATH non défini, notifications push désactivées');
                 return;
             }
-
             const messageManager = new MessageManager(sharedStatePath);
-
             // Charger les règles de filtrage
             const minPriority = process.env.NOTIFICATIONS_MIN_PRIORITY || 'MEDIUM';
             this.notificationService.loadFilterRules([
@@ -132,11 +148,9 @@ class RooStateManagerServer {
                     notifyUser: true
                 }
             ]);
-
             // Créer l'intercepteur d'outils
             const state = this.stateManager.getState();
             const machineId = process.env.ROOSYNC_MACHINE_ID || 'local_machine';
-
             this.toolInterceptor = new ToolUsageInterceptor(
                 this.notificationService,
                 messageManager,
@@ -148,11 +162,10 @@ class RooStateManagerServer {
                     machineId
                 }
             );
-
-            console.log('✅ [Notifications] Système initialisé avec succès');
+            logger.info('✅ [Notifications] Système initialisé avec succès');
         } catch (error) {
-            console.error('❌ [Notifications] Erreur lors de l\'initialisation:', error);
-            console.warn('⚠️ [Notifications] Le serveur continuera sans notifications push');
+            logger.error('❌ [Notifications] Erreur lors de l\'initialisation:', { error });
+            logger.warn('⚠️ [Notifications] Le serveur continuera sans notifications push');
         }
     }
 
@@ -161,10 +174,8 @@ class RooStateManagerServer {
      */
     private registerHandlers(): void {
         const state = this.stateManager.getState();
-
         // Enregistrer le handler ListTools
         registerListToolsHandler(this.server);
-
         // Enregistrer le handler CallTool avec toutes les dépendances
         registerCallToolHandler(
             this.server,
@@ -175,7 +186,6 @@ class RooStateManagerServer {
             this.ensureSkeletonCacheIsFresh.bind(this),
             saveSkeletonToDisk
         );
-
         // Wrapper pour tronquer les résultats ET activer l'intercepteur de notifications
         const originalCallTool = this.server['_requestHandlers'].get('tools/call');
         if (originalCallTool) {
@@ -210,13 +220,13 @@ class RooStateManagerServer {
      */
     private async ensureSkeletonCacheIsFresh(args?: { workspace?: string }): Promise<boolean> {
         try {
-            console.log('[FAILSAFE] Checking skeleton cache freshness...');
+            logger.debug('[FAILSAFE] Checking skeleton cache freshness...');
 
             const state = this.stateManager.getState();
 
             // Vérifier si le cache est vide - reconstruction nécessaire
             if (state.conversationCache.size === 0) {
-                console.log('[FAILSAFE] Cache empty, triggering differential rebuild...');
+                logger.info('[FAILSAFE] Cache empty, triggering differential rebuild...');
                 await handleBuildSkeletonCache({
                     force_rebuild: false,
                     workspace_filter: args?.workspace
@@ -227,7 +237,7 @@ class RooStateManagerServer {
             // Vérifier si des nouvelles conversations existent depuis la dernière mise à jour
             const storageLocations = await RooStorageDetector.detectStorageLocations();
             if (storageLocations.length === 0) {
-                console.log('[FAILSAFE] No storage locations found');
+                logger.warn('[FAILSAFE] No storage locations found');
                 return false;
             }
 
@@ -239,19 +249,16 @@ class RooStateManagerServer {
             for (const location of storageLocations) {
                 try {
                     const conversationDirs = await fs.readdir(location, { withFileTypes: true });
-
                     for (const convDir of conversationDirs) { // Traitement de toutes les conversations
                         if (convDir.isDirectory() && convDir.name !== '.skeletons') {
                             const taskPath = path.join(location, convDir.name);
                             const metadataPath = path.join(taskPath, 'task_metadata.json');
-
                             try {
                                 const metadataStat = await fs.stat(metadataPath);
                                 const ageMs = now - metadataStat.mtime.getTime();
-
                                 // Si metadata récent ET pas dans le cache
                                 if (ageMs < CACHE_VALIDITY_MS && !state.conversationCache.has(convDir.name)) {
-                                    console.log(`[FAILSAFE] New task detected: ${convDir.name}, age: ${Math.round(ageMs/1000)}s`);
+                                    logger.debug(`[FAILSAFE] New task detected: ${convDir.name}, age: ${Math.round(ageMs/1000)}s`);
                                     needsUpdate = true;
                                     break;
                                 }
@@ -260,16 +267,15 @@ class RooStateManagerServer {
                             }
                         }
                     }
-
                     if (needsUpdate) break;
                 } catch (readdirError) {
-                    console.warn(`[FAILSAFE] Could not read directory ${location}:`, readdirError);
+                    logger.warn(`[FAILSAFE] Could not read directory ${location}:`, { error: readdirError });
                 }
             }
 
             // Déclencher reconstruction différentielle si nécessaire
             if (needsUpdate) {
-                console.log('[FAILSAFE] Cache outdated, triggering differential rebuild...');
+                logger.info('[FAILSAFE] Cache outdated, triggering differential rebuild...');
                 await handleBuildSkeletonCache({
                     force_rebuild: false,
                     workspace_filter: args?.workspace
@@ -277,11 +283,11 @@ class RooStateManagerServer {
                 return true;
             }
 
-            console.log('[FAILSAFE] Skeleton cache is fresh');
+            logger.debug('[FAILSAFE] Skeleton cache is fresh');
             return false;
 
         } catch (error) {
-            console.error('[FAILSAFE] Error checking skeleton cache freshness:', error);
+            logger.error('[FAILSAFE] Error checking skeleton cache freshness:', { error });
             return false;
         }
     }
@@ -292,7 +298,7 @@ class RooStateManagerServer {
     async run(): Promise<void> {
         const transport = new StdioServerTransport();
         await this.server.connect(transport);
-        console.error(`Roo State Manager Server started - v${packageJson.version}`);
+        logger.info(`Roo State Manager Server started - v${packageJson.version}`);
     }
 
     /**
@@ -300,13 +306,11 @@ class RooStateManagerServer {
      */
     async stop(): Promise<void> {
         const state = this.stateManager.getState();
-
         // Arrêter le service d'indexation Qdrant
         if (state.qdrantIndexInterval) {
             clearInterval(state.qdrantIndexInterval);
             state.qdrantIndexInterval = null;
         }
-
         if (this.server && (this.server as any).transport) {
             (this.server as any).transport.close();
         }
@@ -315,25 +319,30 @@ class RooStateManagerServer {
 
 // Gestion des erreurs globales
 process.on('uncaughtException', (error) => {
-    console.error('Uncaught exception:', error);
+    logger.error('Uncaught exception:', { error });
     process.exit(1);
 });
 
 process.on('unhandledRejection', (reason, promise) => {
-    console.error('Unhandled rejection at:', promise, 'reason:', reason);
+    logger.error('Unhandled rejection at:', { promise, reason });
     process.exit(1);
 });
 
 // Démarrage du serveur
-try {
-    const server = new RooStateManagerServer();
-    server.run().catch((error) => {
-        console.error('Fatal error during server execution:', error);
+(async () => {
+    try {
+        // Vérifier les conflits d'identité avant de démarrer
+        await checkIdentityConflictAtStartup();
+
+        const server = new RooStateManagerServer();
+        server.run().catch((error) => {
+            logger.error('Fatal error during server execution:', { error });
+            process.exit(1);
+        });
+    } catch (error) {
+        logger.error('Fatal error during server initialization:', { error });
         process.exit(1);
-    });
-} catch (error) {
-    console.error('Fatal error during server initialization:', error);
-    process.exit(1);
-}
+    }
+})();
 
 export { RooStateManagerServer };

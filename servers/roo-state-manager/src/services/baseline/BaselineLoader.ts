@@ -4,6 +4,9 @@
  * Ce module gère la lecture, le parsing et la transformation
  * des fichiers de configuration baseline.
  */
+import { createLogger } from '../../utils/logger.js';
+
+const logger = createLogger('baseline-loader');
 
 import { promises as fs } from 'fs';
 import { existsSync } from 'fs';
@@ -23,24 +26,24 @@ export class BaselineLoader {
    * Charge la configuration baseline depuis un fichier
    */
   public async loadBaseline(baselinePath: string): Promise<BaselineConfig | null> {
-    console.log('[DEBUG] BaselineLoader.loadBaseline() appelé');
-    console.log('[DEBUG] baselinePath:', baselinePath);
+    logger.debug('BaselineLoader.loadBaseline() appelé');
+    logger.debug('baselinePath', { baselinePath });
 
     try {
-      console.log('[DEBUG] Début try block dans loadBaseline');
+      logger.debug('Début try block dans loadBaseline');
 
       if (!existsSync(baselinePath)) {
-        console.log('[DEBUG] Fichier baseline non trouvé:', baselinePath);
+        logger.warn('Fichier baseline non trouvé', { baselinePath });
         return null;
       }
 
-      console.log('[DEBUG] Fichier baseline trouvé, lecture en cours...');
-      const content = await fs.readFile(baselinePath, 'utf-8');
-      console.log('[DEBUG] Contenu lu, longueur:', content.length);
-      console.log('[DEBUG] Début du contenu:', content.substring(0, 100));
+      logger.debug('Fichier baseline trouvé, lecture en cours');
+      const content = (await fs.readFile(baselinePath, 'utf-8')).replace(/^\uFEFF/, '');
+      logger.debug('Contenu lu, longueur', { length: content.length });
+      logger.debug('Début du contenu', { preview: content.substring(0, 100) });
 
       const baselineFile = JSON.parse(content) as BaselineFileConfig;
-      console.log('[DEBUG] JSON parsé avec succès');
+      logger.debug('JSON parsé avec succès');
 
       // Validation du fichier baseline
       this.validator.ensureValidBaselineFileConfig(baselineFile);
@@ -52,12 +55,13 @@ export class BaselineLoader {
     } catch (error) {
       // DEBUG: Capturer l'erreur originale avec tous les détails
       const originalError = error as Error;
-      console.error('[DEBUG] ERREUR DANS loadBaseline():');
-      console.error('[DEBUG] Message:', originalError.message);
-      console.error('[DEBUG] Stack:', originalError.stack);
-      console.error('[DEBUG] Type:', typeof originalError);
-      console.error('[DEBUG] Nom:', originalError.name);
-      console.error('[DEBUG] Path:', baselinePath);
+      logger.error('ERREUR DANS loadBaseline()', error, {
+        message: originalError.message,
+        stack: originalError.stack,
+        type: typeof originalError,
+        name: originalError.name,
+        path: baselinePath
+      });
 
       if (error instanceof BaselineServiceError) {
         throw error;
@@ -104,15 +108,15 @@ export class BaselineLoader {
         );
       }
 
-      console.error('DEBUG: Fichier trouvé, lecture du contenu...');
-      const content = await fs.readFile(baselinePath, 'utf-8');
-      console.error('DEBUG: Contenu lu, longueur:', content.length);
-      console.error('DEBUG: Début du contenu:', content.substring(0, 100));
+      logger.debug('Fichier trouvé, lecture du contenu');
+      const content = (await fs.readFile(baselinePath, 'utf-8')).replace(/^\uFEFF/, '');
+      logger.debug('Contenu lu, longueur', { length: content.length });
+      logger.debug('Début du contenu', { preview: content.substring(0, 100) });
 
       let baselineFile;
       try {
         baselineFile = JSON.parse(content) as BaselineFileConfig;
-        console.error('DEBUG: JSON parsé avec succès');
+        logger.debug('JSON parsé avec succès');
       } catch (parseError) {
         console.error('DEBUG: ERREUR PARSING JSON:', parseError);
         console.error('DEBUG: Contenu brut qui cause l\'erreur:', content);

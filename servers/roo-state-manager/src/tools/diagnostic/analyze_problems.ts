@@ -1,6 +1,7 @@
 import { Tool } from '@modelcontextprotocol/sdk/types.js';
 import * as fs from 'fs/promises';
 import * as path from 'path';
+import { getSharedStatePath } from '../../utils/server-helpers.js';
 
 interface AnalyzeOptions {
     roadmapPath?: string;
@@ -53,26 +54,9 @@ export async function analyzeRooSyncProblems(options: AnalyzeOptions = {}) {
         // Détection du chemin
         let roadmapPath = options.roadmapPath;
         if (!roadmapPath) {
-             // Tentative de détection standard
-             // Note: En environnement MCP, les chemins relatifs peuvent varier.
-             // On suppose une structure relative connue ou on cherche.
-             // Pour l'instant on hardcode les chemins probables comme dans le script PS1 mais adaptés
-             const commonPaths = [
-                 '../../Drive/.shortcut-targets-by-id/1jEQqHabwXrIukTEI1vE05gWsJNYNNFVB/.shared-state/sync-roadmap.md', // Path du script PS1
-                 'RooSync/sync-roadmap.md',
-                 'docs/suivi/RooSync/sync-roadmap.md',
-                 '.shared-state/sync-roadmap.md'
-             ];
-             
-             for (const p of commonPaths) {
-                 // Résolution du chemin absolu si nécessaire, ou relatif au CWD
-                 const resolvedPath = path.resolve(process.cwd(), p);
-                 try {
-                     await fs.access(resolvedPath);
-                     roadmapPath = resolvedPath;
-                     break;
-                 } catch {}
-             }
+             // CORRECTION SDDD : Utiliser ROOSYNC_SHARED_PATH via helper centralisé
+             const sharedStatePath = getSharedStatePath();
+             roadmapPath = path.join(sharedStatePath, 'sync-roadmap.md');
         }
 
         if (!roadmapPath) {
@@ -197,7 +181,7 @@ export async function analyzeRooSyncProblems(options: AnalyzeOptions = {}) {
             const reportDir = path.resolve(process.cwd(), 'roo-config/reports');
             await fs.mkdir(reportDir, { recursive: true });
             reportPath = path.join(reportDir, `PHASE3A-ANALYSE-${new Date().toISOString().replace(/[:.]/g, '-')}.md`);
-            
+
             const reportContent = `# Rapport d'Analyse RooSync
 Date: ${analysis.timestamp}
 Fichier: ${analysis.filePath}

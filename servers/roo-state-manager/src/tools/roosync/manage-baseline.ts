@@ -1,26 +1,26 @@
 /**
  * Outil MCP : roosync_manage_baseline
- * 
+ *
  * Outil consolidé combinant version-baseline et restore-baseline.
  * Permet de versionner et de restaurer des baselines.
- * 
+ *
  * @module tools/roosync/manage-baseline
  * @version 2.3.0
  */
+import { createLogger, Logger } from '../../utils/logger.js';
 
 import { z } from 'zod';
 import { zodToJsonSchema } from 'zod-to-json-schema';
 import { getRooSyncService, RooSyncServiceError } from '../../services/RooSyncService.js';
 import { existsSync, readFileSync, writeFileSync } from 'fs';
 import { join } from 'path';
-import { createLogger, Logger } from '../../utils/logger.js';
 import { BaselineService } from '../../services/BaselineService.js';
 import { ConfigService } from '../../services/ConfigService.js';
 import { execSync } from 'child_process';
 import type { BaselineConfig } from '../../types/baseline.js';
 
 // Logger instance for manage baseline tool
-const logger: Logger = createLogger('ManageBaselineTool');
+const logger = createLogger('ManageBaselineTool');
 
 /**
  * Schema de validation pour roosync_manage_baseline
@@ -77,9 +77,9 @@ function validateSemanticVersion(version: string): boolean {
 
 /**
  * Outil roosync_manage_baseline
- * 
+ *
  * Outil consolidé combinant version-baseline et restore-baseline.
- * 
+ *
  * @param args Arguments validés
  * @returns Résultat de l'opération
  * @throws {RooSyncServiceError} En cas d'erreur
@@ -104,7 +104,7 @@ export async function roosync_manage_baseline(args: ManageBaselineArgs): Promise
     if (error instanceof RooSyncServiceError) {
       throw error;
     }
-    
+
     throw new RooSyncServiceError(
       `Erreur lors de l'opération: ${(error as Error).message}`,
       'ROOSYNC_MANAGE_BASELINE_ERROR'
@@ -120,7 +120,7 @@ async function handleVersionAction(
   timestamp: string,
   config: any
 ): Promise<ManageBaselineResult> {
-  logger.info('🏷️ Starting baseline versioning', { 
+  logger.info('🏷️ Starting baseline versioning', {
     version: args.version,
     pushTags: args.pushTags,
     createChangelog: args.createChangelog
@@ -138,7 +138,7 @@ async function handleVersionAction(
   const configService = new ConfigService();
   const sharedPath = configService.getSharedStatePath();
   const baselineService = new BaselineService(configService, {} as any, {} as any);
-  
+
   // Charger la baseline actuelle
   const currentBaseline = await baselineService.loadBaseline();
   if (!currentBaseline) {
@@ -151,7 +151,7 @@ async function handleVersionAction(
   // Préparer le tag Git
   const tagName = `baseline-v${args.version}`;
   const tagMessage = args.message || `Baseline version ${args.version} - Machine: ${currentBaseline.machineId}`;
-  
+
   logger.info('Creating Git tag', { tagName, message: tagMessage });
 
   // Vérifier si le tag existe déjà
@@ -169,6 +169,19 @@ async function handleVersionAction(
       `Le tag ${tagName} existe déjà. Utilisez une autre version.`,
       'TAG_ALREADY_EXISTS'
     );
+  }
+
+  // Committer le fichier de baseline avant de créer le tag
+  let baselineCommitted = false;
+  try {
+    const baselinePath = join(sharedPath, 'sync-config.ref.json');
+    execSync(`git add "${baselinePath}"`, { stdio: 'pipe' });
+    execSync(`git commit -m "chore: baseline version ${args.version}"`, { stdio: 'pipe' });
+    baselineCommitted = true;
+    logger.info('✅ Baseline committed successfully', { baselinePath });
+  } catch (error) {
+    logger.warn('⚠️ Could not commit baseline file', { error: (error as Error).message });
+    // Continuer sans bloquer
   }
 
   // Créer le tag Git
@@ -202,7 +215,7 @@ async function handleVersionAction(
   if (args.createChangelog !== false) {
     try {
       const changelogPath = join(sharedPath, 'CHANGELOG-baseline.md');
-      
+
       let changelogContent = '';
       if (existsSync(changelogPath)) {
         changelogContent = readFileSync(changelogPath, 'utf-8');
@@ -210,7 +223,7 @@ async function handleVersionAction(
         // Créer l'en-tête du CHANGELOG
         changelogContent = `# CHANGELOG Baseline RooSync\n\nToutes les modifications notables de la baseline.\n\n`;
       }
-      
+
       // Ajouter l'entrée de version
       const versionEntry = `
 ## [${args.version}] - ${new Date().toISOString().split('T')[0]}
@@ -229,17 +242,17 @@ async function handleVersionAction(
 ---
 
 `;
-      
+
       // Insérer au début du fichier (après l'en-tête)
       const headerEndIndex = changelogContent.indexOf('\n\n');
       if (headerEndIndex !== -1) {
-        changelogContent = changelogContent.substring(0, headerEndIndex + 2) + 
-                        versionEntry + 
+        changelogContent = changelogContent.substring(0, headerEndIndex + 2) +
+                        versionEntry +
                         changelogContent.substring(headerEndIndex + 2);
       } else {
         changelogContent += versionEntry;
       }
-      
+
       writeFileSync(changelogPath, changelogContent, 'utf-8');
       changelogUpdated = true;
       logger.info('✅ CHANGELOG updated successfully', { changelogPath });
@@ -277,13 +290,13 @@ async function handleVersionAction(
         }
       }
     };
-    
+
     await baselineService.updateBaseline(updatedBaseline, {
       createBackup: true,
       updateReason: `Versioning baseline v${args.version}`,
       updatedBy: 'roosync_manage_baseline'
     });
-    
+
     logger.info('✅ Baseline version updated', { version: args.version });
   } catch (error) {
     logger.warn('⚠️ Could not update baseline version', { error: (error as Error).message });
@@ -300,7 +313,7 @@ async function handleVersionAction(
   if (changelogUpdated) {
     message += `\nCHANGELOG mis à jour`;
   }
-  
+
   logger.info('✅ Baseline versioning completed successfully', {
     version: args.version,
     tagName,
@@ -309,7 +322,7 @@ async function handleVersionAction(
     tagPushed,
     changelogUpdated
   });
-  
+
   return {
     action: 'version',
     success: true,
@@ -329,7 +342,7 @@ async function handleRestoreAction(
   timestamp: string,
   config: any
 ): Promise<ManageBaselineResult> {
-  logger.info('🔄 Starting baseline restore', { 
+  logger.info('🔄 Starting baseline restore', {
     source: args.source,
     createBackup: args.createBackup
   });
@@ -338,7 +351,7 @@ async function handleRestoreAction(
   const configService = new ConfigService();
   const sharedPath = configService.getSharedStatePath();
   const baselineService = new BaselineService(configService, {} as any, {} as any);
-  
+
   // Récupérer la baseline actuelle pour sauvegarde
   let currentBaseline: BaselineConfig | null = null;
   try {
@@ -346,7 +359,7 @@ async function handleRestoreAction(
   } catch (error) {
     logger.warn('Impossible de charger la baseline actuelle', { error: (error as Error).message });
   }
-  
+
   // Créer une sauvegarde de l'état actuel si demandé
   let backupCreated = false;
   let backupPath: string | undefined;
@@ -354,13 +367,13 @@ async function handleRestoreAction(
     try {
       const backupTimestamp = new Date().toISOString().replace(/[:.]/g, '-');
       backupPath = join(sharedPath, '.rollback', `sync-config.ref.backup.${backupTimestamp}.json`);
-      
+
       // Créer le répertoire de sauvegarde si nécessaire
       const backupDir = join(sharedPath, '.rollback');
       if (!existsSync(backupDir)) {
         execSync(`mkdir -p "${backupDir}"`, { stdio: 'pipe' });
       }
-      
+
       writeFileSync(backupPath, JSON.stringify(currentBaseline, null, 2), 'utf-8');
       backupCreated = true;
       logger.info('✅ Sauvegarde de l\'état actuel créée', { backupPath });
@@ -369,36 +382,36 @@ async function handleRestoreAction(
       // Continuer sans bloquer
     }
   }
-  
+
   // Déterminer le type de source et restaurer
   let sourceType: 'tag' | 'backup';
   let restoredBaseline: BaselineConfig;
-  
+
   if (!args.source) {
     throw new RooSyncServiceError(
       'Source de restauration requise',
       'SOURCE_REQUIRED'
     );
   }
-  
+
   if (args.source.startsWith('baseline-v')) {
     // Restauration depuis un tag Git
     sourceType = 'tag';
     try {
       logger.info('Restauration depuis le tag Git', { tagName: args.source });
-      
+
       // Récupérer le contenu du tag
       const baselineContent = execSync(`git show ${args.source}:sync-config.ref.json`, { encoding: 'utf8' });
       restoredBaseline = JSON.parse(baselineContent) as BaselineConfig;
-      
+
       // Valider la baseline
       if (!restoredBaseline.machineId || !restoredBaseline.version) {
         throw new Error('Baseline invalide: champs requis manquants');
       }
-      
-      logger.info('Baseline récupérée depuis le tag', { 
-        machineId: restoredBaseline.machineId, 
-        version: restoredBaseline.version 
+
+      logger.info('Baseline récupérée depuis le tag', {
+        machineId: restoredBaseline.machineId,
+        version: restoredBaseline.version
       });
     } catch (error) {
       throw new RooSyncServiceError(
@@ -411,22 +424,22 @@ async function handleRestoreAction(
     sourceType = 'backup';
     try {
       logger.info('Restauration depuis la sauvegarde', { backupPath: args.source });
-      
+
       if (!existsSync(args.source)) {
         throw new Error(`Fichier de sauvegarde non trouvé: ${args.source}`);
       }
-      
+
       const backupContent = readFileSync(args.source, 'utf-8');
       restoredBaseline = JSON.parse(backupContent) as BaselineConfig;
-      
+
       // Valider la baseline
       if (!restoredBaseline.machineId || !restoredBaseline.version) {
         throw new Error('Baseline invalide: champs requis manquants');
       }
-      
-      logger.info('Baseline récupérée depuis la sauvegarde', { 
-        machineId: restoredBaseline.machineId, 
-        version: restoredBaseline.version 
+
+      logger.info('Baseline récupérée depuis la sauvegarde', {
+        machineId: restoredBaseline.machineId,
+        version: restoredBaseline.version
       });
     } catch (error) {
       throw new RooSyncServiceError(
@@ -440,7 +453,7 @@ async function handleRestoreAction(
       'INVALID_SOURCE'
     );
   }
-  
+
   // Appliquer la baseline restaurée
   try {
     await baselineService.updateBaseline(restoredBaseline, {
@@ -448,7 +461,7 @@ async function handleRestoreAction(
       updateReason: args.updateReason || `Restauration depuis ${sourceType}: ${args.source}`,
       updatedBy: args.restoredBy || 'roosync_manage_baseline'
     });
-    
+
     logger.info('✅ Baseline restaurée avec succès', {
       machineId: restoredBaseline.machineId,
       version: restoredBaseline.version,
@@ -461,17 +474,17 @@ async function handleRestoreAction(
       'APPLY_RESTORED_BASELINE_ERROR'
     );
   }
-  
+
   // Préparer le message de résultat
   let message = `Baseline restaurée avec succès depuis ${args.source}`;
   message += `\nMachine: ${restoredBaseline.machineId}`;
   message += `\nVersion: ${restoredBaseline.version}`;
   message += `\nSource: ${sourceType}`;
-  
+
   if (backupCreated && backupPath) {
     message += `\nSauvegarde créée: ${backupPath}`;
   }
-  
+
   logger.info('✅ Baseline restore completed successfully', {
     sourceType,
     source: args.source,
@@ -479,7 +492,7 @@ async function handleRestoreAction(
     restoredVersion: restoredBaseline.version,
     backupCreated
   });
-  
+
   return {
     action: 'restore',
     success: true,

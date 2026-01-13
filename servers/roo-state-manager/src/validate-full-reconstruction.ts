@@ -1,8 +1,11 @@
 import { HierarchyReconstructionEngine } from './utils/hierarchy-reconstruction-engine.js';
 import { RooStorageDetector } from './utils/roo-storage-detector.js';
 import { ConversationSkeleton } from './types/conversation.js';
+import { createLogger } from './utils/logger.js';
 import * as fs from 'fs/promises';
 import * as path from 'path';
+
+const logger = createLogger('validate-full-reconstruction');
 
 interface ValidationStats {
     totalTasks: number;
@@ -51,19 +54,18 @@ class HierarchyValidator {
     }
 
     async validate(): Promise<void> {
-        console.log('🔨 Validation de la reconstruction hiérarchique complète');
-        console.log('=' .repeat(70));
-        console.log(`📁 Workspace: ${this.workspace}`);
-        console.log();
+        logger.info('🔨 Validation de la reconstruction hiérarchique complète');
+        logger.info('='.repeat(70));
+        logger.info(`📁 Workspace: ${this.workspace}`);
 
         // Phase 0: Capture de l'état initial
         await this.captureInitialState();
 
         // Phase 1: Reconstruction complète
         const startTime = Date.now();
-        console.log('🚀 Phase 1: Reconstruction hiérarchique avec forceRebuild=true');
-        console.log('-'.repeat(50));
-        
+        logger.info('🚀 Phase 1: Reconstruction hiérarchique avec forceRebuild=true');
+        logger.info('-'.repeat(50));
+
         const phase1Start = Date.now();
         const reconstructedSkeletons = await HierarchyReconstructionEngine.reconstructHierarchy(
             this.workspace,
@@ -71,58 +73,54 @@ class HierarchyValidator {
         );
         const phase1End = Date.now();
         this.stats.phaseTimings.phase1 = phase1End - phase1Start;
-        
-        console.log(`✅ Phase 1 terminée en ${this.stats.phaseTimings.phase1}ms`);
-        console.log();
+
+        logger.info(`✅ Phase 1 terminée en ${this.stats.phaseTimings.phase1}ms`);
 
         // Phase 2: Analyse des résultats
-        console.log('📊 Phase 2: Analyse des résultats');
-        console.log('-'.repeat(50));
+        logger.info('📊 Phase 2: Analyse des résultats');
+        logger.info('-'.repeat(50));
         const phase2Start = Date.now();
         await this.analyzeResults(reconstructedSkeletons);
         const phase2End = Date.now();
         this.stats.phaseTimings.phase2 = phase2End - phase2Start;
-        
+
         this.stats.reconstructionTime = Date.now() - startTime;
-        console.log(`✅ Phase 2 terminée en ${this.stats.phaseTimings.phase2}ms`);
-        console.log();
+        logger.info(`✅ Phase 2 terminée en ${this.stats.phaseTimings.phase2}ms`);
 
         // Phase 3: Génération de l'arbre
-        console.log('🌲 Phase 3: Génération de l\'arbre hiérarchique');
-        console.log('-'.repeat(50));
+        logger.info('🌲 Phase 3: Génération de l\'arbre hiérarchique');
+        logger.info('-'.repeat(50));
         await this.generateTree();
-        console.log();
 
         // Phase 4: Génération du rapport
-        console.log('📝 Phase 4: Génération du rapport de validation');
-        console.log('-'.repeat(50));
+        logger.info('📝 Phase 4: Génération du rapport de validation');
+        logger.info('-'.repeat(50));
         await this.generateReport();
-        console.log();
 
         // Affichage des résultats
         this.displaySummary();
     }
 
     private async captureInitialState(): Promise<void> {
-        console.log('📸 Capture de l\'état initial...');
-        
+        logger.info('📸 Capture de l\'état initial');
+
         // Utiliser HierarchyReconstructionEngine sans forceRebuild pour obtenir l'état actuel
         try {
             const skeletons = await HierarchyReconstructionEngine.reconstructHierarchy(
                 this.workspace,
                 false // pas de forceRebuild, juste récupérer l'état actuel
             );
-            
+
             skeletons.forEach((skeleton: ConversationSkeleton) => {
                 this.beforeSkeletons.set(skeleton.taskId, skeleton);
             });
-            
-            console.log(`  • ${this.beforeSkeletons.size} tâches trouvées`);
+
+            logger.info(`  • ${this.beforeSkeletons.size} tâches trouvées`);
             const rootCount = Array.from(this.beforeSkeletons.values())
                 .filter(s => !s.parentTaskId || s.parentTaskId === 'ROOT').length;
-            console.log(`  • ${rootCount} tâches racines (sans parent)`);
+            logger.info(`  • ${rootCount} tâches racines (sans parent)`);
         } catch (error) {
-            console.warn('  ⚠️ Impossible de capturer l\'état initial, continuation...');
+            logger.warn('  ⚠️ Impossible de capturer l\'état initial, continuation');
             // Continue même si on ne peut pas capturer l'état initial
         }
     }
@@ -146,7 +144,7 @@ class HierarchyValidator {
                 this.stats.rootTasks++;
             } else {
                 this.stats.tasksWithParents++;
-                
+
                 // Vérifier si c'est une nouvelle relation
                 const before = this.beforeSkeletons.get(skeleton.taskId);
                 if (!before?.parentTaskId || before.parentTaskId === 'ROOT') {
@@ -156,7 +154,7 @@ class HierarchyValidator {
                                      (skeleton as any).parentConfidenceScore || 0;
                     const pattern = (skeleton as any).hierarchyMetadata?.pattern ||
                                   (skeleton as any).reconstructionMethod || 'unknown';
-                    
+
                     this.stats.parentChildRelations.push({
                         parentId: skeleton.parentTaskId,
                         childId: skeleton.taskId,
@@ -185,12 +183,12 @@ class HierarchyValidator {
         }
 
         // Logs détaillés
-        console.log(`  • Total de tâches: ${this.stats.totalTasks}`);
-        console.log(`  • Tâches racines: ${this.stats.rootTasks}`);
-        console.log(`  • Tâches avec parent: ${this.stats.tasksWithParents}`);
-        console.log(`  • Profondeur maximale: ${this.stats.maxDepth}`);
-        console.log(`  • Nouvelles relations trouvées: ${this.stats.parentChildRelations.length}`);
-        console.log(`  • Score de confiance moyen: ${this.stats.averageConfidenceScore.toFixed(2)}`);
+        logger.info(`  • Total de tâches: ${this.stats.totalTasks}`);
+        logger.info(`  • Tâches racines: ${this.stats.rootTasks}`);
+        logger.info(`  • Tâches avec parent: ${this.stats.tasksWithParents}`);
+        logger.info(`  • Profondeur maximale: ${this.stats.maxDepth}`);
+        logger.info(`  • Nouvelles relations trouvées: ${this.stats.parentChildRelations.length}`);
+        logger.info(`  • Score de confiance moyen: ${this.stats.averageConfidenceScore.toFixed(2)}`);
     }
 
     private async calculateDepth(skeleton: ConversationSkeleton, allSkeletons: ConversationSkeleton[]): Promise<number> {
@@ -210,11 +208,11 @@ class HierarchyValidator {
     }
 
     private async generateTree(): Promise<void> {
-        console.log('  • Génération de l\'arbre hiérarchique...');
-        
+        logger.info('  • Génération de l\'arbre hiérarchique');
+
         const skeletons = Array.from(this.afterSkeletons.values());
         const rootSkeletons = skeletons.filter(s => !s.parentTaskId || s.parentTaskId === 'ROOT');
-        
+
         let treeContent = '# 🌲 ARBRE HIÉRARCHIQUE RECONSTRUIT\n\n';
         treeContent += `> Généré le ${new Date().toISOString()}\n\n`;
         treeContent += `## 📊 Statistiques\n\n`;
@@ -235,12 +233,12 @@ class HierarchyValidator {
 
         treeContent += `## 🌳 Arbre hiérarchique\n\n`;
         treeContent += '```\n';
-        
+
         // Générer l'arbre pour chaque racine
         for (const root of rootSkeletons) {
             treeContent += this.generateTreeNode(root, skeletons, 0);
         }
-        
+
         treeContent += '```\n\n';
 
         // Ajouter les détails des nouvelles relations
@@ -248,11 +246,11 @@ class HierarchyValidator {
             treeContent += `## 🔗 Nouvelles relations découvertes\n\n`;
             treeContent += '| Parent | Enfant | Confiance | Pattern |\n';
             treeContent += '|--------|--------|-----------|----------|\n';
-            
+
             const topRelations = this.stats.parentChildRelations
                 .sort((a, b) => b.confidence - a.confidence)
                 .slice(0, 20); // Top 20 relations
-            
+
             for (const rel of topRelations) {
                 const parentTitle = this.afterSkeletons.get(rel.parentId)?.metadata?.title || rel.parentId.substring(0, 8) + '...';
                 const childTitle = this.afterSkeletons.get(rel.childId)?.metadata?.title || rel.childId.substring(0, 8) + '...';
@@ -262,7 +260,7 @@ class HierarchyValidator {
 
         const outputPath = path.join(this.workspace, 'ARBRE_HIERARCHIE_RECONSTRUITE.md');
         await fs.writeFile(outputPath, treeContent, 'utf-8');
-        console.log(`  ✅ Arbre généré: ${outputPath}`);
+        logger.info(`  ✅ Arbre généré: ${outputPath}`);
     }
 
     private generateTreeNode(skeleton: ConversationSkeleton, allSkeletons: ConversationSkeleton[], depth: number): string {
@@ -273,16 +271,16 @@ class HierarchyValidator {
         const confidenceStr = confidence
             ? ` [${(confidence * 100).toFixed(0)}%]`
             : '';
-        
+
         const title = skeleton.metadata?.title || skeleton.taskId.substring(0, 8) + '...';
         let result = `${indent}${icon} ${title}${confidenceStr}\n`;
-        
+
         // Trouver les enfants
         const children = allSkeletons.filter(s => s.parentTaskId === skeleton.taskId);
         for (const child of children) {
             result += this.generateTreeNode(child, allSkeletons, depth + 1);
         }
-        
+
         return result;
     }
 
@@ -320,16 +318,16 @@ class HierarchyValidator {
     }
 
     private async generateReport(): Promise<void> {
-        console.log('  • Génération du rapport de validation...');
-        
+        logger.info('  • Génération du rapport de validation');
+
         let reportContent = '# 📊 RAPPORT DE VALIDATION - RECONSTRUCTION HIÉRARCHIQUE\n\n';
         reportContent += `> Généré le ${new Date().toISOString()}\n\n`;
-        
+
         // Résumé exécutif
         reportContent += '## 🎯 Résumé Exécutif\n\n';
         reportContent += `La reconstruction hiérarchique a traité **${this.stats.totalTasks} tâches** `;
         reportContent += `en **${this.stats.reconstructionTime}ms**.\n\n`;
-        
+
         const beforeRootCount = Array.from(this.beforeSkeletons.values())
             .filter(s => !s.parentTaskId || s.parentTaskId === 'ROOT').length;
         reportContent += `### Transformation\n\n`;
@@ -347,7 +345,7 @@ class HierarchyValidator {
         reportContent += '### Distribution de la profondeur\n\n';
         reportContent += '| Profondeur | Nombre de tâches | Pourcentage |\n';
         reportContent += '|------------|------------------|-------------|\n';
-        
+
         const sortedDepths = Array.from(this.stats.depthDistribution.entries()).sort((a, b) => a[0] - b[0]);
         for (const [depth, count] of sortedDepths) {
             const percentage = (count / this.stats.totalTasks * 100).toFixed(1);
@@ -361,7 +359,7 @@ class HierarchyValidator {
         this.stats.parentChildRelations.forEach(rel => {
             patternCounts.set(rel.pattern, (patternCounts.get(rel.pattern) || 0) + 1);
         });
-        
+
         const sortedPatterns = Array.from(patternCounts.entries()).sort((a, b) => b[1] - a[1]);
         reportContent += '| Pattern | Utilisations | Pourcentage |\n';
         reportContent += '|---------|--------------|-------------|\n';
@@ -373,7 +371,7 @@ class HierarchyValidator {
 
         // Exemples de hiérarchies reconstruites
         reportContent += '## 🔍 Exemples de Hiérarchies Reconstruites\n\n';
-        
+
         // Trouver les meilleures hiérarchies (avec le plus d'enfants)
         const parentChildCount = new Map<string, number>();
         Array.from(this.afterSkeletons.values()).forEach(s => {
@@ -381,11 +379,11 @@ class HierarchyValidator {
                 parentChildCount.set(s.parentTaskId, (parentChildCount.get(s.parentTaskId) || 0) + 1);
             }
         });
-        
+
         const topParents = Array.from(parentChildCount.entries())
             .sort((a, b) => b[1] - a[1])
             .slice(0, 3);
-        
+
         for (const [parentId, childCount] of topParents) {
             const parent = this.afterSkeletons.get(parentId);
             if (parent) {
@@ -399,12 +397,12 @@ class HierarchyValidator {
                                  (parent as any).parentConfidenceScore || 0;
                 reportContent += `- **Pattern détecté**: ${pattern}\n`;
                 reportContent += `- **Confiance**: ${(confidence * 100).toFixed(0)}%\n\n`;
-                
+
                 // Lister quelques enfants
                 const children = Array.from(this.afterSkeletons.values())
                     .filter(s => s.parentTaskId === parentId)
                     .slice(0, 5);
-                
+
                 if (children.length > 0) {
                     reportContent += '**Enfants:**\n';
                     for (const child of children) {
@@ -420,13 +418,13 @@ class HierarchyValidator {
         reportContent += '## ✅ Validation des Objectifs\n\n';
         const validation = this.validateMetrics();
         let allPassed = true;
-        
+
         for (const [metric, result] of Object.entries(validation)) {
             const icon = result.passed ? '✅' : '❌';
             reportContent += `${icon} **${metric}**: ${result.value} ${result.message}\n`;
             if (!result.passed) allPassed = false;
         }
-        
+
         reportContent += '\n## 🎉 Conclusion\n\n';
         if (allPassed) {
             reportContent += '**✅ SUCCÈS**: Tous les objectifs de reconstruction hiérarchique ont été atteints!\n\n';
@@ -448,38 +446,36 @@ class HierarchyValidator {
 
         const outputPath = path.join(this.workspace, 'VALIDATION_REPORT.md');
         await fs.writeFile(outputPath, reportContent, 'utf-8');
-        console.log(`  ✅ Rapport généré: ${outputPath}`);
+        logger.info(`  ✅ Rapport généré: ${outputPath}`);
     }
 
     private displaySummary(): void {
-        console.log();
-        console.log('=' .repeat(70));
-        console.log('📊 RÉSUMÉ DE LA VALIDATION');
-        console.log('=' .repeat(70));
-        
+        logger.info('='.repeat(70));
+        logger.info('📊 RÉSUMÉ DE LA VALIDATION');
+        logger.info('='.repeat(70));
+
         const beforeRootCount = Array.from(this.beforeSkeletons.values())
             .filter(s => !s.parentTaskId || s.parentTaskId === 'ROOT').length;
-        
-        console.log(`\n📈 Transformation:`);
-        console.log(`  AVANT: ${beforeRootCount}/${this.beforeSkeletons.size} tâches racines`);
-        console.log(`  APRÈS: ${this.stats.rootTasks}/${this.stats.totalTasks} tâches racines`);
-        console.log(`  GAIN:  ${this.stats.parentChildRelations.length} nouvelles relations`);
-        
-        console.log(`\n🏗️ Structure:`);
-        console.log(`  Profondeur max: ${this.stats.maxDepth} niveaux`);
-        console.log(`  Score confiance: ${this.stats.averageConfidenceScore.toFixed(2)}`);
-        
-        console.log(`\n⚡ Performance:`);
-        console.log(`  Temps total: ${this.stats.reconstructionTime}ms`);
-        
-        console.log(`\n📁 Fichiers générés:`);
-        console.log(`  • ARBRE_HIERARCHIE_RECONSTRUITE.md`);
-        console.log(`  • VALIDATION_REPORT.md`);
-        
-        console.log();
-        console.log('=' .repeat(70));
-        console.log('✅ Validation terminée avec succès!');
-        console.log('=' .repeat(70));
+
+        logger.info(`\n📈 Transformation:`);
+        logger.info(`  AVANT: ${beforeRootCount}/${this.beforeSkeletons.size} tâches racines`);
+        logger.info(`  APRÈS: ${this.stats.rootTasks}/${this.stats.totalTasks} tâches racines`);
+        logger.info(`  GAIN:  ${this.stats.parentChildRelations.length} nouvelles relations`);
+
+        logger.info(`\n🏗️ Structure:`);
+        logger.info(`  Profondeur max: ${this.stats.maxDepth} niveaux`);
+        logger.info(`  Score confiance: ${this.stats.averageConfidenceScore.toFixed(2)}`);
+
+        logger.info(`\n⚡ Performance:`);
+        logger.info(`  Temps total: ${this.stats.reconstructionTime}ms`);
+
+        logger.info(`\n📁 Fichiers générés:`);
+        logger.info(`  • ARBRE_HIERARCHIE_RECONSTRUITE.md`);
+        logger.info(`  • VALIDATION_REPORT.md`);
+
+        logger.info('='.repeat(70));
+        logger.info('✅ Validation terminée avec succès!');
+        logger.info('='.repeat(70));
     }
 
     private truncate(str: string, maxLength: number): string {
@@ -491,19 +487,19 @@ class HierarchyValidator {
 // Point d'entrée principal
 async function main() {
     const workspace = 'd:/dev/2025-Epita-Intelligence-Symbolique';
-    
+
     try {
         const validator = new HierarchyValidator(workspace);
         await validator.validate();
     } catch (error) {
-        console.error('❌ Erreur durant la validation:', error);
+        logger.error('❌ Erreur durant la validation', error);
         process.exit(1);
     }
 }
 
 // Exécuter si appelé directement
 if (import.meta.url === `file:///${process.argv[1].replace(/\\/g, '/')}`) {
-    main().catch(console.error);
+    main().catch(error => logger.error('Erreur dans main', error));
 }
 
 export { HierarchyValidator };

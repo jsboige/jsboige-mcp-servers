@@ -1,15 +1,18 @@
 /**
  * Service de notifications push générique pour le MCP roo-state-manager
- * 
+ *
  * Pattern: Observer + Firewall
  * Responsabilités:
  * - Gérer les abonnés (listeners) aux notifications
  * - Filtrer les événements via règles configurables
  * - Émettre des notifications système si pertinent
- * 
+ *
  * @module NotificationService
  * @version 1.0.0
  */
+import { createLogger } from '../utils/logger.js';
+
+const logger = createLogger('notification-service');
 
 /**
  * Interface d'un événement de notification
@@ -17,16 +20,16 @@
 export interface NotificationEvent {
   /** Type d'événement déclencheur */
   type: 'tool_used' | 'new_message' | 'decision_pending';
-  
+
   /** Source de l'événement (nom de l'outil ou machine ID) */
   source: string;
-  
+
   /** Priorité de la notification */
   priority: 'LOW' | 'MEDIUM' | 'HIGH' | 'URGENT';
-  
+
   /** Données associées à l'événement */
   payload: any;
-  
+
   /** Timestamp ISO-8601 de l'événement */
   timestamp: string;
 }
@@ -37,25 +40,25 @@ export interface NotificationEvent {
 export interface FilterRule {
   /** ID unique de la règle */
   id: string;
-  
+
   /** Type d'événement concerné */
   eventType: NotificationEvent['type'];
-  
+
   /** Conditions de filtrage */
   condition: {
     /** Outils sources autorisés (undefined = tous) */
     sourceTool?: string[];
-    
+
     /** Priorités autorisées (undefined = toutes) */
     priority?: string[];
-    
+
     /** Tags requis (undefined = aucun) */
     tags?: string[];
   };
-  
+
   /** Action à effectuer si la condition est remplie */
   action: 'allow' | 'block' | 'require_approval';
-  
+
   /** Notifier l'utilisateur via notification système */
   notifyUser: boolean;
 }
@@ -73,7 +76,7 @@ export interface NotificationListener {
 
 /**
  * Service de gestion des notifications push
- * 
+ *
  * Implémente le pattern Observer pour permettre à des listeners
  * de s'abonner aux événements de notification. Fournit un système
  * de filtrage configurable via règles JSON.
@@ -81,19 +84,19 @@ export interface NotificationListener {
 export class NotificationService {
   /** Liste des listeners abonnés */
   private listeners: NotificationListener[] = [];
-  
+
   /** Règles de filtrage actives */
   private filterRules: FilterRule[] = [];
-  
+
   /**
    * Abonner un listener aux notifications
    * @param listener Listener à ajouter
    */
   subscribe(listener: NotificationListener): void {
-    console.error('🔔 [NotificationService] Subscribing new listener');
+    logger.debug('Subscribing new listener');
     this.listeners.push(listener);
   }
-  
+
   /**
    * Désabonner un listener
    * @param listener Listener à retirer
@@ -102,62 +105,62 @@ export class NotificationService {
     const index = this.listeners.indexOf(listener);
     if (index > -1) {
       this.listeners.splice(index, 1);
-      console.error('🔕 [NotificationService] Listener unsubscribed');
+      logger.debug('Listener unsubscribed');
     }
   }
-  
+
   /**
    * Charger les règles de filtrage depuis une configuration
    * @param rules Tableau de règles à appliquer
    */
   loadFilterRules(rules: FilterRule[]): void {
     this.filterRules = rules;
-    console.error(`⚙️ [NotificationService] Loaded ${rules.length} filter rules`);
+    logger.info(`Loaded ${rules.length} filter rules`);
   }
-  
+
   /**
    * Déclencher une notification après filtrage
-   * 
+   *
    * Process:
    * 1. Évaluer les règles de filtrage
    * 2. Si `action: 'block'` → abandonner
    * 3. Si `action: 'allow'` → émettre vers listeners
    * 4. Si `notifyUser: true` → afficher notification système
-   * 
+   *
    * @param event Événement à notifier
    */
   async notify(event: NotificationEvent): Promise<void> {
-    console.error('📬 [NotificationService] Processing notification:', {
+    logger.debug('Processing notification', {
       type: event.type,
       source: event.source,
       priority: event.priority
     });
-    
+
     // Évaluer les règles de filtrage
     const decision = this.evaluateFilters(event);
-    
+
     if (decision.action === 'block') {
-      console.error('🚫 [NotificationService] Notification blocked by rule:', decision.ruleId);
+      logger.warn('Notification blocked by rule', { ruleId: decision.ruleId });
       return;
     }
-    
+
     if (decision.action === 'require_approval') {
-      console.error('⚠️ [NotificationService] Notification requires approval (not implemented)');
+      logger.warn('Notification requires approval (not implemented)');
       // TODO: Implémenter système d'approbation si nécessaire
     }
-    
+
     // Notifier tous les listeners
-    console.error(`📢 [NotificationService] Emitting to ${this.listeners.length} listeners`);
+    logger.debug(`Emitting to ${this.listeners.length} listeners`);
     await Promise.all(
       this.listeners.map(listener => listener.onNotify(event))
     );
-    
+
     // Notification système si demandée
     if (decision.notifyUser) {
       this.showSystemNotification(event);
     }
   }
-  
+
   /**
    * Évaluer les règles de filtrage pour un événement
    * @param event Événement à évaluer
@@ -172,19 +175,19 @@ export class NotificationService {
     if (this.filterRules.length === 0) {
       return { action: 'allow', notifyUser: false };
     }
-    
+
     // Trouver la première règle qui matche
     for (const rule of this.filterRules) {
       // Vérifier le type d'événement
       if (rule.eventType !== event.type) {
         continue;
       }
-      
+
       // Vérifier les conditions
       const matchesConditions = this.checkConditions(event, rule.condition);
-      
+
       if (matchesConditions) {
-        console.error(`✅ [NotificationService] Matched rule: ${rule.id}`);
+        logger.debug(`Matched rule: ${rule.id}`);
         return {
           action: rule.action,
           ruleId: rule.id,
@@ -192,12 +195,12 @@ export class NotificationService {
         };
       }
     }
-    
+
     // Si aucune règle ne matche, bloquer par défaut (whitelist behavior)
-    console.error('⚠️ [NotificationService] No matching rule, blocking by default');
+    logger.warn('No matching rule, blocking by default');
     return { action: 'block', notifyUser: false };
   }
-  
+
   /**
    * Vérifier si un événement satisfait les conditions d'une règle
    * @param event Événement à vérifier
@@ -214,14 +217,14 @@ export class NotificationService {
         return false;
       }
     }
-    
+
     // Vérifier priority (si définie)
     if (condition.priority && condition.priority.length > 0) {
       if (!condition.priority.includes(event.priority)) {
         return false;
       }
     }
-    
+
     // Vérifier tags (si définis)
     if (condition.tags && condition.tags.length > 0) {
       const eventTags = (event.payload?.tags || []) as string[];
@@ -230,27 +233,27 @@ export class NotificationService {
         return false;
       }
     }
-    
+
     return true;
   }
-  
+
   /**
    * Afficher une notification système (Windows/macOS)
    * @param event Événement à notifier
    */
   private showSystemNotification(event: NotificationEvent): void {
-    console.error('🔔 [NotificationService] Showing system notification');
-    
+    logger.debug('Showing system notification');
+
     // Pour Phase 1, on log seulement
     // TODO: Implémenter avec node-notifier ou équivalent
-    console.error('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
-    console.error(`🔔 NOTIFICATION: ${event.type.toUpperCase()}`);
-    console.error(`   Source: ${event.source}`);
-    console.error(`   Priority: ${event.priority}`);
-    console.error(`   Payload: ${JSON.stringify(event.payload, null, 2)}`);
-    console.error('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
+    logger.debug('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
+    logger.debug(`NOTIFICATION: ${event.type.toUpperCase()}`);
+    logger.debug(`   Source: ${event.source}`);
+    logger.debug(`   Priority: ${event.priority}`);
+    logger.debug(`   Payload: ${JSON.stringify(event.payload, null, 2)}`);
+    logger.debug('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
   }
-  
+
   /**
    * Obtenir les statistiques du service
    * @returns Statistiques du service

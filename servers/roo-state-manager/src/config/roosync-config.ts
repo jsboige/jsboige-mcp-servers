@@ -1,16 +1,19 @@
 /**
  * Configuration RooSync pour roo-state-manager
- * 
+ *
  * Ce module charge et valide les variables d'environnement RooSync
  * depuis le fichier .env et fournit une interface typée pour accéder
  * à la configuration.
- * 
+ *
  * @module roosync-config
  * @version 2.0.0
  */
 
 import { existsSync } from 'fs';
 import { resolve, isAbsolute } from 'path';
+import { createLogger } from '../utils/logger.js';
+
+const logger = createLogger('RooSyncConfig');
 
 /**
  * Configuration RooSync typée
@@ -18,16 +21,16 @@ import { resolve, isAbsolute } from 'path';
 export interface RooSyncConfig {
   /** Chemin absolu vers le répertoire Google Drive partagé */
   sharedPath: string;
-  
+
   /** Identifiant unique de cette machine */
   machineId: string;
-  
+
   /** Active/désactive la synchronisation automatique */
   autoSync: boolean;
-  
+
   /** Stratégie de résolution des conflits */
   conflictStrategy: 'manual' | 'auto-local' | 'auto-remote';
-  
+
   /** Niveau de verbosité des logs */
   logLevel: 'debug' | 'info' | 'warn' | 'error';
 }
@@ -44,7 +47,7 @@ export class RooSyncConfigError extends Error {
 
 /**
  * Valide et charge la configuration RooSync depuis les variables d'environnement
- * 
+ *
  * @throws {RooSyncConfigError} Si une variable est manquante ou invalide
  * @returns {RooSyncConfig} Configuration validée
  */
@@ -54,13 +57,13 @@ export function loadRooSyncConfig(): RooSyncConfig {
     // Vérifier que les variables requises sont présentes même en mode test
     const requiredTestVars = ['ROOSYNC_SHARED_PATH', 'ROOSYNC_MACHINE_ID'];
     const missingTestVars = requiredTestVars.filter(varName => !process.env[varName]);
-    
+
     if (missingTestVars.length > 0) {
       throw new RooSyncConfigError(
         `Variables d'environnement manquantes pour les tests: ${missingTestVars.join(', ')}`
       );
     }
-    
+
     return {
       sharedPath: process.env.ROOSYNC_SHARED_PATH!,
       machineId: process.env.ROOSYNC_MACHINE_ID!,
@@ -88,7 +91,7 @@ export function loadRooSyncConfig(): RooSyncConfig {
 
   // 2. Extraire et valider sharedPath
   const sharedPath = process.env.ROOSYNC_SHARED_PATH!;
-  
+
   if (!isAbsolute(sharedPath)) {
     throw new RooSyncConfigError(
       `ROOSYNC_SHARED_PATH doit être un chemin absolu: ${sharedPath}`
@@ -105,7 +108,7 @@ export function loadRooSyncConfig(): RooSyncConfig {
   // 3. Valider machineId avec validation renforcée
   const machineId = process.env.ROOSYNC_MACHINE_ID!;
   const machineIdPattern = /^[A-Z0-9_-]+$/i;
-  
+
   // Validation du format
   if (!machineIdPattern.test(machineId)) {
     throw new RooSyncConfigError(
@@ -142,7 +145,7 @@ export function loadRooSyncConfig(): RooSyncConfig {
   // 5. Valider conflictStrategy
   const conflictStrategy = process.env.ROOSYNC_CONFLICT_STRATEGY as any;
   const validStrategies = ['manual', 'auto-local', 'auto-remote'];
-  
+
   if (!validStrategies.includes(conflictStrategy)) {
     throw new RooSyncConfigError(
       `ROOSYNC_CONFLICT_STRATEGY invalide: ${conflictStrategy}. ` +
@@ -153,7 +156,7 @@ export function loadRooSyncConfig(): RooSyncConfig {
   // 6. Valider logLevel
   const logLevel = process.env.ROOSYNC_LOG_LEVEL as any;
   const validLogLevels = ['debug', 'info', 'warn', 'error'];
-  
+
   if (!validLogLevels.includes(logLevel)) {
     throw new RooSyncConfigError(
       `ROOSYNC_LOG_LEVEL invalide: ${logLevel}. ` +
@@ -173,10 +176,10 @@ export function loadRooSyncConfig(): RooSyncConfig {
 
 /**
  * Charge la configuration RooSync de manière sécurisée
- * 
+ *
  * Si la configuration est invalide, retourne null au lieu de lever une exception.
  * Utile pour les contextes où RooSync est optionnel.
- * 
+ *
  * @returns {RooSyncConfig | null} Configuration ou null si invalide
  */
 export function tryLoadRooSyncConfig(): RooSyncConfig | null {
@@ -184,7 +187,7 @@ export function tryLoadRooSyncConfig(): RooSyncConfig | null {
     return loadRooSyncConfig();
   } catch (error) {
     if (error instanceof RooSyncConfigError) {
-      console.warn(`⚠️ Configuration RooSync invalide: ${error.message}`);
+      logger.warn(`⚠️ Configuration RooSync invalide: ${error.message}`);
       return null;
     }
     throw error; // Propager les autres erreurs
@@ -193,7 +196,7 @@ export function tryLoadRooSyncConfig(): RooSyncConfig | null {
 
 /**
  * Vérifie si la configuration RooSync est activée et valide
- * 
+ *
  * @returns {boolean} true si RooSync est configuré correctement
  */
 export function isRooSyncEnabled(): boolean {
@@ -229,19 +232,19 @@ export async function validateMachineIdUniqueness(
 }> {
   const { existsSync, readFileSync } = await import('fs');
   const { join } = await import('path');
-  
+
   const registryPath = join(sharedPath, '.machine-registry.json');
-  
+
   try {
     if (existsSync(registryPath)) {
       const registryContent = readFileSync(registryPath, 'utf-8');
       const registryData = JSON.parse(registryContent);
       const machines = registryData.machines || {};
-      
+
       const existingEntry = machines[machineId];
       if (existingEntry) {
         const warningMessage = `⚠️ CONFLIT D'IDENTITÉ: MachineId "${machineId}" déjà utilisé dans le registre (première vue: ${existingEntry.firstSeen}, source: ${existingEntry.source})`;
-        
+
         return {
           isValid: false,
           conflictDetected: true,
@@ -250,13 +253,13 @@ export async function validateMachineIdUniqueness(
         };
       }
     }
-    
+
     return {
       isValid: true,
       conflictDetected: false
     };
   } catch (error) {
-    console.warn('[roosync-config] Erreur validation unicité machineId:', error);
+    logger.warn('[roosync-config] Erreur validation unicité machineId:', { error });
     // En cas d'erreur, autoriser mais logger
     return {
       isValid: true,
@@ -280,18 +283,18 @@ export async function registerMachineId(
 ): Promise<boolean> {
   const { promises: fs, existsSync, readFileSync } = await import('fs');
   const { join } = await import('path');
-  
+
   const registryPath = join(sharedPath, '.machine-registry.json');
-  
+
   try {
     let registryData: any = { machines: {} };
-    
+
     // Charger le registre existant
     if (existsSync(registryPath)) {
       const registryContent = readFileSync(registryPath, 'utf-8');
       registryData = JSON.parse(registryContent);
     }
-    
+
     // Ajouter ou mettre à jour la machine
     const now = new Date().toISOString();
     registryData.machines[machineId] = {
@@ -301,20 +304,20 @@ export async function registerMachineId(
       source,
       status: 'online'
     };
-    
+
     registryData.lastUpdated = now;
-    
+
     // Sauvegarder le registre
     await fs.writeFile(
       registryPath,
       JSON.stringify(registryData, null, 2),
       'utf-8'
     );
-    
-    console.log(`[roosync-config] MachineId ${machineId} enregistré avec succès depuis la source ${source}`);
+
+    logger.info(`[roosync-config] MachineId ${machineId} enregistré avec succès depuis la source ${source}`);
     return true;
   } catch (error) {
-    console.error('[roosync-config] Erreur enregistrement machineId:', error);
+    logger.error('[roosync-config] Erreur enregistrement machineId:', { error });
     return false;
   }
 }
