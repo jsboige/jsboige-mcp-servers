@@ -57,4 +57,7 @@ synthesis-test-output.txt
 "test-results.txt"
 
 # Test fixtures (generated during tests)
-tests/fixtures/roosync-service-test/ 
+tests/fixtures/roosync-service-test/
+
+# Claude Code temporary working directories
+tmpclaude-*/
