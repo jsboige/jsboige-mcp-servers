@@ -18,6 +18,7 @@ import {
   BaselineServiceErrorCode
 } from '../../types/baseline.js';
 import { ConfigValidator } from './ConfigValidator.js';
+import { readJSONFileWithoutBOM } from '../../utils/encoding-helpers.js';
 
 export class BaselineLoader {
   constructor(private validator: ConfigValidator) {}
@@ -38,11 +39,7 @@ export class BaselineLoader {
       }
 
       logger.debug('Fichier baseline trouvé, lecture en cours');
-      const content = (await fs.readFile(baselinePath, 'utf-8')).replace(/^\uFEFF/, '');
-      logger.debug('Contenu lu, longueur', { length: content.length });
-      logger.debug('Début du contenu', { preview: content.substring(0, 100) });
-
-      const baselineFile = JSON.parse(content) as BaselineFileConfig;
+      const baselineFile = await readJSONFileWithoutBOM<BaselineFileConfig>(baselinePath);
       logger.debug('JSON parsé avec succès');
 
       // Validation du fichier baseline
@@ -109,17 +106,13 @@ export class BaselineLoader {
       }
 
       logger.debug('Fichier trouvé, lecture du contenu');
-      const content = (await fs.readFile(baselinePath, 'utf-8')).replace(/^\uFEFF/, '');
-      logger.debug('Contenu lu, longueur', { length: content.length });
-      logger.debug('Début du contenu', { preview: content.substring(0, 100) });
 
       let baselineFile;
       try {
-        baselineFile = JSON.parse(content) as BaselineFileConfig;
+        baselineFile = await readJSONFileWithoutBOM<BaselineFileConfig>(baselinePath);
         logger.debug('JSON parsé avec succès');
       } catch (parseError) {
         console.error('DEBUG: ERREUR PARSING JSON:', parseError);
-        console.error('DEBUG: Contenu brut qui cause l\'erreur:', content);
         throw new BaselineServiceError(
           `Erreur parsing JSON baseline: ${(parseError as Error).message}`,
           BaselineServiceErrorCode.BASELINE_INVALID,

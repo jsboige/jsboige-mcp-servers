@@ -10,6 +10,7 @@
 
 import { readFileSync } from 'fs';
 import { resolve } from 'path';
+import { readJSONFileSyncWithoutBOM, parseJSONWithoutBOM } from './encoding-helpers.js';
 
 /**
  * Interface pour une décision RooSync
@@ -246,14 +247,7 @@ function parseDecisionBlock(blockContent: string): RooSyncDecision | null {
  */
 export function parseDashboardJson(filePath: string): RooSyncDashboard {
   try {
-    const content = readFileSync(resolve(filePath), 'utf-8');
-    
-    // Guard contre le bug Vitest où readFileSync retourne undefined
-    if (!content || typeof content !== 'string') {
-      throw new Error('Contenu du fichier vide ou invalide');
-    }
-    
-    const data = JSON.parse(content);
+    const data = readJSONFileSyncWithoutBOM<RooSyncDashboard>(resolve(filePath));
     
     // Validation basique de la structure
     if (!data.version || !data.machines) {
@@ -279,14 +273,7 @@ export function parseDashboardJson(filePath: string): RooSyncDashboard {
  */
 export function parseConfigJson(filePath: string): any {
   try {
-    const content = readFileSync(resolve(filePath), 'utf-8');
-    
-    // Guard contre le bug Vitest où readFileSync retourne undefined
-    if (!content || typeof content !== 'string') {
-      throw new Error('Contenu du fichier vide ou invalide');
-    }
-    
-    return JSON.parse(content);
+    return readJSONFileSyncWithoutBOM<any>(resolve(filePath));
   } catch (error) {
     const errorMessage = error instanceof Error ? error.message : String(error);
     throw new RooSyncParseError(
@@ -377,7 +364,7 @@ export function parseRoadmapMarkdownContent(content: string): RooSyncDecision[] 
  */
 export function parseDashboardJsonContent(content: string): RooSyncDashboard {
   try {
-    const data = JSON.parse(content);
+    const data = parseJSONWithoutBOM<RooSyncDashboard>(content);
     
     // Validation basique de la structure
     if (!data.version || !data.machines) {
@@ -402,7 +389,7 @@ export function parseDashboardJsonContent(content: string): RooSyncDashboard {
  */
 export function parseConfigJsonContent(content: string): any {
   try {
-    return JSON.parse(content);
+    return parseJSONWithoutBOM<any>(content);
   } catch (error) {
     const errorMessage = error instanceof Error ? error.message : String(error);
     throw new RooSyncParseError(

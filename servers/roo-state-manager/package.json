@@ -41,6 +41,7 @@
   ],
   "license": "MIT",
   "dependencies": {
+    "@langchain/core": "^0.3.58",
     "@modelcontextprotocol/sdk": "^1.16.0",
     "@qdrant/js-client-rest": "^1.16.2",
     "@xmldom/xmldom": "^0.8.11",
@@ -50,7 +51,7 @@
     "glob": "^10.3.10",
     "html-entities": "^2.6.0",
     "http-proxy": "^1.18.1",
-    "langchain": "^0.3.10",
+    "langchain": "^0.3.37",
     "marked": "^14.1.0",
     "node-fetch": "^3.3.2",
     "openai": "^4.20.0",
@@ -64,7 +65,7 @@
     "winston": "^3.17.0",
     "ws": "^8.18.0",
     "xml-js": "^1.6.11",
-    "xmlbuilder2": "^3.1.1",
+    "xmlbuilder2": "^4.0.3",
     "zod-to-json-schema": "^3.24.6"
   },
   "devDependencies": {

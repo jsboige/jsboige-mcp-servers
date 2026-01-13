@@ -17,6 +17,7 @@ import { join, dirname } from 'path';
 import { fileURLToPath } from 'url';
 import { IConfigService, BaselineServiceConfig } from '../types/baseline.js';
 import { getSharedStatePath } from '../utils/server-helpers.js';
+import { readJSONFileWithoutBOM } from '../utils/encoding-helpers.js';
 
 // Utiliser une approche compatible avec les tests
 // En environnement de test, nous utilisons process.cwd() comme fallback
@@ -67,8 +68,7 @@ export class ConfigService implements IConfigService {
         return {};
       }
 
-      const content = await fs.readFile(this.configPath, 'utf-8');
-      return JSON.parse(content);
+      return await readJSONFileWithoutBOM<any>(this.configPath);
     } catch (error) {
       logger.error('Erreur lors du chargement de la configuration', error);
       return {};

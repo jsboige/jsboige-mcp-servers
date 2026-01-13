@@ -3,6 +3,7 @@ import * as fs from 'fs/promises';
 import * as path from 'path';
 import { FullInventory, InventoryData, McpServerInfo, RooModeInfo, ScriptInfo } from '../../types/inventory';
 import { PowerShellExecutor } from '../PowerShellExecutor';
+import { readJSONFileWithoutBOM } from '../../utils/encoding-helpers.js';
 
 export class InventoryService {
   private static instance: InventoryService;
@@ -85,8 +86,7 @@ private async loadRemoteInventory(machineId: string): Promise<FullInventory> {
   const inventoryPath = path.join(sharedPath, 'inventories', `${machineId}.json`);
 
   try {
-    const content = await fs.readFile(inventoryPath, 'utf-8');
-    const inventory: FullInventory = JSON.parse(content);
+    const inventory: FullInventory = await readJSONFileWithoutBOM<FullInventory>(inventoryPath);
 
     // Vérifier que l'inventaire chargé correspond bien au machineId demandé
     if (inventory.machineId !== machineId) {
@@ -113,8 +113,7 @@ private async loadRemoteInventory(machineId: string): Promise<FullInventory> {
 private async collectMcpServers(): Promise<McpServerInfo[]> {
     try {
       if (await this.fileExists(this.MCP_SETTINGS_PATH)) {
-        const content = await fs.readFile(this.MCP_SETTINGS_PATH, 'utf-8');
-        const settings = JSON.parse(content);
+        const settings = await readJSONFileWithoutBOM<any>(this.MCP_SETTINGS_PATH);
         const servers: McpServerInfo[] = [];
 
         if (settings.mcpServers) {
@@ -143,8 +142,7 @@ private async collectMcpServers(): Promise<McpServerInfo[]> {
     const modesPath = path.join(this.ROO_CONFIG_PATH, 'settings/modes.json');
     try {
       if (await this.fileExists(modesPath)) {
-        const content = await fs.readFile(modesPath, 'utf-8');
-        const config = JSON.parse(content);
+        const config = await readJSONFileWithoutBOM<any>(modesPath);
         return config.modes || [];
       } else {
         return []; // Return empty if file not found, similar to script handling

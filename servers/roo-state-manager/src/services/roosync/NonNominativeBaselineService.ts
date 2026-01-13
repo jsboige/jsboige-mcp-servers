@@ -27,6 +27,7 @@ import {
 } from '../../types/non-nominative-baseline.js';
 import { MachineInventory as LegacyMachineInventory, BaselineConfig, BaselineFileConfig } from '../../types/baseline.js';
 import { BaselineServiceError, BaselineServiceErrorCode } from '../../types/baseline.js';
+import { readJSONFileWithoutBOM } from '../../utils/encoding-helpers.js';
 
 /**
  * Service pour la gestion des baselines non-nominatives
@@ -831,14 +832,12 @@ export class NonNominativeBaselineService {
         // Charger une baseline spécifique
         const baselinePath = join(this.sharedPath, `baseline-${baselineId}.json`);
         if (existsSync(baselinePath)) {
-          const content = await fs.readFile(baselinePath, 'utf-8');
-          return JSON.parse(content);
+          return await readJSONFileWithoutBOM<NonNominativeBaseline>(baselinePath);
         }
       } else {
         // Charger la baseline active
         if (existsSync(this.baselinePath)) {
-          const content = await fs.readFile(this.baselinePath, 'utf-8');
-          return JSON.parse(content);
+          return await readJSONFileWithoutBOM<NonNominativeBaseline>(this.baselinePath);
         }
       }
       return null;
@@ -876,7 +875,7 @@ export class NonNominativeBaselineService {
       if (existsSync(this.mappingsPath)) {
         const content = await fs.readFile(this.mappingsPath, 'utf-8');
         if (content && content.trim() !== '') {
-          mappings = JSON.parse(content);
+          mappings = await readJSONFileWithoutBOM<MachineConfigurationMapping[]>(this.mappingsPath);
         }
       }
 
@@ -905,8 +904,7 @@ export class NonNominativeBaselineService {
     try {
       const statePath = join(this.sharedPath, 'non-nominative-state.json');
       if (existsSync(statePath)) {
-        const content = await fs.readFile(statePath, 'utf-8');
-        this.state = JSON.parse(content);
+        this.state = await readJSONFileWithoutBOM<NonNominativeBaselineState>(statePath);
       }
     } catch (error) {
       console.warn('[NonNominativeBaselineService] Erreur chargement état:', error);
