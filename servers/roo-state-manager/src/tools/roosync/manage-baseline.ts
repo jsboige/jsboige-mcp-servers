@@ -400,6 +400,13 @@ async function handleRestoreAction(
     try {
       logger.info('Restauration depuis le tag Git', { tagName: args.source });
 
+      // Fix Bug #291: Vérifier si le tag existe avant de tenter la restauration
+      try {
+        execSync(`git rev-parse --verify ${args.source}^{commit}`, { encoding: 'utf8', stdio: 'pipe' });
+      } catch (tagError) {
+        throw new Error(`Le tag Git ${args.source} n'existe pas. Vérifiez les tags disponibles avec 'git tag -l'.`);
+      }
+
       // Récupérer le contenu du tag
       const baselineContent = execSync(`git show ${args.source}:sync-config.ref.json`, { encoding: 'utf8' });
       restoredBaseline = JSON.parse(baselineContent) as BaselineConfig;

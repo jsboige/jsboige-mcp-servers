@@ -1,4 +1,4 @@
-u/**
+/**
  * Gestionnaire central d'identité pour RooSync
  *
  * Responsable d'unifier toutes les sources d'identité en une seule

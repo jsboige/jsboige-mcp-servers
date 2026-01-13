@@ -12,6 +12,7 @@ import { existsSync, writeFileSync } from 'fs';
 import { join } from 'path';
 import { createLogger, Logger } from '../../utils/logger.js';
 import { BaselineService } from '../../services/BaselineService.js';
+import { ConfigService } from '../../services/ConfigService.js';
 import type { BaselineConfig, BaselineFileConfig } from '../../types/baseline.js';
 
 // Logger instance for export baseline tool
@@ -64,11 +65,13 @@ export async function roosync_export_baseline(args: ExportBaselineArgs): Promise
     // Validation des arguments
     const validatedArgs = ExportBaselineArgsSchema.parse(args);
     
-    // Créer le service BaselineService
+    // Créer le service BaselineService avec ConfigService réel
+    // Fix Bug #290: utiliser ConfigService au lieu d'un objet vide
+    const configService = new ConfigService();
     const baselineService = new BaselineService(
-      {} as any, // configService
-      {} as any, // inventoryCollector
-      {} as any  // diffDetector
+      configService,
+      {} as any, // inventoryCollector - non requis pour loadBaseline
+      {} as any  // diffDetector - non requis pour loadBaseline
     );
     
     // Récupérer la baseline à exporter
