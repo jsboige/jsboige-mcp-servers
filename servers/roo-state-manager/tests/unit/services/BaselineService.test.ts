@@ -21,6 +21,13 @@ vi.mock('fs', async () => {
   };
 });
 
+// Mock readJSONFileWithoutBOM - BaselineLoader utilise cette fonction
+vi.mock('../../../src/utils/encoding-helpers.js', () => ({
+  readJSONFileWithoutBOM: vi.fn()
+}));
+
+import { readJSONFileWithoutBOM } from '../../../src/utils/encoding-helpers.js';
+
 describe('BaselineService', () => {
   let service: any;
   let mockConfigService: any;
@@ -135,7 +142,7 @@ describe('BaselineService', () => {
       timestamp: '2025-01-01T00:00:00.000Z',
       machines: [
         {
-          machineId: 'test-machine',
+          id: 'test-machine',
           os: 'test-platform',
           architecture: 'x64',
           hardware: {
@@ -160,8 +167,8 @@ describe('BaselineService', () => {
       return false;
     });
 
-    // Mock readFile pour retourner le JSON
-    vi.mocked(fs.readFile).mockResolvedValue(JSON.stringify(mockBaseline));
+    // Mock readJSONFileWithoutBOM - BaselineLoader utilise cette fonction
+    vi.mocked(readJSONFileWithoutBOM).mockResolvedValue(mockBaseline);
 
     // loadBaseline transforme le résultat, donc on ne peut pas comparer directement avec mockBaseline
     // On vérifie juste que ça ne plante pas et que ça retourne quelque chose
@@ -186,8 +193,8 @@ describe('BaselineService', () => {
       return false;
     });
 
-    // Mock readFile pour retourner un JSON invalide
-    vi.mocked(fs.readFile).mockResolvedValue('invalid json');
+    // Mock readJSONFileWithoutBOM pour simuler un JSON invalide (lance SyntaxError)
+    vi.mocked(readJSONFileWithoutBOM).mockRejectedValue(new SyntaxError('Invalid JSON'));
 
     await expect(service.loadBaseline()).rejects.toThrow();
   });
@@ -200,7 +207,7 @@ describe('BaselineService', () => {
       timestamp: '2025-01-01T00:00:00.000Z',
       machines: [
         {
-          machineId: 'test-machine',
+          id: 'test-machine',
           os: 'test-platform',
           architecture: 'x64',
           hardware: {
@@ -225,8 +232,8 @@ describe('BaselineService', () => {
       return false;
     });
 
-    // Mock readFile pour retourner le JSON
-    vi.mocked(fs.readFile).mockResolvedValue(JSON.stringify(mockBaseline));
+    // Mock readJSONFileWithoutBOM - BaselineLoader utilise cette fonction
+    vi.mocked(readJSONFileWithoutBOM).mockResolvedValue(mockBaseline);
 
     const result = await service.compareWithBaseline('test-machine');
 
@@ -242,7 +249,7 @@ describe('BaselineService', () => {
       timestamp: '2025-01-01T00:00:00.000Z',
       machines: [
         {
-          machineId: 'test-machine',
+          id: 'test-machine',
           os: 'test-platform',
           architecture: 'x64',
           hardware: {
@@ -267,8 +274,8 @@ describe('BaselineService', () => {
       return false;
     });
 
-    // Mock readFile pour retourner le JSON
-    vi.mocked(fs.readFile).mockResolvedValue(JSON.stringify(mockBaseline));
+    // Mock readJSONFileWithoutBOM - BaselineLoader utilise cette fonction
+    vi.mocked(readJSONFileWithoutBOM).mockResolvedValue(mockBaseline);
 
     const result = await service.compareWithBaseline('test-machine');
 
@@ -284,7 +291,7 @@ describe('BaselineService', () => {
       timestamp: '2025-01-01T00:00:00.000Z',
       machines: [
         {
-          machineId: 'test-machine',
+          id: 'test-machine',
           os: 'test-platform',
           architecture: 'x64',
           hardware: {
@@ -309,8 +316,8 @@ describe('BaselineService', () => {
       return false;
     });
 
-    // Mock readFile pour retourner le JSON
-    vi.mocked(fs.readFile).mockResolvedValue(JSON.stringify(mockBaseline));
+    // Mock readJSONFileWithoutBOM - BaselineLoader utilise cette fonction
+    vi.mocked(readJSONFileWithoutBOM).mockResolvedValue(mockBaseline);
 
     // On mock le diffDetector pour retourner des différences
     mockDiffDetector.compareBaselineWithMachine.mockResolvedValue([

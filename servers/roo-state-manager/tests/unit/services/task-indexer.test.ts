@@ -111,32 +111,35 @@ describe('🛡️ TaskIndexer Anti-Leak Protections & Circuit Breaker Tests', ()
     // Mock fs.access pour simuler que les fichiers n'existent pas
     mockFs.access.mockRejectedValue(new Error('File not found'));
     
-    // La fonction indexTask globale retourne [] quand la tâche n'est pas trouvée
-    // (voir lignes 816-824 dans task-indexer.ts)
-    const result = await taskIndexer.indexTask('test-task-id');
-    expect(result).toEqual([]);
+    // La fonction indexTask lance une erreur quand la tâche n'est pas trouvée
+    await expect(taskIndexer.indexTask('test-task-id')).rejects.toThrow(
+      'Task test-task-id not found in any storage location'
+    );
   });
 
   test('Circuit Breaker - État OPEN : Bloque les requêtes après 3 échecs', async () => {
     // Test de la gestion d'erreur avec échecs multiples
     mockFs.access.mockRejectedValue(new Error('File not found'));
     
-    // La fonction indexTask globale retourne [] quand la tâche n'est pas trouvée
-    const result1 = await taskIndexer.indexTask('test-task-id-fail');
-    expect(result1).toEqual([]);
+    // La fonction indexTask lance une erreur quand la tâche n'est pas trouvée
+    await expect(taskIndexer.indexTask('test-task-id-fail')).rejects.toThrow(
+      'Task test-task-id-fail not found in any storage location'
+    );
     
     // Vérifier que l'erreur est bien gérée pour les appels suivants
-    const result2 = await taskIndexer.indexTask('test-task-id-blocked');
-    expect(result2).toEqual([]);
+    await expect(taskIndexer.indexTask('test-task-id-blocked')).rejects.toThrow(
+      'Task test-task-id-blocked not found in any storage location'
+    );
   });
 
   test('Circuit Breaker - Délai exponentiel : 2s, 4s, 8s', async () => {
     // Test de la gestion d'erreur avec retry timing
     mockFs.access.mockRejectedValue(new Error('File not found'));
     
-    // La fonction indexTask globale retourne [] quand la tâche n'est pas trouvée
-    const result = await taskIndexer.indexTask('test-retry-timing');
-    expect(result).toEqual([]);
+    // La fonction indexTask lance une erreur quand la tâche n'est pas trouvée
+    await expect(taskIndexer.indexTask('test-retry-timing')).rejects.toThrow(
+      'Task test-retry-timing not found in any storage location'
+    );
   });
 
   test('Validation des payloads - sanitizePayload supprime undefined', () => {
@@ -169,9 +172,10 @@ describe('🛡️ TaskIndexer Anti-Leak Protections & Circuit Breaker Tests', ()
     const consoleErrorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
     mockFs.access.mockRejectedValue(new Error('File not found'));
     
-    // La fonction indexTask globale retourne [] quand la tâche n'est pas trouvée
-    const result = await taskIndexer.indexTask('orphan-task');
-    expect(result).toEqual([]);
+    // La fonction indexTask lance une erreur quand la tâche n'est pas trouvée
+    await expect(taskIndexer.indexTask('orphan-task')).rejects.toThrow(
+      'Task orphan-task not found in any storage location'
+    );
     expect(consoleErrorSpy).toHaveBeenCalled();
     
     consoleErrorSpy.mockRestore();
@@ -182,13 +186,14 @@ describe('🛡️ TaskIndexer Anti-Leak Protections & Circuit Breaker Tests', ()
     mockFs.access.mockRejectedValue(new Error('File not found'));
     
     try {
-      // La fonction indexTask globale retourne [] quand la tâche n'est pas trouvée
-      const result = await taskIndexer.indexTask('test-logging');
-      expect(result).toEqual([]);
+      // La fonction indexTask lance une erreur quand la tâche n'est pas trouvée
+      await expect(taskIndexer.indexTask('test-logging')).rejects.toThrow(
+        'Task test-logging not found in any storage location'
+      );
       // Vérifier que l'erreur est bien loggée avec le message attendu (parmi tous les appels)
       const errorCalls = consoleErrorSpy.mock.calls;
       const hasExpectedMessage = errorCalls.some(call =>
-        call.some(arg => typeof arg === 'string' && arg.includes('Failed to index task test-logging'))
+        call.some(arg => typeof arg === 'string' && arg.includes('Error indexing task test-logging'))
       );
       expect(hasExpectedMessage).toBe(true);
     } finally {
