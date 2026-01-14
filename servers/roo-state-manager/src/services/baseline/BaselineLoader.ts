@@ -19,12 +19,17 @@ import {
 } from '../../types/baseline.js';
 import { ConfigValidator } from './ConfigValidator.js';
 import { readJSONFileWithoutBOM } from '../../utils/encoding-helpers.js';
+import {
+  BaselineLoaderError,
+  BaselineLoaderErrorCode
+} from '../../types/errors.js';
 
 export class BaselineLoader {
   constructor(private validator: ConfigValidator) {}
 
   /**
    * Charge la configuration baseline depuis un fichier
+   * @throws {BaselineLoaderError} Si le chargement échoue
    */
   public async loadBaseline(baselinePath: string): Promise<BaselineConfig | null> {
     logger.debug('BaselineLoader.loadBaseline() appelé');
@@ -60,48 +65,52 @@ export class BaselineLoader {
         path: baselinePath
       });
 
-      if (error instanceof BaselineServiceError) {
+      if (error instanceof BaselineLoaderError || error instanceof BaselineServiceError) {
         throw error;
       }
 
       if (error instanceof SyntaxError) {
-        throw new BaselineServiceError(
+        throw new BaselineLoaderError(
           `Erreur parsing JSON baseline: ${originalError.message}`,
-          BaselineServiceErrorCode.BASELINE_INVALID,
-          error
+          BaselineLoaderErrorCode.BASELINE_PARSE_FAILED,
+          { baselinePath },
+          originalError
         );
       }
 
-      throw new BaselineServiceError(
+      throw new BaselineLoaderError(
         `Erreur chargement baseline: ${originalError.message}`,
-        BaselineServiceErrorCode.BASELINE_NOT_FOUND,
-        error
+        BaselineLoaderErrorCode.BASELINE_LOAD_FAILED,
+        { baselinePath },
+        error instanceof Error ? error : undefined
       );
     }
   }
 
   /**
    * Lit le fichier baseline de configuration (format BaselineFileConfig)
+   * @throws {BaselineLoaderError} Si la lecture échoue
    */
   public async readBaselineFile(baselinePath: string): Promise<BaselineFileConfig | null> {
+    const debugInfo = {
+      path: baselinePath,
+      pathType: typeof baselinePath,
+      pathLength: baselinePath?.length || 0,
+      workingDirectory: process.cwd(),
+      fileExists: false,
+      resolvedPath: ''
+    };
+
+    const fileExists = existsSync(baselinePath);
+    debugInfo.fileExists = fileExists;
+    debugInfo.resolvedPath = resolve(baselinePath);
+
     try {
-      const debugInfo = {
-        path: baselinePath,
-        pathType: typeof baselinePath,
-        pathLength: baselinePath?.length || 0,
-        workingDirectory: process.cwd(),
-        fileExists: false,
-        resolvedPath: ''
-      };
-
-      const fileExists = existsSync(baselinePath);
-      debugInfo.fileExists = fileExists;
-      debugInfo.resolvedPath = resolve(baselinePath);
-
       if (!fileExists) {
-        throw new BaselineServiceError(
+        throw new BaselineLoaderError(
           'Baseline file not found',
-          BaselineServiceErrorCode.BASELINE_NOT_FOUND
+          BaselineLoaderErrorCode.BASELINE_NOT_FOUND,
+          { baselinePath, resolvedPath: resolve(baselinePath) }
         );
       }
 
@@ -113,10 +122,11 @@ export class BaselineLoader {
         logger.debug('JSON parsé avec succès');
       } catch (parseError) {
         console.error('DEBUG: ERREUR PARSING JSON:', parseError);
-        throw new BaselineServiceError(
+        throw new BaselineLoaderError(
           `Erreur parsing JSON baseline: ${(parseError as Error).message}`,
-          BaselineServiceErrorCode.BASELINE_INVALID,
-          parseError
+          BaselineLoaderErrorCode.BASELINE_PARSE_FAILED,
+          { baselinePath },
+          parseError as Error
         );
       }
 
@@ -125,58 +135,81 @@ export class BaselineLoader {
 
       return baselineFile;
     } catch (error) {
-      if (error instanceof BaselineServiceError) {
+      if (error instanceof BaselineLoaderError || error instanceof BaselineServiceError) {
         throw error;
       }
 
-      throw new BaselineServiceError(
+      throw new BaselineLoaderError(
         `Erreur lecture fichier baseline: ${(error as Error).message}`,
-        BaselineServiceErrorCode.BASELINE_NOT_FOUND,
-        error
+        BaselineLoaderErrorCode.BASELINE_READ_FAILED,
+        { baselinePath, debugInfo },
+        error as Error
       );
     }
   }
 
   /**
    * Transforme la structure du fichier baseline pour le DiffDetector
+   * @throws {BaselineLoaderError} Si la transformation échoue
    */
   public transformBaselineForDiffDetector(baselineFile: BaselineFileConfig): BaselineConfig {
-    // Récupérer la première machine du fichier baseline
-    const firstMachine = baselineFile.machines?.[0];
+    try {
+      // Récupérer la première machine du fichier baseline
+      const firstMachine = baselineFile.machines?.[0];
 
-    return {
-      machineId: baselineFile.machineId || 'unknown',
-      config: {
-        roo: {
-          modes: firstMachine?.roo?.modes || [],
-          mcpSettings: this.extractMcpSettings(firstMachine?.roo?.mcpServers || []),
-          userSettings: {}
-        },
-        hardware: {
-          cpu: {
-            model: 'Unknown CPU',
-            cores: firstMachine?.hardware?.cpu?.cores || 0,
-            threads: firstMachine?.hardware?.cpu?.threads || 0
+      if (!firstMachine) {
+        throw new BaselineLoaderError(
+          'Aucune machine trouvée dans le fichier baseline',
+          BaselineLoaderErrorCode.BASELINE_INVALID,
+          { baselineId: baselineFile.baselineId, machineCount: baselineFile.machines?.length || 0 }
+        );
+      }
+
+      return {
+        machineId: baselineFile.machineId || 'unknown',
+        config: {
+          roo: {
+            modes: firstMachine?.roo?.modes || [],
+            mcpSettings: this.extractMcpSettings(firstMachine?.roo?.mcpServers || []),
+            userSettings: {}
           },
-          memory: {
-            total: firstMachine?.hardware?.memory?.total || 0
+          hardware: {
+            cpu: {
+              model: 'Unknown CPU',
+              cores: firstMachine?.hardware?.cpu?.cores || 0,
+              threads: firstMachine?.hardware?.cpu?.threads || 0
+            },
+            memory: {
+              total: firstMachine?.hardware?.memory?.total || 0
+            },
+            disks: [],
+            gpu: 'Unknown'
           },
-          disks: [],
-          gpu: 'Unknown'
+          software: {
+            powershell: 'Unknown',
+            node: firstMachine?.software?.node || 'Unknown',
+            python: firstMachine?.software?.python || 'Unknown'
+          },
+          system: {
+            os: firstMachine?.os || 'Unknown',
+            architecture: firstMachine?.architecture || 'Unknown'
+          }
         },
-        software: {
-          powershell: 'Unknown',
-          node: firstMachine?.software?.node || 'Unknown',
-          python: firstMachine?.software?.python || 'Unknown'
-        },
-        system: {
-          os: firstMachine?.os || 'Unknown',
-          architecture: firstMachine?.architecture || 'Unknown'
-        }
-      },
-      lastUpdated: baselineFile.timestamp || new Date().toISOString(),
-      version: baselineFile.version || '2.1'
-    };
+        lastUpdated: baselineFile.timestamp || new Date().toISOString(),
+        version: baselineFile.version || '2.1'
+      };
+    } catch (error) {
+      if (error instanceof BaselineLoaderError) {
+        throw error;
+      }
+
+      throw new BaselineLoaderError(
+        `Erreur lors de la transformation de la baseline: ${error instanceof Error ? error.message : String(error)}`,
+        BaselineLoaderErrorCode.BASELINE_TRANSFORM_FAILED,
+        { baselineId: baselineFile.baselineId },
+        error instanceof Error ? error : undefined
+      );
+    }
   }
 
   /**

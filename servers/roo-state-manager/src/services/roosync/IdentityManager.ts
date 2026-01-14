@@ -12,6 +12,10 @@ import { promises as fs, existsSync, readFileSync } from 'fs';
 import { join } from 'path';
 import { RooSyncConfig } from '../../config/roosync-config.js';
 import { PresenceManager } from './PresenceManager.js';
+import {
+  IdentityManagerError,
+  IdentityManagerErrorCode
+} from '../../types/errors.js';
 
 /**
  * Sources d'identité possibles
@@ -51,15 +55,6 @@ export interface IdentityValidationResult {
 }
 
 /**
- * Erreur du gestionnaire d'identité
- */
-export class IdentityManagerError extends Error {
-  constructor(message: string, public readonly code?: string) {
-    super(`[IdentityManager] ${message}`);
-    this.name = 'IdentityManagerError';
-  }
-}
-
 /**
  * Gestionnaire central d'identité
  */
@@ -78,11 +73,12 @@ export class IdentityManager {
 
   /**
    * Charger le registre d'identité depuis le disque
+   * @throws {IdentityManagerError} Si le chargement échoue
    */
   private async loadIdentityRegistry(): Promise<Map<string, IdentityInfo>> {
-    try {
-      const registryPath = this.getIdentityRegistryPath();
+    const registryPath = this.getIdentityRegistryPath();
 
+    try {
       if (existsSync(registryPath)) {
         const content = await fs.readFile(registryPath, 'utf-8');
         const data = JSON.parse(content);
@@ -97,6 +93,22 @@ export class IdentityManager {
       }
     } catch (error) {
       console.warn('[IdentityManager] Erreur chargement registre d\'identité:', error);
+
+      if (error instanceof SyntaxError) {
+        throw new IdentityManagerError(
+          `Erreur de parsing JSON dans le registre d'identité: ${error.message}`,
+          IdentityManagerErrorCode.REGISTRY_LOAD_FAILED,
+          { registryPath },
+          error
+        );
+      }
+
+      throw new IdentityManagerError(
+        `Erreur lors du chargement du registre d'identité: ${error instanceof Error ? error.message : String(error)}`,
+        IdentityManagerErrorCode.REGISTRY_LOAD_FAILED,
+        { registryPath },
+        error instanceof Error ? error : undefined
+      );
     }
 
     return new Map<string, IdentityInfo>();
@@ -104,10 +116,12 @@ export class IdentityManager {
 
   /**
    * Sauvegarder le registre d'identité sur le disque
+   * @throws {IdentityManagerError} Si la sauvegarde échoue
    */
   private async saveIdentityRegistry(registry: Map<string, IdentityInfo>): Promise<void> {
+    const registryPath = this.getIdentityRegistryPath();
+
     try {
-      const registryPath = this.getIdentityRegistryPath();
       const data = {
         identities: Object.fromEntries(registry),
         lastUpdated: new Date().toISOString(),
@@ -123,9 +137,12 @@ export class IdentityManager {
       console.log(`[IdentityManager] Registre d'identité sauvegardé: ${registry.size} identités`);
     } catch (error) {
       console.error('[IdentityManager] Erreur sauvegarde registre d\'identité:', error);
+
       throw new IdentityManagerError(
-        `Impossible de sauvegarder le registre d\'identité: ${error instanceof Error ? error.message : String(error)}`,
-        'REGISTRY_SAVE_FAILED'
+        `Impossible de sauvegarder le registre d'identité: ${error instanceof Error ? error.message : String(error)}`,
+        IdentityManagerErrorCode.REGISTRY_SAVE_FAILED,
+        { registryPath, registrySize: registry.size },
+        error instanceof Error ? error : undefined
       );
     }
   }
@@ -206,6 +223,7 @@ export class IdentityManager {
           }
         } catch (error) {
           console.warn('[IdentityManager] Erreur lecture baseline:', error);
+          // On ne propage pas l'erreur ici car la baseline est optionnelle
         }
       }
 
@@ -241,6 +259,7 @@ export class IdentityManager {
           }
         } catch (error) {
           console.warn('[IdentityManager] Erreur lecture dashboard:', error);
+          // On ne propage pas l'erreur ici car le dashboard est optionnel
         }
       }
 
@@ -249,9 +268,12 @@ export class IdentityManager {
 
     } catch (error) {
       console.error('[IdentityManager] Erreur collecte identités:', error);
+
       throw new IdentityManagerError(
         `Erreur lors de la collecte des identités: ${error instanceof Error ? error.message : String(error)}`,
-        'COLLECTION_FAILED'
+        IdentityManagerErrorCode.COLLECTION_FAILED,
+        { machineId: this.config.machineId },
+        error instanceof Error ? error : undefined
       );
     }
   }
@@ -324,12 +346,13 @@ export class IdentityManager {
 
     } catch (error) {
       console.error('[IdentityManager] Erreur validation identités:', error);
-      return {
-        isValid: false,
-        conflicts: [],
-        orphaned: [],
-        recommendations: ['Erreur lors de la validation des identités']
-      };
+
+      throw new IdentityManagerError(
+        `Erreur lors de la validation des identités: ${error instanceof Error ? error.message : String(error)}`,
+        IdentityManagerErrorCode.VALIDATION_FAILED,
+        { machineId: this.config.machineId },
+        error instanceof Error ? error : undefined
+      );
     }
   }
 
@@ -376,7 +399,17 @@ export class IdentityManager {
 
     } catch (error) {
       console.error('[IdentityManager] Erreur synchronisation registre:', error);
-      throw error;
+
+      if (error instanceof IdentityManagerError) {
+        throw error;
+      }
+
+      throw new IdentityManagerError(
+        `Erreur lors de la synchronisation du registre d'identité: ${error instanceof Error ? error.message : String(error)}`,
+        IdentityManagerErrorCode.REGISTRY_SAVE_FAILED,
+        { machineId: this.config.machineId },
+        error instanceof Error ? error : undefined
+      );
     }
   }
 
@@ -442,8 +475,14 @@ export class IdentityManager {
       return result;
 
     } catch (error) {
-      result.errors.push(`Erreur nettoyage identités: ${error}`);
-      return result;
+      console.error('[IdentityManager] Erreur nettoyage identités:', error);
+
+      throw new IdentityManagerError(
+        `Erreur lors du nettoyage des identités: ${error instanceof Error ? error.message : String(error)}`,
+        IdentityManagerErrorCode.CLEANUP_FAILED,
+        { options },
+        error instanceof Error ? error : undefined
+      );
     }
   }
   /**
@@ -486,7 +525,7 @@ export class IdentityManager {
           `3. Attendez ${ACTIVE_THRESHOLD_MS / 1000}s que l'autre instance expire`;
 
         console.error(`[IdentityManager] ${errorMessage}`);
-        throw new IdentityManagerError(errorMessage, 'IDENTITY_CONFLICT');
+        throw new IdentityManagerError(errorMessage, IdentityManagerErrorCode.IDENTITY_CONFLICT);
       }
 
       // L'instance précédente est expirée ou hors ligne, pas de conflit
@@ -501,6 +540,7 @@ export class IdentityManager {
       // Sinon, logger l'erreur mais ne pas bloquer le démarrage
       console.warn('[IdentityManager] Erreur lors de la vérification des conflits d\'identité:', error);
       console.warn('[IdentityManager] ⚠️ Le démarrage continue malgré l\'erreur de vérification');
+      // On ne propage pas l'erreur ici car la vérification est non-bloquante
     }
   }
 }

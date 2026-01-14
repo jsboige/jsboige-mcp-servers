@@ -1,6 +1,6 @@
 /**
  * Types et interfaces pour le BaselineService - RooSync v2.1
- * 
+ *
  * Ce fichier définit toutes les structures de données nécessaires
  * pour l'architecture baseline-driven de RooSync v2.1
  */
@@ -376,4 +376,5 @@ export interface IDiffDetector {
 export interface IConfigService {
   getSharedStatePath(): string;
   getBaselineServiceConfig(): BaselineServiceConfig;
+  getConfigVersion(): Promise<string | null>;
 }

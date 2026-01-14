@@ -18,6 +18,10 @@ import { fileURLToPath } from 'url';
 import { IConfigService, BaselineServiceConfig } from '../types/baseline.js';
 import { getSharedStatePath } from '../utils/server-helpers.js';
 import { readJSONFileWithoutBOM } from '../utils/encoding-helpers.js';
+import {
+  ConfigServiceError,
+  ConfigServiceErrorCode
+} from '../types/errors.js';
 
 // Utiliser une approche compatible avec les tests
 // En environnement de test, nous utilisons process.cwd() comme fallback
@@ -61,22 +65,40 @@ export class ConfigService implements IConfigService {
 
   /**
    * Charge la configuration depuis un fichier
+   * @throws {ConfigServiceError} Si le chargement échoue
    */
   public async loadConfig(): Promise<any> {
     try {
       if (!existsSync(this.configPath)) {
+        logger.warn('Fichier de configuration non trouvé', { configPath: this.configPath });
         return {};
       }
 
       return await readJSONFileWithoutBOM<any>(this.configPath);
     } catch (error) {
       logger.error('Erreur lors du chargement de la configuration', error);
-      return {};
+
+      if (error instanceof SyntaxError) {
+        throw new ConfigServiceError(
+          `Erreur de parsing JSON dans le fichier de configuration: ${error.message}`,
+          ConfigServiceErrorCode.CONFIG_INVALID,
+          { configPath: this.configPath },
+          error
+        );
+      }
+
+      throw new ConfigServiceError(
+        `Erreur lors du chargement de la configuration: ${error instanceof Error ? error.message : String(error)}`,
+        ConfigServiceErrorCode.CONFIG_LOAD_FAILED,
+        { configPath: this.configPath },
+        error instanceof Error ? error : undefined
+      );
     }
   }
 
   /**
    * Sauvegarde la configuration dans un fichier
+   * @throws {ConfigServiceError} Si la sauvegarde échoue
    */
   public async saveConfig(config: any): Promise<boolean> {
     try {
@@ -84,7 +106,50 @@ export class ConfigService implements IConfigService {
       return true;
     } catch (error) {
       logger.error('Erreur lors de la sauvegarde de la configuration', error);
-      return false;
+
+      throw new ConfigServiceError(
+        `Erreur lors de la sauvegarde de la configuration: ${error instanceof Error ? error.message : String(error)}`,
+        ConfigServiceErrorCode.CONFIG_SAVE_FAILED,
+        { configPath: this.configPath },
+        error instanceof Error ? error : undefined
+      );
+    }
+  }
+
+  /**
+   * Retourne la version de configuration actuelle depuis le fichier sync-config.json
+   * @returns La version de configuration ou null si non disponible
+   * @throws {ConfigServiceError} Si la lecture échoue
+   */
+  public async getConfigVersion(): Promise<string | null> {
+    const syncConfigPath = join(this.sharedStatePath, 'sync-config.json');
+
+    try {
+      if (!existsSync(syncConfigPath)) {
+        logger.warn('Fichier sync-config.json non trouvé', { syncConfigPath });
+        return null;
+      }
+      const content = await fs.readFile(syncConfigPath, 'utf-8');
+      const config = JSON.parse(content);
+      return config.version || null;
+    } catch (error) {
+      logger.error('Erreur lors de la lecture de la version de configuration', error);
+
+      if (error instanceof SyntaxError) {
+        throw new ConfigServiceError(
+          `Erreur de parsing JSON dans sync-config.json: ${error.message}`,
+          ConfigServiceErrorCode.CONFIG_INVALID,
+          { path: syncConfigPath },
+          error
+        );
+      }
+
+      throw new ConfigServiceError(
+        `Erreur lors de la lecture de la version de configuration: ${error instanceof Error ? error.message : String(error)}`,
+        ConfigServiceErrorCode.CONFIG_VERSION_READ_FAILED,
+        { path: syncConfigPath },
+        error instanceof Error ? error : undefined
+      );
     }
   }
 
@@ -116,16 +181,27 @@ export class ConfigService implements IConfigService {
 
   /**
    * Trouve le chemin du répertoire d'état partagé
+   * @throws {ConfigServiceError} Si aucun chemin valide n'est trouvé
    */
   private findSharedStatePath(): string {
     // Essayer d'utiliser la variable d'environnement ROOSYNC_SHARED_PATH
     if (process.env.ROOSYNC_SHARED_PATH) {
-      return process.env.ROOSYNC_SHARED_PATH;
+      const envPath = process.env.ROOSYNC_SHARED_PATH;
+      if (existsSync(envPath)) {
+        return envPath;
+      }
+      logger.warn('ROOSYNC_SHARED_PATH défini mais le répertoire n\'existe pas', { envPath });
     }
 
     // Fallback : utiliser le chemin par défaut dans le workspace
-    // Cela évite une erreur critique lors de l'instanciation du service
     const defaultPath = join(process.cwd(), 'roo-config');
+
+    if (!existsSync(defaultPath)) {
+      logger.warn('Chemin d\'état partagé par défaut non trouvé', { defaultPath });
+      // On retourne quand même le chemin par défaut pour éviter de bloquer l'instanciation
+      // Les méthodes qui utilisent ce chemin géreront l'erreur
+    }
+
     return defaultPath;
   }
 }

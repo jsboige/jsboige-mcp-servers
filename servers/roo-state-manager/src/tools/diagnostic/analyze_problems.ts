@@ -178,7 +178,7 @@ export async function analyzeRooSyncProblems(options: AnalyzeOptions = {}) {
             // Logique de génération de rapport MD similaire au PS1
             // Simplifié pour cet outil MCP qui retourne principalement du JSON
             // Mais on peut écrire le fichier si demandé
-            const reportDir = path.resolve(process.cwd(), 'roo-config/reports');
+            const reportDir = path.join(getSharedStatePath(), 'reports');
             await fs.mkdir(reportDir, { recursive: true });
             reportPath = path.join(reportDir, `PHASE3A-ANALYSE-${new Date().toISOString().replace(/[:.]/g, '-')}.md`);
 

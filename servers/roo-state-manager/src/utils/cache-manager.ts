@@ -40,14 +40,14 @@ export class CacheManager {
     totalRequests: 0,
     lastCleanup: Date.now()
   };
-  
+
   private config: CacheConfig;
   private cleanupTimer?: NodeJS.Timeout;
 
   constructor(config: Partial<CacheConfig> = {}) {
     this.config = {
       maxSize: 100 * 1024 * 1024, // 100MB par défaut
-      maxAge: 30 * 60 * 1000, // 30 minutes par défaut
+      maxAge: 60 * 60 * 1000, // 60 minutes par défaut (augmenté de 30 à 60 min)
       persistToDisk: false, // Désactivé pour le débogage
       cacheDir: join(process.cwd(), '.cache', 'roo-state-manager'),
       cleanupInterval: 5 * 60 * 1000, // 5 minutes
@@ -65,7 +65,7 @@ export class CacheManager {
    */
   async get<T>(key: string): Promise<T | null> {
     this.stats.totalRequests++;
-    
+
     const entry = this.cache.get(key);
     if (!entry) {
       this.stats.misses++;
@@ -87,13 +87,13 @@ export class CacheManager {
    * Stocke une entrée dans le cache
    */
   async set<T>(
-    key: string, 
-    data: T, 
+    key: string,
+    data: T,
     dependencies: string[] = [],
     version: string = '1.0.0'
   ): Promise<void> {
     const size = this.calculateSize(data);
-    
+
     const entry: CacheEntry<T> = {
       data,
       timestamp: Date.now(),
@@ -116,14 +116,14 @@ export class CacheManager {
   /**
    * Invalide les entrées basées sur les dépendances
    */
-  async invalidate(dependency: string): Promise<number> {
+  async invalidateByDependency(dependency: string): Promise<number> {
     let invalidatedCount = 0;
-    
+
     for (const [key, entry] of this.cache.entries()) {
       if (entry.dependencies.includes(dependency)) {
         this.cache.delete(key);
         invalidatedCount++;
-        
+
         // Supprimer du disque
         if (this.config.persistToDisk) {
           await this.removeFromDisk(key);
@@ -139,12 +139,12 @@ export class CacheManager {
    */
   async invalidatePattern(pattern: RegExp): Promise<number> {
     let invalidatedCount = 0;
-    
+
     for (const [key, entry] of this.cache.entries()) {
       if (pattern.test(key)) {
         this.cache.delete(key);
         invalidatedCount++;
-        
+
         if (this.config.persistToDisk) {
           await this.removeFromDisk(key);
         }
@@ -155,15 +155,58 @@ export class CacheManager {
   }
 
   /**
+   * Invalide intelligemment le cache selon différentes stratégies
+   * @param options Options d'invalidation
+   * @returns Le nombre d'entrées invalidées
+   */
+  async invalidate(options: {
+    pattern?: RegExp;
+    prefix?: string;
+    dependency?: string;
+    all?: boolean;
+  } = {}): Promise<number> {
+    if (options.all) {
+      const count = this.cache.size;
+      await this.clear();
+      return count;
+    }
+
+    if (options.pattern) {
+      return await this.invalidatePattern(options.pattern);
+    }
+
+    if (options.prefix) {
+      let invalidatedCount = 0;
+      for (const [key, entry] of this.cache.entries()) {
+        if (key.startsWith(options.prefix)) {
+          this.cache.delete(key);
+          invalidatedCount++;
+
+          if (this.config.persistToDisk) {
+            await this.removeFromDisk(key);
+          }
+        }
+      }
+      return invalidatedCount;
+    }
+
+    if (options.dependency) {
+      return await this.invalidateByDependency(options.dependency);
+    }
+
+    return 0;
+  }
+
+  /**
    * Cache spécialisé pour l'arborescence de tâches
    */
   async cacheTaskTree(tree: TaskTree, conversations: ConversationSummary[]): Promise<void> {
     const treeKey = 'task-tree:main';
     const conversationsKey = 'conversations:all';
-    
+
     // Créer les dépendances basées sur les chemins des conversations
     const dependencies = conversations.map(conv => `conversation:${conv.taskId}`);
-    
+
     await this.set(treeKey, tree, dependencies, tree.metadata.version);
     await this.set(conversationsKey, conversations, dependencies);
   }
@@ -179,13 +222,13 @@ export class CacheManager {
    * Cache les résultats de recherche
    */
   async cacheSearchResults(
-    query: string, 
-    filters: Record<string, any>, 
+    query: string,
+    filters: Record<string, any>,
     results: any[]
   ): Promise<void> {
     const searchKey = `search:${this.hashQuery(query, filters)}`;
     const dependencies = ['task-tree:main', 'conversations:all'];
-    
+
     await this.set(searchKey, results, dependencies);
   }
 
@@ -193,7 +236,7 @@ export class CacheManager {
    * Récupère les résultats de recherche mis en cache
    */
   async getCachedSearchResults(
-    query: string, 
+    query: string,
     filters: Record<string, any>
   ): Promise<any[] | null> {
     const searchKey = `search:${this.hashQuery(query, filters)}`;
@@ -222,12 +265,12 @@ export class CacheManager {
   async cleanup(): Promise<number> {
     let cleanedCount = 0;
     const now = Date.now();
-    
+
     for (const [key, entry] of this.cache.entries()) {
       if (now - entry.timestamp > this.config.maxAge) {
         this.cache.delete(key);
         cleanedCount++;
-        
+
         if (this.config.persistToDisk) {
           await this.removeFromDisk(key);
         }
@@ -266,7 +309,7 @@ export class CacheManager {
     if (this.cleanupTimer) {
       clearInterval(this.cleanupTimer);
     }
-    
+
     if (this.config.persistToDisk) {
       await this.saveToDisk();
     }
@@ -314,10 +357,10 @@ export class CacheManager {
       if (currentSize <= this.config.maxSize * 0.8) { // Garder 20% de marge
         break;
       }
-      
+
       this.cache.delete(key);
       currentSize -= entry.size;
-      
+
       if (this.config.persistToDisk) {
         await this.removeFromDisk(key);
       }
@@ -339,13 +382,13 @@ export class CacheManager {
       const metaPath = join(this.config.cacheDir, 'cache-meta.json');
       const metaData = await fs.readFile(metaPath, 'utf-8');
       const meta = JSON.parse(metaData);
-      
+
       for (const [key, entryMeta] of Object.entries(meta)) {
         try {
           const entryPath = join(this.config.cacheDir, `${key}.json`);
           const entryData = await fs.readFile(entryPath, 'utf-8');
           const entry = JSON.parse(entryData);
-          
+
           // Vérifier l'expiration
           if (Date.now() - entry.timestamp <= this.config.maxAge) {
             this.cache.set(key, entry);
@@ -366,9 +409,9 @@ export class CacheManager {
 
     try {
       await fs.mkdir(this.config.cacheDir, { recursive: true });
-      
+
       const meta: Record<string, any> = {};
-      
+
       for (const [key, entry] of this.cache.entries()) {
         await this.persistEntry(key, entry);
         meta[key] = {
@@ -377,7 +420,7 @@ export class CacheManager {
           size: entry.size
         };
       }
-      
+
       const metaPath = join(this.config.cacheDir, 'cache-meta.json');
       await fs.writeFile(metaPath, JSON.stringify(meta, null, 2));
     } catch (error) {
@@ -387,7 +430,7 @@ export class CacheManager {
 
   private async persistEntry(key: string, entry: CacheEntry): Promise<void> {
     if (!this.config.cacheDir) return;
-    
+
     try {
       await fs.mkdir(this.config.cacheDir, { recursive: true });
       const entryPath = join(this.config.cacheDir, `${key.replace(/[^a-zA-Z0-9-_]/g, '_')}.json`);
@@ -399,7 +442,7 @@ export class CacheManager {
 
   private async removeFromDisk(key: string): Promise<void> {
     if (!this.config.cacheDir) return;
-    
+
     try {
       const entryPath = join(this.config.cacheDir, `${key.replace(/[^a-zA-Z0-9-_]/g, '_')}.json`);
       await fs.unlink(entryPath);
