@@ -4,6 +4,7 @@ import * as path from 'path';
 import { FullInventory, InventoryData, McpServerInfo, RooModeInfo, ScriptInfo } from '../../types/inventory';
 import { PowerShellExecutor } from '../PowerShellExecutor';
 import { readJSONFileWithoutBOM } from '../../utils/encoding-helpers.js';
+import { InventoryCollectorError, InventoryCollectorErrorCode } from '../../types/errors.js';
 
 export class InventoryService {
   private static instance: InventoryService;
@@ -78,8 +79,10 @@ private async loadRemoteInventory(machineId: string): Promise<FullInventory> {
   const sharedPath = process.env.ROOSYNC_SHARED_PATH;
 
   if (!sharedPath) {
-    throw new Error(
-      'ROOSYNC_SHARED_PATH n\'est pas configuré. Impossible de charger l\'inventaire distant.'
+    throw new InventoryCollectorError(
+      'ROOSYNC_SHARED_PATH n\'est pas configuré. Impossible de charger l\'inventaire distant.',
+      InventoryCollectorErrorCode.SHARED_STATE_NOT_ACCESSIBLE,
+      { machineId, method: 'loadRemoteInventory' }
     );
   }
 
@@ -90,22 +93,33 @@ private async loadRemoteInventory(machineId: string): Promise<FullInventory> {
 
     // Vérifier que l'inventaire chargé correspond bien au machineId demandé
     if (inventory.machineId !== machineId) {
-      throw new Error(
+      throw new InventoryCollectorError(
         `Incohérence dans l'inventaire: machineId du fichier (${inventory.machineId}) ` +
-        `diffère du machineId demandé (${machineId})`
+        `diffère du machineId demandé (${machineId})`,
+        InventoryCollectorErrorCode.INVENTORY_PARSE_FAILED,
+        { requestedMachineId: machineId, actualMachineId: inventory.machineId, inventoryPath }
       );
     }
 
     return inventory;
   } catch (error: any) {
+    // Propager les erreurs typées
+    if (error instanceof InventoryCollectorError) {
+      throw error;
+    }
     if (error.code === 'ENOENT') {
-      throw new Error(
+      throw new InventoryCollectorError(
         `L'inventaire pour la machine '${machineId}' n'existe pas dans le partage RooSync. ` +
-        `Chemin recherché: ${inventoryPath}`
+        `Chemin recherché: ${inventoryPath}`,
+        InventoryCollectorErrorCode.REMOTE_MACHINE_NOT_FOUND,
+        { machineId, inventoryPath }
       );
     }
-    throw new Error(
-      `Erreur lors du chargement de l'inventaire distant pour '${machineId}': ${error.message}`
+    throw new InventoryCollectorError(
+      `Erreur lors du chargement de l'inventaire distant pour '${machineId}': ${error.message}`,
+      InventoryCollectorErrorCode.INVENTORY_PARSE_FAILED,
+      { machineId, inventoryPath },
+      error
     );
   }
 }

@@ -69,7 +69,7 @@ export class DiffDetector implements IDiffDetector {
       if (!baseline || !baseline.config) {
         throw new BaselineServiceError(
           'Baseline ou baseline.config est null/undefined',
-          BaselineServiceErrorCode.INVALID_BASELINE,
+          BaselineServiceErrorCode.BASELINE_INVALID,
           { baseline: baseline ? 'exists' : 'null', config: baseline?.config ? 'exists' : 'null' }
         );
       }
@@ -78,7 +78,7 @@ export class DiffDetector implements IDiffDetector {
       if (!machine.config) {
         throw new BaselineServiceError(
           'Machine config est null/undefined',
-          BaselineServiceErrorCode.INVALID_BASELINE,
+          BaselineServiceErrorCode.BASELINE_INVALID,
           { machineId: machine.machineId, config: 'null' }
         );
       }

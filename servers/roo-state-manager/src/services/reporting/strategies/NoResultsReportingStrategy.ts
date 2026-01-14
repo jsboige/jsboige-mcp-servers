@@ -11,6 +11,7 @@
 import { BaseReportingStrategy, FormattedMessage } from '../IReportingStrategy.js';
 import { ClassifiedContent, EnhancedSummaryOptions } from '../../../types/enhanced-conversation.js';
 import { DOMParser, XMLSerializer } from '@xmldom/xmldom';
+import { StateManagerError } from '../../../types/errors.js';
 
 export class NoResultsReportingStrategy extends BaseReportingStrategy {
     readonly detailLevel = 'NoResults';
@@ -249,7 +250,12 @@ export class NoResultsReportingStrategy extends BaseReportingStrategy {
             const rootElement = doc.documentElement;
             
             if (!rootElement || rootElement.tagName === 'parsererror') {
-                throw new Error('Erreur de parsing XML');
+                throw new StateManagerError(
+                    'Erreur de parsing XML',
+                    'XML_PARSE_ERROR',
+                    'NoResultsReportingStrategy',
+                    { method: 'processXmlContent' }
+                );
             }
             
             // Extraire tous les éléments enfants

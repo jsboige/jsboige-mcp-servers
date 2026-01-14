@@ -342,7 +342,7 @@ export class LLMService {
         if (!modelConfig) {
             throw new SynthesisServiceError(
                 `Modèle non configuré: ${activeModelId}`,
-                SynthesisServiceErrorCode.LLM_MODEL_NOT_CONFIGURED,
+                SynthesisServiceErrorCode.NO_MODEL_CONFIGURED,
                 { modelId: activeModelId, method: 'generateSynthesis' }
             );
         }
@@ -396,7 +396,7 @@ export class LLMService {
         if (!modelConfig) {
             throw new SynthesisServiceError(
                 `Modèle non configuré: ${activeModelId}`,
-                SynthesisServiceErrorCode.LLM_MODEL_NOT_CONFIGURED,
+                SynthesisServiceErrorCode.NO_MODEL_CONFIGURED,
                 { modelId: activeModelId, method: 'condenseSyntheses' }
             );
         }
@@ -464,7 +464,7 @@ export class LLMService {
         if (!modelConfig) {
             throw new SynthesisServiceError(
                 `Modèle non configuré: ${activeModelId}`,
-                SynthesisServiceErrorCode.LLM_MODEL_NOT_CONFIGURED,
+                SynthesisServiceErrorCode.NO_MODEL_CONFIGURED,
                 { modelId: activeModelId, method: 'callLLM' }
             );
         }
@@ -760,7 +760,7 @@ export class LLMService {
         if (!defaultModel) {
             throw new SynthesisServiceError(
                 `Le modèle par défaut '${this.options.defaultModelId}' n'est pas configuré`,
-                SynthesisServiceErrorCode.LLM_MODEL_NOT_CONFIGURED,
+                SynthesisServiceErrorCode.NO_MODEL_CONFIGURED,
                 { defaultModelId: this.options.defaultModelId, availableModels: this.options.models.map(m => m.modelId) }
             );
         }
@@ -770,7 +770,7 @@ export class LLMService {
             if (!model.modelId || !model.modelName || !model.provider) {
                 throw new SynthesisServiceError(
                     `Configuration invalide pour le modèle: ${JSON.stringify(model)}`,
-                    SynthesisServiceErrorCode.LLM_MODEL_NOT_CONFIGURED,
+                    SynthesisServiceErrorCode.NO_MODEL_CONFIGURED,
                     { model }
                 );
             }

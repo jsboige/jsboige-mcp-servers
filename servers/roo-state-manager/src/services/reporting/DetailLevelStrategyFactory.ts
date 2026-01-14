@@ -13,6 +13,7 @@ import { SummaryReportingStrategy } from './strategies/SummaryReportingStrategy.
 import { NoToolsReportingStrategy } from './strategies/NoToolsReportingStrategy.js';
 import { NoResultsReportingStrategy } from './strategies/NoResultsReportingStrategy.js';
 import { UserOnlyReportingStrategy } from './strategies/UserOnlyReportingStrategy.js';
+import { StateManagerError } from '../../types/errors.js';
 
 /**
  * Factory pour créer les stratégies de reporting
@@ -34,7 +35,12 @@ export class DetailLevelStrategyFactory {
         const strategyCreator = this.strategies.get(detailLevel);
         
         if (!strategyCreator) {
-            throw new Error(`Stratégie non supportée pour DetailLevel: ${detailLevel}`);
+            throw new StateManagerError(
+                `Stratégie non supportée pour DetailLevel: ${detailLevel}`,
+                'UNSUPPORTED_DETAIL_LEVEL',
+                'DetailLevelStrategyFactory',
+                { detailLevel, supportedLevels: Array.from(this.strategies.keys()) }
+            );
         }
 
         return strategyCreator();
