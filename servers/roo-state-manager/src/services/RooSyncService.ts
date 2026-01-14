@@ -8,7 +8,7 @@
  * @version 2.0.0
  */
 
-import { existsSync } from 'fs';
+import { existsSync, statSync } from 'fs';
 import { join } from 'path';
 import { loadRooSyncConfig, RooSyncConfig, validateMachineIdUniqueness, registerMachineId } from '../config/roosync-config.js';
 import {
@@ -39,7 +39,7 @@ export type { DecisionExecutionResult, RollbackRestoreResult };
  * Options de cache pour RooSyncService
  */
 export interface CacheOptions {
-  /** Durée de vie du cache en millisecondes (défaut: 30000 = 30s) */
+  /** Durée de vie du cache en millisecondes (défaut: 300000 = 5 min) */
   ttl?: number;
 
   /** Activer/désactiver le cache */
@@ -47,11 +47,12 @@ export interface CacheOptions {
 }
 
 /**
- * Entrée de cache
+ * Entrée de cache avec support d'invalidation intelligente
  */
 interface CacheEntry<T> {
   data: T;
   timestamp: number;
+  fileHash?: string; // Hash du fichier source pour invalidation intelligente
 }
 
 /**
@@ -90,10 +91,9 @@ export class RooSyncService {
   private nonNominativeBaselineService: NonNominativeBaselineService;
 
   /**
-   /**
-    * Constructeur privé (Singleton)
-    */
-   private constructor(cacheOptions?: CacheOptions, config?: RooSyncConfig) {
+   * Constructeur privé (Singleton)
+   */
+  private constructor(cacheOptions?: CacheOptions, config?: RooSyncConfig) {
      // SDDD Debug: Logging direct dans fichier pour contourner le problème de visibilité
      const debugLog = (message: string, data?: any) => {
        const timestamp = new Date().toISOString();
@@ -122,7 +122,7 @@ export class RooSyncService {
        });
       this.cache = new Map();
       this.cacheOptions = {
-        ttl: cacheOptions?.ttl ?? 30000, // 30 secondes par défaut
+        ttl: cacheOptions?.ttl ?? 5 * 60 * 1000, // 5 minutes par défaut (augmenté de 30s pour réduire les recharges)
         enabled: cacheOptions?.enabled ?? true
       };
       this.powershellExecutor = new PowerShellExecutor({
@@ -464,32 +464,74 @@ export class RooSyncService {
   }
 
   /**
+   * Calculer un hash simple basé sur les métadonnées du fichier (mtime + size)
+   * Permet de détecter les modifications de fichier sans lire tout le contenu
+   */
+  private getFileHash(filePath: string): string | null {
+    try {
+      const stats = statSync(filePath);
+      return `${stats.mtimeMs}-${stats.size}`;
+    } catch (error) {
+      // Si le fichier n'existe pas ou n'est pas accessible, retourner null
+      return null;
+    }
+  }
+
+  /**
+   * Vérifier si une entrée de cache est valide
+   * Prend en compte le TTL ET le hash du fichier source
+   */
+  private isCacheValid<T>(key: string, currentFileHash?: string | null): boolean {
+    const cached = this.cache.get(key);
+    if (!cached) {
+      return false;
+    }
+
+    // Vérifier le TTL
+    const age = Date.now() - cached.timestamp;
+    if (age >= this.cacheOptions.ttl) {
+      return false;
+    }
+
+    // Vérifier le hash du fichier si disponible (invalidation intelligente)
+    if (currentFileHash && cached.fileHash && cached.fileHash !== currentFileHash) {
+      console.log(`[RooSyncService] Cache invalidé pour ${key}: fichier modifié (hash: ${cached.fileHash} -> ${currentFileHash})`);
+      return false;
+    }
+
+    return true;
+  }
+
+  /**
    * Récupérer depuis le cache ou exécuter la fonction
+   * Supporte l'invalidation intelligente basée sur le hash du fichier source
    */
   private async getOrCache<T>(
     key: string,
-    fetchFn: () => T | Promise<T>
+    fetchFn: () => T | Promise<T>,
+    filePath?: string // Chemin du fichier source pour invalidation intelligente
   ): Promise<T> {
     if (!this.cacheOptions.enabled) {
       return fetchFn();
     }
 
-    // Vérifier le cache
-    const cached = this.cache.get(key);
-    if (cached) {
-      const age = Date.now() - cached.timestamp;
-      if (age < this.cacheOptions.ttl) {
+    // Calculer le hash du fichier source si fourni
+    const currentFileHash = filePath ? this.getFileHash(filePath) : undefined;
+
+    // Vérifier la validité du cache (TTL + hash)
+    if (this.isCacheValid(key, currentFileHash)) {
+      const cached = this.cache.get(key);
+      if (cached) {
         return cached.data as T;
       }
-      // Cache expiré
-      this.cache.delete(key);
     }
 
-    // Fetch et mise en cache
+    // Cache invalide ou absent: fetch et mise en cache
     const data = await fetchFn();
     this.cache.set(key, {
       data,
-      timestamp: Date.now()
+      timestamp: Date.now(),
+      fileHash: currentFileHash ?? undefined
     });
 
     return data;
@@ -517,16 +559,22 @@ export class RooSyncService {
 
   /**
    * Charger le dashboard RooSync
+   * Utilise l'invalidation intelligente basée sur le fichier dashboard.json
    */
   public async loadDashboard(): Promise<RooSyncDashboard> {
-    return this.baselineManager.loadDashboard(this.getOrCache.bind(this));
+    const dashboardPath = this.getRooSyncFilePath('dashboard.json');
+    return this.baselineManager.loadDashboard((key, fetchFn) =>
+      this.getOrCache(key, fetchFn, dashboardPath)
+    );
   }
 
   /**
    * Charger toutes les décisions de la roadmap
+   * Utilise l'invalidation intelligente basée sur le fichier sync-roadmap.md
    */
   public async loadDecisions(): Promise<RooSyncDecision[]> {
-    return this.getOrCache('decisions', () => this.syncDecisionManager.loadDecisions());
+    const roadmapPath = this.getRooSyncFilePath('sync-roadmap.md');
+    return this.getOrCache('decisions', () => this.syncDecisionManager.loadDecisions(), roadmapPath);
   }
 
   /**
