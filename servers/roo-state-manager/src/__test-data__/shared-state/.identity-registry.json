@@ -3,14 +3,14 @@
     "test-machine": {
       "machineId": "test-machine",
       "source": "presence",
-      "firstSeen": "2026-01-14T13:57:04.866Z",
-      "lastSeen": "2026-01-14T13:57:04.806Z",
+      "firstSeen": "2026-01-14T14:21:16.669Z",
+      "lastSeen": "2026-01-14T14:21:16.636Z",
       "status": "conflict",
       "metadata": {
         "presencePath": "d:\\roo-extensions\\mcps\\internal\\servers\\roo-state-manager\\src\\__test-data__\\shared-state\\presence\\test-machine.json"
       }
     }
   },
-  "lastUpdated": "2026-01-14T13:57:04.868Z",
+  "lastUpdated": "2026-01-14T14:21:16.670Z",
   "version": "1.0.0"
 }
