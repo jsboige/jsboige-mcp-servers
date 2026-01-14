@@ -12,7 +12,7 @@ import { InventoryCollectorWrapper } from '../../src/services/InventoryCollector
 import { InventoryCollector } from '../../src/services/InventoryCollector.js';
 import { DiffDetector } from '../../src/services/DiffDetector.js';
 import { join } from 'path';
-import { mkdtemp, rm, mkdir, writeFile } from 'fs/promises';
+import { mkdtemp, rm, mkdir, writeFile, readFile } from 'fs/promises';
 import { tmpdir } from 'os';
 
 describe('New Modules Integration', () => {
@@ -24,8 +24,8 @@ describe('New Modules Integration', () => {
         sharedPath = join(tempDir, 'shared');
         await mkdir(sharedPath, { recursive: true });
         
-        // Mock environment variables
-        process.env.ROOSYNC_SHARED_PATH = sharedPath;
+        // Mock environment variables - BaselineService uses SHARED_STATE_PATH
+        process.env.SHARED_STATE_PATH = sharedPath;
         process.env.ROOSYNC_MACHINE_ID = 'test-machine';
     });
 
@@ -99,6 +99,12 @@ describe('New Modules Integration', () => {
                 messages: []
             };
             await writeFile(join(sharedPath, 'sync-config.ref.json'), JSON.stringify(baselineConfig));
+
+            // Verify file was written correctly
+            const fileContent = await readFile(join(sharedPath, 'sync-config.ref.json'), 'utf-8');
+            const parsedContent = JSON.parse(fileContent);
+            expect(parsedContent.machines).toBeDefined();
+            expect(parsedContent.machines.length).toBeGreaterThan(0);
 
             // 3. Run comparison
             const report = await baselineService.compareWithBaseline('test-machine');

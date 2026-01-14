@@ -69,11 +69,9 @@ export class DiffDetector implements IDiffDetector {
         throw new Error('Baseline ou baseline.config est null/undefined');
       }
       
-      // Ne pas utiliser de fallback pour machine.config - laisser l'erreur se produire si config est null
+      // Vérifier que machine.config existe
       if (!machine.config) {
-        const error = new Error('Machine config est null - erreur de test simulée');
-        this.logger.error('Erreur lors de la comparaison baseline/machine', error);
-        throw error;
+        throw new Error('Machine config est null/undefined');
       }
       
       // Comparer la configuration Roo
