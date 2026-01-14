@@ -28,6 +28,7 @@ interface NarrativeContext {
     [key: string]: any; // Flexible pour l'enrichissement
 }
 import { ConversationSkeleton, MessageSkeleton, ActionMetadata } from '../../types/conversation.js';
+import { SynthesisServiceError, SynthesisServiceErrorCode } from '../../types/errors.js';
 import { TaskNavigator } from '../task-navigator.js';
 
 /**
@@ -230,16 +231,24 @@ export class NarrativeContextBuilderService {
         try {
             // 1. Validation des paramètres
             if (!taskId) {
-                throw new Error('taskId is required');
+                throw new SynthesisServiceError(
+                    'taskId is required',
+                    SynthesisServiceErrorCode.TASK_ID_REQUIRED,
+                    { method: 'buildNarrativeContext' }
+                );
             }
 
             // 2. Fusion avec les options par défaut
             const fullOptions = this.mergeWithDefaultOptions(options);
-            
+
             // 3. Chargement du squelette de conversation principal
             const mainConversation = await this.getConversationSkeleton(taskId);
             if (!mainConversation) {
-                throw new Error(`Conversation skeleton not found for taskId: ${taskId}`);
+                throw new SynthesisServiceError(
+                    `Conversation skeleton not found for taskId: ${taskId}`,
+                    SynthesisServiceErrorCode.TASK_ID_REQUIRED,
+                    { taskId, method: 'buildNarrativeContext' }
+                );
             }
 
             // 4. Construction du contexte narratif complet
@@ -719,7 +728,11 @@ export class NarrativeContextBuilderService {
         llmModelId: string
     ): Promise<CondensedSynthesisBatch> {
         // TODO Phase 3: Implémenter la création de lots condensés
-        throw new Error('NarrativeContextBuilderService.createCondensedBatch() - Pas encore implémenté (Phase 1: Squelette)');
+        throw new SynthesisServiceError(
+            'NarrativeContextBuilderService.createCondensedBatch() - Pas encore implémenté (Phase 1: Squelette)',
+            SynthesisServiceErrorCode.NOT_IMPLEMENTED,
+            { method: 'createCondensedBatch', phase: 1, llmModelId, analysesCount: analyses.length }
+        );
     }
 
     // =========================================================================
@@ -902,11 +915,19 @@ export class NarrativeContextBuilderService {
      */
     private validateBuildingOptions(options: ContextBuildingOptions): void {
         if (options.maxDepth < 0) {
-            throw new Error('maxDepth doit être >= 0');
+            throw new SynthesisServiceError(
+                'maxDepth doit être >= 0',
+                SynthesisServiceErrorCode.MAX_DEPTH_INVALID,
+                { maxDepth: options.maxDepth }
+            );
         }
-        
+
         if (options.maxContextSize <= 0) {
-            throw new Error('maxContextSize doit être > 0');
+            throw new SynthesisServiceError(
+                'maxContextSize doit être > 0',
+                SynthesisServiceErrorCode.MAX_CONTEXT_SIZE_INVALID,
+                { maxContextSize: options.maxContextSize }
+            );
         }
     }
 

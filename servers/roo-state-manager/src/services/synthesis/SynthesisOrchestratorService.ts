@@ -24,6 +24,7 @@ import {
 import { ConversationSkeleton } from '../../types/conversation.js';
 import { NarrativeContextBuilderService } from './NarrativeContextBuilderService.js';
 import { LLMService } from './LLMService.js';
+import { SynthesisServiceError, SynthesisServiceErrorCode } from '../../types/errors.js';
 
 /**
  * Options de configuration pour le service orchestrateur.
@@ -324,7 +325,11 @@ export class SynthesisOrchestratorService {
         analysis: ConversationAnalysis
     ): Promise<ConversationSkeleton> {
         // TODO Phase 2: Implémenter la mise à jour des métadonnées
-        throw new Error('SynthesisOrchestratorService.updateSynthesisMetadata() - Pas encore implémenté (Phase 1: Squelette)');
+        throw new SynthesisServiceError(
+            'SynthesisOrchestratorService.updateSynthesisMetadata() - Pas encore implémenté (Phase 1: Squelette)',
+            SynthesisServiceErrorCode.NOT_IMPLEMENTED,
+            { method: 'updateSynthesisMetadata', phase: 1 }
+        );
     }
 
     // =========================================================================
@@ -342,7 +347,11 @@ export class SynthesisOrchestratorService {
      */
     async startBatchSynthesis(config: BatchSynthesisConfig): Promise<BatchSynthesisTask> {
         // TODO Phase 4: Implémenter la logique de traitement par lots
-        throw new Error('SynthesisOrchestratorService.startBatchSynthesis() - Pas encore implémenté (Phase 1: Squelette)');
+        throw new SynthesisServiceError(
+            'SynthesisOrchestratorService.startBatchSynthesis() - Pas encore implémenté (Phase 1: Squelette)',
+            SynthesisServiceErrorCode.NOT_IMPLEMENTED,
+            { method: 'startBatchSynthesis', phase: 1, config }
+        );
     }
 
     /**
@@ -391,7 +400,11 @@ export class SynthesisOrchestratorService {
         options: ExportOptions
     ): Promise<string> {
         // TODO Phase 4: Implémenter la logique d'export
-        throw new Error('SynthesisOrchestratorService.exportSynthesisResults() - Pas encore implémenté (Phase 1: Squelette)');
+        throw new SynthesisServiceError(
+            'SynthesisOrchestratorService.exportSynthesisResults() - Pas encore implémenté (Phase 1: Squelette)',
+            SynthesisServiceErrorCode.NOT_IMPLEMENTED,
+            { method: 'exportSynthesisResults', phase: 1, taskIds, options }
+        );
     }
 
     /**
@@ -431,15 +444,27 @@ export class SynthesisOrchestratorService {
      */
     private validateBatchConfig(config: BatchSynthesisConfig): void {
         if (!config.llmModelId) {
-            throw new Error('llmModelId est requis dans la configuration du lot');
+            throw new SynthesisServiceError(
+                'llmModelId est requis dans la configuration du lot',
+                SynthesisServiceErrorCode.LLM_MODEL_REQUIRED,
+                { config }
+            );
         }
 
         if (config.maxConcurrency <= 0) {
-            throw new Error('maxConcurrency doit être supérieur à 0');
+            throw new SynthesisServiceError(
+                'maxConcurrency doit être supérieur à 0',
+                SynthesisServiceErrorCode.MAX_CONCURRENCY_INVALID,
+                { maxConcurrency: config.maxConcurrency }
+            );
         }
 
         if (!config.taskFilter || (!config.taskFilter.taskIds && !config.taskFilter.workspace)) {
-            throw new Error('taskFilter doit spécifier soit taskIds soit workspace');
+            throw new SynthesisServiceError(
+                'taskFilter doit spécifier soit taskIds soit workspace',
+                SynthesisServiceErrorCode.TASK_FILTER_INVALID,
+                { taskFilter: config.taskFilter }
+            );
         }
     }
 
