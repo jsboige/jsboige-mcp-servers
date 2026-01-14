@@ -44,30 +44,9 @@ if (missingVars.length > 0) {
 console.log('✅ Toutes les variables d\'environnement critiques sont présentes');
 console.log('🔧 [DEBUG] ROOSYNC_SHARED_PATH =', process.env.ROOSYNC_SHARED_PATH);
 
-// Vérification des conflits d'identité au démarrage
-async function checkIdentityConflictAtStartup(): Promise<void> {
-  try {
-    const { loadRooSyncConfig } = await import('./config/roosync-config.js');
-    const { IdentityManager } = await import('./services/roosync/IdentityManager.js');
-    const { PresenceManager } = await import('./services/roosync/PresenceManager.js');
-
-    const config = loadRooSyncConfig();
-    const presenceManager = new PresenceManager(config);
-    const identityManager = new IdentityManager(config, presenceManager);
-
-    await identityManager.checkIdentityConflict();
-    console.log('✅ Vérification des conflits d\'identité réussie');
-  } catch (error) {
-    if (error instanceof Error && error.name === 'IdentityManagerError') {
-      console.error('🚨 ERREUR CRITIQUE: Conflit d\'identité détecté');
-      console.error(error.message);
-      console.error('🔥 ARRÊT IMMÉDIAT DU SERVEUR');
-      process.exit(1);
-    }
-    // Pour les autres erreurs, logger mais ne pas bloquer le démarrage
-    console.warn('⚠️ Erreur lors de la vérification des conflits d\'identité:', error);
-  }
-}
+// NOTE: Système de vérification des conflits d'identité (T2.5) SUPPRIMÉ
+// Raison: Fonctionnalité non demandée par l'utilisateur, bloquait le multi-agent
+// (Claude Code + Roo Code sur même machine). Supprimé le 2026-01-14.
 
 // Imports des modules après validation des env vars
 import { createMcpServer, SERVER_CONFIG } from './config/server-config.js';
@@ -331,9 +310,6 @@ process.on('unhandledRejection', (reason, promise) => {
 // Démarrage du serveur
 (async () => {
     try {
-        // Vérifier les conflits d'identité avant de démarrer
-        await checkIdentityConflictAtStartup();
-
         const server = new RooStateManagerServer();
         server.run().catch((error) => {
             logger.error('Fatal error during server execution:', { error });
