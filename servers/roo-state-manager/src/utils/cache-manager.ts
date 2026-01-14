@@ -1,12 +1,14 @@
 /**
  * Gestionnaire de cache pour l'arborescence de tâches
  * Phase 2 : Cache intelligent avec invalidation sélective
+ * Phase 3 : Invalidation intelligente basée sur les changements de configuration
  */
 
 import { promises as fs } from 'fs';
 import { join } from 'path';
 import { TaskTree, TreeNode, TaskType } from '../types/task-tree.js';
 import { ConversationSummary } from '../types/conversation.js';
+import { ConfigDiffService } from '../services/ConfigDiffService.js';
 
 export interface CacheEntry<T = any> {
   data: T;
@@ -30,6 +32,13 @@ export interface CacheConfig {
   persistToDisk: boolean;
   cacheDir?: string;
   cleanupInterval: number; // Intervalle de nettoyage en ms
+  enableSmartInvalidation?: boolean; // Active l'invalidation intelligente basée sur les changements de config
+}
+
+export interface ConfigVersion {
+  hash: string;
+  timestamp: number;
+  config: any;
 }
 
 export class CacheManager {
@@ -43,16 +52,21 @@ export class CacheManager {
 
   private config: CacheConfig;
   private cleanupTimer?: NodeJS.Timeout;
+  private configDiffService: ConfigDiffService;
+  private configVersions: Map<string, ConfigVersion> = new Map();
 
   constructor(config: Partial<CacheConfig> = {}) {
     this.config = {
       maxSize: 100 * 1024 * 1024, // 100MB par défaut
-      maxAge: 60 * 60 * 1000, // 60 minutes par défaut (augmenté de 30 à 60 min)
+      maxAge: 2 * 60 * 60 * 1000, // 2 heures par défaut (augmenté de 60 min à 2h pour réduire les reconstructions)
       persistToDisk: false, // Désactivé pour le débogage
       cacheDir: join(process.cwd(), '.cache', 'roo-state-manager'),
       cleanupInterval: 5 * 60 * 1000, // 5 minutes
+      enableSmartInvalidation: true, // Activé par défaut
       ...config
     };
+
+    this.configDiffService = new ConfigDiffService();
 
     if (process.env.NODE_ENV !== 'test') {
       this.startCleanupTimer();
@@ -198,6 +212,95 @@ export class CacheManager {
   }
 
   /**
+   * Enregistre une version de configuration pour le suivi des changements
+   * @param configId Identifiant unique de la configuration (ex: 'mcp-settings', 'modes')
+   * @param config La configuration à suivre
+   */
+  async registerConfigVersion(configId: string, config: any): Promise<void> {
+    if (!this.config.enableSmartInvalidation) {
+      return;
+    }
+
+    const hash = this.calculateConfigHash(config);
+    const previousVersion = this.configVersions.get(configId);
+
+    // Si la configuration a changé, invalider le cache
+    if (previousVersion && previousVersion.hash !== hash) {
+      console.log(`[CacheManager] Configuration ${configId} changed, invalidating cache...`);
+      await this.invalidateByDependency(`config:${configId}`);
+    }
+
+    this.configVersions.set(configId, {
+      hash,
+      timestamp: Date.now(),
+      config
+    });
+  }
+
+  /**
+   * Invalide intelligemment le cache basé sur les changements de configuration
+   * @param configId Identifiant de la configuration
+   * @param newConfig Nouvelle configuration
+   * @returns Le nombre d'entrées invalidées
+   */
+  async invalidateOnConfigChange(configId: string, newConfig: any): Promise<number> {
+    if (!this.config.enableSmartInvalidation) {
+      return 0;
+    }
+
+    const previousVersion = this.configVersions.get(configId);
+
+    if (!previousVersion) {
+      // Première version, juste enregistrer
+      await this.registerConfigVersion(configId, newConfig);
+      return 0;
+    }
+
+    // Comparer avec la version précédente
+    const diff = this.configDiffService.compare(previousVersion.config, newConfig);
+
+    if (diff.summary.added > 0 || diff.summary.modified > 0 || diff.summary.deleted > 0) {
+      console.log(`[CacheManager] Config ${configId} changed: ${diff.summary.added} added, ${diff.summary.modified} modified, ${diff.summary.deleted} deleted`);
+
+      // Invalider toutes les entrées dépendantes de cette configuration
+      const invalidated = await this.invalidateByDependency(`config:${configId}`);
+
+      // Mettre à jour la version
+      await this.registerConfigVersion(configId, newConfig);
+
+      return invalidated;
+    }
+
+    return 0;
+  }
+
+  /**
+   * Vérifie si une configuration a changé depuis la dernière vérification
+   * @param configId Identifiant de la configuration
+   * @param currentConfig Configuration actuelle
+   * @returns true si la configuration a changé
+   */
+  hasConfigChanged(configId: string, currentConfig: any): boolean {
+    const previousVersion = this.configVersions.get(configId);
+
+    if (!previousVersion) {
+      return true; // Pas de version précédente = changement
+    }
+
+    const currentHash = this.calculateConfigHash(currentConfig);
+    return previousVersion.hash !== currentHash;
+  }
+
+  /**
+   * Obtient la version actuelle d'une configuration
+   * @param configId Identifiant de la configuration
+   * @returns La version de configuration ou null
+   */
+  getConfigVersion(configId: string): ConfigVersion | null {
+    return this.configVersions.get(configId) || null;
+  }
+
+  /**
    * Cache spécialisé pour l'arborescence de tâches
    */
   async cacheTaskTree(tree: TaskTree, conversations: ConversationSummary[]): Promise<void> {
@@ -327,6 +430,22 @@ export class CacheManager {
 
   private calculateSize(data: any): number {
     return JSON.stringify(data).length * 2; // Approximation UTF-16
+  }
+
+  /**
+   * Calcule un hash pour une configuration
+   * @param config La configuration à hasher
+   * @returns Le hash de la configuration
+   */
+  private calculateConfigHash(config: any): string {
+    const configStr = JSON.stringify(config, Object.keys(config).sort());
+    let hash = 0;
+    for (let i = 0; i < configStr.length; i++) {
+      const char = configStr.charCodeAt(i);
+      hash = ((hash << 5) - hash) + char;
+      hash = hash & hash; // Convert to 32-bit integer
+    }
+    return Math.abs(hash).toString(36);
   }
 
   private hashQuery(query: string, filters: Record<string, any>): string {
