@@ -171,11 +171,10 @@ describe('ConfigService', () => {
       expect(savedConfig).not.toEqual(initialConfig);
     });
 
-    it('devrait retourner false en cas d\'erreur de sauvegarde', async () => {
+    it('devrait lancer une erreur en cas d\'erreur de sauvegarde', async () => {
       const service = new ConfigService('/invalid/path/config.json');
-      const result = await service.saveConfig({ test: 'data' });
 
-      expect(result).toBe(false);
+      await expect(service.saveConfig({ test: 'data' })).rejects.toThrow();
     });
 
     it('devrait formater le JSON avec indentation', async () => {
@@ -216,13 +215,16 @@ describe('ConfigService', () => {
   });
 
   describe('findSharedStatePath', () => {
-    it('devrait utiliser ROOSYNC_SHARED_PATH si défini', () => {
-      vi.stubEnv('ROOSYNC_SHARED_PATH', '/custom/shared/path');
+    it('devrait utiliser ROOSYNC_SHARED_PATH si défini et existant', async () => {
+      // Créer le répertoire temporaire pour ROOSYNC_SHARED_PATH
+      const customSharedPath = join(testDir, 'custom-shared');
+      await fs.mkdir(customSharedPath, { recursive: true });
+      vi.stubEnv('ROOSYNC_SHARED_PATH', customSharedPath);
 
       const service = new ConfigService();
       const sharedStatePath = service.getSharedStatePath();
 
-      expect(sharedStatePath).toBe('/custom/shared/path');
+      expect(sharedStatePath).toBe(customSharedPath);
     });
 
     it('devrait utiliser le chemin par défaut si ROOSYNC_SHARED_PATH n\'est pas défini', () => {

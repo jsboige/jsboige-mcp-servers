@@ -6,7 +6,8 @@
  */
 
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
-import { IdentityManager, IdentityManagerError } from '../../src/services/roosync/IdentityManager';
+import { IdentityManager } from '../../src/services/roosync/IdentityManager';
+import { IdentityManagerError } from '../../src/types/errors';
 import { PresenceManager } from '../../src/services/roosync/PresenceManager';
 import { RooSyncConfig } from '../../src/config/roosync-config';
 import { promises as fs } from 'fs';
