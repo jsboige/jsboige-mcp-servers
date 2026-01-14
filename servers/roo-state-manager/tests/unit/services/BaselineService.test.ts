@@ -3,6 +3,12 @@ import path from 'path';
 import { promises as fs, existsSync, copyFileSync } from 'fs';
 import { BaselineService } from '../../../src/services/BaselineService';
 
+// Mock encoding-helpers pour readJSONFileWithoutBOM
+vi.mock('../../../src/utils/encoding-helpers.js', () => ({
+  readJSONFileWithoutBOM: vi.fn(),
+  writeJSONFileWithBOM: vi.fn()
+}));
+
 // Mock fs module de manière cohérente avec l'import utilisé
 vi.mock('fs', async () => {
   const actual = await vi.importActual<typeof import('fs')>('fs');
@@ -193,7 +199,8 @@ describe('BaselineService', () => {
       return false;
     });
 
-    // Mock readJSONFileWithoutBOM pour simuler un JSON invalide (lance SyntaxError)
+    // Mock readJSONFileWithoutBOM pour lancer une erreur (JSON invalide)
+    const { readJSONFileWithoutBOM } = await import('../../../src/utils/encoding-helpers.js');
     vi.mocked(readJSONFileWithoutBOM).mockRejectedValue(new SyntaxError('Invalid JSON'));
 
     await expect(service.loadBaseline()).rejects.toThrow();
