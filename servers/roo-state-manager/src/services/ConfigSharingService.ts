@@ -19,6 +19,7 @@ import {
 } from '../types/config-sharing.js';
 import { IInventoryCollector, IConfigService } from '../types/baseline.js';
 import { createLogger, Logger } from '../utils/logger.js';
+import { ConfigSharingServiceError, ConfigSharingServiceErrorCode } from '../types/errors.js';
 
 export class ConfigSharingService implements IConfigSharingService {
   private logger: Logger;
@@ -349,7 +350,11 @@ export class ConfigSharingService implements IConfigSharingService {
     
     // CORRECTION SDDD : Utiliser uniquement l'inventaire, pas de fallback process.cwd()
     if (!inventory?.paths?.rooExtensions) {
-      throw new Error('Inventaire incomplet: paths.rooExtensions non disponible. Impossible de collecter les modes.');
+      throw new ConfigSharingServiceError(
+        'Inventaire incomplet: paths.rooExtensions non disponible. Impossible de collecter les modes.',
+        ConfigSharingServiceErrorCode.INVENTORY_INCOMPLETE,
+        { machineId, missingPath: 'rooExtensions' }
+      );
     }
     
     const rooModesPath = join(inventory.paths.rooExtensions, 'roo-modes');
@@ -401,7 +406,11 @@ export class ConfigSharingService implements IConfigSharingService {
     
     // CORRECTION SDDD : Utiliser uniquement l'inventaire, pas de fallback process.cwd()
     if (!inventory?.paths?.mcpSettings) {
-      throw new Error('Inventaire incomplet: paths.mcpSettings non disponible. Impossible de collecter les settings MCP.');
+      throw new ConfigSharingServiceError(
+        'Inventaire incomplet: paths.mcpSettings non disponible. Impossible de collecter les settings MCP.',
+        ConfigSharingServiceErrorCode.INVENTORY_INCOMPLETE,
+        { machineId, missingPath: 'mcpSettings' }
+      );
     }
     
     const mcpSettingsPath = inventory.paths.mcpSettings;

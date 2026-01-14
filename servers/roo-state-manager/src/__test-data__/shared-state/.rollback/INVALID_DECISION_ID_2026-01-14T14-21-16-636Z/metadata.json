@@ -1,6 +1,6 @@
 {
-  "decisionId": "TEST_PERMISSIONS",
-  "timestamp": "2026-01-14T13-57-04-862Z",
+  "decisionId": "INVALID_DECISION_ID",
+  "timestamp": "2026-01-14T14-21-16-636Z",
   "machine": "test-machine",
   "files": [
     "sync-config.ref.json",
