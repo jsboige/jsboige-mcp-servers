@@ -15,6 +15,7 @@ import { join } from 'path';
 import { existsSync } from 'fs';
 import { getSharedStatePath } from '../utils/server-helpers.js';
 import { createLogger } from '../utils/logger.js';
+import { InventoryCollectorError, InventoryCollectorErrorCode } from '../types/errors.js';
 
 const logger = createLogger('InventoryCollectorWrapper');
 
@@ -68,7 +69,11 @@ export class InventoryCollectorWrapper implements IInventoryCollector {
       }
 
       logger.debug(`Aucun inventaire trouvé pour ${machineId}`);
-      throw new Error(`Échec collecte inventaire pour ${machineId}`);
+      throw new InventoryCollectorError(
+        `Échec collecte inventaire pour ${machineId}`,
+        InventoryCollectorErrorCode.SCRIPT_EXECUTION_FAILED,
+        { machineId, sources: ['local', 'sharedState'] }
+      );
     } catch (error) {
       logger.error('Erreur lors de la collecte de l\'inventaire', error);
       throw error; // CORRECTION SDDD : Propager l'erreur pour un meilleur diagnostic

@@ -204,11 +204,19 @@ export class ConfigSharingService implements IConfigSharingService {
       }
 
       if (!configDir || !manifestPath) {
-        throw new Error(`Configuration non trouvée: ${options.version} (machineId: ${machineId})`);
+        throw new ConfigSharingServiceError(
+          `Configuration non trouvée: ${options.version} (machineId: ${machineId})`,
+          ConfigSharingServiceErrorCode.PATH_NOT_AVAILABLE,
+          { version: options.version, machineId }
+        );
       }
 
       if (!existsSync(manifestPath)) {
-        throw new Error(`Manifeste non trouvé: ${manifestPath}`);
+        throw new ConfigSharingServiceError(
+          `Manifeste non trouvé: ${manifestPath}`,
+          ConfigSharingServiceErrorCode.PATH_NOT_AVAILABLE,
+          { manifestPath, version: options.version }
+        );
       }
 
       const manifestContent = await fs.readFile(manifestPath, 'utf-8');

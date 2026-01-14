@@ -11,6 +11,7 @@
 import { existsSync, promises as fs, mkdirSync } from 'fs';
 import { join } from 'path';
 import { createLogger } from '../utils/logger.js';
+import { MessageManagerError, MessageManagerErrorCode } from '../types/errors.js';
 
 const logger = createLogger('MessageManager');
 
@@ -192,7 +193,11 @@ export class MessageManager {
     // CORRECTION ROOSYNC PHASE 3 : Validation anti-auto-messages
     // Empêcher une machine d'envoyer des messages à elle-même
     if (from === to) {
-      throw new Error(`Auto-message interdit : une machine (${from}) ne peut pas envoyer de message à elle-même (${to})`);
+      throw new MessageManagerError(
+        `Auto-message interdit : une machine (${from}) ne peut pas envoyer de message à elle-même (${to})`,
+        MessageManagerErrorCode.INVALID_RECIPIENT,
+        { from, to, type: 'self-message' }
+      );
     }
 
     const message: Message = {
@@ -448,7 +453,11 @@ export class MessageManager {
     const sentFile = join(this.sentPath, `${messageId}.json`);
     
     if (!existsSync(sentFile)) {
-      throw new Error(`Message non trouvé dans sent/ : ${messageId}. Seuls les messages envoyés peuvent être amendés.`);
+      throw new MessageManagerError(
+        `Message non trouvé dans sent/ : ${messageId}. Seuls les messages envoyés peuvent être amendés.`,
+        MessageManagerErrorCode.MESSAGE_NOT_FOUND,
+        { messageId, location: 'sent', action: 'amend' }
+      );
     }
 
     try {
@@ -458,12 +467,20 @@ export class MessageManager {
 
       // Validation : Vérifier que le message n'est pas lu/archivé (en premier)
       if (message.status !== 'unread') {
-        throw new Error(`Impossible d'amender un message déjà lu ou archivé (status: ${message.status}).`);
+        throw new MessageManagerError(
+          `Impossible d'amender un message déjà lu ou archivé (status: ${message.status}).`,
+          MessageManagerErrorCode.INVALID_MESSAGE_FORMAT,
+          { messageId, status: message.status, expectedStatus: 'unread', action: 'amend' }
+        );
       }
 
       // Validation : Vérifier que l'émetteur correspond
       if (message.from !== senderId) {
-        throw new Error(`Permission refusée : seul l'émetteur (${message.from}) peut amender ce message.`);
+        throw new MessageManagerError(
+          `Permission refusée : seul l'émetteur (${message.from}) peut amender ce message.`,
+          MessageManagerErrorCode.MESSAGE_SEND_FAILED,
+          { messageId, expectedSender: message.from, actualSender: senderId, action: 'amend' }
+        );
       }
 
       // Préserver le contenu original si c'est le premier amendement
