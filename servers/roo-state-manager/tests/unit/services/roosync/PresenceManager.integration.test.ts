@@ -150,7 +150,9 @@ describe('PresenceManager Integration with FileLockManager.simple', () => {
     const allPresence = await presenceManager.listAllPresence();
 
     expect(allPresence).toHaveLength(2);
-    expect(allPresence[0].id).toBe('test-machine');
-    expect(allPresence[1].id).toBe('test-machine-2');
+    // Vérifier que les deux machines sont présentes (sans dépendre de l'ordre)
+    const ids = allPresence.map(p => p.id);
+    expect(ids).toContain('test-machine');
+    expect(ids).toContain('test-machine-2');
   });
 });

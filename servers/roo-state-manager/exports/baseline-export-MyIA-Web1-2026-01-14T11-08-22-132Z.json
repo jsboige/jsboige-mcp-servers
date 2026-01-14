@@ -1,0 +1,46 @@
+{
+  "exportInfo": {
+    "timestamp": "2026-01-14T11:08:22.132Z",
+    "format": "json",
+    "exportedBy": "roosync_export_baseline",
+    "version": "1.0.0"
+  },
+  "metadata": {
+    "machineId": "MyIA-Web1",
+    "version": "2.1.0",
+    "lastUpdated": "2026-01-14T11:08:22.061Z"
+  },
+  "configuration": {
+    "roo": {
+      "modes": [],
+      "mcpSettings": {},
+      "userSettings": {}
+    },
+    "hardware": {
+      "cpu": {
+        "model": "Unknown CPU",
+        "cores": 0,
+        "threads": 0
+      },
+      "memory": {
+        "total": 0
+      },
+      "disks": [],
+      "gpu": "Unknown"
+    },
+    "software": {
+      "powershell": "Unknown",
+      "node": "Unknown",
+      "python": "Unknown"
+    },
+    "system": {
+      "os": "Unknown",
+      "architecture": "Unknown"
+    }
+  },
+  "statistics": {
+    "totalParameters": 10,
+    "lastModified": "2026-01-14T11:08:22.061Z",
+    "exportTimestamp": "2026-01-14T11:08:22.132Z"
+  }
+}

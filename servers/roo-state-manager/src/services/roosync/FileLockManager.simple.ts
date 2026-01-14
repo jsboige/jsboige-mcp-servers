@@ -215,18 +215,26 @@ export class FileLockManager {
    * Mettre à jour un fichier JSON avec verrou
    *
    * @param filePath - Chemin du fichier
-   * @param updater - Fonction de mise à jour
+   * @param updater - Fonction de mise à jour (reçoit undefined si fichier n'existe pas)
    * @param options - Options de verrouillage
    * @returns Résultat de l'opération
    */
   async updateJsonWithLock<T>(
     filePath: string,
-    updater: (data: T) => T,
+    updater: (data: T | undefined) => T,
     options?: LockOptions
   ): Promise<LockOperationResult<T>> {
     return this.withLock(filePath, async () => {
-      const content = await fs.readFile(filePath, 'utf-8');
-      const data = JSON.parse(content) as T;
+      let data: T | undefined;
+      try {
+        const content = await fs.readFile(filePath, 'utf-8');
+        data = JSON.parse(content) as T;
+      } catch (error: any) {
+        if (error.code !== 'ENOENT') {
+          throw error;
+        }
+        // Fichier n'existe pas - data reste undefined
+      }
       const updated = updater(data);
       await fs.writeFile(filePath, JSON.stringify(updated, null, 2), 'utf-8');
       return updated;
