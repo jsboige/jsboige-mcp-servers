@@ -17,6 +17,7 @@ import {
   BaselineComparisonReport
 } from '../types/baseline.js';
 import { createLogger, Logger } from '../utils/logger.js';
+import { BaselineServiceError, BaselineServiceErrorCode } from '../types/errors.js';
 
 /**
  * Safe property accessor with default value
@@ -66,12 +67,20 @@ export class DiffDetector implements IDiffDetector {
     try {
       // Vérifier que les configurations existent
       if (!baseline || !baseline.config) {
-        throw new Error('Baseline ou baseline.config est null/undefined');
+        throw new BaselineServiceError(
+          'Baseline ou baseline.config est null/undefined',
+          BaselineServiceErrorCode.INVALID_BASELINE,
+          { baseline: baseline ? 'exists' : 'null', config: baseline?.config ? 'exists' : 'null' }
+        );
       }
-      
+
       // Vérifier que machine.config existe
       if (!machine.config) {
-        throw new Error('Machine config est null/undefined');
+        throw new BaselineServiceError(
+          'Machine config est null/undefined',
+          BaselineServiceErrorCode.INVALID_BASELINE,
+          { machineId: machine.machineId, config: 'null' }
+        );
       }
       
       // Comparer la configuration Roo
