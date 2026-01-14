@@ -54,23 +54,53 @@ export async function analyzeRooSyncProblems(options: AnalyzeOptions = {}) {
         // Détection du chemin
         let roadmapPath = options.roadmapPath;
         if (!roadmapPath) {
-             // CORRECTION SDDD : Utiliser ROOSYNC_SHARED_PATH via helper centralisé
-             const sharedStatePath = getSharedStatePath();
-             roadmapPath = path.join(sharedStatePath, 'sync-roadmap.md');
+            // CORRECTION SDDD : Utiliser la variable d'environnement ROOSYNC_SHARED_PATH (prioritaire) ou SHARED_STATE_PATH (legacy)
+            const sharedStatePath = process.env.ROOSYNC_SHARED_PATH || process.env.SHARED_STATE_PATH;
+            if (sharedStatePath) {
+                const envPath = path.join(sharedStatePath, 'sync-roadmap.md');
+                try {
+                    await fs.access(envPath);
+                    roadmapPath = envPath;
+                }
+                catch {
+                    // Fichier non trouvé via env, continuer avec fallback
+                }
+            }
+            // FALLBACK : Chemins hardcodés (si env non défini ou fichier non trouvé)
+            if (!roadmapPath) {
+                // Tentative de détection standard
+                // Note: En environnement MCP, les chemins relatifs peuvent varier.
+                // On suppose une structure relative connue ou on cherche.
+                // Pour l'instant on hardcode les chemins probables comme dans le script PS1 mais adaptés
+                const commonPaths = [
+                    '../../Drive/.shortcut-targets-by-id/1jEQqHabwXrIukTEI1vE05gWsJNYNNFVB/.shared-state/sync-roadmap.md', // Path du script PS1
+                    'RooSync/sync-roadmap.md',
+                    'docs/suivi/RooSync/sync-roadmap.md',
+                    '.shared-state/sync-roadmap.md'
+                ];
+                for (const p of commonPaths) {
+                    // Résolution du chemin absolu si nécessaire, ou relatif au CWD
+                    const resolvedPath = path.resolve(process.cwd(), p);
+                    try {
+                        await fs.access(resolvedPath);
+                        roadmapPath = resolvedPath;
+                        break;
+                    }
+                    catch { }
+                }
+            }
         }
-
         if (!roadmapPath) {
             return {
                 content: [{
-                    type: 'text' as const,
-                    text: JSON.stringify({
-                        success: false,
-                        error: "Fichier sync-roadmap.md introuvable. Veuillez spécifier le chemin."
-                    }, null, 2)
-                }]
+                        type: 'text',
+                        text: JSON.stringify({
+                            success: false,
+                            error: "Fichier sync-roadmap.md introuvable. Veuillez spécifier le chemin."
+                        }, null, 2)
+                    }]
             };
         }
-
         const stats = await fs.stat(roadmapPath);
         const content = await fs.readFile(roadmapPath, 'utf8');
 
@@ -87,7 +117,6 @@ export async function analyzeRooSyncProblems(options: AnalyzeOptions = {}) {
             issues: [],
             success: true
         };
-
         // Regex pour extraire les blocs de décision
         // Adapté du PS1: (<!-- DECISION_BLOCK_START -->([\s\S]*?)<!-- DECISION_BLOCK_END -->)
         const blockRegex = /<!-- DECISION_BLOCK_START -->([\s\S]*?)<!-- DECISION_BLOCK_END -->/g;
@@ -200,7 +229,7 @@ ${JSON.stringify(analysis.issues, null, 2)}
 
         return {
             content: [{
-                type: 'text' as const,
+                type: 'text',
                 text: JSON.stringify({
                     ...analysis,
                     reportGenerated: reportPath
@@ -211,7 +240,7 @@ ${JSON.stringify(analysis.issues, null, 2)}
     } catch (error: any) {
         return {
             content: [{
-                type: 'text' as const,
+                type: 'text',
                 text: JSON.stringify({
                     success: false,
                     error: error.message,
