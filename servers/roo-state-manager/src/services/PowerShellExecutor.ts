@@ -15,6 +15,7 @@
 import { spawn, ChildProcess } from 'child_process';
 import path from 'path';
 import fs from 'fs';
+import { PowerShellExecutorError, PowerShellExecutorErrorCode } from '../types/errors.js';
 
 /**
  * Résultat d'une exécution PowerShell
@@ -312,15 +313,21 @@ export class PowerShellExecutor {
       const jsonEnd = stdout.lastIndexOf('}');
       
       if (jsonStart === -1 || jsonEnd === -1 || jsonEnd <= jsonStart) {
-        throw new Error('No valid JSON object found in PowerShell output');
+        throw new PowerShellExecutorError(
+          'No valid JSON object found in PowerShell output',
+          PowerShellExecutorErrorCode.NO_JSON_FOUND,
+          { outputLength: stdout.length, outputPreview: stdout.substring(0, 200) }
+        );
       }
-      
+
       const jsonStr = stdout.substring(jsonStart, jsonEnd + 1);
       return JSON.parse(jsonStr) as T;
     } catch (error) {
-      throw new Error(
-        `Failed to parse PowerShell JSON output: ${error instanceof Error ? error.message : String(error)}\n` +
-        `Output: ${stdout.substring(0, 500)}...` // Premier 500 caractères pour debug
+      throw new PowerShellExecutorError(
+        `Failed to parse PowerShell JSON output: ${error instanceof Error ? error.message : String(error)}`,
+        PowerShellExecutorErrorCode.PARSE_FAILED,
+        { outputPreview: stdout.substring(0, 500) },
+        error instanceof Error ? error : undefined
       );
     }
   }

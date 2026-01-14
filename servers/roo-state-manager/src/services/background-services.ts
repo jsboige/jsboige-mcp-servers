@@ -12,6 +12,7 @@ import { ServerState } from './state-manager.service.js';
 import { ANTI_LEAK_CONFIG } from '../config/server-config.js';
 import { TaskIndexer, getHostIdentifier } from './task-indexer.js';
 import * as toolExports from '../tools/index.js';
+import { RooStorageDetectorError, RooStorageDetectorErrorCode } from '../types/errors.js';
 
 /**
  * Charge les squelettes existants depuis le disque au démarrage
@@ -431,7 +432,11 @@ export async function saveSkeletonToDisk(skeleton: ConversationSkeleton): Promis
     try {
         const storageLocations = await RooStorageDetector.detectStorageLocations();
         if (storageLocations.length === 0) {
-            throw new Error('Aucun emplacement de stockage Roo trouvé');
+            throw new RooStorageDetectorError(
+                'Aucun emplacement de stockage Roo trouvé',
+                RooStorageDetectorErrorCode.NO_STORAGE_FOUND,
+                { function: 'saveSkeletonToDisk', skeletonTaskId: skeleton.taskId }
+            );
         }
 
         // ✅ FIX CRITIQUE: Utiliser tasks/.skeletons comme build-skeleton-cache.tool.ts

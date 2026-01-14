@@ -400,11 +400,38 @@ async function handleRestoreAction(
     try {
       logger.info('Restauration depuis le tag Git', { tagName: args.source });
 
-      // Fix Bug #291: Vérifier si le tag existe avant de tenter la restauration
+      // Fix Bug #291 & #304: Vérifier si le tag existe avant de tenter la restauration
+      let tagExists = false;
       try {
-        execSync(`git rev-parse --verify ${args.source}^{commit}`, { encoding: 'utf8', stdio: 'pipe' });
+        execSync(`git rev-parse --verify refs/tags/${args.source}`, { encoding: 'utf8', stdio: 'pipe' });
+        tagExists = true;
       } catch (tagError) {
-        throw new Error(`Le tag Git ${args.source} n'existe pas. Vérifiez les tags disponibles avec 'git tag -l'.`);
+        // Le tag n'existe pas
+        tagExists = false;
+      }
+
+      if (!tagExists) {
+        // Récupérer la liste des tags disponibles
+        let availableTags = '';
+        try {
+          availableTags = execSync('git tag -l "baseline-v*"', { encoding: 'utf8', stdio: 'pipe' }).trim();
+        } catch (listError) {
+          // Ignorer l'erreur de listing
+        }
+
+        let errorMessage = `Le tag Git ${args.source} n'existe pas.`;
+        
+        if (availableTags) {
+          errorMessage += `\n\nTags disponibles:\n${availableTags.split('\n').map(t => `  - ${t}`).join('\n')}`;
+        } else {
+          errorMessage += '\n\nAucun tag baseline disponible.';
+        }
+
+        errorMessage += '\n\nAlternatives:';
+        errorMessage += '\n1. Créez un tag avec roosync_manage_baseline { action: "version", version: "X.Y.Z" }';
+        errorMessage += '\n2. Restaurez depuis un fichier de backup dans le répertoire .rollback/';
+        
+        throw new Error(errorMessage);
       }
 
       // Récupérer le contenu du tag

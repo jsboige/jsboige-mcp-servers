@@ -28,6 +28,7 @@ import { ClassifiedContent as EnhancedClassifiedContent } from '../types/enhance
 import { SummaryGenerator } from './trace-summary/SummaryGenerator.js';
 import { ContentClassifier, ClassifiedContent } from './trace-summary/ContentClassifier.js';
 import { sanitizeSectionHtml } from './trace-summary/ExportRenderer.js';
+import { TraceSummaryServiceError, TraceSummaryServiceErrorCode } from '../types/errors.js';
 
 export { sanitizeSectionHtml };
 
@@ -339,11 +340,19 @@ export class TraceSummaryService {
      */
     private validateClusterInput(rootTask: ConversationSkeleton, childTasks: ConversationSkeleton[]): void {
         if (!rootTask || !rootTask.taskId) {
-            throw new Error('Root task is required and must have a taskId');
+            throw new TraceSummaryServiceError(
+                'Root task is required and must have a taskId',
+                TraceSummaryServiceErrorCode.ROOT_TASK_REQUIRED,
+                { rootTask }
+            );
         }
 
         if (!Array.isArray(childTasks)) {
-            throw new Error('Child tasks must be an array');
+            throw new TraceSummaryServiceError(
+                'Child tasks must be an array',
+                TraceSummaryServiceErrorCode.CHILD_TASKS_INVALID,
+                { childTasks: typeof childTasks }
+            );
         }
 
         // Vérification que toutes les tâches enfantes référencent bien la tâche racine

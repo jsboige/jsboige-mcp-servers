@@ -418,7 +418,7 @@ export function registerCallToolHandler(
 
           // Diagnostic Tools - WP4
           case toolExports.analyze_roosync_problems.name:
-              result = await toolExports.analyzeRooSyncProblems(args as any);
+              result = await toolExports.analyzeRooSyncProblems(args as any) as any;
               break;
           case toolExports.diagnose_env.name:
               result = await toolExports.diagnoseEnv(args as any);

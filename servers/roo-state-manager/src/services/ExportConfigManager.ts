@@ -1,6 +1,7 @@
 import fs from 'fs/promises';
 import path from 'path';
 import { RooStorageDetector } from '../utils/roo-storage-detector.js';
+import { ExportConfigManagerError, ExportConfigManagerErrorCode } from '../types/errors.js';
 
 /**
  * Configuration par défaut pour les exports XML
@@ -90,7 +91,10 @@ export class ExportConfigManager {
         }
 
         if (!this.configPath) {
-            throw new Error('Impossible de déterminer l\'emplacement du fichier de configuration. Aucun stockage Roo détecté.');
+            throw new ExportConfigManagerError(
+                'Impossible de déterminer l\'emplacement du fichier de configuration. Aucun stockage Roo détecté.',
+                ExportConfigManagerErrorCode.NO_STORAGE_DETECTED
+            );
         }
 
         return this.configPath;
@@ -166,19 +170,25 @@ export class ExportConfigManager {
      * Sauvegarde la configuration dans le fichier
      */
     private async saveConfig(config: ExportConfig): Promise<void> {
+        let configPath: string | undefined;
         try {
-            const configPath = await this.getConfigPath();
+            configPath = await this.getConfigPath();
             const configDir = path.dirname(configPath);
-            
+
             // Créer le répertoire si nécessaire
             await fs.mkdir(configDir, { recursive: true });
-            
+
             // Sauvegarder la configuration
             const content = JSON.stringify(config, null, 2);
             await fs.writeFile(configPath, content, 'utf-8');
-            
+
         } catch (error) {
-            throw new Error(`Impossible de sauvegarder la configuration: ${error instanceof Error ? error.message : String(error)}`);
+            throw new ExportConfigManagerError(
+                `Impossible de sauvegarder la configuration: ${error instanceof Error ? error.message : String(error)}`,
+                ExportConfigManagerErrorCode.CONFIG_SAVE_FAILED,
+                { configPath: configPath || 'unknown' },
+                error instanceof Error ? error : undefined
+            );
         }
     }
 
