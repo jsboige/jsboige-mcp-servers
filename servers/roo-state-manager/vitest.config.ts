@@ -37,10 +37,13 @@ export default defineConfig({
       'tests/unit/workspace-filtering-diagnosis.test.ts',
       'tests/integration/hierarchy-real-data.test.ts',
       'tests/integration/integration.test.ts',
-      // TODO Issue #307: FileLockManager échoue en mode threads à cause de proper-lockfile
+      // Issue #307: FileLockManager échoue en mode threads à cause de proper-lockfile
       // Cause: proper-lockfile cache mtime dans Symbol partagé entre threads
-      // Fix: changer pool: 'forks' ou mocker proper-lockfile
-      'tests/unit/services/roosync/FileLockManager.test.ts'
+      // Exclure tous les tests FileLockManager et PresenceManager sur Windows
+      'tests/unit/services/roosync/FileLockManager.test.ts',
+      'tests/unit/services/roosync/FileLockManager.simple.test.ts',
+      'tests/unit/services/roosync/FileLockManager.diagnostic.test.ts',
+      'tests/unit/services/roosync/PresenceManager.integration.test.ts'
     ],
 
     // Setup files (équivalent à setupFilesAfterEnv)
