@@ -16,9 +16,9 @@ import { ConfigValidator } from '../ConfigValidator.js';
 import {
   BaselineFileConfig,
   BaselineConfig,
-  BaselineServiceError,
-  BaselineServiceErrorCode
+  BaselineServiceError
 } from '../../../types/baseline.js';
+import { BaselineLoaderError, BaselineLoaderErrorCode } from '../../../types/errors.js';
 
 describe('BaselineLoader', () => {
   const testDir = join(process.cwd(), 'test-temp-baseline');
@@ -176,7 +176,7 @@ describe('BaselineLoader', () => {
       const invalidJsonFile = join(testDir, 'invalid.json');
       await fs.writeFile(invalidJsonFile, '{invalid json}', 'utf-8');
 
-      await expect(loader.loadBaseline(invalidJsonFile)).rejects.toThrow(BaselineServiceError);
+      await expect(loader.loadBaseline(invalidJsonFile)).rejects.toThrow(BaselineLoaderError);
     });
 
     it('devrait lancer une erreur pour une baseline invalide', async () => {
@@ -186,6 +186,7 @@ describe('BaselineLoader', () => {
       };
       await fs.writeFile(baselineFile, JSON.stringify(invalidBaseline, null, 2), 'utf-8');
 
+      // ConfigValidator lance BaselineServiceError pour les erreurs de validation
       await expect(loader.loadBaseline(baselineFile)).rejects.toThrow(BaselineServiceError);
     });
   });
@@ -259,7 +260,7 @@ describe('BaselineLoader', () => {
     it('devrait lancer une erreur si le fichier n\'existe pas', async () => {
       const nonExistentFile = join(testDir, 'nonexistent.json');
 
-      await expect(loader.readBaselineFile(nonExistentFile)).rejects.toThrow(BaselineServiceError);
+      await expect(loader.readBaselineFile(nonExistentFile)).rejects.toThrow(BaselineLoaderError);
     });
 
     it('devrait lancer une erreur avec le code BASELINE_NOT_FOUND', async () => {
@@ -269,8 +270,8 @@ describe('BaselineLoader', () => {
         await loader.readBaselineFile(nonExistentFile);
         expect(true).toBe(false); // Ne devrait pas arriver ici
       } catch (error) {
-        expect(error).toBeInstanceOf(BaselineServiceError);
-        expect((error as BaselineServiceError).code).toBe(BaselineServiceErrorCode.BASELINE_NOT_FOUND);
+        expect(error).toBeInstanceOf(BaselineLoaderError);
+        expect((error as BaselineLoaderError).code).toBe(BaselineLoaderErrorCode.BASELINE_NOT_FOUND);
       }
     });
 
@@ -278,10 +279,10 @@ describe('BaselineLoader', () => {
       const invalidJsonFile = join(testDir, 'invalid.json');
       await fs.writeFile(invalidJsonFile, '{invalid json}', 'utf-8');
 
-      await expect(loader.readBaselineFile(invalidJsonFile)).rejects.toThrow(BaselineServiceError);
+      await expect(loader.readBaselineFile(invalidJsonFile)).rejects.toThrow(BaselineLoaderError);
     });
 
-    it('devrait lancer une erreur avec le code BASELINE_INVALID pour du JSON invalide', async () => {
+    it('devrait lancer une erreur avec le code BASELINE_PARSE_FAILED pour du JSON invalide', async () => {
       const invalidJsonFile = join(testDir, 'invalid.json');
       await fs.writeFile(invalidJsonFile, '{invalid json}', 'utf-8');
 
@@ -289,8 +290,8 @@ describe('BaselineLoader', () => {
         await loader.readBaselineFile(invalidJsonFile);
         expect(true).toBe(false);
       } catch (error) {
-        expect(error).toBeInstanceOf(BaselineServiceError);
-        expect((error as BaselineServiceError).code).toBe(BaselineServiceErrorCode.BASELINE_INVALID);
+        expect(error).toBeInstanceOf(BaselineLoaderError);
+        expect((error as BaselineLoaderError).code).toBe(BaselineLoaderErrorCode.BASELINE_PARSE_FAILED);
       }
     });
 
@@ -302,6 +303,7 @@ describe('BaselineLoader', () => {
       };
       await fs.writeFile(baselineFile, JSON.stringify(invalidBaseline, null, 2), 'utf-8');
 
+      // ConfigValidator lance BaselineServiceError pour les erreurs de validation
       await expect(loader.readBaselineFile(baselineFile)).rejects.toThrow(BaselineServiceError);
     });
   });
@@ -441,21 +443,22 @@ describe('BaselineLoader', () => {
       expect(result.config.system.architecture).toBe('x64');
     });
 
-    it('devrait gérer une baseline sans machines', () => {
+    it('devrait lancer une erreur pour une baseline sans machines', () => {
       const baselineWithoutMachines: BaselineFileConfig = {
         ...baselineFile,
         machines: []
       };
 
-      const result = loader.transformBaselineForDiffDetector(baselineWithoutMachines);
+      expect(() => loader.transformBaselineForDiffDetector(baselineWithoutMachines)).toThrow(BaselineLoaderError);
 
-      expect(result.config.roo.modes).toEqual([]);
-      expect(result.config.roo.mcpSettings).toEqual({});
-      expect(result.config.hardware.cpu.cores).toBe(0);
-      expect(result.config.hardware.cpu.threads).toBe(0);
-      expect(result.config.hardware.memory.total).toBe(0);
-      expect(result.config.software.node).toBe('Unknown');
-      expect(result.config.software.python).toBe('Unknown');
+      try {
+        loader.transformBaselineForDiffDetector(baselineWithoutMachines);
+        expect(true).toBe(false); // Ne devrait pas arriver ici
+      } catch (error) {
+        expect(error).toBeInstanceOf(BaselineLoaderError);
+        expect((error as BaselineLoaderError).code).toBe(BaselineLoaderErrorCode.BASELINE_INVALID);
+        expect((error as BaselineLoaderError).message).toContain('Aucune machine');
+      }
     });
 
     it('devrait utiliser le timestamp si lastUpdated n\'est pas défini', () => {
