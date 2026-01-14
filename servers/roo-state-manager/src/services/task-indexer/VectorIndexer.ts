@@ -1,4 +1,4 @@
-import { promises as fs, writeFileSync } from 'fs';
+import { promises as fs } from 'fs';
 import * as path from 'path';
 import * as crypto from 'crypto';
 import { Schemas } from '@qdrant/js-client-rest';
@@ -260,34 +260,12 @@ export async function safeQdrantUpsert(points: PointStruct[]): Promise<boolean> 
             try {
                 console.log(`🔄 [safeQdrantUpsert] Batch ${batchIdx + 1}/${totalBatches}, Tentative ${attempt + 1}/${MAX_RETRY_ATTEMPTS} (${batch.length} points, wait=${shouldWait})`);
 
-                // DEBUG: Logger le premier point pour diagnostic 400
-                if (attempt === 0) {
+                // DEBUG: Logger le premier point pour diagnostic 400 (seulement si verbose)
+                if (attempt === 0 && process.env.QDRANT_VERBOSE === 'true') {
                     const sample = batch[0];
                     console.log(`🔍 [safeQdrantUpsert] Sample Point ID: ${sample.id}`);
                     console.log(`🔍 [safeQdrantUpsert] Sample Payload Keys: ${Object.keys(sample.payload || {}).join(', ')}`);
                     console.log(`🔍 [safeQdrantUpsert] Sample Vector Length: ${Array.isArray(sample.vector) ? sample.vector.length : 'Not array'}`);
-
-                    // DUMP COMPLET DU PAYLOAD AVANT ENVOI
-                    // console.error(`🔍 [safeQdrantUpsert] FULL PAYLOAD DUMP:`, JSON.stringify(sample.payload, null, 2));
-
-                    // DEBUG EXTRÊME: Écrire le payload dans un fichier
-                    try {
-                        // Utiliser un chemin absolu sûr dans le dossier temporaire ou workspace
-                        const dumpPath = path.join('d:/roo-extensions/debug_payload_dump.json');
-                        const vecLen = Array.isArray(sample.vector) ? sample.vector.length : 'NOT_ARRAY';
-                        const dumpData = {
-                            payload: sample.payload,
-                            vectorLength: vecLen,
-                            pointId: sample.id
-                        };
-                        writeFileSync(dumpPath, JSON.stringify(dumpData, null, 2));
-                        console.error(`🔥 DUMP ÉCRIT DANS: ${dumpPath}`);
-                    } catch (err: any) {
-                        console.error('❌ Erreur écriture dump:', err);
-                    }
-
-                    // On laisse l'erreur pour arrêter le processus et voir le log
-                    throw new Error(`DEBUG_PAYLOAD_DUMP attempted`);
                 }
 
                 await getQdrantClient().upsert(COLLECTION_NAME, {
