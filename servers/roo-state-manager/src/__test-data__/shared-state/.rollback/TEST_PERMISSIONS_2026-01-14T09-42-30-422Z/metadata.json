@@ -1,0 +1,9 @@
+{
+  "decisionId": "TEST_PERMISSIONS",
+  "timestamp": "2026-01-14T09-42-30-422Z",
+  "machine": "test-machine",
+  "files": [
+    "sync-config.ref.json",
+    "sync-roadmap.md"
+  ]
+}

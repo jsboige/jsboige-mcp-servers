@@ -4,7 +4,8 @@
   "description": "MCP server for file operations",
   "main": "build/index.cjs",
   "scripts": {
-    "build": "esbuild src/index.ts --bundle --platform=node --target=node18 --outfile=build/index.js --format=cjs",
+    "build": "esbuild src/index.ts --bundle --platform=node --target=node18 --outfile=build/index.js --format=cjs && node -e \"require('fs').copyFileSync('build/index.js', 'build/index.cjs')\" && tsc",
+    "pretest": "esbuild src/index.ts --bundle --platform=node --target=node18 --outfile=build/index.js --format=cjs && node -e \"require('fs').copyFileSync('build/index.js', 'build/index.cjs')\" && tsc",
     "start": "node build/index.cjs",
     "start:debug": "node --inspect build/index.cjs",
     "dev": "tsc -w",

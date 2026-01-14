@@ -2,15 +2,15 @@
   "identities": {
     "test-machine": {
       "machineId": "test-machine",
-      "source": "baseline",
-      "firstSeen": "2026-01-12T23:44:29.297Z",
-      "lastSeen": "2026-01-12T23:44:29.297Z",
-      "status": "conflict",
+      "source": "config",
+      "firstSeen": "2026-01-14T09:42:30.424Z",
+      "lastSeen": "2026-01-14T09:42:30.424Z",
+      "status": "valid",
       "metadata": {
-        "baselinePath": "d:\\roo-extensions\\mcps\\internal\\servers\\roo-state-manager\\src\\__test-data__\\shared-state\\sync-config.ref.json"
+        "configPath": "environment"
       }
     }
   },
-  "lastUpdated": "2026-01-12T23:44:29.297Z",
+  "lastUpdated": "2026-01-14T09:42:30.424Z",
   "version": "1.0.0"
 }
