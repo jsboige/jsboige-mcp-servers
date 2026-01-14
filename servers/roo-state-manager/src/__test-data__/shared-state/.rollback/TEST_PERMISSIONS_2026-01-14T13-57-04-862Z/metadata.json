@@ -1,6 +1,6 @@
 {
-  "decisionId": "TEST_NO_ROLLBACK",
-  "timestamp": "2026-01-14T09-42-30-383Z",
+  "decisionId": "TEST_PERMISSIONS",
+  "timestamp": "2026-01-14T13-57-04-862Z",
   "machine": "test-machine",
   "files": [
     "sync-config.ref.json",

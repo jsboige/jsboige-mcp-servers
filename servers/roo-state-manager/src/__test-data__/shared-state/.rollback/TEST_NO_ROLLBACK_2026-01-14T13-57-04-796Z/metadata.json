@@ -1,6 +1,6 @@
 {
-  "decisionId": "INVALID_DECISION_ID",
-  "timestamp": "2026-01-14T09-42-30-389Z",
+  "decisionId": "TEST_NO_ROLLBACK",
+  "timestamp": "2026-01-14T13-57-04-796Z",
   "machine": "test-machine",
   "files": [
     "sync-config.ref.json",
