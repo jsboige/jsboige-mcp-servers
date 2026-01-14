@@ -12,6 +12,9 @@
 import { promises as fs, existsSync } from 'fs';
 import { join, resolve } from 'path';
 import { createHash } from 'crypto';
+import { createLogger } from '../../utils/logger.js';
+
+const logger = createLogger('NonNominativeBaselineService');
 import {
   NonNominativeBaseline,
   ConfigurationProfile,
@@ -65,9 +68,9 @@ export class NonNominativeBaselineService {
   private async initializeService(): Promise<void> {
     try {
       await this.loadState();
-      console.log('[NonNominativeBaselineService] Service initialisé avec succès');
+      logger.info('Service initialisé avec succès');
     } catch (error) {
-      console.warn('[NonNominativeBaselineService] Erreur lors de l\'initialisation:', error);
+      logger.error('Erreur lors de l\'initialisation', error);
     }
   }
 
@@ -124,7 +127,7 @@ export class NonNominativeBaselineService {
     this.state.statistics.lastUpdated = new Date().toISOString();
     await this.saveState();
 
-    console.log(`[NonNominativeBaselineService] Baseline créée: ${baselineId}`);
+    logger.info(`Baseline créée: ${baselineId}`);
     return baseline;
   }
 
@@ -135,7 +138,7 @@ export class NonNominativeBaselineService {
     machineInventories: MachineInventory[],
     config: AggregationConfig
   ): Promise<NonNominativeBaseline> {
-    console.log('[NonNominativeBaselineService] Début de l\'agrégation automatique');
+    logger.info('Début de l\'agrégation automatique');
 
     const profiles: ConfigurationProfile[] = [];
     const categoryData: Map<ConfigurationCategory, any[]> = new Map();
@@ -160,7 +163,7 @@ export class NonNominativeBaselineService {
       profiles
     );
 
-    console.log(`[NonNominativeBaselineService] Baseline agrégée créée: ${baseline.baselineId}`);
+    logger.info(`Baseline agrégée créée: ${baseline.baselineId}`);
     return baseline;
   }
 
@@ -356,7 +359,7 @@ export class NonNominativeBaselineService {
     this.state.statistics.lastUpdated = new Date().toISOString();
     await this.saveState();
 
-    console.log(`[NonNominativeBaselineService] Machine mappée: ${machineHash}`);
+    logger.info(`Machine mappée: ${machineHash}`);
     return mapping;
   }
 
@@ -609,7 +612,7 @@ export class NonNominativeBaselineService {
     legacyBaseline: BaselineConfig | BaselineFileConfig,
     options: MigrationOptions
   ): Promise<MigrationResult> {
-    console.log('[NonNominativeBaselineService] Début de la migration depuis l\'ancien système');
+    logger.info('Début de la migration depuis l\'ancien système');
     const startTime = Date.now();
 
     try {
@@ -669,7 +672,7 @@ export class NonNominativeBaselineService {
         }
       };
 
-      console.log(`[NonNominativeBaselineService] Migration terminée en ${duration}ms`);
+      logger.info(`Migration terminée en ${duration}ms`);
       return result;
 
     } catch (error) {
@@ -791,7 +794,7 @@ export class NonNominativeBaselineService {
   private async createLegacyBackup(legacyBaseline: BaselineConfig | BaselineFileConfig): Promise<void> {
     const backupPath = join(this.sharedPath, `legacy-backup-${Date.now()}.json`);
     await fs.writeFile(backupPath, JSON.stringify(legacyBaseline, null, 2));
-    console.log(`[NonNominativeBaselineService] Backup legacy créé: ${backupPath}`);
+    logger.info(`Backup legacy créé: ${backupPath}`);
   }
 
   /**
@@ -907,7 +910,7 @@ export class NonNominativeBaselineService {
         this.state = await readJSONFileWithoutBOM<NonNominativeBaselineState>(statePath);
       }
     } catch (error) {
-      console.warn('[NonNominativeBaselineService] Erreur chargement état:', error);
+      logger.error('Erreur chargement état', error);
     }
   }
 
@@ -919,7 +922,7 @@ export class NonNominativeBaselineService {
       const statePath = join(this.sharedPath, 'non-nominative-state.json');
       await fs.writeFile(statePath, JSON.stringify(this.state, null, 2));
     } catch (error) {
-      console.warn('[NonNominativeBaselineService] Erreur sauvegarde état:', error);
+      logger.error('Erreur sauvegarde état', error);
     }
   }
 

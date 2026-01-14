@@ -10,6 +10,9 @@
 
 import { existsSync, promises as fs, mkdirSync } from 'fs';
 import { join } from 'path';
+import { createLogger } from '../utils/logger.js';
+
+const logger = createLogger('MessageManager');
 
 /**
  * Interface d'un message RooSync
@@ -134,9 +137,9 @@ export class MessageManager {
       if (!existsSync(dir)) {
         try {
           mkdirSync(dir, { recursive: true });
-          console.error(`✅ [MessageManager] Répertoire créé: ${dir}`);
+          logger.info(`Répertoire créé: ${dir}`);
         } catch (error) {
-          console.error(`❌ [MessageManager] Erreur création répertoire ${dir}:`, error);
+          logger.error(`Erreur création répertoire ${dir}`, error);
         }
       }
     }
@@ -184,7 +187,7 @@ export class MessageManager {
     threadId?: string,
     replyTo?: string
   ): Promise<Message> {
-    console.error('🚀 [MessageManager] Sending message from', from, 'to', to);
+    logger.info(`Sending message from ${from} to ${to}`);
 
     // CORRECTION ROOSYNC PHASE 3 : Validation anti-auto-messages
     // Empêcher une machine d'envoyer des messages à elle-même
@@ -210,17 +213,17 @@ export class MessageManager {
       // Sauvegarder dans inbox du destinataire
       const inboxFile = join(this.inboxPath, `${message.id}.json`);
       await fs.writeFile(inboxFile, JSON.stringify(message, null, 2), 'utf-8');
-      console.error(`✅ [MessageManager] Message saved to inbox: ${inboxFile}`);
+      logger.info(`Message saved to inbox: ${inboxFile}`);
 
       // Sauvegarder dans sent de l'expéditeur
       const sentFile = join(this.sentPath, `${message.id}.json`);
       await fs.writeFile(sentFile, JSON.stringify(message, null, 2), 'utf-8');
-      console.error(`✅ [MessageManager] Message saved to sent: ${sentFile}`);
+      logger.info(`Message saved to sent: ${sentFile}`);
 
-      console.error('✅ [MessageManager] Message sent successfully:', message.id);
+      logger.info(`Message sent successfully: ${message.id}`);
       return message;
     } catch (error) {
-      console.error('❌ [MessageManager] Error sending message:', error);
+      logger.error('Error sending message', error);
       throw error;
     }
   }
@@ -241,16 +244,16 @@ export class MessageManager {
     status?: 'unread' | 'read' | 'all',
     limit?: number
   ): Promise<MessageListItem[]> {
-    console.error('📬 [MessageManager] Reading inbox for:', machineId);
+    logger.info(`Reading inbox for: ${machineId}`);
 
     if (!existsSync(this.inboxPath)) {
-      console.error('⚠️ [MessageManager] Inbox path does not exist:', this.inboxPath);
+      logger.warn(`Inbox path does not exist: ${this.inboxPath}`);
       return [];
     }
 
     try {
       const files = (await fs.readdir(this.inboxPath)).filter(f => f.endsWith('.json'));
-      console.error(`📋 [MessageManager] Found ${files.length} message files`);
+      logger.info(`Found ${files.length} message files`);
 
       const messages: MessageListItem[] = [];
 
@@ -280,7 +283,7 @@ export class MessageManager {
             preview: message.body.substring(0, 100) + (message.body.length > 100 ? '...' : '')
           });
         } catch (error) {
-          console.error(`⚠️ [MessageManager] Error reading message ${file}:`, error);
+          logger.error(`Error reading message ${file}`, error);
         }
       }
 
@@ -289,11 +292,11 @@ export class MessageManager {
 
       // Limiter le nombre de résultats
       const result = limit ? messages.slice(0, limit) : messages;
-      console.error(`✅ [MessageManager] Returning ${result.length} messages`);
+      logger.info(`Returning ${result.length} messages`);
 
       return result;
     } catch (error) {
-      console.error('❌ [MessageManager] Error reading inbox:', error);
+      logger.error('Error reading inbox', error);
       return [];
     }
   }
@@ -307,7 +310,7 @@ export class MessageManager {
    * @returns Le message complet ou null si introuvable
    */
   async getMessage(messageId: string): Promise<Message | null> {
-    console.error('🔍 [MessageManager] Getting message:', messageId);
+    logger.info(`Getting message: ${messageId}`);
 
     const searchPaths = [
       join(this.inboxPath, `${messageId}.json`),
@@ -320,15 +323,15 @@ export class MessageManager {
         try {
           const content = await fs.readFile(filePath, 'utf-8');
           const message: Message = JSON.parse(content);
-          console.error('✅ [MessageManager] Message found in:', filePath);
+          logger.info(`Message found in: ${filePath}`);
           return message;
         } catch (error) {
-          console.error(`⚠️ [MessageManager] Error reading message from ${filePath}:`, error);
+          logger.error(`Error reading message from ${filePath}`, error);
         }
       }
     }
 
-    console.error('⚠️ [MessageManager] Message not found:', messageId);
+    logger.warn(`Message not found: ${messageId}`);
     return null;
   }
 
@@ -341,11 +344,11 @@ export class MessageManager {
    * @returns true si succès, false sinon
    */
   async markAsRead(messageId: string): Promise<boolean> {
-    console.error('✉️ [MessageManager] Marking message as read:', messageId);
+    logger.info(`Marking message as read: ${messageId}`);
 
     const filePath = join(this.inboxPath, `${messageId}.json`);
     if (!existsSync(filePath)) {
-      console.error('⚠️ [MessageManager] Message not found in inbox:', messageId);
+      logger.warn(`Message not found in inbox: ${messageId}`);
       return false;
     }
 
@@ -360,13 +363,13 @@ export class MessageManager {
       const sentPath = join(this.sentPath, `${messageId}.json`);
       if (existsSync(sentPath)) {
         await fs.writeFile(sentPath, JSON.stringify(message, null, 2), 'utf-8');
-        console.error('✅ [MessageManager] Message also marked as read in sent/');
+        logger.info('Message also marked as read in sent/');
       }
       
-      console.error('✅ [MessageManager] Message marked as read');
+      logger.info('Message marked as read');
       return true;
     } catch (error) {
-      console.error('❌ [MessageManager] Error marking message as read:', error);
+      logger.error('Error marking message as read', error);
       return false;
     }
   }
@@ -381,11 +384,11 @@ export class MessageManager {
    * @returns true si succès, false sinon
    */
   async archiveMessage(messageId: string): Promise<boolean> {
-    console.error('📦 [MessageManager] Archiving message:', messageId);
+    logger.info(`Archiving message: ${messageId}`);
 
     const inboxFile = join(this.inboxPath, `${messageId}.json`);
     if (!existsSync(inboxFile)) {
-      console.error('⚠️ [MessageManager] Message not found in inbox:', messageId);
+      logger.warn(`Message not found in inbox: ${messageId}`);
       return false;
     }
 
@@ -405,13 +408,13 @@ export class MessageManager {
       const sentPath = join(this.sentPath, `${messageId}.json`);
       if (existsSync(sentPath)) {
         await fs.writeFile(sentPath, JSON.stringify(message, null, 2), 'utf-8');
-        console.error('✅ [MessageManager] Message also archived in sent/');
+        logger.info('Message also archived in sent/');
       }
 
-      console.error('✅ [MessageManager] Message archived');
+      logger.info('Message archived');
       return true;
     } catch (error) {
-      console.error('❌ [MessageManager] Error archiving message:', error);
+      logger.error('Error archiving message', error);
       return false;
     }
   }
@@ -439,7 +442,7 @@ export class MessageManager {
     reason: string;
     original_content_preserved: boolean;
   }> {
-    console.error('✏️ [MessageManager] Amending message:', messageId);
+    logger.info(`Amending message: ${messageId}`);
 
     // Rechercher le message dans sent/
     const sentFile = join(this.sentPath, `${messageId}.json`);
@@ -489,10 +492,10 @@ export class MessageManager {
       const inboxFile = join(this.inboxPath, `${messageId}.json`);
       if (existsSync(inboxFile)) {
         await fs.writeFile(inboxFile, JSON.stringify(message, null, 2), 'utf-8');
-        console.error('✅ [MessageManager] Message updated in inbox as well');
+        logger.info('Message updated in inbox as well');
       }
 
-      console.error('✅ [MessageManager] Message amended successfully');
+      logger.info('Message amended successfully');
       
       return {
         success: true,
@@ -502,7 +505,7 @@ export class MessageManager {
         original_content_preserved: !!message.metadata.original_content
       };
     } catch (error) {
-      console.error('❌ [MessageManager] Error amending message:', error);
+      logger.error('Error amending message', error);
       throw error;
     }
   }
@@ -518,7 +521,7 @@ export class MessageManager {
    * @returns Liste des messages non lus
    */
   async checkNewMessages(machineId: string): Promise<MessageListItem[]> {
-    console.error('🔔 [MessageManager] Checking for new messages for:', machineId);
+    logger.info(`Checking for new messages for: ${machineId}`);
     return await this.readInbox(machineId, 'unread');
   }
 }
