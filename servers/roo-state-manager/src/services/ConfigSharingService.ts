@@ -99,11 +99,11 @@ export class ConfigSharingService implements IConfigSharingService {
 
     const sharedStatePath = this.configService.getSharedStatePath();
     const configsDir = join(sharedStatePath, 'configs');
-    
+
     // CORRECTION SDDD : Utiliser machineId au lieu de version pour le répertoire
     const machineId = options.machineId || process.env.ROOSYNC_MACHINE_ID || process.env.COMPUTERNAME || 'unknown';
     const machineConfigDir = join(configsDir, machineId);
-    
+
     // Créer un sous-répertoire versionné pour l'historique
     const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
     const versionDir = join(machineConfigDir, `v${options.version}-${timestamp}`);
@@ -121,11 +121,11 @@ export class ConfigSharingService implements IConfigSharingService {
     const manifestPath = join(versionDir, 'manifest.json');
     const manifestContent = await fs.readFile(manifestPath, 'utf-8');
     const manifest: ConfigManifest = JSON.parse(manifestContent);
-    
+
     manifest.version = options.version;
     manifest.description = options.description;
     manifest.author = machineId; // CORRECTION SDDD : Utiliser machineId explicite
-    
+
     await fs.writeFile(manifestPath, JSON.stringify(manifest, null, 2));
 
     // CORRECTION SDDD : Créer un lien symbolique ou fichier latest pour accès facile
@@ -153,7 +153,7 @@ export class ConfigSharingService implements IConfigSharingService {
    */
   public async applyConfig(options: ApplyConfigOptions): Promise<ApplyConfigResult> {
     this.logger.info('Application de la configuration', options);
-    
+
     const errors: string[] = [];
     let filesApplied = 0;
     const details: any[] = []; // Pour stocker les détails des changements
@@ -166,15 +166,15 @@ export class ConfigSharingService implements IConfigSharingService {
 
       const sharedStatePath = this.configService.getSharedStatePath();
       const configsDir = join(sharedStatePath, 'configs');
-      
+
       // CORRECTION SDDD : Supporter le format {machineId}/v{version}-{timestamp}
       let configDir: string | null = null;
       let manifestPath: string | null = null;
-      
+
       // Essayer d'abord le nouveau format par machineId
       const machineId = options.machineId || process.env.ROOSYNC_MACHINE_ID || process.env.COMPUTERNAME || 'unknown';
       const machineConfigDir = join(configsDir, machineId);
-      
+
       if (existsSync(machineConfigDir)) {
         // Chercher le fichier latest.json
         const latestPath = join(machineConfigDir, 'latest.json');
@@ -193,7 +193,7 @@ export class ConfigSharingService implements IConfigSharingService {
           }
         }
       }
-      
+
       // Fallback vers l'ancien format baseline-v{version}
       if (!configDir || !manifestPath) {
         const legacyDir = join(configsDir, `baseline-v${options.version}`);
@@ -218,7 +218,26 @@ export class ConfigSharingService implements IConfigSharingService {
 
       // Récupérer l'inventaire pour résoudre les chemins locaux
       // CORRECTION SDDD : Forcer le rechargement de l'inventaire pour avoir les chemins à jour
-      const inventory = await this.inventoryCollector.collectInventory(process.env.COMPUTERNAME || 'localhost', true) as any;
+      // CORRECTION T2.16 : Réutiliser machineId déjà déclaré plus haut (ligne 175)
+      const inventory = await this.inventoryCollector.collectInventory(machineId, true) as any;
+
+      // CORRECTION T2.16 : Vérifier la complétude de l'inventaire avant de continuer
+      // Harmonisation avec collectModes() et collectMcpSettings() qui lèvent des erreurs
+      if (!inventory?.paths?.rooExtensions) {
+        throw new ConfigSharingServiceError(
+          'Inventaire incomplet: paths.rooExtensions non disponible. Impossible d\'appliquer les modes.',
+          ConfigSharingServiceErrorCode.INVENTORY_INCOMPLETE,
+          { machineId, missingPath: 'rooExtensions' }
+        );
+      }
+
+      if (!inventory?.paths?.mcpSettings) {
+        throw new ConfigSharingServiceError(
+          'Inventaire incomplet: paths.mcpSettings non disponible. Impossible d\'appliquer les settings MCP.',
+          ConfigSharingServiceErrorCode.INVENTORY_INCOMPLETE,
+          { machineId, missingPath: 'mcpSettings' }
+        );
+      }
 
       // 2. Itérer sur les fichiers
       for (const file of manifest.files) {
@@ -229,12 +248,12 @@ export class ConfigSharingService implements IConfigSharingService {
 
           if (file.path.startsWith('roo-modes/')) {
             const fileName = basename(file.path);
-            const rooModesPath = inventory?.paths?.rooExtensions
-              ? join(inventory.paths.rooExtensions, 'roo-modes')
-              : join(process.cwd(), 'roo-modes');
+            // CORRECTION T2.16 : Utiliser uniquement inventory.paths.rooExtensions, pas de fallback
+            const rooModesPath = join(inventory.paths.rooExtensions, 'roo-modes');
             destPath = join(rooModesPath, fileName);
           } else if (file.path === 'mcp-settings/mcp_settings.json') {
-            destPath = inventory?.paths?.mcpSettings || join(process.cwd(), 'config', 'mcp_settings.json');
+            // CORRECTION T2.16 : Utiliser uniquement inventory.paths.mcpSettings, pas de fallback
+            destPath = inventory.paths.mcpSettings;
           } else {
             this.logger.warn(`Type de fichier non supporté ou chemin inconnu: ${file.path}`);
             continue;
@@ -252,7 +271,7 @@ export class ConfigSharingService implements IConfigSharingService {
           if (existsSync(destPath)) {
             action = 'update';
             const localContent = JSON.parse(await fs.readFile(destPath, 'utf-8'));
-            
+
             // Fusion
             finalContent = JsonMerger.merge(sourceContent, localContent, { arrayStrategy: 'replace' });
 
@@ -325,7 +344,7 @@ export class ConfigSharingService implements IConfigSharingService {
     // On suppose que 'config' est déjà un objet de configuration (ex: mcp_settings)
     // Il faudrait idéalement savoir quel type de config on compare pour appliquer la bonne normalisation
     // Pour simplifier ici, on normalise comme 'mcp_config' par défaut si structure correspond, sinon générique
-    
+
     let normalizedConfig = config;
     if (config.mcpServers) {
         normalizedConfig = await this.normalizationService.normalize(config, 'mcp_config');
@@ -347,7 +366,7 @@ export class ConfigSharingService implements IConfigSharingService {
     // CORRECTION SDDD : Utiliser ROOSYNC_MACHINE_ID au lieu de COMPUTERNAME
     const machineId = process.env.ROOSYNC_MACHINE_ID || process.env.COMPUTERNAME || 'localhost';
     const inventory = await this.inventoryCollector.collectInventory(machineId, true) as any;
-    
+
     // CORRECTION SDDD : Utiliser uniquement l'inventaire, pas de fallback process.cwd()
     if (!inventory?.paths?.rooExtensions) {
       throw new ConfigSharingServiceError(
@@ -356,7 +375,7 @@ export class ConfigSharingService implements IConfigSharingService {
         { machineId, missingPath: 'rooExtensions' }
       );
     }
-    
+
     const rooModesPath = join(inventory.paths.rooExtensions, 'roo-modes');
 
     this.logger.info(`Collecte des modes depuis: ${rooModesPath}`);
@@ -367,17 +386,17 @@ export class ConfigSharingService implements IConfigSharingService {
         if (entry.endsWith('.json')) {
           const srcPath = join(rooModesPath, entry);
           const destPath = join(modesDir, entry);
-          
+
           // Lecture et normalisation
           const content = JSON.parse(await fs.readFile(srcPath, 'utf-8'));
           const normalized = await this.normalizationService.normalize(content, 'mode_definition');
-          
+
           // Écriture du fichier normalisé
           await fs.writeFile(destPath, JSON.stringify(normalized, null, 2));
-          
+
           const hash = await this.calculateHash(destPath);
           const stats = await fs.stat(destPath);
-          
+
           files.push({
             path: `roo-modes/${entry}`,
             hash,
@@ -403,7 +422,7 @@ export class ConfigSharingService implements IConfigSharingService {
     // CORRECTION SDDD : Utiliser ROOSYNC_MACHINE_ID au lieu de COMPUTERNAME
     const machineId = process.env.ROOSYNC_MACHINE_ID || process.env.COMPUTERNAME || 'localhost';
     const inventory = await this.inventoryCollector.collectInventory(machineId, true) as any;
-    
+
     // CORRECTION SDDD : Utiliser uniquement l'inventaire, pas de fallback process.cwd()
     if (!inventory?.paths?.mcpSettings) {
       throw new ConfigSharingServiceError(
@@ -412,24 +431,24 @@ export class ConfigSharingService implements IConfigSharingService {
         { machineId, missingPath: 'mcpSettings' }
       );
     }
-    
+
     const mcpSettingsPath = inventory.paths.mcpSettings;
 
     this.logger.info(`Collecte des settings MCP depuis: ${mcpSettingsPath}`);
 
     if (existsSync(mcpSettingsPath)) {
       const destPath = join(mcpDir, 'mcp_settings.json');
-      
+
       // Lecture et normalisation
       const content = JSON.parse(await fs.readFile(mcpSettingsPath, 'utf-8'));
       const normalized = await this.normalizationService.normalize(content, 'mcp_config');
-      
+
       // Écriture du fichier normalisé
       await fs.writeFile(destPath, JSON.stringify(normalized, null, 2));
 
       const hash = await this.calculateHash(destPath);
       const stats = await fs.stat(destPath);
-      
+
       files.push({
         path: 'mcp-settings/mcp_settings.json',
         hash,
