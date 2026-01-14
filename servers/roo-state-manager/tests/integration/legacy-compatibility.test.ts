@@ -61,8 +61,14 @@ describe('Legacy Compatibility Integration Test', () => {
       })
     };
 
+    // Mock ConfigService pour roosyncApplyConfig (getConfigVersion est appelé)
+    const mockConfigService = {
+      getConfigVersion: vi.fn().mockResolvedValue('1.0.0')
+    };
+
     mockRooSyncService = {
       getConfigSharingService: vi.fn().mockReturnValue(mockConfigSharingService),
+      getConfigService: vi.fn().mockReturnValue(mockConfigService),
       getConfig: vi.fn().mockReturnValue({ machineId: 'local-machine' }),
       loadDashboard: vi.fn().mockResolvedValue({ machines: { 'remote-machine': {} } }),
       compareRealConfigurations: vi.fn().mockResolvedValue({
