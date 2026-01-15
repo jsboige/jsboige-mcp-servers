@@ -452,7 +452,7 @@ export class BaselineManager {
   ): Promise<{
     machineId: string;
     overallStatus: string;
-    lastSync: string | null;
+    lastSync: string;
     pendingDecisions: number;
     diffsCount: number;
   }> {
@@ -480,6 +480,359 @@ export class BaselineManager {
       lastSync: machineInfo.lastSync,
       pendingDecisions: machineInfo.pendingDecisions,
       diffsCount: machineInfo.diffsCount
+    };
+  }
+
+  /**
+   * Créer une baseline non-nominative
+   */
+  public async createNonNominativeBaseline(
+    name: string,
+    description: string,
+    profiles: any[]
+  ): Promise<any> {
+    if (!this.nonNominativeService) {
+      throw new RooSyncServiceError(
+        'NonNominativeBaselineService non disponible',
+        'SERVICE_NOT_AVAILABLE'
+      );
+    }
+
+    return await this.nonNominativeService.createBaseline(
+      name,
+      description,
+      profiles
+    );
+  }
+
+  /**
+   * Obtenir la baseline non-nominative active
+   */
+  public async getActiveNonNominativeBaseline(): Promise<any> {
+    if (!this.nonNominativeService) {
+      throw new RooSyncServiceError(
+        'NonNominativeBaselineService non disponible',
+        'SERVICE_NOT_AVAILABLE'
+      );
+    }
+
+    return this.nonNominativeService.getActiveBaseline();
+  }
+
+  /**
+   * Migrer depuis l'ancien système nominatif vers le nouveau système non-nominatif
+   */
+  public async migrateToNonNominative(options?: {
+    createBackup?: boolean;
+    updateReason?: string;
+  }): Promise<any> {
+    if (!this.nonNominativeService) {
+      throw new RooSyncServiceError(
+        'NonNominativeBaselineService non disponible',
+        'SERVICE_NOT_AVAILABLE'
+      );
+    }
+
+    // Charger la baseline actuelle (système nominatif)
+    const currentBaseline = await this.baselineService.loadBaseline();
+
+    if (!currentBaseline) {
+      throw new RooSyncServiceError(
+        'Aucune baseline actuelle trouvée pour la migration',
+        'BASELINE_NOT_FOUND'
+      );
+    }
+
+    // Transformer la baseline nominative en profils non-nominatifs
+    const profiles = this.transformBaselineToProfiles(currentBaseline);
+
+    // Créer la nouvelle baseline non-nominative
+    const newBaseline = await this.nonNominativeService.createBaseline(
+      `Baseline migrée depuis ${currentBaseline.machineId}`,
+      `Baseline générée par migration depuis l'ancien système nominatif`,
+      profiles
+    );
+
+    // Sauvegarder la nouvelle baseline comme active
+    await this.nonNominativeService.saveState();
+
+    return {
+      success: true,
+      oldBaseline: currentBaseline.machineId,
+      newBaseline: newBaseline.baselineId,
+      profilesCount: profiles.length,
+      migratedAt: new Date().toISOString()
+    };
+  }
+
+  /**
+   * Comparer avec la baseline non-nominative
+   */
+  public async compareWithNonNominativeBaseline(
+    machineId: string
+  ): Promise<any> {
+    if (!this.nonNominativeService) {
+      throw new RooSyncServiceError(
+        'NonNominativeBaselineService non disponible',
+        'SERVICE_NOT_AVAILABLE'
+      );
+    }
+
+    const activeBaseline = await this.nonNominativeService.getActiveBaseline();
+    if (!activeBaseline) {
+      throw new RooSyncServiceError(
+        'Aucune baseline non-nominative active trouvée',
+        'BASELINE_NOT_FOUND'
+      );
+    }
+
+    // Obtenir l'inventaire de la machine
+    const machineInventory = await this.getMachineInventory(machineId);
+
+    // Comparer avec la baseline
+    const comparison = await this.nonNominativeService.compareMachines(
+      [this.nonNominativeService.generateMachineHash(machineId)]
+    );
+
+    return comparison;
+  }
+
+  /**
+   * Transformer une baseline nominative en profils non-nominatifs
+   */
+  private transformBaselineToProfiles(baseline: any): any[] {
+    const profiles: any[] = [];
+
+    // Transformer la configuration Roo
+    if (baseline.config?.roo) {
+      profiles.push({
+        profileId: `profile-roo-core-${Date.now()}`,
+        category: 'roo-core',
+        name: 'Profil Roo Core',
+        description: 'Configuration Roo de base',
+        configuration: {
+          modes: baseline.config.roo.modes || [],
+          mcpSettings: baseline.config.roo.mcpSettings || {}
+        },
+        priority: 100,
+        compatibility: {
+          requiredProfiles: [],
+          conflictingProfiles: [],
+          optionalProfiles: []
+        },
+        metadata: {
+          createdAt: new Date().toISOString(),
+          updatedAt: new Date().toISOString(),
+          version: '1.0.0',
+          tags: ['migrated'],
+          stability: 'stable'
+        }
+      });
+    }
+
+    // Transformer la configuration hardware
+    if (baseline.config?.hardware) {
+      profiles.push({
+        profileId: `profile-hardware-cpu-${Date.now()}`,
+        category: 'hardware-cpu',
+        name: 'Profil Hardware CPU',
+        description: 'Configuration CPU',
+        configuration: baseline.config.hardware.cpu || {},
+        priority: 100,
+        compatibility: {
+          requiredProfiles: [],
+          conflictingProfiles: [],
+          optionalProfiles: []
+        },
+        metadata: {
+          createdAt: new Date().toISOString(),
+          updatedAt: new Date().toISOString(),
+          version: '1.0.0',
+          tags: ['migrated'],
+          stability: 'stable'
+        }
+      });
+
+      profiles.push({
+        profileId: `profile-hardware-memory-${Date.now()}`,
+        category: 'hardware-memory',
+        name: 'Profil Hardware Mémoire',
+        description: 'Configuration Mémoire',
+        configuration: baseline.config.hardware.memory || {},
+        priority: 100,
+        compatibility: {
+          requiredProfiles: [],
+          conflictingProfiles: [],
+          optionalProfiles: []
+        },
+        metadata: {
+          createdAt: new Date().toISOString(),
+          updatedAt: new Date().toISOString(),
+          version: '1.0.0',
+          tags: ['migrated'],
+          stability: 'stable'
+        }
+      });
+
+      profiles.push({
+        profileId: `profile-hardware-storage-${Date.now()}`,
+        category: 'hardware-storage',
+        name: 'Profil Hardware Stockage',
+        description: 'Configuration Stockage',
+        configuration: baseline.config.hardware.disks || [],
+        priority: 100,
+        compatibility: {
+          requiredProfiles: [],
+          conflictingProfiles: [],
+          optionalProfiles: []
+        },
+        metadata: {
+          createdAt: new Date().toISOString(),
+          updatedAt: new Date().toISOString(),
+          version: '1.0.0',
+          tags: ['migrated'],
+          stability: 'stable'
+        }
+      });
+    }
+
+    // Transformer la configuration software
+    if (baseline.config?.software) {
+      profiles.push({
+        profileId: `profile-software-powershell-${Date.now()}`,
+        category: 'software-powershell',
+        name: 'Profil Software PowerShell',
+        description: 'Version PowerShell',
+        configuration: { version: baseline.config.software.powershell || 'Unknown' },
+        priority: 100,
+        compatibility: {
+          requiredProfiles: [],
+          conflictingProfiles: [],
+          optionalProfiles: []
+        },
+        metadata: {
+          createdAt: new Date().toISOString(),
+          updatedAt: new Date().toISOString(),
+          version: '1.0.0',
+          tags: ['migrated'],
+          stability: 'stable'
+        }
+      });
+
+      profiles.push({
+        profileId: `profile-software-node-${Date.now()}`,
+        category: 'software-node',
+        name: 'Profil Software Node.js',
+        description: 'Version Node.js',
+        configuration: { version: baseline.config.software.node || 'Unknown' },
+        priority: 100,
+        compatibility: {
+          requiredProfiles: [],
+          conflictingProfiles: [],
+          optionalProfiles: []
+        },
+        metadata: {
+          createdAt: new Date().toISOString(),
+          updatedAt: new Date().toISOString(),
+          version: '1.0.0',
+          tags: ['migrated'],
+          stability: 'stable'
+        }
+      });
+
+      profiles.push({
+        profileId: `profile-software-python-${Date.now()}`,
+        category: 'software-python',
+        name: 'Profil Software Python',
+        description: 'Version Python',
+        configuration: { version: baseline.config.software.python || 'Unknown' },
+        priority: 100,
+        compatibility: {
+          requiredProfiles: [],
+          conflictingProfiles: [],
+          optionalProfiles: []
+        },
+        metadata: {
+          createdAt: new Date().toISOString(),
+          version: '1.0.0',
+          tags: ['migrated'],
+          stability: 'stable'
+        }
+      });
+    }
+
+    // Transformer la configuration system
+    if (baseline.config?.system) {
+      profiles.push({
+        profileId: `profile-system-os-${Date.now()}`,
+        category: 'system-os',
+        name: 'Profil Système OS',
+        description: 'Système d\'exploitation',
+        configuration: { os: baseline.config.system.os || 'Unknown' },
+        priority: 100,
+        compatibility: {
+          requiredProfiles: [],
+          conflictingProfiles: [],
+          optionalProfiles: []
+        },
+        metadata: {
+          createdAt: new Date().toISOString(),
+          updatedAt: new Date().toISOString(),
+          version: '1.0.0',
+          tags: ['migrated'],
+          stability: 'stable'
+        }
+      });
+
+      profiles.push({
+        profileId: `profile-system-architecture-${Date.now()}`,
+        category: 'system-architecture',
+        name: 'Profil Architecture Système',
+        description: 'Architecture système',
+        configuration: { arch: baseline.config.system.architecture || 'Unknown' },
+        priority: 100,
+        compatibility: {
+          requiredProfiles: [],
+          conflictingProfiles: [],
+          optionalProfiles: []
+        },
+        metadata: {
+          createdAt: new Date().toISOString(),
+          updatedAt: new Date().toISOString(),
+          version: '1.0.0',
+          tags: ['migrated'],
+          stability: 'stable'
+        }
+      });
+    }
+
+    return profiles;
+  }
+
+  /**
+   * Obtenir l'inventaire d'une machine pour la comparaison
+   */
+  private async getMachineInventory(machineId: string): Promise<any> {
+    // Cette méthode devrait être implémentée pour collecter l'inventaire
+    // Pour l'instant, on retourne un inventaire vide
+    return {
+      machineId,
+      timestamp: new Date().toISOString(),
+      config: {
+        roo: {
+          modes: [],
+          mcpSettings: {}
+        },
+        hardware: {},
+        software: {},
+        system: {}
+      },
+      metadata: {
+        lastSeen: new Date().toISOString(),
+        version: '1.0.0',
+        source: 'baseline-manager',
+        collectionDuration: 0
+      }
     };
   }
 

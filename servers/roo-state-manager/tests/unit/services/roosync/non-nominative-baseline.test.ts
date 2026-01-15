@@ -578,4 +578,400 @@ describe('NonNominativeBaselineService', () => {
       expect(report.statistics.totalMachines).toBe(1);
     });
   });
+
+  describe('aggregateByMajority', () => {
+    it('devrait retourner la valeur la plus fréquente pour des primitives', async () => {
+      // Accès à la méthode privée via réflexion ou test indirect
+      // Pour l'instant, nous testons via aggregateBaseline
+      const testInventories: MachineInventory[] = [
+        {
+          machineId: 'machine-1',
+          config: {
+            software: {
+              powershell: '7.2.0',
+              node: '18.17.0',
+              python: '3.11.0'
+            }
+          },
+          metadata: { lastSeen: new Date().toISOString(), version: '1.0.0' }
+        },
+        {
+          machineId: 'machine-2',
+          config: {
+            software: {
+              powershell: '7.2.0',
+              node: '18.17.0',
+              python: '3.11.0'
+            }
+          },
+          metadata: { lastSeen: new Date().toISOString(), version: '1.0.0' }
+        },
+        {
+          machineId: 'machine-3',
+          config: {
+            software: {
+              powershell: '7.3.0',
+              node: '18.17.0',
+              python: '3.11.0'
+            }
+          },
+          metadata: { lastSeen: new Date().toISOString(), version: '1.0.0' }
+        }
+      ];
+
+      const aggregationConfig = {
+        sources: [
+          { type: 'machine_inventory', weight: 1, enabled: true }
+        ],
+        categoryRules: {
+          'software-powershell': {
+            strategy: 'majority',
+            confidenceThreshold: 0.7,
+            autoApply: true
+          },
+          'software-node': {
+            strategy: 'majority',
+            confidenceThreshold: 0.7,
+            autoApply: true
+          },
+          'software-python': {
+            strategy: 'majority',
+            confidenceThreshold: 0.7,
+            autoApply: true
+          }
+        },
+        thresholds: {
+          deviationThreshold: 0.2,
+          complianceThreshold: 0.8,
+          outlierDetection: false
+        }
+      } as AggregationConfig;
+
+      const baseline = await service.aggregateBaseline(testInventories, aggregationConfig);
+
+      expect(baseline).toBeDefined();
+      expect(baseline.profiles).toBeDefined();
+      expect(baseline.profiles.length).toBeGreaterThan(0);
+
+      // Vérifier que les versions majoritaires sont sélectionnées
+      const powershellProfile = baseline.profiles.find(p => p.category === 'software-powershell');
+      expect(powershellProfile).toBeDefined();
+      expect(powershellProfile?.configuration.version).toBe('7.2.0'); // 2/3 machines
+
+      const nodeProfile = baseline.profiles.find(p => p.category === 'software-node');
+      expect(nodeProfile).toBeDefined();
+      expect(nodeProfile?.configuration.version).toBe('18.17.0'); // 3/3 machines
+    });
+
+    it('devrait gérer les objets imbriqués', async () => {
+      const testInventories: MachineInventory[] = [
+        {
+          machineId: 'machine-1',
+          config: {
+            roo: {
+              modes: ['ask', 'code'],
+              mcpSettings: { timeout: 30000 }
+            }
+          },
+          metadata: { lastSeen: new Date().toISOString(), version: '1.0.0' }
+        },
+        {
+          machineId: 'machine-2',
+          config: {
+            roo: {
+              modes: ['ask', 'code'],
+              mcpSettings: { timeout: 30000 }
+            }
+          },
+          metadata: { lastSeen: new Date().toISOString(), version: '1.0.0' }
+        },
+        {
+          machineId: 'machine-3',
+          config: {
+            roo: {
+              modes: ['ask', 'architect'],
+              mcpSettings: { timeout: 30000 }
+            }
+          },
+          metadata: { lastSeen: new Date().toISOString(), version: '1.0.0' }
+        }
+      ];
+
+      const aggregationConfig = {
+        sources: [{ type: 'machine_inventory', weight: 1, enabled: true }],
+        categoryRules: {
+          'roo-core': {
+            strategy: 'majority',
+            confidenceThreshold: 0.7,
+            autoApply: true
+          }
+        },
+        thresholds: {
+          deviationThreshold: 0.2,
+          complianceThreshold: 0.8,
+          outlierDetection: false
+        }
+      } as AggregationConfig;
+
+      const baseline = await service.aggregateBaseline(testInventories, aggregationConfig);
+
+      expect(baseline).toBeDefined();
+      const rooCoreProfile = baseline.profiles.find(p => p.category === 'roo-core');
+      expect(rooCoreProfile).toBeDefined();
+      expect(rooCoreProfile?.configuration.modes).toEqual(['ask', 'code']); // 2/3 machines
+    });
+  });
+
+  describe('aggregateByWeightedAverage', () => {
+    it('devrait calculer la moyenne pour les valeurs numériques', async () => {
+      const testInventories: MachineInventory[] = [
+        {
+          machineId: 'machine-1',
+          config: {
+            hardware: {
+              cpu: { cores: 4, model: 'Intel i5' },
+              memory: { total: 8192, type: 'DDR4' }
+            }
+          },
+          metadata: { lastSeen: new Date().toISOString(), version: '1.0.0' }
+        },
+        {
+          machineId: 'machine-2',
+          config: {
+            hardware: {
+              cpu: { cores: 8, model: 'Intel i7' },
+              memory: { total: 16384, type: 'DDR4' }
+            }
+          },
+          metadata: { lastSeen: new Date().toISOString(), version: '1.0.0' }
+        },
+        {
+          machineId: 'machine-3',
+          config: {
+            hardware: {
+              cpu: { cores: 16, model: 'Intel i9' },
+              memory: { total: 32768, type: 'DDR4' }
+            }
+          },
+          metadata: { lastSeen: new Date().toISOString(), version: '1.0.0' }
+        }
+      ];
+
+      const aggregationConfig = {
+        sources: [{ type: 'machine_inventory', weight: 1, enabled: true }],
+        categoryRules: {
+          'hardware-cpu': {
+            strategy: 'weighted_average',
+            confidenceThreshold: 0.7,
+            autoApply: true
+          },
+          'hardware-memory': {
+            strategy: 'weighted_average',
+            confidenceThreshold: 0.7,
+            autoApply: true
+          }
+        },
+        thresholds: {
+          deviationThreshold: 0.2,
+          complianceThreshold: 0.8,
+          outlierDetection: false
+        }
+      } as AggregationConfig;
+
+      const baseline = await service.aggregateBaseline(testInventories, aggregationConfig);
+
+      expect(baseline).toBeDefined();
+      const cpuProfile = baseline.profiles.find(p => p.category === 'hardware-cpu');
+      expect(cpuProfile).toBeDefined();
+      // Moyenne: (4 + 8 + 16) / 3 = 9.33
+      expect(cpuProfile?.configuration.cores).toBeCloseTo(9.33, 1);
+
+      const memoryProfile = baseline.profiles.find(p => p.category === 'hardware-memory');
+      expect(memoryProfile).toBeDefined();
+      // Moyenne: (8192 + 16384 + 32768) / 3 = 19114.67
+      expect(memoryProfile?.configuration.total).toBeCloseTo(19114.67, 1);
+    });
+
+    it('devrait utiliser la majorité pour les chaînes de caractères', async () => {
+      const testInventories: MachineInventory[] = [
+        {
+          machineId: 'machine-1',
+          config: {
+            system: {
+              os: 'Windows 11',
+              architecture: 'x64'
+            }
+          },
+          metadata: { lastSeen: new Date().toISOString(), version: '1.0.0' }
+        },
+        {
+          machineId: 'machine-2',
+          config: {
+            system: {
+              os: 'Windows 11',
+              architecture: 'x64'
+            }
+          },
+          metadata: { lastSeen: new Date().toISOString(), version: '1.0.0' }
+        },
+        {
+          machineId: 'machine-3',
+          config: {
+            system: {
+              os: 'Windows 10',
+              architecture: 'x64'
+            }
+          },
+          metadata: { lastSeen: new Date().toISOString(), version: '1.0.0' }
+        }
+      ];
+
+      const aggregationConfig = {
+        sources: [{ type: 'machine_inventory', weight: 1, enabled: true }],
+        categoryRules: {
+          'system-os': {
+            strategy: 'weighted_average',
+            confidenceThreshold: 0.7,
+            autoApply: true
+          },
+          'system-architecture': {
+            strategy: 'weighted_average',
+            confidenceThreshold: 0.7,
+            autoApply: true
+          }
+        },
+        thresholds: {
+          deviationThreshold: 0.2,
+          complianceThreshold: 0.8,
+          outlierDetection: false
+        }
+      } as AggregationConfig;
+
+      const baseline = await service.aggregateBaseline(testInventories, aggregationConfig);
+
+      expect(baseline).toBeDefined();
+      const osProfile = baseline.profiles.find(p => p.category === 'system-os');
+      expect(osProfile).toBeDefined();
+      // Pour les chaînes, utilise la majorité
+      expect(osProfile?.configuration.os).toBe('Windows 11'); // 2/3 machines
+
+      const archProfile = baseline.profiles.find(p => p.category === 'system-architecture');
+      expect(archProfile).toBeDefined();
+      expect(archProfile?.configuration.arch).toBe('x64'); // 3/3 machines
+    });
+
+    it('devrait gérer les données mixtes (numériques et chaînes)', async () => {
+      const testInventories: MachineInventory[] = [
+        {
+          machineId: 'machine-1',
+          config: {
+            hardware: {
+              cpu: { cores: 4, model: 'Intel i5' },
+              memory: { total: 8192, type: 'DDR4' }
+            }
+          },
+          metadata: { lastSeen: new Date().toISOString(), version: '1.0.0' }
+        },
+        {
+          machineId: 'machine-2',
+          config: {
+            hardware: {
+              cpu: { cores: 8, model: 'Intel i7' },
+              memory: { total: 16384, type: 'DDR4' }
+            }
+          },
+          metadata: { lastSeen: new Date().toISOString(), version: '1.0.0' }
+        }
+      ];
+
+      const aggregationConfig = {
+        sources: [{ type: 'machine_inventory', weight: 1, enabled: true }],
+        categoryRules: {
+          'hardware-cpu': {
+            strategy: 'weighted_average',
+            confidenceThreshold: 0.7,
+            autoApply: true
+          }
+        },
+        thresholds: {
+          deviationThreshold: 0.2,
+          complianceThreshold: 0.8,
+          outlierDetection: false
+        }
+      } as AggregationConfig;
+
+      const baseline = await service.aggregateBaseline(testInventories, aggregationConfig);
+
+      expect(baseline).toBeDefined();
+      const cpuProfile = baseline.profiles.find(p => p.category === 'hardware-cpu');
+      expect(cpuProfile).toBeDefined();
+      // cores est numérique, model est une chaîne
+      expect(cpuProfile?.configuration.cores).toBe(6); // (4 + 8) / 2
+      expect(cpuProfile?.configuration.model).toBe('Intel i5'); // Première valeur pour les chaînes
+    });
+  });
+
+  describe('edge cases agrégation', () => {
+    it('devrait gérer un tableau vide', async () => {
+      const aggregationConfig = {
+        sources: [{ type: 'machine_inventory', weight: 1, enabled: true }],
+        categoryRules: {
+          'roo-core': {
+            strategy: 'majority',
+            confidenceThreshold: 0.7,
+            autoApply: true
+          }
+        },
+        thresholds: {
+          deviationThreshold: 0.2,
+          complianceThreshold: 0.8,
+          outlierDetection: false
+        }
+      } as AggregationConfig;
+
+      const baseline = await service.aggregateBaseline([], aggregationConfig);
+
+      expect(baseline).toBeDefined();
+      expect(baseline.profiles).toHaveLength(0);
+    });
+
+    it('devrait gérer un seul élément', async () => {
+      const testInventories: MachineInventory[] = [
+        {
+          machineId: 'machine-1',
+          config: {
+            software: {
+              powershell: '7.2.0',
+              node: '18.17.0',
+              python: '3.11.0'
+            }
+          },
+          metadata: { lastSeen: new Date().toISOString(), version: '1.0.0' }
+        }
+      ];
+
+      const aggregationConfig = {
+        sources: [{ type: 'machine_inventory', weight: 1, enabled: true }],
+        categoryRules: {
+          'software-powershell': {
+            strategy: 'majority',
+            confidenceThreshold: 0.7,
+            autoApply: true
+          }
+        },
+        thresholds: {
+          deviationThreshold: 0.2,
+          complianceThreshold: 0.8,
+          outlierDetection: false
+        }
+      } as AggregationConfig;
+
+      const baseline = await service.aggregateBaseline(testInventories, aggregationConfig);
+
+      expect(baseline).toBeDefined();
+      const powershellProfile = baseline.profiles.find(p => p.category === 'software-powershell');
+      expect(powershellProfile).toBeDefined();
+      expect(powershellProfile?.configuration.version).toBe('7.2.0');
+    });
+  });
 });

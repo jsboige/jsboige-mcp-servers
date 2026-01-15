@@ -234,4 +234,183 @@ describe('BaselineManager', () => {
             expect(result.logs).toContain('[ROLLBACK] ✅ Intégrité vérifiée: file1 (100 bytes)');
         });
     });
+
+    describe('NonNominativeBaseline Integration', () => {
+        let mockNonNominativeService: any;
+
+        beforeEach(() => {
+            mockNonNominativeService = {
+                createBaseline: vi.fn(),
+                getActiveBaseline: vi.fn(),
+                saveState: vi.fn(),
+                compareMachines: vi.fn(),
+                generateMachineHash: vi.fn()
+            };
+
+            manager = new BaselineManager(
+                mockConfig,
+                mockBaselineService as unknown as BaselineService,
+                mockConfigComparator as unknown as ConfigComparator,
+                mockNonNominativeService
+            );
+        });
+
+        describe('createNonNominativeBaseline', () => {
+            it('should create a non-nominative baseline successfully', async () => {
+                const mockBaseline = {
+                    baselineId: 'baseline-1',
+                    name: 'Test Baseline',
+                    description: 'Test Description'
+                };
+                mockNonNominativeService.createBaseline.mockResolvedValue(mockBaseline);
+
+                const profiles = [{ profileId: 'profile-1', category: 'test' }];
+                const result = await manager.createNonNominativeBaseline(
+                    'Test Baseline',
+                    'Test Description',
+                    profiles
+                );
+
+                expect(mockNonNominativeService.createBaseline).toHaveBeenCalledWith(
+                    'Test Baseline',
+                    'Test Description',
+                    profiles
+                );
+                expect(result).toEqual(mockBaseline);
+            });
+
+            it('should throw error if NonNominativeBaselineService is not available', async () => {
+                const managerWithoutService = new BaselineManager(
+                    mockConfig,
+                    mockBaselineService as unknown as BaselineService,
+                    mockConfigComparator as unknown as ConfigComparator
+                );
+
+                await expect(
+                    managerWithoutService.createNonNominativeBaseline('Test', 'Desc', [])
+                ).rejects.toThrow('NonNominativeBaselineService non disponible');
+            });
+        });
+
+        describe('getActiveNonNominativeBaseline', () => {
+            it('should return active non-nominative baseline', async () => {
+                const mockBaseline = {
+                    baselineId: 'baseline-1',
+                    name: 'Active Baseline'
+                };
+                mockNonNominativeService.getActiveBaseline.mockResolvedValue(mockBaseline);
+
+                const result = await manager.getActiveNonNominativeBaseline();
+
+                expect(mockNonNominativeService.getActiveBaseline).toHaveBeenCalled();
+                expect(result).toEqual(mockBaseline);
+            });
+
+            it('should throw error if NonNominativeBaselineService is not available', async () => {
+                const managerWithoutService = new BaselineManager(
+                    mockConfig,
+                    mockBaselineService as unknown as BaselineService,
+                    mockConfigComparator as unknown as ConfigComparator
+                );
+
+                await expect(
+                    managerWithoutService.getActiveNonNominativeBaseline()
+                ).rejects.toThrow('NonNominativeBaselineService non disponible');
+            });
+        });
+
+        describe('migrateToNonNominative', () => {
+            it('should migrate from nominative to non-nominative baseline', async () => {
+                const mockCurrentBaseline = {
+                    machineId: 'old-machine',
+                    config: {
+                        roo: { modes: [], mcpSettings: {} },
+                        hardware: { cpu: { cores: 4 }, memory: { total: 16 } },
+                        software: { powershell: '7.0', node: '18.0', python: '3.10' },
+                        system: { os: 'Windows', architecture: 'x64' }
+                    }
+                };
+                mockBaselineService.loadBaseline.mockResolvedValue(mockCurrentBaseline);
+
+                const mockNewBaseline = {
+                    baselineId: 'baseline-new',
+                    name: 'Migrated Baseline'
+                };
+                mockNonNominativeService.createBaseline.mockResolvedValue(mockNewBaseline);
+                mockNonNominativeService.saveState.mockResolvedValue(undefined);
+
+                const result = await manager.migrateToNonNominative();
+
+                expect(mockBaselineService.loadBaseline).toHaveBeenCalled();
+                expect(mockNonNominativeService.createBaseline).toHaveBeenCalled();
+                expect(mockNonNominativeService.saveState).toHaveBeenCalled();
+                expect(result.success).toBe(true);
+                expect(result.oldBaseline).toBe('old-machine');
+                expect(result.newBaseline).toBe('baseline-new');
+            });
+
+            it('should throw error if no current baseline found', async () => {
+                mockBaselineService.loadBaseline.mockResolvedValue(null);
+
+                await expect(manager.migrateToNonNominative()).rejects.toThrow(
+                    'Aucune baseline actuelle trouvée pour la migration'
+                );
+            });
+
+            it('should throw error if NonNominativeBaselineService is not available', async () => {
+                const managerWithoutService = new BaselineManager(
+                    mockConfig,
+                    mockBaselineService as unknown as BaselineService,
+                    mockConfigComparator as unknown as ConfigComparator
+                );
+
+                await expect(
+                    managerWithoutService.migrateToNonNominative()
+                ).rejects.toThrow('NonNominativeBaselineService non disponible');
+            });
+        });
+
+        describe('compareWithNonNominativeBaseline', () => {
+            it('should compare machine with non-nominative baseline', async () => {
+                const mockActiveBaseline = {
+                    baselineId: 'baseline-1',
+                    name: 'Active Baseline'
+                };
+                mockNonNominativeService.getActiveBaseline.mockResolvedValue(mockActiveBaseline);
+
+                const mockComparison = {
+                    matches: true,
+                    diffs: []
+                };
+                mockNonNominativeService.compareMachines.mockResolvedValue(mockComparison);
+                mockNonNominativeService.generateMachineHash.mockReturnValue('hash-123');
+
+                const result = await manager.compareWithNonNominativeBaseline('test-machine');
+
+                expect(mockNonNominativeService.getActiveBaseline).toHaveBeenCalled();
+                expect(mockNonNominativeService.compareMachines).toHaveBeenCalledWith(['hash-123']);
+                expect(result).toEqual(mockComparison);
+            });
+
+            it('should throw error if no active baseline found', async () => {
+                mockNonNominativeService.getActiveBaseline.mockResolvedValue(null);
+
+                await expect(
+                    manager.compareWithNonNominativeBaseline('test-machine')
+                ).rejects.toThrow('Aucune baseline non-nominative active trouvée');
+            });
+
+            it('should throw error if NonNominativeBaselineService is not available', async () => {
+                const managerWithoutService = new BaselineManager(
+                    mockConfig,
+                    mockBaselineService as unknown as BaselineService,
+                    mockConfigComparator as unknown as ConfigComparator
+                );
+
+                await expect(
+                    managerWithoutService.compareWithNonNominativeBaseline('test-machine')
+                ).rejects.toThrow('NonNominativeBaselineService non disponible');
+            });
+        });
+    });
 });

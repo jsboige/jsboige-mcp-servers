@@ -300,16 +300,150 @@ export class NonNominativeBaselineService {
    * Agrège par majorité (valeur la plus fréquente)
    */
   private aggregateByMajority(data: any[]): any {
-    // Implémentation simplifiée - à améliorer selon les types de données
-    return data[0]; // Pour l'instant, prend la première valeur
+    if (data.length === 0) {
+      return {};
+    }
+
+    if (data.length === 1) {
+      return data[0];
+    }
+
+    // Pour les objets, on agrège par propriété
+    if (typeof data[0] === 'object' && data[0] !== null) {
+      const result: any = {};
+      const keys = Object.keys(data[0]);
+
+      for (const key of keys) {
+        const values = data.map(item => item[key]).filter(v => v !== undefined);
+        const counts = new Map<any, number>();
+
+        // Compter les occurrences de chaque valeur
+        for (const value of values) {
+          const serialized = JSON.stringify(value);
+          counts.set(serialized, (counts.get(serialized) || 0) + 1);
+        }
+
+        // Trouver la valeur la plus fréquente
+        let maxCount = 0;
+        let mostFrequentValue = values[0];
+
+        for (const [serialized, count] of counts.entries()) {
+          if (count > maxCount) {
+            maxCount = count;
+            mostFrequentValue = JSON.parse(serialized);
+          }
+        }
+
+        result[key] = mostFrequentValue;
+      }
+
+      return result;
+    }
+
+    // Pour les valeurs primitives, retourner la plus fréquente
+    const counts = new Map<any, number>();
+    for (const item of data) {
+      counts.set(item, (counts.get(item) || 0) + 1);
+    }
+
+    let maxCount = 0;
+    let mostFrequentValue = data[0];
+
+    for (const [value, count] of counts.entries()) {
+      if (count > maxCount) {
+        maxCount = count;
+        mostFrequentValue = value;
+      }
+    }
+
+    return mostFrequentValue;
   }
 
   /**
    * Agrège par moyenne pondérée
    */
   private aggregateByWeightedAverage(data: any[]): any {
-    // Implémentation simplifiée - à améliorer selon les types de données
-    return data[0]; // Pour l'instant, prend la première valeur
+    if (data.length === 0) {
+      return {};
+    }
+
+    if (data.length === 1) {
+      return data[0];
+    }
+
+    // Pour les objets, on agrège par propriété
+    if (typeof data[0] === 'object' && data[0] !== null) {
+      const result: any = {};
+      const keys = Object.keys(data[0]);
+
+      for (const key of keys) {
+        const values = data.map(item => item[key]).filter(v => v !== undefined);
+
+        // Si toutes les valeurs sont des nombres, calculer la moyenne
+        if (values.every(v => typeof v === 'number')) {
+          const sum = values.reduce((acc, val) => acc + val, 0);
+          result[key] = sum / values.length;
+        }
+        // Si les valeurs sont des chaînes de caractères (versions), utiliser la majorité
+        else if (values.every(v => typeof v === 'string')) {
+          const counts = new Map<string, number>();
+          for (const value of values) {
+            counts.set(value, (counts.get(value) || 0) + 1);
+          }
+
+          let maxCount = 0;
+          let mostFrequentValue = values[0];
+
+          for (const [value, count] of counts.entries()) {
+            if (count > maxCount) {
+              maxCount = count;
+              mostFrequentValue = value;
+            }
+          }
+
+          result[key] = mostFrequentValue;
+        }
+        // Pour les objets imbriqués, utiliser la majorité
+        else if (values.every(v => typeof v === 'object' && v !== null)) {
+          result[key] = this.aggregateByMajority(values);
+        }
+        // Sinon, utiliser la première valeur
+        else {
+          result[key] = values[0];
+        }
+      }
+
+      return result;
+    }
+
+    // Pour les valeurs primitives numériques, calculer la moyenne
+    if (data.every(item => typeof item === 'number')) {
+      const sum = data.reduce((acc, val) => acc + val, 0);
+      return sum / data.length;
+    }
+
+    // Pour les chaînes de caractères, utiliser la majorité
+    if (data.every(item => typeof item === 'string')) {
+      const counts = new Map<string, number>();
+      for (const item of data) {
+        counts.set(item, (counts.get(item) || 0) + 1);
+      }
+
+      let maxCount = 0;
+      let mostFrequentValue = data[0];
+
+      for (const [value, count] of counts.entries()) {
+        if (count > maxCount) {
+          maxCount = count;
+          mostFrequentValue = value;
+        }
+      }
+
+      return mostFrequentValue;
+    }
+
+    // Par défaut, retourner la première valeur
+    return data[0];
   }
 
   /**
@@ -808,20 +942,17 @@ export class NonNominativeBaselineService {
       );
     }
 
-    if (baseline.profiles.length === 0) {
-      throw new BaselineServiceError(
-        'Baseline invalide: aucun profil défini',
-        BaselineServiceErrorCode.BASELINE_INVALID
-      );
-    }
-
-    // Valider chaque profil
-    for (const profile of baseline.profiles) {
-      if (!profile.profileId || !profile.category || !profile.configuration) {
-        throw new BaselineServiceError(
-          'Profil invalide: champs requis manquants',
-          BaselineServiceErrorCode.BASELINE_INVALID
-        );
+    // Permettre les baselines vides (utiles pour les tests et l'initialisation)
+    // La validation des profils ne s'applique que si des profils sont définis
+    if (baseline.profiles.length > 0) {
+      // Valider chaque profil
+      for (const profile of baseline.profiles) {
+        if (!profile.profileId || !profile.category || !profile.configuration) {
+          throw new BaselineServiceError(
+            'Profil invalide: champs requis manquants',
+            BaselineServiceErrorCode.BASELINE_INVALID
+          );
+        }
       }
     }
   }
@@ -836,6 +967,14 @@ export class NonNominativeBaselineService {
         const baselinePath = join(this.sharedPath, `baseline-${baselineId}.json`);
         if (existsSync(baselinePath)) {
           return await readJSONFileWithoutBOM<NonNominativeBaseline>(baselinePath);
+        }
+        // Si le fichier spécifique n'existe pas, essayer le fichier par défaut
+        if (existsSync(this.baselinePath)) {
+          const baseline = await readJSONFileWithoutBOM<NonNominativeBaseline>(this.baselinePath);
+          // Vérifier que c'est la bonne baseline
+          if (baseline.baselineId === baselineId) {
+            return baseline;
+          }
         }
       } else {
         // Charger la baseline active

@@ -2,7 +2,7 @@
  * Export centralisé des outils RooSync
  *
  * @module tools/roosync
- * @version 2.3.0
+ * @version 3.0.0
  */
 
 export {
@@ -184,6 +184,19 @@ export { amendMessage } from './amend_message.js';
 // NOUVEAU: Outil d'inventaire
 export { getMachineInventoryTool } from './get-machine-inventory.js';
 
+// Export des outils Heartbeat (T3.16)
+export { roosyncRegisterHeartbeat, registerHeartbeatToolMetadata } from './register-heartbeat.js';
+export { roosyncGetOfflineMachines, getOfflineMachinesToolMetadata } from './get-offline-machines.js';
+export { roosyncGetWarningMachines, getWarningMachinesToolMetadata } from './get-warning-machines.js';
+export { roosyncGetHeartbeatState, getHeartbeatStateToolMetadata } from './get-heartbeat-state.js';
+export { roosyncStartHeartbeatService, startHeartbeatServiceToolMetadata } from './start-heartbeat-service.js';
+export { roosyncStopHeartbeatService, stopHeartbeatServiceToolMetadata } from './stop-heartbeat-service.js';
+export { roosyncCheckHeartbeats, checkHeartbeatsToolMetadata } from './check-heartbeats.js';
+
+// Export des outils de synchronisation automatique (T3.16)
+export { roosyncSyncOnOffline, syncOnOfflineToolMetadata } from './sync-on-offline.js';
+export { roosyncSyncOnOnline, syncOnOnlineToolMetadata } from './sync-on-online.js';
+
 // Import des métadonnées pour l'array
 import { getStatusToolMetadata } from './get-status.js';
 import { compareConfigToolMetadata } from './compare-config.js';
@@ -201,6 +214,19 @@ import { collectConfigToolMetadata } from './collect-config.js';
 import { publishConfigToolMetadata } from './publish-config.js';
 import { applyConfigToolMetadata } from './apply-config.js';
 import { getMachineInventoryTool } from './get-machine-inventory.js';
+
+// Import des métadonnées des outils Heartbeat (T3.16)
+import { registerHeartbeatToolMetadata } from './register-heartbeat.js';
+import { getOfflineMachinesToolMetadata } from './get-offline-machines.js';
+import { getWarningMachinesToolMetadata } from './get-warning-machines.js';
+import { getHeartbeatStateToolMetadata } from './get-heartbeat-state.js';
+import { startHeartbeatServiceToolMetadata } from './start-heartbeat-service.js';
+import { stopHeartbeatServiceToolMetadata } from './stop-heartbeat-service.js';
+import { checkHeartbeatsToolMetadata } from './check-heartbeats.js';
+
+// Import des métadonnées des outils de synchronisation automatique (T3.16)
+import { syncOnOfflineToolMetadata } from './sync-on-offline.js';
+import { syncOnOnlineToolMetadata } from './sync-on-online.js';
 
 // Métadonnées pour l'outil d'inventaire (format JSON Schema standard)
 const getMachineInventoryToolMetadata = {
@@ -256,11 +282,13 @@ const exportBaselineToolMetadata = {
 
 /**
  * Liste de tous les outils RooSync pour enregistrement MCP
- * Version 2.3 : 16 outils consolidés
+ * Version 3.0 : 24 outils consolidés
  * - Configuration: init, compare-config, update-baseline, manage-baseline, export-baseline
  * - Services: collect-config, publish-config, apply-config, get-machine-inventory
  * - Présentation: get-status (fusionné avec read-dashboard), list-diffs
  * - Décision: approve-decision, reject-decision, apply-decision, rollback-decision, get-decision-details
+ * - Heartbeat: register-heartbeat, get-offline-machines, get-warning-machines, get-heartbeat-state, start-heartbeat-service, stop-heartbeat-service, check-heartbeats
+ * - Synchronisation automatique: sync-on-offline, sync-on-online
  * - Debug: debug-reset (fusionné avec debug-dashboard et reset-service)
  */
 export const roosyncTools = [
@@ -280,5 +308,16 @@ export const roosyncTools = [
   publishConfigToolMetadata,
   applyConfigToolMetadata,
   getMachineInventoryToolMetadata,
-  debugResetToolMetadata
+  debugResetToolMetadata,
+  // Outils Heartbeat (T3.16)
+  registerHeartbeatToolMetadata,
+  getOfflineMachinesToolMetadata,
+  getWarningMachinesToolMetadata,
+  getHeartbeatStateToolMetadata,
+  startHeartbeatServiceToolMetadata,
+  stopHeartbeatServiceToolMetadata,
+  checkHeartbeatsToolMetadata,
+  // Outils de synchronisation automatique (T3.16)
+  syncOnOfflineToolMetadata,
+  syncOnOnlineToolMetadata
 ];

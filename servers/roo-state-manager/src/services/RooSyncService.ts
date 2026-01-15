@@ -31,6 +31,7 @@ import { MessageHandler } from './roosync/MessageHandler.js';
 import { PresenceManager } from './roosync/PresenceManager.js';
 import { IdentityManager } from './roosync/IdentityManager.js';
 import { NonNominativeBaselineService } from './roosync/NonNominativeBaselineService.js';
+import { HeartbeatService, type HeartbeatServiceState, type HeartbeatCheckResult } from './roosync/HeartbeatService.js';
 
 // Re-export des types pour compatibilité
 export type { DecisionExecutionResult, RollbackRestoreResult };
@@ -88,6 +89,7 @@ export class RooSyncService {
   private presenceManager: PresenceManager;
   private identityManager: IdentityManager;
   private nonNominativeBaselineService: NonNominativeBaselineService;
+  private heartbeatService: HeartbeatService;
 
   /**
    /**
@@ -166,6 +168,7 @@ export class RooSyncService {
       this.presenceManager = new PresenceManager(this.config);
       this.identityManager = new IdentityManager(this.config, this.presenceManager);
       this.nonNominativeBaselineService = new NonNominativeBaselineService(this.config.sharedPath);
+      this.heartbeatService = new HeartbeatService(this.config.sharedPath);
 
     } catch (error) {
       debugLog('ERREUR dans constructeur RooSyncService', {
@@ -821,6 +824,185 @@ export class RooSyncService {
    */
   public getNonNominativeMachineMappings(): any[] {
     return this.baselineManager.getNonNominativeMachineMappings();
+  }
+
+  /**
+   * Obtient le service de heartbeat
+   */
+  public getHeartbeatService(): HeartbeatService {
+    return this.heartbeatService;
+  }
+
+  /**
+   * Enregistre un heartbeat pour la machine courante
+   */
+  public async registerHeartbeat(metadata?: Record<string, any>): Promise<void> {
+    return this.heartbeatService.registerHeartbeat(this.config.machineId, metadata);
+  }
+
+  /**
+   * Obtient les machines actuellement offline
+   */
+  public getOfflineMachines(): string[] {
+    return this.heartbeatService.getOfflineMachines();
+  }
+
+  /**
+   * Obtient les machines en avertissement
+   */
+  public getWarningMachines(): string[] {
+    return this.heartbeatService.getWarningMachines();
+  }
+
+  /**
+   * Obtient l'état complet du service de heartbeat
+   */
+  public getHeartbeatState(): HeartbeatServiceState {
+    return this.heartbeatService.getState();
+  }
+
+  /**
+   * Démarre le service de heartbeat automatique
+   */
+  public async startHeartbeatService(
+    onOfflineDetected?: (machineId: string) => void,
+    onOnlineRestored?: (machineId: string) => void
+  ): Promise<void> {
+    console.log(`[RooSyncService] Démarrage du service heartbeat pour: ${this.config.machineId}`);
+    
+    // Configurer les callbacks pour la synchronisation automatique
+    const offlineCallback = async (machineId: string) => {
+      console.log(`[RooSyncService] Machine offline détectée: ${machineId}`);
+      
+      // Appeler le callback utilisateur si fourni
+      if (onOfflineDetected) {
+        onOfflineDetected(machineId);
+      }
+      
+      // Synchroniser automatiquement les baselines
+      await this.syncOnMachineOffline(machineId);
+    };
+    
+    const onlineCallback = async (machineId: string) => {
+      console.log(`[RooSyncService] Machine redevenue online: ${machineId}`);
+      
+      // Appeler le callback utilisateur si fourni
+      if (onOnlineRestored) {
+        onOnlineRestored(machineId);
+      }
+      
+      // Synchroniser automatiquement les baselines
+      await this.syncOnMachineOnline(machineId);
+    };
+    
+    await this.heartbeatService.startHeartbeatService(
+      this.config.machineId,
+      offlineCallback,
+      onlineCallback
+    );
+  }
+
+  /**
+   * Arrête le service de heartbeat
+   */
+  public async stopHeartbeatService(): Promise<void> {
+    console.log('[RooSyncService] Arrêt du service heartbeat');
+    return this.heartbeatService.stopHeartbeatService();
+  }
+
+  /**
+   * Synchronise automatiquement les baselines lors de la détection offline
+   */
+  private async syncOnMachineOffline(machineId: string): Promise<void> {
+    try {
+      console.log(`[RooSyncService] Synchronisation automatique pour machine offline: ${machineId}`);
+      
+      // Vérifier si une baseline non-nominative est active
+      const activeBaseline = this.nonNominativeBaselineService.getActiveBaseline();
+      
+      if (activeBaseline) {
+        // En mode profil, mettre à jour la baseline avec les machines online restantes
+        console.log('[RooSyncService] Mise à jour baseline non-nominative (machine offline)');
+        
+        // Collecter l'inventaire de la machine courante
+        const inventory = await this.inventoryCollector.collectInventory(this.config.machineId, true);
+        if (inventory) {
+          const compatibleInventory: any = inventory;
+          
+          // Créer une nouvelle baseline agrégée
+          await this.baselineManager.createNonNominativeBaseline(
+            `Baseline Auto (Offline: ${machineId})`,
+            `Mise à jour automatique suite à détection offline de ${machineId}`,
+            []
+          );
+        }
+      } else {
+        // En mode legacy, mettre à jour la baseline standard
+        console.log('[RooSyncService] Mise à jour baseline legacy (machine offline)');
+        await this.updateBaseline(this.config.machineId, {
+          mode: 'legacy',
+          updateReason: `Machine offline détectée: ${machineId}`
+        });
+      }
+      
+      // Vider le cache pour forcer la relecture
+      this.clearCache();
+      
+    } catch (error) {
+      console.error(`[RooSyncService] Erreur synchronisation automatique (offline):`, error);
+      // Ne pas bloquer en cas d'erreur
+    }
+  }
+
+  /**
+   * Synchronise automatiquement les baselines lors du retour online
+   */
+  private async syncOnMachineOnline(machineId: string): Promise<void> {
+    try {
+      console.log(`[RooSyncService] Synchronisation automatique pour machine online: ${machineId}`);
+      
+      // Vérifier si une baseline non-nominative est active
+      const activeBaseline = this.nonNominativeBaselineService.getActiveBaseline();
+      
+      if (activeBaseline) {
+        // En mode profil, mettre à jour la baseline avec la machine revenue online
+        console.log('[RooSyncService] Mise à jour baseline non-nominative (machine online)');
+        
+        // Collecter l'inventaire de la machine courante
+        const inventory = await this.inventoryCollector.collectInventory(this.config.machineId, true);
+        if (inventory) {
+          const compatibleInventory: any = inventory;
+          
+          // Créer une nouvelle baseline agrégée
+          await this.baselineManager.createNonNominativeBaseline(
+            `Baseline Auto (Online: ${machineId})`,
+            `Mise à jour automatique suite au retour online de ${machineId}`,
+            []
+          );
+        }
+      } else {
+        // En mode legacy, mettre à jour la baseline standard
+        console.log('[RooSyncService] Mise à jour baseline legacy (machine online)');
+        await this.updateBaseline(this.config.machineId, {
+          mode: 'legacy',
+          updateReason: `Machine redevenue online: ${machineId}`
+        });
+      }
+      
+      // Vider le cache pour forcer la relecture
+      this.clearCache();
+      
+    } catch (error) {
+      console.error(`[RooSyncService] Erreur synchronisation automatique (online):`, error);
+      // Ne pas bloquer en cas d'erreur
+    }
+  }
+
+  /**
+   * Vérifie les heartbeats et détecte les machines offline
+   */
+  public async checkHeartbeats(): Promise<HeartbeatCheckResult> {
+    return this.heartbeatService.checkHeartbeats();
   }
 }
 
