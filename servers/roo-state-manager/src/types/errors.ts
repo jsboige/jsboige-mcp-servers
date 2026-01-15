@@ -5,17 +5,14 @@
  * pour une gestion explicite et cohérente des erreurs dans tous les services.
  */
 
-// =============================================================================
-// T3.7 - Classification des erreurs (Script vs Système)
-// =============================================================================
-
 /**
- * Catégories d'erreurs pour distinguer les problèmes de script vs système
+ * Catégories d'erreur pour distinguer les erreurs script vs système
+ * (T3.7 - Différencier erreurs script vs système)
  */
 export enum ErrorCategory {
-  SCRIPT = 'SCRIPT',           // Bug dans le code PowerShell
-  SYSTEM = 'SYSTEM',           // Problème système (fichier, réseau, permissions)
-  UNKNOWN = 'UNKNOWN'          // Impossible à déterminer
+  SCRIPT = 'SCRIPT',           // Bug dans le code PowerShell (syntaxe, logique, variables)
+  SYSTEM = 'SYSTEM',           // Problème système (fichier, réseau, permissions, timeout)
+  UNKNOWN = 'UNKNOWN'          // Impossible à déterminer automatiquement
 }
 
 /**
@@ -24,25 +21,25 @@ export enum ErrorCategory {
 export class StateManagerError extends Error {
   public readonly code: string;
   public readonly service: string;
-  public readonly category: ErrorCategory;
   public readonly details?: any;
   public readonly cause?: Error;
+  public readonly category: ErrorCategory;  // T3.7: Catégorie d'erreur
 
   constructor(
     message: string,
     code: string,
     service: string,
-    category: ErrorCategory = ErrorCategory.UNKNOWN,
     details?: any,
-    cause?: Error
+    cause?: Error,
+    category: ErrorCategory = ErrorCategory.UNKNOWN  // T3.7: Catégorie par défaut
   ) {
     super(message);
     this.name = 'StateManagerError';
     this.code = code;
     this.service = service;
-    this.category = category;
     this.details = details;
     this.cause = cause;
+    this.category = category;
 
     // Maintient la trace de la pile d'appels correcte
     if (Error.captureStackTrace) {
@@ -51,7 +48,7 @@ export class StateManagerError extends Error {
   }
 
   /**
-   * Retourne une representation JSON de l'erreur
+   * Retourne une représentation JSON de l'erreur
    */
   toJSON(): Record<string, any> {
     return {
@@ -59,7 +56,7 @@ export class StateManagerError extends Error {
       message: this.message,
       code: this.code,
       service: this.service,
-      category: this.category,
+      category: this.category,  // T3.7: Inclure la catégorie
       details: this.details,
       cause: this.cause ? {
         name: this.cause.name,
@@ -67,123 +64,6 @@ export class StateManagerError extends Error {
       } : undefined
     };
   }
-}
-
-/**
- * Interface pour le résultat d'exécution PowerShell
- */
-export interface PowerShellExecutionResult {
-  exitCode: number;
-  stdout: string;
-  stderr: string;
-}
-
-/**
- * Détecte si une erreur PowerShell est de type script ou système
- *
- * @param error - Résultat d'exécution PowerShell, Error standard, ou message d'erreur
- * @returns Catégorie de l'erreur (SCRIPT, SYSTEM ou UNKNOWN)
- */
-export function detectPowerShellErrorType(
-  error: PowerShellExecutionResult | Error | string
-): ErrorCategory {
-  let errorMessage: string;
-  
-  // Extraire le message d'erreur selon le type d'entrée
-  if (typeof error === 'string') {
-    errorMessage = error;
-  } else if (error instanceof Error) {
-    errorMessage = error.message;
-  } else {
-    errorMessage = error.stderr || error.stdout || '';
-  }
-  
-  const stderr = errorMessage.toLowerCase();
-  
-  // Indicateurs d'erreur script (problèmes dans le code PowerShell lui-même)
-  const scriptIndicators = [
-    /syntax error/i,
-    /unexpected token/i,
-    /variable .* cannot be retrieved/i,
-    /invalid operation/i,
-    /term '.*' not recognized/i,
-    /missing closing/i,
-    /unexpected end of file/i,
-    /cannot convert value/i,
-    /cannot index into a null array/i,
-    /property '.*' cannot be found/i
-  ];
-  
-  // Indicateurs d'erreur système (problèmes d'exécution indépendants du code)
-  const systemIndicators = [
-    /cannot find path/i,
-    /access.*denied/i,
-    /timed out/i,
-    /network path not found/i,
-    /the system cannot find the file specified/i,
-    /permission denied/i,
-    /disk full/i,
-    /network unreachable/i,
-    /connection refused/i,
-    /file not found/i,
-    /directory not found/i
-  ];
-  
-  // Vérifier les indicateurs de script en premier
-  if (scriptIndicators.some(pattern => pattern.test(stderr))) {
-    return ErrorCategory.SCRIPT;
-  }
-  
-  // Vérifier les indicateurs système
-  if (systemIndicators.some(pattern => pattern.test(stderr))) {
-    return ErrorCategory.SYSTEM;
-  }
-  
-  // Si aucun pattern n'est reconnu, retourner UNKNOWN
-  return ErrorCategory.UNKNOWN;
-}
-
-/**
- * Suggère une catégorie d'erreur basée sur le service et le code d'erreur
- *
- * @param service - Nom du service
- * @param code - Code d'erreur
- * @returns Catégorie suggérée pour l'erreur
- */
-export function suggestErrorCategory(service: string, code: string): ErrorCategory {
-  // Mapping des codes d'erreur connus vers les catégories appropriées
-  const errorMappings: Record<string, Record<string, ErrorCategory>> = {
-    'PowerShellExecutor': {
-      'NO_JSON_FOUND': ErrorCategory.SCRIPT,
-      'EXECUTION_FAILED': ErrorCategory.SYSTEM,
-      'TIMEOUT': ErrorCategory.SYSTEM,
-      'SCRIPT_NOT_FOUND': ErrorCategory.SYSTEM,
-      'PARSE_FAILED': ErrorCategory.SCRIPT,
-      'CONFIG_MISSING': ErrorCategory.SYSTEM
-    },
-    'InventoryCollector': {
-      'SCRIPT_NOT_FOUND': ErrorCategory.SYSTEM,
-      'SCRIPT_EXECUTION_FAILED': ErrorCategory.SCRIPT,
-      'INVENTORY_PARSE_FAILED': ErrorCategory.SCRIPT,
-      'INVENTORY_SAVE_FAILED': ErrorCategory.SYSTEM,
-      'REMOTE_MACHINE_NOT_FOUND': ErrorCategory.SYSTEM,
-      'SHARED_STATE_NOT_ACCESSIBLE': ErrorCategory.SYSTEM
-    },
-    'Generic': {
-      'FILE_SYSTEM_ERROR': ErrorCategory.SYSTEM,
-      'NETWORK_ERROR': ErrorCategory.SYSTEM,
-      'PERMISSION_DENIED': ErrorCategory.SYSTEM,
-      'TIMEOUT': ErrorCategory.SYSTEM,
-      'INVALID_ARGUMENT': ErrorCategory.SCRIPT
-    }
-  };
-  
-  const serviceMappings = errorMappings[service];
-  if (serviceMappings && serviceMappings[code]) {
-    return serviceMappings[code];
-  }
-  
-  return ErrorCategory.UNKNOWN;
 }
 
 /**
@@ -617,4 +497,187 @@ export class ConfigSharingServiceError extends StateManagerError {
     super(message, code, 'ConfigSharingService', details, cause);
     this.name = 'ConfigSharingServiceError';
   }
+}
+
+// =============================================================================
+// T3.7 - Fonctions de classification d'erreur (Script vs Système)
+// =============================================================================
+
+/**
+ * Indicateurs d'erreur script PowerShell
+ * Patterns typiques de bugs dans le code PowerShell lui-même
+ */
+const SCRIPT_ERROR_PATTERNS = [
+  /syntax error/i,
+  /unexpected token/i,
+  /unexpected '\{/i,
+  /unexpected '\('/i,
+  /missing '\}'/i,
+  /missing '\)'/i,
+  /missing closing/i,
+  /invalid syntax/i,
+  /variable .* cannot be retrieved/i,
+  /term '.*' is not recognized/i,
+  /the term '.*' is not recognized as a cmdlet/i,
+  /command .* not found/i,
+  /invalid operation/i,
+  /cannot convert value/i,
+  /cannot index into a null array/i,
+  /you cannot call a method on a null-valued expression/i,
+  /object reference not set to an instance/i,
+  /null-valued expression/i,
+  /method invocation is not supported/i,
+  /property assignment is not supported/i,
+  /the property '.*' cannot be found on this object/i,
+  /cannot validate argument on parameter/i,
+  /parameter name '.*' is ambiguous/i,
+  /a parameter cannot be found that matches parameter name/i
+];
+
+/**
+ * Indicateurs d'erreur système PowerShell
+ * Problèmes d'exécution indépendants du code
+ */
+const SYSTEM_ERROR_PATTERNS = [
+  /cannot find path/i,
+  /path .* not found/i,
+  /file not found/i,
+  /no such file or directory/i,
+  /access (denied|to the path|is denied|denied to)/i,
+  /permission denied/i,
+  /unauthorized access/i,
+  /timeout/i,
+  /timed out/i,
+  /operation timed out/i,
+  /network path not found/i,
+  /network unreachable/i,
+  /connection refused/i,
+  /no connection could be made/i,
+  /the network path was not found/i,
+  /the remote server returned an error/i,
+  /disk full/i,
+  /not enough disk space/i,
+  /write error/i,
+  /read error/i,
+  /i\/o error/i,
+  /device not ready/i,
+  /drive not ready/i,
+  /the process cannot access the file/i,
+  /being used by another process/i,
+  /locked/i
+];
+
+/**
+ * Interface pour les résultats d'exécution PowerShell
+ */
+export interface PowerShellExecutionResult {
+  stdout?: string;
+  stderr?: string;
+  exitCode?: number;
+  error?: Error;
+}
+
+/**
+ * Détecte si une erreur PowerShell est de type script ou système
+ *
+ * @param error - Le résultat d'exécution PowerShell ou une erreur
+ * @returns La catégorie d'erreur (SCRIPT, SYSTEM ou UNKNOWN)
+ *
+ * @example
+ * ```typescript
+ * const result = await executor.execute(script);
+ * if (result.exitCode !== 0) {
+ *   const category = detectPowerShellErrorType(result);
+ *   throw new PowerShellExecutorError(
+ *     'Script failed',
+ *     'EXECUTION_FAILED',
+ *     { category }
+ *   );
+ * }
+ * ```
+ */
+export function detectPowerShellErrorType(
+  error: PowerShellExecutionResult | Error | string
+): ErrorCategory {
+  // Extraire le texte d'erreur
+  let errorText = '';
+
+  if (typeof error === 'string') {
+    errorText = error;
+  } else if (error instanceof Error) {
+    errorText = error.message;
+  } else if (error.stderr) {
+    errorText = error.stderr;
+  } else if (error.stdout) {
+    errorText = error.stdout;
+  } else if (error.error?.message) {
+    errorText = error.error.message;
+  }
+
+  if (!errorText) {
+    return ErrorCategory.UNKNOWN;
+  }
+
+  const lowerText = errorText.toLowerCase();
+
+  // Vérifier les indicateurs d'erreur script en premier
+  for (const pattern of SCRIPT_ERROR_PATTERNS) {
+    if (pattern.test(lowerText)) {
+      return ErrorCategory.SCRIPT;
+    }
+  }
+
+  // Vérifier les indicateurs d'erreur système
+  for (const pattern of SYSTEM_ERROR_PATTERNS) {
+    if (pattern.test(lowerText)) {
+      return ErrorCategory.SYSTEM;
+    }
+  }
+
+  // Si aucun pattern n'est reconnu, retourner UNKNOWN
+  return ErrorCategory.UNKNOWN;
+}
+
+/**
+ * Détermine la catégorie d'erreur basée sur le code d'erreur
+ * Pour les services qui ont des codes d'erreur connus
+ *
+ * @param service - Le nom du service
+ * @param code - Le code d'erreur
+ * @returns La catégorie d'erreur suggérée
+ */
+export function suggestErrorCategory(service: string, code: string): ErrorCategory {
+  // Mapping des codes d'erreur connus vers les catégories
+  const scriptErrorCodes = new Set([
+    'INVENTORY_PARSE_FAILED',
+    'PARSE_FAILED',
+    'INVALID_ARGUMENT',
+    'VALIDATION_FAILED',
+    'IDENTITY_CONFLICT',
+    'BASELINE_INVALID'
+  ]);
+
+  const systemErrorCodes = new Set([
+    'SCRIPT_NOT_FOUND',
+    'SCRIPT_EXECUTION_FAILED',
+    'INVENTORY_SAVE_FAILED',
+    'REMOTE_MACHINE_NOT_FOUND',
+    'SHARED_STATE_NOT_ACCESSIBLE',
+    'FILE_SYSTEM_ERROR',
+    'NETWORK_ERROR',
+    'PERMISSION_DENIED',
+    'TIMEOUT',
+    'NO_JSON_FOUND',
+    'EXECUTION_FAILED'
+  ]);
+
+  if (scriptErrorCodes.has(code)) {
+    return ErrorCategory.SCRIPT;
+  }
+
+  if (systemErrorCodes.has(code)) {
+    return ErrorCategory.SYSTEM;
+  }
+
+  return ErrorCategory.UNKNOWN;
 }
