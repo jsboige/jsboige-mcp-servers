@@ -6,6 +6,7 @@
  */
 
 import { Tool } from '@modelcontextprotocol/sdk/types.js';
+import { StateManagerError } from '../../types/errors.js';
 import { TraceSummaryService, SummaryOptions } from '../../services/TraceSummaryService.js';
 import { ExportConfigManager } from '../../services/ExportConfigManager.js';
 import { ConversationSkeleton } from '../../types/conversation.js';
@@ -83,13 +84,23 @@ export async function handleExportConversationJson(
     try {
         // Valider les arguments
         if (!args.taskId) {
-            throw new Error("taskId est requis");
+            throw new StateManagerError(
+                'taskId est requis',
+                'VALIDATION_FAILED',
+                'ExportConversationJsonTool',
+                { missingParam: 'taskId' }
+            );
         }
 
         // Récupérer le ConversationSkeleton
         const conversation = await getConversationSkeleton(args.taskId);
         if (!conversation) {
-            throw new Error(`Conversation avec taskId ${args.taskId} introuvable`);
+            throw new StateManagerError(
+                `Conversation avec taskId ${args.taskId} introuvable`,
+                'CONVERSATION_NOT_FOUND',
+                'ExportConversationJsonTool',
+                { taskId: args.taskId }
+            );
         }
 
         // Préparer les options de génération
@@ -113,7 +124,12 @@ export async function handleExportConversationJson(
         const result = await summaryService.generateSummary(conversation, summaryOptions);
 
         if (!result.success) {
-            throw new Error(`Erreur lors de la génération de l'export JSON: ${result.error}`);
+            throw new StateManagerError(
+                `Erreur lors de la génération de l'export JSON: ${result.error}`,
+                'EXPORT_GENERATION_FAILED',
+                'ExportConversationJsonTool',
+                { taskId: args.taskId, error: result.error }
+            );
         }
 
         // Si filePath est fourni, sauvegarder le fichier
@@ -146,7 +162,12 @@ export async function handleExportConversationJson(
                 ].filter(line => line !== '').join('\n');
                 
             } catch (writeError) {
-                throw new Error(`Erreur lors de l'écriture du fichier ${args.filePath}: ${writeError}`);
+                throw new StateManagerError(
+                    `Erreur lors de l'écriture du fichier ${args.filePath}: ${writeError}`,
+                    'FILE_WRITE_FAILED',
+                    'ExportConversationJsonTool',
+                    { filePath: args.filePath, error: String(writeError) }
+                );
             }
         }
 
@@ -179,7 +200,15 @@ export async function handleExportConversationJson(
         return response;
 
     } catch (error) {
+        if (error instanceof StateManagerError) {
+            throw error;
+        }
         const errorMessage = error instanceof Error ? error.message : 'Erreur inconnue';
-        throw new Error(`Export JSON échoué: ${errorMessage}`);
+        throw new StateManagerError(
+            `Export JSON échoué: ${errorMessage}`,
+            'EXPORT_FAILED',
+            'ExportConversationJsonTool',
+            { taskId: args.taskId, originalError: errorMessage }
+        );
     }
 }

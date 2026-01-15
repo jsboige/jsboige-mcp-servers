@@ -6,6 +6,7 @@
  */
 
 import { Tool } from '@modelcontextprotocol/sdk/types.js';
+import { StateManagerError } from '../../types/errors.js';
 import { TraceSummaryService } from '../../services/TraceSummaryService.js';
 import { ExportConfigManager } from '../../services/ExportConfigManager.js';
 import { ConversationSkeleton, ClusterSummaryOptions } from '../../types/conversation.js';
@@ -170,13 +171,23 @@ export async function handleGenerateClusterSummary(
     try {
         // Valider les arguments
         if (!args.rootTaskId) {
-            throw new Error("rootTaskId est requis");
+            throw new StateManagerError(
+                'rootTaskId est requis',
+                'VALIDATION_FAILED',
+                'GenerateClusterSummaryTool',
+                { missingParam: 'rootTaskId' }
+            );
         }
 
         // Récupérer la tâche racine
         const rootTask = await getConversationSkeleton(args.rootTaskId);
         if (!rootTask) {
-            throw new Error(`Tâche racine avec taskId ${args.rootTaskId} introuvable`);
+            throw new StateManagerError(
+                `Tâche racine avec taskId ${args.rootTaskId} introuvable`,
+                'ROOT_TASK_NOT_FOUND',
+                'GenerateClusterSummaryTool',
+                { rootTaskId: args.rootTaskId }
+            );
         }
 
         // Récupérer les tâches enfantes
@@ -228,7 +239,12 @@ export async function handleGenerateClusterSummary(
         const result = await summaryService.generateClusterSummary(rootTask, childTasks, clusterOptions);
 
         if (!result.success) {
-            throw new Error(`Erreur lors de la génération du résumé de grappe: ${result.error || 'Erreur inconnue'}`);
+            throw new StateManagerError(
+                `Erreur lors de la génération du résumé de grappe: ${result.error || 'Erreur inconnue'}`,
+                'CLUSTER_SUMMARY_GENERATION_FAILED',
+                'GenerateClusterSummaryTool',
+                { rootTaskId: args.rootTaskId, error: result.error }
+            );
         }
 
         // Construction du résultat final avec métadonnées

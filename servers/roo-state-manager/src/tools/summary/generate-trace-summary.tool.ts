@@ -6,6 +6,7 @@
  */
 
 import { Tool } from '@modelcontextprotocol/sdk/types.js';
+import { StateManagerError } from '../../types/errors.js';
 import { TraceSummaryService, SummaryOptions } from '../../services/TraceSummaryService.js';
 import { ExportConfigManager } from '../../services/ExportConfigManager.js';
 import { ConversationSkeleton } from '../../types/conversation.js';
@@ -112,13 +113,23 @@ export async function handleGenerateTraceSummary(
     try {
         // Valider les arguments
         if (!args.taskId) {
-            throw new Error("taskId est requis");
+            throw new StateManagerError(
+                'taskId est requis',
+                'VALIDATION_FAILED',
+                'GenerateTraceSummaryTool',
+                { missingParam: 'taskId' }
+            );
         }
 
         // Récupérer le ConversationSkeleton
         const conversation = await getConversationSkeleton(args.taskId);
         if (!conversation) {
-            throw new Error(`Conversation avec taskId ${args.taskId} introuvable`);
+            throw new StateManagerError(
+                `Conversation avec taskId ${args.taskId} introuvable`,
+                'CONVERSATION_NOT_FOUND',
+                'GenerateTraceSummaryTool',
+                { taskId: args.taskId }
+            );
         }
 
         // Préparer les options de génération
@@ -141,7 +152,12 @@ export async function handleGenerateTraceSummary(
 const result = await summaryService.generateSummary(conversation, summaryOptions);
 
 if (!result.success) {
-    throw new Error(`Erreur lors de la génération du résumé: ${result.error}`);
+    throw new StateManagerError(
+        `Erreur lors de la génération du résumé: ${result.error}`,
+        'SUMMARY_GENERATION_FAILED',
+        'GenerateTraceSummaryTool',
+        { taskId: args.taskId, error: result.error }
+    );
 }
 
 // Si filePath est fourni, sauvegarder le fichier
@@ -208,7 +224,12 @@ if (args.filePath) {
         ].filter(line => line !== '').join('\n');
         
     } catch (writeError) {
-        throw new Error(`Erreur lors de l'écriture du fichier ${args.filePath}: ${writeError}`);
+        throw new StateManagerError(
+            `Erreur lors de l'écriture du fichier ${args.filePath}: ${writeError}`,
+            'FILE_WRITE_FAILED',
+            'GenerateTraceSummaryTool',
+            { filePath: args.filePath, error: String(writeError) }
+        );
     }
 }
 
@@ -235,7 +256,15 @@ const response = [
 return response;
 
     } catch (error) {
+        if (error instanceof StateManagerError) {
+            throw error;
+        }
         const errorMessage = error instanceof Error ? error.message : 'Erreur inconnue';
-        throw new Error(`Génération de résumé échouée: ${errorMessage}`);
+        throw new StateManagerError(
+            `Génération de résumé échouée: ${errorMessage}`,
+            'SUMMARY_FAILED',
+            'GenerateTraceSummaryTool',
+            { taskId: args.taskId, originalError: errorMessage }
+        );
     }
 }

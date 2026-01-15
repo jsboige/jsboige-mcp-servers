@@ -9,6 +9,7 @@
 import { MessageManager } from '../../services/MessageManager.js';
 import { getSharedStatePath } from '../../utils/server-helpers.js';
 import { createLogger, Logger } from '../../utils/logger.js';
+import { MessageManagerError, MessageManagerErrorCode } from '../../types/errors.js';
 
 // Logger instance for reply_message tool
 const logger: Logger = createLogger('ReplyMessageTool');
@@ -79,11 +80,19 @@ export async function replyMessage(
   try {
     // Validation des paramètres requis
     if (!args.message_id) {
-      throw new Error('Paramètre "message_id" requis : ID du message auquel répondre');
+      throw new MessageManagerError(
+        'Paramètre "message_id" requis : ID du message auquel répondre',
+        MessageManagerErrorCode.INVALID_MESSAGE_FORMAT,
+        { missingParam: 'message_id', providedArgs: Object.keys(args) }
+      );
     }
-    
+
     if (!args.body) {
-      throw new Error('Paramètre "body" requis : Corps de la réponse');
+      throw new MessageManagerError(
+        'Paramètre "body" requis : Corps de la réponse',
+        MessageManagerErrorCode.INVALID_MESSAGE_FORMAT,
+        { missingParam: 'body', providedArgs: Object.keys(args) }
+      );
     }
 
     // Initialiser le MessageManager

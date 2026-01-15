@@ -4,6 +4,7 @@
  */
 
 import { CallToolResult } from '@modelcontextprotocol/sdk/types.js';
+import { StateManagerError } from '../../types/errors.js';
 import { ConversationSkeleton } from '../../types/conversation.js';
 import {
     formatTaskTreeAscii,
@@ -132,13 +133,23 @@ export async function handleGetTaskTree(
 
         // Multiple matches - throw error with suggestions
         const suggestions = prefixMatches.slice(0, 5).map(s => s.taskId).join(', ');
-        throw new Error(`Ambiguous task ID '${id}'. Multiple matches found: ${suggestions}. Please provide a more specific ID.`);
+        throw new StateManagerError(
+            `Ambiguous task ID '${id}'. Multiple matches found: ${suggestions}. Please provide a more specific ID.`,
+            'AMBIGUOUS_TASK_ID',
+            'GetTaskTreeTool',
+            { taskId: id, matchCount: prefixMatches.length, suggestions: prefixMatches.slice(0, 5).map(s => s.taskId) }
+        );
     };
 
     const targetSkeleton = findTaskById(conversation_id);
     if (!targetSkeleton) {
-        const availableIds = skeletons.map(s => `${s.taskId} (${s.metadata?.title || 'No title'})`).join(', ');
-        throw new Error(`Task ID '${conversation_id}' not found. Available tasks: ${availableIds}`);
+        const availableIds = skeletons.slice(0, 10).map(s => `${s.taskId} (${s.metadata?.title || 'No title'})`);
+        throw new StateManagerError(
+            `Task ID '${conversation_id}' not found`,
+            'TASK_NOT_FOUND',
+            'GetTaskTreeTool',
+            { taskId: conversation_id, availableTasksCount: skeletons.length, sampleAvailableIds: availableIds }
+        );
     }
 
     // 🎯 CORRECTION CRITIQUE : Reconstruction hybride robuste
@@ -415,7 +426,12 @@ export async function handleGetTaskTree(
     }
 
     if (!tree) {
-        throw new Error(`Could not build tree for conversation ID '${conversation_id}'. Task exists but tree construction failed.`);
+        throw new StateManagerError(
+            `Could not build tree for conversation ID '${conversation_id}'. Task exists but tree construction failed.`,
+            'TREE_CONSTRUCTION_FAILED',
+            'GetTaskTreeTool',
+            { conversationId: conversation_id, includeSiblings: include_siblings, maxDepth: max_depth }
+        );
     }
 
     // Format output based on output_format parameter
