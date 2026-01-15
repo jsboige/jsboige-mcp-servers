@@ -474,7 +474,99 @@ export class ConfigSharingService implements IConfigSharingService {
     const profilesDir = join(tempDir, 'profiles');
     await fs.mkdir(profilesDir, { recursive: true });
 
-    // TODO: Implémenter la collecte Profils (structure à définir)
+    // T3.8: Implémenter la collecte des profils de configuration
+    // Les profils sont stockés dans le shared state path
+    const sharedStatePath = this.configService.getSharedStatePath();
+    const profilesSourcePath = join(sharedStatePath, 'configuration-profiles.json');
+
+    this.logger.info(`Collecte des profils depuis: ${profilesSourcePath}`);
+
+    // Collecter le fichier principal des profils s'il existe
+    if (existsSync(profilesSourcePath)) {
+      try {
+        const destPath = join(profilesDir, 'configuration-profiles.json');
+
+        // Lecture du fichier de profils
+        const content = JSON.parse(await fs.readFile(profilesSourcePath, 'utf-8'));
+
+        // Normalisation des profils
+        const normalized = await this.normalizationService.normalize(content, 'profile_settings');
+
+        // Écriture du fichier normalisé
+        await fs.writeFile(destPath, JSON.stringify(normalized, null, 2));
+
+        const hash = await this.calculateHash(destPath);
+        const stats = await fs.stat(destPath);
+
+        files.push({
+          path: 'profiles/configuration-profiles.json',
+          hash,
+          type: 'profile_settings',
+          size: stats.size
+        });
+
+        this.logger.info(`Profils collectés: ${stats.size} bytes`);
+      } catch (error) {
+        this.logger.warn(`Erreur lors de la lecture des profils: ${error}`);
+      }
+    } else {
+      this.logger.info('Aucun fichier de profils trouvé (configuration-profiles.json)');
+    }
+
+    // Collecter également les mappings machine si présents
+    const mappingsSourcePath = join(sharedStatePath, 'machine-mappings.json');
+    if (existsSync(mappingsSourcePath)) {
+      try {
+        const destPath = join(profilesDir, 'machine-mappings.json');
+
+        const content = JSON.parse(await fs.readFile(mappingsSourcePath, 'utf-8'));
+        const normalized = await this.normalizationService.normalize(content, 'profile_settings');
+
+        await fs.writeFile(destPath, JSON.stringify(normalized, null, 2));
+
+        const hash = await this.calculateHash(destPath);
+        const stats = await fs.stat(destPath);
+
+        files.push({
+          path: 'profiles/machine-mappings.json',
+          hash,
+          type: 'profile_settings',
+          size: stats.size
+        });
+
+        this.logger.info(`Mappings machine collectés: ${stats.size} bytes`);
+      } catch (error) {
+        this.logger.warn(`Erreur lors de la lecture des mappings: ${error}`);
+      }
+    }
+
+    // Collecter la baseline non-nominative si présente
+    const baselineSourcePath = join(sharedStatePath, 'non-nominative-baseline.json');
+    if (existsSync(baselineSourcePath)) {
+      try {
+        const destPath = join(profilesDir, 'non-nominative-baseline.json');
+
+        const content = JSON.parse(await fs.readFile(baselineSourcePath, 'utf-8'));
+        const normalized = await this.normalizationService.normalize(content, 'profile_settings');
+
+        await fs.writeFile(destPath, JSON.stringify(normalized, null, 2));
+
+        const hash = await this.calculateHash(destPath);
+        const stats = await fs.stat(destPath);
+
+        files.push({
+          path: 'profiles/non-nominative-baseline.json',
+          hash,
+          type: 'profile_settings',
+          size: stats.size
+        });
+
+        this.logger.info(`Baseline non-nominative collectée: ${stats.size} bytes`);
+      } catch (error) {
+        this.logger.warn(`Erreur lors de la lecture de la baseline: ${error}`);
+      }
+    }
+
     return files;
   }
 
