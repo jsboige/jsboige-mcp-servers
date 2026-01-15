@@ -39,7 +39,7 @@ export type { DecisionExecutionResult, RollbackRestoreResult };
  * Options de cache pour RooSyncService
  */
 export interface CacheOptions {
-  /** Durée de vie du cache en millisecondes (défaut: 30000 = 30s) */
+  /** Durée de vie du cache en millisecondes (défaut: 300000 = 5min) */
   ttl?: number;
 
   /** Activer/désactiver le cache */
@@ -122,7 +122,7 @@ export class RooSyncService {
        });
       this.cache = new Map();
       this.cacheOptions = {
-        ttl: cacheOptions?.ttl ?? 30000, // 30 secondes par défaut
+        ttl: cacheOptions?.ttl ?? 300000, // 5 minutes par défaut (T2.6)
         enabled: cacheOptions?.enabled ?? true
       };
       this.powershellExecutor = new PowerShellExecutor({
