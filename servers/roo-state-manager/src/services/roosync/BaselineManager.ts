@@ -1141,4 +1141,286 @@ export class BaselineManager {
     const state = this.nonNominativeService.getState();
     return state.mappings || [];
   }
+
+  /**
+   * Calculer le checksum SHA256 d'un répertoire de rollback
+   */
+  private async calculateChecksum(dirPath: string): Promise<string> {
+    try {
+      const crypto = await import('crypto');
+      const hash = crypto.createHash('sha256');
+
+      const files = await fs.readdir(dirPath);
+
+      for (const file of files) {
+        if (file === 'metadata.json') continue;
+
+        const filePath = join(dirPath, file);
+        const content = await fs.readFile(filePath);
+        hash.update(content);
+      }
+
+      return hash.digest('hex').substring(0, 16);
+    } catch (error) {
+      console.warn('[RollbackManager] Impossible de calculer le checksum:', error);
+      return 'unknown';
+    }
+  }
+
+  /**
+   * Lister tous les points de rollback disponibles
+   */
+  public async listRollbackPoints(): Promise<Array<{
+    decisionId: string;
+    timestamp: string;
+    machine: string;
+    files: string[];
+  }>> {
+    try {
+      const sharedPath = this.config.sharedPath;
+      const rollbackDir = join(sharedPath, '.rollback');
+
+      if (!existsSync(rollbackDir)) {
+        return [];
+      }
+
+      const allBackups = await fs.readdir(rollbackDir);
+      const rollbackPoints = [];
+
+      for (const backupName of allBackups) {
+        const backupPath = join(rollbackDir, backupName);
+        const metadataPath = join(backupPath, 'metadata.json');
+
+        if (!existsSync(metadataPath)) continue;
+
+        const metadataContent = await fs.readFile(metadataPath, 'utf-8');
+        const metadata = JSON.parse(metadataContent);
+
+        rollbackPoints.push({
+          decisionId: metadata.decisionId,
+          timestamp: metadata.timestamp,
+          machine: metadata.machine,
+          files: metadata.files || []
+        });
+      }
+
+      return rollbackPoints.sort((a, b) => {
+        const dateA = new Date(a.timestamp);
+        const dateB = new Date(b.timestamp);
+        return dateB.getTime() - dateA.getTime();
+      });
+    } catch (error) {
+      console.error('[RollbackManager] Erreur listRollbackPoints:', error);
+      return [];
+    }
+  }
+
+  /**
+   * Nettoyer les vieux points de rollback
+   */
+  public async cleanupOldRollbacks(options: {
+    olderThanDays?: number;
+    keepPerDecision?: number;
+    dryRun?: boolean;
+  } = {}): Promise<{
+    deleted: string[];
+    kept: string[];
+    errors: string[];
+  }> {
+    try {
+      const sharedPath = this.config.sharedPath;
+      const rollbackDir = join(sharedPath, '.rollback');
+
+      if (!existsSync(rollbackDir)) {
+        return {
+          deleted: [],
+          kept: [],
+          errors: ['Rollback directory not found']
+        };
+      }
+
+      const allBackups = await fs.readdir(rollbackDir);
+      const now = Date.now();
+      const cutoffTime = options.olderThanDays
+        ? now - (options.olderThanDays * 24 * 60 * 60 * 1000)
+        : 0;
+
+      const deleted: string[] = [];
+      const kept: string[] = [];
+      const errors: string[] = [];
+
+      // Grouper par décision
+      const decisionGroups = new Map<string, string[]>();
+      for (const backupName of allBackups) {
+        const match = backupName.match(/^([^_]+)_/);
+        if (match) {
+          const decisionId = match[1];
+          if (!decisionGroups.has(decisionId)) {
+            decisionGroups.set(decisionId, []);
+          }
+          decisionGroups.get(decisionId)!.push(backupName);
+        }
+      }
+
+      // Nettoyer chaque groupe
+      for (const [decisionId, backups] of decisionGroups) {
+        // Trier par date (plus récent en premier) avec null check
+        backups.sort((a, b) => {
+          const matchA = a.match(/_(\d{4})-(\d{2})-(\d{2})T(\d{2})/);
+          const matchB = b.match(/_(\d{4})-(\d{2})-(\d{2})T(\d{2})/);
+          const dateA = matchA ? new Date(matchA[1]) : new Date(0);
+          const dateB = matchB ? new Date(matchB[1]) : new Date(0);
+          return dateB.getTime() - dateA.getTime();
+        });
+
+        // Garder les N plus récents
+        const toKeep = backups.slice(0, options.keepPerDecision || 1);
+
+        // Supprimer les vieux
+        const toDelete = backups.slice(options.keepPerDecision || 1);
+
+        for (const backupName of toDelete) {
+          const backupPath = join(rollbackDir, backupName);
+
+          if (options.dryRun) {
+            console.log(`[RollbackManager] [DRY RUN] Supprimer: ${backupName}`);
+          } else {
+            await fs.rm(backupPath, { recursive: true, force: true });
+            console.log(`[RollbackManager] 🗑️ Supprimé: ${backupName}`);
+          }
+
+          deleted.push(backupName);
+        }
+
+        kept.push(...toKeep);
+      }
+
+      return {
+        deleted,
+        kept,
+        errors
+      };
+    } catch (error) {
+      console.error('[RollbackManager] Erreur cleanupOldRollbacks:', error);
+      return {
+        deleted: [],
+        kept: [],
+        errors: [`Error: ${error instanceof Error ? error.message : String(error)}`]
+      };
+    }
+  }
+
+  /**
+   * Valider un point de rollback
+   */
+  public async validateRollbackPoint(decisionId: string): Promise<{
+    isValid: boolean;
+    checksum?: string;
+    files: string[];
+    errors: string[];
+  }> {
+    try {
+      const sharedPath = this.config.sharedPath;
+      const rollbackDir = join(sharedPath, '.rollback');
+
+      if (!existsSync(rollbackDir)) {
+        return {
+          isValid: false,
+          checksum: undefined,
+          files: [],
+          errors: ['Rollback directory not found']
+        };
+      }
+
+      // Trouver le rollback le plus récent pour cette décision
+      const allBackups = await fs.readdir(rollbackDir);
+      const matchingBackups = allBackups
+        .filter(name => name.startsWith(decisionId))
+        .sort()
+        .reverse();
+
+      if (matchingBackups.length === 0) {
+        return {
+          isValid: false,
+          checksum: undefined,
+          files: [],
+          errors: [`No rollback found for decision ${decisionId}`]
+        };
+      }
+
+      const backupPath = join(rollbackDir, matchingBackups[0]);
+
+      if (!existsSync(backupPath)) {
+        return {
+          isValid: false,
+          checksum: undefined,
+          files: [],
+          errors: [`Backup directory not found: ${backupPath}`]
+        };
+      }
+
+      // Calculer le checksum actuel
+      const currentChecksum = await this.calculateChecksum(backupPath);
+
+      // Lire metadata
+      const metadataPath = join(backupPath, 'metadata.json');
+      let metadata: any = null;
+      let files: string[] = [];
+
+      if (existsSync(metadataPath)) {
+        try {
+          const metadataContent = await fs.readFile(metadataPath, 'utf-8');
+          metadata = JSON.parse(metadataContent);
+          files = metadata.files || [];
+        } catch (error) {
+          console.warn(`[RollbackManager] Erreur lecture metadata: ${error}`);
+        }
+      } else {
+        console.warn(`[RollbackManager] ⚠️ Metadata introuvable, utilisation des fichiers par défaut`);
+      }
+
+      // Vérifier l'intégrité des fichiers
+      const errors: string[] = [];
+      const validFiles: string[] = [];
+
+      for (const file of files) {
+        const filePath = join(backupPath, file);
+
+        if (!existsSync(filePath)) {
+          errors.push(`File not found: ${file}`);
+          continue;
+        }
+
+        try {
+          const stats = await fs.stat(filePath);
+
+          if (stats.size === 0) {
+            errors.push(`Empty file: ${file}`);
+            continue;
+          }
+
+          validFiles.push(file);
+        } catch (error) {
+          errors.push(`Error checking file ${file}: ${error}`);
+        }
+      }
+
+      const isValid = errors.length === 0 && validFiles.length > 0;
+
+      return {
+        isValid,
+        checksum: currentChecksum,
+        files: validFiles,
+        errors
+      };
+    } catch (error) {
+      console.error('[RollbackManager] Erreur validateRollbackPoint:', error);
+      return {
+        isValid: false,
+        checksum: undefined,
+        files: [],
+        errors: [`Error: ${error instanceof Error ? error.message : String(error)}`]
+      };
+    }
+  }
 }

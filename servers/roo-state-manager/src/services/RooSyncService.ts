@@ -724,6 +724,45 @@ export class RooSyncService {
   }
 
   /**
+   * Lister tous les points de rollback disponibles
+   */
+  public async listRollbackPoints(): Promise<Array<{
+    decisionId: string;
+    timestamp: string;
+    machine: string;
+    files: string[];
+  }>> {
+    return this.baselineManager.listRollbackPoints();
+  }
+
+  /**
+   * Nettoyer les vieux points de rollback
+   */
+  public async cleanupOldRollbacks(options: {
+    olderThanDays?: number;
+    keepPerDecision?: number;
+    dryRun?: boolean;
+  } = {}): Promise<{
+    deleted: string[];
+    kept: string[];
+    errors: string[];
+  }> {
+    return this.baselineManager.cleanupOldRollbacks(options);
+  }
+
+  /**
+   * Valider un point de rollback
+   */
+  public async validateRollbackPoint(decisionId: string): Promise<{
+    isValid: boolean;
+    checksum?: string;
+    files: string[];
+    errors: string[];
+  }> {
+    return this.baselineManager.validateRollbackPoint(decisionId);
+  }
+
+  /**
    * Collecte l'inventaire d'une machine
    */
   async getInventory(machineId: string, forceRefresh = false): Promise<MachineInventory | null> {
