@@ -1,0 +1,43 @@
+{
+  "version": "2.1.0",
+  "baselineId": "baseline-2026-01-15T11-27-45-650Z",
+  "timestamp": "2026-01-15T11:27:45.650Z",
+  "lastUpdated": "2026-01-15T11:27:45.650Z",
+  "machineId": "test-machine",
+  "autoSync": false,
+  "conflictStrategy": "manual",
+  "logLevel": "info",
+  "sharedStatePath": "d:\\roo-extensions\\mcps\\internal\\servers\\roo-state-manager\\src\\__test-data__\\shared-state\\sync-config.ref.json",
+  "machines": [
+    {
+      "id": "test-machine",
+      "name": "test-machine",
+      "hostname": "test-machine",
+      "os": "Unknown",
+      "architecture": "Unknown",
+      "lastSeen": "2026-01-15T11:27:45.650Z",
+      "roo": {
+        "modes": [],
+        "mcpServers": [],
+        "sdddSpecs": []
+      },
+      "hardware": {
+        "cpu": {
+          "cores": 0,
+          "threads": 0
+        },
+        "memory": {
+          "total": 0
+        }
+      },
+      "software": {
+        "node": "Unknown",
+        "python": "Unknown"
+      }
+    }
+  ],
+  "syncTargets": [],
+  "syncPaths": [],
+  "decisions": [],
+  "messages": []
+}

@@ -1,0 +1,9 @@
+{
+  "decisionId": "TEST_NO_ROLLBACK",
+  "timestamp": "2026-01-15T11-27-47-542Z",
+  "machine": "test-machine",
+  "files": [
+    "sync-config.ref.json",
+    "sync-roadmap.md"
+  ]
+}
