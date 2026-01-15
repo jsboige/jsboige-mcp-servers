@@ -4,6 +4,7 @@ import {
   ComparisonSummary
 } from './DiffDetector.js';
 import { BaselineDifference } from '../types/baseline.js';
+import { StateManagerError } from '../types/errors.js';
 
 /**
  * Types pour le diff granulaire
@@ -813,7 +814,12 @@ export class GranularDiffDetector {
         return this.exportToHTML(report);
       
       default:
-        throw new Error(`Format non supporté: ${format}`);
+        throw new StateManagerError(
+          `Format non supporté: ${format}`,
+          'UNSUPPORTED_EXPORT_FORMAT',
+          'GranularDiffDetector',
+          { format, supportedFormats: ['json', 'markdown', 'csv', 'html'] }
+        );
     }
   }
 

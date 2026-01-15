@@ -91,8 +91,10 @@ export class PowerShellExecutor {
     } else if (process.env.ROOSYNC_SHARED_PATH) {
       this.roosyncBasePath = process.env.ROOSYNC_SHARED_PATH;
     } else {
-      throw new Error(
-        'ROOSYNC_SHARED_PATH non défini. Le système RooSync nécessite un chemin de stockage externe explicite.'
+      throw new PowerShellExecutorError(
+        'ROOSYNC_SHARED_PATH non défini. Le système RooSync nécessite un chemin de stockage externe explicite.',
+        PowerShellExecutorErrorCode.CONFIG_MISSING,
+        { envVar: 'ROOSYNC_SHARED_PATH', method: 'constructor' }
       );
     }
     

@@ -5,12 +5,26 @@
  * pour une gestion explicite et cohérente des erreurs dans tous les services.
  */
 
+// =============================================================================
+// T3.7 - Classification des erreurs (Script vs Système)
+// =============================================================================
+
+/**
+ * Catégories d'erreurs pour distinguer les problèmes de script vs système
+ */
+export enum ErrorCategory {
+  SCRIPT = 'SCRIPT',           // Bug dans le code PowerShell
+  SYSTEM = 'SYSTEM',           // Problème système (fichier, réseau, permissions)
+  UNKNOWN = 'UNKNOWN'          // Impossible à déterminer
+}
+
 /**
  * Classe de base pour toutes les erreurs du State Manager
  */
 export class StateManagerError extends Error {
   public readonly code: string;
   public readonly service: string;
+  public readonly category: ErrorCategory;
   public readonly details?: any;
   public readonly cause?: Error;
 
@@ -18,6 +32,7 @@ export class StateManagerError extends Error {
     message: string,
     code: string,
     service: string,
+    category: ErrorCategory = ErrorCategory.UNKNOWN,
     details?: any,
     cause?: Error
   ) {
@@ -25,6 +40,7 @@ export class StateManagerError extends Error {
     this.name = 'StateManagerError';
     this.code = code;
     this.service = service;
+    this.category = category;
     this.details = details;
     this.cause = cause;
 
@@ -35,7 +51,7 @@ export class StateManagerError extends Error {
   }
 
   /**
-   * Retourne une représentation JSON de l'erreur
+   * Retourne une representation JSON de l'erreur
    */
   toJSON(): Record<string, any> {
     return {
@@ -43,6 +59,7 @@ export class StateManagerError extends Error {
       message: this.message,
       code: this.code,
       service: this.service,
+      category: this.category,
       details: this.details,
       cause: this.cause ? {
         name: this.cause.name,
@@ -50,6 +67,123 @@ export class StateManagerError extends Error {
       } : undefined
     };
   }
+}
+
+/**
+ * Interface pour le résultat d'exécution PowerShell
+ */
+export interface PowerShellExecutionResult {
+  exitCode: number;
+  stdout: string;
+  stderr: string;
+}
+
+/**
+ * Détecte si une erreur PowerShell est de type script ou système
+ *
+ * @param error - Résultat d'exécution PowerShell, Error standard, ou message d'erreur
+ * @returns Catégorie de l'erreur (SCRIPT, SYSTEM ou UNKNOWN)
+ */
+export function detectPowerShellErrorType(
+  error: PowerShellExecutionResult | Error | string
+): ErrorCategory {
+  let errorMessage: string;
+  
+  // Extraire le message d'erreur selon le type d'entrée
+  if (typeof error === 'string') {
+    errorMessage = error;
+  } else if (error instanceof Error) {
+    errorMessage = error.message;
+  } else {
+    errorMessage = error.stderr || error.stdout || '';
+  }
+  
+  const stderr = errorMessage.toLowerCase();
+  
+  // Indicateurs d'erreur script (problèmes dans le code PowerShell lui-même)
+  const scriptIndicators = [
+    /syntax error/i,
+    /unexpected token/i,
+    /variable .* cannot be retrieved/i,
+    /invalid operation/i,
+    /term '.*' not recognized/i,
+    /missing closing/i,
+    /unexpected end of file/i,
+    /cannot convert value/i,
+    /cannot index into a null array/i,
+    /property '.*' cannot be found/i
+  ];
+  
+  // Indicateurs d'erreur système (problèmes d'exécution indépendants du code)
+  const systemIndicators = [
+    /cannot find path/i,
+    /access.*denied/i,
+    /timed out/i,
+    /network path not found/i,
+    /the system cannot find the file specified/i,
+    /permission denied/i,
+    /disk full/i,
+    /network unreachable/i,
+    /connection refused/i,
+    /file not found/i,
+    /directory not found/i
+  ];
+  
+  // Vérifier les indicateurs de script en premier
+  if (scriptIndicators.some(pattern => pattern.test(stderr))) {
+    return ErrorCategory.SCRIPT;
+  }
+  
+  // Vérifier les indicateurs système
+  if (systemIndicators.some(pattern => pattern.test(stderr))) {
+    return ErrorCategory.SYSTEM;
+  }
+  
+  // Si aucun pattern n'est reconnu, retourner UNKNOWN
+  return ErrorCategory.UNKNOWN;
+}
+
+/**
+ * Suggère une catégorie d'erreur basée sur le service et le code d'erreur
+ *
+ * @param service - Nom du service
+ * @param code - Code d'erreur
+ * @returns Catégorie suggérée pour l'erreur
+ */
+export function suggestErrorCategory(service: string, code: string): ErrorCategory {
+  // Mapping des codes d'erreur connus vers les catégories appropriées
+  const errorMappings: Record<string, Record<string, ErrorCategory>> = {
+    'PowerShellExecutor': {
+      'NO_JSON_FOUND': ErrorCategory.SCRIPT,
+      'EXECUTION_FAILED': ErrorCategory.SYSTEM,
+      'TIMEOUT': ErrorCategory.SYSTEM,
+      'SCRIPT_NOT_FOUND': ErrorCategory.SYSTEM,
+      'PARSE_FAILED': ErrorCategory.SCRIPT,
+      'CONFIG_MISSING': ErrorCategory.SYSTEM
+    },
+    'InventoryCollector': {
+      'SCRIPT_NOT_FOUND': ErrorCategory.SYSTEM,
+      'SCRIPT_EXECUTION_FAILED': ErrorCategory.SCRIPT,
+      'INVENTORY_PARSE_FAILED': ErrorCategory.SCRIPT,
+      'INVENTORY_SAVE_FAILED': ErrorCategory.SYSTEM,
+      'REMOTE_MACHINE_NOT_FOUND': ErrorCategory.SYSTEM,
+      'SHARED_STATE_NOT_ACCESSIBLE': ErrorCategory.SYSTEM
+    },
+    'Generic': {
+      'FILE_SYSTEM_ERROR': ErrorCategory.SYSTEM,
+      'NETWORK_ERROR': ErrorCategory.SYSTEM,
+      'PERMISSION_DENIED': ErrorCategory.SYSTEM,
+      'TIMEOUT': ErrorCategory.SYSTEM,
+      'INVALID_ARGUMENT': ErrorCategory.SCRIPT
+    }
+  };
+  
+  const serviceMappings = errorMappings[service];
+  if (serviceMappings && serviceMappings[code]) {
+    return serviceMappings[code];
+  }
+  
+  return ErrorCategory.UNKNOWN;
 }
 
 /**
@@ -259,7 +393,9 @@ export enum SynthesisServiceErrorCode {
   NO_ANALYSIS_TO_CONDENSE = 'NO_ANALYSIS_TO_CONDENSE',
   NO_MODEL_CONFIGURED = 'NO_MODEL_CONFIGURED',
   DEFAULT_MODEL_REQUIRED = 'DEFAULT_MODEL_REQUIRED',
-  BATCH_SYNTHESIS_FAILED = 'BATCH_SYNTHESIS_FAILED'
+  BATCH_SYNTHESIS_FAILED = 'BATCH_SYNTHESIS_FAILED',
+  SYNTHESIS_GENERATION_FAILED = 'SYNTHESIS_GENERATION_FAILED',
+  CONDENSATION_FAILED = 'CONDENSATION_FAILED'
 }
 
 /**
@@ -283,7 +419,8 @@ export class SynthesisServiceError extends StateManagerError {
 export enum TraceSummaryServiceErrorCode {
   ROOT_TASK_REQUIRED = 'ROOT_TASK_REQUIRED',
   CHILD_TASKS_INVALID = 'CHILD_TASKS_INVALID',
-  SUMMARY_GENERATION_FAILED = 'SUMMARY_GENERATION_FAILED'
+  SUMMARY_GENERATION_FAILED = 'SUMMARY_GENERATION_FAILED',
+  EXPORT_FAILED = 'EXPORT_FAILED'
 }
 
 /**
@@ -309,7 +446,8 @@ export enum PowerShellExecutorErrorCode {
   EXECUTION_FAILED = 'EXECUTION_FAILED',
   TIMEOUT = 'TIMEOUT',
   SCRIPT_NOT_FOUND = 'SCRIPT_NOT_FOUND',
-  PARSE_FAILED = 'PARSE_FAILED'
+  PARSE_FAILED = 'PARSE_FAILED',
+  CONFIG_MISSING = 'CONFIG_MISSING'
 }
 
 /**

@@ -12,6 +12,7 @@ import { existsSync, readFileSync } from 'fs';
 import { join } from 'path';
 import os from 'os';
 import { createLogger, Logger } from '../../utils/logger.js';
+import { MessageManagerError, MessageManagerErrorCode } from '../../types/errors.js';
 
 // Logger instance for send_message tool
 const logger: Logger = createLogger('SendMessageTool');
@@ -65,15 +66,27 @@ export async function sendMessage(
   try {
     // Validation des paramètres requis
     if (!args.to) {
-      throw new Error('Paramètre "to" requis : ID de la machine destinataire');
+      throw new MessageManagerError(
+        'Paramètre "to" requis : ID de la machine destinataire',
+        MessageManagerErrorCode.INVALID_MESSAGE_FORMAT,
+        { missingParam: 'to', providedArgs: Object.keys(args) }
+      );
     }
-    
+
     if (!args.subject) {
-      throw new Error('Paramètre "subject" requis : Sujet du message');
+      throw new MessageManagerError(
+        'Paramètre "subject" requis : Sujet du message',
+        MessageManagerErrorCode.INVALID_MESSAGE_FORMAT,
+        { missingParam: 'subject', providedArgs: Object.keys(args) }
+      );
     }
-    
+
     if (!args.body) {
-      throw new Error('Paramètre "body" requis : Corps du message');
+      throw new MessageManagerError(
+        'Paramètre "body" requis : Corps du message',
+        MessageManagerErrorCode.INVALID_MESSAGE_FORMAT,
+        { missingParam: 'body', providedArgs: Object.keys(args) }
+      );
     }
 
     // Initialiser le MessageManager

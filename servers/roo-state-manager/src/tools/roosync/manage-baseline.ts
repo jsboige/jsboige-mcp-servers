@@ -400,38 +400,46 @@ async function handleRestoreAction(
     try {
       logger.info('Restauration depuis le tag Git', { tagName: args.source });
 
-      // Fix Bug #291 & #304: Vérifier si le tag existe avant de tenter la restauration
-      let tagExists = false;
+      // Fix Bug #291: Vérifier si le tag existe avant de tenter la restauration
       try {
-        execSync(`git rev-parse --verify refs/tags/${args.source}`, { encoding: 'utf8', stdio: 'pipe' });
-        tagExists = true;
+        execSync(`git rev-parse --verify ${args.source}^{commit}`, { encoding: 'utf8', stdio: 'pipe' });
       } catch (tagError) {
-        // Le tag n'existe pas
-        tagExists = false;
-      }
-
-      if (!tagExists) {
         // Récupérer la liste des tags disponibles
         let availableTags = '';
         try {
-          availableTags = execSync('git tag -l "baseline-v*"', { encoding: 'utf8', stdio: 'pipe' }).trim();
+          const allTags = execSync('git tag -l', { encoding: 'utf8' });
+          const baselineTags = allTags.split('\n').filter(tag => tag.startsWith('baseline-v'));
+          if (baselineTags.length > 0) {
+            availableTags = `\n\nTags baseline disponibles:\n${baselineTags.map(t => `  - ${t}`).join('\n')}`;
+          }
         } catch (listError) {
           // Ignorer l'erreur de listing
         }
 
-        let errorMessage = `Le tag Git ${args.source} n'existe pas.`;
-        
-        if (availableTags) {
-          errorMessage += `\n\nTags disponibles:\n${availableTags.split('\n').map(t => `  - ${t}`).join('\n')}`;
-        } else {
-          errorMessage += '\n\nAucun tag baseline disponible.';
+        // Vérifier s'il y a des backups disponibles
+        let availableBackups = '';
+        try {
+          const backupDir = join(sharedPath, '.rollback');
+          if (existsSync(backupDir)) {
+            const backupFiles = execSync(`ls -t "${backupDir}" 2>/dev/null || dir /b /o-d "${backupDir}" 2>nul`, {
+              encoding: 'utf8',
+              shell: 'powershell.exe'
+            });
+            const backups = backupFiles.split('\n').filter(f => f.includes('sync-config.ref.backup.'));
+            if (backups.length > 0) {
+              availableBackups = `\n\nSauvegardes disponibles dans ${backupDir}:\n${backups.slice(0, 5).map(b => `  - ${join(backupDir, b)}`).join('\n')}`;
+            }
+          }
+        } catch (backupError) {
+          // Ignorer l'erreur de listing
         }
 
-        errorMessage += '\n\nAlternatives:';
-        errorMessage += '\n1. Créez un tag avec roosync_manage_baseline { action: "version", version: "X.Y.Z" }';
-        errorMessage += '\n2. Restaurez depuis un fichier de backup dans le répertoire .rollback/';
-        
-        throw new Error(errorMessage);
+        throw new Error(
+          `Le tag Git ${args.source} n'existe pas.${availableTags}${availableBackups}\n\nAlternatives:\n` +
+          `  1. Utilisez un tag existant de la liste ci-dessus\n` +
+          `  2. Restaurez depuis une sauvegarde avec le chemin complet\n` +
+          `  3. Créez une nouvelle baseline avec roosync_manage_baseline (action: version)`
+        );
       }
 
       // Récupérer le contenu du tag

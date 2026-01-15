@@ -2,6 +2,7 @@ import { promises as fs } from 'fs';
 import * as path from 'path';
 import * as os from 'os';
 import { v4 as uuidv4, v5 as uuidv5 } from 'uuid';
+import { StateManagerError } from '../../types/errors.js';
 
 // Namespace pour UUID v5 (généré aléatoirement une fois, constant pour le projet)
 const UUID_NAMESPACE = '6ba7b810-9dad-11d1-80b4-00c04fd430c8';
@@ -199,7 +200,13 @@ export async function extractChunksFromTask(taskId: string, taskPath: string): P
         console.error(`Task ID: ${taskId}`);
 
         // Propager l'erreur pour éviter faux succès silencieux
-        throw new Error(`Extraction chunks échouée pour ${taskId}: ${error instanceof Error ? error.message : String(error)}`);
+        throw new StateManagerError(
+            `Extraction chunks échouée pour ${taskId}: ${error instanceof Error ? error.message : String(error)}`,
+            'CHUNK_EXTRACTION_FAILED',
+            'ChunkExtractor',
+            { taskId, apiHistoryPath },
+            error instanceof Error ? error : undefined
+        );
     }
 
     const uiMessagesPath = path.join(taskPath, 'ui_messages.json');

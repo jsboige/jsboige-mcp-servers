@@ -19,7 +19,7 @@
  * @since 2025-09-27 (Phase orchestration 2-niveaux)
  */
 
-import { 
+import {
   ProcessingLevel,
   ToolCategory,
   ExecutionContext,
@@ -27,6 +27,7 @@ import {
   DisplayPreset
 } from '../interfaces/UnifiedToolInterface.js';
 import { CacheAntiLeakManager } from './CacheAntiLeakManager.js';
+import { StateManagerError } from '../types/errors.js';
 
 /**
  * Tâche de processing avec métadonnées
@@ -262,7 +263,12 @@ export class TwoLevelProcessingOrchestrator {
         }
         
       default:
-        throw new Error(`Unknown processing level: ${processingLevel}`);
+        throw new StateManagerError(
+          `Unknown processing level: ${processingLevel}`,
+          'INVALID_PROCESSING_LEVEL',
+          'TwoLevelProcessingOrchestrator',
+          { processingLevel, taskId: task.id }
+        );
     }
   }
 
@@ -352,7 +358,12 @@ export class TwoLevelProcessingOrchestrator {
     
     if (this.immediateWorkers >= this.config.maxConcurrentImmediate) {
       if (allowFallback) {
-        throw new Error('Immediate processing at capacity, fallback to background');
+        throw new StateManagerError(
+          'Immediate processing at capacity, fallback to background',
+          'IMMEDIATE_CAPACITY_EXCEEDED',
+          'TwoLevelProcessingOrchestrator',
+          { taskId: task.id, currentWorkers: this.immediateWorkers, maxWorkers: this.config.maxConcurrentImmediate }
+        );
       }
       // Ajout à la queue avec tri par priorité
       this.immediateQueue.push(task);

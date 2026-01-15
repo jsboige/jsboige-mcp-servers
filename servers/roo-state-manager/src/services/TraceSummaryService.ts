@@ -1503,7 +1503,11 @@ ${organizedTasks.sortedTasks.map(task => {
                     content = this.generateCsvTools(conversation, options);
                     break;
                 default:
-                    throw new Error(`Unsupported CSV variant: ${variant}`);
+                    throw new TraceSummaryServiceError(
+                        `Unsupported CSV variant: ${variant}`,
+                        TraceSummaryServiceErrorCode.EXPORT_FAILED,
+                        { variant, supportedVariants: ['conversations', 'messages', 'tools'] }
+                    );
             }
 
             statistics = this.calculateJsonStatistics([conversation]); // Réutiliser la logique de calcul

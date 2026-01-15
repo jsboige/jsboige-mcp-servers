@@ -1,5 +1,6 @@
 import { create } from 'xmlbuilder2';
 import { ConversationSkeleton, MessageSkeleton, ActionMetadata } from '../types/conversation.js';
+import { StateManagerError } from '../types/errors.js';
 
 /**
  * Options pour l'export XML
@@ -269,12 +270,22 @@ export class XmlExporterService {
         ];
 
         if (dangerousPatterns.some(pattern => pattern.test(filePath))) {
-            throw new Error(`Unsafe file path: ${filePath}`);
+            throw new StateManagerError(
+                `Unsafe file path: ${filePath}`,
+                'PATH_TRAVERSAL_DETECTED',
+                'XmlExporterService',
+                { filePath, method: 'validateFilePath' }
+            );
         }
 
         // Vérifie que le chemin n'est pas trop long
         if (filePath.length > 260) {
-            throw new Error(`File path too long: ${filePath}`);
+            throw new StateManagerError(
+                `File path too long: ${filePath}`,
+                'PATH_TOO_LONG',
+                'XmlExporterService',
+                { filePath, length: filePath.length, maxLength: 260 }
+            );
         }
     }
 

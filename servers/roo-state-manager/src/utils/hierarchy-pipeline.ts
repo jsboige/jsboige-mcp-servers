@@ -9,6 +9,7 @@ import { join, dirname, basename, extname } from 'path';
 import { fileURLToPath } from 'url';
 import { MessageExtractionCoordinator } from './message-extraction-coordinator.js';
 import { NewTaskInstruction } from '../types/conversation.js';
+import { GenericError, GenericErrorCode } from '../types/errors.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
@@ -253,7 +254,7 @@ export class HierarchyPipeline {
       // Pour les tests, on simule la lecture du répertoire
       return ['ui_messages.json', 'task_metadata.json'];
     } catch (error) {
-      throw new Error(`Impossible de lire le répertoire ${directory}: ${error}`);
+      throw new GenericError(`Impossible de lire le répertoire ${directory}: ${error}`, GenericErrorCode.FILE_SYSTEM_ERROR, { directory });
     }
   }
 }

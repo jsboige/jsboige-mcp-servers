@@ -23,7 +23,8 @@ describe('Performance & Concurrency', () => {
         sharedPath = join(tempDir, 'shared');
         await mkdir(sharedPath, { recursive: true });
         
-        process.env.ROOSYNC_SHARED_PATH = sharedPath;
+        // Mock environment variables - BaselineService uses SHARED_STATE_PATH
+        process.env.SHARED_STATE_PATH = sharedPath;
         process.env.ROOSYNC_MACHINE_ID = 'perf-machine';
     });
 
@@ -98,6 +99,9 @@ describe('Performance & Concurrency', () => {
             messages: []
         };
         await writeFile(join(sharedPath, 'sync-config.ref.json'), JSON.stringify(baselineConfig));
+
+        // Wait for file to be fully written (timing issue)
+        await new Promise(resolve => setTimeout(resolve, 50));
 
         // Run 50 concurrent comparisons
         const iterations = 50;

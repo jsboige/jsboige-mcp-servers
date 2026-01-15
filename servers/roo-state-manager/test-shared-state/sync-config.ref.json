@@ -1,0 +1,35 @@
+{
+  "version": "1.0.0",
+  "baselineId": "test-baseline-id",
+  "machineId": "test-machine",
+  "timestamp": "2025-01-01T00:00:00.000Z",
+  "autoSync": false,
+  "conflictStrategy": "keep-local",
+  "logLevel": "INFO",
+  "sharedStatePath": "test-shared-state",
+  "machines": [
+    {
+      "id": "test-machine",
+      "name": "Test Machine",
+      "hostname": "test-machine",
+      "os": "test-platform",
+      "architecture": "x64",
+      "hardware": {
+        "cpu": { "model": "test-cpu", "cores": 8, "threads": 8 },
+        "memory": { "total": 16000000000 },
+        "disks": [],
+        "gpu": "test-gpu"
+      },
+      "software": {
+        "node": "18.0.0",
+        "python": "3.10.0",
+        "powershell": "7.0.0"
+      },
+      "roo": {
+        "modes": [],
+        "mcpSettings": {},
+        "userSettings": {}
+      }
+    }
+  ]
+}

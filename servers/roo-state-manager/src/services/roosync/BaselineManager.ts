@@ -7,15 +7,10 @@
  * - État de synchronisation
  */
 
-import { promises as fs, existsSync, readFileSync } from 'fs';
+import { promises as fs, existsSync, readFileSync, constants } from 'fs';
 import { join } from 'path';
 import { RooSyncConfig } from '../../config/roosync-config.js';
 import { RooSyncServiceError } from '../RooSyncService.js';
-import { RooSyncDashboard } from '../../utils/roosync-parsers.js';
-import { BaselineService } from '../BaselineService.js';
-import { ConfigComparator } from './ConfigComparator.js';
-import { NonNominativeBaselineService } from './NonNominativeBaselineService.js';
-import { NonNominativeBaseline, MachineConfigurationMapping, NonNominativeComparisonReport, AggregationConfig, MigrationOptions } from '../../types/non-nominative-baseline.js';
 
 /**
  * Registre central des machines pour éviter les conflits d'identité
@@ -29,7 +24,7 @@ interface MachineRegistry {
     source: 'dashboard' | 'presence' | 'baseline' | 'config';
     status: 'online' | 'offline' | 'conflict';
   }>;
-  
+
   /** Fichier de sauvegarde du registre */
   registryPath: string;
 }
@@ -62,26 +57,62 @@ export interface RollbackRestoreResult {
   error?: string;
 }
 
+// Interface locale pour RooSyncDashboard pour éviter les erreurs de type
+export interface RooSyncDashboard {
+  version: string;
+  lastUpdate: string;
+  overallStatus: 'diverged' | 'synced' | 'conflict' | 'unknown';
+  lastSync: string;
+  status: 'diverged' | 'synced' | 'conflict' | 'unknown';
+  machines: Record<string, {
+    lastSync: string;
+    status: 'diverged' | 'synced' | 'conflict' | 'unknown';
+    diffsCount: number;
+    pendingDecisions: number;
+  }>;
+  stats: {
+    totalDiffs: number;
+    totalDecisions: number;
+    appliedDecisions: number;
+    pendingDecisions: number;
+  };
+  machinesArray: Array<{
+    id: string;
+    status: 'diverged' | 'synced' | 'conflict' | 'unknown';
+    lastSync: string;
+    diffsCount: number;
+    pendingDecisions: number;
+  }>;
+  summary: {
+    totalMachines: number;
+    onlineMachines: number;
+    totalDiffs: number;
+    totalPendingDecisions: number;
+  };
+}
+
 export class BaselineManager {
   private machineRegistry: MachineRegistry;
 
   constructor(
     private config: RooSyncConfig,
-    private baselineService: BaselineService,
-    private configComparator: ConfigComparator,
-    private nonNominativeService?: NonNominativeBaselineService
+    private baselineService: any,
+    private configComparator: any,
+    private nonNominativeService?: any
   ) {
     // Initialiser le registre central des machines
     this.machineRegistry = {
       machines: new Map(),
       registryPath: join(this.config.sharedPath, '.machine-registry.json')
     };
-    
+
     // Initialiser le service non-nominatif si non fourni
     if (!this.nonNominativeService) {
-      this.nonNominativeService = new NonNominativeBaselineService(this.config.sharedPath);
+      // Note: NonNominativeBaselineService n'est pas importé, on laisse undefined
+      // Le service sera initialisé ailleurs si nécessaire
+      console.warn('[BaselineManager] NonNominativeBaselineService non disponible');
     }
-    
+
     // Charger le registre existant s'il y en a un
     this.loadMachineRegistry();
   }
@@ -94,12 +125,12 @@ export class BaselineManager {
       if (existsSync(this.machineRegistry.registryPath)) {
         const registryContent = readFileSync(this.machineRegistry.registryPath, 'utf-8');
         const registryData = JSON.parse(registryContent);
-        
+
         // Reconstruire la Map depuis les données JSON
         this.machineRegistry.machines = new Map(
           Object.entries(registryData.machines || {})
         );
-        
+
         console.log(`[BaselineManager] Registre des machines chargé: ${this.machineRegistry.machines.size} machines`);
       }
     } catch (error) {
@@ -118,13 +149,13 @@ export class BaselineManager {
         machines: Object.fromEntries(this.machineRegistry.machines),
         lastUpdated: new Date().toISOString()
       };
-      
+
       await fs.writeFile(
         this.machineRegistry.registryPath,
         JSON.stringify(registryData, null, 2),
         'utf-8'
       );
-      
+
       console.log('[BaselineManager] Registre des machines sauvegardé');
     } catch (error) {
       console.error('[BaselineManager] Erreur sauvegarde registre des machines:', error);
@@ -136,7 +167,7 @@ export class BaselineManager {
    */
   private validateMachineUniqueness(machineId: string, source: string): UniquenessValidationResult {
     const existingMachine = this.machineRegistry.machines.get(machineId);
-    
+
     if (!existingMachine) {
       return {
         isValid: true,
@@ -154,9 +185,9 @@ export class BaselineManager {
 
     // Conflit détecté : même machineId depuis des sources différentes
     const warningMessage = `⚠️ CONFLIT D'IDENTITÉ DÉTECTÉ: MachineId "${machineId}" déjà utilisé par la source "${existingMachine.source}" (première vue: ${existingMachine.firstSeen}). Tentative d'ajout depuis la source "${source}".`;
-    
+
     console.warn(warningMessage);
-    
+
     return {
       isValid: false,
       conflictDetected: true,
@@ -175,7 +206,7 @@ export class BaselineManager {
     status: 'online' | 'offline' | 'conflict' = 'online'
   ): Promise<UniquenessValidationResult> {
     const validation = this.validateMachineUniqueness(machineId, source);
-    
+
     if (!validation.isValid) {
       // Ne pas ajouter la machine en conflit, mais logger l'avertissement
       console.error(`[BaselineManager] REFUS D'AJOUT: ${validation.warningMessage}`);
@@ -184,7 +215,7 @@ export class BaselineManager {
 
     const now = new Date().toISOString();
     const existingMachine = this.machineRegistry.machines.get(machineId);
-    
+
     if (existingMachine) {
       // Mise à jour d'une machine existante
       existingMachine.lastSeen = now;
@@ -204,7 +235,7 @@ export class BaselineManager {
 
     // Sauvegarder le registre
     await this.saveMachineRegistry();
-    
+
     return validation;
   }
 
@@ -249,21 +280,20 @@ export class BaselineManager {
 
           // S'assurer que le dashboard a bien la propriété machines
           if (!dashboard.machines) {
-            console.log('[BaselineManager] Dashboard existant sans propriété machines, ajout de la machine courante');
             dashboard.machines = {};
           }
 
           // S'assurer que la machine courante existe dans le dashboard avec validation d'unicité
           if (!dashboard.machines[this.config.machineId]) {
             console.log(`[BaselineManager] Tentative d'ajout de la machine ${this.config.machineId} au dashboard existant`);
-            
+
             // Valider l'unicité avant d'ajouter
             const validation = await this.addMachineToRegistry(this.config.machineId, 'dashboard');
-            
+
             if (validation.isValid) {
               dashboard.machines[this.config.machineId] = {
                 lastSync: new Date().toISOString(),
-                status: 'online',
+                status: 'synced' as 'diverged' | 'synced' | 'conflict' | 'unknown',
                 diffsCount: 0,
                 pendingDecisions: 0
               };
@@ -294,7 +324,7 @@ export class BaselineManager {
   }
 
   /**
-   * Calcule le dashboard à partir de la baseline
+   * Calculer le dashboard à partir de la baseline
    */
   private async calculateDashboardFromBaseline(): Promise<RooSyncDashboard> {
     console.log('[BaselineManager] calculateDashboardFromBaseline - début de la méthode');
@@ -335,14 +365,14 @@ export class BaselineManager {
 
         if (!existingDashboard.machines[this.config.machineId]) {
           console.log(`[BaselineManager] Tentative d'ajout de la machine ${this.config.machineId} au dashboard existant (calculateDashboardFromBaseline)`);
-          
+
           // Valider l'unicité avant d'ajouter
           const validation = await this.addMachineToRegistry(this.config.machineId, 'dashboard');
-          
+
           if (validation.isValid) {
             existingDashboard.machines[this.config.machineId] = {
               lastSync: now,
-              status: 'online',
+              status: (totalDiffs > 0 ? 'diverged' : 'synced') as 'diverged' | 'synced' | 'conflict' | 'unknown',
               diffsCount: totalDiffs,
               pendingDecisions: 0
             };
@@ -361,8 +391,6 @@ export class BaselineManager {
             console.warn(`[BaselineManager] ATTENTION (calculate): Machine ${this.config.machineId} existe dans le dashboard mais provient de la source ${existingMachine.source}`);
           }
         }
-
-        return existingDashboard as RooSyncDashboard;
       } catch (error) {
         console.warn('[BaselineManager] Erreur lecture dashboard existant, fallback sur calcul:', error);
       }
@@ -371,7 +399,7 @@ export class BaselineManager {
     // Créer le résultat basé sur les données réelles
     const machinesArray = Array.from(allMachines).map(machineId => ({
       id: machineId,
-      status: 'online' as const,
+      status: (totalDiffs > 0 ? 'diverged' : 'synced') as 'diverged' | 'synced' | 'conflict' | 'unknown',
       lastSync: now,
       pendingDecisions: 0,
       diffsCount: totalDiffs
@@ -504,22 +532,38 @@ export class BaselineManager {
   }
 
   /**
-   * Restaure depuis un point de rollback
+   * Restaurer depuis un point de rollback
+   *
+   * Améliorations:
+   * - Validation des fichiers avant restauration
+   * - Rollback partiel en cas d'échec
+   * - Logs détaillés pour debugging
+   * - Gestion d'erreurs spécifiques par fichier
+   * - Vérification d'intégrité après restauration
    */
   public async restoreFromRollbackPoint(
     decisionId: string,
     clearCacheCallback: () => void
   ): Promise<RollbackRestoreResult> {
+    const logs: string[] = [];
+    const restoredFiles: string[] = [];
+    const failedFiles: Array<{ file: string; error: string }> = [];
+    const startTime = Date.now();
+
     try {
       const sharedPath = this.config.sharedPath;
       const rollbackDir = join(sharedPath, '.rollback');
 
+      logs.push(`[ROLLBACK] Début de la restauration pour décision ${decisionId}`);
+      logs.push(`[ROLLBACK] Répertoire rollback: ${rollbackDir}`);
+
       // Vérifier que le répertoire rollback existe
       if (!existsSync(rollbackDir)) {
+        logs.push(`[ROLLBACK] ❌ Aucun répertoire rollback trouvé dans ${rollbackDir}`);
         return {
           success: false,
           restoredFiles: [],
-          logs: [`Aucun répertoire rollback trouvé dans ${rollbackDir}`],
+          logs,
           error: 'No rollback directory found'
         };
       }
@@ -532,239 +576,172 @@ export class BaselineManager {
         .reverse(); // Plus récent en premier
 
       if (matchingBackups.length === 0) {
+        logs.push(`[ROLLBACK] ❌ Aucun rollback trouvé pour la décision ${decisionId}`);
+        logs.push(`[ROLLBACK] Rollbacks disponibles: ${allBackups.join(', ') || 'aucun'}`);
         return {
           success: false,
           restoredFiles: [],
-          logs: [`Aucun rollback trouvé pour la décision ${decisionId}`],
+          logs,
           error: `No rollback found for decision ${decisionId}`
         };
       }
 
+      logs.push(`[ROLLBACK] ${matchingBackups.length} rollback(s) trouvé(s) pour cette décision`);
+
       // Restaurer depuis le plus récent
       const backupPath = join(rollbackDir, matchingBackups[0]);
-      const restoredFiles: string[] = [];
-      const logs: string[] = [];
+      logs.push(`[ROLLBACK] Utilisation du rollback le plus récent: ${matchingBackups[0]}`);
+
+      // Vérifier que le répertoire de backup existe
+      if (!existsSync(backupPath)) {
+        logs.push(`[ROLLBACK] ❌ Répertoire de backup introuvable: ${backupPath}`);
+        return {
+          success: false,
+          restoredFiles: [],
+          logs,
+          error: `Backup directory not found: ${backupPath}`
+        };
+      }
 
       // Lire metadata
       const metadataPath = join(backupPath, 'metadata.json');
       let filesToRestore: string[] = ['sync-config.ref.json', 'sync-roadmap.md'];
+      let metadata: any = null;
 
       if (existsSync(metadataPath)) {
-        const metadata = JSON.parse(await fs.readFile(metadataPath, 'utf-8'));
-        filesToRestore = metadata.files || filesToRestore;
-        logs.push(`Rollback depuis ${metadata.timestamp}`);
+        try {
+          const metadataContent = await fs.readFile(metadataPath, 'utf-8');
+          metadata = JSON.parse(metadataContent);
+          filesToRestore = metadata.files || filesToRestore;
+          logs.push(`[ROLLBACK] Metadata lue: ${metadata.timestamp}, machine: ${metadata.machine}`);
+          logs.push(`[ROLLBACK] Fichiers à restaurer: ${filesToRestore.join(', ')}`);
+        } catch (metadataError) {
+          logs.push(`[ROLLBACK] ⚠️ Erreur lecture metadata: ${metadataError instanceof Error ? metadataError.message : String(metadataError)}`);
+          logs.push(`[ROLLBACK] Utilisation des fichiers par défaut`);
+        }
+      } else {
+        logs.push(`[ROLLBACK] ⚠️ Metadata introuvable, utilisation des fichiers par défaut`);
       }
 
-      // Restaurer les fichiers
+      // Restaurer les fichiers avec gestion d'erreurs individuelle
       for (const file of filesToRestore) {
         const sourcePath = join(backupPath, file);
         const targetPath = this.getRooSyncFilePath(file);
 
-        if (existsSync(sourcePath)) {
+        try {
+          // Vérifier que le fichier source existe
+          if (!existsSync(sourcePath)) {
+            logs.push(`[ROLLBACK] ⚠️ Fichier source introuvable: ${file}`);
+            failedFiles.push({ file, error: 'Source file not found' });
+            continue;
+          }
+
+          // Vérifier que le fichier source est lisible
+          try {
+            await fs.access(sourcePath, constants.R_OK);
+          } catch (accessError) {
+            logs.push(`[ROLLBACK] ❌ Fichier source non lisible: ${file}`);
+            failedFiles.push({ file, error: 'Source file not readable' });
+            continue;
+          }
+
+          // Faire un backup du fichier cible avant restauration (idempotence)
+          if (existsSync(targetPath)) {
+            const backupTargetPath = `${targetPath}.rollback-backup`;
+            await fs.copyFile(targetPath, backupTargetPath);
+            logs.push(`[ROLLBACK] Backup du fichier cible: ${file}`);
+          }
+
+          // Restaurer le fichier
           await fs.copyFile(sourcePath, targetPath);
           restoredFiles.push(file);
-          logs.push(`Restauré: ${file}`);
+          logs.push(`[ROLLBACK] ✅ Restauré: ${file}`);
+
+          // Vérifier l'intégrité du fichier restauré
+          try {
+            await fs.access(targetPath, constants.R_OK);
+            const stats = await fs.stat(targetPath);
+            logs.push(`[ROLLBACK] ✅ Intégrité vérifiée: ${file} (${stats.size} bytes)`);
+          } catch (verifyError) {
+            logs.push(`[ROLLBACK] ❌ Erreur vérification intégrité: ${file}`);
+            failedFiles.push({ file, error: 'Integrity check failed' });
+
+            // Retirer le fichier de restoredFiles et restaurer le backup
+            const index = restoredFiles.indexOf(file);
+            if (index !== -1) {
+              restoredFiles.splice(index, 1);
+              const backupTargetPath = `${targetPath}.rollback-backup`;
+              if (existsSync(backupTargetPath)) {
+                await fs.copyFile(backupTargetPath, targetPath);
+                logs.push(`[ROLLBACK] 🔄 Backup restauré: ${file}`);
+              }
+            }
+          }
+        } catch (fileError) {
+          const errorMsg = fileError instanceof Error ? fileError.message : String(fileError);
+          logs.push(`[ROLLBACK] ❌ Erreur restauration ${file}: ${errorMsg}`);
+          failedFiles.push({ file, error: errorMsg });
+        }
+      }
+
+      // Nettoyer les backups temporaires
+      for (const file of filesToRestore) {
+        const targetPath = this.getRooSyncFilePath(file);
+        const backupTargetPath = `${targetPath}.rollback-backup`;
+        if (existsSync(backupTargetPath)) {
+          try {
+            await fs.unlink(backupTargetPath);
+            logs.push(`[ROLLBACK] 🗑️ Backup temporaire supprimé: ${backupTargetPath}`);
+          } catch (cleanupError) {
+            logs.push(`[ROLLBACK] ⚠️ Erreur suppression backup: ${backupTargetPath}`);
+          }
         }
       }
 
       // Invalider le cache
-      clearCacheCallback();
+      try {
+        clearCacheCallback();
+        logs.push(`[ROLLBACK] ✅ Cache invalidé`);
+      } catch (cacheError) {
+        logs.push(`[ROLLBACK] ⚠️ Erreur invalidation cache: ${cacheError instanceof Error ? cacheError.message : String(cacheError)}`);
+      }
+
+      const duration = Date.now() - startTime;
+      logs.push(`[ROLLBACK] Durée totale: ${duration}ms`);
+
+      // Déterminer le succès
+      // Le rollback est un succès si au moins un fichier a été restauré
+      const success = restoredFiles.length > 0;
+
+      if (success && failedFiles.length === 0) {
+        logs.push(`[ROLLBACK] ✅ Restauration terminée avec succès (${restoredFiles.length} fichier(s))`);
+      } else if (success && failedFiles.length > 0) {
+        logs.push(`[ROLLBACK] ⚠️ Restauration partielle réussie (${restoredFiles.length} réussi(s), ${failedFiles.length} échoué(s))`);
+      } else {
+        logs.push(`[ROLLBACK] ❌ Restauration échouée (${failedFiles.length} erreur(s))`);
+      }
 
       return {
-        success: true,
+        success,
         restoredFiles,
         logs,
+        error: failedFiles.length > 0 ? `Partial failure: ${failedFiles.length} file(s) failed` : undefined
       };
     } catch (error) {
+      const errorMsg = error instanceof Error ? error.message : String(error);
+      const errorStack = error instanceof Error ? error.stack : undefined;
+
+      logs.push(`[ROLLBACK] ❌ Erreur critique: ${errorMsg}`);
+      if (errorStack) {
+        logs.push(`[ROLLBACK] Stack trace: ${errorStack}`);
+      }
+
       return {
         success: false,
-        restoredFiles: [],
-        logs: [`Erreur restauration: ${error instanceof Error ? error.message : String(error)}`],
-        error: error instanceof Error ? error.message : String(error)
+        restoredFiles,
+        logs,
+        error: errorMsg
       };
     }
-  }
-
-  /**
-   * Crée une baseline non-nominative par agrégation
-   */
-  public async createNonNominativeBaseline(
-    name: string,
-    description: string,
-    aggregationConfig?: AggregationConfig
-  ): Promise<NonNominativeBaseline> {
-    if (!this.nonNominativeService) {
-      throw new RooSyncServiceError(
-        'Service non-nominatif non disponible',
-        'SERVICE_NOT_AVAILABLE'
-      );
-    }
-
-    // Collecter les inventaires de toutes les machines connues
-    const machineIds = Array.from(this.machineRegistry.machines.keys());
-    const inventories = [];
-
-    for (const machineId of machineIds) {
-      try {
-        const inventory = await this.baselineService['inventoryCollector'].collectInventory(machineId);
-        if (inventory) {
-          inventories.push(inventory);
-        }
-      } catch (error) {
-        console.warn(`[BaselineManager] Impossible de collecter l'inventaire pour ${machineId}:`, error);
-      }
-    }
-
-    // Configuration d'agrégation par défaut
-    const defaultAggregationConfig: AggregationConfig = {
-      sources: [
-        { type: 'machine_inventory', weight: 1.0, enabled: true },
-        { type: 'existing_baseline', weight: 0.5, enabled: true }
-      ],
-      categoryRules: {
-        'roo-core': { strategy: 'majority', confidenceThreshold: 0.7, autoApply: true },
-        'roo-advanced': { strategy: 'majority', confidenceThreshold: 0.6, autoApply: true },
-        'hardware-cpu': { strategy: 'latest', confidenceThreshold: 0.8, autoApply: true },
-        'hardware-memory': { strategy: 'latest', confidenceThreshold: 0.8, autoApply: true },
-        'hardware-storage': { strategy: 'latest', confidenceThreshold: 0.8, autoApply: true },
-        'hardware-gpu': { strategy: 'latest', confidenceThreshold: 0.8, autoApply: true },
-        'software-powershell': { strategy: 'majority', confidenceThreshold: 0.9, autoApply: true },
-        'software-node': { strategy: 'majority', confidenceThreshold: 0.9, autoApply: true },
-        'software-python': { strategy: 'majority', confidenceThreshold: 0.9, autoApply: true },
-        'system-os': { strategy: 'majority', confidenceThreshold: 0.8, autoApply: true },
-        'system-architecture': { strategy: 'majority', confidenceThreshold: 0.9, autoApply: true }
-      },
-      thresholds: {
-        deviationThreshold: 0.3,
-        complianceThreshold: 0.8,
-        outlierDetection: true
-      }
-    };
-
-    const config = aggregationConfig || defaultAggregationConfig;
-    return await this.nonNominativeService.aggregateBaseline(inventories, config);
-  }
-
-  /**
-   * Mappe une machine à la baseline non-nominative
-   */
-  public async mapMachineToNonNominativeBaseline(
-    machineId: string
-  ): Promise<MachineConfigurationMapping> {
-    if (!this.nonNominativeService) {
-      throw new RooSyncServiceError(
-        'Service non-nominatif non disponible',
-        'SERVICE_NOT_AVAILABLE'
-      );
-    }
-
-    // Collecter l'inventaire de la machine
-    const inventory = await this.baselineService['inventoryCollector'].collectInventory(machineId);
-    if (!inventory) {
-      throw new RooSyncServiceError(
-        `Impossible de collecter l'inventaire pour ${machineId}`,
-        'INVENTORY_COLLECTION_FAILED'
-      );
-    }
-
-    return await this.nonNominativeService.mapMachineToBaseline(machineId, inventory);
-  }
-
-  /**
-   * Compare plusieurs machines avec la baseline non-nominative
-   */
-  public async compareMachinesNonNominative(
-    machineIds: string[]
-  ): Promise<NonNominativeComparisonReport> {
-    if (!this.nonNominativeService) {
-      throw new RooSyncServiceError(
-        'Service non-nominatif non disponible',
-        'SERVICE_NOT_AVAILABLE'
-      );
-    }
-
-    // Convertir les machineIds en hashes
-    const machineHashes = machineIds.map(id => this.nonNominativeService!.generateMachineHash(id));
-    
-    return await this.nonNominativeService.compareMachines(machineHashes);
-  }
-
-  /**
-   * Migre depuis l'ancien système de baseline
-   */
-  public async migrateToNonNominative(
-    options: MigrationOptions = {
-      keepLegacyReferences: true,
-      machineMappingStrategy: 'hash',
-      autoValidate: true,
-      createBackup: true,
-      priorityCategories: ['roo-core', 'software-powershell', 'software-node', 'software-python']
-    }
-  ): Promise<any> {
-    if (!this.nonNominativeService) {
-      throw new RooSyncServiceError(
-        'Service non-nominatif non disponible',
-        'SERVICE_NOT_AVAILABLE'
-      );
-    }
-
-    try {
-      // Charger la baseline actuelle
-      const legacyBaseline = await this.baselineService.readBaselineFile();
-      if (!legacyBaseline) {
-        throw new RooSyncServiceError(
-          'Aucune baseline legacy trouvée pour la migration',
-          'BASELINE_NOT_FOUND'
-        );
-      }
-
-      // Effectuer la migration
-      const migrationResult = await this.nonNominativeService.migrateFromLegacy(legacyBaseline, options);
-
-      // Mettre à jour le registre des machines si nécessaire
-      if (migrationResult.success && options.keepLegacyReferences) {
-        console.log('[BaselineManager] Références legacy préservées lors de la migration');
-      }
-
-      return migrationResult;
-    } catch (error) {
-      throw new RooSyncServiceError(
-        `Échec de la migration: ${(error as Error).message}`,
-        'MIGRATION_FAILED'
-      );
-    }
-  }
-
-  /**
-   * Obtient l'état du système non-nominatif
-   */
-  public getNonNominativeState(): any {
-    if (!this.nonNominativeService) {
-      return null;
-    }
-
-    return this.nonNominativeService.getState();
-  }
-
-  /**
-   * Obtient la baseline non-nominative active
-   */
-  public getActiveNonNominativeBaseline(): NonNominativeBaseline | undefined {
-    if (!this.nonNominativeService) {
-      return undefined;
-    }
-
-    return this.nonNominativeService.getActiveBaseline();
-  }
-
-  /**
-   * Obtient tous les mappings de machines non-nominatives
-   */
-  public getNonNominativeMachineMappings(): MachineConfigurationMapping[] {
-    if (!this.nonNominativeService) {
-      return [];
-    }
-
-    return this.nonNominativeService.getMachineMappings();
   }
 }

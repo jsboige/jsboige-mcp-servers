@@ -20,6 +20,7 @@ import OpenAI from 'openai';
 // L'import zodResponseFormat a été remplacé par l'utilisation directe de response_format
 import { z } from 'zod';
 import * as crypto from 'crypto';
+import { SynthesisServiceError, SynthesisServiceErrorCode } from '../../types/errors.js';
 
 // =============================================================================
 // SCHEMAS ZOD POUR STRUCTURED OUTPUT
@@ -339,12 +340,16 @@ export class LLMService {
         const modelConfig = this.getModelConfig(activeModelId);
         
         if (!modelConfig) {
-            throw new Error(`Modèle non configuré: ${activeModelId}`);
+            throw new SynthesisServiceError(
+                `Modèle non configuré: ${activeModelId}`,
+                SynthesisServiceErrorCode.NO_MODEL_CONFIGURED,
+                { modelId: activeModelId, method: 'generateSynthesis' }
+            );
         }
 
         // Construction du prompt optimisé pour la synthèse
         const synthesisPrompt = this.buildSynthesisPrompt(context, taskId, modelConfig.modelName);
-        
+
         try {
             // Appel LLM avec structured output
             const result = await this.callLLM(
@@ -359,7 +364,12 @@ export class LLMService {
             return result;
         } catch (error) {
             console.error(`Erreur génération synthèse pour tâche ${taskId}:`, error);
-            throw new Error(`Échec génération synthèse: ${error instanceof Error ? error.message : 'Erreur inconnue'}`);
+            throw new SynthesisServiceError(
+                `Échec génération synthèse: ${error instanceof Error ? error.message : 'Erreur inconnue'}`,
+                SynthesisServiceErrorCode.SYNTHESIS_GENERATION_FAILED,
+                { taskId, modelId: activeModelId },
+                error instanceof Error ? error : undefined
+            );
         }
     }
 
@@ -382,18 +392,26 @@ export class LLMService {
     ): Promise<LLMCallResult> {
         const activeModelId = modelId || this.options.defaultModelId;
         const modelConfig = this.getModelConfig(activeModelId);
-        
+
         if (!modelConfig) {
-            throw new Error(`Modèle non configuré: ${activeModelId}`);
+            throw new SynthesisServiceError(
+                `Modèle non configuré: ${activeModelId}`,
+                SynthesisServiceErrorCode.NO_MODEL_CONFIGURED,
+                { modelId: activeModelId, method: 'condenseSyntheses' }
+            );
         }
 
         if (analyses.length === 0) {
-            throw new Error('Aucune analyse à condenser');
+            throw new SynthesisServiceError(
+                'Aucune analyse à condenser',
+                SynthesisServiceErrorCode.CONDENSATION_FAILED,
+                { analysesCount: 0, method: 'condenseSyntheses' }
+            );
         }
 
         // Construction du prompt de condensation
         const condensationPrompt = this.buildCondensationPrompt(analyses);
-        
+
         try {
             // Appel LLM avec structured output pour condensation
             const result = await this.callLLM(
@@ -411,7 +429,12 @@ export class LLMService {
             return result;
         } catch (error) {
             console.error(`Erreur condensation de ${analyses.length} synthèses:`, error);
-            throw new Error(`Échec condensation: ${error instanceof Error ? error.message : 'Erreur inconnue'}`);
+            throw new SynthesisServiceError(
+                `Échec condensation: ${error instanceof Error ? error.message : 'Erreur inconnue'}`,
+                SynthesisServiceErrorCode.CONDENSATION_FAILED,
+                { analysesCount: analyses.length, modelId: activeModelId },
+                error instanceof Error ? error : undefined
+            );
         }
     }
 
@@ -439,7 +462,11 @@ export class LLMService {
         const modelConfig = this.getModelConfig(activeModelId);
         
         if (!modelConfig) {
-            throw new Error(`Modèle non configuré: ${activeModelId}`);
+            throw new SynthesisServiceError(
+                `Modèle non configuré: ${activeModelId}`,
+                SynthesisServiceErrorCode.NO_MODEL_CONFIGURED,
+                { modelId: activeModelId, method: 'callLLM' }
+            );
         }
 
         // Générer le contexte d'appel
@@ -714,22 +741,38 @@ export class LLMService {
      */
     private validateConfiguration(): void {
         if (!this.options.models || this.options.models.length === 0) {
-            throw new Error('Au moins un modèle doit être configuré');
+            throw new SynthesisServiceError(
+                'Au moins un modèle doit être configuré',
+                SynthesisServiceErrorCode.LLM_MODEL_REQUIRED,
+                { options: this.options }
+            );
         }
 
         if (!this.options.defaultModelId) {
-            throw new Error('Un modèle par défaut doit être spécifié');
+            throw new SynthesisServiceError(
+                'Un modèle par défaut doit être spécifié',
+                SynthesisServiceErrorCode.LLM_MODEL_REQUIRED,
+                { defaultModelId: this.options.defaultModelId }
+            );
         }
 
         const defaultModel = this.getModelConfig(this.options.defaultModelId);
         if (!defaultModel) {
-            throw new Error(`Le modèle par défaut '${this.options.defaultModelId}' n'est pas configuré`);
+            throw new SynthesisServiceError(
+                `Le modèle par défaut '${this.options.defaultModelId}' n'est pas configuré`,
+                SynthesisServiceErrorCode.NO_MODEL_CONFIGURED,
+                { defaultModelId: this.options.defaultModelId, availableModels: this.options.models.map(m => m.modelId) }
+            );
         }
 
         // Valider chaque modèle configuré
         for (const model of this.options.models) {
             if (!model.modelId || !model.modelName || !model.provider) {
-                throw new Error(`Configuration invalide pour le modèle: ${JSON.stringify(model)}`);
+                throw new SynthesisServiceError(
+                    `Configuration invalide pour le modèle: ${JSON.stringify(model)}`,
+                    SynthesisServiceErrorCode.NO_MODEL_CONFIGURED,
+                    { model }
+                );
             }
         }
     }

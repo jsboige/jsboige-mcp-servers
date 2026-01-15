@@ -11,6 +11,7 @@ import { ConversationSkeleton } from '../types/conversation.js';
 import { RooStorageDetector } from './roo-storage-detector.js';
 import { OUTPUT_CONFIG } from '../config/server-config.js';
 import * as toolExports from '../tools/index.js';
+import { GenericError, GenericErrorCode } from '../types/errors.js';
 
 /**
  * Obtenir le chemin du répertoire shared-state RooSync
@@ -23,10 +24,12 @@ export function getSharedStatePath(): string {
     }
     
     // ERREUR : Aucun chemin configuré
-    throw new Error(
+    throw new GenericError(
         "Configuration CRITIQUE manquante : ROOSYNC_SHARED_PATH n'est pas définie. " +
         "Le système RooSync nécessite un chemin de stockage externe explicite. " +
-        "Veuillez définir cette variable d'environnement dans votre fichier .env ou votre configuration système."
+        "Veuillez définir cette variable d'environnement dans votre fichier .env ou votre configuration système.",
+        GenericErrorCode.INVALID_ARGUMENT,
+        { requiredEnvVar: 'ROOSYNC_SHARED_PATH' }
     );
 }
 
@@ -113,12 +116,12 @@ export async function handleExportConversationJson(
         const { taskId } = args;
         
         if (!taskId) {
-            throw new Error("taskId est requis");
+            throw new GenericError("taskId est requis", GenericErrorCode.INVALID_ARGUMENT);
         }
 
         const conversation = conversationCache.get(taskId);
         if (!conversation) {
-            throw new Error(`Conversation avec taskId ${taskId} introuvable`);
+            throw new GenericError(`Conversation avec taskId ${taskId} introuvable`, GenericErrorCode.INVALID_ARGUMENT, { taskId });
         }
 
         const getConversationSkeleton = async (id: string) => {
@@ -156,12 +159,12 @@ export async function handleExportConversationCsv(
         const { taskId } = args;
         
         if (!taskId) {
-            throw new Error("taskId est requis");
+            throw new GenericError("taskId est requis", GenericErrorCode.INVALID_ARGUMENT);
         }
 
         const conversation = conversationCache.get(taskId);
         if (!conversation) {
-            throw new Error(`Conversation avec taskId ${taskId} introuvable`);
+            throw new GenericError(`Conversation avec taskId ${taskId} introuvable`, GenericErrorCode.INVALID_ARGUMENT, { taskId });
         }
 
         const getConversationSkeleton = async (id: string) => {

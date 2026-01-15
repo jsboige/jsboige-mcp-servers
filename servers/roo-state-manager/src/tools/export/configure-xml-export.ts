@@ -3,6 +3,7 @@
  */
 
 import { Tool, CallToolResult } from '@modelcontextprotocol/sdk/types.js';
+import { StateManagerError } from '../../types/errors.js';
 import { ExportConfigManager } from '../../services/ExportConfigManager.js';
 
 /**
@@ -60,7 +61,12 @@ export async function handleConfigureXmlExport(
 
             case 'set':
                 if (!config) {
-                    throw new Error('Configuration manquante pour l\'action \'set\'.');
+                    throw new StateManagerError(
+                        'Configuration manquante pour l\'action \'set\'',
+                        'VALIDATION_FAILED',
+                        'ConfigureXmlExportTool',
+                        { action, missingParam: 'config' }
+                    );
                 }
                 await exportConfigManager.updateConfig(config);
                 return {
@@ -80,7 +86,12 @@ export async function handleConfigureXmlExport(
                 };
 
             default:
-                throw new Error(`Action non reconnue : ${action}`);
+                throw new StateManagerError(
+                    `Action non reconnue : ${action}`,
+                    'INVALID_ACTION',
+                    'ConfigureXmlExportTool',
+                    { action, validActions: ['get', 'set', 'reset'] }
+                );
         }
 
     } catch (error) {

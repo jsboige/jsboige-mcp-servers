@@ -18,10 +18,10 @@
  * @since 2025-09-27 (Phase services consolidés)
  */
 
-import { 
+import {
   UnifiedServices,
   IStorageService,
-  ICacheAntiLeakService, 
+  ICacheAntiLeakService,
   ISearchService,
   IExportService,
   ISummaryService,
@@ -31,6 +31,7 @@ import {
   CacheAntiLeakConfig,
   ExecutionContext
 } from '../interfaces/UnifiedToolInterface.js';
+import { StateManagerError } from '../types/errors.js';
 
 /**
  * Configuration du registre de services
@@ -160,7 +161,12 @@ export class ServiceRegistry {
   getService<T>(serviceName: keyof UnifiedServices): T {
     const service = this.services.get(serviceName);
     if (!service) {
-      throw new Error(`Service '${serviceName}' not found in registry`);
+      throw new StateManagerError(
+        `Service '${serviceName}' not found in registry`,
+        'SERVICE_NOT_FOUND',
+        'ServiceRegistry',
+        { serviceName, availableServices: Array.from(this.services.keys()) }
+      );
     }
 
     // Mise à jour des métriques d'accès
@@ -184,7 +190,12 @@ export class ServiceRegistry {
     const service = this.services.get(serviceName);
     
     if (!service) {
-      throw new Error(`Service '${serviceName}' not found`);
+      throw new StateManagerError(
+        `Service '${serviceName}' not found`,
+        'SERVICE_NOT_FOUND',
+        'ServiceRegistry',
+        { serviceName, methodName }
+      );
     }
 
     try {
@@ -220,7 +231,12 @@ export class ServiceRegistry {
           break;
           
         default:
-          throw new Error(`Unknown processing level: ${service.processingLevel}`);
+          throw new StateManagerError(
+            `Unknown processing level: ${service.processingLevel}`,
+            'INVALID_PROCESSING_LEVEL',
+            'ServiceRegistry',
+            { serviceName, processingLevel: service.processingLevel }
+          );
       }
       
       // Mise à jour métriques de succès

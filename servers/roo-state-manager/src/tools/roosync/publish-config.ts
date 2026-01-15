@@ -1,5 +1,6 @@
 import { z } from 'zod';
 import { getRooSyncService } from '../../services/RooSyncService.js';
+import { ConfigSharingServiceError, ConfigSharingServiceErrorCode } from '../../types/errors.js';
 export const PublishConfigArgsSchema = z.object({
   packagePath: z.string().describe('Chemin du package temporaire créé par roosync_collect_config'),
   version: z.string().describe('Version de la configuration (ex: "2.2.0")'),
@@ -31,7 +32,14 @@ export async function roosyncPublishConfig(args: PublishConfigArgs) {
       machineId: result.machineId // CORRECTION SDDD : Retourner le machineId utilisé
     };
   } catch (error) {
-    throw new Error(`Erreur lors de la publication de configuration: ${error instanceof Error ? error.message : String(error)}`);
+    if (error instanceof ConfigSharingServiceError) {
+      throw error;
+    }
+    throw new ConfigSharingServiceError(
+      `Erreur lors de la publication de configuration: ${error instanceof Error ? error.message : String(error)}`,
+      ConfigSharingServiceErrorCode.PUBLISH_FAILED,
+      { originalError: error instanceof Error ? error.message : String(error), args }
+    );
   }
 }
 

@@ -12,6 +12,7 @@ import { existsSync, readFileSync } from 'fs';
 import { join } from 'path';
 import os from 'os';
 import { createLogger, Logger } from '../../utils/logger.js';
+import { StateManagerError } from '../../types/errors.js';
 
 // Logger instance for amend_message tool
 const logger: Logger = createLogger('AmendMessageTool');
@@ -60,11 +61,21 @@ export async function amendMessage(
   try {
     // Validation des paramètres requis
     if (!args.message_id) {
-      throw new Error('Paramètre "message_id" requis : ID du message à modifier');
+      throw new StateManagerError(
+        'Paramètre "message_id" requis : ID du message à modifier',
+        'VALIDATION_FAILED',
+        'AmendMessageTool',
+        { missingParam: 'message_id', providedArgs: Object.keys(args) }
+      );
     }
-    
+
     if (!args.new_content) {
-      throw new Error('Paramètre "new_content" requis : Nouveau contenu du message');
+      throw new StateManagerError(
+        'Paramètre "new_content" requis : Nouveau contenu du message',
+        'VALIDATION_FAILED',
+        'AmendMessageTool',
+        { missingParam: 'new_content', providedArgs: Object.keys(args) }
+      );
     }
 
     // Initialiser le MessageManager

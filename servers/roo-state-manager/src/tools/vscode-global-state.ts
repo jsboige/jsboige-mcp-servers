@@ -6,6 +6,7 @@ import sqlite3 from 'sqlite3';
 import { promisify } from 'util';
 import { RooStorageDetector } from '../utils/roo-storage-detector.js';
 import { ConversationSkeleton } from '../types/conversation.js';
+import { GenericError, GenericErrorCode } from '../types/errors.js';
 
 interface HistoryItem {
     ts: number;
@@ -53,10 +54,10 @@ async function findVSCodeGlobalStateFile(): Promise<string> {
             }
         }
     } catch (error) {
-        throw new Error(`Impossible de trouver le fichier de stockage global VS Code dans ${userDataDir}: ${error}`);
+        throw new GenericError(`Impossible de trouver le fichier de stockage global VS Code dans ${userDataDir}: ${error}`, GenericErrorCode.FILE_SYSTEM_ERROR, { userDataDir });
     }
     
-    throw new Error(`Aucun fichier de stockage global VS Code trouvé dans ${userDataDir}`);
+    throw new GenericError(`Aucun fichier de stockage global VS Code trouvé dans ${userDataDir}`, GenericErrorCode.FILE_SYSTEM_ERROR, { userDataDir });
 }
 
 /**

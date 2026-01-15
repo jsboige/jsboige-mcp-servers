@@ -2,6 +2,7 @@ import { promises as fs } from 'fs';
 import * as path from 'path';
 import { Schemas } from '@qdrant/js-client-rest';
 import { getQdrantClient } from './qdrant.js';
+import { StateManagerError } from '../types/errors.js';
 
 // Import des nouveaux modules
 import { validateVectorGlobal } from './task-indexer/EmbeddingValidator.js';
@@ -112,7 +113,12 @@ export class TaskIndexer {
                 }
             }
 
-            throw new Error(`Task ${taskId} not found in any storage location`);
+            throw new StateManagerError(
+                `Task ${taskId} not found in any storage location`,
+                'TASK_NOT_FOUND',
+                'TaskIndexer',
+                { taskId, searchedLocations: locations }
+            );
         } catch (error) {
             console.error(`Error indexing task ${taskId}:`, error);
             throw error;

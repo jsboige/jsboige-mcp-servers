@@ -10,6 +10,7 @@
 
 import { promises as fs } from 'fs';
 import { join } from 'path';
+import { StateManagerError } from '../../types/errors.js';
 
 /**
  * Options de verrouillage
@@ -123,7 +124,12 @@ export class FileLockManager {
       }
     }
 
-    throw new Error(`Impossible d'acquérir le verrou sur ${filePath} après ${opts.retries} tentatives`);
+    throw new StateManagerError(
+      `Impossible d'acquérir le verrou sur ${filePath} après ${opts.retries} tentatives`,
+      'LOCK_ACQUISITION_FAILED',
+      'FileLockManager',
+      { filePath, retries: opts.retries }
+    );
   }
 
   /**

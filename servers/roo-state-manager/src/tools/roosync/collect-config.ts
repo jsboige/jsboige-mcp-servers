@@ -1,5 +1,6 @@
 import { z } from 'zod';
 import { getRooSyncService } from '../../services/RooSyncService.js';
+import { ConfigSharingServiceError, ConfigSharingServiceErrorCode } from '../../types/errors.js';
 export const CollectConfigArgsSchema = z.object({
   targets: z.array(z.string()).optional().describe('Liste des cibles à collecter (modes, mcp, profiles). Défaut: ["modes", "mcp"]'),
   dryRun: z.boolean().optional().describe('Si true, simule la collecte sans créer de fichiers. Défaut: false')
@@ -27,7 +28,11 @@ export async function roosyncCollectConfig(args: CollectConfigArgs) {
       manifest: result.manifest
     };
   } catch (error) {
-    throw new Error(`Erreur lors de la collecte de configuration: ${error instanceof Error ? error.message : String(error)}`);
+    throw new ConfigSharingServiceError(
+      `Erreur lors de la collecte de configuration: ${error instanceof Error ? error.message : String(error)}`,
+      ConfigSharingServiceErrorCode.COLLECTION_FAILED,
+      { originalError: error instanceof Error ? error.message : String(error), args }
+    );
   }
 }
 

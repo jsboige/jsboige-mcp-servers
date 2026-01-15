@@ -4,6 +4,7 @@
  */
 
 import { CallToolResult } from '@modelcontextprotocol/sdk/types.js';
+import { StateManagerError } from '../../types/errors.js';
 import { ConversationSkeleton } from '../../types/conversation.js';
 import { promises as fs } from 'fs';
 import path from 'path';
@@ -104,7 +105,12 @@ export async function handleExportTaskTreeMarkdown(
         } = args;
 
         if (!conversation_id) {
-            throw new Error("conversation_id est requis");
+            throw new StateManagerError(
+                'conversation_id est requis',
+                'VALIDATION_FAILED',
+                'ExportTaskTreeMarkdownTool',
+                { missingParam: 'conversation_id' }
+            );
         }
 
         // **FAILSAFE: Auto-rebuild cache si nécessaire**
@@ -122,17 +128,32 @@ export async function handleExportTaskTreeMarkdown(
         });
 
         if (!treeResult || !treeResult.content || !treeResult.content[0]) {
-            throw new Error("Impossible de récupérer l'arbre des tâches");
+            throw new StateManagerError(
+                "Impossible de récupérer l'arbre des tâches",
+                'TREE_RETRIEVAL_FAILED',
+                'ExportTaskTreeMarkdownTool',
+                { conversationId: conversation_id }
+            );
         }
 
         const contentItem = treeResult.content[0];
         if (contentItem.type !== 'text') {
-             throw new Error("Le format retourné n'est pas du texte");
+            throw new StateManagerError(
+                "Le format retourné n'est pas du texte",
+                'INVALID_RESPONSE_FORMAT',
+                'ExportTaskTreeMarkdownTool',
+                { actualType: contentItem.type, conversationId: conversation_id }
+            );
         }
 
         const formattedTree = contentItem.text;
         if (typeof formattedTree !== 'string') {
-            throw new Error("Format de données invalide retourné par get_task_tree");
+            throw new StateManagerError(
+                "Format de données invalide retourné par get_task_tree",
+                'INVALID_DATA_FORMAT',
+                'ExportTaskTreeMarkdownTool',
+                { actualType: typeof formattedTree, conversationId: conversation_id }
+            );
         }
 
         // Sauvegarder dans un fichier si spécifié

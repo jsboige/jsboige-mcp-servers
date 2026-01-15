@@ -3,6 +3,7 @@
  */
 
 import { Tool, CallToolResult } from '@modelcontextprotocol/sdk/types.js';
+import { StateManagerError } from '../../types/errors.js';
 import { ConversationSkeleton } from '../../types/conversation.js';
 import { XmlExporterService } from '../../services/XmlExporterService.js';
 
@@ -73,7 +74,12 @@ export async function handleExportConversationXml(
         
         const rootSkeleton = conversationCache.get(conversationId);
         if (!rootSkeleton) {
-            throw new Error(`Conversation racine avec l'ID '${conversationId}' non trouvée dans le cache.`);
+            throw new StateManagerError(
+                `Conversation racine avec l'ID '${conversationId}' non trouvée dans le cache`,
+                'CONVERSATION_NOT_FOUND',
+                'ExportConversationXmlTool',
+                { conversationId, cacheSize: conversationCache.size }
+            );
         }
 
         // Collecter toutes les tâches de la conversation

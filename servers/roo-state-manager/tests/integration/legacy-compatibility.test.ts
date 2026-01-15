@@ -67,6 +67,18 @@ describe('Legacy Compatibility Integration Test', () => {
     };
 
     mockRooSyncService = {
+      getConfigService: vi.fn().mockReturnValue({
+        getConfigVersion: vi.fn().mockResolvedValue('1.0.0'),
+        get: vi.fn(),
+        set: vi.fn(),
+        getAll: vi.fn().mockReturnValue({}),
+        getBaselineServiceConfig: vi.fn().mockReturnValue({
+          baselinePath: undefined,
+          roadmapPath: undefined,
+          logLevel: 'INFO'
+        }),
+        getSharedStatePath: vi.fn().mockReturnValue('/tmp/test-shared-state')
+      }),
       getConfigSharingService: vi.fn().mockReturnValue(mockConfigSharingService),
       getConfigService: vi.fn().mockReturnValue(mockConfigService),
       getConfig: vi.fn().mockReturnValue({ machineId: 'local-machine' }),
