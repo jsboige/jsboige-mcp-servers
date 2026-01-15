@@ -11,6 +11,7 @@
  */
 
 import { Tool } from '@modelcontextprotocol/sdk/types.js';
+import { StateManagerError } from '../../types/errors.js';
 import { ConversationAnalysis } from '../../models/synthesis/SynthesisModels.js';
 import { ConversationSkeleton } from '../../types/conversation.js';
 import { SynthesisOrchestratorService } from '../../services/synthesis/SynthesisOrchestratorService.js';
@@ -74,7 +75,12 @@ export async function handleGetConversationSynthesis(
     try {
         // Valider les arguments
         if (!args.taskId) {
-            throw new Error('taskId est requis');
+            throw new StateManagerError(
+                'taskId est requis',
+                'VALIDATION_FAILED',
+                'GetConversationSynthesisTool',
+                { missingParam: 'taskId' }
+            );
         }
 
         const outputFormat = args.outputFormat || 'json';
@@ -96,8 +102,16 @@ export async function handleGetConversationSynthesis(
         }
         
     } catch (error) {
+        if (error instanceof StateManagerError) {
+            throw error;
+        }
         const errorMessage = error instanceof Error ? error.message : 'Erreur inconnue';
-        throw new Error(`Erreur lors de la récupération de la synthèse: ${errorMessage}`);
+        throw new StateManagerError(
+            `Erreur lors de la récupération de la synthèse: ${errorMessage}`,
+            'SYNTHESIS_RETRIEVAL_FAILED',
+            'GetConversationSynthesisTool',
+            { taskId: args.taskId, originalError: errorMessage }
+        );
     }
 }
 
@@ -116,7 +130,12 @@ async function generateRealSynthesis(
     // Vérifier que la conversation existe
     const skeleton = await getConversationSkeleton(taskId);
     if (!skeleton) {
-        throw new Error(`Conversation non trouvée: ${taskId}`);
+        throw new StateManagerError(
+            `Conversation non trouvée: ${taskId}`,
+            'CONVERSATION_NOT_FOUND',
+            'GetConversationSynthesisTool',
+            { taskId }
+        );
     }
 
     // Instancier les services avec configuration par défaut

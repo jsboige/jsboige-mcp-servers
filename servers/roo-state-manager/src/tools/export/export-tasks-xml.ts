@@ -3,6 +3,7 @@
  */
 
 import { Tool, CallToolResult } from '@modelcontextprotocol/sdk/types.js';
+import { StateManagerError } from '../../types/errors.js';
 import { ConversationSkeleton } from '../../types/conversation.js';
 import { XmlExporterService } from '../../services/XmlExporterService.js';
 
@@ -67,7 +68,12 @@ export async function handleExportTasksXml(
         
         const skeleton = conversationCache.get(taskId);
         if (!skeleton) {
-            throw new Error(`Tâche avec l'ID '${taskId}' non trouvée dans le cache.`);
+            throw new StateManagerError(
+                `Tâche avec l'ID '${taskId}' non trouvée dans le cache`,
+                'TASK_NOT_FOUND',
+                'ExportTasksXmlTool',
+                { taskId, cacheSize: conversationCache.size }
+            );
         }
 
         const xmlContent = xmlExporterService.generateTaskXml(skeleton, {

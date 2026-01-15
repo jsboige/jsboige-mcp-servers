@@ -9,6 +9,7 @@
 import { MessageManager } from '../../services/MessageManager.js';
 import { getSharedStatePath } from '../../utils/server-helpers.js';
 import { createLogger, Logger } from '../../utils/logger.js';
+import { MessageManagerError, MessageManagerErrorCode } from '../../types/errors.js';
 
 // Logger instance for get_message tool
 const logger: Logger = createLogger('GetMessageTool');
@@ -88,7 +89,11 @@ export async function getMessage(
   try {
     // Validation des paramètres requis
     if (!args.message_id) {
-      throw new Error('Paramètre "message_id" requis : ID du message à récupérer');
+      throw new MessageManagerError(
+        'Paramètre "message_id" requis : ID du message à récupérer',
+        MessageManagerErrorCode.INVALID_MESSAGE_FORMAT,
+        { missingParam: 'message_id', providedArgs: Object.keys(args) }
+      );
     }
 
     // Initialiser le MessageManager

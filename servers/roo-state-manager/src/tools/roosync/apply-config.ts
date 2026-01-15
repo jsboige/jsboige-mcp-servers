@@ -1,5 +1,6 @@
 import { z } from 'zod';
 import { getRooSyncService } from '../../services/RooSyncService.js';
+import { ConfigSharingServiceError, ConfigSharingServiceErrorCode } from '../../types/errors.js';
 
 export const ApplyConfigArgsSchema = z.object({
   version: z.string().optional().describe('Version à appliquer (défaut: latest)'),
@@ -30,12 +31,16 @@ export async function roosyncApplyConfig(args: ApplyConfigArgs) {
         const requestedMajor = parseInt(version.split('.')[0], 10);
 
         if (currentMajor !== requestedMajor) {
-          throw new Error(
-            `Incompatibilité de version de configuration:\n` +
-            `  - Version actuelle: ${currentVersion}\n` +
-            `  - Version requise: ${version}\n\n` +
-            `La version de configuration requise doit correspondre à la version majeure actuelle.\n` +
-            `Utilisez 'latest' pour appliquer la dernière version compatible ou spécifiez une version compatible (v${currentMajor}.x.x).`
+          throw new ConfigSharingServiceError(
+            `Incompatibilité de version de configuration: actuelle=${currentVersion}, requise=${version}`,
+            ConfigSharingServiceErrorCode.COLLECTION_FAILED,
+            {
+              currentVersion,
+              requestedVersion: version,
+              currentMajor,
+              requestedMajor,
+              suggestion: `Utilisez 'latest' ou une version compatible (v${currentMajor}.x.x)`
+            }
           );
         }
       }
@@ -59,7 +64,14 @@ export async function roosyncApplyConfig(args: ApplyConfigArgs) {
       errors: result.errors
     };
   } catch (error) {
-    throw new Error(`Erreur lors de l'application de la configuration: ${error instanceof Error ? error.message : String(error)}`);
+    if (error instanceof ConfigSharingServiceError) {
+      throw error;
+    }
+    throw new ConfigSharingServiceError(
+      `Erreur lors de l'application de la configuration: ${error instanceof Error ? error.message : String(error)}`,
+      ConfigSharingServiceErrorCode.COLLECTION_FAILED,
+      { originalError: error instanceof Error ? error.message : String(error), args }
+    );
   }
 }
 

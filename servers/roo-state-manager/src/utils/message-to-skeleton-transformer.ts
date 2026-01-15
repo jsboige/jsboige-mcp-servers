@@ -12,6 +12,7 @@ import { UIMessagesDeserializer } from './ui-messages-deserializer.js';
 import { ConversationSkeleton } from '../types/conversation.js';
 import { computeInstructionPrefix } from './task-instruction-index.js';
 import { WorkspaceDetector } from './workspace-detector.js';
+import { GenericError, GenericErrorCode } from '../types/errors.js';
 
 /**
  * Options de configuration du transformer
@@ -261,39 +262,39 @@ export class MessageToSkeletonTransformer {
   private validateSkeletonCompatibility(skeleton: ConversationSkeleton): void {
     // Validation 1 : taskId requis
     if (!skeleton.taskId) {
-      throw new Error('Skeleton validation failed: taskId is required');
+      throw new GenericError('Skeleton validation failed: taskId is required', GenericErrorCode.INVALID_ARGUMENT);
     }
 
     // Validation 2 : createdAt valide
     if (!skeleton.metadata.createdAt) {
-      throw new Error('Skeleton validation failed: invalid createdAt timestamp');
+      throw new GenericError('Skeleton validation failed: invalid createdAt timestamp', GenericErrorCode.INVALID_ARGUMENT);
     }
 
     // Validation 3 : lastActivity cohérent
     const createdAt = new Date(skeleton.metadata.createdAt).getTime();
     const lastActivity = new Date(skeleton.metadata.lastActivity).getTime();
     if (lastActivity < createdAt) {
-      throw new Error('Skeleton validation failed: lastActivity before createdAt');
+      throw new GenericError('Skeleton validation failed: lastActivity before createdAt', GenericErrorCode.INVALID_ARGUMENT);
     }
 
     // Validation 4 : isCompleted cohérent
     if (skeleton.isCompleted && !skeleton.metadata.lastActivity) {
-      throw new Error('Skeleton validation failed: isCompleted but no lastActivity');
+      throw new GenericError('Skeleton validation failed: isCompleted but no lastActivity', GenericErrorCode.INVALID_ARGUMENT);
     }
 
     // Validation 5 : Prefixes valides
     if (skeleton.childTaskInstructionPrefixes) {
       if (skeleton.childTaskInstructionPrefixes.some(p => p.length === 0)) {
-        throw new Error('Skeleton validation failed: empty prefix detected');
+        throw new GenericError('Skeleton validation failed: empty prefix detected', GenericErrorCode.INVALID_ARGUMENT);
       }
       if (skeleton.childTaskInstructionPrefixes.some(p => p.length > 192)) {
-        throw new Error('Skeleton validation failed: prefix exceeds 192 chars');
+        throw new GenericError('Skeleton validation failed: prefix exceeds 192 chars', GenericErrorCode.INVALID_ARGUMENT);
       }
     }
 
     // Validation 6 : truncatedInstruction valide
     if (skeleton.truncatedInstruction && skeleton.truncatedInstruction.length > 192) {
-      throw new Error('Skeleton validation failed: truncatedInstruction exceeds 192 chars');
+      throw new GenericError('Skeleton validation failed: truncatedInstruction exceeds 192 chars', GenericErrorCode.INVALID_ARGUMENT);
     }
   }
 

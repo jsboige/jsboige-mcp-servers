@@ -14,6 +14,7 @@ import { createLogger, Logger } from '../../utils/logger.js';
 import { BaselineService } from '../../services/BaselineService.js';
 import { ConfigService } from '../../services/ConfigService.js';
 import type { BaselineConfig, BaselineFileConfig } from '../../types/baseline.js';
+import { StateManagerError } from '../../types/errors.js';
 
 // Logger instance for export baseline tool
 const logger: Logger = createLogger('ExportBaselineTool');
@@ -84,7 +85,12 @@ export async function roosync_export_baseline(args: ExportBaselineArgs): Promise
     }
 
     if (!baseline) {
-      throw new Error(`Baseline non trouvée pour machineId: ${validatedArgs.machineId || 'actuelle'}`);
+      throw new StateManagerError(
+        `Baseline non trouvée pour machineId: ${validatedArgs.machineId || 'actuelle'}`,
+        'BASELINE_NOT_FOUND',
+        'ExportBaselineTool',
+        { machineId: validatedArgs.machineId || 'actuelle' }
+      );
     }
 
     // Préparer les données d'export
@@ -108,7 +114,12 @@ export async function roosync_export_baseline(args: ExportBaselineArgs): Promise
         extension = '.csv';
         break;
       default:
-        throw new Error(`Format non supporté: ${validatedArgs.format}`);
+        throw new StateManagerError(
+          `Format non supporté: ${validatedArgs.format}`,
+          'UNSUPPORTED_FORMAT',
+          'ExportBaselineTool',
+          { format: validatedArgs.format, supportedFormats: ['json', 'yaml', 'csv'] }
+        );
     }
 
     // Déterminer le chemin de sortie
@@ -156,7 +167,15 @@ export async function roosync_export_baseline(args: ExportBaselineArgs): Promise
 
   } catch (error) {
     logger.error('Export baseline failed', { error: (error as Error).message, args });
-    throw new Error(`Erreur lors de l'export de la baseline: ${(error as Error).message}`);
+    if (error instanceof StateManagerError) {
+      throw error;
+    }
+    throw new StateManagerError(
+      `Erreur lors de l'export de la baseline: ${(error as Error).message}`,
+      'EXPORT_FAILED',
+      'ExportBaselineTool',
+      { originalError: (error as Error).message, args }
+    );
   }
 }
 

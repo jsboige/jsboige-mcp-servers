@@ -3,6 +3,7 @@
  */
 
 import { CallToolResult } from '@modelcontextprotocol/sdk/types.js';
+import { StateManagerError } from '../../types/errors.js';
 import { ConversationSkeleton } from '../../types/conversation.js';
 import { normalizePath } from '../../utils/path-normalizer.js';
 import { scanDiskForNewTasks } from './disk-scanner.js';
@@ -119,9 +120,11 @@ export const getCurrentTaskTool = {
         const targetWorkspace = args.workspace || contextWorkspace;
         
         if (!targetWorkspace) {
-            throw new Error(
-                'Workspace non fourni et impossible à détecter automatiquement. ' +
-                'Veuillez spécifier un workspace explicitement.'
+            throw new StateManagerError(
+                'Workspace non fourni et impossible à détecter automatiquement. Veuillez spécifier un workspace explicitement.',
+                'WORKSPACE_NOT_SPECIFIED',
+                'GetCurrentTaskTool',
+                { argsWorkspace: args.workspace, contextWorkspace }
             );
         }
         
@@ -131,9 +134,11 @@ export const getCurrentTaskTool = {
         const currentTask = await findMostRecentTask(conversationCache, targetWorkspace, true);
         
         if (!currentTask) {
-            throw new Error(
-                `Aucune tâche trouvée dans le workspace "${targetWorkspace}". ` +
-                'Vérifiez que le chemin du workspace est correct ou que des conversations existent.'
+            throw new StateManagerError(
+                `Aucune tâche trouvée dans le workspace "${targetWorkspace}". Vérifiez que le chemin du workspace est correct ou que des conversations existent.`,
+                'NO_TASK_IN_WORKSPACE',
+                'GetCurrentTaskTool',
+                { workspace: targetWorkspace, cacheSize: conversationCache.size }
             );
         }
         
