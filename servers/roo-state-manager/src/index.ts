@@ -307,11 +307,69 @@ process.on('unhandledRejection', (reason, promise) => {
     process.exit(1);
 });
 
+// T3.6: Graceful shutdown avec timeout
+const SHUTDOWN_TIMEOUT_MS = parseInt(process.env.SHUTDOWN_TIMEOUT_MS || '10000', 10);
+let isShuttingDown = false;
+let serverInstance: RooStateManagerServer | null = null;
+
+/**
+ * Graceful shutdown handler avec timeout
+ * T3.6 - Implémenter graceful shutdown timeout
+ */
+async function gracefulShutdown(signal: string): Promise<void> {
+    if (isShuttingDown) {
+        logger.warn(`Shutdown already in progress, ignoring ${signal}`);
+        return;
+    }
+
+    isShuttingDown = true;
+    logger.info(`Received ${signal}, starting graceful shutdown (timeout: ${SHUTDOWN_TIMEOUT_MS}ms)...`);
+
+    // Timeout de sécurité
+    const forceExitTimeout = setTimeout(() => {
+        logger.error(`Graceful shutdown timed out after ${SHUTDOWN_TIMEOUT_MS}ms, forcing exit`);
+        process.exit(1);
+    }, SHUTDOWN_TIMEOUT_MS);
+
+    try {
+        // 1. Arrêter le serveur MCP
+        if (serverInstance) {
+            logger.info('Stopping MCP server...');
+            await serverInstance.stop();
+            logger.info('MCP server stopped');
+        }
+
+        // 2. Arrêter le ServiceRegistry (cleanup de tous les services)
+        const { getServiceRegistry } = await import('./services/ServiceRegistry.js');
+        const registry = getServiceRegistry();
+        if (registry) {
+            logger.info('Shutting down ServiceRegistry...');
+            await registry.shutdown();
+            logger.info('ServiceRegistry shutdown complete');
+        }
+
+        // 3. Cleanup réussi
+        clearTimeout(forceExitTimeout);
+        logger.info(`Graceful shutdown completed successfully after ${signal}`);
+        process.exit(0);
+
+    } catch (error) {
+        clearTimeout(forceExitTimeout);
+        logger.error('Error during graceful shutdown:', { error });
+        process.exit(1);
+    }
+}
+
+// Enregistrement des handlers de signaux
+process.on('SIGTERM', () => gracefulShutdown('SIGTERM'));
+process.on('SIGINT', () => gracefulShutdown('SIGINT'));
+process.on('SIGHUP', () => gracefulShutdown('SIGHUP'));
+
 // Démarrage du serveur
 (async () => {
     try {
-        const server = new RooStateManagerServer();
-        server.run().catch((error) => {
+        serverInstance = new RooStateManagerServer();
+        serverInstance.run().catch((error) => {
             logger.error('Fatal error during server execution:', { error });
             process.exit(1);
         });
