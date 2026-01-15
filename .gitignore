@@ -72,7 +72,20 @@ test-results/
 # Archives
 *.zip
 /servers/roo-state-manager/diag_results.json
-/servers/roo-state-manager/diag_results_full.json-e "servers/roo-state-manager/output.txt\nservers/roo-state-manager/run-hierarchy-test.ps1\nservers/roo-state-manager/test-quick.ps1" 
+/servers/roo-state-manager/diag_results_full.json
+/servers/roo-state-manager/output.txt
+/servers/roo-state-manager/run-hierarchy-test.ps1
+/servers/roo-state-manager/test-quick.ps1
+/servers/roo-state-manager/test-output.txt
+/servers/roo-state-manager/test-baseline.txt
+/servers/roo-state-manager/test-baseline-valid.json
+/servers/roo-state-manager/test-tool-*.js
+/servers/roo-state-manager/test-*.log
+/servers/roo-state-manager/debug-*.log
+/servers/roo-state-manager/test-lock-temp-*/
+/servers/roo-state-manager/temp/
+/servers/roo-state-manager/tmp-debug/
+/servers/roo-state-manager/undefined/
 build-test-results.txt
 servers/roo-state-manager/build-errors.txt
 servers/quickfiles-server/.jest-cache/
