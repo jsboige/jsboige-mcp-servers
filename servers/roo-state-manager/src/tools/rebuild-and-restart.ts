@@ -4,6 +4,7 @@ import * as path from 'path';
 import * as fs from 'fs/promises';
 import { fileURLToPath } from 'url';
 import { dirname } from 'path';
+import { GenericError, GenericErrorCode } from '../types/errors.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
@@ -12,7 +13,7 @@ async function runNpmBuild(mcpPath: string): Promise<string> {
     return new Promise((resolve, reject) => {
         exec('npm run build', { cwd: mcpPath }, (error, stdout, stderr) => {
             if (error) {
-                return reject(new Error(`Build failed: ${error.message}\n${stderr}`));
+                return reject(new GenericError(`Build failed: ${error.message}`, GenericErrorCode.FILE_SYSTEM_ERROR));
             }
             resolve(stdout);
         });
@@ -24,7 +25,7 @@ async function touchFile(filePath: string): Promise<string> {
     return new Promise((resolve, reject) => {
         exec(`powershell.exe -Command "${command}"`, (error, stdout, stderr) => {
             if (error) {
-                return reject(new Error(`Touch failed for ${filePath}: ${error.message}\n${stderr}`));
+                return reject(new GenericError(`Touch failed for ${filePath}: ${error.message}`, GenericErrorCode.FILE_SYSTEM_ERROR));
             }
             resolve(`Touched: ${filePath}`);
         });
@@ -51,7 +52,7 @@ export const rebuildAndRestart = {
             
             const mcpConfig = settings.mcpServers?.[mcp_name];
             if (!mcpConfig) {
-                throw new Error(`MCP "${mcp_name}" not found in settings file.`);
+                throw new GenericError(`MCP "${mcp_name}" not found in settings file.`, GenericErrorCode.INVALID_ARGUMENT);
             }
 
             let mcpPath: string;

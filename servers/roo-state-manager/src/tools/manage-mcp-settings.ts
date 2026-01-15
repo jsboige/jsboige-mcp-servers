@@ -2,6 +2,7 @@ import { CallToolResult } from '@modelcontextprotocol/sdk/types.js';
 import * as fs from 'fs/promises';
 import * as path from 'path';
 import * as os from 'os';
+import { GenericError, GenericErrorCode } from '../types/errors.js';
 
 interface McpServer {
     transportType?: string;
@@ -225,7 +226,7 @@ async function writeMcpSettings(settings: McpSettings, backup: boolean): Promise
 
         // Valider la structure JSON
         if (!settings.mcpServers || typeof settings.mcpServers !== 'object') {
-            throw new Error('Structure invalide: mcpServers requis');
+            throw new GenericError('Structure invalide: mcpServers requis', GenericErrorCode.INVALID_ARGUMENT);
         }
         
         if (backup) {
@@ -290,7 +291,7 @@ export const rebuildTaskIndexFixed = {
             try {
                 const stats = await fs.stat(tasksDir);
                 if (!stats.isDirectory()) {
-                    throw new Error('Pas un répertoire');
+                    throw new GenericError('Pas un répertoire', GenericErrorCode.FILE_SYSTEM_ERROR);
                 }
                 report += `✅ **Répertoire des conversations trouvé !**\n\n`;
             } catch (error) {
@@ -532,7 +533,7 @@ async function toggleServer(serverName: string, backup: boolean): Promise<CallTo
         const settings = JSON.parse(content) as McpSettings;
         
         if (!settings.mcpServers[serverName]) {
-            throw new Error(`Serveur "${serverName}" non trouvé`);
+            throw new GenericError(`Serveur "${serverName}" non trouvé`, GenericErrorCode.INVALID_ARGUMENT);
         }
         
         if (backup) {
