@@ -1,56 +1,24 @@
 /**
- * Types et interfaces pour le système de baseline non-nominatif - RooSync v2.2
- *
- * @deprecated Utiliser `baseline-unified.ts` pour les nouveaux développements.
- * Ce fichier est conservé pour compatibilité legacy et sera supprimé
- * après la migration complète vers l'architecture v3.0.
- *
- * @see baseline-unified.ts pour les types canoniques
+ * Types canoniques pour le système de baseline unifié - RooSync v3.0+
+ * 
+ * Ce fichier définit les structures de données canoniques pour le système
+ * de baseline unifié. Il remplace les définitions dupliquées dans:
+ * - baseline.ts (legacy v2.1 - nominatif)
+ * - non-nominative-baseline.ts (v2.2 - intermédiaire)
+ * 
+ * Les types de ce fichier sont la source de vérité unique pour l'architecture
+ * de baseline non-nominative v3.0, choisie comme modèle unique pour RooSync.
+ * 
+ * @version 3.0.0
+ * @canonical Ce fichier est la source de vérité pour les types de baseline
  * @see docs/suivi/RooSync/T3_9_ANALYSE_BASELINE_UNIQUE.md pour la justification
- *
- * Ce fichier définit les structures de données pour le nouveau système
- * de baseline qui ne dépend plus des identités de machines nominatives.
  */
-
-/**
- * Inventaire de machine pour l'agrégation de baseline
- */
-export interface MachineInventory {
-  machineId: string;
-  timestamp?: string;
-  config: {
-    roo?: {
-      modes?: string[];
-      mcpSettings?: Record<string, any>;
-      userSettings?: Record<string, any>;
-    };
-    hardware?: {
-      cpu?: any;
-      memory?: any;
-      disks?: any;
-      gpu?: any;
-    };
-    software?: {
-      powershell?: string;
-      node?: string;
-      python?: string;
-    };
-    system?: {
-      os?: string;
-      architecture?: string;
-    };
-  };
-  metadata: {
-    lastSeen?: string;
-    version?: string;
-    source?: string;
-    collectionDuration?: number;
-    collectorVersion?: string;
-  };
-}
 
 /**
  * Catégories de configuration pour la baseline non-nominative
+ * 
+ * Ces 11 catégories permettent une granularité fine pour la synchronisation
+ * sélective des configurations entre machines.
  */
 export type ConfigurationCategory =
   | 'roo-core'           // Configuration Roo de base (modes, MCPs)
@@ -67,6 +35,9 @@ export type ConfigurationCategory =
 
 /**
  * Profil de configuration pour une catégorie donnée
+ * 
+ * Un profil représente une configuration réutilisable pour une catégorie
+ * spécifique. Les profils peuvent être partagés entre plusieurs machines.
  */
 export interface ConfigurationProfile {
   /** Identifiant unique du profil (non-nominatif) */
@@ -87,14 +58,7 @@ export interface ConfigurationProfile {
   /** Priorité du profil (plus élevé = plus prioritaire) */
   priority: number;
   
-  /** Compatibilité avec d'autres profils */
-  compatibility: {
-    requiredProfiles: string[];     // Profils requis
-    conflictingProfiles: string[];  // Profils incompatibles
-    optionalProfiles: string[];     // Profils optionnels
-  };
-  
-  /** Métadonnées */
+  /** Métadonnées du profil */
   metadata: {
     createdAt: string;
     updatedAt: string;
@@ -106,8 +70,11 @@ export interface ConfigurationProfile {
 
 /**
  * Baseline non-nominative complète
+ * 
+ * Une baseline est une collection de profils de configuration qui définit
+ * l'état de référence pour un ensemble de machines.
  */
-export interface NonNominativeBaseline {
+export interface Baseline {
   /** Identifiant unique de la baseline */
   baselineId: string;
   
@@ -123,10 +90,10 @@ export interface NonNominativeBaseline {
   /** Profils de configuration composant la baseline */
   profiles: ConfigurationProfile[];
   
-  /** Règles d'agrégation et de priorité */
+  /** Règles d'agrégation */
   aggregationRules: {
     defaultPriority: number;
-    conflictResolution: 'highest_priority' | 'most_recent' | 'manual';
+    conflictResolution: 'highest_priority' | 'most_recent';
     autoMergeCategories: ConfigurationCategory[];
   };
   
@@ -138,11 +105,75 @@ export interface NonNominativeBaseline {
     lastModifiedBy: string;
     tags: string[];
     status: 'draft' | 'active' | 'deprecated' | 'archived';
+    
+    /** Historique des versions */
+    versionHistory?: Array<{
+      version: string;
+      releasedAt: string;
+      releasedBy: string;
+      releaseNotes: string;
+    }>;
   };
 }
 
 /**
- * Configuration de machine mappée à la baseline non-nominative
+ * Inventaire de machine pour l'agrégation de baseline
+ * 
+ * Représente l'état complet de la configuration d'une machine à un instant T.
+ * Utilisé pour créer des profils ou comparer avec une baseline existante.
+ */
+export interface MachineInventory {
+  /** Identifiant de la machine (hash anonymisé) */
+  machineId: string;
+  
+  /** Timestamp de la collecte */
+  timestamp?: string;
+  
+  /** Configuration de la machine */
+  config: {
+    /** Configuration Roo */
+    roo?: {
+      modes?: string[];
+      mcpSettings?: Record<string, any>;
+      userSettings?: Record<string, any>;
+    };
+    
+    /** Configuration matérielle */
+    hardware?: {
+      cpu?: any;
+      memory?: any;
+      disks?: any;
+      gpu?: any;
+    };
+    
+    /** Configuration logicielle */
+    software?: {
+      powershell?: string;
+      node?: string;
+      python?: string;
+    };
+    
+    /** Configuration système */
+    system?: {
+      os?: string;
+      architecture?: string;
+    };
+  };
+  
+  /** Métadonnées de l'inventaire */
+  metadata: {
+    lastSeen?: string;
+    version?: string;
+    source?: string;
+    collectionDuration?: number;
+    collectorVersion?: string;
+  };
+}
+
+/**
+ * Configuration de machine mappée à la baseline
+ * 
+ * Associe une machine à une baseline et aux profils qui lui sont appliqués.
  */
 export interface MachineConfigurationMapping {
   /** Identifiant unique du mapping */
@@ -159,7 +190,6 @@ export interface MachineConfigurationMapping {
     profileId: string;
     category: ConfigurationCategory;
     appliedAt: string;
-    source: 'auto' | 'manual' | 'inherited';
   }>;
   
   /** Déviations détectées */
@@ -167,23 +197,23 @@ export interface MachineConfigurationMapping {
     category: ConfigurationCategory;
     expectedValue: any;
     actualValue: any;
-    severity: 'CRITICAL' | 'IMPORTANT' | 'WARNING' | 'INFO';
     detectedAt: string;
   }>;
   
-  /** Métadonnées */
+  /** Métadonnées du mapping */
   metadata: {
     firstSeen: string;
     lastSeen: string;
     lastUpdated: string;
-    confidence: number; // 0-1
   };
 }
 
 /**
- * Rapport de comparaison non-nominatif
+ * Rapport de comparaison de baseline
+ * 
+ * Résultat de la comparaison entre une baseline et une ou plusieurs machines.
  */
-export interface NonNominativeComparisonReport {
+export interface ComparisonReport {
   /** Identifiant du rapport */
   reportId: string;
   
@@ -200,7 +230,6 @@ export interface NonNominativeComparisonReport {
     field: string;
     expectedValue: any;
     actualValue: any;
-    severity: 'CRITICAL' | 'IMPORTANT' | 'WARNING' | 'INFO';
     description: string;
   }>>;
   
@@ -208,7 +237,6 @@ export interface NonNominativeComparisonReport {
   statistics: {
     totalMachines: number;
     totalDifferences: number;
-    differencesBySeverity: Record<string, number>;
     differencesByCategory: Record<ConfigurationCategory, number>;
     complianceRate: number; // 0-1
   };
@@ -222,35 +250,10 @@ export interface NonNominativeComparisonReport {
 }
 
 /**
- * Système de versionnement de baseline
- */
-export interface BaselineVersion {
-  /** Numéro de version */
-  version: string;
-  
-  /** Baseline ID */
-  baselineId: string;
-  
-  /** Changements depuis la version précédente */
-  changes: Array<{
-    type: 'added' | 'modified' | 'removed' | 'deprecated';
-    target: string; // profileId ou category
-    description: string;
-    impact: 'low' | 'medium' | 'high' | 'critical';
-  }>;
-  
-  /** Métadonnées de version */
-  metadata: {
-    releasedAt: string;
-    releasedBy: string;
-    releaseNotes: string;
-    migrationRequired: boolean;
-    migrationPath?: string;
-  };
-}
-
-/**
  * Configuration d'agrégation automatique
+ * 
+ * Définit comment agréger les configurations de plusieurs machines
+ * pour créer une baseline.
  */
 export interface AggregationConfig {
   /** Sources de données pour l'agrégation */
@@ -262,8 +265,7 @@ export interface AggregationConfig {
   
   /** Règles d'agrégation par catégorie */
   categoryRules: Record<ConfigurationCategory, {
-    strategy: 'majority' | 'weighted_average' | 'latest' | 'manual';
-    confidenceThreshold: number; // 0-1
+    strategy: 'majority' | 'latest';
     autoApply: boolean;
   }>;
   
@@ -271,22 +273,23 @@ export interface AggregationConfig {
   thresholds: {
     deviationThreshold: number; // 0-1
     complianceThreshold: number; // 0-1
-    outlierDetection: boolean;
   };
 }
 
 /**
- * État du système de baseline non-nominatif
+ * État du système de baseline
+ * 
+ * État global du système de baseline à un instant T.
  */
-export interface NonNominativeBaselineState {
+export interface BaselineState {
   /** Baseline actuellement active */
-  activeBaseline?: NonNominativeBaseline;
+  activeBaseline?: Baseline;
   
   /** Machines mappées */
   machineMappings: MachineConfigurationMapping[];
   
   /** Dernière comparaison */
-  lastComparison?: NonNominativeComparisonReport;
+  lastComparison?: ComparisonReport;
   
   /** Statistiques */
   statistics: {
@@ -300,17 +303,10 @@ export interface NonNominativeBaselineState {
 
 /**
  * Options de migration depuis l'ancien système
+ * 
+ * Configuration pour migrer depuis le système v2.1 (nominatif) vers v3.0.
  */
 export interface MigrationOptions {
-  /** Conserver les anciennes références */
-  keepLegacyReferences: boolean;
-  
-  /** Stratégie de mapping des machineId */
-  machineMappingStrategy: 'hash' | 'uuid' | 'sequential';
-  
-  /** Validation automatique après migration */
-  autoValidate: boolean;
-  
   /** Créer un backup avant migration */
   createBackup: boolean;
   
@@ -319,13 +315,16 @@ export interface MigrationOptions {
 }
 
 /**
- * Résultat de migration */
+ * Résultat de migration
+ * 
+ * Résultat d'une opération de migration depuis le système legacy.
+ */
 export interface MigrationResult {
   /** Succès de la migration */
   success: boolean;
   
   /** Baseline créée */
-  newBaseline?: NonNominativeBaseline;
+  newBaseline?: Baseline;
   
   /** Machines migrées */
   migratedMachines: string[];
@@ -343,7 +342,6 @@ export interface MigrationResult {
     successfulMigrations: number;
     failedMigrations: number;
     profilesCreated: number;
-    deviationsDetected: number;
   };
   
   /** Métadonnées */
@@ -353,3 +351,38 @@ export interface MigrationResult {
     duration: number; // en millisecondes
   };
 }
+
+/**
+ * Stratégies d'agrégation disponibles
+ */
+export type AggregationStrategy = 'majority' | 'latest' | 'weighted_average';
+
+/**
+ * Résolution de conflits
+ */
+export type ConflictResolution = 'highest_priority' | 'most_recent' | 'manual';
+
+/**
+ * Statut d'une baseline
+ */
+export type BaselineStatus = 'draft' | 'active' | 'deprecated' | 'archived';
+
+/**
+ * Stabilité d'un profil
+ */
+export type ProfileStability = 'stable' | 'beta' | 'experimental';
+
+/**
+ * Type de source de données
+ */
+export type DataSourceType = 'machine_inventory' | 'existing_baseline' | 'manual_input';
+
+/**
+ * Réexport des types pour compatibilité
+ * 
+ * Ces alias permettent une transition progressive vers les types canoniques.
+ * @deprecated Utiliser les types canoniques directement
+ */
+export type NonNominativeBaseline = Baseline;
+export type NonNominativeComparisonReport = ComparisonReport;
+export type NonNominativeBaselineState = BaselineState;

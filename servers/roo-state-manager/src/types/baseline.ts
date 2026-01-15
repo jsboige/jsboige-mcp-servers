@@ -1,6 +1,13 @@
 /**
  * Types et interfaces pour le BaselineService - RooSync v2.1
  *
+ * @deprecated Utiliser `baseline-unified.ts` pour les nouveaux développements.
+ * Ce fichier est conservé pour compatibilité legacy et sera supprimé
+ * après la migration complète vers l'architecture v3.0.
+ *
+ * @see baseline-unified.ts pour les types canoniques
+ * @see docs/suivi/RooSync/T3_9_ANALYSE_BASELINE_UNIQUE.md pour la justification
+ *
  * Ce fichier définit toutes les structures de données nécessaires
  * pour l'architecture baseline-driven de RooSync v2.1
  */
