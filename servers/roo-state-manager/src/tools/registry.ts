@@ -611,7 +611,7 @@ export function registerCallToolHandler(
                }
                break;
            default:
-               throw new Error(`Tool not found: ${name}`);
+               throw new GenericError(`Tool not found: ${name}`, GenericErrorCode.INVALID_ARGUMENT);
        }
 
         return result;

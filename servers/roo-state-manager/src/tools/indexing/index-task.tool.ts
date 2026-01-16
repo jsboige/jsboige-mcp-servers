@@ -6,6 +6,7 @@
 import { CallToolResult } from '@modelcontextprotocol/sdk/types.js';
 import { ConversationSkeleton } from '../../types/conversation.js';
 import { RooStorageDetector } from '../../utils/roo-storage-detector.js';
+import { GenericError, GenericErrorCode } from '../../types/errors.js';
 
 export interface IndexTaskSemanticArgs {
     task_id: string;
@@ -55,19 +56,19 @@ export const indexTaskSemanticTool = {
             console.log(`[DEBUG] QDRANT_COLLECTION_NAME: ${qdrantCollection || 'MISSING'}`);
             
             if (!openaiKey) {
-                throw new Error('OPENAI_API_KEY environment variable is required');
+                throw new GenericError('OPENAI_API_KEY environment variable is required', GenericErrorCode.INVALID_ARGUMENT);
             }
             
             const skeleton = conversationCache.get(task_id);
             if (!skeleton) {
-                throw new Error(`Task with ID '${task_id}' not found in cache.`);
+                throw new GenericError(`Task with ID '${task_id}' not found in cache.`, GenericErrorCode.INVALID_ARGUMENT);
             }
             
             const conversation = await RooStorageDetector.findConversationById(task_id);
             const taskPath = conversation?.path;
             
             if (!taskPath) {
-                throw new Error(`Task directory for '${task_id}' not found in any storage location.`);
+                throw new GenericError(`Task directory for '${task_id}' not found in any storage location.`, GenericErrorCode.FILE_SYSTEM_ERROR);
             }
             
             console.log(`[DEBUG] Attempting to import indexTask from task-indexer.js`);

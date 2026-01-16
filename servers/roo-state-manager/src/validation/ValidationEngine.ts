@@ -19,12 +19,13 @@
  */
 
 import { z } from 'zod';
-import { 
-  DisplayPreset, 
-  DisplayOptions, 
-  ToolCategory, 
-  ValidationResult 
+import {
+  DisplayPreset,
+  DisplayOptions,
+  ToolCategory,
+  ValidationResult
 } from '../interfaces/UnifiedToolInterface.js';
+import { GenericError, GenericErrorCode } from '../types/errors.js';
 
 /**
  * Schémas de validation pour chaque catégorie d'outils
@@ -265,7 +266,7 @@ export class ValidationEngine {
       case ToolCategory.UTILITY:
         return ToolValidationSchemas.UTILITY_SCHEMA;
       default:
-        throw new Error(`Unknown tool category: ${category}`);
+        throw new GenericError(`Unknown tool category: ${category}`, GenericErrorCode.INVALID_ARGUMENT);
     }
   }
 

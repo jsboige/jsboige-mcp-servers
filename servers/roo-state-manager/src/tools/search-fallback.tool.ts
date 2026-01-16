@@ -4,6 +4,7 @@
  */
 
 import { CallToolResult } from '@modelcontextprotocol/sdk/types.js';
+import { GenericError, GenericErrorCode } from '../types/errors.js';
 
 export interface SearchFallbackArgs {
     conversation_id?: string;
@@ -153,7 +154,7 @@ export async function handleSearchTasksSemanticFallback(
     console.log(`[DEBUG] Specific search - conversation_id: "${conversation_id}" (type: ${typeof conversation_id})`);
     const skeleton = conversationCache.get(conversation_id);
     if (!skeleton) {
-        throw new Error(`Conversation with ID '${conversation_id}' not found in cache.`);
+        throw new GenericError(`Conversation with ID '${conversation_id}' not found in cache.`, GenericErrorCode.INVALID_ARGUMENT);
     }
 
     const query = search_query.toLowerCase();
