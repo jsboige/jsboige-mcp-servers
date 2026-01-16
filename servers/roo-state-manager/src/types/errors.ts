@@ -476,14 +476,15 @@ export class ExportConfigManagerError extends StateManagerError {
 }
 
 /**
- * Codes d'erreur pour ConfigSharingService
- */
-export enum ConfigSharingServiceErrorCode {
-  INVENTORY_INCOMPLETE = 'INVENTORY_INCOMPLETE',
-  COLLECTION_FAILED = 'COLLECTION_FAILED',
-  PATH_NOT_AVAILABLE = 'PATH_NOT_AVAILABLE'
-}
-
+ /**
+  * Codes d'erreur pour ConfigSharingService
+  */
+ export enum ConfigSharingServiceErrorCode {
+   INVENTORY_INCOMPLETE = 'INVENTORY_INCOMPLETE',
+   COLLECTION_FAILED = 'COLLECTION_FAILED',
+   PATH_NOT_AVAILABLE = 'PATH_NOT_AVAILABLE',
+   PUBLISH_FAILED = 'PUBLISH_FAILED'
+ }
 /**
  * Erreur spécifique pour ConfigSharingService
  */

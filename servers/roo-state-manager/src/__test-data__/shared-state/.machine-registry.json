@@ -1,0 +1,12 @@
+{
+  "machines": {
+    "test-machine": {
+      "machineId": "test-machine",
+      "firstSeen": "2026-01-16T16:39:16.735Z",
+      "lastSeen": "2026-01-16T16:39:16.735Z",
+      "source": "service",
+      "status": "online"
+    }
+  },
+  "lastUpdated": "2026-01-16T16:39:16.735Z"
+}

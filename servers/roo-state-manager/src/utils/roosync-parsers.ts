@@ -1,9 +1,9 @@
 /**
  * Parsers pour les fichiers RooSync
- * 
+ *
  * Ce module contient les utilitaires de parsing pour les différents
  * formats de fichiers utilisés par RooSync (Markdown avec marqueurs HTML, JSON).
- * 
+ *
  * @module roosync-parsers
  * @version 2.0.0
  */
@@ -18,37 +18,37 @@ import { readJSONFileSyncWithoutBOM, parseJSONWithoutBOM } from './encoding-help
 export interface RooSyncDecision {
   /** Identifiant unique de la décision (UUID ou hash) */
   id: string;
-  
+
   /** Titre/description de la décision */
   title: string;
-  
+
   /** État de la décision */
   status: 'pending' | 'approved' | 'rejected' | 'applied' | 'rolled_back';
-  
+
   /** Type de changement */
   type: 'config' | 'file' | 'setting';
-  
+
   /** Chemin du fichier concerné (si applicable) */
   path?: string;
-  
+
   /** Machine source de la décision */
   sourceMachine: string;
-  
+
   /** Machines cibles */
   targetMachines: string[];
-  
+
   /** Date de création */
   createdAt: string;
-  
+
   /** Date de dernière modification */
   updatedAt?: string;
-  
+
   /** Utilisateur ayant créé la décision */
   createdBy?: string;
-  
+
   /** Détails du changement (diff, description) */
   details?: string;
-  
+
   /** Chemin du backup (si appliqué) */
   backupPath?: string;
 }
@@ -59,36 +59,36 @@ export interface RooSyncDecision {
 export interface RooSyncDashboard {
   /** Version du format du dashboard */
   version: string;
-  
+
   /** Date de dernière mise à jour */
   lastUpdate: string;
-  
+
   /** Date de dernière synchronisation */
   lastSync: string;
-  
+
   /** État global de synchronisation */
   overallStatus: 'synced' | 'diverged' | 'conflict' | 'unknown';
-  
+
   /** État de synchronisation (alias pour overallStatus) */
   status: 'synced' | 'diverged' | 'conflict' | 'unknown';
-  
+
   /** Machines enregistrées */
   machines: {
     [machineId: string]: {
       /** Dernière synchronisation réussie */
       lastSync: string;
-      
+
       /** État de la machine */
-      status: 'online' | 'offline' | 'unknown';
-      
+      status: 'online' | 'offline' | 'unknown' | 'synced' | 'diverged' | 'conflict';
+
       /** Nombre de différences détectées */
       diffsCount: number;
-      
+
       /** Nombre de décisions en attente */
       pendingDecisions: number;
     };
   };
-  
+
   /** Statistiques globales */
   stats?: {
     totalDiffs: number;
@@ -96,28 +96,27 @@ export interface RooSyncDashboard {
     appliedDecisions: number;
     pendingDecisions: number;
   };
-  
-  /** Tableau des machines (pour compatibilité avec get-status.ts) */
-  machinesArray?: Array<{
-    id: string;
-    status: 'online' | 'offline' | 'unknown';
-    lastSync: string;
-    pendingDecisions: number;
-    diffsCount: number;
-  }>;
-  
-  /** Résumé statistique (pour compatibilité avec get-status.ts) */
-  summary?: {
-    totalMachines: number;
-    onlineMachines: number;
-    totalDiffs: number;
-    totalPendingDecisions: number;
-  };
+/** Tableau des machines (pour compatibilité avec get-status.ts) */
+machinesArray?: Array<{
+  id: string;
+  status: 'online' | 'offline' | 'unknown' | 'synced' | 'diverged' | 'conflict';
+  lastSync: string;
+  diffsCount: number;
+  pendingDecisions: number;
+}>;
+
+/** Résumé statistique (pour compatibilité avec get-status.ts) */
+summary?: {
+  totalMachines: number;
+  onlineMachines: number;
+  totalDiffs: number;
+  totalPendingDecisions: number;
+};
 }
 
 /**
- * Erreur de parsing RooSync
- */
+* Erreur de parsing RooSync
+*/
 export class RooSyncParseError extends Error {
   constructor(message: string, public readonly filePath?: string) {
     super(`[RooSync Parse] ${message}`);
@@ -127,12 +126,12 @@ export class RooSyncParseError extends Error {
 
 /**
  * Parse un fichier Markdown contenant des décisions RooSync
- * 
+ *
  * Les décisions sont encadrées par des marqueurs HTML :
  * <!-- DECISION_BLOCK_START -->
  * ...
  * <!-- DECISION_BLOCK_END -->
- * 
+ *
  * @param filePath Chemin vers le fichier Markdown
  * @returns Tableau de décisions parsées
  * @throws {RooSyncParseError} Si le parsing échoue
@@ -140,28 +139,28 @@ export class RooSyncParseError extends Error {
 export function parseRoadmapMarkdown(filePath: string): RooSyncDecision[] {
   try {
     const content = readFileSync(resolve(filePath), 'utf-8');
-    
+
     // Guard contre le bug Vitest où readFileSync retourne undefined
     if (!content || typeof content !== 'string') {
       return [];
     }
-    
+
     const decisions: RooSyncDecision[] = [];
-    
+
     // Regex pour extraire les blocs de décisions
     const blockRegex = /<!-- DECISION_BLOCK_START -->([\s\S]*?)<!-- DECISION_BLOCK_END -->/g;
-    
+
     let match;
     while ((match = blockRegex.exec(content)) !== null) {
       const blockContent = match[1].trim();
-      
+
       // Parser le contenu du bloc
       const decision = parseDecisionBlock(blockContent);
       if (decision) {
         decisions.push(decision);
       }
     }
-    
+
     return decisions;
   } catch (error) {
     const errorMessage = error instanceof Error ? error.message : String(error);
@@ -174,7 +173,7 @@ export function parseRoadmapMarkdown(filePath: string): RooSyncDecision[] {
 
 /**
  * Parse le contenu d'un bloc de décision Markdown
- * 
+ *
  * @param blockContent Contenu Markdown du bloc
  * @returns Décision parsée ou null si invalide
  */
@@ -192,32 +191,32 @@ function parseDecisionBlock(blockContent: string): RooSyncDecision | null {
     const updatedAtMatch = blockContent.match(/\*\*Mis à jour:\*\*\s*(.+?)$/m);
     const createdByMatch = blockContent.match(/\*\*Créé par:\*\*\s*(.+?)$/m);
     const detailsMatch = blockContent.match(/\*\*Détails:\*\*\s*([\s\S]*?)(?:\n\*\*|$)/);
-    
+
     if (!idMatch || !titleMatch || !statusMatch || !sourceMachineMatch) {
       return null; // Champs obligatoires manquants
     }
-    
+
     // Parser le statut
     const statusStr = statusMatch[1].trim().toLowerCase();
     const validStatuses = ['pending', 'approved', 'rejected', 'applied', 'rolled_back'];
-    const status = validStatuses.includes(statusStr) 
+    const status = validStatuses.includes(statusStr)
       ? statusStr as RooSyncDecision['status']
       : 'pending';
-    
+
     // Parser le type
     const typeStr = typeMatch ? typeMatch[1].trim().toLowerCase() : 'config';
     const validTypes = ['config', 'file', 'setting'];
     const type = validTypes.includes(typeStr)
       ? typeStr as RooSyncDecision['type']
       : 'config';
-    
+
     // Parser les machines cibles
     const targetMachinesStr = targetMachinesMatch ? targetMachinesMatch[1].trim() : '';
     const targetMachines = targetMachinesStr
       .split(',')
       .map(m => m.trim())
       .filter(m => m.length > 0);
-    
+
     return {
       id: idMatch[1].trim(),
       title: titleMatch[1].trim(),
@@ -240,7 +239,7 @@ function parseDecisionBlock(blockContent: string): RooSyncDecision | null {
 
 /**
  * Parse un fichier JSON dashboard RooSync
- * 
+ *
  * @param filePath Chemin vers le fichier JSON
  * @returns Dashboard parsé
  * @throws {RooSyncParseError} Si le parsing échoue
@@ -248,12 +247,12 @@ function parseDecisionBlock(blockContent: string): RooSyncDecision | null {
 export function parseDashboardJson(filePath: string): RooSyncDashboard {
   try {
     const data = readJSONFileSyncWithoutBOM<RooSyncDashboard>(resolve(filePath));
-    
+
     // Validation basique de la structure
     if (!data.version || !data.machines) {
       throw new Error('Structure de dashboard invalide (version ou machines manquant)');
     }
-    
+
     return data as RooSyncDashboard;
   } catch (error) {
     const errorMessage = error instanceof Error ? error.message : String(error);
@@ -266,7 +265,7 @@ export function parseDashboardJson(filePath: string): RooSyncDashboard {
 
 /**
  * Parse un fichier JSON de configuration RooSync
- * 
+ *
  * @param filePath Chemin vers le fichier JSON
  * @returns Configuration parsée
  * @throws {RooSyncParseError} Si le parsing échoue
@@ -285,7 +284,7 @@ export function parseConfigJson(filePath: string): any {
 
 /**
  * Filtre les décisions par statut
- * 
+ *
  * @param decisions Tableau de décisions
  * @param status Statut à filtrer
  * @returns Décisions filtrées
@@ -299,7 +298,7 @@ export function filterDecisionsByStatus(
 
 /**
  * Filtre les décisions par machine cible
- * 
+ *
  * @param decisions Tableau de décisions
  * @param machineId ID de la machine
  * @returns Décisions filtrées
@@ -308,8 +307,8 @@ export function filterDecisionsByMachine(
   decisions: RooSyncDecision[],
   machineId: string
 ): RooSyncDecision[] {
-  return decisions.filter(d => 
-    d.targetMachines.includes(machineId) || 
+  return decisions.filter(d =>
+    d.targetMachines.includes(machineId) ||
     d.targetMachines.includes('all') ||
     d.targetMachines.length === 0
   );
@@ -317,7 +316,7 @@ export function filterDecisionsByMachine(
 
 /**
  * Trouve une décision par ID
- * 
+ *
  * @param decisions Tableau de décisions
  * @param id ID de la décision
  * @returns Décision trouvée ou undefined
@@ -337,21 +336,21 @@ export function findDecisionById(
  */
 export function parseRoadmapMarkdownContent(content: string): RooSyncDecision[] {
   const decisions: RooSyncDecision[] = [];
-  
+
   // Regex pour extraire les blocs de décisions
   const blockRegex = /<!-- DECISION_BLOCK_START -->([\s\S]*?)<!-- DECISION_BLOCK_END -->/g;
-  
+
   let match;
   while ((match = blockRegex.exec(content)) !== null) {
     const blockContent = match[1].trim();
-    
+
     // Parser le contenu du bloc
     const decision = parseDecisionBlock(blockContent);
     if (decision) {
       decisions.push(decision);
     }
   }
-  
+
   return decisions;
 }
 
@@ -365,12 +364,12 @@ export function parseRoadmapMarkdownContent(content: string): RooSyncDecision[] 
 export function parseDashboardJsonContent(content: string): RooSyncDashboard {
   try {
     const data = parseJSONWithoutBOM<RooSyncDashboard>(content);
-    
+
     // Validation basique de la structure
     if (!data.version || !data.machines) {
       throw new Error('Structure de dashboard invalide (version ou machines manquant)');
     }
-    
+
     return data as RooSyncDashboard;
   } catch (error) {
     const errorMessage = error instanceof Error ? error.message : String(error);

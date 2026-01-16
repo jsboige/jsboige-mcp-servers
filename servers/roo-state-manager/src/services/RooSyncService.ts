@@ -59,7 +59,11 @@ interface CacheEntry<T> {
  * Erreur du service RooSync
  */
 export class RooSyncServiceError extends Error {
-  constructor(message: string, public readonly code?: string) {
+  constructor(
+    message: string,
+    public readonly code?: string,
+    public readonly details?: any
+  ) {
     super(`[RooSync Service] ${message}`);
     this.name = 'RooSyncServiceError';
   }
@@ -750,7 +754,7 @@ export class RooSyncService {
       await this.baselineManager.createNonNominativeBaseline(
         `Baseline ${options.version || 'Auto'}`,
         options.updateReason || `Mise à jour depuis ${machineId}`,
-        undefined // Config par défaut
+        [] // Config par défaut (tableau vide)
       );
       
       return true;

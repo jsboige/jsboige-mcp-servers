@@ -19,7 +19,7 @@ vi.mock('../../src/services/RooSyncService.js', () => {
 describe('Legacy Compatibility Integration Test', () => {
   let mockRooSyncService: any;
   let mockConfigSharingService: any;
-  
+
   // Modules à tester (importés dynamiquement)
   let roosyncCollectConfig: any;
   let roosyncCompareConfig: any;
@@ -80,7 +80,6 @@ describe('Legacy Compatibility Integration Test', () => {
         getSharedStatePath: vi.fn().mockReturnValue('/tmp/test-shared-state')
       }),
       getConfigSharingService: vi.fn().mockReturnValue(mockConfigSharingService),
-      getConfigService: vi.fn().mockReturnValue(mockConfigService),
       getConfig: vi.fn().mockReturnValue({ machineId: 'local-machine' }),
       loadDashboard: vi.fn().mockResolvedValue({ machines: { 'remote-machine': {} } }),
       compareRealConfigurations: vi.fn().mockResolvedValue({

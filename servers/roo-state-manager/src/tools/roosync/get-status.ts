@@ -38,7 +38,7 @@ export const GetStatusResultSchema = z.object({
   
   machines: z.array(z.object({
     id: z.string().describe('ID de la machine'),
-    status: z.enum(['online', 'offline', 'unknown']).describe('État de la machine'),
+    status: z.enum(['online', 'offline', 'unknown', 'synced', 'diverged', 'conflict']).describe('État de la machine'),
     lastSync: z.string().describe('Dernière synchronisation'),
     pendingDecisions: z.number().describe('Nombre de décisions en attente'),
     diffsCount: z.number().describe('Nombre de différences détectées')

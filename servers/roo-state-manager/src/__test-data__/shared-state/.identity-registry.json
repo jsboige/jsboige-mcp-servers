@@ -1,0 +1,16 @@
+{
+  "identities": {
+    "test-machine": {
+      "machineId": "test-machine",
+      "source": "baseline",
+      "firstSeen": "2026-01-16T16:39:20.685Z",
+      "lastSeen": "2026-01-16T16:39:20.685Z",
+      "status": "conflict",
+      "metadata": {
+        "baselinePath": "d:\\roo-extensions\\mcps\\internal\\servers\\roo-state-manager\\src\\__test-data__\\shared-state\\sync-config.ref.json"
+      }
+    }
+  },
+  "lastUpdated": "2026-01-16T16:39:20.685Z",
+  "version": "1.0.0"
+}

@@ -13,12 +13,12 @@ export const getMachineInventoryTool: UnifiedToolContract = {
   processingLevel: ProcessingLevel.IMMEDIATE,
   version: '1.0.0',
   inputSchema,
-  execute: async (input: z.infer<typeof inputSchema>): Promise<ToolResult<any>> => {
+  execute: async (input: z.infer<typeof inputSchema>, context: any): Promise<ToolResult<any>> => {
     const startTime = Date.now();
     try {
       const service = InventoryService.getInstance();
       const inventory = await service.getMachineInventory(input.machineId);
-      
+
       return {
         success: true,
         data: inventory,

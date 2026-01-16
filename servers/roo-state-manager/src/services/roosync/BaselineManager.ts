@@ -11,6 +11,7 @@ import { promises as fs, existsSync, readFileSync, constants } from 'fs';
 import { join } from 'path';
 import { RooSyncConfig } from '../../config/roosync-config.js';
 import { RooSyncServiceError } from '../RooSyncService.js';
+import type { RooSyncDashboard } from '../../utils/roosync-parsers.js';
 
 /**
  * Registre central des machines pour éviter les conflits d'identité
@@ -55,40 +56,6 @@ export interface RollbackRestoreResult {
 
   /** Message d'erreur si échec */
   error?: string;
-}
-
-// Interface locale pour RooSyncDashboard pour éviter les erreurs de type
-export interface RooSyncDashboard {
-  version: string;
-  lastUpdate: string;
-  overallStatus: 'diverged' | 'synced' | 'conflict' | 'unknown';
-  lastSync: string;
-  status: 'diverged' | 'synced' | 'conflict' | 'unknown';
-  machines: Record<string, {
-    lastSync: string;
-    status: 'diverged' | 'synced' | 'conflict' | 'unknown';
-    diffsCount: number;
-    pendingDecisions: number;
-  }>;
-  stats: {
-    totalDiffs: number;
-    totalDecisions: number;
-    appliedDecisions: number;
-    pendingDecisions: number;
-  };
-  machinesArray: Array<{
-    id: string;
-    status: 'diverged' | 'synced' | 'conflict' | 'unknown';
-    lastSync: string;
-    diffsCount: number;
-    pendingDecisions: number;
-  }>;
-  summary: {
-    totalMachines: number;
-    onlineMachines: number;
-    totalDiffs: number;
-    totalPendingDecisions: number;
-  };
 }
 
 export class BaselineManager {
@@ -1096,5 +1063,82 @@ export class BaselineManager {
         error: errorMsg
       };
     }
+  }
+
+  /**
+   * Mappe une machine à la baseline non-nominative
+   * @param machineId ID de la machine à mapper
+   * @returns Mapping de la machine vers la baseline
+   */
+  public async mapMachineToNonNominativeBaseline(machineId: string): Promise<any> {
+    if (!this.nonNominativeService) {
+      throw new RooSyncServiceError(
+        'NonNominativeBaselineService non disponible',
+        'SERVICE_NOT_AVAILABLE'
+      );
+    }
+
+    const activeBaseline = await this.nonNominativeService.getActiveBaseline();
+    if (!activeBaseline) {
+      throw new RooSyncServiceError(
+        'Aucune baseline non-nominative active trouvée',
+        'BASELINE_NOT_FOUND'
+      );
+    }
+
+    // Générer le hash de la machine
+    const machineHash = this.nonNominativeService.generateMachineHash(machineId);
+
+    return {
+      machineId,
+      machineHash,
+      baselineId: activeBaseline.baselineId || 'unknown',
+      profileIds: activeBaseline.profiles?.map((p: any) => p.profileId) || [],
+      mappedAt: new Date().toISOString()
+    };
+  }
+
+  /**
+   * Compare plusieurs machines avec la baseline non-nominative
+   * @param machineIds IDs des machines à comparer
+   * @returns Comparaison des machines
+   */
+  public async compareMachinesNonNominative(machineIds: string[]): Promise<any> {
+    if (!this.nonNominativeService) {
+      throw new RooSyncServiceError(
+        'NonNominativeBaselineService non disponible',
+        'SERVICE_NOT_AVAILABLE'
+      );
+    }
+
+    return await this.nonNominativeService.compareMachines(machineIds);
+  }
+
+  /**
+   * Obtient l'état du système non-nominatif
+   * @returns État actuel du système non-nominatif
+   */
+  public getNonNominativeState(): any {
+    if (!this.nonNominativeService) {
+      return {
+        available: false,
+        error: 'NonNominativeBaselineService non disponible'
+      };
+    }
+
+    return this.nonNominativeService.getState();
+  }
+
+  /**
+   * Obtient les mappings de machines non-nominatives
+   * @returns Liste des mappings machine → baseline
+   */
+  public getNonNominativeMachineMappings(): any[] {
+    if (!this.nonNominativeService) {
+      return [];
+    }
+
+    const state = this.nonNominativeService.getState();
+    return state.mappings || [];
   }
 }

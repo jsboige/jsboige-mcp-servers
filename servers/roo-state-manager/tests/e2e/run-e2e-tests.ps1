@@ -64,14 +64,13 @@ if ($Workflow) {
 
 Write-Host ""
 
-# Options Jest
-$jestOptions = @(
-    "--runInBand",
-    "--testTimeout=120000"  # 2 minutes par test
+# Options Vitest
+$vitestOptions = @(
+    "--test-timeout=120000"  # 2 minutes par test
 )
 
 if ($Verbose) {
-    $jestOptions += "--verbose"
+    $vitestOptions += "--verbose"
 }
 
 # Exécuter les tests
@@ -80,9 +79,9 @@ Write-Host ""
 
 $env:NODE_OPTIONS = "--experimental-vm-modules --max-old-space-size=8192"
 if ($testPattern) {
-    & npx vitest run $testPattern @jestOptions
+    & npx vitest run $testPattern @vitestOptions
 } else {
-    & npx vitest run "tests/e2e/" @jestOptions
+    & npx vitest run "tests/e2e/" @vitestOptions
 }
 
 $testExitCode = $LASTEXITCODE

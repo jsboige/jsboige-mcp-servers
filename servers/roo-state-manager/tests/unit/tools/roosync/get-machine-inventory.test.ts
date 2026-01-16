@@ -51,6 +51,67 @@ describe('roosync_get_machine_inventory - Execution', () => {
     vi.resetModules();
   });
 
+  // Créer des mocks pour les interfaces requises
+  const createMockServices = () => ({
+    storage: {
+      detectRooStorage: vi.fn(),
+      getStorageStats: vi.fn(),
+      getConversationSkeleton: vi.fn()
+    },
+    cache: {
+      get: vi.fn(),
+      set: vi.fn(),
+      clear: vi.fn(),
+      getStats: vi.fn()
+    },
+    search: {
+      searchTasksSemantic: vi.fn(),
+      indexTask: vi.fn()
+    },
+    export: {
+      export: vi.fn()
+    },
+    summary: {
+      generateTraceSummary: vi.fn(),
+      generateClusterSummary: vi.fn(),
+      getConversationSynthesis: vi.fn()
+    },
+    display: {
+      viewConversationTree: vi.fn(),
+      getTaskTree: vi.fn(),
+      listConversations: vi.fn(),
+      viewTaskDetails: vi.fn()
+    },
+    utility: {
+      rebuildSkeletonCache: vi.fn(),
+      manageMcpSettings: vi.fn(),
+      readVscodeLogs: vi.fn()
+    }
+  });
+
+  const createMockSecurity = () => ({
+    validateInput: true,
+    sanitizeOutput: true
+  });
+
+  const createMockMonitoring = () => ({
+    recordExecution: vi.fn(),
+    getMetrics: vi.fn(() => Promise.resolve({ executionTime: 0, success: true }))
+  });
+
+  const createMockBackgroundMonitoring = () => ({
+    recordBackground: vi.fn(),
+    recordExecution: vi.fn(),
+    getMetrics: vi.fn(() => Promise.resolve({ executionTime: 0, success: true }))
+  });
+
+  const createMockCacheManager = () => ({
+    get: vi.fn(),
+    store: vi.fn(),
+    evictOldEntries: vi.fn(),
+    getTotalSize: vi.fn(() => 0)
+  });
+
   it('devrait retourner une structure de résultat valide', async () => {
     // Mock du service d'inventaire
     vi.doMock('../../../../src/services/roosync/InventoryService.js', () => ({
@@ -71,7 +132,15 @@ describe('roosync_get_machine_inventory - Execution', () => {
     const module = await import('../../../../src/tools/roosync/get-machine-inventory.js');
     const tool = module.getMachineInventoryTool;
 
-    const result = await tool.execute({});
+    const result = await tool.execute({}, {
+      services: createMockServices(),
+      security: createMockSecurity(),
+      monitoring: {
+        immediate: createMockMonitoring(),
+        background: createMockBackgroundMonitoring()
+      },
+      cacheManager: createMockCacheManager()
+    });
 
     expect(result).toHaveProperty('success');
     expect(result).toHaveProperty('metrics');
@@ -91,7 +160,15 @@ describe('roosync_get_machine_inventory - Execution', () => {
     const module = await import('../../../../src/tools/roosync/get-machine-inventory.js');
     const tool = module.getMachineInventoryTool;
 
-    const result = await tool.execute({});
+    const result = await tool.execute({}, {
+      services: createMockServices(),
+      security: createMockSecurity(),
+      monitoring: {
+        immediate: createMockMonitoring(),
+        background: createMockBackgroundMonitoring()
+      },
+      cacheManager: createMockCacheManager()
+    });
 
     expect(result.success).toBe(false);
     expect(result.error).toBeDefined();
