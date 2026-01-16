@@ -153,6 +153,6 @@ describe('view_conversation_tree Tool', () => {
         
         await expect(async () => {
             await viewConversationTree.handler({}, emptyCache);
-        }).rejects.toThrow("Cache is empty and no task_id was provided. Cannot determine the latest task.");
+        }).rejects.toThrow("Cache is empty and no task_id was provided. Cannot determine latest task.");
     });
 });

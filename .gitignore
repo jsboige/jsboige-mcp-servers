@@ -90,3 +90,16 @@ build-test-results.txt
 servers/roo-state-manager/build-errors.txt
 servers/quickfiles-server/.jest-cache/
 servers/jinavigator-server/.jest-cache/
+servers/roo-state-manager/src/__test-data__/shared-state/.identity-registry.json
+servers/roo-state-manager/src/__test-data__/shared-state/.machine-registry.json
+servers/roo-state-manager/src/__test-data__/shared-state/sync-config.ref.json
+servers/roo-state-manager/src/__test-data__/shared-state/.rollback/INVALID_DECISION_ID_2026-01-16T16-39-20-658Z/metadata.json
+servers/roo-state-manager/src/__test-data__/shared-state/.rollback/INVALID_DECISION_ID_2026-01-16T16-39-20-658Z/sync-config.ref.json
+servers/roo-state-manager/src/__test-data__/shared-state/.rollback/INVALID_DECISION_ID_2026-01-16T17-03-49-075Z/metadata.json
+servers/roo-state-manager/src/__test-data__/shared-state/.rollback/TEST_NO_ROLLBACK_2026-01-16T16-39-20-651Z/metadata.json
+servers/roo-state-manager/src/__test-data__/shared-state/.rollback/TEST_NO_ROLLBACK_2026-01-16T16-39-20-651Z/sync-config.ref.json
+servers/roo-state-manager/src/__test-data__/shared-state/.rollback/TEST_NO_ROLLBACK_2026-01-16T17-03-49-069Z/metadata.json
+servers/roo-state-manager/src/__test-data__/shared-state/.rollback/TEST_PERMISSIONS_2026-01-16T16-39-20-682Z/metadata.json
+servers/roo-state-manager/src/__test-data__/shared-state/.rollback/TEST_PERMISSIONS_2026-01-16T16-39-20-682Z/sync-config.ref.json
+servers/roo-state-manager/src/__test-data__/shared-state/.rollback/TEST_PERMISSIONS_2026-01-16T17-03-49-102Z/metadata.json
+servers/roo-state-manager/src/__test-data__/shared-state/presence/test-machine.json

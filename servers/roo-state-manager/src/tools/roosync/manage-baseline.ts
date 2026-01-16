@@ -442,7 +442,6 @@ async function handleRestoreAction(
           `  3. Créez une nouvelle baseline avec roosync_manage_baseline (action: version)`,
           'TAG_NOT_FOUND',
           'ManageBaselineTool',
-          undefined,
           { source: args.source, availableTags, availableBackups }
         );
       }

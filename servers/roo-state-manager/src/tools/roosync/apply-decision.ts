@@ -11,7 +11,7 @@
 import { z } from 'zod';
 import { zodToJsonSchema } from 'zod-to-json-schema';
 import { getRooSyncService, RooSyncServiceError } from '../../services/RooSyncService.js';
-import { BaselineServiceError } from '../../types/errors.js';
+import { BaselineServiceError, BaselineServiceErrorCode } from '../../types/errors.js';
 import { writeFileSync, readFileSync } from 'fs';
 import { join } from 'path';
 
@@ -119,7 +119,7 @@ export async function roosyncApplyDecision(args: ApplyDecisionArgs): Promise<App
         });
         
         if (!result.success) {
-          throw new BaselineServiceError(result.error || 'Échec de l\'exécution', 'APPLICATION_FAILED');
+          throw new BaselineServiceError(result.error || 'Échec de l\'exécution', BaselineServiceErrorCode.APPLICATION_FAILED);
         }
         
         executionLog.push(...result.logs);

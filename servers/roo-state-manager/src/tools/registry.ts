@@ -9,6 +9,7 @@ import { Server } from '@modelcontextprotocol/sdk/server/index.js';
 import { CallToolRequestSchema, ListToolsRequestSchema, CallToolResult } from '@modelcontextprotocol/sdk/types.js';
 import { ServerState } from '../services/state-manager.service.js';
 import * as toolExports from './index.js';
+import { GenericError, GenericErrorCode } from '../types/errors.js';
 
 /**
  * Enregistre le handler pour ListTools

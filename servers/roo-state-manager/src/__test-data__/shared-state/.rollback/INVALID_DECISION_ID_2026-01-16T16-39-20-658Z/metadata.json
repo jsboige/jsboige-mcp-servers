@@ -1,9 +1,0 @@
-{
-  "decisionId": "INVALID_DECISION_ID",
-  "timestamp": "2026-01-16T16-39-20-658Z",
-  "machine": "test-machine",
-  "files": [
-    "sync-config.ref.json",
-    "sync-roadmap.md"
-  ]
-}
