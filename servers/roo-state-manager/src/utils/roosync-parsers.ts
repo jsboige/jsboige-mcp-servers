@@ -11,6 +11,7 @@
 import { readFileSync } from 'fs';
 import { resolve } from 'path';
 import { readJSONFileSyncWithoutBOM, parseJSONWithoutBOM } from './encoding-helpers.js';
+import { GenericError, GenericErrorCode } from '../types/errors.js';
 
 /**
  * Interface pour une décision RooSync
@@ -250,7 +251,7 @@ export function parseDashboardJson(filePath: string): RooSyncDashboard {
 
     // Validation basique de la structure
     if (!data.version || !data.machines) {
-      throw new Error('Structure de dashboard invalide (version ou machines manquant)');
+      throw new GenericError('Structure de dashboard invalide (version ou machines manquant)', GenericErrorCode.INVALID_ARGUMENT);
     }
 
     return data as RooSyncDashboard;
@@ -367,7 +368,7 @@ export function parseDashboardJsonContent(content: string): RooSyncDashboard {
 
     // Validation basique de la structure
     if (!data.version || !data.machines) {
-      throw new Error('Structure de dashboard invalide (version ou machines manquant)');
+      throw new GenericError('Structure de dashboard invalide (version ou machines manquant)', GenericErrorCode.INVALID_ARGUMENT);
     }
 
     return data as RooSyncDashboard;

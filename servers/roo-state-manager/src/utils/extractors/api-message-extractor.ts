@@ -5,6 +5,7 @@
 
 import { PatternExtractor, createInstruction, extractTimestamp } from '../message-pattern-extractors.js';
 import { NewTaskInstruction } from '../../types/conversation.js';
+import { GenericError, GenericErrorCode } from '../../types/errors.js';
 
 /**
  * Extracteur pour les messages API avec champ content
@@ -23,12 +24,12 @@ export class ApiContentExtractor implements PatternExtractor {
     try {
       // 🎯 CORRECTION SDDD: Validation explicite du contenu pour générer une erreur si invalide
       if (!message.content || typeof message.content !== 'object') {
-        throw new Error('Invalid message content structure');
+        throw new GenericError('Invalid message content structure', GenericErrorCode.INVALID_ARGUMENT);
       }
       
       const content = message.content.content || message.content.message;
       if (!content || typeof content !== 'string') {
-        throw new Error('Invalid content in message');
+        throw new GenericError('Invalid content in message', GenericErrorCode.INVALID_ARGUMENT);
       }
       
       const instruction = createInstruction(

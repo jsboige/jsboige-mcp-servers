@@ -3,6 +3,7 @@
 import * as fs from 'fs/promises';
 import * as path from 'path';
 import { RooStorageDetector } from './utils/roo-storage-detector.js';
+import { GenericError, GenericErrorCode } from './types/errors.js';
 
 async function debugHierarchy() {
     console.log("🔍 DEBUG: Analyse de la hiérarchie...\n");
@@ -19,7 +20,7 @@ async function debugHierarchy() {
         // Utiliser le premier location trouvé
         const firstLocation = storageResult.locations?.[0];
         if (!firstLocation) {
-            throw new Error('Aucun emplacement de stockage trouvé');
+            throw new GenericError('Aucun emplacement de stockage trouvé', GenericErrorCode.FILE_SYSTEM_ERROR);
         }
         const conversationsDir = path.join(
             firstLocation.path,

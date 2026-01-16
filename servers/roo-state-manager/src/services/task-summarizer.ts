@@ -1,16 +1,17 @@
 // import * as fs from 'fs/promises';
 // import * as path from 'path';
 // import openai from './openai.js';
-//
+import { GenericError, GenericErrorCode } from '../types/errors.js';
+
 // interface Message {
 //   role: 'user' | 'assistant';
 //   content: string;
 // }
-//
+
 // interface Conversation {
 //   messages: Message[];
 // }
-//
+
 // export async function summarizeTask(taskId: string, taskPath: string): Promise<string> {
 //   const messagesJsonPath = path.join(taskPath, 'messages.json');
 //
@@ -48,9 +49,9 @@
 //
 //   } catch (error) {
 //     if ((error as NodeJS.ErrnoException).code === 'ENOENT') {
-//         throw new Error(`Fichier messages.json non trouvé pour la tâche ${taskId}`);
+//         throw new GenericError(`Fichier messages.json non trouvé pour la tâche ${taskId}`, GenericErrorCode.FILE_SYSTEM_ERROR);
 //     }
 //     console.error(`Erreur lors du résumé de la tâche ${taskId}:`, error);
-//     throw new Error(`Impossible de générer le résumé pour la tâche ${taskId}.`);
+//     throw new GenericError(`Impossible de générer le résumé pour la tâche ${taskId}.`, GenericErrorCode.FILE_SYSTEM_ERROR);
 //   }
 // }

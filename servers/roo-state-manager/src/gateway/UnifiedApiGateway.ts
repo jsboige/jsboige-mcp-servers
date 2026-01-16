@@ -22,6 +22,7 @@ import {
   ValidationResult,
   UnifiedServices
 } from '../interfaces/UnifiedToolInterface.js';
+import { GenericError, GenericErrorCode } from '../types/errors.js';
 
 /**
  * Configuration du Gateway unifié
@@ -216,13 +217,13 @@ export class UnifiedApiGateway {
       // 1. Validation d'entrée
       const validationResult = await this.validateInput(preset, options);
       if (!validationResult.isValid) {
-        throw new Error(`Validation failed: ${validationResult.errors.join(', ')}`);
+        throw new GenericError(`Validation failed: ${validationResult.errors.join(', ')}`, GenericErrorCode.INVALID_ARGUMENT);
       }
 
       // 2. Résolution du preset intelligent
       const presetConfig = INTELLIGENT_PRESETS[preset];
       if (!presetConfig) {
-        throw new Error(`Unknown preset: ${preset}`);
+        throw new GenericError(`Unknown preset: ${preset}`, GenericErrorCode.INVALID_ARGUMENT);
       }
 
       // 3. Merge des options avec les défauts du preset
@@ -326,7 +327,7 @@ export class UnifiedApiGateway {
         return immediateResult;
         
       default:
-        throw new Error(`Unknown processing level: ${(presetConfig as any).processingLevel}`);
+        throw new GenericError(`Unknown processing level: ${(presetConfig as any).processingLevel}`, GenericErrorCode.INVALID_ARGUMENT);
     }
   }
 

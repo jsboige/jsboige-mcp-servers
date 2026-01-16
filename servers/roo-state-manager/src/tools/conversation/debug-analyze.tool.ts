@@ -4,6 +4,7 @@
 
 import { CallToolResult } from '@modelcontextprotocol/sdk/types.js';
 import { ConversationSkeleton } from '../../types/conversation.js';
+import { GenericError, GenericErrorCode } from '../../types/errors.js';
 
 /**
  * Définition de l'outil debug_analyze_conversation
@@ -33,6 +34,6 @@ export const debugAnalyzeTool = {
         if (skeleton) {
             return { content: [{ type: 'text', text: JSON.stringify(skeleton, null, 2) }] };
         }
-        throw new Error(`Task with ID '${taskId}' not found in cache.`);
+        throw new GenericError(`Task with ID '${taskId}' not found in cache.`, GenericErrorCode.INVALID_ARGUMENT);
     }
 };

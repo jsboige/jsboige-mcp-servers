@@ -9,6 +9,7 @@ import {
 } from './smart-truncation/index.js';
 import { promises as fs } from 'fs';
 import * as path from 'path';
+import { GenericError, GenericErrorCode } from '../types/errors.js';
 
 /**
  * Tronque un message en gardant le début et la fin
@@ -27,10 +28,9 @@ function truncateMessage(message: string, truncate: number): string {
 }
 
 /**
- /**
   * Trouve la tâche la plus récente dans le cache, optionnellement filtrée par workspace
   */
- function findLatestTask(conversationCache: Map<string, ConversationSkeleton>, workspace?: string): ConversationSkeleton | undefined {
+function findLatestTask(conversationCache: Map<string, ConversationSkeleton>, workspace?: string): ConversationSkeleton | undefined {
      if (conversationCache.size === 0) {
          return undefined;
      }
@@ -49,7 +49,7 @@ function truncateMessage(message: string, truncate: number): string {
      return validTasks.reduce((latest, current) => {
          return new Date(latest.metadata.lastActivity) > new Date(current.metadata.lastActivity) ? latest : current;
      });
- }
+}
 /**
  * Logique principale pour view_conversation_tree (version asynchrone)
  */
@@ -79,15 +79,15 @@ async function handleViewConversationTreeExecutionAsync(
     if (!task_id) {
         // Si le cache est vide, message explicite attendu par les tests
         if (conversationCache.size === 0) {
-            throw new Error("Cache is empty and no task_id was provided. Cannot determine the latest task.");
+            throw new GenericError("Cache is empty and no task_id was provided. Cannot determine latest task.", GenericErrorCode.INVALID_ARGUMENT);
         }
         // Sélection automatique de la tâche la plus récente (tous workspaces si non fourni)
         const latestTask = findLatestTask(conversationCache, workspace);
         if (!latestTask) {
             if (workspace) {
-                throw new Error(`No tasks found for workspace '${workspace}'. Please verify the workspace path or provide a specific task_id.`);
+                throw new GenericError(`No tasks found for workspace '${workspace}'. Please verify workspace path or provide a specific task_id.`, GenericErrorCode.INVALID_ARGUMENT);
             }
-            throw new Error("No tasks found. Cannot determine the latest task.");
+            throw new GenericError("No tasks found. Cannot determine latest task.", GenericErrorCode.INVALID_ARGUMENT);
         }
         task_id = latestTask.taskId;
     }
@@ -188,7 +188,7 @@ async function handleViewConversationTreeExecutionAsync(
     let tasksToDisplay: ConversationSkeleton[] = [];
     const mainTask = skeletonMap.get(task_id);
     if (!mainTask) {
-        throw new Error(`Task with ID '${task_id}' not found in cache.`);
+        throw new GenericError(`Task with ID '${task_id}' not found in cache.`, GenericErrorCode.INVALID_ARGUMENT);
     }
 
     switch (view_mode) {
@@ -204,7 +204,7 @@ async function handleViewConversationTreeExecutionAsync(
                 const directParentId = chain[chain.length - 1].parentTaskId;
                 if (directParentId) {
                     const siblings = skeletons.filter(s => s.parentTaskId === directParentId);
-                    // Display parent, then all its children (siblings of the target + target itself)
+                    // Display parent, then all its children (siblings of target + target itself)
                     const parentTask = skeletonMap.get(directParentId);
                     if(parentTask) tasksToDisplay.push(parentTask);
                     tasksToDisplay.push(...siblings);
@@ -256,15 +256,15 @@ function handleViewConversationTreeExecution(
     if (!task_id) {
         // Si le cache est vide, message explicite attendu par les tests
         if (conversationCache.size === 0) {
-            throw new Error("Cache is empty and no task_id was provided. Cannot determine the latest task.");
+            throw new GenericError("Cache is empty and no task_id was provided. Cannot determine latest task.", GenericErrorCode.INVALID_ARGUMENT);
         }
         // Sélection automatique de la tâche la plus récente (tous workspaces si non fourni)
         const latestTask = findLatestTask(conversationCache, workspace);
         if (!latestTask) {
             if (workspace) {
-                throw new Error(`No tasks found for workspace '${workspace}'. Please verify the workspace path or provide a specific task_id.`);
+                throw new GenericError(`No tasks found for workspace '${workspace}'. Please verify workspace path or provide a specific task_id.`, GenericErrorCode.INVALID_ARGUMENT);
             }
-            throw new Error("No tasks found. Cannot determine the latest task.");
+            throw new GenericError("No tasks found. Cannot determine latest task.", GenericErrorCode.INVALID_ARGUMENT);
         }
         task_id = latestTask.taskId;
     }
@@ -292,7 +292,7 @@ function handleViewConversationTreeExecution(
     let tasksToDisplay: ConversationSkeleton[] = [];
     const mainTask = skeletonMap.get(task_id);
     if (!mainTask) {
-        throw new Error(`Task with ID '${task_id}' not found in cache.`);
+        throw new GenericError(`Task with ID '${task_id}' not found in cache.`, GenericErrorCode.INVALID_ARGUMENT);
     }
 
     switch (view_mode) {
@@ -380,7 +380,7 @@ async function handleLegacyTruncationAsync(
 
     const contentItem = result.content[0];
     const treeOutput = (contentItem.type === 'text' ? contentItem.text : '') as string;
-
+ 
     // Sauvegarder dans un fichier si demandé
     const saveResult = await saveToFileIfRequested(args.output_file, treeOutput);
     
@@ -475,7 +475,7 @@ async function handleSmartTruncationAsync(
 
     const contentItem = result.content[0];
     const treeOutput = (contentItem.type === 'text' ? contentItem.text : '') as string;
-
+ 
     // Sauvegarder dans un fichier si demandé
     const saveResult = await saveToFileIfRequested(args.output_file, treeOutput);
     

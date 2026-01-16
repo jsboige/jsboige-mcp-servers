@@ -6,6 +6,7 @@ import { CallToolResult } from '@modelcontextprotocol/sdk/types.js';
 import { RooStorageDetector } from '../../utils/roo-storage-detector.js';
 import { promises as fs } from 'fs';
 import path from 'path';
+import { GenericError, GenericErrorCode } from '../../types/errors.js';
 
 /**
  * Définition de l'outil get_raw_conversation
@@ -29,7 +30,7 @@ export const getRawConversationTool = {
     handler: async (args: { taskId: string }): Promise<CallToolResult> => {
         const { taskId } = args;
         if (!taskId) {
-            throw new Error("taskId is required.");
+            throw new GenericError("taskId is required.", GenericErrorCode.INVALID_ARGUMENT);
         }
 
         const locations = await RooStorageDetector.detectStorageLocations();
@@ -84,6 +85,6 @@ export const getRawConversationTool = {
             }
         }
 
-        throw new Error(`Task with ID '${taskId}' not found in any storage location.`);
+        throw new GenericError(`Task with ID '${taskId}' not found in any storage location.`, GenericErrorCode.FILE_SYSTEM_ERROR);
     }
 };

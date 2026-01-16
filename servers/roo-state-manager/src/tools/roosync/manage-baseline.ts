@@ -18,6 +18,7 @@ import { BaselineService } from '../../services/BaselineService.js';
 import { ConfigService } from '../../services/ConfigService.js';
 import { execSync } from 'child_process';
 import type { BaselineConfig } from '../../types/baseline.js';
+import { BaselineServiceError, BaselineServiceErrorCode, StateManagerError } from '../../types/errors.js';
 
 // Logger instance for manage baseline tool
 const logger = createLogger('ManageBaselineTool');
@@ -434,11 +435,15 @@ async function handleRestoreAction(
           // Ignorer l'erreur de listing
         }
 
-        throw new Error(
+        throw new StateManagerError(
           `Le tag Git ${args.source} n'existe pas.${availableTags}${availableBackups}\n\nAlternatives:\n` +
           `  1. Utilisez un tag existant de la liste ci-dessus\n` +
           `  2. Restaurez depuis une sauvegarde avec le chemin complet\n` +
-          `  3. Créez une nouvelle baseline avec roosync_manage_baseline (action: version)`
+          `  3. Créez une nouvelle baseline avec roosync_manage_baseline (action: version)`,
+          'TAG_NOT_FOUND',
+          'ManageBaselineTool',
+          undefined,
+          { source: args.source, availableTags, availableBackups }
         );
       }
 
@@ -448,7 +453,7 @@ async function handleRestoreAction(
 
       // Valider la baseline
       if (!restoredBaseline.machineId || !restoredBaseline.version) {
-        throw new Error('Baseline invalide: champs requis manquants');
+        throw new BaselineServiceError('Baseline invalide: champs requis manquants', BaselineServiceErrorCode.BASELINE_INVALID);
       }
 
       logger.info('Baseline récupérée depuis le tag', {
@@ -468,7 +473,7 @@ async function handleRestoreAction(
       logger.info('Restauration depuis la sauvegarde', { backupPath: args.source });
 
       if (!existsSync(args.source)) {
-        throw new Error(`Fichier de sauvegarde non trouvé: ${args.source}`);
+        throw new BaselineServiceError(`Fichier de sauvegarde non trouvé: ${args.source}`, BaselineServiceErrorCode.BASELINE_NOT_FOUND);
       }
 
       const backupContent = readFileSync(args.source, 'utf-8');
@@ -476,7 +481,7 @@ async function handleRestoreAction(
 
       // Valider la baseline
       if (!restoredBaseline.machineId || !restoredBaseline.version) {
-        throw new Error('Baseline invalide: champs requis manquants');
+        throw new BaselineServiceError('Baseline invalide: champs requis manquants', BaselineServiceErrorCode.BASELINE_INVALID);
       }
 
       logger.info('Baseline récupérée depuis la sauvegarde', {

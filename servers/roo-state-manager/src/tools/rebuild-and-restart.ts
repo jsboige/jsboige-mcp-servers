@@ -42,7 +42,7 @@ export const rebuildAndRestart = {
         },
         required: ['mcp_name'],
     },
-    async handler(args: { mcp_name: string }): Promise<CallToolResult> {
+    handler: async (args: { mcp_name: string }): Promise<CallToolResult> => {
         try {
             const { mcp_name } = args;
             const settingsPath = path.join(process.env.APPDATA || '', 'Code', 'User', 'globalStorage', 'rooveterinaryinc.roo-cline', 'settings', 'mcp_settings.json');
@@ -64,7 +64,7 @@ export const rebuildAndRestart = {
             } else if (mcpConfig.args?.[0] && (mcpConfig.args[0].includes('/') || mcpConfig.args[0].includes('\\'))) {
                 mcpPath = path.dirname(path.dirname(mcpConfig.args[0]));
             } else {
-                throw new Error(`Could not determine the working directory for MCP "${mcp_name}". Please add a "cwd" property to its configuration.`);
+                throw new GenericError(`Could not determine working directory for MCP "${mcp_name}". Please add a "cwd" property to its configuration.`, GenericErrorCode.INVALID_ARGUMENT);
             }
 
             let warningMessage = '';
@@ -87,10 +87,10 @@ export const rebuildAndRestart = {
 
             const resultText = `Build for "${mcp_name}" successful:\n${buildResult}\n\nRestart triggered:\n${touchResult}${warningMessage}`;
             
-            return { content: [{ type: 'text' as const, text: resultText }] };
+            return { content: [{ type: 'text', text: resultText }] };
         } catch (error) {
             const errorMessage = error instanceof Error ? error.message : String(error);
-            return { content: [{ type: 'text' as const, text: `Error during rebuild and restart: ${errorMessage}` }] };
+            return { content: [{ type: 'text', text: `Error during rebuild and restart: ${errorMessage}` }] };
         }
     },
 };
