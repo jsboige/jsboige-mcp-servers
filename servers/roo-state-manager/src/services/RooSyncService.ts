@@ -31,6 +31,10 @@ import { MessageHandler } from './roosync/MessageHandler.js';
 import { PresenceManager } from './roosync/PresenceManager.js';
 import { IdentityManager } from './roosync/IdentityManager.js';
 import { NonNominativeBaselineService } from './roosync/NonNominativeBaselineService.js';
+// T3.15 - Services de synchronisation multi-agent
+import { HeartbeatService } from './roosync/HeartbeatService.js';
+import { CommitLogService } from './roosync/CommitLogService.js';
+import { ConsensusService } from './roosync/ConsensusService.js';
 
 // Re-export des types pour compatibilité
 export type { DecisionExecutionResult, RollbackRestoreResult };
@@ -88,6 +92,10 @@ export class RooSyncService {
   private presenceManager: PresenceManager;
   private identityManager: IdentityManager;
   private nonNominativeBaselineService: NonNominativeBaselineService;
+  // T3.15 - Services de synchronisation multi-agent
+  private heartbeatService: HeartbeatService;
+  private commitLogService: CommitLogService;
+  private consensusService: ConsensusService;
 
   /**
    /**
@@ -166,6 +174,15 @@ export class RooSyncService {
       this.presenceManager = new PresenceManager(this.config);
       this.identityManager = new IdentityManager(this.config, this.presenceManager);
       this.nonNominativeBaselineService = new NonNominativeBaselineService(this.config.sharedPath);
+
+      // T3.15 - Initialisation des services de synchronisation multi-agent
+      this.heartbeatService = new HeartbeatService(this.config);
+      this.commitLogService = new CommitLogService(this.config);
+      this.consensusService = new ConsensusService(
+        this.config,
+        this.heartbeatService,
+        this.commitLogService
+      );
 
     } catch (error) {
       debugLog('ERREUR dans constructeur RooSyncService', {
@@ -860,6 +877,193 @@ export class RooSyncService {
    */
   public getNonNominativeMachineMappings(): any[] {
     return this.baselineManager.getNonNominativeMachineMappings();
+  }
+
+  // =============================================================================
+  // T3.15 - Méthodes de délégation pour les services de synchronisation multi-agent
+  // =============================================================================
+
+  /**
+   * Obtenir le service de heartbeat
+   */
+  public getHeartbeatService(): HeartbeatService {
+    return this.heartbeatService;
+  }
+
+  /**
+   * Obtenir le service de commit log
+   */
+  public getCommitLogService(): CommitLogService {
+    return this.commitLogService;
+  }
+
+  /**
+   * Obtenir le service de consensus
+   */
+  public getConsensusService(): ConsensusService {
+    return this.consensusService;
+  }
+
+  /**
+   * Enregistrer un heartbeat pour la machine courante
+   */
+  public async registerHeartbeat(options?: {
+    timestamp?: number;
+    metadata?: {
+      version?: string;
+      mode?: string;
+      source?: string;
+    };
+  }): Promise<void> {
+    return this.heartbeatService.registerHeartbeat(
+      this.config.machineId,
+      options?.timestamp,
+      options
+    );
+  }
+
+  /**
+   * Vérifier si une machine est en ligne
+   */
+  public async isMachineAlive(
+    machineId: string,
+    timeout?: number
+  ): Promise<boolean> {
+    return this.heartbeatService.isMachineAlive(machineId, timeout);
+  }
+
+  /**
+   * Obtenir la liste des machines en ligne
+   */
+  public async getAliveMachines(timeout?: number): Promise<string[]> {
+    return this.heartbeatService.getAliveMachines(timeout);
+  }
+
+  /**
+   * Nettoyer les heartbeats obsolètes
+   */
+  public async cleanupStaleMachines(
+    timeout?: number
+  ): Promise<{ cleaned: number; remaining: number }> {
+    return this.heartbeatService.cleanupStaleMachines(timeout);
+  }
+
+  /**
+   * Logger une action dans le commit log
+   */
+  public async logAction(action: {
+    machineId?: string;
+    actionType: string;
+    description: string;
+    data?: any;
+    status?: 'success' | 'error' | 'pending';
+    errorMessage?: string;
+    metadata?: any;
+  }): Promise<string> {
+    return this.commitLogService.logAction({
+      machineId: action.machineId || this.config.machineId,
+      actionType: action.actionType as any,
+      description: action.description,
+      data: action.data,
+      status: action.status || 'success',
+      errorMessage: action.errorMessage,
+      metadata: action.metadata
+    });
+  }
+
+  /**
+   * Obtenir l'historique des commits
+   */
+  public async getCommitHistory(options?: {
+    machineId?: string;
+    limit?: number;
+    actionType?: 'baseline_update' | 'config_apply' | 'config_publish' | 'decision_approve' | 'decision_reject' | 'decision_apply' | 'decision_rollback' | 'message_send' | 'message_read' | 'message_archive' | 'heartbeat_register' | 'presence_update' | 'identity_register' | 'conflict_resolve' | 'unknown';
+    status?: 'success' | 'error' | 'pending';
+    since?: number;
+    until?: number;
+  }): Promise<any[]> {
+    return this.commitLogService.getCommitHistory(options);
+  }
+
+  /**
+   * Obtenir le dernier commit d'une machine
+   */
+  public async getLatestCommit(machineId: string): Promise<any | null> {
+    return this.commitLogService.getLatestCommit(machineId);
+  /**
+   * Proposer un changement pour consensus
+   */
+  public async proposeChange(change: {
+    machineId?: string;
+    changeType: 'baseline_update' | 'config_apply' | 'config_publish' | 'decision' | 'other';
+    data: any;
+    description: string;
+    metadata?: any;
+  }, options?: {
+    strategy?: 'timestamp' | 'local' | 'remote' | 'merge' | 'manual';
+    consensusTimeout?: number;
+    minApprovals?: number;
+  }): Promise<boolean> {
+    return this.consensusService.proposeChange(
+      {
+        machineId: change.machineId || this.config.machineId,
+        changeType: change.changeType,
+        data: change.data,
+        description: change.description,
+        metadata: change.metadata
+      },
+      options
+    );
+  }
+/**
+ * Résoudre un conflit entre deux versions
+ */
+public async resolveConflict(
+  local: any,
+  remote: any,
+  options?: {
+    strategy?: 'timestamp' | 'local' | 'remote' | 'merge' | 'manual';
+    consensusTimeout?: number;
+    minApprovals?: number;
+  }
+): Promise<any> {
+  return this.consensusService.resolveConflict(local, remote, options);
+  }
+
+  /**
+   * Obtenir l'état du consensus
+   */
+  public async getConsensusState(): Promise<any> {
+    return this.consensusService.getConsensusState();
+    }
+  /**
+   * Obtenir des statistiques sur les heartbeats
+   */
+  public async getHeartbeatStats(): Promise<{
+    total: number;
+    online: number;
+    offline: number;
+    unknown: number;
+  }> {
+    return this.heartbeatService.getHeartbeatStats();
+  }
+
+  /**
+   * Obtenir des statistiques sur les commits
+   */
+  public async getCommitStats(options?: {
+    machineId?: string;
+    limit?: number;
+    actionType?: 'baseline_update' | 'config_apply' | 'config_publish' | 'decision_approve' | 'decision_reject' | 'decision_apply' | 'decision_rollback' | 'message_send' | 'message_read' | 'message_archive' | 'heartbeat_register' | 'presence_update' | 'identity_register' | 'conflict_resolve' | 'unknown';
+    status?: 'success' | 'error' | 'pending';
+    since?: number;
+    until?: number;
+  }): Promise<{
+    total: number;
+    byType: Record<string, number>;
+    byStatus: Record<string, number>;
+  }> {
+    return this.commitLogService.getCommitStats(options);
   }
 }
 
