@@ -35,9 +35,10 @@ const ALLOWED_TOOLS = new Set([
     'roosync_list_diffs',
     'roosync_compare_config',
     'roosync_get_decision_details',
-    // Actions critiques pour E2E (2 outils) - v2.4.0
+    // Actions critiques pour E2E (3 outils) - v2.5.0
     'roosync_collect_config',
-    'roosync_apply_config'
+    'roosync_apply_config',
+    'roosync_publish_config'
 ]);
 
 // Buffer pour accumuler les messages JSON incomplets
