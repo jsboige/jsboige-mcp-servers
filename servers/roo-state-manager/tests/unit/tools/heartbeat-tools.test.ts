@@ -50,19 +50,22 @@ describe('Outils MCP Heartbeat', () => {
 
   describe('roosync_register_heartbeat', () => {
     it('devrait enregistrer un heartbeat pour une nouvelle machine', async () => {
-      mockHeartbeatService.getHeartbeatData.mockReturnValue(undefined);
+      // Premier appel: undefined (nouvelle machine)
+      // Deuxième appel: données après enregistrement
+      mockHeartbeatService.getHeartbeatData
+        .mockReturnValueOnce(undefined)
+        .mockReturnValueOnce({
+          machineId: 'test-machine',
+          lastHeartbeat: new Date().toISOString(),
+          status: 'online' as const,
+          missedHeartbeats: 0,
+          metadata: {
+            firstSeen: new Date().toISOString(),
+            lastUpdated: new Date().toISOString(),
+            version: '3.0.0'
+          }
+        });
       mockHeartbeatService.registerHeartbeat.mockResolvedValue(undefined);
-      mockHeartbeatService.getHeartbeatData.mockReturnValue({
-        machineId: 'test-machine',
-        lastHeartbeat: new Date().toISOString(),
-        status: 'online' as const,
-        missedHeartbeats: 0,
-        metadata: {
-          firstSeen: new Date().toISOString(),
-          lastUpdated: new Date().toISOString(),
-          version: '3.0.0'
-        }
-      });
 
       const result = await roosyncRegisterHeartbeat({
         machineId: 'test-machine',
@@ -80,29 +83,32 @@ describe('Outils MCP Heartbeat', () => {
     });
 
     it('devrait mettre à jour un heartbeat existant', async () => {
-      mockHeartbeatService.getHeartbeatData.mockReturnValue({
-        machineId: 'test-machine',
-        lastHeartbeat: new Date(Date.now() - 60000).toISOString(),
-        status: 'online' as const,
-        missedHeartbeats: 0,
-        metadata: {
-          firstSeen: new Date(Date.now() - 120000).toISOString(),
-          lastUpdated: new Date(Date.now() - 60000).toISOString(),
-          version: '3.0.0'
-        }
-      });
+      // Premier appel: données existantes (machine connue)
+      // Deuxième appel: données mises à jour après enregistrement
+      mockHeartbeatService.getHeartbeatData
+        .mockReturnValueOnce({
+          machineId: 'test-machine',
+          lastHeartbeat: new Date(Date.now() - 60000).toISOString(),
+          status: 'online' as const,
+          missedHeartbeats: 0,
+          metadata: {
+            firstSeen: new Date(Date.now() - 120000).toISOString(),
+            lastUpdated: new Date(Date.now() - 60000).toISOString(),
+            version: '3.0.0'
+          }
+        })
+        .mockReturnValueOnce({
+          machineId: 'test-machine',
+          lastHeartbeat: new Date().toISOString(),
+          status: 'online' as const,
+          missedHeartbeats: 0,
+          metadata: {
+            firstSeen: new Date(Date.now() - 120000).toISOString(),
+            lastUpdated: new Date().toISOString(),
+            version: '3.0.0'
+          }
+        });
       mockHeartbeatService.registerHeartbeat.mockResolvedValue(undefined);
-      mockHeartbeatService.getHeartbeatData.mockReturnValue({
-        machineId: 'test-machine',
-        lastHeartbeat: new Date().toISOString(),
-        status: 'online' as const,
-        missedHeartbeats: 0,
-        metadata: {
-          firstSeen: new Date(Date.now() - 120000).toISOString(),
-          lastUpdated: new Date().toISOString(),
-          version: '3.0.0'
-        }
-      });
 
       const result = await roosyncRegisterHeartbeat({
         machineId: 'test-machine'
