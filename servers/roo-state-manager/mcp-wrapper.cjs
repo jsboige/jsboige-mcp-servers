@@ -19,7 +19,8 @@ function logDebug(message) {
 
 // Liste des outils RooSync autorisés pour Claude Code (coordination)
 // - Messagerie : communication inter-machine
-// - Lecture seule : monitoring et diagnostic (sans modification)
+// - Lecture seule : monitoring et diagnostic
+// - Actions critiques : collect/apply config pour E2E testing
 const ALLOWED_TOOLS = new Set([
     // Messagerie (6 outils)
     'roosync_send_message',
@@ -28,12 +29,15 @@ const ALLOWED_TOOLS = new Set([
     'roosync_get_message',
     'roosync_mark_message_read',
     'roosync_archive_message',
-    // Lecture seule pour coordination (5 outils) - v2.3.1
+    // Lecture seule (5 outils)
     'roosync_get_status',
     'roosync_get_machine_inventory',
     'roosync_list_diffs',
     'roosync_compare_config',
-    'roosync_get_decision_details'
+    'roosync_get_decision_details',
+    // Actions critiques pour E2E (2 outils) - v2.4.0
+    'roosync_collect_config',
+    'roosync_apply_config'
 ]);
 
 // Buffer pour accumuler les messages JSON incomplets
