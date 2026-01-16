@@ -31,23 +31,8 @@ tmp-debug/
 mcp-debugging/
 
 # Reports and documentation
-/*.md
-!README.md
-!CHANGELOG.md
-!REFACTORING*.md
-!VALIDATION*.md
-!BATCH*.md
-!GIT_SYNC*.md
-!PROJECT_FINAL_SYNTHESIS.md
-!PHASE*.md
-!NEXT_SESSION*.md
-!TEST_FAILURES*.md
-!FUNCTIONAL_REDUNDANCY*.md
-
-# Reports
-/*-report.md
-/*-validation.md
-!docs/**/*-validation.md
+README.md
+CHANGELOG.md
 
 # Vitest migration
 vitest-migration/
