@@ -88,13 +88,30 @@ export class InventoryCollectorWrapper implements IInventoryCollector {
         // CORRECTION SDDD : Utiliser la variable d'environnement ROOSYNC_SHARED_PATH via helper centralisé
         const baseSharedPath = getSharedStatePath();
         const sharedStatePath = join(baseSharedPath, 'inventories');
-        
+
         logger.debug(`ROOSYNC_SHARED_PATH: ${process.env.ROOSYNC_SHARED_PATH}`);
         logger.debug(`baseSharedPath: ${baseSharedPath}`);
-        
-        // Chercher les fichiers d'inventaire pour cette machine
+
+        // CORRECTION Bug #322 : D'abord essayer le fichier exact {machineId}.json
+        // (format utilisé par InventoryService.loadRemoteInventory)
+        const exactFilePath = join(sharedStatePath, `${machineId}.json`);
+        if (existsSync(exactFilePath)) {
+          logger.info(`📂 Fichier exact trouvé: ${exactFilePath}`);
+          try {
+            let content = await fs.readFile(exactFilePath, 'utf-8');
+            if (content.charCodeAt(0) === 0xFEFF) {
+              content = content.slice(1);
+            }
+            const rawInventory = JSON.parse(content);
+            return this.convertRawToBaselineFormat(rawInventory);
+          } catch (exactError) {
+            logger.debug(`Erreur lecture fichier exact: ${exactError instanceof Error ? exactError.message : String(exactError)}`);
+          }
+        }
+
+        // Chercher les fichiers d'inventaire pour cette machine (format timestamp)
         logger.debug(`Lecture du répertoire: ${sharedStatePath}`);
-        
+
         let inventoryFiles;
         try {
           inventoryFiles = await fs.readdir(sharedStatePath);
@@ -104,10 +121,10 @@ export class InventoryCollectorWrapper implements IInventoryCollector {
           return null;
         }
         logger.debug(`Fichiers trouvés: ${JSON.stringify(inventoryFiles)}`);
-        
+
         // CORRECTION SDDD : Améliorer la recherche pour inclure les fichiers -fixed
         const machineFiles = inventoryFiles.filter(file =>
-          file.startsWith(machineId) && file.endsWith('.json')
+          file.startsWith(machineId) && file.endsWith('.json') && file !== `${machineId}.json`
         );
         
         logger.debug(`Fichiers pour ${machineId}: ${JSON.stringify(machineFiles)}`);

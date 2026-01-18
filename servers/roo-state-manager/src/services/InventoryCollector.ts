@@ -338,7 +338,15 @@ export class InventoryCollector {
         return null;
       }
 
-      // Lire tous les fichiers d'inventaire pour cette machine
+      // CORRECTION Bug #322 : D'abord essayer le fichier exact {machineId}.json
+      // (format utilisé par InventoryService.loadRemoteInventory)
+      const exactFilePath = join(inventoriesDir, `${machineId}.json`);
+      if (existsSync(exactFilePath)) {
+        this.logger.info(`📂 Fichier exact trouvé: ${exactFilePath}`);
+        return await this.loadInventoryFile(exactFilePath, machineId);
+      }
+
+      // Ensuite chercher les fichiers avec timestamp (format {machineId}-*.json)
       const files = await fs.readdir(inventoriesDir);
       const machineFiles = files
         .filter(f => f.toLowerCase().startsWith(machineId.toLowerCase()) && f.endsWith('.json'))
@@ -350,13 +358,29 @@ export class InventoryCollector {
         return null;
       }
 
-      // Charger le fichier le plus récent
+      // Charger le fichier le plus récent (format timestamp)
       const latestFile = machineFiles[0];
       const filepath = join(inventoriesDir, latestFile);
+      return await this.loadInventoryFile(filepath, machineId);
+
+    } catch (error) {
+      this.logger.error(`❌ Erreur chargement depuis .shared-state`, error);
+      return null;
+    }
+  }
+
+  /**
+   * Charge un fichier d'inventaire spécifique
+   * @param filepath - Chemin complet du fichier
+   * @param machineId - Identifiant de la machine (pour le cache)
+   * @returns Inventaire ou null en cas d'erreur
+   */
+  private async loadInventoryFile(filepath: string, machineId: string): Promise<MachineInventory | null> {
+    try {
       this.logger.info(`📂 Chargement depuis: ${filepath}`);
 
       let content = await fs.readFile(filepath, 'utf-8');
-      
+
       // Strip BOM UTF-8 si présent
       if (content.charCodeAt(0) === 0xFEFF) {
         content = content.slice(1);
@@ -364,7 +388,7 @@ export class InventoryCollector {
       }
 
       const inventory: MachineInventory = JSON.parse(content);
-      this.logger.info(`✅ Inventaire chargé pour ${inventory.machineId} (${latestFile})`);
+      this.logger.info(`✅ Inventaire chargé pour ${inventory.machineId}`);
 
       // Mettre à jour le cache
       this.cache.set(machineId, {
@@ -373,9 +397,8 @@ export class InventoryCollector {
       });
 
       return inventory;
-
     } catch (error) {
-      this.logger.error(`❌ Erreur chargement depuis .shared-state`, error);
+      this.logger.error(`❌ Erreur lecture fichier inventaire: ${filepath}`, error);
       return null;
     }
   }
