@@ -813,13 +813,6 @@ export class CommitLogService {
   }
 
   /**
-   * Attend que le service soit initialisé
-   */
-  public async waitForInitialization(): Promise<void> {
-    await this.initializationPromise;
-  }
-
-  /**
    * Obtient l'état complet du service
    */
   public getState(): CommitLogState {
