@@ -14,6 +14,37 @@ import { existsSync, mkdirSync, appendFileSync, readdirSync, statSync, unlinkSyn
 import { join, dirname } from 'path';
 import { tmpdir } from 'os';
 
+// ANSI color codes for console output
+const COLORS = {
+    reset: '\x1b[0m',
+    bright: '\x1b[1m',
+    dim: '\x1b[2m',
+    red: '\x1b[31m',
+    green: '\x1b[32m',
+    yellow: '\x1b[33m',
+    blue: '\x1b[34m',
+    magenta: '\x1b[35m',
+    cyan: '\x1b[36m',
+    white: '\x1b[37m',
+    gray: '\x1b[90m'
+};
+
+// Icons for log levels
+const LEVEL_ICONS: Record<LogLevel, string> = {
+    DEBUG: '🔍',
+    INFO: 'ℹ️',
+    WARN: '⚠️',
+    ERROR: '❌'
+};
+
+// Color mapping for log levels
+const LEVEL_COLORS: Record<LogLevel, string> = {
+    DEBUG: COLORS.gray,
+    INFO: COLORS.blue,
+    WARN: COLORS.yellow,
+    ERROR: COLORS.red
+};
+
 export type LogLevel = 'DEBUG' | 'INFO' | 'WARN' | 'ERROR';
 
 export interface LoggerOptions {
@@ -127,8 +158,21 @@ export class Logger {
         }
 
         const timestamp = new Date().toISOString();
-        const metadataStr = metadata ? ` | ${JSON.stringify(metadata)}` : '';
-        const logEntry = `[${timestamp}] [${level}] [${this.source}] ${message}${metadataStr}`;
+        const icon = LEVEL_ICONS[level];
+        const color = LEVEL_COLORS[level];
+        
+        // Format timestamp for better readability (YYYY-MM-DD HH:mm:ss)
+        const readableTimestamp = timestamp.replace('T', ' ').replace(/\.\d+Z$/, '');
+        
+        // Format metadata with indentation for better readability
+        let metadataStr = '';
+        if (metadata) {
+            const formattedMetadata = JSON.stringify(metadata, null, 2);
+            metadataStr = '\n' + formattedMetadata.split('\n').map(line => `  ${line}`).join('\n');
+        }
+        
+        // Create log entry for file (plain text, no colors)
+        const logEntry = `[${readableTimestamp}] [${level}] [${this.source}] ${icon} ${message}${metadataStr}`;
 
         // Output to console (critical for Task Scheduler Windows visibility)
         this.logToConsole(level, logEntry);
@@ -141,21 +185,24 @@ export class Logger {
     }
 
     /**
-     * Output to console with appropriate method
+     * Output to console with appropriate method and colors
      */
     private logToConsole(level: LogLevel, logEntry: string): void {
+        const color = LEVEL_COLORS[level];
+        const coloredEntry = `${color}${logEntry}${COLORS.reset}`;
+        
         switch (level) {
             case 'ERROR':
-                console.error(logEntry);
+                console.error(coloredEntry);
                 break;
             case 'WARN':
-                console.warn(logEntry);
+                console.warn(coloredEntry);
                 break;
             case 'DEBUG':
-                console.debug(logEntry);
+                console.debug(coloredEntry);
                 break;
             default:
-                console.log(logEntry);
+                console.log(coloredEntry);
         }
     }
 
