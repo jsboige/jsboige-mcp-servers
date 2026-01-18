@@ -303,6 +303,7 @@ export interface MachineInventory {
       architecture: string;
     };
   };
+  // CORRECTION Bug #322 : Ajout du champ paths pour ConfigSharingService
   paths?: {
     rooExtensions?: string;
     mcpSettings?: string;
