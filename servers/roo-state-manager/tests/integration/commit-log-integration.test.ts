@@ -75,6 +75,8 @@ describe('CommitLogService - Tests d\'Intégration', () => {
     };
 
     commitLogService = new CommitLogService(config);
+    // Attendre que le service soit initialisé
+    await commitLogService.waitForInitialization();
   });
 
   afterEach(async () => {
@@ -160,6 +162,8 @@ describe('CommitLogService - Tests d\'Intégration', () => {
         enableSigning: false,
         hashAlgorithm: 'sha256'
       });
+      // Attendre que le nouveau service soit initialisé
+      await newService.waitForInitialization();
 
       // Assert - Vérifier que les données ont été chargées
       const state = newService.getState();
@@ -503,6 +507,8 @@ describe('CommitLogService - Tests d\'Intégration', () => {
         enableSigning: false,
         hashAlgorithm: 'sha256'
       });
+      // Attendre que le nouveau service soit initialisé
+      await newService.waitForInitialization();
 
       // Act - Vérifier la cohérence
       const result = await newService.verifyConsistency();

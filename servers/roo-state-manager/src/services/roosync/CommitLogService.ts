@@ -98,20 +98,17 @@ export class CommitLogService {
     };
 
     // Initialisation asynchrone non-bloquante pour éviter les Unhandled Rejections
-    this.initializeService().catch(error => {
-      // En mode test, ne pas bloquer - juste logger un warning
-      if (process.env.NODE_ENV === 'test' || process.env.ROOSYNC_TEST_MODE === 'true') {
-        logger.warn('Initialisation du service de commit log ignorée en mode test', { error: error.message });
-      } else {
-        logger.error('Erreur critique lors de l\'initialisation du service de commit log', error);
-        // Ne pas relancer l'erreur pour éviter les Unhandled Rejections
-        // L'état initialized sera false et les opérations échoueront proprement
-      }
+    this.initializationPromise = this.initializeService().catch(error => {
+      logger.error('Erreur critique lors de l\'initialisation du service de commit log', error);
+      // Ne pas relancer l'erreur pour éviter les Unhandled Rejections
+      // L'état initialized sera false et les opérations échoueront proprement
     });
   }
 
   /** Indique si le service est initialisé */
   private initialized: boolean = false;
+  /** Promise résolue quand l'initialisation est terminée */
+  private initializationPromise: Promise<void>;
 
   /**
    * Initialise le service et charge l'état existant
@@ -210,6 +207,12 @@ export class CommitLogService {
    */
   private async acquireLock(): Promise<boolean> {
     if (this.isLocked) {
+      return false;
+    }
+
+    // Vérifier si un lock existe déjà
+    if (existsSync(this.lockFilePath)) {
+      logger.warn('Lock déjà présent, impossible d\'acquérir le lock');
       return false;
     }
 
@@ -635,6 +638,15 @@ export class CommitLogService {
       }
     }
 
+    // Vérifier la cohérence entre currentSequenceNumber et le nombre d'entrées
+    if (this.state.currentSequenceNumber !== this.state.entries.size) {
+      inconsistentEntries.push({
+        sequenceNumber: this.state.currentSequenceNumber,
+        issue: `Numéro de séquence courant (${this.state.currentSequenceNumber}) incohérent avec le nombre d'entrées (${this.state.entries.size})`,
+        severity: 'high'
+      });
+    }
+
     // Vérifier les hash
     for (const entry of this.state.entries.values()) {
       const computedHash = this.computeHash(entry);
@@ -779,6 +791,13 @@ export class CommitLogService {
   }
 
   /**
+   * Attend que le service soit initialisé
+   */
+  public async waitForInitialization(): Promise<void> {
+    await this.initializationPromise;
+  }
+
+  /**
    * Obtient l'état complet du service
    */
   public getState(): CommitLogState {
@@ -789,6 +808,14 @@ export class CommitLogService {
       statistics: { ...this.state.statistics },
       metadata: { ...this.state.metadata }
     };
+  }
+
+  /**
+   * Obtient l'état interne du service (pour tests uniquement)
+   * @internal
+   */
+  public _getInternalState(): CommitLogState {
+    return this.state;
   }
 
   /**
