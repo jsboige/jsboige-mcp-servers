@@ -300,13 +300,21 @@ vi.mock('path', () => ({
   })
 }));
 
-// Mock du module os
-vi.mock('os', () => ({
-  platform: () => 'win32',
-  arch: () => 'x64',
-  tmpdir: () => '/tmp',
-  homedir: () => '/home/user'
-}));
+// Mock du module os - inclure toutes les fonctions utilisées
+vi.mock('os', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('os')>();
+  return {
+    ...actual,
+    platform: () => 'win32',
+    arch: () => 'x64',
+    tmpdir: () => '/tmp',
+    homedir: () => '/home/user',
+    hostname: () => 'test-machine',
+    type: () => 'Windows_NT',
+    release: () => '10.0.19045',
+    userInfo: () => ({ username: 'test-user' }),
+  };
+});
 
 // Mock du module child_process
 vi.mock('child_process', () => ({

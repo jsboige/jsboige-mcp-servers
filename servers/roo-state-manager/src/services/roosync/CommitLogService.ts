@@ -98,17 +98,39 @@ export class CommitLogService {
     };
 
     // Initialisation asynchrone non-bloquante pour éviter les Unhandled Rejections
-    this.initializationPromise = this.initializeService().catch(error => {
-      logger.error('Erreur critique lors de l\'initialisation du service de commit log', error);
-      // Ne pas relancer l'erreur pour éviter les Unhandled Rejections
-      // L'état initialized sera false et les opérations échoueront proprement
+    // Stocke la Promise pour permettre l'attente via waitForInitialization()
+    this.initPromise = this.initializeService().catch(error => {
+      // En mode test, ne pas bloquer - juste logger un warning
+      if (process.env.NODE_ENV === 'test' || process.env.ROOSYNC_TEST_MODE === 'true') {
+        logger.warn('Initialisation du service de commit log ignorée en mode test', { error: error.message });
+      } else {
+        logger.error('Erreur critique lors de l\'initialisation du service de commit log', error);
+        // Ne pas relancer l'erreur pour éviter les Unhandled Rejections
+        // L'état initialized sera false et les opérations échoueront proprement
+      }
     });
   }
 
   /** Indique si le service est initialisé */
   private initialized: boolean = false;
-  /** Promise résolue quand l'initialisation est terminée */
-  private initializationPromise: Promise<void>;
+
+  /** Promise d'initialisation pour permettre l'attente */
+  private initPromise: Promise<void>;
+
+  /**
+   * Attend que le service soit complètement initialisé
+   * @returns Promise qui se résout quand le service est prêt
+   */
+  public async waitForInitialization(): Promise<void> {
+    return this.initPromise;
+  }
+
+  /**
+   * Vérifie si le service est initialisé
+   */
+  public isInitialized(): boolean {
+    return this.initialized;
+  }
 
   /**
    * Initialise le service et charge l'état existant
