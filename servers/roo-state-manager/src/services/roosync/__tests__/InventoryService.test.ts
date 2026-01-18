@@ -5,7 +5,18 @@ import * as path from 'path';
 import { InventoryService } from '../InventoryService';
 
 vi.mock('fs/promises');
-vi.mock('os');
+// Mock os module but preserve original functions and add our mocks
+vi.mock('os', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('os')>();
+  return {
+    ...actual,
+    homedir: vi.fn(() => '/mock/home'),
+    hostname: vi.fn(() => 'test-machine'),
+    type: vi.fn(() => 'Windows_NT'),
+    release: vi.fn(() => '10.0.19045'),
+    userInfo: vi.fn(() => ({ username: 'test-user' })),
+  };
+});
 
 describe('InventoryService', () => {
   let service: InventoryService;
@@ -13,12 +24,9 @@ describe('InventoryService', () => {
 
   beforeEach(() => {
     vi.clearAllMocks();
-    vi.mocked(os.homedir).mockReturnValue(mockHomeDir);
-    vi.mocked(os.hostname).mockReturnValue('test-machine');
-    vi.mocked(os.type).mockReturnValue('Windows_NT');
-    vi.mocked(os.release).mockReturnValue('10.0.19045');
-    vi.mocked(os.userInfo).mockReturnValue({ username: 'test-user' } as any);
-    
+    // Les mocks de os sont définis au niveau module avec importOriginal
+    // Pas besoin de les redéfinir ici
+
     // We need to reset the singleton instance to ensure clean state
     // This is a bit tricky with private constructors and singletons in tests
     // For this test, we assume getInstance works correctly

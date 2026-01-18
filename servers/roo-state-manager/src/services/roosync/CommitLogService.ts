@@ -97,8 +97,8 @@ export class CommitLogService {
       }
     };
 
-    // Initialisation asynchrone non-bloquante pour éviter les Unhandled Rejections
-    this.initializeService().catch(error => {
+    // Initialisation asynchrone - stocke la Promise pour permettre l'attente
+    this.initPromise = this.initializeService().catch(error => {
       // En mode test, ne pas bloquer - juste logger un warning
       if (process.env.NODE_ENV === 'test' || process.env.ROOSYNC_TEST_MODE === 'true') {
         logger.warn('Initialisation du service de commit log ignorée en mode test', { error: error.message });
@@ -112,6 +112,24 @@ export class CommitLogService {
 
   /** Indique si le service est initialisé */
   private initialized: boolean = false;
+
+  /** Promise d'initialisation pour permettre l'attente */
+  private initPromise: Promise<void>;
+
+  /**
+   * Attend que le service soit complètement initialisé
+   * @returns Promise qui se résout quand le service est prêt
+   */
+  public async waitForInitialization(): Promise<void> {
+    return this.initPromise;
+  }
+
+  /**
+   * Vérifie si le service est initialisé
+   */
+  public isInitialized(): boolean {
+    return this.initialized;
+  }
 
   /**
    * Initialise le service et charge l'état existant
