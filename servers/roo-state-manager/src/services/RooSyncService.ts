@@ -32,6 +32,7 @@ import { PresenceManager } from './roosync/PresenceManager.js';
 import { IdentityManager } from './roosync/IdentityManager.js';
 import { NonNominativeBaselineService } from './roosync/NonNominativeBaselineService.js';
 import { HeartbeatService, type HeartbeatServiceState, type HeartbeatCheckResult } from './roosync/HeartbeatService.js';
+import { CommitLogService } from './roosync/CommitLogService.js';
 
 // Re-export des types pour compatibilité
 export type { DecisionExecutionResult, RollbackRestoreResult };
@@ -94,6 +95,7 @@ export class RooSyncService {
   private identityManager: IdentityManager;
   private nonNominativeBaselineService: NonNominativeBaselineService;
   private heartbeatService: HeartbeatService;
+  private commitLogService: CommitLogService;
 
   /**
    /**
@@ -173,6 +175,17 @@ export class RooSyncService {
       this.identityManager = new IdentityManager(this.config, this.presenceManager);
       this.nonNominativeBaselineService = new NonNominativeBaselineService(this.config.sharedPath);
       this.heartbeatService = new HeartbeatService(this.config.sharedPath);
+      this.commitLogService = new CommitLogService({
+        commitLogPath: join(this.config.sharedPath, 'commit-log'),
+        syncInterval: 30000, // 30 secondes
+        maxEntries: 10000,
+        maxRetryAttempts: 3,
+        retryDelay: 5000,
+        enableCompression: true,
+        compressionAge: 86400000, // 24 heures
+        enableSigning: false,
+        hashAlgorithm: 'sha256'
+      });
 
     } catch (error) {
       debugLog('ERREUR dans constructeur RooSyncService', {
@@ -838,6 +851,13 @@ export class RooSyncService {
   }
 
   /**
+   * Obtient le service de commit log
+   */
+  public getCommitLogService(): CommitLogService {
+    return this.commitLogService;
+  }
+
+  /**
    * Enregistre un heartbeat pour la machine courante
    */
   public async registerHeartbeat(metadata?: Record<string, any>): Promise<void> {
@@ -912,6 +932,22 @@ export class RooSyncService {
   public async stopHeartbeatService(): Promise<void> {
     console.log('[RooSyncService] Arrêt du service heartbeat');
     return this.heartbeatService.stopHeartbeatService();
+  }
+
+  /**
+   * Démarre le service de commit log
+   */
+  public async startCommitLogService(): Promise<void> {
+    console.log('[RooSyncService] Démarrage du service commit log');
+    await this.commitLogService.startAutoSync();
+  }
+
+  /**
+   * Arrête le service de commit log
+   */
+  public async stopCommitLogService(): Promise<void> {
+    console.log('[RooSyncService] Arrêt du service commit log');
+    await this.commitLogService.stopAutoSync();
   }
 
   /**
