@@ -182,21 +182,70 @@ export class InventoryCollectorWrapper implements IInventoryCollector {
       }
     }
   /**
-   * CORRECTION SDDD : Convertit l'inventaire brut du shared state vers BaselineMachineInventory
+   * CORRECTION SDDD + #322 : Convertit l'inventaire brut du shared state vers BaselineMachineInventory
+   * Supporte deux formats :
+   * - Format InventoryCollector (legacy) : roo.modes, roo.mcpServers, hardware.cpu, etc.
+   * - Format InventoryService (nouveau) : inventory.mcpServers, inventory.rooModes, inventory.systemInfo, etc.
    */
   private convertRawToBaselineFormat(rawInventory: any): BaselineMachineInventory {
+    // CORRECTION #322 : Détecter le format de l'inventaire
+    const isInventoryServiceFormat = rawInventory.inventory !== undefined;
+
+    if (isInventoryServiceFormat) {
+      // Format InventoryService (nouveau) - rawInventory.inventory contient les données
+      const inv = rawInventory.inventory;
+      return {
+        machineId: rawInventory.machineId,
+        timestamp: rawInventory.timestamp,
+        config: {
+          roo: {
+            modes: inv.rooModes || [],
+            mcpSettings: inv.mcpServers || {},
+            userSettings: {}
+          },
+          hardware: {
+            cpu: {
+              model: inv.systemInfo?.processor || 'Unknown CPU',
+              cores: inv.systemInfo?.cpuCores || 0,
+              threads: inv.systemInfo?.cpuThreads || 0
+            },
+            memory: {
+              total: 0 // Non disponible dans ce format
+            },
+            disks: [],
+            gpu: 'None'
+          },
+          software: {
+            powershell: inv.systemInfo?.powershellVersion || 'Unknown',
+            node: 'N/A',
+            python: 'N/A'
+          },
+          system: {
+            os: inv.systemInfo?.os || 'Unknown',
+            architecture: 'Unknown'
+          }
+        },
+        metadata: {
+          collectionDuration: 0,
+          source: 'remote' as any,
+          collectorVersion: '2.1.0'
+        }
+      };
+    }
+
+    // Format InventoryCollector (legacy) - données directement dans rawInventory
     return {
       machineId: rawInventory.machineId,
       timestamp: rawInventory.timestamp,
       config: {
         roo: {
           modes: rawInventory.roo?.modes || [],
-          mcpSettings: rawInventory.roo?.mcpServers || {}, // CORRECTION SDDD : Accès correct via roo.mcpServers
+          mcpSettings: rawInventory.roo?.mcpServers || {},
           userSettings: {}
         },
         hardware: {
           cpu: {
-            model: 'Unknown CPU', // Pas de model dans la structure réelle
+            model: 'Unknown CPU',
             cores: rawInventory.hardware?.cpu?.cores || 0,
             threads: rawInventory.hardware?.cpu?.threads || 0
           },
@@ -230,7 +279,7 @@ export class InventoryCollectorWrapper implements IInventoryCollector {
       },
       metadata: {
         collectionDuration: 0,
-        source: 'remote' as any, // CORRECTION SDDD : forcer le type pour compatibilité
+        source: 'remote' as any,
         collectorVersion: '2.1.0'
       },
       // CORRECTION Bug #322 : Préserver le champ paths pour ConfigSharingService

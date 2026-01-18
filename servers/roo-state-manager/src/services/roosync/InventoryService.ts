@@ -1,10 +1,12 @@
 import * as os from 'os';
 import * as fs from 'fs/promises';
 import * as path from 'path';
+import { existsSync } from 'fs';
 import { FullInventory, InventoryData, McpServerInfo, RooModeInfo, ScriptInfo } from '../../types/inventory';
 import { PowerShellExecutor } from '../PowerShellExecutor';
 import { readJSONFileWithoutBOM } from '../../utils/encoding-helpers.js';
 import { InventoryCollectorError, InventoryCollectorErrorCode } from '../../types/errors.js';
+import { getSharedStatePath } from '../../utils/server-helpers.js';
 
 export class InventoryService {
   private static instance: InventoryService;
@@ -72,7 +74,7 @@ export class InventoryService {
     }
   };
 
-  return {
+  const inventory: FullInventory = {
     machineId: finalMachineId,
     timestamp: new Date().toISOString(),
     inventory: inventoryData,
@@ -83,6 +85,11 @@ export class InventoryService {
       scripts: this.SCRIPTS_PATH
     }
   };
+
+  // CORRECTION #322: Sauvegarder l'inventaire dans le shared state pour permettre à compare_config de fonctionner
+  await this.saveToSharedState(inventory);
+
+  return inventory;
 }
 
 /**
@@ -284,12 +291,42 @@ private async collectMcpServers(): Promise<McpServerInfo[]> {
       }
   }
 
-  private async fileExists(path: string): Promise<boolean> {
+  private async fileExists(filePath: string): Promise<boolean> {
     try {
-      await fs.access(path);
+      await fs.access(filePath);
       return true;
     } catch {
       return false;
+    }
+  }
+
+  /**
+   * CORRECTION #322: Sauvegarde l'inventaire dans le shared state pour permettre à compare_config de fonctionner
+   * @param inventory - L'inventaire à sauvegarder
+   */
+  private async saveToSharedState(inventory: FullInventory): Promise<void> {
+    try {
+      const sharedStatePath = getSharedStatePath();
+      const inventoriesDir = path.join(sharedStatePath, 'inventories');
+
+      // Créer le répertoire s'il n'existe pas
+      if (!existsSync(inventoriesDir)) {
+        console.log(`[InventoryService] 📁 Création du répertoire: ${inventoriesDir}`);
+        await fs.mkdir(inventoriesDir, { recursive: true });
+      }
+
+      // Sauvegarder avec un nom simple (sans timestamp) pour que loadRemoteInventory puisse le trouver
+      // Format: {machineId}.json
+      const filename = `${inventory.machineId}.json`;
+      const filepath = path.join(inventoriesDir, filename);
+
+      // Sauvegarder le fichier
+      await fs.writeFile(filepath, JSON.stringify(inventory, null, 2), 'utf-8');
+      console.log(`[InventoryService] 💾 Inventaire sauvegardé: ${filepath}`);
+
+    } catch (error) {
+      // Non-bloquant : on log mais on ne throw pas
+      console.warn(`[InventoryService] ⚠️ Impossible de sauvegarder dans .shared-state:`, error);
     }
   }
 }
