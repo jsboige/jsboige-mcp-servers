@@ -16,6 +16,7 @@ import { existsSync } from 'fs';
 import { getSharedStatePath } from '../utils/server-helpers.js';
 import { createLogger } from '../utils/logger.js';
 import { InventoryCollectorError, InventoryCollectorErrorCode } from '../types/errors.js';
+import { InventoryService } from './roosync/InventoryService.js';
 
 const logger = createLogger('InventoryCollectorWrapper');
 
@@ -68,11 +69,56 @@ export class InventoryCollectorWrapper implements IInventoryCollector {
         logger.error(`Erreur lors de loadFromSharedState pour ${machineId}`, loadError);
       }
 
+      // CORRECTION Bug #322 : Fallback vers InventoryService qui fonctionne pour les machines locales
+      logger.debug(`Tentative fallback via InventoryService pour ${machineId}`);
+      try {
+        const inventoryService = InventoryService.getInstance();
+        const serviceInventory = await inventoryService.getMachineInventory(machineId);
+        if (serviceInventory) {
+          logger.info(`✅ Inventaire obtenu via InventoryService pour ${machineId}`);
+          // Convertir le format FullInventory vers BaselineMachineInventory
+          return {
+            machineId: serviceInventory.machineId,
+            timestamp: serviceInventory.timestamp,
+            config: {
+              roo: {
+                modes: (serviceInventory.inventory.rooModes || []).map((m: any) => m.slug || m.name || String(m)),
+                mcpSettings: {},
+                userSettings: {}
+              },
+              hardware: {
+                cpu: { model: 'N/A', cores: 0, threads: 0 },
+                memory: { total: 0 },
+                disks: [],
+                gpu: 'N/A'
+              },
+              software: {
+                powershell: serviceInventory.inventory.systemInfo?.powershellVersion || 'N/A',
+                node: 'N/A',
+                python: 'N/A'
+              },
+              system: {
+                os: serviceInventory.inventory.systemInfo?.os || 'N/A',
+                architecture: 'x64'
+              }
+            },
+            paths: serviceInventory.paths,
+            metadata: {
+              collectionDuration: 0,
+              source: 'local',
+              collectorVersion: '2.1.0'
+            }
+          };
+        }
+      } catch (serviceError) {
+        logger.error(`Erreur InventoryService pour ${machineId}`, serviceError);
+      }
+
       logger.debug(`Aucun inventaire trouvé pour ${machineId}`);
       throw new InventoryCollectorError(
         `Échec collecte inventaire pour ${machineId}`,
         InventoryCollectorErrorCode.SCRIPT_EXECUTION_FAILED,
-        { machineId, sources: ['local', 'sharedState'] }
+        { machineId, sources: ['local', 'sharedState', 'inventoryService'] }
       );
     } catch (error) {
       logger.error('Erreur lors de la collecte de l\'inventaire', error);
