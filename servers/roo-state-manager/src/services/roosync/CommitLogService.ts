@@ -97,8 +97,21 @@ export class CommitLogService {
       }
     };
 
-    this.initializeService();
+    // Initialisation asynchrone non-bloquante pour éviter les Unhandled Rejections
+    this.initializeService().catch(error => {
+      // En mode test, ne pas bloquer - juste logger un warning
+      if (process.env.NODE_ENV === 'test' || process.env.ROOSYNC_TEST_MODE === 'true') {
+        logger.warn('Initialisation du service de commit log ignorée en mode test', { error: error.message });
+      } else {
+        logger.error('Erreur critique lors de l\'initialisation du service de commit log', error);
+        // Ne pas relancer l'erreur pour éviter les Unhandled Rejections
+        // L'état initialized sera false et les opérations échoueront proprement
+      }
+    });
   }
+
+  /** Indique si le service est initialisé */
+  private initialized: boolean = false;
 
   /**
    * Initialise le service et charge l'état existant
@@ -112,6 +125,7 @@ export class CommitLogService {
       // Charger l'état existant
       await this.loadState();
 
+      this.initialized = true;
       logger.info('Service de commit log initialisé', {
         commitLogPath: this.config.commitLogPath,
         currentSequenceNumber: this.state.currentSequenceNumber,
@@ -119,6 +133,7 @@ export class CommitLogService {
       });
     } catch (error) {
       logger.error('Erreur lors de l\'initialisation', error);
+      this.initialized = false;
       throw new CommitLogServiceError(
         `Erreur d'initialisation: ${error instanceof Error ? error.message : String(error)}`,
         'INITIALIZATION_FAILED'

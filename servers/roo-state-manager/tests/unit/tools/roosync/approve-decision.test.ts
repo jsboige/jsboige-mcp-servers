@@ -13,12 +13,25 @@ import { RooSyncService } from '../../../../src/services/RooSyncService.js';
 import { roosyncApproveDecision, ApproveDecisionArgs } from '../../../../src/tools/roosync/approve-decision.js';
 
 // Mock fs module pour contourner le bug Vitest
+// Inclure promises inline pour éviter le hoisting issue
 vi.mock('fs', () => ({
   readFileSync: vi.fn(),
   writeFileSync: vi.fn(),
   mkdirSync: vi.fn(),
   rmSync: vi.fn(),
-  existsSync: vi.fn(() => true)
+  existsSync: vi.fn(() => true),
+  promises: {
+    mkdir: vi.fn().mockResolvedValue(undefined),
+    readdir: vi.fn().mockResolvedValue([]),
+    readFile: vi.fn().mockResolvedValue('{}'),
+    writeFile: vi.fn().mockResolvedValue(undefined),
+    rm: vi.fn().mockResolvedValue(undefined),
+    unlink: vi.fn().mockResolvedValue(undefined),
+    stat: vi.fn().mockResolvedValue({ isDirectory: () => true, size: 100, mtime: new Date() }),
+    access: vi.fn().mockResolvedValue(undefined),
+    rename: vi.fn().mockResolvedValue(undefined),
+    copyFile: vi.fn().mockResolvedValue(undefined)
+  }
 }));
 
 describe('roosync_approve_decision', () => {

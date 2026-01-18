@@ -13,6 +13,7 @@ import { RooSyncService } from '../../../../src/services/RooSyncService.js';
 import { roosyncRollbackDecision } from '../../../../src/tools/roosync/rollback-decision.js';
 
 // Mock fs module pour contourner le bug Vitest
+// Inclure promises avec mockResolvedValue pour le CommitLogService
 vi.mock('fs', () => ({
   readFileSync: vi.fn(),
   writeFileSync: vi.fn(),
@@ -20,10 +21,14 @@ vi.mock('fs', () => ({
   rmSync: vi.fn(),
   existsSync: vi.fn(() => true),
   promises: {
-    readFile: vi.fn(),
-    writeFile: vi.fn(),
-    access: vi.fn(),
-    mkdir: vi.fn()
+    readFile: vi.fn().mockResolvedValue('{}'),
+    writeFile: vi.fn().mockResolvedValue(undefined),
+    access: vi.fn().mockResolvedValue(undefined),
+    mkdir: vi.fn().mockResolvedValue(undefined),
+    readdir: vi.fn().mockResolvedValue([]),
+    stat: vi.fn().mockResolvedValue({ isDirectory: () => true, size: 100, mtime: new Date() }),
+    rm: vi.fn().mockResolvedValue(undefined),
+    unlink: vi.fn().mockResolvedValue(undefined)
   }
 }));
 
