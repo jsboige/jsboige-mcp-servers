@@ -225,7 +225,9 @@ export class InventoryCollectorWrapper implements IInventoryCollector {
         collectionDuration: 0,
         source: 'remote' as any, // CORRECTION SDDD : forcer le type pour compatibilité
         collectorVersion: '2.1.0'
-      }
+      },
+      // CORRECTION Bug #322 : Préserver le champ paths pour ConfigSharingService
+      paths: rawInventory.paths
     };
   }
 
@@ -273,7 +275,9 @@ export class InventoryCollectorWrapper implements IInventoryCollector {
         collectionDuration: 0, // À calculer
         source: 'local',
         collectorVersion: '1.0.0'
-      }
+      },
+      // CORRECTION Bug #322 : Préserver le champ paths pour ConfigSharingService
+      paths: inventory.paths
     };
   }
 
