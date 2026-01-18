@@ -44,5 +44,8 @@ synthesis-test-output.txt
 # Test fixtures (generated during tests)
 tests/fixtures/roosync-service-test/
 
+# Test data (generated/modified by tests)
+src/__test-data__/
+
 # Claude Code temporary working directories
 tmpclaude-*/
