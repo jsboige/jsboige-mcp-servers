@@ -344,8 +344,10 @@ describe('DiffDetector', () => {
       // Le test doit s'attendre à ce que l'erreur soit logger ET relancée
       await expect(diffDetector.compareBaselineWithMachine(baselineConfig, invalidMachine)).rejects.toThrow('Machine config est null/undefined');
       
+      // Le nouveau format du logger inclut timestamp, icône et metadata
+      // Vérifier que le message d'erreur est présent (format flexible)
       expect(consoleSpy).toHaveBeenCalledWith(
-        expect.stringContaining('[ERROR] [DiffDetector] Erreur lors de la comparaison baseline/machine')
+        expect.stringContaining('Erreur lors de la comparaison baseline/machine')
       );
       
       consoleSpy.mockRestore();
