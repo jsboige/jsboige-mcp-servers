@@ -314,6 +314,13 @@ export interface MachineInventory {
     source: 'local' | 'remote';
     collectorVersion: string;
   };
+  // CORRECTION Bug #322 : Ajout du champ paths pour ConfigSharingService
+  paths?: {
+    rooExtensions?: string;
+    mcpSettings?: string;
+    rooConfig?: string;
+    scripts?: string;
+  };
 }
 
 /**
