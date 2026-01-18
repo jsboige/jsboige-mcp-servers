@@ -229,8 +229,9 @@ export class ConfigSharingService implements IConfigSharingService {
       // Récupérer l'inventaire pour résoudre les chemins locaux
       // CORRECTION SDDD : Utiliser InventoryService pour charger l'inventaire depuis le fichier JSON
       // CORRECTION T2.16 : Utiliser ROOSYNC_MACHINE_ID au lieu de COMPUTERNAME
+      // CORRECTION Bug collect_config : Appeler sans argument pour forcer collecte locale
       const localMachineId = process.env.ROOSYNC_MACHINE_ID || process.env.COMPUTERNAME || 'localhost';
-      const inventory = await this.inventoryService.getMachineInventory(localMachineId) as any;
+      const inventory = await this.inventoryService.getMachineInventory() as any;
 
       // CORRECTION T2.16 : Vérifier que les chemins requis sont disponibles (harmonisation avec collectModes/collectMcpSettings)
       if (!inventory?.paths?.rooExtensions) {
@@ -373,8 +374,9 @@ export class ConfigSharingService implements IConfigSharingService {
     // Récupérer l'inventaire pour trouver les chemins
     // CORRECTION SDDD : Utiliser InventoryService pour charger l'inventaire depuis le fichier JSON
     // CORRECTION SDDD : Utiliser ROOSYNC_MACHINE_ID au lieu de COMPUTERNAME
+    // CORRECTION Bug collect_config : Appeler sans argument pour forcer collecte locale
     const machineId = process.env.ROOSYNC_MACHINE_ID || process.env.COMPUTERNAME || 'localhost';
-    const inventory = await this.inventoryService.getMachineInventory(machineId) as any;
+    const inventory = await this.inventoryService.getMachineInventory() as any;
 
     // CORRECTION SDDD : Utiliser uniquement l'inventaire, pas de fallback process.cwd()
     if (!inventory?.paths?.rooExtensions) {
@@ -429,8 +431,9 @@ export class ConfigSharingService implements IConfigSharingService {
     // Récupérer l'inventaire pour trouver les chemins
     // CORRECTION SDDD : Utiliser InventoryService pour charger l'inventaire depuis le fichier JSON
     // CORRECTION SDDD : Utiliser ROOSYNC_MACHINE_ID au lieu de COMPUTERNAME
+    // CORRECTION Bug collect_config : Appeler sans argument pour forcer collecte locale
     const machineId = process.env.ROOSYNC_MACHINE_ID || process.env.COMPUTERNAME || 'localhost';
-    const inventory = await this.inventoryService.getMachineInventory(machineId) as any;
+    const inventory = await this.inventoryService.getMachineInventory() as any;
 
     // CORRECTION SDDD : Utiliser uniquement l'inventaire, pas de fallback process.cwd()
     if (!inventory?.paths?.mcpSettings) {
