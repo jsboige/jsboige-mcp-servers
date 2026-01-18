@@ -16,6 +16,43 @@ import { tmpdir } from 'os';
 
 export type LogLevel = 'DEBUG' | 'INFO' | 'WARN' | 'ERROR';
 
+/**
+ * ANSI color codes for console output
+ */
+const ANSI_COLORS = {
+    reset: '\x1b[0m',
+    bright: '\x1b[1m',
+    dim: '\x1b[2m',
+    red: '\x1b[31m',
+    green: '\x1b[32m',
+    yellow: '\x1b[33m',
+    blue: '\x1b[34m',
+    magenta: '\x1b[35m',
+    cyan: '\x1b[36m',
+    white: '\x1b[40m',
+    bgRed: '\x1b[41m',
+    bgYellow: '\x1b[43m',
+    bgBlue: '\x1b[44m'
+};
+
+/**
+ * Color mapping for log levels
+ */
+const LEVEL_COLORS: Record<LogLevel, { prefix: string; suffix: string }> = {
+    DEBUG: { prefix: ANSI_COLORS.dim + ANSI_COLORS.cyan, suffix: ANSI_COLORS.reset },
+    INFO: { prefix: ANSI_COLORS.green, suffix: ANSI_COLORS.reset },
+    WARN: { prefix: ANSI_COLORS.bright + ANSI_COLORS.yellow, suffix: ANSI_COLORS.reset },
+    ERROR: { prefix: ANSI_COLORS.bright + ANSI_COLORS.red, suffix: ANSI_COLORS.reset }
+};
+
+/**
+ * Format a log entry with colors for console output
+ */
+function formatWithColors(level: LogLevel, logEntry: string): string {
+    const colors = LEVEL_COLORS[level];
+    return `${colors.prefix}${logEntry}${colors.suffix}`;
+}
+
 export interface LoggerOptions {
     /** Base directory for logs (default: .shared-state/logs) */
     logDir?: string;
@@ -141,21 +178,23 @@ export class Logger {
     }
 
     /**
-     * Output to console with appropriate method
+     * Output to console with appropriate method and colors
      */
     private logToConsole(level: LogLevel, logEntry: string): void {
+        const coloredEntry = formatWithColors(level, logEntry);
+        
         switch (level) {
             case 'ERROR':
-                console.error(logEntry);
+                console.error(coloredEntry);
                 break;
             case 'WARN':
-                console.warn(logEntry);
+                console.warn(coloredEntry);
                 break;
             case 'DEBUG':
-                console.debug(logEntry);
+                console.debug(coloredEntry);
                 break;
             default:
-                console.log(logEntry);
+                console.log(coloredEntry);
         }
     }
 
