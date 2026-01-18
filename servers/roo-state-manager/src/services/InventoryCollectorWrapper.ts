@@ -39,18 +39,8 @@ export class InventoryCollectorWrapper implements IInventoryCollector {
       // CORRECTION SDDD : Gérer les machines distantes via shared state
       logger.debug(`InventoryCollectorWrapper.collectInventory() DÉBUT pour ${machineId}, forceRefresh=${forceRefresh}`);
       
-      // D'abord essayer l'InventoryCollector existant (pour machine locale)
-      try {
-        const inventory = await this.inventoryCollector.collectInventory(machineId, forceRefresh);
-        if (inventory) {
-          logger.debug(`Inventaire local trouvé pour ${machineId}`);
-          return this.convertToBaselineFormat(inventory);
-        }
-      } catch (localError) {
-        logger.debug(`Échec collecte locale pour ${machineId}: ${localError instanceof Error ? localError.message : String(localError)}`);
-      }
-      
-      // Si pas d'inventaire local ou erreur, essayer de charger depuis le shared state
+      // CORRECTION Bug #322 : D'abord essayer de charger depuis le shared state
+      // pour éviter d'exécuter le script PowerShell inutilement
       logger.debug(`Tentative depuis shared state pour ${machineId}`);
       logger.debug(`Appel de loadFromSharedState pour ${machineId}`);
       
@@ -66,6 +56,17 @@ export class InventoryCollectorWrapper implements IInventoryCollector {
         }
       } catch (loadError) {
         logger.error(`Erreur lors de loadFromSharedState pour ${machineId}`, loadError);
+      }
+      
+      // Si pas d'inventaire dans shared state, essayer l'InventoryCollector existant (pour machine locale)
+      try {
+        const inventory = await this.inventoryCollector.collectInventory(machineId, forceRefresh);
+        if (inventory) {
+          logger.debug(`Inventaire local trouvé pour ${machineId}`);
+          return this.convertToBaselineFormat(inventory);
+        }
+      } catch (localError) {
+        logger.debug(`Échec collecte locale pour ${machineId}: ${localError instanceof Error ? localError.message : String(localError)}`);
       }
 
       logger.debug(`Aucun inventaire trouvé pour ${machineId}`);
@@ -94,11 +95,25 @@ export class InventoryCollectorWrapper implements IInventoryCollector {
 
         // CORRECTION Bug #322 : D'abord essayer le fichier exact {machineId}.json
         // (format utilisé par InventoryService.loadRemoteInventory)
+        // CORRECTION Bug #322 : Rendre la recherche insensible à la casse
         const exactFilePath = join(sharedStatePath, `${machineId}.json`);
+        const exactFilePathLower = join(sharedStatePath, `${machineId.toLowerCase()}.json`);
         if (existsSync(exactFilePath)) {
           logger.info(`📂 Fichier exact trouvé: ${exactFilePath}`);
           try {
             let content = await fs.readFile(exactFilePath, 'utf-8');
+            if (content.charCodeAt(0) === 0xFEFF) {
+              content = content.slice(1);
+            }
+            const rawInventory = JSON.parse(content);
+            return this.convertRawToBaselineFormat(rawInventory);
+          } catch (exactError) {
+            logger.debug(`Erreur lecture fichier exact: ${exactError instanceof Error ? exactError.message : String(exactError)}`);
+          }
+        } else if (existsSync(exactFilePathLower)) {
+          logger.info(`📂 Fichier exact trouvé (insensible à la casse): ${exactFilePathLower}`);
+          try {
+            let content = await fs.readFile(exactFilePathLower, 'utf-8');
             if (content.charCodeAt(0) === 0xFEFF) {
               content = content.slice(1);
             }
@@ -123,8 +138,13 @@ export class InventoryCollectorWrapper implements IInventoryCollector {
         logger.debug(`Fichiers trouvés: ${JSON.stringify(inventoryFiles)}`);
 
         // CORRECTION SDDD : Améliorer la recherche pour inclure les fichiers -fixed
+        // CORRECTION Bug #322 : Chercher aussi les fichiers qui contiennent le machineId (pas seulement qui commencent)
+        // CORRECTION Bug #322 : Rendre la recherche insensible à la casse
+        const machineIdLower = machineId.toLowerCase();
         const machineFiles = inventoryFiles.filter(file =>
-          file.startsWith(machineId) && file.endsWith('.json') && file !== `${machineId}.json`
+          (file.toLowerCase().startsWith(machineIdLower) || file.toLowerCase().includes(machineIdLower)) &&
+          file.endsWith('.json') &&
+          file.toLowerCase() !== `${machineIdLower}.json`
         );
         
         logger.debug(`Fichiers pour ${machineId}: ${JSON.stringify(machineFiles)}`);
@@ -201,14 +221,14 @@ export class InventoryCollectorWrapper implements IInventoryCollector {
    * CORRECTION SDDD : Convertit l'inventaire brut du shared state vers BaselineMachineInventory
    */
   private convertRawToBaselineFormat(rawInventory: any): BaselineMachineInventory {
-    return {
+    const result: any = {
       machineId: rawInventory.machineId,
       timestamp: rawInventory.timestamp,
       config: {
         roo: {
-          modes: rawInventory.roo?.modes || [],
-          mcpSettings: rawInventory.roo?.mcpServers || {}, // CORRECTION SDDD : Accès correct via roo.mcpServers
-          userSettings: {}
+            modes: rawInventory.roo?.modes || [],
+            mcpSettings: rawInventory.roo?.mcpServers || {}, // CORRECTION SDDD : Accès correct via roo.mcpServers
+            userSettings: {}
         },
         hardware: {
           cpu: {
@@ -244,6 +264,20 @@ export class InventoryCollectorWrapper implements IInventoryCollector {
         collectorVersion: '2.1.0'
       }
     };
+    
+    // CORRECTION Bug #322 : Préserver le champ paths pour ConfigSharingService
+    if (rawInventory.paths) {
+      result.paths = rawInventory.paths;
+    } else {
+      result.paths = {
+        rooExtensions: undefined,
+        mcpSettings: undefined,
+        rooConfig: undefined,
+        scripts: undefined
+      };
+    }
+    
+    return result as BaselineMachineInventory;
   }
 
   /**
@@ -252,7 +286,7 @@ export class InventoryCollectorWrapper implements IInventoryCollector {
   private convertToBaselineFormat(
     inventory: MachineInventory
   ): BaselineMachineInventory {
-    return {
+    const result: any = {
       machineId: inventory.machineId,
       timestamp: inventory.timestamp,
       config: {
@@ -292,6 +326,20 @@ export class InventoryCollectorWrapper implements IInventoryCollector {
         collectorVersion: '1.0.0'
       }
     };
+    
+    // CORRECTION Bug #322 : Préserver le champ paths pour ConfigSharingService
+    if (inventory.paths) {
+      result.paths = inventory.paths;
+    } else {
+      result.paths = {
+        rooExtensions: undefined,
+        mcpSettings: undefined,
+        rooConfig: undefined,
+        scripts: undefined
+      };
+    }
+    
+    return result as BaselineMachineInventory;
   }
 
   /**
