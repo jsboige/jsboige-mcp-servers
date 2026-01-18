@@ -1,9 +1,9 @@
 /**
  * InventoryCollector - Collecte l'inventaire système via Get-MachineInventory.ps1
- * 
+ *
  * Wrapper TypeScript pour orchestrer l'appel au script PowerShell de collecte d'inventaire
  * avec cache TTL pour optimiser les performances.
- * 
+ *
  * @module InventoryCollector
  * @version 1.0.0
  */
@@ -89,7 +89,7 @@ export class InventoryCollector {
   private readonly cacheTTL = 3600000; // 1h en ms (3600 * 1000)
   private logger: Logger;
   private gitHelpers: GitHelpers;
-  
+
   /**
    * Constructeur
    */
@@ -98,11 +98,11 @@ export class InventoryCollector {
     this.logger = createLogger('InventoryCollector');
     this.gitHelpers = getGitHelpers();
     this.logger.info(`Instance créée avec cache TTL de ${this.cacheTTL}ms`);
-    
+
     // Vérifier Git au démarrage
     this.verifyGitOnStartup();
   }
-  
+
   /**
    * Vérifier la disponibilité de Git au démarrage
    */
@@ -133,7 +133,7 @@ export class InventoryCollector {
    */
   async collectInventory(machineId: string, forceRefresh = false): Promise<MachineInventory | null> {
     this.logger.info(`🔍 Collecte inventaire pour machine: ${machineId}`, { forceRefresh });
-    
+
     // Vérifier le cache si pas de forceRefresh
     if (!forceRefresh && this.isCacheValid(machineId)) {
       this.logger.info(`✅ Cache valide trouvé pour ${machineId}`);
@@ -145,7 +145,7 @@ export class InventoryCollector {
       // STRATÉGIE 1 : Charger depuis .shared-state/inventories/ (prioritaire)
       this.logger.info(`📂 Tentative de chargement depuis .shared-state/inventories/`);
       const sharedInventory = await this.loadFromSharedState(machineId);
-      
+
       if (sharedInventory) {
         this.logger.info(`✅ Inventaire chargé depuis .shared-state pour ${machineId}`);
         return sharedInventory;
@@ -158,25 +158,25 @@ export class InventoryCollector {
     const localHostname = os.hostname().toLowerCase();
     const isLocalMachine = machineId.toLowerCase() === localHostname ||
                           machineId.toLowerCase().includes('myia-ai-01');
-    
+
     if (!isLocalMachine) {
       this.logger.error(`❌ Machine distante ${machineId} sans inventaire dans .shared-state`);
       return null;
     }
 
     this.logger.info(`🔧 Machine locale détectée, exécution du script PowerShell en fallback`);
-    
+
     try {
       // Calculer projectRoot comme dans init.ts (remonter 7 niveaux depuis build/src/services/)
       // __dirname en production = .../roo-state-manager/build/src/services/
       const projectRoot = join(__dirname, '..', '..', '..', '..', '..', '..', '..');
       this.logger.debug(`📂 Project root calculé: ${projectRoot}`);
       this.logger.debug(`📂 __dirname actuel: ${__dirname}`);
-      
+
       // Construire chemin absolu du script PowerShell
       const inventoryScriptPath = join(projectRoot, 'scripts', 'inventory', 'Get-MachineInventory.ps1');
       this.logger.debug(`📄 Script path: ${inventoryScriptPath}`);
-      
+
       // Vérifier que le script existe
       if (!existsSync(inventoryScriptPath)) {
         this.logger.error(`❌ Script NON TROUVÉ: ${inventoryScriptPath}`);
@@ -185,7 +185,9 @@ export class InventoryCollector {
       this.logger.info(`✅ Script trouvé`);
 
       // Commande PowerShell directe (comme init.ts) - PAS de -OutputPath
-      const inventoryCmd = `powershell.exe -NoProfile -ExecutionPolicy Bypass -File "${inventoryScriptPath}" -MachineId "${machineId}"`;
+      // CORRECTION: Passer le shared state path explicitement pour éviter les problèmes de variables d'environnement
+      const sharedStatePath = getSharedStatePath();
+      const inventoryCmd = `powershell.exe -NoProfile -ExecutionPolicy Bypass -File "${inventoryScriptPath}" -MachineId "${machineId}" -SharedStatePath "${sharedStatePath}"`;
       this.logger.debug(`🔧 Commande: ${inventoryCmd}`);
       this.logger.debug(`📂 Working directory: ${projectRoot}`);
 
@@ -307,19 +309,19 @@ export class InventoryCollector {
    */
   private isCacheValid(machineId: string): boolean {
     const cached = this.cache.get(machineId);
-    
+
     if (!cached) {
       return false;
     }
 
     const age = Date.now() - cached.timestamp;
     const isValid = age < this.cacheTTL;
-    
+
     if (!isValid) {
       this.logger.debug(`⏰ Cache expiré pour ${machineId}`, { age: Math.round(age / 1000) });
       this.cache.delete(machineId);
     }
-    
+
     return isValid;
   }
 
@@ -341,7 +343,7 @@ export class InventoryCollector {
       // Lire tous les fichiers d'inventaire pour cette machine
       const files = await fs.readdir(inventoriesDir);
       const machineFiles = files
-        .filter(f => f.toLowerCase().startsWith(machineId.toLowerCase()) && f.endsWith('.json'))
+        .filter(f => f.toLowerCase().includes(machineId.toLowerCase()) && f.endsWith('.json'))
         .sort()
         .reverse(); // Plus récent en premier
 
@@ -356,7 +358,7 @@ export class InventoryCollector {
       this.logger.info(`📂 Chargement depuis: ${filepath}`);
 
       let content = await fs.readFile(filepath, 'utf-8');
-      
+
       // Strip BOM UTF-8 si présent
       if (content.charCodeAt(0) === 0xFEFF) {
         content = content.slice(1);

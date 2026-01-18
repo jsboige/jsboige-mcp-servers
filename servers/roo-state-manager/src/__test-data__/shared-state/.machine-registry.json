@@ -2,11 +2,11 @@
   "machines": {
     "test-machine": {
       "machineId": "test-machine",
-      "firstSeen": "2026-01-16T17:03:49.021Z",
-      "lastSeen": "2026-01-16T17:03:49.021Z",
+      "firstSeen": "2026-01-18T17:34:39.978Z",
+      "lastSeen": "2026-01-18T17:34:39.978Z",
       "source": "service",
       "status": "online"
     }
   },
-  "lastUpdated": "2026-01-16T17:03:49.021Z"
+  "lastUpdated": "2026-01-18T17:34:39.978Z"
 }

@@ -1,0 +1,47 @@
+{
+  "timestamp": "2026-01-18T14:16:09.290Z",
+  "testsRun": 3,
+  "testsPassed": 2,
+  "testsFailed": 1,
+  "successRate": 67,
+  "results": [
+    {
+      "testName": "Timeout - Script PowerShell Long (>30s)",
+      "success": true,
+      "details": "✅ Timeout détecté et géré correctement",
+      "observations": [
+        "Script timeout : true",
+        "Timeout configuré : 5000ms",
+        "Durée exécution : 5005ms",
+        "Exit code : -1",
+        "Erreur : Timeout after 5000ms",
+        "✅ Timeout déclenché correctement"
+      ]
+    },
+    {
+      "testName": "Gestion Erreurs - Script Échoué (exit code != 0)",
+      "success": true,
+      "details": "✅ Erreur détectée et gérée",
+      "observations": [
+        "Script réussi : false",
+        "Exit code : 1",
+        "Durée exécution : 399ms",
+        "Stderr : \u001b[31;1mWrite-Error: \u001b[31;1mSimulated error\u001b[0m\r\n...",
+        "Erreur : Command failed: pwsh -NoProfile -ExecutionPolicy Bypass -File \"tests\\results\\roosync\\deployment-test-scripts\\test-failure.ps1\"\n\u001b[31;1mWrite-Error: \u001b[31;1mSimulated error\u001b[0m\r\n",
+        "✅ Erreur détectée et gérée correctement"
+      ]
+    },
+    {
+      "testName": "Dry-run Mode - deployModes({ dryRun: true })",
+      "success": false,
+      "details": "❌ Dry-run mode non appliqué",
+      "observations": [
+        "Test LIVE mode réussi : true",
+        "Test LIVE contient \"DRY-RUN MODE\" : false (attendu: false)",
+        "Test DRY-RUN mode réussi : true",
+        "Test DRY-RUN contient \"DRY-RUN MODE\" : false (attendu: true)",
+        "❌ Dry-run mode PAS appliqué correctement"
+      ]
+    }
+  ]
+}

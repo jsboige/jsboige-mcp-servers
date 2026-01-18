@@ -303,6 +303,12 @@ export interface MachineInventory {
       architecture: string;
     };
   };
+  paths?: {
+    rooExtensions?: string;
+    mcpSettings?: string;
+    rooConfig?: string;
+    scripts?: string;
+  };
   metadata: {
     collectionDuration: number; // en millisecondes
     source: 'local' | 'remote';

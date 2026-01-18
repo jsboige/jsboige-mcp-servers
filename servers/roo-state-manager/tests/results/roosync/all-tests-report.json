@@ -1,0 +1,46 @@
+{
+  "timestamp": "2026-01-18T14:16:13.576Z",
+  "batteriesRun": 4,
+  "batteriesSuccess": 3,
+  "batteriesFailed": 1,
+  "overallSuccessRate": 75,
+  "individualTests": {
+    "total": 10,
+    "passed": 9,
+    "failed": 1
+  },
+  "results": [
+    {
+      "testName": "Test 1 - Logger Rotation",
+      "success": true,
+      "details": "4/4 tests PASS (100%)",
+      "testsRun": 4,
+      "testsPassed": 4,
+      "testsFailed": 0,
+      "successRate": 100
+    },
+    {
+      "testName": "Test 2 - Git Helpers",
+      "success": true,
+      "details": "3/3 tests PASS (100%)",
+      "testsRun": 3,
+      "testsPassed": 3,
+      "testsFailed": 0,
+      "successRate": 100
+    },
+    {
+      "testName": "Test 3 - Deployment Wrappers",
+      "success": false,
+      "details": "2/3 tests PASS (67%)",
+      "testsRun": 3,
+      "testsPassed": 2,
+      "testsFailed": 1,
+      "successRate": 67
+    },
+    {
+      "testName": "Test 4 - Task Scheduler",
+      "success": true,
+      "details": "Test exécuté avec succès (pas de rapport JSON)"
+    }
+  ]
+}

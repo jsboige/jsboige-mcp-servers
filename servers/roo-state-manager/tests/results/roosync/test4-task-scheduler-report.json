@@ -1,0 +1,48 @@
+{
+  "startTime": "2026-01-18T15:16:11.1503849+01:00",
+  "totalTests": 3,
+  "convergence": 100.0,
+  "endTime": "2026-01-18T15:16:12.4648887+01:00",
+  "testId": "4",
+  "tests": [
+    {
+      "logFilePath": "D:\\roo-extensions\\mcps\\internal\\servers\\roo-state-manager\\tests\\roosync\\..\\results\\roosync\\task-scheduler-test-logs\\mcp-task-scheduler.log",
+      "hasShutdownMessage": [
+        "[2026-01-18 15:15:25.290] [INFO] MCP Server shutdown - Task Scheduler execution completed",
+        "[2026-01-18 15:16:12.188] [INFO] MCP Server shutdown - Task Scheduler execution completed"
+      ],
+      "hasInitMessage": [
+        "[2026-01-18 15:15:24.279] [INFO] Logger initialized - Task Scheduler execution",
+        "[2026-01-18 15:16:11.175] [INFO] Logger initialized - Task Scheduler execution"
+      ],
+      "passed": true,
+      "logFileSize": 2689,
+      "hasLogLevels": true,
+      "testId": "4.1",
+      "logLineCount": 35,
+      "testName": "Logs Fichier - Task Scheduler visibility"
+    },
+    {
+      "canRead": true,
+      "testId": "4.2",
+      "passed": true,
+      "testName": "Permissions Fichier Log",
+      "canWrite": true
+    },
+    {
+      "remainingLogs": [
+        "mcp-task-scheduler.log",
+        "roo-state-manager.1.log",
+        "roo-state-manager.log"
+      ],
+      "deletedCount": 1,
+      "passed": true,
+      "remainingCount": 3,
+      "testId": "4.3",
+      "oldLogDeleted": true,
+      "testName": "Rotation Logs - Task Scheduler simulation"
+    }
+  ],
+  "testName": "Task Scheduler Integration",
+  "passedTests": 3
+}

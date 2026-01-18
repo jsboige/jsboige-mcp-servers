@@ -15,6 +15,7 @@ import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js'
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
 // Charger les variables d'environnement AVANT tout autre import
+// CORRECTION : Utiliser __dirname pour charger le .env depuis le répertoire du serveur MCP
 const envPath = path.join(__dirname, '..', '.env');
 // Note: console.log utilisé ici car le logger n'est pas encore initialisé
 console.log('🔧 [DEBUG] Chargement .env depuis:', envPath);

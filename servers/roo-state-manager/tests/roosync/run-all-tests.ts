@@ -1,12 +1,12 @@
 /**
  * RooSync All Tests Runner - Phase 3
- * 
+ *
  * Exécute les 4 batteries de tests unitaires en mode dry-run :
  * - Test 1 : Logger Rotation
  * - Test 2 : Git Helpers
  * - Test 3 : Deployment Wrappers
  * - Test 4 : Task Scheduler (PowerShell)
- * 
+ *
  * Usage :
  *   npx ts-node tests/roosync/run-all-tests.ts
  *   npx ts-node tests/roosync/run-all-tests.ts --verbose
@@ -31,17 +31,17 @@ const logger = new TestLogger(RUNNER_LOG_FILE);
 const TESTS = [
   {
     name: 'Test 1 - Logger Rotation',
-    command: 'npx ts-node tests/roosync/test-logger-rotation-dryrun.ts',
+    command: 'npx tsx tests/roosync/test-logger-rotation-dryrun.ts',
     reportPath: 'tests/results/roosync/logger-test-logs/test-report.json',
   },
   {
     name: 'Test 2 - Git Helpers',
-    command: 'npx ts-node tests/roosync/test-git-helpers-dryrun.ts',
+    command: 'npx tsx tests/roosync/test-git-helpers-dryrun.ts',
     reportPath: 'tests/results/roosync/test2-git-helpers-report.json',
   },
   {
     name: 'Test 3 - Deployment Wrappers',
-    command: 'npx ts-node tests/roosync/test-deployment-wrappers-dryrun.ts',
+    command: 'npx tsx tests/roosync/test-deployment-wrappers-dryrun.ts',
     reportPath: 'tests/results/roosync/test3-deployment-report.json',
   },
   {

@@ -1,10 +1,10 @@
 /**
  * TestLogger - Utilitaire de logging pour tests RooSync
- * 
+ *
  * Usage:
  * ```typescript
  * import { TestLogger } from './helpers/test-logger';
- * 
+ *
  * const logger = new TestLogger('./tests/results/roosync/my-test.log');
  * logger.section('Test Section');
  * logger.log('Test message');
@@ -12,6 +12,7 @@
  */
 
 import * as fs from 'fs';
+import * as path from 'path';
 
 export class TestLogger {
   private logFile: string;
@@ -19,7 +20,7 @@ export class TestLogger {
   constructor(logFile: string) {
     this.logFile = logFile;
     // Créer répertoire parent si inexistant
-    const logDir = logFile.substring(0, logFile.lastIndexOf('/'));
+    const logDir = path.dirname(logFile);
     if (!fs.existsSync(logDir)) {
       fs.mkdirSync(logDir, { recursive: true });
     }

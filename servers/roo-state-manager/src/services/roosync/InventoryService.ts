@@ -34,12 +34,28 @@ export class InventoryService {
   const finalMachineId = machineId || os.hostname();
   const localHostname = os.hostname();
 
+  // Normaliser le machineId en minuscules pour correspondre au nom de fichier
+  const normalizedMachineId = finalMachineId.toLowerCase();
+
   // Si machineId est fourni et différent de l'hôte local, charger l'inventaire distant
-  if (machineId && machineId !== localHostname) {
-    return await this.loadRemoteInventory(machineId);
+  if (machineId && machineId.toLowerCase() !== localHostname.toLowerCase()) {
+    return await this.loadRemoteInventory(normalizedMachineId);
   }
 
-  // Sinon, collecter l'inventaire local
+  // Pour la machine locale, essayer d'abord de charger depuis le fichier JSON
+  // Si le fichier n'existe pas, collecter l'inventaire localement
+  try {
+    return await this.loadRemoteInventory(normalizedMachineId);
+  } catch (error: any) {
+    // Si le fichier n'existe pas, collecter l'inventaire localement
+    if (error.code === 'ENOENT' || error.message?.includes('n\'existe pas')) {
+      console.log(`Fichier d'inventaire non trouvé pour ${normalizedMachineId}, collecte locale...`);
+    } else {
+      console.warn(`Erreur lors du chargement de l'inventaire: ${error.message}`);
+    }
+  }
+
+  // Collecter l'inventaire local
   const inventoryData: InventoryData = {
     mcpServers: await this.collectMcpServers(),
     slashCommands: [], // Not implemented in script
@@ -86,7 +102,7 @@ private async loadRemoteInventory(machineId: string): Promise<FullInventory> {
     );
   }
 
-  const inventoryPath = path.join(sharedPath, 'inventories', `${machineId}.json`);
+  const inventoryPath = path.join(sharedPath, 'inventories', `machine-inventory-${machineId}.json`);
 
   try {
     const inventory: FullInventory = await readJSONFileWithoutBOM<FullInventory>(inventoryPath);
