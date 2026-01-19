@@ -15,11 +15,38 @@ export class InventoryService {
   private readonly ROO_CONFIG_PATH: string;
   private readonly SCRIPTS_PATH: string;
 
+  /**
+   * Détecte la racine roo-extensions en remontant l'arborescence depuis process.cwd()
+   * Recherche un répertoire contenant CLAUDE.md (fichier caractéristique de roo-extensions)
+   */
+  private static findRooExtensionsRoot(): string {
+    // Si la variable d'environnement est définie, l'utiliser
+    if (process.env.ROO_EXTENSIONS_PATH) {
+      return process.env.ROO_EXTENSIONS_PATH;
+    }
+
+    let currentPath = process.cwd();
+
+    // Remonter jusqu'à 10 niveaux pour trouver la racine
+    for (let i = 0; i < 10; i++) {
+      // Vérifier si on est à la racine roo-extensions (présence de CLAUDE.md)
+      if (existsSync(path.join(currentPath, 'CLAUDE.md'))) {
+        return currentPath;
+      }
+      const parentPath = path.dirname(currentPath);
+      if (parentPath === currentPath) break; // Atteint la racine du système
+      currentPath = parentPath;
+    }
+
+    // Fallback au cwd si CLAUDE.md non trouvé
+    return process.cwd();
+  }
+
   private constructor() {
     // Define paths relative to the assumed workspace root or user home
     // In a real scenario, these might be configurable or auto-detected
     const userHome = os.homedir();
-    this.ROO_EXTENSIONS_PATH = process.env.ROO_EXTENSIONS_PATH || process.cwd();
+    this.ROO_EXTENSIONS_PATH = InventoryService.findRooExtensionsRoot();
     this.MCP_SETTINGS_PATH = path.join(userHome, 'AppData/Roaming/Code/User/globalStorage/rooveterinaryinc.roo-cline/settings/mcp_settings.json');
     this.ROO_CONFIG_PATH = path.join(this.ROO_EXTENSIONS_PATH, 'roo-config');
     this.SCRIPTS_PATH = path.join(this.ROO_EXTENSIONS_PATH, 'scripts');
