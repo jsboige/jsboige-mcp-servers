@@ -136,7 +136,8 @@ private async loadRemoteInventory(machineId: string): Promise<FullInventory> {
     );
   }
 
-  const inventoryPath = path.join(sharedPath, 'inventories', `machine-inventory-${machineId}.json`);
+  // CORRECTION #340 : Utiliser le nouveau format {machineId}.json (aligné avec InventoryCollector)
+  const inventoryPath = path.join(sharedPath, 'inventories', `${machineId}.json`);
 
   try {
     const inventory: FullInventory = await readJSONFileWithoutBOM<FullInventory>(inventoryPath);
