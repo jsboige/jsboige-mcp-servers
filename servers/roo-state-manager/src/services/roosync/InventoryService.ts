@@ -19,7 +19,9 @@ export class InventoryService {
     // Define paths relative to the assumed workspace root or user home
     // In a real scenario, these might be configurable or auto-detected
     const userHome = os.homedir();
-    this.ROO_EXTENSIONS_PATH = process.env.ROO_EXTENSIONS_PATH || process.cwd();
+    // CORRECTION Bug #322 : process.cwd() dans le contexte MCP retourne mcps/internal/servers/roo-state-manager
+    // Il faut remonter 4 niveaux pour atteindre le workspace racine (même logique que getSharedStatePath)
+    this.ROO_EXTENSIONS_PATH = process.env.ROO_EXTENSIONS_PATH || path.join(process.cwd(), '..', '..', '..', '..');
     this.MCP_SETTINGS_PATH = path.join(userHome, 'AppData/Roaming/Code/User/globalStorage/rooveterinaryinc.roo-cline/settings/mcp_settings.json');
     this.ROO_CONFIG_PATH = path.join(this.ROO_EXTENSIONS_PATH, 'roo-config');
     this.SCRIPTS_PATH = path.join(this.ROO_EXTENSIONS_PATH, 'scripts');
