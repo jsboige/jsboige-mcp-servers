@@ -1,12 +1,12 @@
 /**
  * Production Logger for RooSync v2 - Windows Task Scheduler Compatible
- * 
+ *
  * Features:
  * - Double output: Console + File (visible in Task Scheduler)
  * - Automatic log rotation (max 10MB per file, 7 days retention)
  * - ISO 8601 timestamps
  * - Source tracking for debugging
- * 
+ *
  * @see docs/roosync/convergence-v1-v2-analysis-20251022.md Phase 1.1
  */
 
@@ -35,14 +35,6 @@ const LEVEL_ICONS: Record<LogLevel, string> = {
     INFO: 'ℹ️',
     WARN: '⚠️',
     ERROR: '❌'
-};
-
-// Color mapping for log levels
-const LEVEL_COLORS: Record<LogLevel, string> = {
-    DEBUG: COLORS.gray,
-    INFO: COLORS.blue,
-    WARN: COLORS.yellow,
-    ERROR: COLORS.red
 };
 
 export type LogLevel = 'DEBUG' | 'INFO' | 'WARN' | 'ERROR';
@@ -165,7 +157,7 @@ export class Logger {
      */
     public error(message: string, error?: Error | unknown, metadata?: Record<string, any>): void {
         let enhancedMetadata = metadata || {};
-        
+
         if (error) {
             if (error instanceof Error) {
                 enhancedMetadata = {
@@ -197,17 +189,17 @@ export class Logger {
         const timestamp = new Date().toISOString();
         const icon = LEVEL_ICONS[level];
         const color = LEVEL_COLORS[level];
-        
+
         // Format timestamp for better readability (YYYY-MM-DD HH:mm:ss)
         const readableTimestamp = timestamp.replace('T', ' ').replace(/\.\d+Z$/, '');
-        
+
         // Format metadata with indentation for better readability
         let metadataStr = '';
         if (metadata) {
             const formattedMetadata = JSON.stringify(metadata, null, 2);
             metadataStr = '\n' + formattedMetadata.split('\n').map(line => `  ${line}`).join('\n');
         }
-        
+
         // Create log entry for file (plain text, no colors)
         const logEntry = `[${readableTimestamp}] [${level}] [${this.source}] ${icon} ${message}${metadataStr}`;
 
@@ -313,13 +305,13 @@ export class Logger {
             // So we just start a new file with incremented suffix
             const dateStr = new Date().toISOString().split('T')[0].replace(/-/g, '');
             const basePattern = `${this.filePrefix}-${dateStr}`;
-            
+
             // Find next available number
             const existingFiles = readdirSync(this.logDir).filter(f => f.startsWith(basePattern));
             const nextNum = existingFiles.length + 1;
-            
+
             this.currentLogFile = join(this.logDir, `${basePattern}-${nextNum}.log`);
-            
+
             console.log(`[Logger] Log rotated to: ${this.currentLogFile}`);
         } catch (error) {
             console.error('[Logger] Failed to rotate log:', error);
