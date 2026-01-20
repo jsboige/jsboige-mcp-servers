@@ -1,12 +1,12 @@
 /**
  * Production Logger for RooSync v2 - Windows Task Scheduler Compatible
- * 
+ *
  * Features:
  * - Double output: Console + File (visible in Task Scheduler)
  * - Automatic log rotation (max 10MB per file, 7 days retention)
  * - ISO 8601 timestamps
  * - Source tracking for debugging
- * 
+ *
  * @see docs/roosync/convergence-v1-v2-analysis-20251022.md Phase 1.1
  */
 
@@ -37,15 +37,44 @@ const LEVEL_ICONS: Record<LogLevel, string> = {
     ERROR: '❌'
 };
 
-// Color mapping for log levels
-const LEVEL_COLORS: Record<LogLevel, string> = {
-    DEBUG: COLORS.gray,
-    INFO: COLORS.blue,
-    WARN: COLORS.yellow,
-    ERROR: COLORS.red
+export type LogLevel = 'DEBUG' | 'INFO' | 'WARN' | 'ERROR';
+
+/**
+ * ANSI color codes for console output
+ */
+const ANSI_COLORS = {
+    reset: '\x1b[0m',
+    bright: '\x1b[1m',
+    dim: '\x1b[2m',
+    red: '\x1b[31m',
+    green: '\x1b[32m',
+    yellow: '\x1b[33m',
+    blue: '\x1b[34m',
+    magenta: '\x1b[35m',
+    cyan: '\x1b[36m',
+    white: '\x1b[40m',
+    bgRed: '\x1b[41m',
+    bgYellow: '\x1b[43m',
+    bgBlue: '\x1b[44m'
 };
 
-export type LogLevel = 'DEBUG' | 'INFO' | 'WARN' | 'ERROR';
+/**
+ * Color mapping for log levels
+ */
+const LEVEL_COLORS: Record<LogLevel, { prefix: string; suffix: string }> = {
+    DEBUG: { prefix: ANSI_COLORS.dim + ANSI_COLORS.cyan, suffix: ANSI_COLORS.reset },
+    INFO: { prefix: ANSI_COLORS.green, suffix: ANSI_COLORS.reset },
+    WARN: { prefix: ANSI_COLORS.bright + ANSI_COLORS.yellow, suffix: ANSI_COLORS.reset },
+    ERROR: { prefix: ANSI_COLORS.bright + ANSI_COLORS.red, suffix: ANSI_COLORS.reset }
+};
+
+/**
+ * Format a log entry with colors for console output
+ */
+function formatWithColors(level: LogLevel, logEntry: string): string {
+    const colors = LEVEL_COLORS[level];
+    return `${colors.prefix}${logEntry}${colors.suffix}`;
+}
 
 export interface LoggerOptions {
     /** Base directory for logs (default: .shared-state/logs) */
@@ -128,7 +157,7 @@ export class Logger {
      */
     public error(message: string, error?: Error | unknown, metadata?: Record<string, any>): void {
         let enhancedMetadata = metadata || {};
-        
+
         if (error) {
             if (error instanceof Error) {
                 enhancedMetadata = {
@@ -160,17 +189,17 @@ export class Logger {
         const timestamp = new Date().toISOString();
         const icon = LEVEL_ICONS[level];
         const color = LEVEL_COLORS[level];
-        
+
         // Format timestamp for better readability (YYYY-MM-DD HH:mm:ss)
         const readableTimestamp = timestamp.replace('T', ' ').replace(/\.\d+Z$/, '');
-        
+
         // Format metadata with indentation for better readability
         let metadataStr = '';
         if (metadata) {
             const formattedMetadata = JSON.stringify(metadata, null, 2);
             metadataStr = '\n' + formattedMetadata.split('\n').map(line => `  ${line}`).join('\n');
         }
-        
+
         // Create log entry for file (plain text, no colors)
         const logEntry = `[${readableTimestamp}] [${level}] [${this.source}] ${icon} ${message}${metadataStr}`;
 
@@ -188,9 +217,8 @@ export class Logger {
      * Output to console with appropriate method and colors
      */
     private logToConsole(level: LogLevel, logEntry: string): void {
-        const color = LEVEL_COLORS[level];
-        const coloredEntry = `${color}${logEntry}${COLORS.reset}`;
-        
+        const coloredEntry = formatWithColors(level, logEntry);
+
         switch (level) {
             case 'ERROR':
                 console.error(coloredEntry);
@@ -277,13 +305,13 @@ export class Logger {
             // So we just start a new file with incremented suffix
             const dateStr = new Date().toISOString().split('T')[0].replace(/-/g, '');
             const basePattern = `${this.filePrefix}-${dateStr}`;
-            
+
             // Find next available number
             const existingFiles = readdirSync(this.logDir).filter(f => f.startsWith(basePattern));
             const nextNum = existingFiles.length + 1;
-            
+
             this.currentLogFile = join(this.logDir, `${basePattern}-${nextNum}.log`);
-            
+
             console.log(`[Logger] Log rotated to: ${this.currentLogFile}`);
         } catch (error) {
             console.error('[Logger] Failed to rotate log:', error);

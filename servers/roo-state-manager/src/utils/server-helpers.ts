@@ -14,25 +14,22 @@ import * as toolExports from '../tools/index.js';
 import { GenericError, GenericErrorCode } from '../types/errors.js';
 
 /**
- * Obtenir le chemin du répertoire shared-state RooSync
- */
-export function getSharedStatePath(): string {
-    // Priorité UNIQUE : Variable d'environnement ROOSYNC_SHARED_PATH
-    // Nous ne supportons plus de fallback ou de chemin par défaut pour garantir la cohérence.
-    if (process.env.ROOSYNC_SHARED_PATH) {
-        return process.env.ROOSYNC_SHARED_PATH;
-    }
-    
-    // ERREUR : Aucun chemin configuré
-    throw new GenericError(
-        "Configuration CRITIQUE manquante : ROOSYNC_SHARED_PATH n'est pas définie. " +
-        "Le système RooSync nécessite un chemin de stockage externe explicite. " +
-        "Veuillez définir cette variable d'environnement dans votre fichier .env ou votre configuration système.",
-        GenericErrorCode.INVALID_ARGUMENT,
-        { requiredEnvVar: 'ROOSYNC_SHARED_PATH' }
-    );
-}
-
+ /**
+  * Obtenir le chemin du répertoire shared-state RooSync
+  */
+ export function getSharedStatePath(): string {
+     // Priorité : Variable d'environnement ROOSYNC_SHARED_PATH
+     if (process.env.ROOSYNC_SHARED_PATH) {
+         return process.env.ROOSYNC_SHARED_PATH;
+     }
+     
+     // CORRECTION Bug #322 : Fallback vers le chemin par défaut
+     // Le process.cwd() dans le contexte MCP est dans mcps/internal/servers/roo-state-manager
+     // Il faut remonter 4 niveaux pour atteindre le workspace racine
+     const workspaceRoot = path.join(process.cwd(), '..', '..', '..', '..');
+     const defaultPath = path.join(workspaceRoot, 'roo-config', 'shared-state');
+     return defaultPath;
+ }
 /**
  * Tronque les résultats trop longs
  */

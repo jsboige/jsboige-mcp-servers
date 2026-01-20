@@ -161,9 +161,10 @@ export class RooSyncService {
         error: null
       });
 
+      // CORRECTION Bug #322 : Utiliser inventoryWrapper pour charger depuis shared state
       this.configSharingService = new ConfigSharingService(
         this.configService,
-        this.inventoryCollector as any
+        inventoryWrapper as any
       );
 
       // Initialisation des nouveaux modules

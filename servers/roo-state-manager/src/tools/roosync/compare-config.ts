@@ -5,12 +5,13 @@
  * Supporte implicitement le mode "profils" via l'ID de cible.
  *
  * @module tools/roosync/compare-config
- * @version 2.1.0
+ * @version 2.2.0 - Added granularity and filter params (#339)
  */
 
 import { z } from 'zod';
 import { zodToJsonSchema } from 'zod-to-json-schema';
 import { getRooSyncService, RooSyncServiceError } from '../../services/RooSyncService.js';
+import { GranularDiffDetector, GranularDiffReport, GranularDiffResult } from '../../services/GranularDiffDetector.js';
 
 /**
  * Schema de validation pour roosync_compare_config
@@ -21,7 +22,11 @@ export const CompareConfigArgsSchema = z.object({
   target: z.string().optional()
     .describe('ID de la machine cible (optionnel, défaut: remote_machine)'),
   force_refresh: z.boolean().optional()
-    .describe('Forcer la collecte d\'inventaire même si cache valide (défaut: false)')
+    .describe('Forcer la collecte d\'inventaire même si cache valide (défaut: false)'),
+  granularity: z.enum(['mcp', 'mode', 'full']).optional()
+    .describe('Niveau de granularité: mcp (MCPs uniquement), mode (modes Roo), full (comparaison complète GranularDiffDetector)'),
+  filter: z.string().optional()
+    .describe('Filtre optionnel sur les paths (ex: "jupyter" pour filtrer un MCP spécifique)')
 });
 
 export type CompareConfigArgs = z.infer<typeof CompareConfigArgsSchema>;
@@ -92,8 +97,71 @@ export async function roosyncCompareConfig(args: CompareConfigArgs): Promise<Com
       // Gérer l'alias 'local-machine' qui doit être mappé vers le vrai machineId
       const sourceMachineId = (args.source === 'local-machine') ? config.machineId : (args.source || config.machineId);
       const targetMachineId = (args.target === 'local-machine') ? config.machineId : (args.target || await getDefaultTargetMachine(service, sourceMachineId));
-    
-    // Comparaison réelle
+
+    // Si granularity est fourni, utiliser GranularDiffDetector
+    if (args.granularity) {
+      debugLog('Mode granulaire activé', { granularity: args.granularity, filter: args.filter });
+
+      // Charger les inventaires complets des deux machines
+      const sourceInventory = await service.getInventory(sourceMachineId, args.force_refresh || false);
+      const targetInventory = await service.getInventory(targetMachineId, args.force_refresh || false);
+
+      if (!sourceInventory || !targetInventory) {
+        throw new RooSyncServiceError(
+          `Inventaire manquant: source=${!!sourceInventory}, target=${!!targetInventory}`,
+          'INVENTORY_MISSING'
+        );
+      }
+
+      // Déterminer les données à comparer selon la granularité
+      let sourceData: any;
+      let targetData: any;
+
+      switch (args.granularity) {
+        case 'mcp':
+          sourceData = (sourceInventory as any).inventory?.mcpServers || (sourceInventory as any).mcpServers || {};
+          targetData = (targetInventory as any).inventory?.mcpServers || (targetInventory as any).mcpServers || {};
+          break;
+        case 'mode':
+          sourceData = (sourceInventory as any).inventory?.rooModes || (sourceInventory as any).rooModes || {};
+          targetData = (targetInventory as any).inventory?.rooModes || (targetInventory as any).rooModes || {};
+          break;
+        case 'full':
+        default:
+          sourceData = sourceInventory;
+          targetData = targetInventory;
+          break;
+      }
+
+      // Utiliser GranularDiffDetector
+      const detector = new GranularDiffDetector();
+      const granularReport = await detector.compareGranular(
+        sourceData,
+        targetData,
+        sourceMachineId,
+        targetMachineId,
+        {
+          includeUnchanged: false,
+          semanticAnalysis: true,
+          maxDepth: 30
+        }
+      );
+
+      // Appliquer le filtre si fourni
+      let filteredDiffs = granularReport.diffs;
+      if (args.filter) {
+        const filterLower = args.filter.toLowerCase();
+        filteredDiffs = granularReport.diffs.filter(diff =>
+          diff.path.toLowerCase().includes(filterLower) ||
+          diff.description.toLowerCase().includes(filterLower)
+        );
+      }
+
+      // Convertir au format CompareConfigResult
+      return formatGranularReport(granularReport, filteredDiffs, sourceMachineId, targetMachineId);
+    }
+
+    // Comparaison standard (sans granularité)
     const report = await service.compareRealConfigurations(
       sourceMachineId,
       targetMachineId,
@@ -178,6 +246,60 @@ function formatComparisonReport(report: any): CompareConfigResult {
 }
 
 /**
+ * Formate le rapport GranularDiffDetector pour l'affichage MCP
+ */
+function formatGranularReport(
+  report: GranularDiffReport,
+  filteredDiffs: GranularDiffResult[],
+  sourceMachineId: string,
+  targetMachineId: string
+): CompareConfigResult {
+  // Recalculer le summary basé sur les diffs filtrés
+  const summary = {
+    total: filteredDiffs.length,
+    critical: filteredDiffs.filter(d => d.severity === 'CRITICAL').length,
+    important: filteredDiffs.filter(d => d.severity === 'IMPORTANT').length,
+    warning: filteredDiffs.filter(d => d.severity === 'WARNING').length,
+    info: filteredDiffs.filter(d => d.severity === 'INFO').length
+  };
+
+  return {
+    source: sourceMachineId,
+    target: targetMachineId,
+    host_id: report.sourceLabel,
+    differences: filteredDiffs.map(diff => ({
+      category: diff.category,
+      severity: diff.severity,
+      path: diff.path,
+      description: diff.description,
+      action: getRecommendedAction(diff)
+    })),
+    summary
+  };
+}
+
+/**
+ * Génère une action recommandée basée sur le type et la sévérité du diff
+ */
+function getRecommendedAction(diff: GranularDiffResult): string | undefined {
+  switch (diff.type) {
+    case 'added':
+      return diff.severity === 'CRITICAL' ? 'Vérifier si ajout intentionnel' : undefined;
+    case 'removed':
+      return diff.severity === 'CRITICAL' ? 'Vérifier si suppression intentionnelle' : undefined;
+    case 'modified':
+      if (diff.severity === 'CRITICAL') {
+        return 'Synchroniser la configuration';
+      } else if (diff.severity === 'IMPORTANT') {
+        return 'Vérifier la cohérence';
+      }
+      return undefined;
+    default:
+      return undefined;
+  }
+}
+
+/**
  * Métadonnées de l'outil pour l'enregistrement MCP
  * Utilise Zod.shape natif pour compatibilité MCP
  */
@@ -192,7 +314,12 @@ Détection multi-niveaux :
 - System (OS, architecture) - INFO
 
 Supporte également la comparaison avec des profils (ex: target='profile:dev').
-Utilise Get-MachineInventory.ps1 pour collecte d'inventaire complet avec cache TTL 1h.`,
+Utilise Get-MachineInventory.ps1 pour collecte d'inventaire complet avec cache TTL 1h.
+
+Modes de granularité (nouveau) :
+- mcp: Compare uniquement les configurations MCP
+- mode: Compare uniquement les modes Roo
+- full: Comparaison granulaire complète avec GranularDiffDetector`,
   inputSchema: {
     type: 'object' as const,
     properties: {
@@ -207,6 +334,15 @@ Utilise Get-MachineInventory.ps1 pour collecte d'inventaire complet avec cache T
       force_refresh: {
         type: 'boolean',
         description: 'Forcer la collecte d\'inventaire même si cache valide (défaut: false)'
+      },
+      granularity: {
+        type: 'string',
+        enum: ['mcp', 'mode', 'full'],
+        description: 'Niveau de granularité: mcp (MCPs uniquement), mode (modes Roo), full (comparaison complète)'
+      },
+      filter: {
+        type: 'string',
+        description: 'Filtre optionnel sur les paths (ex: "jupyter" pour filtrer un MCP spécifique)'
       }
     },
     additionalProperties: false
