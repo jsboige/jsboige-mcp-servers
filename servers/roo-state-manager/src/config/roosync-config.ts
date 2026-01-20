@@ -64,12 +64,37 @@ export function loadRooSyncConfig(): RooSyncConfig {
       );
     }
 
+    // En mode test, utiliser les variables d'environnement si elles sont présentes
+    // pour permettre de tester la logique de validation
+    const autoSyncStr = process.env.ROOSYNC_AUTO_SYNC?.toLowerCase() || 'false';
+    const autoSync = autoSyncStr === 'true';
+    const conflictStrategy = process.env.ROOSYNC_CONFLICT_STRATEGY || 'manual';
+    const logLevel = process.env.ROOSYNC_LOG_LEVEL || 'info';
+
+    // Valider conflictStrategy même en mode test
+    const validStrategies = ['manual', 'auto-local', 'auto-remote'];
+    if (!validStrategies.includes(conflictStrategy)) {
+      throw new RooSyncConfigError(
+        `ROOSYNC_CONFLICT_STRATEGY invalide: ${conflictStrategy}. ` +
+        `Valeurs acceptées: ${validStrategies.join(', ')}`
+      );
+    }
+
+    // Valider logLevel même en mode test
+    const validLogLevels = ['debug', 'info', 'warn', 'error'];
+    if (!validLogLevels.includes(logLevel)) {
+      throw new RooSyncConfigError(
+        `ROOSYNC_LOG_LEVEL invalide: ${logLevel}. ` +
+        `Valeurs acceptées: ${validLogLevels.join(', ')}`
+      );
+    }
+
     return {
       sharedPath: process.env.ROOSYNC_SHARED_PATH!,
       machineId: process.env.ROOSYNC_MACHINE_ID!,
-      autoSync: false,
-      conflictStrategy: 'manual',
-      logLevel: 'info'
+      autoSync,
+      conflictStrategy: conflictStrategy as 'manual' | 'auto-local' | 'auto-remote',
+      logLevel: logLevel as 'debug' | 'info' | 'warn' | 'error'
     };
   }
 

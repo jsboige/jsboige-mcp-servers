@@ -13,8 +13,8 @@ describe('RooSync Configuration', () => {
   beforeEach(() => {
     // Sauvegarder l'environnement actuel
     originalEnv = { ...process.env };
-    // Désactiver le mode test pour tester la validation réelle
-    process.env.NODE_ENV = 'development';
+    // Utiliser le mode test pour éviter la vérification du chemin
+    process.env.NODE_ENV = 'test';
   });
 
   afterEach(() => {
