@@ -140,18 +140,18 @@ export class InventoryCollector {
       return this.cache.get(machineId)!.data;
     }
 
-    // CORRECTION SDDD : Si forceRefresh, sauter le chargement depuis .shared-state pour forcer l'exécution du script
-    if (!forceRefresh) {
-      // STRATÉGIE 1 : Charger depuis .shared-state/inventories/ (prioritaire)
-      this.logger.info(`📂 Tentative de chargement depuis .shared-state/inventories/`);
-      const sharedInventory = await this.loadFromSharedState(machineId);
+    // CORRECTION Bug #322 : TOUJOURS essayer de charger depuis .shared-state/inventories/ (prioritaire)
+    // Même avec forceRefresh, on essaie d'abord le shared state avant d'exécuter le script
+    this.logger.info(`📂 Tentative de chargement depuis .shared-state/inventories/`);
+    const sharedInventory = await this.loadFromSharedState(machineId);
 
-      if (sharedInventory) {
-        this.logger.info(`✅ Inventaire chargé depuis .shared-state pour ${machineId}`);
-        return sharedInventory;
-      }
-    } else {
-      this.logger.info(`🔄 ForceRefresh activé : bypass du chargement .shared-state pour forcer l'exécution du script`);
+    if (sharedInventory) {
+      this.logger.info(`✅ Inventaire chargé depuis .shared-state pour ${machineId}`);
+      return sharedInventory;
+    }
+
+    if (forceRefresh) {
+      this.logger.info(`🔄 ForceRefresh activé mais aucun inventaire dans .shared-state, exécution du script`);
     }
 
     // STRATÉGIE 2 : Si pas trouvé, vérifier si machine locale et exécuter script PowerShell
@@ -167,9 +167,10 @@ export class InventoryCollector {
     this.logger.info(`🔧 Machine locale détectée, exécution du script PowerShell en fallback`);
 
     try {
-      // Calculer projectRoot comme dans init.ts (remonter 7 niveaux depuis build/src/services/)
-      // __dirname en production = .../roo-state-manager/build/src/services/
-      const projectRoot = join(__dirname, '..', '..', '..', '..', '..', '..', '..');
+      // CORRECTION Bug #322 : Utiliser le même chemin que getSharedStatePath()
+      // Le __dirname en production = .../roo-state-manager/build/src/services/
+      // Il faut remonter 5 niveaux pour atteindre le workspace racine
+      const projectRoot = join(__dirname, '..', '..', '..', '..', '..');
       this.logger.debug(`📂 Project root calculé: ${projectRoot}`);
       this.logger.debug(`📂 __dirname actuel: ${__dirname}`);
 
@@ -334,16 +335,43 @@ export class InventoryCollector {
     try {
       const sharedStatePath = getSharedStatePath();
       const inventoriesDir = join(sharedStatePath, 'inventories');
+      
+      // CORRECTION Bug #322 : Logger le chemin pour debug
+      this.logger.debug(`📂 sharedStatePath: ${sharedStatePath}`);
+      this.logger.debug(`📂 inventoriesDir: ${inventoriesDir}`);
+      this.logger.debug(`📂 machineId: ${machineId}`);
 
       if (!existsSync(inventoriesDir)) {
         this.logger.debug(`❌ Répertoire inventories non trouvé: ${inventoriesDir}`);
         return null;
       }
 
-      // Lire tous les fichiers d'inventaire pour cette machine
+      // CORRECTION Bug #322 : D'abord essayer le fichier exact {machineId}.json
+      // (format utilisé par InventoryService.loadRemoteInventory)
+      // CORRECTION Bug #322 : Rendre la recherche insensible à la casse
+      const exactFilePath = join(inventoriesDir, `${machineId}.json`);
+      const exactFilePathLower = join(inventoriesDir, `${machineId.toLowerCase()}.json`);
+      if (existsSync(exactFilePath)) {
+        this.logger.info(`📂 Fichier exact trouvé: ${exactFilePath}`);
+        return await this.loadInventoryFile(exactFilePath, machineId);
+      } else if (existsSync(exactFilePathLower)) {
+        this.logger.info(`📂 Fichier exact trouvé (insensible à la casse): ${exactFilePathLower}`);
+        return await this.loadInventoryFile(exactFilePathLower, machineId);
+      }
+
+      // Ensuite chercher les fichiers avec timestamp (format {machineId}-*.json)
       const files = await fs.readdir(inventoriesDir);
+      const machineIdLower = machineId.toLowerCase();
+      
+      // CORRECTION Bug #322 : Inclure explicitement le fichier exact en minuscules
       const machineFiles = files
-        .filter(f => f.toLowerCase().includes(machineId.toLowerCase()) && f.endsWith('.json'))
+        .filter(f => {
+          const fLower = f.toLowerCase();
+          // Inclure les fichiers qui commencent par machineId (avec ou sans timestamp)
+          // OU qui contiennent machineId (pour les fichiers comme myia-web1.json)
+          return (fLower.startsWith(machineIdLower) || fLower.includes(machineIdLower)) &&
+                 f.endsWith('.json');
+        })
         .sort()
         .reverse(); // Plus récent en premier
 
@@ -352,9 +380,25 @@ export class InventoryCollector {
         return null;
       }
 
-      // Charger le fichier le plus récent
+      // Charger le fichier le plus récent (format timestamp)
       const latestFile = machineFiles[0];
       const filepath = join(inventoriesDir, latestFile);
+      return await this.loadInventoryFile(filepath, machineId);
+
+    } catch (error) {
+      this.logger.error(`❌ Erreur chargement depuis .shared-state`, error);
+      return null;
+    }
+  }
+
+  /**
+   * Charge un fichier d'inventaire spécifique
+   * @param filepath - Chemin complet du fichier
+   * @param machineId - Identifiant de la machine (pour le cache)
+   * @returns Inventaire ou null en cas d'erreur
+   */
+  private async loadInventoryFile(filepath: string, machineId: string): Promise<MachineInventory | null> {
+    try {
       this.logger.info(`📂 Chargement depuis: ${filepath}`);
 
       let content = await fs.readFile(filepath, 'utf-8');
@@ -365,8 +409,95 @@ export class InventoryCollector {
         this.logger.debug('🔧 BOM UTF-8 détecté et supprimé');
       }
 
-      const inventory: MachineInventory = JSON.parse(content);
-      this.logger.info(`✅ Inventaire chargé pour ${inventory.machineId} (${latestFile})`);
+      const raw = JSON.parse(content);
+      
+      // CORRECTION Bug #322 : Gérer les deux formats d'inventaire
+      // Format 1: "raw" du script PowerShell avec champ "inventory" imbriqué
+      // Format 2: "baseline" direct avec champs machineId, timestamp, etc.
+      let inventory: MachineInventory;
+      
+      if (raw.inventory && raw.machineId && raw.timestamp && raw.paths) {
+        // Format "raw" - extraire les champs de niveau supérieur
+        this.logger.debug(`📦 Format "raw" détecté avec champ inventory imbriqué`);
+        inventory = {
+          machineId: raw.machineId,
+          timestamp: raw.timestamp,
+          system: raw.inventory?.systemInfo ? {
+            hostname: raw.inventory.systemInfo.hostname || os.hostname(),
+            os: raw.inventory.systemInfo.os || os.platform(),
+            architecture: raw.inventory.systemInfo.architecture || os.arch(),
+            uptime: raw.inventory.systemInfo.uptime || os.uptime()
+          } : {
+            hostname: os.hostname(),
+            os: os.platform(),
+            architecture: os.arch(),
+            uptime: os.uptime()
+          },
+          hardware: raw.inventory?.systemInfo ? {
+            cpu: {
+              name: raw.inventory.systemInfo.processor || 'Unknown',
+              cores: raw.inventory.systemInfo.cpuCores || os.cpus().length,
+              threads: raw.inventory.systemInfo.cpuThreads || os.cpus().length
+            },
+            memory: {
+              total: raw.inventory.systemInfo.totalMemory || os.totalmem(),
+              available: raw.inventory.systemInfo.availableMemory || os.freemem()
+            },
+            disks: raw.inventory.systemInfo.disks || [],
+            gpu: raw.inventory.systemInfo.gpu
+          } : {
+            cpu: {
+              name: 'Unknown',
+              cores: os.cpus().length,
+              threads: os.cpus().length
+            },
+            memory: {
+              total: os.totalmem(),
+              available: os.freemem()
+            },
+            disks: [],
+            gpu: undefined
+          },
+          software: raw.inventory?.tools ? {
+            powershell: raw.inventory.tools.powershell?.version || 'Unknown',
+            node: raw.inventory.tools.node?.version,
+            python: raw.inventory.tools.python?.version
+          } : {
+            powershell: 'Unknown',
+            node: undefined,
+            python: undefined
+          },
+          roo: {
+            mcpServers: (raw.inventory?.mcpServers || []).map((mcp: any) => ({
+              name: mcp.name,
+              enabled: mcp.enabled,
+              command: mcp.command,
+              transportType: mcp.transportType,
+              alwaysAllow: mcp.alwaysAllow,
+              description: mcp.description
+            })),
+            modes: (raw.inventory?.rooModes || []).map((mode: any) => ({
+              slug: mode.slug,
+              name: mode.name,
+              defaultModel: mode.defaultModel,
+              tools: mode.tools,
+              allowedFilePatterns: mode.allowedFilePatterns
+            })),
+            sdddSpecs: raw.inventory?.sdddSpecs,
+            scripts: raw.inventory?.scripts
+          },
+          paths: raw.paths
+        };
+      } else if (raw.machineId && raw.timestamp && raw.paths) {
+        // Format "baseline" direct
+        this.logger.debug(`📦 Format "baseline" direct détecté`);
+        inventory = raw as MachineInventory;
+      } else {
+        this.logger.error(`❌ Format d'inventaire non reconnu`);
+        return null;
+      }
+      
+      this.logger.info(`✅ Inventaire chargé pour ${inventory.machineId}`);
 
       // Mettre à jour le cache
       this.cache.set(machineId, {
@@ -375,9 +506,8 @@ export class InventoryCollector {
       });
 
       return inventory;
-
     } catch (error) {
-      this.logger.error(`❌ Erreur chargement depuis .shared-state`, error);
+      this.logger.error(`❌ Erreur lecture fichier inventaire: ${filepath}`, error);
       return null;
     }
   }

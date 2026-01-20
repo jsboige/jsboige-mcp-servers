@@ -2,6 +2,18 @@ import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { viewConversationTree } from '../../../src/tools/view-conversation-tree.js';
 import { ConversationSkeleton } from '../../../src/types/conversation.js';
 
+// Mock fs (promises as fs)
+vi.mock('fs', () => {
+    const mockWriteFile = vi.fn();
+    const mockMkdir = vi.fn();
+    return {
+        promises: {
+            writeFile: mockWriteFile,
+            mkdir: mockMkdir,
+        },
+    };
+});
+
 const createMockSkeleton = (taskId: string, parentTaskId?: string, title?: string, lastActivity?: string, sequenceContent: string = ''): ConversationSkeleton => ({
     taskId,
     parentTaskId,
@@ -18,8 +30,10 @@ const createMockSkeleton = (taskId: string, parentTaskId?: string, title?: strin
 
 describe('view_conversation_tree Tool', () => {
     let mockCache: Map<string, ConversationSkeleton>;
+    let mockWriteFile: any;
+    let mockMkdir: any;
 
-    beforeEach(() => {
+    beforeEach(async () => {
         mockCache = new Map<string, ConversationSkeleton>();
         const root = createMockSkeleton('root', undefined, 'Root Task', '2025-01-01T10:00:00Z', 'root content');
         const child1 = createMockSkeleton('child1', 'root', 'Child 1', '2025-01-01T11:00:00Z', 'child1 content');
@@ -29,6 +43,12 @@ describe('view_conversation_tree Tool', () => {
         mockCache.set('child1', child1);
         mockCache.set('child2', child2);
         mockCache.set('grandchild1', grandchild1);
+        
+        // Récupérer les mocks fs
+        const fsModule: any = await vi.importMock('fs');
+        mockWriteFile = fsModule.promises.writeFile;
+        mockMkdir = fsModule.promises.mkdir;
+        vi.clearAllMocks();
     });
 
     it('should display a single task in single mode', async () => {
@@ -46,10 +66,10 @@ describe('view_conversation_tree Tool', () => {
         expect(textContent).toContain('Task: Grandchild 1');
     });
 
-    it('should automatically select the latest task if no task_id is provided', async () => {
+    it('should automatically select latest task if no task_id is provided', async () => {
         const result = await viewConversationTree.handler({}, mockCache);
         const textContent = result.content[0].type === 'text' ? result.content[0].text : '';
-        // Child 2 is the latest
+        // Child 2 is latest
         expect(textContent).toContain('Task: Child 2');
     });
 
@@ -68,7 +88,7 @@ describe('view_conversation_tree Tool', () => {
         // Ajouter une action mockée pour tester le comportement skeleton
         const taskWithAction = createMockSkeleton('task_with_action', undefined, 'Task With Action', '2025-01-01T10:00:00Z', 'test content');
         taskWithAction.sequence.push({
-            type: 'tool',
+            type: 'command',
             name: 'test_tool',
             status: 'success',
             timestamp: '2025-01-01T10:01:00Z',
@@ -89,7 +109,7 @@ describe('view_conversation_tree Tool', () => {
         // Ajouter une action mockée pour tester le comportement summary
         const taskWithAction = createMockSkeleton('task_with_action', undefined, 'Task With Action', '2025-01-01T10:00:00Z', 'test content');
         taskWithAction.sequence.push({
-            type: 'tool',
+            type: 'command',
             name: 'test_tool',
             status: 'success',
             timestamp: '2025-01-01T10:01:00Z',
@@ -111,7 +131,7 @@ describe('view_conversation_tree Tool', () => {
         // Ajouter une action mockée pour tester le comportement full
         const taskWithAction = createMockSkeleton('task_with_action', undefined, 'Task With Action', '2025-01-01T10:00:00Z', 'test content');
         taskWithAction.sequence.push({
-            type: 'tool',
+            type: 'command',
             name: 'test_tool',
             status: 'success',
             timestamp: '2025-01-01T10:01:00Z',
@@ -142,17 +162,35 @@ describe('view_conversation_tree Tool', () => {
         expect(textContent).toContain('Task: Child 2'); // Sibling
     });
 
+    it('should save to file when output_file is provided', async () => {
+        mockMkdir.mockResolvedValue(undefined);
+        mockWriteFile.mockResolvedValue(undefined);
+        
+        const result = await viewConversationTree.handler({ task_id: 'child1', output_file: '/test/output.md' }, mockCache);
+        const textContent = result.content[0].type === 'text' ? result.content[0].text : '';
+        
+        expect(mockMkdir).toHaveBeenCalled();
+        expect(mockWriteFile).toHaveBeenCalled();
+        expect(textContent).toContain('sauvegardé');
+    });
+
     it('should throw error for non-existent task', async () => {
-        await expect(async () => {
+        try {
             await viewConversationTree.handler({ task_id: 'non_existent' }, mockCache);
-        }).rejects.toThrow("Task with ID 'non_existent' not found in cache.");
+            throw new Error('Expected error to be thrown');
+        } catch (error: any) {
+            expect(error.message).toContain("Task with ID 'non_existent' not found in cache.");
+        }
     });
 
     it('should throw error when cache is empty and no task_id provided', async () => {
         const emptyCache = new Map<string, ConversationSkeleton>();
         
-        await expect(async () => {
+        try {
             await viewConversationTree.handler({}, emptyCache);
-        }).rejects.toThrow("Cache is empty and no task_id was provided. Cannot determine latest task.");
+            throw new Error('Expected error to be thrown');
+        } catch (error: any) {
+            expect(error.message).toContain("Cache is empty and no task_id was provided. Cannot determine latest task.");
+        }
     });
 });
