@@ -1,17 +1,18 @@
 #!/usr/bin/env node
 /**
- * MCP Wrapper v2.5.0 - Filtre les outils RooSync pour Claude Code
+ * MCP Wrapper v2.6.0 - Filtre les outils RooSync pour Claude Code
  *
- * Outils autorisés (14):
+ * Outils autorisés (15):
  * - Messagerie (6): send_message, read_inbox, reply_message, get_message, mark_message_read, archive_message
  * - Lecture seule (5): get_status, get_machine_inventory, list_diffs, compare_config, get_decision_details
  * - E2E complet (3): collect_config, publish_config, apply_config
+ * - Infrastructure (1): init (enregistrement machine et MAJ dashboard)
  *
  * Exclus (overengineering):
  * - Heartbeat (6 outils)
  * - Sync-on-offline/on-online (2 outils)
  * - Decision management (approve/reject/apply/rollback)
- * - Baseline management (init, update, manage, export)
+ * - Baseline management (update, manage, export) - sauf init
  */
 
 const { spawn } = require('child_process');
@@ -48,7 +49,9 @@ const ALLOWED_TOOLS = new Set([
     // Actions critiques pour E2E (3 outils) - v2.5.0
     'roosync_collect_config',
     'roosync_publish_config',   // AJOUT: Publier sa config pour les autres
-    'roosync_apply_config'
+    'roosync_apply_config',
+    // Infrastructure (1 outil) - v2.6.0
+    'roosync_init'              // AJOUT: Enregistrer machine et MAJ dashboard
 ]);
 
 // Buffer pour accumuler les messages JSON incomplets
