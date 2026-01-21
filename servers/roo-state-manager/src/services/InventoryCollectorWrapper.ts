@@ -58,7 +58,7 @@ export class InventoryCollectorWrapper implements IInventoryCollector {
       } catch (loadError) {
         logger.error(`Erreur lors de loadFromSharedState pour ${machineId}`, loadError);
       }
-      
+
       // Si pas d'inventaire dans shared state, essayer l'InventoryCollector existant (pour machine locale)
       try {
         const inventory = await this.inventoryCollector.collectInventory(machineId, forceRefresh);
@@ -186,11 +186,11 @@ export class InventoryCollectorWrapper implements IInventoryCollector {
         // CORRECTION SDDD : Améliorer la recherche pour inclure les fichiers -fixed
         // CORRECTION Bug #322 : Chercher aussi les fichiers qui contiennent le machineId (pas seulement qui commencent)
         // CORRECTION Bug #322 : Rendre la recherche insensible à la casse
+        // CORRECTION Bug #362 : NE PAS exclure le fichier exact qu'on cherche !
         const machineIdLower = machineId.toLowerCase();
         const machineFiles = inventoryFiles.filter(file =>
           (file.toLowerCase().startsWith(machineIdLower) || file.toLowerCase().includes(machineIdLower)) &&
-          file.endsWith('.json') &&
-          file.toLowerCase() !== `${machineIdLower}.json`
+          file.endsWith('.json')
         );
 
         logger.debug(`Fichiers pour ${machineId}: ${JSON.stringify(machineFiles)}`);
@@ -320,7 +320,7 @@ export class InventoryCollectorWrapper implements IInventoryCollector {
         collectorVersion: '2.1.0'
       }
     };
-    
+
     // CORRECTION Bug #322 : Préserver le champ paths pour ConfigSharingService
     if (rawInventory.paths) {
       result.paths = rawInventory.paths;
@@ -332,7 +332,7 @@ export class InventoryCollectorWrapper implements IInventoryCollector {
         scripts: undefined
       };
     }
-    
+
     return result as BaselineMachineInventory;
   }
 
@@ -389,7 +389,7 @@ export class InventoryCollectorWrapper implements IInventoryCollector {
         collectorVersion: '1.0.0'
       }
     };
-    
+
     // CORRECTION Bug #322 : Préserver le champ paths pour ConfigSharingService
     if (inventory.paths) {
       result.paths = inventory.paths;
@@ -401,7 +401,7 @@ export class InventoryCollectorWrapper implements IInventoryCollector {
         scripts: undefined
       };
     }
-    
+
     return result as BaselineMachineInventory;
   }
 

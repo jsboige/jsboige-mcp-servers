@@ -1,10 +1,10 @@
 /**
  * DiffDetector - Service de détection des différences
- * 
+ *
  * Service responsable de comparer les configurations baseline
  * avec les configurations des machines cibles pour identifier
  * les différences et leur sévérité.
- * 
+ *
  * @module DiffDetector
  * @version 2.1.0
  */
@@ -50,7 +50,7 @@ function safeGet<T>(
  */
 export class DiffDetector implements IDiffDetector {
   private logger: Logger;
-  
+
   constructor() {
     this.logger = createLogger('DiffDetector');
   }
@@ -82,23 +82,23 @@ export class DiffDetector implements IDiffDetector {
           { machineId: machine.machineId, config: 'null' }
         );
       }
-      
+
       // Comparer la configuration Roo
       const rooDiffs = this.compareRooConfig(baseline.config.roo, machine.config.roo);
       differences.push(...rooDiffs);
-      
+
       // Comparer la configuration matérielle
       const hardwareDiffs = this.compareHardwareConfig(baseline.config.hardware, machine.config.hardware);
       differences.push(...hardwareDiffs);
-      
+
       // Comparer la configuration logicielle
-      const softwareDiffs = this.compareSoftwareConfig(baseline.config.software, machine.config.software);
+      const softwareDiffs = this.compareSoftwareConfig(baseline.config.software, machine.config.software, machine);
       differences.push(...softwareDiffs);
-      
+
       // Comparer la configuration système
       const systemDiffs = this.compareSystemConfig(baseline.config.system, machine.config.system);
       differences.push(...systemDiffs);
-      
+
       return differences;
     } catch (error) {
       this.logger.error('Erreur lors de la comparaison baseline/machine', error);
@@ -207,7 +207,7 @@ export class DiffDetector implements IDiffDetector {
     const machineCores = safeGet(machineHardware, ['cpu', 'cores'], 0);
     const coreDiff = Math.abs(baselineCores - machineCores);
     const coreDiffPercent = baselineCores > 0 ? (coreDiff / Math.max(baselineCores, machineCores)) * 100 : 0;
-    
+
     if (coreDiffPercent > 0) {
       const severity = this.determineSeverity('hardware', 'MODIFIED', 'cpu.cores', coreDiffPercent);
       differences.push({
@@ -228,7 +228,7 @@ export class DiffDetector implements IDiffDetector {
     const machineThreads = safeGet(machineHardware, ['cpu', 'threads'], 0);
     const threadDiff = Math.abs(baselineThreads - machineThreads);
     const threadDiffPercent = baselineThreads > 0 ? (threadDiff / Math.max(baselineThreads, machineThreads)) * 100 : 0;
-    
+
     if (threadDiffPercent > 0) {
       const severity = this.determineSeverity('hardware', 'MODIFIED', 'cpu.threads', threadDiffPercent);
       differences.push({
@@ -262,12 +262,12 @@ export class DiffDetector implements IDiffDetector {
     const machineMemTotal = safeGet(machineHardware, ['memory', 'total'], 0);
     const ramDiff = Math.abs(baselineMemTotal - machineMemTotal);
     const ramDiffPercent = baselineMemTotal > 0 ? (ramDiff / Math.max(baselineMemTotal, machineMemTotal)) * 100 : 0;
-    
+
     if (ramDiffPercent > 0) {
       const severity = this.determineSeverity('hardware', 'MODIFIED', 'memory.total', ramDiffPercent);
       const baselineGB = (baselineMemTotal / (1024 ** 3)).toFixed(1);
       const machineGB = (machineMemTotal / (1024 ** 3)).toFixed(1);
-      
+
       differences.push({
         category: 'hardware',
         severity,
@@ -318,16 +318,21 @@ export class DiffDetector implements IDiffDetector {
 
   /**
    * Compare les configurations logicielles
+   * Supporte les structures legacy (config.software) et actuelle (inventory.*)
    */
   private compareSoftwareConfig(
     baselineSoftware: any,
-    machineSoftware: any
+    machineSoftware: any,
+    machineInventory?: MachineInventory
   ): BaselineDifference[] {
     const differences: BaselineDifference[] = [];
 
-    // PowerShell
+    // PowerShell - Supporte les deux structures
     const baselinePwsh = safeGet(baselineSoftware, ['powershell'], 'Unknown');
-    const machinePwsh = safeGet(machineSoftware, ['powershell'], 'Unknown');
+    const machinePwsh = safeGet(machineSoftware, ['powershell'], 'Unknown')
+      || safeGet(machineInventory, ['inventory', 'systemInfo', 'powershellVersion'], 'Unknown')
+      || safeGet(machineInventory, ['inventory', 'tools', 'powershell', 'version'], 'Unknown')
+      || 'Unknown';
     if (baselinePwsh !== machinePwsh) {
       differences.push({
         category: 'software',
@@ -340,9 +345,10 @@ export class DiffDetector implements IDiffDetector {
       });
     }
 
-    // Node.js
+    // Node.js - Supporte les deux structures
     const baselineNode = safeGet(baselineSoftware, ['node'], null);
-    const machineNode = safeGet(machineSoftware, ['node'], null);
+    const machineNode = safeGet(machineSoftware, ['node'], null)
+      || safeGet(machineInventory, ['inventory', 'tools', 'node', 'version'], null);
     if (baselineNode !== machineNode) {
       // Gérer le cas où Node est absent sur une machine
       if (!baselineNode || !machineNode) {
@@ -370,9 +376,10 @@ export class DiffDetector implements IDiffDetector {
       }
     }
 
-    // Python
+    // Python - Supporte les deux structures
     const baselinePython = safeGet(baselineSoftware, ['python'], null);
-    const machinePython = safeGet(machineSoftware, ['python'], null);
+    const machinePython = safeGet(machineSoftware, ['python'], null)
+      || safeGet(machineInventory, ['inventory', 'tools', 'python', 'version'], null);
     if (baselinePython !== machinePython) {
       if (!baselinePython || !machinePython) {
         differences.push({
@@ -578,12 +585,12 @@ export class DiffDetector implements IDiffDetector {
 
     // Comparer les objets de manière récursive
     const allKeys = new Set([...Object.keys(baseline), ...Object.keys(actual)]);
-    
+
     for (const key of allKeys) {
       const newPath = `${basePath}.${key}`;
       const baseValue = baseline[key];
       const actualValue = actual[key];
-      
+
       // Si les deux sont des objets, comparer récursivement
       if (typeof baseValue === 'object' && baseValue !== null &&
           typeof actualValue === 'object' && actualValue !== null) {
@@ -620,23 +627,23 @@ export class DiffDetector implements IDiffDetector {
     if (category === 'system') {
       return 'CRITICAL';
     }
-    
+
     if (category === 'config') {
       return 'CRITICAL';
     }
-    
+
     if (category === 'hardware' && path.includes('memory')) {
       return diffPercent > 20 ? 'IMPORTANT' : 'WARNING';
     }
-    
+
     if (category === 'hardware' && path.includes('cpu')) {
       return diffPercent > 30 ? 'IMPORTANT' : 'WARNING';
     }
-    
+
     if (category === 'software') {
       return 'WARNING';
     }
-    
+
     return 'INFO';
   }
 

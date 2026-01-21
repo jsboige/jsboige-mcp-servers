@@ -93,7 +93,7 @@ export class NonNominativeBaselineService {
     profiles: ConfigurationProfile[]
   ): Promise<NonNominativeBaseline> {
     const baselineId = `baseline-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
-    
+
     const baseline: NonNominativeBaseline = {
       baselineId,
       version: '1.0.0',
@@ -169,13 +169,18 @@ export class NonNominativeBaselineService {
 
   /**
    * Extrait les données par catégorie depuis un inventaire
+   * Supporte les structures legacy (config.*) et actuelle (inventory.*)
    */
   private extractCategoryData(
     inventory: MachineInventory,
     categoryData: Map<ConfigurationCategory, any[]>
   ): void {
-    // Configuration Roo
-    if (inventory.config.roo) {
+    // Configuration Roo - Supporte les deux structures
+    const rooModes = inventory.config?.roo?.modes || inventory.inventory?.rooModes;
+    const rooMcpSettings = inventory.config?.roo?.mcpSettings;
+    const rooUserSettings = inventory.config?.roo?.userSettings;
+
+    if (rooModes || rooMcpSettings || rooUserSettings) {
       if (!categoryData.has('roo-core')) {
         categoryData.set('roo-core', []);
       }
@@ -184,17 +189,21 @@ export class NonNominativeBaselineService {
       }
 
       categoryData.get('roo-core')!.push({
-        modes: inventory.config.roo.modes,
-        mcpSettings: inventory.config.roo.mcpSettings
+        modes: rooModes,
+        mcpSettings: rooMcpSettings
       });
 
       categoryData.get('roo-advanced')!.push({
-        userSettings: inventory.config.roo.userSettings
+        userSettings: rooUserSettings
       });
     }
 
-    // Hardware
-    if (inventory.config.hardware) {
+    // Hardware - Supporte les deux structures
+    const hardwareCpu = inventory.config?.hardware?.cpu || inventory.inventory?.systemInfo;
+    const hardwareMemory = inventory.config?.hardware?.memory || inventory.inventory?.systemInfo;
+    const hardwareDisks = inventory.config?.hardware?.disks || inventory.inventory?.systemInfo?.disks;
+
+    if (hardwareCpu || hardwareMemory || hardwareDisks) {
       if (!categoryData.has('hardware-cpu')) {
         categoryData.set('hardware-cpu', []);
       }
@@ -205,40 +214,54 @@ export class NonNominativeBaselineService {
         categoryData.set('hardware-storage', []);
       }
 
-      categoryData.get('hardware-cpu')!.push(inventory.config.hardware.cpu);
-      categoryData.get('hardware-memory')!.push(inventory.config.hardware.memory);
-      categoryData.get('hardware-storage')!.push(inventory.config.hardware.disks);
+      categoryData.get('hardware-cpu')!.push(hardwareCpu);
+      categoryData.get('hardware-memory')!.push(hardwareMemory);
+      categoryData.get('hardware-storage')!.push(hardwareDisks);
     }
 
-    // Software
-    if (inventory.config.software) {
-      if (!categoryData.has('software-powershell')) {
-        categoryData.set('software-powershell', []);
-      }
-      if (!categoryData.has('software-node')) {
-        categoryData.set('software-node', []);
-      }
-      if (!categoryData.has('software-python')) {
-        categoryData.set('software-python', []);
-      }
+    // Software - Supporte les deux structures
+    const powershellVersion = inventory.config?.software?.powershell
+      || inventory.inventory?.systemInfo?.powershellVersion
+      || inventory.inventory?.tools?.powershell?.version
+      || 'Unknown';
+    const nodeVersion = inventory.config?.software?.node
+      || inventory.inventory?.tools?.node?.version
+      || 'Unknown';
+    const pythonVersion = inventory.config?.software?.python
+      || inventory.inventory?.tools?.python?.version
+      || 'Unknown';
 
-      categoryData.get('software-powershell')!.push({ version: inventory.config.software.powershell });
-      categoryData.get('software-node')!.push({ version: inventory.config.software.node });
-      categoryData.get('software-python')!.push({ version: inventory.config.software.python });
+    if (!categoryData.has('software-powershell')) {
+      categoryData.set('software-powershell', []);
+    }
+    if (!categoryData.has('software-node')) {
+      categoryData.set('software-node', []);
+    }
+    if (!categoryData.has('software-python')) {
+      categoryData.set('software-python', []);
     }
 
-    // System
-    if (inventory.config.system) {
-      if (!categoryData.has('system-os')) {
-        categoryData.set('system-os', []);
-      }
-      if (!categoryData.has('system-architecture')) {
-        categoryData.set('system-architecture', []);
-      }
+    categoryData.get('software-powershell')!.push({ version: powershellVersion });
+    categoryData.get('software-node')!.push({ version: nodeVersion });
+    categoryData.get('software-python')!.push({ version: pythonVersion });
 
-      categoryData.get('system-os')!.push({ os: inventory.config.system.os });
-      categoryData.get('system-architecture')!.push({ arch: inventory.config.system.architecture });
+    // System - Supporte les deux structures
+    const os = inventory.config?.system?.os
+      || inventory.inventory?.systemInfo?.os
+      || 'Unknown';
+    const arch = inventory.config?.system?.architecture
+      || inventory.inventory?.systemInfo?.architecture
+      || 'Unknown';
+
+    if (!categoryData.has('system-os')) {
+      categoryData.set('system-os', []);
     }
+    if (!categoryData.has('system-architecture')) {
+      categoryData.set('system-architecture', []);
+    }
+
+    categoryData.get('system-os')!.push({ os });
+    categoryData.get('system-architecture')!.push({ arch });
   }
 
   /**
@@ -455,8 +478,8 @@ export class NonNominativeBaselineService {
     baselineId?: string
   ): Promise<MachineConfigurationMapping> {
     const machineHash = this.generateMachineHash(machineId);
-    const activeBaseline = baselineId ? 
-      await this.loadBaseline(baselineId) : 
+    const activeBaseline = baselineId ?
+      await this.loadBaseline(baselineId) :
       this.state.activeBaseline;
 
     if (!activeBaseline) {
@@ -583,32 +606,54 @@ export class NonNominativeBaselineService {
 
   /**
    * Extrait la valeur réelle pour une catégorie
+   * Supporte les structures legacy (config.*) et actuelle (inventory.*)
    */
   private extractActualValue(inventory: MachineInventory, category: ConfigurationCategory): any {
     switch (category) {
       case 'roo-core':
         return {
-          modes: inventory.config.roo?.modes,
-          mcpSettings: inventory.config.roo?.mcpSettings
+          modes: inventory.config?.roo?.modes || inventory.inventory?.rooModes,
+          mcpSettings: inventory.config?.roo?.mcpSettings
         };
       case 'roo-advanced':
         return {
-          userSettings: inventory.config.roo?.userSettings
+          userSettings: inventory.config?.roo?.userSettings
         };
       case 'hardware-cpu':
-        return inventory.config.hardware?.cpu;
+        return inventory.config?.hardware?.cpu || inventory.inventory?.systemInfo;
       case 'hardware-memory':
-        return inventory.config.hardware?.memory;
+        return inventory.config?.hardware?.memory || inventory.inventory?.systemInfo;
       case 'software-powershell':
-        return { version: inventory.config.software?.powershell };
+        return {
+          version: inventory.config?.software?.powershell
+            || inventory.inventory?.systemInfo?.powershellVersion
+            || inventory.inventory?.tools?.powershell?.version
+            || 'Unknown'
+        };
       case 'software-node':
-        return { version: inventory.config.software?.node };
+        return {
+          version: inventory.config?.software?.node
+            || inventory.inventory?.tools?.node?.version
+            || 'Unknown'
+        };
       case 'software-python':
-        return { version: inventory.config.software?.python };
+        return {
+          version: inventory.config?.software?.python
+            || inventory.inventory?.tools?.python?.version
+            || 'Unknown'
+        };
       case 'system-os':
-        return { os: inventory.config.system?.os };
+        return {
+          os: inventory.config?.system?.os
+            || inventory.inventory?.systemInfo?.os
+            || 'Unknown'
+        };
       case 'system-architecture':
-        return { arch: inventory.config.system?.architecture };
+        return {
+          arch: inventory.config?.system?.architecture
+            || inventory.inventory?.systemInfo?.architecture
+            || 'Unknown'
+        };
       default:
         return null;
     }
@@ -644,10 +689,10 @@ export class NonNominativeBaselineService {
    */
   private calculateConfidence(deviations: any[]): number {
     if (deviations.length === 0) return 1.0;
-    
+
     const criticalDeviations = deviations.filter(d => d.severity === 'CRITICAL').length;
     const importantDeviations = deviations.filter(d => d.severity === 'IMPORTANT').length;
-    
+
     // Plus il y a de déviations critiques/importantes, moins la confiance est élevée
     const penalty = (criticalDeviations * 0.3) + (importantDeviations * 0.1);
     return Math.max(0, 1.0 - penalty);
@@ -711,7 +756,7 @@ export class NonNominativeBaselineService {
       differencesByCategoryCount[category as ConfigurationCategory] = differencesByCategory[category as ConfigurationCategory].length;
     });
 
-    const complianceRate = machineHashes.length > 0 ? 
+    const complianceRate = machineHashes.length > 0 ?
       1.0 - (totalDifferences / (machineHashes.length * this.state.activeBaseline.profiles.length)) : 0;
 
     const report: NonNominativeComparisonReport = {
@@ -830,7 +875,7 @@ export class NonNominativeBaselineService {
     // Extraire depuis BaselineConfig (ancien format)
     if ('config' in legacyBaseline) {
       const config = legacyBaseline as BaselineConfig;
-      
+
       // Profil Roo Core
       profiles.push({
         profileId: `profile-roo-core-${Date.now()}`,
@@ -1013,7 +1058,7 @@ export class NonNominativeBaselineService {
   private async saveMachineMapping(mapping: MachineConfigurationMapping): Promise<void> {
     try {
       let mappings: MachineConfigurationMapping[] = [];
-      
+
       if (existsSync(this.mappingsPath)) {
         const content = await fs.readFile(this.mappingsPath, 'utf-8');
         if (content && content.trim() !== '') {
@@ -1086,3 +1131,4 @@ export class NonNominativeBaselineService {
     return [...this.state.machineMappings];
   }
 }
+

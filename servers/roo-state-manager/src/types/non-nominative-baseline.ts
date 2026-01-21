@@ -14,11 +14,16 @@
 
 /**
  * Inventaire de machine pour l'agrégation de baseline
+ *
+ * Supporte deux structures de données :
+ * - Structure legacy avec config.software et config.system
+ * - Structure actuelle avec inventory.systemInfo et tools
  */
 export interface MachineInventory {
   machineId: string;
   timestamp?: string;
-  config: {
+  /** Structure legacy (obsolète mais conservée pour compatibilité) */
+  config?: {
     roo?: {
       modes?: string[];
       mcpSettings?: Record<string, any>;
@@ -40,12 +45,53 @@ export interface MachineInventory {
       architecture?: string;
     };
   };
-  metadata: {
+  /** Structure actuelle retournée par roosync_get_machine_inventory */
+  inventory?: {
+    systemInfo?: {
+      powershellVersion?: string;
+      os?: string;
+      architecture?: string;
+      cpuCores?: number;
+      cpuThreads?: number;
+      totalMemory?: number;
+      availableMemory?: number;
+      disks?: any[];
+      gpu?: any[];
+      hostname?: string;
+      processor?: string;
+      uptime?: number;
+      username?: string;
+    };
+    tools?: {
+      node?: {
+        version?: string;
+      };
+      python?: {
+        version?: string;
+      };
+      powershell?: {
+        version?: string;
+      };
+    };
+    scripts?: any;
+    slashCommands?: any[];
+    terminalCommands?: any;
+    sdddSpecs?: any[];
+    rooModes?: any[];
+    mcpServers?: any[];
+  };
+  metadata?: {
     lastSeen?: string;
     version?: string;
     source?: string;
     collectionDuration?: number;
     collectorVersion?: string;
+  };
+  paths?: {
+    scripts?: string;
+    rooExtensions?: string;
+    rooConfig?: string;
+    mcpSettings?: string;
   };
 }
 
@@ -71,29 +117,29 @@ export type ConfigurationCategory =
 export interface ConfigurationProfile {
   /** Identifiant unique du profil (non-nominatif) */
   profileId: string;
-  
+
   /** Catégorie de configuration */
   category: ConfigurationCategory;
-  
+
   /** Nom descriptif du profil */
   name: string;
-  
+
   /** Description du profil */
   description: string;
-  
+
   /** Valeurs de configuration pour ce profil */
   configuration: Record<string, any>;
-  
+
   /** Priorité du profil (plus élevé = plus prioritaire) */
   priority: number;
-  
+
   /** Compatibilité avec d'autres profils */
   compatibility: {
     requiredProfiles: string[];     // Profils requis
     conflictingProfiles: string[];  // Profils incompatibles
     optionalProfiles: string[];     // Profils optionnels
   };
-  
+
   /** Métadonnées */
   metadata: {
     createdAt: string;
@@ -110,26 +156,26 @@ export interface ConfigurationProfile {
 export interface NonNominativeBaseline {
   /** Identifiant unique de la baseline */
   baselineId: string;
-  
+
   /** Version de la baseline */
   version: string;
-  
+
   /** Nom de la baseline */
   name: string;
-  
+
   /** Description de la baseline */
   description: string;
-  
+
   /** Profils de configuration composant la baseline */
   profiles: ConfigurationProfile[];
-  
+
   /** Règles d'agrégation et de priorité */
   aggregationRules: {
     defaultPriority: number;
     conflictResolution: 'highest_priority' | 'most_recent' | 'manual';
     autoMergeCategories: ConfigurationCategory[];
   };
-  
+
   /** Métadonnées de la baseline */
   metadata: {
     createdAt: string;
@@ -147,13 +193,13 @@ export interface NonNominativeBaseline {
 export interface MachineConfigurationMapping {
   /** Identifiant unique du mapping */
   mappingId: string;
-  
+
   /** Identifiant de la machine (hash anonymisé) */
   machineHash: string;
-  
+
   /** Baseline de référence */
   baselineId: string;
-  
+
   /** Profils appliqués pour cette machine */
   appliedProfiles: Array<{
     profileId: string;
@@ -161,7 +207,7 @@ export interface MachineConfigurationMapping {
     appliedAt: string;
     source: 'auto' | 'manual' | 'inherited';
   }>;
-  
+
   /** Déviations détectées */
   deviations: Array<{
     category: ConfigurationCategory;
@@ -170,7 +216,7 @@ export interface MachineConfigurationMapping {
     severity: 'CRITICAL' | 'IMPORTANT' | 'WARNING' | 'INFO';
     detectedAt: string;
   }>;
-  
+
   /** Métadonnées */
   metadata: {
     firstSeen: string;
@@ -186,13 +232,13 @@ export interface MachineConfigurationMapping {
 export interface NonNominativeComparisonReport {
   /** Identifiant du rapport */
   reportId: string;
-  
+
   /** Baseline de référence */
   baselineId: string;
-  
+
   /** Machines comparées (hash anonymisés) */
   machineHashes: string[];
-  
+
   /** Différences par catégorie */
   differencesByCategory: Record<ConfigurationCategory, Array<{
     machineHash: string;
@@ -203,7 +249,7 @@ export interface NonNominativeComparisonReport {
     severity: 'CRITICAL' | 'IMPORTANT' | 'WARNING' | 'INFO';
     description: string;
   }>>;
-  
+
   /** Statistiques */
   statistics: {
     totalMachines: number;
@@ -212,7 +258,7 @@ export interface NonNominativeComparisonReport {
     differencesByCategory: Record<ConfigurationCategory, number>;
     complianceRate: number; // 0-1
   };
-  
+
   /** Métadonnées */
   metadata: {
     generatedAt: string;
@@ -227,10 +273,10 @@ export interface NonNominativeComparisonReport {
 export interface BaselineVersion {
   /** Numéro de version */
   version: string;
-  
+
   /** Baseline ID */
   baselineId: string;
-  
+
   /** Changements depuis la version précédente */
   changes: Array<{
     type: 'added' | 'modified' | 'removed' | 'deprecated';
@@ -238,7 +284,7 @@ export interface BaselineVersion {
     description: string;
     impact: 'low' | 'medium' | 'high' | 'critical';
   }>;
-  
+
   /** Métadonnées de version */
   metadata: {
     releasedAt: string;
@@ -259,14 +305,14 @@ export interface AggregationConfig {
     weight: number; // Poids dans l'agrégation
     enabled: boolean;
   }>;
-  
+
   /** Règles d'agrégation par catégorie */
   categoryRules: Record<ConfigurationCategory, {
     strategy: 'majority' | 'weighted_average' | 'latest' | 'manual';
     confidenceThreshold: number; // 0-1
     autoApply: boolean;
   }>;
-  
+
   /** Seuils de détection */
   thresholds: {
     deviationThreshold: number; // 0-1
@@ -281,13 +327,13 @@ export interface AggregationConfig {
 export interface NonNominativeBaselineState {
   /** Baseline actuellement active */
   activeBaseline?: NonNominativeBaseline;
-  
+
   /** Machines mappées */
   machineMappings: MachineConfigurationMapping[];
-  
+
   /** Dernière comparaison */
   lastComparison?: NonNominativeComparisonReport;
-  
+
   /** Statistiques */
   statistics: {
     totalBaselines: number;
@@ -304,16 +350,16 @@ export interface NonNominativeBaselineState {
 export interface MigrationOptions {
   /** Conserver les anciennes références */
   keepLegacyReferences: boolean;
-  
+
   /** Stratégie de mapping des machineId */
   machineMappingStrategy: 'hash' | 'uuid' | 'sequential';
-  
+
   /** Validation automatique après migration */
   autoValidate: boolean;
-  
+
   /** Créer un backup avant migration */
   createBackup: boolean;
-  
+
   /** Catégories à migrer en priorité */
   priorityCategories: ConfigurationCategory[];
 }
@@ -323,20 +369,20 @@ export interface MigrationOptions {
 export interface MigrationResult {
   /** Succès de la migration */
   success: boolean;
-  
+
   /** Baseline créée */
   newBaseline?: NonNominativeBaseline;
-  
+
   /** Machines migrées */
   migratedMachines: string[];
-  
+
   /** Erreurs rencontrées */
   errors: Array<{
     type: string;
     message: string;
     details?: any;
   }>;
-  
+
   /** Statistiques */
   statistics: {
     totalMachines: number;
@@ -345,7 +391,7 @@ export interface MigrationResult {
     profilesCreated: number;
     deviationsDetected: number;
   };
-  
+
   /** Métadonnées */
   metadata: {
     migratedAt: string;
