@@ -11,7 +11,7 @@ jobs:
     runs-on: ubuntu-22.04
     strategy:
       matrix:
-        server: [quickfiles-server, jupyter-mcp-server, jinavigator-server]
+        server: [quickfiles-server, jinavigator-server]
 
     steps:
     - uses: actions/checkout@v3
@@ -53,7 +53,7 @@ jobs:
     runs-on: ubuntu-22.04
     strategy:
       matrix:
-        server: [quickfiles-server, jupyter-mcp-server, jinavigator-server]
+        server: [quickfiles-server, jinavigator-server]
 
     steps:
     - uses: actions/checkout@v3
@@ -138,7 +138,7 @@ jobs:
     
     - name: Check server README files
       run: |
-        for server in quickfiles-server jupyter-mcp-server jinavigator-server; do
+        for server in quickfiles-server jinavigator-server; do
           if [ ! -f servers/$server/README.md ]; then
             echo "README.md is missing for $server"
             exit 1
