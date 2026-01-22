@@ -11,7 +11,8 @@
 import { z } from 'zod';
 import { zodToJsonSchema } from 'zod-to-json-schema';
 import { getRooSyncService, RooSyncServiceError } from '../../services/RooSyncService.js';
-import { GranularDiffDetector, GranularDiffReport, GranularDiffResult } from '../../services/GranularDiffDetector.js';
+import { GranularDiffDetector } from '../../services/GranularDiffDetector.js';
+import type { GranularDiffReport, GranularDiffResult } from '../../services/GranularDiffDetector.js';
 
 /**
  * Schema de validation pour roosync_compare_config
@@ -147,11 +148,27 @@ export async function roosyncCompareConfig(args: CompareConfigArgs): Promise<Com
         }
       );
 
+      // Préfixer les chemins pour le mode granulaire
+      let diffs = granularReport.diffs;
+      if (args.granularity === 'mcp') {
+        diffs = diffs.map(diff => ({
+          ...diff,
+          path: `inventory.mcpServers.${diff.path}`,
+          category: 'roo_config' as any
+        }));
+      } else if (args.granularity === 'mode') {
+        diffs = diffs.map(diff => ({
+          ...diff,
+          path: `inventory.rooModes.${diff.path}`,
+          category: 'roo_config' as any
+        }));
+      }
+
       // Appliquer le filtre si fourni
-      let filteredDiffs = granularReport.diffs;
+      let filteredDiffs = diffs;
       if (args.filter) {
         const filterLower = args.filter.toLowerCase();
-        filteredDiffs = granularReport.diffs.filter(diff =>
+        filteredDiffs = diffs.filter(diff =>
           diff.path.toLowerCase().includes(filterLower) ||
           diff.description.toLowerCase().includes(filterLower)
         );
