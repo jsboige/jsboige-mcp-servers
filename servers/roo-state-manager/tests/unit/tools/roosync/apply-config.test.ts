@@ -679,3 +679,282 @@ describe('roosync_apply_config - Tests Version Incompatible', () => {
     }
   });
 });
+
+// =============================================================================
+// TESTS PRIORITÉ 2 - Tests Erreurs (5 tests)
+// =============================================================================
+
+describe('roosync_apply_config - Tests Erreurs', () => {
+  let mockRooSyncService: any;
+  let mockConfigService: any;
+  let mockConfigSharingService: any;
+
+  beforeEach(() => {
+    vi.resetModules();
+
+    mockConfigService = {
+      getConfigVersion: vi.fn().mockResolvedValue('1.0.0'),
+    };
+
+    mockConfigSharingService = {
+      applyConfig: vi.fn().mockResolvedValue({
+        success: true,
+        filesApplied: 5,
+        backupPath: '/mock/backup/path',
+        errors: []
+      })
+    };
+
+    mockRooSyncService = {
+      getConfigService: vi.fn().mockReturnValue(mockConfigService),
+      getConfigSharingService: vi.fn().mockReturnValue(mockConfigSharingService)
+    };
+
+    vi.doMock('../../../../src/services/RooSyncService.js', () => ({
+      getRooSyncService: vi.fn().mockReturnValue(mockRooSyncService)
+    }));
+  });
+
+  it('devrait rejeter une configuration non trouvée', async () => {
+    const { ConfigSharingServiceError, ConfigSharingServiceErrorCode } = await import('../../../../src/types/errors.js');
+    
+    mockConfigSharingService.applyConfig.mockRejectedValue(
+      new ConfigSharingServiceError(
+        'Configuration non trouvée: 1.5.0 (machineId: myia-ai-01)',
+        ConfigSharingServiceErrorCode.PATH_NOT_AVAILABLE,
+        { version: '1.5.0', machineId: 'myia-ai-01' }
+      )
+    );
+
+    const module = await import('../../../../src/tools/roosync/apply-config.js');
+    
+    await expect(
+      module.roosyncApplyConfig({ version: '1.5.0', machineId: 'myia-ai-01' })
+    ).rejects.toThrow('Configuration non trouvée');
+
+    try {
+      await module.roosyncApplyConfig({ version: '1.5.0', machineId: 'myia-ai-01' });
+    } catch (error: any) {
+      expect(error).toBeInstanceOf(ConfigSharingServiceError);
+      expect(error.code).toBe(ConfigSharingServiceErrorCode.PATH_NOT_AVAILABLE);
+      expect(error.details.version).toBe('1.5.0');
+      expect(error.details.machineId).toBe('myia-ai-01');
+    }
+  });
+
+  it('devrait rejeter un manifeste non trouvé', async () => {
+    const { ConfigSharingServiceError, ConfigSharingServiceErrorCode } = await import('../../../../src/types/errors.js');
+    
+    mockConfigSharingService.applyConfig.mockRejectedValue(
+      new ConfigSharingServiceError(
+        'Manifeste non trouvé: /path/to/manifest.json',
+        ConfigSharingServiceErrorCode.PATH_NOT_AVAILABLE,
+        { manifestPath: '/path/to/manifest.json', version: '1.0.0' }
+      )
+    );
+
+    const module = await import('../../../../src/tools/roosync/apply-config.js');
+    
+    await expect(
+      module.roosyncApplyConfig({ version: '1.0.0' })
+    ).rejects.toThrow('Manifeste non trouvé');
+
+    try {
+      await module.roosyncApplyConfig({ version: '1.0.0' });
+    } catch (error: any) {
+      expect(error).toBeInstanceOf(ConfigSharingServiceError);
+      expect(error.code).toBe(ConfigSharingServiceErrorCode.PATH_NOT_AVAILABLE);
+      expect(error.details.manifestPath).toBe('/path/to/manifest.json');
+    }
+  });
+
+  it('devrait rejeter un inventaire incomplet', async () => {
+    const { ConfigSharingServiceError, ConfigSharingServiceErrorCode } = await import('../../../../src/types/errors.js');
+    
+    mockConfigSharingService.applyConfig.mockRejectedValue(
+      new ConfigSharingServiceError(
+        'Inventaire incomplet: paths.rooExtensions non disponible. Impossible d\'appliquer la configuration.',
+        ConfigSharingServiceErrorCode.INVENTORY_INCOMPLETE,
+        { machineId: 'localhost', missingPath: 'rooExtensions' }
+      )
+    );
+
+    const module = await import('../../../../src/tools/roosync/apply-config.js');
+    
+    await expect(
+      module.roosyncApplyConfig({ version: 'latest' })
+    ).rejects.toThrow('Inventaire incomplet');
+
+    try {
+      await module.roosyncApplyConfig({ version: 'latest' });
+    } catch (error: any) {
+      expect(error).toBeInstanceOf(ConfigSharingServiceError);
+      expect(error.code).toBe(ConfigSharingServiceErrorCode.INVENTORY_INCOMPLETE);
+      expect(error.details.missingPath).toBe('rooExtensions');
+    }
+  });
+
+  it('devrait gérer une erreur de lecture fichier', async () => {
+    const { ConfigSharingServiceError, ConfigSharingServiceErrorCode } = await import('../../../../src/types/errors.js');
+    
+    mockConfigSharingService.applyConfig.mockResolvedValue({
+      success: false,
+      filesApplied: 0,
+      backupPath: undefined,
+      errors: ['Erreur lors du traitement de roo-modes/test.json: ENOENT: no such file or directory']
+    });
+
+    const module = await import('../../../../src/tools/roosync/apply-config.js');
+    const result = await module.roosyncApplyConfig({ version: 'latest' });
+
+    expect(result.status).toBe('error');
+    expect(result.message).toBe('Échec de l\'application de la configuration');
+    expect(result.filesApplied).toBe(0);
+    expect(result.errors).toBeDefined();
+    expect(result.errors).toHaveLength(1);
+    expect(result.errors![0]).toContain('Erreur lors du traitement');
+    expect(result.errors![0]).toContain('ENOENT');
+  });
+
+  it('devrait gérer une erreur d\'écriture fichier', async () => {
+    const { ConfigSharingServiceError, ConfigSharingServiceErrorCode } = await import('../../../../src/types/errors.js');
+    
+    mockConfigSharingService.applyConfig.mockResolvedValue({
+      success: false,
+      filesApplied: 2,
+      backupPath: '/mock/backup/path',
+      errors: [
+        'Erreur lors du traitement de roo-modes/test.json: EACCES: permission denied',
+        'Erreur lors du traitement de mcp-settings/mcp_settings.json: EACCES: permission denied'
+      ]
+    });
+
+    const module = await import('../../../../src/tools/roosync/apply-config.js');
+    const result = await module.roosyncApplyConfig({ version: 'latest' });
+
+    expect(result.status).toBe('error');
+    expect(result.message).toBe('Échec de l\'application de la configuration');
+    expect(result.filesApplied).toBe(2);
+    expect(result.errors).toBeDefined();
+    expect(result.errors).toHaveLength(2);
+    expect(result.errors![0]).toContain('EACCES');
+    expect(result.errors![1]).toContain('EACCES');
+  });
+});
+
+// =============================================================================
+// TESTS PRIORITÉ 2 - Tests Résultat (4 tests)
+// =============================================================================
+
+describe('roosync_apply_config - Tests Résultat', () => {
+  let mockRooSyncService: any;
+  let mockConfigService: any;
+  let mockConfigSharingService: any;
+
+  beforeEach(() => {
+    vi.resetModules();
+
+    mockConfigService = {
+      getConfigVersion: vi.fn().mockResolvedValue('1.0.0'),
+    };
+
+    mockConfigSharingService = {
+      applyConfig: vi.fn().mockResolvedValue({
+        success: true,
+        filesApplied: 5,
+        backupPath: '/mock/backup/path',
+        errors: []
+      })
+    };
+
+    mockRooSyncService = {
+      getConfigService: vi.fn().mockReturnValue(mockConfigService),
+      getConfigSharingService: vi.fn().mockReturnValue(mockConfigSharingService)
+    };
+
+    vi.doMock('../../../../src/services/RooSyncService.js', () => ({
+      getRooSyncService: vi.fn().mockReturnValue(mockRooSyncService)
+    }));
+  });
+
+  it('devrait avoir la structure du résultat succès correcte', async () => {
+    const module = await import('../../../../src/tools/roosync/apply-config.js');
+    const result = await module.roosyncApplyConfig({ version: 'latest' });
+
+    expect(result).toHaveProperty('status');
+    expect(result).toHaveProperty('message');
+    expect(result).toHaveProperty('filesApplied');
+    expect(result).toHaveProperty('backupPath');
+    expect(result).toHaveProperty('errors');
+    
+    expect(typeof result.status).toBe('string');
+    expect(typeof result.message).toBe('string');
+    expect(typeof result.filesApplied).toBe('number');
+    expect(typeof result.backupPath).toBe('string');
+    expect(Array.isArray(result.errors)).toBe(true);
+  });
+
+  it('devrait avoir la structure du résultat erreur correcte', async () => {
+    mockConfigSharingService.applyConfig.mockResolvedValue({
+      success: false,
+      filesApplied: 0,
+      backupPath: undefined,
+      errors: ['Erreur de test']
+    });
+
+    const module = await import('../../../../src/tools/roosync/apply-config.js');
+    const result = await module.roosyncApplyConfig({ version: 'latest' });
+
+    expect(result).toHaveProperty('status');
+    expect(result).toHaveProperty('message');
+    expect(result).toHaveProperty('filesApplied');
+    expect(result).toHaveProperty('backupPath');
+    expect(result).toHaveProperty('errors');
+    
+    expect(result.status).toBe('error');
+    expect(result.message).toBe('Échec de l\'application de la configuration');
+    expect(result.filesApplied).toBe(0);
+    expect(result.backupPath).toBeUndefined();
+    expect(Array.isArray(result.errors)).toBe(true);
+    expect(result.errors).toHaveLength(1);
+  });
+
+  it('devrait compter correctement filesApplied', async () => {
+    mockConfigSharingService.applyConfig.mockResolvedValue({
+      success: true,
+      filesApplied: 7,
+      backupPath: '/mock/backup/path',
+      errors: []
+    });
+
+    const module = await import('../../../../src/tools/roosync/apply-config.js');
+    const result = await module.roosyncApplyConfig({ version: 'latest' });
+
+    expect(result.filesApplied).toBe(7);
+    expect(typeof result.filesApplied).toBe('number');
+    expect(result.filesApplied).toBeGreaterThanOrEqual(0);
+  });
+
+  it('devrait collecter les erreurs dans le tableau errors', async () => {
+    mockConfigSharingService.applyConfig.mockResolvedValue({
+      success: false,
+      filesApplied: 3,
+      backupPath: '/mock/backup/path',
+      errors: [
+        'Erreur 1: fichier non trouvé',
+        'Erreur 2: permission refusée',
+        'Erreur 3: format invalide'
+      ]
+    });
+
+    const module = await import('../../../../src/tools/roosync/apply-config.js');
+    const result = await module.roosyncApplyConfig({ version: 'latest' });
+
+    expect(result.errors).toBeDefined();
+    expect(Array.isArray(result.errors)).toBe(true);
+    expect(result.errors).toHaveLength(3);
+    expect(result.errors![0]).toContain('Erreur 1');
+    expect(result.errors![1]).toContain('Erreur 2');
+    expect(result.errors![2]).toContain('Erreur 3');
+  });
+});
