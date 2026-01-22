@@ -611,6 +611,15 @@ export function registerCallToolHandler(
                    result = { content: [{ type: 'text', text: `Error: ${(error as Error).message}` }], isError: true };
                }
                break;
+           // NOUVEAU: Outil de refresh dashboard (T3.17)
+           case 'roosync_refresh_dashboard':
+               try {
+                   const roosyncResult = await toolExports.roosyncRefreshDashboard(args as any);
+                   result = { content: [{ type: 'text', text: JSON.stringify(roosyncResult, null, 2) }] };
+               } catch (error) {
+                   result = { content: [{ type: 'text', text: `Error: ${(error as Error).message}` }], isError: true };
+               }
+               break;
            default:
                throw new GenericError(`Tool not found: ${name}`, GenericErrorCode.INVALID_ARGUMENT);
        }
