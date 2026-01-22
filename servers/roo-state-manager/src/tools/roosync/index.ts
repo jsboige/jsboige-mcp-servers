@@ -197,6 +197,9 @@ export { roosyncCheckHeartbeats, checkHeartbeatsToolMetadata } from './check-hea
 export { roosyncSyncOnOffline, syncOnOfflineToolMetadata } from './sync-on-offline.js';
 export { roosyncSyncOnOnline, syncOnOnlineToolMetadata } from './sync-on-online.js';
 
+// Export des outils de dashboard (T3.17)
+export { roosyncRefreshDashboard, refreshDashboardToolMetadata } from './refresh-dashboard.js';
+
 // Import des métadonnées pour l'array
 import { getStatusToolMetadata } from './get-status.js';
 import { compareConfigToolMetadata } from './compare-config.js';
@@ -227,6 +230,9 @@ import { checkHeartbeatsToolMetadata } from './check-heartbeats.js';
 // Import des métadonnées des outils de synchronisation automatique (T3.16)
 import { syncOnOfflineToolMetadata } from './sync-on-offline.js';
 import { syncOnOnlineToolMetadata } from './sync-on-online.js';
+
+// Import des métadonnées des outils de dashboard (T3.17)
+import { refreshDashboardToolMetadata } from './refresh-dashboard.js';
 
 // Métadonnées pour l'outil d'inventaire (format JSON Schema standard)
 const getMachineInventoryToolMetadata = {
@@ -282,10 +288,10 @@ const exportBaselineToolMetadata = {
 
 /**
  * Liste de tous les outils RooSync pour enregistrement MCP
- * Version 3.0 : 24 outils consolidés
+ * Version 3.1 : 25 outils consolidés
  * - Configuration: init, compare-config, update-baseline, manage-baseline, export-baseline
  * - Services: collect-config, publish-config, apply-config, get-machine-inventory
- * - Présentation: get-status (fusionné avec read-dashboard), list-diffs
+ * - Présentation: get-status (fusionné avec read-dashboard), list-diffs, refresh-dashboard
  * - Décision: approve-decision, reject-decision, apply-decision, rollback-decision, get-decision-details
  * - Heartbeat: register-heartbeat, get-offline-machines, get-warning-machines, get-heartbeat-state, start-heartbeat-service, stop-heartbeat-service, check-heartbeats
  * - Synchronisation automatique: sync-on-offline, sync-on-online
@@ -319,5 +325,7 @@ export const roosyncTools = [
   checkHeartbeatsToolMetadata,
   // Outils de synchronisation automatique (T3.16)
   syncOnOfflineToolMetadata,
-  syncOnOnlineToolMetadata
+  syncOnOnlineToolMetadata,
+  // Outils de dashboard (T3.17)
+  refreshDashboardToolMetadata
 ];
