@@ -139,7 +139,7 @@ describe('Legacy Compatibility Integration Test', () => {
 
     expect(mockConfigSharingService.applyConfig).toHaveBeenCalledWith({
       version: '1.0.0',
-      targets: undefined,
+      targets: [],
       backup: true,
       dryRun: true
     });

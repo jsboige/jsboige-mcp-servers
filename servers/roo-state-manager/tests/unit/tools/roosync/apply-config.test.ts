@@ -160,7 +160,7 @@ describe('roosync_apply_config - Tests Fonctionnels', () => {
     expect(mockConfigSharingService.applyConfig).toHaveBeenCalledWith({
       version: 'latest',
       machineId: undefined,
-      targets: undefined,
+      targets: [],
       backup: true,
       dryRun: false
     });
@@ -175,7 +175,7 @@ describe('roosync_apply_config - Tests Fonctionnels', () => {
     expect(mockConfigSharingService.applyConfig).toHaveBeenCalledWith({
       version: '1.2.3',
       machineId: undefined,
-      targets: undefined,
+      targets: [],
       backup: true,
       dryRun: false
     });
@@ -192,7 +192,7 @@ describe('roosync_apply_config - Tests Fonctionnels', () => {
     expect(mockConfigSharingService.applyConfig).toHaveBeenCalledWith({
       version: 'latest',
       machineId: 'myia-ai-01',
-      targets: undefined,
+      targets: [],
       backup: true,
       dryRun: false
     });
@@ -207,7 +207,7 @@ describe('roosync_apply_config - Tests Fonctionnels', () => {
     expect(mockConfigSharingService.applyConfig).toHaveBeenCalledWith({
       version: 'latest',
       machineId: undefined,
-      targets: undefined,
+      targets: [],
       backup: true,
       dryRun: false
     });
@@ -258,7 +258,7 @@ describe('roosync_apply_config - Tests Backup', () => {
     expect(mockConfigSharingService.applyConfig).toHaveBeenCalledWith({
       version: 'latest',
       machineId: undefined,
-      targets: undefined,
+      targets: [],
       backup: true, // Backup activé par défaut
       dryRun: false
     });
@@ -283,7 +283,7 @@ describe('roosync_apply_config - Tests Backup', () => {
     expect(mockConfigSharingService.applyConfig).toHaveBeenCalledWith({
       version: 'latest',
       machineId: undefined,
-      targets: undefined,
+      targets: [],
       backup: false,
       dryRun: false
     });
@@ -357,7 +357,7 @@ describe('roosync_apply_config - Tests DryRun', () => {
     expect(mockConfigSharingService.applyConfig).toHaveBeenCalledWith({
       version: 'latest',
       machineId: undefined,
-      targets: undefined,
+      targets: [],
       backup: true,
       dryRun: true
     });
@@ -382,7 +382,7 @@ describe('roosync_apply_config - Tests DryRun', () => {
     expect(mockConfigSharingService.applyConfig).toHaveBeenCalledWith({
       version: 'latest',
       machineId: undefined,
-      targets: undefined,
+      targets: [],
       backup: true,
       dryRun: false
     });
@@ -422,7 +422,7 @@ describe('roosync_apply_config - Tests DryRun', () => {
     expect(mockConfigSharingService.applyConfig).toHaveBeenCalledWith({
       version: 'latest',
       machineId: undefined,
-      targets: undefined,
+      targets: [],
       backup: false,
       dryRun: true
     });
@@ -624,7 +624,7 @@ describe('roosync_apply_config - Tests Version Incompatible', () => {
     expect(mockConfigSharingService.applyConfig).toHaveBeenCalledWith({
       version: '1.2.3',
       machineId: undefined,
-      targets: undefined,
+      targets: [],
       backup: true,
       dryRun: false
     });

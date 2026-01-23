@@ -63,8 +63,10 @@ export class ConfigSharingService implements IConfigSharingService {
     }
 
     // Collecte des MCPs
-    if (options.targets.includes('mcp')) {
-      const mcpFiles = await this.collectMcpSettings(tempDir);
+    const mcpTargets = options.targets.filter(t => t.startsWith('mcp:'));
+    if (options.targets.includes('mcp') || mcpTargets.length > 0) {
+      const mcpServerNames = mcpTargets.map(t => t.slice(4));
+      const mcpFiles = await this.collectMcpSettings(tempDir, mcpServerNames);
       manifest.files.push(...mcpFiles);
     }
 
@@ -423,7 +425,7 @@ export class ConfigSharingService implements IConfigSharingService {
     return files;
   }
 
-  private async collectMcpSettings(tempDir: string): Promise<ConfigManifestFile[]> {
+  private async collectMcpSettings(tempDir: string, mcpServerNames?: string[]): Promise<ConfigManifestFile[]> {
     const files: ConfigManifestFile[] = [];
     const mcpDir = join(tempDir, 'mcp-settings');
     await fs.mkdir(mcpDir, { recursive: true });
@@ -453,6 +455,31 @@ export class ConfigSharingService implements IConfigSharingService {
 
       // Lecture et normalisation
       const content = JSON.parse(await fs.readFile(mcpSettingsPath, 'utf-8'));
+      
+      // Filtrage des serveurs MCP spécifiques si demandé
+      if (mcpServerNames && mcpServerNames.length > 0) {
+        if (!content.mcpServers) {
+          this.logger.warn('Aucun serveur MCP trouvé dans la configuration');
+          return files;
+        }
+        
+        const filteredServers: any = {};
+        for (const serverName of mcpServerNames) {
+          if (content.mcpServers[serverName]) {
+            filteredServers[serverName] = content.mcpServers[serverName];
+          } else {
+            this.logger.warn(`Serveur MCP non trouvé: ${serverName}`);
+          }
+        }
+        
+        if (Object.keys(filteredServers).length === 0) {
+          this.logger.warn('Aucun serveur MCP correspondant trouvé');
+          return files;
+        }
+        
+        content.mcpServers = filteredServers;
+      }
+      
       const normalized = await this.normalizationService.normalize(content, 'mcp_config');
 
       // Écriture du fichier normalisé

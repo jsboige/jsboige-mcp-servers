@@ -18,7 +18,7 @@ export interface ConfigManifest {
 }
 
 export interface CollectConfigOptions {
-  targets: ('modes' | 'mcp' | 'profiles')[];
+  targets: ('modes' | 'mcp' | 'profiles' | `mcp:${string}`)[];
   dryRun?: boolean;
   description?: string;
 }
@@ -47,7 +47,7 @@ export interface PublishConfigResult {
 export interface ApplyConfigOptions {
   version?: string; // Défaut: latest
   machineId?: string; // CORRECTION SDDD : Optionnel, utilise ROOSYNC_MACHINE_ID par défaut
-  targets?: ('modes' | 'mcp' | 'profiles')[];
+  targets?: ('modes' | 'mcp' | 'profiles' | `mcp:${string}`)[];
   backup?: boolean; // Défaut: true
   dryRun?: boolean;
 }

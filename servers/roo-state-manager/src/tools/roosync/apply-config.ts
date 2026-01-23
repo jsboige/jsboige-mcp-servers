@@ -5,12 +5,63 @@ import { ConfigSharingServiceError, ConfigSharingServiceErrorCode } from '../../
 export const ApplyConfigArgsSchema = z.object({
   version: z.string().optional().describe('Version à appliquer (défaut: latest)'),
   machineId: z.string().optional().describe('ID de la machine source (optionnel, utilise ROOSYNC_MACHINE_ID par défaut)'),
-  targets: z.array(z.string()).optional().describe('Filtre optionnel des cibles (modes, mcp, profiles)'),
+  targets: z.array(z.string()).optional().refine(
+    (targets) => {
+      if (!targets) return true;
+      return targets.every(target => {
+        if (target === 'modes' || target === 'mcp' || target === 'profiles') {
+          return true;
+        }
+        if (target.startsWith('mcp:')) {
+          const serverName = target.slice(4);
+          return serverName && serverName.trim() !== '';
+        }
+        return false;
+      });
+    },
+    {
+      message: "Target invalide. Valeurs acceptées: modes, mcp, profiles, ou mcp:<nomServeur>"
+    }
+  ).describe('Filtre optionnel des cibles (modes, mcp, profiles, ou mcp:<nomServeur>)'),
   backup: z.boolean().optional().describe('Créer un backup local avant application (défaut: true)'),
   dryRun: z.boolean().optional().describe('Si true, simule l\'application sans modifier les fichiers')
 });
 
 export type ApplyConfigArgs = z.infer<typeof ApplyConfigArgsSchema>;
+
+/**
+ * Parse et valide les targets de configuration
+ * @param targets - Liste des targets à parser
+ * @returns Liste des targets validés
+ * @throws ConfigSharingServiceError si un target est invalide
+ */
+function parseTargets(targets?: string[]): ('modes' | 'mcp' | 'profiles' | `mcp:${string}`)[] {
+  if (!targets) return [];
+  
+  return targets.map(target => {
+    if (target.startsWith('mcp:')) {
+      const serverName = target.slice(4);
+      if (!serverName || serverName.trim() === '') {
+        throw new ConfigSharingServiceError(
+          `Format de target MCP invalide: '${target}'. Le nom du serveur ne peut pas être vide.`,
+          ConfigSharingServiceErrorCode.INVALID_TARGET_FORMAT,
+          { target }
+        );
+      }
+      return target as `mcp:${string}`;
+    }
+    
+    if (target === 'modes' || target === 'mcp' || target === 'profiles') {
+      return target;
+    }
+    
+    throw new ConfigSharingServiceError(
+      `Target invalide: '${target}'. Valeurs acceptées: modes, mcp, profiles, ou mcp:<nomServeur>`,
+      ConfigSharingServiceErrorCode.INVALID_TARGET_FORMAT,
+      { target }
+    );
+  });
+}
 
 export async function roosyncApplyConfig(args: ApplyConfigArgs) {
   const { version, machineId, targets, backup = true, dryRun = false } = args;
@@ -51,7 +102,7 @@ export async function roosyncApplyConfig(args: ApplyConfigArgs) {
     const result = await configSharingService.applyConfig({
       version,
       machineId, // CORRECTION SDDD : Passer le machineId au service
-      targets: targets as ('modes' | 'mcp' | 'profiles')[],
+      targets: parseTargets(targets),
       backup,
       dryRun
     });
@@ -92,7 +143,7 @@ export const applyConfigToolMetadata = {
       targets: {
         type: 'array',
         items: { type: 'string' },
-        description: 'Filtre optionnel des cibles (modes, mcp, profiles)'
+        description: 'Filtre optionnel des cibles (modes, mcp, profiles, ou mcp:<nomServeur>)'
       },
       backup: {
         type: 'boolean',
