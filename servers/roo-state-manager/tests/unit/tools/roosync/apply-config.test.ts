@@ -548,6 +548,116 @@ describe('roosync_apply_config - Tests Targets', () => {
       dryRun: false
     });
   });
+
+  // =============================================================================
+  // TESTS #349 - Tests Targets MCP Spécifiques
+  // =============================================================================
+
+  it('devrait appliquer targets: mcp:github uniquement (#349)', async () => {
+    const module = await import('../../../../src/tools/roosync/apply-config.js');
+    const result = await module.roosyncApplyConfig({
+      version: 'latest',
+      targets: ['mcp:github']
+    });
+
+    expect(result.status).toBe('success');
+    expect(mockConfigSharingService.applyConfig).toHaveBeenCalledWith({
+      version: 'latest',
+      machineId: undefined,
+      targets: ['mcp:github'],
+      backup: true,
+      dryRun: false
+    });
+  });
+
+  it('devrait appliquer targets: multiples MCP spécifiques (#349)', async () => {
+    const module = await import('../../../../src/tools/roosync/apply-config.js');
+    const result = await module.roosyncApplyConfig({
+      version: 'latest',
+      targets: ['mcp:win-cli', 'mcp:markitdown']
+    });
+
+    expect(result.status).toBe('success');
+    expect(mockConfigSharingService.applyConfig).toHaveBeenCalledWith({
+      version: 'latest',
+      machineId: undefined,
+      targets: ['mcp:win-cli', 'mcp:markitdown'],
+      backup: true,
+      dryRun: false
+    });
+  });
+
+  it('devrait appliquer targets: mélange modes et mcp spécifique (#349)', async () => {
+    const module = await import('../../../../src/tools/roosync/apply-config.js');
+    const result = await module.roosyncApplyConfig({
+      version: 'latest',
+      targets: ['modes', 'mcp:jupyter']
+    });
+
+    expect(result.status).toBe('success');
+    expect(mockConfigSharingService.applyConfig).toHaveBeenCalledWith({
+      version: 'latest',
+      machineId: undefined,
+      targets: ['modes', 'mcp:jupyter'],
+      backup: true,
+      dryRun: false
+    });
+  });
+});
+
+// =============================================================================
+// TESTS #349 - Validation Schema Targets MCP
+// =============================================================================
+
+describe('roosync_apply_config - Schema Validation Targets (#349)', () => {
+  beforeEach(() => {
+    vi.resetModules();
+  });
+
+  it('devrait accepter target mcp:github', async () => {
+    const module = await import('../../../../src/tools/roosync/apply-config.js');
+    const result = module.ApplyConfigArgsSchema.safeParse({
+      targets: ['mcp:github']
+    });
+
+    expect(result.success).toBe(true);
+  });
+
+  it('devrait accepter multiples targets mcp:*', async () => {
+    const module = await import('../../../../src/tools/roosync/apply-config.js');
+    const result = module.ApplyConfigArgsSchema.safeParse({
+      targets: ['mcp:win-cli', 'mcp:markitdown', 'mcp:jupyter']
+    });
+
+    expect(result.success).toBe(true);
+  });
+
+  it('devrait rejeter target mcp: sans nom de serveur', async () => {
+    const module = await import('../../../../src/tools/roosync/apply-config.js');
+    const result = module.ApplyConfigArgsSchema.safeParse({
+      targets: ['mcp:']
+    });
+
+    expect(result.success).toBe(false);
+  });
+
+  it('devrait rejeter target invalide', async () => {
+    const module = await import('../../../../src/tools/roosync/apply-config.js');
+    const result = module.ApplyConfigArgsSchema.safeParse({
+      targets: ['invalid-target']
+    });
+
+    expect(result.success).toBe(false);
+  });
+
+  it('devrait accepter mélange modes + mcp spécifiques', async () => {
+    const module = await import('../../../../src/tools/roosync/apply-config.js');
+    const result = module.ApplyConfigArgsSchema.safeParse({
+      targets: ['modes', 'mcp:github', 'profiles']
+    });
+
+    expect(result.success).toBe(true);
+  });
 });
 
 // =============================================================================
