@@ -576,16 +576,21 @@ export async function executeUnarchiveProject(
  * @param {object} params - Les paramètres pour la récupération des éléments.
  * @param {string} params.projectId - L'ID du projet.
  * @param {any} [params.filterOptions] - Options pour filtrer les résultats côté client (ex: { state: 'Done' }).
+ * @param {number} [params.limit=100] - Nombre maximum d'éléments à retourner (max: 100).
+ * @param {boolean} [params.summary=false] - Mode résumé : retourne uniquement titre + status (réduit la taille).
  * @returns {Promise<object>} Une promesse qui résout avec la liste des éléments du projet.
  */
 export async function executeGetProjectItems(
   octokit: any,
-  { projectId, filterOptions }: { projectId: string; filterOptions?: any }
+  { projectId, filterOptions, limit = 100, summary = false }: { projectId: string; filterOptions?: any; limit?: number; summary?: boolean }
 ) {
   try {
-    const variables: { [key: string]: any } = {
+    // Valider et limiter le paramètre limit
+    const itemsLimit = Math.min(Math.max(1, limit || 100), 100);
+
+    const variables: { [key: string]: any} = {
       id: projectId,
-      first: 100,
+      first: itemsLimit,
     };
 
     let queryDef = `query GetProjectWithItems($id: ID!, $first: Int!, $after: String`;
@@ -594,6 +599,37 @@ export async function executeGetProjectItems(
     // GraphQL ne supportant pas le filtrage direct, nous récupérons tout et filtrons côté client.
 
     queryDef += `)`;
+
+    // Construire la requête GraphQL selon le mode (summary ou complet)
+    const fieldValuesLimit = summary ? 3 : 20; // Réduire fieldValues en mode summary
+    const contentFragment = summary
+      ? `
+        content {
+          ... on DraftIssue {
+            title
+          }
+          ... on Issue {
+             title
+          }
+          ... on PullRequest {
+             title
+          }
+        }
+      `
+      : `
+        content {
+          ... on DraftIssue {
+            title
+            body
+          }
+          ... on Issue {
+             title
+          }
+          ... on PullRequest {
+             title
+          }
+        }
+      `;
 
     const query = `
       ${queryDef} {
@@ -608,19 +644,8 @@ export async function executeGetProjectItems(
               nodes {
                 id
                 type
-                content {
-                  ... on DraftIssue {
-                    title
-                    body
-                  }
-                  ... on Issue {
-                     title
-                  }
-                  ... on PullRequest {
-                     title
-                  }
-                }
-                fieldValues(first: 20) {
+                ${contentFragment}
+                fieldValues(first: ${fieldValuesLimit}) {
                   nodes {
                     ... on ProjectV2ItemFieldTextValue {
                       text

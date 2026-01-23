@@ -374,13 +374,24 @@ export function setupTools(server: any, accounts: GitHubAccount[]): ToolWithExec
             description: "Critères de filtrage (ex: { 'status': 'Done' }).",
             properties: {},
             additionalProperties: true
+          },
+          limit: {
+            type: 'number',
+            description: "Nombre maximum d'éléments à retourner (défaut: 100, max: 100).",
+            minimum: 1,
+            maximum: 100
+          },
+          summary: {
+            type: 'boolean',
+            description: "Mode résumé : retourne uniquement titre + status (réduit la taille de la réponse).",
+            default: false
           }
         },
         required: ['owner', 'project_id']
       },
-      execute: async ({ owner, project_id, filterOptions }: { owner: string, project_id: string, filterOptions?: any }) => {
+      execute: async ({ owner, project_id, filterOptions, limit, summary }: { owner: string, project_id: string, filterOptions?: any, limit?: number, summary?: boolean }) => {
         const octokit = getGitHubClient(owner, accounts);
-        return await executeGetProjectItems(octokit, { projectId: project_id, filterOptions });
+        return await executeGetProjectItems(octokit, { projectId: project_id, filterOptions, limit, summary });
       }
     },
     /**
