@@ -21,7 +21,7 @@ export const RefreshDashboardArgsSchema = z.object({
   baseline: z.string().optional()
     .describe('Machine à utiliser comme baseline (défaut: myia-ai-01)'),
   outputDir: z.string().optional()
-    .describe('Répertoire de sortie pour le dashboard (défaut: roo-config/shared-state/dashboards)')
+    .describe('Répertoire de sortie pour le dashboard (défaut: $ROOSYNC_SHARED_PATH/dashboards)')
 });
 
 export type RefreshDashboardArgs = z.infer<typeof RefreshDashboardArgsSchema>;
@@ -59,7 +59,12 @@ export type RefreshDashboardResult = z.infer<typeof RefreshDashboardResultSchema
 export async function roosyncRefreshDashboard(args: RefreshDashboardArgs): Promise<RefreshDashboardResult> {
   try {
     const baseline = args.baseline || 'myia-ai-01';
-    const outputDir = args.outputDir || 'roo-config/shared-state/dashboards';
+    // CORRECTION Bug #368: Utiliser ROOSYNC_SHARED_PATH depuis .env, JAMAIS de chemin local dans le dépôt
+    const sharedPath = process.env.ROOSYNC_SHARED_PATH;
+    if (!sharedPath) {
+      throw new Error('ROOSYNC_SHARED_PATH non configuré dans .env - impossible de générer le dashboard');
+    }
+    const outputDir = args.outputDir || `${sharedPath}/dashboards`;
 
     console.log('[REFRESH DASHBOARD] Début du rafraîchissement...');
     console.log('[REFRESH DASHBOARD] Baseline:', baseline);
@@ -192,7 +197,7 @@ export const refreshDashboardToolMetadata = {
       },
       outputDir: {
         type: 'string',
-        description: 'Répertoire de sortie pour le dashboard (défaut: roo-config/shared-state/dashboards)'
+        description: 'Répertoire de sortie pour le dashboard (défaut: $ROOSYNC_SHARED_PATH/dashboards)'
       }
     },
     additionalProperties: false
