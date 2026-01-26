@@ -5,7 +5,7 @@
  * une architecture modulaire de tests organisés par catégorie.
  */
 
-export default {
+module.exports = {
   // Environnement de test Node.js
   testEnvironment: 'node',
   
