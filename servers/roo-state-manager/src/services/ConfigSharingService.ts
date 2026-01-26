@@ -252,6 +252,12 @@ export class ConfigSharingService implements IConfigSharingService {
         );
       }
 
+      // 1.5. Extraire les targets de type mcp:<nomServeur>
+      const mcpTargets = (options.targets || []).filter(t => t.startsWith('mcp:')) as `mcp:${string}`[];
+      const mcpServerNames = mcpTargets.map(t => t.slice(4));
+      const hasMcpTargets = mcpServerNames.length > 0;
+      const hasMcpTarget = (options.targets || []).includes('mcp');
+
       // 2. Itérer sur les fichiers
       for (const file of manifest.files) {
         try {
@@ -265,6 +271,16 @@ export class ConfigSharingService implements IConfigSharingService {
             const rooModesPath = join(inventory.paths.rooExtensions, 'roo-modes');
             destPath = join(rooModesPath, fileName);
           } else if (file.path === 'mcp-settings/mcp_settings.json') {
+            // Vérifier si on doit traiter ce fichier MCP
+            // Si on a des targets mcp:<nomServeur> mais pas de target 'mcp', on filtre
+            if (hasMcpTargets && !hasMcpTarget) {
+              // On ne traite que les serveurs spécifiés
+              this.logger.info(`Filtrage des serveurs MCP: ${mcpServerNames.join(', ')}`);
+            } else if (!hasMcpTarget && !hasMcpTargets) {
+              // Pas de target MCP, on saute ce fichier
+              this.logger.info('Pas de target MCP, fichier mcp_settings.json ignoré');
+              continue;
+            }
             destPath = inventory.paths.mcpSettings;
           } else {
             this.logger.warn(`Type de fichier non supporté ou chemin inconnu: ${file.path}`);
@@ -276,8 +292,33 @@ export class ConfigSharingService implements IConfigSharingService {
           // Lecture du contenu source
           const sourceContent = JSON.parse(await fs.readFile(sourcePath, 'utf-8'));
 
-          // Gestion du contenu local existant
+          // Filtrage des serveurs MCP spécifiques si demandé
           let finalContent = sourceContent;
+          if (file.path === 'mcp-settings/mcp_settings.json' && hasMcpTargets && !hasMcpTarget) {
+            if (!sourceContent.mcpServers) {
+              this.logger.warn('Aucun serveur MCP trouvé dans la configuration source');
+              continue;
+            }
+            
+            const filteredServers: any = {};
+            for (const serverName of mcpServerNames) {
+              if (sourceContent.mcpServers[serverName]) {
+                filteredServers[serverName] = sourceContent.mcpServers[serverName];
+              } else {
+                this.logger.warn(`Serveur MCP non trouvé dans la source: ${serverName}`);
+              }
+            }
+            
+            if (Object.keys(filteredServers).length === 0) {
+              this.logger.warn('Aucun serveur MCP correspondant trouvé dans la source');
+              continue;
+            }
+            
+            finalContent = { ...sourceContent, mcpServers: filteredServers };
+            this.logger.info(`Filtrage appliqué: ${Object.keys(filteredServers).length} serveur(s) MCP`);
+          }
+
+          // Gestion du contenu local existant
           let action = 'create';
 
           if (existsSync(destPath)) {
@@ -285,7 +326,7 @@ export class ConfigSharingService implements IConfigSharingService {
             const localContent = JSON.parse(await fs.readFile(destPath, 'utf-8'));
 
             // Fusion
-            finalContent = JsonMerger.merge(sourceContent, localContent, { arrayStrategy: 'replace' });
+            finalContent = JsonMerger.merge(finalContent, localContent, { arrayStrategy: 'replace' });
 
             // Backup si non dryRun
             if (!options.dryRun) {
