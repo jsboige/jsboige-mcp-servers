@@ -1,0 +1,27 @@
+{
+  "name": "jupyter-mcp-server",
+  "version": "1.0.0",
+  "description": "MCP server for Jupyter notebook operations",
+  "main": "dist/index.js",
+  "scripts": {
+    "build": "echo 'Using pre-built dist folder'",
+    "start": "node dist/index.js",
+    "test": "jest --passWithNoTests",
+    "test:coverage": "jest --coverage --passWithNoTests"
+  },
+  "keywords": [
+    "mcp",
+    "jupyter",
+    "notebook"
+  ],
+  "license": "MIT",
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.0.0",
+    "minimist": "^1.2.8"
+  },
+  "devDependencies": {
+    "@types/jest": "^29.5.12",
+    "@types/node": "^22.15.3",
+    "jest": "^29.7.0"
+  }
+}
