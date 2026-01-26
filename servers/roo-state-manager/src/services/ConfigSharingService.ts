@@ -252,9 +252,46 @@ export class ConfigSharingService implements IConfigSharingService {
         );
       }
 
+      // Issue #349: Extraire les targets de type mcp:xxx pour le filtrage granulaire
+      const mcpTargets = options.targets?.filter(t => t.startsWith('mcp:')) || [];
+      const mcpServerNames = mcpTargets.map(t => t.slice(4));
+      const hasMcpTargets = mcpServerNames.length > 0;
+      const hasMcpTarget = options.targets?.includes('mcp') || false;
+      const hasModesTarget = options.targets?.includes('modes') || false;
+      const hasProfilesTarget = options.targets?.includes('profiles') || false;
+
+      // Si aucun target n'est spécifié, tout appliquer par défaut
+      const applyAll = options.targets === undefined || options.targets.length === 0;
+
+      this.logger.info('Targets de configuration', {
+        applyAll,
+        hasMcpTarget,
+        hasModesTarget,
+        hasProfilesTarget,
+        mcpServerNames
+      });
+
       // 2. Itérer sur les fichiers
       for (const file of manifest.files) {
         try {
+          // Issue #349: Filtrage basé sur les targets
+          let shouldProcess = false;
+          
+          if (applyAll) {
+            shouldProcess = true;
+          } else if (file.path.startsWith('roo-modes/')) {
+            shouldProcess = hasModesTarget;
+          } else if (file.path === 'mcp-settings/mcp_settings.json') {
+            shouldProcess = hasMcpTarget || hasMcpTargets;
+          } else if (file.path.startsWith('profiles/')) {
+            shouldProcess = hasProfilesTarget;
+          }
+
+          if (!shouldProcess) {
+            this.logger.debug(`Fichier ignoré (ne correspond pas aux targets): ${file.path}`);
+            continue;
+          }
+
           // Résolution du chemin source et destination
           const sourcePath = join(configDir, file.path);
           let destPath: string | null = null;
@@ -275,6 +312,26 @@ export class ConfigSharingService implements IConfigSharingService {
 
           // Lecture du contenu source
           const sourceContent = JSON.parse(await fs.readFile(sourcePath, 'utf-8'));
+
+          // Issue #349: Filtrage granulaire des serveurs MCP si targets mcp:xxx sont spécifiés
+          if (hasMcpTargets && file.path === 'mcp-settings/mcp_settings.json' && sourceContent.mcpServers) {
+            const filteredServers: any = {};
+            for (const serverName of mcpServerNames) {
+              if (sourceContent.mcpServers[serverName]) {
+                filteredServers[serverName] = sourceContent.mcpServers[serverName];
+              } else {
+                this.logger.warn(`Serveur MCP non trouvé dans la configuration source: ${serverName}`);
+              }
+            }
+            
+            if (Object.keys(filteredServers).length === 0) {
+              this.logger.warn('Aucun serveur MCP correspondant trouvé, fichier ignoré');
+              continue;
+            }
+            
+            sourceContent.mcpServers = filteredServers;
+            this.logger.info(`Filtrage MCP appliqué: ${Object.keys(filteredServers).join(', ')}`);
+          }
 
           // Gestion du contenu local existant
           let finalContent = sourceContent;
