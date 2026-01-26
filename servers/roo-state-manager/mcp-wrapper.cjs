@@ -11,9 +11,9 @@
  * - Renvoie TOUJOURS la même réponse filtrée
  * - Garantit unicité des noms d'outils
  *
- * Outils autorisés (16):
+ * Outils autorisés (17):
  * - Messagerie (6): send_message, read_inbox, reply_message, get_message, mark_message_read, archive_message
- * - Lecture seule (5): get_status, get_machine_inventory, list_diffs, compare_config, get_decision_details
+ * - Lecture seule (6): get_status, get_machine_inventory, list_diffs, compare_config, get_decision_details, refresh_dashboard
  * - E2E complet (3): collect_config, publish_config, apply_config
  * - Infrastructure (2): init, get_active_config
  */
@@ -40,12 +40,13 @@ const ALLOWED_TOOLS = new Set([
     'roosync_get_message',
     'roosync_mark_message_read',
     'roosync_archive_message',
-    // Lecture seule (5 outils)
+    // Lecture seule (6 outils)
     'roosync_get_status',
     'roosync_get_machine_inventory',
     'roosync_list_diffs',
     'roosync_compare_config',
     'roosync_get_decision_details',
+    'roosync_refresh_dashboard', // Issue #363 - MAJ dashboard sans init complet
     // Actions critiques pour E2E (3 outils)
     'roosync_collect_config',
     'roosync_publish_config',
