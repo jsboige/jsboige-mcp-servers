@@ -97,37 +97,19 @@ describe('InventoryService', () => {
     });
   });
 
-   it('should collect scripts correctly', async () => {
-    const mockScripts = ['script1.ps1', 'script2.ps1'];
-    const mockDirs = [
-        { name: 'category1', isDirectory: () => true, isFile: () => false },
-        { name: 'root-script.ps1', isDirectory: () => false, isFile: () => true }
-    ] as any;
-    
-    const mockCategoryFiles = [
-        { name: 'cat-script.ps1', isDirectory: () => false, isFile: () => true }
-    ] as any;
-
+   /**
+    * SIMPLIFICATION "Écuries d'Augias" : Scripts non collectés
+    * Les scripts PowerShell ne sont pas utiles pour la comparaison des configurations
+    * et gonflaient l'inventaire de 70+ KB. Maintenant retourne un objet vide.
+    */
+   it('should return empty scripts (simplified inventory)', async () => {
     vi.mocked(fs.access).mockResolvedValue(undefined);
     vi.mocked(fs.readFile).mockResolvedValue('{}');
-    
-    // Mock readdir for scripts path
-    vi.mocked(fs.readdir).mockImplementation(async (pathLike: any) => {
-        if (pathLike.includes('scripts') && !pathLike.includes('category1')) {
-            return mockDirs;
-        }
-        if (pathLike.includes('category1')) {
-            return mockCategoryFiles;
-        }
-        return [];
-    });
 
     const inventory = await service.getMachineInventory();
 
-    expect(inventory.inventory.scripts.categories['root']).toHaveLength(1);
-    expect(inventory.inventory.scripts.categories['root'][0].name).toBe('root-script.ps1');
-    
-    expect(inventory.inventory.scripts.categories['category1']).toHaveLength(1);
-    expect(inventory.inventory.scripts.categories['category1'][0].name).toBe('cat-script.ps1');
+    // Simplification: scripts est maintenant un objet vide
+    expect(inventory.inventory.scripts.categories).toEqual({});
+    expect(inventory.inventory.scripts.all).toEqual([]);
   });
 });
