@@ -14,6 +14,24 @@ vi.mock('../ConfigNormalizationService', () => {
   return { ConfigNormalizationService };
 });
 
+// Mock InventoryService
+const mockGetMachineInventory = vi.fn().mockResolvedValue({
+  paths: {
+    rooExtensions: '/mock/roo-extensions',
+    mcpSettings: '/mock/.claude.json'
+  }
+});
+
+vi.mock('../roosync/InventoryService', () => {
+  return {
+    InventoryService: {
+      getInstance: () => ({
+        getMachineInventory: mockGetMachineInventory
+      })
+    }
+  };
+});
+
 describe('ConfigSharingService', () => {
   let service: ConfigSharingService;
   let mockConfigService: IConfigService;
@@ -83,21 +101,6 @@ describe('ConfigSharingService', () => {
 
   // Issue #349: Tests pour le filtrage granulaire des targets mcp:xxx
   describe('applyConfig with granular targets', () => {
-    beforeEach(() => {
-      // Mock InventoryService pour les tests applyConfig
-      vi.mock('../../services/roosync/InventoryService', () => ({
-        InventoryService: {
-          getInstance: vi.fn().mockReturnValue({
-            getMachineInventory: vi.fn().mockResolvedValue({
-              paths: {
-                rooExtensions: '/mock/roo/extensions',
-                mcpSettings: '/mock/mcp/settings.json'
-              }
-            })
-          })
-        }
-      }));
-    });
 
     it('should apply all files when no targets specified', async () => {
       // Ce test nécessite un setup plus complexe avec des fichiers temporaires
