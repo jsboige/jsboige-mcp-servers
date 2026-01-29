@@ -52,8 +52,23 @@ describe('MessageManager', () => {
 
   afterEach(async () => {
     // Cleanup : supprimer répertoire test pour isolation
+    // Retry logic for Windows ENOTEMPTY issues
     if (existsSync(testSharedStatePath)) {
-      rmSync(testSharedStatePath, { recursive: true, force: true });
+      for (let i = 0; i < 3; i++) {
+        try {
+          rmSync(testSharedStatePath, { recursive: true, force: true });
+          break;
+        } catch (err: unknown) {
+          if (i === 2) {
+            // Last attempt failed, ignore ENOTEMPTY errors
+            if ((err as NodeJS.ErrnoException).code !== 'ENOTEMPTY') {
+              throw err;
+            }
+          }
+          // Wait a bit before retry
+          await new Promise(resolve => setTimeout(resolve, 50));
+        }
+      }
     }
   });
 
