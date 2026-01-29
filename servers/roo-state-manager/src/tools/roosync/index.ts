@@ -185,6 +185,7 @@ export { amendMessage } from './amend_message.js';
 export { getMachineInventoryTool } from './get-machine-inventory.js';
 
 // Export des outils Heartbeat (T3.16)
+// @deprecated Ces 7 outils seront remplaces par heartbeat_status et heartbeat_service dans une future version
 export { roosyncRegisterHeartbeat, registerHeartbeatToolMetadata } from './register-heartbeat.js';
 export { roosyncGetOfflineMachines, getOfflineMachinesToolMetadata } from './get-offline-machines.js';
 export { roosyncGetWarningMachines, getWarningMachinesToolMetadata } from './get-warning-machines.js';
@@ -192,6 +193,10 @@ export { roosyncGetHeartbeatState, getHeartbeatStateToolMetadata } from './get-h
 export { roosyncStartHeartbeatService, startHeartbeatServiceToolMetadata } from './start-heartbeat-service.js';
 export { roosyncStopHeartbeatService, stopHeartbeatServiceToolMetadata } from './stop-heartbeat-service.js';
 export { roosyncCheckHeartbeats, checkHeartbeatsToolMetadata } from './check-heartbeats.js';
+
+// NOUVEAU: Outils Heartbeat consolides v3.1 (CONS-2)
+export { roosyncHeartbeatStatus, heartbeatStatusToolMetadata } from './heartbeat-status.js';
+export { roosyncHeartbeatService, heartbeatServiceToolMetadata } from './heartbeat-service.js';
 
 // Export des outils de synchronisation automatique (T3.16)
 export { roosyncSyncOnOffline, syncOnOfflineToolMetadata } from './sync-on-offline.js';
@@ -218,7 +223,7 @@ import { publishConfigToolMetadata } from './publish-config.js';
 import { applyConfigToolMetadata } from './apply-config.js';
 import { getMachineInventoryTool } from './get-machine-inventory.js';
 
-// Import des métadonnées des outils Heartbeat (T3.16)
+// Import des métadonnées des outils Heartbeat (T3.16) - @deprecated
 import { registerHeartbeatToolMetadata } from './register-heartbeat.js';
 import { getOfflineMachinesToolMetadata } from './get-offline-machines.js';
 import { getWarningMachinesToolMetadata } from './get-warning-machines.js';
@@ -226,6 +231,10 @@ import { getHeartbeatStateToolMetadata } from './get-heartbeat-state.js';
 import { startHeartbeatServiceToolMetadata } from './start-heartbeat-service.js';
 import { stopHeartbeatServiceToolMetadata } from './stop-heartbeat-service.js';
 import { checkHeartbeatsToolMetadata } from './check-heartbeats.js';
+
+// Import des métadonnées des outils Heartbeat consolides (CONS-2)
+import { heartbeatStatusToolMetadata } from './heartbeat-status.js';
+import { heartbeatServiceToolMetadata } from './heartbeat-service.js';
 
 // Import des métadonnées des outils de synchronisation automatique (T3.16)
 import { syncOnOfflineToolMetadata } from './sync-on-offline.js';
@@ -288,14 +297,15 @@ const exportBaselineToolMetadata = {
 
 /**
  * Liste de tous les outils RooSync pour enregistrement MCP
- * Version 3.1 : 25 outils consolidés
+ * Version 3.1.1 : 27 outils (dont 2 nouveaux consolides)
  * - Configuration: init, compare-config, update-baseline, manage-baseline, export-baseline
  * - Services: collect-config, publish-config, apply-config, get-machine-inventory
- * - Présentation: get-status (fusionné avec read-dashboard), list-diffs, refresh-dashboard
- * - Décision: approve-decision, reject-decision, apply-decision, rollback-decision, get-decision-details
- * - Heartbeat: register-heartbeat, get-offline-machines, get-warning-machines, get-heartbeat-state, start-heartbeat-service, stop-heartbeat-service, check-heartbeats
+ * - Presentation: get-status (fusionne avec read-dashboard), list-diffs, refresh-dashboard
+ * - Decision: approve-decision, reject-decision, apply-decision, rollback-decision, get-decision-details
+ * - Heartbeat legacy (deprecated): register-heartbeat, get-offline-machines, get-warning-machines, get-heartbeat-state, start-heartbeat-service, stop-heartbeat-service, check-heartbeats
+ * - Heartbeat v3.1 (CONS-2): heartbeat-status, heartbeat-service
  * - Synchronisation automatique: sync-on-offline, sync-on-online
- * - Debug: debug-reset (fusionné avec debug-dashboard et reset-service)
+ * - Debug: debug-reset (fusionne avec debug-dashboard et reset-service)
  */
 export const roosyncTools = [
   initToolMetadata,
@@ -315,7 +325,7 @@ export const roosyncTools = [
   applyConfigToolMetadata,
   getMachineInventoryToolMetadata,
   debugResetToolMetadata,
-  // Outils Heartbeat (T3.16)
+  // Outils Heartbeat legacy (T3.16) - @deprecated, utiliser heartbeat-status et heartbeat-service
   registerHeartbeatToolMetadata,
   getOfflineMachinesToolMetadata,
   getWarningMachinesToolMetadata,
@@ -323,6 +333,9 @@ export const roosyncTools = [
   startHeartbeatServiceToolMetadata,
   stopHeartbeatServiceToolMetadata,
   checkHeartbeatsToolMetadata,
+  // Outils Heartbeat consolides v3.1 (CONS-2)
+  heartbeatStatusToolMetadata,
+  heartbeatServiceToolMetadata,
   // Outils de synchronisation automatique (T3.16)
   syncOnOfflineToolMetadata,
   syncOnOnlineToolMetadata,
