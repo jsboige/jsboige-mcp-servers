@@ -38,7 +38,6 @@
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.20.2",
     "axios": "^1.9.0",
-    "express": "^5.0.1",
-    "quickfiles-server": "^1.0.0"
+    "express": "^5.0.1"
   }
 }

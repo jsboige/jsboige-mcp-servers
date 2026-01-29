@@ -218,92 +218,27 @@ private async collectMcpServers(): Promise<McpServerInfo[]> {
     }
   }
 
+  /**
+   * SIMPLIFICATION "Écuries d'Augias" : Ne plus collecter les specs SDDD
+   * Ces fichiers ne sont pas utiles pour la comparaison des configurations
+   * et gonflent inutilement l'inventaire.
+   */
   private async collectSdddSpecs(): Promise<any[]> {
-     const specsPath = path.join(this.ROO_CONFIG_PATH, 'specifications');
-     const specs: any[] = [];
-     try {
-        if (await this.fileExists(specsPath)) {
-            const files = await fs.readdir(specsPath);
-            for (const file of files) {
-                if (file.endsWith('.md') && file !== 'README.md') {
-                    const filePath = path.join(specsPath, file);
-                    const stats = await fs.stat(filePath);
-                    specs.push({
-                        name: file,
-                        path: path.relative(this.ROO_EXTENSIONS_PATH, filePath),
-                        size: stats.size,
-                        lastModified: stats.mtime.toISOString().split('T')[0]
-                    });
-                }
-            }
-        }
-     } catch (error: any) {
-         console.error(`Error reading specs: ${error.message}`);
-     }
-     return specs;
+     // Retourner un tableau vide pour alléger l'inventaire
+     return [];
   }
 
+  /**
+   * SIMPLIFICATION "Écuries d'Augias" : Ne plus collecter les scripts PowerShell
+   * Ces fichiers ne sont pas utiles pour la comparaison des configurations
+   * et gonflent l'inventaire de 70+ KB à cause de la récursion.
+   */
   private async collectScripts(): Promise<{ categories: { [key: string]: ScriptInfo[] }; all: ScriptInfo[] }> {
-      const result = {
-          categories: {} as { [key: string]: ScriptInfo[] },
-          all: [] as ScriptInfo[]
+      // Retourner un objet vide pour alléger l'inventaire
+      return {
+          categories: {},
+          all: []
       };
-
-      try {
-          if (await this.fileExists(this.SCRIPTS_PATH)) {
-              // Get directories (categories)
-              const items = await fs.readdir(this.SCRIPTS_PATH, { withFileTypes: true });
-
-              for (const item of items) {
-                  if (item.isDirectory()) {
-                      const category = item.name;
-                      result.categories[category] = [];
-                      const dirPath = path.join(this.SCRIPTS_PATH, category);
-                      const files = await this.getFilesRecursively(dirPath, '.ps1');
-
-                      for (const file of files) {
-                          const scriptInfo: ScriptInfo = {
-                              name: path.basename(file),
-                              path: path.relative(this.ROO_EXTENSIONS_PATH, file),
-                              category: category
-                          };
-                          result.categories[category].push(scriptInfo);
-                          result.all.push(scriptInfo);
-                      }
-                  } else if (item.isFile() && item.name.endsWith('.ps1')) {
-                      // Root scripts
-                      if (!result.categories['root']) {
-                          result.categories['root'] = [];
-                      }
-                       const scriptInfo: ScriptInfo = {
-                              name: item.name,
-                              path: path.relative(this.ROO_EXTENSIONS_PATH, path.join(this.SCRIPTS_PATH, item.name)),
-                              category: 'root'
-                          };
-                      result.categories['root'].push(scriptInfo);
-                      result.all.push(scriptInfo);
-                  }
-              }
-          }
-      } catch (error: any) {
-          console.error(`Error collecting scripts: ${error.message}`);
-      }
-
-      return result;
-  }
-
-  private async getFilesRecursively(dir: string, extension: string): Promise<string[]> {
-      let results: string[] = [];
-      const list = await fs.readdir(dir, { withFileTypes: true });
-      for (const item of list) {
-          const fullPath = path.join(dir, item.name);
-          if (item.isDirectory()) {
-              results = results.concat(await this.getFilesRecursively(fullPath, extension));
-          } else if (item.name.endsWith(extension)) {
-              results.push(fullPath);
-          }
-      }
-      return results;
   }
 
   private async getPowershellVersion(): Promise<string> {

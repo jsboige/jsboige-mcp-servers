@@ -120,12 +120,26 @@ export async function roosyncCompareConfig(args: CompareConfigArgs): Promise<Com
 
       switch (args.granularity) {
         case 'mcp':
-          sourceData = (sourceInventory as any).inventory?.mcpServers || (sourceInventory as any).mcpServers || {};
-          targetData = (targetInventory as any).inventory?.mcpServers || (targetInventory as any).mcpServers || {};
+          // Support 3 formats: FullInventory (inventory.mcpServers), InventoryCollector (roo.mcpServers), ou direct
+          sourceData = (sourceInventory as any).inventory?.mcpServers ||
+                       (sourceInventory as any).roo?.mcpServers ||
+                       (sourceInventory as any).mcpServers ||
+                       {};
+          targetData = (targetInventory as any).inventory?.mcpServers ||
+                       (targetInventory as any).roo?.mcpServers ||
+                       (targetInventory as any).mcpServers ||
+                       {};
           break;
         case 'mode':
-          sourceData = (sourceInventory as any).inventory?.rooModes || (sourceInventory as any).rooModes || {};
-          targetData = (targetInventory as any).inventory?.rooModes || (targetInventory as any).rooModes || {};
+          // Support 3 formats: FullInventory (inventory.rooModes), InventoryCollector (roo.modes), ou direct
+          sourceData = (sourceInventory as any).inventory?.rooModes ||
+                       (sourceInventory as any).roo?.modes ||
+                       (sourceInventory as any).rooModes ||
+                       {};
+          targetData = (targetInventory as any).inventory?.rooModes ||
+                       (targetInventory as any).roo?.modes ||
+                       (targetInventory as any).rooModes ||
+                       {};
           break;
         case 'full':
         default:
