@@ -58,6 +58,9 @@ export type ExportBaselineResult = z.infer<typeof ExportBaselineResultSchema>;
 
 /**
  * Fonction principale pour roosync_export_baseline
+ *
+ * @deprecated Utilisez roosync_baseline avec action: 'export' à la place.
+ * Cet outil est conservé pour compatibilité mais sera supprimé dans une version future.
  */
 export async function roosync_export_baseline(args: ExportBaselineArgs): Promise<ExportBaselineResult> {
   try {

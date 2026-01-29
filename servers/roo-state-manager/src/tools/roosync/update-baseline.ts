@@ -123,10 +123,13 @@ function createBaselineFromInventory(
 
 /**
  * Outil roosync_update_baseline
- * 
+ *
+ * @deprecated Utilisez roosync_baseline avec action: 'update' à la place.
+ * Cet outil est conservé pour compatibilité mais sera supprimé dans une version future.
+ *
  * Met à jour la configuration baseline en utilisant une machine spécifique
  * comme nouvelle référence.
- * 
+ *
  * @param args Arguments validés
  * @returns Résultat de la mise à jour
  * @throws {RooSyncServiceError} En cas d'erreur
@@ -346,7 +349,7 @@ export async function roosyncUpdateBaseline(args: UpdateBaselineArgs): Promise<U
  */
 export const updateBaselineToolMetadata = {
   name: 'roosync_update_baseline',
-  description: 'Met à jour la configuration baseline avec une nouvelle machine cible ou un profil',
+  description: '[DEPRECATED] Met à jour la configuration baseline avec une nouvelle machine cible ou un profil. Utilisez roosync_baseline avec action: \'update\' à la place.',
   inputSchema: {
     type: 'object' as const,
     properties: {

@@ -79,6 +79,9 @@ function validateSemanticVersion(version: string): boolean {
 /**
  * Outil roosync_manage_baseline
  *
+ * @deprecated Utilisez roosync_baseline avec action: 'version' ou 'restore' à la place.
+ * Cet outil est conservé pour compatibilité mais sera supprimé dans une version future.
+ *
  * Outil consolidé combinant version-baseline et restore-baseline.
  *
  * @param args Arguments validés
@@ -556,7 +559,7 @@ async function handleRestoreAction(
  */
 export const manageBaselineToolMetadata = {
   name: 'roosync_manage_baseline',
-  description: 'Outil consolidé pour versionner et restaurer des baselines RooSync',
+  description: '[DEPRECATED] Outil consolidé pour versionner et restaurer des baselines RooSync. Utilisez roosync_baseline avec action: \'version\' ou \'restore\' à la place.',
   inputSchema: {
     type: 'object' as const,
     properties: {

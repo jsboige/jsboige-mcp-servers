@@ -161,6 +161,19 @@ export type {
   ExportBaselineResult
 } from './export-baseline.js';
 
+// Outil consolidé Baseline (CONS-4) - Remplace update-baseline, manage-baseline et export-baseline
+export {
+  roosync_baseline,
+  BaselineArgsSchema,
+  BaselineResultSchema,
+  baselineToolMetadata
+} from './baseline.js';
+
+export type {
+  BaselineArgs,
+  BaselineResult
+} from './baseline.js';
+
 // Les outils de diff granulaire ont été supprimés en Phase 3
 
 // Export des outils de configuration partagée (Cycle 6)
@@ -212,6 +225,7 @@ import { getDecisionDetailsToolMetadata } from './get-decision-details.js';
 import { initToolMetadata } from './init.js';
 import { updateBaselineToolMetadata } from './update-baseline.js';
 import { manageBaselineToolMetadata } from './manage-baseline.js';
+import { baselineToolMetadata } from './baseline.js';
 import { debugResetToolMetadata } from './debug-reset.js';
 import { collectConfigToolMetadata } from './collect-config.js';
 import { publishConfigToolMetadata } from './publish-config.js';
@@ -288,8 +302,8 @@ const exportBaselineToolMetadata = {
 
 /**
  * Liste de tous les outils RooSync pour enregistrement MCP
- * Version 3.1 : 25 outils consolidés
- * - Configuration: init, compare-config, update-baseline, manage-baseline, export-baseline
+ * Version 3.2 : 26 outils consolidés (CONS-4: 3→1 Baseline)
+ * - Configuration: init, compare-config, baseline (consolidé), update-baseline (deprecated), manage-baseline (deprecated), export-baseline (deprecated)
  * - Services: collect-config, publish-config, apply-config, get-machine-inventory
  * - Présentation: get-status (fusionné avec read-dashboard), list-diffs, refresh-dashboard
  * - Décision: approve-decision, reject-decision, apply-decision, rollback-decision, get-decision-details
@@ -307,9 +321,10 @@ export const roosyncTools = [
   applyDecisionToolMetadata,
   rollbackDecisionToolMetadata,
   getDecisionDetailsToolMetadata,
-  updateBaselineToolMetadata,
-  manageBaselineToolMetadata,
-  exportBaselineToolMetadata,
+  baselineToolMetadata, // CONS-4: Outil consolidé (remplace les 3 suivants)
+  updateBaselineToolMetadata, // [DEPRECATED] Utilisez baselineToolMetadata avec action: 'update'
+  manageBaselineToolMetadata, // [DEPRECATED] Utilisez baselineToolMetadata avec action: 'version' | 'restore'
+  exportBaselineToolMetadata, // [DEPRECATED] Utilisez baselineToolMetadata avec action: 'export'
   collectConfigToolMetadata,
   publishConfigToolMetadata,
   applyConfigToolMetadata,
