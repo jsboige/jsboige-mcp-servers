@@ -106,12 +106,12 @@ export {
   InitArgsSchema,
   InitResultSchema,
   initToolMetadata
-} from './init.js';
+} from './roosync_init.js';
 
 export type {
   InitArgs,
   InitResult
-} from './init.js';
+} from './roosync_init.js';
 
 export {
   roosyncUpdateBaseline,
@@ -214,7 +214,7 @@ import { rejectDecisionToolMetadata } from './reject-decision.js';
 import { applyDecisionToolMetadata } from './apply-decision.js';
 import { rollbackDecisionToolMetadata } from './rollback-decision.js';
 import { getDecisionDetailsToolMetadata } from './get-decision-details.js';
-import { initToolMetadata } from './init.js';
+import { initToolMetadata } from './roosync_init.js';
 import { updateBaselineToolMetadata } from './update-baseline.js';
 import { manageBaselineToolMetadata } from './manage-baseline.js';
 import { debugResetToolMetadata } from './debug-reset.js';
