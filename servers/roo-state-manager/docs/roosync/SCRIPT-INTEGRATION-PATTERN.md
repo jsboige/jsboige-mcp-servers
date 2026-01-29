@@ -49,7 +49,7 @@ const __dirname = dirname(__filename);
 ### 2. Calculer le Chemin Racine du Projet
 
 ```typescript
-// Depuis mcps/internal/servers/roo-state-manager/src/tools/roosync/init.ts
+// Depuis mcps/internal/servers/roo-state-manager/src/tools/roosync/roosync_init.ts
 // Remonter à la racine : ../../../../../..
 const projectRoot = join(dirname(dirname(dirname(dirname(dirname(__dirname))))));
 const inventoryScriptPath = join(projectRoot, 'scripts', 'inventory', 'Get-MachineInventory.ps1');
@@ -61,14 +61,14 @@ const inventoryScriptPath = join(projectRoot, 'scripts', 'inventory', 'Get-Machi
 const inventoryCmd = `powershell.exe -NoProfile -ExecutionPolicy Bypass -File "${inventoryScriptPath}" -MachineId "${machineId}"`;
 
 try {
-  const { stdout, stderr } = await execAsync(inventoryCmd, { 
+  const { stdout, stderr } = await execAsync(inventoryCmd, {
     timeout: 30000, // 30 secondes max
     cwd: projectRoot
   });
-  
+
   // Le script retourne le chemin du fichier JSON créé
   const inventoryFilePath = stdout.trim();
-  
+
   if (inventoryFilePath && existsSync(inventoryFilePath)) {
     const inventoryData = JSON.parse(readFileSync(inventoryFilePath, 'utf-8'));
     // Traiter les données...
@@ -240,7 +240,7 @@ const __dirname = dirname(__filename);
 
 **Cause** : Script PowerShell a échoué silencieusement
 
-**Solution** : 
+**Solution** :
 - Vérifier `stderr` pour erreurs
 - Tester script manuellement
 - Ajouter logs dans le script PS
@@ -261,5 +261,5 @@ const __dirname = dirname(__filename);
 
 ---
 
-**Dernière mise à jour** : 2025-10-14  
+**Dernière mise à jour** : 2025-10-14
 **Version** : 1.0.0 (POC)
