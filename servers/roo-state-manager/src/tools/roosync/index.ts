@@ -194,6 +194,17 @@ export { replyMessage } from './reply_message.js';
 // Export des outils de messagerie Phase 3 - Advanced Features
 export { amendMessage } from './amend_message.js';
 
+// ============================================================
+// CONS-1 : Outils consolidés de messagerie (7→3)
+// ============================================================
+// Ces 3 outils remplacent progressivement les 7 outils legacy ci-dessus :
+// - roosyncRead (mode: inbox|message) → remplace read_inbox + get_message
+// - roosyncSend (action: send|reply|amend) → remplace send_message + reply_message + amend_message
+// - roosyncManage (action: mark_read|archive) → remplace mark_message_read + archive_message
+export { roosyncRead } from './read.js';
+export { roosyncSend } from './send.js';
+export { roosyncManage } from './manage.js';
+
 // NOUVEAU: Outil d'inventaire
 export { getMachineInventoryTool } from './get-machine-inventory.js';
 
