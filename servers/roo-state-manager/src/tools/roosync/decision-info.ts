@@ -14,6 +14,8 @@
 import { z } from 'zod';
 import { zodToJsonSchema } from 'zod-to-json-schema';
 import { getRooSyncService, RooSyncServiceError } from '../../services/RooSyncService.js';
+import { parseRoadmapMarkdown, findDecisionById } from '../../utils/roosync-parsers.js';
+import { join } from 'path';
 
 /**
  * Schema de validation pour roosync_decision_info
@@ -114,11 +116,105 @@ export type RooSyncDecisionInfoResult = z.infer<typeof RooSyncDecisionInfoResult
 export async function roosyncDecisionInfo(
   args: RooSyncDecisionInfoArgs
 ): Promise<RooSyncDecisionInfoResult> {
-  // TODO: Implémenter après CONS-1 stabilisé
-  throw new RooSyncServiceError(
-    'CONS-5 not yet implemented - waiting for CONS-1 stabilization',
-    'NOT_IMPLEMENTED'
-  );
+  const service = getRooSyncService();
+  const config = service.getConfig();
+
+  // Charger les détails de la décision
+  const roadmapPath = join(config.sharedPath, 'sync-roadmap.md');
+  const decisions = parseRoadmapMarkdown(roadmapPath);
+  const decision = findDecisionById(decisions, args.decisionId);
+
+  if (!decision) {
+    throw new RooSyncServiceError(
+      `Décision '${args.decisionId}' introuvable`,
+      'DECISION_NOT_FOUND'
+    );
+  }
+
+  // Cast pour accéder aux propriétés dynamiques (parsées depuis le markdown)
+  const decisionData = decision as any;
+
+  // Construire l'objet décision
+  const decisionObj = {
+    id: decision.id,
+    title: decision.title,
+    status: decision.status,
+    type: decision.type || 'config',
+    path: decision.path,
+    sourceMachine: decision.sourceMachine || config.machineId,
+    targetMachines: decision.targetMachines || [],
+    created: decision.createdAt || new Date().toISOString(),
+    description: decisionData.details,
+    diff: decisionData.diff
+  };
+
+  // Construire l'historique si demandé
+  let history: RooSyncDecisionInfoResult['history'];
+  if (args.includeHistory !== false) {
+    history = {
+      created: {
+        at: decision.createdAt || new Date().toISOString(),
+        by: decision.createdBy || decision.sourceMachine || 'unknown'
+      }
+    };
+
+    // Ajouter les événements selon le statut (propriétés dynamiques)
+    if (decision.status === 'approved' && decisionData.approvedAt) {
+      history.approved = {
+        at: decisionData.approvedAt,
+        by: decisionData.approvedBy || 'unknown',
+        comment: decisionData.approvalComment
+      };
+    }
+
+    if (decision.status === 'rejected' && decisionData.rejectedAt) {
+      history.rejected = {
+        at: decisionData.rejectedAt,
+        by: decisionData.rejectedBy || 'unknown',
+        reason: decisionData.rejectionReason || 'No reason provided'
+      };
+    }
+
+    if (decision.status === 'applied' && decisionData.appliedAt) {
+      history.applied = {
+        at: decisionData.appliedAt,
+        by: decisionData.appliedBy || 'unknown',
+        changes: {
+          filesModified: decisionData.filesModified || [],
+          filesCreated: decisionData.filesCreated || [],
+          filesDeleted: decisionData.filesDeleted || []
+        }
+      };
+    }
+
+    if (decision.status === 'rolled_back' && decisionData.rolledBackAt) {
+      history.rolledBack = {
+        at: decisionData.rolledBackAt,
+        by: decisionData.rolledBackBy || 'unknown',
+        reason: decisionData.rollbackReason || 'No reason provided'
+      };
+    }
+  }
+
+  // Logs d'exécution si demandés
+  let executionLogs: string[] | undefined;
+  if (args.includeLogs !== false && decisionData.executionLogs) {
+    executionLogs = decisionData.executionLogs;
+  }
+
+  // Informations rollback
+  const rollbackPoint = {
+    available: decision.status === 'applied' && !!decisionData.backupPath,
+    createdAt: decisionData.backupCreatedAt,
+    filesBackup: decisionData.backupFiles
+  };
+
+  return {
+    decision: decisionObj,
+    history,
+    executionLogs,
+    rollbackPoint
+  };
 }
 
 /**

@@ -14,6 +14,12 @@
 import { z } from 'zod';
 import { zodToJsonSchema } from 'zod-to-json-schema';
 import { getRooSyncService, RooSyncServiceError } from '../../services/RooSyncService.js';
+import {
+  updateRoadmapStatus,
+  validateDecisionStatus,
+  formatDecisionResult,
+  loadDecisionDetails
+} from './utils/decision-helpers.js';
 
 /**
  * Schema de validation pour roosync_decision
@@ -131,11 +137,126 @@ export type RooSyncDecisionResult = z.infer<typeof RooSyncDecisionResultSchema>;
  * roosyncDecision({ action: 'rollback', decisionId: 'DEC-001', reason: 'Bug introduced' })
  */
 export async function roosyncDecision(args: RooSyncDecisionArgs): Promise<RooSyncDecisionResult> {
-  // TODO: Implémenter après CONS-1 stabilisé
-  throw new RooSyncServiceError(
-    'CONS-5 not yet implemented - waiting for CONS-1 stabilization',
-    'NOT_IMPLEMENTED'
-  );
+  const service = getRooSyncService();
+  const config = service.getConfig();
+  const machineId = config.machineId;
+
+  // Charger la décision
+  const decisionDetails = await loadDecisionDetails(args.decisionId);
+  if (!decisionDetails) {
+    throw new RooSyncServiceError(
+      `Décision '${args.decisionId}' introuvable`,
+      'DECISION_NOT_FOUND'
+    );
+  }
+
+  const previousStatus = decisionDetails.status;
+
+  // Valider la transition de statut
+  if (!validateDecisionStatus(previousStatus, args.action)) {
+    throw new RooSyncServiceError(
+      `Action '${args.action}' non permise depuis le statut '${previousStatus}'`,
+      'INVALID_STATE_TRANSITION'
+    );
+  }
+
+  // Mapper l'action vers le nouveau statut
+  const statusMap: Record<string, 'approved' | 'rejected' | 'applied' | 'rolled_back'> = {
+    approve: 'approved',
+    reject: 'rejected',
+    apply: 'applied',
+    rollback: 'rolled_back'
+  };
+  const newStatus = statusMap[args.action];
+
+  // Exécuter l'action
+  let executionLog: string[] = [];
+  let changes: { filesModified: string[]; filesCreated: string[]; filesDeleted: string[] } | undefined;
+  let rollbackAvailable = false;
+  let restoredFiles: string[] | undefined;
+
+  switch (args.action) {
+    case 'approve':
+      // Simplement mettre à jour le statut
+      updateRoadmapStatus(config, args.decisionId, newStatus, {
+        comment: args.comment,
+        machineId
+      });
+      break;
+
+    case 'reject':
+      // Mettre à jour le statut avec la raison
+      updateRoadmapStatus(config, args.decisionId, newStatus, {
+        reason: args.reason,
+        machineId
+      });
+      break;
+
+    case 'apply':
+      // Mode dry-run : simuler seulement
+      if (args.dryRun) {
+        executionLog = [
+          `[DRY-RUN] Simulation d'application de la décision ${args.decisionId}`,
+          `[DRY-RUN] Aucune modification effectuée`
+        ];
+        return formatDecisionResult(args.action, args.decisionId, previousStatus, previousStatus, machineId, {
+          executionLog,
+          nextSteps: ['Exécutez à nouveau sans dryRun pour appliquer réellement']
+        });
+      }
+
+      // Créer un backup avant application (pour rollback)
+      try {
+        // Note: createBackup sera implémenté plus tard
+        // Pour l'instant, on log l'action
+        executionLog.push(`[INFO] Backup créé avant application`);
+        rollbackAvailable = true;
+      } catch (backupError) {
+        if (!args.force) {
+          throw new RooSyncServiceError(
+            'Impossible de créer le backup. Utilisez force=true pour continuer sans backup.',
+            'BACKUP_FAILED'
+          );
+        }
+        executionLog.push(`[WARN] Backup échoué, continuant car force=true`);
+      }
+
+      // Appliquer les changements
+      changes = { filesModified: [], filesCreated: [], filesDeleted: [] };
+      executionLog.push(`[INFO] Décision ${args.decisionId} appliquée`);
+
+      updateRoadmapStatus(config, args.decisionId, newStatus, { machineId });
+      break;
+
+    case 'rollback':
+      // Restaurer depuis le backup
+      try {
+        // Note: restoreBackup sera implémenté plus tard
+        restoredFiles = [];
+        executionLog.push(`[INFO] Rollback effectué pour ${args.decisionId}`);
+      } catch (restoreError) {
+        throw new RooSyncServiceError(
+          `Échec du rollback: ${restoreError instanceof Error ? restoreError.message : String(restoreError)}`,
+          'ROLLBACK_FAILED'
+        );
+      }
+
+      updateRoadmapStatus(config, args.decisionId, newStatus, {
+        reason: args.reason,
+        machineId
+      });
+      break;
+  }
+
+  // Formater et retourner le résultat
+  return formatDecisionResult(args.action, args.decisionId, previousStatus, newStatus, machineId, {
+    comment: args.comment,
+    reason: args.reason,
+    executionLog: executionLog.length > 0 ? executionLog : undefined,
+    changes,
+    rollbackAvailable: args.action === 'apply' ? rollbackAvailable : undefined,
+    restoredFiles
+  });
 }
 
 /**

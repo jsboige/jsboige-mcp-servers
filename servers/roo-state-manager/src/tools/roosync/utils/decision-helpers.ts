@@ -351,22 +351,74 @@ export function generateNextSteps(
 export function createBackup(
   files: string[],
   backupPath: string
-): { timestamp: string; files: string[] } {
-  // TODO: Implémenter après CONS-1 stabilisé
-  throw new Error('CONS-5 not yet implemented - waiting for CONS-1 stabilization');
+): { timestamp: string; files: string[]; backupDir: string } {
+  const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
+  const backupDir = join(backupPath, `backup-${timestamp}`);
+
+  try {
+    // Créer le répertoire de backup s'il n'existe pas
+    const { mkdirSync, copyFileSync, existsSync } = require('fs');
+    if (!existsSync(backupDir)) {
+      mkdirSync(backupDir, { recursive: true });
+    }
+
+    const backedUpFiles: string[] = [];
+
+    for (const file of files) {
+      if (existsSync(file)) {
+        const fileName = file.replace(/[/\\]/g, '_');
+        const backupFilePath = join(backupDir, fileName);
+        copyFileSync(file, backupFilePath);
+        backedUpFiles.push(file);
+      }
+    }
+
+    return {
+      timestamp,
+      files: backedUpFiles,
+      backupDir
+    };
+  } catch (error) {
+    const errorMessage = error instanceof Error ? error.message : String(error);
+    throw new Error(`Échec de la création du backup: ${errorMessage}`);
+  }
 }
 
 /**
  * Restaure les fichiers depuis un backup (pour rollback)
  *
  * @param backupInfo Informations sur le backup à restaurer
- * @param targetPath Chemin de destination
+ * @param targetPath Chemin de destination (non utilisé, les fichiers sont restaurés à leur emplacement original)
  * @returns Liste des fichiers restaurés
  */
 export function restoreBackup(
-  backupInfo: { timestamp: string; files: string[] },
+  backupInfo: { timestamp: string; files: string[]; backupDir?: string },
   targetPath: string
 ): string[] {
-  // TODO: Implémenter après CONS-1 stabilisé
-  throw new Error('CONS-5 not yet implemented - waiting for CONS-1 stabilization');
+  try {
+    const { copyFileSync, existsSync, readdirSync } = require('fs');
+
+    if (!backupInfo.backupDir || !existsSync(backupInfo.backupDir)) {
+      throw new Error('Répertoire de backup introuvable');
+    }
+
+    const restoredFiles: string[] = [];
+    const backupFiles = readdirSync(backupInfo.backupDir);
+
+    for (const backupFile of backupFiles) {
+      // Reconstituer le chemin original depuis le nom du fichier backup
+      const originalPath = backupFile.replace(/_/g, '/');
+      const backupFilePath = join(backupInfo.backupDir, backupFile);
+
+      if (existsSync(backupFilePath)) {
+        copyFileSync(backupFilePath, originalPath);
+        restoredFiles.push(originalPath);
+      }
+    }
+
+    return restoredFiles;
+  } catch (error) {
+    const errorMessage = error instanceof Error ? error.message : String(error);
+    throw new Error(`Échec de la restauration du backup: ${errorMessage}`);
+  }
 }
