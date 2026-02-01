@@ -74,6 +74,13 @@ export function registerListToolsHandler(server: Server): void {
                 toolExports.exportConversationXmlTool,
                 toolExports.exportProjectXmlTool,
                 toolExports.configureXmlExportTool,
+                // CONS-12: Outil unifié consolidé
+                {
+                    name: toolExports.roosyncSummarizeTool.name,
+                    description: toolExports.roosyncSummarizeTool.description,
+                    inputSchema: toolExports.roosyncSummarizeTool.inputSchema,
+                },
+                // Legacy summary tools (conservés pour compatibilité)
                 {
                     name: toolExports.generateTraceSummaryTool.name,
                     description: toolExports.generateTraceSummaryTool.description,
@@ -366,6 +373,21 @@ export function registerCallToolHandler(
            case 'repair_conversation_bom':
                result = await toolExports.repairConversationBomTool.handler(args as any);
               break;
+           // CONS-12: Outil unifié consolidé
+           case toolExports.roosyncSummarizeTool.name: {
+               const summaryResult = await toolExports.handleRooSyncSummarize(
+                   args as any,
+                   async (id: string) => state.conversationCache.get(id) || null,
+                   async (rootId: string) => {
+                       // Fonction findChildTasks pour le mode cluster
+                       const allTasks = Array.from(state.conversationCache.values());
+                       return allTasks.filter(task => task.metadata?.parentTaskId === rootId);
+                   }
+               );
+               result = { content: [{ type: 'text', text: summaryResult }] };
+               break;
+           }
+           // Legacy summary tools (conservés pour compatibilité)
            case toolExports.generateTraceSummaryTool.name: {
                const summaryText = await toolExports.handleGenerateTraceSummary(args as any, async (id: string) => {
                    return state.conversationCache.get(id) || null;

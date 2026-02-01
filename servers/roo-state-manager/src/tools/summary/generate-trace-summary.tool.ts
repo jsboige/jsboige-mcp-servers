@@ -16,7 +16,7 @@ import path from 'path';
 /**
  * Arguments du tool generate_trace_summary
  */
-interface GenerateTraceSummaryArgs {
+export interface GenerateTraceSummaryArgs {
     /** ID de la tâche pour laquelle générer le résumé */
     taskId: string;
     /** Chemin de destination pour sauvegarder le fichier (optionnel) */

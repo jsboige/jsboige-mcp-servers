@@ -14,7 +14,7 @@ import { ConversationSkeleton, ClusterSummaryOptions } from '../../types/convers
 /**
  * Arguments du tool generate_cluster_summary
  */
-interface GenerateClusterSummaryArgs {
+export interface GenerateClusterSummaryArgs {
     /** ID de la tâche racine de la grappe */
     rootTaskId: string;
     /** Liste des IDs des tâches enfantes (optionnel, peut être auto-détecté) */

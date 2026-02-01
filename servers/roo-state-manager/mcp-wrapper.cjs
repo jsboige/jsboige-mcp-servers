@@ -11,11 +11,12 @@
  * - Renvoie TOUJOURS la même réponse filtrée
  * - Garantit unicité des noms d'outils
  *
- * Outils autorisés (17):
+ * Outils autorisés (21):
  * - Messagerie (6): send_message, read_inbox, reply_message, get_message, mark_message_read, archive_message
  * - Lecture seule (6): get_status, get_machine_inventory, list_diffs, compare_config, get_decision_details, refresh_dashboard
  * - E2E complet (3): collect_config, publish_config, apply_config
  * - Infrastructure (2): init, get_active_config
+ * - Summary (4): roosync_summarize, generate_trace_summary, generate_cluster_summary, get_conversation_synthesis
  */
 
 const { spawn } = require('child_process');
@@ -53,7 +54,12 @@ const ALLOWED_TOOLS = new Set([
     'roosync_apply_config',
     // Infrastructure (2 outils) - v3.0.0
     'roosync_init',              // Enregistrer machine et MAJ dashboard
-    'roosync_get_active_config'  // Obtenir la config active
+    'roosync_get_active_config', // Obtenir la config active
+    // Summary (4 outils) - CONS-12
+    'roosync_summarize',              // Outil consolidé 3→1 (CONS-12)
+    'generate_trace_summary',         // Legacy (trace seule)
+    'generate_cluster_summary',       // Legacy (cluster/grappe)
+    'get_conversation_synthesis'      // Legacy (synthèse LLM)
 ]);
 
 // Cache pour la réponse tools/list filtrée (anti-doublons VS Code)
