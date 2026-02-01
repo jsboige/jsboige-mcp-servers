@@ -327,15 +327,17 @@ const exportBaselineToolMetadata = {
 
 /**
  * Liste de tous les outils RooSync pour enregistrement MCP
- * Version 3.3 : 27 outils consolidés (CONS-3: 4→2 Config, CONS-4: 3→1 Baseline)
- * - Configuration: init, compare-config, roosync_config (CONS-3: consolidé collect+publish+apply), baseline (consolidé), update-baseline (deprecated), manage-baseline (deprecated), export-baseline (deprecated)
- * - Services: collect-config (deprecated), publish-config (deprecated), apply-config (deprecated), get-machine-inventory
- * - Presentation: get-status (fusionne avec read-dashboard), list-diffs, refresh-dashboard
+ * Version 3.3 : 24 outils consolidés (CONS-3: 4→2 Config, CONS-4: 3→1 Baseline)
+ * CORRECTION 2026-02-01: Retrait effectif des 6 outils deprecated de roosyncTools
+ *
+ * - Configuration: init, compare-config, roosync_config (CONS-3), baseline (CONS-4)
+ * - Services: get-machine-inventory
+ * - Presentation: get-status, list-diffs, refresh-dashboard
  * - Decision: approve-decision, reject-decision, apply-decision, rollback-decision, get-decision-details
  * - Heartbeat legacy (deprecated): register-heartbeat, get-offline-machines, get-warning-machines, get-heartbeat-state, start-heartbeat-service, stop-heartbeat-service, check-heartbeats
  * - Heartbeat v3.1 (CONS-2): heartbeat-status, heartbeat-service
  * - Synchronisation automatique: sync-on-offline, sync-on-online
- * - Debug: debug-reset (fusionne avec debug-dashboard et reset-service)
+ * - Debug: debug-reset
  */
 export const roosyncTools = [
   initToolMetadata,
@@ -347,14 +349,8 @@ export const roosyncTools = [
   applyDecisionToolMetadata,
   rollbackDecisionToolMetadata,
   getDecisionDetailsToolMetadata,
-  baselineToolMetadata, // CONS-4: Outil consolidé (remplace les 3 suivants)
-  updateBaselineToolMetadata, // [DEPRECATED] Utilisez baselineToolMetadata avec action: 'update'
-  manageBaselineToolMetadata, // [DEPRECATED] Utilisez baselineToolMetadata avec action: 'version' | 'restore'
-  exportBaselineToolMetadata, // [DEPRECATED] Utilisez baselineToolMetadata avec action: 'export'
-  collectConfigToolMetadata, // [DEPRECATED] Utilisez configToolMetadata avec action: 'collect'
-  publishConfigToolMetadata, // [DEPRECATED] Utilisez configToolMetadata avec action: 'publish'
-  applyConfigToolMetadata, // [DEPRECATED] Utilisez configToolMetadata avec action: 'apply'
-  configToolMetadata, // CONS-3: Outil consolidé (remplace les 3 précédents)
+  baselineToolMetadata, // CONS-4: Outil consolidé Baseline 3→1
+  configToolMetadata, // CONS-3: Outil consolidé Config 4→2
   getMachineInventoryToolMetadata,
   debugResetToolMetadata,
   // Outils Heartbeat legacy (T3.16) - @deprecated, utiliser heartbeat-status et heartbeat-service
