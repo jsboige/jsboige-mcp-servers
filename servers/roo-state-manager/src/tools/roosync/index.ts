@@ -181,6 +181,10 @@ export { roosyncCollectConfig, collectConfigToolMetadata } from './collect-confi
 export { roosyncPublishConfig, publishConfigToolMetadata } from './publish-config.js';
 export { roosyncApplyConfig, applyConfigToolMetadata } from './apply-config.js';
 
+// CONS-3: Outil consolidé de configuration (collect + publish + apply → roosync_config)
+export { roosyncConfig, ConfigArgsSchema, configToolMetadata } from './config.js';
+export type { ConfigArgs } from './config.js';
+
 // Export des nouveaux outils de messagerie (Phase 1)
 export { sendMessage } from './send_message.js';
 export { readInbox } from './read_inbox.js';
@@ -246,6 +250,7 @@ import { debugResetToolMetadata } from './debug-reset.js';
 import { collectConfigToolMetadata } from './collect-config.js';
 import { publishConfigToolMetadata } from './publish-config.js';
 import { applyConfigToolMetadata } from './apply-config.js';
+import { configToolMetadata } from './config.js'; // CONS-3
 import { getMachineInventoryTool } from './get-machine-inventory.js';
 
 // Import des métadonnées des outils Heartbeat (T3.16) - @deprecated
@@ -322,9 +327,9 @@ const exportBaselineToolMetadata = {
 
 /**
  * Liste de tous les outils RooSync pour enregistrement MCP
- * Version 3.2 : 26 outils consolidés (CONS-4: 3→1 Baseline)
- * - Configuration: init, compare-config, baseline (consolidé), update-baseline (deprecated), manage-baseline (deprecated), export-baseline (deprecated)
- * - Services: collect-config, publish-config, apply-config, get-machine-inventory
+ * Version 3.3 : 27 outils consolidés (CONS-3: 4→2 Config, CONS-4: 3→1 Baseline)
+ * - Configuration: init, compare-config, roosync_config (CONS-3: consolidé collect+publish+apply), baseline (consolidé), update-baseline (deprecated), manage-baseline (deprecated), export-baseline (deprecated)
+ * - Services: collect-config (deprecated), publish-config (deprecated), apply-config (deprecated), get-machine-inventory
  * - Presentation: get-status (fusionne avec read-dashboard), list-diffs, refresh-dashboard
  * - Decision: approve-decision, reject-decision, apply-decision, rollback-decision, get-decision-details
  * - Heartbeat legacy (deprecated): register-heartbeat, get-offline-machines, get-warning-machines, get-heartbeat-state, start-heartbeat-service, stop-heartbeat-service, check-heartbeats
@@ -346,9 +351,10 @@ export const roosyncTools = [
   updateBaselineToolMetadata, // [DEPRECATED] Utilisez baselineToolMetadata avec action: 'update'
   manageBaselineToolMetadata, // [DEPRECATED] Utilisez baselineToolMetadata avec action: 'version' | 'restore'
   exportBaselineToolMetadata, // [DEPRECATED] Utilisez baselineToolMetadata avec action: 'export'
-  collectConfigToolMetadata,
-  publishConfigToolMetadata,
-  applyConfigToolMetadata,
+  collectConfigToolMetadata, // [DEPRECATED] Utilisez configToolMetadata avec action: 'collect'
+  publishConfigToolMetadata, // [DEPRECATED] Utilisez configToolMetadata avec action: 'publish'
+  applyConfigToolMetadata, // [DEPRECATED] Utilisez configToolMetadata avec action: 'apply'
+  configToolMetadata, // CONS-3: Outil consolidé (remplace les 3 précédents)
   getMachineInventoryToolMetadata,
   debugResetToolMetadata,
   // Outils Heartbeat legacy (T3.16) - @deprecated, utiliser heartbeat-status et heartbeat-service
