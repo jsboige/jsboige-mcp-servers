@@ -32,8 +32,9 @@ export function registerListToolsHandler(server: Server): void {
                     inputSchema: { type: 'object', properties: {}, required: [] },
                 },
                 toolExports.buildSkeletonCacheDefinition,
-                toolExports.getTaskTreeTool,
-                toolExports.debugTaskParsingTool,
+                // CONS-9: Outils Tasks consolidés (4→2)
+                toolExports.taskBrowseTool,
+                toolExports.taskExportTool,
                 toolExports.searchTasksByContentTool.definition,
                 toolExports.debugAnalyzeTool.definition,
                 {
@@ -108,7 +109,7 @@ export function registerListToolsHandler(server: Server): void {
                     description: toolExports.getConversationSynthesisTool.description,
                     inputSchema: toolExports.getConversationSynthesisTool.inputSchema,
                 },
-                toolExports.exportTaskTreeMarkdownTool,
+                // CONS-9: exportTaskTreeMarkdownTool retiré (remplacé par task_export action='markdown')
 
                 // Diagnostic Tools - WP4
                 {
@@ -312,8 +313,21 @@ export function registerCallToolHandler(
             case 'build_skeleton_cache':
                 result = await toolExports.handleBuildSkeletonCache(args as any, state.conversationCache, state);
                 break;
-            case 'get_task_tree':
-                result = await toolExports.handleGetTaskTree(args as any, state.conversationCache, async () => { await ensureSkeletonCacheIsFresh(); });
+            // CONS-9: Nouveaux outils consolidés
+            case 'task_browse':
+                result = await toolExports.handleTaskBrowse(
+                    args as any,
+                    state.conversationCache,
+                    async () => { await ensureSkeletonCacheIsFresh(); },
+                    undefined  // contextWorkspace
+                );
+                break;
+            case 'task_export':
+                result = await toolExports.handleTaskExport(
+                    args as any,
+                    state.conversationCache,
+                    async () => { await ensureSkeletonCacheIsFresh(); }
+                );
                 break;
             case toolExports.viewConversationTree.name:
                 result = await toolExports.viewConversationTree.handler(args as any, state.conversationCache);
@@ -333,9 +347,7 @@ export function registerCallToolHandler(
            case toolExports.debugAnalyzeTool.definition.name:
                result = await toolExports.debugAnalyzeTool.handler(args as any, state.conversationCache);
                break;
-           case 'debug_task_parsing':
-               result = await toolExports.handleDebugTaskParsing(args as any);
-               break;
+           // CONS-9: debug_task_parsing retiré (remplacé par task_export action='debug')
            case toolExports.readVscodeLogs.name:
                result = await toolExports.readVscodeLogs.handler(args as any);
                break;
@@ -430,14 +442,7 @@ export function registerCallToolHandler(
               result = { content: [{ type: 'text', text: typeof synthResult === 'string' ? synthResult : JSON.stringify(synthResult, null, 2) }] };
               break;
           }
-          case 'export_task_tree_markdown':
-              result = await toolExports.handleExportTaskTreeMarkdown(
-                  args as any,
-                  async (treeArgs: any) => await toolExports.handleGetTaskTree(treeArgs, state.conversationCache, async () => { await ensureSkeletonCacheIsFresh(); }),
-                  async () => { await ensureSkeletonCacheIsFresh(); },
-                  state.conversationCache
-              );
-              break;
+          // CONS-9: export_task_tree_markdown retiré (remplacé par task_export action='markdown')
 
           // Diagnostic Tools - WP4
           case toolExports.analyze_roosync_problems.name:
