@@ -17,6 +17,16 @@
 import { describe, test, expect, vi, beforeEach } from 'vitest';
 import { handleTaskExport, TaskExportArgs } from '../export.js';
 import { ConversationSkeleton } from '../../../types/conversation.js';
+import { CallToolResult } from '@modelcontextprotocol/sdk/types.js';
+
+/** Helper to extract text from CallToolResult content */
+function getTextContent(result: CallToolResult, index: number = 0): string {
+    const content = result.content[index];
+    if (content && content.type === 'text') {
+        return content.text;
+    }
+    return '';
+}
 
 // Mock handleExportTaskTreeMarkdown
 vi.mock('../export-tree-md.tool.js', () => ({
@@ -72,8 +82,8 @@ describe('task_export - CONS-9', () => {
             const result = await handleTaskExport(args, mockCache, mockEnsureCache);
 
             expect(result.isError).toBe(true);
-            expect(result.content[0].text).toContain('action');
-            expect(result.content[0].text).toContain('requis');
+            expect(getTextContent(result)).toContain('action');
+            expect(getTextContent(result)).toContain('requis');
         });
 
         test('should return error when action is invalid', async () => {
@@ -82,9 +92,9 @@ describe('task_export - CONS-9', () => {
             const result = await handleTaskExport(args, mockCache, mockEnsureCache);
 
             expect(result.isError).toBe(true);
-            expect(result.content[0].text).toContain('invalide');
-            expect(result.content[0].text).toContain('markdown');
-            expect(result.content[0].text).toContain('debug');
+            expect(getTextContent(result)).toContain('invalide');
+            expect(getTextContent(result)).toContain('markdown');
+            expect(getTextContent(result)).toContain('debug');
         });
 
         test('should return error when conversation_id is missing for markdown action', async () => {
@@ -93,8 +103,8 @@ describe('task_export - CONS-9', () => {
             const result = await handleTaskExport(args, mockCache, mockEnsureCache);
 
             expect(result.isError).toBe(true);
-            expect(result.content[0].text).toContain('conversation_id');
-            expect(result.content[0].text).toContain('requis');
+            expect(getTextContent(result)).toContain('conversation_id');
+            expect(getTextContent(result)).toContain('requis');
         });
 
         test('should return error when task_id is missing for debug action', async () => {
@@ -103,8 +113,8 @@ describe('task_export - CONS-9', () => {
             const result = await handleTaskExport(args, mockCache, mockEnsureCache);
 
             expect(result.isError).toBe(true);
-            expect(result.content[0].text).toContain('task_id');
-            expect(result.content[0].text).toContain('requis');
+            expect(getTextContent(result)).toContain('task_id');
+            expect(getTextContent(result)).toContain('requis');
         });
     });
 
@@ -136,7 +146,7 @@ describe('task_export - CONS-9', () => {
                 mockCache
             );
             expect(result.isError).toBeFalsy();
-            expect(result.content[0].text).toContain('Exported markdown for conv-123');
+            expect(getTextContent(result)).toContain('Exported markdown for conv-123');
         });
 
         test('should pass all markdown-specific parameters', async () => {
@@ -204,7 +214,7 @@ describe('task_export - CONS-9', () => {
                 task_id: 'task-to-debug'
             });
             expect(result.isError).toBeFalsy();
-            expect(result.content[0].text).toContain('Debug info for task-to-debug');
+            expect(getTextContent(result)).toContain('Debug info for task-to-debug');
         });
 
         test('should only pass task_id to debug handler', async () => {
