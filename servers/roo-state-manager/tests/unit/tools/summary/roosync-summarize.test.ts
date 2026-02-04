@@ -22,11 +22,20 @@ async function getConversationSkeletonMock(taskId: string): Promise<Conversation
         return null;
     }
     // Retourne un skeleton minimal valide pour les autres cas
+    // IMPORTANT: Utiliser 'sequence' (pas 'turns') et metadata complet
     return {
         taskId,
-        metadata: {},
-        turns: []
-    } as ConversationSkeleton;
+        metadata: {
+            title: 'Test Task',
+            lastActivity: new Date().toISOString(),
+            createdAt: new Date().toISOString(),
+            messageCount: 0,
+            actionCount: 0,
+            totalSize: 0,
+            workspace: '/test/workspace'
+        },
+        sequence: []
+    };
 }
 
 describe('roosync_summarize - CONS-12', () => {
