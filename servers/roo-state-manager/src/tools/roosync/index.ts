@@ -209,8 +209,9 @@ export { roosyncRead } from './read.js';
 export { roosyncSend } from './send.js';
 export { roosyncManage } from './manage.js';
 
-// NOUVEAU: Outil d'inventaire
-export { getMachineInventoryTool } from './get-machine-inventory.js';
+// CONS-6: Outils consolidés Inventory (4→2)
+export { inventoryTool, inventoryToolMetadata } from './inventory.js';
+export { roosyncMachines, machinesToolMetadata } from './machines.js';
 
 // Export des outils Heartbeat (T3.16)
 // @deprecated Ces 7 outils seront remplaces par heartbeat_status et heartbeat_service dans une future version
@@ -251,7 +252,9 @@ import { collectConfigToolMetadata } from './collect-config.js';
 import { publishConfigToolMetadata } from './publish-config.js';
 import { applyConfigToolMetadata } from './apply-config.js';
 import { configToolMetadata } from './config.js'; // CONS-3
-import { getMachineInventoryTool } from './get-machine-inventory.js';
+// Import des métadonnées des outils consolidés Inventory (CONS-6)
+import { inventoryToolMetadata } from './inventory.js';
+import { machinesToolMetadata } from './machines.js';
 
 // Import des métadonnées des outils Heartbeat (T3.16) - @deprecated
 import { registerHeartbeatToolMetadata } from './register-heartbeat.js';
@@ -274,19 +277,20 @@ import { syncOnOnlineToolMetadata } from './sync-on-online.js';
 import { refreshDashboardToolMetadata } from './refresh-dashboard.js';
 
 // Métadonnées pour l'outil d'inventaire (format JSON Schema standard)
-const getMachineInventoryToolMetadata = {
-  name: 'roosync_get_machine_inventory',
-  description: 'Collecte l\'inventaire complet de configuration de la machine courante pour RooSync.',
-  inputSchema: {
-    type: 'object',
-    properties: {
-      machineId: {
-        type: 'string',
-        description: 'Identifiant optionnel de la machine (défaut: hostname)'
-      }
-    }
-  }
-};
+// CONS-6: Remplacé par inventoryToolMetadata
+// const getMachineInventoryToolMetadata = {
+//   name: 'roosync_get_machine_inventory',
+//   description: 'Collecte l\'inventaire complet de configuration de la machine courante pour RooSync.',
+//   inputSchema: {
+//     type: 'object',
+//     properties: {
+//       machineId: {
+//         type: 'string',
+//         description: 'Identifiant optionnel de la machine (défaut: hostname)'
+//       }
+//     }
+//   }
+// };
 
 // Métadonnées pour l'outil export baseline
 const exportBaselineToolMetadata = {
@@ -327,11 +331,11 @@ const exportBaselineToolMetadata = {
 
 /**
  * Liste de tous les outils RooSync pour enregistrement MCP
- * Version 3.3 : 24 outils consolidés (CONS-3: 4→2 Config, CONS-4: 3→1 Baseline)
+ * Version 3.4 : 23 outils consolidés (CONS-3: 4→2 Config, CONS-4: 3→1 Baseline, CONS-6: 4→2 Inventory)
  * CORRECTION 2026-02-01: Retrait effectif des 6 outils deprecated de roosyncTools
  *
  * - Configuration: init, compare-config, roosync_config (CONS-3), baseline (CONS-4)
- * - Services: get-machine-inventory
+ * - Services: inventory (CONS-6), machines (CONS-6)
  * - Presentation: get-status, list-diffs, refresh-dashboard
  * - Decision: approve-decision, reject-decision, apply-decision, rollback-decision, get-decision-details
  * - Heartbeat legacy (deprecated): register-heartbeat, get-offline-machines, get-warning-machines, get-heartbeat-state, start-heartbeat-service, stop-heartbeat-service, check-heartbeats
@@ -351,13 +355,11 @@ export const roosyncTools = [
   getDecisionDetailsToolMetadata,
   baselineToolMetadata, // CONS-4: Outil consolidé Baseline 3→1
   configToolMetadata, // CONS-3: Outil consolidé Config 4→2
-  getMachineInventoryToolMetadata,
+  inventoryToolMetadata, // CONS-6: Outil consolidé Inventory (machine + heartbeat)
+  machinesToolMetadata, // CONS-6: Outil consolidé Machines (offline + warning)
   debugResetToolMetadata,
   // Outils Heartbeat legacy (T3.16) - @deprecated, utiliser heartbeat-status et heartbeat-service
   registerHeartbeatToolMetadata,
-  getOfflineMachinesToolMetadata,
-  getWarningMachinesToolMetadata,
-  getHeartbeatStateToolMetadata,
   startHeartbeatServiceToolMetadata,
   stopHeartbeatServiceToolMetadata,
   checkHeartbeatsToolMetadata,
