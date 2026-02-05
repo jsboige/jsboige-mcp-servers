@@ -258,16 +258,10 @@ import { configToolMetadata } from './config.js'; // CONS-3
 import { inventoryToolMetadata } from './inventory.js';
 import { machinesToolMetadata } from './machines.js';
 
-// Import des métadonnées des outils Heartbeat (T3.16) - @deprecated
-import { registerHeartbeatToolMetadata } from './register-heartbeat.js';
-import { getOfflineMachinesToolMetadata } from './get-offline-machines.js';
-import { getWarningMachinesToolMetadata } from './get-warning-machines.js';
-import { getHeartbeatStateToolMetadata } from './get-heartbeat-state.js';
-import { startHeartbeatServiceToolMetadata } from './start-heartbeat-service.js';
-import { stopHeartbeatServiceToolMetadata } from './stop-heartbeat-service.js';
-import { checkHeartbeatsToolMetadata } from './check-heartbeats.js';
+// CLEANUP-1: Imports deprecated heartbeat retirés (register, get-offline, get-warning, get-state, start, stop, check)
+// Les modules existent toujours pour backward compat dans registry.ts CallTool handlers
 
-// Import des métadonnées des outils Heartbeat consolides (CONS-2)
+// Import des métadonnées des outils Heartbeat consolidés (CONS-2)
 import { heartbeatStatusToolMetadata } from './heartbeat-status.js';
 import { heartbeatServiceToolMetadata } from './heartbeat-service.js';
 
@@ -333,14 +327,12 @@ const exportBaselineToolMetadata = {
 
 /**
  * Liste de tous les outils RooSync pour enregistrement MCP
- * Version 3.4 : 23 outils consolidés (CONS-3: 4→2 Config, CONS-4: 3→1 Baseline, CONS-6: 4→2 Inventory)
- * CORRECTION 2026-02-01: Retrait effectif des 6 outils deprecated de roosyncTools
+ * Version 3.5 : 19 outils (CLEANUP-1: retrait 4 deprecated heartbeat)
  *
  * - Configuration: init, compare-config, roosync_config (CONS-3), baseline (CONS-4)
  * - Services: inventory (CONS-6), machines (CONS-6)
  * - Presentation: get-status, list-diffs, refresh-dashboard
  * - Decision: approve-decision, reject-decision, apply-decision, rollback-decision, get-decision-details
- * - Heartbeat legacy (deprecated): register-heartbeat, get-offline-machines, get-warning-machines, get-heartbeat-state, start-heartbeat-service, stop-heartbeat-service, check-heartbeats
  * - Heartbeat v3.1 (CONS-2): heartbeat-status, heartbeat-service
  * - Synchronisation automatique: sync-on-offline, sync-on-online
  * - Debug: debug-reset
@@ -360,12 +352,9 @@ export const roosyncTools = [
   inventoryToolMetadata, // CONS-6: Outil consolidé Inventory (machine + heartbeat)
   machinesToolMetadata, // CONS-6: Outil consolidé Machines (offline + warning)
   debugResetToolMetadata,
-  // Outils Heartbeat legacy (T3.16) - @deprecated, utiliser heartbeat-status et heartbeat-service
-  registerHeartbeatToolMetadata,
-  startHeartbeatServiceToolMetadata,
-  stopHeartbeatServiceToolMetadata,
-  checkHeartbeatsToolMetadata,
-  // Outils Heartbeat consolides v3.1 (CONS-2)
+  // CLEANUP-1: 4 deprecated heartbeat retirés (register, start, stop, check)
+  // Remplacés par heartbeat-status et heartbeat-service (CONS-2)
+  // Les case handlers dans registry.ts restent pour backward compat
   heartbeatStatusToolMetadata,
   heartbeatServiceToolMetadata,
   // Outils de synchronisation automatique (T3.16)

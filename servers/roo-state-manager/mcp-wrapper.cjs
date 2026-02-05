@@ -33,6 +33,7 @@ function logDebug(message) {
 }
 
 // Liste des outils RooSync autorisés pour Claude Code
+// CLEANUP-1 (2026-02-05): Aligné avec consolidations CONS-2/3/4/6/12
 const ALLOWED_TOOLS = new Set([
     // Messagerie (6 outils)
     'roosync_send_message',
@@ -41,20 +42,18 @@ const ALLOWED_TOOLS = new Set([
     'roosync_get_message',
     'roosync_mark_message_read',
     'roosync_archive_message',
-    // Lecture seule (6 outils)
+    // Lecture seule (5 outils)
     'roosync_get_status',
-    'roosync_get_machine_inventory',
     'roosync_list_diffs',
     'roosync_compare_config',
     'roosync_get_decision_details',
-    'roosync_refresh_dashboard', // Issue #363 - MAJ dashboard sans init complet
-    // Actions critiques pour E2E (3 outils)
-    'roosync_collect_config',
-    'roosync_publish_config',
-    'roosync_apply_config',
-    // Infrastructure (2 outils) - v3.0.0
-    'roosync_init',              // Enregistrer machine et MAJ dashboard
-    'roosync_get_active_config', // Obtenir la config active
+    'roosync_refresh_dashboard',
+    // Outils consolidés (5 outils) - CONS-2/3/4/6
+    'roosync_config',            // CONS-3: collect + publish + apply config
+    'roosync_inventory',         // CONS-6: machine inventory + heartbeat state
+    'roosync_baseline',          // CONS-4: update + manage + export baseline
+    'roosync_machines',          // CONS-6: offline + warning machines
+    'roosync_init',              // Infrastructure
     // Summary (4 outils) - CONS-12
     'roosync_summarize',              // Outil consolidé 3→1 (CONS-12)
     'generate_trace_summary',         // Legacy (trace seule)
