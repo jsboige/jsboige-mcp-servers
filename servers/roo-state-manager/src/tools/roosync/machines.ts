@@ -10,6 +10,7 @@
  */
 
 import { z } from 'zod';
+import { UnifiedToolContract, ToolCategory, ProcessingLevel, ToolResult } from '../../interfaces/UnifiedToolInterface.js';
 import { getRooSyncService } from '../../services/RooSyncService.js';
 import { HeartbeatServiceError } from '../../services/roosync/HeartbeatService.js';
 
@@ -98,95 +99,117 @@ export const MachinesResultSchema = z.object({
 export type MachinesResult = z.infer<typeof MachinesResultSchema>;
 
 /**
- * Outil roosync_machines
+ * Outil roosync_machines (UnifiedToolContract)
  *
  * Fusionne get-offline-machines et get-warning-machines.
  * Permet de récupérer les machines offline et/ou en avertissement.
- *
- * @param args Arguments validés
- * @returns Liste des machines offline et/ou en avertissement
- * @throws {HeartbeatServiceError} En cas d'erreur
  */
-export async function roosyncMachines(args: MachinesArgs): Promise<MachinesResult> {
-  try {
-    const { status, includeDetails = false } = args;
-    const rooSyncService = getRooSyncService();
-    const heartbeatService = rooSyncService.getHeartbeatService();
-    const checkedAt = new Date().toISOString();
+export const machinesTool: UnifiedToolContract = {
+  name: 'roosync_machines',
+  description: 'Outil consolidé pour récupérer les machines offline et/ou en avertissement. Fusionne get-offline-machines et get-warning-machines.',
+  category: ToolCategory.UTILITY,
+  processingLevel: ProcessingLevel.IMMEDIATE,
+  version: '3.0.0',
+  inputSchema: MachinesArgsSchema,
+  execute: async (input: z.infer<typeof MachinesArgsSchema>, context: any): Promise<ToolResult<any>> => {
+    const startTime = Date.now();
+    try {
+      const { status, includeDetails = false } = input;
+      const rooSyncService = getRooSyncService();
+      const heartbeatService = rooSyncService.getHeartbeatService();
+      const checkedAt = new Date().toISOString();
 
-    const result: any = {
-      success: true,
-      checkedAt
-    };
+      const result: any = {
+        success: true,
+        checkedAt
+      };
 
-    // Récupérer les machines offline si demandé
-    if (status === 'offline' || status === 'all') {
-      const offlineMachines = heartbeatService.getOfflineMachines();
+      // Récupérer les machines offline si demandé
+      if (status === 'offline' || status === 'all') {
+        const offlineMachines = heartbeatService.getOfflineMachines();
 
-      if (includeDetails) {
-        const detailedMachines: OfflineMachineDetails[] = [];
+        if (includeDetails) {
+          const detailedMachines: OfflineMachineDetails[] = [];
 
-        for (const machineId of offlineMachines) {
-          const heartbeatData = heartbeatService.getHeartbeatData(machineId);
+          for (const machineId of offlineMachines) {
+            const heartbeatData = heartbeatService.getHeartbeatData(machineId);
 
-          if (heartbeatData && heartbeatData.offlineSince) {
-            detailedMachines.push({
-              machineId: heartbeatData.machineId,
-              lastHeartbeat: heartbeatData.lastHeartbeat,
-              offlineSince: heartbeatData.offlineSince,
-              missedHeartbeats: heartbeatData.missedHeartbeats,
-              metadata: heartbeatData.metadata
-            });
+            if (heartbeatData && heartbeatData.offlineSince) {
+              detailedMachines.push({
+                machineId: heartbeatData.machineId,
+                lastHeartbeat: heartbeatData.lastHeartbeat,
+                offlineSince: heartbeatData.offlineSince,
+                missedHeartbeats: heartbeatData.missedHeartbeats,
+                metadata: heartbeatData.metadata
+              });
+            }
           }
+
+          result.offlineMachines = detailedMachines;
+          result.offlineCount = detailedMachines.length;
+        } else {
+          result.offlineMachines = offlineMachines;
+          result.offlineCount = offlineMachines.length;
         }
-
-        result.offlineMachines = detailedMachines;
-        result.offlineCount = detailedMachines.length;
-      } else {
-        result.offlineMachines = offlineMachines;
-        result.offlineCount = offlineMachines.length;
       }
-    }
 
-    // Récupérer les machines en avertissement si demandé
-    if (status === 'warning' || status === 'all') {
-      const warningMachines = heartbeatService.getWarningMachines();
+      // Récupérer les machines en avertissement si demandé
+      if (status === 'warning' || status === 'all') {
+        const warningMachines = heartbeatService.getWarningMachines();
 
-      if (includeDetails) {
-        const detailedMachines: WarningMachineDetails[] = [];
+        if (includeDetails) {
+          const detailedMachines: WarningMachineDetails[] = [];
 
-        for (const machineId of warningMachines) {
-          const heartbeatData = heartbeatService.getHeartbeatData(machineId);
+          for (const machineId of warningMachines) {
+            const heartbeatData = heartbeatService.getHeartbeatData(machineId);
 
-          if (heartbeatData) {
-            detailedMachines.push({
-              machineId: heartbeatData.machineId,
-              lastHeartbeat: heartbeatData.lastHeartbeat,
-              missedHeartbeats: heartbeatData.missedHeartbeats,
-              metadata: heartbeatData.metadata
-            });
+            if (heartbeatData) {
+              detailedMachines.push({
+                machineId: heartbeatData.machineId,
+                lastHeartbeat: heartbeatData.lastHeartbeat,
+                missedHeartbeats: heartbeatData.missedHeartbeats,
+                metadata: heartbeatData.metadata
+              });
+            }
           }
+
+          result.warningMachines = detailedMachines;
+          result.warningCount = detailedMachines.length;
+        } else {
+          result.warningMachines = warningMachines;
+          result.warningCount = warningMachines.length;
         }
-
-        result.warningMachines = detailedMachines;
-        result.warningCount = detailedMachines.length;
-      } else {
-        result.warningMachines = warningMachines;
-        result.warningCount = warningMachines.length;
       }
-    }
 
-    return result;
-  } catch (error) {
-    if (error instanceof HeartbeatServiceError) {
-      throw error;
+      return {
+        success: true,
+        data: result,
+        metrics: {
+          executionTime: Date.now() - startTime,
+          processingLevel: ProcessingLevel.IMMEDIATE
+        }
+      };
+    } catch (error: any) {
+      return {
+        success: false,
+        error: {
+          code: 'MACHINES_COLLECTION_FAILED',
+          message: error.message
+        },
+        metrics: {
+          executionTime: Date.now() - startTime,
+          processingLevel: ProcessingLevel.IMMEDIATE
+        }
+      };
     }
-
-    throw new HeartbeatServiceError(
-      `Erreur lors de la récupération des machines: ${(error as Error).message}`,
-      'MACHINES_GET_FAILED'
-    );
   }
+};
+
+/**
+ * Fonction wrapper pour compatibilité avec les tests
+ */
+export async function roosyncMachines(args: MachinesArgs, context?: any): Promise<ToolResult<any>> {
+  return machinesTool.execute(args, context);
 }
 
 /**

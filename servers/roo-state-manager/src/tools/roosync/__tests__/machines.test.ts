@@ -14,8 +14,6 @@
  */
 
 import { describe, test, expect, beforeEach, afterEach, vi } from 'vitest';
-import { existsSync, rmSync, mkdirSync } from 'fs';
-import { join } from 'path';
 
 // Mock RooSyncService et HeartbeatService
 vi.mock('../../../services/RooSyncService.js', () => ({
@@ -102,9 +100,9 @@ const mockExecutionContext: any = {
 };
 
 // Import après les mocks
-import { roosyncMachines } from '../machines.js';
+import { machinesTool, machinesToolMetadata } from '../machines.js';
 
-describe('roosyncMachines', () => {
+describe('machinesTool', () => {
   beforeEach(() => {
     // Reset mocks avant chaque test
     vi.clearAllMocks();
@@ -121,7 +119,7 @@ describe('roosyncMachines', () => {
 
   describe('status: offline', () => {
     test('should return offline machines', async () => {
-      const result = await roosyncMachines(
+      const result = await machinesTool.execute(
         { status: 'offline' },
         mockExecutionContext
       );
@@ -133,7 +131,7 @@ describe('roosyncMachines', () => {
     });
 
     test('should return offline machines with details', async () => {
-      const result = await roosyncMachines(
+      const result = await machinesTool.execute(
         { status: 'offline', includeDetails: true },
         mockExecutionContext
       );
@@ -149,7 +147,7 @@ describe('roosyncMachines', () => {
         throw new Error('Heartbeat service error');
       });
 
-      const result = await roosyncMachines(
+      const result = await machinesTool.execute(
         { status: 'offline' },
         mockExecutionContext
       );
@@ -166,7 +164,7 @@ describe('roosyncMachines', () => {
 
   describe('status: warning', () => {
     test('should return warning machines', async () => {
-      const result = await roosyncMachines(
+      const result = await machinesTool.execute(
         { status: 'warning' },
         mockExecutionContext
       );
@@ -178,7 +176,7 @@ describe('roosyncMachines', () => {
     });
 
     test('should return warning machines with details', async () => {
-      const result = await roosyncMachines(
+      const result = await machinesTool.execute(
         { status: 'warning', includeDetails: true },
         mockExecutionContext
       );
@@ -194,7 +192,7 @@ describe('roosyncMachines', () => {
 
   describe('status: all', () => {
     test('should return both offline and warning machines', async () => {
-      const result = await roosyncMachines(
+      const result = await machinesTool.execute(
         { status: 'all' },
         mockExecutionContext
       );
@@ -205,7 +203,7 @@ describe('roosyncMachines', () => {
     });
 
     test('should include details when requested', async () => {
-      const result = await roosyncMachines(
+      const result = await machinesTool.execute(
         { status: 'all', includeDetails: true },
         mockExecutionContext
       );
@@ -221,8 +219,6 @@ describe('roosyncMachines', () => {
 
   describe('validation', () => {
     test('should have correct metadata', () => {
-      const { machinesToolMetadata } = require('../machines.js');
-
       expect(machinesToolMetadata.name).toBe('roosync_machines');
       expect(machinesToolMetadata.description).toContain('machines');
       expect(machinesToolMetadata.inputSchema.properties.status).toBeDefined();
@@ -230,8 +226,6 @@ describe('roosyncMachines', () => {
     });
 
     test('should require status parameter', () => {
-      const { machinesToolMetadata } = require('../machines.js');
-
       expect(machinesToolMetadata.inputSchema.required).toContain('status');
     });
   });
@@ -242,9 +236,9 @@ describe('roosyncMachines', () => {
 
   describe('integration', () => {
     test('should handle multiple calls with different status', async () => {
-      const r1 = await roosyncMachines({ status: 'offline' }, mockExecutionContext);
-      const r2 = await roosyncMachines({ status: 'warning' }, mockExecutionContext);
-      const r3 = await roosyncMachines({ status: 'all' }, mockExecutionContext);
+      const r1 = await machinesTool.execute({ status: 'offline' }, mockExecutionContext);
+      const r2 = await machinesTool.execute({ status: 'warning' }, mockExecutionContext);
+      const r3 = await machinesTool.execute({ status: 'all' }, mockExecutionContext);
 
       expect(r1.success).toBe(true);
       expect(r2.success).toBe(true);
@@ -252,7 +246,7 @@ describe('roosyncMachines', () => {
     });
 
     test('should return execution time metrics', async () => {
-      const result = await roosyncMachines(
+      const result = await machinesTool.execute(
         { status: 'offline' },
         mockExecutionContext
       );
