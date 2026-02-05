@@ -21,8 +21,8 @@ async function getConversationSkeletonMock(taskId: string): Promise<Conversation
     if (taskId === 'non-existent-task') {
         return null;
     }
-    // Retourne un skeleton minimal valide pour les autres cas
     // IMPORTANT: Utiliser 'sequence' (pas 'turns') et metadata complet
+    // Voir ConversationSkeleton interface dans src/types/conversation.ts
     return {
         taskId,
         metadata: {

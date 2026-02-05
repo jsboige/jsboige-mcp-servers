@@ -274,8 +274,8 @@ describe('inventoryTool', () => {
   // ============================================================
 
   describe('validation', () => {
-    test('should have correct metadata', () => {
-      const { inventoryToolMetadata } = require('../inventory.js');
+    test('should have correct metadata', async () => {
+      const { inventoryToolMetadata } = await import('../inventory.js');
 
       expect(inventoryToolMetadata.name).toBe('roosync_inventory');
       expect(inventoryToolMetadata.description).toContain('inventaire');
@@ -283,8 +283,8 @@ describe('inventoryTool', () => {
       expect(inventoryToolMetadata.inputSchema.properties.type.enum).toEqual(['machine', 'heartbeat', 'all']);
     });
 
-    test('should require type parameter', () => {
-      const { inventoryToolMetadata } = require('../inventory.js');
+    test('should require type parameter', async () => {
+      const { inventoryToolMetadata } = await import('../inventory.js');
 
       expect(inventoryToolMetadata.inputSchema.required).toContain('type');
     });
