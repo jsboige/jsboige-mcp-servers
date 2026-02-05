@@ -212,6 +212,8 @@ export { roosyncManage } from './manage.js';
 // CONS-6: Outils consolidés Inventory (4→2)
 export { inventoryTool, inventoryToolMetadata } from './inventory.js';
 export { roosyncMachines, machinesToolMetadata } from './machines.js';
+// [DEPRECATED] Legacy inventory tool - utiliser inventoryTool à la place
+export { getMachineInventoryTool } from './get-machine-inventory.js';
 
 // Export des outils Heartbeat (T3.16)
 // @deprecated Ces 7 outils seront remplaces par heartbeat_status et heartbeat_service dans une future version

@@ -71,10 +71,9 @@ export function registerListToolsHandler(server: Server): void {
                 },
                 toolExports.diagnoseConversationBomTool.definition,
                 toolExports.repairConversationBomTool.definition,
-                toolExports.exportTasksXmlTool,
-                toolExports.exportConversationXmlTool,
-                toolExports.exportProjectXmlTool,
-                toolExports.configureXmlExportTool,
+                // CONS-10: Outils Export consolidés (6→2)
+                toolExports.exportDataTool,
+                toolExports.exportConfigTool,
                 // CONS-12: Outil unifié consolidé
                 {
                     name: toolExports.roosyncSummarizeTool.name,
@@ -92,16 +91,8 @@ export function registerListToolsHandler(server: Server): void {
                     description: toolExports.generateClusterSummaryTool.description,
                     inputSchema: toolExports.generateClusterSummaryTool.inputSchema,
                 },
-                {
-                    name: toolExports.exportConversationJsonTool.name,
-                    description: toolExports.exportConversationJsonTool.description,
-                    inputSchema: toolExports.exportConversationJsonTool.inputSchema,
-                },
-                {
-                    name: toolExports.exportConversationCsvTool.name,
-                    description: toolExports.exportConversationCsvTool.description,
-                    inputSchema: toolExports.exportConversationCsvTool.inputSchema,
-                },
+                // CONS-10: exportConversationJsonTool et exportConversationCsvTool retirés
+                // (remplacés par export_data avec format='json'/'csv')
                 toolExports.viewTaskDetailsTool.definition,
                 toolExports.getRawConversationTool.definition,
                 {
@@ -385,6 +376,21 @@ export function registerCallToolHandler(
            case 'repair_conversation_bom':
                result = await toolExports.repairConversationBomTool.handler(args as any);
               break;
+
+           // CONS-10: Outils Export consolidés (6→2)
+           case toolExports.exportDataTool.name:
+               result = await toolExports.handleExportData(
+                   args as any,
+                   state.conversationCache,
+                   state.xmlExporterService,
+                   async (options?: { workspace?: string }) => { await ensureSkeletonCacheIsFresh(options); },
+                   async (id: string) => state.conversationCache.get(id) || null
+               );
+               break;
+           case toolExports.exportConfigTool.name:
+               result = await toolExports.handleExportConfig(args as any, state.exportConfigManager);
+               break;
+
            // CONS-12: Outil unifié consolidé
            case toolExports.roosyncSummarizeTool.name: {
                const summaryResult = await toolExports.handleRooSyncSummarize(
@@ -414,6 +420,8 @@ export function registerCallToolHandler(
                result = { content: [{ type: 'text', text: clusterText }] };
                break;
            }
+           // CONS-10: [DEPRECATED] Handlers conservés pour backward compatibility
+           // Ces outils seront retirés dans une version future - utiliser export_data et export_config
            case toolExports.exportConversationJsonTool.name:
               result = await handleExportConversationJson(args as any);
               break;
