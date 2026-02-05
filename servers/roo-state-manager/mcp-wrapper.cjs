@@ -11,11 +11,13 @@
  * - Renvoie TOUJOURS la même réponse filtrée
  * - Garantit unicité des noms d'outils
  *
- * Outils autorisés (21):
+ * Outils autorisés (27):
  * - Messagerie (6): send_message, read_inbox, reply_message, get_message, mark_message_read, archive_message
- * - Lecture seule (6): get_status, get_machine_inventory, list_diffs, compare_config, get_decision_details, refresh_dashboard
- * - E2E complet (3): collect_config, publish_config, apply_config
- * - Infrastructure (2): init, get_active_config
+ * - Lecture seule (5): get_status, list_diffs, compare_config, get_decision_details, refresh_dashboard
+ * - Consolidés (5): config, inventory, baseline, machines, init
+ * - Décisions (4): approve_decision, reject_decision, apply_decision, rollback_decision
+ * - Monitoring (1): heartbeat_status
+ * - Diagnostic (2): analyze_roosync_problems, diagnose_env
  * - Summary (4): roosync_summarize, generate_trace_summary, generate_cluster_summary, get_conversation_synthesis
  */
 
@@ -33,7 +35,7 @@ function logDebug(message) {
 }
 
 // Liste des outils RooSync autorisés pour Claude Code
-// CLEANUP-1 (2026-02-05): Aligné avec consolidations CONS-2/3/4/6/12
+// MAJ 2026-02-05: 27 outils (CLEANUP-1 + ajout decisions/heartbeat/diagnostic)
 const ALLOWED_TOOLS = new Set([
     // Messagerie (6 outils)
     'roosync_send_message',
@@ -54,6 +56,16 @@ const ALLOWED_TOOLS = new Set([
     'roosync_baseline',          // CONS-4: update + manage + export baseline
     'roosync_machines',          // CONS-6: offline + warning machines
     'roosync_init',              // Infrastructure
+    // Workflow décisionnel (4 outils) - coordination multi-agent
+    'roosync_approve_decision',  // Approuver une décision inter-machines
+    'roosync_reject_decision',   // Rejeter une décision
+    'roosync_apply_decision',    // Appliquer une décision approuvée
+    'roosync_rollback_decision', // Rollback une décision appliquée
+    // Monitoring (1 outil) - CONS-2
+    'roosync_heartbeat_status',  // Statut heartbeat des machines
+    // Diagnostic (2 outils) - non-RooSync mais utiles pour coordination
+    'analyze_roosync_problems',  // Diagnostic problèmes RooSync
+    'diagnose_env',              // Diagnostic environnement (.env, paths)
     // Summary (4 outils) - CONS-12
     'roosync_summarize',              // Outil consolidé 3→1 (CONS-12)
     'generate_trace_summary',         // Legacy (trace seule)
