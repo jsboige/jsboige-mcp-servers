@@ -21,21 +21,18 @@ async function getConversationSkeletonMock(taskId: string): Promise<Conversation
     if (taskId === 'non-existent-task') {
         return null;
     }
-    // IMPORTANT: Utiliser 'sequence' (pas 'turns') et metadata complet
-    // Voir ConversationSkeleton interface dans src/types/conversation.ts
+    // Retourne un skeleton minimal valide pour les autres cas
     return {
         taskId,
         metadata: {
-            title: 'Test Task',
             lastActivity: new Date().toISOString(),
             createdAt: new Date().toISOString(),
             messageCount: 0,
             actionCount: 0,
-            totalSize: 0,
-            workspace: '/test/workspace'
+            totalSize: 0
         },
         sequence: []
-    };
+    } as ConversationSkeleton;
 }
 
 describe('roosync_summarize - CONS-12', () => {

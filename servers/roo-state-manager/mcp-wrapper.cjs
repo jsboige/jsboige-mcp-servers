@@ -11,14 +11,14 @@
  * - Renvoie TOUJOURS la même réponse filtrée
  * - Garantit unicité des noms d'outils
  *
- * Outils autorisés (27):
+ * Outils autorisés (24):
  * - Messagerie (6): send_message, read_inbox, reply_message, get_message, mark_message_read, archive_message
  * - Lecture seule (5): get_status, list_diffs, compare_config, get_decision_details, refresh_dashboard
  * - Consolidés (5): config, inventory, baseline, machines, init
  * - Décisions (4): approve_decision, reject_decision, apply_decision, rollback_decision
  * - Monitoring (1): heartbeat_status
  * - Diagnostic (2): analyze_roosync_problems, diagnose_env
- * - Summary (4): roosync_summarize, generate_trace_summary, generate_cluster_summary, get_conversation_synthesis
+ * - Summary (1): roosync_summarize (CONS-12 unifié, 3 legacy retirés: #399 CLEANUP-2)
  */
 
 const { spawn } = require('child_process');
@@ -35,7 +35,7 @@ function logDebug(message) {
 }
 
 // Liste des outils RooSync autorisés pour Claude Code
-// MAJ 2026-02-05: 27 outils (CLEANUP-1 + ajout decisions/heartbeat/diagnostic)
+// MAJ 2026-02-06: 24 outils (CLEANUP-2: retrait 3 legacy summary tools)
 const ALLOWED_TOOLS = new Set([
     // Messagerie (6 outils)
     'roosync_send_message',
@@ -66,11 +66,8 @@ const ALLOWED_TOOLS = new Set([
     // Diagnostic (2 outils) - non-RooSync mais utiles pour coordination
     'analyze_roosync_problems',  // Diagnostic problèmes RooSync
     'diagnose_env',              // Diagnostic environnement (.env, paths)
-    // Summary (4 outils) - CONS-12
-    'roosync_summarize',              // Outil consolidé 3→1 (CONS-12)
-    'generate_trace_summary',         // Legacy (trace seule)
-    'generate_cluster_summary',       // Legacy (cluster/grappe)
-    'get_conversation_synthesis'      // Legacy (synthèse LLM)
+    // Summary (1 outil) - CONS-12 (3 legacy retirés: #399 CLEANUP-2)
+    'roosync_summarize'               // Outil consolidé 3→1 (CONS-12)
 ]);
 
 // Cache pour la réponse tools/list filtrée (anti-doublons VS Code)
