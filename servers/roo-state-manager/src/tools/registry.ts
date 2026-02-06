@@ -80,26 +80,12 @@ export function registerListToolsHandler(server: Server): void {
                     description: toolExports.roosyncSummarizeTool.description,
                     inputSchema: toolExports.roosyncSummarizeTool.inputSchema,
                 },
-                // Legacy summary tools (conservés pour compatibilité)
-                {
-                    name: toolExports.generateTraceSummaryTool.name,
-                    description: toolExports.generateTraceSummaryTool.description,
-                    inputSchema: toolExports.generateTraceSummaryTool.inputSchema,
-                },
-                {
-                    name: toolExports.generateClusterSummaryTool.name,
-                    description: toolExports.generateClusterSummaryTool.description,
-                    inputSchema: toolExports.generateClusterSummaryTool.inputSchema,
-                },
+                // CLEANUP-2: Legacy summary tools retirés (generate_trace_summary, generate_cluster_summary, get_conversation_synthesis)
+                // Remplacés par roosync_summarize (CONS-12)
                 // CONS-10: exportConversationJsonTool et exportConversationCsvTool retirés
                 // (remplacés par export_data avec format='json'/'csv')
                 toolExports.viewTaskDetailsTool.definition,
                 toolExports.getRawConversationTool.definition,
-                {
-                    name: toolExports.getConversationSynthesisTool.name,
-                    description: toolExports.getConversationSynthesisTool.description,
-                    inputSchema: toolExports.getConversationSynthesisTool.inputSchema,
-                },
                 // CONS-9: exportTaskTreeMarkdownTool retiré (remplacé par task_export action='markdown')
 
                 // Diagnostic Tools - WP4
@@ -405,21 +391,8 @@ export function registerCallToolHandler(
                result = { content: [{ type: 'text', text: summaryResult }] };
                break;
            }
-           // Legacy summary tools (conservés pour compatibilité)
-           case toolExports.generateTraceSummaryTool.name: {
-               const summaryText = await toolExports.handleGenerateTraceSummary(args as any, async (id: string) => {
-                   return state.conversationCache.get(id) || null;
-               });
-               result = { content: [{ type: 'text', text: summaryText }] };
-               break;
-           }
-           case toolExports.generateClusterSummaryTool.name: {
-               const clusterText = await toolExports.handleGenerateClusterSummary(args as any, async (id: string) => {
-                   return state.conversationCache.get(id) || null;
-               });
-               result = { content: [{ type: 'text', text: clusterText }] };
-               break;
-           }
+           // CLEANUP-2: Legacy summary tools handlers retirés (generate_trace_summary, generate_cluster_summary, get_conversation_synthesis)
+           // Remplacés par roosync_summarize (CONS-12)
            // CONS-10: [DEPRECATED] Handlers conservés pour backward compatibility
            // Ces outils seront retirés dans une version future - utiliser export_data et export_config
            case toolExports.exportConversationJsonTool.name:
@@ -443,13 +416,7 @@ export function registerCallToolHandler(
             case toolExports.getRawConversationTool.definition.name:
                 result = await toolExports.getRawConversationTool.handler(args as any);
                 break;
-          case toolExports.getConversationSynthesisTool.name: {
-              const synthResult = await toolExports.handleGetConversationSynthesis(args as any, async (id: string) => {
-                  return state.conversationCache.get(id) || null;
-              });
-              result = { content: [{ type: 'text', text: typeof synthResult === 'string' ? synthResult : JSON.stringify(synthResult, null, 2) }] };
-              break;
-          }
+          // CLEANUP-2: getConversationSynthesisTool handler retiré (remplacé par roosync_summarize)
           // CONS-9: export_task_tree_markdown retiré (remplacé par task_export action='markdown')
 
           // Diagnostic Tools - WP4
