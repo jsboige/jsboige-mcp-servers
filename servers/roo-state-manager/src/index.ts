@@ -4,8 +4,12 @@
  * Ce fichier orchestre l'initialisation et le démarrage du serveur.
  * Toute la logique métier est dans src/tools/, src/services/, src/config/
  */
-// FIX: Ignorer les erreurs SSL pour Qdrant (certificat auto-signé ou invalide)
-process.env.NODE_TLS_REJECT_UNAUTHORIZED = '0';
+// FIX #373: TLS bypass now opt-in via QDRANT_SKIP_TLS_VERIFY env var
+// Previously set globally and unconditionally, disabling TLS for ALL connections
+// Now only applied when explicitly configured (e.g. for self-signed Qdrant certs)
+if (process.env.QDRANT_SKIP_TLS_VERIFY === 'true') {
+    process.env.NODE_TLS_REJECT_UNAUTHORIZED = '0';
+}
 import dotenv from 'dotenv';
 import { fileURLToPath } from 'url';
 import { dirname } from 'path';

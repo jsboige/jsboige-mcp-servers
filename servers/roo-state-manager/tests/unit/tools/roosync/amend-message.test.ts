@@ -47,8 +47,11 @@ describe('roosync_amend_message - Validation', () => {
 
     vi.doMock('os', () => ({
       default: {
-        hostname: vi.fn().mockReturnValue('test-machine')
-      }
+        hostname: vi.fn().mockReturnValue('test-machine'),
+        tmpdir: vi.fn().mockReturnValue('/tmp')
+      },
+      hostname: vi.fn().mockReturnValue('test-machine'),
+      tmpdir: vi.fn().mockReturnValue('/tmp')
     }));
 
     // Importer le module après les mocks

@@ -109,10 +109,11 @@ export class Logger {
 
     constructor(options: LoggerOptions = {}) {
         // Determine default log directory
-        // FIX: Use temp dir instead of cwd to avoid polluting project root when env var is missing
-        const defaultLogDir = process.env.ROOSYNC_SHARED_PATH
-            ? join(process.env.ROOSYNC_SHARED_PATH, 'logs')
-            : join(tmpdir(), 'roo-state-manager-logs');
+        // FIX #371: Always use local temp dir for logs to avoid Google Drive FS
+        // write conflicts when multiple MCP server instances run concurrently.
+        // GDrive virtual FS (GoogleDriveFS) does not handle concurrent appendFileSync
+        // from multiple processes, causing UNKNOWN/EINVAL write errors.
+        const defaultLogDir = join(tmpdir(), 'roo-state-manager-logs');
 
         this.logDir = options.logDir || defaultLogDir;
         this.filePrefix = options.filePrefix || 'roosync';
