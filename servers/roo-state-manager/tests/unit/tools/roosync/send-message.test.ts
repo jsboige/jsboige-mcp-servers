@@ -38,9 +38,10 @@ describe('roosync_send_message - Validation', () => {
       getSharedStatePath: vi.fn().mockReturnValue('/mock/shared-state')
     }));
 
-    // Mock de os pour getLocalMachineId()
+    // Mock de os pour getLocalMachineId() + tmpdir() used by logger
     vi.doMock('os', () => ({
-      hostname: vi.fn().mockReturnValue('test-machine')
+      hostname: vi.fn().mockReturnValue('test-machine'),
+      tmpdir: vi.fn().mockReturnValue('/tmp')
     }));
 
     // Importer le module après les mocks
