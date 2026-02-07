@@ -469,6 +469,63 @@ export function registerCallToolHandler(
                   result = { content: [{ type: 'text', text: `Error: ${(error as Error).message}` }], isError: true };
               }
               break;
+          // Consolidated tools: CallTool handlers for CONS-2/3/4/6 consolidated tools
+          case 'roosync_baseline':
+              try {
+                  const roosyncResult = await toolExports.roosync_baseline(args as any);
+                  result = { content: [{ type: 'text', text: JSON.stringify(roosyncResult, null, 2) }] };
+              } catch (error) {
+                  result = { content: [{ type: 'text', text: `Error: ${(error as Error).message}` }], isError: true };
+              }
+              break;
+          case 'roosync_config':
+              try {
+                  const roosyncResult = await toolExports.roosyncConfig(args as any);
+                  result = { content: [{ type: 'text', text: JSON.stringify(roosyncResult, null, 2) }] };
+              } catch (error) {
+                  result = { content: [{ type: 'text', text: `Error: ${(error as Error).message}` }], isError: true };
+              }
+              break;
+          case 'roosync_inventory':
+              try {
+                  const invResult = await toolExports.inventoryTool.execute(args as any, {} as any);
+                  if (invResult.success) {
+                      result = { content: [{ type: 'text', text: JSON.stringify(invResult.data, null, 2) }] };
+                  } else {
+                      result = { content: [{ type: 'text', text: `Error: ${invResult.error?.message}` }], isError: true };
+                  }
+              } catch (error) {
+                  result = { content: [{ type: 'text', text: `Error: ${(error as Error).message}` }], isError: true };
+              }
+              break;
+          case 'roosync_machines':
+              try {
+                  const machResult = await toolExports.roosyncMachines(args as any);
+                  if (machResult.success) {
+                      result = { content: [{ type: 'text', text: JSON.stringify(machResult.data, null, 2) }] };
+                  } else {
+                      result = { content: [{ type: 'text', text: `Error: ${machResult.error?.message}` }], isError: true };
+                  }
+              } catch (error) {
+                  result = { content: [{ type: 'text', text: `Error: ${(error as Error).message}` }], isError: true };
+              }
+              break;
+          case 'roosync_heartbeat_status':
+              try {
+                  const hbResult = await toolExports.roosyncHeartbeatStatus(args as any);
+                  result = { content: [{ type: 'text', text: JSON.stringify(hbResult, null, 2) }] };
+              } catch (error) {
+                  result = { content: [{ type: 'text', text: `Error: ${(error as Error).message}` }], isError: true };
+              }
+              break;
+          case 'roosync_heartbeat_service':
+              try {
+                  const hbsResult = await toolExports.roosyncHeartbeatService(args as any);
+                  result = { content: [{ type: 'text', text: JSON.stringify(hbsResult, null, 2) }] };
+              } catch (error) {
+                  result = { content: [{ type: 'text', text: `Error: ${(error as Error).message}` }], isError: true };
+              }
+              break;
           // CONS-1: Outils messagerie consolidés (6→3)
            case 'roosync_send':
                try {
