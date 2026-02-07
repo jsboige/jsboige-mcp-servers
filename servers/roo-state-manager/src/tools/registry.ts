@@ -25,10 +25,8 @@ export function registerListToolsHandler(server: Server): void {
                 },
                 // CONS-13: Outil Storage consolidé (2→1)
                 toolExports.storageInfoTool.definition,
-                // [DEPRECATED] Anciens outils storage (backward compatibility)
-                toolExports.detectStorageTool.definition,
-                toolExports.getStorageStatsTool.definition,
-                toolExports.listConversationsTool.definition,
+                // CLEANUP-3: detect_storage, get_storage_stats, list_conversations retirés de ListTools
+                // (CallTool handlers conservés pour backward compat)
                 {
                     name: 'touch_mcp_settings',
                     description: 'Touche le fichier de paramètres pour forcer le rechargement des MCPs Roo.',
@@ -36,17 +34,14 @@ export function registerListToolsHandler(server: Server): void {
                 },
                 // CONS-13: Outil Maintenance consolidé (3→1)
                 toolExports.maintenanceToolDefinition,
-                // [DEPRECATED] Ancien outil cache (backward compatibility)
-                toolExports.buildSkeletonCacheDefinition,
+                // CLEANUP-3: build_skeleton_cache retiré de ListTools (backward compat via CallTool)
                 // CONS-9: Outils Tasks consolidés (4→2)
                 toolExports.taskBrowseTool,
                 toolExports.taskExportTool,
                 // CONS-11: Outils Search/Indexing consolidés (4→2)
                 toolExports.roosyncSearchTool,
                 toolExports.roosyncIndexingTool,
-                // CONS-11 Legacy: conservés pour compatibilité backward
-                toolExports.searchTasksByContentTool.definition,
-                toolExports.debugAnalyzeTool.definition,
+                // CLEANUP-3: search_tasks_by_content, debug_analyze retirés de ListTools (backward compat via CallTool)
                 {
                     name: toolExports.viewConversationTree.name,
                     description: toolExports.viewConversationTree.description,
@@ -62,8 +57,8 @@ export function registerListToolsHandler(server: Server): void {
                     description: toolExports.manageMcpSettings.description,
                     inputSchema: toolExports.manageMcpSettings.inputSchema,
                 },
-                toolExports.indexTaskSemanticTool.definition,
-                toolExports.resetQdrantCollectionTool.definition,
+                // CLEANUP-3: index_task_semantic, reset_qdrant_collection, rebuild_task_index_fixed retirés de ListTools
+                // (remplacés par roosync_indexing, CallTool handlers conservés pour backward compat)
                 {
                    name: toolExports.rebuildAndRestart.name,
                    description: toolExports.rebuildAndRestart.description,
@@ -74,14 +69,8 @@ export function registerListToolsHandler(server: Server): void {
                    description: toolExports.getMcpBestPractices.description,
                    inputSchema: toolExports.getMcpBestPractices.inputSchema,
                 },
-                {
-                   name: toolExports.rebuildTaskIndexFixed.name,
-                   description: toolExports.rebuildTaskIndexFixed.description,
-                   inputSchema: toolExports.rebuildTaskIndexFixed.inputSchema,
-                },
-                // [DEPRECATED] Anciens outils BOM (backward compatibility via maintenance)
-                toolExports.diagnoseConversationBomTool.definition,
-                toolExports.repairConversationBomTool.definition,
+                // CLEANUP-3: diagnose_conversation_bom, repair_conversation_bom retirés de ListTools
+                // (remplacés par maintenance action=diagnose_bom/repair_bom, CallTool handlers conservés)
                 // CONS-10: Outils Export consolidés (6→2)
                 toolExports.exportDataTool,
                 toolExports.exportConfigTool,
