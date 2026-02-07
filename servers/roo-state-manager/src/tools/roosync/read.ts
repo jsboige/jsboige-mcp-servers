@@ -95,9 +95,11 @@ Votre inbox est vide pour le moment.
   result += `|----|----|----|----------|--------|------|\n`;
 
   for (const msg of messages) {
-    const shortId = msg.id.substring(0, 20) + '...';
-    const shortSubject = msg.subject.length > 20 ? msg.subject.substring(0, 20) + '...' : msg.subject;
-    result += `| ${shortId} | ${msg.from} | ${shortSubject} | ${getPriorityIcon(msg.priority)} ${msg.priority} | ${getStatusIcon(msg.status)} ${msg.status} | ${formatDate(msg.timestamp)} |\n`;
+    // BUG FIX: Afficher l'ID complet (critique pour roosync_read mode message)
+    const fullId = msg.id;
+    const maxSubjectLength = 25;
+    const shortSubject = msg.subject.length > maxSubjectLength ? msg.subject.substring(0, maxSubjectLength) + '...' : msg.subject;
+    result += `| ${fullId} | ${msg.from} | ${shortSubject} | ${getPriorityIcon(msg.priority)} ${msg.priority} | ${getStatusIcon(msg.status)} ${msg.status} | ${formatDate(msg.timestamp)} |\n`;
   }
 
   result += `\n---\n\n`;
