@@ -11,14 +11,14 @@
  * - Renvoie TOUJOURS la même réponse filtrée
  * - Garantit unicité des noms d'outils
  *
- * Outils autorisés (21):
+ * Outils autorisés (18):
  * - Messagerie CONS-1 (3): roosync_send, roosync_read, roosync_manage
- * - Lecture seule (5): get_status, list_diffs, compare_config, get_decision_details, refresh_dashboard
+ * - Lecture seule (4): get_status, list_diffs, compare_config, refresh_dashboard
  * - Consolidés (5): config, inventory, baseline, machines, init
- * - Décisions (4): approve_decision, reject_decision, apply_decision, rollback_decision
+ * - Décisions CONS-5 (2): roosync_decision, roosync_decision_info
  * - Monitoring (1): heartbeat_status
  * - Diagnostic (2): analyze_roosync_problems, diagnose_env
- * - Summary (1): roosync_summarize (CONS-12 unifié, 3 legacy retirés: #399 CLEANUP-2)
+ * - Summary (1): roosync_summarize (CONS-12 unifié)
  */
 
 const { spawn } = require('child_process');
@@ -35,17 +35,16 @@ function logDebug(message) {
 }
 
 // Liste des outils RooSync autorisés pour Claude Code
-// MAJ 2026-02-07: 21 outils (CONS-1: messagerie 6→3)
+// MAJ 2026-02-07: 18 outils (CONS-5: decisions 5→2)
 const ALLOWED_TOOLS = new Set([
     // Messagerie CONS-1 (3 outils) - remplace 6 legacy
     'roosync_send',              // CONS-1: send + reply + amend
     'roosync_read',              // CONS-1: read_inbox + get_message
     'roosync_manage',            // CONS-1: mark_message_read + archive_message
-    // Lecture seule (5 outils)
+    // Lecture seule (4 outils)
     'roosync_get_status',
     'roosync_list_diffs',
     'roosync_compare_config',
-    'roosync_get_decision_details',
     'roosync_refresh_dashboard',
     // Outils consolidés (5 outils) - CONS-2/3/4/6
     'roosync_config',            // CONS-3: collect + publish + apply config
@@ -53,20 +52,18 @@ const ALLOWED_TOOLS = new Set([
     'roosync_baseline',          // CONS-4: update + manage + export baseline
     'roosync_machines',          // CONS-6: offline + warning machines
     'roosync_init',              // Infrastructure
-    // Workflow décisionnel (4 outils) - coordination multi-agent
-    'roosync_approve_decision',  // Approuver une décision inter-machines
-    'roosync_reject_decision',   // Rejeter une décision
-    'roosync_apply_decision',    // Appliquer une décision approuvée
-    'roosync_rollback_decision', // Rollback une décision appliquée
+    // Décisions CONS-5 (2 outils) - remplace 5 legacy
+    'roosync_decision',          // CONS-5: approve + reject + apply + rollback
+    'roosync_decision_info',     // CONS-5: get_decision_details + list + history
     // Monitoring (1 outil) - CONS-2
     'roosync_heartbeat_status',  // Statut heartbeat des machines
     // Diagnostic (2 outils) - non-RooSync mais utiles pour coordination
     'analyze_roosync_problems',  // Diagnostic problèmes RooSync
     'diagnose_env',              // Diagnostic environnement (.env, paths)
-    // Summary (1 outil) - CONS-12 (3 legacy retirés: #399 CLEANUP-2)
-    'roosync_summarize'               // Outil consolidé 3→1 (CONS-12)
+    // Summary (1 outil) - CONS-12
+    'roosync_summarize'          // Outil consolidé 3→1 (CONS-12)
 ]);
-// Total: 21 outils (3+5+5+4+1+2+1 = 21)
+// Total: 18 outils (3+4+5+2+1+2+1 = 18)
 
 // Cache pour la réponse tools/list filtrée (anti-doublons VS Code)
 let cachedToolsListResponse = null;

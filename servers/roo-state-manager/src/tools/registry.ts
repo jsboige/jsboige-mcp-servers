@@ -469,6 +469,23 @@ export function registerCallToolHandler(
                   result = { content: [{ type: 'text', text: `Error: ${(error as Error).message}` }], isError: true };
               }
               break;
+          // CONS-5: Consolidated decision tools (5→2)
+          case 'roosync_decision':
+              try {
+                  const roosyncResult = await toolExports.roosyncDecision(args as any);
+                  result = { content: [{ type: 'text', text: JSON.stringify(roosyncResult, null, 2) }] };
+              } catch (error) {
+                  result = { content: [{ type: 'text', text: `Error: ${(error as Error).message}` }], isError: true };
+              }
+              break;
+          case 'roosync_decision_info':
+              try {
+                  const roosyncResult = await toolExports.roosyncDecisionInfo(args as any);
+                  result = { content: [{ type: 'text', text: JSON.stringify(roosyncResult, null, 2) }] };
+              } catch (error) {
+                  result = { content: [{ type: 'text', text: `Error: ${(error as Error).message}` }], isError: true };
+              }
+              break;
           // Consolidated tools: CallTool handlers for CONS-2/3/4/6 consolidated tools
           case 'roosync_baseline':
               try {

@@ -101,6 +101,31 @@ export type {
   GetDecisionDetailsResult
 } from './get-decision-details.js';
 
+// CONS-5: Outils consolidés de décisions (5→2)
+export {
+  roosyncDecision,
+  RooSyncDecisionArgsSchema,
+  RooSyncDecisionResultSchema,
+  roosyncDecisionToolMetadata
+} from './decision.js';
+
+export type {
+  RooSyncDecisionArgs,
+  RooSyncDecisionResult
+} from './decision.js';
+
+export {
+  roosyncDecisionInfo,
+  RooSyncDecisionInfoArgsSchema,
+  RooSyncDecisionInfoResultSchema,
+  roosyncDecisionInfoToolMetadata
+} from './decision-info.js';
+
+export type {
+  RooSyncDecisionInfoArgs,
+  RooSyncDecisionInfoResult
+} from './decision-info.js';
+
 export {
   roosyncInit,
   InitArgsSchema,
@@ -240,11 +265,9 @@ export { roosyncRefreshDashboard, refreshDashboardToolMetadata } from './refresh
 import { getStatusToolMetadata } from './get-status.js';
 import { compareConfigToolMetadata } from './compare-config.js';
 import { listDiffsToolMetadata } from './list-diffs.js';
-import { approveDecisionToolMetadata } from './approve-decision.js';
-import { rejectDecisionToolMetadata } from './reject-decision.js';
-import { applyDecisionToolMetadata } from './apply-decision.js';
-import { rollbackDecisionToolMetadata } from './rollback-decision.js';
-import { getDecisionDetailsToolMetadata } from './get-decision-details.js';
+// CONS-5: Legacy decision imports replaced by consolidated
+import { roosyncDecisionToolMetadata } from './decision.js';
+import { roosyncDecisionInfoToolMetadata } from './decision-info.js';
 import { initToolMetadata } from './roosync_init.js';
 import { updateBaselineToolMetadata } from './update-baseline.js';
 import { manageBaselineToolMetadata } from './manage-baseline.js';
@@ -332,13 +355,13 @@ const exportBaselineToolMetadata = {
 
 /**
  * Liste de tous les outils RooSync pour enregistrement MCP
- * Version 3.6 : 22 outils (CONS-1: ajout 3 outils messagerie consolidés)
+ * Version 3.7 : 19 outils (CONS-5: decisions 5→2)
  *
  * - Configuration: init, compare-config, roosync_config (CONS-3), baseline (CONS-4)
  * - Services: inventory (CONS-6), machines (CONS-6)
  * - Presentation: get-status, list-diffs, refresh-dashboard
- * - Decision: approve-decision, reject-decision, apply-decision, rollback-decision, get-decision-details
- * - Heartbeat v3.1 (CONS-2): heartbeat-status, heartbeat-service
+ * - Decision (CONS-5): roosync_decision, roosync_decision_info
+ * - Heartbeat (CONS-2): heartbeat-status, heartbeat-service
  * - Synchronisation automatique: sync-on-offline, sync-on-online
  * - Messagerie (CONS-1): roosync_send, roosync_read, roosync_manage
  * - Debug: debug-reset
@@ -348,19 +371,15 @@ export const roosyncTools = [
   getStatusToolMetadata,
   compareConfigToolMetadata,
   listDiffsToolMetadata,
-  approveDecisionToolMetadata,
-  rejectDecisionToolMetadata,
-  applyDecisionToolMetadata,
-  rollbackDecisionToolMetadata,
-  getDecisionDetailsToolMetadata,
+  // CONS-5: Outils de décision consolidés (5→2)
+  roosyncDecisionToolMetadata,
+  roosyncDecisionInfoToolMetadata,
   baselineToolMetadata, // CONS-4: Outil consolidé Baseline 3→1
   configToolMetadata, // CONS-3: Outil consolidé Config 4→2
   inventoryToolMetadata, // CONS-6: Outil consolidé Inventory (machine + heartbeat)
   machinesToolMetadata, // CONS-6: Outil consolidé Machines (offline + warning)
   debugResetToolMetadata,
-  // CLEANUP-1: 4 deprecated heartbeat retirés (register, start, stop, check)
-  // Remplacés par heartbeat-status et heartbeat-service (CONS-2)
-  // Les case handlers dans registry.ts restent pour backward compat
+  // CONS-2: heartbeat consolidés (7→2)
   heartbeatStatusToolMetadata,
   heartbeatServiceToolMetadata,
   // Outils de synchronisation automatique (T3.16)
