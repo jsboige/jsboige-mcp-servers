@@ -23,6 +23,9 @@ export function registerListToolsHandler(server: Server): void {
                     description: 'This is a minimal tool to check if the MCP is reloading.',
                     inputSchema: { type: 'object', properties: {}, required: [] },
                 },
+                // CONS-13: Outil Storage consolidé (2→1)
+                toolExports.storageInfoTool.definition,
+                // [DEPRECATED] Anciens outils storage (backward compatibility)
                 toolExports.detectStorageTool.definition,
                 toolExports.getStorageStatsTool.definition,
                 toolExports.listConversationsTool.definition,
@@ -31,6 +34,9 @@ export function registerListToolsHandler(server: Server): void {
                     description: 'Touche le fichier de paramètres pour forcer le rechargement des MCPs Roo.',
                     inputSchema: { type: 'object', properties: {}, required: [] },
                 },
+                // CONS-13: Outil Maintenance consolidé (3→1)
+                toolExports.maintenanceToolDefinition,
+                // [DEPRECATED] Ancien outil cache (backward compatibility)
                 toolExports.buildSkeletonCacheDefinition,
                 // CONS-9: Outils Tasks consolidés (4→2)
                 toolExports.taskBrowseTool,
@@ -73,6 +79,7 @@ export function registerListToolsHandler(server: Server): void {
                    description: toolExports.rebuildTaskIndexFixed.description,
                    inputSchema: toolExports.rebuildTaskIndexFixed.inputSchema,
                 },
+                // [DEPRECATED] Anciens outils BOM (backward compatibility via maintenance)
                 toolExports.diagnoseConversationBomTool.definition,
                 toolExports.repairConversationBomTool.definition,
                 // CONS-10: Outils Export consolidés (6→2)
@@ -279,6 +286,11 @@ export function registerCallToolHandler(
 
                 result = { content: [{ type: 'text', text: `INVESTIGATION DES CANAUX DE LOGS - ${timestamp} - Vérifiez tous les logs maintenant!` }] };
                 break;
+           // CONS-13: Outil Storage consolidé
+           case 'storage_info':
+               result = await toolExports.handleStorageInfo(args as any);
+               break;
+           // [DEPRECATED] Anciens outils storage
            case toolExports.detectStorageTool.definition.name:
                result = await toolExports.detectStorageTool.handler({});
                break;
@@ -291,6 +303,11 @@ export function registerCallToolHandler(
             case 'touch_mcp_settings':
                 result = await handleTouchMcpSettings();
                 break;
+            // CONS-13: Outil Maintenance consolidé
+            case 'maintenance':
+                result = await toolExports.handleMaintenance(args as any, state.conversationCache, state);
+                break;
+            // [DEPRECATED] Ancien outil cache
             case 'build_skeleton_cache':
                 result = await toolExports.handleBuildSkeletonCache(args as any, state.conversationCache, state);
                 break;
