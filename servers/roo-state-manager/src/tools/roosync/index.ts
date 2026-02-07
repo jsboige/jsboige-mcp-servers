@@ -205,9 +205,9 @@ export { amendMessage } from './amend_message.js';
 // - roosyncRead (mode: inbox|message) → remplace read_inbox + get_message
 // - roosyncSend (action: send|reply|amend) → remplace send_message + reply_message + amend_message
 // - roosyncManage (action: mark_read|archive) → remplace mark_message_read + archive_message
-export { roosyncRead } from './read.js';
-export { roosyncSend } from './send.js';
-export { roosyncManage } from './manage.js';
+export { roosyncRead, readToolMetadata } from './read.js';
+export { roosyncSend, sendToolMetadata } from './send.js';
+export { roosyncManage, manageToolMetadata } from './manage.js';
 
 // CONS-6: Outils consolidés Inventory (4→2)
 export { inventoryTool, inventoryToolMetadata } from './inventory.js';
@@ -272,6 +272,11 @@ import { syncOnOnlineToolMetadata } from './sync-on-online.js';
 // Import des métadonnées des outils de dashboard (T3.17)
 import { refreshDashboardToolMetadata } from './refresh-dashboard.js';
 
+// CONS-1: Import des métadonnées des outils de messagerie consolidés
+import { sendToolMetadata } from './send.js';
+import { readToolMetadata } from './read.js';
+import { manageToolMetadata } from './manage.js';
+
 // Métadonnées pour l'outil d'inventaire (format JSON Schema standard)
 // CONS-6: Remplacé par inventoryToolMetadata
 // const getMachineInventoryToolMetadata = {
@@ -327,7 +332,7 @@ const exportBaselineToolMetadata = {
 
 /**
  * Liste de tous les outils RooSync pour enregistrement MCP
- * Version 3.5 : 19 outils (CLEANUP-1: retrait 4 deprecated heartbeat)
+ * Version 3.6 : 22 outils (CONS-1: ajout 3 outils messagerie consolidés)
  *
  * - Configuration: init, compare-config, roosync_config (CONS-3), baseline (CONS-4)
  * - Services: inventory (CONS-6), machines (CONS-6)
@@ -335,6 +340,7 @@ const exportBaselineToolMetadata = {
  * - Decision: approve-decision, reject-decision, apply-decision, rollback-decision, get-decision-details
  * - Heartbeat v3.1 (CONS-2): heartbeat-status, heartbeat-service
  * - Synchronisation automatique: sync-on-offline, sync-on-online
+ * - Messagerie (CONS-1): roosync_send, roosync_read, roosync_manage
  * - Debug: debug-reset
  */
 export const roosyncTools = [
@@ -361,5 +367,9 @@ export const roosyncTools = [
   syncOnOfflineToolMetadata,
   syncOnOnlineToolMetadata,
   // Outils de dashboard (T3.17)
-  refreshDashboardToolMetadata
+  refreshDashboardToolMetadata,
+  // CONS-1: Outils de messagerie consolidés (6→3)
+  sendToolMetadata,
+  readToolMetadata,
+  manageToolMetadata
 ];

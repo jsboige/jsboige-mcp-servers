@@ -228,6 +228,29 @@ Il n'apparaîtra plus dans la boîte de réception (\`roosync_read\`).
  * @param args Arguments de l'outil
  * @returns Résultat de l'opération
  */
+/**
+ * Métadonnées de l'outil roosync_manage pour enregistrement MCP
+ */
+export const manageToolMetadata = {
+  name: 'roosync_manage',
+  description: 'Gérer le cycle de vie des messages RooSync : marquer comme lu ou archiver',
+  inputSchema: {
+    type: 'object',
+    properties: {
+      action: {
+        type: 'string',
+        enum: ['mark_read', 'archive'],
+        description: 'Action à effectuer sur le message'
+      },
+      message_id: {
+        type: 'string',
+        description: 'ID du message à traiter'
+      }
+    },
+    required: ['action', 'message_id']
+  }
+};
+
 export async function roosyncManage(
   args: RooSyncManageArgs
 ): Promise<{ content: Array<{ type: string; text: string }> }> {

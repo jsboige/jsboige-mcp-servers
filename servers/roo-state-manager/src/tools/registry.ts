@@ -113,140 +113,9 @@ export function registerListToolsHandler(server: Server): void {
 
                 // RooSync tools - Batch 6 synchronization
                 ...toolExports.roosyncTools,
-                // RooSync Messaging tools - Phase 1
-                {
-                    name: 'roosync_send_message',
-                    description: 'Envoyer un message structuré à une autre machine via RooSync',
-                    inputSchema: {
-                        type: 'object',
-                        properties: {
-                            to: {
-                                type: 'string',
-                                description: 'ID de la machine destinataire (ex: myia-ai-01)'
-                            },
-                            subject: {
-                                type: 'string',
-                                description: 'Sujet du message'
-                            },
-                            body: {
-                                type: 'string',
-                                description: 'Corps du message (markdown supporté)'
-                            },
-                            priority: {
-                                type: 'string',
-                                enum: ['LOW', 'MEDIUM', 'HIGH', 'URGENT'],
-                                description: 'Priorité du message (défaut: MEDIUM)'
-                            },
-                            tags: {
-                                type: 'array',
-                                items: { type: 'string' },
-                                description: 'Tags optionnels pour catégoriser le message'
-                            },
-                            thread_id: {
-                                type: 'string',
-                                description: 'ID du thread pour regrouper les messages'
-                            },
-                            reply_to: {
-                                type: 'string',
-                                description: 'ID du message auquel on répond'
-                            }
-                        },
-                        required: ['to', 'subject', 'body']
-                    }
-                },
-                {
-                    name: 'roosync_read_inbox',
-                    description: 'Lire la boîte de réception des messages RooSync',
-                    inputSchema: {
-                        type: 'object',
-                        properties: {
-                            status: {
-                                type: 'string',
-                                enum: ['unread', 'read', 'all'],
-                                description: 'Filtrer par status (défaut: all)'
-                            },
-                            limit: {
-                                type: 'number',
-                                description: 'Nombre maximum de messages à retourner'
-                            }
-                        }
-                    }
-                },
-                {
-                    name: 'roosync_get_message',
-                    description: 'Obtenir les détails complets d\'un message spécifique',
-                    inputSchema: {
-                        type: 'object',
-                        properties: {
-                            message_id: {
-                                type: 'string',
-                                description: 'ID du message à récupérer'
-                            },
-                            mark_as_read: {
-                                type: 'boolean',
-                                description: 'Marquer automatiquement comme lu (défaut: false)'
-                            }
-                        },
-                        required: ['message_id']
-                    }
-                },
-                // RooSync Messaging tools - Phase 2 (Management)
-                {
-                    name: 'roosync_mark_message_read',
-                    description: 'Marquer un message comme lu en mettant à jour son statut',
-                    inputSchema: {
-                        type: 'object',
-                        properties: {
-                            message_id: {
-                                type: 'string',
-                                description: 'ID du message à marquer comme lu'
-                            }
-                        },
-                        required: ['message_id']
-                    }
-                },
-                {
-                    name: 'roosync_archive_message',
-                    description: 'Archiver un message en le déplaçant de inbox/ vers archive/',
-                    inputSchema: {
-                        type: 'object',
-                        properties: {
-                            message_id: {
-                                type: 'string',
-                                description: 'ID du message à archiver'
-                            }
-                        },
-                        required: ['message_id']
-                    }
-                },
-                {
-                    name: 'roosync_reply_message',
-                    description: 'Répondre à un message existant en créant un nouveau message lié',
-                    inputSchema: {
-                        type: 'object',
-                        properties: {
-                            message_id: {
-                                type: 'string',
-                                description: 'ID du message auquel répondre'
-                            },
-                            body: {
-                                type: 'string',
-                                description: 'Corps de la réponse'
-                            },
-                            priority: {
-                                type: 'string',
-                                enum: ['LOW', 'MEDIUM', 'HIGH', 'URGENT'],
-                                description: 'Priorité de la réponse (défaut: priorité du message original)'
-                            },
-                            tags: {
-                                type: 'array',
-                                items: { type: 'string' },
-                                description: 'Tags supplémentaires (le tag "reply" est ajouté automatiquement)'
-                            }
-                        },
-                        required: ['message_id', 'body']
-                    }
-                },
+                // CONS-1: Les 6 outils messagerie legacy sont maintenant dans roosyncTools via les metadata
+                // (roosync_send, roosync_read, roosync_manage)
+                // Les anciens noms (roosync_send_message, etc.) restent fonctionnels via CallTool pour backward compat
             ] as any[],
         };
     });
@@ -600,7 +469,29 @@ export function registerCallToolHandler(
                   result = { content: [{ type: 'text', text: `Error: ${(error as Error).message}` }], isError: true };
               }
               break;
-          // RooSync Messaging tools - Phase 1
+          // CONS-1: Outils messagerie consolidés (6→3)
+           case 'roosync_send':
+               try {
+                   result = await toolExports.roosyncSend(args as any) as CallToolResult;
+               } catch (error) {
+                   result = { content: [{ type: 'text', text: `Error: ${(error as Error).message}` }], isError: true };
+               }
+               break;
+           case 'roosync_read':
+               try {
+                   result = await toolExports.roosyncRead(args as any) as CallToolResult;
+               } catch (error) {
+                   result = { content: [{ type: 'text', text: `Error: ${(error as Error).message}` }], isError: true };
+               }
+               break;
+           case 'roosync_manage':
+               try {
+                   result = await toolExports.roosyncManage(args as any) as CallToolResult;
+               } catch (error) {
+                   result = { content: [{ type: 'text', text: `Error: ${(error as Error).message}` }], isError: true };
+               }
+               break;
+          // [DEPRECATED] Legacy messaging tools - backward compat via CONS-1
            case 'roosync_send_message':
                try {
                    result = await toolExports.sendMessage(args as any) as CallToolResult;

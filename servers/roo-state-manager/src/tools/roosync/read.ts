@@ -216,6 +216,42 @@ Le message n'a pas été trouvé dans :
  * @param args Arguments de l'outil
  * @returns Résultat formaté
  */
+/**
+ * Métadonnées de l'outil roosync_read pour enregistrement MCP
+ */
+export const readToolMetadata = {
+  name: 'roosync_read',
+  description: 'Lire la boîte de réception des messages RooSync ou obtenir les détails complets d\'un message spécifique',
+  inputSchema: {
+    type: 'object',
+    properties: {
+      mode: {
+        type: 'string',
+        enum: ['inbox', 'message'],
+        description: 'Mode de lecture : inbox (liste des messages) ou message (détails d\'un message)'
+      },
+      status: {
+        type: 'string',
+        enum: ['unread', 'read', 'all'],
+        description: 'Filtrer par status (mode inbox, défaut: all)'
+      },
+      limit: {
+        type: 'number',
+        description: 'Nombre maximum de messages à retourner (mode inbox)'
+      },
+      message_id: {
+        type: 'string',
+        description: 'ID du message à récupérer (requis pour mode=message)'
+      },
+      mark_as_read: {
+        type: 'boolean',
+        description: 'Marquer automatiquement comme lu (mode message, défaut: false)'
+      }
+    },
+    required: ['mode']
+  }
+};
+
 export async function roosyncRead(
   args: RooSyncReadArgs
 ): Promise<{ content: Array<{ type: string; text: string }> }> {

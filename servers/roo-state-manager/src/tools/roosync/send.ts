@@ -363,6 +363,67 @@ Le **contenu original** est préservé dans \`metadata.original_content\` pour t
  * @param args Arguments de l'outil
  * @returns Résultat de l'opération
  */
+/**
+ * Métadonnées de l'outil roosync_send pour enregistrement MCP
+ */
+export const sendToolMetadata = {
+  name: 'roosync_send',
+  description: 'Envoyer un message structuré, répondre à un message existant, ou amender un message envoyé via RooSync',
+  inputSchema: {
+    type: 'object',
+    properties: {
+      action: {
+        type: 'string',
+        enum: ['send', 'reply', 'amend'],
+        description: 'Action à effectuer : send (nouveau message), reply (répondre), amend (modifier)'
+      },
+      to: {
+        type: 'string',
+        description: 'ID de la machine destinataire (ex: myia-ai-01). Requis pour action=send'
+      },
+      subject: {
+        type: 'string',
+        description: 'Sujet du message. Requis pour action=send'
+      },
+      body: {
+        type: 'string',
+        description: 'Corps du message (markdown supporté). Requis pour action=send et reply'
+      },
+      priority: {
+        type: 'string',
+        enum: ['LOW', 'MEDIUM', 'HIGH', 'URGENT'],
+        description: 'Priorité du message (défaut: MEDIUM)'
+      },
+      tags: {
+        type: 'array',
+        items: { type: 'string' },
+        description: 'Tags optionnels pour catégoriser le message'
+      },
+      thread_id: {
+        type: 'string',
+        description: 'ID du thread pour regrouper les messages'
+      },
+      reply_to: {
+        type: 'string',
+        description: 'ID du message auquel on répond (pour action=send)'
+      },
+      message_id: {
+        type: 'string',
+        description: 'ID du message (requis pour action=reply et amend)'
+      },
+      new_content: {
+        type: 'string',
+        description: 'Nouveau contenu du message (requis pour action=amend)'
+      },
+      reason: {
+        type: 'string',
+        description: 'Raison de l\'amendement (optionnel, pour action=amend)'
+      }
+    },
+    required: ['action']
+  }
+};
+
 export async function roosyncSend(
   args: RooSyncSendArgs
 ): Promise<{ content: Array<{ type: string; text: string }> }> {

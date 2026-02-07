@@ -11,8 +11,8 @@
  * - Renvoie TOUJOURS la même réponse filtrée
  * - Garantit unicité des noms d'outils
  *
- * Outils autorisés (24):
- * - Messagerie (6): send_message, read_inbox, reply_message, get_message, mark_message_read, archive_message
+ * Outils autorisés (21):
+ * - Messagerie CONS-1 (3): roosync_send, roosync_read, roosync_manage
  * - Lecture seule (5): get_status, list_diffs, compare_config, get_decision_details, refresh_dashboard
  * - Consolidés (5): config, inventory, baseline, machines, init
  * - Décisions (4): approve_decision, reject_decision, apply_decision, rollback_decision
@@ -35,15 +35,12 @@ function logDebug(message) {
 }
 
 // Liste des outils RooSync autorisés pour Claude Code
-// MAJ 2026-02-06: 24 outils (CLEANUP-2: retrait 3 legacy summary tools)
+// MAJ 2026-02-07: 21 outils (CONS-1: messagerie 6→3)
 const ALLOWED_TOOLS = new Set([
-    // Messagerie (6 outils)
-    'roosync_send_message',
-    'roosync_read_inbox',
-    'roosync_reply_message',
-    'roosync_get_message',
-    'roosync_mark_message_read',
-    'roosync_archive_message',
+    // Messagerie CONS-1 (3 outils) - remplace 6 legacy
+    'roosync_send',              // CONS-1: send + reply + amend
+    'roosync_read',              // CONS-1: read_inbox + get_message
+    'roosync_manage',            // CONS-1: mark_message_read + archive_message
     // Lecture seule (5 outils)
     'roosync_get_status',
     'roosync_list_diffs',
@@ -69,6 +66,7 @@ const ALLOWED_TOOLS = new Set([
     // Summary (1 outil) - CONS-12 (3 legacy retirés: #399 CLEANUP-2)
     'roosync_summarize'               // Outil consolidé 3→1 (CONS-12)
 ]);
+// Total: 21 outils (3+5+5+4+1+2+1 = 21)
 
 // Cache pour la réponse tools/list filtrée (anti-doublons VS Code)
 let cachedToolsListResponse = null;
