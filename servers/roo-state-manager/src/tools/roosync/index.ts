@@ -41,65 +41,30 @@ export type {
   ListDiffsResult
 } from './list-diffs.js';
 
+// CONS-5: Outils consolidés Décision (5→2)
 export {
-  roosyncApproveDecision,
-  ApproveDecisionArgsSchema,
-  ApproveDecisionResultSchema,
-  approveDecisionToolMetadata
-} from './approve-decision.js';
+  roosyncDecision,
+  RooSyncDecisionArgsSchema,
+  RooSyncDecisionResultSchema,
+  roosyncDecisionToolMetadata
+} from './decision.js';
 
 export type {
-  ApproveDecisionArgs,
-  ApproveDecisionResult
-} from './approve-decision.js';
+  RooSyncDecisionArgs,
+  RooSyncDecisionResult
+} from './decision.js';
 
 export {
-  roosyncRejectDecision,
-  RejectDecisionArgsSchema,
-  RejectDecisionResultSchema,
-  rejectDecisionToolMetadata
-} from './reject-decision.js';
+  roosyncDecisionInfo,
+  RooSyncDecisionInfoArgsSchema,
+  RooSyncDecisionInfoResultSchema,
+  roosyncDecisionInfoToolMetadata
+} from './decision-info.js';
 
 export type {
-  RejectDecisionArgs,
-  RejectDecisionResult
-} from './reject-decision.js';
-
-export {
-  roosyncApplyDecision,
-  ApplyDecisionArgsSchema,
-  ApplyDecisionResultSchema,
-  applyDecisionToolMetadata
-} from './apply-decision.js';
-
-export type {
-  ApplyDecisionArgs,
-  ApplyDecisionResult
-} from './apply-decision.js';
-
-export {
-  roosyncRollbackDecision,
-  RollbackDecisionArgsSchema,
-  RollbackDecisionResultSchema,
-  rollbackDecisionToolMetadata
-} from './rollback-decision.js';
-
-export type {
-  RollbackDecisionArgs,
-  RollbackDecisionResult
-} from './rollback-decision.js';
-
-export {
-  roosyncGetDecisionDetails,
-  GetDecisionDetailsArgsSchema,
-  GetDecisionDetailsResultSchema,
-  getDecisionDetailsToolMetadata
-} from './get-decision-details.js';
-
-export type {
-  GetDecisionDetailsArgs,
-  GetDecisionDetailsResult
-} from './get-decision-details.js';
+  RooSyncDecisionInfoArgs,
+  RooSyncDecisionInfoResult
+} from './decision-info.js';
 
 export {
   roosyncInit,
@@ -240,11 +205,9 @@ export { roosyncRefreshDashboard, refreshDashboardToolMetadata } from './refresh
 import { getStatusToolMetadata } from './get-status.js';
 import { compareConfigToolMetadata } from './compare-config.js';
 import { listDiffsToolMetadata } from './list-diffs.js';
-import { approveDecisionToolMetadata } from './approve-decision.js';
-import { rejectDecisionToolMetadata } from './reject-decision.js';
-import { applyDecisionToolMetadata } from './apply-decision.js';
-import { rollbackDecisionToolMetadata } from './rollback-decision.js';
-import { getDecisionDetailsToolMetadata } from './get-decision-details.js';
+// CONS-5: Import des métadonnées des outils consolidés Décision (5→2)
+import { roosyncDecisionToolMetadata } from './decision.js';
+import { roosyncDecisionInfoToolMetadata } from './decision-info.js';
 import { initToolMetadata } from './roosync_init.js';
 import { updateBaselineToolMetadata } from './update-baseline.js';
 import { manageBaselineToolMetadata } from './manage-baseline.js';
@@ -333,13 +296,12 @@ const exportBaselineToolMetadata = {
 
 /**
  * Liste de tous les outils RooSync pour enregistrement MCP
- * Version 3.4 : 23 outils consolidés (CONS-3: 4→2 Config, CONS-4: 3→1 Baseline, CONS-6: 4→2 Inventory)
- * CORRECTION 2026-02-01: Retrait effectif des 6 outils deprecated de roosyncTools
+ * Version 3.5 : 20 outils consolidés (CONS-3: 4→2 Config, CONS-4: 3→1 Baseline, CONS-5: 5→2 Decision, CONS-6: 4→2 Inventory)
  *
  * - Configuration: init, compare-config, roosync_config (CONS-3), baseline (CONS-4)
  * - Services: inventory (CONS-6), machines (CONS-6)
  * - Presentation: get-status, list-diffs, refresh-dashboard
- * - Decision: approve-decision, reject-decision, apply-decision, rollback-decision, get-decision-details
+ * - Decision: roosync_decision (CONS-5), roosync_decision_info (CONS-5)
  * - Heartbeat legacy (deprecated): register-heartbeat, get-offline-machines, get-warning-machines, get-heartbeat-state, start-heartbeat-service, stop-heartbeat-service, check-heartbeats
  * - Heartbeat v3.1 (CONS-2): heartbeat-status, heartbeat-service
  * - Synchronisation automatique: sync-on-offline, sync-on-online
@@ -350,11 +312,9 @@ export const roosyncTools = [
   getStatusToolMetadata,
   compareConfigToolMetadata,
   listDiffsToolMetadata,
-  approveDecisionToolMetadata,
-  rejectDecisionToolMetadata,
-  applyDecisionToolMetadata,
-  rollbackDecisionToolMetadata,
-  getDecisionDetailsToolMetadata,
+  // CONS-5: Outils consolidés Décision (5→2)
+  roosyncDecisionToolMetadata,      // approve/reject/apply/rollback
+  roosyncDecisionInfoToolMetadata,  // get-decision-details (read-only)
   baselineToolMetadata, // CONS-4: Outil consolidé Baseline 3→1
   configToolMetadata, // CONS-3: Outil consolidé Config 4→2
   inventoryToolMetadata, // CONS-6: Outil consolidé Inventory (machine + heartbeat)

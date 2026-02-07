@@ -485,41 +485,18 @@ export function registerCallToolHandler(
                   result = { content: [{ type: 'text', text: `Error: ${(error as Error).message}` }], isError: true };
               }
               break;
-          case 'roosync_get_decision_details':
+          // CONS-5: Outils consolidés Décision (5→2)
+          case 'roosync_decision':
               try {
-                  const roosyncResult = await toolExports.roosyncGetDecisionDetails(args as any);
+                  const roosyncResult = await toolExports.roosyncDecision(args as any);
                   result = { content: [{ type: 'text', text: JSON.stringify(roosyncResult, null, 2) }] };
               } catch (error) {
                   result = { content: [{ type: 'text', text: `Error: ${(error as Error).message}` }], isError: true };
               }
               break;
-          case 'roosync_approve_decision':
+          case 'roosync_decision_info':
               try {
-                  const roosyncResult = await toolExports.roosyncApproveDecision(args as any);
-                  result = { content: [{ type: 'text', text: JSON.stringify(roosyncResult, null, 2) }] };
-              } catch (error) {
-                  result = { content: [{ type: 'text', text: `Error: ${(error as Error).message}` }], isError: true };
-              }
-              break;
-          case 'roosync_reject_decision':
-              try {
-                  const roosyncResult = await toolExports.roosyncRejectDecision(args as any);
-                  result = { content: [{ type: 'text', text: JSON.stringify(roosyncResult, null, 2) }] };
-              } catch (error) {
-                  result = { content: [{ type: 'text', text: `Error: ${(error as Error).message}` }], isError: true };
-              }
-              break;
-          case 'roosync_apply_decision':
-              try {
-                  const roosyncResult = await toolExports.roosyncApplyDecision(args as any);
-                  result = { content: [{ type: 'text', text: JSON.stringify(roosyncResult, null, 2) }] };
-              } catch (error) {
-                  result = { content: [{ type: 'text', text: `Error: ${(error as Error).message}` }], isError: true };
-              }
-              break;
-          case 'roosync_rollback_decision':
-              try {
-                  const roosyncResult = await toolExports.roosyncRollbackDecision(args as any);
+                  const roosyncResult = await toolExports.roosyncDecisionInfo(args as any);
                   result = { content: [{ type: 'text', text: JSON.stringify(roosyncResult, null, 2) }] };
               } catch (error) {
                   result = { content: [{ type: 'text', text: `Error: ${(error as Error).message}` }], isError: true };
