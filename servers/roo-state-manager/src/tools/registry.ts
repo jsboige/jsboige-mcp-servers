@@ -35,6 +35,10 @@ export function registerListToolsHandler(server: Server): void {
                 // CONS-9: Outils Tasks consolidés (4→2)
                 toolExports.taskBrowseTool,
                 toolExports.taskExportTool,
+                // CONS-11: Outils Search/Indexing consolidés (4→2)
+                toolExports.roosyncSearchTool,
+                toolExports.roosyncIndexingTool,
+                // CONS-11 Legacy: conservés pour compatibilité backward
                 toolExports.searchTasksByContentTool.definition,
                 toolExports.debugAnalyzeTool.definition,
                 {
@@ -312,6 +316,29 @@ export function registerCallToolHandler(
             case toolExports.viewTaskDetailsTool.definition.name:
                 result = await toolExports.viewTaskDetailsTool.handler(args as any, state.conversationCache);
                 break;
+            // CONS-11: Outil unifié roosync_search
+            case 'roosync_search':
+                result = await toolExports.handleRooSyncSearch(
+                    args as any,
+                    state.conversationCache,
+                    ensureSkeletonCacheIsFresh,
+                    toolExports.handleSearchTasksSemanticFallback,
+                    () => toolExports.handleDiagnoseSemanticIndex(state.conversationCache)
+                );
+                break;
+            // CONS-11: Outil unifié roosync_indexing
+            case 'roosync_indexing':
+                result = await toolExports.handleRooSyncIndexing(
+                    args as any,
+                    state.conversationCache,
+                    ensureSkeletonCacheIsFresh,
+                    saveSkeletonToDisk,
+                    state.qdrantIndexQueue,
+                    (enabled: boolean) => { state.isQdrantIndexingEnabled = enabled; },
+                    toolExports.rebuildTaskIndexFixed.handler
+                );
+                break;
+            // CONS-11 Legacy: search_tasks_by_content conservé pour backward compat
             case toolExports.searchTasksByContentTool.definition.name:
                 result = await toolExports.searchTasksByContentTool.handler(
                     args as any,
