@@ -11,8 +11,39 @@ import { z } from 'zod';
 import { zodToJsonSchema } from 'zod-to-json-schema';
 import { exec } from 'child_process';
 import { promisify } from 'util';
+import * as path from 'path';
+import * as fs from 'fs';
+import { fileURLToPath } from 'url';
 
 const execAsync = promisify(exec);
+
+/**
+ * Détecte la racine roo-extensions en remontant l'arborescence
+ */
+function findRooExtensionsRoot(): string {
+  // ESM-safe: use import.meta.url to get current file location
+  const currentFile = fileURLToPath(import.meta.url);
+  let dir = path.dirname(currentFile);
+  for (let i = 0; i < 10; i++) {
+    try {
+      fs.accessSync(path.join(dir, 'CLAUDE.md'));
+      return dir;
+    } catch {
+      dir = path.dirname(dir);
+    }
+  }
+  // Fallback: try process.cwd() and walk up
+  dir = process.cwd();
+  for (let i = 0; i < 10; i++) {
+    try {
+      fs.accessSync(path.join(dir, 'CLAUDE.md'));
+      return dir;
+    } catch {
+      dir = path.dirname(dir);
+    }
+  }
+  return process.cwd();
+}
 
 /**
  * Schema de validation pour roosync_refresh_dashboard
@@ -70,16 +101,19 @@ export async function roosyncRefreshDashboard(args: RefreshDashboardArgs): Promi
     console.log('[REFRESH DASHBOARD] Baseline:', baseline);
     console.log('[REFRESH DASHBOARD] OutputDir:', outputDir);
 
-    // Construire la commande PowerShell
-    const scriptPath = 'scripts/roosync/generate-mcp-dashboard.ps1';
-    const command = `pwsh -c "& '${scriptPath}' -Baseline '${baseline}' -OutputDir '${outputDir}'"`;
+    // Construire la commande PowerShell avec chemin absolu
+    const repoRoot = findRooExtensionsRoot();
+    const scriptPath = path.join(repoRoot, 'scripts', 'roosync', 'generate-mcp-dashboard.ps1');
+    const command = `pwsh -NoProfile -ExecutionPolicy Bypass -c "& '${scriptPath}' -Baseline '${baseline}' -OutputDir '${outputDir}'"`;
 
+    console.log('[REFRESH DASHBOARD] Repo root:', repoRoot);
     console.log('[REFRESH DASHBOARD] Exécution de la commande:', command);
 
-    // Exécuter le script PowerShell
+    // Exécuter le script PowerShell depuis la racine du repo
     const { stdout, stderr } = await execAsync(command, {
-      cwd: process.cwd(),
-      encoding: 'utf8'
+      cwd: repoRoot,
+      encoding: 'utf8',
+      env: { ...process.env, ROOSYNC_SHARED_PATH: sharedPath }
     });
 
     if (stderr && !stderr.includes('WARNING')) {
