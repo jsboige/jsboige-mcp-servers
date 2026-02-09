@@ -12,6 +12,7 @@ import { existsSync, promises as fs, mkdirSync } from 'fs';
 import { join } from 'path';
 import { createLogger } from '../utils/logger.js';
 import { MessageManagerError, MessageManagerErrorCode } from '../types/errors.js';
+import { parseMachineWorkspace, matchesRecipient } from '../utils/message-helpers.js';
 
 const logger = createLogger('MessageManager');
 
@@ -190,11 +191,15 @@ export class MessageManager {
   ): Promise<Message> {
     logger.info(`Sending message from ${from} to ${to}`);
 
-    // CORRECTION ROOSYNC PHASE 3 : Validation anti-auto-messages
-    // Empêcher une machine d'envoyer des messages à elle-même
-    if (from === to) {
+    // Validation anti-auto-messages (workspace-aware)
+    // Same machine + same workspace = blocked
+    // Same machine + different workspace = allowed
+    const fromParsed = parseMachineWorkspace(from);
+    const toParsed = parseMachineWorkspace(to);
+    if (fromParsed.machineId === toParsed.machineId &&
+        fromParsed.workspaceId === toParsed.workspaceId) {
       throw new MessageManagerError(
-        `Auto-message interdit : une machine (${from}) ne peut pas envoyer de message à elle-même (${to})`,
+        `Auto-message interdit : ${from} ne peut pas envoyer de message à ${to}`,
         MessageManagerErrorCode.INVALID_RECIPIENT,
         { from, to, type: 'self-message' }
       );
@@ -235,21 +240,28 @@ export class MessageManager {
 
   /**
    * Lit la boîte de réception d'une machine
-   * 
+   *
    * Filtre les messages par destinataire et statut, puis les trie
    * par ordre chronologique décroissant (plus récents en premier).
-   * 
+   *
+   * Supporte le format workspace: "machineId:workspaceId"
+   * - Messages à "machineId" (sans workspace) → visibles par tous les workspaces
+   * - Messages à "machineId:workspaceId" → visibles uniquement par ce workspace
+   * - Messages à "all" → visibles par tous
+   *
    * @param machineId ID de la machine destinataire
    * @param status Filtrer par statut (unread, read, all)
    * @param limit Nombre maximum de messages à retourner
+   * @param workspaceId ID optionnel du workspace pour filtrage
    * @returns Liste des messages correspondants
    */
   async readInbox(
     machineId: string,
     status?: 'unread' | 'read' | 'all',
-    limit?: number
+    limit?: number,
+    workspaceId?: string
   ): Promise<MessageListItem[]> {
-    logger.info(`Reading inbox for: ${machineId}`);
+    logger.info(`Reading inbox for: ${machineId}${workspaceId ? ':' + workspaceId : ''}`);
 
     if (!existsSync(this.inboxPath)) {
       logger.warn(`Inbox path does not exist: ${this.inboxPath}`);
@@ -267,8 +279,8 @@ export class MessageManager {
           const content = await fs.readFile(join(this.inboxPath, file), 'utf-8');
           const message: Message = JSON.parse(content);
 
-          // Filtrer par destinataire (supporte "All" et "all" pour les messages broadcast)
-          if (message.to !== machineId && message.to !== 'All' && message.to !== 'all') {
+          // Filtrer par destinataire (workspace-aware)
+          if (!matchesRecipient(message.to, machineId, workspaceId)) {
             continue;
           }
 
@@ -535,10 +547,11 @@ export class MessageManager {
    * de notifications push.
    *
    * @param machineId ID de la machine destinataire
+   * @param workspaceId ID optionnel du workspace pour filtrage
    * @returns Liste des messages non lus
    */
-  async checkNewMessages(machineId: string): Promise<MessageListItem[]> {
-    logger.info(`Checking for new messages for: ${machineId}`);
-    return await this.readInbox(machineId, 'unread');
+  async checkNewMessages(machineId: string, workspaceId?: string): Promise<MessageListItem[]> {
+    logger.info(`Checking for new messages for: ${machineId}${workspaceId ? ':' + workspaceId : ''}`);
+    return await this.readInbox(machineId, 'unread', undefined, workspaceId);
   }
 }

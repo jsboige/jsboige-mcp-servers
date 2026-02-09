@@ -29,6 +29,106 @@ export function getLocalMachineId(): string {
 }
 
 /**
+ * Récupère l'ID du workspace local (optionnel)
+ *
+ * @returns ID du workspace ou undefined si non configuré
+ *
+ * @example
+ * ```typescript
+ * // With ROOSYNC_WORKSPACE_ID=roo-extensions
+ * getLocalWorkspaceId(); // "roo-extensions"
+ * // Without env var
+ * getLocalWorkspaceId(); // undefined
+ * ```
+ */
+export function getLocalWorkspaceId(): string | undefined {
+  return process.env.ROOSYNC_WORKSPACE_ID || undefined;
+}
+
+/**
+ * Récupère l'identifiant complet local (machine + workspace optionnel)
+ *
+ * @returns "machineId:workspaceId" si workspace configuré, sinon "machineId"
+ *
+ * @example
+ * ```typescript
+ * // With ROOSYNC_WORKSPACE_ID=roo-extensions on myia-ai-01
+ * getLocalFullId(); // "myia-ai-01:roo-extensions"
+ * // Without workspace
+ * getLocalFullId(); // "myia-ai-01"
+ * ```
+ */
+export function getLocalFullId(): string {
+  const machineId = getLocalMachineId();
+  const workspaceId = getLocalWorkspaceId();
+  return workspaceId ? `${machineId}:${workspaceId}` : machineId;
+}
+
+/**
+ * Parse un identifiant composite "machineId:workspaceId" ou simple "machineId"
+ *
+ * @param id L'identifiant à parser
+ * @returns Objet avec machineId et workspaceId optionnel
+ *
+ * @example
+ * ```typescript
+ * parseMachineWorkspace("myia-ai-01:roo-extensions");
+ * // { machineId: "myia-ai-01", workspaceId: "roo-extensions" }
+ * parseMachineWorkspace("myia-ai-01");
+ * // { machineId: "myia-ai-01", workspaceId: undefined }
+ * ```
+ */
+export function parseMachineWorkspace(id: string): { machineId: string; workspaceId?: string } {
+  const colonIndex = id.indexOf(':');
+  if (colonIndex === -1) {
+    return { machineId: id };
+  }
+  return {
+    machineId: id.substring(0, colonIndex),
+    workspaceId: id.substring(colonIndex + 1)
+  };
+}
+
+/**
+ * Vérifie si un message correspond au destinataire local
+ *
+ * Règles de matching :
+ * - "all" / "All" → match tous
+ * - "machineId" (sans workspace) → match toutes les instances sur cette machine
+ * - "machineId:workspaceId" → match UNIQUEMENT ce workspace spécifique
+ *
+ * @param messageTo Destinataire du message
+ * @param localMachineId ID machine locale
+ * @param localWorkspaceId ID workspace local (optionnel)
+ * @returns true si le message correspond au destinataire local
+ */
+export function matchesRecipient(
+  messageTo: string,
+  localMachineId: string,
+  localWorkspaceId?: string
+): boolean {
+  // Broadcast
+  if (messageTo === 'all' || messageTo === 'All') {
+    return true;
+  }
+
+  const parsed = parseMachineWorkspace(messageTo);
+
+  // Machine must match
+  if (parsed.machineId !== localMachineId) {
+    return false;
+  }
+
+  // If message targets a specific workspace, only that workspace should see it
+  if (parsed.workspaceId) {
+    return localWorkspaceId === parsed.workspaceId;
+  }
+
+  // Message targets the whole machine (no workspace specified) → all workspaces see it
+  return true;
+}
+
+/**
  * Formatte la date en format français lisible
  *
  * @param isoDate Date au format ISO-8601

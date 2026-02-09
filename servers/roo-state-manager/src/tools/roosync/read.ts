@@ -17,7 +17,8 @@ import {
   formatDateFull,
   getPriorityIcon,
   getStatusIcon,
-  getLocalMachineId
+  getLocalMachineId,
+  getLocalWorkspaceId
 } from '../../utils/message-helpers.js';
 
 // Logger instance for read tool
@@ -57,13 +58,14 @@ async function readInboxMode(
   messageManager: MessageManager
 ): Promise<string> {
   const localMachineId = getLocalMachineId();
+  const localWorkspaceId = getLocalWorkspaceId();
   const status = args.status || 'all';
   const limit = args.limit;
 
-  logger.info('📬 Reading inbox', { status, limit });
+  logger.info('📬 Reading inbox', { machineId: localMachineId, workspaceId: localWorkspaceId, status, limit });
 
-  // Lire les messages via MessageManager
-  const messages = await messageManager.readInbox(localMachineId, status, limit);
+  // Lire les messages via MessageManager (workspace-aware)
+  const messages = await messageManager.readInbox(localMachineId, status, limit, localWorkspaceId);
 
   // Cas : aucun message
   if (messages.length === 0) {
@@ -77,7 +79,7 @@ Votre inbox est vide pour le moment.
 
   // Pour les compteurs, on doit refaire la requête sans filtre
   const allMessages = status !== 'all'
-    ? await messageManager.readInbox(localMachineId, 'all')
+    ? await messageManager.readInbox(localMachineId, 'all', undefined, localWorkspaceId)
     : messages;
 
   const totalMessages = allMessages.length;

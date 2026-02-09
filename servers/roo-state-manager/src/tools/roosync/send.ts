@@ -17,7 +17,8 @@ import {
   formatDateFull,
   getPriorityIcon,
   getStatusIcon,
-  getLocalMachineId
+  getLocalMachineId,
+  getLocalFullId
 } from '../../utils/message-helpers.js';
 
 // Logger instance for send tool
@@ -85,8 +86,8 @@ async function sendNewMessage(
     );
   }
 
-  // Obtenir l'ID de la machine locale
-  const from = getLocalMachineId();
+  // Obtenir l'ID complet local (machine + workspace si configuré)
+  const from = getLocalFullId();
   logger.debug('📍 Message routing', { from, to: args.to });
 
   // Envoyer le message
@@ -301,8 +302,8 @@ async function amendMessage(
     );
   }
 
-  // Obtenir l'ID de la machine locale (émetteur)
-  const senderId = getLocalMachineId();
+  // Obtenir l'ID complet local (émetteur, inclut workspace si configuré)
+  const senderId = getLocalFullId();
   logger.debug('🔐 Sender ID identified', { senderId });
 
   // Amender le message via MessageManager
@@ -379,7 +380,7 @@ export const sendToolMetadata = {
       },
       to: {
         type: 'string',
-        description: 'ID de la machine destinataire (ex: myia-ai-01). Requis pour action=send'
+        description: 'Destinataire : machine (ex: myia-ai-01) ou machine:workspace (ex: myia-ai-01:roo-extensions). Requis pour action=send'
       },
       subject: {
         type: 'string',
