@@ -103,6 +103,61 @@ describe('roosync_config - Schema Validation - Action Collect', () => {
     });
     expect(invalidEmpty.success).toBe(false);
   });
+
+  it('devrait accepter les nouveaux targets (roomodes, model-configs, rules)', async () => {
+    const module = await import('../../../../src/tools/roosync/config.js');
+
+    // Valide: roomodes seul
+    const roomodes = module.ConfigArgsSchema.safeParse({
+      action: 'collect',
+      targets: ['roomodes']
+    });
+    expect(roomodes.success).toBe(true);
+
+    // Valide: model-configs seul
+    const modelConfigs = module.ConfigArgsSchema.safeParse({
+      action: 'collect',
+      targets: ['model-configs']
+    });
+    expect(modelConfigs.success).toBe(true);
+
+    // Valide: rules seul
+    const rules = module.ConfigArgsSchema.safeParse({
+      action: 'collect',
+      targets: ['rules']
+    });
+    expect(rules.success).toBe(true);
+
+    // Valide: combinaison anciens et nouveaux targets
+    const combined = module.ConfigArgsSchema.safeParse({
+      action: 'collect',
+      targets: ['roomodes', 'rules', 'modes', 'mcp:jupyter']
+    });
+    expect(combined.success).toBe(true);
+  });
+
+  it('devrait accepter publish atomique avec les nouveaux targets', async () => {
+    const module = await import('../../../../src/tools/roosync/config.js');
+
+    const result = module.ConfigArgsSchema.safeParse({
+      action: 'publish',
+      targets: ['roomodes', 'rules'],
+      version: '1.0.0',
+      description: 'Deploy modes + rules'
+    });
+    expect(result.success).toBe(true);
+  });
+
+  it('devrait accepter apply avec les nouveaux targets', async () => {
+    const module = await import('../../../../src/tools/roosync/config.js');
+
+    const result = module.ConfigArgsSchema.safeParse({
+      action: 'apply',
+      targets: ['roomodes', 'rules', 'model-configs'],
+      machineId: 'myia-ai-01'
+    });
+    expect(result.success).toBe(true);
+  });
 });
 
 describe('roosync_config - Schema Validation - Action Publish', () => {
@@ -404,5 +459,32 @@ describe('roosync_config - Retrocompatibilité', () => {
       dryRun: true
     });
     expect(case5.success).toBe(true);
+
+    // Cas 6: apply avec nouveaux targets (roomodes, rules, model-configs)
+    const case6 = module.ConfigArgsSchema.safeParse({
+      action: 'apply',
+      targets: ['roomodes', 'rules', 'model-configs']
+    });
+    expect(case6.success).toBe(true);
+  });
+});
+
+describe('roosync_config - Metadata New Targets', () => {
+  it('devrait documenter les nouveaux targets dans la description', async () => {
+    const module = await import('../../../../src/tools/roosync/config.js');
+    const metadata = module.configToolMetadata;
+
+    expect(metadata.description).toContain('roomodes');
+    expect(metadata.description).toContain('model-configs');
+    expect(metadata.description).toContain('rules');
+  });
+
+  it('devrait documenter les targets dans le inputSchema', async () => {
+    const module = await import('../../../../src/tools/roosync/config.js');
+    const metadata = module.configToolMetadata;
+
+    expect(metadata.inputSchema.properties.targets.description).toContain('roomodes');
+    expect(metadata.inputSchema.properties.targets.description).toContain('model-configs');
+    expect(metadata.inputSchema.properties.targets.description).toContain('rules');
   });
 });

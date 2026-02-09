@@ -5,7 +5,7 @@
 export interface ConfigManifestFile {
   path: string;
   hash: string;
-  type: 'mode_definition' | 'mcp_config' | 'profile_settings' | 'other';
+  type: 'mode_definition' | 'mcp_config' | 'profile_settings' | 'roomodes_config' | 'model_config' | 'rules_config' | 'other';
   size: number;
 }
 
@@ -18,7 +18,7 @@ export interface ConfigManifest {
 }
 
 export interface CollectConfigOptions {
-  targets: ('modes' | 'mcp' | 'profiles' | `mcp:${string}`)[];
+  targets: ('modes' | 'mcp' | 'profiles' | 'roomodes' | 'model-configs' | 'rules' | `mcp:${string}`)[];
   dryRun?: boolean;
   description?: string;
 }
@@ -47,7 +47,7 @@ export interface PublishConfigResult {
 export interface ApplyConfigOptions {
   version?: string; // Défaut: latest
   machineId?: string; // CORRECTION SDDD : Optionnel, utilise ROOSYNC_MACHINE_ID par défaut
-  targets?: ('modes' | 'mcp' | 'profiles' | `mcp:${string}`)[];
+  targets?: ('modes' | 'mcp' | 'profiles' | 'roomodes' | 'model-configs' | 'rules' | `mcp:${string}`)[];
   backup?: boolean; // Défaut: true
   dryRun?: boolean;
 }

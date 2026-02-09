@@ -19,7 +19,7 @@ export const ConfigArgsSchema = z.object({
     (targets) => {
       if (!targets) return true;
       return targets.every(target => {
-        if (target === 'modes' || target === 'mcp' || target === 'profiles') {
+        if (target === 'modes' || target === 'mcp' || target === 'profiles' || target === 'roomodes' || target === 'model-configs' || target === 'rules') {
           return true;
         }
         if (target.startsWith('mcp:')) {
@@ -30,9 +30,9 @@ export const ConfigArgsSchema = z.object({
       });
     },
     {
-      message: "Target invalide. Valeurs acceptées: modes, mcp, profiles, ou mcp:<nomServeur>"
+      message: "Target invalide. Valeurs acceptées: modes, mcp, profiles, roomodes, model-configs, rules, ou mcp:<nomServeur>"
     }
-  ).describe('Liste des cibles à collecter/appliquer (modes, mcp, profiles, ou mcp:<nomServeur>). Défaut: ["modes", "mcp"]'),
+  ).describe('Liste des cibles à collecter/appliquer (modes, mcp, profiles, roomodes, model-configs, rules, ou mcp:<nomServeur>). Défaut: ["modes", "mcp"]'),
 
   // Pour publish (requiert collect préalable OU packagePath)
   packagePath: z.string().optional().describe('Chemin du package créé par collect. Si omis avec action=publish et targets fourni, fait collect+publish atomique'),
@@ -85,12 +85,12 @@ function parseTargets(targets?: string[]): ('modes' | 'mcp' | 'profiles' | `mcp:
       return target as `mcp:${string}`;
     }
 
-    if (target === 'modes' || target === 'mcp' || target === 'profiles') {
-      return target;
+    if (target === 'modes' || target === 'mcp' || target === 'profiles' || target === 'roomodes' || target === 'model-configs' || target === 'rules') {
+      return target as any;
     }
 
     throw new ConfigSharingServiceError(
-      `Target invalide: '${target}'. Valeurs acceptées: modes, mcp, profiles, ou mcp:<nomServeur>`,
+      `Target invalide: '${target}'. Valeurs acceptées: modes, mcp, profiles, roomodes, model-configs, rules, ou mcp:<nomServeur>`,
       ConfigSharingServiceErrorCode.INVALID_TARGET_FORMAT,
       { target }
     );
@@ -248,7 +248,7 @@ Consolide collect_config, publish_config, et apply_config en un seul outil actio
 
 **Actions disponibles:**
 
-- **collect**: Collecte la configuration locale (modes Roo, MCPs, profils)
+- **collect**: Collecte la configuration locale (modes Roo, MCPs, profils, roomodes, model-configs, rules)
   - Paramètres: targets (optional), dryRun (optional)
   - Output: packagePath, totalSize, manifest
 
@@ -261,6 +261,8 @@ Consolide collect_config, publish_config, et apply_config en un seul outil actio
   - Paramètres: version (optional, défaut: "latest"), machineId (optional), targets (optional, supporte mcp:<nom>), backup (optional, défaut: true), dryRun (optional)
   - Output: filesApplied, backupPath, errors
   - Validation version majeure automatique
+
+**Targets disponibles:** modes, mcp, profiles, roomodes, model-configs, rules, mcp:<nomServeur>
 
 **Note SDDD:** Stocke par machineId pour éviter les écrasements entre machines.`,
   inputSchema: {
@@ -282,7 +284,7 @@ Consolide collect_config, publish_config, et apply_config en un seul outil actio
       targets: {
         type: 'array',
         items: { type: 'string' },
-        description: 'Liste des cibles à collecter/appliquer (modes, mcp, profiles, ou mcp:<nomServeur>). Défaut: ["modes", "mcp"]'
+        description: 'Liste des cibles à collecter/appliquer (modes, mcp, profiles, roomodes, model-configs, rules, ou mcp:<nomServeur>). Défaut: ["modes", "mcp"]'
       },
       packagePath: {
         type: 'string',

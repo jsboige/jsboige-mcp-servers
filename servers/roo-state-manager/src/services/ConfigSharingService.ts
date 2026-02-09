@@ -2,6 +2,7 @@ import { promises as fs } from 'fs';
 import { join, dirname, basename } from 'path';
 import { existsSync, mkdirSync } from 'fs';
 import { createHash } from 'crypto';
+import { homedir } from 'os';
 import { ConfigNormalizationService } from './ConfigNormalizationService.js';
 import { ConfigDiffService } from './ConfigDiffService.js';
 import { JsonMerger } from '../utils/JsonMerger.js';
@@ -74,6 +75,24 @@ export class ConfigSharingService implements IConfigSharingService {
     if (options.targets.includes('profiles')) {
       const profileFiles = await this.collectProfiles(tempDir);
       manifest.files.push(...profileFiles);
+    }
+
+    // Collecte du .roomodes (workspace root)
+    if (options.targets.includes('roomodes')) {
+      const roomodesFiles = await this.collectRoomodes(tempDir);
+      manifest.files.push(...roomodesFiles);
+    }
+
+    // Collecte du model-configs.json
+    if (options.targets.includes('model-configs')) {
+      const modelConfigFiles = await this.collectModelConfigs(tempDir);
+      manifest.files.push(...modelConfigFiles);
+    }
+
+    // Collecte des rules globales
+    if (options.targets.includes('rules')) {
+      const rulesFiles = await this.collectRules(tempDir);
+      manifest.files.push(...rulesFiles);
     }
 
     // Calcul de la taille totale
@@ -259,6 +278,9 @@ export class ConfigSharingService implements IConfigSharingService {
       const hasMcpTarget = options.targets?.includes('mcp') || false;
       const hasModesTarget = options.targets?.includes('modes') || false;
       const hasProfilesTarget = options.targets?.includes('profiles') || false;
+      const hasRoomodesTarget = options.targets?.includes('roomodes') || false;
+      const hasModelConfigsTarget = options.targets?.includes('model-configs') || false;
+      const hasRulesTarget = options.targets?.includes('rules') || false;
 
       // Si aucun target n'est spécifié, tout appliquer par défaut
       const applyAll = options.targets === undefined || options.targets.length === 0;
@@ -268,6 +290,9 @@ export class ConfigSharingService implements IConfigSharingService {
         hasMcpTarget,
         hasModesTarget,
         hasProfilesTarget,
+        hasRoomodesTarget,
+        hasModelConfigsTarget,
+        hasRulesTarget,
         mcpServerNames
       });
 
@@ -285,6 +310,12 @@ export class ConfigSharingService implements IConfigSharingService {
             shouldProcess = hasMcpTarget || hasMcpTargets;
           } else if (file.path.startsWith('profiles/')) {
             shouldProcess = hasProfilesTarget;
+          } else if (file.path.startsWith('roomodes/')) {
+            shouldProcess = hasRoomodesTarget;
+          } else if (file.path.startsWith('model-configs/')) {
+            shouldProcess = hasModelConfigsTarget;
+          } else if (file.path.startsWith('rules/')) {
+            shouldProcess = hasRulesTarget;
           }
 
           if (!shouldProcess) {
@@ -313,6 +344,17 @@ export class ConfigSharingService implements IConfigSharingService {
               continue;
             }
             destPath = inventory.paths.mcpSettings;
+          } else if (file.path.startsWith('roomodes/')) {
+            // .roomodes -> workspace root
+            destPath = join(inventory.paths.rooExtensions, '.roomodes');
+          } else if (file.path.startsWith('model-configs/')) {
+            // model-configs.json -> roo-config/model-configs.json
+            destPath = join(inventory.paths.rooExtensions, 'roo-config', 'model-configs.json');
+          } else if (file.path.startsWith('rules/')) {
+            // rules/*.md -> ~/.roo/rules/{filename}
+            const fileName = basename(file.path);
+            const rulesDir = join(homedir(), '.roo', 'rules');
+            destPath = join(rulesDir, fileName);
           } else {
             this.logger.warn(`Type de fichier non supporté ou chemin inconnu: ${file.path}`);
             continue;
@@ -320,7 +362,39 @@ export class ConfigSharingService implements IConfigSharingService {
 
           if (!destPath) continue;
 
-          // Lecture du contenu source
+          // Traitement spécial pour les fichiers non-JSON (rules = markdown)
+          const isTextFile = file.type === 'rules_config';
+          if (isTextFile) {
+            const rawContent = await fs.readFile(sourcePath, 'utf-8');
+            let action = 'create';
+
+            if (existsSync(destPath)) {
+              action = 'update';
+              // Backup si non dryRun
+              if (!options.dryRun) {
+                const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
+                const backupPath = `${destPath}.backup_${timestamp}`;
+                await fs.copyFile(destPath, backupPath);
+                this.logger.info(`Backup créé: ${backupPath}`);
+              }
+            }
+
+            details.push({
+              file: file.path,
+              dest: destPath,
+              action,
+              size: rawContent.length
+            });
+
+            if (!options.dryRun) {
+              await fs.mkdir(dirname(destPath), { recursive: true });
+              await fs.writeFile(destPath, rawContent, 'utf-8');
+              filesApplied++;
+            }
+            continue;
+          }
+
+          // Lecture du contenu source (JSON)
           const sourceContent = JSON.parse(await fs.readFile(sourcePath, 'utf-8'));
 
           // Issue #349: Filtrage granulaire des serveurs MCP si targets mcp:xxx sont spécifiés
@@ -354,10 +428,14 @@ export class ConfigSharingService implements IConfigSharingService {
 
           if (existsSync(destPath)) {
             action = 'update';
-            const localContent = JSON.parse(await fs.readFile(destPath, 'utf-8'));
 
-            // Fusion
-            finalContent = JsonMerger.merge(finalContent, localContent, { arrayStrategy: 'replace' });
+            // Pour roomodes et model-configs : remplacement complet (pas de merge)
+            // Pour modes/mcp/profiles : fusion JSON
+            const isReplacementTarget = file.type === 'roomodes_config' || file.type === 'model_config';
+            if (!isReplacementTarget) {
+              const localContent = JSON.parse(await fs.readFile(destPath, 'utf-8'));
+              finalContent = JsonMerger.merge(finalContent, localContent, { arrayStrategy: 'replace' });
+            }
 
             // Backup si non dryRun
             if (!options.dryRun) {
@@ -669,6 +747,153 @@ export class ConfigSharingService implements IConfigSharingService {
       } catch (error) {
         this.logger.warn(`Erreur lors de la lecture de la baseline: ${error}`);
       }
+    }
+
+    return files;
+  }
+
+  /**
+   * Collecte le fichier .roomodes depuis la racine du workspace
+   */
+  private async collectRoomodes(tempDir: string): Promise<ConfigManifestFile[]> {
+    const files: ConfigManifestFile[] = [];
+    const roomodesDir = join(tempDir, 'roomodes');
+    await fs.mkdir(roomodesDir, { recursive: true });
+
+    const machineId = process.env.ROOSYNC_MACHINE_ID || process.env.COMPUTERNAME || 'localhost';
+    const inventory = await this.inventoryService.getMachineInventory() as any;
+
+    if (!inventory?.paths?.rooExtensions) {
+      throw new ConfigSharingServiceError(
+        'Inventaire incomplet: paths.rooExtensions non disponible. Impossible de collecter .roomodes.',
+        ConfigSharingServiceErrorCode.INVENTORY_INCOMPLETE,
+        { machineId, missingPath: 'rooExtensions' }
+      );
+    }
+
+    const roomodesPath = join(inventory.paths.rooExtensions, '.roomodes');
+    this.logger.info(`Collecte de .roomodes depuis: ${roomodesPath}`);
+
+    if (existsSync(roomodesPath)) {
+      const destPath = join(roomodesDir, '.roomodes');
+
+      // .roomodes est un fichier JSON - on le lit et normalise
+      const content = JSON.parse(await fs.readFile(roomodesPath, 'utf-8'));
+      const normalized = await this.normalizationService.normalize(content, 'roomodes_config');
+      await fs.writeFile(destPath, JSON.stringify(normalized, null, 2));
+
+      const hash = await this.calculateHash(destPath);
+      const stats = await fs.stat(destPath);
+
+      files.push({
+        path: 'roomodes/.roomodes',
+        hash,
+        type: 'roomodes_config',
+        size: stats.size
+      });
+
+      this.logger.info(`.roomodes collecté: ${stats.size} bytes`);
+    } else {
+      this.logger.warn(`.roomodes non trouvé: ${roomodesPath}`);
+    }
+
+    return files;
+  }
+
+  /**
+   * Collecte le fichier model-configs.json depuis roo-config/
+   */
+  private async collectModelConfigs(tempDir: string): Promise<ConfigManifestFile[]> {
+    const files: ConfigManifestFile[] = [];
+    const modelDir = join(tempDir, 'model-configs');
+    await fs.mkdir(modelDir, { recursive: true });
+
+    const machineId = process.env.ROOSYNC_MACHINE_ID || process.env.COMPUTERNAME || 'localhost';
+    const inventory = await this.inventoryService.getMachineInventory() as any;
+
+    if (!inventory?.paths?.rooExtensions) {
+      throw new ConfigSharingServiceError(
+        'Inventaire incomplet: paths.rooExtensions non disponible. Impossible de collecter model-configs.',
+        ConfigSharingServiceErrorCode.INVENTORY_INCOMPLETE,
+        { machineId, missingPath: 'rooExtensions' }
+      );
+    }
+
+    const modelConfigPath = join(inventory.paths.rooExtensions, 'roo-config', 'model-configs.json');
+    this.logger.info(`Collecte de model-configs.json depuis: ${modelConfigPath}`);
+
+    if (existsSync(modelConfigPath)) {
+      const destPath = join(modelDir, 'model-configs.json');
+
+      const content = JSON.parse(await fs.readFile(modelConfigPath, 'utf-8'));
+      const normalized = await this.normalizationService.normalize(content, 'model_config');
+      await fs.writeFile(destPath, JSON.stringify(normalized, null, 2));
+
+      const hash = await this.calculateHash(destPath);
+      const stats = await fs.stat(destPath);
+
+      files.push({
+        path: 'model-configs/model-configs.json',
+        hash,
+        type: 'model_config',
+        size: stats.size
+      });
+
+      this.logger.info(`model-configs.json collecté: ${stats.size} bytes`);
+    } else {
+      this.logger.warn(`model-configs.json non trouvé: ${modelConfigPath}`);
+    }
+
+    return files;
+  }
+
+  /**
+   * Collecte les rules globales depuis roo-config/rules-global/
+   * Les rules sont des fichiers Markdown (pas du JSON), copies tels quels.
+   */
+  private async collectRules(tempDir: string): Promise<ConfigManifestFile[]> {
+    const files: ConfigManifestFile[] = [];
+    const rulesDir = join(tempDir, 'rules');
+    await fs.mkdir(rulesDir, { recursive: true });
+
+    const machineId = process.env.ROOSYNC_MACHINE_ID || process.env.COMPUTERNAME || 'localhost';
+    const inventory = await this.inventoryService.getMachineInventory() as any;
+
+    if (!inventory?.paths?.rooExtensions) {
+      throw new ConfigSharingServiceError(
+        'Inventaire incomplet: paths.rooExtensions non disponible. Impossible de collecter les rules.',
+        ConfigSharingServiceErrorCode.INVENTORY_INCOMPLETE,
+        { machineId, missingPath: 'rooExtensions' }
+      );
+    }
+
+    const rulesGlobalPath = join(inventory.paths.rooExtensions, 'roo-config', 'rules-global');
+    this.logger.info(`Collecte des rules depuis: ${rulesGlobalPath}`);
+
+    if (existsSync(rulesGlobalPath)) {
+      const entries = await fs.readdir(rulesGlobalPath);
+      for (const entry of entries) {
+        if (entry.endsWith('.md')) {
+          const srcPath = join(rulesGlobalPath, entry);
+          const destPath = join(rulesDir, entry);
+
+          // Les rules sont des fichiers texte - copie brute sans normalisation JSON
+          await fs.copyFile(srcPath, destPath);
+
+          const hash = await this.calculateHash(destPath);
+          const stats = await fs.stat(destPath);
+
+          files.push({
+            path: `rules/${entry}`,
+            hash,
+            type: 'rules_config',
+            size: stats.size
+          });
+        }
+      }
+      this.logger.info(`${files.length} rules collectées depuis rules-global/`);
+    } else {
+      this.logger.warn(`Répertoire rules-global non trouvé: ${rulesGlobalPath}`);
     }
 
     return files;

@@ -1,7 +1,7 @@
 import { homedir } from 'os';
 import { join, sep, isAbsolute, normalize } from 'path';
 
-export type ConfigType = 'mcp_config' | 'mode_definition' | 'profile_settings';
+export type ConfigType = 'mcp_config' | 'mode_definition' | 'profile_settings' | 'roomodes_config' | 'model_config' | 'rules_config';
 
 export interface MachineContext {
   os: 'windows' | 'linux' | 'darwin';
