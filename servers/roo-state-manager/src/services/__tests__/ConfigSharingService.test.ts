@@ -102,6 +102,85 @@ describe('ConfigSharingService', () => {
     });
   });
 
+  // Tests pour les nouveaux targets: roomodes, model-configs, rules
+  describe('collectConfig with roomodes target', () => {
+    it('should handle roomodes target without errors when .roomodes does not exist', async () => {
+      const result = await service.collectConfig({
+        targets: ['roomodes'],
+        description: 'Test collect roomodes from non-existent path'
+      });
+
+      expect(result).toBeDefined();
+      expect(result.manifest).toBeDefined();
+      expect(result.manifest.files).toBeInstanceOf(Array);
+      // filesCount = 0 car le fichier .roomodes n'existe pas au mock path
+      expect(result.filesCount).toBe(0);
+    });
+
+    it('should return valid manifest structure for roomodes', async () => {
+      const result = await service.collectConfig({
+        targets: ['roomodes'],
+        description: 'Test roomodes manifest'
+      });
+
+      expect(result.manifest.description).toBe('Test roomodes manifest');
+      expect(result.manifest.timestamp).toBeDefined();
+      expect(result.manifest.files).toBeInstanceOf(Array);
+    });
+  });
+
+  describe('collectConfig with model-configs target', () => {
+    it('should handle model-configs target without errors when file does not exist', async () => {
+      const result = await service.collectConfig({
+        targets: ['model-configs'],
+        description: 'Test collect model-configs from non-existent path'
+      });
+
+      expect(result).toBeDefined();
+      expect(result.manifest).toBeDefined();
+      expect(result.manifest.files).toBeInstanceOf(Array);
+      expect(result.filesCount).toBe(0);
+    });
+  });
+
+  describe('collectConfig with rules target', () => {
+    it('should handle rules target without errors when rules-global dir does not exist', async () => {
+      const result = await service.collectConfig({
+        targets: ['rules'],
+        description: 'Test collect rules from non-existent path'
+      });
+
+      expect(result).toBeDefined();
+      expect(result.manifest).toBeDefined();
+      expect(result.manifest.files).toBeInstanceOf(Array);
+      expect(result.filesCount).toBe(0);
+    });
+  });
+
+  describe('collectConfig with combined new targets', () => {
+    it('should handle all new targets together without errors', async () => {
+      const result = await service.collectConfig({
+        targets: ['roomodes', 'model-configs', 'rules'],
+        description: 'Test all new targets combined'
+      });
+
+      expect(result).toBeDefined();
+      expect(result.manifest).toBeDefined();
+      expect(result.manifest.files).toBeInstanceOf(Array);
+      expect(result.filesCount).toBe(0);
+    });
+
+    it('should handle mix of old and new targets', async () => {
+      const result = await service.collectConfig({
+        targets: ['modes', 'roomodes', 'rules', 'profiles'],
+        description: 'Test mixed old and new targets'
+      });
+
+      expect(result).toBeDefined();
+      expect(result.manifest).toBeDefined();
+    });
+  });
+
   // Issue #349: Tests pour le filtrage granulaire des targets mcp:xxx
   describe('applyConfig with granular targets', () => {
 
@@ -170,6 +249,50 @@ describe('ConfigSharingService', () => {
       });
 
       expect(result).toBeDefined();
+    });
+
+    it('should filter files based on roomodes target', async () => {
+      const result = await service.applyConfig({
+        version: 'latest',
+        targets: ['roomodes'],
+        dryRun: true
+      });
+
+      expect(result).toBeDefined();
+      expect(typeof result.success).toBe('boolean');
+    });
+
+    it('should filter files based on model-configs target', async () => {
+      const result = await service.applyConfig({
+        version: 'latest',
+        targets: ['model-configs'],
+        dryRun: true
+      });
+
+      expect(result).toBeDefined();
+      expect(typeof result.success).toBe('boolean');
+    });
+
+    it('should filter files based on rules target', async () => {
+      const result = await service.applyConfig({
+        version: 'latest',
+        targets: ['rules'],
+        dryRun: true
+      });
+
+      expect(result).toBeDefined();
+      expect(typeof result.success).toBe('boolean');
+    });
+
+    it('should handle all new targets combined in apply', async () => {
+      const result = await service.applyConfig({
+        version: 'latest',
+        targets: ['roomodes', 'model-configs', 'rules'],
+        dryRun: true
+      });
+
+      expect(result).toBeDefined();
+      expect(typeof result.success).toBe('boolean');
     });
   });
 
