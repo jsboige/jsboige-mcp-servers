@@ -665,6 +665,15 @@ export function registerCallToolHandler(
                    result = { content: [{ type: 'text', text: `Error: ${(error as Error).message}` }], isError: true };
                }
                break;
+           // CONS-#443 Groupe 3: Consolidation MCP management (manage_mcp_settings + rebuild_and_restart_mcp + touch_mcp_settings → roosync_mcp_management)
+           case 'roosync_mcp_management':
+               try {
+                   const mcpManagementResult = await toolExports.roosyncMcpManagement(args as any);
+                   result = { content: [{ type: 'text', text: JSON.stringify(mcpManagementResult, null, 2) }] };
+               } catch (error) {
+                   result = { content: [{ type: 'text', text: `Error: ${(error as Error).message}` }], isError: true };
+               }
+               break;
            default:
                throw new GenericError(`Tool not found: ${name}`, GenericErrorCode.INVALID_ARGUMENT);
        }

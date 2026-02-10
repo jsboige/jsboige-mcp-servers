@@ -258,6 +258,10 @@ export { roosyncHeartbeatService, heartbeatServiceToolMetadata } from './heartbe
 // Remplace sync-on-offline + sync-on-online
 export { roosyncSyncEvent, syncEventToolMetadata } from './sync-event.js';
 
+// CONS-#443 Groupe 3: Outil consolidé de gestion MCP (3→1)
+// Remplace manage_mcp_settings + rebuild_and_restart_mcp + touch_mcp_settings
+export { roosyncMcpManagement, mcpManagementToolMetadata } from './mcp-management.js';
+
 // Export des outils de dashboard (T3.17)
 export { roosyncRefreshDashboard, refreshDashboardToolMetadata } from './refresh-dashboard.js';
 
@@ -290,6 +294,9 @@ import { heartbeatServiceToolMetadata } from './heartbeat-service.js';
 
 // CONS-#443 Groupe 2: Import de l'outil consolidé de synchronisation
 import { syncEventToolMetadata } from './sync-event.js';
+
+// CONS-#443 Groupe 3: Import de l'outil consolidé de gestion MCP
+import { mcpManagementToolMetadata } from './mcp-management.js';
 
 // Import des métadonnées des outils de dashboard (T3.17)
 import { refreshDashboardToolMetadata } from './refresh-dashboard.js';
@@ -354,7 +361,7 @@ const exportBaselineToolMetadata = {
 
 /**
  * Liste de tous les outils RooSync pour enregistrement MCP
- * Version 3.8 : 18 outils (CONS-#443 Groupe 2: sync events 2→1)
+ * Version 3.9 : 19 outils (CONS-#443 Groupe 3: MCP management 3→1)
  *
  * - Configuration: init, compare-config, roosync_config (CONS-3), baseline (CONS-4)
  * - Services: inventory (CONS-6), machines (CONS-6)
@@ -363,6 +370,7 @@ const exportBaselineToolMetadata = {
  * - Heartbeat (CONS-2): heartbeat-status, heartbeat-service
  * - Synchronisation automatique (CONS-#443 Groupe 2): roosync_sync_event
  * - Messagerie (CONS-1): roosync_send, roosync_read, roosync_manage
+ * - Gestion MCP (CONS-#443 Groupe 3): roosync_mcp_management
  * - Debug: debug-reset
  */
 export const roosyncTools = [
@@ -383,6 +391,8 @@ export const roosyncTools = [
   heartbeatServiceToolMetadata,
   // CONS-#443 Groupe 2: Outil consolidé de synchronisation (sync-on-offline + sync-on-online → roosync_sync_event)
   syncEventToolMetadata,
+  // CONS-#443 Groupe 3: Outil consolidé de gestion MCP (manage_mcp_settings + rebuild_and_restart_mcp + touch_mcp_settings → roosync_mcp_management)
+  mcpManagementToolMetadata,
   // Outils de dashboard (T3.17)
   refreshDashboardToolMetadata,
   // CONS-1: Outils de messagerie consolidés (6→3)
