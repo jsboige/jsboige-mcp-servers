@@ -620,6 +620,15 @@ export function registerCallToolHandler(
                    result = { content: [{ type: 'text', text: `Error: ${(error as Error).message}` }], isError: true };
                }
                break;
+           // CONS-#443 Groupe 2: Consolidation sync events (sync_on_offline + sync_on_online → roosync_sync_event)
+           case 'roosync_sync_event':
+               try {
+                   const syncEventResult = await toolExports.roosyncSyncEvent(args as any);
+                   result = { content: [{ type: 'text', text: JSON.stringify(syncEventResult, null, 2) }] };
+               } catch (error) {
+                   result = { content: [{ type: 'text', text: `Error: ${(error as Error).message}` }], isError: true };
+               }
+               break;
            default:
                throw new GenericError(`Tool not found: ${name}`, GenericErrorCode.INVALID_ARGUMENT);
        }

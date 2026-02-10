@@ -254,9 +254,9 @@ export { roosyncCheckHeartbeats, checkHeartbeatsToolMetadata } from './check-hea
 export { roosyncHeartbeatStatus, heartbeatStatusToolMetadata } from './heartbeat-status.js';
 export { roosyncHeartbeatService, heartbeatServiceToolMetadata } from './heartbeat-service.js';
 
-// Export des outils de synchronisation automatique (T3.16)
-export { roosyncSyncOnOffline, syncOnOfflineToolMetadata } from './sync-on-offline.js';
-export { roosyncSyncOnOnline, syncOnOnlineToolMetadata } from './sync-on-online.js';
+// CONS-#443 Groupe 2: Outil consolidé de synchronisation automatique (2→1)
+// Remplace sync-on-offline + sync-on-online
+export { roosyncSyncEvent, syncEventToolMetadata } from './sync-event.js';
 
 // Export des outils de dashboard (T3.17)
 export { roosyncRefreshDashboard, refreshDashboardToolMetadata } from './refresh-dashboard.js';
@@ -288,9 +288,8 @@ import { machinesToolMetadata } from './machines.js';
 import { heartbeatStatusToolMetadata } from './heartbeat-status.js';
 import { heartbeatServiceToolMetadata } from './heartbeat-service.js';
 
-// Import des métadonnées des outils de synchronisation automatique (T3.16)
-import { syncOnOfflineToolMetadata } from './sync-on-offline.js';
-import { syncOnOnlineToolMetadata } from './sync-on-online.js';
+// CONS-#443 Groupe 2: Import de l'outil consolidé de synchronisation
+import { syncEventToolMetadata } from './sync-event.js';
 
 // Import des métadonnées des outils de dashboard (T3.17)
 import { refreshDashboardToolMetadata } from './refresh-dashboard.js';
@@ -355,14 +354,14 @@ const exportBaselineToolMetadata = {
 
 /**
  * Liste de tous les outils RooSync pour enregistrement MCP
- * Version 3.7 : 19 outils (CONS-5: decisions 5→2)
+ * Version 3.8 : 18 outils (CONS-#443 Groupe 2: sync events 2→1)
  *
  * - Configuration: init, compare-config, roosync_config (CONS-3), baseline (CONS-4)
  * - Services: inventory (CONS-6), machines (CONS-6)
  * - Presentation: get-status, list-diffs, refresh-dashboard
  * - Decision (CONS-5): roosync_decision, roosync_decision_info
  * - Heartbeat (CONS-2): heartbeat-status, heartbeat-service
- * - Synchronisation automatique: sync-on-offline, sync-on-online
+ * - Synchronisation automatique (CONS-#443 Groupe 2): roosync_sync_event
  * - Messagerie (CONS-1): roosync_send, roosync_read, roosync_manage
  * - Debug: debug-reset
  */
@@ -382,9 +381,8 @@ export const roosyncTools = [
   // CONS-2: heartbeat consolidés (7→2)
   heartbeatStatusToolMetadata,
   heartbeatServiceToolMetadata,
-  // Outils de synchronisation automatique (T3.16)
-  syncOnOfflineToolMetadata,
-  syncOnOnlineToolMetadata,
+  // CONS-#443 Groupe 2: Outil consolidé de synchronisation (sync-on-offline + sync-on-online → roosync_sync_event)
+  syncEventToolMetadata,
   // Outils de dashboard (T3.17)
   refreshDashboardToolMetadata,
   // CONS-1: Outils de messagerie consolidés (6→3)
