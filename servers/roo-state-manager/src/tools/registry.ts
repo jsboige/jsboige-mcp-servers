@@ -674,6 +674,15 @@ export function registerCallToolHandler(
                    result = { content: [{ type: 'text', text: `Error: ${(error as Error).message}` }], isError: true };
                }
                break;
+           // CONS-#443 Groupe 4: Consolidation Storage management (storage_info + maintenance → roosync_storage_management)
+           case 'roosync_storage_management':
+               try {
+                   const storageManagementResult = await toolExports.roosyncStorageManagement(args as any, state.conversationCache, state);
+                   result = { content: [{ type: 'text', text: JSON.stringify(storageManagementResult, null, 2) }] };
+               } catch (error) {
+                   result = { content: [{ type: 'text', text: `Error: ${(error as Error).message}` }], isError: true };
+               }
+               break;
            default:
                throw new GenericError(`Tool not found: ${name}`, GenericErrorCode.INVALID_ARGUMENT);
        }
