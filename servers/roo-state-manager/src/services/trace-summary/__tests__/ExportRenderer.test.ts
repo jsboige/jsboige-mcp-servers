@@ -818,10 +818,10 @@ describe('ExportRenderer - countItemsByType (indirect via console logging)', () 
         await renderer.renderConversationContent(content, options);
 
         const logCalls = consoleSpy.mock.calls.map(c => c[0]);
-        const beforeLog = logCalls.find((msg: string) =>
+        const beforeLog = logCalls.find((msg: unknown) =>
             typeof msg === 'string' && msg.includes('AVANT filtrage')
         );
-        const afterLog = logCalls.find((msg: string) =>
+        const afterLog = logCalls.find((msg: unknown) =>
             typeof msg === 'string' && msg.includes('filtrage')
         );
         expect(beforeLog).toBeDefined();
@@ -841,7 +841,7 @@ describe('ExportRenderer - countItemsByType (indirect via console logging)', () 
         await renderer.renderConversationContent(content, options);
 
         const logCalls = consoleSpy.mock.calls.map(c => c[0]);
-        const beforeLog = logCalls.find((msg: string) =>
+        const beforeLog = logCalls.find((msg: unknown) =>
             typeof msg === 'string' && msg.includes('AVANT filtrage')
         );
         expect(beforeLog).toBeDefined();
@@ -867,7 +867,7 @@ describe('ExportRenderer - countItemsByType (indirect via console logging)', () 
         await renderer.renderConversationContent(content, options);
 
         const logCalls = consoleSpy.mock.calls.map(c => c[0]);
-        const beforeLog = logCalls.find((msg: string) =>
+        const beforeLog = logCalls.find((msg: unknown) =>
             typeof msg === 'string' && msg.includes('AVANT filtrage')
         );
         expect(beforeLog).toBeDefined();
