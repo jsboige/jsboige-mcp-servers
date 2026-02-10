@@ -40,7 +40,11 @@ export async function loadSkeletonsFromDisk(conversationCache: Map<string, Conve
             for (const file of jsonFiles) {
                 try {
                     const filePath = path.join(skeletonsCacheDir, file);
-                    const content = await fs.readFile(filePath, 'utf8');
+                    let content = await fs.readFile(filePath, 'utf8');
+                    // Strip BOM UTF-8 si présent (fix Windows encoding issues)
+                    if (content.charCodeAt(0) === 0xFEFF) {
+                        content = content.slice(1);
+                    }
                     const skeleton: ConversationSkeleton = JSON.parse(content);
                     conversationCache.set(skeleton.taskId, skeleton);
                 } catch (error) {
