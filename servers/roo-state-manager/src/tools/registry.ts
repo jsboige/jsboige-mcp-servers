@@ -10,6 +10,8 @@ import { CallToolRequestSchema, ListToolsRequestSchema, CallToolResult } from '@
 import { ServerState } from '../services/state-manager.service.js';
 import * as toolExports from './index.js';
 import { GenericError, GenericErrorCode } from '../types/errors.js';
+import { RooStorageDetector } from '../utils/roo-storage-detector.js';
+import * as path from 'path';
 
 /**
  * Enregistre le handler pour ListTools
@@ -283,7 +285,31 @@ export function registerCallToolHandler(
            case toolExports.roosyncSummarizeTool.name: {
                const summaryResult = await toolExports.handleRooSyncSummarize(
                    args as any,
-                   async (id: string) => state.conversationCache.get(id) || null,
+                   async (id: string) => {
+                       // D'abord essayer le cache
+                       const cached = state.conversationCache.get(id);
+                       if (cached) return cached;
+
+                       // Fallback: générer le squelette à la volée depuis les fichiers Roo
+                       // Fix #449: roosync_summarize échouait pour conversations sans squelette pré-généré
+                       try {
+                           const locations = await RooStorageDetector.detectStorageLocations();
+                           for (const location of locations) {
+                               const taskPath = path.join(location, id);
+                               const skeleton = await RooStorageDetector.analyzeConversation(id, taskPath);
+                               if (skeleton) {
+                                   // Ajouter au cache pour la prochaine fois
+                                   state.conversationCache.set(id, skeleton);
+                                   console.log(`[#449 Fix] Generated skeleton on-the-fly for ${id}`);
+                                   return skeleton;
+                               }
+                           }
+                       } catch (error) {
+                           console.warn(`[#449 Fix] Failed to generate skeleton on-the-fly for ${id}:`, error);
+                       }
+
+                       return null;
+                   },
                    async (rootId: string) => {
                        // Fonction findChildTasks pour le mode cluster
                        const allTasks = Array.from(state.conversationCache.values());
