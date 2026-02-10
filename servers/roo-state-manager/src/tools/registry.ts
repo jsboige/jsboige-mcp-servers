@@ -12,6 +12,7 @@ import * as toolExports from './index.js';
 import { GenericError, GenericErrorCode } from '../types/errors.js';
 import { RooStorageDetector } from '../utils/roo-storage-detector.js';
 import * as path from 'path';
+import { existsSync } from 'fs';
 
 /**
  * Enregistre le handler pour ListTools
@@ -286,34 +287,43 @@ export function registerCallToolHandler(
                const summaryResult = await toolExports.handleRooSyncSummarize(
                    args as any,
                    async (id: string) => {
-                       // D'abord essayer le cache
+                       // 1. Try RAM cache first
                        const cached = state.conversationCache.get(id);
                        if (cached) return cached;
-
-                       // Fallback: générer le squelette à la volée depuis les fichiers Roo
-                       // Fix #449: roosync_summarize échouait pour conversations sans squelette pré-généré
+                       // 2. Fallback: scan disk for Roo conversations (#449)
                        try {
                            const locations = await RooStorageDetector.detectStorageLocations();
-                           for (const location of locations) {
-                               const taskPath = path.join(location, id);
-                               const skeleton = await RooStorageDetector.analyzeConversation(id, taskPath);
-                               if (skeleton) {
-                                   // Ajouter au cache pour la prochaine fois
-                                   state.conversationCache.set(id, skeleton);
-                                   console.log(`[#449 Fix] Generated skeleton on-the-fly for ${id}`);
-                                   return skeleton;
+                           for (const loc of locations) {
+                               const taskPath = path.join(loc, id);
+                               if (existsSync(taskPath)) {
+                                   const skeleton = await RooStorageDetector.analyzeConversation(id, taskPath);
+                                   if (skeleton) {
+                                       state.conversationCache.set(id, skeleton);
+                                       return skeleton;
+                                   }
                                }
                            }
-                       } catch (error) {
-                           console.warn(`[#449 Fix] Failed to generate skeleton on-the-fly for ${id}:`, error);
-                       }
-
+                       } catch { /* disk fallback failed, return null */ }
                        return null;
                    },
                    async (rootId: string) => {
                        // Fonction findChildTasks pour le mode cluster
                        const allTasks = Array.from(state.conversationCache.values());
-                       return allTasks.filter(task => task.metadata?.parentTaskId === rootId);
+                       // Also check disk for child tasks (#449)
+                       try {
+                           const locations = await RooStorageDetector.detectStorageLocations();
+                           for (const loc of locations) {
+                               const taskPath = path.join(loc, rootId);
+                               if (existsSync(taskPath)) {
+                                   const skeleton = await RooStorageDetector.analyzeConversation(rootId, taskPath);
+                                   if (skeleton && !state.conversationCache.has(rootId)) {
+                                       state.conversationCache.set(rootId, skeleton);
+                                   }
+                               }
+                           }
+                       } catch { /* ignore disk errors */ }
+                       const allTasksUpdated = Array.from(state.conversationCache.values());
+                       return allTasksUpdated.filter(task => task.metadata?.parentTaskId === rootId);
                    }
                );
                result = { content: [{ type: 'text', text: summaryResult }] };
@@ -642,6 +652,24 @@ export function registerCallToolHandler(
                try {
                    const roosyncResult = await toolExports.roosyncRefreshDashboard(args as any);
                    result = { content: [{ type: 'text', text: JSON.stringify(roosyncResult, null, 2) }] };
+               } catch (error) {
+                   result = { content: [{ type: 'text', text: `Error: ${(error as Error).message}` }], isError: true };
+               }
+               break;
+           // CONS-#443 Groupe 2: Consolidation sync events (sync_on_offline + sync_on_online → roosync_sync_event)
+           case 'roosync_sync_event':
+               try {
+                   const syncEventResult = await toolExports.roosyncSyncEvent(args as any);
+                   result = { content: [{ type: 'text', text: JSON.stringify(syncEventResult, null, 2) }] };
+               } catch (error) {
+                   result = { content: [{ type: 'text', text: `Error: ${(error as Error).message}` }], isError: true };
+               }
+               break;
+           // CONS-#443 Groupe 3: Consolidation MCP management (manage_mcp_settings + rebuild_and_restart_mcp + touch_mcp_settings → roosync_mcp_management)
+           case 'roosync_mcp_management':
+               try {
+                   const mcpManagementResult = await toolExports.roosyncMcpManagement(args as any);
+                   result = { content: [{ type: 'text', text: JSON.stringify(mcpManagementResult, null, 2) }] };
                } catch (error) {
                    result = { content: [{ type: 'text', text: `Error: ${(error as Error).message}` }], isError: true };
                }

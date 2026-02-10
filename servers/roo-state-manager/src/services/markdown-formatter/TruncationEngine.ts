@@ -11,16 +11,16 @@ export class TruncationEngine {
     /**
      * Troncature intelligente des paramètres d'outils
      */
-    static truncateToolParameters(params: any, options?: TruncationOptions): { content: string, wasTruncated: boolean } {
+    static truncateToolParameters(params: any, options?: Partial<TruncationOptions>): { content: string, wasTruncated: boolean } {
         const maxLength = options?.maxParameterLength ?? 500;
         const preserveStructure = options?.preserveStructure ?? true;
-        
+
         if (!params) {
             return { content: 'N/A', wasTruncated: false };
         }
 
         let content = typeof params === 'string' ? params : JSON.stringify(params, null, 2);
-        
+
         if (content.length <= maxLength) {
             return { content, wasTruncated: false };
         }
@@ -40,7 +40,7 @@ export class TruncationEngine {
     /**
      * Troncature intelligente des résultats d'outils
      */
-    static truncateToolResult(result: any, options?: TruncationOptions): { content: string, wasTruncated: boolean } {
+    static truncateToolResult(result: any, options?: Partial<TruncationOptions>): { content: string, wasTruncated: boolean } {
         const maxLength = options?.maxResultLength ?? 1000;
         
         if (!result) {
