@@ -10,6 +10,9 @@ import { CallToolRequestSchema, ListToolsRequestSchema, CallToolResult } from '@
 import { ServerState } from '../services/state-manager.service.js';
 import * as toolExports from './index.js';
 import { GenericError, GenericErrorCode } from '../types/errors.js';
+import { RooStorageDetector } from '../utils/roo-storage-detector.js';
+import * as path from 'path';
+import { existsSync } from 'fs';
 
 /**
  * Enregistre le handler pour ListTools
@@ -283,11 +286,44 @@ export function registerCallToolHandler(
            case toolExports.roosyncSummarizeTool.name: {
                const summaryResult = await toolExports.handleRooSyncSummarize(
                    args as any,
-                   async (id: string) => state.conversationCache.get(id) || null,
+                   async (id: string) => {
+                       // 1. Try RAM cache first
+                       const cached = state.conversationCache.get(id);
+                       if (cached) return cached;
+                       // 2. Fallback: scan disk for Roo conversations (#449)
+                       try {
+                           const locations = await RooStorageDetector.detectStorageLocations();
+                           for (const loc of locations) {
+                               const taskPath = path.join(loc, id);
+                               if (existsSync(taskPath)) {
+                                   const skeleton = await RooStorageDetector.analyzeConversation(id, taskPath);
+                                   if (skeleton) {
+                                       state.conversationCache.set(id, skeleton);
+                                       return skeleton;
+                                   }
+                               }
+                           }
+                       } catch { /* disk fallback failed, return null */ }
+                       return null;
+                   },
                    async (rootId: string) => {
                        // Fonction findChildTasks pour le mode cluster
                        const allTasks = Array.from(state.conversationCache.values());
-                       return allTasks.filter(task => task.metadata?.parentTaskId === rootId);
+                       // Also check disk for child tasks (#449)
+                       try {
+                           const locations = await RooStorageDetector.detectStorageLocations();
+                           for (const loc of locations) {
+                               const taskPath = path.join(loc, rootId);
+                               if (existsSync(taskPath)) {
+                                   const skeleton = await RooStorageDetector.analyzeConversation(rootId, taskPath);
+                                   if (skeleton && !state.conversationCache.has(rootId)) {
+                                       state.conversationCache.set(rootId, skeleton);
+                                   }
+                               }
+                           }
+                       } catch { /* ignore disk errors */ }
+                       const allTasksUpdated = Array.from(state.conversationCache.values());
+                       return allTasksUpdated.filter(task => task.metadata?.parentTaskId === rootId);
                    }
                );
                result = { content: [{ type: 'text', text: summaryResult }] };
@@ -516,18 +552,11 @@ export function registerCallToolHandler(
                   result = { content: [{ type: 'text', text: `Error: ${(error as Error).message}` }], isError: true };
               }
               break;
-          case 'roosync_heartbeat_status':
+          // CONS-#443 Groupe 1: Outil consolidé de heartbeat (2→1)
+          case 'roosync_heartbeat':
               try {
-                  const hbResult = await toolExports.roosyncHeartbeatStatus(args as any);
-                  result = { content: [{ type: 'text', text: JSON.stringify(hbResult, null, 2) }] };
-              } catch (error) {
-                  result = { content: [{ type: 'text', text: `Error: ${(error as Error).message}` }], isError: true };
-              }
-              break;
-          case 'roosync_heartbeat_service':
-              try {
-                  const hbsResult = await toolExports.roosyncHeartbeatService(args as any);
-                  result = { content: [{ type: 'text', text: JSON.stringify(hbsResult, null, 2) }] };
+                  const heartbeatResult = await toolExports.roosyncHeartbeat(args as any);
+                  result = { content: [{ type: 'text', text: JSON.stringify(heartbeatResult, null, 2) }] };
               } catch (error) {
                   result = { content: [{ type: 'text', text: `Error: ${(error as Error).message}` }], isError: true };
               }
@@ -616,6 +645,33 @@ export function registerCallToolHandler(
                try {
                    const roosyncResult = await toolExports.roosyncRefreshDashboard(args as any);
                    result = { content: [{ type: 'text', text: JSON.stringify(roosyncResult, null, 2) }] };
+               } catch (error) {
+                   result = { content: [{ type: 'text', text: `Error: ${(error as Error).message}` }], isError: true };
+               }
+               break;
+           // CONS-#443 Groupe 2: Consolidation sync events (sync_on_offline + sync_on_online → roosync_sync_event)
+           case 'roosync_sync_event':
+               try {
+                   const syncEventResult = await toolExports.roosyncSyncEvent(args as any);
+                   result = { content: [{ type: 'text', text: JSON.stringify(syncEventResult, null, 2) }] };
+               } catch (error) {
+                   result = { content: [{ type: 'text', text: `Error: ${(error as Error).message}` }], isError: true };
+               }
+               break;
+           // CONS-#443 Groupe 3: Consolidation MCP management (manage_mcp_settings + rebuild_and_restart_mcp + touch_mcp_settings → roosync_mcp_management)
+           case 'roosync_mcp_management':
+               try {
+                   const mcpManagementResult = await toolExports.roosyncMcpManagement(args as any);
+                   result = { content: [{ type: 'text', text: JSON.stringify(mcpManagementResult, null, 2) }] };
+               } catch (error) {
+                   result = { content: [{ type: 'text', text: `Error: ${(error as Error).message}` }], isError: true };
+               }
+               break;
+           // CONS-#443 Groupe 4: Consolidation Storage management (storage_info + maintenance → roosync_storage_management)
+           case 'roosync_storage_management':
+               try {
+                   const storageManagementResult = await toolExports.roosyncStorageManagement(args as any, state.conversationCache, state);
+                   result = { content: [{ type: 'text', text: JSON.stringify(storageManagementResult, null, 2) }] };
                } catch (error) {
                    result = { content: [{ type: 'text', text: `Error: ${(error as Error).message}` }], isError: true };
                }
