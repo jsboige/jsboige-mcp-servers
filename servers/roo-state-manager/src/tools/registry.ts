@@ -552,18 +552,11 @@ export function registerCallToolHandler(
                   result = { content: [{ type: 'text', text: `Error: ${(error as Error).message}` }], isError: true };
               }
               break;
-          case 'roosync_heartbeat_status':
+          // CONS-#443 Groupe 1: Outil consolidé de heartbeat (2→1)
+          case 'roosync_heartbeat':
               try {
-                  const hbResult = await toolExports.roosyncHeartbeatStatus(args as any);
-                  result = { content: [{ type: 'text', text: JSON.stringify(hbResult, null, 2) }] };
-              } catch (error) {
-                  result = { content: [{ type: 'text', text: `Error: ${(error as Error).message}` }], isError: true };
-              }
-              break;
-          case 'roosync_heartbeat_service':
-              try {
-                  const hbsResult = await toolExports.roosyncHeartbeatService(args as any);
-                  result = { content: [{ type: 'text', text: JSON.stringify(hbsResult, null, 2) }] };
+                  const heartbeatResult = await toolExports.roosyncHeartbeat(args as any);
+                  result = { content: [{ type: 'text', text: JSON.stringify(heartbeatResult, null, 2) }] };
               } catch (error) {
                   result = { content: [{ type: 'text', text: `Error: ${(error as Error).message}` }], isError: true };
               }
