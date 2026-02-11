@@ -259,7 +259,7 @@ export class SmartTruncationEngine {
     private planElementTruncation(task: ConversationSkeleton, truncationBudget: number): ElementTruncationPlan[] {
         const plans: ElementTruncationPlan[] = [];
         let remainingBudget = truncationBudget;
-        
+
         // Identifier les éléments candidats à la troncature (messages centraux prioritairement)
         const elements = task.sequence.map((item, index) => ({
             index,
@@ -268,7 +268,7 @@ export class SmartTruncationEngine {
             type: 'role' in item ?
                 (item.role === 'user' ? 'user_message' as const : 'assistant_message' as const) : 'action' as const
         }));
-        
+
         // Trier par priorité (actions d'abord, puis messages assistant, puis user messages)
         const priorityOrder: Record<'action' | 'assistant_message' | 'user_message', number> = {
             action: 3,
@@ -276,13 +276,15 @@ export class SmartTruncationEngine {
             user_message: 1
         };
         elements.sort((a, b) => priorityOrder[b.type] - priorityOrder[a.type]);
-        
+
         for (const element of elements) {
             if (remainingBudget <= 0) break;
-            
+
             const truncationAmount = Math.min(remainingBudget, element.size * 0.7); // Max 70% de troncature
-            
-            if (truncationAmount > 10) { // Seuil minimum pour valoir la peine
+
+            // FIX P0-1: Accepter toute troncature >= 1 char pour atteindre le budget
+            // (seuil abaissé de 10 → 1 pour éviter 0% compression)
+            if (truncationAmount >= 1) {
                 plans.push({
                     sequenceIndex: element.index,
                     type: element.type as any,
@@ -294,11 +296,11 @@ export class SmartTruncationEngine {
                         endLines: 5
                     }
                 });
-                
+
                 remainingBudget -= truncationAmount;
             }
         }
-        
+
         return plans;
     }
     
