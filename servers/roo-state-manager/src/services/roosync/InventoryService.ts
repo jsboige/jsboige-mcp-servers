@@ -85,14 +85,14 @@ export class InventoryService {
     tools: {}, // Skipped in script
     systemInfo: {
       os: `${os.type()} ${os.release()}`,
-      hostname: os.hostname(),
+      hostname: os.hostname().toLowerCase(),
       username: os.userInfo().username,
       powershellVersion: await this.getPowershellVersion()
     }
   };
 
   const inventory: FullInventory = {
-    machineId: finalMachineId,
+    machineId: normalizedMachineId,
     timestamp: new Date().toISOString(),
     inventory: inventoryData,
     paths: {

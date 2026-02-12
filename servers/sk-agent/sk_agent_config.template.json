@@ -1,0 +1,26 @@
+{
+  "model": {
+    "base_url": "http://localhost:5001/v1",
+    "api_key_env": "VLLM_API_KEY_MINI",
+    "model_id": "qwen3-vl-8b-thinking",
+    "vision": true
+  },
+  "mcps": [
+    {
+      "name": "searxng",
+      "description": "Web search via SearXNG",
+      "command": "npx",
+      "args": ["-y", "mcp-searxng"],
+      "env": {
+        "SEARXNG_URL": "https://search.myia.io"
+      }
+    },
+    {
+      "name": "playwright",
+      "description": "Browser automation and web scraping",
+      "command": "npx",
+      "args": ["-y", "@playwright/mcp@latest"]
+    }
+  ],
+  "system_prompt": "You are a helpful assistant with access to web search and browser tools. Use them when the user asks about current information or needs to analyze web content. Always respond in the same language as the user."
+}
