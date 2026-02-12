@@ -1,11 +1,7 @@
 /**
- * Outil MCP consolide : roosync_heartbeat_status
+ * Outil MCP : roosync_heartbeat_status
  *
- * Consolide 4 outils en un seul:
- * - roosync_get_heartbeat_state
- * - roosync_check_heartbeats
- * - roosync_get_offline_machines
- * - roosync_get_warning_machines
+ * État complet du service de heartbeat (machines online, offline, warning).
  *
  * @module tools/roosync/heartbeat-status
  * @version 3.1.0
@@ -217,7 +213,7 @@ export async function roosyncHeartbeatStatus(args: HeartbeatStatusArgs): Promise
  */
 export const heartbeatStatusToolMetadata = {
   name: 'roosync_heartbeat_status',
-  description: 'Obtient l\'etat complet du service de heartbeat. Consolide les fonctionnalites de get-heartbeat-state, check-heartbeats, get-offline-machines et get-warning-machines.',
+  description: 'État complet du service de heartbeat (machines online, offline, warning, heartbeats).',
   inputSchema: {
     type: 'object' as const,
     properties: {

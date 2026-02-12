@@ -1,11 +1,10 @@
 /**
  * Outil MCP : roosync_send
  *
- * Outil consolidé pour envoyer/répondre/amender des messages RooSync
- * Fusionne : send_message + reply_message + amend_message
+ * Envoi, réponse, et amendement de messages RooSync.
  *
  * @module roosync/send
- * @version 1.0.0 (CONS-1)
+ * @version 1.0.0
  */
 
 import { MessageManager } from '../../services/MessageManager.js';

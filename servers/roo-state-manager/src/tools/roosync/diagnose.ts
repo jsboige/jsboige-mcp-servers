@@ -1,8 +1,7 @@
 /**
  * Outil MCP : roosync_diagnose
  *
- * CONS-#443 Groupe 5 : Consolidation de diagnose_env + debug_reset + minimal_test_tool
- * Outil complet de diagnostic et debug du système RooSync.
+ * Diagnostic et debug complet du système RooSync.
  *
  * @module tools/roosync/diagnose
  * @version 1.0.0

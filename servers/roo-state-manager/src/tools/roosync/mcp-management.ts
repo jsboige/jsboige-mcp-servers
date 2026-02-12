@@ -1,8 +1,7 @@
 /**
  * Outil MCP : roosync_mcp_management
  *
- * CONS-#443 Groupe 3 : Consolidation de manage_mcp_settings + rebuild_and_restart_mcp + touch_mcp_settings
- * Gestion complète des serveurs MCP : configuration, rebuild, et reload.
+ * Gestion complète des serveurs MCP (configuration, rebuild, reload).
  *
  * @module tools/roosync/mcp-management
  * @version 1.0.0

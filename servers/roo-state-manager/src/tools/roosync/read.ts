@@ -1,11 +1,10 @@
 /**
  * Outil MCP : roosync_read
  *
- * Outil consolidé pour lire les messages RooSync
- * Fusionne : read_inbox + get_message
+ * Lecture des messages RooSync (inbox, message spécifique).
  *
  * @module roosync/read
- * @version 1.0.0 (CONS-1)
+ * @version 1.0.0
  */
 
 import { MessageManager } from '../../services/MessageManager.js';

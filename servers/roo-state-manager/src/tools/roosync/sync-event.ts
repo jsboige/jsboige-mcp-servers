@@ -1,8 +1,7 @@
 /**
  * Outil MCP : roosync_sync_event
  *
- * CONS-#443 Groupe 2 : Consolidation de sync_on_offline + sync_on_online
- * Synchronise automatiquement les baselines lors des changements d'état online/offline.
+ * Synchronisation automatique des baselines lors des changements d'état (online/offline).
  *
  * @module tools/roosync/sync-event
  * @version 4.0.0

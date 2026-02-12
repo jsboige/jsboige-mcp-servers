@@ -1,11 +1,10 @@
 /**
  * Outil MCP : roosync_manage
  *
- * Outil consolidé pour gérer le cycle de vie des messages RooSync
- * Fusionne : mark_message_read + archive_message
+ * Gestion du cycle de vie des messages RooSync (marquer lu, archiver).
  *
  * @module roosync/manage
- * @version 1.0.0 (CONS-1)
+ * @version 1.0.0
  */
 
 import { MessageManager } from '../../services/MessageManager.js';

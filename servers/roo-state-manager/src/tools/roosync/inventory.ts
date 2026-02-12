@@ -1,12 +1,10 @@
 /**
- * Outil MCP consolidé : roosync_inventory
+ * Outil MCP : roosync_inventory
  *
- * Fusionne get-machine-inventory et get-heartbeat-state.
- * Permet de récupérer l'inventaire machine et/ou l'état heartbeat.
+ * Récupération de l'inventaire machine et/ou de l'état heartbeat.
  *
  * @module tools/roosync/inventory
  * @version 3.0.0
- * @since CONS-6
  */
 
 import { z } from 'zod';
@@ -105,8 +103,7 @@ export type InventoryResult = z.infer<typeof InventoryResultSchema>;
 /**
  * Outil roosync_inventory
  *
- * Fusionne get-machine-inventory et get-heartbeat-state.
- * Permet de récupérer l'inventaire machine et/ou l'état heartbeat.
+ * Récupération de l'inventaire machine et/ou de l'état heartbeat.
  *
  * @param args Arguments validés
  * @returns Inventaire et/ou état heartbeat
@@ -114,7 +111,7 @@ export type InventoryResult = z.infer<typeof InventoryResultSchema>;
  */
 export const inventoryTool: UnifiedToolContract = {
   name: 'roosync_inventory',
-  description: 'Outil consolidé pour récupérer l\'inventaire machine et/ou l\'état heartbeat. Fusionne get-machine-inventory et get-heartbeat-state.',
+  description: 'Récupération de l\'inventaire machine et/ou de l\'état heartbeat.',
   category: ToolCategory.UTILITY,
   processingLevel: ProcessingLevel.IMMEDIATE,
   version: '3.0.0',
@@ -181,7 +178,7 @@ export const inventoryTool: UnifiedToolContract = {
  */
 export const inventoryToolMetadata = {
   name: 'roosync_inventory',
-  description: 'Outil consolidé pour récupérer l\'inventaire machine et/ou l\'état heartbeat. Fusionne get-machine-inventory et get-heartbeat-state.',
+  description: 'Récupération de l\'inventaire machine et/ou de l\'état heartbeat.',
   inputSchema: {
     type: 'object' as const,
     properties: {

@@ -338,7 +338,7 @@ describe('roosync_config - Metadata', () => {
     const metadata = module.configToolMetadata;
 
     expect(metadata.name).toBe('roosync_config');
-    expect(metadata.description).toContain('Outil unifié');
+    expect(metadata.description).toContain('Gestion');
     expect(metadata.description).toContain('configuration RooSync');
     expect(metadata.inputSchema).toBeDefined();
     expect(metadata.inputSchema.type).toBe('object');
@@ -366,7 +366,9 @@ describe('roosync_config - Metadata', () => {
     const module = await import('../../../../src/tools/roosync/config.js');
     const metadata = module.configToolMetadata;
 
-    expect(metadata.description).toContain('atomique');
+    // Test simplifié après cleanup #443 - description compacte sans détails techniques
+    expect(metadata.description).toContain('collecte');
+    expect(metadata.description).toContain('publication');
   });
 
   it('devrait avoir enum correct pour action', async () => {
