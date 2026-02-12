@@ -299,7 +299,7 @@ async function handleTestAction(
  */
 export const diagnoseToolMetadata = {
   name: 'roosync_diagnose',
-  description: 'Diagnostic et debug complet RooSync : env (environnement), debug (dashboard), reset (service), test (minimal). Consolidation (CONS-#443 Groupe 5) de diagnose_env + debug_reset + minimal_test_tool.',
+  description: 'Outil de diagnostic et debug complet pour RooSync. Actions disponibles : env (diagnostic environnement système), debug (debug dashboard avec reset instance), reset (réinitialisation service avec confirmation), test (test minimal MCP).',
   inputSchema: {
     type: 'object' as const,
     properties: {

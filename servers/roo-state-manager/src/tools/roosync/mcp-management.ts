@@ -474,7 +474,7 @@ export async function roosyncMcpManagement(args: McpManagementArgs): Promise<Mcp
  */
 export const mcpManagementToolMetadata = {
     name: 'roosync_mcp_management',
-    description: 'Gestion complète des serveurs MCP : configuration (read/write/backup/update/toggle), rebuild (build+restart), et touch (force reload). Consolidation (CONS-#443 Groupe 3) de manage_mcp_settings + rebuild_and_restart_mcp + touch_mcp_settings.',
+    description: 'Gestion complète des serveurs MCP. Actions : manage (read/write/backup/update/toggle configuration), rebuild (build npm + restart MCP avec watchPaths), touch (force reload de tous les serveurs MCP).',
     inputSchema: {
         type: 'object' as const,
         properties: {

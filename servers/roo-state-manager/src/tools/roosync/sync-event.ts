@@ -165,7 +165,7 @@ export async function roosyncSyncEvent(args: SyncEventArgs): Promise<SyncEventRe
  */
 export const syncEventToolMetadata = {
   name: 'roosync_sync_event',
-  description: 'Synchronise automatiquement les baselines lors des changements d\'état online/offline d\'une machine. Cette opération est typiquement appelée par le service de heartbeat. Consolidation (CONS-#443 Groupe 2) de roosync_sync_on_offline + roosync_sync_on_online.',
+  description: 'Synchronise automatiquement les baselines lors des changements d\'état online/offline d\'une machine. Actions : offline (sauvegarde baseline avant déconnexion), online (restauration baseline après reconnexion). Généralement appelé automatiquement par le service heartbeat.',
   inputSchema: {
     type: 'object' as const,
     properties: {
