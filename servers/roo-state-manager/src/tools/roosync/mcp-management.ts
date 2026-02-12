@@ -111,16 +111,18 @@ export const McpManagementArgsSchema = z.object({
         .describe('Type d\'opération MCP: manage (configuration), rebuild (build+restart), touch (force reload)'),
 
     // Paramètres pour action: 'manage'
-    subAction: z.enum(['read', 'write', 'backup', 'update_server', 'toggle_server']).optional()
-        .describe('Sous-action pour manage: read, write, backup, update_server, toggle_server'),
+    subAction: z.enum(['read', 'write', 'backup', 'update_server', 'update_server_field', 'toggle_server', 'sync_always_allow']).optional()
+        .describe('Sous-action pour manage: read, write, backup, update_server (REMPLACE tout le bloc), update_server_field (FUSIONNE champs), toggle_server, sync_always_allow'),
     server_name: z.string().optional()
-        .describe('Nom du serveur MCP (pour update_server et toggle_server)'),
+        .describe('Nom du serveur MCP (pour update_server, toggle_server, sync_always_allow)'),
     server_config: z.record(z.any()).optional()
         .describe('Configuration du serveur (pour update_server)'),
     settings: z.record(z.any()).optional()
         .describe('Paramètres complets (pour write)'),
     backup: z.boolean().optional()
         .describe('Créer une sauvegarde avant modification (défaut: true pour manage)'),
+    tools: z.array(z.string()).optional()
+        .describe('Liste des noms d\'outils à auto-approuver (pour sync_always_allow). Si omis, conserve la liste existante et ajoute les outils manquants.'),
 
     // Paramètre pour action: 'rebuild'
     mcp_name: z.string().optional()
@@ -260,6 +262,61 @@ async function handleManageAction(args: McpManagementArgs): Promise<McpManagemen
             };
         }
 
+        case 'update_server_field': {
+            if (!server_name) {
+                throw new HeartbeatServiceError('server_name requis pour subAction "update_server_field"', 'MISSING_SERVER_NAME');
+            }
+            if (!server_config || Object.keys(server_config).length === 0) {
+                throw new HeartbeatServiceError(
+                    'server_config requis pour subAction "update_server_field" (contient uniquement les champs à modifier)',
+                    'MISSING_PARAMS'
+                );
+            }
+
+            const authCheck4 = checkWriteAuthorization();
+            if (!authCheck4.isAuthorized) {
+                throw new HeartbeatServiceError(
+                    `MISE À JOUR CHAMP REFUSÉE: ${authCheck4.message}\n\n📋 État actuel: ${getAuthorizationStatus()}`,
+                    'WRITE_NOT_AUTHORIZED'
+                );
+            }
+
+            const content4 = await fs.readFile(MCP_SETTINGS_PATH, 'utf-8');
+            const mcpSettings4 = JSON.parse(content4) as McpSettings;
+
+            if (!mcpSettings4.mcpServers[server_name]) {
+                throw new HeartbeatServiceError(
+                    `Serveur "${server_name}" non trouvé dans mcp_settings.json`,
+                    'SERVER_NOT_FOUND'
+                );
+            }
+
+            if (backup) {
+                await backupMcpSettings();
+            }
+
+            // FUSION (merge) au lieu de remplacement: on ne touche que les champs fournis
+            const existingConfig = mcpSettings4.mcpServers[server_name];
+            const updatedFields = Object.keys(server_config);
+            mcpSettings4.mcpServers[server_name] = { ...existingConfig, ...server_config } as McpServer;
+
+            await fs.writeFile(MCP_SETTINGS_PATH, JSON.stringify(mcpSettings4, null, 2), 'utf-8');
+
+            return {
+                success: true,
+                action: 'manage',
+                subAction: 'update_server_field',
+                timestamp,
+                message: `✅ Champ(s) mis à jour pour "${server_name}": ${updatedFields.join(', ')}${backup ? ' (sauvegarde créée)' : ''}\n\n` +
+                    `⚠️ Seuls les champs fournis ont été modifiés, le reste de la configuration est préservé.\n\n${authCheck4.message}`,
+                details: {
+                    serverName: server_name,
+                    updatedFields,
+                    preservedFields: Object.keys(existingConfig).filter(k => !updatedFields.includes(k))
+                }
+            };
+        }
+
         case 'toggle_server': {
             if (!server_name) {
                 throw new HeartbeatServiceError('server_name requis pour subAction "toggle_server"', 'MISSING_SERVER_NAME');
@@ -298,6 +355,72 @@ async function handleManageAction(args: McpManagementArgs): Promise<McpManagemen
                 timestamp,
                 message: `✅ Serveur "${server_name}" ${newState}${backup ? ' (sauvegarde créée)' : ''}\n\n${authCheck.message}`,
                 details: { serverName: server_name, newState }
+            };
+        }
+
+        case 'sync_always_allow': {
+            if (!server_name) {
+                throw new HeartbeatServiceError('server_name requis pour subAction "sync_always_allow"', 'MISSING_SERVER_NAME');
+            }
+
+            const authCheck = checkWriteAuthorization();
+            if (!authCheck.isAuthorized) {
+                throw new HeartbeatServiceError(
+                    `SYNC AUTO-APPROVE REFUSÉ: ${authCheck.message}\n\n📋 État actuel: ${getAuthorizationStatus()}`,
+                    'WRITE_NOT_AUTHORIZED'
+                );
+            }
+
+            const content = await fs.readFile(MCP_SETTINGS_PATH, 'utf-8');
+            const mcpSettings = JSON.parse(content) as McpSettings;
+
+            if (!mcpSettings.mcpServers[server_name]) {
+                throw new HeartbeatServiceError(`Serveur "${server_name}" non trouvé`, 'SERVER_NOT_FOUND');
+            }
+
+            if (backup) {
+                await backupMcpSettings();
+            }
+
+            const existingAlwaysAllow = mcpSettings.mcpServers[server_name].alwaysAllow || [];
+            const { tools: newTools } = args;
+
+            let updatedAlwaysAllow: string[];
+            let added: string[];
+            let removed: string[];
+
+            if (newTools && newTools.length > 0) {
+                // Replace mode: set alwaysAllow to exactly the provided list
+                updatedAlwaysAllow = [...new Set(newTools)].sort();
+                added = updatedAlwaysAllow.filter(t => !existingAlwaysAllow.includes(t));
+                removed = existingAlwaysAllow.filter(t => !updatedAlwaysAllow.includes(t));
+            } else {
+                // No tools provided: keep existing (no-op, but report current state)
+                updatedAlwaysAllow = existingAlwaysAllow;
+                added = [];
+                removed = [];
+            }
+
+            mcpSettings.mcpServers[server_name].alwaysAllow = updatedAlwaysAllow;
+            await fs.writeFile(MCP_SETTINGS_PATH, JSON.stringify(mcpSettings, null, 2), 'utf-8');
+
+            return {
+                success: true,
+                action: 'manage',
+                subAction: 'sync_always_allow',
+                timestamp,
+                message: `✅ alwaysAllow mis à jour pour "${server_name}": ${updatedAlwaysAllow.length} outils${backup ? ' (sauvegarde créée)' : ''}\n\n` +
+                    (added.length > 0 ? `Ajoutés (${added.length}): ${added.join(', ')}\n` : '') +
+                    (removed.length > 0 ? `Retirés (${removed.length}): ${removed.join(', ')}\n` : '') +
+                    (added.length === 0 && removed.length === 0 ? 'Aucun changement.\n' : '') +
+                    `\n${authCheck.message}`,
+                details: {
+                    serverName: server_name,
+                    totalTools: updatedAlwaysAllow.length,
+                    added,
+                    removed,
+                    alwaysAllow: updatedAlwaysAllow
+                }
             };
         }
 
@@ -474,7 +597,7 @@ export async function roosyncMcpManagement(args: McpManagementArgs): Promise<Mcp
  */
 export const mcpManagementToolMetadata = {
     name: 'roosync_mcp_management',
-    description: 'Gestion complète des serveurs MCP. Actions : manage (read/write/backup/update/toggle configuration), rebuild (build npm + restart MCP avec watchPaths), touch (force reload de tous les serveurs MCP).',
+    description: 'Gestion complète des serveurs MCP. Actions : manage (read/write/backup/update/toggle/update_server_field/sync_always_allow configuration), rebuild (build npm + restart MCP avec watchPaths), touch (force reload de tous les serveurs MCP).',
     inputSchema: {
         type: 'object' as const,
         properties: {
@@ -485,16 +608,16 @@ export const mcpManagementToolMetadata = {
             },
             subAction: {
                 type: 'string',
-                enum: ['read', 'write', 'backup', 'update_server', 'toggle_server'],
-                description: 'Sous-action pour manage: read, write, backup, update_server, toggle_server'
+                enum: ['read', 'write', 'backup', 'update_server', 'update_server_field', 'toggle_server', 'sync_always_allow'],
+                description: 'Sous-action pour manage: read, write, backup, update_server (REMPLACE tout le bloc), update_server_field (FUSIONNE champs sans écraser), toggle_server, sync_always_allow'
             },
             server_name: {
                 type: 'string',
-                description: 'Nom du serveur MCP (pour update_server et toggle_server)'
+                description: 'Nom du serveur MCP (pour update_server, update_server_field, toggle_server, sync_always_allow)'
             },
             server_config: {
                 type: 'object',
-                description: 'Configuration du serveur (pour update_server)'
+                description: 'Configuration du serveur (pour update_server: REMPLACE tout) ou champs à modifier (pour update_server_field: FUSIONNE)'
             },
             settings: {
                 type: 'object',
@@ -503,6 +626,11 @@ export const mcpManagementToolMetadata = {
             backup: {
                 type: 'boolean',
                 description: 'Créer une sauvegarde avant modification (défaut: true pour manage)'
+            },
+            tools: {
+                type: 'array',
+                items: { type: 'string' },
+                description: 'Liste des noms d\'outils à auto-approuver (pour sync_always_allow)'
             },
             mcp_name: {
                 type: 'string',
