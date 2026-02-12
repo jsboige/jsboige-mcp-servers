@@ -1,7 +1,6 @@
 /**
  * Outil MCP : roosync_heartbeat
  *
- * CONS-#443 Groupe 1 : Consolidation de heartbeat_status + heartbeat_service
  * Gestion complète du heartbeat : status (lecture) ET service (gestion).
  *
  * @module tools/roosync/heartbeat

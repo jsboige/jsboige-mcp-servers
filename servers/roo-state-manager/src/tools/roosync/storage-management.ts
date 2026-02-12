@@ -1,8 +1,7 @@
 /**
  * Outil MCP : roosync_storage_management
  *
- * CONS-#443 Groupe 4 : Consolidation de storage_info + maintenance
- * Gestion complète du stockage : inspection ET maintenance.
+ * Gestion complète du stockage Roo (inspection, maintenance, cache, BOM repair).
  *
  * @module tools/roosync/storage-management
  * @version 1.0.0

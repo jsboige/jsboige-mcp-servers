@@ -1,14 +1,12 @@
 /**
- * Outil MCP : roosync_decision (CONS-5)
+ * Outil MCP : roosync_decision
  *
- * Outil consolidé pour la gestion du workflow de décision.
- * Fusionne : approve_decision, reject_decision, apply_decision, rollback_decision
+ * Gestion du workflow de décision (approve, reject, apply, rollback).
  *
  * Pattern CQRS : Command (mutation)
  *
  * @module tools/roosync/decision
- * @version 3.0.0 (CONS-5)
- * @status SKELETON - En attente CONS-1 stabilisation
+ * @version 3.0.0
  */
 
 import { z } from 'zod';
