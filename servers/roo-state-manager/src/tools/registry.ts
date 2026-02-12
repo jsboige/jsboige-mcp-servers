@@ -21,11 +21,6 @@ export function registerListToolsHandler(server: Server): void {
     server.setRequestHandler(ListToolsRequestSchema, async () => {
         return {
             tools: [
-                {
-                    name: 'minimal_test_tool',
-                    description: 'This is a minimal tool to check if the MCP is reloading.',
-                    inputSchema: { type: 'object', properties: {}, required: [] },
-                },
                 // CONS-13: Outil Storage consolidé (2→1)
                 toolExports.storageInfoTool.definition,
                 // CLEANUP-3: detect_storage, get_storage_stats, list_conversations retirés de ListTools
@@ -97,11 +92,6 @@ export function registerListToolsHandler(server: Server): void {
                     description: toolExports.analyze_roosync_problems.description,
                     inputSchema: toolExports.analyze_roosync_problems.inputSchema,
                 },
-                {
-                    name: toolExports.diagnose_env.name,
-                    description: toolExports.diagnose_env.description,
-                    inputSchema: toolExports.diagnose_env.inputSchema,
-                },
 
                 // RooSync tools - Batch 6 synchronization
                 ...toolExports.roosyncTools,
@@ -131,22 +121,6 @@ export function registerCallToolHandler(
         let result: CallToolResult;
 
         switch (name) {
-            case 'minimal_test_tool':
-                // TESTS COMPLETS POUR TRAQUER OÙ VONT LES LOGS
-                const timestamp = new Date().toISOString();
-                console.log('🔍 [STDOUT-SEARCH] console.log test - Heure:', timestamp);
-                console.error('🔍 [STDERR-CONFIRMED] console.error test - Heure:', timestamp);
-
-                // Tests de tous les canaux possibles
-                process.stdout.write(`🔍 [STDOUT-SEARCH] process.stdout.write test - ${timestamp}\n`);
-                process.stderr.write(`🔍 [STDERR-CONFIRMED] process.stderr.write test - ${timestamp}\n`);
-
-                // Test avec console.info et console.warn
-                console.info('🔍 [INFO-SEARCH] console.info test - Heure:', timestamp);
-                console.warn('🔍 [WARN-SEARCH] console.warn test - Heure:', timestamp);
-
-                result = { content: [{ type: 'text', text: `INVESTIGATION DES CANAUX DE LOGS - ${timestamp} - Vérifiez tous les logs maintenant!` }] };
-                break;
            // CONS-13: Outil Storage consolidé
            case 'storage_info':
                result = await toolExports.handleStorageInfo(args as any);
@@ -361,9 +335,6 @@ export function registerCallToolHandler(
           case toolExports.analyze_roosync_problems.name:
               result = await toolExports.analyzeRooSyncProblems(args as any) as any;
               break;
-          case toolExports.diagnose_env.name:
-              result = await toolExports.diagnoseEnv(args as any);
-              break;
 
           // RooSync tools - Batch 6 synchronization
           case 'roosync_get_status':
@@ -454,9 +425,9 @@ export function registerCallToolHandler(
                   result = { content: [{ type: 'text', text: `Error: ${(error as Error).message}` }], isError: true };
               }
               break;
-          case 'roosync_debug_reset':
+          case 'roosync_diagnose':
               try {
-                  const roosyncResult = await toolExports.roosync_debug_reset(args as any);
+                  const roosyncResult = await toolExports.roosyncDiagnose(args as any);
                   result = { content: [{ type: 'text', text: JSON.stringify(roosyncResult, null, 2) }] };
               } catch (error) {
                   result = { content: [{ type: 'text', text: `Error: ${(error as Error).message}` }], isError: true };

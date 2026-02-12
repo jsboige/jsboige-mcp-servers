@@ -311,7 +311,7 @@ describe('TwoLevelProcessingOrchestrator', () => {
       const ctx = createMockContext();
       const result = await orchestrator.submitTask(
         ToolCategory.UTILITY as any,
-        'diagnose_env',
+        'roosync_diagnose',
         'execute',
         [],
         ctx

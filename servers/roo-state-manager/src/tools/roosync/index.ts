@@ -266,6 +266,10 @@ export { roosyncMcpManagement, mcpManagementToolMetadata } from './mcp-managemen
 // Remplace storage_info + maintenance
 export { roosyncStorageManagement, storageManagementToolMetadata } from './storage-management.js';
 
+// CONS-#443 Groupe 5: Outil consolidé de diagnostic (3→1)
+// Remplace diagnose_env + debug_reset + minimal_test_tool
+export { roosyncDiagnose, diagnoseToolMetadata } from './diagnose.js';
+
 // Export des outils de dashboard (T3.17)
 export { roosyncRefreshDashboard, refreshDashboardToolMetadata } from './refresh-dashboard.js';
 
@@ -280,7 +284,7 @@ import { initToolMetadata } from './roosync_init.js';
 import { updateBaselineToolMetadata } from './update-baseline.js';
 import { manageBaselineToolMetadata } from './manage-baseline.js';
 import { baselineToolMetadata } from './baseline.js';
-import { debugResetToolMetadata } from './debug-reset.js';
+import { diagnoseToolMetadata } from './diagnose.js';
 import { collectConfigToolMetadata } from './collect-config.js';
 import { publishConfigToolMetadata } from './publish-config.js';
 import { applyConfigToolMetadata } from './apply-config.js';
@@ -367,7 +371,7 @@ const exportBaselineToolMetadata = {
 
 /**
  * Liste de tous les outils RooSync pour enregistrement MCP
- * Version 3.11 : 19 outils (CONS-#443 Groupe 1: Heartbeat 2→1)
+ * Version 3.12 : 18 outils (CONS-#443 Groupe 5: Diagnostic 3→1, 19→18 outils)
  *
  * - Configuration: init, compare-config, roosync_config (CONS-3), baseline (CONS-4)
  * - Services: inventory (CONS-6), machines (CONS-6)
@@ -378,7 +382,7 @@ const exportBaselineToolMetadata = {
  * - Messagerie (CONS-1): roosync_send, roosync_read, roosync_manage
  * - Gestion MCP (CONS-#443 Groupe 3): roosync_mcp_management
  * - Gestion stockage (CONS-#443 Groupe 4): roosync_storage_management
- * - Debug: debug-reset
+ * - Diagnostic (CONS-#443 Groupe 5): roosync_diagnose
  */
 export const roosyncTools = [
   initToolMetadata,
@@ -392,7 +396,6 @@ export const roosyncTools = [
   configToolMetadata, // CONS-3: Outil consolidé Config 4→2
   inventoryToolMetadata, // CONS-6: Outil consolidé Inventory (machine + heartbeat)
   machinesToolMetadata, // CONS-6: Outil consolidé Machines (offline + warning)
-  debugResetToolMetadata,
   // CONS-#443 Groupe 1: Outil consolidé de heartbeat (heartbeat_status + heartbeat_service → roosync_heartbeat)
   heartbeatToolMetadata,
   // CONS-#443 Groupe 2: Outil consolidé de synchronisation (sync-on-offline + sync-on-online → roosync_sync_event)
@@ -401,6 +404,8 @@ export const roosyncTools = [
   mcpManagementToolMetadata,
   // CONS-#443 Groupe 4: Outil consolidé de gestion du stockage (storage_info + maintenance → roosync_storage_management)
   storageManagementToolMetadata,
+  // CONS-#443 Groupe 5: Outil consolidé de diagnostic (diagnose_env + debug_reset + minimal_test_tool → roosync_diagnose)
+  diagnoseToolMetadata,
   // Outils de dashboard (T3.17)
   refreshDashboardToolMetadata,
   // CONS-1: Outils de messagerie consolidés (6→3)
