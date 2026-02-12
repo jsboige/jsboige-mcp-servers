@@ -117,22 +117,21 @@ describe('SmartTruncation Engine', () => {
             expect(lastPlan.preservationWeight).toBeGreaterThan(middlePlan.preservationWeight);
         });
 
-        test('should respect minPreservationRate and maxTruncationRate', () => {
+        test('should respect maxTruncationRate', () => {
             const engine = new SmartTruncationEngine({
                 ...mockConfig,
                 maxOutputLength: 1000,
-                minPreservationRate: 0.8,
                 maxTruncationRate: 0.5
             });
             const tasks = [createMockTask('task1', 5)];
             const result = engine.apply(tasks);
-            
+
             if (result.taskPlans.length > 0 && result.taskPlans[0].truncationBudget > 0) {
                 const plan = result.taskPlans[0];
                 const truncationRate = plan.truncationBudget / plan.originalSize;
-                const preservationRate = 1 - truncationRate;
-                
-                expect(preservationRate).toBeGreaterThanOrEqual(0.8);
+
+                // FIX P0-1b follow-up: minPreservationRate contrainte retirée (contradictoire)
+                // Seule maxTruncationRate s'applique maintenant, gradient gère la préservation
                 expect(truncationRate).toBeLessThanOrEqual(0.5);
             }
         });
