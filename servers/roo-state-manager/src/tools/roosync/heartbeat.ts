@@ -179,7 +179,7 @@ async function handleServiceAction(
  */
 export const heartbeatToolMetadata = {
   name: 'roosync_heartbeat',
-  description: 'Gestion complète du heartbeat Roo : status (état), register (enregistrer), start (démarrer), stop (arrêter). Consolidation (CONS-#443 Groupe 1) de heartbeat_status + heartbeat_service.',
+  description: 'Gestion complète du heartbeat des agents Roo. Actions : status (consulter état), register (enregistrer nouveau heartbeat), start (démarrer surveillance), stop (arrêter surveillance).',
   inputSchema: {
     type: 'object' as const,
     properties: {

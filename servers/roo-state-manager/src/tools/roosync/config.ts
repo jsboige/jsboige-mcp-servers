@@ -242,9 +242,9 @@ export async function roosyncConfig(args: ConfigArgs) {
  */
 export const configToolMetadata = {
   name: 'roosync_config',
-  description: `Outil unifié de gestion de configuration RooSync (CONS-3).
+  description: `Outil unifié de gestion de configuration RooSync.
 
-Consolide collect_config, publish_config, et apply_config en un seul outil action-based.
+Actions disponibles : collect (collecter depuis machines), publish (publier vers état partagé), apply (appliquer depuis état partagé).
 
 **Actions disponibles:**
 

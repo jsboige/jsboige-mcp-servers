@@ -210,7 +210,7 @@ async function handleMaintenanceAction(
  */
 export const storageManagementToolMetadata = {
     name: 'roosync_storage_management',
-    description: 'Gestion complète du stockage Roo : inspection (storage) et maintenance (cache/BOM repair). Consolidation (CONS-#443 Groupe 4) de storage_info + maintenance. action=storage (detect/stats) pour inspecter, action=maintenance (cache_rebuild/diagnose_bom/repair_bom) pour réparer.',
+    description: 'Gestion complète du stockage Roo : inspection et maintenance. Actions : storage (detect=localiser stockage, stats=statistiques par workspace), maintenance (cache_rebuild=reconstruire cache conversations, diagnose_bom=diagnostiquer problèmes BOM UTF-8, repair_bom=réparer fichiers corrompus).',
     inputSchema: {
         type: 'object' as const,
         properties: {

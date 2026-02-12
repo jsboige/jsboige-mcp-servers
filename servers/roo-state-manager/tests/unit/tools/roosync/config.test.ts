@@ -339,7 +339,7 @@ describe('roosync_config - Metadata', () => {
 
     expect(metadata.name).toBe('roosync_config');
     expect(metadata.description).toContain('Outil unifié');
-    expect(metadata.description).toContain('CONS-3');
+    expect(metadata.description).toContain('configuration RooSync');
     expect(metadata.inputSchema).toBeDefined();
     expect(metadata.inputSchema.type).toBe('object');
     expect(metadata.inputSchema.properties).toHaveProperty('action');
