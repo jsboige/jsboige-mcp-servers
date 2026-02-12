@@ -20,8 +20,9 @@ import os from 'os';
  */
 export function getLocalMachineId(): string {
   // Priorité à la variable d'environnement (pour les tests)
+  // Normalisation lowercase pour cohérence (évite doublons case-sensitive)
   if (process.env.ROOSYNC_MACHINE_ID) {
-    return process.env.ROOSYNC_MACHINE_ID;
+    return process.env.ROOSYNC_MACHINE_ID.toLowerCase();
   }
 
   // Fallback vers le hostname OS
