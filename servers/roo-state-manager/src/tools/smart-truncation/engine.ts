@@ -43,8 +43,10 @@ class GradientCalculator {
         totalTasks: number,
         gradientStrength: number
     ): number {
-        if (totalTasks <= 1) return 1.0;
-        
+        // FIX P0-1c: Pour une seule tâche, permettre la troncature (poids 0.3 = 70% de troncature possible)
+        // Le gradient est conçu pour répartir entre plusieurs tâches
+        if (totalTasks <= 1) return 0.3;
+
         // Position normalisée du centre [0,1]
         const center = (totalTasks - 1) / 2;
         const distanceFromCenter = Math.abs(position - center) / center;
@@ -160,10 +162,11 @@ class BudgetAllocator {
             
             // Contraindre selon les limites de configuration
             const maxAllowedTruncation = originalSize * config.maxTruncationRate;
-            const minRequiredPreservation = originalSize * config.minPreservationRate;
-            
+
+            // FIX P0-1b: Retirer contrainte minPreservationRate (contradictoire avec maxTruncationRate)
+            // Le gradient exponentiel s'occupe déjà de préserver les extrêmes
+            // minPreservationRate=0.9 limitait à 10% max, rendant maxTruncationRate=0.7 inutile
             truncationBudget = Math.min(truncationBudget, maxAllowedTruncation);
-            truncationBudget = Math.max(0, Math.min(truncationBudget, originalSize - minRequiredPreservation));
             
             return {
                 taskId: task.taskId,

@@ -196,8 +196,16 @@ export class SynthesisOrchestratorService {
                     }
                 };
 
-                // Garantir que la synthèse narrative utilise le contexte réel
-                llmAnalysis.synthesis.initialContextSummary = contextResult.contextSummary;
+                // Garantir que la synthèse narrative existe et utilise le contexte réel
+                // FIX BUG: Si le LLM n'a pas généré synthesis, le créer
+                if (!llmAnalysis.synthesis) {
+                    llmAnalysis.synthesis = {
+                        initialContextSummary: contextResult.contextSummary,
+                        finalTaskSummary: ""
+                    };
+                } else {
+                    llmAnalysis.synthesis.initialContextSummary = contextResult.contextSummary;
+                }
 
                 console.log(`🎯 [SynthesisOrchestrator] Synthèse LLM terminée pour ${taskId} (${llmResult.usage.totalTokens} tokens, $${llmResult.usage.estimatedCost.toFixed(4)})`);
 
