@@ -9,9 +9,16 @@ Multi-model LLM proxy server for Claude Code and Roo Code.
 - **Vision support**: Analyze images with vision-capable models
 - **Dynamic model selection**: Choose the right model for each task
 
+## Configured Models (Myia Infrastructure)
+
+| Model ID | Endpoint | Vision | Description |
+|----------|----------|--------|-------------|
+| `qwen3-vl-8b-thinking` | `https://api.mini.text-generation-webui.myia.io/v1` | ✅ | Default, vision model |
+| `glm-4.7-flash` | `https://api.medium.text-generation-webui.myia.io/v1` | ❌ | Fast text model |
+
 ## Configuration
 
-Edit `sk_agent_config.json`:
+Copy `sk_agent_config.template.json` to `sk_agent_config.json` and add your API keys:
 
 ```json
 {
@@ -19,19 +26,19 @@ Edit `sk_agent_config.json`:
   "models": [
     {
       "id": "qwen3-vl-8b-thinking",
-      "base_url": "http://localhost:5001/v1",
-      "api_key_env": "VLLM_API_KEY_MINI",
+      "base_url": "https://api.mini.text-generation-webui.myia.io/v1",
+      "api_key": "YOUR_MINI_API_KEY_HERE",
       "model_id": "qwen3-vl-8b-thinking",
       "vision": true,
-      "description": "Vision model for image analysis (Qwen3-VL 8B)"
+      "description": "Vision model for image analysis (Qwen3-VL 8B Thinking)"
     },
     {
       "id": "glm-4.7-flash",
-      "base_url": "https://api.z.ai/api/anthropic",
-      "api_key_env": "ANTHROPIC_AUTH_TOKEN",
-      "model_id": "glm-4.7-air",
+      "base_url": "https://api.medium.text-generation-webui.myia.io/v1",
+      "api_key": "YOUR_MEDIUM_API_KEY_HERE",
+      "model_id": "glm-4.7-flash",
       "vision": false,
-      "description": "Fast text model for quick responses (GLM-4.7-Air)"
+      "description": "Fast text model for quick responses (GLM-4.7-Flash)"
     }
   ],
   "mcps": [
@@ -48,12 +55,14 @@ Edit `sk_agent_config.json`:
       "name": "playwright",
       "description": "Browser automation",
       "command": "npx",
-      "args": ["-y", "@playwright/mcp"]
+      "args": ["-y", "@playwright/mcp@latest"]
     }
   ],
   "system_prompt": "You are a helpful assistant with access to web search and browser tools."
 }
 ```
+
+**Important**: The `sk_agent_config.json` file is excluded from git (contains API keys).
 
 ## MCP Tools
 

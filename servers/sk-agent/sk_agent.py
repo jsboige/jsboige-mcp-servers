@@ -7,27 +7,36 @@ for Claude Code / Roo Code.  Uses Semantic Kernel for orchestration so that
 the target model can autonomously call MCP-provided tools (SearXNG, Playwright,
 etc.) configured via a simple JSON file.
 
+Models configured (Myia infrastructure):
+    - qwen3-vl-8b-thinking (default, vision): https://api.mini.text-generation-webui.myia.io/v1
+    - glm-4.7-flash (text): https://api.medium.text-generation-webui.myia.io/v1
+
 Architecture:
     Claude/Roo  --stdio-->  FastMCP server (this file)
                                   |
                                   v
                              Semantic Kernel
-                             +-- OpenAI Chat Completion --> vLLM / Open-WebUI
+                             +-- OpenAI Chat Completion --> Myia API endpoints
                              +-- MCPStdioPlugin: SearXNG
                              +-- MCPStdioPlugin: Playwright
                              +-- MCPStdioPlugin: ... (from config)
 
 Tools exposed to Claude/Roo:
-    ask(prompt, system_prompt?)     -- text query with auto tool use
-    analyze_image(image_source, prompt?) -- vision query, converts paths to base64
-    list_tools()                    -- introspection: list loaded MCP plugins/tools
+    ask(prompt, system_prompt?, model?)     -- text query with auto tool use
+    analyze_image(image_source, prompt?)    -- vision query, converts paths to base64
+    list_tools()                            -- introspection: list loaded MCP plugins/tools
+    list_models()                           -- list available models and capabilities
+    switch_model(model)                     -- switch default model for subsequent requests
 
 Configuration:
     SK_AGENT_CONFIG env var or default sk_agent_config.json next to this file.
+    Template: sk_agent_config.template.json (without API keys)
 
 Usage:
     python sk_agent.py                   # stdio MCP server
-    claude mcp add sk-agent -- python d:/vllm/myia_vllm/mcp/sk_agent.py
+    # Add to Claude Code:
+    # Edit ~/.claude.json and add to mcpServers:
+    #   "sk-agent": {"command": "python", "args": ["path/to/sk_agent.py"]}
 """
 
 from __future__ import annotations
