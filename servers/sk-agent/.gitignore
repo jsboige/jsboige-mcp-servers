@@ -4,3 +4,6 @@ __pycache__/
 .venv/
 venv/
 *.egg-info/
+
+# Config with API keys (use template instead)
+sk_agent_config.json
