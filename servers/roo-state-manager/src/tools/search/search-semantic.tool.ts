@@ -34,6 +34,159 @@ function truncateMessage(message: string, truncate: number): string {
 }
 
 /**
+ * Extract a context snippet centered around the best matching portion of content.
+ * Looks for query words in the content and returns surrounding text.
+ */
+function extractSnippet(content: string, query: string, maxChars: number = 300): string {
+    if (!content) return '';
+
+    const lowerContent = content.toLowerCase();
+    const queryWords = query.toLowerCase().split(/\s+/).filter(w => w.length > 2);
+
+    // Find the position of the first matching query word
+    let bestPos = -1;
+    for (const word of queryWords) {
+        const pos = lowerContent.indexOf(word);
+        if (pos !== -1) {
+            bestPos = pos;
+            break;
+        }
+    }
+
+    if (bestPos === -1) {
+        // No keyword match, return the start of the content
+        return content.length <= maxChars ? content : content.substring(0, maxChars) + '...';
+    }
+
+    // Center the snippet around the match
+    const halfWindow = Math.floor(maxChars / 2);
+    const start = Math.max(0, bestPos - halfWindow);
+    const end = Math.min(content.length, bestPos + halfWindow);
+    let snippet = content.substring(start, end).trim();
+
+    if (start > 0) snippet = '...' + snippet;
+    if (end < content.length) snippet = snippet + '...';
+
+    return snippet;
+}
+
+/**
+ * Interpret a cosine similarity score into a human-readable quality label
+ */
+function interpretScore(score: number): string {
+    if (score >= 0.9) return 'excellent';
+    if (score >= 0.75) return 'good';
+    if (score >= 0.6) return 'moderate';
+    if (score >= 0.4) return 'weak';
+    return 'marginal';
+}
+
+/**
+ * Format a timestamp as relative time (e.g., "2d ago", "5h ago")
+ */
+function formatRelativeTime(timestamp: string | undefined): string {
+    if (!timestamp) return '';
+    try {
+        const date = new Date(timestamp);
+        if (isNaN(date.getTime())) return '';
+        const now = new Date();
+        const diffMs = now.getTime() - date.getTime();
+        const diffHours = Math.floor(diffMs / 3600000);
+        const diffDays = Math.floor(diffHours / 24);
+        if (diffDays > 30) return date.toISOString().split('T')[0];
+        if (diffDays > 0) return `${diffDays}d ago`;
+        if (diffHours > 0) return `${diffHours}h ago`;
+        return 'recent';
+    } catch {
+        return '';
+    }
+}
+
+interface RawSearchResult {
+    taskId: string;
+    score: number;
+    content: string;
+    snippet: string;
+    relevance: string;
+    metadata: {
+        chunk_id: string | undefined;
+        chunk_type: string | undefined;
+        workspace: string | undefined;
+        task_title: string;
+        role: string | undefined;
+        timestamp: string | undefined;
+        relative_time: string;
+        message_position: string | undefined;
+        host_os: string;
+    };
+}
+
+interface GroupedTask {
+    taskId: string;
+    task_title: string;
+    workspace: string | undefined;
+    host_os: string;
+    best_score: number;
+    relevance: string;
+    chunks: Array<{
+        score: number;
+        relevance: string;
+        snippet: string;
+        chunk_type: string | undefined;
+        role: string | undefined;
+        relative_time: string;
+        message_position: string | undefined;
+    }>;
+}
+
+/**
+ * Deduplicate and group results by task_id, keeping the best-scoring chunks per task.
+ */
+function groupResultsByTask(results: RawSearchResult[]): GroupedTask[] {
+    const taskMap = new Map<string, GroupedTask>();
+
+    for (const r of results) {
+        const existing = taskMap.get(r.taskId);
+        if (existing) {
+            existing.chunks.push({
+                score: r.score,
+                relevance: r.relevance,
+                snippet: r.snippet,
+                chunk_type: r.metadata.chunk_type,
+                role: r.metadata.role,
+                relative_time: r.metadata.relative_time,
+                message_position: r.metadata.message_position,
+            });
+            if (r.score > existing.best_score) {
+                existing.best_score = r.score;
+                existing.relevance = r.relevance;
+            }
+        } else {
+            taskMap.set(r.taskId, {
+                taskId: r.taskId,
+                task_title: r.metadata.task_title,
+                workspace: r.metadata.workspace,
+                host_os: r.metadata.host_os,
+                best_score: r.score,
+                relevance: r.relevance,
+                chunks: [{
+                    score: r.score,
+                    relevance: r.relevance,
+                    snippet: r.snippet,
+                    chunk_type: r.metadata.chunk_type,
+                    role: r.metadata.role,
+                    relative_time: r.metadata.relative_time,
+                    message_position: r.metadata.message_position,
+                }],
+            });
+        }
+    }
+
+    // Sort tasks by best score descending
+    return Array.from(taskMap.values()).sort((a, b) => b.best_score - a.best_score);
+}
+
+/**
  * Définition de l'outil MCP search_tasks_by_content
  */
 export const searchTasksByContentTool = {
@@ -198,46 +351,59 @@ export const searchTasksByContentTool = {
                 ? searchResults
                 : (searchResults as any).result || (searchResults as any).points || [];
 
-            const results = rawPoints.map((result: any) => ({
-                taskId: result.payload?.task_id || 'unknown',
-                score: result.score || 0,
-                match: truncateMessage(String(result.payload?.content || 'No content'), 2),
-                metadata: {
-                    chunk_id: result.payload?.chunk_id,
-                    chunk_type: result.payload?.chunk_type,
-                    workspace: result.payload?.workspace,
-                    task_title: result.payload?.task_title || `Task ${result.payload?.task_id}`,
-                    message_index: result.payload?.message_index,
-                    total_messages: result.payload?.total_messages,
-                    role: result.payload?.role,
-                    timestamp: result.payload?.timestamp,
-                    message_position: result.payload?.message_index && result.payload?.total_messages
-                        ? `${result.payload.message_index}/${result.payload.total_messages}`
-                        : undefined,
-                    host_os: result.payload?.host_os || 'unknown'
-                }
-            })) || [];
+            // Phase 2: Enriched results with snippets, score interpretation, deduplication
+            const results: RawSearchResult[] = rawPoints.map((result: any) => {
+                const content = String(result.payload?.content || '');
+                const score = result.score || 0;
+                return {
+                    taskId: result.payload?.task_id || 'unknown',
+                    score,
+                    content: truncateMessage(content, 5),
+                    snippet: extractSnippet(content, search_query),
+                    relevance: interpretScore(score),
+                    metadata: {
+                        chunk_id: result.payload?.chunk_id,
+                        chunk_type: result.payload?.chunk_type,
+                        workspace: result.payload?.workspace,
+                        task_title: result.payload?.task_title || `Task ${result.payload?.task_id}`,
+                        role: result.payload?.role,
+                        timestamp: result.payload?.timestamp,
+                        relative_time: formatRelativeTime(result.payload?.timestamp),
+                        message_position: result.payload?.message_index && result.payload?.total_messages
+                            ? `${result.payload.message_index}/${result.payload.total_messages}`
+                            : undefined,
+                        host_os: result.payload?.host_os || 'unknown'
+                    }
+                };
+            });
 
-            // Créer un rapport enrichi avec contexte multi-machine
+            // Group by task_id: deduplicate multiple chunks from the same conversation
+            const groupedResults = groupResultsByTask(results);
+
+            // Cross-machine analysis
+            const allHosts = results.map(r => r.metadata.host_os);
+            const machinesFound = [...new Set(allHosts)];
+            const resultsByMachine: { [key: string]: number } = {};
+            for (const host of allHosts) {
+                resultsByMachine[host] = (resultsByMachine[host] || 0) + 1;
+            }
+
+            // Build enriched report
             const searchReport = {
                 current_machine: {
                     host_id: currentHostId,
                     search_timestamp: new Date().toISOString(),
                     query: search_query,
-                    results_count: results.length
+                    results_count: results.length,
+                    unique_tasks: groupedResults.length
                 },
                 cross_machine_analysis: {
-                    machines_found: [...new Set(results.map((r: any) => r.metadata.host_os))],
-                    results_by_machine: results.reduce((acc: { [key: string]: number }, r: any) => {
-                        const host = r.metadata.host_os || 'unknown';
-                        acc[host] = (acc[host] || 0) + 1;
-                        return acc;
-                    }, {})
+                    machines_found: machinesFound,
+                    results_by_machine: resultsByMachine
                 },
-                results: results
+                results: groupedResults
             };
 
-            // Mode normal : retourne l'objet searchReport formaté en texte JSON
             return {
                 isError: false,
                 content: [{
