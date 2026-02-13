@@ -1,0 +1,39 @@
+{
+  "default_model": "qwen3-vl-8b-thinking",
+  "models": [
+    {
+      "id": "qwen3-vl-8b-thinking",
+      "base_url": "http://localhost:5001/v1",
+      "api_key_env": "VLLM_API_KEY_MINI",
+      "model_id": "qwen3-vl-8b-thinking",
+      "vision": true,
+      "description": "Vision model for image analysis (Qwen3-VL 8B)"
+    },
+    {
+      "id": "glm-4.7-flash",
+      "base_url": "https://api.z.ai/api/anthropic",
+      "api_key_env": "ANTHROPIC_AUTH_TOKEN",
+      "model_id": "glm-4.7-air",
+      "vision": false,
+      "description": "Fast text model for quick responses (GLM-4.7-Air)"
+    }
+  ],
+  "mcps": [
+    {
+      "name": "searxng",
+      "description": "Web search via SearXNG",
+      "command": "npx",
+      "args": ["-y", "mcp-searxng"],
+      "env": {
+        "SEARXNG_URL": "https://search.myia.io"
+      }
+    },
+    {
+      "name": "playwright",
+      "description": "Browser automation and web scraping",
+      "command": "npx",
+      "args": ["-y", "@playwright/mcp@latest"]
+    }
+  ],
+  "system_prompt": "You are a helpful assistant with access to web search and browser tools. Use them when the user asks about current information or needs to analyze web content. Always respond in the same language as the user."
+}

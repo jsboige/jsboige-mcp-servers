@@ -17,12 +17,14 @@ import { describe, test, expect, beforeEach, afterEach, vi } from 'vitest';
 import { existsSync, rmSync, mkdirSync } from 'fs';
 import { join } from 'path';
 
-// Mock getLocalMachineId pour contrôler l'émetteur dans les tests
+// Mock getLocalMachineId and getLocalFullId pour contrôler l'émetteur dans les tests
 vi.mock('../../../utils/message-helpers.js', async () => {
   const actual = await vi.importActual('../../../utils/message-helpers.js');
   return {
     ...actual,
-    getLocalMachineId: vi.fn(() => 'test-machine')
+    getLocalMachineId: vi.fn(() => 'test-machine'),
+    getLocalFullId: vi.fn(() => 'test-machine'),
+    getLocalWorkspaceId: vi.fn(() => undefined)
   };
 });
 

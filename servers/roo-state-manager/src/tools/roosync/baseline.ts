@@ -1,11 +1,7 @@
 /**
  * Outil MCP : roosync_baseline
  *
- * Outil consolidé regroupant les 3 outils Baseline :
- * - roosync_update_baseline → action: 'update'
- * - roosync_manage_baseline (version) → action: 'version'
- * - roosync_manage_baseline (restore) → action: 'restore'
- * - roosync_export_baseline → action: 'export'
+ * Gestion des baselines RooSync (update, version, restore, export).
  *
  * @module tools/roosync/baseline
  * @version 2.3.0

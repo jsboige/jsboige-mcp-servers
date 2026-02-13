@@ -43,8 +43,10 @@ class GradientCalculator {
         totalTasks: number,
         gradientStrength: number
     ): number {
-        if (totalTasks <= 1) return 1.0;
-        
+        // FIX P0-1c: Pour une seule tâche, permettre la troncature (poids 0.3 = 70% de troncature possible)
+        // Le gradient est conçu pour répartir entre plusieurs tâches
+        if (totalTasks <= 1) return 0.3;
+
         // Position normalisée du centre [0,1]
         const center = (totalTasks - 1) / 2;
         const distanceFromCenter = Math.abs(position - center) / center;
@@ -160,10 +162,11 @@ class BudgetAllocator {
             
             // Contraindre selon les limites de configuration
             const maxAllowedTruncation = originalSize * config.maxTruncationRate;
-            const minRequiredPreservation = originalSize * config.minPreservationRate;
-            
+
+            // FIX P0-1b: Retirer contrainte minPreservationRate (contradictoire avec maxTruncationRate)
+            // Le gradient exponentiel s'occupe déjà de préserver les extrêmes
+            // minPreservationRate=0.9 limitait à 10% max, rendant maxTruncationRate=0.7 inutile
             truncationBudget = Math.min(truncationBudget, maxAllowedTruncation);
-            truncationBudget = Math.max(0, Math.min(truncationBudget, originalSize - minRequiredPreservation));
             
             return {
                 taskId: task.taskId,
@@ -259,7 +262,7 @@ export class SmartTruncationEngine {
     private planElementTruncation(task: ConversationSkeleton, truncationBudget: number): ElementTruncationPlan[] {
         const plans: ElementTruncationPlan[] = [];
         let remainingBudget = truncationBudget;
-        
+
         // Identifier les éléments candidats à la troncature (messages centraux prioritairement)
         const elements = task.sequence.map((item, index) => ({
             index,
@@ -268,7 +271,7 @@ export class SmartTruncationEngine {
             type: 'role' in item ?
                 (item.role === 'user' ? 'user_message' as const : 'assistant_message' as const) : 'action' as const
         }));
-        
+
         // Trier par priorité (actions d'abord, puis messages assistant, puis user messages)
         const priorityOrder: Record<'action' | 'assistant_message' | 'user_message', number> = {
             action: 3,
@@ -276,13 +279,15 @@ export class SmartTruncationEngine {
             user_message: 1
         };
         elements.sort((a, b) => priorityOrder[b.type] - priorityOrder[a.type]);
-        
+
         for (const element of elements) {
             if (remainingBudget <= 0) break;
-            
+
             const truncationAmount = Math.min(remainingBudget, element.size * 0.7); // Max 70% de troncature
-            
-            if (truncationAmount > 10) { // Seuil minimum pour valoir la peine
+
+            // FIX P0-1: Accepter toute troncature >= 1 char pour atteindre le budget
+            // (seuil abaissé de 10 → 1 pour éviter 0% compression)
+            if (truncationAmount >= 1) {
                 plans.push({
                     sequenceIndex: element.index,
                     type: element.type as any,
@@ -294,11 +299,11 @@ export class SmartTruncationEngine {
                         endLines: 5
                     }
                 });
-                
+
                 remainingBudget -= truncationAmount;
             }
         }
-        
+
         return plans;
     }
     

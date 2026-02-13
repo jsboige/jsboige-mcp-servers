@@ -1,11 +1,10 @@
 /**
  * Outil MCP : roosync_send
  *
- * Outil consolidé pour envoyer/répondre/amender des messages RooSync
- * Fusionne : send_message + reply_message + amend_message
+ * Envoi, réponse, et amendement de messages RooSync.
  *
  * @module roosync/send
- * @version 1.0.0 (CONS-1)
+ * @version 1.0.0
  */
 
 import { MessageManager } from '../../services/MessageManager.js';
@@ -17,7 +16,8 @@ import {
   formatDateFull,
   getPriorityIcon,
   getStatusIcon,
-  getLocalMachineId
+  getLocalMachineId,
+  getLocalFullId
 } from '../../utils/message-helpers.js';
 
 // Logger instance for send tool
@@ -85,8 +85,8 @@ async function sendNewMessage(
     );
   }
 
-  // Obtenir l'ID de la machine locale
-  const from = getLocalMachineId();
+  // Obtenir l'ID complet local (machine + workspace si configuré)
+  const from = getLocalFullId();
   logger.debug('📍 Message routing', { from, to: args.to });
 
   // Envoyer le message
@@ -301,8 +301,8 @@ async function amendMessage(
     );
   }
 
-  // Obtenir l'ID de la machine locale (émetteur)
-  const senderId = getLocalMachineId();
+  // Obtenir l'ID complet local (émetteur, inclut workspace si configuré)
+  const senderId = getLocalFullId();
   logger.debug('🔐 Sender ID identified', { senderId });
 
   // Amender le message via MessageManager
@@ -363,6 +363,67 @@ Le **contenu original** est préservé dans \`metadata.original_content\` pour t
  * @param args Arguments de l'outil
  * @returns Résultat de l'opération
  */
+/**
+ * Métadonnées de l'outil roosync_send pour enregistrement MCP
+ */
+export const sendToolMetadata = {
+  name: 'roosync_send',
+  description: 'Envoyer un message structuré, répondre à un message existant, ou amender un message envoyé via RooSync',
+  inputSchema: {
+    type: 'object',
+    properties: {
+      action: {
+        type: 'string',
+        enum: ['send', 'reply', 'amend'],
+        description: 'Action à effectuer : send (nouveau message), reply (répondre), amend (modifier)'
+      },
+      to: {
+        type: 'string',
+        description: 'Destinataire : machine (ex: myia-ai-01) ou machine:workspace (ex: myia-ai-01:roo-extensions). Requis pour action=send'
+      },
+      subject: {
+        type: 'string',
+        description: 'Sujet du message. Requis pour action=send'
+      },
+      body: {
+        type: 'string',
+        description: 'Corps du message (markdown supporté). Requis pour action=send et reply'
+      },
+      priority: {
+        type: 'string',
+        enum: ['LOW', 'MEDIUM', 'HIGH', 'URGENT'],
+        description: 'Priorité du message (défaut: MEDIUM)'
+      },
+      tags: {
+        type: 'array',
+        items: { type: 'string' },
+        description: 'Tags optionnels pour catégoriser le message'
+      },
+      thread_id: {
+        type: 'string',
+        description: 'ID du thread pour regrouper les messages'
+      },
+      reply_to: {
+        type: 'string',
+        description: 'ID du message auquel on répond (pour action=send)'
+      },
+      message_id: {
+        type: 'string',
+        description: 'ID du message (requis pour action=reply et amend)'
+      },
+      new_content: {
+        type: 'string',
+        description: 'Nouveau contenu du message (requis pour action=amend)'
+      },
+      reason: {
+        type: 'string',
+        description: 'Raison de l\'amendement (optionnel, pour action=amend)'
+      }
+    },
+    required: ['action']
+  }
+};
+
 export async function roosyncSend(
   args: RooSyncSendArgs
 ): Promise<{ content: Array<{ type: string; text: string }> }> {

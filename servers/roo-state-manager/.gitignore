@@ -49,3 +49,6 @@ src/__test-data__/
 
 # Claude Code temporary working directories
 tmpclaude-*/
+
+# Exports (machine-specific baseline exports, never version)
+exports/

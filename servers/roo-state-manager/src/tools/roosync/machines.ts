@@ -1,12 +1,10 @@
 /**
- * Outil MCP consolidé : roosync_machines
+ * Outil MCP : roosync_machines
  *
- * Fusionne get-offline-machines et get-warning-machines.
- * Permet de récupérer les machines offline et/ou en avertissement.
+ * Récupération des machines offline et/ou en avertissement.
  *
  * @module tools/roosync/machines
  * @version 3.0.0
- * @since CONS-6
  */
 
 import { z } from 'zod';
@@ -101,12 +99,11 @@ export type MachinesResult = z.infer<typeof MachinesResultSchema>;
 /**
  * Outil roosync_machines (UnifiedToolContract)
  *
- * Fusionne get-offline-machines et get-warning-machines.
- * Permet de récupérer les machines offline et/ou en avertissement.
+ * Récupération des machines offline et/ou en avertissement.
  */
 export const machinesTool: UnifiedToolContract = {
   name: 'roosync_machines',
-  description: 'Outil consolidé pour récupérer les machines offline et/ou en avertissement. Fusionne get-offline-machines et get-warning-machines.',
+  description: 'Récupération des machines offline et/ou en avertissement.',
   category: ToolCategory.UTILITY,
   processingLevel: ProcessingLevel.IMMEDIATE,
   version: '3.0.0',
@@ -217,7 +214,7 @@ export async function roosyncMachines(args: MachinesArgs, context?: any): Promis
  */
 export const machinesToolMetadata = {
   name: 'roosync_machines',
-  description: 'Outil consolidé pour récupérer les machines offline et/ou en avertissement. Fusionne get-offline-machines et get-warning-machines.',
+  description: 'Récupération des machines offline et/ou en avertissement.',
   inputSchema: {
     type: 'object' as const,
     properties: {

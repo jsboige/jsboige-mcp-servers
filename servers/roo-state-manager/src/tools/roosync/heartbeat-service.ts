@@ -1,10 +1,7 @@
 /**
- * Outil MCP consolide : roosync_heartbeat_service
+ * Outil MCP : roosync_heartbeat_service
  *
- * Consolide 3 outils en un seul:
- * - roosync_register_heartbeat
- * - roosync_start_heartbeat_service
- * - roosync_stop_heartbeat_service
+ * Gestion du service de heartbeat (register, start, stop).
  *
  * @module tools/roosync/heartbeat-service
  * @version 3.1.0
@@ -244,7 +241,7 @@ export async function roosyncHeartbeatService(args: HeartbeatServiceArgs): Promi
  */
 export const heartbeatServiceToolMetadata = {
   name: 'roosync_heartbeat_service',
-  description: 'Gere le service de heartbeat. Actions: register (enregistrer un heartbeat), start (demarrer le service), stop (arreter). Consolide register-heartbeat, start-heartbeat-service et stop-heartbeat-service.',
+  description: 'Gestion du service de heartbeat. Actions : register (enregistrer), start (démarrer), stop (arrêter).',
   inputSchema: {
     type: 'object' as const,
     properties: {

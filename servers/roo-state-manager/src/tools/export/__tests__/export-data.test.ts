@@ -37,25 +37,16 @@ const mockXmlExporterService = {
     saveXmlToFile: vi.fn()
 };
 
-// Mock TraceSummaryService avec hoisting correct
-vi.mock('../../../services/TraceSummaryService.js', () => {
-    const mockGenerateSummary = vi.fn().mockResolvedValue({
-        success: true,
-        content: '{"mock": "json"}',
-        statistics: {
-            totalSections: 10,
-            userMessages: 5,
-            assistantMessages: 4,
-            toolResults: 1,
-            totalContentSize: 1024
-        }
-    });
-    return {
-        TraceSummaryService: class {
-            generateSummary = mockGenerateSummary;
-        }
-    };
-});
+// Mock TraceSummaryService avec vi.hoisted (pattern ESM fiable)
+const { mockGenerateSummary } = vi.hoisted(() => ({
+    mockGenerateSummary: vi.fn()
+}));
+
+vi.mock('../../../services/TraceSummaryService.js', () => ({
+    TraceSummaryService: class {
+        generateSummary = mockGenerateSummary;
+    }
+}));
 
 // Mock ExportConfigManager
 vi.mock('../../../services/ExportConfigManager.js', () => ({
@@ -104,6 +95,19 @@ describe('export_data - CONS-10', () => {
         mockGetSkeleton = vi.fn(async (taskId: string) => mockCache.get(taskId) || null);
 
         vi.clearAllMocks();
+
+        // Re-setup TraceSummaryService mock after clearAllMocks
+        mockGenerateSummary.mockResolvedValue({
+            success: true,
+            content: '{"mock": "json"}',
+            statistics: {
+                totalSections: 10,
+                userMessages: 5,
+                assistantMessages: 4,
+                toolResults: 1,
+                totalContentSize: 1024
+            }
+        });
     });
 
     // ============================================================
@@ -289,9 +293,7 @@ describe('export_data - CONS-10', () => {
     // ============================================================
 
     describe('target: conversation, format: json', () => {
-        // TODO: Integration test requires proper TraceSummaryService mock
-        // This test validates the actual export flow works - skip for now
-        test.skip('should export conversation as JSON (integration)', async () => {
+        test('should export conversation as JSON', async () => {
             const args: ExportDataArgs = {
                 target: 'conversation',
                 format: 'json',
@@ -334,9 +336,7 @@ describe('export_data - CONS-10', () => {
     // ============================================================
 
     describe('target: conversation, format: csv', () => {
-        // TODO: Integration test requires proper TraceSummaryService mock
-        // This test validates the actual export flow works - skip for now
-        test.skip('should export conversation as CSV (integration)', async () => {
+        test('should export conversation as CSV', async () => {
             const args: ExportDataArgs = {
                 target: 'conversation',
                 format: 'csv',

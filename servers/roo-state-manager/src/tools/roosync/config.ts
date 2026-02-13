@@ -4,7 +4,6 @@ import { ConfigSharingServiceError, ConfigSharingServiceErrorCode } from '../../
 
 /**
  * Schema Zod pour roosync_config - Outil unifié de gestion de configuration
- * Consolide collect_config, publish_config, et apply_config
  */
 export const ConfigArgsSchema = z.object({
   // Action requise
@@ -19,7 +18,7 @@ export const ConfigArgsSchema = z.object({
     (targets) => {
       if (!targets) return true;
       return targets.every(target => {
-        if (target === 'modes' || target === 'mcp' || target === 'profiles') {
+        if (target === 'modes' || target === 'mcp' || target === 'profiles' || target === 'roomodes' || target === 'model-configs' || target === 'rules') {
           return true;
         }
         if (target.startsWith('mcp:')) {
@@ -30,9 +29,9 @@ export const ConfigArgsSchema = z.object({
       });
     },
     {
-      message: "Target invalide. Valeurs acceptées: modes, mcp, profiles, ou mcp:<nomServeur>"
+      message: "Target invalide. Valeurs acceptées: modes, mcp, profiles, roomodes, model-configs, rules, ou mcp:<nomServeur>"
     }
-  ).describe('Liste des cibles à collecter/appliquer (modes, mcp, profiles, ou mcp:<nomServeur>). Défaut: ["modes", "mcp"]'),
+  ).describe('Liste des cibles à collecter/appliquer (modes, mcp, profiles, roomodes, model-configs, rules, ou mcp:<nomServeur>). Défaut: ["modes", "mcp"]'),
 
   // Pour publish (requiert collect préalable OU packagePath)
   packagePath: z.string().optional().describe('Chemin du package créé par collect. Si omis avec action=publish et targets fourni, fait collect+publish atomique'),
@@ -85,12 +84,12 @@ function parseTargets(targets?: string[]): ('modes' | 'mcp' | 'profiles' | `mcp:
       return target as `mcp:${string}`;
     }
 
-    if (target === 'modes' || target === 'mcp' || target === 'profiles') {
-      return target;
+    if (target === 'modes' || target === 'mcp' || target === 'profiles' || target === 'roomodes' || target === 'model-configs' || target === 'rules') {
+      return target as any;
     }
 
     throw new ConfigSharingServiceError(
-      `Target invalide: '${target}'. Valeurs acceptées: modes, mcp, profiles, ou mcp:<nomServeur>`,
+      `Target invalide: '${target}'. Valeurs acceptées: modes, mcp, profiles, roomodes, model-configs, rules, ou mcp:<nomServeur>`,
       ConfigSharingServiceErrorCode.INVALID_TARGET_FORMAT,
       { target }
     );
@@ -98,8 +97,7 @@ function parseTargets(targets?: string[]): ('modes' | 'mcp' | 'profiles' | `mcp:
 }
 
 /**
- * Outil unifié de gestion de configuration RooSync
- * Consolide collect_config, publish_config, et apply_config en un seul outil action-based
+ * Gestion de configuration RooSync (collect, publish, apply)
  *
  * @param args - Arguments avec action ('collect', 'publish', ou 'apply')
  * @returns Résultat de l'opération avec status et données spécifiques à l'action
@@ -242,27 +240,7 @@ export async function roosyncConfig(args: ConfigArgs) {
  */
 export const configToolMetadata = {
   name: 'roosync_config',
-  description: `Outil unifié de gestion de configuration RooSync (CONS-3).
-
-Consolide collect_config, publish_config, et apply_config en un seul outil action-based.
-
-**Actions disponibles:**
-
-- **collect**: Collecte la configuration locale (modes Roo, MCPs, profils)
-  - Paramètres: targets (optional), dryRun (optional)
-  - Output: packagePath, totalSize, manifest
-
-- **publish**: Publie vers le stockage partagé GDrive
-  - Paramètres: packagePath OU targets (collect+publish atomique), version (required), description (required), machineId (optional)
-  - Output: version, targetPath, machineId
-  - Support collect+publish atomique: Si targets fourni sans packagePath, fait collect automatique puis publish
-
-- **apply**: Applique une configuration depuis GDrive
-  - Paramètres: version (optional, défaut: "latest"), machineId (optional), targets (optional, supporte mcp:<nom>), backup (optional, défaut: true), dryRun (optional)
-  - Output: filesApplied, backupPath, errors
-  - Validation version majeure automatique
-
-**Note SDDD:** Stocke par machineId pour éviter les écrasements entre machines.`,
+  description: 'Gestion de configuration RooSync. Actions : collect (collecte locale), publish (publication GDrive), apply (application depuis GDrive). Cibles : modes, mcp, profiles, roomodes, model-configs, rules, mcp:<nomServeur>. Stocke par machineId.',
   inputSchema: {
     type: 'object' as const,
     properties: {
@@ -282,7 +260,7 @@ Consolide collect_config, publish_config, et apply_config en un seul outil actio
       targets: {
         type: 'array',
         items: { type: 'string' },
-        description: 'Liste des cibles à collecter/appliquer (modes, mcp, profiles, ou mcp:<nomServeur>). Défaut: ["modes", "mcp"]'
+        description: 'Liste des cibles à collecter/appliquer (modes, mcp, profiles, roomodes, model-configs, rules, ou mcp:<nomServeur>). Défaut: ["modes", "mcp"]'
       },
       packagePath: {
         type: 'string',

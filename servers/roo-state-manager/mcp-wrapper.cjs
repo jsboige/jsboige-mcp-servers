@@ -1,22 +1,20 @@
 #!/usr/bin/env node
 /**
- * MCP Wrapper v3.0.0 - Filtre RooSync + Déduplication anti-doublons VS Code
+ * MCP Wrapper v4.0.0 - Pass-through + Déduplication anti-doublons VS Code
  *
- * PROBLÈME RÉSOLU :
- * - Claude Code VS Code appelle tools/list plusieurs fois (main + sub-agents)
- * - Cela crée des doublons d'outils → erreur "Tool names must be unique"
+ * CHANGEMENT v4: Plus de filtrage d'outils. Tous les outils de roo-state-manager
+ * sont exposés à Claude Code (~37 outils après consolidations).
  *
- * SOLUTION :
- * - Cache la liste d'outils après le premier appel
- * - Renvoie TOUJOURS la même réponse filtrée
- * - Garantit unicité des noms d'outils
+ * Raisons du changement:
+ * - Claude Code a besoin des outils conversation_browser (consolidé #457),
+ *   view_task_details, get_raw_conversation pour analyser les runs
+ *   du scheduler Roo sans lire manuellement les fichiers JSON.
+ * - roosync_search et export_data sont utiles pour la coordination.
+ * - ~37 outils est raisonnable pour Claude (pas de threshold comme Roo à 60).
  *
- * Outils autorisés (21):
- * - Messagerie (6): send_message, read_inbox, reply_message, get_message, mark_message_read, archive_message
- * - Lecture seule (6): get_status, get_machine_inventory, list_diffs, compare_config, get_decision_details, refresh_dashboard
- * - E2E complet (3): collect_config, publish_config, apply_config
- * - Infrastructure (2): init, get_active_config
- * - Summary (4): roosync_summarize, generate_trace_summary, generate_cluster_summary, get_conversation_synthesis
+ * Fonctions conservées:
+ * - Déduplication cache (VS Code appelle tools/list plusieurs fois)
+ * - Suppression des logs stderr bruyants
  */
 
 const { spawn } = require('child_process');
@@ -32,44 +30,13 @@ function logDebug(message) {
     }
 }
 
-// Liste des outils RooSync autorisés pour Claude Code
-const ALLOWED_TOOLS = new Set([
-    // Messagerie (6 outils)
-    'roosync_send_message',
-    'roosync_read_inbox',
-    'roosync_reply_message',
-    'roosync_get_message',
-    'roosync_mark_message_read',
-    'roosync_archive_message',
-    // Lecture seule (6 outils)
-    'roosync_get_status',
-    'roosync_get_machine_inventory',
-    'roosync_list_diffs',
-    'roosync_compare_config',
-    'roosync_get_decision_details',
-    'roosync_refresh_dashboard', // Issue #363 - MAJ dashboard sans init complet
-    // Actions critiques pour E2E (3 outils)
-    'roosync_collect_config',
-    'roosync_publish_config',
-    'roosync_apply_config',
-    // Infrastructure (2 outils) - v3.0.0
-    'roosync_init',              // Enregistrer machine et MAJ dashboard
-    'roosync_get_active_config', // Obtenir la config active
-    // Summary (4 outils) - CONS-12
-    'roosync_summarize',              // Outil consolidé 3→1 (CONS-12)
-    'generate_trace_summary',         // Legacy (trace seule)
-    'generate_cluster_summary',       // Legacy (cluster/grappe)
-    'get_conversation_synthesis'      // Legacy (synthèse LLM)
-]);
-
-// Cache pour la réponse tools/list filtrée (anti-doublons VS Code)
+// Cache pour la réponse tools/list (anti-doublons VS Code)
 let cachedToolsListResponse = null;
 
 // Buffer pour accumuler les messages JSON incomplets
 let buffer = '';
 
-logDebug('Starting roo-state-manager MCP server v3.0 (anti-duplicate)...');
-logDebug(`Allowed tools (${ALLOWED_TOOLS.size}): ${Array.from(ALLOWED_TOOLS).join(', ')}`);
+logDebug('Starting roo-state-manager MCP server v4.0 (pass-through + anti-duplicate)...');
 
 // Spawn le serveur avec stdout et stderr redirigés pour filtrage
 const server = spawn('node', [serverPath], {
@@ -113,46 +80,43 @@ server.stderr.on('data', (data) => {
     }
 });
 
-// Fonction pour filtrer et cacher la réponse tools/list
-function filterAndCacheToolsList(message) {
+// Fonction pour cacher la réponse tools/list (anti-doublons, sans filtrage)
+function cacheToolsList(message) {
     try {
         const parsed = JSON.parse(message);
 
         // Si c'est une réponse "tools/list"
         if (parsed.result && parsed.result.tools && Array.isArray(parsed.result.tools)) {
 
-            // Si on a déjà un cache, renvoyer le cache avec un nouvel ID
+            // Si on a déjà un cache, renvoyer le cache avec le bon ID
             if (cachedToolsListResponse) {
                 logDebug('Using cached tools/list (preventing duplicates)');
                 const cachedResponse = JSON.parse(cachedToolsListResponse);
-                // Garder l'ID de la requête originale
                 if (parsed.id !== undefined) {
                     cachedResponse.id = parsed.id;
                 }
                 return JSON.stringify(cachedResponse);
             }
 
-            // Sinon, filtrer et créer le cache
-            const originalCount = parsed.result.tools.length;
-            parsed.result.tools = parsed.result.tools.filter(tool =>
-                ALLOWED_TOOLS.has(tool.name)
-            );
-            const filteredCount = parsed.result.tools.length;
-
-            logDebug(`Filtered tools: ${originalCount} -> ${filteredCount}`);
-            logDebug(`Tool names: ${parsed.result.tools.map(t => t.name).join(', ')}`);
-
-            if (filteredCount === 0) {
-                logDebug('WARNING: No tools remaining after filtering!');
-            }
+            // Premier appel: vérifier unicité et cacher
+            const toolCount = parsed.result.tools.length;
+            logDebug(`Tools/list: ${toolCount} tools`);
 
             // Vérifier l'unicité des noms d'outils
             const toolNames = parsed.result.tools.map(t => t.name);
             const uniqueNames = new Set(toolNames);
             if (toolNames.length !== uniqueNames.size) {
-                logDebug('ERROR: Duplicate tool names detected after filtering!');
-                logDebug(`Tools: ${toolNames.join(', ')}`);
+                logDebug('WARNING: Duplicate tool names detected, deduplicating...');
+                const seen = new Set();
+                parsed.result.tools = parsed.result.tools.filter(tool => {
+                    if (seen.has(tool.name)) return false;
+                    seen.add(tool.name);
+                    return true;
+                });
+                logDebug(`After dedup: ${parsed.result.tools.length} tools`);
             }
+
+            logDebug(`Tool names: ${parsed.result.tools.map(t => t.name).join(', ')}`);
 
             // Mettre en cache
             cachedToolsListResponse = JSON.stringify(parsed);
@@ -169,7 +133,7 @@ function filterAndCacheToolsList(message) {
     }
 }
 
-// Filtrer stdout : filtrage dès le début + cache anti-doublons
+// Traiter stdout : cache anti-doublons + suppression logs non-JSON
 server.stdout.on('data', (data) => {
     const output = data.toString();
 
@@ -185,10 +149,9 @@ server.stdout.on('data', (data) => {
         if (!trimmed) return;
 
         if (trimmed.startsWith('{')) {
-            // C'est un message MCP JSON-RPC
-            // Filtrer et cacher les tools/list pour éviter les doublons
-            const filtered = filterAndCacheToolsList(trimmed);
-            process.stdout.write(filtered + '\n');
+            // Message MCP JSON-RPC - cacher tools/list pour éviter doublons
+            const processed = cacheToolsList(trimmed);
+            process.stdout.write(processed + '\n');
         } else if (trimmed.includes('Roo State Manager Server started')) {
             // Laisser passer le message de démarrage
             process.stdout.write(line + '\n');

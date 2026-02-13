@@ -31,5 +31,8 @@ export * from './roosync/index.js';
 export * from './cache/index.js';
 export * from './repair/index.js';
 
+// CONS-13: Maintenance tools consolidés (5→2)
+export * from './maintenance/index.js';
+
 // Diagnostic Tools - WP4 (Cycle 7)
 export * from './diagnostic/index.js';

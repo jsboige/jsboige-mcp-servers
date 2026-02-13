@@ -41,7 +41,67 @@ export type {
   ListDiffsResult
 } from './list-diffs.js';
 
-// CONS-5: Outils consolidés Décision (5→2)
+export {
+  roosyncApproveDecision,
+  ApproveDecisionArgsSchema,
+  ApproveDecisionResultSchema,
+  approveDecisionToolMetadata
+} from './approve-decision.js';
+
+export type {
+  ApproveDecisionArgs,
+  ApproveDecisionResult
+} from './approve-decision.js';
+
+export {
+  roosyncRejectDecision,
+  RejectDecisionArgsSchema,
+  RejectDecisionResultSchema,
+  rejectDecisionToolMetadata
+} from './reject-decision.js';
+
+export type {
+  RejectDecisionArgs,
+  RejectDecisionResult
+} from './reject-decision.js';
+
+export {
+  roosyncApplyDecision,
+  ApplyDecisionArgsSchema,
+  ApplyDecisionResultSchema,
+  applyDecisionToolMetadata
+} from './apply-decision.js';
+
+export type {
+  ApplyDecisionArgs,
+  ApplyDecisionResult
+} from './apply-decision.js';
+
+export {
+  roosyncRollbackDecision,
+  RollbackDecisionArgsSchema,
+  RollbackDecisionResultSchema,
+  rollbackDecisionToolMetadata
+} from './rollback-decision.js';
+
+export type {
+  RollbackDecisionArgs,
+  RollbackDecisionResult
+} from './rollback-decision.js';
+
+export {
+  roosyncGetDecisionDetails,
+  GetDecisionDetailsArgsSchema,
+  GetDecisionDetailsResultSchema,
+  getDecisionDetailsToolMetadata
+} from './get-decision-details.js';
+
+export type {
+  GetDecisionDetailsArgs,
+  GetDecisionDetailsResult
+} from './get-decision-details.js';
+
+// CONS-5: Outils consolidés de décisions (5→2)
 export {
   roosyncDecision,
   RooSyncDecisionArgsSchema,
@@ -170,9 +230,9 @@ export { amendMessage } from './amend_message.js';
 // - roosyncRead (mode: inbox|message) → remplace read_inbox + get_message
 // - roosyncSend (action: send|reply|amend) → remplace send_message + reply_message + amend_message
 // - roosyncManage (action: mark_read|archive) → remplace mark_message_read + archive_message
-export { roosyncRead } from './read.js';
-export { roosyncSend } from './send.js';
-export { roosyncManage } from './manage.js';
+export { roosyncRead, readToolMetadata } from './read.js';
+export { roosyncSend, sendToolMetadata } from './send.js';
+export { roosyncManage, manageToolMetadata } from './manage.js';
 
 // CONS-6: Outils consolidés Inventory (4→2)
 export { inventoryTool, inventoryToolMetadata } from './inventory.js';
@@ -190,13 +250,25 @@ export { roosyncStartHeartbeatService, startHeartbeatServiceToolMetadata } from 
 export { roosyncStopHeartbeatService, stopHeartbeatServiceToolMetadata } from './stop-heartbeat-service.js';
 export { roosyncCheckHeartbeats, checkHeartbeatsToolMetadata } from './check-heartbeats.js';
 
-// NOUVEAU: Outils Heartbeat consolides v3.1 (CONS-2)
-export { roosyncHeartbeatStatus, heartbeatStatusToolMetadata } from './heartbeat-status.js';
-export { roosyncHeartbeatService, heartbeatServiceToolMetadata } from './heartbeat-service.js';
+// CONS-#443 Groupe 1: Outil consolidé de heartbeat (2→1)
+// Remplace heartbeat_status + heartbeat_service
+export { roosyncHeartbeat, heartbeatToolMetadata } from './heartbeat.js';
 
-// Export des outils de synchronisation automatique (T3.16)
-export { roosyncSyncOnOffline, syncOnOfflineToolMetadata } from './sync-on-offline.js';
-export { roosyncSyncOnOnline, syncOnOnlineToolMetadata } from './sync-on-online.js';
+// CONS-#443 Groupe 2: Outil consolidé de synchronisation automatique (2→1)
+// Remplace sync-on-offline + sync-on-online
+export { roosyncSyncEvent, syncEventToolMetadata } from './sync-event.js';
+
+// CONS-#443 Groupe 3: Outil consolidé de gestion MCP (3→1)
+// Remplace manage_mcp_settings + rebuild_and_restart_mcp + touch_mcp_settings
+export { roosyncMcpManagement, mcpManagementToolMetadata } from './mcp-management.js';
+
+// CONS-#443 Groupe 4: Outil consolidé de gestion du stockage (2→1)
+// Remplace storage_info + maintenance
+export { roosyncStorageManagement, storageManagementToolMetadata } from './storage-management.js';
+
+// CONS-#443 Groupe 5: Outil consolidé de diagnostic (3→1)
+// Remplace diagnose_env + debug_reset + minimal_test_tool
+export { roosyncDiagnose, diagnoseToolMetadata } from './diagnose.js';
 
 // Export des outils de dashboard (T3.17)
 export { roosyncRefreshDashboard, refreshDashboardToolMetadata } from './refresh-dashboard.js';
@@ -205,14 +277,14 @@ export { roosyncRefreshDashboard, refreshDashboardToolMetadata } from './refresh
 import { getStatusToolMetadata } from './get-status.js';
 import { compareConfigToolMetadata } from './compare-config.js';
 import { listDiffsToolMetadata } from './list-diffs.js';
-// CONS-5: Import des métadonnées des outils consolidés Décision (5→2)
+// CONS-5: Legacy decision imports replaced by consolidated
 import { roosyncDecisionToolMetadata } from './decision.js';
 import { roosyncDecisionInfoToolMetadata } from './decision-info.js';
 import { initToolMetadata } from './roosync_init.js';
 import { updateBaselineToolMetadata } from './update-baseline.js';
 import { manageBaselineToolMetadata } from './manage-baseline.js';
 import { baselineToolMetadata } from './baseline.js';
-import { debugResetToolMetadata } from './debug-reset.js';
+import { diagnoseToolMetadata } from './diagnose.js';
 import { collectConfigToolMetadata } from './collect-config.js';
 import { publishConfigToolMetadata } from './publish-config.js';
 import { applyConfigToolMetadata } from './apply-config.js';
@@ -221,25 +293,28 @@ import { configToolMetadata } from './config.js'; // CONS-3
 import { inventoryToolMetadata } from './inventory.js';
 import { machinesToolMetadata } from './machines.js';
 
-// Import des métadonnées des outils Heartbeat (T3.16) - @deprecated
-import { registerHeartbeatToolMetadata } from './register-heartbeat.js';
-import { getOfflineMachinesToolMetadata } from './get-offline-machines.js';
-import { getWarningMachinesToolMetadata } from './get-warning-machines.js';
-import { getHeartbeatStateToolMetadata } from './get-heartbeat-state.js';
-import { startHeartbeatServiceToolMetadata } from './start-heartbeat-service.js';
-import { stopHeartbeatServiceToolMetadata } from './stop-heartbeat-service.js';
-import { checkHeartbeatsToolMetadata } from './check-heartbeats.js';
+// CLEANUP-1: Imports deprecated heartbeat retirés (register, get-offline, get-warning, get-state, start, stop, check)
+// Les modules existent toujours pour backward compat dans registry.ts CallTool handlers
 
-// Import des métadonnées des outils Heartbeat consolides (CONS-2)
-import { heartbeatStatusToolMetadata } from './heartbeat-status.js';
-import { heartbeatServiceToolMetadata } from './heartbeat-service.js';
+// CONS-#443 Groupe 1: Import de l'outil consolidé de heartbeat
+import { heartbeatToolMetadata } from './heartbeat.js';
 
-// Import des métadonnées des outils de synchronisation automatique (T3.16)
-import { syncOnOfflineToolMetadata } from './sync-on-offline.js';
-import { syncOnOnlineToolMetadata } from './sync-on-online.js';
+// CONS-#443 Groupe 2: Import de l'outil consolidé de synchronisation
+import { syncEventToolMetadata } from './sync-event.js';
+
+// CONS-#443 Groupe 3: Import de l'outil consolidé de gestion MCP
+import { mcpManagementToolMetadata } from './mcp-management.js';
+
+// CONS-#443 Groupe 4: Import de l'outil consolidé de gestion du stockage
+import { storageManagementToolMetadata } from './storage-management.js';
 
 // Import des métadonnées des outils de dashboard (T3.17)
 import { refreshDashboardToolMetadata } from './refresh-dashboard.js';
+
+// CONS-1: Import des métadonnées des outils de messagerie consolidés
+import { sendToolMetadata } from './send.js';
+import { readToolMetadata } from './read.js';
+import { manageToolMetadata } from './manage.js';
 
 // Métadonnées pour l'outil d'inventaire (format JSON Schema standard)
 // CONS-6: Remplacé par inventoryToolMetadata
@@ -296,41 +371,45 @@ const exportBaselineToolMetadata = {
 
 /**
  * Liste de tous les outils RooSync pour enregistrement MCP
- * Version 3.5 : 20 outils consolidés (CONS-3: 4→2 Config, CONS-4: 3→1 Baseline, CONS-5: 5→2 Decision, CONS-6: 4→2 Inventory)
+ * Version 3.12 : 18 outils (CONS-#443 Groupe 5: Diagnostic 3→1, 19→18 outils)
  *
  * - Configuration: init, compare-config, roosync_config (CONS-3), baseline (CONS-4)
  * - Services: inventory (CONS-6), machines (CONS-6)
  * - Presentation: get-status, list-diffs, refresh-dashboard
- * - Decision: roosync_decision (CONS-5), roosync_decision_info (CONS-5)
- * - Heartbeat legacy (deprecated): register-heartbeat, get-offline-machines, get-warning-machines, get-heartbeat-state, start-heartbeat-service, stop-heartbeat-service, check-heartbeats
- * - Heartbeat v3.1 (CONS-2): heartbeat-status, heartbeat-service
- * - Synchronisation automatique: sync-on-offline, sync-on-online
- * - Debug: debug-reset
+ * - Decision (CONS-5): roosync_decision, roosync_decision_info
+ * - Heartbeat (CONS-#443 Groupe 1): roosync_heartbeat
+ * - Synchronisation automatique (CONS-#443 Groupe 2): roosync_sync_event
+ * - Messagerie (CONS-1): roosync_send, roosync_read, roosync_manage
+ * - Gestion MCP (CONS-#443 Groupe 3): roosync_mcp_management
+ * - Gestion stockage (CONS-#443 Groupe 4): roosync_storage_management
+ * - Diagnostic (CONS-#443 Groupe 5): roosync_diagnose
  */
 export const roosyncTools = [
   initToolMetadata,
   getStatusToolMetadata,
   compareConfigToolMetadata,
   listDiffsToolMetadata,
-  // CONS-5: Outils consolidés Décision (5→2)
-  roosyncDecisionToolMetadata,      // approve/reject/apply/rollback
-  roosyncDecisionInfoToolMetadata,  // get-decision-details (read-only)
+  // CONS-5: Outils de décision consolidés (5→2)
+  roosyncDecisionToolMetadata,
+  roosyncDecisionInfoToolMetadata,
   baselineToolMetadata, // CONS-4: Outil consolidé Baseline 3→1
   configToolMetadata, // CONS-3: Outil consolidé Config 4→2
   inventoryToolMetadata, // CONS-6: Outil consolidé Inventory (machine + heartbeat)
   machinesToolMetadata, // CONS-6: Outil consolidé Machines (offline + warning)
-  debugResetToolMetadata,
-  // Outils Heartbeat legacy (T3.16) - @deprecated, utiliser heartbeat-status et heartbeat-service
-  registerHeartbeatToolMetadata,
-  startHeartbeatServiceToolMetadata,
-  stopHeartbeatServiceToolMetadata,
-  checkHeartbeatsToolMetadata,
-  // Outils Heartbeat consolides v3.1 (CONS-2)
-  heartbeatStatusToolMetadata,
-  heartbeatServiceToolMetadata,
-  // Outils de synchronisation automatique (T3.16)
-  syncOnOfflineToolMetadata,
-  syncOnOnlineToolMetadata,
+  // CONS-#443 Groupe 1: Outil consolidé de heartbeat (heartbeat_status + heartbeat_service → roosync_heartbeat)
+  heartbeatToolMetadata,
+  // CONS-#443 Groupe 2: Outil consolidé de synchronisation (sync-on-offline + sync-on-online → roosync_sync_event)
+  syncEventToolMetadata,
+  // CONS-#443 Groupe 3: Outil consolidé de gestion MCP (manage_mcp_settings + rebuild_and_restart_mcp + touch_mcp_settings → roosync_mcp_management)
+  mcpManagementToolMetadata,
+  // CONS-#443 Groupe 4: Outil consolidé de gestion du stockage (storage_info + maintenance → roosync_storage_management)
+  storageManagementToolMetadata,
+  // CONS-#443 Groupe 5: Outil consolidé de diagnostic (diagnose_env + debug_reset + minimal_test_tool → roosync_diagnose)
+  diagnoseToolMetadata,
   // Outils de dashboard (T3.17)
-  refreshDashboardToolMetadata
+  refreshDashboardToolMetadata,
+  // CONS-1: Outils de messagerie consolidés (6→3)
+  sendToolMetadata,
+  readToolMetadata,
+  manageToolMetadata
 ];

@@ -71,19 +71,9 @@ export class InventoryService {
     return await this.loadRemoteInventory(normalizedMachineId);
   }
 
-  // Pour la machine locale, essayer d'abord de charger depuis le fichier JSON
-  // Si le fichier n'existe pas, collecter l'inventaire localement
-  try {
-    return await this.loadRemoteInventory(normalizedMachineId);
-  } catch (error: any) {
-    // Si le fichier n'existe pas, collecter l'inventaire localement
-    if (error.code === 'ENOENT' || error.message?.includes('n\'existe pas')) {
-      console.log(`Fichier d'inventaire non trouvé pour ${normalizedMachineId}, collecte locale...`);
-    } else {
-      console.warn(`Erreur lors du chargement de l'inventaire: ${error.message}`);
-    }
-  }
-
+  // Pour la machine locale, toujours collecter l'inventaire frais
+  // FIX: L'ancien code chargeait le fichier GDrive en cache et ne le rafraîchissait jamais
+  // car loadRemoteInventory réussissait si le fichier existait (même périmé)
   // Collecter l'inventaire local
   const inventoryData: InventoryData = {
     mcpServers: await this.collectMcpServers(),
@@ -95,14 +85,14 @@ export class InventoryService {
     tools: {}, // Skipped in script
     systemInfo: {
       os: `${os.type()} ${os.release()}`,
-      hostname: os.hostname(),
+      hostname: os.hostname().toLowerCase(),
       username: os.userInfo().username,
       powershellVersion: await this.getPowershellVersion()
     }
   };
 
   const inventory: FullInventory = {
-    machineId: finalMachineId,
+    machineId: normalizedMachineId,
     timestamp: new Date().toISOString(),
     inventory: inventoryData,
     paths: {

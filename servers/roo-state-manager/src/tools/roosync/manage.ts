@@ -1,11 +1,10 @@
 /**
  * Outil MCP : roosync_manage
  *
- * Outil consolidé pour gérer le cycle de vie des messages RooSync
- * Fusionne : mark_message_read + archive_message
+ * Gestion du cycle de vie des messages RooSync (marquer lu, archiver).
  *
  * @module roosync/manage
- * @version 1.0.0 (CONS-1)
+ * @version 1.0.0
  */
 
 import { MessageManager } from '../../services/MessageManager.js';
@@ -228,6 +227,29 @@ Il n'apparaîtra plus dans la boîte de réception (\`roosync_read\`).
  * @param args Arguments de l'outil
  * @returns Résultat de l'opération
  */
+/**
+ * Métadonnées de l'outil roosync_manage pour enregistrement MCP
+ */
+export const manageToolMetadata = {
+  name: 'roosync_manage',
+  description: 'Gérer le cycle de vie des messages RooSync : marquer comme lu ou archiver',
+  inputSchema: {
+    type: 'object',
+    properties: {
+      action: {
+        type: 'string',
+        enum: ['mark_read', 'archive'],
+        description: 'Action à effectuer sur le message'
+      },
+      message_id: {
+        type: 'string',
+        description: 'ID du message à traiter'
+      }
+    },
+    required: ['action', 'message_id']
+  }
+};
+
 export async function roosyncManage(
   args: RooSyncManageArgs
 ): Promise<{ content: Array<{ type: string; text: string }> }> {

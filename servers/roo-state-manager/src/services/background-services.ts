@@ -13,6 +13,7 @@ import { ANTI_LEAK_CONFIG } from '../config/server-config.js';
 import { TaskIndexer, getHostIdentifier } from './task-indexer.js';
 import * as toolExports from '../tools/index.js';
 import { RooStorageDetectorError, RooStorageDetectorErrorCode } from '../types/errors.js';
+import { RooSyncService } from './RooSyncService.js';
 
 /**
  * Charge les squelettes existants depuis le disque au démarrage
@@ -40,7 +41,11 @@ export async function loadSkeletonsFromDisk(conversationCache: Map<string, Conve
             for (const file of jsonFiles) {
                 try {
                     const filePath = path.join(skeletonsCacheDir, file);
-                    const content = await fs.readFile(filePath, 'utf8');
+                    let content = await fs.readFile(filePath, 'utf8');
+                    // Strip BOM UTF-8 si présent (fix Windows encoding issues)
+                    if (content.charCodeAt(0) === 0xFEFF) {
+                        content = content.slice(1);
+                    }
                     const skeleton: ConversationSkeleton = JSON.parse(content);
                     conversationCache.set(skeleton.taskId, skeleton);
                 } catch (error) {
@@ -156,6 +161,22 @@ export async function initializeBackgroundServices(state: ServerState): Promise<
 
         // Niveau 2: Initialisation du service d'indexation Qdrant asynchrone
         await initializeQdrantIndexingService(state);
+
+        // Auto-start heartbeat service
+        try {
+            const rooSyncService = RooSyncService.getInstance();
+            await rooSyncService.startHeartbeatService(
+                (machineId: string) => {
+                    console.log(`[Heartbeat] Machine offline: ${machineId}`);
+                },
+                (machineId: string) => {
+                    console.log(`[Heartbeat] Machine online: ${machineId}`);
+                }
+            );
+            console.log('✅ Heartbeat service auto-started');
+        } catch (error: any) {
+            console.warn('⚠️ Heartbeat init failed (non-blocking):', error.message);
+        }
 
         console.log('✅ Services background initialisés avec succès');
     } catch (error: any) {

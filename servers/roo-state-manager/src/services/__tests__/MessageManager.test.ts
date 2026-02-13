@@ -422,6 +422,128 @@ describe('MessageManager', () => {
     });
   });
 
+  describe('Workspace messaging (#434)', () => {
+    test('should allow sending between same machine different workspaces', async () => {
+      const message = await messageManager.sendMessage(
+        'myia-ai-01:roo-extensions',
+        'myia-ai-01:vllm-hosting',
+        'Cross-workspace',
+        'Hello from roo-extensions'
+      );
+
+      expect(message.from).toBe('myia-ai-01:roo-extensions');
+      expect(message.to).toBe('myia-ai-01:vllm-hosting');
+    });
+
+    test('should block self-message on same machine:workspace', async () => {
+      await expect(
+        messageManager.sendMessage(
+          'myia-ai-01:roo-extensions',
+          'myia-ai-01:roo-extensions',
+          'Self',
+          'Self message'
+        )
+      ).rejects.toThrow(/Auto-message interdit/);
+    });
+
+    test('should block self-message on same machine (no workspace)', async () => {
+      await expect(
+        messageManager.sendMessage(
+          'myia-ai-01',
+          'myia-ai-01',
+          'Self',
+          'Self message'
+        )
+      ).rejects.toThrow(/Auto-message interdit/);
+    });
+
+    test('readInbox with workspace should see workspace-specific messages', async () => {
+      await messageManager.sendMessage(
+        'myia-po-2024',
+        'myia-ai-01:roo-extensions',
+        'For roo-ext workspace',
+        'Body'
+      );
+
+      const inbox = await messageManager.readInbox('myia-ai-01', 'all', undefined, 'roo-extensions');
+      expect(inbox).toHaveLength(1);
+      expect(inbox[0].subject).toBe('For roo-ext workspace');
+    });
+
+    test('readInbox with different workspace should NOT see workspace-specific messages', async () => {
+      await messageManager.sendMessage(
+        'myia-po-2024',
+        'myia-ai-01:roo-extensions',
+        'For roo-ext only',
+        'Body'
+      );
+
+      const inbox = await messageManager.readInbox('myia-ai-01', 'all', undefined, 'vllm-hosting');
+      expect(inbox).toHaveLength(0);
+    });
+
+    test('readInbox without workspace should NOT see workspace-targeted messages', async () => {
+      await messageManager.sendMessage(
+        'myia-po-2024',
+        'myia-ai-01:roo-extensions',
+        'Workspace-specific',
+        'Body'
+      );
+
+      const inbox = await messageManager.readInbox('myia-ai-01');
+      expect(inbox).toHaveLength(0);
+    });
+
+    test('readInbox with workspace should see machine-level messages', async () => {
+      await messageManager.sendMessage(
+        'myia-po-2024',
+        'myia-ai-01',
+        'For all workspaces',
+        'Body'
+      );
+
+      const inbox = await messageManager.readInbox('myia-ai-01', 'all', undefined, 'roo-extensions');
+      expect(inbox).toHaveLength(1);
+      expect(inbox[0].subject).toBe('For all workspaces');
+    });
+
+    test('readInbox with workspace should see broadcast messages', async () => {
+      await messageManager.sendMessage(
+        'myia-po-2024',
+        'all',
+        'Broadcast',
+        'Body'
+      );
+
+      const inbox = await messageManager.readInbox('myia-ai-01', 'all', undefined, 'roo-extensions');
+      expect(inbox).toHaveLength(1);
+    });
+
+    test('readInbox should see machine-level + workspace-specific + broadcast', async () => {
+      await messageManager.sendMessage('myia-po-2024', 'myia-ai-01', 'Machine-level', 'Body');
+      await messageManager.sendMessage('myia-po-2024', 'myia-ai-01:roo-extensions', 'Workspace-specific', 'Body');
+      await messageManager.sendMessage('myia-po-2024', 'all', 'Broadcast', 'Body');
+
+      const inbox = await messageManager.readInbox('myia-ai-01', 'all', undefined, 'roo-extensions');
+      expect(inbox).toHaveLength(3);
+    });
+
+    test('checkNewMessages should respect workspace filter', async () => {
+      await messageManager.sendMessage(
+        'myia-po-2024',
+        'myia-ai-01:roo-extensions',
+        'Unread workspace msg',
+        'Body'
+      );
+
+      const unread = await messageManager.checkNewMessages('myia-ai-01', 'roo-extensions');
+      expect(unread).toHaveLength(1);
+
+      const otherWs = await messageManager.checkNewMessages('myia-ai-01', 'other-ws');
+      expect(otherWs).toHaveLength(0);
+    });
+  });
+
   describe('Edge Cases', () => {
     test('should handle empty inbox gracefully', async () => {
       const inbox = await messageManager.readInbox('machine1');

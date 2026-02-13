@@ -1,14 +1,12 @@
 /**
- * Outil MCP : roosync_decision_info (CONS-5)
+ * Outil MCP : roosync_decision_info
  *
- * Outil consolidé pour la consultation des décisions (read-only).
- * Remplace : get_decision_details
+ * Consultation des décisions (lecture seule, historique complet).
  *
  * Pattern CQRS : Query (lecture seule)
  *
  * @module tools/roosync/decision-info
- * @version 3.0.0 (CONS-5)
- * @status SKELETON - En attente CONS-1 stabilisation
+ * @version 3.0.0
  */
 
 import { z } from 'zod';

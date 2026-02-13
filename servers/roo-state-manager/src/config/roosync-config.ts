@@ -131,8 +131,9 @@ export function loadRooSyncConfig(): RooSyncConfig {
   }
 
   // 3. Valider machineId avec validation renforcée
-  const machineId = process.env.ROOSYNC_MACHINE_ID!;
-  const machineIdPattern = /^[A-Z0-9_-]+$/i;
+  // Normalisation lowercase pour éviter les doublons case-sensitive (ex: MyIA-Web1 vs myia-web1)
+  const machineId = process.env.ROOSYNC_MACHINE_ID!.toLowerCase();
+  const machineIdPattern = /^[a-z0-9_-]+$/;
 
   // Validation du format
   if (!machineIdPattern.test(machineId)) {

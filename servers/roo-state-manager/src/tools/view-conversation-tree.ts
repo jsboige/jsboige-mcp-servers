@@ -128,13 +128,23 @@ async function handleViewConversationTreeExecutionAsync(
         skeleton.sequence.forEach(item => {
             if ('role' in item) { // Message user/assistant
                 const role = item.role === 'user' ? '👤 User' : '🤖 Assistant';
-                const message = truncateMessage(item.content, truncate);
-                const messageLines = message.split('\n').map(l => `${indent}    | ${l}`).join('\n');
-                output += `${indent}  [${role}]:\n${messageLines}\n`;
+
+                // FIX P0-2: Mode skeleton ultra-compact (1 ligne résumée vs 3+3 lignes)
+                if (detail_level === 'skeleton') {
+                    // Résumé 1 ligne (50 chars max) au lieu de 3+3 lignes
+                    const summary = item.content.substring(0, 50).replace(/\n/g, ' ');
+                    const ellipsis = item.content.length > 50 ? '...' : '';
+                    output += `${indent}  [${role}]: ${summary}${ellipsis}\n`;
+                } else {
+                    // Summary/Full : comportement original
+                    const message = truncateMessage(item.content, truncate);
+                    const messageLines = message.split('\n').map(l => `${indent}    | ${l}`).join('\n');
+                    output += `${indent}  [${role}]:\n${messageLines}\n`;
+                }
             } else { // Action - format selon detail_level
                 const icon = item.type === 'command' ? '⚙️' : '🛠️';
                 const timestamp = item.timestamp ? new Date(item.timestamp).toLocaleTimeString('fr-FR') : '';
-                
+
                 switch (detail_level) {
                     case 'skeleton':
                         // Métadonnées seulement : nom + statut + timestamp
@@ -578,13 +588,23 @@ function createFormatTaskFunction(detail_level: string, truncate: number, curren
         skeleton.sequence.forEach(item => {
             if ('role' in item) { // Message user/assistant
                 const role = item.role === 'user' ? '👤 User' : '🤖 Assistant';
-                const message = truncateMessage(item.content, truncate);
-                const messageLines = message.split('\n').map(l => `${indent}    | ${l}`).join('\n');
-                output += `${indent}  [${role}]:\n${messageLines}\n`;
+
+                // FIX P0-2: Mode skeleton ultra-compact (1 ligne résumée vs 3+3 lignes)
+                if (detail_level === 'skeleton') {
+                    // Résumé 1 ligne (50 chars max) au lieu de 3+3 lignes
+                    const summary = item.content.substring(0, 50).replace(/\n/g, ' ');
+                    const ellipsis = item.content.length > 50 ? '...' : '';
+                    output += `${indent}  [${role}]: ${summary}${ellipsis}\n`;
+                } else {
+                    // Summary/Full : comportement original
+                    const message = truncateMessage(item.content, truncate);
+                    const messageLines = message.split('\n').map(l => `${indent}    | ${l}`).join('\n');
+                    output += `${indent}  [${role}]:\n${messageLines}\n`;
+                }
             } else { // Action - format selon detail_level
                 const icon = item.type === 'command' ? '⚙️' : '🛠️';
                 const timestamp = item.timestamp ? new Date(item.timestamp).toLocaleTimeString('fr-FR') : '';
-                
+
                 switch (detail_level) {
                     case 'skeleton':
                         // Métadonnées seulement : nom + statut + timestamp

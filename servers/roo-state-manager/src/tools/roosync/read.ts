@@ -1,11 +1,10 @@
 /**
  * Outil MCP : roosync_read
  *
- * Outil consolidé pour lire les messages RooSync
- * Fusionne : read_inbox + get_message
+ * Lecture des messages RooSync (inbox, message spécifique).
  *
  * @module roosync/read
- * @version 1.0.0 (CONS-1)
+ * @version 1.0.0
  */
 
 import { MessageManager } from '../../services/MessageManager.js';
@@ -17,7 +16,8 @@ import {
   formatDateFull,
   getPriorityIcon,
   getStatusIcon,
-  getLocalMachineId
+  getLocalMachineId,
+  getLocalWorkspaceId
 } from '../../utils/message-helpers.js';
 
 // Logger instance for read tool
@@ -57,13 +57,14 @@ async function readInboxMode(
   messageManager: MessageManager
 ): Promise<string> {
   const localMachineId = getLocalMachineId();
+  const localWorkspaceId = getLocalWorkspaceId();
   const status = args.status || 'all';
   const limit = args.limit;
 
-  logger.info('📬 Reading inbox', { status, limit });
+  logger.info('📬 Reading inbox', { machineId: localMachineId, workspaceId: localWorkspaceId, status, limit });
 
-  // Lire les messages via MessageManager
-  const messages = await messageManager.readInbox(localMachineId, status, limit);
+  // Lire les messages via MessageManager (workspace-aware)
+  const messages = await messageManager.readInbox(localMachineId, status, limit, localWorkspaceId);
 
   // Cas : aucun message
   if (messages.length === 0) {
@@ -77,7 +78,7 @@ Votre inbox est vide pour le moment.
 
   // Pour les compteurs, on doit refaire la requête sans filtre
   const allMessages = status !== 'all'
-    ? await messageManager.readInbox(localMachineId, 'all')
+    ? await messageManager.readInbox(localMachineId, 'all', undefined, localWorkspaceId)
     : messages;
 
   const totalMessages = allMessages.length;
@@ -95,9 +96,11 @@ Votre inbox est vide pour le moment.
   result += `|----|----|----|----------|--------|------|\n`;
 
   for (const msg of messages) {
-    const shortId = msg.id.substring(0, 20) + '...';
-    const shortSubject = msg.subject.length > 20 ? msg.subject.substring(0, 20) + '...' : msg.subject;
-    result += `| ${shortId} | ${msg.from} | ${shortSubject} | ${getPriorityIcon(msg.priority)} ${msg.priority} | ${getStatusIcon(msg.status)} ${msg.status} | ${formatDate(msg.timestamp)} |\n`;
+    // BUG FIX: Afficher l'ID complet (critique pour roosync_read mode message)
+    const fullId = msg.id;
+    const maxSubjectLength = 25;
+    const shortSubject = msg.subject.length > maxSubjectLength ? msg.subject.substring(0, maxSubjectLength) + '...' : msg.subject;
+    result += `| ${fullId} | ${msg.from} | ${shortSubject} | ${getPriorityIcon(msg.priority)} ${msg.priority} | ${getStatusIcon(msg.status)} ${msg.status} | ${formatDate(msg.timestamp)} |\n`;
   }
 
   result += `\n---\n\n`;
@@ -216,6 +219,42 @@ Le message n'a pas été trouvé dans :
  * @param args Arguments de l'outil
  * @returns Résultat formaté
  */
+/**
+ * Métadonnées de l'outil roosync_read pour enregistrement MCP
+ */
+export const readToolMetadata = {
+  name: 'roosync_read',
+  description: 'Lire la boîte de réception des messages RooSync ou obtenir les détails complets d\'un message spécifique',
+  inputSchema: {
+    type: 'object',
+    properties: {
+      mode: {
+        type: 'string',
+        enum: ['inbox', 'message'],
+        description: 'Mode de lecture : inbox (liste des messages) ou message (détails d\'un message)'
+      },
+      status: {
+        type: 'string',
+        enum: ['unread', 'read', 'all'],
+        description: 'Filtrer par status (mode inbox, défaut: all)'
+      },
+      limit: {
+        type: 'number',
+        description: 'Nombre maximum de messages à retourner (mode inbox)'
+      },
+      message_id: {
+        type: 'string',
+        description: 'ID du message à récupérer (requis pour mode=message)'
+      },
+      mark_as_read: {
+        type: 'boolean',
+        description: 'Marquer automatiquement comme lu (mode message, défaut: false)'
+      }
+    },
+    required: ['mode']
+  }
+};
+
 export async function roosyncRead(
   args: RooSyncReadArgs
 ): Promise<{ content: Array<{ type: string; text: string }> }> {
