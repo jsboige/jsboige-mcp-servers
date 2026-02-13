@@ -28,7 +28,9 @@ vi.mock('../../../../src/services/qdrant.js', () => ({
 }));
 
 vi.mock('../../../../src/services/openai.js', () => ({
-    default: vi.fn(() => mockOpenAIClient)
+    default: vi.fn(() => mockOpenAIClient),
+    getEmbeddingModel: vi.fn(() => 'text-embedding-3-small'),
+    getEmbeddingDimensions: vi.fn(() => 1536)
 }));
 
 vi.mock('../../../../src/services/task-indexer.js', () => ({

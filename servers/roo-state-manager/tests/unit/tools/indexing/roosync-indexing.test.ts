@@ -41,7 +41,9 @@ vi.mock('../../../../src/services/openai.js', () => ({
         embeddings: {
             create: vi.fn().mockRejectedValue(new Error('No API key'))
         }
-    }))
+    })),
+    getEmbeddingModel: vi.fn(() => 'text-embedding-3-small'),
+    getEmbeddingDimensions: vi.fn(() => 1536)
 }));
 
 describe('roosync_indexing - CONS-11', () => {

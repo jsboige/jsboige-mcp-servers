@@ -33,9 +33,9 @@ export const CACHE_CONFIG = {
 };
 
 export const INDEXING_CONFIG = {
-    BATCH_SIZE: 100,
+    BATCH_SIZE: parseInt(process.env.INDEXING_BATCH_SIZE || '50', 10) || 50,
     MAX_CONCURRENT_REQUESTS: 5,
-    EMBEDDING_MODEL: 'text-embedding-3-small',
+    get EMBEDDING_MODEL() { return process.env.EMBEDDING_MODEL || 'text-embedding-3-small'; },
 };
 
 export const OUTPUT_CONFIG = {
