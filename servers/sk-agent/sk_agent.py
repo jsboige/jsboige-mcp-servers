@@ -78,6 +78,13 @@ CONFIG_PATH = os.environ.get(
     str(Path(__file__).parent / "sk_agent_config.json"),
 )
 
+# Recursion protection: SK_AGENT_DEPTH tracks nesting level
+# Depth 0 = top-level instance (can load MCPs including self)
+# Depth 1+ = child instance (skip MCP loading to prevent infinite recursion)
+SK_AGENT_DEPTH = int(os.environ.get("SK_AGENT_DEPTH", "0"))
+if SK_AGENT_DEPTH > 0:
+    log.info("Running as child MCP (depth=%d), MCP loading will be skipped", SK_AGENT_DEPTH)
+
 MAX_IMAGE_BYTES = 4 * 1024 * 1024  # 4 MB -- resize above this
 MAX_IMAGE_PIXELS = 774_144          # Qwen3-VL mini default
 
@@ -210,15 +217,29 @@ class SKAgent:
         )
         log.info("Model: %s at %s (id: %s)", model_id, base_url, self._current_model_id)
 
-        # Connect MCP plugins (only if not already connected)
-        if not self._plugins:
+        # Connect MCP plugins (only if not already connected AND not a child instance)
+        # Recursion protection: child instances (SK_AGENT_DEPTH > 0) skip MCP loading
+        if SK_AGENT_DEPTH > 0:
+            log.info("Skipping MCP plugins (child instance, depth=%d)", SK_AGENT_DEPTH)
+        elif not self._plugins:
             for mcp_cfg in self.config.get("mcps", []):
                 try:
                     env = {**os.environ, **(mcp_cfg.get("env") or {})}
+
+                    # Detect self-inclusion: if this MCP looks like sk-agent, set depth
+                    mcp_cmd = mcp_cfg.get("command", "")
+                    mcp_args = " ".join(mcp_cfg.get("args", []))
+                    is_self = "sk_agent.py" in mcp_args or "sk-agent" in mcp_cfg.get("name", "").lower()
+
+                    if is_self:
+                        # Increment depth for child instance
+                        env["SK_AGENT_DEPTH"] = str(SK_AGENT_DEPTH + 1)
+                        log.info("Self-inclusion detected: spawning child sk-agent with depth=%d", SK_AGENT_DEPTH + 1)
+
                     plugin = MCPStdioPlugin(
                         name=mcp_cfg["name"],
                         description=mcp_cfg.get("description"),
-                        command=mcp_cfg["command"],
+                        command=mcp_cmd,
                         args=mcp_cfg.get("args"),
                         env=env,
                     )

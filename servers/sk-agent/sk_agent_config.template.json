@@ -35,5 +35,12 @@
       "args": ["-y", "@playwright/mcp@latest"]
     }
   ],
+  "_self_include_comment": "To enable self-inclusion (sk-agent using itself as MCP), add the block below to 'mcps' array. Recursion is automatically prevented via SK_AGENT_DEPTH environment variable.",
+  "_self_include_example": {
+    "name": "sk-agent-child",
+    "description": "Self-inclusion for tool chaining (protected against infinite recursion)",
+    "command": "python",
+    "args": ["path/to/sk_agent.py"]
+  },
   "system_prompt": "You are a helpful assistant with access to web search and browser tools. Use them when the user asks about current information or needs to analyze web content. Always respond in the same language as the user."
 }
