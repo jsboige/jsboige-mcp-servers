@@ -107,23 +107,23 @@ export class ToolUsageInterceptor {
       });
     }
     
-    // 2. Vérifier la boîte de réception RooSync
+    // 2. Vérifier la boîte de réception RooSync (non-bloquant avec timeout)
+    // FIX: Previously this was `await`-ed, blocking ALL tool calls if Google Drive was slow
     if (this.config.checkInbox) {
-      try {
-        const newMessages = await this.checkForNewMessages();
-        
-        if (newMessages.length > 0) {
-          console.error(`📬 [ToolUsageInterceptor] Found ${newMessages.length} new messages`);
-          
-          // 3. Émettre notification si pertinent
-          await this.notifyNewMessages(newMessages, toolName);
-        } else {
-          console.error('✅ [ToolUsageInterceptor] No new messages');
-        }
-      } catch (error) {
-        console.error('⚠️ [ToolUsageInterceptor] Error checking inbox:', error);
-        // Ne pas bloquer l'exécution de l'outil
-      }
+      const inboxCheckPromise = this.checkForNewMessages()
+        .then(async (newMessages) => {
+          if (newMessages.length > 0) {
+            console.error(`📬 [ToolUsageInterceptor] Found ${newMessages.length} new messages`);
+            await this.notifyNewMessages(newMessages, toolName);
+          }
+        })
+        .catch(error => {
+          console.error('⚠️ [ToolUsageInterceptor] Error checking inbox:', error);
+        });
+
+      // Race with a 3-second timeout: don't block tool execution
+      const timeoutPromise = new Promise<void>(resolve => setTimeout(resolve, 3000));
+      await Promise.race([inboxCheckPromise, timeoutPromise]);
     }
     
     // 4. Exécuter l'outil original
