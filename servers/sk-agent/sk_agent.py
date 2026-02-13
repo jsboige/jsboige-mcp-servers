@@ -79,11 +79,10 @@ CONFIG_PATH = os.environ.get(
 )
 
 # Recursion protection: SK_AGENT_DEPTH tracks nesting level
-# Depth 0 = top-level instance (can load MCPs including self)
-# Depth 1+ = child instance (skip MCP loading to prevent infinite recursion)
+# Default max depth is 2, allowing: root -> child -> grandchild
+# At max depth, MCP loading is skipped to prevent infinite recursion
 SK_AGENT_DEPTH = int(os.environ.get("SK_AGENT_DEPTH", "0"))
-if SK_AGENT_DEPTH > 0:
-    log.info("Running as child MCP (depth=%d), MCP loading will be skipped", SK_AGENT_DEPTH)
+DEFAULT_MAX_RECURSION_DEPTH = 2
 
 MAX_IMAGE_BYTES = 4 * 1024 * 1024  # 4 MB -- resize above this
 MAX_IMAGE_PIXELS = 774_144          # Qwen3-VL mini default
@@ -217,16 +216,17 @@ class SKAgent:
         )
         log.info("Model: %s at %s (id: %s)", model_id, base_url, self._current_model_id)
 
-        # Connect MCP plugins (only if not already connected AND not a child instance)
-        # Recursion protection: child instances (SK_AGENT_DEPTH > 0) skip MCP loading
-        if SK_AGENT_DEPTH > 0:
-            log.info("Skipping MCP plugins (child instance, depth=%d)", SK_AGENT_DEPTH)
+        # Connect MCP plugins (only if not already connected AND not at max recursion depth)
+        # Recursion protection: skip MCP loading when depth >= max_recursion_depth
+        max_depth = self.config.get("max_recursion_depth", DEFAULT_MAX_RECURSION_DEPTH)
+        if SK_AGENT_DEPTH >= max_depth:
+            log.info("Skipping MCP plugins (depth=%d >= max_depth=%d)", SK_AGENT_DEPTH, max_depth)
         elif not self._plugins:
             for mcp_cfg in self.config.get("mcps", []):
                 try:
                     env = {**os.environ, **(mcp_cfg.get("env") or {})}
 
-                    # Detect self-inclusion: if this MCP looks like sk-agent, set depth
+                    # Detect self-inclusion: if this MCP looks like sk-agent, increment depth
                     mcp_cmd = mcp_cfg.get("command", "")
                     mcp_args = " ".join(mcp_cfg.get("args", []))
                     is_self = "sk_agent.py" in mcp_args or "sk-agent" in mcp_cfg.get("name", "").lower()
