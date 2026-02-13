@@ -385,6 +385,17 @@ async function indexTaskInQdrant(taskId: string, state: ServerState): Promise<vo
 
         console.log(`[SUCCESS] Task ${taskId} successfully indexed in Qdrant.`);
 
+        // Archive cross-machine sur GDrive (non-bloquant)
+        try {
+            const { TaskArchiver } = await import('./task-archiver/index.js');
+            const conversation = await RooStorageDetector.findConversationById(taskId);
+            if (conversation?.path && skeleton) {
+                await TaskArchiver.archiveTask(taskId, conversation.path, skeleton);
+            }
+        } catch (archiveError) {
+            console.warn(`[ARCHIVE] Non-blocking archive failed for ${taskId}:`, archiveError);
+        }
+
     } catch (error: any) {
         if (error.message && error.message.includes('not found in any storage location')) {
             console.warn(`[WARN] Task ${taskId} is in cache but not on disk. Skipping indexing.`);

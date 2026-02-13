@@ -23,7 +23,7 @@ import { handleDiagnoseSemanticIndex } from './diagnose-index.tool.js';
  */
 export interface RooSyncIndexingArgs {
     /** Action d'indexation */
-    action: 'index' | 'reset' | 'rebuild' | 'diagnose';
+    action: 'index' | 'reset' | 'rebuild' | 'diagnose' | 'archive';
 
     /** ID de la tâche à indexer (requis pour action=index) */
     task_id?: string;
@@ -39,6 +39,9 @@ export interface RooSyncIndexingArgs {
 
     /** Mode simulation (pour action=rebuild) */
     dry_run?: boolean;
+
+    /** Filtre par machine (pour action=archive sans task_id) */
+    machine_id?: string;
 }
 
 /**
@@ -52,8 +55,8 @@ export const roosyncIndexingTool: Tool = {
         properties: {
             action: {
                 type: 'string',
-                enum: ['index', 'reset', 'rebuild', 'diagnose'],
-                description: "Action: 'index' (indexer une tâche dans Qdrant), 'reset' (réinitialiser la collection Qdrant), 'rebuild' (reconstruire l'index SQLite VS Code), 'diagnose' (diagnostic complet de l'index)"
+                enum: ['index', 'reset', 'rebuild', 'diagnose', 'archive'],
+                description: "Action: 'index' (indexer une tâche dans Qdrant), 'reset' (réinitialiser la collection Qdrant), 'rebuild' (reconstruire l'index SQLite VS Code), 'diagnose' (diagnostic complet de l'index), 'archive' (archiver une tâche sur GDrive ou lister les archives)"
             },
             task_id: {
                 type: 'string',
@@ -77,6 +80,10 @@ export const roosyncIndexingTool: Tool = {
                 type: 'boolean',
                 description: 'Mode simulation sans modification (pour action=rebuild)',
                 default: false
+            },
+            machine_id: {
+                type: 'string',
+                description: 'Filtre par machine (pour action=archive, liste les archives de cette machine uniquement)'
             }
         },
         required: ['action']
@@ -100,14 +107,14 @@ export async function handleRooSyncIndexing(
     if (!args.action) {
         return {
             isError: true,
-            content: [{ type: 'text', text: 'Le paramètre "action" est requis. Valeurs possibles: index, reset, rebuild, diagnose' }]
+            content: [{ type: 'text', text: 'Le paramètre "action" est requis. Valeurs possibles: index, reset, rebuild, diagnose, archive' }]
         };
     }
 
-    if (!['index', 'reset', 'rebuild', 'diagnose'].includes(args.action)) {
+    if (!['index', 'reset', 'rebuild', 'diagnose', 'archive'].includes(args.action)) {
         return {
             isError: true,
-            content: [{ type: 'text', text: `Action "${args.action}" invalide. Valeurs possibles: index, reset, rebuild, diagnose` }]
+            content: [{ type: 'text', text: `Action "${args.action}" invalide. Valeurs possibles: index, reset, rebuild, diagnose, archive` }]
         };
     }
 
@@ -146,6 +153,46 @@ export async function handleRooSyncIndexing(
 
         case 'diagnose': {
             return await handleDiagnoseSemanticIndex(conversationCache);
+        }
+
+        case 'archive': {
+            const { TaskArchiver } = await import('../../services/task-archiver/index.js');
+            const { RooStorageDetector } = await import('../../utils/roo-storage-detector.js');
+
+            if (args.task_id) {
+                // Archiver une tache specifique
+                const conversation = await RooStorageDetector.findConversationById(args.task_id);
+                if (!conversation) {
+                    return {
+                        isError: true,
+                        content: [{ type: 'text', text: `Tâche ${args.task_id} non trouvée localement` }]
+                    };
+                }
+                const skeleton = conversationCache.get(args.task_id);
+                if (!skeleton) {
+                    return {
+                        isError: true,
+                        content: [{ type: 'text', text: `Squelette de la tâche ${args.task_id} non trouvé dans le cache` }]
+                    };
+                }
+                await TaskArchiver.archiveTask(args.task_id, conversation.path, skeleton);
+                return {
+                    isError: false,
+                    content: [{ type: 'text', text: `Tâche ${args.task_id} archivée avec succès sur GDrive` }]
+                };
+            } else {
+                // Lister les archives
+                const taskIds = await TaskArchiver.listArchivedTasks(args.machine_id);
+                return {
+                    isError: false,
+                    content: [{ type: 'text', text: JSON.stringify({
+                        action: 'archive_list',
+                        machine_filter: args.machine_id || 'all',
+                        total: taskIds.length,
+                        task_ids: taskIds.slice(0, 100)
+                    }, null, 2) }]
+                };
+            }
         }
 
         default:

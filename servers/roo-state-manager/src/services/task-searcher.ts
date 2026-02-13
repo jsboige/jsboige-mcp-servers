@@ -51,28 +51,75 @@ export interface ContextWindow {
  * Recrée la liste complète des chunks pour une tâche donnée à partir de sa source de vérité.
  */
 async function reconstructAllChunksForTask(taskId: string): Promise<Chunk[]> {
-    const conversation = await RooStorageDetector.findConversationById(taskId);
-    if (!conversation) {
-        console.warn(`Could not find conversation path for task ${taskId} during context reconstitution.`);
-        return [];
-    }
-
     const chunks: Chunk[] = [];
-    const apiHistoryPath = path.join(conversation.path, 'api_conversation_history.json');
     let sequenceOrder = 0;
 
-    try {
+    // 1. Tentative locale
+    const conversation = await RooStorageDetector.findConversationById(taskId);
+    if (conversation) {
+        const apiHistoryPath = path.join(conversation.path, 'api_conversation_history.json');
         try {
-            await fs.access(apiHistoryPath); // Check if file exists and is accessible
-            const apiHistoryContent = await fs.readFile(apiHistoryPath, 'utf-8');
-            const apiMessages: ApiMessage[] = JSON.parse(apiHistoryContent);
+            try {
+                await fs.access(apiHistoryPath);
+                const apiHistoryContent = await fs.readFile(apiHistoryPath, 'utf-8');
+                const apiMessages: ApiMessage[] = JSON.parse(apiHistoryContent);
 
-            for (const msg of apiMessages) {
-                if (msg.role === 'system') continue;
+                for (const msg of apiMessages) {
+                    if (msg.role === 'system') continue;
 
-                if (msg.content) {
+                    if (msg.content) {
+                        chunks.push({
+                            chunk_id: '',
+                            task_id: taskId,
+                            parent_task_id: null,
+                            root_task_id: null,
+                            chunk_type: 'message_exchange',
+                            sequence_order: sequenceOrder++,
+                            timestamp: msg.timestamp || new Date().toISOString(),
+                            indexed: true,
+                            content: msg.content,
+                            participants: [msg.role],
+                        });
+                    }
+                    if (msg.tool_calls) {
+                        for (const toolCall of msg.tool_calls) {
+                             chunks.push({
+                                chunk_id: '',
+                                task_id: taskId,
+                                parent_task_id: null,
+                                root_task_id: null,
+                                chunk_type: 'tool_interaction',
+                                sequence_order: sequenceOrder++,
+                                timestamp: msg.timestamp || new Date().toISOString(),
+                                indexed: false,
+                                content: `Tool call: ${toolCall.function.name}`,
+                                tool_details: {
+                                    tool_name: toolCall.function.name,
+                                    parameters: JSON.parse(toolCall.function.arguments || '{}'),
+                                    status: 'success',
+                                },
+                            });
+                        }
+                    }
+                }
+            } catch (readError) {
+                // File doesn't exist or is unreadable, continue without it.
+            }
+        } catch (error) {
+            console.error(`Error reconstructing chunks for task ${taskId}:`, error);
+        }
+    }
+
+    // 2. Fallback: archive cross-machine GDrive (si aucun chunk local)
+    if (chunks.length === 0) {
+        try {
+            const { TaskArchiver } = await import('./task-archiver/index.js');
+            const archived = await TaskArchiver.readArchivedTask(taskId);
+            if (archived) {
+                console.log(`[ARCHIVE_FALLBACK] Task ${taskId} found in GDrive archive from ${archived.machineId}`);
+                for (const msg of archived.messages) {
                     chunks.push({
-                        chunk_id: '', // Non pertinent pour la reconstitution
+                        chunk_id: '',
                         task_id: taskId,
                         parent_task_id: null,
                         root_task_id: null,
@@ -84,32 +131,10 @@ async function reconstructAllChunksForTask(taskId: string): Promise<Chunk[]> {
                         participants: [msg.role],
                     });
                 }
-                if (msg.tool_calls) {
-                    for (const toolCall of msg.tool_calls) {
-                         chunks.push({
-                            chunk_id: '',
-                            task_id: taskId,
-                            parent_task_id: null,
-                            root_task_id: null,
-                            chunk_type: 'tool_interaction',
-                            sequence_order: sequenceOrder++,
-                            timestamp: msg.timestamp || new Date().toISOString(),
-                            indexed: false,
-                            content: `Tool call: ${toolCall.function.name}`,
-                            tool_details: {
-                                tool_name: toolCall.function.name,
-                                parameters: JSON.parse(toolCall.function.arguments || '{}'),
-                                status: 'success',
-                            },
-                        });
-                    }
-                }
             }
-        } catch (readError) {
-            // File doesn't exist or is unreadable, continue without it.
+        } catch (archiveFallbackError) {
+            console.warn(`[ARCHIVE_FALLBACK] Failed for ${taskId}:`, archiveFallbackError);
         }
-    } catch (error) {
-        console.error(`Error reconstructing chunks for task ${taskId}:`, error);
     }
 
     return chunks.sort((a, b) => a.sequence_order - b.sequence_order);
