@@ -712,7 +712,102 @@ describe('#433 - Config Sharing New Targets I/O Tests', () => {
   });
 
   // =====================================================
-  // ROUND-TRIP TEST (collect -> simulate publish -> apply)
+  // APPLY MIXED TARGETS (#433 checklist)
+  // =====================================================
+
+  describe('applyConfig - mixed targets (roomodes + model-configs + rules)', () => {
+    it('should apply roomodes + model-configs + rules together in a single operation', async () => {
+      const machineId = 'test-machine';
+      const configVersion = 'v1.0.0-mixed';
+      const machineConfigDir = join(sharedStateDir, 'configs', machineId, configVersion);
+      await mkdir(machineConfigDir, { recursive: true });
+
+      // Source roomodes
+      const sourceRoomodes = { customModes: [{ slug: 'mixed-mode', name: 'Mixed', roleDefinition: 'Applied via mixed', groups: ['read'] }] };
+      await mkdir(join(machineConfigDir, 'roomodes'), { recursive: true });
+      await writeFile(
+        join(machineConfigDir, 'roomodes', '.roomodes'),
+        JSON.stringify(sourceRoomodes, null, 2)
+      );
+
+      // Source model-configs
+      const sourceModelConfigs = { profiles: { mixed: { provider: 'anthropic', model: 'claude-haiku-4-5-20251001' } } };
+      await mkdir(join(machineConfigDir, 'model-configs'), { recursive: true });
+      await writeFile(
+        join(machineConfigDir, 'model-configs', 'model-configs.json'),
+        JSON.stringify(sourceModelConfigs, null, 2)
+      );
+
+      // Source rules
+      await mkdir(join(machineConfigDir, 'rules'), { recursive: true });
+      await writeFile(join(machineConfigDir, 'rules', '00-security.md'), SAMPLE_RULE_1);
+
+      const manifest = {
+        version: '1.0.0',
+        timestamp: new Date().toISOString(),
+        author: machineId,
+        description: 'Test apply mixed targets',
+        files: [
+          { path: 'roomodes/.roomodes', hash: 'mix1', type: 'roomodes_config', size: 100 },
+          { path: 'model-configs/model-configs.json', hash: 'mix2', type: 'model_config', size: 80 },
+          { path: 'rules/00-security.md', hash: 'mix3', type: 'rules_config', size: 60 }
+        ]
+      };
+      await writeFile(join(machineConfigDir, 'manifest.json'), JSON.stringify(manifest, null, 2));
+      await writeFile(
+        join(sharedStateDir, 'configs', machineId, 'latest.json'),
+        JSON.stringify({ path: machineConfigDir })
+      );
+
+      // Pre-existing files on workspace
+      await writeFile(
+        join(rooExtensionsDir, '.roomodes'),
+        JSON.stringify({ customModes: [{ slug: 'old' }] })
+      );
+      await mkdir(join(rooExtensionsDir, 'roo-config'), { recursive: true });
+      await writeFile(
+        join(rooExtensionsDir, 'roo-config', 'model-configs.json'),
+        JSON.stringify(SAMPLE_MODEL_CONFIGS)
+      );
+
+      // Mock homedir for rules destination
+      const osModule = await import('os');
+      vi.spyOn(osModule, 'homedir').mockReturnValue(join(tempRoot, 'mixed-home'));
+      const rulesDestDir = join(tempRoot, 'mixed-home', '.roo', 'rules');
+      await mkdir(rulesDestDir, { recursive: true });
+
+      // Act
+      const result = await service.applyConfig({
+        version: 'latest',
+        machineId,
+        targets: ['roomodes', 'model-configs', 'rules']
+      });
+
+      // Assert: all 3 targets applied
+      expect(result.success).toBe(true);
+      expect(result.filesApplied).toBe(3);
+
+      // Verify roomodes replaced
+      const appliedRoomodes = JSON.parse(await readFile(join(rooExtensionsDir, '.roomodes'), 'utf-8'));
+      expect(appliedRoomodes.customModes[0].slug).toBe('mixed-mode');
+
+      // Verify model-configs replaced
+      const appliedModelConfigs = JSON.parse(
+        await readFile(join(rooExtensionsDir, 'roo-config', 'model-configs.json'), 'utf-8')
+      );
+      expect(appliedModelConfigs.profiles.mixed).toBeDefined();
+      expect(appliedModelConfigs.profiles.default).toBeUndefined();
+
+      // Verify rules applied as text
+      const appliedRule = await readFile(join(rulesDestDir, '00-security.md'), 'utf-8');
+      expect(appliedRule).toBe(SAMPLE_RULE_1);
+
+      vi.restoreAllMocks();
+    });
+  });
+
+  // =====================================================
+  // ROUND-TRIP TESTS (collect -> simulate publish -> apply)
   // =====================================================
 
   describe('round-trip collect -> apply', () => {
@@ -773,6 +868,209 @@ describe('#433 - Config Sharing New Targets I/O Tests', () => {
       expect(finalContent).toEqual(SAMPLE_ROOMODES);
 
       // Cleanup collect temp
+      await rm(collectResult.packagePath, { recursive: true, force: true });
+    });
+
+    it('should produce identical content after collect and apply for model-configs', async () => {
+      // Arrange: create source model-configs.json
+      await mkdir(join(rooExtensionsDir, 'roo-config'), { recursive: true });
+      await writeFile(
+        join(rooExtensionsDir, 'roo-config', 'model-configs.json'),
+        JSON.stringify(SAMPLE_MODEL_CONFIGS, null, 2)
+      );
+
+      // Step 1: Collect
+      const collectResult = await service.collectConfig({
+        targets: ['model-configs'],
+        description: 'Round-trip model-configs test'
+      });
+
+      // Step 2: Simulate publish
+      const machineId = 'round-trip-mc';
+      const configVersion = 'v1.0.0-rt-mc';
+      const machineConfigDir = join(sharedStateDir, 'configs', machineId, configVersion);
+      await mkdir(machineConfigDir, { recursive: true });
+
+      const srcFile = join(collectResult.packagePath, 'model-configs', 'model-configs.json');
+      await mkdir(join(machineConfigDir, 'model-configs'), { recursive: true });
+      const collectedContent = await readFile(srcFile, 'utf-8');
+      await writeFile(join(machineConfigDir, 'model-configs', 'model-configs.json'), collectedContent);
+
+      await writeFile(
+        join(machineConfigDir, 'manifest.json'),
+        JSON.stringify(collectResult.manifest, null, 2)
+      );
+      await writeFile(
+        join(sharedStateDir, 'configs', machineId, 'latest.json'),
+        JSON.stringify({ path: machineConfigDir })
+      );
+
+      // Step 3: Delete original
+      await rm(join(rooExtensionsDir, 'roo-config', 'model-configs.json'));
+
+      // Step 4: Apply
+      const applyResult = await service.applyConfig({
+        version: 'latest',
+        machineId,
+        targets: ['model-configs']
+      });
+
+      // Assert
+      expect(applyResult.success).toBe(true);
+      expect(applyResult.filesApplied).toBe(1);
+
+      const finalContent = JSON.parse(
+        await readFile(join(rooExtensionsDir, 'roo-config', 'model-configs.json'), 'utf-8')
+      );
+      expect(finalContent).toEqual(SAMPLE_MODEL_CONFIGS);
+
+      await rm(collectResult.packagePath, { recursive: true, force: true });
+    });
+
+    it('should produce identical content after collect and apply for rules', async () => {
+      // Arrange: create source rules
+      const rulesGlobalDir = join(rooExtensionsDir, 'roo-config', 'rules-global');
+      await mkdir(rulesGlobalDir, { recursive: true });
+      await writeFile(join(rulesGlobalDir, '00-security.md'), SAMPLE_RULE_1);
+      await writeFile(join(rulesGlobalDir, '01-coding.md'), SAMPLE_RULE_2);
+
+      // Step 1: Collect
+      const collectResult = await service.collectConfig({
+        targets: ['rules'],
+        description: 'Round-trip rules test'
+      });
+
+      // Step 2: Simulate publish
+      const machineId = 'round-trip-rules';
+      const configVersion = 'v1.0.0-rt-rules';
+      const machineConfigDir = join(sharedStateDir, 'configs', machineId, configVersion);
+      await mkdir(machineConfigDir, { recursive: true });
+
+      await mkdir(join(machineConfigDir, 'rules'), { recursive: true });
+      const rule1Content = await readFile(join(collectResult.packagePath, 'rules', '00-security.md'), 'utf-8');
+      const rule2Content = await readFile(join(collectResult.packagePath, 'rules', '01-coding.md'), 'utf-8');
+      await writeFile(join(machineConfigDir, 'rules', '00-security.md'), rule1Content);
+      await writeFile(join(machineConfigDir, 'rules', '01-coding.md'), rule2Content);
+
+      await writeFile(
+        join(machineConfigDir, 'manifest.json'),
+        JSON.stringify(collectResult.manifest, null, 2)
+      );
+      await writeFile(
+        join(sharedStateDir, 'configs', machineId, 'latest.json'),
+        JSON.stringify({ path: machineConfigDir })
+      );
+
+      // Step 3: Mock homedir for apply destination
+      const osModule = await import('os');
+      vi.spyOn(osModule, 'homedir').mockReturnValue(join(tempRoot, 'rt-home'));
+      const rulesDestDir = join(tempRoot, 'rt-home', '.roo', 'rules');
+      // Don't pre-create - let applyConfig auto-create
+
+      // Step 4: Apply
+      const applyResult = await service.applyConfig({
+        version: 'latest',
+        machineId,
+        targets: ['rules']
+      });
+
+      // Assert
+      expect(applyResult.success).toBe(true);
+      expect(applyResult.filesApplied).toBe(2);
+
+      const finalRule1 = await readFile(join(rulesDestDir, '00-security.md'), 'utf-8');
+      const finalRule2 = await readFile(join(rulesDestDir, '01-coding.md'), 'utf-8');
+      expect(finalRule1).toBe(SAMPLE_RULE_1);
+      expect(finalRule2).toBe(SAMPLE_RULE_2);
+
+      vi.restoreAllMocks();
+      await rm(collectResult.packagePath, { recursive: true, force: true });
+    });
+
+    it('should round-trip all new targets together (roomodes + model-configs + rules)', async () => {
+      // Arrange: create all source files
+      await writeFile(
+        join(rooExtensionsDir, '.roomodes'),
+        JSON.stringify(SAMPLE_ROOMODES, null, 2)
+      );
+      await mkdir(join(rooExtensionsDir, 'roo-config', 'rules-global'), { recursive: true });
+      await writeFile(
+        join(rooExtensionsDir, 'roo-config', 'model-configs.json'),
+        JSON.stringify(SAMPLE_MODEL_CONFIGS, null, 2)
+      );
+      await writeFile(
+        join(rooExtensionsDir, 'roo-config', 'rules-global', '00-security.md'),
+        SAMPLE_RULE_1
+      );
+
+      // Step 1: Collect all
+      const collectResult = await service.collectConfig({
+        targets: ['roomodes', 'model-configs', 'rules'],
+        description: 'Round-trip all targets'
+      });
+      expect(collectResult.filesCount).toBe(3);
+
+      // Step 2: Simulate publish
+      const machineId = 'round-trip-all';
+      const configVersion = 'v1.0.0-rt-all';
+      const machineConfigDir = join(sharedStateDir, 'configs', machineId, configVersion);
+      await mkdir(machineConfigDir, { recursive: true });
+
+      // Copy collected files to publish directory
+      for (const file of collectResult.manifest.files) {
+        const srcPath = join(collectResult.packagePath, file.path);
+        const destPath = join(machineConfigDir, file.path);
+        await mkdir(join(destPath, '..'), { recursive: true });
+        const content = await readFile(srcPath, 'utf-8');
+        await writeFile(destPath, content);
+      }
+
+      await writeFile(
+        join(machineConfigDir, 'manifest.json'),
+        JSON.stringify(collectResult.manifest, null, 2)
+      );
+      await writeFile(
+        join(sharedStateDir, 'configs', machineId, 'latest.json'),
+        JSON.stringify({ path: machineConfigDir })
+      );
+
+      // Step 3: Delete originals
+      await rm(join(rooExtensionsDir, '.roomodes'));
+      await rm(join(rooExtensionsDir, 'roo-config', 'model-configs.json'));
+
+      // Mock homedir for rules
+      const osModule = await import('os');
+      vi.spyOn(osModule, 'homedir').mockReturnValue(join(tempRoot, 'rt-all-home'));
+
+      // Step 4: Apply all
+      const applyResult = await service.applyConfig({
+        version: 'latest',
+        machineId,
+        targets: ['roomodes', 'model-configs', 'rules']
+      });
+
+      // Assert
+      expect(applyResult.success).toBe(true);
+      expect(applyResult.filesApplied).toBe(3);
+
+      // Verify roomodes
+      const finalRoomodes = JSON.parse(
+        await readFile(join(rooExtensionsDir, '.roomodes'), 'utf-8')
+      );
+      expect(finalRoomodes).toEqual(SAMPLE_ROOMODES);
+
+      // Verify model-configs
+      const finalModelConfigs = JSON.parse(
+        await readFile(join(rooExtensionsDir, 'roo-config', 'model-configs.json'), 'utf-8')
+      );
+      expect(finalModelConfigs).toEqual(SAMPLE_MODEL_CONFIGS);
+
+      // Verify rules
+      const rulesDestDir = join(tempRoot, 'rt-all-home', '.roo', 'rules');
+      const finalRule = await readFile(join(rulesDestDir, '00-security.md'), 'utf-8');
+      expect(finalRule).toBe(SAMPLE_RULE_1);
+
+      vi.restoreAllMocks();
       await rm(collectResult.packagePath, { recursive: true, force: true });
     });
   });

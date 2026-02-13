@@ -3,7 +3,7 @@ import * as path from 'path';
 import * as crypto from 'crypto';
 import { Schemas } from '@qdrant/js-client-rest';
 import { getQdrantClient } from '../qdrant.js';
-import getOpenAIClient from '../openai.js';
+import getOpenAIClient, { getEmbeddingModel, getEmbeddingDimensions } from '../openai.js';
 import { validateVectorGlobal, sanitizePayload } from './EmbeddingValidator.js';
 import { extractChunksFromTask, splitChunk, Chunk } from './ChunkExtractor.js';
 import { networkMetrics } from './QdrantHealthMonitor.js';
@@ -11,7 +11,9 @@ import { networkMetrics } from './QdrantHealthMonitor.js';
 type PointStruct = Schemas['PointStruct'];
 
 const COLLECTION_NAME = process.env.QDRANT_COLLECTION_NAME || 'roo_tasks_semantic_index';
-const EMBEDDING_MODEL = 'text-embedding-3-small';
+
+/** Configurable batch size for Qdrant upserts (was hardcoded to 1 for debug) */
+const INDEXING_BATCH_SIZE = Math.max(1, parseInt(process.env.INDEXING_BATCH_SIZE || '50', 10) || 50);
 
 // --- Circuit Breaker Configuration ---
 const MAX_RETRY_ATTEMPTS = 3;
@@ -157,21 +159,19 @@ export async function ensureCollectionExists() {
         const collectionExists = result.collections.some((collection) => collection.name === COLLECTION_NAME);
 
         if (!collectionExists) {
-            console.log(`Collection "${COLLECTION_NAME}" not found. Creating...`);
+            const vectorSize = getEmbeddingDimensions();
+            console.log(`Collection "${COLLECTION_NAME}" not found. Creating with vector size ${vectorSize}...`);
 
-            // 🚨 FIX CRITIQUE: Spécifier max_indexing_threads > 0 lors de la création
-            // Sans cela, Qdrant peut utiliser 0 par défaut, causant des deadlocks avec wait=true
-            // Référence: diagnostics/20251013_DIAGNOSTIC_FINAL.md - "max_indexing_threads: 0"
             await qdrant.createCollection(COLLECTION_NAME, {
                 vectors: {
-                    size: 1536,
+                    size: vectorSize,
                     distance: 'Cosine',
                 },
                 hnsw_config: {
                     max_indexing_threads: 2  // ✅ DOIT être > 0 pour éviter deadlock avec wait=true
                 }
             });
-            console.log(`Collection "${COLLECTION_NAME}" created successfully with max_indexing_threads: 2`);
+            console.log(`Collection "${COLLECTION_NAME}" created successfully (size=${vectorSize}, max_indexing_threads=2)`);
         }
     } catch (error) {
         console.error('Error ensuring Qdrant collection exists:', error);
@@ -234,9 +234,8 @@ export async function safeQdrantUpsert(points: PointStruct[]): Promise<boolean> 
         host_os: payloadSample.host_os
     });
 
-    // 🚀 BATCHING INTELLIGENT: Si plus de 100 points, découper en batches
-    // DEBUG: Réduit à 1 pour diagnostic précis
-    const batchSize = 1;
+    // 🚀 BATCHING INTELLIGENT: Configurable via INDEXING_BATCH_SIZE env var
+    const batchSize = INDEXING_BATCH_SIZE;
     const totalBatches = Math.ceil(sanitizedPoints.length / batchSize);
 
     if (totalBatches > 1) {
@@ -279,7 +278,7 @@ export async function safeQdrantUpsert(points: PointStruct[]): Promise<boolean> 
 
                 // 📊 Mise à jour métriques réseau
                 networkMetrics.qdrantCalls++;
-                networkMetrics.bytesTransferred += batch.length * 6144; // 1536 dims * 4 bytes
+                networkMetrics.bytesTransferred += batch.length * getEmbeddingDimensions() * 4;
 
                 console.log(`✅ [safeQdrantUpsert] Batch ${batchIdx + 1}/${totalBatches} réussi - ${batch.length} points (${attemptDuration}ms)`);
 
@@ -412,15 +411,15 @@ export async function indexTask(taskId: string, taskPath: string): Promise<Point
                         console.log(`[CACHE] Embedding trouvé en cache pour subchunk ${subChunk.chunk_id}`);
                         vector = cached.vector;
                     } else {
-                        // 🌐 APPEL RÉSEAU OpenAI - Maintenant seulement si nécessaire
+                        const embeddingModel = getEmbeddingModel();
+                        const expectedDims = getEmbeddingDimensions();
+
                         const embeddingResponse = await getOpenAIClient().embeddings.create({
-                            model: EMBEDDING_MODEL,
+                            model: embeddingModel,
                             input: subChunk.content,
                         });
                         vector = embeddingResponse.data[0].embedding;
 
-                        // 🔧 FIX CRITIQUE: Validation améliorée avec logging détaillé
-                        // Ajout de logs détaillés pour diagnostiquer les problèmes d'embedding
                         console.log(`[DEBUG] Embedding response reçu:`, {
                             model: embeddingResponse.model,
                             usage: embeddingResponse.usage,
@@ -428,23 +427,16 @@ export async function indexTask(taskId: string, taskPath: string): Promise<Point
                             chunkId: subChunk.chunk_id
                         });
 
-                        // Validation robuste avec gestion d'erreurs améliorée
                         if (!vector || !Array.isArray(vector)) {
                             console.error(`❌ [indexTask] Embedding invalide: pas un tableau pour chunk ${subChunk.chunk_id}`);
-                            console.error(`❌ [indexTask] Type reçu: ${typeof vector}, contenu: ${subChunk.content.substring(0, 100)}...`);
-                            // Continuer avec le prochain chunk au lieu de tout arrêter
                             continue;
                         }
 
-                        if (vector.length !== 1536) {
-                            console.warn(`⚠️ [indexTask] Dimension inattendue: ${vector.length} (attendu: 1536) pour chunk ${subChunk.chunk_id}`);
-                            console.warn(`⚠️ [indexTask] Modèle utilisé: ${EMBEDDING_MODEL}`);
-                            // Au lieu de rejeter, on tente d'utiliser le vecteur quand même
-                            // Qdrant pourrait accepter des dimensions variables ou on ajustera plus tard
-                            console.log(`[INFO] Tentative d'indexation avec dimension ${vector.length} pour chunk ${subChunk.chunk_id}`);
+                        if (vector.length !== expectedDims) {
+                            console.warn(`⚠️ [indexTask] Dimension inattendue: ${vector.length} (attendu: ${expectedDims}) pour chunk ${subChunk.chunk_id}`);
+                            console.warn(`⚠️ [indexTask] Modèle utilisé: ${embeddingModel}`);
                         }
 
-                        // Stocker en cache
                         embeddingCache.set(contentHash, { vector, timestamp: now });
                         operationTimestamps.push(now);
                         console.log(`[CACHE] Embedding mis en cache pour subchunk ${subChunk.chunk_id} (dimension: ${vector.length})`);
@@ -538,18 +530,18 @@ export async function resetCollection(): Promise<void> {
             console.log(`Collection ${COLLECTION_NAME} n'existait pas, continuer...`);
         }
 
-        // 🚨 FIX CRITIQUE: Spécifier max_indexing_threads > 0 lors de la recréation
+        const vectorSize = getEmbeddingDimensions();
         await qdrant.createCollection(COLLECTION_NAME, {
             vectors: {
-                size: 1536,
+                size: vectorSize,
                 distance: 'Cosine',
             },
             hnsw_config: {
-                max_indexing_threads: 2  // ✅ DOIT être > 0 pour éviter deadlock avec wait=true
+                max_indexing_threads: 2
             }
         });
 
-        console.log(`Collection ${COLLECTION_NAME} recréée avec succès`);
+        console.log(`Collection ${COLLECTION_NAME} recréée avec succès (size=${vectorSize})`);
     } catch (error) {
         console.error('Erreur lors de la réinitialisation de la collection Qdrant:', error);
         throw error;
@@ -579,7 +571,7 @@ export async function countPointsByHostOs(hostOs: string): Promise<number> {
         }, `Qdrant count pour host_os=${hostOs}`);
 
         networkMetrics.qdrantCalls++;
-        networkMetrics.bytesTransferred += 1024; // Approximation pour l'appel count
+        networkMetrics.bytesTransferred += 1024;
         return result.count;
     } catch (error) {
         console.error(`Could not count points for host_os=${hostOs}:`, error);
@@ -644,7 +636,7 @@ export async function upsertPointsBatch(
                 console.log(`✓ Batch ${batchNumber}/${totalBatches} inséré (${batch.length} points, wait=${shouldWait})`);
 
                 networkMetrics.qdrantCalls++;
-                networkMetrics.bytesTransferred += batch.length * 6144; // Approximation: 1536 dims * 4 bytes
+                networkMetrics.bytesTransferred += batch.length * getEmbeddingDimensions() * 4;
 
             } catch (error: any) {
                 // Ne pas retry sur HTTP 400 (erreur client)

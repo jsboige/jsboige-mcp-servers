@@ -5,7 +5,7 @@
 import { CallToolResult } from '@modelcontextprotocol/sdk/types.js';
 import { ConversationSkeleton } from '../../types/conversation.js';
 import { getQdrantClient } from '../../services/qdrant.js';
-import getOpenAIClient from '../../services/openai.js';
+import getOpenAIClient, { getEmbeddingModel } from '../../services/openai.js';
 
 /**
  * Diagnostique l'état de l'index sémantique
@@ -67,7 +67,7 @@ export async function handleDiagnoseSemanticIndex(
         try {
             const openai = getOpenAIClient();
             const testEmbedding = await openai.embeddings.create({
-                model: 'text-embedding-3-small',
+                model: getEmbeddingModel(),
                 input: 'test connectivity',
             });
             diagnostics.details.openai_connection = testEmbedding.data[0].embedding.length > 0 ? 'success' : 'failed';

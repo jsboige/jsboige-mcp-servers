@@ -33,18 +33,15 @@ export function registerListToolsHandler(server: Server): void {
                 // CONS-13: Outil Maintenance consolidé (3→1)
                 toolExports.maintenanceToolDefinition,
                 // CLEANUP-3: build_skeleton_cache retiré de ListTools (backward compat via CallTool)
-                // CONS-9: Outils Tasks consolidés (4→2)
-                toolExports.taskBrowseTool,
+                // CONS-X (#457): Outil consolidé conversation_browser (task_browse + view_conversation_tree + roosync_summarize → 1)
+                toolExports.conversationBrowserTool,
+                // [DEPRECATED] task_browse, view_conversation_tree, roosync_summarize retirés de ListTools
+                // (CallTool handlers conservés pour backward compat)
                 toolExports.taskExportTool,
                 // CONS-11: Outils Search/Indexing consolidés (4→2)
                 toolExports.roosyncSearchTool,
                 toolExports.roosyncIndexingTool,
                 // CLEANUP-3: search_tasks_by_content, debug_analyze retirés de ListTools (backward compat via CallTool)
-                {
-                    name: toolExports.viewConversationTree.name,
-                    description: toolExports.viewConversationTree.description,
-                    inputSchema: toolExports.viewConversationTree.inputSchema,
-                },
                 {
                     name: toolExports.readVscodeLogs.name,
                     description: toolExports.readVscodeLogs.description,
@@ -72,14 +69,8 @@ export function registerListToolsHandler(server: Server): void {
                 // CONS-10: Outils Export consolidés (6→2)
                 toolExports.exportDataTool,
                 toolExports.exportConfigTool,
-                // CONS-12: Outil unifié consolidé
-                {
-                    name: toolExports.roosyncSummarizeTool.name,
-                    description: toolExports.roosyncSummarizeTool.description,
-                    inputSchema: toolExports.roosyncSummarizeTool.inputSchema,
-                },
-                // CLEANUP-2: Legacy summary tools retirés (generate_trace_summary, generate_cluster_summary, get_conversation_synthesis)
-                // Remplacés par roosync_summarize (CONS-12)
+                // CONS-12→#457: roosync_summarize retiré de ListTools (remplacé par conversation_browser action=summarize)
+                // CallTool handler conservé pour backward compat
                 // CONS-10: exportConversationJsonTool et exportConversationCsvTool retirés
                 // (remplacés par export_data avec format='json'/'csv')
                 toolExports.viewTaskDetailsTool.definition,
@@ -146,7 +137,53 @@ export function registerCallToolHandler(
             case 'build_skeleton_cache':
                 result = await toolExports.handleBuildSkeletonCache(args as any, state.conversationCache, state);
                 break;
-            // CONS-9: Nouveaux outils consolidés
+            // CONS-X (#457): Outil consolidé conversation_browser
+            case 'conversation_browser':
+                result = await toolExports.handleConversationBrowser(
+                    args as any,
+                    state.conversationCache,
+                    async () => { await ensureSkeletonCacheIsFresh(); },
+                    undefined,  // contextWorkspace
+                    async (id: string) => {
+                        // 1. Try RAM cache first
+                        const cached = state.conversationCache.get(id);
+                        if (cached) return cached;
+                        // 2. Fallback: scan disk for Roo conversations
+                        try {
+                            const locations = await RooStorageDetector.detectStorageLocations();
+                            for (const loc of locations) {
+                                const taskPath = path.join(loc, id);
+                                if (existsSync(taskPath)) {
+                                    const skeleton = await RooStorageDetector.analyzeConversation(id, taskPath);
+                                    if (skeleton) {
+                                        state.conversationCache.set(id, skeleton);
+                                        return skeleton;
+                                    }
+                                }
+                            }
+                        } catch { /* disk fallback failed */ }
+                        return null;
+                    },
+                    async (rootId: string) => {
+                        // Fonction findChildTasks pour le mode cluster
+                        try {
+                            const locations = await RooStorageDetector.detectStorageLocations();
+                            for (const loc of locations) {
+                                const taskPath = path.join(loc, rootId);
+                                if (existsSync(taskPath)) {
+                                    const skeleton = await RooStorageDetector.analyzeConversation(rootId, taskPath);
+                                    if (skeleton && !state.conversationCache.has(rootId)) {
+                                        state.conversationCache.set(rootId, skeleton);
+                                    }
+                                }
+                            }
+                        } catch { /* ignore disk errors */ }
+                        const allTasks = Array.from(state.conversationCache.values());
+                        return allTasks.filter(task => task.metadata?.parentTaskId === rootId);
+                    }
+                );
+                break;
+            // [DEPRECATED] CONS-9: task_browse conservé pour backward compat
             case 'task_browse':
                 result = await toolExports.handleTaskBrowse(
                     args as any,
@@ -162,6 +199,7 @@ export function registerCallToolHandler(
                     async () => { await ensureSkeletonCacheIsFresh(); }
                 );
                 break;
+            // [DEPRECATED] #457: view_conversation_tree conservé pour backward compat
             case toolExports.viewConversationTree.name:
                 result = await toolExports.viewConversationTree.handler(args as any, state.conversationCache);
                 break;
@@ -256,7 +294,7 @@ export function registerCallToolHandler(
                result = await toolExports.handleExportConfig(args as any, state.exportConfigManager);
                break;
 
-           // CONS-12: Outil unifié consolidé
+           // [DEPRECATED] CONS-12→#457: roosync_summarize conservé pour backward compat
            case toolExports.roosyncSummarizeTool.name: {
                const summaryResult = await toolExports.handleRooSyncSummarize(
                    args as any,

@@ -77,9 +77,28 @@ def load_config() -> dict:
     path = Path(CONFIG_PATH)
     if not path.exists():
         log.warning("Config not found at %s, using defaults", path)
-        return {"model": {}, "mcps": [], "system_prompt": ""}
+        return {"models": [], "mcps": [], "system_prompt": ""}
     with open(path, encoding="utf-8") as f:
-        return json.load(f)
+        config = json.load(f)
+
+    # Backward compatibility: convert old "model" format to new "models" format
+    if "model" in config and "models" not in config:
+        old_model = config["model"]
+        model_id = old_model.get("model_id", "default")
+        config["models"] = [{
+            "id": model_id,
+            **old_model
+        }]
+        config["default_model"] = model_id
+        del config["model"]
+        log.info("Migrated old config format to new multi-model format")
+
+    # Set default_model if not specified
+    if "models" in config and "default_model" not in config:
+        if config["models"]:
+            config["default_model"] = config["models"][0]["id"]
+
+    return config
 
 
 # ---------------------------------------------------------------------------
@@ -150,11 +169,21 @@ class SKAgent:
         self._agent: ChatCompletionAgent | None = None
         self._thread: ChatHistoryAgentThread | None = None
         self._plugins: list = []
+        self._models: list[dict] = config.get("models", [])
+        self._default_model_id: str = config.get("default_model", "")
+        self._current_model_cfg: dict = {}
+        self._current_model_id: str = self._default_model_id
+        self._async_client: AsyncOpenAI | None = None  # Store for re-use
 
     async def start(self):
         """Initialize the SK agent: connect to model and MCP plugins."""
-        model_cfg = self.config.get("model", {})
+        # Find the default model configuration
+        model_cfg = self._get_model_config(self._default_model_id)
+        self._current_model_cfg = model_cfg
+        await self._create_agent(model_cfg)
 
+    async def _create_agent(self, model_cfg: dict):
+        """Create or recreate the SK agent with a specific model configuration."""
         # Build OpenAI client pointing to configured endpoint
         api_key = os.environ.get(
             model_cfg.get("api_key_env", "VLLM_API_KEY_MINI"),
@@ -163,31 +192,34 @@ class SKAgent:
         base_url = model_cfg.get("base_url", "http://localhost:5001/v1")
         model_id = model_cfg.get("model_id", "default")
 
-        async_client = AsyncOpenAI(api_key=api_key, base_url=base_url)
+        # Store client for potential re-use in vision requests
+        self._async_client = AsyncOpenAI(api_key=api_key, base_url=base_url)
+
         service = OpenAIChatCompletion(
             ai_model_id=model_id,
-            async_client=async_client,
+            async_client=self._async_client,
         )
-        log.info("Model: %s at %s", model_id, base_url)
+        log.info("Model: %s at %s (id: %s)", model_id, base_url, self._current_model_id)
 
-        # Connect MCP plugins
-        for mcp_cfg in self.config.get("mcps", []):
-            try:
-                env = {**os.environ, **(mcp_cfg.get("env") or {})}
-                plugin = MCPStdioPlugin(
-                    name=mcp_cfg["name"],
-                    description=mcp_cfg.get("description"),
-                    command=mcp_cfg["command"],
-                    args=mcp_cfg.get("args"),
-                    env=env,
-                )
-                connected = await self._exit_stack.enter_async_context(plugin)
-                self._plugins.append(connected)
-                log.info("MCP plugin loaded: %s (%s %s)",
-                         mcp_cfg["name"], mcp_cfg["command"],
-                         " ".join(mcp_cfg.get("args", [])))
-            except Exception:
-                log.exception("Failed to load MCP plugin: %s", mcp_cfg.get("name"))
+        # Connect MCP plugins (only if not already connected)
+        if not self._plugins:
+            for mcp_cfg in self.config.get("mcps", []):
+                try:
+                    env = {**os.environ, **(mcp_cfg.get("env") or {})}
+                    plugin = MCPStdioPlugin(
+                        name=mcp_cfg["name"],
+                        description=mcp_cfg.get("description"),
+                        command=mcp_cfg["command"],
+                        args=mcp_cfg.get("args"),
+                        env=env,
+                    )
+                    connected = await self._exit_stack.enter_async_context(plugin)
+                    self._plugins.append(connected)
+                    log.info("MCP plugin loaded: %s (%s %s)",
+                             mcp_cfg["name"], mcp_cfg["command"],
+                             " ".join(mcp_cfg.get("args", [])))
+                except Exception:
+                    log.exception("Failed to load MCP plugin: %s", mcp_cfg.get("name"))
 
         # Create agent
         system_prompt = self.config.get("system_prompt", "")
@@ -199,12 +231,58 @@ class SKAgent:
         )
         log.info("SK Agent ready with %d MCP plugins", len(self._plugins))
 
-    async def ask(self, prompt: str, system_prompt: str = "") -> str:
-        """Send a text prompt to the model with auto tool calling."""
+    async def switch_model(self, model_id: str) -> str:
+        """Switch to a different model. Returns success message or error."""
+        model_cfg = self._get_model_config(model_id)
+        if not model_cfg:
+            available = [m.get("id") for m in self._models]
+            return f"Model '{model_id}' not found. Available: {available}"
+
+        # Check vision capability for image requests
+        old_vision = self._current_model_cfg.get("vision", False)
+        new_vision = model_cfg.get("vision", False)
+
+        # Recreate agent with new model
+        self._current_model_id = model_id
+        self._current_model_cfg = model_cfg
+        await self._create_agent(model_cfg)
+
+        vision_note = " (vision enabled)" if new_vision else ""
+        return f"Switched to model '{model_id}'{vision_note}"
+
+    async def ask(self, prompt: str, system_prompt: str = "", model_id: str | None = None) -> str:
+        """Send a text prompt to the model with auto tool calling.
+
+        Args:
+            prompt: The user question or instruction.
+            system_prompt: Optional override for the system prompt.
+            model_id: Optional model ID to use for this request (overrides default).
+        """
         if not self._agent:
             return "Agent not initialized"
 
-        # Optionally override system prompt per request
+        # If a specific model is requested and different from current
+        if model_id and model_id != self._current_model_id:
+            model_cfg = self._get_model_config(model_id)
+            if not model_cfg:
+                return f"Model '{model_id}' not found"
+            # Use the OpenAI client directly for this specific request
+            api_key = os.environ.get(
+                model_cfg.get("api_key_env", "VLLM_API_KEY_MINI"),
+                model_cfg.get("api_key", "no-key"),
+            )
+            base_url = model_cfg.get("base_url", "http://localhost:5001/v1")
+            target_model_id = model_cfg.get("model_id", "default")
+
+            async with AsyncOpenAI(api_key=api_key, base_url=base_url) as client:
+                resp = await client.chat.completions.create(
+                    model=target_model_id,
+                    messages=[{"role": "user", "content": prompt}],
+                    max_tokens=2048,
+                )
+            return resp.choices[0].message.content or ""
+
+        # Use the default agent with optional system prompt override
         if system_prompt:
             self._agent.instructions = system_prompt
 
@@ -212,47 +290,75 @@ class SKAgent:
         return str(response)
 
     async def ask_with_image(
-        self, image_source: str, prompt: str = "Describe this image in detail"
+        self,
+        image_source: str,
+        prompt: str = "Describe this image in detail",
+        model_id: str | None = None
     ) -> str:
         """Send an image + prompt to the model (vision).
 
-        image_source can be a local file path or URL.
-        The image is converted to base64 and sent as an image_url content part.
+        Args:
+            image_source: Local file path or URL to the image.
+            prompt: Question or instruction about the image.
+            model_id: Optional model ID to use (overrides default).
         """
         if not self._agent:
             return "Agent not initialized"
 
-        model_cfg = self.config.get("model", {})
+        # Determine which model config to use
+        if model_id and model_id != self._current_model_id:
+            model_cfg = self._get_model_config(model_id)
+            if not model_cfg:
+                return f"Model '{model_id}' not found"
+        else:
+            model_cfg = self._current_model_cfg
+
         if not model_cfg.get("vision", False):
             return "Vision is not enabled for the configured model."
 
         b64_data, media_type = await resolve_attachment(image_source)
         data_url = f"data:{media_type};base64,{b64_data}"
 
-        # Build multimodal message directly via the underlying service
-        # ChatCompletionAgent doesn't natively support image content parts,
-        # so we use the OpenAI client directly for vision requests.
-        api_key = os.environ.get(
-            model_cfg.get("api_key_env", "VLLM_API_KEY_MINI"),
-            model_cfg.get("api_key", "no-key"),
-        )
-        base_url = model_cfg.get("base_url", "http://localhost:5001/v1")
-        model_id = model_cfg.get("model_id", "default")
+        # Use the stored async_client or create a new one for a specific model
+        if model_id and model_id != self._current_model_id:
+            api_key = os.environ.get(
+                model_cfg.get("api_key_env", "VLLM_API_KEY_MINI"),
+                model_cfg.get("api_key", "no-key"),
+            )
+            base_url = model_cfg.get("base_url", "http://localhost:5001/v1")
+            target_model_id = model_cfg.get("model_id", "default")
 
-        async with AsyncOpenAI(api_key=api_key, base_url=base_url) as client:
-            resp = await client.chat.completions.create(
-                model=model_id,
+            async with AsyncOpenAI(api_key=api_key, base_url=base_url) as client:
+                resp = await client.chat.completions.create(
+                    model=target_model_id,
+                    messages=[{
+                        "role": "user",
+                        "content": [
+                            {"type": "text", "text": prompt},
+                            {"type": "image_url", "image_url": {"url": data_url}},
+                        ],
+                    }],
+                    max_tokens=1024,
+                )
+            return resp.choices[0].message.content or ""
+        else:
+            # Use the stored async_client (current model)
+            if not self._async_client:
+                return "Agent not properly initialized"
+
+            target_model_id = model_cfg.get("model_id", "default")
+            resp = await self._async_client.chat.completions.create(
+                model=target_model_id,
                 messages=[{
                     "role": "user",
                     "content": [
                         {"type": "text", "text": prompt},
-                        {"type": "image_url",
-                         "image_url": {"url": data_url}},
+                        {"type": "image_url", "image_url": {"url": data_url}},
                     ],
                 }],
                 max_tokens=1024,
             )
-        return resp.choices[0].message.content or ""
+            return resp.choices[0].message.content or ""
 
     def list_loaded_tools(self) -> str:
         """Return a description of all loaded MCP plugins and their tools."""
@@ -275,6 +381,37 @@ class SKAgent:
         self._plugins.clear()
         self._agent = None
         log.info("SK Agent stopped")
+
+    def _get_model_config(self, model_id: str | None = None) -> dict:
+        """Get configuration for a specific model, or the default."""
+        if model_id is None:
+            model_id = self._default_model_id
+
+        # Find the model by id
+        for model in self._models:
+            if model.get("id") == model_id:
+                return model
+
+        # Fallback to first model if default not found
+        if self._models and model_id == self._default_model_id:
+            log.warning("Default model '%s' not found, using first model", model_id)
+            return self._models[0]
+
+        # Backward compatibility: if no models array, return empty dict
+        return {}
+
+    def list_models(self) -> list[dict]:
+        """Return a list of all configured models."""
+        return [
+            {
+                "id": m.get("id", "unknown"),
+                "model_id": m.get("model_id", ""),
+                "vision": m.get("vision", False),
+                "description": m.get("description", ""),
+                "is_default": m.get("id") == self._default_model_id
+            }
+            for m in self._models
+        ]
 
 
 # ---------------------------------------------------------------------------
@@ -302,7 +439,7 @@ async def _get_agent() -> SKAgent:
 
 
 @mcp_server.tool()
-async def ask(prompt: str, system_prompt: str = "") -> str:
+async def ask(prompt: str, system_prompt: str = "", model: str = "") -> str:
     """Send a text prompt to the local LLM.
 
     The model may autonomously use its configured tools (web search, browser,
@@ -311,13 +448,19 @@ async def ask(prompt: str, system_prompt: str = "") -> str:
     Args:
         prompt: The user question or instruction.
         system_prompt: Optional override for the system prompt.
+        model: Optional model ID to use for this request (e.g., "qwen3-vl-8b-thinking",
+              "glm-4.7-flash"). If not specified, uses the default model.
     """
     agent = await _get_agent()
-    return await agent.ask(prompt, system_prompt)
+    return await agent.ask(prompt, system_prompt, model if model else None)
 
 
 @mcp_server.tool()
-async def analyze_image(image_source: str, prompt: str = "Describe this image in detail") -> str:
+async def analyze_image(
+    image_source: str,
+    prompt: str = "Describe this image in detail",
+    model: str = ""
+) -> str:
     """Analyze an image using the local vision model.
 
     Accepts a local file path (e.g. D:/screenshots/img.png) or a URL.
@@ -326,9 +469,11 @@ async def analyze_image(image_source: str, prompt: str = "Describe this image in
     Args:
         image_source: Path to a local image file or an HTTP(S) URL.
         prompt: Question or instruction about the image.
+        model: Optional model ID to use (must support vision). If not specified,
+              uses the default model.
     """
     agent = await _get_agent()
-    return await agent.ask_with_image(image_source, prompt)
+    return await agent.ask_with_image(image_source, prompt, model if model else None)
 
 
 @mcp_server.tool()
@@ -339,6 +484,56 @@ async def list_tools() -> str:
     """
     agent = await _get_agent()
     return agent.list_loaded_tools()
+
+
+@mcp_server.tool()
+async def list_models() -> str:
+    """List all configured models available in the sk-agent.
+
+    Returns information about each model including:
+    - id: Unique identifier for the model
+    - model_id: The actual model name used in API calls
+    - vision: Whether the model supports vision/image input
+    - description: Human-readable description
+    - is_default: Whether this is the default model
+
+    Useful for selecting the right model for your task.
+    """
+    config = load_config()
+    models = config.get("models", [])
+    default_model = config.get("default_model", "")
+
+    if not models:
+        return "No models configured."
+
+    lines = ["## Available Models"]
+    for m in models:
+        model_id = m.get("id", "unknown")
+        is_default = " (DEFAULT)" if model_id == default_model else ""
+        desc = m.get("description", "")
+        vision_badge = " 👁️" if m.get("vision", False) else ""
+        lines.append(f"- {model_id}{is_default}{vision_badge}: {desc}")
+
+    return "\n".join(lines)
+
+
+@mcp_server.tool()
+async def switch_model(model: str) -> str:
+    """Switch the default model for all subsequent requests.
+
+    This changes the model used by both 'ask' and 'analyze_image' tools
+    until another switch_model call or server restart.
+
+    Args:
+        model: The model ID to switch to (e.g., "qwen3-vl-8b-thinking",
+              "glm-4.7-flash"). Use list_models() to see available models.
+
+    Returns:
+        A message indicating the switch was successful or an error if the model
+        was not found.
+    """
+    agent = await _get_agent()
+    return await agent.switch_model(model)
 
 
 # ---------------------------------------------------------------------------

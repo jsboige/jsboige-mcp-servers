@@ -4,14 +4,16 @@
  */
 
 import { StateManagerError } from '../../types/errors.js';
+import { getEmbeddingDimensions } from '../openai.js';
 
 /**
  * Valide qu'un vecteur a la bonne dimension et ne contient pas de NaN/Infinity
  * @param vector Le vecteur à valider
- * @param expectedDim La dimension attendue (défaut: 1536)
+ * @param expectedDim La dimension attendue (défaut: from EMBEDDING_DIMENSIONS env or 1536)
  * @throws StateManagerError si le vecteur est invalide
  */
-export function validateVectorGlobal(vector: number[], expectedDim: number = 1536): void {
+export function validateVectorGlobal(vector: number[], expectedDim?: number): void {
+    const dim = expectedDim ?? getEmbeddingDimensions();
     if (!Array.isArray(vector)) {
         throw new StateManagerError(
             `Vector doit être un tableau, reçu: ${typeof vector}`,
@@ -21,12 +23,12 @@ export function validateVectorGlobal(vector: number[], expectedDim: number = 153
         );
     }
 
-    if (vector.length !== expectedDim) {
+    if (vector.length !== dim) {
         throw new StateManagerError(
-            `Dimension invalide: ${vector.length}, attendu: ${expectedDim}`,
+            `Dimension invalide: ${vector.length}, attendu: ${dim}`,
             'INVALID_VECTOR_DIMENSION',
             'EmbeddingValidator',
-            { actualDimension: vector.length, expectedDimension: expectedDim }
+            { actualDimension: vector.length, expectedDimension: dim }
         );
     }
 

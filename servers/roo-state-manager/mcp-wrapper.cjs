@@ -3,14 +3,14 @@
  * MCP Wrapper v4.0.0 - Pass-through + Déduplication anti-doublons VS Code
  *
  * CHANGEMENT v4: Plus de filtrage d'outils. Tous les outils de roo-state-manager
- * sont exposés à Claude Code (39 outils au lieu de 18).
+ * sont exposés à Claude Code (~37 outils après consolidations).
  *
  * Raisons du changement:
- * - Claude Code a besoin des outils task_browse, view_task_details,
- *   view_conversation_tree, get_raw_conversation pour analyser les runs
+ * - Claude Code a besoin des outils conversation_browser (consolidé #457),
+ *   view_task_details, get_raw_conversation pour analyser les runs
  *   du scheduler Roo sans lire manuellement les fichiers JSON.
  * - roosync_search et export_data sont utiles pour la coordination.
- * - 39 outils est raisonnable pour Claude (pas de threshold comme Roo à 60).
+ * - ~37 outils est raisonnable pour Claude (pas de threshold comme Roo à 60).
  *
  * Fonctions conservées:
  * - Déduplication cache (VS Code appelle tools/list plusieurs fois)

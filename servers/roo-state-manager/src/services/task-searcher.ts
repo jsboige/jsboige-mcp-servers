@@ -1,5 +1,5 @@
 import { QdrantClient } from '@qdrant/js-client-rest';
-import getOpenAIClient from './openai.js';
+import getOpenAIClient, { getEmbeddingModel } from './openai.js';
 import { getQdrantClient } from './qdrant.js';
 import { RooStorageDetector } from '../utils/roo-storage-detector.js';
 import { promises as fs } from 'fs';
@@ -140,7 +140,7 @@ export async function searchTasks(
 
   // 1. Vectoriser la requête
   const embeddingResponse = await openai.embeddings.create({
-    model: 'text-embedding-3-small',
+    model: getEmbeddingModel(),
     input: query,
   });
   const vector = embeddingResponse.data[0].embedding;

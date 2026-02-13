@@ -6,7 +6,7 @@
 import { CallToolResult } from '@modelcontextprotocol/sdk/types.js';
 import { ConversationSkeleton } from '../../types/conversation.js';
 import { getQdrantClient } from '../../services/qdrant.js';
-import getOpenAIClient from '../../services/openai.js';
+import getOpenAIClient, { getEmbeddingModel } from '../../services/openai.js';
 import { handleSearchTasksSemanticFallback } from './search-fallback.tool.js';
 
 export interface SearchTasksByContentArgs {
@@ -139,7 +139,7 @@ export const searchTasksByContentTool = {
 
             // Créer l'embedding de la requête
             const embedding = await openai.embeddings.create({
-                model: 'text-embedding-3-small',
+                model: getEmbeddingModel(),
                 input: search_query
             });
 
