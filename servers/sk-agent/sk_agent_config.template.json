@@ -36,7 +36,7 @@
       "args": ["-y", "@playwright/mcp@latest"]
     },
     {
-      "name": "sk-agent",
+      "name": "sk_agent",
       "description": "Self-inclusion for recursive tool chaining",
       "command": "python",
       "args": ["path/to/sk_agent.py"]

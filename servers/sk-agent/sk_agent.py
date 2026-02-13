@@ -229,7 +229,7 @@ class SKAgent:
                     # Detect self-inclusion: if this MCP looks like sk-agent, increment depth
                     mcp_cmd = mcp_cfg.get("command", "")
                     mcp_args = " ".join(mcp_cfg.get("args", []))
-                    is_self = "sk_agent.py" in mcp_args or "sk-agent" in mcp_cfg.get("name", "").lower()
+                    is_self = "sk_agent.py" in mcp_args or "sk_agent" in mcp_cfg.get("name", "").lower()
 
                     if is_self:
                         # Increment depth for child instance
