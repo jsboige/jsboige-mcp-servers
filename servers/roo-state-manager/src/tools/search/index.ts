@@ -10,3 +10,12 @@ export type { SearchFallbackArgs } from './search-fallback.tool.js';
 // CONS-11: Outil unifié consolidé
 export { roosyncSearchTool, handleRooSyncSearch } from './roosync-search.tool.js';
 export type { RooSyncSearchArgs } from './roosync-search.tool.js';
+
+// #452 Phase 2: Recherche sémantique dans le code (workspace indexé par Roo)
+export {
+	codebaseSearchTool,
+	codebaseSearchToolDefinition,
+	handleCodebaseSearch,
+	getWorkspaceCollectionName
+} from './search-codebase.tool.js';
+export type { CodebaseSearchArgs } from './search-codebase.tool.js';
