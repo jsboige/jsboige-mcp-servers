@@ -1,5 +1,6 @@
 {
-  "default_model": "qwen3-vl-8b-thinking",
+  "default_ask_model": "glm-4.7-flash",
+  "default_vision_model": "qwen3-vl-8b-thinking",
   "max_recursion_depth": 2,
   "models": [
     {
