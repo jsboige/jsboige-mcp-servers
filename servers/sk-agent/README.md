@@ -4,25 +4,63 @@ Multi-model LLM proxy server for Claude Code and Roo Code.
 
 ## Features
 
-- **Multi-model support**: Configure multiple models and switch between them
+- **Multi-model support**: Configure multiple models with per-model kernels
 - **Tool calling**: Models can use MCP plugins (SearXNG, Playwright, etc.)
 - **Vision support**: Analyze images with vision-capable models
 - **Dynamic model selection**: Choose the right model for each task
+- **Intermediate steps**: Optional visibility into tool calls and reasoning
+- **Self-inclusion**: Recursive tool chaining with configurable depth limit
+- **Conversation threading**: Persistent chat sessions per model
+
+## Architecture
+
+```text
+Claude/Roo  --stdio-->  FastMCP server (sk_agent.py)
+                              |
+                              v
+                         Semantic Kernel (per-model)
+                         +-- OpenAI Chat Completion (multiple services)
+                         +-- MCPStdioPlugin: SearXNG, Playwright, etc.
+```
+
+Each model gets its own kernel, agent, and optional model-specific MCP plugins.
 
 ## Configured Models (Myia Infrastructure)
 
-| Model ID | Endpoint | Vision | Description |
-|----------|----------|--------|-------------|
-| `qwen3-vl-8b-thinking` | `https://api.mini.text-generation-webui.myia.io/v1` | ✅ | Default, vision model |
-| `glm-4.7-flash` | `https://api.medium.text-generation-webui.myia.io/v1` | ❌ | Fast text model |
+| Model ID                  | Endpoint                                           | Vision | Default For | Description              |
+|---------------------------|----------------------------------------------------|--------|-------------|--------------------------|
+| `qwen3-vl-8b-thinking`    | `https://api.mini.text-generation-webui.myia.io/v1`  | Yes    | Vision      | Qwen3-VL 8B Thinking     |
+| `glm-4.7-flash`           | `https://api.medium.text-generation-webui.myia.io/v1`| No     | Ask         | GLM-4.7-Flash (fast text)|
 
 ## Configuration
 
-Copy `sk_agent_config.template.json` to `sk_agent_config.json` and add your API keys:
+Copy `sk_agent_config.template.json` to `sk_agent_config.json` and add your API keys.
+
+### Configuration Fields
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `default_ask_model` | string | Model ID for `ask()` tool (default: first model) |
+| `default_vision_model` | string | Model ID for `analyze_image()` tool |
+| `max_recursion_depth` | int | Max self-inclusion depth (default: 2) |
+| `models` | array | List of model configurations |
+| `models[].id` | string | Unique identifier for the model |
+| `models[].base_url` | string | OpenAI-compatible API endpoint |
+| `models[].api_key` | string | API key (or use `api_key_env` for env var) |
+| `models[].model_id` | string | Actual model name for API calls |
+| `models[].vision` | bool | Whether model supports image input |
+| `models[].system_prompt` | string | Model-specific system prompt (optional) |
+| `models[].mcps` | array | Model-specific MCP plugins (optional) |
+| `mcps` | array | Shared MCP plugins for all models |
+| `system_prompt` | string | Global system prompt (fallback) |
+
+### Example Configuration
 
 ```json
 {
-  "default_model": "qwen3-vl-8b-thinking",
+  "default_ask_model": "glm-4.7-flash",
+  "default_vision_model": "qwen3-vl-8b-thinking",
+  "max_recursion_depth": 2,
   "models": [
     {
       "id": "qwen3-vl-8b-thinking",
@@ -30,7 +68,8 @@ Copy `sk_agent_config.template.json` to `sk_agent_config.json` and add your API 
       "api_key": "YOUR_MINI_API_KEY_HERE",
       "model_id": "qwen3-vl-8b-thinking",
       "vision": true,
-      "description": "Vision model for image analysis (Qwen3-VL 8B Thinking)"
+      "description": "Vision model for image analysis (Qwen3-VL 8B Thinking)",
+      "system_prompt": "You are a vision analysis specialist."
     },
     {
       "id": "glm-4.7-flash",
@@ -47,9 +86,7 @@ Copy `sk_agent_config.template.json` to `sk_agent_config.json` and add your API 
       "description": "Web search via SearXNG",
       "command": "npx",
       "args": ["-y", "mcp-searxng"],
-      "env": {
-        "SEARXNG_URL": "https://search.myia.io"
-      }
+      "env": { "SEARXNG_URL": "https://search.myia.io" }
     },
     {
       "name": "playwright",
@@ -58,7 +95,7 @@ Copy `sk_agent_config.template.json` to `sk_agent_config.json` and add your API 
       "args": ["-y", "@playwright/mcp@latest"]
     }
   ],
-  "system_prompt": "You are a helpful assistant with access to web search and browser tools."
+  "system_prompt": "You are a helpful assistant with access to tools."
 }
 ```
 
@@ -66,82 +103,169 @@ Copy `sk_agent_config.template.json` to `sk_agent_config.json` and add your API 
 
 ## MCP Tools
 
-### `ask(prompt, system_prompt="", model="")`
+### `ask(prompt, model="", system_prompt="", conversation_id="", include_steps=false)`
+
 Send a text prompt to the configured model.
 
+**Parameters:**
+
 - `prompt`: The user question or instruction
-- `system_prompt`: Optional override for the system prompt
 - `model`: Optional model ID to use (e.g., "glm-4.7-flash")
+- `system_prompt`: Optional override for the system prompt
+- `conversation_id`: Optional conversation ID to continue a session
+- `include_steps`: If true, include intermediate tool calls in response
 
-**Example with specific model:**
-```
-ask("What is the capital of France?", model="glm-4.7-flash")
+**Returns:**
+
+```json
+{
+  "response": "Model response text",
+  "conversation_id": "conv-abc123",
+  "model_used": "glm-4.7-flash",
+  "steps": [
+    { "type": "function_call", "name": "search", "arguments": {...} },
+    { "type": "function_result", "name": "search", "result": {...} }
+  ]
+}
 ```
 
-### `analyze_image(image_source, prompt="Describe this image", model="")`
+### `analyze_image(image_source, prompt="", model="", conversation_id="")`
+
 Analyze an image using a vision-capable model.
+
+**Parameters:**
 
 - `image_source`: Local file path or URL to the image
 - `prompt`: Question or instruction about the image
 - `model`: Optional model ID (must support vision)
+- `conversation_id`: Optional (currently not used for vision)
 
-**Example:**
+**Returns:**
+
+```json
+{
+  "response": "Image description or analysis",
+  "conversation_id": null,
+  "model_used": "qwen3-vl-8b-thinking"
+}
 ```
-analyze_image("D:/screenshots/screenshot.png", "What is shown in this image?", model="qwen3-vl-8b-thinking")
+
+### `zoom_image(image_source, region, prompt="", model="")`
+
+Zoom into a specific region of an image and analyze it.
+
+**Parameters:**
+
+- `image_source`: Local file path or URL to the image
+- `region`: JSON string with crop region (see below)
+- `prompt`: Question or instruction about the region
+- `model`: Optional model ID (must support vision)
+
+**Region format (JSON string):**
+
+```json
+// Pixels
+{"x": 100, "y": 200, "width": 300, "height": 400}
+
+// Percentages (relative to image size)
+{"x": "10%", "y": "20%", "width": "50%", "height": "30%"}
 ```
 
-### `switch_model(model)`
-Switch the default model for all subsequent requests.
+**Returns:**
 
-- `model`: The model ID to switch to
-
-**Example:**
+```json
+{
+  "response": "Region description or analysis",
+  "model_used": "qwen3-vl-8b-thinking",
+  "region_analyzed": {"x": 100, "y": 200, "width": 300, "height": 400}
+}
 ```
-switch_model("glm-4.7-flash")  # Use fast model for text-only tasks
+
+**Usage example:**
+
+```text
+// Zoom on bottom-right quadrant
+zoom_image("screenshot.png", '{"x": "50%", "y": "50%", "width": "50%", "height": "50%"}', "What text is visible here?")
 ```
 
 ### `list_models()`
+
 List all configured models with their capabilities.
 
 **Returns:**
-```
+
+```text
 ## Available Models
-- qwen3-vl-8b-thinking (DEFAULT) 👁️: Vision model for image analysis
-- glm-4.7-flash: Fast text model for quick responses
+- glm-4.7-flash [ASK]: Fast text model for quick responses
+- qwen3-vl-8b-thinking [VISION]: Vision model for image analysis
 ```
 
 ### `list_tools()`
+
 List all loaded MCP plugins and their tools.
+
+### `end_conversation(conversation_id)`
+
+Clean up a conversation thread.
 
 ## Usage Patterns
 
 ### Fast text processing
-```python
-# Switch to fast model for quick queries
-switch_model("glm-4.7-flash")
-ask("Summarize this text: ...")
+
+```text
+ask("Summarize this text: ...", model="glm-4.7-flash")
 ```
 
 ### Vision analysis
-```python
-# Switch to vision model for image tasks
-switch_model("qwen3-vl-8b-thinking")
-analyze_image("path/to/image.png", "Describe the UI")
+
+```text
+analyze_image("path/to/image.png", "Describe the UI", model="qwen3-vl-8b-thinking")
 ```
 
-### One-shot model selection
-```python
-# Use a specific model without changing default
-ask("Explain quantum computing", model="glm-4.7-flash")
+### With intermediate steps (debugging)
+
+```text
+ask("Search for recent news about AI", include_steps=true)
+```
+
+### Conversation continuity
+
+```text
+# First message
+response1 = ask("What is Python?")
+# response1.conversation_id = "conv-abc123"
+
+# Continue conversation
+response2 = ask("Tell me more about decorators", conversation_id="conv-abc123")
+```
+
+## Self-Inclusion (Recursive Tool Chaining)
+
+sk-agent can include itself as an MCP plugin for recursive tool chaining. This is protected by:
+
+1. **Depth tracking**: `SK_AGENT_DEPTH` environment variable
+2. **Configurable limit**: `max_recursion_depth` in config (default: 2)
+3. **Automatic depth increment**: Child instances get `SK_AGENT_DEPTH + 1`
+
+```json
+{
+  "mcps": [
+    {
+      "name": "sk_agent",
+      "description": "Self-inclusion for recursive tool chaining",
+      "command": "python",
+      "args": ["path/to/sk_agent.py"]
+    }
+  ]
+}
 ```
 
 ## Environment Variables
 
-Set these in your shell or `.env` file:
-
-- `VLLM_API_KEY_MINI`: API key for vLLM models (default: empty)
-- `ANTHROPIC_AUTH_TOKEN`: API key for z.ai GLM models
-- `SK_AGENT_CONFIG`: Path to config file (default: `sk_agent_config.json`)
+| Variable | Description | Default |
+|----------|-------------|---------|
+| `SK_AGENT_CONFIG` | Path to config file | `sk_agent_config.json` |
+| `SK_AGENT_DEPTH` | Current recursion depth (internal) | `0` |
 
 ## Requirements
 
@@ -150,6 +274,14 @@ Set these in your shell or `.env` file:
 - `mcp>=1.7`
 - `openai>=1.109`
 - `Pillow>=10.0`
+- `httpx>=0.27`
+
+## Installation
+
+```bash
+cd mcps/internal/servers/sk-agent
+pip install -r requirements.txt
+```
 
 ## Running
 
@@ -160,3 +292,20 @@ python sk_agent.py
 # Or via npx (for Claude Code / Roo Code integration)
 npx -y @modelcontextprotocol/inspector python sk_agent.py
 ```
+
+## Changelog
+
+### 2026-02-14
+
+- **Per-model kernels**: Each model gets its own kernel and agent
+- **Intermediate steps**: `include_steps` parameter shows tool calls
+- **Self-inclusion**: Protected recursive tool chaining with depth limit
+- **Model-specific plugins**: `models[].mcps` for per-model MCP configuration
+- **Default models**: Separate `default_ask_model` and `default_vision_model`
+- **Model-specific prompts**: `models[].system_prompt` override
+
+### 2026-02-12
+
+- Initial multi-model support
+- Vision support with image resizing
+- MCP plugin integration (SearXNG, Playwright)

@@ -9,7 +9,8 @@
       "api_key": "YOUR_MINI_API_KEY_HERE",
       "model_id": "qwen3-vl-8b-thinking",
       "vision": true,
-      "description": "Vision model for image analysis (Qwen3-VL 8B Thinking)"
+      "description": "Vision model for image analysis (Qwen3-VL 8B Thinking)",
+      "system_prompt": "You are a vision analysis specialist. Describe images in detail, focusing on relevant visual elements. Be precise and thorough."
     },
     {
       "id": "glm-4.7-flash",
@@ -17,7 +18,8 @@
       "api_key": "YOUR_MEDIUM_API_KEY_HERE",
       "model_id": "glm-4.7-flash",
       "vision": false,
-      "description": "Fast text model for quick responses (GLM-4.7-Flash)"
+      "description": "Fast text model for quick responses (GLM-4.7-Flash)",
+      "system_prompt": "You are a helpful assistant with access to tools. Use them when needed. Always respond in the same language as the user."
     }
   ],
   "mcps": [

@@ -54,6 +54,7 @@ from semantic_kernel import Kernel
 from semantic_kernel.agents import ChatCompletionAgent, ChatHistoryAgentThread
 from semantic_kernel.connectors.ai.open_ai import OpenAIChatCompletion
 from semantic_kernel.connectors.mcp import MCPStdioPlugin
+from semantic_kernel.contents import FunctionCallContent, FunctionResultContent
 
 # ---------------------------------------------------------------------------
 # Logging
@@ -79,6 +80,51 @@ DEFAULT_MAX_RECURSION_DEPTH = 2
 
 MAX_IMAGE_BYTES = 4 * 1024 * 1024  # 4 MB
 MAX_IMAGE_PIXELS = 774_144  # Qwen3-VL mini default
+
+
+def _crop_image(data: bytes, media_type: str, region: dict) -> tuple[bytes, str]:
+    """Crop image to specified region.
+
+    Args:
+        data: Raw image bytes
+        media_type: MIME type of the image
+        region: Dict with x, y, width, height (pixels or percentages)
+
+    Returns:
+        Tuple of (cropped_image_bytes, media_type)
+    """
+    import io
+
+    img = Image.open(io.BytesIO(data))
+    img_w, img_h = img.size
+
+    # Parse region - support both pixels and percentages
+    def parse_value(val: float | str, total: int) -> int:
+        if isinstance(val, str) and val.endswith("%"):
+            return int(float(val[:-1]) / 100 * total)
+        return int(val)
+
+    x = parse_value(region.get("x", 0), img_w)
+    y = parse_value(region.get("y", 0), img_h)
+    w = parse_value(region.get("width", region.get("w", img_w)), img_w)
+    h = parse_value(region.get("height", region.get("h", img_h)), img_h)
+
+    # Clamp to image bounds
+    x = max(0, min(x, img_w - 1))
+    y = max(0, min(y, img_h - 1))
+    w = min(w, img_w - x)
+    h = min(h, img_h - y)
+
+    # Crop
+    cropped = img.crop((x, y, x + w, y + h))
+
+    buf = io.BytesIO()
+    fmt = "JPEG" if media_type in ("image/jpeg", "image/jpg") else "PNG"
+    cropped.save(buf, format=fmt)
+    out_type = f"image/{fmt.lower()}"
+
+    log.info("Cropped image %dx%d -> %dx%d", img_w, img_h, w, h)
+    return buf.getvalue(), out_type
 
 
 def load_config() -> dict:
@@ -363,32 +409,93 @@ class SKAgentManager:
         if system_prompt:
             agent.instructions = system_prompt
 
-        # Invoke agent
-        response = await agent.get_response(messages=prompt, thread=thread)
+        # Collect intermediate steps if requested
+        collected_steps: list[dict] = []
+
+        async def handle_intermediate_message(message) -> None:
+            """Callback to capture intermediate messages (tool calls/results)."""
+            step = {
+                "role": str(message.role) if hasattr(message, 'role') else "unknown",
+            }
+            # Check message items for function calls/results
+            if hasattr(message, 'items') and message.items:
+                for item in message.items:
+                    if isinstance(item, FunctionCallContent):
+                        # Try to parse arguments as JSON
+                        args = item.arguments if hasattr(item, 'arguments') else {}
+                        if isinstance(args, str):
+                            try:
+                                args = json.loads(args)
+                            except (json.JSONDecodeError, TypeError):
+                                pass  # Keep as string if not valid JSON
+                        collected_steps.append({
+                            "type": "function_call",
+                            "name": item.name if hasattr(item, 'name') else str(item),
+                            "arguments": args,
+                        })
+                    elif isinstance(item, FunctionResultContent):
+                        # Extract result - handle MCP TextContent objects
+                        raw_result = item.result if hasattr(item, 'result') else item
+                        parsed_result = None
+
+                        # Case 1: List of TextContent objects (MCP tool response)
+                        if isinstance(raw_result, list):
+                            texts = []
+                            for elem in raw_result:
+                                if hasattr(elem, 'text'):
+                                    texts.append(elem.text)
+                                elif hasattr(elem, 'content') and hasattr(elem.content, 'text'):
+                                    texts.append(elem.content.text)
+                                else:
+                                    texts.append(str(elem))
+                            combined = "\n".join(texts)
+                            try:
+                                parsed_result = json.loads(combined)
+                            except (json.JSONDecodeError, TypeError):
+                                parsed_result = combined
+                        # Case 2: String that might be JSON
+                        elif isinstance(raw_result, str):
+                            try:
+                                parsed_result = json.loads(raw_result)
+                            except (json.JSONDecodeError, TypeError):
+                                parsed_result = raw_result
+                        # Case 3: Single TextContent object
+                        elif hasattr(raw_result, 'text'):
+                            try:
+                                parsed_result = json.loads(raw_result.text)
+                            except (json.JSONDecodeError, TypeError):
+                                parsed_result = raw_result.text
+                        else:
+                            parsed_result = str(raw_result)
+
+                        collected_steps.append({
+                            "type": "function_result",
+                            "name": item.name if hasattr(item, 'name') else str(item),
+                            "result": parsed_result,
+                        })
+            elif hasattr(message, 'content') and message.content:
+                # Regular message with content
+                step["content"] = str(message.content)
+                collected_steps.append(step)
+
+        # Use invoke() with callback for intermediate steps
+        final_response = None
+        async for response in agent.invoke(
+            messages=prompt,
+            thread=thread,
+            on_intermediate_message=handle_intermediate_message if include_steps else None,
+        ):
+            final_response = response
+            thread = response.thread  # Update thread reference
 
         result = {
-            "response": str(response),
+            "response": str(final_response) if final_response else "",
             "conversation_id": conv_id,
             "model_used": target_model,
         }
 
-        # Include intermediate steps if requested
-        if include_steps and response.messages:
-            steps = []
-            for msg in response.messages:
-                step = {
-                    "role": str(msg.role) if hasattr(msg, 'role') else "unknown",
-                    "content": str(msg.content) if hasattr(msg, 'content') else str(msg),
-                }
-                # Add tool call info if present
-                if hasattr(msg, 'tool_calls') and msg.tool_calls:
-                    step["tool_calls"] = [
-                        {"name": tc.name if hasattr(tc, 'name') else str(tc),
-                         "arguments": tc.arguments if hasattr(tc, 'arguments') else {}}
-                        for tc in msg.tool_calls
-                    ]
-                steps.append(step)
-            result["steps"] = steps
+        if include_steps:
+            result["steps"] = collected_steps
 
         return result
 
@@ -453,6 +560,86 @@ class SKAgentManager:
             "response": resp.choices[0].message.content or "",
             "conversation_id": None,  # Vision requests don't continue threads for now
             "model_used": target_model,
+        }
+
+    async def analyze_image_region(
+        self,
+        image_source: str,
+        region: dict,
+        prompt: str = "Describe this region in detail",
+        model_id: str | None = None,
+    ) -> dict[str, Any]:
+        """Zoom/crop to a region and analyze it.
+
+        Args:
+            image_source: Local file path or URL to the image
+            region: Dict with x, y, width, height (pixels or "10%" percentages)
+            prompt: Question or instruction about the region
+            model_id: Optional model ID (must support vision)
+
+        Returns:
+            Dict with: response, model_used, region_analyzed
+        """
+        if not self._agents:
+            return {"error": "No agents initialized"}
+
+        # Determine which model to use (prefer vision-capable)
+        target_model = model_id or self.config.get("default_vision_model", "")
+        model_cfg = self._get_model_config(target_model)
+
+        if not model_cfg or not model_cfg.get("vision", False):
+            # Try to find a vision model
+            for m in self.config.get("models", []):
+                if m.get("vision", False):
+                    target_model = m.get("id", "")
+                    model_cfg = m
+                    log.info("Auto-selected vision model: %s", target_model)
+                    break
+            else:
+                return {"error": "No vision-capable model available"}
+
+        # Load image
+        try:
+            data, media_type = await resolve_attachment(image_source)
+        except FileNotFoundError as e:
+            return {"error": str(e)}
+
+        # Decode base64 back to bytes for cropping
+        raw_data = base64.b64decode(data)
+
+        # Crop to region
+        try:
+            cropped_data, cropped_type = _crop_image(raw_data, media_type, region)
+        except Exception as e:
+            return {"error": f"Failed to crop image: {e}"}
+
+        # Re-encode cropped image
+        cropped_b64 = base64.b64encode(cropped_data).decode("ascii")
+        data_url = f"data:{cropped_type};base64,{cropped_b64}"
+
+        # Get OpenAI client for this model
+        client = self._openai_clients.get(target_model)
+        if not client:
+            return {"error": f"No client for model: {target_model}"}
+
+        # Analyze cropped region
+        target_model_name = model_cfg.get("model_id", target_model)
+        resp = await client.chat.completions.create(
+            model=target_model_name,
+            messages=[{
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": prompt},
+                    {"type": "image_url", "image_url": {"url": data_url}},
+                ],
+            }],
+            max_tokens=1024,
+        )
+
+        return {
+            "response": resp.choices[0].message.content or "",
+            "model_used": target_model,
+            "region_analyzed": region,
         }
 
     def list_models(self) -> list[dict]:
@@ -566,7 +753,7 @@ async def ask(
         system_prompt=system_prompt if system_prompt else None,
         include_steps=include_steps,
     )
-    return json.dumps(result, ensure_ascii=False)
+    return json.dumps(result, ensure_ascii=False, indent=2)
 
 
 @mcp_server.tool()
@@ -597,7 +784,45 @@ async def analyze_image(
         model_id=model if model else None,
         conversation_id=conversation_id if conversation_id else None,
     )
-    return json.dumps(result, ensure_ascii=False)
+    return json.dumps(result, ensure_ascii=False, indent=2)
+
+
+@mcp_server.tool()
+async def zoom_image(
+    image_source: str,
+    region: str,
+    prompt: str = "Describe this region in detail",
+    model: str = "",
+) -> str:
+    """Zoom into a specific region of an image and analyze it.
+
+    Crops the image to the specified region and analyzes it with the vision model.
+    Useful for examining details in specific areas of an image.
+
+    Args:
+        image_source: Path to a local image file or an HTTP(S) URL.
+        region: JSON string with crop region. Example: '{"x": 100, "y": 200, "width": 300, "height": 400}'
+                Values can be pixels or percentages like '{"x": "10%", "y": "20%", "width": "50%", "height": "30%"}'
+        prompt: Question or instruction about the region.
+        model: Optional model ID (must support vision). Uses default vision model if not specified.
+
+    Returns:
+        JSON string with: response, model_used, region_analyzed
+    """
+    # Parse region JSON
+    try:
+        region_dict = json.loads(region)
+    except json.JSONDecodeError:
+        return json.dumps({"error": f"Invalid region JSON: {region}"}, ensure_ascii=False, indent=2)
+
+    manager = await _get_manager()
+    result = await manager.analyze_image_region(
+        image_source=image_source,
+        region=region_dict,
+        prompt=prompt,
+        model_id=model if model else None,
+    )
+    return json.dumps(result, ensure_ascii=False, indent=2)
 
 
 @mcp_server.tool()
