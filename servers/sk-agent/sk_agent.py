@@ -54,7 +54,6 @@ from semantic_kernel import Kernel
 from semantic_kernel.agents import ChatCompletionAgent, ChatHistoryAgentThread
 from semantic_kernel.connectors.ai.open_ai import OpenAIChatCompletion
 from semantic_kernel.connectors.mcp import MCPStdioPlugin
-from semantic_kernel.functions.kernel_arguments import KernelArguments
 
 # ---------------------------------------------------------------------------
 # Logging
@@ -175,22 +174,30 @@ async def resolve_attachment(source: str) -> tuple[str, str]:
 # ---------------------------------------------------------------------------
 
 class SKAgentManager:
-    """Manages SK kernel, MCP plugins, and per-conversation threads."""
+    """Manages per-model kernels, MCP plugins, and per-conversation threads."""
 
     def __init__(self, config: dict):
         self.config = config
         self._exit_stack = AsyncExitStack()
-        self._kernel: Kernel | None = None
-        self._plugins: list = []
-        self._threads: dict[str, ChatHistoryAgentThread] = {}
-        self._services: dict[str, OpenAIChatCompletion] = {}
+        # Per-model resources
+        self._kernels: dict[str, Kernel] = {}
+        self._agents: dict[str, ChatCompletionAgent] = {}
         self._openai_clients: dict[str, AsyncOpenAI] = {}
+        self._model_plugins: dict[str, list] = {}  # Per-model plugins
+        # Shared resources
+        self._shared_plugins: list = []
+        self._threads: dict[str, ChatHistoryAgentThread] = {}
 
     async def start(self):
-        """Initialize the kernel, register all model services, load plugins."""
-        self._kernel = Kernel()
+        """Initialize per-model kernels, agents, and plugins."""
+        max_depth = self.config.get("max_recursion_depth", DEFAULT_MAX_RECURSION_DEPTH)
+        if SK_AGENT_DEPTH >= max_depth:
+            log.info("Skipping MCP plugins (depth=%d >= max_depth=%d)", SK_AGENT_DEPTH, max_depth)
+        else:
+            # Load shared MCP plugins
+            await self._load_shared_plugins()
 
-        # Register all model services
+        # Create a kernel + agent per model
         for model_cfg in self.config.get("models", []):
             model_id = model_cfg.get("id", "default")
             api_key = os.environ.get(
@@ -200,30 +207,50 @@ class SKAgentManager:
             base_url = model_cfg.get("base_url", "http://localhost:5001/v1")
             target_model = model_cfg.get("model_id", "default")
 
+            # Create OpenAI client for this model
             client = AsyncOpenAI(api_key=api_key, base_url=base_url)
             self._openai_clients[model_id] = client
 
+            # Create dedicated kernel for this model
+            kernel = Kernel()
             service = OpenAIChatCompletion(
                 ai_model_id=target_model,
                 async_client=client,
-                service_id=model_id,  # Use model_id as service_id
+                service_id=model_id,
             )
-            self._kernel.add_service(service)
-            self._services[model_id] = service
-            log.info("Registered model service: %s -> %s at %s", model_id, target_model, base_url)
+            kernel.add_service(service)
+            self._kernels[model_id] = kernel
 
-        # Load MCP plugins (if not at max recursion depth)
-        max_depth = self.config.get("max_recursion_depth", DEFAULT_MAX_RECURSION_DEPTH)
-        if SK_AGENT_DEPTH >= max_depth:
-            log.info("Skipping MCP plugins (depth=%d >= max_depth=%d)", SK_AGENT_DEPTH, max_depth)
-        else:
-            await self._load_plugins()
+            # Get model-specific system prompt or use global
+            system_prompt = model_cfg.get("system_prompt") or self.config.get("system_prompt", "")
 
-        log.info("SK Agent Manager ready with %d services, %d plugins",
-                 len(self._services), len(self._plugins))
+            # Combine shared + per-model plugins
+            all_plugins = list(self._shared_plugins)
 
-    async def _load_plugins(self):
-        """Load all MCP plugins from config."""
+            # Load per-model MCPs if specified
+            if SK_AGENT_DEPTH < max_depth and model_cfg.get("mcps"):
+                model_plugins = await self._load_model_plugins(model_cfg, model_id)
+                all_plugins.extend(model_plugins)
+                self._model_plugins[model_id] = model_plugins
+
+            # Create agent for this model with all plugins
+            # Sanitize model_id for agent name (only alphanumeric, underscore, hyphen)
+            safe_name = model_id.replace(".", "-").replace(" ", "-")
+            agent = ChatCompletionAgent(
+                kernel=kernel,
+                name=f"sk-agent-{safe_name}",
+                instructions=system_prompt,
+                plugins=all_plugins,
+            )
+            self._agents[model_id] = agent
+
+            log.info("Created agent for model: %s -> %s at %s", model_id, target_model, base_url)
+
+        log.info("SK Agent Manager ready: %d agents, %d shared plugins, %d model-specific plugins",
+                 len(self._agents), len(self._shared_plugins), sum(len(p) for p in self._model_plugins.values()))
+
+    async def _load_shared_plugins(self):
+        """Load all MCP plugins from config.mcps (shared by all models)."""
         for mcp_cfg in self.config.get("mcps", []):
             try:
                 env = {**os.environ, **(mcp_cfg.get("env") or {})}
@@ -244,10 +271,42 @@ class SKAgentManager:
                     env=env,
                 )
                 connected = await self._exit_stack.enter_async_context(plugin)
-                self._plugins.append(connected)
-                log.info("MCP plugin loaded: %s", mcp_cfg["name"])
+                self._shared_plugins.append(connected)
+                log.info("Shared MCP plugin loaded: %s", mcp_cfg["name"])
             except Exception:
-                log.exception("Failed to load MCP plugin: %s", mcp_cfg.get("name"))
+                log.exception("Failed to load shared MCP plugin: %s", mcp_cfg.get("name"))
+
+    async def _load_model_plugins(self, model_cfg: dict, model_id: str) -> list:
+        """Load MCP plugins specific to a model from model_cfg.mcps."""
+        plugins = []
+        for mcp_cfg in model_cfg.get("mcps", []):
+            try:
+                env = {**os.environ, **(mcp_cfg.get("env") or {})}
+
+                # Detect self-inclusion
+                mcp_args = " ".join(mcp_cfg.get("args", []))
+                is_self = "sk_agent.py" in mcp_args or "sk_agent" in mcp_cfg.get("name", "").lower()
+
+                if is_self:
+                    env["SK_AGENT_DEPTH"] = str(SK_AGENT_DEPTH + 1)
+                    log.info("Self-inclusion: spawning child sk-agent with depth=%d", SK_AGENT_DEPTH + 1)
+
+                # Prefix name with model_id to avoid conflicts
+                plugin_name = f"{model_id}_{mcp_cfg['name']}"
+
+                plugin = MCPStdioPlugin(
+                    name=plugin_name,
+                    description=mcp_cfg.get("description"),
+                    command=mcp_cfg.get("command", ""),
+                    args=mcp_cfg.get("args"),
+                    env=env,
+                )
+                connected = await self._exit_stack.enter_async_context(plugin)
+                plugins.append(connected)
+                log.info("Model-specific MCP plugin loaded: %s for model %s", mcp_cfg["name"], model_id)
+            except Exception:
+                log.exception("Failed to load model MCP plugin: %s for model %s", mcp_cfg.get("name"), model_id)
+        return plugins
 
     def _get_model_config(self, model_id: str) -> dict | None:
         """Get configuration for a specific model."""
@@ -272,19 +331,24 @@ class SKAgentManager:
         model_id: str | None = None,
         conversation_id: str | None = None,
         system_prompt: str | None = None,
+        include_steps: bool = False,
     ) -> dict[str, Any]:
         """Send a text prompt with auto tool calling.
 
-        Returns dict with: response, conversation_id, model_used
-        """
-        if not self._kernel:
-            return {"error": "Kernel not initialized"}
+        Args:
+            prompt: The user question or instruction.
+            model_id: Optional model ID to use.
+            conversation_id: Optional conversation ID to continue.
+            system_prompt: Optional override for the system prompt.
+            include_steps: If True, include intermediate steps (tool calls) in response.
 
+        Returns dict with: response, conversation_id, model_used, and optionally steps
+        """
         # Determine which model to use
         target_model = model_id or self.config.get("default_ask_model", "")
-        if target_model not in self._services:
+        if target_model not in self._agents:
             # Fallback to first available
-            target_model = next(iter(self._services), "")
+            target_model = next(iter(self._agents), "")
             if not target_model:
                 return {"error": "No models available"}
             log.warning("Requested model not found, using: %s", target_model)
@@ -292,25 +356,41 @@ class SKAgentManager:
         # Get or create thread
         conv_id, thread = self._get_or_create_thread(conversation_id)
 
-        # Create agent with specific service
-        effective_system_prompt = system_prompt or self.config.get("system_prompt", "")
-        agent = ChatCompletionAgent(
-            kernel=self._kernel,
-            name="sk-agent",
-            instructions=effective_system_prompt,
-            plugins=self._plugins,
-        )
+        # Get pre-created agent for this model
+        agent = self._agents[target_model]
 
-        # Invoke with service selection via kernel arguments
-        arguments = KernelArguments(service_id=target_model)
+        # Override system prompt if provided
+        if system_prompt:
+            agent.instructions = system_prompt
 
-        response = await agent.get_response(messages=prompt, thread=thread, arguments=arguments)
+        # Invoke agent
+        response = await agent.get_response(messages=prompt, thread=thread)
 
-        return {
+        result = {
             "response": str(response),
             "conversation_id": conv_id,
             "model_used": target_model,
         }
+
+        # Include intermediate steps if requested
+        if include_steps and response.messages:
+            steps = []
+            for msg in response.messages:
+                step = {
+                    "role": str(msg.role) if hasattr(msg, 'role') else "unknown",
+                    "content": str(msg.content) if hasattr(msg, 'content') else str(msg),
+                }
+                # Add tool call info if present
+                if hasattr(msg, 'tool_calls') and msg.tool_calls:
+                    step["tool_calls"] = [
+                        {"name": tc.name if hasattr(tc, 'name') else str(tc),
+                         "arguments": tc.arguments if hasattr(tc, 'arguments') else {}}
+                        for tc in msg.tool_calls
+                    ]
+                steps.append(step)
+            result["steps"] = steps
+
+        return result
 
     async def ask_with_image(
         self,
@@ -323,8 +403,8 @@ class SKAgentManager:
 
         Returns dict with: response, conversation_id, model_used
         """
-        if not self._kernel:
-            return {"error": "Kernel not initialized"}
+        if not self._agents:
+            return {"error": "No agents initialized"}
 
         # Determine which model to use (prefer vision-capable)
         target_model = model_id or self.config.get("default_vision_model", "")
@@ -394,11 +474,13 @@ class SKAgentManager:
 
     def list_loaded_tools(self) -> str:
         """Return description of all loaded MCP plugins and their tools."""
-        if not self._kernel:
-            return "Kernel not initialized."
+        if not self._kernels:
+            return "No kernels initialized."
 
+        # Use first kernel's plugins (shared by all models)
+        first_kernel = next(iter(self._kernels.values()))
         lines = []
-        for plugin_name, plugin in self._kernel.plugins.items():
+        for plugin_name, plugin in first_kernel.plugins.items():
             lines.append(f"## {plugin_name}")
             if hasattr(plugin, "description") and plugin.description:
                 lines.append(f"  {plugin.description}")
@@ -421,9 +503,10 @@ class SKAgentManager:
     async def stop(self):
         """Clean up all resources."""
         await self._exit_stack.aclose()
-        self._plugins.clear()
+        self._shared_plugins.clear()
         self._threads.clear()
-        self._kernel = None
+        self._kernels.clear()
+        self._agents.clear()
         log.info("SK Agent Manager stopped")
 
 
@@ -458,6 +541,7 @@ async def ask(
     model: str = "",
     conversation_id: str = "",
     system_prompt: str = "",
+    include_steps: bool = False,
 ) -> str:
     """Send a text prompt to the local LLM.
 
@@ -469,9 +553,10 @@ async def ask(
         model: Optional model ID (e.g., "glm-4.7-flash"). Uses default if not specified.
         conversation_id: Optional conversation ID to continue a previous conversation.
         system_prompt: Optional override for the system prompt.
+        include_steps: If True, include intermediate reasoning/tool call steps.
 
     Returns:
-        JSON string with: response, conversation_id, model_used
+        JSON string with: response, conversation_id, model_used, and optionally steps
     """
     manager = await _get_manager()
     result = await manager.ask(
@@ -479,6 +564,7 @@ async def ask(
         model_id=model if model else None,
         conversation_id=conversation_id if conversation_id else None,
         system_prompt=system_prompt if system_prompt else None,
+        include_steps=include_steps,
     )
     return json.dumps(result, ensure_ascii=False)
 
