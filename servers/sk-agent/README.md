@@ -25,12 +25,26 @@ Claude/Roo  --stdio-->  FastMCP server (sk_agent.py)
 
 Each model gets its own kernel, agent, and optional model-specific MCP plugins.
 
-## Configured Models (Myia Infrastructure)
+## Configured Models
 
-| Model ID                  | Endpoint                                           | Vision | Default For | Description              |
-|---------------------------|----------------------------------------------------|--------|-------------|--------------------------|
-| `qwen3-vl-8b-thinking`    | `https://api.mini.text-generation-webui.myia.io/v1`  | Yes    | Vision      | Qwen3-VL 8B Thinking     |
-| `glm-4.7-flash`           | `https://api.medium.text-generation-webui.myia.io/v1`| No     | Ask         | GLM-4.7-Flash (fast text)|
+### z.ai API (enabled by default)
+
+| Model ID      | Endpoint                               | Vision | Default For | Description           |
+|---------------|----------------------------------------|--------|-------------|-----------------------|
+| `glm-4.6v`    | `https://api.z.ai/api/coding/paas/v4`  | Yes    | Vision      | GLM-4.6V (vision)     |
+| `glm-5`       | `https://api.z.ai/api/coding/paas/v4`  | No     | Ask         | GLM-5 (fast text)     |
+| `glm-4-plus`  | `https://api.z.ai/api/coding/paas/v4`  | No     | -           | GLM-4-Plus (advanced) |
+
+### Myia Infrastructure (disabled by default)
+
+| Model ID               | Endpoint                                           | Vision | Description                    |
+|------------------------|----------------------------------------------------|--------|--------------------------------|
+| `qwen3-vl-8b-thinking` | `https://api.mini.text-generation-webui.myia.io/v1`  | Yes    | Qwen3-VL 8B Thinking           |
+| `glm-4.7-flash`        | `https://api.medium.text-generation-webui.myia.io/v1`| No     | GLM-4.7-Flash                  |
+
+### Model Enable/Disable
+
+Each model has an `enabled` field in the configuration. Set to `true` to activate, `false` to deactivate.
 
 ## Configuration
 
@@ -45,6 +59,7 @@ Copy `sk_agent_config.template.json` to `sk_agent_config.json` and add your API 
 | `max_recursion_depth` | int | Max self-inclusion depth (default: 2) |
 | `models` | array | List of model configurations |
 | `models[].id` | string | Unique identifier for the model |
+| `models[].enabled` | bool | Whether model is active (default: true) |
 | `models[].base_url` | string | OpenAI-compatible API endpoint |
 | `models[].api_key` | string | API key (or use `api_key_env` for env var) |
 | `models[].model_id` | string | Actual model name for API calls |
@@ -58,26 +73,39 @@ Copy `sk_agent_config.template.json` to `sk_agent_config.json` and add your API 
 
 ```json
 {
-  "default_ask_model": "glm-4.7-flash",
-  "default_vision_model": "qwen3-vl-8b-thinking",
+  "default_ask_model": "glm-5",
+  "default_vision_model": "glm-4.6v",
   "max_recursion_depth": 2,
   "models": [
     {
+      "id": "glm-4.6v",
+      "enabled": true,
+      "base_url": "https://api.z.ai/api/coding/paas/v4",
+      "api_key_env": "ZAI_API_KEY",
+      "api_key": "YOUR_ZAI_API_KEY_HERE",
+      "model_id": "glm-4.6v",
+      "vision": true,
+      "description": "Vision model for image analysis (GLM-4.6V via z.ai)",
+      "system_prompt": "You are a vision analysis specialist."
+    },
+    {
+      "id": "glm-5",
+      "enabled": true,
+      "base_url": "https://api.z.ai/api/coding/paas/v4",
+      "api_key_env": "ZAI_API_KEY",
+      "api_key": "YOUR_ZAI_API_KEY_HERE",
+      "model_id": "glm-5",
+      "vision": false,
+      "description": "Fast text model for quick responses (GLM-5 via z.ai)"
+    },
+    {
       "id": "qwen3-vl-8b-thinking",
+      "enabled": false,
       "base_url": "https://api.mini.text-generation-webui.myia.io/v1",
       "api_key": "YOUR_MINI_API_KEY_HERE",
       "model_id": "qwen3-vl-8b-thinking",
       "vision": true,
-      "description": "Vision model for image analysis (Qwen3-VL 8B Thinking)",
-      "system_prompt": "You are a vision analysis specialist."
-    },
-    {
-      "id": "glm-4.7-flash",
-      "base_url": "https://api.medium.text-generation-webui.myia.io/v1",
-      "api_key": "YOUR_MEDIUM_API_KEY_HERE",
-      "model_id": "glm-4.7-flash",
-      "vision": false,
-      "description": "Fast text model for quick responses (GLM-4.7-Flash)"
+      "description": "Vision model (Qwen3-VL 8B - Myia)"
     }
   ],
   "mcps": [
@@ -129,30 +157,33 @@ Send a text prompt to the configured model.
 }
 ```
 
-### `analyze_image(image_source, prompt="", model="", conversation_id="")`
+### `analyze_image(image_source, prompt="", model="", conversation_id="", zoom_context="")`
 
-Analyze an image using a vision-capable model.
+Analyze an image using a vision-capable model with Semantic Kernel.
 
 **Parameters:**
 
 - `image_source`: Local file path or URL to the image
 - `prompt`: Question or instruction about the image
 - `model`: Optional model ID (must support vision)
-- `conversation_id`: Optional (currently not used for vision)
+- `conversation_id`: Optional conversation ID to continue a session
+- `zoom_context`: Optional JSON string with zoom context for recursive calls
 
 **Returns:**
 
 ```json
 {
   "response": "Image description or analysis",
-  "conversation_id": null,
-  "model_used": "qwen3-vl-8b-thinking"
+  "conversation_id": "conv-abc123",
+  "model_used": "glm-4v-flash",
+  "zoom_context": {"depth": 1, "stack": [...], "original_source": "..."}
 }
 ```
 
-### `zoom_image(image_source, region, prompt="", model="")`
+### `zoom_image(image_source, region, prompt="", model="", conversation_id="", zoom_context="")`
 
-Zoom into a specific region of an image and analyze it.
+Zoom into a specific region of an image and analyze it using Semantic Kernel.
+Supports progressive zoom by passing the previous zoom_context.
 
 **Parameters:**
 
@@ -160,6 +191,8 @@ Zoom into a specific region of an image and analyze it.
 - `region`: JSON string with crop region (see below)
 - `prompt`: Question or instruction about the region
 - `model`: Optional model ID (must support vision)
+- `conversation_id`: Optional conversation ID to continue a session
+- `zoom_context`: Optional JSON string with previous zoom context for progressive zoom
 
 **Region format (JSON string):**
 
@@ -171,21 +204,36 @@ Zoom into a specific region of an image and analyze it.
 {"x": "10%", "y": "20%", "width": "50%", "height": "30%"}
 ```
 
+**Zoom context format (for progressive zoom):**
+
+```json
+{
+  "depth": 1,
+  "stack": [{"x": 100, "y": 200, "w": 300, "h": 400}],
+  "original_source": "path/to/original/image.png"
+}
+```
+
 **Returns:**
 
 ```json
 {
   "response": "Region description or analysis",
-  "model_used": "qwen3-vl-8b-thinking",
-  "region_analyzed": {"x": 100, "y": 200, "width": 300, "height": 400}
+  "conversation_id": "conv-abc123",
+  "model_used": "glm-4v-flash",
+  "region_analyzed": {"x": 100, "y": 200, "width": 300, "height": 400},
+  "zoom_context": {"depth": 2, "stack": [...], "original_source": "..."}
 }
 ```
 
 **Usage example:**
 
 ```text
-// Zoom on bottom-right quadrant
-zoom_image("screenshot.png", '{"x": "50%", "y": "50%", "width": "50%", "height": "50%"}', "What text is visible here?")
+// First zoom on bottom-right quadrant
+result1 = zoom_image("screenshot.png", '{"x": "50%", "y": "50%", "width": "50%", "height": "50%"}', "What is here?")
+
+// Progressive zoom - pass zoom_context from previous call
+result2 = zoom_image("screenshot.png", '{"x": "25%", "y": "25%", "width": "50%", "height": "50%"}', "Read this text", "", "", result1.zoom_context)
 ```
 
 ### `list_models()`

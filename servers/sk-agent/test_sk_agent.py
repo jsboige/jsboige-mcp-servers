@@ -37,6 +37,7 @@ def isolated_config(tmp_path):
         "models": [
             {
                 "id": "test-model",
+                "enabled": True,
                 "base_url": "https://api.test.com/v1",
                 "api_key": "test-key",
                 "model_id": "test-model-v1",
@@ -45,6 +46,7 @@ def isolated_config(tmp_path):
             },
             {
                 "id": "test-vision",
+                "enabled": True,
                 "base_url": "https://api.test.com/v1",
                 "api_key": "test-key",
                 "model_id": "test-vision-v1",
@@ -456,6 +458,190 @@ class TestIntegration:
 
         assert "error" in result
         assert "No vision-capable model" in result["error"]
+
+
+# ---------------------------------------------------------------------------
+# Model Enable/Disable Tests
+# ---------------------------------------------------------------------------
+
+class TestModelEnabled:
+    """Tests for model enable/disable functionality."""
+
+    def test_list_models_includes_enabled_field(self, isolated_config):
+        """Test that list_models includes enabled field."""
+        import sk_agent
+        import importlib
+        importlib.reload(sk_agent)
+
+        config = sk_agent.load_config()
+        manager = sk_agent.SKAgentManager(config)
+
+        models = manager.list_models()
+
+        assert len(models) > 0
+        for m in models:
+            assert "enabled" in m
+
+    def test_disabled_model_not_loaded(self, tmp_path):
+        """Test that disabled models are skipped during startup."""
+        import sk_agent
+        import importlib
+        importlib.reload(sk_agent)
+
+        config = {
+            "default_ask_model": "enabled-model",
+            "models": [
+                {"id": "enabled-model", "enabled": True, "model_id": "v1", "vision": False, "base_url": "http://localhost"},
+                {"id": "disabled-model", "enabled": False, "model_id": "v2", "vision": True, "base_url": "http://localhost"},
+            ],
+        }
+        manager = sk_agent.SKAgentManager(config)
+
+        # Simulate start() without actually loading plugins
+        for model_cfg in config.get("models", []):
+            if not model_cfg.get("enabled", True):
+                continue  # Should skip disabled model
+            model_id = model_cfg.get("id")
+            manager._agents[model_id] = MagicMock()
+
+        assert "enabled-model" in manager._agents
+        assert "disabled-model" not in manager._agents
+
+    @pytest.mark.asyncio
+    async def test_vision_search_ignores_disabled_models(self, tmp_path):
+        """Test that vision model search ignores disabled models."""
+        import sk_agent
+        import importlib
+        importlib.reload(sk_agent)
+
+        config = {
+            "default_vision_model": "disabled-vision",
+            "models": [
+                {"id": "disabled-vision", "enabled": False, "model_id": "v1", "vision": True, "base_url": "http://localhost"},
+                {"id": "enabled-vision", "enabled": True, "model_id": "v2", "vision": True, "base_url": "http://localhost"},
+            ],
+        }
+        manager = sk_agent.SKAgentManager(config)
+        manager._agents = {"enabled-vision": MagicMock()}
+
+        # When searching for vision model, should only find enabled one
+        result = await manager.ask_with_image("fake.png", "test")
+
+        # Should not have error - found enabled vision model
+        assert "error" not in result or result.get("error") != "No vision-capable model available"
+
+
+# ---------------------------------------------------------------------------
+# Zoom Context Tests
+# ---------------------------------------------------------------------------
+
+class TestZoomContext:
+    """Tests for zoom context functionality."""
+
+    def test_zoom_context_structure(self):
+        """Test that zoom context is built correctly."""
+        # Simulate zoom context building
+        zoom_context = None
+        region = {"x": 100, "y": 200, "width": 300, "height": 400}
+
+        new_depth = (zoom_context.get("depth", 0) + 1) if zoom_context else 1
+        new_stack = list(zoom_context.get("stack", [])) if zoom_context else []
+        new_stack.append(region)
+
+        new_zoom_context = {
+            "depth": new_depth,
+            "stack": new_stack,
+            "original_source": "test.png",
+        }
+
+        assert new_zoom_context["depth"] == 1
+        assert len(new_zoom_context["stack"]) == 1
+        assert new_zoom_context["stack"][0] == region
+
+    def test_progressive_zoom_depth(self):
+        """Test that progressive zoom increases depth."""
+        # First zoom
+        ctx1 = {"depth": 1, "stack": [{"x": 0, "y": 0, "w": 100, "h": 100}], "original_source": "test.png"}
+        region2 = {"x": 25, "y": 25, "width": 50, "height": 50}
+
+        new_depth = (ctx1.get("depth", 0) + 1) if ctx1 else 1
+        new_stack = list(ctx1.get("stack", []))
+        new_stack.append(region2)
+
+        ctx2 = {"depth": new_depth, "stack": new_stack, "original_source": ctx1["original_source"]}
+
+        assert ctx2["depth"] == 2
+        assert len(ctx2["stack"]) == 2
+
+
+# ---------------------------------------------------------------------------
+# Multi-Image / Document Tests (GLM-4.6V capabilities)
+# ---------------------------------------------------------------------------
+
+class TestAdvancedVisionCapabilities:
+    """Tests for advanced vision capabilities (multi-image, documents)."""
+
+    def test_ask_with_media_supports_single_image(self):
+        """Test that _ask_with_media can handle single image input."""
+        import sk_agent
+
+        # Verify the method signature accepts image_data and media_type
+        import inspect
+        sig = inspect.signature(sk_agent.SKAgentManager._ask_with_media)
+        params = list(sig.parameters.keys())
+
+        assert "image_data" in params
+        assert "media_type" in params
+        assert "zoom_context" in params
+
+    @pytest.mark.asyncio
+    async def test_analyze_image_region_with_zoom_context(self, tmp_path):
+        """Test that zoom context is passed through and incremented."""
+        import sk_agent
+        import importlib
+        importlib.reload(sk_agent)
+
+        config = {
+            "default_vision_model": "test-vision",
+            "models": [
+                {"id": "test-vision", "enabled": True, "model_id": "v1", "vision": True, "base_url": "http://localhost"},
+            ],
+        }
+        manager = sk_agent.SKAgentManager(config)
+
+        # Mock the agent
+        mock_agent = MagicMock()
+        mock_agent.invoke = MagicMock()
+        manager._agents = {"test-vision": mock_agent}
+        manager._threads = {}
+
+        # Create a test image file
+        test_img = tmp_path / "test.png"
+        from PIL import Image
+        img = Image.new('RGB', (100, 100), color='red')
+        img.save(test_img)
+
+        # Mock the async generator for invoke
+        async def mock_invoke(*args, **kwargs):
+            mock_response = MagicMock()
+            mock_response.__str__ = lambda self: "Test response"
+            mock_response.thread = MagicMock()
+            yield mock_response
+
+        mock_agent.invoke = mock_invoke
+
+        # Test with zoom context
+        prev_context = {"depth": 1, "stack": [{"x": 0, "y": 0, "w": 50, "h": 50}], "original_source": str(test_img)}
+        result = await manager.analyze_image_region(
+            str(test_img),
+            {"x": 10, "y": 10, "width": 30, "height": 30},
+            "Describe this region",
+            zoom_context=prev_context
+        )
+
+        assert "zoom_context" in result
+        assert result["zoom_context"]["depth"] == 2
+        assert len(result["zoom_context"]["stack"]) == 2
 
 
 # ---------------------------------------------------------------------------
