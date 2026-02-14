@@ -13,6 +13,7 @@ import { GenericError, GenericErrorCode } from '../types/errors.js';
 import { RooStorageDetector } from '../utils/roo-storage-detector.js';
 import * as path from 'path';
 import { existsSync } from 'fs';
+import { CACHE_CONFIG } from '../config/server-config.js';
 
 /**
  * Enregistre le handler pour ListTools
@@ -143,7 +144,7 @@ export function registerCallToolHandler(
                     args as any,
                     state.conversationCache,
                     async () => { await ensureSkeletonCacheIsFresh(); },
-                    undefined,  // contextWorkspace
+                    CACHE_CONFIG.DEFAULT_WORKSPACE,  // contextWorkspace: utilise process.cwd() ou WORKSPACE_PATH
                     async (id: string) => {
                         // 1. Try RAM cache first
                         const cached = state.conversationCache.get(id);
@@ -189,7 +190,7 @@ export function registerCallToolHandler(
                     args as any,
                     state.conversationCache,
                     async () => { await ensureSkeletonCacheIsFresh(); },
-                    undefined  // contextWorkspace
+                    CACHE_CONFIG.DEFAULT_WORKSPACE  // contextWorkspace: utilise process.cwd() ou WORKSPACE_PATH
                 );
                 break;
             case 'task_export':
