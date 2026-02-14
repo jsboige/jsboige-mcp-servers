@@ -645,6 +645,310 @@ class TestAdvancedVisionCapabilities:
 
 
 # ---------------------------------------------------------------------------
+# Video Analysis Tests
+# ---------------------------------------------------------------------------
+
+class TestVideoAnalysis:
+    """Tests for video analysis functionality."""
+
+    def test_extract_video_frames_function_exists(self):
+        """Test that video frame extraction function exists and has correct signature."""
+        import sk_agent
+        import inspect
+
+        assert hasattr(sk_agent, "_extract_video_frames")
+        sig = inspect.signature(sk_agent._extract_video_frames)
+        params = list(sig.parameters.keys())
+
+        assert "video_path" in params
+        assert "num_frames" in params
+
+    def test_extract_video_frames_mocked(self, tmp_path):
+        """Test video frame extraction with mocked ffmpeg."""
+        import sk_agent
+        import importlib
+        importlib.reload(sk_agent)
+
+        # Create a fake video file (just needs to exist for path check)
+        fake_video = tmp_path / "test.mp4"
+        fake_video.write_bytes(b"fake video content")
+
+        # Mock subprocess to simulate ffmpeg behavior
+        frames = []
+        original_run = sk_agent.subprocess.run
+
+        def mock_run(cmd, *args, **kwargs):
+            # Detect if it's ffprobe (get duration) or ffmpeg (extract frame)
+            if "ffprobe" in cmd:
+                # Return mock duration
+                result = MagicMock()
+                result.stdout = "10.0\n"  # 10 seconds
+                result.stderr = ""
+                return result
+            elif "ffmpeg" in cmd:
+                # Simulate frame extraction by creating output file
+                output_path = cmd[-1]
+                from PIL import Image
+                import io
+                img = Image.new('RGB', (100, 100), color='blue')
+                buf = io.BytesIO()
+                img.save(buf, format='JPEG')
+                Path(output_path).write_bytes(buf.getvalue())
+                result = MagicMock()
+                result.returncode = 0
+                return result
+            return original_run(cmd, *args, **kwargs)
+
+        with patch.object(sk_agent.subprocess, 'run', side_effect=mock_run):
+            result = sk_agent._extract_video_frames(str(fake_video), num_frames=3)
+
+        # Should have extracted frames
+        assert len(result) == 3
+        for frame_data, media_type in result:
+            assert len(frame_data) > 0
+            assert media_type == "image/jpeg"
+
+    @pytest.mark.asyncio
+    async def test_analyze_video_no_vision_model(self, tmp_path):
+        """Test video analysis when no vision model is configured."""
+        import sk_agent
+        import importlib
+        importlib.reload(sk_agent)
+
+        config = {
+            "default_vision_model": "text-only",
+            "models": [
+                {"id": "text-only", "model_id": "v1", "vision": False, "base_url": "http://localhost"},
+            ],
+        }
+        manager = sk_agent.SKAgentManager(config)
+        manager._agents = {"text-only": MagicMock()}
+
+        result = await manager.analyze_video(str(tmp_path / "fake.mp4"))
+
+        assert "error" in result
+        assert "No vision-capable model" in result["error"]
+
+    @pytest.mark.asyncio
+    async def test_analyze_video_success(self, tmp_path):
+        """Test successful video analysis."""
+        import sk_agent
+        import importlib
+        importlib.reload(sk_agent)
+
+        config = {
+            "default_vision_model": "test-vision",
+            "models": [
+                {"id": "test-vision", "enabled": True, "model_id": "v1", "vision": True, "base_url": "http://localhost"},
+            ],
+        }
+        manager = sk_agent.SKAgentManager(config)
+
+        # Mock the agent
+        mock_agent = MagicMock()
+        manager._agents = {"test-vision": mock_agent}
+        manager._threads = {}
+
+        # Create a test video file (fake)
+        test_video = tmp_path / "test.mp4"
+        test_video.write_bytes(b"fake video")
+
+        # Mock _extract_video_frames to return test frames
+        def mock_extract_frames(path, num_frames=8):
+            from PIL import Image
+            import io
+            img = Image.new('RGB', (100, 100), color='green')
+            buf = io.BytesIO()
+            img.save(buf, format='JPEG')
+            return [(buf.getvalue(), "image/jpeg") for _ in range(num_frames)]
+
+        with patch.object(sk_agent, '_extract_video_frames', side_effect=mock_extract_frames):
+            # Mock the async generator for invoke
+            async def mock_invoke(*args, **kwargs):
+                mock_response = MagicMock()
+                mock_response.__str__ = lambda self: "Video analysis result"
+                mock_response.thread = MagicMock()
+                yield mock_response
+
+            mock_agent.invoke = mock_invoke
+
+            result = await manager.analyze_video(str(test_video), num_frames=4)
+
+        assert "response" in result
+        assert result["frames_analyzed"] == 4
+        assert "conversation_id" in result
+        assert result["model_used"] == "test-vision"
+
+
+# ---------------------------------------------------------------------------
+# Document Analysis Tests
+# ---------------------------------------------------------------------------
+
+class TestDocumentAnalysis:
+    """Tests for document (PDF) analysis functionality."""
+
+    def test_pdf_to_images_function_exists(self):
+        """Test that PDF conversion function exists and has correct signature."""
+        import sk_agent
+        import inspect
+
+        assert hasattr(sk_agent, "_pdf_to_images")
+        sig = inspect.signature(sk_agent._pdf_to_images)
+        params = list(sig.parameters.keys())
+
+        assert "pdf_path" in params
+        assert "max_pages" in params
+
+    def test_pdf_to_images_mocked(self, tmp_path):
+        """Test PDF to image conversion with mocked pdf2image."""
+        import sk_agent
+        import importlib
+        importlib.reload(sk_agent)
+
+        # Create a fake PDF file
+        fake_pdf = tmp_path / "test.pdf"
+        fake_pdf.write_bytes(b"%PDF-1.4 fake pdf content")
+
+        # Mock pdf2image
+        from PIL import Image
+        mock_pages = [Image.new('RGB', (200, 200), color='white') for _ in range(3)]
+
+        with patch.dict('sys.modules', {'pdf2image': MagicMock()}):
+            import sys
+            mock_pdf2image = sys.modules['pdf2image']
+            mock_pdf2image.convert_from_path = MagicMock(return_value=mock_pages)
+
+            # Force reimport to use mocked module
+            result = sk_agent._pdf_to_images(str(fake_pdf), max_pages=3)
+
+        # Should have converted pages
+        assert len(result) == 3
+        for page_data, media_type in result:
+            assert len(page_data) > 0
+            assert media_type == "image/jpeg"
+
+    @pytest.mark.asyncio
+    async def test_analyze_document_no_vision_model(self, tmp_path):
+        """Test document analysis when no vision model is configured."""
+        import sk_agent
+        import importlib
+        importlib.reload(sk_agent)
+
+        config = {
+            "default_vision_model": "text-only",
+            "models": [
+                {"id": "text-only", "model_id": "v1", "vision": False, "base_url": "http://localhost"},
+            ],
+        }
+        manager = sk_agent.SKAgentManager(config)
+        manager._agents = {"text-only": MagicMock()}
+
+        result = await manager.analyze_document(str(tmp_path / "fake.pdf"))
+
+        assert "error" in result
+        assert "No vision-capable model" in result["error"]
+
+    @pytest.mark.asyncio
+    async def test_analyze_document_success(self, tmp_path):
+        """Test successful document analysis."""
+        import sk_agent
+        import importlib
+        importlib.reload(sk_agent)
+
+        config = {
+            "default_vision_model": "test-vision",
+            "models": [
+                {"id": "test-vision", "enabled": True, "model_id": "v1", "vision": True, "base_url": "http://localhost"},
+            ],
+        }
+        manager = sk_agent.SKAgentManager(config)
+
+        # Mock the agent
+        mock_agent = MagicMock()
+        manager._agents = {"test-vision": mock_agent}
+        manager._threads = {}
+
+        # Create a test PDF file (fake)
+        test_pdf = tmp_path / "test.pdf"
+        test_pdf.write_bytes(b"%PDF-1.4 fake pdf")
+
+        # Mock _pdf_to_images to return test pages
+        def mock_pdf_to_images(path, max_pages=10):
+            from PIL import Image
+            import io
+            img = Image.new('RGB', (200, 300), color='white')
+            buf = io.BytesIO()
+            img.save(buf, format='JPEG')
+            return [(buf.getvalue(), "image/jpeg") for _ in range(min(5, max_pages))]
+
+        with patch.object(sk_agent, '_pdf_to_images', side_effect=mock_pdf_to_images):
+            # Mock the async generator for invoke
+            async def mock_invoke(*args, **kwargs):
+                mock_response = MagicMock()
+                mock_response.__str__ = lambda self: "Document analysis result"
+                mock_response.thread = MagicMock()
+                yield mock_response
+
+            mock_agent.invoke = mock_invoke
+
+            result = await manager.analyze_document(str(test_pdf), max_pages=5)
+
+        assert "response" in result
+        assert result["pages_analyzed"] == 5
+        assert "conversation_id" in result
+        assert result["model_used"] == "test-vision"
+
+    @pytest.mark.asyncio
+    async def test_analyze_document_respects_max_pages(self, tmp_path):
+        """Test that document analysis respects max_pages limit."""
+        import sk_agent
+        import importlib
+        importlib.reload(sk_agent)
+
+        config = {
+            "default_vision_model": "test-vision",
+            "models": [
+                {"id": "test-vision", "enabled": True, "model_id": "v1", "vision": True, "base_url": "http://localhost"},
+            ],
+        }
+        manager = sk_agent.SKAgentManager(config)
+
+        # Mock the agent
+        mock_agent = MagicMock()
+        manager._agents = {"test-vision": mock_agent}
+        manager._threads = {}
+
+        # Create a test PDF file
+        test_pdf = tmp_path / "test.pdf"
+        test_pdf.write_bytes(b"%PDF-1.4 fake pdf")
+
+        # Mock _pdf_to_images to return more pages than max_pages
+        def mock_pdf_to_images(path, max_pages=10):
+            from PIL import Image
+            import io
+            img = Image.new('RGB', (200, 300), color='white')
+            buf = io.BytesIO()
+            img.save(buf, format='JPEG')
+            # Return exactly max_pages images
+            return [(buf.getvalue(), "image/jpeg") for _ in range(max_pages)]
+
+        with patch.object(sk_agent, '_pdf_to_images', side_effect=mock_pdf_to_images):
+            # Mock the async generator for invoke
+            async def mock_invoke(*args, **kwargs):
+                mock_response = MagicMock()
+                mock_response.__str__ = lambda self: "Result"
+                mock_response.thread = MagicMock()
+                yield mock_response
+
+            mock_agent.invoke = mock_invoke
+
+            result = await manager.analyze_document(str(test_pdf), max_pages=3)
+
+        # Should only analyze 3 pages (not more)
+        assert result["pages_analyzed"] == 3
+
+
+# ---------------------------------------------------------------------------
 # Run Tests
 # ---------------------------------------------------------------------------
 

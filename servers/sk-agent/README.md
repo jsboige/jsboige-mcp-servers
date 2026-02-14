@@ -236,6 +236,83 @@ result1 = zoom_image("screenshot.png", '{"x": "50%", "y": "50%", "width": "50%",
 result2 = zoom_image("screenshot.png", '{"x": "25%", "y": "25%", "width": "50%", "height": "50%"}', "Read this text", "", "", result1.zoom_context)
 ```
 
+### `analyze_video(video_source, prompt="", model="", conversation_id="", num_frames=8)`
+
+Analyze a video by extracting frames and using the vision model.
+GLM-4.6V supports up to 128K token context for comprehensive video understanding.
+
+**Parameters:**
+
+- `video_source`: Local file path to the video (MP4, AVI, MOV, etc.)
+- `prompt`: Question or instruction about the video content
+- `model`: Optional model ID (must support vision)
+- `conversation_id`: Optional conversation ID to continue a session
+- `num_frames`: Number of frames to extract (default: 8, max: 20)
+
+**Returns:**
+
+```json
+{
+  "response": "Video analysis result",
+  "conversation_id": "conv-abc123",
+  "model_used": "glm-4.6v",
+  "frames_analyzed": 8
+}
+```
+
+**Requirements:**
+- `ffmpeg` and `ffprobe` must be installed and available in PATH for video frame extraction
+
+**Usage example:**
+
+```text
+analyze_video("demo.mp4", "What happens in this video? Summarize the key events.", num_frames=12)
+```
+
+### `analyze_document(document_source, prompt="", model="", conversation_id="", max_pages=10)`
+
+Analyze a PDF document by converting pages to images.
+GLM-4.6V supports multi-page documents with its 128K token context.
+
+**Parameters:**
+
+- `document_source`: Local file path to the PDF document
+- `prompt`: Question or instruction about the document
+- `model`: Optional model ID (must support vision)
+- `conversation_id`: Optional conversation ID to continue a session
+- `max_pages`: Maximum pages to analyze (default: 10, max: 50)
+
+**Returns:**
+
+```json
+{
+  "response": "Document analysis and summary",
+  "conversation_id": "conv-abc123",
+  "model_used": "glm-4.6v",
+  "pages_analyzed": 5
+}
+```
+
+**Requirements:**
+- `pdf2image` (preferred) or `PyMuPDF` must be installed for PDF conversion
+- For pdf2image, also requires `poppler-utils` (Linux) or Poppler (Windows/macOS)
+
+**Installation:**
+
+```bash
+# Option 1: pdf2image (better quality)
+pip install pdf2image
+
+# Option 2: PyMuPDF (fallback)
+pip install PyMuPDF
+```
+
+**Usage example:**
+
+```text
+analyze_document("report.pdf", "Summarize this document and extract key findings", max_pages=15)
+```
+
 ### `list_models()`
 
 List all configured models with their capabilities.
@@ -342,6 +419,14 @@ npx -y @modelcontextprotocol/inspector python sk_agent.py
 ```
 
 ## Changelog
+
+### 2026-02-15
+
+- **Video analysis**: New `analyze_video` tool extracts frames and analyzes video content
+- **Document analysis**: New `analyze_document` tool converts PDF pages to images for analysis
+- **Semantic Kernel vision**: Refactored to use SK's `ChatMessageContent` with `ImageContent`
+- **Multi-image support**: GLM-4.6V's 128K context enables multi-frame and multi-page analysis
+- **Zoom context**: Progressive zoom tracking with depth and region stack
 
 ### 2026-02-14
 

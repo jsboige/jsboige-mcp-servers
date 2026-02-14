@@ -35,11 +35,14 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import io
 import json
 import logging
 import mimetypes
 import os
+import subprocess
 import sys
+import tempfile
 import uuid
 from contextlib import AsyncExitStack
 from pathlib import Path
@@ -132,6 +135,117 @@ def _crop_image(data: bytes, media_type: str, region: dict) -> tuple[bytes, str]
 
     log.info("Cropped image %dx%d -> %dx%d", img_w, img_h, w, h)
     return buf.getvalue(), out_type
+
+
+def _extract_video_frames(video_path: str, num_frames: int = 8, fps: float | None = None) -> list[tuple[bytes, str]]:
+    """Extract frames from a video file using ffmpeg.
+
+    Args:
+        video_path: Path to the video file
+        num_frames: Number of frames to extract (evenly distributed)
+        fps: Optional frame rate to use (if None, extracts evenly distributed frames)
+
+    Returns:
+        List of (frame_bytes, media_type) tuples
+    """
+    try:
+        # Get video duration
+        probe_cmd = [
+            "ffprobe", "-v", "error", "-show_entries", "format=duration",
+            "-of", "default=noprint_wrappers=1:nokey=1", video_path
+        ]
+        result = subprocess.run(probe_cmd, capture_output=True, text=True, timeout=30)
+        duration = float(result.stdout.strip())
+    except (subprocess.TimeoutExpired, ValueError, FileNotFoundError) as e:
+        log.warning("Could not get video duration: %s, using default method", e)
+        duration = None
+
+    frames = []
+
+    if duration:
+        # Extract evenly distributed frames
+        timestamps = [duration * (i + 0.5) / num_frames for i in range(num_frames)]
+    else:
+        # Fallback: extract at fixed intervals
+        timestamps = [i * 2.0 for i in range(num_frames)]
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        for i, ts in enumerate(timestamps):
+            output_path = os.path.join(tmpdir, f"frame_{i:03d}.jpg")
+            try:
+                cmd = [
+                    "ffmpeg", "-y", "-ss", str(ts), "-i", video_path,
+                    "-frames:v", "1", "-q:v", "2", output_path
+                ]
+                subprocess.run(cmd, capture_output=True, timeout=30, check=True)
+
+                if os.path.exists(output_path):
+                    with open(output_path, "rb") as f:
+                        frame_data = f.read()
+                    frames.append((frame_data, "image/jpeg"))
+                    log.info("Extracted frame %d at %.2fs from video", i, ts)
+            except (subprocess.TimeoutExpired, subprocess.CalledProcessError, FileNotFoundError) as e:
+                log.warning("Failed to extract frame %d: %s", i, e)
+                continue
+
+    log.info("Extracted %d frames from video: %s", len(frames), video_path)
+    return frames
+
+
+def _pdf_to_images(pdf_path: str, max_pages: int = 10) -> list[tuple[bytes, str]]:
+    """Convert PDF pages to images using pdf2image or PyMuPDF.
+
+    Args:
+        pdf_path: Path to the PDF file
+        max_pages: Maximum number of pages to convert
+
+    Returns:
+        List of (image_bytes, media_type) tuples
+    """
+    images = []
+
+    # Try pdf2image first (better quality)
+    try:
+        from pdf2image import convert_from_path
+
+        pages = convert_from_path(pdf_path, first_page=1, last_page=max_pages, dpi=150)
+        for i, page in enumerate(pages):
+            buf = io.BytesIO()
+            page.save(buf, format="JPEG", quality=85)
+            images.append((buf.getvalue(), "image/jpeg"))
+            log.info("Converted PDF page %d to image (pdf2image)", i + 1)
+
+        log.info("Converted %d pages from PDF: %s", len(images), pdf_path)
+        return images
+    except ImportError:
+        log.debug("pdf2image not available, trying PyMuPDF")
+    except Exception as e:
+        log.warning("pdf2image failed: %s, trying PyMuPDF", e)
+
+    # Fallback to PyMuPDF (fitz)
+    try:
+        import fitz  # PyMuPDF
+
+        doc = fitz.open(pdf_path)
+        for i, page in enumerate(doc):
+            if i >= max_pages:
+                break
+            # Render page to image
+            mat = fitz.Matrix(2.0, 2.0)  # 2x zoom for better quality
+            pix = page.get_pixmap(matrix=mat)
+            img_data = pix.tobytes("jpeg")
+            images.append((img_data, "image/jpeg"))
+            log.info("Converted PDF page %d to image (PyMuPDF)", i + 1)
+
+        doc.close()
+        log.info("Converted %d pages from PDF: %s", len(images), pdf_path)
+        return images
+    except ImportError:
+        log.error("Neither pdf2image nor PyMuPDF available for PDF conversion")
+        raise RuntimeError("PDF conversion requires pdf2image or PyMuPDF. Install with: pip install pdf2image or pip install PyMuPDF")
+    except Exception as e:
+        log.error("PDF conversion failed: %s", e)
+        raise
 
 
 def load_config() -> dict:
@@ -820,6 +934,185 @@ class SKAgentManager:
         result["region_analyzed"] = region
         return result
 
+    async def analyze_video(
+        self,
+        video_source: str,
+        prompt: str = "Describe what happens in this video",
+        model_id: str | None = None,
+        conversation_id: str | None = None,
+        num_frames: int = 8,
+    ) -> dict[str, Any]:
+        """Analyze a video by extracting frames and using vision model.
+
+        This method extracts key frames from a video and sends them
+        to the vision model for analysis. GLM-4.6V supports up to 128K
+        tokens context, allowing comprehensive video understanding.
+
+        Args:
+            video_source: Local file path to the video
+            prompt: Question or instruction about the video
+            model_id: Optional model ID (must support vision)
+            conversation_id: Optional conversation ID to continue
+            num_frames: Number of frames to extract (default: 8)
+
+        Returns:
+            Dict with: response, conversation_id, model_used, frames_analyzed
+        """
+        if not self._agents:
+            return {"error": "No agents initialized"}
+
+        # Check vision model availability
+        target_model = model_id or self.config.get("default_vision_model", "")
+        model_cfg = self._get_model_config(target_model)
+
+        if not model_cfg or not model_cfg.get("vision", False):
+            for m in self.config.get("models", []):
+                if m.get("enabled", True) and m.get("vision", False):
+                    target_model = m.get("id", "")
+                    model_cfg = m
+                    log.info("Auto-selected vision model: %s", target_model)
+                    break
+            else:
+                return {"error": "No vision-capable model available"}
+
+        # Extract frames from video
+        try:
+            frames = _extract_video_frames(video_source, num_frames=num_frames)
+        except Exception as e:
+            return {"error": f"Failed to extract video frames: {e}"}
+
+        if not frames:
+            return {"error": "No frames could be extracted from video"}
+
+        # Build multi-image content
+        # For multi-image, we send all frames as a single message with multiple images
+        content_items = [TextContent(text=f"{prompt}\n\nThe video has been sampled into {len(frames)} frames below:")]
+
+        for i, (frame_data, media_type) in enumerate(frames):
+            b64_data = base64.b64encode(frame_data).decode("ascii")
+            data_url = f"data:{media_type};base64,{b64_data}"
+            content_items.append(TextContent(text=f"\n--- Frame {i + 1} ---"))
+            content_items.append(ImageContent(data_uri=data_url))
+
+        # Get or create thread
+        conv_id, thread = self._get_or_create_thread(conversation_id)
+
+        # Get agent
+        agent = self._agents[target_model]
+
+        # Create message with all frames
+        message = ChatMessageContent(
+            role=AuthorRole.USER,
+            items=content_items,
+        )
+
+        # Invoke agent
+        final_response = None
+        async for response in agent.invoke(
+            messages=message,
+            thread=thread,
+        ):
+            final_response = response
+            thread = response.thread
+
+        self._threads[conv_id] = thread
+
+        return {
+            "response": str(final_response) if final_response else "",
+            "conversation_id": conv_id,
+            "model_used": target_model,
+            "frames_analyzed": len(frames),
+        }
+
+    async def analyze_document(
+        self,
+        document_source: str,
+        prompt: str = "Summarize this document and extract key information",
+        model_id: str | None = None,
+        conversation_id: str | None = None,
+        max_pages: int = 10,
+    ) -> dict[str, Any]:
+        """Analyze a PDF document by converting pages to images.
+
+        This method converts PDF pages to images and sends them
+        to the vision model for analysis. Supports multi-page documents
+        with GLM-4.6V's 128K token context.
+
+        Args:
+            document_source: Local file path to the PDF document
+            prompt: Question or instruction about the document
+            model_id: Optional model ID (must support vision)
+            conversation_id: Optional conversation ID to continue
+            max_pages: Maximum number of pages to analyze (default: 10)
+
+        Returns:
+            Dict with: response, conversation_id, model_used, pages_analyzed
+        """
+        if not self._agents:
+            return {"error": "No agents initialized"}
+
+        # Check vision model availability
+        target_model = model_id or self.config.get("default_vision_model", "")
+        model_cfg = self._get_model_config(target_model)
+
+        if not model_cfg or not model_cfg.get("vision", False):
+            for m in self.config.get("models", []):
+                if m.get("enabled", True) and m.get("vision", False):
+                    target_model = m.get("id", "")
+                    model_cfg = m
+                    log.info("Auto-selected vision model: %s", target_model)
+                    break
+            else:
+                return {"error": "No vision-capable model available"}
+
+        # Convert PDF to images
+        try:
+            pages = _pdf_to_images(document_source, max_pages=max_pages)
+        except Exception as e:
+            return {"error": f"Failed to convert document: {e}"}
+
+        if not pages:
+            return {"error": "No pages could be extracted from document"}
+
+        # Build multi-page content
+        content_items = [TextContent(text=f"{prompt}\n\nThe document has {len(pages)} pages below:")]
+
+        for i, (page_data, media_type) in enumerate(pages):
+            b64_data = base64.b64encode(page_data).decode("ascii")
+            data_url = f"data:{media_type};base64,{b64_data}"
+            content_items.append(TextContent(text=f"\n--- Page {i + 1} ---"))
+            content_items.append(ImageContent(data_uri=data_url))
+
+        # Get or create thread
+        conv_id, thread = self._get_or_create_thread(conversation_id)
+
+        # Get agent
+        agent = self._agents[target_model]
+
+        # Create message with all pages
+        message = ChatMessageContent(
+            role=AuthorRole.USER,
+            items=content_items,
+        )
+
+        # Invoke agent
+        final_response = None
+        async for response in agent.invoke(
+            messages=message,
+            thread=thread,
+        ):
+            final_response = response
+            thread = response.thread
+
+        self._threads[conv_id] = thread
+
+        return {
+            "response": str(final_response) if final_response else "",
+            "conversation_id": conv_id,
+            "model_used": target_model,
+            "pages_analyzed": len(pages),
+        }
+
     def list_models(self) -> list[dict]:
         """Return list of all configured models."""
         default_ask = self.config.get("default_ask_model", "")
@@ -1029,6 +1322,81 @@ async def zoom_image(
         model_id=model if model else None,
         conversation_id=conversation_id if conversation_id else None,
         zoom_context=zoom_ctx,
+    )
+    return json.dumps(result, ensure_ascii=False, indent=2)
+
+
+@mcp_server.tool()
+async def analyze_video(
+    video_source: str,
+    prompt: str = "Describe what happens in this video",
+    model: str = "",
+    conversation_id: str = "",
+    num_frames: int = 8,
+) -> str:
+    """Analyze a video by extracting frames and using the vision model.
+
+    Extracts key frames from a video file and sends them to the vision model
+    for comprehensive video understanding. Supports GLM-4.6V's 128K token context.
+
+    Args:
+        video_source: Path to a local video file (MP4, AVI, MOV, etc.).
+        prompt: Question or instruction about the video content.
+        model: Optional model ID (must support vision). Uses default vision model if not specified.
+        conversation_id: Optional conversation ID to continue a previous conversation.
+        num_frames: Number of frames to extract from the video (default: 8, max: 20).
+
+    Returns:
+        JSON string with: response, conversation_id, model_used, frames_analyzed
+    """
+    # Clamp num_frames to reasonable range
+    num_frames = max(1, min(num_frames, 20))
+
+    manager = await _get_manager()
+    result = await manager.analyze_video(
+        video_source=video_source,
+        prompt=prompt,
+        model_id=model if model else None,
+        conversation_id=conversation_id if conversation_id else None,
+        num_frames=num_frames,
+    )
+    return json.dumps(result, ensure_ascii=False, indent=2)
+
+
+@mcp_server.tool()
+async def analyze_document(
+    document_source: str,
+    prompt: str = "Summarize this document and extract key information",
+    model: str = "",
+    conversation_id: str = "",
+    max_pages: int = 10,
+) -> str:
+    """Analyze a PDF document by converting pages to images.
+
+    Converts PDF pages to images and sends them to the vision model
+    for document understanding. Supports multi-page documents with GLM-4.6V's
+    128K token context. Can extract text, tables, diagrams, and other content.
+
+    Args:
+        document_source: Path to a local PDF file.
+        prompt: Question or instruction about the document content.
+        model: Optional model ID (must support vision). Uses default vision model if not specified.
+        conversation_id: Optional conversation ID to continue a previous conversation.
+        max_pages: Maximum number of pages to analyze (default: 10, max: 50).
+
+    Returns:
+        JSON string with: response, conversation_id, model_used, pages_analyzed
+    """
+    # Clamp max_pages to reasonable range
+    max_pages = max(1, min(max_pages, 50))
+
+    manager = await _get_manager()
+    result = await manager.analyze_document(
+        document_source=document_source,
+        prompt=prompt,
+        model_id=model if model else None,
+        conversation_id=conversation_id if conversation_id else None,
+        max_pages=max_pages,
     )
     return json.dumps(result, ensure_ascii=False, indent=2)
 
