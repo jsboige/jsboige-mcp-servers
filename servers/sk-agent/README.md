@@ -7,6 +7,8 @@ Multi-model LLM proxy server for Claude Code and Roo Code.
 - **Multi-model support**: Configure multiple models with per-model kernels
 - **Tool calling**: Models can use MCP plugins (SearXNG, Playwright, etc.)
 - **Vision support**: Analyze images with vision-capable models
+- **Document analysis**: PDF, PPTX, DOCX, XLSX with visual/text/hybrid modes
+- **Video analysis**: Extract frames and analyze video content
 - **Dynamic model selection**: Choose the right model for each task
 - **Intermediate steps**: Optional visibility into tool calls and reasoning
 - **Self-inclusion**: Recursive tool chaining with configurable depth limit
@@ -27,24 +29,24 @@ Each model gets its own kernel, agent, and optional model-specific MCP plugins.
 
 ## Configured Models
 
-### z.ai API (enabled by default)
+### z.ai Cloud API (enabled by default)
 
-| Model ID      | Endpoint                               | Vision | Default For | Description           |
-|---------------|----------------------------------------|--------|-------------|-----------------------|
-| `glm-4.6v`    | `https://api.z.ai/api/coding/paas/v4`  | Yes    | Vision      | GLM-4.6V (vision)     |
-| `glm-5`       | `https://api.z.ai/api/coding/paas/v4`  | No     | Ask         | GLM-5 (fast text)     |
-| `glm-4-plus`  | `https://api.z.ai/api/coding/paas/v4`  | No     | -           | GLM-4-Plus (advanced) |
+| Model ID   | Endpoint                              | Vision | Default For | Context | Description        |
+|------------|---------------------------------------|--------|-------------|---------|--------------------|
+| `glm-4.6v` | `https://api.z.ai/api/coding/paas/v4` | Yes    | Vision      | 128K    | GLM-4.6V (vision)  |
+| `glm-5`    | `https://api.z.ai/api/coding/paas/v4` | No     | Ask         | 200K    | GLM-5 (reasoning)  |
 
-### Myia Infrastructure (disabled by default)
+### Myia Self-Hosted (disabled by default in template, enable if available)
 
-| Model ID               | Endpoint                                           | Vision | Description                    |
-|------------------------|----------------------------------------------------|--------|--------------------------------|
-| `qwen3-vl-8b-thinking` | `https://api.mini.text-generation-webui.myia.io/v1`  | Yes    | Qwen3-VL 8B Thinking           |
-| `glm-4.7-flash`        | `https://api.medium.text-generation-webui.myia.io/v1`| No     | GLM-4.7-Flash                  |
+| Model ID        | Endpoint                                              | Vision | Context | Description                    |
+|-----------------|-------------------------------------------------------|--------|---------|--------------------------------|
+| `zwz-8b`        | `https://api.mini.text-generation-webui.myia.io/v1`   | No     | 131K    | ZwZ 8B AWQ (Qwen-based)        |
+| `glm-4.7-flash` | `https://api.medium.text-generation-webui.myia.io/v1` | No     | 131K    | GLM-4.7-Flash AWQ              |
 
 ### Model Enable/Disable
 
 Each model has an `enabled` field in the configuration. Set to `true` to activate, `false` to deactivate.
+Only enabled models are loaded at startup.
 
 ## Configuration
 
@@ -54,16 +56,18 @@ Copy `sk_agent_config.template.json` to `sk_agent_config.json` and add your API 
 
 | Field | Type | Description |
 |-------|------|-------------|
-| `default_ask_model` | string | Model ID for `ask()` tool (default: first model) |
-| `default_vision_model` | string | Model ID for `analyze_image()` tool |
+| `default_ask_model` | string | Model ID for `ask()` tool (default: first enabled model) |
+| `default_vision_model` | string | Model ID for `analyze_image()` / `analyze_document(mode=visual)` |
 | `max_recursion_depth` | int | Max self-inclusion depth (default: 2) |
 | `models` | array | List of model configurations |
 | `models[].id` | string | Unique identifier for the model |
 | `models[].enabled` | bool | Whether model is active (default: true) |
 | `models[].base_url` | string | OpenAI-compatible API endpoint |
 | `models[].api_key` | string | API key (or use `api_key_env` for env var) |
+| `models[].api_key_env` | string | Environment variable name containing the API key |
 | `models[].model_id` | string | Actual model name for API calls |
 | `models[].vision` | bool | Whether model supports image input |
+| `models[].context_window` | int | Token context limit (auto-inferred if omitted) |
 | `models[].system_prompt` | string | Model-specific system prompt (optional) |
 | `models[].mcps` | array | Model-specific MCP plugins (optional) |
 | `mcps` | array | Shared MCP plugins for all models |
@@ -85,8 +89,8 @@ Copy `sk_agent_config.template.json` to `sk_agent_config.json` and add your API 
       "api_key": "YOUR_ZAI_API_KEY_HERE",
       "model_id": "glm-4.6v",
       "vision": true,
-      "description": "Vision model for image analysis (GLM-4.6V via z.ai)",
-      "system_prompt": "You are a vision analysis specialist."
+      "description": "Vision model for image/document analysis (GLM-4.6V via z.ai)",
+      "context_window": 128000
     },
     {
       "id": "glm-5",
@@ -96,16 +100,18 @@ Copy `sk_agent_config.template.json` to `sk_agent_config.json` and add your API 
       "api_key": "YOUR_ZAI_API_KEY_HERE",
       "model_id": "glm-5",
       "vision": false,
-      "description": "Fast text model for quick responses (GLM-5 via z.ai)"
+      "description": "Text model for complex reasoning (GLM-5 via z.ai)",
+      "context_window": 200000
     },
     {
-      "id": "qwen3-vl-8b-thinking",
+      "id": "zwz-8b",
       "enabled": false,
       "base_url": "https://api.mini.text-generation-webui.myia.io/v1",
       "api_key": "YOUR_MINI_API_KEY_HERE",
-      "model_id": "qwen3-vl-8b-thinking",
-      "vision": true,
-      "description": "Vision model (Qwen3-VL 8B - Myia)"
+      "model_id": "zwz-8b",
+      "vision": false,
+      "description": "Fast local text model (ZwZ 8B AWQ - Myia self-hosted)",
+      "context_window": 131072
     }
   ],
   "mcps": [
@@ -131,14 +137,14 @@ Copy `sk_agent_config.template.json` to `sk_agent_config.json` and add your API 
 
 ## MCP Tools
 
-### `ask(prompt, model="", system_prompt="", conversation_id="", include_steps=false)`
+### `ask(prompt, model?, system_prompt?, conversation_id?, include_steps?)`
 
 Send a text prompt to the configured model.
 
 **Parameters:**
 
 - `prompt`: The user question or instruction
-- `model`: Optional model ID to use (e.g., "glm-4.7-flash")
+- `model`: Optional model ID to use (e.g., "glm-5", "zwz-8b")
 - `system_prompt`: Optional override for the system prompt
 - `conversation_id`: Optional conversation ID to continue a session
 - `include_steps`: If true, include intermediate tool calls in response
@@ -149,181 +155,103 @@ Send a text prompt to the configured model.
 {
   "response": "Model response text",
   "conversation_id": "conv-abc123",
-  "model_used": "glm-4.7-flash",
-  "steps": [
-    { "type": "function_call", "name": "search", "arguments": {...} },
-    { "type": "function_result", "name": "search", "result": {...} }
-  ]
+  "model_used": "glm-5",
+  "steps": [...]
 }
 ```
 
-### `analyze_image(image_source, prompt="", model="", conversation_id="", zoom_context="")`
+### `analyze_image(image_source, prompt?, model?, conversation_id?, zoom_context?)`
 
-Analyze an image using a vision-capable model with Semantic Kernel.
+Analyze an image using a vision-capable model.
 
 **Parameters:**
 
 - `image_source`: Local file path or URL to the image
 - `prompt`: Question or instruction about the image
 - `model`: Optional model ID (must support vision)
-- `conversation_id`: Optional conversation ID to continue a session
+- `conversation_id`: Optional conversation ID
 - `zoom_context`: Optional JSON string with zoom context for recursive calls
 
-**Returns:**
+### `zoom_image(image_source, region, prompt?, model?, conversation_id?, zoom_context?)`
 
-```json
-{
-  "response": "Image description or analysis",
-  "conversation_id": "conv-abc123",
-  "model_used": "glm-4v-flash",
-  "zoom_context": {"depth": 1, "stack": [...], "original_source": "..."}
-}
-```
-
-### `zoom_image(image_source, region, prompt="", model="", conversation_id="", zoom_context="")`
-
-Zoom into a specific region of an image and analyze it using Semantic Kernel.
-Supports progressive zoom by passing the previous zoom_context.
-
-**Parameters:**
-
-- `image_source`: Local file path or URL to the image
-- `region`: JSON string with crop region (see below)
-- `prompt`: Question or instruction about the region
-- `model`: Optional model ID (must support vision)
-- `conversation_id`: Optional conversation ID to continue a session
-- `zoom_context`: Optional JSON string with previous zoom context for progressive zoom
+Zoom into a specific region of an image and analyze it.
 
 **Region format (JSON string):**
 
 ```json
-// Pixels
 {"x": 100, "y": 200, "width": 300, "height": 400}
-
-// Percentages (relative to image size)
 {"x": "10%", "y": "20%", "width": "50%", "height": "30%"}
 ```
 
-**Zoom context format (for progressive zoom):**
-
-```json
-{
-  "depth": 1,
-  "stack": [{"x": 100, "y": 200, "w": 300, "h": 400}],
-  "original_source": "path/to/original/image.png"
-}
-```
-
-**Returns:**
-
-```json
-{
-  "response": "Region description or analysis",
-  "conversation_id": "conv-abc123",
-  "model_used": "glm-4v-flash",
-  "region_analyzed": {"x": 100, "y": 200, "width": 300, "height": 400},
-  "zoom_context": {"depth": 2, "stack": [...], "original_source": "..."}
-}
-```
-
-**Usage example:**
-
-```text
-// First zoom on bottom-right quadrant
-result1 = zoom_image("screenshot.png", '{"x": "50%", "y": "50%", "width": "50%", "height": "50%"}', "What is here?")
-
-// Progressive zoom - pass zoom_context from previous call
-result2 = zoom_image("screenshot.png", '{"x": "25%", "y": "25%", "width": "50%", "height": "50%"}', "Read this text", "", "", result1.zoom_context)
-```
-
-### `analyze_video(video_source, prompt="", model="", conversation_id="", num_frames=8)`
+### `analyze_video(video_source, prompt?, model?, conversation_id?, num_frames?)`
 
 Analyze a video by extracting frames and using the vision model.
-GLM-4.6V supports up to 128K token context for comprehensive video understanding.
 
 **Parameters:**
 
 - `video_source`: Local file path to the video (MP4, AVI, MOV, etc.)
 - `prompt`: Question or instruction about the video content
-- `model`: Optional model ID (must support vision)
-- `conversation_id`: Optional conversation ID to continue a session
 - `num_frames`: Number of frames to extract (default: 8, max: 20)
 
-**Returns:**
+**Requirements:** `ffmpeg` and `ffprobe` must be in PATH.
 
-```json
-{
-  "response": "Video analysis result",
-  "conversation_id": "conv-abc123",
-  "model_used": "glm-4.6v",
-  "frames_analyzed": 8
-}
-```
+### `analyze_document(document_source, prompt?, model?, max_pages?, mode?, page_range?, auto_limit_tokens?)`
 
-**Requirements:**
-- `ffmpeg` and `ffprobe` must be installed and available in PATH for video frame extraction
+Analyze a document with unified pipeline supporting multiple formats and modes.
 
-**Usage example:**
+**Supported formats:**
 
-```text
-analyze_video("demo.mp4", "What happens in this video? Summarize the key events.", num_frames=12)
-```
-
-### `analyze_document(document_source, prompt="", model="", conversation_id="", max_pages=10)`
-
-Analyze a PDF document by converting pages to images.
-GLM-4.6V supports multi-page documents with its 128K token context.
+| Format     | Visual mode         | Text mode           | Hybrid mode        |
+|------------|---------------------|---------------------|--------------------|
+| PDF        | PyMuPDF (DPI 180)   | PyMuPDF text extract| Both               |
+| PPT/PPTX   | LibreOffice -> PDF  | LibreOffice -> text | Both               |
+| DOC/DOCX   | LibreOffice -> PDF  | python-docx / LO    | Both               |
+| XLS/XLSX   | LibreOffice -> PDF  | pandas CSV          | Both               |
 
 **Parameters:**
 
-- `document_source`: Local file path to the PDF document
+- `document_source`: Path to document file
 - `prompt`: Question or instruction about the document
-- `model`: Optional model ID (must support vision)
-- `conversation_id`: Optional conversation ID to continue a session
+- `model`: Optional model ID (auto-selected based on mode)
 - `max_pages`: Maximum pages to analyze (default: 10, max: 50)
+- `mode`: `"visual"` (images), `"text"` (extracted text), `"hybrid"` (both)
+- `page_range`: Optional JSON `{"start": 1, "end": 10}` (1-indexed, inclusive)
+- `auto_limit_tokens`: Auto-limit pages based on model context window (default: true)
 
 **Returns:**
 
 ```json
 {
-  "response": "Document analysis and summary",
+  "response": "Document analysis",
   "conversation_id": "conv-abc123",
   "model_used": "glm-4.6v",
-  "pages_analyzed": 5
+  "pages_analyzed": 5,
+  "mode": "visual"
 }
 ```
 
-**Requirements:**
-- `pdf2image` (preferred) or `PyMuPDF` must be installed for PDF conversion
-- For pdf2image, also requires `poppler-utils` (Linux) or Poppler (Windows/macOS)
-
-**Installation:**
-
-```bash
-# Option 1: pdf2image (better quality)
-pip install pdf2image
-
-# Option 2: PyMuPDF (fallback)
-pip install PyMuPDF
-```
-
-**Usage example:**
+**Usage examples:**
 
 ```text
-analyze_document("report.pdf", "Summarize this document and extract key findings", max_pages=15)
+analyze_document("report.pdf", "Summarize key findings", max_pages=15)
+analyze_document("slides.pptx", "What topics are covered?", mode="visual")
+analyze_document("data.xlsx", "Analyze trends in this data", mode="text")
+analyze_document("contract.docx", "Extract key terms", mode="hybrid", page_range='{"start":1,"end":5}')
 ```
+
+### `install_libreoffice(force?, custom_path?)`
+
+Check/install LibreOffice (required for PPT/DOC/XLS visual conversion).
+
+**Methods (order of preference):**
+1. Custom path (portable) via `custom_path` parameter
+2. winget (Windows 11)
+3. Chocolatey
+4. Manual download instructions
 
 ### `list_models()`
 
-List all configured models with their capabilities.
-
-**Returns:**
-
-```text
-## Available Models
-- glm-4.7-flash [ASK]: Fast text model for quick responses
-- qwen3-vl-8b-thinking [VISION]: Vision model for image analysis
-```
+List all configured models with their capabilities, context windows, and default status.
 
 ### `list_tools()`
 
@@ -333,57 +261,13 @@ List all loaded MCP plugins and their tools.
 
 Clean up a conversation thread.
 
-## Usage Patterns
-
-### Fast text processing
-
-```text
-ask("Summarize this text: ...", model="glm-4.7-flash")
-```
-
-### Vision analysis
-
-```text
-analyze_image("path/to/image.png", "Describe the UI", model="qwen3-vl-8b-thinking")
-```
-
-### With intermediate steps (debugging)
-
-```text
-ask("Search for recent news about AI", include_steps=true)
-```
-
-### Conversation continuity
-
-```text
-# First message
-response1 = ask("What is Python?")
-# response1.conversation_id = "conv-abc123"
-
-# Continue conversation
-response2 = ask("Tell me more about decorators", conversation_id="conv-abc123")
-```
-
 ## Self-Inclusion (Recursive Tool Chaining)
 
-sk-agent can include itself as an MCP plugin for recursive tool chaining. This is protected by:
+sk-agent can include itself as an MCP plugin. Protected by:
 
 1. **Depth tracking**: `SK_AGENT_DEPTH` environment variable
 2. **Configurable limit**: `max_recursion_depth` in config (default: 2)
 3. **Automatic depth increment**: Child instances get `SK_AGENT_DEPTH + 1`
-
-```json
-{
-  "mcps": [
-    {
-      "name": "sk_agent",
-      "description": "Self-inclusion for recursive tool chaining",
-      "command": "python",
-      "args": ["path/to/sk_agent.py"]
-    }
-  ]
-}
-```
 
 ## Environment Variables
 
@@ -391,6 +275,7 @@ sk-agent can include itself as an MCP plugin for recursive tool chaining. This i
 |----------|-------------|---------|
 | `SK_AGENT_CONFIG` | Path to config file | `sk_agent_config.json` |
 | `SK_AGENT_DEPTH` | Current recursion depth (internal) | `0` |
+| `ZAI_API_KEY` | z.ai API key (if using `api_key_env`) | - |
 
 ## Requirements
 
@@ -401,11 +286,21 @@ sk-agent can include itself as an MCP plugin for recursive tool chaining. This i
 - `Pillow>=10.0`
 - `httpx>=0.27`
 
+**Optional (for document analysis):**
+- `PyMuPDF` - PDF to images/text
+- `pdf2image` - PDF to images (alternative)
+- `python-docx` - DOCX text extraction (alternative to LibreOffice)
+- `pandas` + `openpyxl` - Excel to CSV
+- `ffmpeg` - Video frame extraction
+
 ## Installation
 
 ```bash
 cd mcps/internal/servers/sk-agent
 pip install -r requirements.txt
+
+# Optional: document/video support
+pip install PyMuPDF python-docx pandas openpyxl
 ```
 
 ## Running
@@ -414,18 +309,25 @@ pip install -r requirements.txt
 # As an MCP server (stdio)
 python sk_agent.py
 
-# Or via npx (for Claude Code / Roo Code integration)
+# Or via npx inspector (debugging)
 npx -y @modelcontextprotocol/inspector python sk_agent.py
 ```
 
 ## Changelog
 
+### 2026-02-16
+
+- **Model updates**: Removed deprecated `glm-4-plus`, updated self-hosted model `qwen3-vl-8b-thinking` -> `zwz-8b`
+- **Self-hosted re-enabled**: Both mini (zwz-8b) and medium (glm-4.7-flash) endpoints back online
+- **Config improvements**: Added explicit `context_window` to all model configs
+- **Template updated**: Dual cloud+self-hosted config with placeholders for API keys
+
 ### 2026-02-15
 
-- **Video analysis**: New `analyze_video` tool extracts frames and analyzes video content
-- **Document analysis**: New `analyze_document` tool converts PDF pages to images for analysis
-- **Semantic Kernel vision**: Refactored to use SK's `ChatMessageContent` with `ImageContent`
-- **Multi-image support**: GLM-4.6V's 128K context enables multi-frame and multi-page analysis
+- **Document analysis**: Unified pipeline for PDF, PPT/PPTX, DOC/DOCX, XLS/XLSX
+- **Three analysis modes**: visual (images), text (extracted), hybrid (both)
+- **Token auto-limiting**: Pages auto-limited based on model context window
+- **Video analysis**: New `analyze_video` tool with keyframe extraction
 - **Zoom context**: Progressive zoom tracking with depth and region stack
 
 ### 2026-02-14
@@ -434,8 +336,6 @@ npx -y @modelcontextprotocol/inspector python sk_agent.py
 - **Intermediate steps**: `include_steps` parameter shows tool calls
 - **Self-inclusion**: Protected recursive tool chaining with depth limit
 - **Model-specific plugins**: `models[].mcps` for per-model MCP configuration
-- **Default models**: Separate `default_ask_model` and `default_vision_model`
-- **Model-specific prompts**: `models[].system_prompt` override
 
 ### 2026-02-12
 
