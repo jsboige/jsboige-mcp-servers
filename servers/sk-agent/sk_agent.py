@@ -22,8 +22,12 @@ Architecture:
 Tools exposed to Claude/Roo:
     ask(prompt, model?, conversation_id?)     -- text query with auto tool use
     analyze_image(image, prompt?, model?, conversation_id?)  -- vision query
+    analyze_document(document, prompt?, mode?, max_pages?, page_range?) -- document analysis
+    analyze_video(video, prompt?, num_frames?, conversation_id?) -- video analysis
+    zoom_image(image, region, prompt?, ...)   -- image region analysis
     list_tools()                              -- introspection: loaded tools
     list_models()                             -- list available models
+    install_libreoffice(force?, custom_path?) -- install/configure LibreOffice
     end_conversation(conversation_id)         -- clean up a conversation
 
 Configuration:
@@ -35,14 +39,13 @@ from __future__ import annotations
 
 import asyncio
 import base64
-import io
 import json
 import logging
 import mimetypes
 import os
+import shutil
 import subprocess
 import sys
-import tempfile
 import uuid
 from contextlib import AsyncExitStack
 from pathlib import Path
@@ -51,7 +54,6 @@ from typing import Any
 import httpx
 from mcp.server.fastmcp import FastMCP
 from openai import AsyncOpenAI
-from PIL import Image
 
 from semantic_kernel import Kernel
 from semantic_kernel.agents import ChatCompletionAgent, ChatHistoryAgentThread
@@ -64,6 +66,24 @@ from semantic_kernel.contents import (
     FunctionResultContent,
     ImageContent,
     TextContent,
+)
+
+# Import document and media processing modules
+from document_processing import (
+    DocumentAnalysisMode,
+    PageRange,
+    extract_document_pages,
+    set_libreoffice_path,
+    _find_libreoffice,
+    DEFAULT_MAX_PAGES,
+    MAX_PAGES_HARD_LIMIT,
+)
+from media_processing import (
+    _crop_image,
+    _resize_image_if_needed,
+    _extract_video_frames,
+    _extract_keyframes,
+    _get_video_info,
 )
 
 # ---------------------------------------------------------------------------
@@ -88,165 +108,10 @@ CONFIG_PATH = os.environ.get(
 SK_AGENT_DEPTH = int(os.environ.get("SK_AGENT_DEPTH", "0"))
 DEFAULT_MAX_RECURSION_DEPTH = 2
 
-MAX_IMAGE_BYTES = 4 * 1024 * 1024  # 4 MB
-MAX_IMAGE_PIXELS = 774_144  # Qwen3-VL mini default
 
-
-def _crop_image(data: bytes, media_type: str, region: dict) -> tuple[bytes, str]:
-    """Crop image to specified region.
-
-    Args:
-        data: Raw image bytes
-        media_type: MIME type of the image
-        region: Dict with x, y, width, height (pixels or percentages)
-
-    Returns:
-        Tuple of (cropped_image_bytes, media_type)
-    """
-    import io
-
-    img = Image.open(io.BytesIO(data))
-    img_w, img_h = img.size
-
-    # Parse region - support both pixels and percentages
-    def parse_value(val: float | str, total: int) -> int:
-        if isinstance(val, str) and val.endswith("%"):
-            return int(float(val[:-1]) / 100 * total)
-        return int(val)
-
-    x = parse_value(region.get("x", 0), img_w)
-    y = parse_value(region.get("y", 0), img_h)
-    w = parse_value(region.get("width", region.get("w", img_w)), img_w)
-    h = parse_value(region.get("height", region.get("h", img_h)), img_h)
-
-    # Clamp to image bounds
-    x = max(0, min(x, img_w - 1))
-    y = max(0, min(y, img_h - 1))
-    w = min(w, img_w - x)
-    h = min(h, img_h - y)
-
-    # Crop
-    cropped = img.crop((x, y, x + w, y + h))
-
-    buf = io.BytesIO()
-    fmt = "JPEG" if media_type in ("image/jpeg", "image/jpg") else "PNG"
-    cropped.save(buf, format=fmt)
-    out_type = f"image/{fmt.lower()}"
-
-    log.info("Cropped image %dx%d -> %dx%d", img_w, img_h, w, h)
-    return buf.getvalue(), out_type
-
-
-def _extract_video_frames(video_path: str, num_frames: int = 8, fps: float | None = None) -> list[tuple[bytes, str]]:
-    """Extract frames from a video file using ffmpeg.
-
-    Args:
-        video_path: Path to the video file
-        num_frames: Number of frames to extract (evenly distributed)
-        fps: Optional frame rate to use (if None, extracts evenly distributed frames)
-
-    Returns:
-        List of (frame_bytes, media_type) tuples
-    """
-    try:
-        # Get video duration
-        probe_cmd = [
-            "ffprobe", "-v", "error", "-show_entries", "format=duration",
-            "-of", "default=noprint_wrappers=1:nokey=1", video_path
-        ]
-        result = subprocess.run(probe_cmd, capture_output=True, text=True, timeout=30)
-        duration = float(result.stdout.strip())
-    except (subprocess.TimeoutExpired, ValueError, FileNotFoundError) as e:
-        log.warning("Could not get video duration: %s, using default method", e)
-        duration = None
-
-    frames = []
-
-    if duration:
-        # Extract evenly distributed frames
-        timestamps = [duration * (i + 0.5) / num_frames for i in range(num_frames)]
-    else:
-        # Fallback: extract at fixed intervals
-        timestamps = [i * 2.0 for i in range(num_frames)]
-
-    with tempfile.TemporaryDirectory() as tmpdir:
-        for i, ts in enumerate(timestamps):
-            output_path = os.path.join(tmpdir, f"frame_{i:03d}.jpg")
-            try:
-                cmd = [
-                    "ffmpeg", "-y", "-ss", str(ts), "-i", video_path,
-                    "-frames:v", "1", "-q:v", "2", output_path
-                ]
-                subprocess.run(cmd, capture_output=True, timeout=30, check=True)
-
-                if os.path.exists(output_path):
-                    with open(output_path, "rb") as f:
-                        frame_data = f.read()
-                    frames.append((frame_data, "image/jpeg"))
-                    log.info("Extracted frame %d at %.2fs from video", i, ts)
-            except (subprocess.TimeoutExpired, subprocess.CalledProcessError, FileNotFoundError) as e:
-                log.warning("Failed to extract frame %d: %s", i, e)
-                continue
-
-    log.info("Extracted %d frames from video: %s", len(frames), video_path)
-    return frames
-
-
-def _pdf_to_images(pdf_path: str, max_pages: int = 10) -> list[tuple[bytes, str]]:
-    """Convert PDF pages to images using pdf2image or PyMuPDF.
-
-    Args:
-        pdf_path: Path to the PDF file
-        max_pages: Maximum number of pages to convert
-
-    Returns:
-        List of (image_bytes, media_type) tuples
-    """
-    images = []
-
-    # Try pdf2image first (better quality)
-    try:
-        from pdf2image import convert_from_path
-
-        pages = convert_from_path(pdf_path, first_page=1, last_page=max_pages, dpi=150)
-        for i, page in enumerate(pages):
-            buf = io.BytesIO()
-            page.save(buf, format="JPEG", quality=85)
-            images.append((buf.getvalue(), "image/jpeg"))
-            log.info("Converted PDF page %d to image (pdf2image)", i + 1)
-
-        log.info("Converted %d pages from PDF: %s", len(images), pdf_path)
-        return images
-    except ImportError:
-        log.debug("pdf2image not available, trying PyMuPDF")
-    except Exception as e:
-        log.warning("pdf2image failed: %s, trying PyMuPDF", e)
-
-    # Fallback to PyMuPDF (fitz)
-    try:
-        import fitz  # PyMuPDF
-
-        doc = fitz.open(pdf_path)
-        for i, page in enumerate(doc):
-            if i >= max_pages:
-                break
-            # Render page to image
-            mat = fitz.Matrix(2.0, 2.0)  # 2x zoom for better quality
-            pix = page.get_pixmap(matrix=mat)
-            img_data = pix.tobytes("jpeg")
-            images.append((img_data, "image/jpeg"))
-            log.info("Converted PDF page %d to image (PyMuPDF)", i + 1)
-
-        doc.close()
-        log.info("Converted %d pages from PDF: %s", len(images), pdf_path)
-        return images
-    except ImportError:
-        log.error("Neither pdf2image nor PyMuPDF available for PDF conversion")
-        raise RuntimeError("PDF conversion requires pdf2image or PyMuPDF. Install with: pip install pdf2image or pip install PyMuPDF")
-    except Exception as e:
-        log.error("PDF conversion failed: %s", e)
-        raise
-
+# ---------------------------------------------------------------------------
+# Configuration Loading
+# ---------------------------------------------------------------------------
 
 def load_config() -> dict:
     """Load configuration from JSON file."""
@@ -283,34 +148,49 @@ def load_config() -> dict:
     if "default_model" in config and "default_ask_model" in config:
         del config["default_model"]
 
+    # Validate model entries
+    for m in config.get("models", []):
+        if "id" not in m:
+            log.warning("Model entry missing 'id' field: %s", m)
+            m["id"] = "unknown"
+
     return config
 
 
+def save_config(config: dict) -> None:
+    """Save configuration to JSON file."""
+    path = Path(CONFIG_PATH)
+    with open(path, "w", encoding="utf-8") as f:
+        json.dump(config, f, indent=2, ensure_ascii=False)
+
+
+def get_model_context_window(config: dict, model_id: str) -> int:
+    """Get context window for a model from config.
+
+    Default values:
+    - Vision models: 128k (GLM-4.6V, Qwen3-VL)
+    - Cloud models: 200k (z.ai API)
+    - Text models: 32k (conservative default)
+    """
+    for m in config.get("models", []):
+        if m.get("id") == model_id:
+            # Check explicit context_window in config
+            if "context_window" in m:
+                return m["context_window"]
+            # Infer from model type
+            if m.get("vision", False):
+                return 128_000  # 128k for vision models
+            # Check if cloud API (larger context)
+            base_url = m.get("base_url", "")
+            if "z.ai" in base_url or "openai.com" in base_url:
+                return 200_000  # 200k for cloud models
+            return 32_000  # Conservative default for local models
+    return 32_000
+
+
 # ---------------------------------------------------------------------------
-# Image / attachment helpers
+# Image Processing Helpers
 # ---------------------------------------------------------------------------
-
-def _resize_image(data: bytes, media_type: str) -> tuple[bytes, str]:
-    """Resize image if it exceeds MAX_IMAGE_BYTES or MAX_IMAGE_PIXELS."""
-    img = Image.open(__import__("io").BytesIO(data))
-    w, h = img.size
-    pixels = w * h
-
-    needs_resize = len(data) > MAX_IMAGE_BYTES or pixels > MAX_IMAGE_PIXELS
-    if not needs_resize:
-        return data, media_type
-
-    scale = min(1.0, (MAX_IMAGE_PIXELS / pixels) ** 0.5)
-    new_w, new_h = int(w * scale), int(h * scale)
-    img = img.resize((new_w, new_h), Image.LANCZOS)
-
-    buf = __import__("io").BytesIO()
-    fmt = "JPEG" if media_type in ("image/jpeg", "image/jpg") else "PNG"
-    img.save(buf, format=fmt)
-    out_type = f"image/{fmt.lower()}"
-    log.info("Resized image %dx%d -> %dx%d (%s)", w, h, new_w, new_h, out_type)
-    return buf.getvalue(), out_type
-
 
 async def resolve_attachment(source: str) -> tuple[str, str]:
     """Convert a local file path or URL to (base64_data, media_type)."""
@@ -331,7 +211,7 @@ async def resolve_attachment(source: str) -> tuple[str, str]:
         data = p.read_bytes()
         media_type = mimetypes.guess_type(str(p))[0] or "image/png"
 
-    data, media_type = _resize_image(data, media_type)
+    data, media_type = _resize_image_if_needed(data, media_type)
     b64 = base64.b64encode(data).decode("ascii")
     return b64, media_type
 
@@ -492,10 +372,14 @@ class SKAgentManager:
         if conversation_id and conversation_id in self._threads:
             return conversation_id, self._threads[conversation_id]
 
-        new_id = conversation_id or f"conv-{uuid.uuid4().hex[:8]}"
+        new_id = conversation_id or str(uuid.uuid4())
         thread = ChatHistoryAgentThread()
         self._threads[new_id] = thread
         return new_id, thread
+
+    # -----------------------------------------------------------------------
+    # Core Agent Methods
+    # -----------------------------------------------------------------------
 
     async def ask(
         self,
@@ -505,265 +389,49 @@ class SKAgentManager:
         system_prompt: str | None = None,
         include_steps: bool = False,
     ) -> dict[str, Any]:
-        """Send a text prompt with auto tool calling.
+        """Send a text prompt to the model with optional tool use."""
+        if not self._agents:
+            return {"error": "No agents initialized"}
 
-        Args:
-            prompt: The user question or instruction.
-            model_id: Optional model ID to use.
-            conversation_id: Optional conversation ID to continue.
-            system_prompt: Optional override for the system prompt.
-            include_steps: If True, include intermediate steps (tool calls) in response.
-
-        Returns dict with: response, conversation_id, model_used, and optionally steps
-        """
-        # Determine which model to use
+        # Select model
         target_model = model_id or self.config.get("default_ask_model", "")
-        if target_model not in self._agents:
-            # Fallback to first available
-            target_model = next(iter(self._agents), "")
-            if not target_model:
-                return {"error": "No models available"}
-            log.warning("Requested model not found, using: %s", target_model)
+        if not target_model or target_model not in self._agents:
+            for m in self.config.get("models", []):
+                if m.get("enabled", True):
+                    target_model = m.get("id", "")
+                    break
 
-        # Get or create thread
+        if not target_model or target_model not in self._agents:
+            return {"error": "No suitable model available"}
+
+        agent = self._agents[target_model]
         conv_id, thread = self._get_or_create_thread(conversation_id)
 
-        # Get pre-created agent for this model
-        agent = self._agents[target_model]
+        # Build message
+        items = [TextContent(text=prompt)]
+        message = ChatMessageContent(role=AuthorRole.USER, items=items)
 
-        # Override system prompt if provided
-        if system_prompt:
-            agent.instructions = system_prompt
-
-        # Collect intermediate steps if requested
-        collected_steps: list[dict] = []
+        # Track intermediate steps if requested
+        steps = []
 
         async def handle_intermediate_message(message) -> None:
-            """Callback to capture intermediate messages (tool calls/results)."""
-            step = {
-                "role": str(message.role) if hasattr(message, 'role') else "unknown",
-            }
-            # Check message items for function calls/results
-            if hasattr(message, 'items') and message.items:
-                for item in message.items:
-                    if isinstance(item, FunctionCallContent):
-                        # Try to parse arguments as JSON
-                        args = item.arguments if hasattr(item, 'arguments') else {}
-                        if isinstance(args, str):
-                            try:
-                                args = json.loads(args)
-                            except (json.JSONDecodeError, TypeError):
-                                pass  # Keep as string if not valid JSON
-                        collected_steps.append({
-                            "type": "function_call",
-                            "name": item.name if hasattr(item, 'name') else str(item),
-                            "arguments": args,
-                        })
-                    elif isinstance(item, FunctionResultContent):
-                        # Extract result - handle MCP TextContent objects
-                        raw_result = item.result if hasattr(item, 'result') else item
-                        parsed_result = None
+            """Track intermediate messages for step-by-step output."""
+            step_info = {"role": str(message.role)}
+            for item in message.items:
+                if isinstance(item, FunctionCallContent):
+                    step_info["type"] = "tool_call"
+                    step_info["name"] = item.function_name
+                    step_info["arguments"] = item.arguments
+                elif isinstance(item, FunctionResultContent):
+                    step_info["type"] = "tool_result"
+                    step_info["result"] = str(item.result)[:500]  # Truncate
+                elif isinstance(item, TextContent):
+                    step_info["type"] = "text"
+                    step_info["content"] = item.text[:200]
+            if "type" in step_info:
+                steps.append(step_info)
 
-                        # Case 1: List of TextContent objects (MCP tool response)
-                        if isinstance(raw_result, list):
-                            texts = []
-                            for elem in raw_result:
-                                if hasattr(elem, 'text'):
-                                    texts.append(elem.text)
-                                elif hasattr(elem, 'content') and hasattr(elem.content, 'text'):
-                                    texts.append(elem.content.text)
-                                else:
-                                    texts.append(str(elem))
-                            combined = "\n".join(texts)
-                            try:
-                                parsed_result = json.loads(combined)
-                            except (json.JSONDecodeError, TypeError):
-                                parsed_result = combined
-                        # Case 2: String that might be JSON
-                        elif isinstance(raw_result, str):
-                            try:
-                                parsed_result = json.loads(raw_result)
-                            except (json.JSONDecodeError, TypeError):
-                                parsed_result = raw_result
-                        # Case 3: Single TextContent object
-                        elif hasattr(raw_result, 'text'):
-                            try:
-                                parsed_result = json.loads(raw_result.text)
-                            except (json.JSONDecodeError, TypeError):
-                                parsed_result = raw_result.text
-                        else:
-                            parsed_result = str(raw_result)
-
-                        collected_steps.append({
-                            "type": "function_result",
-                            "name": item.name if hasattr(item, 'name') else str(item),
-                            "result": parsed_result,
-                        })
-            elif hasattr(message, 'content') and message.content:
-                # Regular message with content
-                step["content"] = str(message.content)
-                collected_steps.append(step)
-
-        # Use invoke() with callback for intermediate steps
-        final_response = None
-        async for response in agent.invoke(
-            messages=prompt,
-            thread=thread,
-            on_intermediate_message=handle_intermediate_message if include_steps else None,
-        ):
-            final_response = response
-            thread = response.thread  # Update thread reference
-
-        result = {
-            "response": str(final_response) if final_response else "",
-            "conversation_id": conv_id,
-            "model_used": target_model,
-        }
-
-        if include_steps:
-            result["steps"] = collected_steps
-
-        return result
-
-    async def _ask_with_media(
-        self,
-        prompt: str,
-        image_data: str | None = None,
-        media_type: str | None = None,
-        model_id: str | None = None,
-        conversation_id: str | None = None,
-        system_prompt: str | None = None,
-        include_steps: bool = False,
-        zoom_context: dict | None = None,
-    ) -> dict[str, Any]:
-        """Send a prompt with optional image using Semantic Kernel.
-
-        This is the core method that handles both text-only and vision requests
-        using Semantic Kernel's ChatCompletionAgent with proper content types.
-
-        Args:
-            prompt: The user question or instruction.
-            image_data: Optional base64-encoded image data.
-            media_type: MIME type of the image (e.g., "image/png").
-            model_id: Optional model ID to use.
-            conversation_id: Optional conversation ID to continue.
-            system_prompt: Optional override for the system prompt.
-            include_steps: If True, include intermediate steps (tool calls) in response.
-            zoom_context: Optional dict with zoom level info for recursive calls:
-                - depth: current zoom depth (0 = no zoom)
-                - stack: list of previous regions [{"x": 10, "y": 20, "w": 100, "h": 100}]
-                - original_source: original image source before any cropping
-
-        Returns dict with: response, conversation_id, model_used, and optionally steps, zoom_context
-        """
-        # Determine which model to use
-        target_model = model_id or (self.config.get("default_vision_model") if image_data else self.config.get("default_ask_model"))
-        if target_model not in self._agents:
-            target_model = next(iter(self._agents), "")
-            if not target_model:
-                return {"error": "No models available"}
-            log.warning("Requested model not found, using: %s", target_model)
-
-        # Verify vision capability if image provided
-        if image_data:
-            model_cfg = self._get_model_config(target_model)
-            if not model_cfg or not model_cfg.get("vision", False):
-                # Try to find a vision model among enabled models
-                for m in self.config.get("models", []):
-                    if m.get("enabled", True) and m.get("vision", False):
-                        target_model = m.get("id", "")
-                        log.info("Auto-selected vision model: %s", target_model)
-                        break
-                else:
-                    return {"error": "No vision-capable model available"}
-
-        # Get or create thread
-        conv_id, thread = self._get_or_create_thread(conversation_id)
-
-        # Get pre-created agent for this model
-        agent = self._agents[target_model]
-
-        # Override system prompt if provided
-        if system_prompt:
-            agent.instructions = system_prompt
-
-        # Build message content items
-        content_items = [TextContent(text=prompt)]
-
-        if image_data and media_type:
-            # Create data URI for the image
-            data_url = f"data:{media_type};base64,{image_data}"
-            content_items.append(ImageContent(data_uri=data_url))
-
-        # Create ChatMessageContent with items
-        message = ChatMessageContent(
-            role=AuthorRole.USER,
-            items=content_items,
-        )
-
-        # Collect intermediate steps if requested
-        collected_steps: list[dict] = []
-
-        async def handle_intermediate_message(msg) -> None:
-            """Callback to capture intermediate messages (tool calls/results)."""
-            step = {
-                "role": str(msg.role) if hasattr(msg, 'role') else "unknown",
-            }
-            if hasattr(msg, 'items') and msg.items:
-                for item in msg.items:
-                    if isinstance(item, FunctionCallContent):
-                        args = item.arguments if hasattr(item, 'arguments') else {}
-                        if isinstance(args, str):
-                            try:
-                                args = json.loads(args)
-                            except (json.JSONDecodeError, TypeError):
-                                pass
-                        collected_steps.append({
-                            "type": "function_call",
-                            "name": item.name if hasattr(item, 'name') else str(item),
-                            "arguments": args,
-                        })
-                    elif isinstance(item, FunctionResultContent):
-                        raw_result = item.result if hasattr(item, 'result') else item
-                        parsed_result = None
-
-                        if isinstance(raw_result, list):
-                            texts = []
-                            for elem in raw_result:
-                                if hasattr(elem, 'text'):
-                                    texts.append(elem.text)
-                                elif hasattr(elem, 'content') and hasattr(elem.content, 'text'):
-                                    texts.append(elem.content.text)
-                                else:
-                                    texts.append(str(elem))
-                            combined = "\n".join(texts)
-                            try:
-                                parsed_result = json.loads(combined)
-                            except (json.JSONDecodeError, TypeError):
-                                parsed_result = combined
-                        elif isinstance(raw_result, str):
-                            try:
-                                parsed_result = json.loads(raw_result)
-                            except (json.JSONDecodeError, TypeError):
-                                parsed_result = raw_result
-                        elif hasattr(raw_result, 'text'):
-                            try:
-                                parsed_result = json.loads(raw_result.text)
-                            except (json.JSONDecodeError, TypeError):
-                                parsed_result = raw_result.text
-                        else:
-                            parsed_result = str(raw_result)
-
-                        collected_steps.append({
-                            "type": "function_result",
-                            "name": item.name if hasattr(item, 'name') else str(item),
-                            "result": parsed_result,
-                        })
-            elif hasattr(msg, 'content') and msg.content:
-                step["content"] = str(msg.content)
-                collected_steps.append(step)
-
-        # Use invoke() with callback for intermediate steps
+        # Invoke agent
         final_response = None
         async for response in agent.invoke(
             messages=message,
@@ -771,9 +439,8 @@ class SKAgentManager:
             on_intermediate_message=handle_intermediate_message if include_steps else None,
         ):
             final_response = response
-            thread = response.thread  # Update thread reference
+            thread = response.thread
 
-        # Update thread storage
         self._threads[conv_id] = thread
 
         result = {
@@ -781,12 +448,77 @@ class SKAgentManager:
             "conversation_id": conv_id,
             "model_used": target_model,
         }
-
         if include_steps:
-            result["steps"] = collected_steps
+            result["steps"] = steps
 
-        if zoom_context:
-            result["zoom_context"] = zoom_context
+        return result
+
+    async def _ask_with_media(
+        self,
+        media_items: list,
+        prompt: str,
+        model_id: str | None = None,
+        conversation_id: str | None = None,
+        include_steps: bool = False,
+    ) -> dict[str, Any]:
+        """Internal method to ask with media content (images)."""
+        if not self._agents:
+            return {"error": "No agents initialized"}
+
+        # Select vision model
+        target_model = model_id or self.config.get("default_vision_model", "")
+        model_cfg = self._get_model_config(target_model)
+
+        if not model_cfg or not model_cfg.get("vision", False):
+            for m in self.config.get("models", []):
+                if m.get("enabled", True) and m.get("vision", False):
+                    target_model = m.get("id", "")
+                    model_cfg = m
+                    log.info("Auto-selected vision model: %s", target_model)
+                    break
+            else:
+                return {"error": "No vision-capable model available"}
+
+        agent = self._agents[target_model]
+        conv_id, thread = self._get_or_create_thread(conversation_id)
+
+        # Build message with media and prompt
+        items = list(media_items)
+        items.append(TextContent(text=prompt))
+        message = ChatMessageContent(role=AuthorRole.USER, items=items)
+
+        # Track steps
+        steps = []
+
+        async def handle_intermediate_message(msg) -> None:
+            step_info = {"role": str(msg.role)}
+            for item in msg.items:
+                if isinstance(item, FunctionCallContent):
+                    step_info["type"] = "tool_call"
+                    step_info["name"] = item.function_name
+                elif isinstance(item, TextContent):
+                    step_info["type"] = "text"
+            if "type" in step_info:
+                steps.append(step_info)
+
+        final_response = None
+        async for response in agent.invoke(
+            messages=message,
+            thread=thread,
+            on_intermediate_message=handle_intermediate_message if include_steps else None,
+        ):
+            final_response = response
+            thread = response.thread
+
+        self._threads[conv_id] = thread
+
+        result = {
+            "response": str(final_response) if final_response else "",
+            "conversation_id": conv_id,
+            "model_used": target_model,
+        }
+        if include_steps:
+            result["steps"] = steps
 
         return result
 
@@ -796,52 +528,17 @@ class SKAgentManager:
         prompt: str = "Describe this image in detail",
         model_id: str | None = None,
         conversation_id: str | None = None,
-        zoom_context: dict | None = None,
     ) -> dict[str, Any]:
-        """Send an image + prompt for vision analysis using Semantic Kernel.
-
-        Args:
-            image_source: Local file path or URL to the image
-            prompt: Question or instruction about the image
-            model_id: Optional model ID (must support vision)
-            conversation_id: Optional conversation ID to continue
-            zoom_context: Optional zoom context for recursive calls
-
-        Returns dict with: response, conversation_id, model_used, zoom_context (if provided)
-        """
-        if not self._agents:
-            return {"error": "No agents initialized"}
-
-        # Check vision model availability BEFORE loading image
-        target_model = model_id or self.config.get("default_vision_model", "")
-        model_cfg = self._get_model_config(target_model)
-
-        if not model_cfg or not model_cfg.get("vision", False):
-            # Try to find a vision model among enabled models
-            for m in self.config.get("models", []):
-                if m.get("enabled", True) and m.get("vision", False):
-                    target_model = m.get("id", "")
-                    model_cfg = m
-                    log.info("Auto-selected vision model: %s", target_model)
-                    break
-            else:
-                return {"error": "No vision-capable model available"}
-
-        # Load and encode image
+        """Ask a question about an image."""
         try:
             b64_data, media_type = await resolve_attachment(image_source)
-        except FileNotFoundError as e:
+            data_url = f"data:{media_type};base64,{b64_data}"
+            image_item = ImageContent(data_uri=data_url)
+            return await self._ask_with_media(
+                [image_item], prompt, model_id, conversation_id
+            )
+        except Exception as e:
             return {"error": str(e)}
-
-        # Delegate to unified method
-        return await self._ask_with_media(
-            prompt=prompt,
-            image_data=b64_data,
-            media_type=media_type,
-            model_id=model_id,
-            conversation_id=conversation_id,
-            zoom_context=zoom_context,
-        )
 
     async def analyze_image_region(
         self,
@@ -850,89 +547,42 @@ class SKAgentManager:
         prompt: str = "Describe this region in detail",
         model_id: str | None = None,
         conversation_id: str | None = None,
-        zoom_context: dict | None = None,
+        zoom_context: str | None = None,
     ) -> dict[str, Any]:
-        """Zoom/crop to a region and analyze it using Semantic Kernel.
-
-        This method crops the image to the specified region and analyzes it.
-        It can be called recursively for progressive zoom, passing the zoom_context
-        to maintain the zoom stack and enable the model to understand the context.
-
-        Args:
-            image_source: Local file path or URL to the image
-            region: Dict with x, y, width, height (pixels or "10%" percentages)
-            prompt: Question or instruction about the region
-            model_id: Optional model ID (must support vision)
-            conversation_id: Optional conversation ID to continue
-            zoom_context: Optional previous zoom context for recursive calls:
-                - depth: current zoom depth (incremented automatically)
-                - stack: list of previous regions
-                - original_source: original image source
-
-        Returns:
-            Dict with: response, conversation_id, model_used, region_analyzed, zoom_context
-        """
-        if not self._agents:
-            return {"error": "No agents initialized"}
-
-        # Check vision model availability BEFORE loading image
-        target_model = model_id or self.config.get("default_vision_model", "")
-        model_cfg = self._get_model_config(target_model)
-
-        if not model_cfg or not model_cfg.get("vision", False):
-            # Try to find a vision model among enabled models
-            for m in self.config.get("models", []):
-                if m.get("enabled", True) and m.get("vision", False):
-                    target_model = m.get("id", "")
-                    model_cfg = m
-                    log.info("Auto-selected vision model: %s", target_model)
-                    break
+        """Analyze a specific region of an image (zoom)."""
+        try:
+            # Load image
+            if image_source.startswith(("http://", "https://")):
+                async with httpx.AsyncClient(timeout=30) as client:
+                    resp = await client.get(image_source, follow_redirects=True)
+                    resp.raise_for_status()
+                    data = resp.content
+                    media_type = resp.headers.get("content-type", "").split(";")[0].strip()
             else:
-                return {"error": "No vision-capable model available"}
+                p = Path(image_source)
+                if not p.exists():
+                    return {"error": f"Image not found: {image_source}"}
+                data = p.read_bytes()
+                media_type = mimetypes.guess_type(str(p))[0] or "image/png"
 
-        # Build new zoom context
-        new_depth = (zoom_context.get("depth", 0) + 1) if zoom_context else 1
-        new_stack = list(zoom_context.get("stack", [])) if zoom_context else []
-        new_stack.append(region)
-        original_source = zoom_context.get("original_source", image_source) if zoom_context else image_source
+            # Crop to region
+            cropped_data, cropped_type = _crop_image(data, media_type, region)
+            cropped_data, cropped_type = _resize_image_if_needed(cropped_data, cropped_type)
 
-        new_zoom_context = {
-            "depth": new_depth,
-            "stack": new_stack,
-            "original_source": original_source,
-        }
+            # Build context message
+            context_msg = prompt
+            if zoom_context:
+                context_msg = f"[Zoom context: {zoom_context}]\n\n{prompt}"
 
-        # Load image
-        try:
-            data, media_type = await resolve_attachment(image_source)
-        except FileNotFoundError as e:
-            return {"error": str(e)}
+            b64_data = base64.b64encode(cropped_data).decode("ascii")
+            data_url = f"data:{cropped_type};base64,{b64_data}"
+            image_item = ImageContent(data_uri=data_url)
 
-        # Decode base64 back to bytes for cropping
-        raw_data = base64.b64decode(data)
-
-        # Crop to region
-        try:
-            cropped_data, cropped_type = _crop_image(raw_data, media_type, region)
+            return await self._ask_with_media(
+                [image_item], context_msg, model_id, conversation_id
+            )
         except Exception as e:
-            return {"error": f"Failed to crop image: {e}"}
-
-        # Re-encode cropped image
-        cropped_b64 = base64.b64encode(cropped_data).decode("ascii")
-
-        # Delegate to unified method with cropped image
-        result = await self._ask_with_media(
-            prompt=prompt,
-            image_data=cropped_b64,
-            media_type=cropped_type,
-            model_id=model_id,
-            conversation_id=conversation_id,
-            zoom_context=new_zoom_context,
-        )
-
-        # Add region info to result
-        result["region_analyzed"] = region
-        return result
+            return {"error": str(e)}
 
     async def analyze_video(
         self,
@@ -941,27 +591,33 @@ class SKAgentManager:
         model_id: str | None = None,
         conversation_id: str | None = None,
         num_frames: int = 8,
+        use_keyframes: bool = True,
     ) -> dict[str, Any]:
-        """Analyze a video by extracting frames and using vision model.
-
-        This method extracts key frames from a video and sends them
-        to the vision model for analysis. GLM-4.6V supports up to 128K
-        tokens context, allowing comprehensive video understanding.
-
-        Args:
-            video_source: Local file path to the video
-            prompt: Question or instruction about the video
-            model_id: Optional model ID (must support vision)
-            conversation_id: Optional conversation ID to continue
-            num_frames: Number of frames to extract (default: 8)
-
-        Returns:
-            Dict with: response, conversation_id, model_used, frames_analyzed
-        """
+        """Analyze a video by extracting frames."""
         if not self._agents:
             return {"error": "No agents initialized"}
 
-        # Check vision model availability
+        # Check video file exists
+        video_path = Path(video_source)
+        if not video_path.exists():
+            return {"error": f"Video file not found: {video_source}"}
+
+        # Get video info
+        video_info = _get_video_info(str(video_path))
+
+        # Extract frames
+        try:
+            if use_keyframes:
+                frames = _extract_keyframes(str(video_path), num_frames=num_frames)
+            else:
+                frames = _extract_video_frames(str(video_path), num_frames=num_frames)
+        except Exception as e:
+            return {"error": f"Failed to extract video frames: {e}"}
+
+        if not frames:
+            return {"error": "No frames could be extracted from video"}
+
+        # Select vision model
         target_model = model_id or self.config.get("default_vision_model", "")
         model_cfg = self._get_model_config(target_model)
 
@@ -969,49 +625,26 @@ class SKAgentManager:
             for m in self.config.get("models", []):
                 if m.get("enabled", True) and m.get("vision", False):
                     target_model = m.get("id", "")
-                    model_cfg = m
-                    log.info("Auto-selected vision model: %s", target_model)
                     break
             else:
                 return {"error": "No vision-capable model available"}
 
-        # Extract frames from video
-        try:
-            frames = _extract_video_frames(video_source, num_frames=num_frames)
-        except Exception as e:
-            return {"error": f"Failed to extract video frames: {e}"}
+        agent = self._agents[target_model]
+        conv_id, thread = self._get_or_create_thread(conversation_id)
 
-        if not frames:
-            return {"error": "No frames could be extracted from video"}
-
-        # Build multi-image content
-        # For multi-image, we send all frames as a single message with multiple images
-        content_items = [TextContent(text=f"{prompt}\n\nThe video has been sampled into {len(frames)} frames below:")]
+        # Build content with frames
+        content_items = [TextContent(text=f"{prompt}\n\nThe video has {len(frames)} frames:")]
 
         for i, (frame_data, media_type) in enumerate(frames):
             b64_data = base64.b64encode(frame_data).decode("ascii")
             data_url = f"data:{media_type};base64,{b64_data}"
-            content_items.append(TextContent(text=f"\n--- Frame {i + 1} ---"))
+            content_items.append(TextContent(text=f"\n[Frame {i + 1}]"))
             content_items.append(ImageContent(data_uri=data_url))
 
-        # Get or create thread
-        conv_id, thread = self._get_or_create_thread(conversation_id)
+        message = ChatMessageContent(role=AuthorRole.USER, items=content_items)
 
-        # Get agent
-        agent = self._agents[target_model]
-
-        # Create message with all frames
-        message = ChatMessageContent(
-            role=AuthorRole.USER,
-            items=content_items,
-        )
-
-        # Invoke agent
         final_response = None
-        async for response in agent.invoke(
-            messages=message,
-            thread=thread,
-        ):
+        async for response in agent.invoke(messages=message, thread=thread):
             final_response = response
             thread = response.thread
 
@@ -1022,6 +655,10 @@ class SKAgentManager:
             "conversation_id": conv_id,
             "model_used": target_model,
             "frames_analyzed": len(frames),
+            "video_info": {
+                "duration": video_info.duration if video_info else None,
+                "resolution": f"{video_info.width}x{video_info.height}" if video_info else None,
+            } if video_info else None,
         }
 
     async def analyze_document(
@@ -1030,58 +667,108 @@ class SKAgentManager:
         prompt: str = "Summarize this document and extract key information",
         model_id: str | None = None,
         conversation_id: str | None = None,
-        max_pages: int = 10,
+        max_pages: int = DEFAULT_MAX_PAGES,
+        mode: DocumentAnalysisMode = "visual",
+        page_range: dict | None = None,
+        auto_limit_tokens: bool = True,
     ) -> dict[str, Any]:
-        """Analyze a PDF document by converting pages to images.
+        """Analyze a document (PDF, PPT/PPTX, DOC/DOCX, XLS/XLSX) with unified pipeline.
 
-        This method converts PDF pages to images and sends them
-        to the vision model for analysis. Supports multi-page documents
-        with GLM-4.6V's 128K token context.
+        Supports 3 analysis modes:
+        - "visual": Convert pages to images (requires vision model)
+        - "text": Extract text content (uses text model)
+        - "hybrid": Both images and text (requires vision model)
 
         Args:
-            document_source: Local file path to the PDF document
+            document_source: Local file path to the document
             prompt: Question or instruction about the document
-            model_id: Optional model ID (must support vision)
+            model_id: Optional model ID override
             conversation_id: Optional conversation ID to continue
-            max_pages: Maximum number of pages to analyze (default: 10)
+            max_pages: Maximum number of pages/sheets to analyze
+            mode: Analysis mode - "visual", "text", or "hybrid"
+            page_range: Optional dict with "start" and "end" (1-indexed, inclusive)
+            auto_limit_tokens: Auto-limit pages based on model context window
 
         Returns:
-            Dict with: response, conversation_id, model_used, pages_analyzed
+            Dict with: response, conversation_id, model_used, pages_analyzed, mode
         """
         if not self._agents:
             return {"error": "No agents initialized"}
 
-        # Check vision model availability
-        target_model = model_id or self.config.get("default_vision_model", "")
-        model_cfg = self._get_model_config(target_model)
+        # Select model early to get context window
+        has_images_hint = mode in ("visual", "hybrid")
+        if has_images_hint:
+            target_model = model_id or self.config.get("default_vision_model", "")
+            model_cfg = self._get_model_config(target_model)
+            if not model_cfg or not model_cfg.get("vision", False):
+                for m in self.config.get("models", []):
+                    if m.get("enabled", True) and m.get("vision", False):
+                        target_model = m.get("id", "")
+                        model_cfg = m
+                        break
+        else:
+            target_model = model_id or self.config.get("default_ask_model", "")
+            model_cfg = self._get_model_config(target_model)
 
-        if not model_cfg or not model_cfg.get("vision", False):
-            for m in self.config.get("models", []):
-                if m.get("enabled", True) and m.get("vision", False):
-                    target_model = m.get("id", "")
-                    model_cfg = m
-                    log.info("Auto-selected vision model: %s", target_model)
-                    break
-            else:
-                return {"error": "No vision-capable model available"}
+        if not target_model or target_model not in self._agents:
+            return {"error": "No suitable model available"}
 
-        # Convert PDF to images
+        # Get context window for auto-limiting
+        context_window = None
+        if auto_limit_tokens and model_cfg:
+            context_window = get_model_context_window(self.config, target_model)
+
+        # Parse page range
+        range_obj = None
+        if page_range:
+            range_obj = PageRange(
+                start=page_range.get("start", 1),
+                end=page_range.get("end"),
+            )
+
+        # Extract pages using unified pipeline
         try:
-            pages = _pdf_to_images(document_source, max_pages=max_pages)
+            pages = extract_document_pages(
+                document_source,
+                mode=mode,
+                max_pages=max_pages,
+                page_range=range_obj,
+                context_window=context_window,
+            )
         except Exception as e:
-            return {"error": f"Failed to convert document: {e}"}
+            return {"error": f"Failed to extract document pages: {e}"}
 
         if not pages:
             return {"error": "No pages could be extracted from document"}
 
-        # Build multi-page content
-        content_items = [TextContent(text=f"{prompt}\n\nThe document has {len(pages)} pages below:")]
+        # Determine if we need vision model (has images)
+        has_images = any(p.has_image for p in pages)
+        needs_vision = has_images or mode == "visual"
 
-        for i, (page_data, media_type) in enumerate(pages):
-            b64_data = base64.b64encode(page_data).decode("ascii")
-            data_url = f"data:{media_type};base64,{b64_data}"
-            content_items.append(TextContent(text=f"\n--- Page {i + 1} ---"))
-            content_items.append(ImageContent(data_uri=data_url))
+        if needs_vision and not model_cfg.get("vision", False):
+            return {"error": "No vision-capable model available for visual/hybrid mode"}
+
+        # Build content items
+        content_items = [TextContent(text=f"{prompt}\n\nThe document has {len(pages)} page(s):")]
+
+        for page in pages:
+            # Add page separator
+            page_label = f"Page {page.page_number}"
+            if page.metadata and page.metadata.get("sheet_name"):
+                page_label = f"Sheet '{page.metadata['sheet_name']}'"
+            elif page.metadata and page.metadata.get("source") == "all_slides":
+                page_label = "All slides"
+            content_items.append(TextContent(text=f"\n--- {page_label} ---"))
+
+            # Add text content if available
+            if page.has_text:
+                content_items.append(TextContent(text=page.text_content))
+
+            # Add image content if available
+            if page.has_image:
+                b64_data = base64.b64encode(page.image_data).decode("ascii")
+                data_url = f"data:{page.media_type};base64,{b64_data}"
+                content_items.append(ImageContent(data_uri=data_url))
 
         # Get or create thread
         conv_id, thread = self._get_or_create_thread(conversation_id)
@@ -1111,6 +798,7 @@ class SKAgentManager:
             "conversation_id": conv_id,
             "model_used": target_model,
             "pages_analyzed": len(pages),
+            "mode": mode,
         }
 
     def list_models(self) -> list[dict]:
@@ -1125,6 +813,7 @@ class SKAgentManager:
                 "vision": m.get("vision", False),
                 "enabled": m.get("enabled", True),
                 "description": m.get("description", ""),
+                "context_window": m.get("context_window", get_model_context_window(self.config, m.get("id", ""))),
                 "is_default_ask": m.get("id") == default_ask,
                 "is_default_vision": m.get("id") == default_vision,
             }
@@ -1182,16 +871,18 @@ mcp_server = FastMCP(
     ),
 )
 
-_agent_manager: SKAgentManager | None = None
+# Global manager instance
+_manager: SKAgentManager | None = None
 
 
 async def _get_manager() -> SKAgentManager:
-    global _agent_manager
-    if _agent_manager is None:
+    """Get or create the global manager instance."""
+    global _manager
+    if _manager is None:
         config = load_config()
-        _agent_manager = SKAgentManager(config)
-        await _agent_manager.start()
-    return _agent_manager
+        _manager = SKAgentManager(config)
+        await _manager.start()
+    return _manager
 
 
 @mcp_server.tool()
@@ -1225,7 +916,7 @@ async def ask(
         system_prompt=system_prompt if system_prompt else None,
         include_steps=include_steps,
     )
-    return json.dumps(result, ensure_ascii=False, indent=2)
+    return json.dumps(result, ensure_ascii=False)
 
 
 @mcp_server.tool()
@@ -1253,23 +944,19 @@ async def analyze_image(
     Returns:
         JSON string with: response, conversation_id, model_used, zoom_context (if provided)
     """
-    # Parse zoom_context if provided
-    zoom_ctx = None
-    if zoom_context:
-        try:
-            zoom_ctx = json.loads(zoom_context)
-        except json.JSONDecodeError:
-            log.warning("Invalid zoom_context JSON, ignoring: %s", zoom_context)
-
     manager = await _get_manager()
     result = await manager.ask_with_image(
         image_source=image_source,
         prompt=prompt,
         model_id=model if model else None,
         conversation_id=conversation_id if conversation_id else None,
-        zoom_context=zoom_ctx,
     )
-    return json.dumps(result, ensure_ascii=False, indent=2)
+
+    # Include zoom context if provided
+    if zoom_context:
+        result["zoom_context"] = zoom_context
+
+    return json.dumps(result, ensure_ascii=False)
 
 
 @mcp_server.tool()
@@ -1300,19 +987,11 @@ async def zoom_image(
     Returns:
         JSON string with: response, conversation_id, model_used, region_analyzed, zoom_context
     """
-    # Parse region JSON
+    import json as json_mod
     try:
-        region_dict = json.loads(region)
-    except json.JSONDecodeError:
-        return json.dumps({"error": f"Invalid region JSON: {region}"}, ensure_ascii=False, indent=2)
-
-    # Parse zoom_context if provided
-    zoom_ctx = None
-    if zoom_context:
-        try:
-            zoom_ctx = json.loads(zoom_context)
-        except json.JSONDecodeError:
-            log.warning("Invalid zoom_context JSON, ignoring: %s", zoom_context)
+        region_dict = json_mod.loads(region)
+    except json_mod.JSONDecodeError:
+        return json.dumps({"error": "Invalid region JSON"}, ensure_ascii=False)
 
     manager = await _get_manager()
     result = await manager.analyze_image_region(
@@ -1321,9 +1000,11 @@ async def zoom_image(
         prompt=prompt,
         model_id=model if model else None,
         conversation_id=conversation_id if conversation_id else None,
-        zoom_context=zoom_ctx,
+        zoom_context=zoom_context if zoom_context else None,
     )
-    return json.dumps(result, ensure_ascii=False, indent=2)
+
+    result["region_analyzed"] = region_dict
+    return json.dumps(result, ensure_ascii=False)
 
 
 @mcp_server.tool()
@@ -1349,7 +1030,7 @@ async def analyze_video(
     Returns:
         JSON string with: response, conversation_id, model_used, frames_analyzed
     """
-    # Clamp num_frames to reasonable range
+    # Clamp num_frames
     num_frames = max(1, min(num_frames, 20))
 
     manager = await _get_manager()
@@ -1360,7 +1041,7 @@ async def analyze_video(
         conversation_id=conversation_id if conversation_id else None,
         num_frames=num_frames,
     )
-    return json.dumps(result, ensure_ascii=False, indent=2)
+    return json.dumps(result, ensure_ascii=False)
 
 
 @mcp_server.tool()
@@ -1370,25 +1051,55 @@ async def analyze_document(
     model: str = "",
     conversation_id: str = "",
     max_pages: int = 10,
+    mode: str = "visual",
+    page_range: str = "",
+    auto_limit_tokens: bool = True,
 ) -> str:
-    """Analyze a PDF document by converting pages to images.
+    """Analyse un document (PDF, PPT/PPTX, DOC/DOCX, XLS/XLSX) avec pipeline unifié.
 
-    Converts PDF pages to images and sends them to the vision model
-    for document understanding. Supports multi-page documents with GLM-4.6V's
-    128K token context. Can extract text, tables, diagrams, and other content.
+    3 modes d'analyse disponibles:
+    - "visual": Convertit les pages en images (requiert modèle vision)
+    - "text": Extrait le contenu textuel (utilise modèle texte)
+    - "hybrid": Combine images ET texte (requiert modèle vision)
+
+    Formats supportés:
+    - PDF: PyMuPDF (images DPI 180 PNG + extraction texte)
+    - PPT/PPTX: LibreOffice → PDF → images, ou extraction texte
+    - DOC/DOCX: LibreOffice → PDF → images, ou extraction texte
+    - XLS/XLSX: LibreOffice → PDF → images, ou CSV (pandas/LibreOffice)
+
+    Peut extraire texte, tableaux, diagrammes, formules, etc.
+    Supporte les documents multi-pages avec le contexte 128K-200K tokens.
 
     Args:
-        document_source: Path to a local PDF file.
-        prompt: Question or instruction about the document content.
-        model: Optional model ID (must support vision). Uses default vision model if not specified.
-        conversation_id: Optional conversation ID to continue a previous conversation.
-        max_pages: Maximum number of pages to analyze (default: 10, max: 50).
+        document_source: Chemin vers un fichier local (PDF, PPT, PPTX, DOC, DOCX, XLS, XLSX).
+        prompt: Question ou instruction sur le contenu du document.
+        model: ID du modèle optionnel. Auto-sélectionné selon le mode si non spécifié.
+        conversation_id: ID de conversation optionnel pour continuer une conversation précédente.
+        max_pages: Nombre maximum de pages/feuilles à analyser (défaut: 10, max: 50).
+        mode: Mode d'analyse - "visual" (images), "text" (texte), "hybrid" (les deux). Défaut: visual.
+        page_range: JSON optionnel avec plage de pages: '{"start": 1, "end": 10}' (1-indexé, inclusif).
+        auto_limit_tokens: Limite automatique des pages selon le contexte du modèle (défaut: true).
 
     Returns:
-        JSON string with: response, conversation_id, model_used, pages_analyzed
+        Chaîne JSON avec: response, conversation_id, model_used, pages_analyzed, mode
     """
+    import json as json_mod
+
     # Clamp max_pages to reasonable range
-    max_pages = max(1, min(max_pages, 50))
+    max_pages = max(1, min(max_pages, MAX_PAGES_HARD_LIMIT))
+
+    # Validate mode
+    if mode not in ("visual", "text", "hybrid"):
+        return json.dumps({"error": f"Invalid mode '{mode}'. Must be: visual, text, or hybrid"}, ensure_ascii=False)
+
+    # Parse page_range if provided
+    page_range_dict = None
+    if page_range:
+        try:
+            page_range_dict = json_mod.loads(page_range)
+        except json_mod.JSONDecodeError:
+            return json.dumps({"error": "Invalid page_range JSON"}, ensure_ascii=False)
 
     manager = await _get_manager()
     result = await manager.analyze_document(
@@ -1397,8 +1108,11 @@ async def analyze_document(
         model_id=model if model else None,
         conversation_id=conversation_id if conversation_id else None,
         max_pages=max_pages,
+        mode=mode,  # type: ignore
+        page_range=page_range_dict,
+        auto_limit_tokens=auto_limit_tokens,
     )
-    return json.dumps(result, ensure_ascii=False, indent=2)
+    return json.dumps(result, ensure_ascii=False)
 
 
 @mcp_server.tool()
@@ -1420,32 +1134,191 @@ async def list_models() -> str:
     - model_id: The actual model name used in API calls
     - vision: Whether the model supports vision/image input
     - description: Human-readable description
+    - context_window: Token context limit
     - is_default_ask: Whether this is the default for ask()
     - is_default_vision: Whether this is the default for analyze_image()
 
     Useful for selecting the right model for your task.
     """
-    config = load_config()
-    models = config.get("models", [])
-    default_ask = config.get("default_ask_model", "")
-    default_vision = config.get("default_vision_model", "")
+    manager = await _get_manager()
+    models = manager.list_models()
 
-    if not models:
-        return "No models configured."
-
-    lines = ["## Available Models"]
+    lines = ["# Available Models", ""]
     for m in models:
         model_id = m.get("id", "unknown")
-        badges = []
-        if model_id == default_ask:
-            badges.append("ASK")
-        if model_id == default_vision:
-            badges.append("VISION👁️")
-        badge_str = f" [{'+'.join(badges)}]" if badges else ""
+        vision = m.get("vision", False)
+        context = m.get("context_window", "unknown")
         desc = m.get("description", "")
-        lines.append(f"- {model_id}{badge_str}: {desc}")
+
+        badges = []
+        if m.get("is_default_ask"):
+            badges.append("default-ask")
+        if m.get("is_default_vision"):
+            badges.append("default-vision")
+        if vision:
+            badges.append("vision")
+
+        badge_str = f" [{', '.join(badges)}]" if badges else ""
+        lines.append(f"## {model_id}{badge_str}")
+        lines.append(f"- Model: {m.get('model_id', 'unknown')}")
+        lines.append(f"- Context: {context:,} tokens" if isinstance(context, int) else f"- Context: {context}")
+        lines.append(f"- Vision: {'Yes' if vision else 'No'}")
+        if desc:
+            lines.append(f"- Description: {desc}")
+        lines.append("")
 
     return "\n".join(lines)
+
+
+@mcp_server.tool()
+async def install_libreoffice(force: bool = False, custom_path: str = "") -> str:
+    """Vérifie si LibreOffice est installé et l'installe si nécessaire.
+
+    LibreOffice est requis pour la conversion de fichiers PowerPoint (PPT/PPTX)
+    en images pour l'analyse par le modèle de vision.
+
+    Méthodes d'installation (par ordre de préférence):
+    1. Chemin personnalisé (portable) - utiliser custom_path
+    2. winget (Windows Package Manager) - recommandé sur Windows 11
+    3. choco (Chocolatey) - alternative
+    4. Téléchargement manuel - instructions fournies
+
+    Args:
+        force: Si True, réinstalle même si déjà présent (défaut: False)
+        custom_path: Chemin vers une installation LibreOffice portable existante
+                     (ex: "D:\\PortableApps\\PortableApps\\LibreOfficePortable\\LibreOfficePortable.exe")
+
+    Returns:
+        Statut de l'installation et instructions
+    """
+    import platform
+
+    # If custom path provided, validate and configure it
+    if custom_path:
+        custom_path_obj = Path(custom_path)
+
+        # Check if path exists
+        if not custom_path_obj.exists():
+            return f"❌ Chemin non trouvé: {custom_path}"
+
+        # If it's a directory, look for the executable inside
+        if custom_path_obj.is_dir():
+            # Look for soffice.exe or LibreOfficePortable.exe in common locations
+            for exe_name in ["soffice.exe", "program/soffice.exe", "LibreOfficePortable.exe"]:
+                candidate = custom_path_obj / exe_name
+                if candidate.exists():
+                    custom_path = str(candidate)
+                    custom_path_obj = candidate
+                    break
+            else:
+                return f"❌ Aucun exécutable LibreOffice (soffice.exe/LibreOfficePortable.exe) trouvé dans: {custom_path}"
+
+        # Validate it's a valid executable
+        if custom_path_obj.suffix.lower() != ".exe":
+            return f"❌ Le chemin doit pointer vers un exécutable (.exe): {custom_path}"
+
+        if set_libreoffice_path(str(custom_path_obj)):
+            log.info("Configured custom LibreOffice path: %s", custom_path)
+
+            # Try to get version
+            try:
+                result = subprocess.run(
+                    [custom_path, "--version"],
+                    capture_output=True,
+                    text=True,
+                    timeout=10
+                )
+                version = result.stdout.strip() or result.stderr.strip() or "(version inconnue)"
+                return f"✅ LibreOffice configuré: {version}\nChemin: {custom_path}"
+            except Exception as e:
+                return f"✅ LibreOffice configuré: {custom_path}\n⚠️ Impossible de vérifier la version: {e}"
+        else:
+            return f"❌ Échec de la configuration du chemin: {custom_path}"
+
+    # Check if already installed
+    libreoffice_cmd = _find_libreoffice()
+
+    if libreoffice_cmd and not force:
+        # Verify version
+        try:
+            result = subprocess.run(
+                [libreoffice_cmd, "--version"],
+                capture_output=True,
+                text=True,
+                timeout=10
+            )
+            version = result.stdout.strip() or result.stderr.strip()
+            return f"✅ LibreOffice déjà installé: {version}\nChemin: {libreoffice_cmd}"
+        except Exception as e:
+            log.warning("Failed to get LibreOffice version: %s", e)
+
+    # Check platform
+    if platform.system() != "Windows":
+        return (
+            "⚠️ Installation automatique uniquement sur Windows.\n"
+            "Sur Linux: sudo apt install libreoffice\n"
+            "Sur macOS: brew install --cask libreoffice"
+        )
+
+    # Try winget first (Windows 11 built-in)
+    winget_path = shutil.which("winget")
+    if winget_path:
+        log.info("Installing LibreOffice via winget...")
+        try:
+            result = subprocess.run(
+                [winget_path, "install", "TheDocumentFoundation.LibreOffice", "--accept-source-agreements", "--accept-package-agreements"],
+                capture_output=True,
+                text=True,
+                timeout=300  # 5 minutes
+            )
+            if result.returncode == 0:
+                return (
+                    "✅ LibreOffice installé avec succès via winget!\n"
+                    "Redémarrez votre terminal/VS Code pour utiliser la conversion PPT."
+                )
+            else:
+                log.warning("winget install failed: %s", result.stderr)
+        except subprocess.TimeoutExpired:
+            return "❌ Installation via winget a expiré (>5min). Essayez manuellement."
+        except Exception as e:
+            log.warning("winget install error: %s", e)
+
+    # Try chocolatey as fallback
+    choco_path = shutil.which("choco")
+    if choco_path:
+        log.info("Installing LibreOffice via chocolatey...")
+        try:
+            result = subprocess.run(
+                [choco_path, "install", "libreoffice", "-y"],
+                capture_output=True,
+                text=True,
+                timeout=300
+            )
+            if result.returncode == 0:
+                return (
+                    "✅ LibreOffice installé avec succès via Chocolatey!\n"
+                    "Redémarrez votre terminal/VS Code pour utiliser la conversion PPT."
+                )
+            else:
+                log.warning("choco install failed: %s", result.stderr)
+        except subprocess.TimeoutExpired:
+            return "❌ Installation via Chocolatey a expiré (>5min). Essayez manuellement."
+        except Exception as e:
+            log.warning("choco install error: %s", e)
+
+    # Manual installation instructions
+    return (
+        "❌ Impossible d'installer automatiquement LibreOffice.\n\n"
+        "📋 Installation manuelle:\n"
+        "1. Téléchargez depuis: https://www.libreoffice.org/download/\n"
+        "2. Ou installez via PowerShell (admin):\n"
+        "   winget install TheDocumentFoundation.LibreOffice\n"
+        "3. Redémarrez VS Code après l'installation\n\n"
+        "💡 Alternative: Si vous avez Scoop:\n"
+        "   scoop bucket add extras && scoop install libreoffice\n\n"
+        "💡 Pour une version portable, utilisez le paramètre custom_path:\n"
+        "   install_libreoffice(custom_path='D:\\PortableApps\\...\\LibreOfficePortable.exe')"
+    )
 
 
 @mcp_server.tool()
