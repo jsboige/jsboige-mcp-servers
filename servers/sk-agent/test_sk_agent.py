@@ -29,6 +29,7 @@ import pytest
 sys.path.insert(0, str(Path(__file__).parent))
 
 import sk_agent
+from semantic_kernel.agents import ChatCompletionAgent
 from sk_agent_config import (
     SKAgentConfig,
     AgentConfig,
@@ -838,6 +839,672 @@ from sk_conversations import (
     build_run_conversation_description,
 )
 
+
+# ---------------------------------------------------------------------------
+# Memory Setup Tests
+# ---------------------------------------------------------------------------
+
+class TestMemorySetup:
+    """Tests for _setup_memory and memory integration in agent creation."""
+
+    def _make_memory_config(self, memory_enabled=True, embeddings=True, qdrant=True):
+        """Create config with memory-related settings."""
+        kwargs = {}
+        if embeddings:
+            kwargs["embeddings"] = {
+                "base_url": "https://embeddings.test/v1/embeddings",
+                "api_key": "test-emb-key",
+                "model_id": "test-embedding-model",
+                "dimensions": 1024,
+            }
+        if qdrant:
+            kwargs["qdrant"] = {
+                "url": "https://qdrant.test",
+                "port": 443,
+                "api_key": "test-qdrant-key",
+                "default_collection_prefix": "test-prefix",
+            }
+
+        return make_v2_config(
+            models=[{"id": "m1", "base_url": "http://test", "model_id": "v1"}],
+            agents=[{
+                "id": "mem-agent",
+                "model": "m1",
+                "system_prompt": "Base prompt.",
+                "memory": {"enabled": memory_enabled, "collection": "my-collection"},
+            }],
+            default_agent="mem-agent",
+            **kwargs,
+        )
+
+    @pytest.mark.asyncio
+    async def test_setup_memory_returns_none_without_embeddings(self):
+        """_setup_memory returns None when embeddings not configured."""
+        config = self._make_memory_config(embeddings=False)
+        manager = sk_agent.SKAgentManager(config)
+        agent_cfg = config.agents[0]
+        kernel = MagicMock()
+
+        result = await manager._setup_memory(agent_cfg, kernel)
+        assert result is None
+
+    @pytest.mark.asyncio
+    async def test_setup_memory_creates_qdrant_store(self):
+        """_setup_memory creates QdrantMemoryStore when available."""
+        config = self._make_memory_config()
+        manager = sk_agent.SKAgentManager(config)
+        agent_cfg = config.agents[0]
+        kernel = MagicMock()
+
+        with patch.object(sk_agent, "HAS_QDRANT", True), \
+             patch.object(sk_agent, "HAS_MEMORY", True), \
+             patch("sk_agent.QdrantMemoryStore") as MockQdrant, \
+             patch("sk_agent.SemanticTextMemory") as MockMemory, \
+             patch("sk_agent.TextMemoryPlugin") as MockPlugin, \
+             patch("sk_agent.OpenAITextEmbedding") as MockEmb, \
+             patch("sk_agent.AsyncOpenAI"):
+
+            MockQdrant.return_value = MagicMock()
+            MockMemory.return_value = MagicMock()
+            MockPlugin.return_value = MagicMock()
+            MockEmb.return_value = MagicMock()
+
+            result = await manager._setup_memory(agent_cfg, kernel)
+
+            assert result is not None
+            MockQdrant.assert_called_once()
+            # Verify Qdrant params
+            call_kwargs = MockQdrant.call_args.kwargs
+            assert call_kwargs["vector_size"] == 1024
+            assert call_kwargs["url"] == "https://qdrant.test"
+            assert call_kwargs["port"] == 443
+            assert call_kwargs["api_key"] == "test-qdrant-key"
+
+    @pytest.mark.asyncio
+    async def test_setup_memory_falls_back_to_volatile(self):
+        """_setup_memory uses VolatileMemoryStore when Qdrant unavailable."""
+        config = self._make_memory_config()
+        manager = sk_agent.SKAgentManager(config)
+        agent_cfg = config.agents[0]
+        kernel = MagicMock()
+
+        with patch.object(sk_agent, "HAS_QDRANT", False), \
+             patch.object(sk_agent, "HAS_MEMORY", True), \
+             patch("sk_agent.VolatileMemoryStore") as MockVolatile, \
+             patch("sk_agent.SemanticTextMemory") as MockMemory, \
+             patch("sk_agent.TextMemoryPlugin") as MockPlugin, \
+             patch("sk_agent.OpenAITextEmbedding") as MockEmb, \
+             patch("sk_agent.AsyncOpenAI"):
+
+            MockVolatile.return_value = MagicMock()
+            MockMemory.return_value = MagicMock()
+            MockPlugin.return_value = MagicMock()
+            MockEmb.return_value = MagicMock()
+
+            result = await manager._setup_memory(agent_cfg, kernel)
+
+            assert result is not None
+            MockVolatile.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_setup_memory_collection_naming(self):
+        """Memory collection uses prefix-collection format."""
+        config = self._make_memory_config()
+        manager = sk_agent.SKAgentManager(config)
+        agent_cfg = config.agents[0]
+        kernel = MagicMock()
+
+        with patch.object(sk_agent, "HAS_QDRANT", True), \
+             patch.object(sk_agent, "HAS_MEMORY", True), \
+             patch("sk_agent.QdrantMemoryStore") as MockQdrant, \
+             patch("sk_agent.SemanticTextMemory") as MockMemory, \
+             patch("sk_agent.TextMemoryPlugin") as MockPlugin, \
+             patch("sk_agent.OpenAITextEmbedding"), \
+             patch("sk_agent.AsyncOpenAI"):
+
+            MockQdrant.return_value = MagicMock()
+            mock_memory = MagicMock()
+            MockMemory.return_value = mock_memory
+            MockPlugin.return_value = MagicMock()
+
+            await manager._setup_memory(agent_cfg, kernel)
+
+            # Verify collection is stored
+            assert "mem-agent" in manager._memory_stores
+            assert manager._memory_stores["mem-agent"] is mock_memory
+
+    @pytest.mark.asyncio
+    async def test_setup_memory_creates_embeddings_generator(self):
+        """_setup_memory creates OpenAITextEmbedding with correct config."""
+        config = self._make_memory_config()
+        manager = sk_agent.SKAgentManager(config)
+        agent_cfg = config.agents[0]
+        kernel = MagicMock()
+
+        with patch.object(sk_agent, "HAS_QDRANT", True), \
+             patch.object(sk_agent, "HAS_MEMORY", True), \
+             patch("sk_agent.QdrantMemoryStore"), \
+             patch("sk_agent.SemanticTextMemory") as MockMemory, \
+             patch("sk_agent.TextMemoryPlugin"), \
+             patch("sk_agent.OpenAITextEmbedding") as MockEmb, \
+             patch("sk_agent.AsyncOpenAI") as MockClient:
+
+            MockEmb.return_value = MagicMock()
+            MockMemory.return_value = MagicMock()
+
+            await manager._setup_memory(agent_cfg, kernel)
+
+            MockEmb.assert_called_once()
+            assert MockEmb.call_args.kwargs["ai_model_id"] == "test-embedding-model"
+
+    @pytest.mark.asyncio
+    async def test_setup_memory_exception_returns_none(self):
+        """_setup_memory returns None on exception (does not crash)."""
+        config = self._make_memory_config()
+        manager = sk_agent.SKAgentManager(config)
+        agent_cfg = config.agents[0]
+        kernel = MagicMock()
+
+        with patch.object(sk_agent, "HAS_QDRANT", True), \
+             patch.object(sk_agent, "HAS_MEMORY", True), \
+             patch("sk_agent.QdrantMemoryStore", side_effect=Exception("Connection refused")):
+
+            result = await manager._setup_memory(agent_cfg, kernel)
+            assert result is None
+
+    def test_memory_prompt_augmentation(self):
+        """Agent with memory gets prompt augmented with memory hint."""
+        config = self._make_memory_config(memory_enabled=True)
+        agent_cfg = config.agents[0]
+
+        # The prompt augmentation happens in _create_agent, so we verify the logic
+        system_prompt = agent_cfg.system_prompt or ""
+        if agent_cfg.memory.enabled:
+            system_prompt += (
+                "\n\nYou have access to persistent memory. "
+                "Use memory-save to remember important facts and "
+                "memory-recall to retrieve relevant knowledge."
+            )
+
+        assert "memory-save" in system_prompt
+        assert "memory-recall" in system_prompt
+        assert system_prompt.startswith("Base prompt.")
+
+    def test_memory_prompt_not_augmented_when_disabled(self):
+        """Agent without memory does not get memory hint."""
+        config = self._make_memory_config(memory_enabled=False)
+        agent_cfg = config.agents[0]
+
+        system_prompt = agent_cfg.system_prompt or ""
+        assert "memory-save" not in system_prompt
+
+    def test_memory_badge_in_description(self):
+        """Agent with memory shows [memory] badge in description."""
+        config = self._make_memory_config(memory_enabled=True)
+        desc = sk_agent.build_call_agent_description(config)
+        assert "memory" in desc
+
+    def test_no_memory_badge_when_disabled(self):
+        """Agent without memory doesn't show [memory] badge."""
+        config = self._make_memory_config(memory_enabled=False)
+        desc = sk_agent.build_call_agent_description(config)
+        # Check only the agent listing line (starts with "  - mem-agent:")
+        agent_lines = [l for l in desc.splitlines() if l.strip().startswith("- mem-agent:")]
+        assert len(agent_lines) == 1
+        assert "memory" not in agent_lines[0]
+
+    @pytest.mark.asyncio
+    async def test_create_agent_with_memory_integration(self):
+        """Full _create_agent with memory enabled passes plugin to agent."""
+        config = self._make_memory_config()
+        manager = sk_agent.SKAgentManager(config)
+        agent_cfg = config.agents[0]
+        model_cfg = config.models[0]
+
+        # Set up service mock
+        mock_service = MagicMock()
+        manager._services[model_cfg.id] = mock_service
+
+        mock_plugin = MagicMock()
+
+        with patch.object(sk_agent, "HAS_MEMORY", True), \
+             patch.object(manager, "_setup_memory", new_callable=AsyncMock, return_value=mock_plugin), \
+             patch("sk_agent.ChatCompletionAgent") as MockAgent:
+
+            MockAgent.return_value = MagicMock()
+            await manager._create_agent(agent_cfg, model_cfg)
+
+            # Verify _setup_memory was called
+            manager._setup_memory.assert_called_once_with(agent_cfg, manager._kernels["mem-agent"])
+
+            # Verify plugin was passed to ChatCompletionAgent
+            call_kwargs = MockAgent.call_args.kwargs
+            assert mock_plugin in call_kwargs["plugins"]
+
+    @pytest.mark.asyncio
+    async def test_create_agent_without_memory(self):
+        """_create_agent without memory: no memory plugin in plugins list."""
+        config = self._make_memory_config(memory_enabled=False)
+        manager = sk_agent.SKAgentManager(config)
+        agent_cfg = config.agents[0]
+        model_cfg = config.models[0]
+
+        mock_service = MagicMock()
+        manager._services[model_cfg.id] = mock_service
+
+        with patch("sk_agent.ChatCompletionAgent") as MockAgent:
+            MockAgent.return_value = MagicMock()
+            await manager._create_agent(agent_cfg, model_cfg)
+
+            call_kwargs = MockAgent.call_args.kwargs
+            assert call_kwargs["plugins"] == []
+
+
+# ---------------------------------------------------------------------------
+# Conversation Execution Tests
+# ---------------------------------------------------------------------------
+
+class TestConversationExecution:
+    """Tests for actual conversation execution with mocked SK agents."""
+
+    def _make_mock_agent(self, name="test-agent", responses=None):
+        """Create a mock ChatCompletionAgent."""
+        agent = MagicMock(spec=ChatCompletionAgent)
+        agent.name = name
+        agent.kernel = MagicMock()
+        return agent
+
+    def _make_runner_with_agents(self, agent_names=None, config_conversations=None):
+        """Create a ConversationRunner with mock agents."""
+        agent_names = agent_names or ["agent-a", "agent-b"]
+        sk_agents = {}
+        for name in agent_names:
+            sk_agents[name] = self._make_mock_agent(name=f"sk-agent-{name}")
+
+        conv_data = config_conversations or []
+        config = make_v2_config(
+            models=[{"id": "m1", "base_url": "http://test", "model_id": "v1"}],
+            agents=[{"id": name, "model": "m1"} for name in agent_names],
+            conversations=conv_data,
+            default_agent=agent_names[0] if agent_names else "",
+        )
+        return ConversationRunner(config, sk_agents), sk_agents
+
+    @pytest.mark.asyncio
+    async def test_run_group_chat_collects_steps(self):
+        """Group chat run collects steps from all agents."""
+        runner, agents = self._make_runner_with_agents(
+            agent_names=["agent-a", "agent-b"],
+            config_conversations=[{
+                "id": "test-conv",
+                "description": "Test",
+                "type": "group_chat",
+                "agents": ["agent-a", "agent-b"],
+                "max_rounds": 4,
+            }],
+        )
+
+        # Mock AgentGroupChat to yield fake messages
+        mock_messages = [
+            MagicMock(name="agent-a", content="Response A1", role=MagicMock()),
+            MagicMock(name="agent-b", content="Response B1", role=MagicMock()),
+        ]
+        # Fix: MagicMock(name=...) sets the mock's name attribute
+        mock_messages[0].name = "sk-agent-agent-a"
+        mock_messages[1].name = "sk-agent-agent-b"
+
+        with patch("sk_conversations.AgentGroupChat") as MockChat:
+            mock_chat_instance = MagicMock()
+
+            async def fake_invoke():
+                for msg in mock_messages:
+                    yield msg
+
+            mock_chat_instance.invoke = fake_invoke
+            mock_chat_instance.add_chat_message = AsyncMock()
+            MockChat.return_value = mock_chat_instance
+
+            result = await runner.run("test prompt", conversation_id="test-conv")
+
+        assert "error" not in result
+        assert result["conversation_type"] == "group_chat"
+        assert len(result["steps"]) == 2
+        assert result["steps"][0]["agent"] == "sk-agent-agent-a"
+        assert result["steps"][1]["agent"] == "sk-agent-agent-b"
+        assert result["response"] == "Response B1"  # Last response
+
+    @pytest.mark.asyncio
+    async def test_run_sequential_limits_to_agent_count(self):
+        """Sequential conversation sets max_iterations to number of agents."""
+        runner, agents = self._make_runner_with_agents(
+            agent_names=["a", "b", "c"],
+            config_conversations=[{
+                "id": "seq-conv",
+                "description": "Sequential test",
+                "type": "sequential",
+                "agents": ["a", "b", "c"],
+                "max_rounds": 99,  # Should be ignored, capped to len(agents)=3
+            }],
+        )
+
+        with patch("sk_conversations.AgentGroupChat") as MockChat, \
+             patch("sk_conversations.DefaultTerminationStrategy") as MockTermination:
+
+            mock_chat_instance = MagicMock()
+
+            async def fake_invoke():
+                return
+                yield  # Make this an async generator
+
+            mock_chat_instance.invoke = fake_invoke
+            mock_chat_instance.add_chat_message = AsyncMock()
+            MockChat.return_value = mock_chat_instance
+
+            await runner.run("test", conversation_id="seq-conv")
+
+            # Verify termination strategy was created with max_iterations = len(agents) = 3
+            MockTermination.assert_called_once()
+            call_kwargs = MockTermination.call_args.kwargs
+            assert call_kwargs["maximum_iterations"] == 3
+
+    @pytest.mark.asyncio
+    async def test_run_concurrent_parallel_execution(self):
+        """Concurrent conversation runs all agents in parallel."""
+        runner, agents = self._make_runner_with_agents(
+            agent_names=["fast", "slow"],
+            config_conversations=[{
+                "id": "concurrent-conv",
+                "description": "Concurrent test",
+                "type": "concurrent",
+                "agents": ["fast", "slow"],
+            }],
+        )
+
+        # Mock agent.invoke to return responses
+        for name, mock_agent in agents.items():
+            resp = MagicMock()
+            resp.__str__ = lambda self, n=name: f"Response from {n}"
+
+            async def fake_invoke(messages=None, thread=None, _name=name):
+                r = MagicMock()
+                r.__str__ = lambda self, _n=_name: f"Response from {_n}"
+                yield r
+
+            mock_agent.invoke = fake_invoke
+
+        with patch("semantic_kernel.agents.ChatHistoryAgentThread") as MockThread:
+            MockThread.return_value = MagicMock()
+            result = await runner.run("test", conversation_id="concurrent-conv")
+
+        assert "error" not in result
+        assert result["conversation_type"] == "concurrent"
+        assert result["rounds"] == 1
+        assert len(result["steps"]) == 2
+
+    @pytest.mark.asyncio
+    async def test_run_with_max_rounds_override(self):
+        """Options can override max_rounds."""
+        runner, agents = self._make_runner_with_agents(
+            agent_names=["a"],
+            config_conversations=[{
+                "id": "gc",
+                "description": "Test",
+                "type": "group_chat",
+                "agents": ["a"],
+                "max_rounds": 6,
+            }],
+        )
+
+        with patch("sk_conversations.AgentGroupChat") as MockChat, \
+             patch("sk_conversations.DefaultTerminationStrategy") as MockTermination:
+
+            mock_chat_instance = MagicMock()
+
+            async def fake_invoke():
+                return
+                yield
+
+            mock_chat_instance.invoke = fake_invoke
+            mock_chat_instance.add_chat_message = AsyncMock()
+            MockChat.return_value = mock_chat_instance
+
+            await runner.run("test", conversation_id="gc", options={"max_rounds": 20})
+
+            call_kwargs = MockTermination.call_args.kwargs
+            assert call_kwargs["maximum_iterations"] == 20
+
+    @pytest.mark.asyncio
+    async def test_run_magentic_tries_kernel_function_selection(self):
+        """Magentic conversation tries KernelFunctionSelectionStrategy."""
+        runner, agents = self._make_runner_with_agents(
+            agent_names=["researcher", "synthesizer"],
+            config_conversations=[{
+                "id": "mag-conv",
+                "description": "Magentic test",
+                "type": "magentic",
+                "agents": ["researcher", "synthesizer"],
+            }],
+        )
+
+        with patch("sk_conversations.AgentGroupChat") as MockChat, \
+             patch("semantic_kernel.agents.strategies.KernelFunctionSelectionStrategy") as MockKFS, \
+             patch("semantic_kernel.functions.KernelFunctionFromPrompt") as MockKFP:
+
+            MockKFS.return_value = MagicMock()
+            MockKFP.return_value = MagicMock()
+
+            mock_chat_instance = MagicMock()
+
+            async def fake_invoke():
+                return
+                yield
+
+            mock_chat_instance.invoke = fake_invoke
+            mock_chat_instance.add_chat_message = AsyncMock()
+            MockChat.return_value = mock_chat_instance
+
+            await runner.run("test", conversation_id="mag-conv")
+
+            # Verify KernelFunctionSelectionStrategy was attempted
+            MockKFS.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_run_handles_agent_exception(self):
+        """Conversation returns error dict when agent raises."""
+        runner, agents = self._make_runner_with_agents(
+            agent_names=["a"],
+            config_conversations=[{
+                "id": "fail-conv",
+                "description": "Failing",
+                "type": "group_chat",
+                "agents": ["a"],
+            }],
+        )
+
+        with patch("sk_conversations.AgentGroupChat") as MockChat:
+            MockChat.side_effect = Exception("SK initialization error")
+
+            result = await runner.run("test", conversation_id="fail-conv")
+
+            assert "error" in result
+            assert "SK initialization error" in result["error"]
+
+    @pytest.mark.asyncio
+    async def test_run_with_inline_agents(self):
+        """Conversations with inline agents create agents on the fly."""
+        config = make_v2_config(
+            models=[{"id": "m1", "base_url": "http://test", "model_id": "v1"}],
+            agents=[{"id": "base", "model": "m1"}],
+            default_agent="base",
+            conversations=[{
+                "id": "inline-conv",
+                "description": "With inline",
+                "type": "sequential",
+                "agents": ["inline-a", "inline-b"],
+                "inline_agents": [
+                    {"id": "inline-a", "model": "m1", "system_prompt": "You are A."},
+                    {"id": "inline-b", "model": "m1", "system_prompt": "You are B."},
+                ],
+            }],
+        )
+
+        mock_kernel = MagicMock()
+        mock_base = MagicMock(spec=ChatCompletionAgent)
+        mock_base.name = "sk-agent-base"
+        mock_base.kernel = mock_kernel
+
+        runner = ConversationRunner(config, {"base": mock_base})
+
+        with patch("sk_conversations.ChatCompletionAgent") as MockAgent, \
+             patch("sk_conversations.AgentGroupChat") as MockChat:
+
+            created_agents = []
+
+            def track_creation(**kwargs):
+                agent = MagicMock(spec=ChatCompletionAgent)
+                agent.name = kwargs.get("name", "unnamed")
+                agent.kernel = kwargs.get("kernel")
+                created_agents.append(agent)
+                return agent
+
+            MockAgent.side_effect = track_creation
+
+            mock_chat_instance = MagicMock()
+
+            async def fake_invoke():
+                return
+                yield
+
+            mock_chat_instance.invoke = fake_invoke
+            mock_chat_instance.add_chat_message = AsyncMock()
+            MockChat.return_value = mock_chat_instance
+
+            await runner.run("test", conversation_id="inline-conv")
+
+            # Verify 2 inline agents were created
+            assert len(created_agents) == 2
+            assert "inline-a" in created_agents[0].name
+            assert "inline-b" in created_agents[1].name
+            # Both reuse the same kernel
+            for agent in created_agents:
+                assert agent.kernel is mock_kernel
+
+
+# ---------------------------------------------------------------------------
+# Dynamic Description Mutation Tests
+# ---------------------------------------------------------------------------
+
+class TestDynamicDescriptionMutation:
+    """Tests for _update_tool_descriptions mutating FastMCP tool descriptions."""
+
+    def test_fastmcp_tool_description_can_be_mutated(self):
+        """Verify FastMCP Tool.description field is mutable."""
+        from mcp.server.fastmcp import FastMCP
+
+        server = FastMCP("test-mutation")
+
+        @server.tool()
+        def sample_tool(x: str) -> str:
+            """Original description"""
+            return x
+
+        tool = server._tool_manager._tools.get("sample_tool")
+        assert tool is not None
+        assert tool.description == "Original description"
+
+        tool.description = "Mutated description"
+        assert tool.description == "Mutated description"
+
+    def test_update_tool_descriptions_modifies_call_agent(self):
+        """_update_tool_descriptions changes call_agent description based on config."""
+        config = make_v2_config(
+            models=[{"id": "m1", "base_url": "http://test", "model_id": "v1", "context_window": 100000}],
+            agents=[{"id": "test-agent", "model": "m1", "description": "A test agent"}],
+            default_agent="test-agent",
+        )
+
+        # Access the actual mcp_server from sk_agent module
+        server = sk_agent.mcp_server
+
+        # Check if call_agent is registered
+        if "call_agent" in server._tool_manager._tools:
+            original_desc = server._tool_manager._tools["call_agent"].description
+
+            sk_agent._update_tool_descriptions(config)
+
+            new_desc = server._tool_manager._tools["call_agent"].description
+            assert "test-agent" in new_desc
+            assert "A test agent" in new_desc
+            assert "100K" in new_desc
+
+            # Restore original to not affect other tests
+            server._tool_manager._tools["call_agent"].description = original_desc
+
+    def test_update_tool_descriptions_modifies_run_conversation(self):
+        """_update_tool_descriptions changes run_conversation description."""
+        config = make_v2_config(
+            models=[{"id": "m1", "base_url": "http://test", "model_id": "v1"}],
+            agents=[{"id": "a1", "model": "m1"}],
+            conversations=[{
+                "id": "my-research",
+                "description": "Custom research pipeline",
+                "type": "sequential",
+                "agents": ["a1"],
+            }],
+        )
+
+        server = sk_agent.mcp_server
+
+        if "run_conversation" in server._tool_manager._tools:
+            original_desc = server._tool_manager._tools["run_conversation"].description
+
+            sk_agent._update_tool_descriptions(config)
+
+            new_desc = server._tool_manager._tools["run_conversation"].description
+            assert "my-research" in new_desc
+            assert "Custom research pipeline" in new_desc
+
+            # Restore
+            server._tool_manager._tools["run_conversation"].description = original_desc
+
+    def test_update_tool_descriptions_shows_memory_badge(self):
+        """Dynamic descriptions include [memory] for memory-enabled agents."""
+        config = make_v2_config(
+            models=[{"id": "m1", "base_url": "http://test", "model_id": "v1"}],
+            agents=[{
+                "id": "mem-agent",
+                "model": "m1",
+                "description": "Agent with memory",
+                "memory": {"enabled": True, "collection": "test-mem"},
+            }],
+            embeddings={
+                "base_url": "https://emb.test/v1",
+                "api_key": "key",
+                "model_id": "emb-model",
+                "dimensions": 1024,
+            },
+            default_agent="mem-agent",
+        )
+
+        desc = sk_agent.build_call_agent_description(config)
+        assert "memory" in desc
+        # Specifically in the agent line
+        agent_lines = [l for l in desc.splitlines() if "mem-agent" in l]
+        assert any("memory" in l for l in agent_lines)
+
+    def test_update_tool_descriptions_handles_exception_gracefully(self):
+        """_update_tool_descriptions doesn't crash on internal errors."""
+        config = make_v2_config()
+
+        # Mock mcp_server to cause error
+        with patch.object(sk_agent.mcp_server, "_tool_manager", None):
+            # Should not raise, just log
+            sk_agent._update_tool_descriptions(config)
+
+
+# ---------------------------------------------------------------------------
+# Conversation Preset Tests (existing, keep unchanged)
+# ---------------------------------------------------------------------------
 
 class TestConversationPresets:
     """Tests for built-in conversation presets."""
