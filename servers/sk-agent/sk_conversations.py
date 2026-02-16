@@ -339,30 +339,69 @@ class ConversationRunner:
             try:
                 from semantic_kernel.agents.strategies import KernelFunctionSelectionStrategy
                 from semantic_kernel.functions import KernelFunctionFromPrompt
+                from semantic_kernel.prompt_template import (
+                    InputVariable,
+                    PromptTemplateConfig,
+                )
 
                 # Use the first agent's kernel for the manager
                 manager_kernel = agents[0].kernel if agents else Kernel()
                 agent_names = ", ".join(a.name for a in agents)
+
+                # Build prompt with allow_dangerously_set_content for the
+                # history variable (SK >= 1.39 requires explicit opt-in).
+                prompt_text = (
+                    "You are a conversation manager. Given the conversation so far, "
+                    f"decide which agent should speak next. Available agents: {agent_names}.\n\n"
+                    "Rules:\n"
+                    "- If research/facts are needed, pick the researcher.\n"
+                    "- If synthesis is needed, pick the synthesizer.\n"
+                    "- If quality review is needed, pick the critic.\n"
+                    "- Respond with ONLY the agent name, nothing else.\n\n"
+                    "{{$history}}\n\n"
+                    "Next agent:"
+                )
+                prompt_template_config = PromptTemplateConfig(
+                    template=prompt_text,
+                    allow_dangerously_set_content=True,
+                    input_variables=[
+                        InputVariable(
+                            name="history",
+                            allow_dangerously_set_content=True,
+                        ),
+                        InputVariable(
+                            name="agents",
+                            allow_dangerously_set_content=True,
+                        ),
+                    ],
+                )
                 selection_fn = KernelFunctionFromPrompt(
                     function_name="select_next",
-                    prompt=f"""You are a conversation manager. Given the conversation so far,
-decide which agent should speak next. Available agents: {agent_names}.
-
-Rules:
-- If research/facts are needed, pick the researcher.
-- If synthesis is needed, pick the synthesizer.
-- If quality review is needed, pick the critic.
-- Respond with ONLY the agent name, nothing else.
-
-{{{{$history}}}}
-
-Next agent:""",
+                    prompt_template_config=prompt_template_config,
                 )
+                def _parse_selection_result(result) -> str:
+                    """Extract the agent name string from the function result."""
+                    # result is a FunctionResult whose .value is list[ChatMessageContent]
+                    if hasattr(result, 'value'):
+                        val = result.value
+                        # If it's a list of ChatMessageContent, get text from the last one
+                        if isinstance(val, list):
+                            for item in reversed(val):
+                                if hasattr(item, 'items'):
+                                    for sub in item.items:
+                                        if hasattr(sub, 'text') and sub.text:
+                                            return sub.text.strip()
+                                if hasattr(item, 'content') and item.content:
+                                    return str(item.content).strip()
+                        return str(val).strip()
+                    return str(result).strip()
+
                 selection_strategy = KernelFunctionSelectionStrategy(
                     kernel=manager_kernel,
                     function=selection_fn,
                     agent_variable_name="agents",
                     history_variable_name="history",
+                    result_parser=_parse_selection_result,
                 )
             except (ImportError, Exception) as e:
                 log.warning("KernelFunctionSelectionStrategy not available, falling back to sequential: %s", e)
