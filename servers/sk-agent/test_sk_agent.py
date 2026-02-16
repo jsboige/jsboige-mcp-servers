@@ -38,6 +38,7 @@ from sk_agent_config import (
     MemoryConfig,
     EmbeddingsConfig,
     QdrantConfig,
+    ConversationConfig,
     load_config,
     migrate_config_v1_to_v2,
     get_model_context_window,
@@ -1734,6 +1735,321 @@ class TestConversationInlineAgents:
             MockAgent.return_value = MagicMock()
             result = runner._create_inline_agent(inline_cfg)
             assert result is not None
+
+
+# ---------------------------------------------------------------------------
+# Shared Agent Resolution Priority Tests
+# ---------------------------------------------------------------------------
+
+class TestSharedAgentResolutionPriority:
+    """Tests that top-level (shared) agents take priority over inline agents.
+
+    When a conversation references agent IDs that exist both as top-level
+    config agents AND as inline_agents, the top-level agents must be used.
+    This ensures conversation agents promoted to shared top-level are actually
+    picked up by the ConversationRunner.
+    """
+
+    def test_top_level_agent_preferred_over_inline(self):
+        """Top-level SK agent is used when both top-level and inline exist with same ID."""
+        config = make_v2_config(
+            models=[{"id": "m1", "base_url": "http://test", "model_id": "v1"}],
+            agents=[{"id": "researcher", "model": "m1", "system_prompt": "TOP LEVEL researcher"}],
+            default_agent="researcher",
+        )
+
+        # Create a mock SK agent for the top-level "researcher"
+        mock_top_level_agent = MagicMock(spec=ChatCompletionAgent)
+        mock_top_level_agent.name = "sk-researcher"
+        mock_top_level_agent.kernel = MagicMock()
+
+        runner = ConversationRunner.__new__(ConversationRunner)
+        runner.config = config
+        runner.sk_agents = {"researcher": mock_top_level_agent}
+
+        # Create conversation config with inline agent that has same ID
+        conv = ConversationConfig(
+            id="test-conv",
+            description="Test",
+            type="sequential",
+            agents=["researcher"],
+            max_rounds=1,
+            inline_agents=[
+                AgentConfig(
+                    id="researcher",
+                    description="Inline researcher (should NOT be used)",
+                    model="m1",
+                    system_prompt="INLINE researcher",
+                ),
+            ],
+        )
+
+        resolved = runner._resolve_conversation_agents(conv)
+        assert len(resolved) == 1
+        # Must be the top-level mock, not a newly created inline agent
+        assert resolved[0] is mock_top_level_agent
+
+    def test_inline_agent_used_when_no_top_level(self):
+        """Inline agent is used as fallback when no top-level agent exists."""
+        config = make_v2_config(
+            models=[{"id": "m1", "base_url": "http://test", "model_id": "v1"}],
+            agents=[{"id": "other-agent", "model": "m1"}],
+            default_agent="other-agent",
+        )
+
+        mock_other = MagicMock(spec=ChatCompletionAgent)
+        mock_other.kernel = MagicMock()
+
+        runner = ConversationRunner.__new__(ConversationRunner)
+        runner.config = config
+        runner.sk_agents = {"other-agent": mock_other}
+
+        conv = ConversationConfig(
+            id="test-conv",
+            description="Test",
+            type="sequential",
+            agents=["inline-only"],
+            max_rounds=1,
+            inline_agents=[
+                AgentConfig(
+                    id="inline-only",
+                    description="Only exists inline",
+                    model="m1",
+                    system_prompt="I am inline only",
+                ),
+            ],
+        )
+
+        with patch("sk_conversations.ChatCompletionAgent") as MockAgent:
+            mock_created = MagicMock()
+            MockAgent.return_value = mock_created
+            resolved = runner._resolve_conversation_agents(conv)
+            assert len(resolved) == 1
+            # Must be the newly created inline agent
+            assert resolved[0] is mock_created
+
+    def test_mixed_resolution_top_level_and_inline(self):
+        """Conversation with mix of top-level and inline-only agents resolves both."""
+        config = make_v2_config(
+            models=[{"id": "m1", "base_url": "http://test", "model_id": "v1"}],
+            agents=[{"id": "shared-agent", "model": "m1"}],
+            default_agent="shared-agent",
+        )
+
+        mock_shared = MagicMock(spec=ChatCompletionAgent)
+        mock_shared.name = "sk-shared-agent"
+        mock_shared.kernel = MagicMock()
+
+        runner = ConversationRunner.__new__(ConversationRunner)
+        runner.config = config
+        runner.sk_agents = {"shared-agent": mock_shared}
+
+        conv = ConversationConfig(
+            id="mixed-conv",
+            description="Mixed resolution test",
+            type="sequential",
+            agents=["shared-agent", "inline-specialist"],
+            max_rounds=2,
+            inline_agents=[
+                AgentConfig(
+                    id="inline-specialist",
+                    description="Inline only",
+                    model="m1",
+                    system_prompt="Specialist",
+                ),
+            ],
+        )
+
+        with patch("sk_conversations.ChatCompletionAgent") as MockAgent:
+            mock_inline = MagicMock()
+            MockAgent.return_value = mock_inline
+            resolved = runner._resolve_conversation_agents(conv)
+            assert len(resolved) == 2
+            assert resolved[0] is mock_shared  # top-level
+            assert resolved[1] is mock_inline   # inline fallback
+
+    def test_unresolvable_agent_skipped_with_warning(self):
+        """Agent ID that exists neither top-level nor inline is skipped."""
+        config = make_v2_config(
+            models=[{"id": "m1", "base_url": "http://test", "model_id": "v1"}],
+            agents=[{"id": "a1", "model": "m1"}],
+        )
+
+        runner = ConversationRunner.__new__(ConversationRunner)
+        runner.config = config
+        runner.sk_agents = {"a1": MagicMock(spec=ChatCompletionAgent)}
+
+        conv = ConversationConfig(
+            id="test",
+            description="Test",
+            type="sequential",
+            agents=["nonexistent-agent"],
+            max_rounds=1,
+        )
+
+        resolved = runner._resolve_conversation_agents(conv)
+        assert len(resolved) == 0  # skipped, not crashed
+
+
+class TestSharedConversationAgentConfig:
+    """Tests that shared conversation agents in config/presets are well-formed."""
+
+    def test_deep_search_agents_have_non_empty_models_in_template(self):
+        """Template config agents for deep-search should have explicit models."""
+        # Load the template config
+        template_path = Path(__file__).parent / "sk_agent_config.template.json"
+        if not template_path.exists():
+            pytest.skip("Template config not found")
+
+        with open(template_path) as f:
+            raw = json.load(f)
+
+        agent_ids_needed = {"researcher", "synthesizer", "critic"}
+        agents_by_id = {a["id"]: a for a in raw.get("agents", [])}
+
+        for agent_id in agent_ids_needed:
+            assert agent_id in agents_by_id, f"Shared agent '{agent_id}' missing from template"
+            agent = agents_by_id[agent_id]
+            assert agent.get("model"), f"Agent '{agent_id}' has empty/missing model"
+
+    def test_deep_think_agents_have_non_empty_models_in_template(self):
+        """Template config agents for deep-think should have explicit models."""
+        template_path = Path(__file__).parent / "sk_agent_config.template.json"
+        if not template_path.exists():
+            pytest.skip("Template config not found")
+
+        with open(template_path) as f:
+            raw = json.load(f)
+
+        agent_ids_needed = {"optimist", "devils-advocate", "pragmatist", "mediator"}
+        agents_by_id = {a["id"]: a for a in raw.get("agents", [])}
+
+        for agent_id in agent_ids_needed:
+            assert agent_id in agents_by_id, f"Shared agent '{agent_id}' missing from template"
+            agent = agents_by_id[agent_id]
+            assert agent.get("model"), f"Agent '{agent_id}' has empty/missing model"
+
+    def test_all_shared_agents_have_unique_prompts(self):
+        """Each shared agent must have a distinct system_prompt (no copy-paste)."""
+        template_path = Path(__file__).parent / "sk_agent_config.template.json"
+        if not template_path.exists():
+            pytest.skip("Template config not found")
+
+        with open(template_path) as f:
+            raw = json.load(f)
+
+        prompts = {}
+        for agent in raw.get("agents", []):
+            prompt = agent.get("system_prompt", "")
+            if prompt:
+                assert prompt not in prompts.values(), (
+                    f"Agent '{agent['id']}' has duplicate system_prompt with another agent"
+                )
+                prompts[agent["id"]] = prompt
+
+    def test_conversation_agents_individually_callable(self):
+        """Shared conversation agents can be resolved individually via call_agent."""
+        config = make_v2_config(
+            models=[
+                {"id": "strong", "base_url": "http://test", "model_id": "v1"},
+                {"id": "fast", "base_url": "http://test", "model_id": "v2"},
+            ],
+            agents=[
+                {"id": "researcher", "model": "strong", "description": "Research agent"},
+                {"id": "critic", "model": "fast", "description": "Critic agent"},
+            ],
+            default_agent="researcher",
+        )
+
+        manager = sk_agent.SKAgentManager.__new__(sk_agent.SKAgentManager)
+        manager.config = config
+        manager._threads = {}
+
+        # Populate _sk_agents with mocks (simulating post-start() state)
+        mock_researcher = MagicMock(spec=ChatCompletionAgent)
+        mock_critic = MagicMock(spec=ChatCompletionAgent)
+        manager._sk_agents = {
+            "researcher": mock_researcher,
+            "critic": mock_critic,
+        }
+
+        # Verify each conversation agent resolves individually
+        agent_id, sk_agent_obj = manager._resolve_agent(agent_id="researcher")
+        assert agent_id == "researcher"
+        assert sk_agent_obj is mock_researcher
+
+        agent_id, sk_agent_obj = manager._resolve_agent(agent_id="critic")
+        assert agent_id == "critic"
+        assert sk_agent_obj is mock_critic
+
+    def test_config_conversations_reference_shared_agents(self):
+        """Config conversations (no inline_agents) resolve via shared top-level agents."""
+        config = make_v2_config(
+            models=[{"id": "m1", "base_url": "http://test", "model_id": "v1"}],
+            agents=[
+                {"id": "researcher", "model": "m1"},
+                {"id": "synthesizer", "model": "m1"},
+                {"id": "critic", "model": "m1"},
+            ],
+            conversations=[{
+                "id": "deep-search",
+                "description": "Test deep search",
+                "type": "magentic",
+                "agents": ["researcher", "synthesizer", "critic"],
+                "max_rounds": 5,
+            }],
+        )
+
+        # Create mock SK agents for all three
+        mock_agents = {}
+        for aid in ["researcher", "synthesizer", "critic"]:
+            mock = MagicMock(spec=ChatCompletionAgent)
+            mock.name = f"sk-{aid}"
+            mock.kernel = MagicMock()
+            mock_agents[aid] = mock
+
+        runner = ConversationRunner(config, mock_agents)
+
+        # Resolve the config-defined conversation (no inline_agents)
+        conv = runner._resolve_conversation("deep-search")
+        assert conv is not None
+        assert conv.id == "deep-search"
+
+        resolved = runner._resolve_conversation_agents(conv)
+        assert len(resolved) == 3
+        assert resolved[0] is mock_agents["researcher"]
+        assert resolved[1] is mock_agents["synthesizer"]
+        assert resolved[2] is mock_agents["critic"]
+
+    def test_preset_inline_agents_all_have_system_prompts(self):
+        """Built-in preset inline agents all have non-empty system_prompts."""
+        for preset_id, preset in PRESETS.items():
+            for inline in preset.inline_agents:
+                assert inline.system_prompt, (
+                    f"Preset '{preset_id}' inline agent '{inline.id}' has empty system_prompt"
+                )
+                assert len(inline.system_prompt) > 50, (
+                    f"Preset '{preset_id}' inline agent '{inline.id}' has suspiciously short prompt"
+                )
+
+    def test_model_diversity_in_template_agents(self):
+        """Template agents use at least 2 different models (not all on same model)."""
+        template_path = Path(__file__).parent / "sk_agent_config.template.json"
+        if not template_path.exists():
+            pytest.skip("Template config not found")
+
+        with open(template_path) as f:
+            raw = json.load(f)
+
+        models_used = set()
+        for agent in raw.get("agents", []):
+            model = agent.get("model", "")
+            if model:
+                models_used.add(model)
+
+        assert len(models_used) >= 2, (
+            f"Expected at least 2 different models across agents, got: {models_used}"
+        )
 
 
 # ---------------------------------------------------------------------------
