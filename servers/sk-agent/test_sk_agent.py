@@ -1523,7 +1523,7 @@ class TestConversationPresets:
         assert DEEP_SEARCH_PRESET.max_rounds == 10
 
     def test_deep_think_has_correct_agents(self):
-        assert DEEP_THINK_PRESET.agents == ["optimist", "devils-advocate", "pragmatist", "synthesizer-dt"]
+        assert DEEP_THINK_PRESET.agents == ["optimist", "devils-advocate", "pragmatist", "mediator"]
         assert DEEP_THINK_PRESET.type == "group_chat"
         assert DEEP_THINK_PRESET.max_rounds == 8
 
@@ -1533,7 +1533,7 @@ class TestConversationPresets:
 
     def test_deep_think_inline_agents(self):
         inline_ids = [a.id for a in DEEP_THINK_PRESET.inline_agents]
-        assert inline_ids == ["optimist", "devils-advocate", "pragmatist", "synthesizer-dt"]
+        assert inline_ids == ["optimist", "devils-advocate", "pragmatist", "mediator"]
 
 
 class TestConversationRunner:
