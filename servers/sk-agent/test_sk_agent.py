@@ -1,15 +1,18 @@
 #!/usr/bin/env python3
 """
-Unit tests for sk-agent MCP server.
+Unit tests for sk-agent MCP server v2.0.
 
 Tests cover:
-- Configuration loading and validation
-- Image processing utilities (crop)
-- Model selection logic
-- Recursion depth protection
-- SKAgentManager class
-- Video analysis integration
-- Document analysis integration
+- Configuration loading (v1 auto-migration, v2 direct)
+- Attachment classification
+- Agent resolution logic
+- SKAgentManager class (init, threads, list_agents)
+- call_agent routing (text, image, video, document)
+- Dynamic descriptions
+- Image processing utilities (crop, resize)
+- Video frame extraction
+- Backward compatibility (v1 config, deprecated aliases)
+- Context window inference
 """
 
 import io
@@ -18,7 +21,7 @@ import os
 import sys
 import tempfile
 from pathlib import Path
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock, AsyncMock, patch
 
 import pytest
 
@@ -26,6 +29,20 @@ import pytest
 sys.path.insert(0, str(Path(__file__).parent))
 
 import sk_agent
+from sk_agent_config import (
+    SKAgentConfig,
+    AgentConfig,
+    ModelConfig,
+    McpConfig,
+    MemoryConfig,
+    EmbeddingsConfig,
+    QdrantConfig,
+    load_config,
+    migrate_config_v1_to_v2,
+    get_model_context_window,
+    _parse_config,
+    DEFAULT_MAX_RECURSION_DEPTH,
+)
 from media_processing import (
     _crop_image,
     _resize_image_if_needed,
@@ -35,12 +52,78 @@ from media_processing import (
 
 
 # ---------------------------------------------------------------------------
+# Helper: Create SKAgentConfig from v2 data
+# ---------------------------------------------------------------------------
+
+def make_v2_config(
+    models: list | None = None,
+    agents: list | None = None,
+    mcps: list | None = None,
+    **kwargs,
+) -> SKAgentConfig:
+    """Create an SKAgentConfig directly from v2-style data."""
+    raw = {
+        "config_version": 2,
+        "models": models or [],
+        "agents": agents or [],
+        "mcps": mcps or [],
+        **kwargs,
+    }
+    return _parse_config(raw)
+
+
+def make_v1_config(**overrides) -> SKAgentConfig:
+    """Create an SKAgentConfig from a v1-style dict (auto-migrated)."""
+    raw = {"models": [], "mcps": [], **overrides}
+    migrated = migrate_config_v1_to_v2(raw)
+    return _parse_config(migrated)
+
+
+# ---------------------------------------------------------------------------
 # Test Fixtures
 # ---------------------------------------------------------------------------
 
 @pytest.fixture
+def sample_image():
+    """Create a sample PNG image for testing."""
+    from PIL import Image
+    img = Image.new("RGB", (100, 100), color="red")
+    buf = io.BytesIO()
+    img.save(buf, format="PNG")
+    buf.seek(0)
+    return buf.getvalue()
+
+
+@pytest.fixture
+def text_config():
+    """Config with a single text model -> single agent."""
+    return make_v2_config(
+        models=[{"id": "text-model", "base_url": "http://test", "model_id": "v1", "vision": False}],
+        agents=[{"id": "text-agent", "model": "text-model"}],
+        default_agent="text-agent",
+    )
+
+
+@pytest.fixture
+def vision_config():
+    """Config with text + vision models -> two agents."""
+    return make_v2_config(
+        models=[
+            {"id": "text-model", "base_url": "http://test", "model_id": "v1", "vision": False, "context_window": 200000},
+            {"id": "vision-model", "base_url": "http://test", "model_id": "v1-vis", "vision": True, "context_window": 128000},
+        ],
+        agents=[
+            {"id": "text-agent", "model": "text-model", "description": "Text agent"},
+            {"id": "vision-agent", "model": "vision-model", "description": "Vision agent"},
+        ],
+        default_agent="text-agent",
+        default_vision_agent="vision-agent",
+    )
+
+
+@pytest.fixture
 def isolated_config(tmp_path):
-    """Create a temporary config file and set SK_AGENT_CONFIG."""
+    """Create a temporary v1 config file and set SK_AGENT_CONFIG."""
     config_data = {
         "default_ask_model": "test-model",
         "default_vision_model": "test-vision",
@@ -83,49 +166,69 @@ def isolated_config(tmp_path):
         del os.environ["SK_AGENT_CONFIG"]
 
 
-@pytest.fixture
-def sample_image():
-    """Create a sample PNG image for testing."""
-    from PIL import Image
-    img = Image.new("RGB", (100, 100), color="red")
-    buf = io.BytesIO()
-    img.save(buf, format="PNG")
-    buf.seek(0)
-    return buf.getvalue()
-
-
 # ---------------------------------------------------------------------------
 # Configuration Tests
 # ---------------------------------------------------------------------------
 
 class TestConfigLoading:
-    """Tests for configuration loading and validation."""
+    """Tests for config loading via the sk_agent module."""
 
     @pytest.mark.skip(reason="Module reload isolation issue - config cached at import")
     def test_load_config_missing_file(self, tmp_path):
-        """Test loading config when file doesn't exist."""
         pass
 
     def test_load_config_valid_file(self, isolated_config):
-        """Test loading a valid config file."""
-        import importlib
-        importlib.reload(sk_agent)
-        config = sk_agent.load_config()
+        """Test loading a valid v1 config file (auto-migrates to v2)."""
+        config = load_config(isolated_config)
 
-        assert "models" in config
-        assert len(config["models"]) == 2
-        assert config["default_ask_model"] == "test-model"
-        assert config["default_vision_model"] == "test-vision"
+        assert type(config).__name__ == "SKAgentConfig"
+        assert len(config.models) == 2
+        # V1 models become agents with same IDs
+        assert len(config.agents) == 2
 
     @pytest.mark.skip(reason="Module reload isolation issue")
     def test_load_config_backward_compatibility(self, tmp_path):
-        """Test backward compatibility with old config format."""
         pass
 
     @pytest.mark.skip(reason="Module reload isolation issue")
     def test_load_config_auto_default_models(self, tmp_path):
-        """Test auto-setting default models."""
         pass
+
+
+# ---------------------------------------------------------------------------
+# Attachment Classification Tests
+# ---------------------------------------------------------------------------
+
+class TestAttachmentClassification:
+    """Tests for classify_attachment()."""
+
+    def test_image_extensions(self):
+        assert sk_agent.classify_attachment("photo.png") == "image"
+        assert sk_agent.classify_attachment("photo.jpg") == "image"
+        assert sk_agent.classify_attachment("photo.JPEG") == "image"
+        assert sk_agent.classify_attachment("photo.webp") == "image"
+
+    def test_video_extensions(self):
+        assert sk_agent.classify_attachment("clip.mp4") == "video"
+        assert sk_agent.classify_attachment("clip.avi") == "video"
+        assert sk_agent.classify_attachment("clip.MOV") == "video"
+
+    def test_document_extensions(self):
+        assert sk_agent.classify_attachment("doc.pdf") == "document"
+        assert sk_agent.classify_attachment("doc.pptx") == "document"
+        assert sk_agent.classify_attachment("doc.docx") == "document"
+        assert sk_agent.classify_attachment("doc.xlsx") == "document"
+
+    def test_unknown_extension(self):
+        assert sk_agent.classify_attachment("file.txt") is None
+        assert sk_agent.classify_attachment("file.py") is None
+        assert sk_agent.classify_attachment("") is None
+
+    def test_url_classification(self):
+        assert sk_agent.classify_attachment("https://example.com/photo.png") == "image"
+        assert sk_agent.classify_attachment("https://example.com/video.mp4") == "video"
+        assert sk_agent.classify_attachment("https://example.com/report.pdf") == "document"
+        assert sk_agent.classify_attachment("https://example.com/page") is None
 
 
 # ---------------------------------------------------------------------------
@@ -145,7 +248,6 @@ class TestImageProcessing:
         """Test that large images are resized."""
         from PIL import Image
 
-        # Create a very large image
         img = Image.new("RGB", (2000, 2000), color="blue")
         buf = io.BytesIO()
         img.save(buf, format="PNG")
@@ -153,11 +255,9 @@ class TestImageProcessing:
 
         resized_data, media_type = _resize_image_if_needed(
             large_data, "image/png",
-            max_bytes=100_000,  # 100 KB limit
+            max_bytes=100_000,
             max_pixels=500_000,
         )
-
-        # Should have been resized
         assert len(resized_data) <= 100_000
 
     def test_crop_image_pixels(self, sample_image):
@@ -178,11 +278,9 @@ class TestImageProcessing:
 
     def test_crop_image_clamp_bounds(self, sample_image):
         """Test that crop region is clamped to image bounds."""
-        # Request crop beyond image bounds
         region = {"x": 80, "y": 80, "width": 100, "height": 100}
         cropped_data, media_type = _crop_image(sample_image, "image/png", region)
 
-        # Should still succeed with clamped bounds
         assert len(cropped_data) > 0
 
 
@@ -195,15 +293,18 @@ class TestRecursionDepth:
 
     def test_default_max_recursion_depth(self):
         """Test default recursion depth value."""
-        assert sk_agent.DEFAULT_MAX_RECURSION_DEPTH == 2
+        assert DEFAULT_MAX_RECURSION_DEPTH == 2
 
     def test_sk_agent_depth_env_var(self, monkeypatch):
         """Test SK_AGENT_DEPTH environment variable."""
         monkeypatch.setenv("SK_AGENT_DEPTH", "3")
-        # Need to reload to pick up env var
         import importlib
-        importlib.reload(sk_agent)
-        assert sk_agent.SK_AGENT_DEPTH == 3
+        import sk_agent_config
+        importlib.reload(sk_agent_config)
+        assert sk_agent_config.SK_AGENT_DEPTH == 3
+        # Cleanup
+        monkeypatch.delenv("SK_AGENT_DEPTH")
+        importlib.reload(sk_agent_config)
 
 
 # ---------------------------------------------------------------------------
@@ -213,206 +314,323 @@ class TestRecursionDepth:
 class TestSKAgentManager:
     """Tests for SKAgentManager class."""
 
-    def test_init(self):
-        """Test SKAgentManager initialization."""
-        config = {"models": [], "mcps": []}
+    def test_init_empty(self):
+        """Test SKAgentManager with empty config."""
+        config = make_v2_config()
         manager = sk_agent.SKAgentManager(config)
 
-        assert manager.config == config
-        assert manager._agents == {}
+        assert manager.config is config
+        assert manager._sk_agents == {}
         assert manager._kernels == {}
+        assert manager._threads == {}
 
-    def test_list_models(self, isolated_config):
-        """Test list_models method."""
-        import importlib
-        importlib.reload(sk_agent)
+    def test_init_with_config(self, vision_config):
+        """Test SKAgentManager stores config, agents not created until start()."""
+        manager = sk_agent.SKAgentManager(vision_config)
+        assert manager.config is vision_config
+        assert len(manager._sk_agents) == 0
 
-        config = sk_agent.load_config()
-        manager = sk_agent.SKAgentManager(config)
-        manager._agents = {"test-model": MagicMock(), "test-vision": MagicMock()}
+    def test_list_agents(self, vision_config):
+        """Test list_agents method."""
+        manager = sk_agent.SKAgentManager(vision_config)
+        agents = manager.list_agents()
 
-        models = manager.list_models()
+        assert len(agents) == 2
+        assert agents[0]["id"] == "text-agent"
+        assert agents[1]["id"] == "vision-agent"
+        assert agents[0]["is_default"]
+        assert not agents[0]["is_default_vision"]
+        assert not agents[1]["is_default"]
+        assert agents[1]["is_default_vision"]
 
-        assert len(models) == 2
-        assert models[0]["id"] == "test-model"
-        assert models[1]["id"] == "test-vision"
-        assert models[0]["is_default_ask"]
-        assert not models[0]["is_default_vision"]
-        assert not models[1]["is_default_ask"]
-        assert models[1]["is_default_vision"]
+    def test_list_agents_vision_flag(self, vision_config):
+        """Test that vision flag is correctly reported."""
+        manager = sk_agent.SKAgentManager(vision_config)
+        agents = manager.list_agents()
+        assert agents[0]["vision"] is False
+        assert agents[1]["vision"] is True
 
-    def test_get_or_create_thread_new(self):
+    def test_list_agents_model_info(self, vision_config):
+        """Test that model info is carried over."""
+        manager = sk_agent.SKAgentManager(vision_config)
+        agents = manager.list_agents()
+        model_ids = {a["model_id"] for a in agents}
+        assert "v1" in model_ids
+        assert "v1-vis" in model_ids
+
+    def test_get_or_create_thread_new(self, text_config):
         """Test creating a new thread."""
-        config = {"models": [], "mcps": []}
-        manager = sk_agent.SKAgentManager(config)
-
+        manager = sk_agent.SKAgentManager(text_config)
         conv_id, thread = manager._get_or_create_thread(None)
 
         assert conv_id is not None
         assert thread is not None
         assert conv_id in manager._threads
 
-    def test_get_or_create_thread_existing(self):
+    def test_get_or_create_thread_existing(self, text_config):
         """Test getting an existing thread."""
-        config = {"models": [], "mcps": []}
-        manager = sk_agent.SKAgentManager(config)
-
-        # Create a thread first
+        manager = sk_agent.SKAgentManager(text_config)
         conv_id, thread = manager._get_or_create_thread(None)
-
-        # Get the same thread
         conv_id2, thread2 = manager._get_or_create_thread(conv_id)
 
         assert conv_id == conv_id2
         assert thread == thread2
 
-    def test_end_conversation(self):
+    def test_end_conversation(self, text_config):
         """Test ending a conversation."""
-        config = {"models": [], "mcps": []}
-        manager = sk_agent.SKAgentManager(config)
-
-        # Create a thread
+        manager = sk_agent.SKAgentManager(text_config)
         conv_id, _ = manager._get_or_create_thread(None)
         assert conv_id in manager._threads
 
-        # End it
         result = manager.end_conversation(conv_id)
         assert result is True
         assert conv_id not in manager._threads
 
-    def test_end_conversation_not_found(self):
+    def test_end_conversation_not_found(self, text_config):
         """Test ending a non-existent conversation."""
-        config = {"models": [], "mcps": []}
-        manager = sk_agent.SKAgentManager(config)
-
+        manager = sk_agent.SKAgentManager(text_config)
         result = manager.end_conversation("non-existent")
         assert result is False
 
 
 # ---------------------------------------------------------------------------
-# Model Selection Tests
+# Agent Resolution Tests
 # ---------------------------------------------------------------------------
 
-class TestModelSelection:
-    """Tests for model selection logic."""
+class TestAgentResolution:
+    """Tests for _resolve_agent() logic."""
 
-    def test_get_model_config_found(self):
-        """Test finding a model config."""
-        config = {
-            "models": [
-                {"id": "model-a", "vision": False},
-                {"id": "model-b", "vision": True},
-            ]
-        }
+    def test_resolve_explicit_agent_id(self, vision_config):
+        """Explicit agent_id overrides all defaults."""
+        manager = sk_agent.SKAgentManager(vision_config)
+        manager._sk_agents = {"text-agent": MagicMock(), "vision-agent": MagicMock()}
+
+        agent_id, agent = manager._resolve_agent(agent_id="vision-agent")
+        assert agent_id == "vision-agent"
+        assert agent is not None
+
+    def test_resolve_default_agent(self, vision_config):
+        """No hints -> default agent."""
+        manager = sk_agent.SKAgentManager(vision_config)
+        manager._sk_agents = {"text-agent": MagicMock(), "vision-agent": MagicMock()}
+
+        agent_id, agent = manager._resolve_agent()
+        assert agent_id == "text-agent"
+
+    def test_resolve_vision_default(self, vision_config):
+        """needs_vision=True -> default vision agent."""
+        manager = sk_agent.SKAgentManager(vision_config)
+        manager._sk_agents = {"text-agent": MagicMock(), "vision-agent": MagicMock()}
+
+        agent_id, agent = manager._resolve_agent(needs_vision=True)
+        assert agent_id == "vision-agent"
+
+    def test_resolve_no_agents(self):
+        """No agents initialized -> (None, None)."""
+        config = make_v2_config()
         manager = sk_agent.SKAgentManager(config)
 
-        result = manager._get_model_config("model-b")
+        agent_id, agent = manager._resolve_agent()
+        assert agent_id is None
+        assert agent is None
 
-        assert result is not None
-        assert result["id"] == "model-b"
-        assert result["vision"] is True
+    def test_resolve_model_id_backward_compat(self, vision_config):
+        """model_id maps to agent that uses that model."""
+        manager = sk_agent.SKAgentManager(vision_config)
+        manager._sk_agents = {"text-agent": MagicMock(), "vision-agent": MagicMock()}
 
-    def test_get_model_config_not_found(self):
-        """Test model config not found."""
-        config = {"models": [{"id": "model-a", "vision": False}]}
+        agent_id, agent = manager._resolve_agent(model_id="vision-model")
+        assert agent_id == "vision-agent"
+
+    def test_resolve_first_available(self):
+        """No default configured -> first available agent."""
+        config = make_v2_config(
+            models=[{"id": "m1", "base_url": "http://test", "model_id": "v1"}],
+            agents=[{"id": "only-agent", "model": "m1"}],
+        )
         manager = sk_agent.SKAgentManager(config)
+        manager._sk_agents = {"only-agent": MagicMock()}
 
-        result = manager._get_model_config("non-existent")
+        agent_id, agent = manager._resolve_agent()
+        assert agent_id == "only-agent"
 
-        assert result is None
+    def test_resolve_nonexistent_agent_id_falls_through(self, vision_config):
+        """Nonexistent agent_id falls through to defaults."""
+        manager = sk_agent.SKAgentManager(vision_config)
+        manager._sk_agents = {"text-agent": MagicMock(), "vision-agent": MagicMock()}
+
+        agent_id, agent = manager._resolve_agent(agent_id="nonexistent")
+        # Falls through: not in _sk_agents -> goes to default
+        assert agent_id == "text-agent"
 
 
 # ---------------------------------------------------------------------------
-# Integration Tests
+# call_agent Integration Tests
 # ---------------------------------------------------------------------------
 
-class TestIntegration:
-    """Integration tests with mocked agents."""
+class TestCallAgent:
+    """Tests for the unified call_agent method."""
 
     @pytest.mark.asyncio
-    async def test_ask_no_models(self):
-        """Test ask with no models configured."""
-        config = {"models": [], "mcps": []}
+    async def test_call_agent_no_agents(self):
+        """No agents -> error."""
+        config = make_v2_config()
         manager = sk_agent.SKAgentManager(config)
 
-        result = await manager.ask("test prompt")
-
+        result = await manager.call_agent("test prompt")
         assert "error" in result
         assert "No agents" in result["error"]
 
     @pytest.mark.asyncio
-    async def test_analyze_image_region_no_vision_model(self, tmp_path):
-        """Test analyze_image_region when no vision model is available."""
-        config = {"models": [{"id": "text-only", "vision": False}]}
-        manager = sk_agent.SKAgentManager(config)
-        manager._agents = {"text-only": MagicMock()}
+    async def test_call_agent_text_routing(self, vision_config):
+        """Text-only prompt routes to default agent."""
+        manager = sk_agent.SKAgentManager(vision_config)
 
-        # Create a test image
+        mock_agent = MagicMock()
+        async def fake_invoke(**kwargs):
+            resp = MagicMock()
+            resp.__str__ = lambda self: "Hello!"
+            resp.thread = MagicMock()
+            yield resp
+        mock_agent.invoke = fake_invoke
+        manager._sk_agents = {"text-agent": mock_agent, "vision-agent": MagicMock()}
+
+        result = await manager.call_agent("Hello")
+        assert result["agent_used"] == "text-agent"
+        assert result["response"] == "Hello!"
+
+    @pytest.mark.asyncio
+    async def test_call_agent_image_routing(self, vision_config, tmp_path, sample_image):
+        """Image attachment routes to vision agent."""
+        manager = sk_agent.SKAgentManager(vision_config)
+
+        mock_agent = MagicMock()
+        async def fake_invoke(**kwargs):
+            resp = MagicMock()
+            resp.__str__ = lambda self: "I see a red image"
+            resp.thread = MagicMock()
+            yield resp
+        mock_agent.invoke = fake_invoke
+        manager._sk_agents = {"text-agent": MagicMock(), "vision-agent": mock_agent}
+
         from PIL import Image
-        img = Image.new("RGB", (100, 100), color="red")
         img_path = tmp_path / "test.png"
+        img = Image.open(io.BytesIO(sample_image))
         img.save(img_path)
 
-        result = await manager.analyze_image_region(
-            str(img_path),
-            region={"x": 0, "y": 0, "width": 50, "height": 50}
-        )
+        result = await manager.call_agent("Describe this", attachment=str(img_path))
+        assert result["agent_used"] == "vision-agent"
+        assert "I see a red image" in result["response"]
 
-        assert "error" in result
+    @pytest.mark.asyncio
+    async def test_call_agent_explicit_agent_override(self, vision_config):
+        """Explicit agent_id overrides auto-selection."""
+        manager = sk_agent.SKAgentManager(vision_config)
+
+        mock_vision = MagicMock()
+        async def fake_invoke(**kwargs):
+            resp = MagicMock()
+            resp.__str__ = lambda self: "From vision"
+            resp.thread = MagicMock()
+            yield resp
+        mock_vision.invoke = fake_invoke
+        manager._sk_agents = {"text-agent": MagicMock(), "vision-agent": mock_vision}
+
+        result = await manager.call_agent("Hello", agent_id="vision-agent")
+        assert result["agent_used"] == "vision-agent"
 
 
 # ---------------------------------------------------------------------------
-# Model Enabled Tests
+# Dynamic Description Tests
+# ---------------------------------------------------------------------------
+
+class TestDynamicDescriptions:
+    """Tests for build_call_agent_description and build_list_agents_description."""
+
+    def test_call_agent_description_lists_agents(self, vision_config):
+        desc = sk_agent.build_call_agent_description(vision_config)
+        assert "text-agent" in desc
+        assert "vision-agent" in desc
+        assert "Available agents:" in desc
+
+    def test_call_agent_description_shows_vision(self, vision_config):
+        desc = sk_agent.build_call_agent_description(vision_config)
+        assert "vision" in desc.lower()
+
+    def test_call_agent_description_shows_defaults(self, vision_config):
+        desc = sk_agent.build_call_agent_description(vision_config)
+        assert "Default: text-agent" in desc
+        assert "Default vision: vision-agent" in desc
+
+    def test_list_agents_description_count(self, vision_config):
+        desc = sk_agent.build_list_agents_description(vision_config)
+        assert "2" in desc
+
+    def test_call_agent_description_shows_tools(self):
+        """Agents with MCPs show tool badges."""
+        config = make_v2_config(
+            models=[{"id": "m1", "base_url": "http://test", "model_id": "v1"}],
+            agents=[{"id": "researcher", "model": "m1", "mcps": ["searxng"], "description": "Web researcher"}],
+            mcps=[{"id": "searxng", "command": "npx", "args": ["-y", "mcp-searxng"]}],
+        )
+        desc = sk_agent.build_call_agent_description(config)
+        assert "searxng" in desc
+        assert "tools:" in desc
+
+
+# ---------------------------------------------------------------------------
+# Model Enabled/Disabled Tests
 # ---------------------------------------------------------------------------
 
 class TestModelEnabled:
-    """Tests for model enabled/disabled functionality."""
+    """Tests for model enabled/disabled behavior in the agent layer."""
 
-    def test_list_models_includes_enabled_field(self):
-        """Test that list_models includes enabled field."""
-        config = {
-            "models": [
-                {"id": "enabled-model", "enabled": True, "vision": False},
-                {"id": "disabled-model", "enabled": False, "vision": False},
-            ]
-        }
-        manager = sk_agent.SKAgentManager(config)
-
-        models = manager.list_models()
-
-        assert models[0]["enabled"] is True
-        assert models[1]["enabled"] is False
-
-    def test_disabled_model_not_loaded(self):
-        """Test that disabled models are not loaded."""
-        config = {
-            "models": [
+    def test_disabled_model_agent_not_listed(self):
+        """Agents whose model is disabled are excluded from list_agents."""
+        config = make_v2_config(
+            models=[
                 {"id": "enabled-model", "enabled": True, "base_url": "http://test", "model_id": "v1"},
                 {"id": "disabled-model", "enabled": False, "base_url": "http://test", "model_id": "v2"},
-            ]
-        }
+            ],
+            agents=[
+                {"id": "enabled-agent", "model": "enabled-model"},
+                {"id": "disabled-agent", "model": "disabled-model"},
+            ],
+        )
         manager = sk_agent.SKAgentManager(config)
-        manager._agents = {"enabled-model": MagicMock()}  # Simulate only enabled loaded
+        agents = manager.list_agents()
 
-        assert "enabled-model" in manager._agents
-        assert "disabled-model" not in manager._agents
+        assert len(agents) == 1
+        assert agents[0]["id"] == "enabled-agent"
 
-    def test_vision_search_ignores_disabled_models(self):
-        """Test that vision model search ignores disabled models."""
-        config = {
-            "default_vision_model": "disabled-vision",
-            "models": [
-                {"id": "disabled-vision", "enabled": False, "vision": True},
-                {"id": "enabled-vision", "enabled": True, "vision": True},
-            ]
-        }
+    def test_disabled_model_not_in_description(self):
+        """Agents with disabled models don't appear in dynamic description."""
+        config = make_v2_config(
+            models=[
+                {"id": "enabled-model", "enabled": True, "base_url": "http://test", "model_id": "v1"},
+                {"id": "disabled-model", "enabled": False, "base_url": "http://test", "model_id": "v2"},
+            ],
+            agents=[
+                {"id": "active-agent", "model": "enabled-model", "description": "Active"},
+                {"id": "inactive-agent", "model": "disabled-model", "description": "Inactive"},
+            ],
+        )
+        desc = sk_agent.build_call_agent_description(config)
+        assert "active-agent" in desc
+        assert "inactive-agent" not in desc
+
+    def test_v1_migration_disabled_model(self):
+        """V1 disabled models become agents but are filtered in list_agents."""
+        config = make_v1_config(
+            models=[
+                {"id": "enabled", "enabled": True, "base_url": "http://test", "model_id": "v1", "vision": False},
+                {"id": "disabled", "enabled": False, "base_url": "http://test", "model_id": "v2", "vision": False},
+            ],
+        )
         manager = sk_agent.SKAgentManager(config)
-        manager._agents = {"enabled-vision": MagicMock()}
-
-        # Get model config should find the enabled one
-        enabled_cfg = manager._get_model_config("enabled-vision")
-        assert enabled_cfg is not None
-        assert enabled_cfg["vision"] is True
+        agents = manager.list_agents()
+        # Only enabled model's agent shows
+        assert len(agents) == 1
 
 
 # ---------------------------------------------------------------------------
@@ -429,10 +647,7 @@ class TestZoomContext:
             "stack": [{"x": 100, "y": 200, "w": 300, "h": 400}],
             "original_source": "test.png"
         }
-        import json
         context_str = json.dumps(zoom_context)
-
-        # Verify it can be serialized
         parsed = json.loads(context_str)
         assert parsed["depth"] == 1
         assert len(parsed["stack"]) == 1
@@ -441,62 +656,7 @@ class TestZoomContext:
         """Test that zoom depth increases with each zoom."""
         context_v1 = {"depth": 1, "stack": [], "original_source": "test.png"}
         context_v2 = {"depth": 2, "stack": [{"x": 0, "y": 0, "w": 100, "h": 100}], "original_source": "test.png"}
-
         assert context_v2["depth"] > context_v1["depth"]
-
-
-# ---------------------------------------------------------------------------
-# Advanced Vision Capabilities Tests
-# ---------------------------------------------------------------------------
-
-class TestAdvancedVisionCapabilities:
-    """Tests for advanced vision features."""
-
-    @pytest.mark.asyncio
-    async def test_ask_with_media_supports_single_image(self, sample_image):
-        """Test that _ask_with_media can handle a single image."""
-        config = {
-            "default_vision_model": "test-vision",
-            "models": [{"id": "test-vision", "vision": True, "base_url": "http://test", "model_id": "v1"}]
-        }
-        manager = sk_agent.SKAgentManager(config)
-        manager._agents = {"test-vision": MagicMock()}
-
-        from semantic_kernel.contents import ImageContent
-        import base64
-        b64_data = base64.b64encode(sample_image).decode("ascii")
-        image_item = ImageContent(data_uri=f"data:image/png;base64,{b64_data}")
-
-        # This should not raise an error about image handling
-        # The actual agent invocation would need mocking for full test
-
-    @pytest.mark.asyncio
-    async def test_analyze_image_region_with_zoom_context(self, sample_image, tmp_path):
-        """Test image region analysis with zoom context."""
-        config = {
-            "default_vision_model": "test-vision",
-            "models": [{"id": "test-vision", "vision": True, "base_url": "http://test", "model_id": "v1"}]
-        }
-        manager = sk_agent.SKAgentManager(config)
-        manager._agents = {"test-vision": MagicMock()}
-
-        # Create a test image file
-        from PIL import Image
-        img = Image.open(io.BytesIO(sample_image))
-        img_path = tmp_path / "test.png"
-        img.save(img_path)
-
-        import base64
-        zoom_context = '{"depth": 1, "stack": []}'
-
-        result = await manager.analyze_image_region(
-            str(img_path),
-            region={"x": 0, "y": 0, "width": 50, "height": 50},
-            zoom_context=zoom_context
-        )
-
-        # Result should include the zoom context in the prompt
-        # (actual result depends on mocked agent)
 
 
 # ---------------------------------------------------------------------------
@@ -504,7 +664,7 @@ class TestAdvancedVisionCapabilities:
 # ---------------------------------------------------------------------------
 
 class TestVideoAnalysis:
-    """Tests for video analysis functionality."""
+    """Tests for video analysis via call_agent routing."""
 
     def test_extract_video_frames_function_exists(self):
         """Test that _extract_video_frames function exists."""
@@ -513,7 +673,6 @@ class TestVideoAnalysis:
 
         sig = inspect.signature(_extract_video_frames)
         params = list(sig.parameters.keys())
-
         assert "video_path" in params
         assert "num_frames" in params
 
@@ -522,28 +681,22 @@ class TestVideoAnalysis:
         fake_video = tmp_path / "test.mp4"
         fake_video.write_bytes(b"fake video")
 
-        # Create a test frame image
         from PIL import Image
-        import io
         img = Image.new('RGB', (100, 100), color='red')
         buf = io.BytesIO()
         img.save(buf, format='JPEG')
         fake_frame = buf.getvalue()
 
-        # Mock _get_video_info to return valid info
         mock_video_info = MagicMock()
         mock_video_info.duration = 10.0
         mock_video_info.width = 640
         mock_video_info.height = 480
 
-        # Mock subprocess to simulate ffmpeg frame extraction
         def mock_run(cmd, *args, **kwargs):
             result = MagicMock()
             result.returncode = 0
             result.stderr = ""
-            # If this is an ffmpeg frame extraction command
             if "ffmpeg" in cmd and "-frames:v" in cmd:
-                # Find output path (last argument)
                 output_path = cmd[-1]
                 Path(output_path).parent.mkdir(parents=True, exist_ok=True)
                 with open(output_path, 'wb') as f:
@@ -554,104 +707,366 @@ class TestVideoAnalysis:
             with patch('media_processing.subprocess.run', side_effect=mock_run):
                 frames = _extract_video_frames(str(fake_video), num_frames=2)
 
-        # Should have extracted 2 frames
         assert len(frames) == 2
 
     @pytest.mark.asyncio
-    async def test_analyze_video_no_vision_model(self, tmp_path):
-        """Test analyze_video when no vision model is available."""
-        config = {"models": [{"id": "text-only", "vision": False}]}
-        manager = sk_agent.SKAgentManager(config)
-        manager._agents = {"text-only": MagicMock()}
-
-        # Create a fake video file
-        fake_video = tmp_path / "test.mp4"
-        fake_video.write_bytes(b"fake video")
-
-        result = await manager.analyze_video(str(fake_video))
-
-        assert "error" in result
-
-    @pytest.mark.asyncio
-    async def test_analyze_video_success(self, tmp_path):
-        """Test successful video analysis."""
-        config = {
-            "default_vision_model": "test-vision",
-            "models": [{"id": "test-vision", "vision": True, "base_url": "http://test", "model_id": "v1"}]
-        }
-        manager = sk_agent.SKAgentManager(config)
+    async def test_video_routing_with_vision_agent(self, tmp_path, vision_config):
+        """Video file routes to vision agent."""
+        manager = sk_agent.SKAgentManager(vision_config)
 
         mock_agent = MagicMock()
-        manager._agents = {"test-vision": mock_agent}
-        manager._threads = {}
+        async def fake_invoke(**kwargs):
+            resp = MagicMock()
+            resp.__str__ = lambda self: "Video summary"
+            resp.thread = MagicMock()
+            yield resp
+        mock_agent.invoke = fake_invoke
+        manager._sk_agents = {"text-agent": MagicMock(), "vision-agent": mock_agent}
 
-        # Create a fake video file
         fake_video = tmp_path / "test.mp4"
         fake_video.write_bytes(b"fake video")
 
-        # Mock video info extraction
-        with patch('sk_agent._get_video_info', return_value=None):
-            # Mock frame extraction
-            from PIL import Image
-            import io
-            img = Image.new('RGB', (100, 100), color='red')
-            buf = io.BytesIO()
-            img.save(buf, format='JPEG')
-            fake_frame = buf.getvalue()
+        from PIL import Image
+        img = Image.new('RGB', (100, 100), color='red')
+        buf = io.BytesIO()
+        img.save(buf, format='JPEG')
+        fake_frame = buf.getvalue()
 
+        with patch('sk_agent._get_video_info', return_value=None):
             with patch('sk_agent._extract_keyframes', return_value=[
                 (fake_frame, "image/jpeg"),
                 (fake_frame, "image/jpeg"),
             ]):
-                async def mock_invoke(*args, **kwargs):
-                    mock_response = MagicMock()
-                    mock_response.__str__ = lambda self: "Video summary"
-                    mock_response.thread = MagicMock()
-                    yield mock_response
+                result = await manager.call_agent("Describe video", attachment=str(fake_video))
 
-                mock_agent.invoke = mock_invoke
-                result = await manager.analyze_video(str(fake_video))
-
-        assert "response" in result
-        assert result["frames_analyzed"] == 2
+        assert result.get("agent_used") == "vision-agent"
+        assert result.get("frames_analyzed") == 2
 
 
 # ---------------------------------------------------------------------------
-# Context Window Tests
+# Context Window Tests (via sk_agent_config)
 # ---------------------------------------------------------------------------
 
 class TestContextWindow:
-    """Tests for context window functionality."""
+    """Tests for context window inference."""
 
-    def test_get_model_context_window_explicit(self):
-        """Test getting explicit context window from config."""
-        config = {
-            "models": [
-                {"id": "test", "context_window": 100_000}
-            ]
-        }
-        result = sk_agent.get_model_context_window(config, "test")
+    def test_explicit_context_window(self):
+        """Explicit context_window in config is used."""
+        config = make_v2_config(
+            models=[{"id": "test", "base_url": "http://test", "model_id": "v1", "context_window": 100_000}],
+            agents=[{"id": "a", "model": "test"}],
+        )
+        result = get_model_context_window(config, "test")
         assert result == 100_000
 
-    def test_get_model_context_window_vision_default(self):
-        """Test default context window for vision models."""
-        config = {
-            "models": [
-                {"id": "test", "vision": True}
-            ]
-        }
-        result = sk_agent.get_model_context_window(config, "test")
+    def test_vision_model_default_context_window(self):
+        """Vision models default to 128K."""
+        config = make_v2_config(
+            models=[{"id": "test", "base_url": "http://test", "model_id": "v1", "vision": True}],
+            agents=[{"id": "a", "model": "test"}],
+        )
+        result = get_model_context_window(config, "test")
         assert result == 128_000
 
-    def test_get_model_context_window_cloud_default(self):
-        """Test default context window for cloud models."""
-        config = {
-            "models": [
-                {"id": "test", "vision": False, "base_url": "https://api.z.ai/v1"}
-            ]
-        }
-        result = sk_agent.get_model_context_window(config, "test")
+    def test_cloud_model_default_context_window(self):
+        """Cloud models (z.ai) default to 200K."""
+        config = make_v2_config(
+            models=[{"id": "test", "base_url": "https://api.z.ai/v1", "model_id": "v1", "vision": False}],
+            agents=[{"id": "a", "model": "test"}],
+        )
+        result = get_model_context_window(config, "test")
         assert result == 200_000
+
+    def test_unknown_model_default(self):
+        """Unknown model returns 32K default."""
+        config = make_v2_config()
+        result = get_model_context_window(config, "nonexistent")
+        assert result == 32_000
+
+
+# ---------------------------------------------------------------------------
+# Backward Compatibility Tests (v1 -> v2)
+# ---------------------------------------------------------------------------
+
+class TestBackwardCompatibility:
+    """Tests verifying v1 configs work correctly through the v2 stack."""
+
+    def test_v1_config_creates_agents(self, isolated_config):
+        """V1 config with models auto-creates agents."""
+        config = load_config(isolated_config)
+
+        assert type(config).__name__ == "SKAgentConfig"
+        assert len(config.agents) == 2
+
+    def test_v1_default_ask_becomes_default_agent(self, isolated_config):
+        """V1 default_ask_model maps to default_agent."""
+        config = load_config(isolated_config)
+
+        default = config.get_default_agent()
+        assert default is not None
+        assert default.id == "test-model"
+
+    def test_v1_default_vision_becomes_default_vision_agent(self, isolated_config):
+        """V1 default_vision_model maps to default_vision_agent."""
+        config = load_config(isolated_config)
+
+        vision = config.get_default_vision_agent()
+        assert vision is not None
+        assert vision.id == "test-vision"
+
+    def test_manager_list_agents_with_v1_config(self, isolated_config):
+        """Manager works correctly with auto-migrated v1 config."""
+        config = load_config(isolated_config)
+        manager = sk_agent.SKAgentManager(config)
+
+        agents = manager.list_agents()
+        assert len(agents) == 2
+        model_ids = {a["model_id"] for a in agents}
+        assert "test-model-v1" in model_ids
+        assert "test-vision-v1" in model_ids
+
+
+# ---------------------------------------------------------------------------
+# Conversation Tests
+# ---------------------------------------------------------------------------
+
+from sk_conversations import (
+    ConversationRunner,
+    PRESETS,
+    DEEP_SEARCH_PRESET,
+    DEEP_THINK_PRESET,
+    build_run_conversation_description,
+)
+
+
+class TestConversationPresets:
+    """Tests for built-in conversation presets."""
+
+    def test_deep_search_preset_exists(self):
+        assert "deep-search" in PRESETS
+        assert PRESETS["deep-search"] is DEEP_SEARCH_PRESET
+
+    def test_deep_think_preset_exists(self):
+        assert "deep-think" in PRESETS
+        assert PRESETS["deep-think"] is DEEP_THINK_PRESET
+
+    def test_deep_search_has_correct_agents(self):
+        assert DEEP_SEARCH_PRESET.agents == ["researcher", "synthesizer", "critic"]
+        assert DEEP_SEARCH_PRESET.type == "magentic"
+        assert DEEP_SEARCH_PRESET.max_rounds == 10
+
+    def test_deep_think_has_correct_agents(self):
+        assert DEEP_THINK_PRESET.agents == ["optimist", "devils-advocate", "pragmatist", "synthesizer-dt"]
+        assert DEEP_THINK_PRESET.type == "group_chat"
+        assert DEEP_THINK_PRESET.max_rounds == 8
+
+    def test_deep_search_inline_agents(self):
+        inline_ids = [a.id for a in DEEP_SEARCH_PRESET.inline_agents]
+        assert inline_ids == ["researcher", "synthesizer", "critic"]
+
+    def test_deep_think_inline_agents(self):
+        inline_ids = [a.id for a in DEEP_THINK_PRESET.inline_agents]
+        assert inline_ids == ["optimist", "devils-advocate", "pragmatist", "synthesizer-dt"]
+
+
+class TestConversationRunner:
+    """Tests for ConversationRunner class."""
+
+    def _make_runner(self, config=None, sk_agents=None):
+        if config is None:
+            config = make_v2_config(
+                models=[{"id": "m1", "base_url": "http://test", "model_id": "v1"}],
+                agents=[{"id": "a1", "model": "m1"}],
+            )
+        return ConversationRunner(config, sk_agents or {})
+
+    def test_list_conversations_returns_presets(self):
+        runner = self._make_runner()
+        convs = runner.list_conversations()
+
+        ids = [c["id"] for c in convs]
+        assert "deep-search" in ids
+        assert "deep-think" in ids
+
+    def test_list_conversations_marks_builtins(self):
+        runner = self._make_runner()
+        convs = runner.list_conversations()
+
+        for conv in convs:
+            assert conv.get("builtin") is True
+
+    def test_list_conversations_includes_config_conversations(self):
+        config = make_v2_config(
+            models=[{"id": "m1", "base_url": "http://test", "model_id": "v1"}],
+            agents=[{"id": "a1", "model": "m1"}],
+            conversations=[
+                {"id": "custom-conv", "description": "My custom", "type": "sequential", "agents": ["a1"]}
+            ],
+        )
+        runner = ConversationRunner(config, {})
+        convs = runner.list_conversations()
+
+        ids = [c["id"] for c in convs]
+        assert "custom-conv" in ids
+        # Built-ins still present
+        assert "deep-search" in ids
+
+    def test_config_conversation_overrides_preset(self):
+        """Config-defined conversation with same ID as preset takes precedence."""
+        config = make_v2_config(
+            models=[{"id": "m1", "base_url": "http://test", "model_id": "v1"}],
+            agents=[{"id": "a1", "model": "m1"}],
+            conversations=[
+                {"id": "deep-search", "description": "My custom deep search", "type": "sequential", "agents": ["a1"]}
+            ],
+        )
+        runner = ConversationRunner(config, {})
+        convs = runner.list_conversations()
+
+        # Only one deep-search, not duplicated
+        ds = [c for c in convs if c["id"] == "deep-search"]
+        assert len(ds) == 1
+        assert ds[0]["description"] == "My custom deep search"
+        assert ds[0].get("builtin") is not True
+
+    def test_resolve_conversation_defaults_to_deep_search(self):
+        runner = self._make_runner()
+        conv = runner._resolve_conversation(None)
+        assert conv is not None
+        assert conv.id == "deep-search"
+
+    def test_resolve_conversation_finds_preset(self):
+        runner = self._make_runner()
+        conv = runner._resolve_conversation("deep-think")
+        assert conv is not None
+        assert conv.id == "deep-think"
+
+    def test_resolve_conversation_not_found(self):
+        runner = self._make_runner()
+        conv = runner._resolve_conversation("nonexistent")
+        assert conv is None
+
+    @pytest.mark.asyncio
+    async def test_run_unknown_conversation_returns_error(self):
+        runner = self._make_runner()
+        result = await runner.run("test prompt", conversation_id="nonexistent")
+        assert "error" in result
+        assert "not found" in result["error"].lower()
+
+    @pytest.mark.asyncio
+    async def test_run_no_agents_returns_error(self):
+        """Running a conversation with no resolvable agents returns error."""
+        runner = self._make_runner(sk_agents={})
+        result = await runner.run("test prompt", conversation_id="deep-search")
+        assert "error" in result
+        assert "no agents" in result["error"].lower()
+
+
+class TestConversationDescriptionBuilder:
+    """Tests for build_run_conversation_description."""
+
+    def test_includes_presets(self):
+        config = make_v2_config(
+            models=[{"id": "m1", "base_url": "http://test", "model_id": "v1"}],
+            agents=[{"id": "a1", "model": "m1"}],
+        )
+        desc = build_run_conversation_description(config)
+
+        assert "deep-search" in desc
+        assert "deep-think" in desc
+        assert "built-in" in desc
+
+    def test_includes_config_conversations(self):
+        config = make_v2_config(
+            models=[{"id": "m1", "base_url": "http://test", "model_id": "v1"}],
+            agents=[{"id": "a1", "model": "m1"}],
+            conversations=[
+                {"id": "my-conv", "description": "Custom conversation", "type": "group_chat", "agents": ["a1"]}
+            ],
+        )
+        desc = build_run_conversation_description(config)
+
+        assert "my-conv" in desc
+        assert "Custom conversation" in desc
+
+    def test_no_duplicate_when_overriding_preset(self):
+        config = make_v2_config(
+            models=[{"id": "m1", "base_url": "http://test", "model_id": "v1"}],
+            agents=[{"id": "a1", "model": "m1"}],
+            conversations=[
+                {"id": "deep-search", "description": "Overridden", "type": "sequential", "agents": ["a1"]}
+            ],
+        )
+        desc = build_run_conversation_description(config)
+
+        # Only one conversation listing line for deep-search (not duplicated)
+        conv_lines = [line for line in desc.splitlines() if line.strip().startswith("- deep-search:")]
+        assert len(conv_lines) == 1
+        assert "Overridden" in conv_lines[0]
+
+
+class TestConversationInlineAgents:
+    """Tests for inline agent resolution in conversations."""
+
+    def test_inline_agent_creation_reuses_kernel(self):
+        """Inline agents should reuse existing agent kernels."""
+        runner = ConversationRunner.__new__(ConversationRunner)
+        config = make_v2_config(
+            models=[{"id": "m1", "base_url": "http://test", "model_id": "v1"}],
+            agents=[{"id": "a1", "model": "m1"}],
+        )
+        runner.config = config
+
+        # Create a mock SK agent with a mock kernel
+        mock_kernel = MagicMock()
+        mock_agent = MagicMock()
+        mock_agent.kernel = mock_kernel
+        runner.sk_agents = {"a1": mock_agent}
+
+        inline_cfg = AgentConfig(
+            id="inline-test",
+            description="Test inline",
+            model="m1",
+            system_prompt="You are a test agent.",
+        )
+
+        with patch("sk_conversations.ChatCompletionAgent") as MockAgent:
+            MockAgent.return_value = MagicMock()
+            result = runner._create_inline_agent(inline_cfg)
+
+            assert result is not None
+            MockAgent.assert_called_once()
+            call_kwargs = MockAgent.call_args
+            assert call_kwargs.kwargs["kernel"] is mock_kernel
+            assert "inline-test" in call_kwargs.kwargs["name"]
+
+    def test_inline_agent_uses_default_model_when_empty(self):
+        """Inline agent with empty model uses default agent's model."""
+        config = make_v2_config(
+            models=[{"id": "m1", "base_url": "http://test", "model_id": "v1"}],
+            agents=[{"id": "a1", "model": "m1"}],
+            default_agent="a1",
+        )
+
+        runner = ConversationRunner.__new__(ConversationRunner)
+        runner.config = config
+
+        mock_kernel = MagicMock()
+        mock_agent = MagicMock()
+        mock_agent.kernel = mock_kernel
+        runner.sk_agents = {"a1": mock_agent}
+
+        inline_cfg = AgentConfig(
+            id="no-model-agent",
+            description="Test",
+            model="",  # Empty model
+            system_prompt="Test",
+        )
+
+        with patch("sk_conversations.ChatCompletionAgent") as MockAgent:
+            MockAgent.return_value = MagicMock()
+            result = runner._create_inline_agent(inline_cfg)
+            assert result is not None
 
 
 # ---------------------------------------------------------------------------

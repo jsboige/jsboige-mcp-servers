@@ -1,38 +1,37 @@
 #!/usr/bin/env python3
 """
-Semantic Kernel MCP Agent -- model-agnostic MCP proxy.
+Semantic Kernel MCP Agent v2.0 -- agent-centric MCP proxy.
 
-Exposes any OpenAI-compatible model (vLLM, Open-WebUI, etc.) as MCP tools
+Exposes AI agents (model + prompt + tools + optional memory) as MCP tools
 for Claude Code / Roo Code.  Uses Semantic Kernel for orchestration so that
-the target model can autonomously call MCP-provided tools (SearXNG, Playwright,
-etc.) configured via a simple JSON file.
-
-Models configured (Myia infrastructure):
-    - qwen3-vl-8b-thinking (vision): https://api.mini.text-generation-webui.myia.io/v1
-    - glm-4.7-flash (text): https://api.medium.text-generation-webui.myia.io/v1
+agents can autonomously call MCP-provided tools (SearXNG, Playwright, etc.)
+and optionally persist knowledge via vector memory (Qdrant).
 
 Architecture:
     Claude/Roo  --stdio-->  FastMCP server (this file)
                                   |
                                   v
-                             Semantic Kernel
-                             +-- OpenAI Chat Completion (multiple services)
-                             +-- MCPStdioPlugin: SearXNG, Playwright, etc.
+                             SK Agent Manager
+                             +-- Shared model pool (OpenAI clients)
+                             +-- Shared MCP plugin pool
+                             +-- Per-agent kernels with memory
+                             +-- Conversation threads
 
-Tools exposed to Claude/Roo:
-    ask(prompt, model?, conversation_id?)     -- text query with auto tool use
-    analyze_image(image, prompt?, model?, conversation_id?)  -- vision query
-    analyze_document(document, prompt?, mode?, max_pages?, page_range?) -- document analysis
-    analyze_video(video, prompt?, num_frames?, conversation_id?) -- video analysis
-    zoom_image(image, region, prompt?, ...)   -- image region analysis
-    list_tools()                              -- introspection: loaded tools
-    list_models()                             -- list available models
-    install_libreoffice(force?, custom_path?) -- install/configure LibreOffice
-    end_conversation(conversation_id)         -- clean up a conversation
+Core tools:
+    call_agent(prompt, agent?, attachment?, options?, ...)  -- unified agent call
+    run_conversation(prompt, conversation?, options?)       -- multi-agent conversations
+    list_agents()           -- list configured agents
+    list_conversations()    -- list conversation presets
+    list_tools()            -- list loaded MCP tools
+    end_conversation(id)    -- cleanup thread
+    install_libreoffice()   -- utility
+
+Deprecated aliases (backward compat):
+    ask, analyze_image, zoom_image, analyze_video, analyze_document, list_models
 
 Configuration:
     SK_AGENT_CONFIG env var or default sk_agent_config.json next to this file.
-    Template: sk_agent_config.template.json (without API keys)
+    Supports v1 (model-centric) and v2 (agent-centric) config formats.
 """
 
 from __future__ import annotations
@@ -86,6 +85,38 @@ from media_processing import (
     _get_video_info,
 )
 
+# Import config module
+from sk_agent_config import (
+    SKAgentConfig,
+    AgentConfig,
+    ModelConfig,
+    McpConfig,
+    load_config,
+    CONFIG_PATH,
+    SK_AGENT_DEPTH,
+    DEFAULT_MAX_RECURSION_DEPTH,
+)
+from sk_conversations import ConversationRunner, build_run_conversation_description
+
+# Optional: vector memory support
+try:
+    from semantic_kernel.memory import SemanticTextMemory, VolatileMemoryStore
+    from semantic_kernel.connectors.ai.open_ai import OpenAITextEmbedding
+    from semantic_kernel.core_plugins import TextMemoryPlugin
+    HAS_MEMORY = True
+except ImportError:
+    HAS_MEMORY = False
+
+try:
+    from semantic_kernel.connectors.memory_stores.qdrant.qdrant_memory_store import QdrantMemoryStore
+    HAS_QDRANT = True
+except ImportError:
+    try:
+        from semantic_kernel.connectors.memory.qdrant import QdrantMemoryStore
+        HAS_QDRANT = True
+    except ImportError:
+        HAS_QDRANT = False
+
 # ---------------------------------------------------------------------------
 # Logging
 # ---------------------------------------------------------------------------
@@ -96,100 +127,44 @@ logging.basicConfig(
 )
 log = logging.getLogger("sk-agent")
 
-# ---------------------------------------------------------------------------
-# Configuration
-# ---------------------------------------------------------------------------
-CONFIG_PATH = os.environ.get(
-    "SK_AGENT_CONFIG",
-    str(Path(__file__).parent / "sk_agent_config.json"),
-)
-
-# Recursion protection: SK_AGENT_DEPTH tracks nesting level
-SK_AGENT_DEPTH = int(os.environ.get("SK_AGENT_DEPTH", "0"))
-DEFAULT_MAX_RECURSION_DEPTH = 2
-
 
 # ---------------------------------------------------------------------------
-# Configuration Loading
+# Attachment Classification
 # ---------------------------------------------------------------------------
 
-def load_config() -> dict:
-    """Load configuration from JSON file."""
-    path = Path(CONFIG_PATH)
-    if not path.exists():
-        log.warning("Config not found at %s, using defaults", path)
-        return {"models": [], "mcps": [], "system_prompt": ""}
-    with open(path, encoding="utf-8") as f:
-        config = json.load(f)
-
-    # Backward compatibility: convert old formats
-    if "model" in config and "models" not in config:
-        old_model = config["model"]
-        model_id = old_model.get("model_id", "default")
-        config["models"] = [{"id": model_id, **old_model}]
-        config["default_ask_model"] = model_id
-        del config["model"]
-
-    # Set default models if not specified
-    if config.get("models"):
-        first_model = config["models"][0].get("id", "")
-        if "default_ask_model" not in config:
-            config["default_ask_model"] = config.get("default_model", first_model)
-        if "default_vision_model" not in config:
-            # Find first vision-capable model
-            for m in config["models"]:
-                if m.get("vision", False):
-                    config["default_vision_model"] = m.get("id", first_model)
-                    break
-            else:
-                config["default_vision_model"] = first_model
-
-    # Remove old default_model if present (use default_ask_model instead)
-    if "default_model" in config and "default_ask_model" in config:
-        del config["default_model"]
-
-    # Validate model entries
-    for m in config.get("models", []):
-        if "id" not in m:
-            log.warning("Model entry missing 'id' field: %s", m)
-            m["id"] = "unknown"
-
-    return config
+# File extension -> content type mapping
+_IMAGE_EXTENSIONS = {".png", ".jpg", ".jpeg", ".gif", ".bmp", ".webp", ".tiff", ".tif", ".svg"}
+_VIDEO_EXTENSIONS = {".mp4", ".avi", ".mov", ".mkv", ".webm", ".flv", ".wmv"}
+_DOCUMENT_EXTENSIONS = {".pdf", ".ppt", ".pptx", ".doc", ".docx", ".xls", ".xlsx"}
 
 
-def save_config(config: dict) -> None:
-    """Save configuration to JSON file."""
-    path = Path(CONFIG_PATH)
-    with open(path, "w", encoding="utf-8") as f:
-        json.dump(config, f, indent=2, ensure_ascii=False)
+def classify_attachment(path: str) -> str | None:
+    """Classify an attachment by file extension or URL pattern.
 
-
-def get_model_context_window(config: dict, model_id: str) -> int:
-    """Get context window for a model from config.
-
-    Default values:
-    - Vision models: 128k (GLM-4.6V, Qwen3-VL)
-    - Cloud models: 200k (z.ai API)
-    - Text models: 32k (conservative default)
+    Returns: "image", "video", "document", or None (unknown/text-only).
     """
-    for m in config.get("models", []):
-        if m.get("id") == model_id:
-            # Check explicit context_window in config
-            if "context_window" in m:
-                return m["context_window"]
-            # Infer from model type
-            if m.get("vision", False):
-                return 128_000  # 128k for vision models
-            # Check if cloud API (larger context)
-            base_url = m.get("base_url", "")
-            if "z.ai" in base_url or "openai.com" in base_url:
-                return 200_000  # 200k for cloud models
-            return 32_000  # Conservative default for local models
-    return 32_000
+    if not path:
+        return None
+
+    # URL: check extension from URL path
+    if path.startswith(("http://", "https://")):
+        from urllib.parse import urlparse
+        url_path = urlparse(path).path
+        ext = Path(url_path).suffix.lower()
+    else:
+        ext = Path(path).suffix.lower()
+
+    if ext in _IMAGE_EXTENSIONS:
+        return "image"
+    elif ext in _VIDEO_EXTENSIONS:
+        return "video"
+    elif ext in _DOCUMENT_EXTENSIONS:
+        return "document"
+    return None
 
 
 # ---------------------------------------------------------------------------
-# Image Processing Helpers
+# Image/Media Processing Helpers
 # ---------------------------------------------------------------------------
 
 async def resolve_attachment(source: str) -> tuple[str, str]:
@@ -217,158 +192,309 @@ async def resolve_attachment(source: str) -> tuple[str, str]:
 
 
 # ---------------------------------------------------------------------------
-# Semantic Kernel Agent Manager
+# Dynamic Description Builders
+# ---------------------------------------------------------------------------
+
+def build_call_agent_description(config: SKAgentConfig) -> str:
+    """Build dynamic description for call_agent tool from config."""
+    lines = [
+        "Send a prompt to an AI agent.",
+        "",
+        "Available agents:",
+    ]
+
+    for agent_cfg in config.agents:
+        model = config.get_model(agent_cfg.model)
+        if not model or not model.enabled:
+            continue
+
+        parts = [f"{model.model_id}, {model.context_window // 1000}K"]
+        if model.vision:
+            parts.append("vision")
+
+        tools = agent_cfg.mcps
+        badges = []
+        if tools:
+            badges.append(f"tools: {', '.join(tools)}")
+        if agent_cfg.memory.enabled:
+            badges.append("memory")
+
+        badge_str = f" [{'; '.join(badges)}]" if badges else ""
+        desc = agent_cfg.description or "No description"
+        lines.append(f"  - {agent_cfg.id}: {desc} ({', '.join(parts)}){badge_str}")
+
+    default_agent = config.get_default_agent()
+    default_vision = config.get_default_vision_agent()
+    if default_agent:
+        default_info = f"Default: {default_agent.id}"
+        if default_vision and default_vision.id != default_agent.id:
+            default_info += f" | Default vision: {default_vision.id}"
+        lines.append("")
+        lines.append(default_info)
+
+    lines.extend([
+        "",
+        "Parameters:",
+        "  prompt: The question or instruction",
+        "  agent: Agent ID (default: auto-select based on attachment type)",
+        "  attachment: File path or URL (image, video, PDF, PPTX, DOCX, XLSX)",
+        "  options: JSON string with type-specific params: region, mode, max_pages, page_range, num_frames",
+        "  conversation_id: Continue previous conversation",
+        "  include_steps: Show intermediate tool/reasoning steps",
+    ])
+
+    return "\n".join(lines)
+
+
+def build_list_agents_description(config: SKAgentConfig) -> str:
+    """Build dynamic description for list_agents tool."""
+    count = len([a for a in config.agents if config.get_model(a.model) and config.get_model(a.model).enabled])
+    return f"List all {count} configured agents with their models, capabilities, tools, and memory status."
+
+
+# ---------------------------------------------------------------------------
+# Semantic Kernel Agent Manager (v2: Agent-Centric)
 # ---------------------------------------------------------------------------
 
 class SKAgentManager:
-    """Manages per-model kernels, MCP plugins, and per-conversation threads."""
+    """Manages agent-centric resources: shared model/MCP pools and per-agent kernels."""
 
-    def __init__(self, config: dict):
+    def __init__(self, config: SKAgentConfig):
         self.config = config
         self._exit_stack = AsyncExitStack()
-        # Per-model resources
-        self._kernels: dict[str, Kernel] = {}
-        self._agents: dict[str, ChatCompletionAgent] = {}
-        self._openai_clients: dict[str, AsyncOpenAI] = {}
-        self._model_plugins: dict[str, list] = {}  # Per-model plugins
-        # Shared resources
-        self._shared_plugins: list = []
+
+        # Shared resource pools
+        self._openai_clients: dict[str, AsyncOpenAI] = {}       # model_id -> client
+        self._services: dict[str, OpenAIChatCompletion] = {}     # model_id -> service
+        self._mcp_plugins: dict[str, Any] = {}                   # mcp_id -> connected plugin
+        self._mcp_plugin_list: list = []                         # Ordered list of all plugins
+
+        # Per-agent resources
+        self._kernels: dict[str, Kernel] = {}                    # agent_id -> kernel
+        self._sk_agents: dict[str, ChatCompletionAgent] = {}     # agent_id -> SK agent
+
+        # Conversation threads
         self._threads: dict[str, ChatHistoryAgentThread] = {}
 
-    async def start(self):
-        """Initialize per-model kernels, agents, and plugins."""
-        max_depth = self.config.get("max_recursion_depth", DEFAULT_MAX_RECURSION_DEPTH)
-        if SK_AGENT_DEPTH >= max_depth:
-            log.info("Skipping MCP plugins (depth=%d >= max_depth=%d)", SK_AGENT_DEPTH, max_depth)
-        else:
-            # Load shared MCP plugins
-            await self._load_shared_plugins()
+        # Memory
+        self._memory_stores: dict[str, Any] = {}                 # agent_id -> SemanticTextMemory
 
-        # Create a kernel + agent per model
-        for model_cfg in self.config.get("models", []):
-            # Skip disabled models
-            if not model_cfg.get("enabled", True):
-                log.info("Skipping disabled model: %s", model_cfg.get("id", "unknown"))
+    async def start(self):
+        """Initialize shared pools and per-agent resources."""
+        # 1. Create shared model pool
+        await self._init_model_pool()
+
+        # 2. Load shared MCP plugins
+        max_depth = self.config.max_recursion_depth
+        if SK_AGENT_DEPTH < max_depth:
+            await self._init_mcp_pool()
+        else:
+            log.info("Skipping MCP plugins (depth=%d >= max_depth=%d)", SK_AGENT_DEPTH, max_depth)
+
+        # 3. Create per-agent resources
+        for agent_cfg in self.config.agents:
+            model = self.config.get_model(agent_cfg.model)
+            if not model or not model.enabled:
+                log.info("Skipping agent '%s': model '%s' not available", agent_cfg.id, agent_cfg.model)
                 continue
 
-            model_id = model_cfg.get("id", "default")
-            api_key = os.environ.get(
-                model_cfg.get("api_key_env", ""),
-                model_cfg.get("api_key", "no-key"),
-            )
-            base_url = model_cfg.get("base_url", "http://localhost:5001/v1")
-            target_model = model_cfg.get("model_id", "default")
+            await self._create_agent(agent_cfg, model)
 
-            # Create OpenAI client for this model
-            client = AsyncOpenAI(api_key=api_key, base_url=base_url)
-            self._openai_clients[model_id] = client
+        log.info(
+            "SK Agent Manager ready: %d agents, %d models, %d MCP plugins",
+            len(self._sk_agents), len(self._openai_clients), len(self._mcp_plugins),
+        )
 
-            # Create dedicated kernel for this model
-            kernel = Kernel()
+    async def _init_model_pool(self):
+        """Create OpenAI clients and services for each enabled model."""
+        for model_cfg in self.config.models:
+            if not model_cfg.enabled:
+                continue
+
+            api_key = model_cfg.resolve_api_key()
+            client = AsyncOpenAI(api_key=api_key, base_url=model_cfg.base_url)
+            self._openai_clients[model_cfg.id] = client
+
             service = OpenAIChatCompletion(
-                ai_model_id=target_model,
+                ai_model_id=model_cfg.model_id,
                 async_client=client,
-                service_id=model_id,
+                service_id=model_cfg.id,
             )
+            self._services[model_cfg.id] = service
+            log.info("Model pool: %s -> %s at %s", model_cfg.id, model_cfg.model_id, model_cfg.base_url)
+
+    async def _init_mcp_pool(self):
+        """Load all MCP plugins from config (shared pool)."""
+        for mcp_cfg in self.config.mcps:
+            try:
+                env = {**os.environ, **mcp_cfg.env}
+
+                # Detect self-inclusion
+                mcp_args = " ".join(mcp_cfg.args)
+                is_self = "sk_agent.py" in mcp_args or "sk_agent" in mcp_cfg.id.lower()
+
+                if is_self:
+                    env["SK_AGENT_DEPTH"] = str(SK_AGENT_DEPTH + 1)
+                    log.info("Self-inclusion: spawning child sk-agent with depth=%d", SK_AGENT_DEPTH + 1)
+
+                plugin = MCPStdioPlugin(
+                    name=mcp_cfg.id,
+                    description=mcp_cfg.description,
+                    command=mcp_cfg.command,
+                    args=mcp_cfg.args,
+                    env=env,
+                )
+                connected = await self._exit_stack.enter_async_context(plugin)
+                self._mcp_plugins[mcp_cfg.id] = connected
+                self._mcp_plugin_list.append(connected)
+                log.info("MCP pool: %s loaded", mcp_cfg.id)
+            except Exception:
+                log.exception("Failed to load MCP plugin: %s", mcp_cfg.id)
+
+    async def _create_agent(self, agent_cfg: AgentConfig, model_cfg: ModelConfig):
+        """Create a SK agent with its own kernel, model service, and plugins."""
+        agent_id = agent_cfg.id
+
+        # Create kernel with the agent's model service
+        kernel = Kernel()
+        service = self._services.get(model_cfg.id)
+        if service:
             kernel.add_service(service)
-            self._kernels[model_id] = kernel
 
-            # Get model-specific system prompt or use global
-            system_prompt = model_cfg.get("system_prompt") or self.config.get("system_prompt", "")
+        # Collect agent-specific MCP plugins
+        agent_plugins = []
+        for mcp_id in agent_cfg.mcps:
+            if mcp_id in self._mcp_plugins:
+                agent_plugins.append(self._mcp_plugins[mcp_id])
 
-            # Combine shared + per-model plugins
-            all_plugins = list(self._shared_plugins)
+        # Set up memory if enabled
+        if agent_cfg.memory.enabled and HAS_MEMORY:
+            memory_plugin = await self._setup_memory(agent_cfg, kernel)
+            if memory_plugin:
+                agent_plugins.append(memory_plugin)
 
-            # Load per-model MCPs if specified
-            if SK_AGENT_DEPTH < max_depth and model_cfg.get("mcps"):
-                model_plugins = await self._load_model_plugins(model_cfg, model_id)
-                all_plugins.extend(model_plugins)
-                self._model_plugins[model_id] = model_plugins
+        # Create SK agent
+        safe_name = agent_id.replace(".", "-").replace(" ", "-")
+        system_prompt = agent_cfg.system_prompt or self.config.system_prompt
 
-            # Create agent for this model with all plugins
-            # Sanitize model_id for agent name (only alphanumeric, underscore, hyphen)
-            safe_name = model_id.replace(".", "-").replace(" ", "-")
-            agent = ChatCompletionAgent(
-                kernel=kernel,
-                name=f"sk-agent-{safe_name}",
-                instructions=system_prompt,
-                plugins=all_plugins,
+        # Augment prompt with memory hint if memory is active
+        if agent_cfg.memory.enabled and HAS_MEMORY:
+            system_prompt += (
+                "\n\nYou have access to persistent memory. "
+                "Use memory-save to remember important facts and "
+                "memory-recall to retrieve relevant knowledge."
             )
-            self._agents[model_id] = agent
 
-            log.info("Created agent for model: %s -> %s at %s", model_id, target_model, base_url)
+        agent = ChatCompletionAgent(
+            kernel=kernel,
+            name=f"sk-agent-{safe_name}",
+            instructions=system_prompt,
+            plugins=agent_plugins,
+        )
+        self._kernels[agent_id] = kernel
+        self._sk_agents[agent_id] = agent
+        log.info("Agent created: %s (model=%s, mcps=%s, memory=%s)",
+                 agent_id, model_cfg.id, agent_cfg.mcps, agent_cfg.memory.enabled)
 
-        log.info("SK Agent Manager ready: %d agents, %d shared plugins, %d model-specific plugins",
-                 len(self._agents), len(self._shared_plugins), sum(len(p) for p in self._model_plugins.values()))
+    async def _setup_memory(self, agent_cfg: AgentConfig, kernel: Kernel) -> Any | None:
+        """Set up vector memory for an agent. Returns TextMemoryPlugin or None."""
+        emb = self.config.embeddings
+        if not emb.is_configured:
+            log.warning("Agent '%s' has memory enabled but embeddings not configured", agent_cfg.id)
+            return None
 
-    async def _load_shared_plugins(self):
-        """Load all MCP plugins from config.mcps (shared by all models)."""
-        for mcp_cfg in self.config.get("mcps", []):
-            try:
-                env = {**os.environ, **(mcp_cfg.get("env") or {})}
+        collection = agent_cfg.memory.collection or f"{agent_cfg.id}-memory"
+        full_collection = f"{self.config.qdrant.default_collection_prefix}-{collection}"
 
-                # Detect self-inclusion
-                mcp_args = " ".join(mcp_cfg.get("args", []))
-                is_self = "sk_agent.py" in mcp_args or "sk_agent" in mcp_cfg.get("name", "").lower()
+        try:
+            # Try Qdrant first
+            if HAS_QDRANT:
+                qdrant_kwargs: dict[str, Any] = {
+                    "vector_size": emb.dimensions,
+                    "url": self.config.qdrant.url,
+                    "port": self.config.qdrant.port,
+                }
+                qdrant_api_key = self.config.qdrant.resolve_api_key()
+                if qdrant_api_key:
+                    qdrant_kwargs["api_key"] = qdrant_api_key
+                store = QdrantMemoryStore(**qdrant_kwargs)
+                log.info("Memory: using Qdrant for agent '%s' (collection=%s)", agent_cfg.id, full_collection)
+            else:
+                store = VolatileMemoryStore()
+                log.warning("Memory: qdrant-client not installed, using volatile store for '%s'", agent_cfg.id)
 
-                if is_self:
-                    env["SK_AGENT_DEPTH"] = str(SK_AGENT_DEPTH + 1)
-                    log.info("Self-inclusion: spawning child sk-agent with depth=%d", SK_AGENT_DEPTH + 1)
+            # Create embeddings generator
+            emb_client = AsyncOpenAI(
+                api_key=emb.resolve_api_key(),
+                base_url=emb.base_url,
+            )
+            embeddings_gen = OpenAITextEmbedding(
+                ai_model_id=emb.model_id,
+                async_client=emb_client,
+            )
 
-                plugin = MCPStdioPlugin(
-                    name=mcp_cfg["name"],
-                    description=mcp_cfg.get("description"),
-                    command=mcp_cfg.get("command", ""),
-                    args=mcp_cfg.get("args"),
-                    env=env,
-                )
-                connected = await self._exit_stack.enter_async_context(plugin)
-                self._shared_plugins.append(connected)
-                log.info("Shared MCP plugin loaded: %s", mcp_cfg["name"])
-            except Exception:
-                log.exception("Failed to load shared MCP plugin: %s", mcp_cfg.get("name"))
+            memory = SemanticTextMemory(
+                storage=store,
+                embeddings_generator=embeddings_gen,
+            )
+            self._memory_stores[agent_cfg.id] = memory
 
-    async def _load_model_plugins(self, model_cfg: dict, model_id: str) -> list:
-        """Load MCP plugins specific to a model from model_cfg.mcps."""
-        plugins = []
-        for mcp_cfg in model_cfg.get("mcps", []):
-            try:
-                env = {**os.environ, **(mcp_cfg.get("env") or {})}
+            plugin = TextMemoryPlugin(memory)
+            return plugin
 
-                # Detect self-inclusion
-                mcp_args = " ".join(mcp_cfg.get("args", []))
-                is_self = "sk_agent.py" in mcp_args or "sk_agent" in mcp_cfg.get("name", "").lower()
+        except Exception:
+            log.exception("Failed to set up memory for agent '%s'", agent_cfg.id)
+            return None
 
-                if is_self:
-                    env["SK_AGENT_DEPTH"] = str(SK_AGENT_DEPTH + 1)
-                    log.info("Self-inclusion: spawning child sk-agent with depth=%d", SK_AGENT_DEPTH + 1)
+    # -----------------------------------------------------------------------
+    # Agent Resolution
+    # -----------------------------------------------------------------------
 
-                # Prefix name with model_id to avoid conflicts
-                plugin_name = f"{model_id}_{mcp_cfg['name']}"
+    def _resolve_agent(
+        self,
+        agent_id: str | None = None,
+        needs_vision: bool = False,
+        model_id: str | None = None,
+    ) -> tuple[str, ChatCompletionAgent] | tuple[None, None]:
+        """Resolve which agent to use.
 
-                plugin = MCPStdioPlugin(
-                    name=plugin_name,
-                    description=mcp_cfg.get("description"),
-                    command=mcp_cfg.get("command", ""),
-                    args=mcp_cfg.get("args"),
-                    env=env,
-                )
-                connected = await self._exit_stack.enter_async_context(plugin)
-                plugins.append(connected)
-                log.info("Model-specific MCP plugin loaded: %s for model %s", mcp_cfg["name"], model_id)
-            except Exception:
-                log.exception("Failed to load model MCP plugin: %s for model %s", mcp_cfg.get("name"), model_id)
-        return plugins
+        Priority:
+        1. Explicit agent_id
+        2. Backward compat: model_id -> find agent using that model
+        3. needs_vision -> default_vision_agent
+        4. default_agent
+        5. First available agent
+        """
+        if not self._sk_agents:
+            return None, None
 
-    def _get_model_config(self, model_id: str) -> dict | None:
-        """Get configuration for a specific model."""
-        for m in self.config.get("models", []):
-            if m.get("id") == model_id:
-                return m
-        return None
+        # 1. Explicit agent_id
+        if agent_id and agent_id in self._sk_agents:
+            return agent_id, self._sk_agents[agent_id]
+
+        # 2. Backward compat: model_id
+        if model_id:
+            agent_cfg = self.config.find_agent_for_model(model_id)
+            if agent_cfg and agent_cfg.id in self._sk_agents:
+                return agent_cfg.id, self._sk_agents[agent_cfg.id]
+
+        # 3. Vision default
+        if needs_vision:
+            vision_cfg = self.config.get_default_vision_agent()
+            if vision_cfg and vision_cfg.id in self._sk_agents:
+                return vision_cfg.id, self._sk_agents[vision_cfg.id]
+
+        # 4. Default agent
+        default_cfg = self.config.get_default_agent()
+        if default_cfg and default_cfg.id in self._sk_agents:
+            return default_cfg.id, self._sk_agents[default_cfg.id]
+
+        # 5. First available
+        first_id = next(iter(self._sk_agents))
+        return first_id, self._sk_agents[first_id]
 
     def _get_or_create_thread(self, conversation_id: str | None) -> tuple[str, ChatHistoryAgentThread]:
-        """Get existing thread or create new one. Returns (conversation_id, thread)."""
+        """Get existing thread or create new one."""
         if conversation_id and conversation_id in self._threads:
             return conversation_id, self._threads[conversation_id]
 
@@ -378,180 +504,164 @@ class SKAgentManager:
         return new_id, thread
 
     # -----------------------------------------------------------------------
-    # Core Agent Methods
+    # Unified call_agent
     # -----------------------------------------------------------------------
 
-    async def ask(
+    async def call_agent(
         self,
         prompt: str,
-        model_id: str | None = None,
+        agent_id: str | None = None,
+        attachment: str | None = None,
+        options: dict | None = None,
         conversation_id: str | None = None,
-        system_prompt: str | None = None,
         include_steps: bool = False,
+        # Backward compat params
+        model_id: str | None = None,
     ) -> dict[str, Any]:
-        """Send a text prompt to the model with optional tool use."""
-        if not self._agents:
+        """Unified agent invocation with optional attachment routing."""
+        if not self._sk_agents:
             return {"error": "No agents initialized"}
 
-        # Select model
-        target_model = model_id or self.config.get("default_ask_model", "")
-        if not target_model or target_model not in self._agents:
-            for m in self.config.get("models", []):
-                if m.get("enabled", True):
-                    target_model = m.get("id", "")
-                    break
+        options = options or {}
+        attachment_type = classify_attachment(attachment) if attachment else None
+        needs_vision = attachment_type in ("image", "video", "document")
 
-        if not target_model or target_model not in self._agents:
-            return {"error": "No suitable model available"}
+        # If mode=text for document, we don't necessarily need vision
+        if attachment_type == "document" and options.get("mode") == "text":
+            needs_vision = False
 
-        agent = self._agents[target_model]
+        # Resolve agent
+        resolved_id, agent = self._resolve_agent(
+            agent_id=agent_id,
+            needs_vision=needs_vision,
+            model_id=model_id,
+        )
+
+        if not resolved_id or not agent:
+            return {"error": "No suitable agent available"}
+
+        # Route based on attachment type
+        if attachment_type == "image":
+            region = options.get("region")
+            if region:
+                return await self._handle_image_region(
+                    resolved_id, agent, attachment, region, prompt,
+                    conversation_id, include_steps, options.get("zoom_context"),
+                )
+            else:
+                return await self._handle_image(
+                    resolved_id, agent, attachment, prompt,
+                    conversation_id, include_steps,
+                )
+        elif attachment_type == "video":
+            return await self._handle_video(
+                resolved_id, agent, attachment, prompt,
+                conversation_id, include_steps, options.get("num_frames", 8),
+            )
+        elif attachment_type == "document":
+            return await self._handle_document(
+                resolved_id, agent, attachment, prompt,
+                conversation_id, include_steps, options,
+            )
+        else:
+            return await self._handle_text(
+                resolved_id, agent, prompt,
+                conversation_id, include_steps,
+            )
+
+    # -----------------------------------------------------------------------
+    # Handler Methods
+    # -----------------------------------------------------------------------
+
+    async def _handle_text(
+        self,
+        agent_id: str,
+        agent: ChatCompletionAgent,
+        prompt: str,
+        conversation_id: str | None,
+        include_steps: bool,
+    ) -> dict[str, Any]:
+        """Handle text-only prompt."""
         conv_id, thread = self._get_or_create_thread(conversation_id)
-
-        # Build message
         items = [TextContent(text=prompt)]
         message = ChatMessageContent(role=AuthorRole.USER, items=items)
 
-        # Track intermediate steps if requested
         steps = []
-
-        async def handle_intermediate_message(message) -> None:
-            """Track intermediate messages for step-by-step output."""
-            step_info = {"role": str(message.role)}
-            for item in message.items:
-                if isinstance(item, FunctionCallContent):
-                    step_info["type"] = "tool_call"
-                    step_info["name"] = item.function_name
-                    step_info["arguments"] = item.arguments
-                elif isinstance(item, FunctionResultContent):
-                    step_info["type"] = "tool_result"
-                    step_info["result"] = str(item.result)[:500]  # Truncate
-                elif isinstance(item, TextContent):
-                    step_info["type"] = "text"
-                    step_info["content"] = item.text[:200]
-            if "type" in step_info:
-                steps.append(step_info)
-
-        # Invoke agent
         final_response = None
         async for response in agent.invoke(
             messages=message,
             thread=thread,
-            on_intermediate_message=handle_intermediate_message if include_steps else None,
+            on_intermediate_message=self._make_step_handler(steps) if include_steps else None,
         ):
             final_response = response
             thread = response.thread
 
         self._threads[conv_id] = thread
-
         result = {
             "response": str(final_response) if final_response else "",
             "conversation_id": conv_id,
-            "model_used": target_model,
+            "agent_used": agent_id,
+            "model_used": self._get_agent_model_id(agent_id),
         }
         if include_steps:
             result["steps"] = steps
-
         return result
 
-    async def _ask_with_media(
+    async def _handle_image(
         self,
-        media_items: list,
-        prompt: str,
-        model_id: str | None = None,
-        conversation_id: str | None = None,
-        include_steps: bool = False,
-    ) -> dict[str, Any]:
-        """Internal method to ask with media content (images)."""
-        if not self._agents:
-            return {"error": "No agents initialized"}
-
-        # Select vision model
-        target_model = model_id or self.config.get("default_vision_model", "")
-        model_cfg = self._get_model_config(target_model)
-
-        if not model_cfg or not model_cfg.get("vision", False):
-            for m in self.config.get("models", []):
-                if m.get("enabled", True) and m.get("vision", False):
-                    target_model = m.get("id", "")
-                    model_cfg = m
-                    log.info("Auto-selected vision model: %s", target_model)
-                    break
-            else:
-                return {"error": "No vision-capable model available"}
-
-        agent = self._agents[target_model]
-        conv_id, thread = self._get_or_create_thread(conversation_id)
-
-        # Build message with media and prompt
-        items = list(media_items)
-        items.append(TextContent(text=prompt))
-        message = ChatMessageContent(role=AuthorRole.USER, items=items)
-
-        # Track steps
-        steps = []
-
-        async def handle_intermediate_message(msg) -> None:
-            step_info = {"role": str(msg.role)}
-            for item in msg.items:
-                if isinstance(item, FunctionCallContent):
-                    step_info["type"] = "tool_call"
-                    step_info["name"] = item.function_name
-                elif isinstance(item, TextContent):
-                    step_info["type"] = "text"
-            if "type" in step_info:
-                steps.append(step_info)
-
-        final_response = None
-        async for response in agent.invoke(
-            messages=message,
-            thread=thread,
-            on_intermediate_message=handle_intermediate_message if include_steps else None,
-        ):
-            final_response = response
-            thread = response.thread
-
-        self._threads[conv_id] = thread
-
-        result = {
-            "response": str(final_response) if final_response else "",
-            "conversation_id": conv_id,
-            "model_used": target_model,
-        }
-        if include_steps:
-            result["steps"] = steps
-
-        return result
-
-    async def ask_with_image(
-        self,
+        agent_id: str,
+        agent: ChatCompletionAgent,
         image_source: str,
-        prompt: str = "Describe this image in detail",
-        model_id: str | None = None,
-        conversation_id: str | None = None,
+        prompt: str,
+        conversation_id: str | None,
+        include_steps: bool,
     ) -> dict[str, Any]:
-        """Ask a question about an image."""
+        """Handle image analysis."""
         try:
             b64_data, media_type = await resolve_attachment(image_source)
             data_url = f"data:{media_type};base64,{b64_data}"
             image_item = ImageContent(data_uri=data_url)
-            return await self._ask_with_media(
-                [image_item], prompt, model_id, conversation_id
-            )
+
+            conv_id, thread = self._get_or_create_thread(conversation_id)
+            items = [image_item, TextContent(text=prompt)]
+            message = ChatMessageContent(role=AuthorRole.USER, items=items)
+
+            steps = []
+            final_response = None
+            async for response in agent.invoke(
+                messages=message,
+                thread=thread,
+                on_intermediate_message=self._make_step_handler(steps) if include_steps else None,
+            ):
+                final_response = response
+                thread = response.thread
+
+            self._threads[conv_id] = thread
+            result = {
+                "response": str(final_response) if final_response else "",
+                "conversation_id": conv_id,
+                "agent_used": agent_id,
+                "model_used": self._get_agent_model_id(agent_id),
+            }
+            if include_steps:
+                result["steps"] = steps
+            return result
         except Exception as e:
             return {"error": str(e)}
 
-    async def analyze_image_region(
+    async def _handle_image_region(
         self,
+        agent_id: str,
+        agent: ChatCompletionAgent,
         image_source: str,
         region: dict,
-        prompt: str = "Describe this region in detail",
-        model_id: str | None = None,
-        conversation_id: str | None = None,
+        prompt: str,
+        conversation_id: str | None,
+        include_steps: bool,
         zoom_context: str | None = None,
     ) -> dict[str, Any]:
-        """Analyze a specific region of an image (zoom)."""
+        """Handle image region analysis (zoom)."""
         try:
-            # Load image
             if image_source.startswith(("http://", "https://")):
                 async with httpx.AsyncClient(timeout=30) as client:
                     resp = await client.get(image_source, follow_redirects=True)
@@ -565,11 +675,9 @@ class SKAgentManager:
                 data = p.read_bytes()
                 media_type = mimetypes.guess_type(str(p))[0] or "image/png"
 
-            # Crop to region
             cropped_data, cropped_type = _crop_image(data, media_type, region)
             cropped_data, cropped_type = _resize_image_if_needed(cropped_data, cropped_type)
 
-            # Build context message
             context_msg = prompt
             if zoom_context:
                 context_msg = f"[Zoom context: {zoom_context}]\n\n{prompt}"
@@ -578,38 +686,57 @@ class SKAgentManager:
             data_url = f"data:{cropped_type};base64,{b64_data}"
             image_item = ImageContent(data_uri=data_url)
 
-            return await self._ask_with_media(
-                [image_item], context_msg, model_id, conversation_id
-            )
+            conv_id, thread = self._get_or_create_thread(conversation_id)
+            items = [image_item, TextContent(text=context_msg)]
+            message = ChatMessageContent(role=AuthorRole.USER, items=items)
+
+            steps = []
+            final_response = None
+            async for response in agent.invoke(
+                messages=message,
+                thread=thread,
+                on_intermediate_message=self._make_step_handler(steps) if include_steps else None,
+            ):
+                final_response = response
+                thread = response.thread
+
+            self._threads[conv_id] = thread
+            result = {
+                "response": str(final_response) if final_response else "",
+                "conversation_id": conv_id,
+                "agent_used": agent_id,
+                "model_used": self._get_agent_model_id(agent_id),
+                "region_analyzed": region,
+            }
+            if zoom_context:
+                result["zoom_context"] = zoom_context
+            if include_steps:
+                result["steps"] = steps
+            return result
         except Exception as e:
             return {"error": str(e)}
 
-    async def analyze_video(
+    async def _handle_video(
         self,
+        agent_id: str,
+        agent: ChatCompletionAgent,
         video_source: str,
-        prompt: str = "Describe what happens in this video",
-        model_id: str | None = None,
-        conversation_id: str | None = None,
+        prompt: str,
+        conversation_id: str | None,
+        include_steps: bool,
         num_frames: int = 8,
-        use_keyframes: bool = True,
     ) -> dict[str, Any]:
-        """Analyze a video by extracting frames."""
-        if not self._agents:
-            return {"error": "No agents initialized"}
-
-        # Check video file exists
+        """Handle video analysis."""
         video_path = Path(video_source)
         if not video_path.exists():
             return {"error": f"Video file not found: {video_source}"}
 
-        # Get video info
         video_info = _get_video_info(str(video_path))
+        num_frames = max(1, min(num_frames, 20))
 
-        # Extract frames
         try:
-            if use_keyframes:
-                frames = _extract_keyframes(str(video_path), num_frames=num_frames)
-            else:
+            frames = _extract_keyframes(str(video_path), num_frames=num_frames)
+            if not frames:
                 frames = _extract_video_frames(str(video_path), num_frames=num_frames)
         except Exception as e:
             return {"error": f"Failed to extract video frames: {e}"}
@@ -617,24 +744,9 @@ class SKAgentManager:
         if not frames:
             return {"error": "No frames could be extracted from video"}
 
-        # Select vision model
-        target_model = model_id or self.config.get("default_vision_model", "")
-        model_cfg = self._get_model_config(target_model)
-
-        if not model_cfg or not model_cfg.get("vision", False):
-            for m in self.config.get("models", []):
-                if m.get("enabled", True) and m.get("vision", False):
-                    target_model = m.get("id", "")
-                    break
-            else:
-                return {"error": "No vision-capable model available"}
-
-        agent = self._agents[target_model]
         conv_id, thread = self._get_or_create_thread(conversation_id)
 
-        # Build content with frames
         content_items = [TextContent(text=f"{prompt}\n\nThe video has {len(frames)} frames:")]
-
         for i, (frame_data, media_type) in enumerate(frames):
             b64_data = base64.b64encode(frame_data).decode("ascii")
             data_url = f"data:{media_type};base64,{b64_data}"
@@ -643,90 +755,64 @@ class SKAgentManager:
 
         message = ChatMessageContent(role=AuthorRole.USER, items=content_items)
 
+        steps = []
         final_response = None
-        async for response in agent.invoke(messages=message, thread=thread):
+        async for response in agent.invoke(
+            messages=message,
+            thread=thread,
+            on_intermediate_message=self._make_step_handler(steps) if include_steps else None,
+        ):
             final_response = response
             thread = response.thread
 
         self._threads[conv_id] = thread
-
-        return {
+        result = {
             "response": str(final_response) if final_response else "",
             "conversation_id": conv_id,
-            "model_used": target_model,
+            "agent_used": agent_id,
+            "model_used": self._get_agent_model_id(agent_id),
             "frames_analyzed": len(frames),
-            "video_info": {
-                "duration": video_info.duration if video_info else None,
-                "resolution": f"{video_info.width}x{video_info.height}" if video_info else None,
-            } if video_info else None,
         }
+        if video_info:
+            result["video_info"] = {
+                "duration": video_info.duration,
+                "resolution": f"{video_info.width}x{video_info.height}",
+            }
+        if include_steps:
+            result["steps"] = steps
+        return result
 
-    async def analyze_document(
+    async def _handle_document(
         self,
+        agent_id: str,
+        agent: ChatCompletionAgent,
         document_source: str,
-        prompt: str = "Summarize this document and extract key information",
-        model_id: str | None = None,
-        conversation_id: str | None = None,
-        max_pages: int = DEFAULT_MAX_PAGES,
-        mode: DocumentAnalysisMode = "visual",
-        page_range: dict | None = None,
-        auto_limit_tokens: bool = True,
+        prompt: str,
+        conversation_id: str | None,
+        include_steps: bool,
+        options: dict,
     ) -> dict[str, Any]:
-        """Analyze a document (PDF, PPT/PPTX, DOC/DOCX, XLS/XLSX) with unified pipeline.
+        """Handle document analysis."""
+        mode = options.get("mode", "visual")
+        max_pages = max(1, min(options.get("max_pages", DEFAULT_MAX_PAGES), MAX_PAGES_HARD_LIMIT))
+        auto_limit_tokens = options.get("auto_limit_tokens", True)
 
-        Supports 3 analysis modes:
-        - "visual": Convert pages to images (requires vision model)
-        - "text": Extract text content (uses text model)
-        - "hybrid": Both images and text (requires vision model)
-
-        Args:
-            document_source: Local file path to the document
-            prompt: Question or instruction about the document
-            model_id: Optional model ID override
-            conversation_id: Optional conversation ID to continue
-            max_pages: Maximum number of pages/sheets to analyze
-            mode: Analysis mode - "visual", "text", or "hybrid"
-            page_range: Optional dict with "start" and "end" (1-indexed, inclusive)
-            auto_limit_tokens: Auto-limit pages based on model context window
-
-        Returns:
-            Dict with: response, conversation_id, model_used, pages_analyzed, mode
-        """
-        if not self._agents:
-            return {"error": "No agents initialized"}
-
-        # Select model early to get context window
-        has_images_hint = mode in ("visual", "hybrid")
-        if has_images_hint:
-            target_model = model_id or self.config.get("default_vision_model", "")
-            model_cfg = self._get_model_config(target_model)
-            if not model_cfg or not model_cfg.get("vision", False):
-                for m in self.config.get("models", []):
-                    if m.get("enabled", True) and m.get("vision", False):
-                        target_model = m.get("id", "")
-                        model_cfg = m
-                        break
-        else:
-            target_model = model_id or self.config.get("default_ask_model", "")
-            model_cfg = self._get_model_config(target_model)
-
-        if not target_model or target_model not in self._agents:
-            return {"error": "No suitable model available"}
+        if mode not in ("visual", "text", "hybrid"):
+            return {"error": f"Invalid mode '{mode}'. Must be: visual, text, or hybrid"}
 
         # Get context window for auto-limiting
-        context_window = None
-        if auto_limit_tokens and model_cfg:
-            context_window = get_model_context_window(self.config, target_model)
+        model_id = self._get_agent_model_id(agent_id)
+        model_cfg = self.config.get_model(model_id) if model_id else None
+        context_window = model_cfg.context_window if (auto_limit_tokens and model_cfg) else None
 
         # Parse page range
         range_obj = None
+        page_range = options.get("page_range")
         if page_range:
-            range_obj = PageRange(
-                start=page_range.get("start", 1),
-                end=page_range.get("end"),
-            )
+            if isinstance(page_range, str):
+                page_range = json.loads(page_range)
+            range_obj = PageRange(start=page_range.get("start", 1), end=page_range.get("end"))
 
-        # Extract pages using unified pipeline
         try:
             pages = extract_document_pages(
                 document_source,
@@ -741,18 +827,14 @@ class SKAgentManager:
         if not pages:
             return {"error": "No pages could be extracted from document"}
 
-        # Determine if we need vision model (has images)
         has_images = any(p.has_image for p in pages)
         needs_vision = has_images or mode == "visual"
 
-        if needs_vision and not model_cfg.get("vision", False):
-            return {"error": "No vision-capable model available for visual/hybrid mode"}
+        if needs_vision and model_cfg and not model_cfg.vision:
+            return {"error": "Agent's model does not support vision for visual/hybrid mode"}
 
-        # Build content items
         content_items = [TextContent(text=f"{prompt}\n\nThe document has {len(pages)} page(s):")]
-
         for page in pages:
-            # Add page separator
             page_label = f"Page {page.page_number}"
             if page.metadata and page.metadata.get("sheet_name"):
                 page_label = f"Sheet '{page.metadata['sheet_name']}'"
@@ -760,72 +842,98 @@ class SKAgentManager:
                 page_label = "All slides"
             content_items.append(TextContent(text=f"\n--- {page_label} ---"))
 
-            # Add text content if available
             if page.has_text:
                 content_items.append(TextContent(text=page.text_content))
-
-            # Add image content if available
             if page.has_image:
                 b64_data = base64.b64encode(page.image_data).decode("ascii")
                 data_url = f"data:{page.media_type};base64,{b64_data}"
                 content_items.append(ImageContent(data_uri=data_url))
 
-        # Get or create thread
         conv_id, thread = self._get_or_create_thread(conversation_id)
+        message = ChatMessageContent(role=AuthorRole.USER, items=content_items)
 
-        # Get agent
-        agent = self._agents[target_model]
-
-        # Create message with all pages
-        message = ChatMessageContent(
-            role=AuthorRole.USER,
-            items=content_items,
-        )
-
-        # Invoke agent
+        steps = []
         final_response = None
         async for response in agent.invoke(
             messages=message,
             thread=thread,
+            on_intermediate_message=self._make_step_handler(steps) if include_steps else None,
         ):
             final_response = response
             thread = response.thread
 
         self._threads[conv_id] = thread
-
-        return {
+        result = {
             "response": str(final_response) if final_response else "",
             "conversation_id": conv_id,
-            "model_used": target_model,
+            "agent_used": agent_id,
+            "model_used": self._get_agent_model_id(agent_id),
             "pages_analyzed": len(pages),
             "mode": mode,
         }
+        if include_steps:
+            result["steps"] = steps
+        return result
 
-    def list_models(self) -> list[dict]:
-        """Return list of all configured models."""
-        default_ask = self.config.get("default_ask_model", "")
-        default_vision = self.config.get("default_vision_model", "")
+    # -----------------------------------------------------------------------
+    # Utility Methods
+    # -----------------------------------------------------------------------
 
-        return [
-            {
-                "id": m.get("id", "unknown"),
-                "model_id": m.get("model_id", ""),
-                "vision": m.get("vision", False),
-                "enabled": m.get("enabled", True),
-                "description": m.get("description", ""),
-                "context_window": m.get("context_window", get_model_context_window(self.config, m.get("id", ""))),
-                "is_default_ask": m.get("id") == default_ask,
-                "is_default_vision": m.get("id") == default_vision,
+    def _make_step_handler(self, steps: list):
+        """Create a step handler callback for agent invocation."""
+        async def handler(message) -> None:
+            step_info = {"role": str(message.role)}
+            for item in message.items:
+                if isinstance(item, FunctionCallContent):
+                    step_info["type"] = "tool_call"
+                    step_info["name"] = item.function_name
+                    step_info["arguments"] = item.arguments
+                elif isinstance(item, FunctionResultContent):
+                    step_info["type"] = "tool_result"
+                    step_info["result"] = str(item.result)[:500]
+                elif isinstance(item, TextContent):
+                    step_info["type"] = "text"
+                    step_info["content"] = item.text[:200]
+            if "type" in step_info:
+                steps.append(step_info)
+        return handler
+
+    def _get_agent_model_id(self, agent_id: str) -> str:
+        """Get the model ID for an agent."""
+        agent_cfg = self.config.get_agent(agent_id)
+        return agent_cfg.model if agent_cfg else ""
+
+    def list_agents(self) -> list[dict]:
+        """Return list of configured agents with capabilities."""
+        result = []
+        default_agent = self.config.get_default_agent()
+        default_vision = self.config.get_default_vision_agent()
+
+        for agent_cfg in self.config.agents:
+            model = self.config.get_model(agent_cfg.model)
+            if not model or not model.enabled:
+                continue
+
+            info = {
+                "id": agent_cfg.id,
+                "description": agent_cfg.description,
+                "model": agent_cfg.model,
+                "model_id": model.model_id,
+                "vision": model.vision,
+                "context_window": model.context_window,
+                "mcps": agent_cfg.mcps,
+                "memory": agent_cfg.memory.enabled,
+                "is_default": default_agent and agent_cfg.id == default_agent.id,
+                "is_default_vision": default_vision and agent_cfg.id == default_vision.id,
             }
-            for m in self.config.get("models", [])
-        ]
+            result.append(info)
+        return result
 
     def list_loaded_tools(self) -> str:
         """Return description of all loaded MCP plugins and their tools."""
         if not self._kernels:
             return "No kernels initialized."
 
-        # Use first kernel's plugins (shared by all models)
         first_kernel = next(iter(self._kernels.values()))
         lines = []
         for plugin_name, plugin in first_kernel.plugins.items():
@@ -834,7 +942,6 @@ class SKAgentManager:
                 lines.append(f"  {plugin.description}")
             for fn_name, fn in plugin.functions.items():
                 desc = fn.description or ""
-                # Truncate long descriptions
                 if len(desc) > 100:
                     desc = desc[:97] + "..."
                 lines.append(f"  - {fn_name}: {desc}")
@@ -851,268 +958,163 @@ class SKAgentManager:
     async def stop(self):
         """Clean up all resources."""
         await self._exit_stack.aclose()
-        self._shared_plugins.clear()
+        self._mcp_plugins.clear()
+        self._mcp_plugin_list.clear()
         self._threads.clear()
         self._kernels.clear()
-        self._agents.clear()
+        self._sk_agents.clear()
+        self._openai_clients.clear()
+        self._services.clear()
+        self._memory_stores.clear()
         log.info("SK Agent Manager stopped")
 
 
 # ---------------------------------------------------------------------------
-# FastMCP server -- tools exposed to Claude/Roo
+# FastMCP server
 # ---------------------------------------------------------------------------
 
 mcp_server = FastMCP(
     "sk-agent",
     instructions=(
-        "A proxy to a local LLM with optional tools (web search, browser, etc.). "
-        "Use 'ask' for text queries, 'analyze_image' for vision tasks. "
+        "An agent-centric proxy to local LLMs with tools, memory, and multi-agent conversations. "
+        "Use 'call_agent' for all queries. Pass 'attachment' for images/videos/documents. "
+        "Use 'list_agents' to see available agents. "
         "Pass conversation_id to continue a previous conversation."
     ),
 )
 
 # Global manager instance
 _manager: SKAgentManager | None = None
+_config: SKAgentConfig | None = None
+_conversation_runner: ConversationRunner | None = None
 
 
 async def _get_manager() -> SKAgentManager:
     """Get or create the global manager instance."""
-    global _manager
+    global _manager, _config, _conversation_runner
     if _manager is None:
-        config = load_config()
-        _manager = SKAgentManager(config)
+        _config = load_config()
+        _manager = SKAgentManager(_config)
         await _manager.start()
+        # Create conversation runner with the manager's agents
+        _conversation_runner = ConversationRunner(_config, _manager._sk_agents)
+        # Update tool descriptions dynamically
+        _update_tool_descriptions(_config)
     return _manager
 
 
+async def _get_conversation_runner() -> ConversationRunner:
+    """Get the conversation runner (initializes manager if needed)."""
+    global _conversation_runner
+    await _get_manager()
+    assert _conversation_runner is not None
+    return _conversation_runner
+
+
+def _update_tool_descriptions(config: SKAgentConfig):
+    """Mutate tool descriptions after manager init to reflect live config."""
+    try:
+        tool_manager = mcp_server._tool_manager
+        tools = tool_manager._tools
+
+        if "call_agent" in tools:
+            tools["call_agent"].description = build_call_agent_description(config)
+            log.info("Updated call_agent description dynamically")
+
+        if "list_agents" in tools:
+            tools["list_agents"].description = build_list_agents_description(config)
+
+        if "run_conversation" in tools:
+            tools["run_conversation"].description = build_run_conversation_description(config)
+            log.info("Updated run_conversation description dynamically")
+    except Exception:
+        log.exception("Failed to update tool descriptions dynamically")
+
+
+# ---------------------------------------------------------------------------
+# Core Tools
+# ---------------------------------------------------------------------------
+
 @mcp_server.tool()
-async def ask(
+async def call_agent(
     prompt: str,
-    model: str = "",
+    agent: str = "",
+    attachment: str = "",
+    options: str = "",
     conversation_id: str = "",
-    system_prompt: str = "",
     include_steps: bool = False,
 ) -> str:
-    """Send a text prompt to the local LLM.
+    """Send a prompt to an AI agent.
 
-    The model may autonomously use its configured tools (web search, browser,
-    etc.) to answer the query. Returns the model's response.
+    Available agents and capabilities are listed dynamically.
+    Use list_agents() for details.
 
     Args:
-        prompt: The user question or instruction.
-        model: Optional model ID (e.g., "glm-4.7-flash"). Uses default if not specified.
-        conversation_id: Optional conversation ID to continue a previous conversation.
-        system_prompt: Optional override for the system prompt.
-        include_steps: If True, include intermediate reasoning/tool call steps.
+        prompt: The question or instruction.
+        agent: Agent ID (default: auto-select based on attachment type).
+        attachment: File path or URL (image, video, PDF, PPTX, DOCX, XLSX).
+        options: JSON string with type-specific params (region, mode, max_pages, page_range, num_frames).
+        conversation_id: Continue previous conversation.
+        include_steps: Show intermediate tool/reasoning steps.
 
     Returns:
-        JSON string with: response, conversation_id, model_used, and optionally steps
+        JSON string with: response, conversation_id, agent_used, model_used, and type-specific fields.
     """
     manager = await _get_manager()
-    result = await manager.ask(
+
+    opts = {}
+    if options:
+        try:
+            opts = json.loads(options)
+        except json.JSONDecodeError:
+            return json.dumps({"error": "Invalid options JSON"}, ensure_ascii=False)
+
+    result = await manager.call_agent(
         prompt=prompt,
-        model_id=model if model else None,
+        agent_id=agent if agent else None,
+        attachment=attachment if attachment else None,
+        options=opts,
         conversation_id=conversation_id if conversation_id else None,
-        system_prompt=system_prompt if system_prompt else None,
         include_steps=include_steps,
     )
     return json.dumps(result, ensure_ascii=False)
 
 
 @mcp_server.tool()
-async def analyze_image(
-    image_source: str,
-    prompt: str = "Describe this image in detail",
-    model: str = "",
-    conversation_id: str = "",
-    zoom_context: str = "",
-) -> str:
-    """Analyze an image using the local vision model with Semantic Kernel.
+async def list_agents() -> str:
+    """List all configured agents.
 
-    Accepts a local file path (e.g. D:/screenshots/img.png) or a URL.
-    The image is automatically converted to base64 for the model API.
-    Supports conversation continuity and recursive zoom context.
-
-    Args:
-        image_source: Path to a local image file or an HTTP(S) URL.
-        prompt: Question or instruction about the image.
-        model: Optional model ID (must support vision). Uses default vision model if not specified.
-        conversation_id: Optional conversation ID to continue a previous conversation.
-        zoom_context: Optional JSON string with zoom context for recursive calls.
-                      Format: '{"depth": 1, "stack": [{"x": 10, "y": 20, "w": 100, "h": 100}], "original_source": "path"}'
-
-    Returns:
-        JSON string with: response, conversation_id, model_used, zoom_context (if provided)
+    Returns information about each agent including model, vision capability,
+    tools, memory status, and whether it's the default.
     """
     manager = await _get_manager()
-    result = await manager.ask_with_image(
-        image_source=image_source,
-        prompt=prompt,
-        model_id=model if model else None,
-        conversation_id=conversation_id if conversation_id else None,
-    )
+    agents = manager.list_agents()
 
-    # Include zoom context if provided
-    if zoom_context:
-        result["zoom_context"] = zoom_context
+    lines = ["# Available Agents", ""]
+    for a in agents:
+        badges = []
+        if a.get("is_default"):
+            badges.append("default")
+        if a.get("is_default_vision"):
+            badges.append("default-vision")
+        if a.get("vision"):
+            badges.append("vision")
+        if a.get("memory"):
+            badges.append("memory")
 
-    return json.dumps(result, ensure_ascii=False)
+        badge_str = f" [{', '.join(badges)}]" if badges else ""
+        lines.append(f"## {a['id']}{badge_str}")
+        lines.append(f"- Model: {a.get('model_id', 'unknown')} ({a.get('model', '')})")
+        ctx = a.get("context_window", 0)
+        lines.append(f"- Context: {ctx:,} tokens" if isinstance(ctx, int) else f"- Context: {ctx}")
+        lines.append(f"- Vision: {'Yes' if a.get('vision') else 'No'}")
+        if a.get("mcps"):
+            lines.append(f"- Tools: {', '.join(a['mcps'])}")
+        if a.get("description"):
+            lines.append(f"- Description: {a['description']}")
+        lines.append("")
 
-
-@mcp_server.tool()
-async def zoom_image(
-    image_source: str,
-    region: str,
-    prompt: str = "Describe this region in detail",
-    model: str = "",
-    conversation_id: str = "",
-    zoom_context: str = "",
-) -> str:
-    """Zoom into a specific region of an image and analyze it using Semantic Kernel.
-
-    Crops the image to the specified region and analyzes it with the vision model.
-    Useful for examining details in specific areas of an image.
-    Supports progressive zoom by passing the previous zoom_context.
-
-    Args:
-        image_source: Path to a local image file or an HTTP(S) URL.
-        region: JSON string with crop region. Example: '{"x": 100, "y": 200, "width": 300, "height": 400}'
-                Values can be pixels or percentages like '{"x": "10%", "y": "20%", "width": "50%", "height": "30%"}'
-        prompt: Question or instruction about the region.
-        model: Optional model ID (must support vision). Uses default vision model if not specified.
-        conversation_id: Optional conversation ID to continue a previous conversation.
-        zoom_context: Optional JSON string with previous zoom context for progressive zoom.
-                      Pass the zoom_context from a previous zoom_image call to chain zooms.
-
-    Returns:
-        JSON string with: response, conversation_id, model_used, region_analyzed, zoom_context
-    """
-    import json as json_mod
-    try:
-        region_dict = json_mod.loads(region)
-    except json_mod.JSONDecodeError:
-        return json.dumps({"error": "Invalid region JSON"}, ensure_ascii=False)
-
-    manager = await _get_manager()
-    result = await manager.analyze_image_region(
-        image_source=image_source,
-        region=region_dict,
-        prompt=prompt,
-        model_id=model if model else None,
-        conversation_id=conversation_id if conversation_id else None,
-        zoom_context=zoom_context if zoom_context else None,
-    )
-
-    result["region_analyzed"] = region_dict
-    return json.dumps(result, ensure_ascii=False)
-
-
-@mcp_server.tool()
-async def analyze_video(
-    video_source: str,
-    prompt: str = "Describe what happens in this video",
-    model: str = "",
-    conversation_id: str = "",
-    num_frames: int = 8,
-) -> str:
-    """Analyze a video by extracting frames and using the vision model.
-
-    Extracts key frames from a video file and sends them to the vision model
-    for comprehensive video understanding. Supports GLM-4.6V's 128K token context.
-
-    Args:
-        video_source: Path to a local video file (MP4, AVI, MOV, etc.).
-        prompt: Question or instruction about the video content.
-        model: Optional model ID (must support vision). Uses default vision model if not specified.
-        conversation_id: Optional conversation ID to continue a previous conversation.
-        num_frames: Number of frames to extract from the video (default: 8, max: 20).
-
-    Returns:
-        JSON string with: response, conversation_id, model_used, frames_analyzed
-    """
-    # Clamp num_frames
-    num_frames = max(1, min(num_frames, 20))
-
-    manager = await _get_manager()
-    result = await manager.analyze_video(
-        video_source=video_source,
-        prompt=prompt,
-        model_id=model if model else None,
-        conversation_id=conversation_id if conversation_id else None,
-        num_frames=num_frames,
-    )
-    return json.dumps(result, ensure_ascii=False)
-
-
-@mcp_server.tool()
-async def analyze_document(
-    document_source: str,
-    prompt: str = "Summarize this document and extract key information",
-    model: str = "",
-    conversation_id: str = "",
-    max_pages: int = 10,
-    mode: str = "visual",
-    page_range: str = "",
-    auto_limit_tokens: bool = True,
-) -> str:
-    """Analyse un document (PDF, PPT/PPTX, DOC/DOCX, XLS/XLSX) avec pipeline unifié.
-
-    3 modes d'analyse disponibles:
-    - "visual": Convertit les pages en images (requiert modèle vision)
-    - "text": Extrait le contenu textuel (utilise modèle texte)
-    - "hybrid": Combine images ET texte (requiert modèle vision)
-
-    Formats supportés:
-    - PDF: PyMuPDF (images DPI 180 PNG + extraction texte)
-    - PPT/PPTX: LibreOffice → PDF → images, ou extraction texte
-    - DOC/DOCX: LibreOffice → PDF → images, ou extraction texte
-    - XLS/XLSX: LibreOffice → PDF → images, ou CSV (pandas/LibreOffice)
-
-    Peut extraire texte, tableaux, diagrammes, formules, etc.
-    Supporte les documents multi-pages avec le contexte 128K-200K tokens.
-
-    Args:
-        document_source: Chemin vers un fichier local (PDF, PPT, PPTX, DOC, DOCX, XLS, XLSX).
-        prompt: Question ou instruction sur le contenu du document.
-        model: ID du modèle optionnel. Auto-sélectionné selon le mode si non spécifié.
-        conversation_id: ID de conversation optionnel pour continuer une conversation précédente.
-        max_pages: Nombre maximum de pages/feuilles à analyser (défaut: 10, max: 50).
-        mode: Mode d'analyse - "visual" (images), "text" (texte), "hybrid" (les deux). Défaut: visual.
-        page_range: JSON optionnel avec plage de pages: '{"start": 1, "end": 10}' (1-indexé, inclusif).
-        auto_limit_tokens: Limite automatique des pages selon le contexte du modèle (défaut: true).
-
-    Returns:
-        Chaîne JSON avec: response, conversation_id, model_used, pages_analyzed, mode
-    """
-    import json as json_mod
-
-    # Clamp max_pages to reasonable range
-    max_pages = max(1, min(max_pages, MAX_PAGES_HARD_LIMIT))
-
-    # Validate mode
-    if mode not in ("visual", "text", "hybrid"):
-        return json.dumps({"error": f"Invalid mode '{mode}'. Must be: visual, text, or hybrid"}, ensure_ascii=False)
-
-    # Parse page_range if provided
-    page_range_dict = None
-    if page_range:
-        try:
-            page_range_dict = json_mod.loads(page_range)
-        except json_mod.JSONDecodeError:
-            return json.dumps({"error": "Invalid page_range JSON"}, ensure_ascii=False)
-
-    manager = await _get_manager()
-    result = await manager.analyze_document(
-        document_source=document_source,
-        prompt=prompt,
-        model_id=model if model else None,
-        conversation_id=conversation_id if conversation_id else None,
-        max_pages=max_pages,
-        mode=mode,  # type: ignore
-        page_range=page_range_dict,
-        auto_limit_tokens=auto_limit_tokens,
-    )
-    return json.dumps(result, ensure_ascii=False)
+    return "\n".join(lines)
 
 
 @mcp_server.tool()
@@ -1123,202 +1125,6 @@ async def list_tools() -> str:
     """
     manager = await _get_manager()
     return manager.list_loaded_tools()
-
-
-@mcp_server.tool()
-async def list_models() -> str:
-    """List all configured models available in the sk-agent.
-
-    Returns information about each model including:
-    - id: Unique identifier for the model
-    - model_id: The actual model name used in API calls
-    - vision: Whether the model supports vision/image input
-    - description: Human-readable description
-    - context_window: Token context limit
-    - is_default_ask: Whether this is the default for ask()
-    - is_default_vision: Whether this is the default for analyze_image()
-
-    Useful for selecting the right model for your task.
-    """
-    manager = await _get_manager()
-    models = manager.list_models()
-
-    lines = ["# Available Models", ""]
-    for m in models:
-        model_id = m.get("id", "unknown")
-        vision = m.get("vision", False)
-        context = m.get("context_window", "unknown")
-        desc = m.get("description", "")
-
-        badges = []
-        if m.get("is_default_ask"):
-            badges.append("default-ask")
-        if m.get("is_default_vision"):
-            badges.append("default-vision")
-        if vision:
-            badges.append("vision")
-
-        badge_str = f" [{', '.join(badges)}]" if badges else ""
-        lines.append(f"## {model_id}{badge_str}")
-        lines.append(f"- Model: {m.get('model_id', 'unknown')}")
-        lines.append(f"- Context: {context:,} tokens" if isinstance(context, int) else f"- Context: {context}")
-        lines.append(f"- Vision: {'Yes' if vision else 'No'}")
-        if desc:
-            lines.append(f"- Description: {desc}")
-        lines.append("")
-
-    return "\n".join(lines)
-
-
-@mcp_server.tool()
-async def install_libreoffice(force: bool = False, custom_path: str = "") -> str:
-    """Vérifie si LibreOffice est installé et l'installe si nécessaire.
-
-    LibreOffice est requis pour la conversion de fichiers PowerPoint (PPT/PPTX)
-    en images pour l'analyse par le modèle de vision.
-
-    Méthodes d'installation (par ordre de préférence):
-    1. Chemin personnalisé (portable) - utiliser custom_path
-    2. winget (Windows Package Manager) - recommandé sur Windows 11
-    3. choco (Chocolatey) - alternative
-    4. Téléchargement manuel - instructions fournies
-
-    Args:
-        force: Si True, réinstalle même si déjà présent (défaut: False)
-        custom_path: Chemin vers une installation LibreOffice portable existante
-                     (ex: "D:\\PortableApps\\PortableApps\\LibreOfficePortable\\LibreOfficePortable.exe")
-
-    Returns:
-        Statut de l'installation et instructions
-    """
-    import platform
-
-    # If custom path provided, validate and configure it
-    if custom_path:
-        custom_path_obj = Path(custom_path)
-
-        # Check if path exists
-        if not custom_path_obj.exists():
-            return f"❌ Chemin non trouvé: {custom_path}"
-
-        # If it's a directory, look for the executable inside
-        if custom_path_obj.is_dir():
-            # Look for soffice.exe or LibreOfficePortable.exe in common locations
-            for exe_name in ["soffice.exe", "program/soffice.exe", "LibreOfficePortable.exe"]:
-                candidate = custom_path_obj / exe_name
-                if candidate.exists():
-                    custom_path = str(candidate)
-                    custom_path_obj = candidate
-                    break
-            else:
-                return f"❌ Aucun exécutable LibreOffice (soffice.exe/LibreOfficePortable.exe) trouvé dans: {custom_path}"
-
-        # Validate it's a valid executable
-        if custom_path_obj.suffix.lower() != ".exe":
-            return f"❌ Le chemin doit pointer vers un exécutable (.exe): {custom_path}"
-
-        if set_libreoffice_path(str(custom_path_obj)):
-            log.info("Configured custom LibreOffice path: %s", custom_path)
-
-            # Try to get version
-            try:
-                result = subprocess.run(
-                    [custom_path, "--version"],
-                    capture_output=True,
-                    text=True,
-                    timeout=10
-                )
-                version = result.stdout.strip() or result.stderr.strip() or "(version inconnue)"
-                return f"✅ LibreOffice configuré: {version}\nChemin: {custom_path}"
-            except Exception as e:
-                return f"✅ LibreOffice configuré: {custom_path}\n⚠️ Impossible de vérifier la version: {e}"
-        else:
-            return f"❌ Échec de la configuration du chemin: {custom_path}"
-
-    # Check if already installed
-    libreoffice_cmd = _find_libreoffice()
-
-    if libreoffice_cmd and not force:
-        # Verify version
-        try:
-            result = subprocess.run(
-                [libreoffice_cmd, "--version"],
-                capture_output=True,
-                text=True,
-                timeout=10
-            )
-            version = result.stdout.strip() or result.stderr.strip()
-            return f"✅ LibreOffice déjà installé: {version}\nChemin: {libreoffice_cmd}"
-        except Exception as e:
-            log.warning("Failed to get LibreOffice version: %s", e)
-
-    # Check platform
-    if platform.system() != "Windows":
-        return (
-            "⚠️ Installation automatique uniquement sur Windows.\n"
-            "Sur Linux: sudo apt install libreoffice\n"
-            "Sur macOS: brew install --cask libreoffice"
-        )
-
-    # Try winget first (Windows 11 built-in)
-    winget_path = shutil.which("winget")
-    if winget_path:
-        log.info("Installing LibreOffice via winget...")
-        try:
-            result = subprocess.run(
-                [winget_path, "install", "TheDocumentFoundation.LibreOffice", "--accept-source-agreements", "--accept-package-agreements"],
-                capture_output=True,
-                text=True,
-                timeout=300  # 5 minutes
-            )
-            if result.returncode == 0:
-                return (
-                    "✅ LibreOffice installé avec succès via winget!\n"
-                    "Redémarrez votre terminal/VS Code pour utiliser la conversion PPT."
-                )
-            else:
-                log.warning("winget install failed: %s", result.stderr)
-        except subprocess.TimeoutExpired:
-            return "❌ Installation via winget a expiré (>5min). Essayez manuellement."
-        except Exception as e:
-            log.warning("winget install error: %s", e)
-
-    # Try chocolatey as fallback
-    choco_path = shutil.which("choco")
-    if choco_path:
-        log.info("Installing LibreOffice via chocolatey...")
-        try:
-            result = subprocess.run(
-                [choco_path, "install", "libreoffice", "-y"],
-                capture_output=True,
-                text=True,
-                timeout=300
-            )
-            if result.returncode == 0:
-                return (
-                    "✅ LibreOffice installé avec succès via Chocolatey!\n"
-                    "Redémarrez votre terminal/VS Code pour utiliser la conversion PPT."
-                )
-            else:
-                log.warning("choco install failed: %s", result.stderr)
-        except subprocess.TimeoutExpired:
-            return "❌ Installation via Chocolatey a expiré (>5min). Essayez manuellement."
-        except Exception as e:
-            log.warning("choco install error: %s", e)
-
-    # Manual installation instructions
-    return (
-        "❌ Impossible d'installer automatiquement LibreOffice.\n\n"
-        "📋 Installation manuelle:\n"
-        "1. Téléchargez depuis: https://www.libreoffice.org/download/\n"
-        "2. Ou installez via PowerShell (admin):\n"
-        "   winget install TheDocumentFoundation.LibreOffice\n"
-        "3. Redémarrez VS Code après l'installation\n\n"
-        "💡 Alternative: Si vous avez Scoop:\n"
-        "   scoop bucket add extras && scoop install libreoffice\n\n"
-        "💡 Pour une version portable, utilisez le paramètre custom_path:\n"
-        "   install_libreoffice(custom_path='D:\\PortableApps\\...\\LibreOfficePortable.exe')"
-    )
 
 
 @mcp_server.tool()
@@ -1338,12 +1144,407 @@ async def end_conversation(conversation_id: str) -> str:
     return f"Conversation '{conversation_id}' not found."
 
 
+@mcp_server.tool()
+async def install_libreoffice(force: bool = False, custom_path: str = "") -> str:
+    """Check if LibreOffice is installed and install if needed.
+
+    LibreOffice is required for converting PowerPoint (PPT/PPTX), Word (DOC/DOCX),
+    and Excel (XLS/XLSX) files to images for vision model analysis.
+
+    Args:
+        force: Reinstall even if already present (default: False).
+        custom_path: Path to an existing LibreOffice portable installation.
+
+    Returns:
+        Installation status and instructions.
+    """
+    import platform
+
+    if custom_path:
+        custom_path_obj = Path(custom_path)
+        if not custom_path_obj.exists():
+            return f"Path not found: {custom_path}"
+
+        if custom_path_obj.is_dir():
+            for exe_name in ["soffice.exe", "program/soffice.exe", "LibreOfficePortable.exe"]:
+                candidate = custom_path_obj / exe_name
+                if candidate.exists():
+                    custom_path = str(candidate)
+                    custom_path_obj = candidate
+                    break
+            else:
+                return f"No LibreOffice executable found in: {custom_path}"
+
+        if custom_path_obj.suffix.lower() != ".exe":
+            return f"Path must point to an executable (.exe): {custom_path}"
+
+        if set_libreoffice_path(str(custom_path_obj)):
+            try:
+                result = subprocess.run(
+                    [custom_path, "--version"], capture_output=True, text=True, timeout=10
+                )
+                version = result.stdout.strip() or result.stderr.strip() or "(unknown version)"
+                return f"LibreOffice configured: {version}\nPath: {custom_path}"
+            except Exception as e:
+                return f"LibreOffice configured: {custom_path}\nCould not verify version: {e}"
+        else:
+            return f"Failed to configure path: {custom_path}"
+
+    libreoffice_cmd = _find_libreoffice()
+    if libreoffice_cmd and not force:
+        try:
+            result = subprocess.run(
+                [libreoffice_cmd, "--version"], capture_output=True, text=True, timeout=10
+            )
+            version = result.stdout.strip() or result.stderr.strip()
+            return f"LibreOffice already installed: {version}\nPath: {libreoffice_cmd}"
+        except Exception as e:
+            log.warning("Failed to get LibreOffice version: %s", e)
+
+    if platform.system() != "Windows":
+        return (
+            "Auto-install only on Windows.\n"
+            "Linux: sudo apt install libreoffice\n"
+            "macOS: brew install --cask libreoffice"
+        )
+
+    winget_path = shutil.which("winget")
+    if winget_path:
+        try:
+            result = subprocess.run(
+                [winget_path, "install", "TheDocumentFoundation.LibreOffice",
+                 "--accept-source-agreements", "--accept-package-agreements"],
+                capture_output=True, text=True, timeout=300,
+            )
+            if result.returncode == 0:
+                return "LibreOffice installed via winget! Restart your terminal/VS Code."
+        except subprocess.TimeoutExpired:
+            return "Installation via winget timed out (>5min)."
+        except Exception:
+            pass
+
+    choco_path = shutil.which("choco")
+    if choco_path:
+        try:
+            result = subprocess.run(
+                [choco_path, "install", "libreoffice", "-y"],
+                capture_output=True, text=True, timeout=300,
+            )
+            if result.returncode == 0:
+                return "LibreOffice installed via Chocolatey! Restart your terminal/VS Code."
+        except subprocess.TimeoutExpired:
+            return "Installation via Chocolatey timed out (>5min)."
+        except Exception:
+            pass
+
+    return (
+        "Could not install LibreOffice automatically.\n\n"
+        "Manual install:\n"
+        "1. Download: https://www.libreoffice.org/download/\n"
+        "2. Or via PowerShell (admin): winget install TheDocumentFoundation.LibreOffice\n"
+        "3. Restart VS Code after installation\n\n"
+        "For portable version, use custom_path parameter."
+    )
+
+
+# ---------------------------------------------------------------------------
+# Conversation Tools
+# ---------------------------------------------------------------------------
+
+@mcp_server.tool()
+async def run_conversation(
+    prompt: str,
+    conversation: str = "",
+    options: str = "",
+    conversation_id: str = "",
+) -> str:
+    """Run a multi-agent conversation.
+
+    Available conversations are listed dynamically.
+    Use list_conversations() for details.
+
+    Args:
+        prompt: The research question or topic to deliberate.
+        conversation: Conversation preset ID (default: deep-search).
+        options: JSON string with overrides (max_rounds).
+        conversation_id: Reserved for future thread continuity.
+
+    Returns:
+        JSON string with: response, conversation_type, agents_used, rounds, steps.
+    """
+    runner = await _get_conversation_runner()
+
+    opts = {}
+    if options:
+        try:
+            opts = json.loads(options)
+        except json.JSONDecodeError:
+            return json.dumps({"error": "Invalid options JSON"}, ensure_ascii=False)
+
+    result = await runner.run(
+        prompt=prompt,
+        conversation_id=conversation if conversation else None,
+        options=opts,
+    )
+    return json.dumps(result, ensure_ascii=False)
+
+
+@mcp_server.tool()
+async def list_conversations() -> str:
+    """List available multi-agent conversation presets.
+
+    Shows conversation ID, type, participating agents, and max rounds.
+    """
+    runner = await _get_conversation_runner()
+    conversations = runner.list_conversations()
+
+    lines = ["# Available Conversations", ""]
+    for conv in conversations:
+        badges = []
+        if conv.get("builtin"):
+            badges.append("built-in")
+        badges.append(conv.get("type", "unknown"))
+
+        badge_str = f" [{', '.join(badges)}]"
+        agents_str = ", ".join(conv.get("agents", []))
+        lines.append(f"## {conv['id']}{badge_str}")
+        lines.append(f"- Description: {conv.get('description', '')}")
+        lines.append(f"- Agents: {agents_str}")
+        lines.append(f"- Max rounds: {conv.get('max_rounds', 'N/A')}")
+        lines.append("")
+
+    return "\n".join(lines)
+
+
+# ---------------------------------------------------------------------------
+# Deprecated Aliases (backward compatibility)
+# ---------------------------------------------------------------------------
+
+@mcp_server.tool()
+async def ask(
+    prompt: str,
+    model: str = "",
+    conversation_id: str = "",
+    system_prompt: str = "",
+    include_steps: bool = False,
+) -> str:
+    """[DEPRECATED - Use call_agent instead] Send a text prompt to the local LLM.
+
+    Args:
+        prompt: The user question or instruction.
+        model: Optional model ID. Uses default if not specified.
+        conversation_id: Optional conversation ID to continue.
+        system_prompt: Optional override for the system prompt.
+        include_steps: If True, include intermediate steps.
+
+    Returns:
+        JSON string with: response, conversation_id, model_used
+    """
+    manager = await _get_manager()
+    result = await manager.call_agent(
+        prompt=prompt,
+        model_id=model if model else None,
+        conversation_id=conversation_id if conversation_id else None,
+        include_steps=include_steps,
+    )
+    return json.dumps(result, ensure_ascii=False)
+
+
+@mcp_server.tool()
+async def analyze_image(
+    image_source: str,
+    prompt: str = "Describe this image in detail",
+    model: str = "",
+    conversation_id: str = "",
+    zoom_context: str = "",
+) -> str:
+    """[DEPRECATED - Use call_agent with attachment instead] Analyze an image.
+
+    Args:
+        image_source: Path to image file or URL.
+        prompt: Question about the image.
+        model: Optional vision model ID.
+        conversation_id: Continue previous conversation.
+        zoom_context: Optional zoom context JSON.
+
+    Returns:
+        JSON string with: response, conversation_id, model_used
+    """
+    manager = await _get_manager()
+    opts = {}
+    if zoom_context:
+        opts["zoom_context"] = zoom_context
+    result = await manager.call_agent(
+        prompt=prompt,
+        attachment=image_source,
+        options=opts if opts else None,
+        model_id=model if model else None,
+        conversation_id=conversation_id if conversation_id else None,
+    )
+    if zoom_context:
+        result["zoom_context"] = zoom_context
+    return json.dumps(result, ensure_ascii=False)
+
+
+@mcp_server.tool()
+async def zoom_image(
+    image_source: str,
+    region: str,
+    prompt: str = "Describe this region in detail",
+    model: str = "",
+    conversation_id: str = "",
+    zoom_context: str = "",
+) -> str:
+    """[DEPRECATED - Use call_agent with attachment+options.region instead] Zoom into image region.
+
+    Args:
+        image_source: Path to image file or URL.
+        region: JSON string with crop region.
+        prompt: Question about the region.
+        model: Optional vision model ID.
+        conversation_id: Continue previous conversation.
+        zoom_context: Previous zoom context.
+
+    Returns:
+        JSON string with: response, conversation_id, model_used, region_analyzed
+    """
+    try:
+        region_dict = json.loads(region)
+    except json.JSONDecodeError:
+        return json.dumps({"error": "Invalid region JSON"}, ensure_ascii=False)
+
+    manager = await _get_manager()
+    opts = {"region": region_dict}
+    if zoom_context:
+        opts["zoom_context"] = zoom_context
+    result = await manager.call_agent(
+        prompt=prompt,
+        attachment=image_source,
+        options=opts,
+        model_id=model if model else None,
+        conversation_id=conversation_id if conversation_id else None,
+    )
+    result["region_analyzed"] = region_dict
+    return json.dumps(result, ensure_ascii=False)
+
+
+@mcp_server.tool()
+async def analyze_video(
+    video_source: str,
+    prompt: str = "Describe what happens in this video",
+    model: str = "",
+    conversation_id: str = "",
+    num_frames: int = 8,
+) -> str:
+    """[DEPRECATED - Use call_agent with attachment instead] Analyze a video.
+
+    Args:
+        video_source: Path to video file.
+        prompt: Question about the video.
+        model: Optional vision model ID.
+        conversation_id: Continue previous conversation.
+        num_frames: Number of frames to extract (default: 8, max: 20).
+
+    Returns:
+        JSON string with: response, conversation_id, model_used, frames_analyzed
+    """
+    manager = await _get_manager()
+    result = await manager.call_agent(
+        prompt=prompt,
+        attachment=video_source,
+        options={"num_frames": max(1, min(num_frames, 20))},
+        model_id=model if model else None,
+        conversation_id=conversation_id if conversation_id else None,
+    )
+    return json.dumps(result, ensure_ascii=False)
+
+
+@mcp_server.tool()
+async def analyze_document(
+    document_source: str,
+    prompt: str = "Summarize this document and extract key information",
+    model: str = "",
+    conversation_id: str = "",
+    max_pages: int = 10,
+    mode: str = "visual",
+    page_range: str = "",
+    auto_limit_tokens: bool = True,
+) -> str:
+    """[DEPRECATED - Use call_agent with attachment+options instead] Analyze a document.
+
+    Args:
+        document_source: Path to document file.
+        prompt: Question about the document.
+        model: Optional model ID.
+        conversation_id: Continue previous conversation.
+        max_pages: Max pages to analyze (default: 10, max: 50).
+        mode: Analysis mode - visual, text, or hybrid.
+        page_range: JSON with page range.
+        auto_limit_tokens: Auto-limit pages by context window.
+
+    Returns:
+        JSON string with: response, conversation_id, model_used, pages_analyzed, mode
+    """
+    opts: dict[str, Any] = {
+        "mode": mode,
+        "max_pages": max_pages,
+        "auto_limit_tokens": auto_limit_tokens,
+    }
+    if page_range:
+        try:
+            opts["page_range"] = json.loads(page_range)
+        except json.JSONDecodeError:
+            return json.dumps({"error": "Invalid page_range JSON"}, ensure_ascii=False)
+
+    manager = await _get_manager()
+    result = await manager.call_agent(
+        prompt=prompt,
+        attachment=document_source,
+        options=opts,
+        model_id=model if model else None,
+        conversation_id=conversation_id if conversation_id else None,
+    )
+    return json.dumps(result, ensure_ascii=False)
+
+
+@mcp_server.tool()
+async def list_models() -> str:
+    """[DEPRECATED - Use list_agents instead] List configured models.
+
+    Returns model information. For agent-centric view, use list_agents().
+    """
+    manager = await _get_manager()
+    agents = manager.list_agents()
+
+    lines = ["# Available Models (via agents)", ""]
+    for a in agents:
+        badges = []
+        if a.get("is_default"):
+            badges.append("default-ask")
+        if a.get("is_default_vision"):
+            badges.append("default-vision")
+        if a.get("vision"):
+            badges.append("vision")
+
+        badge_str = f" [{', '.join(badges)}]" if badges else ""
+        lines.append(f"## {a.get('model', 'unknown')}{badge_str}")
+        lines.append(f"- Model: {a.get('model_id', 'unknown')}")
+        ctx = a.get("context_window", 0)
+        lines.append(f"- Context: {ctx:,} tokens" if isinstance(ctx, int) else f"- Context: {ctx}")
+        lines.append(f"- Vision: {'Yes' if a.get('vision') else 'No'}")
+        if a.get("description"):
+            lines.append(f"- Description: {a['description']}")
+        lines.append("")
+
+    return "\n".join(lines)
+
+
 # ---------------------------------------------------------------------------
 # Entry point
 # ---------------------------------------------------------------------------
 
 def main():
-    log.info("Starting sk-agent MCP server (config: %s, depth=%d)", CONFIG_PATH, SK_AGENT_DEPTH)
+    log.info("Starting sk-agent MCP server v2.0 (config: %s, depth=%d)", CONFIG_PATH, SK_AGENT_DEPTH)
     mcp_server.run(transport="stdio")
 
 

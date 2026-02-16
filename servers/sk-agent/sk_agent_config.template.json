@@ -1,20 +1,10 @@
 {
-  "default_ask_model": "glm-5",
-  "default_vision_model": "glm-4.6v",
+  "config_version": 2,
   "max_recursion_depth": 2,
+  "default_agent": "analyst",
+  "default_vision_agent": "vision-analyst",
+
   "models": [
-    {
-      "id": "glm-4.6v",
-      "enabled": true,
-      "base_url": "https://api.z.ai/api/coding/paas/v4",
-      "api_key_env": "ZAI_API_KEY",
-      "api_key": "YOUR_ZAI_API_KEY_HERE",
-      "model_id": "glm-4.6v",
-      "vision": true,
-      "description": "Vision model for image/document analysis (GLM-4.6V via z.ai cloud)",
-      "context_window": 128000,
-      "system_prompt": "You are a vision analysis specialist. Describe images in detail, focusing on relevant visual elements. Be precise and thorough."
-    },
     {
       "id": "glm-5",
       "enabled": true,
@@ -23,9 +13,19 @@
       "api_key": "YOUR_ZAI_API_KEY_HERE",
       "model_id": "glm-5",
       "vision": false,
-      "description": "Text model for complex reasoning (GLM-5 via z.ai cloud)",
-      "context_window": 200000,
-      "system_prompt": "You are a helpful assistant with access to tools. Use them when needed. Always respond in the same language as the user."
+      "description": "GLM-5 reasoning via z.ai cloud (200K context)",
+      "context_window": 200000
+    },
+    {
+      "id": "glm-4.6v",
+      "enabled": true,
+      "base_url": "https://api.z.ai/api/coding/paas/v4",
+      "api_key_env": "ZAI_API_KEY",
+      "api_key": "YOUR_ZAI_API_KEY_HERE",
+      "model_id": "glm-4.6v",
+      "vision": true,
+      "description": "GLM-4.6V vision via z.ai cloud (128K context)",
+      "context_window": 128000
     },
     {
       "id": "zwz-8b",
@@ -34,9 +34,8 @@
       "api_key": "YOUR_MINI_API_KEY_HERE",
       "model_id": "zwz-8b",
       "vision": false,
-      "description": "Fast local text model (ZwZ 8B AWQ - Myia self-hosted, 131K context)",
-      "context_window": 131072,
-      "system_prompt": "You are a helpful assistant. Always respond in the same language as the user."
+      "description": "Fast local text model (ZwZ 8B AWQ - 131K context)",
+      "context_window": 131072
     },
     {
       "id": "glm-4.7-flash",
@@ -45,14 +44,28 @@
       "api_key": "YOUR_MEDIUM_API_KEY_HERE",
       "model_id": "glm-4.7-flash",
       "vision": false,
-      "description": "Fast local text model (GLM-4.7-Flash AWQ - Myia self-hosted, 131K context)",
-      "context_window": 131072,
-      "system_prompt": "You are a helpful assistant with access to tools. Use them when needed. Always respond in the same language as the user."
+      "description": "Fast local GLM-4.7-Flash AWQ (131K context)",
+      "context_window": 131072
     }
   ],
+
+  "embeddings": {
+    "base_url": "https://embeddings.myia.io/v1/embeddings",
+    "api_key": "YOUR_EMBEDDINGS_API_KEY_HERE",
+    "model_id": "qwen3-4b-awq-embedding",
+    "dimensions": 2560
+  },
+
+  "qdrant": {
+    "url": "https://qdrant.myia.io",
+    "port": 443,
+    "api_key": "YOUR_QDRANT_API_KEY_HERE",
+    "default_collection_prefix": "sk-agent"
+  },
+
   "mcps": [
     {
-      "name": "searxng",
+      "id": "searxng",
       "description": "Web search via SearXNG",
       "command": "npx",
       "args": ["-y", "mcp-searxng"],
@@ -61,17 +74,131 @@
       }
     },
     {
-      "name": "playwright",
+      "id": "playwright",
       "description": "Browser automation and web scraping",
       "command": "npx",
       "args": ["-y", "@playwright/mcp@latest"]
     },
     {
-      "name": "sk_agent",
+      "id": "sk_agent",
       "description": "Self-inclusion for recursive tool chaining",
       "command": "python",
       "args": ["path/to/sk_agent.py"]
     }
   ],
-  "system_prompt": "You are a helpful assistant with access to web search and browser tools. Use them when the user asks about current information or needs to analyze web content. Always respond in the same language as the user."
+
+  "agents": [
+    {
+      "id": "analyst",
+      "description": "General analyst with web search and persistent memory",
+      "model": "glm-5",
+      "system_prompt": "You are a helpful analyst with web search and memory capabilities. Use them when needed. Always respond in the same language as the user.",
+      "mcps": ["searxng", "playwright"],
+      "memory": {
+        "enabled": true,
+        "collection": "analyst-memory"
+      }
+    },
+    {
+      "id": "vision-analyst",
+      "description": "Image and document analysis specialist (cloud vision model)",
+      "model": "glm-4.6v",
+      "system_prompt": "You are a vision analysis specialist. Describe images in detail, focusing on relevant visual elements. Be precise and thorough.",
+      "mcps": ["searxng"],
+      "memory": {
+        "enabled": false
+      }
+    },
+    {
+      "id": "vision-local",
+      "description": "Fast local vision analysis (self-hosted ZwZ model)",
+      "model": "zwz-8b",
+      "system_prompt": "You are a vision analysis assistant. Analyze images carefully and describe what you see. Be concise but thorough.",
+      "mcps": [],
+      "memory": {
+        "enabled": false
+      }
+    },
+    {
+      "id": "fast",
+      "description": "Quick local responses, no tools",
+      "model": "glm-4.7-flash",
+      "system_prompt": "Respond concisely and accurately. Always respond in the same language as the user.",
+      "mcps": [],
+      "memory": {
+        "enabled": false
+      }
+    }
+  ],
+
+  "conversations": [
+    {
+      "id": "code-review",
+      "description": "Multi-perspective code review with security, performance, and maintainability analysis",
+      "type": "group_chat",
+      "agents": ["security-reviewer", "perf-reviewer", "maintainability-reviewer", "code-synthesizer"],
+      "max_rounds": 6,
+      "inline_agents": [
+        {
+          "id": "security-reviewer",
+          "description": "Security-focused code reviewer",
+          "model": "",
+          "system_prompt": "You are a security expert. Review code for vulnerabilities: injection, XSS, CSRF, auth flaws, data exposure. Reference OWASP Top 10. Be specific with line numbers and fix suggestions."
+        },
+        {
+          "id": "perf-reviewer",
+          "description": "Performance-focused code reviewer",
+          "model": "",
+          "system_prompt": "You are a performance engineer. Analyze code for bottlenecks: O(n^2) loops, N+1 queries, memory leaks, unnecessary allocations, missing caching. Suggest concrete optimizations with expected impact."
+        },
+        {
+          "id": "maintainability-reviewer",
+          "description": "Maintainability and readability reviewer",
+          "model": "",
+          "system_prompt": "You are a senior developer focused on code quality. Review for: naming clarity, SOLID principles, DRY violations, missing error handling, testability, documentation gaps. Suggest refactoring where needed."
+        },
+        {
+          "id": "code-synthesizer",
+          "description": "Synthesizes review findings into actionable summary",
+          "model": "",
+          "system_prompt": "Given reviews from security, performance, and maintainability perspectives: prioritize findings by severity (critical/major/minor), identify consensus issues, and produce a final actionable summary with recommended fixes in priority order."
+        }
+      ]
+    },
+    {
+      "id": "research-debate",
+      "description": "Research a topic from opposing viewpoints then synthesize a balanced conclusion",
+      "type": "sequential",
+      "agents": ["proponent", "opponent", "fact-checker", "debate-synthesizer"],
+      "max_rounds": 4,
+      "inline_agents": [
+        {
+          "id": "proponent",
+          "description": "Argues in favor of the proposition",
+          "model": "",
+          "system_prompt": "You are a debate proponent. Build the strongest possible case FOR the given proposition. Use evidence, logic, and examples. Acknowledge weaknesses but explain why the benefits outweigh them."
+        },
+        {
+          "id": "opponent",
+          "description": "Argues against the proposition",
+          "model": "",
+          "system_prompt": "You are a debate opponent. Build the strongest possible case AGAINST the given proposition. Challenge assumptions, cite counterevidence, and identify risks. Be rigorous but intellectually honest."
+        },
+        {
+          "id": "fact-checker",
+          "description": "Verifies claims from both sides",
+          "model": "",
+          "system_prompt": "You are a fact-checker. Review claims made by both the proponent and opponent. Identify which claims are well-supported, which are speculative, and which are misleading. Rate each major claim on a confidence scale."
+        },
+        {
+          "id": "debate-synthesizer",
+          "description": "Produces balanced conclusion from the debate",
+          "model": "",
+          "system_prompt": "Given arguments for and against, plus fact-checking results: produce a nuanced conclusion. Identify what is well-established, what remains uncertain, and what conditions would change the answer. Provide a clear recommendation with caveats."
+        }
+      ]
+    }
+  ],
+
+  "system_prompt": "You are a helpful assistant with access to tools. Use them when needed. Always respond in the same language as the user."
 }
