@@ -9,8 +9,8 @@
 import { Tool } from '@modelcontextprotocol/sdk/types.js';
 import { CallToolResult } from '@modelcontextprotocol/sdk/types.js';
 import { createHash } from 'crypto';
+import OpenAI from 'openai';
 import { getQdrantClient } from '../../services/qdrant.js';
-import getOpenAIClient, { getEmbeddingModel } from '../../services/openai.js';
 
 /**
  * Génère le nom de collection Qdrant pour un workspace (même convention que Roo)
@@ -54,6 +54,32 @@ export function getWorkspaceCollectionVariants(workspacePath: string): string[] 
 		const hash = createHash('sha256').update(v).digest('hex');
 		return `ws-${hash.substring(0, 16)}`;
 	});
+}
+
+/**
+ * Get a dedicated OpenAI-compatible client for codebase embeddings.
+ * Uses EMBEDDING_API_KEY/EMBEDDING_API_BASE_URL if set (for self-hosted models like Qwen3-4B),
+ * otherwise falls back to OPENAI_API_KEY (standard OpenAI).
+ * Separate from the task-indexer's OpenAI client to avoid config conflicts.
+ */
+let codebaseEmbeddingClient: OpenAI | null = null;
+
+function getCodebaseEmbeddingClient(): OpenAI {
+	if (!codebaseEmbeddingClient) {
+		const apiKey = process.env.EMBEDDING_API_KEY || process.env.OPENAI_API_KEY;
+		if (!apiKey) {
+			throw new Error('No embedding API key configured. Set EMBEDDING_API_KEY or OPENAI_API_KEY.');
+		}
+		codebaseEmbeddingClient = new OpenAI({
+			apiKey,
+			baseURL: process.env.EMBEDDING_API_BASE_URL || undefined,
+		});
+	}
+	return codebaseEmbeddingClient;
+}
+
+function getCodebaseEmbeddingModel(): string {
+	return process.env.EMBEDDING_MODEL || 'text-embedding-3-small';
 }
 
 /**
@@ -225,11 +251,11 @@ export async function handleCodebaseSearch(args: CodebaseSearchArgs): Promise<Ca
 			};
 		}
 
-		// 3. Générer l'embedding de la requête
-		const openai = getOpenAIClient();
-		const embeddingModel = getEmbeddingModel();
+		// 3. Générer l'embedding de la requête (uses dedicated codebase embedding client)
+		const embeddingClient = getCodebaseEmbeddingClient();
+		const embeddingModel = getCodebaseEmbeddingModel();
 
-		const embeddingResponse = await openai.embeddings.create({
+		const embeddingResponse = await embeddingClient.embeddings.create({
 			model: embeddingModel,
 			input: query
 		});
