@@ -14,12 +14,46 @@ import getOpenAIClient, { getEmbeddingModel } from '../../services/openai.js';
 
 /**
  * Génère le nom de collection Qdrant pour un workspace (même convention que Roo)
+ * Roo Code hashes the raw fsPath from VS Code without normalization.
+ * We try the exact path first, then common variants (case, separators).
  * @param workspacePath Chemin absolu du workspace
  * @returns Nom de la collection Qdrant (format: ws-XXXXXXXXXXXXXXXX)
  */
 export function getWorkspaceCollectionName(workspacePath: string): string {
-	const hash = createHash('sha256').update(workspacePath).digest('hex');
+	// Fix double-escaped backslashes (common in JSON/MCP parameter passing)
+	const cleaned = workspacePath.replace(/\\{2,}/g, '\\').replace(/\/+$|\\+$/g, '');
+	const hash = createHash('sha256').update(cleaned).digest('hex');
 	return `ws-${hash.substring(0, 16)}`;
+}
+
+/**
+ * Génère toutes les variantes possibles de noms de collection pour un workspace.
+ * Roo Code ne normalise pas le chemin avant le hachage, donc la casse et le
+ * séparateur peuvent varier. On essaie toutes les combinaisons plausibles.
+ */
+export function getWorkspaceCollectionVariants(workspacePath: string): string[] {
+	const cleaned = workspacePath.replace(/\\{2,}/g, '\\').replace(/\/+$|\\+$/g, '');
+	const variants = new Set<string>();
+
+	// 1. Exact path (cleaned)
+	variants.add(cleaned);
+
+	// 2. Lowercase (Windows is case-insensitive)
+	variants.add(cleaned.toLowerCase());
+
+	// 3. With forward slashes
+	variants.add(cleaned.replace(/\\/g, '/'));
+	variants.add(cleaned.toLowerCase().replace(/\\/g, '/'));
+
+	// 4. With backslashes (Windows native)
+	variants.add(cleaned.replace(/\//g, '\\'));
+	variants.add(cleaned.toLowerCase().replace(/\//g, '\\'));
+
+	// Generate collection names for each variant
+	return [...variants].map(v => {
+		const hash = createHash('sha256').update(v).digest('hex');
+		return `ws-${hash.substring(0, 16)}`;
+	});
 }
 
 /**
@@ -155,30 +189,36 @@ export async function handleCodebaseSearch(args: CodebaseSearchArgs): Promise<Ca
 	const effectiveMinScore = Math.max(0, Math.min(1, min_score));
 
 	try {
-		// 1. Calculer le nom de la collection
-		const collectionName = getWorkspaceCollectionName(workspace);
+		// 1. Calculer les variantes possibles du nom de collection
+		const primaryCollectionName = getWorkspaceCollectionName(workspace);
+		const collectionVariants = getWorkspaceCollectionVariants(workspace);
 
-		// 2. Vérifier que la collection existe
+		// 2. Trouver la collection existante (essayer toutes les variantes)
 		const qdrant = getQdrantClient();
-		let collectionExists = false;
+		let collectionName = '';
 
-		try {
-			const collectionInfo = await qdrant.getCollection(collectionName);
-			collectionExists = collectionInfo.status !== undefined;
-		} catch {
-			// Collection n'existe pas
+		for (const variant of collectionVariants) {
+			try {
+				const collectionInfo = await qdrant.getCollection(variant);
+				if (collectionInfo.status !== undefined) {
+					collectionName = variant;
+					break;
+				}
+			} catch {
+				// Cette variante n'existe pas, essayer la suivante
+			}
 		}
 
-		if (!collectionExists) {
+		if (!collectionName) {
 			return {
 				isError: false,
 				content: [{
 					type: 'text',
 					text: JSON.stringify({
 						status: 'collection_not_found',
-						message: `Collection Qdrant "${collectionName}" non trouvée pour le workspace "${workspace}".`,
+						message: `Collection Qdrant non trouvée pour le workspace "${workspace}".`,
 						hint: 'Le workspace doit être indexé par Roo Code avant de pouvoir effectuer des recherches. Ouvrez le workspace dans VS Code avec Roo activé pour démarrer l\'indexation.',
-						collection_name: collectionName,
+						tried_collections: collectionVariants,
 						workspace: workspace
 					}, null, 2)
 				}]

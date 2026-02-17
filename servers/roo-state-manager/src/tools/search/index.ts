@@ -16,6 +16,7 @@ export {
 	codebaseSearchTool,
 	codebaseSearchToolDefinition,
 	handleCodebaseSearch,
-	getWorkspaceCollectionName
+	getWorkspaceCollectionName,
+	getWorkspaceCollectionVariants
 } from './search-codebase.tool.js';
 export type { CodebaseSearchArgs } from './search-codebase.tool.js';
