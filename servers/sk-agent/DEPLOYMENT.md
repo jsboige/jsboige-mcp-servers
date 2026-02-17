@@ -1,8 +1,30 @@
 # sk-agent v2.0 - Guide de Déploiement Multi-Machine
 
-**Version:** 2.0.1 (fix #482 - wrapper robuste)
-**Date:** 2026-02-16
+**Version:** 2.0.2 (fix handshake MCP - stdout silence)
+**Date:** 2026-02-17
 **Machines cibles:** myia-ai-01, myia-po-2023/2024/2025/2026, myia-web1
+
+---
+
+## ⚠️ WARNING CRITIQUE - MCP stdout Protocol
+
+**NEVER write anything to stdout in MCP wrappers/servers except MCP JSON.**
+
+MCP stdio protocol requires:
+- **stdout** = MCP JSON messages ONLY
+- **stderr** = logs, debug, errors
+
+If wrapper writes `Write-Host "Starting..."` to stdout:
+- ❌ Claude Code tries to parse it as JSON
+- ❌ **Handshake failure** : "non respect du handshake MCP"
+- ❌ Tools never appear
+
+**Fix applied (2026-02-17):**
+- Removed all `Write-Host` from `run-sk-agent.ps1`
+- Wrapper is now **100% silent** on stdout
+- Errors go to stderr only: `[Console]::Error.WriteLine()`
+
+**Commits:** f0e03f7 (submodule), 387a2ab4 (parent)
 
 ---
 
