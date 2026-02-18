@@ -20,18 +20,25 @@ export function getEmbeddingDimensions(): number {
   return Number.isFinite(dims) && dims > 0 ? dims : 1536;
 }
 
+/**
+ * Get OpenAI-compatible client for embeddings.
+ * Uses EMBEDDING_API_KEY preferentially (for self-hosted vLLM like Qwen3-4B),
+ * falls back to OPENAI_API_KEY for backward compatibility.
+ * Both task-level semantic search and codebase_search use the same embedding infra.
+ */
 function getOpenAIClient(): OpenAI {
   if (!openai) {
-    if (!process.env.OPENAI_API_KEY) {
+    const apiKey = process.env.EMBEDDING_API_KEY || process.env.OPENAI_API_KEY;
+    if (!apiKey) {
       throw new StateManagerError(
-        'OpenAI API key is not configured. Please set the OPENAI_API_KEY environment variable.',
-        'OPENAI_API_KEY_MISSING',
+        'No embedding API key configured. Set EMBEDDING_API_KEY (preferred) or OPENAI_API_KEY.',
+        'EMBEDDING_API_KEY_MISSING',
         'OpenAIClient',
-        { envVar: 'OPENAI_API_KEY' }
+        { envVar: 'EMBEDDING_API_KEY' }
       );
     }
     openai = new OpenAI({
-      apiKey: process.env.OPENAI_API_KEY,
+      apiKey,
       baseURL: process.env.EMBEDDING_API_BASE_URL || undefined,
     });
   }

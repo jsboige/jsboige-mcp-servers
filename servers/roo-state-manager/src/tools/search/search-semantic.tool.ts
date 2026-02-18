@@ -419,7 +419,9 @@ export const searchTasksByContentTool = {
             // Fallback vers la recherche textuelle simple
             try {
                 console.log('[DEBUG] Calling fallbackHandler');
-                const fallbackResult = await fallbackHandler(args, conversationCache);
+                // Map search_query → query for the fallback handler (SearchFallbackArgs expects 'query', not 'search_query')
+                const fallbackArgs = { query: args.search_query, workspace: args.workspace };
+                const fallbackResult = await fallbackHandler(fallbackArgs, conversationCache);
                 console.log('[DEBUG] fallbackResult:', JSON.stringify(fallbackResult));
 
                 // Le fallback handler retourne déjà le bon format : content: [objets avec taskId, score, match, etc.]
