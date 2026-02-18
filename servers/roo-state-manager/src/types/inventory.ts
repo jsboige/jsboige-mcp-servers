@@ -29,6 +29,46 @@ export interface SystemInfo {
   hostname: string;
   username: string;
   powershellVersion?: string;
+  // #391: Enriched fields from Get-MachineInventory.ps1
+  architecture?: string;
+  uptime?: number;
+  processor?: string;
+  cpuCores?: number;
+  cpuThreads?: number;
+  totalMemory?: number;
+  availableMemory?: number;
+  git?: {
+    version: string;
+    userName?: string;
+    userEmail?: string;
+    defaultBranch?: string;
+    autocrlf?: string;
+  };
+  psProfile?: {
+    path: string;
+    hash: string;
+  };
+  disks?: Array<{
+    drive: string;
+    size: number;
+    free: number;
+  }>;
+  gpu?: Array<{
+    name: string;
+    memory: number;
+  }>;
+  windowsOS?: {
+    caption?: string;
+    version?: string;
+    buildNumber?: string;
+    osArchitecture?: string;
+    lastBootUpTime?: string;
+  };
+  powerShell?: {
+    version?: string;
+    edition?: string;
+    platform?: string;
+  };
 }
 
 export interface McpServerInfo {

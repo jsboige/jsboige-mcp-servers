@@ -1,16 +1,18 @@
-# sk-agent - Semantic Kernel MCP Server
+# sk-agent - Semantic Kernel MCP Server v2.0
 
-Multi-model LLM proxy server for Claude Code and Roo Code.
+Agent-centric LLM proxy server for Claude Code and Roo Code.
 
 ## Features
 
-- **Multi-model support**: Configure multiple models with per-model kernels
-- **Tool calling**: Models can use MCP plugins (SearXNG, Playwright, etc.)
-- **Vision support**: Analyze images with vision-capable models
-- **Dynamic model selection**: Choose the right model for each task
-- **Intermediate steps**: Optional visibility into tool calls and reasoning
+- **Agent-centric architecture**: Agents combine model + system prompt + tools + optional memory
+- **Shared resource pools**: Models and MCP plugins are shared; agents compose them
+- **Multi-agent conversations**: DeepSearch (research pipeline) and DeepThink (deliberation)
+- **Vector memory**: Per-agent persistent memory via Qdrant + embeddings
+- **Tool calling**: Agents can use MCP plugins (SearXNG, Playwright, etc.)
+- **Vision support**: Image, video, and document analysis
+- **Dynamic descriptions**: Tool descriptions reflect live config at startup
 - **Self-inclusion**: Recursive tool chaining with configurable depth limit
-- **Conversation threading**: Persistent chat sessions per model
+- **Backward compatible**: v1 configs auto-migrate; deprecated aliases still work
 
 ## Architecture
 
@@ -18,247 +20,161 @@ Multi-model LLM proxy server for Claude Code and Roo Code.
 Claude/Roo  --stdio-->  FastMCP server (sk_agent.py)
                               |
                               v
-                         Semantic Kernel (per-model)
-                         +-- OpenAI Chat Completion (multiple services)
-                         +-- MCPStdioPlugin: SearXNG, Playwright, etc.
+                         SK Agent Manager
+                         +-- Shared model pool (OpenAI clients)
+                         +-- Shared MCP plugin pool
+                         +-- Per-agent kernels with memory
+                         +-- Conversation runner (multi-agent)
+                         +-- Conversation threads
 ```
 
-Each model gets its own kernel, agent, and optional model-specific MCP plugins.
+Agents are the central abstraction. Each agent has:
+- A **model** from the shared pool
+- A **system prompt** defining its personality/role
+- A subset of **MCP plugins** (tools)
+- Optional **vector memory** (Qdrant + embeddings)
 
-## Configured Models (Myia Infrastructure)
+## MCP Tools
 
-| Model ID                  | Endpoint                                           | Vision | Default For | Description              |
-|---------------------------|----------------------------------------------------|--------|-------------|--------------------------|
-| `qwen3-vl-8b-thinking`    | `https://api.mini.text-generation-webui.myia.io/v1`  | Yes    | Vision      | Qwen3-VL 8B Thinking     |
-| `glm-4.7-flash`           | `https://api.medium.text-generation-webui.myia.io/v1`| No     | Ask         | GLM-4.7-Flash (fast text)|
+### Core Tools
+
+#### `call_agent(prompt, agent?, attachment?, options?, conversation_id?, include_steps?)`
+
+Unified agent invocation. Routes to the right agent based on content type.
+
+- `prompt`: Question or instruction
+- `agent`: Agent ID (default: auto-select based on attachment)
+- `attachment`: File path or URL (image, video, PDF, PPTX, DOCX, XLSX)
+- `options`: JSON string with type-specific params (`region`, `mode`, `max_pages`, `page_range`, `num_frames`)
+- `conversation_id`: Continue previous conversation
+- `include_steps`: Show intermediate tool/reasoning steps
+
+#### `run_conversation(prompt, conversation?, options?, conversation_id?)`
+
+Run a multi-agent conversation (DeepSearch, DeepThink, or custom).
+
+- `prompt`: Research question or topic
+- `conversation`: Conversation preset ID (default: `deep-search`)
+- `options`: JSON string with overrides (`max_rounds`)
+
+#### `list_agents()`
+
+List all configured agents with models, capabilities, tools, and memory status.
+
+#### `list_conversations()`
+
+List available multi-agent conversation presets.
+
+#### `list_tools()`
+
+List all loaded MCP plugins and their tools.
+
+#### `end_conversation(conversation_id)`
+
+Clean up a conversation thread.
+
+#### `install_libreoffice(force?, custom_path?)`
+
+Check/install LibreOffice for document conversion.
+
+### Deprecated Aliases (backward compat)
+
+These still work but delegate to `call_agent`:
+`ask`, `analyze_image`, `zoom_image`, `analyze_video`, `analyze_document`, `list_models`
+
+## Built-in Conversations
+
+### DeepSearch (magentic)
+
+Multi-agent research with smart manager coordination:
+
+```
+User prompt -> MagenticManager -> Researcher (search) -> Synthesizer (report) -> Critic (review)
+                                       ^                                              |
+                                       +---------- (if not APPROVED) -----------------+
+```
+
+Agents: `researcher` (with search tools), `synthesizer`, `critic`
+Max rounds: 10
+
+### DeepThink (group_chat)
+
+Multi-perspective deliberation with round-robin:
+
+```
+Round 1: Optimist -> Devil's Advocate -> Pragmatist -> Synthesizer
+Round 2: (deeper analysis building on Round 1)
+```
+
+Agents: `optimist`, `devils-advocate`, `pragmatist`, `synthesizer-dt`
+Max rounds: 8
 
 ## Configuration
 
 Copy `sk_agent_config.template.json` to `sk_agent_config.json` and add your API keys.
 
-### Configuration Fields
-
-| Field | Type | Description |
-|-------|------|-------------|
-| `default_ask_model` | string | Model ID for `ask()` tool (default: first model) |
-| `default_vision_model` | string | Model ID for `analyze_image()` tool |
-| `max_recursion_depth` | int | Max self-inclusion depth (default: 2) |
-| `models` | array | List of model configurations |
-| `models[].id` | string | Unique identifier for the model |
-| `models[].base_url` | string | OpenAI-compatible API endpoint |
-| `models[].api_key` | string | API key (or use `api_key_env` for env var) |
-| `models[].model_id` | string | Actual model name for API calls |
-| `models[].vision` | bool | Whether model supports image input |
-| `models[].system_prompt` | string | Model-specific system prompt (optional) |
-| `models[].mcps` | array | Model-specific MCP plugins (optional) |
-| `mcps` | array | Shared MCP plugins for all models |
-| `system_prompt` | string | Global system prompt (fallback) |
-
-### Example Configuration
+### v2 Config (agent-centric)
 
 ```json
 {
-  "default_ask_model": "glm-4.7-flash",
-  "default_vision_model": "qwen3-vl-8b-thinking",
-  "max_recursion_depth": 2,
+  "config_version": 2,
+  "default_agent": "analyst",
+  "default_vision_agent": "vision-analyst",
+
   "models": [
+    { "id": "glm-5", "base_url": "...", "api_key_env": "ZAI_API_KEY", "model_id": "glm-5", "vision": false }
+  ],
+
+  "embeddings": {
+    "base_url": "https://embeddings.myia.io/v1",
+    "model_id": "Qwen3-4B-AWQ-embedding",
+    "dimensions": 2560
+  },
+
+  "qdrant": { "url": "http://localhost", "port": 6333 },
+
+  "mcps": [
+    { "id": "searxng", "command": "npx", "args": ["-y", "mcp-searxng"] }
+  ],
+
+  "agents": [
     {
-      "id": "qwen3-vl-8b-thinking",
-      "base_url": "https://api.mini.text-generation-webui.myia.io/v1",
-      "api_key": "YOUR_MINI_API_KEY_HERE",
-      "model_id": "qwen3-vl-8b-thinking",
-      "vision": true,
-      "description": "Vision model for image analysis (Qwen3-VL 8B Thinking)",
-      "system_prompt": "You are a vision analysis specialist."
-    },
-    {
-      "id": "glm-4.7-flash",
-      "base_url": "https://api.medium.text-generation-webui.myia.io/v1",
-      "api_key": "YOUR_MEDIUM_API_KEY_HERE",
-      "model_id": "glm-4.7-flash",
-      "vision": false,
-      "description": "Fast text model for quick responses (GLM-4.7-Flash)"
+      "id": "analyst",
+      "model": "glm-5",
+      "system_prompt": "You are a helpful analyst.",
+      "mcps": ["searxng"],
+      "memory": { "enabled": true, "collection": "analyst-memory" }
     }
   ],
-  "mcps": [
-    {
-      "name": "searxng",
-      "description": "Web search via SearXNG",
-      "command": "npx",
-      "args": ["-y", "mcp-searxng"],
-      "env": { "SEARXNG_URL": "https://search.myia.io" }
-    },
-    {
-      "name": "playwright",
-      "description": "Browser automation",
-      "command": "npx",
-      "args": ["-y", "@playwright/mcp@latest"]
-    }
-  ],
-  "system_prompt": "You are a helpful assistant with access to tools."
+
+  "conversations": []
 }
 ```
 
-**Important**: The `sk_agent_config.json` file is excluded from git (contains API keys).
+### v1 Config (backward compatible)
 
-## MCP Tools
+v1 configs (without `config_version`) are auto-migrated: each model becomes an agent with the same ID, all MCPs are shared across agents.
 
-### `ask(prompt, model="", system_prompt="", conversation_id="", include_steps=false)`
+### Key Config Sections
 
-Send a text prompt to the configured model.
+| Section | Description |
+|---------|-------------|
+| `models` | Shared model pool (OpenAI-compatible endpoints) |
+| `mcps` | Shared MCP plugin pool |
+| `agents` | Agent definitions (model + prompt + tools + memory) |
+| `conversations` | Custom multi-agent conversation presets |
+| `embeddings` | Embeddings endpoint for vector memory |
+| `qdrant` | Qdrant vector store connection |
 
-**Parameters:**
+## Vector Memory
 
-- `prompt`: The user question or instruction
-- `model`: Optional model ID to use (e.g., "glm-4.7-flash")
-- `system_prompt`: Optional override for the system prompt
-- `conversation_id`: Optional conversation ID to continue a session
-- `include_steps`: If true, include intermediate tool calls in response
+When `memory.enabled: true` on an agent, it gets a `TextMemoryPlugin` with:
+- **`memory-save(text, key, collection)`**: Store information
+- **`memory-recall(ask, collection, relevance, limit)`**: Semantic search
 
-**Returns:**
+Storage priority: Qdrant (persistent) -> VolatileMemoryStore (in-memory fallback).
 
-```json
-{
-  "response": "Model response text",
-  "conversation_id": "conv-abc123",
-  "model_used": "glm-4.7-flash",
-  "steps": [
-    { "type": "function_call", "name": "search", "arguments": {...} },
-    { "type": "function_result", "name": "search", "result": {...} }
-  ]
-}
-```
-
-### `analyze_image(image_source, prompt="", model="", conversation_id="")`
-
-Analyze an image using a vision-capable model.
-
-**Parameters:**
-
-- `image_source`: Local file path or URL to the image
-- `prompt`: Question or instruction about the image
-- `model`: Optional model ID (must support vision)
-- `conversation_id`: Optional (currently not used for vision)
-
-**Returns:**
-
-```json
-{
-  "response": "Image description or analysis",
-  "conversation_id": null,
-  "model_used": "qwen3-vl-8b-thinking"
-}
-```
-
-### `zoom_image(image_source, region, prompt="", model="")`
-
-Zoom into a specific region of an image and analyze it.
-
-**Parameters:**
-
-- `image_source`: Local file path or URL to the image
-- `region`: JSON string with crop region (see below)
-- `prompt`: Question or instruction about the region
-- `model`: Optional model ID (must support vision)
-
-**Region format (JSON string):**
-
-```json
-// Pixels
-{"x": 100, "y": 200, "width": 300, "height": 400}
-
-// Percentages (relative to image size)
-{"x": "10%", "y": "20%", "width": "50%", "height": "30%"}
-```
-
-**Returns:**
-
-```json
-{
-  "response": "Region description or analysis",
-  "model_used": "qwen3-vl-8b-thinking",
-  "region_analyzed": {"x": 100, "y": 200, "width": 300, "height": 400}
-}
-```
-
-**Usage example:**
-
-```text
-// Zoom on bottom-right quadrant
-zoom_image("screenshot.png", '{"x": "50%", "y": "50%", "width": "50%", "height": "50%"}', "What text is visible here?")
-```
-
-### `list_models()`
-
-List all configured models with their capabilities.
-
-**Returns:**
-
-```text
-## Available Models
-- glm-4.7-flash [ASK]: Fast text model for quick responses
-- qwen3-vl-8b-thinking [VISION]: Vision model for image analysis
-```
-
-### `list_tools()`
-
-List all loaded MCP plugins and their tools.
-
-### `end_conversation(conversation_id)`
-
-Clean up a conversation thread.
-
-## Usage Patterns
-
-### Fast text processing
-
-```text
-ask("Summarize this text: ...", model="glm-4.7-flash")
-```
-
-### Vision analysis
-
-```text
-analyze_image("path/to/image.png", "Describe the UI", model="qwen3-vl-8b-thinking")
-```
-
-### With intermediate steps (debugging)
-
-```text
-ask("Search for recent news about AI", include_steps=true)
-```
-
-### Conversation continuity
-
-```text
-# First message
-response1 = ask("What is Python?")
-# response1.conversation_id = "conv-abc123"
-
-# Continue conversation
-response2 = ask("Tell me more about decorators", conversation_id="conv-abc123")
-```
-
-## Self-Inclusion (Recursive Tool Chaining)
-
-sk-agent can include itself as an MCP plugin for recursive tool chaining. This is protected by:
-
-1. **Depth tracking**: `SK_AGENT_DEPTH` environment variable
-2. **Configurable limit**: `max_recursion_depth` in config (default: 2)
-3. **Automatic depth increment**: Child instances get `SK_AGENT_DEPTH + 1`
-
-```json
-{
-  "mcps": [
-    {
-      "name": "sk_agent",
-      "description": "Self-inclusion for recursive tool chaining",
-      "command": "python",
-      "args": ["path/to/sk_agent.py"]
-    }
-  ]
-}
-```
+Each agent has its own collection: `{prefix}-{collection}` (e.g., `sk-agent-analyst-memory`).
 
 ## Environment Variables
 
@@ -266,6 +182,8 @@ sk-agent can include itself as an MCP plugin for recursive tool chaining. This i
 |----------|-------------|---------|
 | `SK_AGENT_CONFIG` | Path to config file | `sk_agent_config.json` |
 | `SK_AGENT_DEPTH` | Current recursion depth (internal) | `0` |
+| `ZAI_API_KEY` | z.ai API key (if using `api_key_env`) | - |
+| `EMBEDDINGS_API_KEY` | Embeddings endpoint key | - |
 
 ## Requirements
 
@@ -275,12 +193,22 @@ sk-agent can include itself as an MCP plugin for recursive tool chaining. This i
 - `openai>=1.109`
 - `Pillow>=10.0`
 - `httpx>=0.27`
+- `qdrant-client>=1.9` (for persistent vector memory)
+
+**Optional:**
+- `PyMuPDF` - PDF to images/text
+- `python-docx` - DOCX text extraction
+- `pandas` + `openpyxl` - Excel to CSV
+- `ffmpeg` - Video frame extraction
 
 ## Installation
 
 ```bash
 cd mcps/internal/servers/sk-agent
 pip install -r requirements.txt
+
+# Optional: document/video support
+pip install PyMuPDF python-docx pandas openpyxl
 ```
 
 ## Running
@@ -289,23 +217,34 @@ pip install -r requirements.txt
 # As an MCP server (stdio)
 python sk_agent.py
 
-# Or via npx (for Claude Code / Roo Code integration)
+# Or via npx inspector (debugging)
 npx -y @modelcontextprotocol/inspector python sk_agent.py
+```
+
+## Testing
+
+```bash
+cd mcps/internal/servers/sk-agent
+python -m pytest test_sk_agent.py test_config.py -v
 ```
 
 ## Changelog
 
-### 2026-02-14
+### v2.0 (2026-02-16)
 
-- **Per-model kernels**: Each model gets its own kernel and agent
-- **Intermediate steps**: `include_steps` parameter shows tool calls
-- **Self-inclusion**: Protected recursive tool chaining with depth limit
-- **Model-specific plugins**: `models[].mcps` for per-model MCP configuration
-- **Default models**: Separate `default_ask_model` and `default_vision_model`
-- **Model-specific prompts**: `models[].system_prompt` override
+- **Agent-centric architecture**: Models/MCPs are shared pools, agents compose them
+- **Multi-agent conversations**: `run_conversation` tool with DeepSearch and DeepThink presets
+- **Vector memory**: Per-agent Qdrant memory with TextMemoryPlugin
+- **Unified API**: `call_agent` replaces ask/analyze_image/zoom_image/analyze_video/analyze_document
+- **Dynamic descriptions**: Tool descriptions generated from live config
+- **Config v2**: New schema with agents, embeddings, qdrant, conversations sections
+- **Backward compatible**: v1 configs auto-migrate, deprecated aliases still work
+- **125 tests**: Config (51) + agent/integration (74), all passing
 
-### 2026-02-12
+### v1.x (2026-02-12 to 2026-02-16)
 
-- Initial multi-model support
-- Vision support with image resizing
+- Multi-model support with per-model kernels
+- Vision, video, and document analysis
+- Self-inclusion with depth-limited recursion
 - MCP plugin integration (SearXNG, Playwright)
+- Intermediate step visibility

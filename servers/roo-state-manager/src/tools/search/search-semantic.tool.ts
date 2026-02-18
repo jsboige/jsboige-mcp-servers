@@ -419,12 +419,11 @@ export const searchTasksByContentTool = {
             // Fallback vers la recherche textuelle simple
             try {
                 console.log('[DEBUG] Calling fallbackHandler');
-                // FIX: Map search_query → query for fallback handler compatibility
-                const fallbackArgs = {
-                    query: args.search_query,
-                    workspace: args.workspace
-                };
-                const fallbackResult = await fallbackHandler(fallbackArgs, conversationCache);
+                // Fix: mapper search_query → query pour le fallback
+                const fallbackResult = await fallbackHandler(
+                    { query: args.search_query, workspace: args.workspace },
+                    conversationCache
+                );
                 console.log('[DEBUG] fallbackResult:', JSON.stringify(fallbackResult));
 
                 // Le fallback handler retourne déjà le bon format : content: [objets avec taskId, score, match, etc.]

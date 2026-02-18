@@ -34,9 +34,15 @@ const REQUIRED_ENV_VARS = [
     'QDRANT_URL',
     'QDRANT_API_KEY',
     'QDRANT_COLLECTION_NAME',
-    'OPENAI_API_KEY',
     'ROOSYNC_SHARED_PATH'
 ];
+// EMBEDDING_API_KEY is the preferred key for self-hosted vLLM embeddings.
+// OPENAI_API_KEY is accepted as fallback for backward compatibility.
+// At least one must be set for semantic search/indexing to work.
+const hasEmbeddingKey = process.env.EMBEDDING_API_KEY || process.env.OPENAI_API_KEY;
+if (!hasEmbeddingKey) {
+    console.error('🚨 ERREUR: Aucune clé d\'embedding configurée. Définir EMBEDDING_API_KEY (préféré) ou OPENAI_API_KEY.');
+}
 const missingVars = REQUIRED_ENV_VARS.filter(varName => !process.env[varName]);
 if (missingVars.length > 0) {
     console.error('🚨 ERREUR CRITIQUE: Variables d\'environnement manquantes:');

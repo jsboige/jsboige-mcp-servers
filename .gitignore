@@ -83,3 +83,4 @@ servers/roo-state-manager/build-errors.txt
 servers/quickfiles-server/.jest-cache/
 servers/jinavigator-server/.jest-cache/
 servers/roo-state-manager/src/__test-data__/shared-state/
+servers/sk-agent/__pycache__/

@@ -46,17 +46,13 @@ export const indexTaskSemanticTool = {
             await ensureCacheFreshCallback();
             
             // Vérification des variables d'environnement
-            const openaiKey = process.env.OPENAI_API_KEY;
+            // EMBEDDING_API_KEY is preferred (self-hosted vLLM), OPENAI_API_KEY as fallback
+            const embeddingKey = process.env.EMBEDDING_API_KEY || process.env.OPENAI_API_KEY;
             const qdrantUrl = process.env.QDRANT_URL;
             const qdrantCollection = process.env.QDRANT_COLLECTION_NAME;
-            
-            console.log(`[DEBUG] Environment check:`);
-            console.log(`[DEBUG] OPENAI_API_KEY: ${openaiKey ? 'SET' : 'MISSING'}`);
-            console.log(`[DEBUG] QDRANT_URL: ${qdrantUrl || 'MISSING'}`);
-            console.log(`[DEBUG] QDRANT_COLLECTION_NAME: ${qdrantCollection || 'MISSING'}`);
-            
-            if (!openaiKey) {
-                throw new GenericError('OPENAI_API_KEY environment variable is required', GenericErrorCode.INVALID_ARGUMENT);
+
+            if (!embeddingKey) {
+                throw new GenericError('No embedding API key configured. Set EMBEDDING_API_KEY (preferred) or OPENAI_API_KEY.', GenericErrorCode.INVALID_ARGUMENT);
             }
             
             const skeleton = conversationCache.get(task_id);
@@ -80,7 +76,7 @@ export const indexTaskSemanticTool = {
             return {
                 content: [{
                     type: "text",
-                    text: `# Indexation sémantique terminée\n\n**Tâche:** ${task_id}\n**Chemin:** ${taskPath}\n**Chunks indexés:** ${indexedPoints.length}\n\n**Variables d'env:**\n- OPENAI_API_KEY: ${openaiKey ? 'SET' : 'MISSING'}\n- QDRANT_URL: ${qdrantUrl || 'MISSING'}\n- QDRANT_COLLECTION: ${qdrantCollection || 'MISSING'}`
+                    text: `# Indexation sémantique terminée\n\n**Tâche:** ${task_id}\n**Chemin:** ${taskPath}\n**Chunks indexés:** ${indexedPoints.length}\n\n**Variables d'env:**\n- EMBEDDING_API_KEY: ${embeddingKey ? 'SET' : 'MISSING'}\n- QDRANT_URL: ${qdrantUrl || 'MISSING'}\n- QDRANT_COLLECTION: ${qdrantCollection || 'MISSING'}`
                 }]
             };
         } catch (error) {

@@ -42,6 +42,8 @@ export function registerListToolsHandler(server: Server): void {
                 // CONS-11: Outils Search/Indexing consolidés (4→2)
                 toolExports.roosyncSearchTool,
                 toolExports.roosyncIndexingTool,
+                // #452 Phase 2: Recherche sémantique dans le code workspace (Roo index)
+                toolExports.codebaseSearchTool,
                 // CLEANUP-3: search_tasks_by_content, debug_analyze retirés de ListTools (backward compat via CallTool)
                 {
                     name: toolExports.readVscodeLogs.name,
@@ -216,6 +218,10 @@ export function registerCallToolHandler(
                     toolExports.handleSearchTasksSemanticFallback,
                     () => toolExports.handleDiagnoseSemanticIndex(state.conversationCache)
                 );
+                break;
+            // #452 Phase 2: Recherche sémantique dans le code workspace
+            case 'codebase_search':
+                result = await toolExports.handleCodebaseSearch(args as any);
                 break;
             // CONS-11: Outil unifié roosync_indexing
             case 'roosync_indexing':
