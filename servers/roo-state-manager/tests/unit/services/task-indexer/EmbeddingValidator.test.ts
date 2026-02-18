@@ -3,30 +3,32 @@ import { validateVectorGlobal, sanitizePayload } from '../../../../src/services/
 
 describe('EmbeddingValidator', () => {
   describe('validateVectorGlobal', () => {
+    const TEST_DIM = 1536; // Fixed dimension for tests, independent of EMBEDDING_DIMENSIONS env
+
     it('should not throw for valid vector', () => {
-      const vector = new Array(1536).fill(0.1);
-      expect(() => validateVectorGlobal(vector)).not.toThrow();
+      const vector = new Array(TEST_DIM).fill(0.1);
+      expect(() => validateVectorGlobal(vector, TEST_DIM)).not.toThrow();
     });
 
     it('should throw if vector is not an array', () => {
-      expect(() => validateVectorGlobal('not-array' as any)).toThrow('Vector doit être un tableau');
+      expect(() => validateVectorGlobal('not-array' as any, TEST_DIM)).toThrow('Vector doit être un tableau');
     });
 
     it('should throw if vector has wrong dimension', () => {
       const vector = new Array(100).fill(0.1);
-      expect(() => validateVectorGlobal(vector)).toThrow('Dimension invalide');
+      expect(() => validateVectorGlobal(vector, TEST_DIM)).toThrow('Dimension invalide');
     });
 
     it('should throw if vector contains NaN', () => {
-      const vector = new Array(1536).fill(0.1);
+      const vector = new Array(TEST_DIM).fill(0.1);
       vector[0] = NaN;
-      expect(() => validateVectorGlobal(vector)).toThrow('Vector contient NaN ou Infinity');
+      expect(() => validateVectorGlobal(vector, TEST_DIM)).toThrow('Vector contient NaN ou Infinity');
     });
 
     it('should throw if vector contains Infinity', () => {
-      const vector = new Array(1536).fill(0.1);
+      const vector = new Array(TEST_DIM).fill(0.1);
       vector[0] = Infinity;
-      expect(() => validateVectorGlobal(vector)).toThrow('Vector contient NaN ou Infinity');
+      expect(() => validateVectorGlobal(vector, TEST_DIM)).toThrow('Vector contient NaN ou Infinity');
     });
   });
 
