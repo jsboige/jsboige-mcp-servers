@@ -77,17 +77,14 @@ export async function handleDiagnoseSemanticIndex(
         }
 
         // Vérifier les variables d'environnement nécessaires
-        console.log('[DEBUG] Environment variables during diagnostic:');
-        console.log(`QDRANT_URL: ${process.env.QDRANT_URL ? 'SET' : 'NOT SET'}`);
-        console.log(`QDRANT_API_KEY: ${process.env.QDRANT_API_KEY ? 'SET' : 'NOT SET'}`);
-        console.log(`QDRANT_COLLECTION_NAME: ${process.env.QDRANT_COLLECTION_NAME ? 'SET' : 'NOT SET'}`);
-        console.log(`OPENAI_API_KEY: ${process.env.OPENAI_API_KEY ? 'SET' : 'NOT SET'}`);
-        
         const envVars = {
             QDRANT_URL: !!process.env.QDRANT_URL,
             QDRANT_API_KEY: !!process.env.QDRANT_API_KEY,
             QDRANT_COLLECTION_NAME: !!process.env.QDRANT_COLLECTION_NAME,
-            OPENAI_API_KEY: !!process.env.OPENAI_API_KEY,
+            EMBEDDING_API_KEY: !!process.env.EMBEDDING_API_KEY,
+            EMBEDDING_API_BASE_URL: !!process.env.EMBEDDING_API_BASE_URL,
+            EMBEDDING_MODEL: !!process.env.EMBEDDING_MODEL,
+            EMBEDDING_DIMENSIONS: !!process.env.EMBEDDING_DIMENSIONS,
         };
         diagnostics.details.environment_variables = envVars;
 
@@ -114,7 +111,7 @@ export async function handleDiagnoseSemanticIndex(
         recommendations.push('La collection existe mais est vide. Lancez rebuild_task_index pour l\'indexer');
     }
     if (diagnostics.details.openai_connection === 'failed') {
-        recommendations.push('Vérifiez votre clé API OpenAI dans les variables d\'environnement');
+        recommendations.push('Vérifiez EMBEDDING_API_KEY et EMBEDDING_API_BASE_URL dans .env (self-hosted vLLM)');
     }
     if (diagnostics.details.qdrant_connection === 'failed') {
         recommendations.push('Vérifiez la configuration Qdrant (URL, clé API, connectivité réseau)');
