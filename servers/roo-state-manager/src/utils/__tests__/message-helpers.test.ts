@@ -55,19 +55,26 @@ describe('message-helpers', () => {
       }
     });
 
-    test('should return workspace ID when set', () => {
-      process.env.ROOSYNC_WORKSPACE_ID = 'roo-extensions';
-      expect(getLocalWorkspaceId()).toBe('roo-extensions');
+    test('should return ROOSYNC_WORKSPACE_ID when set (override)', () => {
+      process.env.ROOSYNC_WORKSPACE_ID = 'custom-workspace';
+      expect(getLocalWorkspaceId()).toBe('custom-workspace');
     });
 
-    test('should return undefined when not set', () => {
+    test('should auto-detect from process.cwd() when env not set', () => {
       delete process.env.ROOSYNC_WORKSPACE_ID;
-      expect(getLocalWorkspaceId()).toBeUndefined();
+      const id = getLocalWorkspaceId();
+      // Should return the current directory name (not undefined anymore)
+      expect(id).toBeTruthy();
+      expect(typeof id).toBe('string');
+      expect(id).not.toBe('undefined');
     });
 
-    test('should return undefined for empty string', () => {
+    test('should auto-detect even for empty string env var', () => {
       process.env.ROOSYNC_WORKSPACE_ID = '';
-      expect(getLocalWorkspaceId()).toBeUndefined();
+      const id = getLocalWorkspaceId();
+      // Empty string should trigger auto-detection
+      expect(id).toBeTruthy();
+      expect(typeof id).toBe('string');
     });
   });
 
@@ -88,16 +95,18 @@ describe('message-helpers', () => {
       }
     });
 
-    test('should return machine:workspace when workspace set', () => {
+    test('should return machine:workspace when both env vars set', () => {
       process.env.ROOSYNC_MACHINE_ID = 'myia-ai-01';
       process.env.ROOSYNC_WORKSPACE_ID = 'roo-extensions';
       expect(getLocalFullId()).toBe('myia-ai-01:roo-extensions');
     });
 
-    test('should return machine only when no workspace', () => {
+    test('should return machine:auto-detected-workspace when only machine env set', () => {
       process.env.ROOSYNC_MACHINE_ID = 'myia-ai-01';
       delete process.env.ROOSYNC_WORKSPACE_ID;
-      expect(getLocalFullId()).toBe('myia-ai-01');
+      const result = getLocalFullId();
+      // Should always include workspace now (auto-detected)
+      expect(result).toMatch(/^myia-ai-01:.+$/);
     });
   });
 
@@ -133,25 +142,22 @@ describe('message-helpers', () => {
   });
 
   describe('matchesRecipient', () => {
-    test('broadcast "all" matches any machine', () => {
-      expect(matchesRecipient('all', 'myia-ai-01')).toBe(true);
-      expect(matchesRecipient('all', 'myia-po-2024', 'roo-extensions')).toBe(true);
+    test('broadcast "all" matches any machine/workspace', () => {
+      expect(matchesRecipient('all', 'myia-ai-01', 'roo-extensions')).toBe(true);
+      expect(matchesRecipient('all', 'myia-po-2024', 'other-workspace')).toBe(true);
     });
 
-    test('broadcast "All" matches any machine', () => {
-      expect(matchesRecipient('All', 'myia-ai-01')).toBe(true);
+    test('broadcast "All" matches any machine/workspace', () => {
+      expect(matchesRecipient('All', 'myia-ai-01', 'roo-extensions')).toBe(true);
     });
 
-    test('machine-only target matches same machine (no workspace)', () => {
-      expect(matchesRecipient('myia-ai-01', 'myia-ai-01')).toBe(true);
-    });
-
-    test('machine-only target matches same machine (with workspace)', () => {
+    test('machine-only target matches same machine (any workspace)', () => {
       expect(matchesRecipient('myia-ai-01', 'myia-ai-01', 'roo-extensions')).toBe(true);
+      expect(matchesRecipient('myia-ai-01', 'myia-ai-01', 'other-workspace')).toBe(true);
     });
 
     test('machine-only target does NOT match different machine', () => {
-      expect(matchesRecipient('myia-ai-01', 'myia-po-2024')).toBe(false);
+      expect(matchesRecipient('myia-ai-01', 'myia-po-2024', 'roo-extensions')).toBe(false);
     });
 
     test('workspace-specific target matches exact workspace', () => {
@@ -162,11 +168,7 @@ describe('message-helpers', () => {
       expect(matchesRecipient('myia-ai-01:roo-extensions', 'myia-ai-01', 'vllm-hosting')).toBe(false);
     });
 
-    test('workspace-specific target does NOT match machine without workspace', () => {
-      expect(matchesRecipient('myia-ai-01:roo-extensions', 'myia-ai-01')).toBe(false);
-    });
-
-    test('workspace-specific target does NOT match different machine', () => {
+    test('workspace-specific target does NOT match different machine (even with same workspace)', () => {
       expect(matchesRecipient('myia-ai-01:roo-extensions', 'myia-po-2024', 'roo-extensions')).toBe(false);
     });
   });
