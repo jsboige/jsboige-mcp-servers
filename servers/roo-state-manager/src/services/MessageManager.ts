@@ -12,7 +12,7 @@ import { existsSync, promises as fs, mkdirSync } from 'fs';
 import { join } from 'path';
 import { createLogger } from '../utils/logger.js';
 import { MessageManagerError, MessageManagerErrorCode } from '../types/errors.js';
-import { parseMachineWorkspace, matchesRecipient } from '../utils/message-helpers.js';
+import { parseMachineWorkspace, matchesRecipient, getLocalWorkspaceId } from '../utils/message-helpers.js';
 
 const logger = createLogger('MessageManager');
 
@@ -261,7 +261,9 @@ export class MessageManager {
     limit?: number,
     workspaceId?: string
   ): Promise<MessageListItem[]> {
-    logger.info(`Reading inbox for: ${machineId}${workspaceId ? ':' + workspaceId : ''}`);
+    // Auto-détection du workspace si non fourni
+    const effectiveWorkspaceId = workspaceId || getLocalWorkspaceId();
+    logger.info(`Reading inbox for: ${machineId}:${effectiveWorkspaceId}`);
 
     if (!existsSync(this.inboxPath)) {
       logger.warn(`Inbox path does not exist: ${this.inboxPath}`);
@@ -280,7 +282,7 @@ export class MessageManager {
           const message: Message = JSON.parse(content);
 
           // Filtrer par destinataire (workspace-aware)
-          if (!matchesRecipient(message.to, machineId, workspaceId)) {
+          if (!matchesRecipient(message.to, machineId, effectiveWorkspaceId)) {
             continue;
           }
 
