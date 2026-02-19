@@ -256,6 +256,9 @@ vi.mock('path', async (importOriginal) => {
 });
 
 // Mock du module os
+// IMPORTANT: tmpdir doit pointer vers un vrai repertoire pour les tests qui
+// utilisent mkdtempSync (HeartbeatService, apply-decision) sans passer par le mock fs.
+// /tmp existe sur Linux (CI) et macOS. Sur Windows, ces tests utilisent le mock fs.
 vi.mock('os', () => ({
   platform: vi.fn(() => 'win32'),
   arch: vi.fn(() => 'x64'),
@@ -263,7 +266,7 @@ vi.mock('os', () => ({
   totalmem: vi.fn(() => 8000000000),
   freemem: vi.fn(() => 4000000000),
   homedir: vi.fn(() => '/mock/home'),
-  tmpdir: vi.fn(() => '/mock/tmp')
+  tmpdir: vi.fn(() => process.env.TMPDIR || process.env.TMP || '/tmp')
 }));
 
 // Mock du module uuid
