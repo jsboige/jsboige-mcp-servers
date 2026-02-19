@@ -95,27 +95,30 @@ export class ConfigNormalizationService implements INormalizationService {
   }
 
   private normalizePath(value: string, context: MachineContext): string {
+    // Helper: convertir tous les backslashes en forward slashes (indépendant de la plateforme)
+    const toForwardSlash = (s: string) => s.replace(/\\/g, '/');
+
     // 1. Préservation des variables d'environnement existantes (ex: %APPDATA%)
     // On ne touche pas si ça ressemble déjà à une variable d'env Windows ou Unix
     if (/%[A-Z_]+%/.test(value) || /\$[A-Z_]+/.test(value)) {
         // On normalise juste les slashes
-        return value.split(sep).join('/');
+        return toForwardSlash(value);
     }
 
     // 2. Normalisation des séparateurs vers '/'
-    let normalized = value.split(sep).join('/');
-    
+    let normalized = toForwardSlash(value);
+
     // 3. Normalisation du Home Directory
-    const homeDir = context.homeDir.split(sep).join('/');
+    const homeDir = toForwardSlash(context.homeDir);
     // Regex insensible à la casse pour Windows
     const homeRegex = new RegExp('^' + this.escapeRegExp(homeDir), context.os === 'windows' ? 'i' : '');
-    
+
     if (homeRegex.test(normalized)) {
       normalized = normalized.replace(homeRegex, this.HOME_PLACEHOLDER);
     }
 
     // 4. Normalisation du Roo Root
-    const rooRoot = context.rooRoot.split(sep).join('/');
+    const rooRoot = toForwardSlash(context.rooRoot);
     const rootRegex = new RegExp('^' + this.escapeRegExp(rooRoot), context.os === 'windows' ? 'i' : '');
 
     if (rootRegex.test(normalized)) {
@@ -128,14 +131,14 @@ export class ConfigNormalizationService implements INormalizationService {
   private denormalizePath(value: string, context: MachineContext): string {
     let denormalized = value;
 
-    // 1. Remplacement des placeholders
+    // 1. Remplacement des placeholders (toujours convertir backslashes pour cohérence)
     if (denormalized.includes(this.HOME_PLACEHOLDER)) {
-      const homeDir = context.homeDir.split(sep).join('/');
+      const homeDir = context.homeDir.replace(/\\/g, '/');
       denormalized = denormalized.replace(this.HOME_PLACEHOLDER, homeDir);
     }
 
     if (denormalized.includes(this.ROOT_PLACEHOLDER)) {
-      const rooRoot = context.rooRoot.split(sep).join('/');
+      const rooRoot = context.rooRoot.replace(/\\/g, '/');
       denormalized = denormalized.replace(this.ROOT_PLACEHOLDER, rooRoot);
     }
 
