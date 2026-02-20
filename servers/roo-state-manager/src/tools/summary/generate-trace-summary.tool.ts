@@ -133,8 +133,9 @@ export async function handleGenerateTraceSummary(
         }
 
         // Préparer les options de génération
+        // BUGFIX #491: Défaut 'Summary' au lieu de 'Full' pour retourner un résumé condensé
         const summaryOptions: SummaryOptions = {
-            detailLevel: args.detailLevel || 'Full',
+            detailLevel: args.detailLevel || 'Summary',
             outputFormat: args.outputFormat || 'markdown',
             truncationChars: args.truncationChars || 0,
             compactStats: args.compactStats || false,
