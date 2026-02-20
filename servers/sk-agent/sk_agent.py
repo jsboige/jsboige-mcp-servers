@@ -9,6 +9,7 @@ and optionally persist knowledge via vector memory (Qdrant).
 
 Architecture:
     Claude/Roo  --stdio-->  FastMCP server (this file)
+    Open WebUI  --HTTP--->  FastMCP server (streamable-http, port 8100)
                                   |
                                   v
                              SK Agent Manager
@@ -16,6 +17,11 @@ Architecture:
                              +-- Shared MCP plugin pool
                              +-- Per-agent kernels with memory
                              +-- Conversation threads
+
+Transport modes:
+    python sk_agent.py                  -> stdio  (default, for Claude Code / Roo Code)
+    python sk_agent.py streamable-http  -> HTTP on port 8100 (for Open WebUI, LAN clients)
+    SK_AGENT_PORT env var               -> override default HTTP port (8100)
 
 Core tools:
     call_agent(prompt, agent?, attachment?, options?, ...)  -- unified agent call
@@ -973,8 +979,12 @@ class SKAgentManager:
 # FastMCP server
 # ---------------------------------------------------------------------------
 
-mcp_server = FastMCP(
-    "sk-agent",
+# Detect transport mode early (needed for FastMCP host/port settings at construction)
+_transport_mode = sys.argv[1] if len(sys.argv) > 1 else "stdio"
+_http_port = int(os.environ.get("SK_AGENT_PORT", "8100"))
+
+_mcp_kwargs: dict[str, Any] = dict(
+    name="sk-agent",
     instructions=(
         "An agent-centric proxy to local LLMs with tools, memory, and multi-agent conversations. "
         "Use 'call_agent' for all queries. Pass 'attachment' for images/videos/documents. "
@@ -982,6 +992,19 @@ mcp_server = FastMCP(
         "Pass conversation_id to continue a previous conversation."
     ),
 )
+
+if _transport_mode == "streamable-http":
+    from mcp.server.fastmcp.server import TransportSecuritySettings
+    _mcp_kwargs.update(
+        host="0.0.0.0",
+        port=_http_port,
+        # Allow Docker containers and LAN clients to connect
+        transport_security=TransportSecuritySettings(
+            enable_dns_rebinding_protection=False,
+        ),
+    )
+
+mcp_server = FastMCP(**_mcp_kwargs)
 
 # Global manager instance
 _manager: SKAgentManager | None = None
@@ -1544,8 +1567,19 @@ async def list_models() -> str:
 # ---------------------------------------------------------------------------
 
 def main():
-    log.info("Starting sk-agent MCP server v2.0 (config: %s, depth=%d)", CONFIG_PATH, SK_AGENT_DEPTH)
-    mcp_server.run(transport="stdio")
+    if _transport_mode == "streamable-http":
+        log.info(
+            "Starting sk-agent MCP server v2.0 [streamable-http on 0.0.0.0:%d] "
+            "(config: %s, depth=%d)",
+            _http_port, CONFIG_PATH, SK_AGENT_DEPTH,
+        )
+        mcp_server.run(transport="streamable-http")
+    else:
+        log.info(
+            "Starting sk-agent MCP server v2.0 [stdio] (config: %s, depth=%d)",
+            CONFIG_PATH, SK_AGENT_DEPTH,
+        )
+        mcp_server.run(transport="stdio")
 
 
 if __name__ == "__main__":
