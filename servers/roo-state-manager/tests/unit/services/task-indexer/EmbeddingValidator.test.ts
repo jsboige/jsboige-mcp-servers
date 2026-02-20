@@ -4,7 +4,7 @@ import { validateVectorGlobal, sanitizePayload } from '../../../../src/services/
 describe('EmbeddingValidator', () => {
   describe('validateVectorGlobal', () => {
     it('should not throw for valid vector', () => {
-      const vector = new Array(1536).fill(0.1);
+      const vector = new Array(2560).fill(0.1);
       expect(() => validateVectorGlobal(vector)).not.toThrow();
     });
 
@@ -18,13 +18,13 @@ describe('EmbeddingValidator', () => {
     });
 
     it('should throw if vector contains NaN', () => {
-      const vector = new Array(1536).fill(0.1);
+      const vector = new Array(2560).fill(0.1);
       vector[0] = NaN;
       expect(() => validateVectorGlobal(vector)).toThrow('Vector contient NaN ou Infinity');
     });
 
     it('should throw if vector contains Infinity', () => {
-      const vector = new Array(1536).fill(0.1);
+      const vector = new Array(2560).fill(0.1);
       vector[0] = Infinity;
       expect(() => validateVectorGlobal(vector)).toThrow('Vector contient NaN ou Infinity');
     });
