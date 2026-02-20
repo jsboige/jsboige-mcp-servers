@@ -270,8 +270,8 @@ describe('disk-scanner', () => {
             const result = await scanDiskForNewTasks(mockCache);
 
             expect(result.length).toBe(1);
-            expect(result[0].metadata.title.length).toBeLessThanOrEqual(100);
-            expect(result[0].metadata.title).toBe(longTitle.substring(0, 100));
+            expect(result[0]?.metadata?.title?.length).toBeLessThanOrEqual(100);
+            expect(result[0]?.metadata?.title).toBe(longTitle.substring(0, 100));
         });
 
         test('should set actionCount and totalSize to 0 for quick scans', async () => {
