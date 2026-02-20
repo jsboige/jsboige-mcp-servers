@@ -98,6 +98,15 @@ export interface ScriptInfo {
   category: string;
 }
 
+// #489: Configuration Claude Code globale (~/.claude.json)
+export interface ClaudeConfigInfo {
+  model?: string;
+  env?: Record<string, string>;
+  mcpServersCount?: number;
+  skillUsage?: Record<string, { usageCount: number; lastUsedAt: number }>;
+  migrationsComplete?: string[];
+}
+
 export interface InventoryData {
   mcpServers: McpServerInfo[];
   slashCommands: any[];
@@ -113,6 +122,7 @@ export interface InventoryData {
   };
   tools: any;
   systemInfo: SystemInfo;
+  claudeConfig?: ClaudeConfigInfo; // #489: Ajout configuration Claude Code globale
 }
 
 export interface FullInventory {
@@ -124,5 +134,6 @@ export interface FullInventory {
     mcpSettings: string;
     rooConfig: string;
     scripts: string;
+    claudeJson?: string; // #489: Ajout chemin ~/.claude.json
   };
 }

@@ -2,7 +2,7 @@ import * as os from 'os';
 import * as fs from 'fs/promises';
 import * as path from 'path';
 import { existsSync } from 'fs';
-import { FullInventory, InventoryData, McpServerInfo, RooModeInfo, ScriptInfo } from '../../types/inventory';
+import { FullInventory, InventoryData, McpServerInfo, RooModeInfo, ScriptInfo, ClaudeConfigInfo } from '../../types/inventory';
 import { PowerShellExecutor } from '../PowerShellExecutor';
 import { readJSONFileWithoutBOM } from '../../utils/encoding-helpers.js';
 import { InventoryCollectorError, InventoryCollectorErrorCode } from '../../types/errors.js';
@@ -14,6 +14,7 @@ export class InventoryService {
   private readonly MCP_SETTINGS_PATH: string;
   private readonly ROO_CONFIG_PATH: string;
   private readonly SCRIPTS_PATH: string;
+  private readonly CLAUDE_JSON_PATH: string; // #489: Ajout chemin vers ~/.claude.json
 
   /**
    * Détecte la racine roo-extensions en remontant l'arborescence depuis process.cwd()
@@ -50,6 +51,7 @@ export class InventoryService {
     this.MCP_SETTINGS_PATH = path.join(userHome, 'AppData/Roaming/Code/User/globalStorage/rooveterinaryinc.roo-cline/settings/mcp_settings.json');
     this.ROO_CONFIG_PATH = path.join(this.ROO_EXTENSIONS_PATH, 'roo-config');
     this.SCRIPTS_PATH = path.join(this.ROO_EXTENSIONS_PATH, 'scripts');
+    this.CLAUDE_JSON_PATH = path.join(userHome, '.claude.json'); // #489: Ajout chemin ~/.claude.json
   }
 
   public static getInstance(): InventoryService {
@@ -88,7 +90,8 @@ export class InventoryService {
       hostname: os.hostname().toLowerCase(),
       username: os.userInfo().username,
       powershellVersion: await this.getPowershellVersion()
-    }
+    },
+    claudeConfig: await this.collectClaudeConfig() // #489: Ajout collecte ~/.claude.json
   };
 
   const inventory: FullInventory = {
@@ -99,7 +102,8 @@ export class InventoryService {
       rooExtensions: this.ROO_EXTENSIONS_PATH,
       mcpSettings: this.MCP_SETTINGS_PATH,
       rooConfig: this.ROO_CONFIG_PATH,
-      scripts: this.SCRIPTS_PATH
+      scripts: this.SCRIPTS_PATH,
+      claudeJson: this.CLAUDE_JSON_PATH // #489: Ajout chemin ~/.claude.json
     }
   };
 
@@ -250,6 +254,78 @@ private async collectMcpServers(): Promise<McpServerInfo[]> {
       return true;
     } catch {
       return false;
+    }
+  }
+
+  /**
+   * #489: Collecte la configuration Claude Code globale depuis ~/.claude.json
+   * Permet de détecter la dette technique entre machines (modèles, env vars, MCPs)
+   */
+  private async collectClaudeConfig(): Promise<ClaudeConfigInfo | undefined> {
+    try {
+      if (await this.fileExists(this.CLAUDE_JSON_PATH)) {
+        const claudeJson = await readJSONFileWithoutBOM<any>(this.CLAUDE_JSON_PATH);
+
+        // Extraire les champs pertinents pour la comparaison
+        const config: ClaudeConfigInfo = {};
+
+        // Modèle par défaut (si défini)
+        if (claudeJson.model) {
+          config.model = claudeJson.model;
+        }
+
+        // Variables d'environnement globales (pour les MCPs)
+        // Regrouper les env vars des MCPs (ROOSYNC_*, QDRANT_*, etc.)
+        const envVars: Record<string, string> = {};
+        if (claudeJson.mcpServers) {
+          for (const [mcpName, mcpConfig] of Object.entries(claudeJson.mcpServers) as [string, any][]) {
+            if (mcpConfig.env) {
+              // Filtrer seulement les vars "système" (ROOSYNC_*, QDRANT_*, OPENAI_*)
+              for (const [key, value] of Object.entries(mcpConfig.env)) {
+                if (key.startsWith('ROOSYNC_') || key.startsWith('QDRANT_') ||
+                    key.startsWith('OPENAI_') || key.startsWith('EMBEDDING_')) {
+                  // Éviter les doublons : si plusieurs MCPs utilisent la même var
+                  if (!(key in envVars)) {
+                    envVars[key] = value as string;
+                  }
+                }
+              }
+            }
+          }
+        }
+        if (Object.keys(envVars).length > 0) {
+          config.env = envVars;
+        }
+
+        // Nombre de MCPs configurés
+        if (claudeJson.mcpServers) {
+          config.mcpServersCount = Object.keys(claudeJson.mcpServers).length;
+        }
+
+        // Skills utilisés (pour détecter l'activité)
+        if (claudeJson.skillUsage) {
+          config.skillUsage = claudeJson.skillUsage;
+        }
+
+        // Migrations complétées (pour détecter la version Claude Code)
+        const migrations: string[] = [];
+        if (claudeJson.sonnet45MigrationComplete) migrations.push('sonnet45');
+        if (claudeJson.opus45MigrationComplete) migrations.push('opus45');
+        if (claudeJson.thinkingMigrationComplete) migrations.push('thinking');
+        if (claudeJson.opusProMigrationComplete) migrations.push('opusPro');
+        if (claudeJson.sonnet1m45MigrationComplete) migrations.push('sonnet1m45');
+        if (migrations.length > 0) {
+          config.migrationsComplete = migrations;
+        }
+
+        return config;
+      } else {
+        // ~/.claude.json n'existe pas (peut arriver sur certaines machines)
+        return undefined;
+      }
+    } catch (error: any) {
+      console.warn(`[InventoryService] ⚠️ Erreur lecture ~/.claude.json: ${error.message}`);
+      return undefined;
     }
   }
 
