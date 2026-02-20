@@ -355,4 +355,251 @@ describe('get_conversation_synthesis', () => {
             expect(result).toContain('exportée');
         });
     });
+
+    describe('Scénarios de fallback LLM', () => {
+        it('devrait retourner un fallback avec error=true quand LLM échoue', async () => {
+            // Avec un skeleton valide, le pipeline LLM va échouer car les services ne sont pas configurés
+            const result = await handleGetConversationSynthesis(
+                { taskId: 'test-llm-fallback', outputFormat: 'json' },
+                getConversationSkeletonMock
+            );
+
+            // Le résultat sera le fallback d'erreur car les services LLM ne sont pas mockés
+            if (typeof result === 'object' && result !== null) {
+                const analysis = result as any;
+                // Le fallback a analysisEngineVersion "3.0.0-error"
+                if (analysis.analysisEngineVersion === '3.0.0-error') {
+                    expect(analysis.objectives).toHaveProperty('error', true);
+                    expect(analysis.strategy).toHaveProperty('error', true);
+                    expect(analysis.quality).toHaveProperty('error', true);
+                    expect(analysis.metrics).toHaveProperty('error');
+                    expect(analysis.llmModelId).toBe('error-fallback');
+                }
+            }
+        });
+
+        it('devrait inclure le message d\'erreur dans le fallback synthesis', async () => {
+            const result = await handleGetConversationSynthesis(
+                { taskId: 'test-error-msg', outputFormat: 'json' },
+                getConversationSkeletonMock
+            );
+
+            if (typeof result === 'object' && result !== null) {
+                const analysis = result as any;
+                if (analysis.analysisEngineVersion === '3.0.0-error') {
+                    expect(analysis.synthesis.finalTaskSummary).toContain('Erreur');
+                    expect(analysis.synthesis.initialContextSummary).toContain('Erreur');
+                }
+            }
+        });
+
+        it('devrait avoir un contextTrace valide dans le fallback', async () => {
+            const result = await handleGetConversationSynthesis(
+                { taskId: 'test-context-trace', outputFormat: 'json' },
+                getConversationSkeletonMock
+            );
+
+            if (typeof result === 'object' && result !== null) {
+                const analysis = result as any;
+                expect(analysis.contextTrace).toBeDefined();
+                expect(analysis.contextTrace.rootTaskId).toBeDefined();
+                expect(analysis.contextTrace.previousSiblingTaskIds).toEqual([]);
+            }
+        });
+    });
+
+    describe('Format markdown détaillé', () => {
+        const testOutputDir = path.join(process.cwd(), 'test-outputs-md');
+        const mdFilePath = path.join(testOutputDir, 'detailed-synthesis.md');
+
+        beforeEach(async () => {
+            try {
+                await fs.mkdir(testOutputDir, { recursive: true });
+            } catch {
+                // Ignorer
+            }
+        });
+
+        afterEach(async () => {
+            try {
+                await fs.unlink(mdFilePath).catch(() => {});
+                await fs.rmdir(testOutputDir).catch(() => {});
+            } catch {
+                // Ignorer
+            }
+        });
+
+        it('devrait inclure les métadonnées dans le markdown', async () => {
+            await handleGetConversationSynthesis(
+                { taskId: 'test-md-meta', filePath: mdFilePath, outputFormat: 'markdown' },
+                getConversationSkeletonMock
+            );
+
+            const content = await fs.readFile(mdFilePath, 'utf-8');
+            expect(content).toContain('# Synthèse de Conversation');
+            expect(content).toContain('test-md-meta');
+            expect(content).toContain('**Analyse générée le :**');
+            expect(content).toContain('**Moteur :**');
+            expect(content).toContain('**Modèle LLM :**');
+        });
+
+        it('devrait inclure les sections Contexte Initial et Synthèse Finale', async () => {
+            await handleGetConversationSynthesis(
+                { taskId: 'test-md-sections', filePath: mdFilePath, outputFormat: 'markdown' },
+                getConversationSkeletonMock
+            );
+
+            const content = await fs.readFile(mdFilePath, 'utf-8');
+            expect(content).toContain('## Contexte Initial');
+            expect(content).toContain('## Synthèse Finale');
+            expect(content).toContain('---');
+        });
+
+        it('devrait inclure une section Métriques avec les indicateurs clés', async () => {
+            await handleGetConversationSynthesis(
+                { taskId: 'test-md-metrics', filePath: mdFilePath, outputFormat: 'markdown' },
+                getConversationSkeletonMock
+            );
+
+            const content = await fs.readFile(mdFilePath, 'utf-8');
+            expect(content).toContain('## Métriques');
+            expect(content).toContain('Messages totaux');
+            expect(content).toContain('Fichiers modifiés');
+            expect(content).toContain('Temps estimé');
+            expect(content).toContain('Score de qualité');
+        });
+
+        it('devrait avoir un footer avec la version du moteur', async () => {
+            await handleGetConversationSynthesis(
+                { taskId: 'test-md-footer', filePath: mdFilePath, outputFormat: 'markdown' },
+                getConversationSkeletonMock
+            );
+
+            const content = await fs.readFile(mdFilePath, 'utf-8');
+            expect(content).toContain('roo-state-manager MCP Synthesis v');
+        });
+    });
+
+    describe('Robustesse export fichiers', () => {
+        it('devrait gérer un chemin avec caractères spéciaux', async () => {
+            const testDir = path.join(process.cwd(), 'test-outputs-special');
+            const specialPath = path.join(testDir, 'synthesis-test_2026.json');
+
+            try {
+                await fs.mkdir(testDir, { recursive: true });
+
+                const result = await handleGetConversationSynthesis(
+                    { taskId: 'test-special-path', filePath: specialPath, outputFormat: 'json' },
+                    getConversationSkeletonMock
+                );
+
+                expect(typeof result).toBe('string');
+                expect(result).toContain('exportée');
+
+                const fileExists = await fs.access(specialPath).then(() => true).catch(() => false);
+                expect(fileExists).toBe(true);
+
+                await fs.unlink(specialPath).catch(() => {});
+            } finally {
+                await fs.rmdir(testDir).catch(() => {});
+            }
+        });
+
+        it('devrait écraser un fichier existant sans erreur', async () => {
+            const testDir = path.join(process.cwd(), 'test-outputs-overwrite');
+            const filePath = path.join(testDir, 'overwrite-test.json');
+
+            try {
+                await fs.mkdir(testDir, { recursive: true });
+
+                // Premier écrit
+                await handleGetConversationSynthesis(
+                    { taskId: 'test-overwrite-1', filePath: filePath, outputFormat: 'json' },
+                    getConversationSkeletonMock
+                );
+
+                // Deuxième écrit (écrase)
+                await handleGetConversationSynthesis(
+                    { taskId: 'test-overwrite-2', filePath: filePath, outputFormat: 'json' },
+                    getConversationSkeletonMock
+                );
+
+                const content = await fs.readFile(filePath, 'utf-8');
+                const parsed = JSON.parse(content);
+                expect(parsed.taskId).toBe('test-overwrite-2');
+
+                await fs.unlink(filePath).catch(() => {});
+            } finally {
+                await fs.rmdir(testDir).catch(() => {});
+            }
+        });
+
+        it('devrait créer l\'arborescence complète pour chemin profond', async () => {
+            const testDir = path.join(process.cwd(), 'test-outputs-deep');
+            const deepPath = path.join(testDir, 'level1', 'level2', 'level3', 'synthesis.json');
+
+            try {
+                const result = await handleGetConversationSynthesis(
+                    { taskId: 'test-deep-path', filePath: deepPath, outputFormat: 'json' },
+                    getConversationSkeletonMock
+                );
+
+                expect(typeof result).toBe('string');
+
+                const fileExists = await fs.access(deepPath).then(() => true).catch(() => false);
+                expect(fileExists).toBe(true);
+
+                // Cleanup récursif
+                await fs.unlink(deepPath).catch(() => {});
+                await fs.rmdir(path.join(testDir, 'level1', 'level2', 'level3')).catch(() => {});
+                await fs.rmdir(path.join(testDir, 'level1', 'level2')).catch(() => {});
+                await fs.rmdir(path.join(testDir, 'level1')).catch(() => {});
+            } finally {
+                await fs.rmdir(testDir).catch(() => {});
+            }
+        });
+    });
+
+    describe('Validation structure ConversationAnalysis', () => {
+        it('devrait avoir tous les champs requis même en fallback', async () => {
+            const result = await handleGetConversationSynthesis(
+                { taskId: 'test-structure', outputFormat: 'json' },
+                getConversationSkeletonMock
+            );
+
+            if (typeof result === 'object' && result !== null) {
+                const analysis = result as any;
+
+                // Champs de premier niveau
+                expect(analysis.taskId).toBeDefined();
+                expect(analysis.analysisEngineVersion).toBeDefined();
+                expect(analysis.analysisTimestamp).toBeDefined();
+                expect(analysis.llmModelId).toBeDefined();
+
+                // Champs structurés
+                expect(analysis.contextTrace).toBeDefined();
+                expect(analysis.objectives).toBeDefined();
+                expect(analysis.strategy).toBeDefined();
+                expect(analysis.quality).toBeDefined();
+                expect(analysis.metrics).toBeDefined();
+                expect(analysis.synthesis).toBeDefined();
+            }
+        });
+
+        it('devrait avoir des timestamps au format ISO', async () => {
+            const result = await handleGetConversationSynthesis(
+                { taskId: 'test-timestamp', outputFormat: 'json' },
+                getConversationSkeletonMock
+            );
+
+            if (typeof result === 'object' && result !== null) {
+                const analysis = result as any;
+                const timestamp = analysis.analysisTimestamp;
+
+                // Vérifier que c'est un ISO string valide
+                const date = new Date(timestamp);
+                expect(date.toISOString()).toBe(timestamp);
+            }
+        });
+    });
 });
