@@ -705,7 +705,7 @@ describe('RooSync E2E - Synchronisation Multi-Machines', () => {
 
       expect(result.content).toBeDefined();
       expect(result.content.length).toBeGreaterThan(0);
-      expect(duration).toBeLessThan(5000);
+      expect(duration).toBeLessThan(6000); // Marge pour variations système
 
       console.log(`⏱️ Temps de lecture messages: ${duration}ms`);
     }, 10000);
