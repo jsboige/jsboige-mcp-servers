@@ -15,6 +15,54 @@ import { GranularDiffDetector } from '../../services/GranularDiffDetector.js';
 import type { GranularDiffReport, GranularDiffResult } from '../../services/GranularDiffDetector.js';
 
 /**
+ * Variables d'environnement critiques pour le fonctionnement du MCP
+ * Ces variables doivent être présentes pour que les fonctionnalités clés fonctionnent
+ * @see #495 - Détection config EMBEDDING_*
+ */
+const CRITICAL_ENV_VARS = [
+  { name: 'EMBEDDING_MODEL', description: 'Modèle d\'embedding pour codebase_search', severity: 'WARNING' as const },
+  { name: 'EMBEDDING_DIMENSIONS', description: 'Dimension des vecteurs d\'embedding', severity: 'WARNING' as const },
+  { name: 'EMBEDDING_API_BASE_URL', description: 'URL de l\'API d\'embedding', severity: 'WARNING' as const },
+  { name: 'EMBEDDING_API_KEY', description: 'Clé API pour l\'embedding', severity: 'WARNING' as const },
+  { name: 'QDRANT_URL', description: 'URL du serveur Qdrant', severity: 'CRITICAL' as const },
+  { name: 'QDRANT_API_KEY', description: 'Clé API Qdrant', severity: 'CRITICAL' as const },
+];
+
+/**
+ * Vérifie les variables d'environnement critiques manquantes
+ * @returns Liste des différences pour les variables manquantes
+ */
+function checkMissingEnvVars(): Array<{
+  category: string;
+  severity: string;
+  path: string;
+  description: string;
+  action?: string;
+}> {
+  const missing: Array<{
+    category: string;
+    severity: string;
+    path: string;
+    description: string;
+    action?: string;
+  }> = [];
+
+  for (const envVar of CRITICAL_ENV_VARS) {
+    if (!process.env[envVar.name]) {
+      missing.push({
+        category: 'environment',
+        severity: envVar.severity,
+        path: `env.${envVar.name}`,
+        description: `Variable d'environnement manquante: ${envVar.name} - ${envVar.description}`,
+        action: `Ajouter ${envVar.name} dans le fichier .env du MCP`
+      });
+    }
+  }
+
+  return missing;
+}
+
+/**
  * Schema de validation pour roosync_compare_config
  */
 export const CompareConfigArgsSchema = z.object({
@@ -261,18 +309,35 @@ async function getDefaultTargetMachine(service: any, sourceMachineId: string): P
  * Formate le rapport de comparaison pour l'affichage MCP
  */
 function formatComparisonReport(report: any): CompareConfigResult {
-  return {
-    source: report.sourceMachine,
-    target: report.targetMachine,
-    host_id: report.hostId || 'unknown',
-    differences: report.differences.map((diff: any) => ({
+  // Vérifier les variables d'environnement critiques manquantes (#495)
+  const envDiffs = checkMissingEnvVars();
+
+  const allDifferences = [
+    ...report.differences.map((diff: any) => ({
       category: diff.category,
       severity: diff.severity,
       path: diff.path,
       description: diff.description,
       action: diff.recommendedAction
     })),
-    summary: report.summary
+    ...envDiffs
+  ];
+
+  // Recalculer le summary avec les env vars
+  const summary = {
+    total: allDifferences.length,
+    critical: allDifferences.filter(d => d.severity === 'CRITICAL').length,
+    important: allDifferences.filter(d => d.severity === 'IMPORTANT').length,
+    warning: allDifferences.filter(d => d.severity === 'WARNING').length,
+    info: allDifferences.filter(d => d.severity === 'INFO').length
+  };
+
+  return {
+    source: report.sourceMachine,
+    target: report.targetMachine,
+    host_id: report.hostId || 'unknown',
+    differences: allDifferences,
+    summary
   };
 }
 
@@ -285,26 +350,34 @@ function formatGranularReport(
   sourceMachineId: string,
   targetMachineId: string
 ): CompareConfigResult {
-  // Recalculer le summary basé sur les diffs filtrés
-  const summary = {
-    total: filteredDiffs.length,
-    critical: filteredDiffs.filter(d => d.severity === 'CRITICAL').length,
-    important: filteredDiffs.filter(d => d.severity === 'IMPORTANT').length,
-    warning: filteredDiffs.filter(d => d.severity === 'WARNING').length,
-    info: filteredDiffs.filter(d => d.severity === 'INFO').length
-  };
+  // Vérifier les variables d'environnement critiques manquantes (#495)
+  const envDiffs = checkMissingEnvVars();
 
-  return {
-    source: sourceMachineId,
-    target: targetMachineId,
-    host_id: report.sourceLabel,
-    differences: filteredDiffs.map(diff => ({
+  const allDifferences = [
+    ...filteredDiffs.map(diff => ({
       category: diff.category,
       severity: diff.severity,
       path: diff.path,
       description: diff.description,
       action: getRecommendedAction(diff)
     })),
+    ...envDiffs
+  ];
+
+  // Recalculer le summary basé sur tous les diffs (incluant env vars)
+  const summary = {
+    total: allDifferences.length,
+    critical: allDifferences.filter(d => d.severity === 'CRITICAL').length,
+    important: allDifferences.filter(d => d.severity === 'IMPORTANT').length,
+    warning: allDifferences.filter(d => d.severity === 'WARNING').length,
+    info: allDifferences.filter(d => d.severity === 'INFO').length
+  };
+
+  return {
+    source: sourceMachineId,
+    target: targetMachineId,
+    host_id: report.sourceLabel,
+    differences: allDifferences,
     summary
   };
 }
@@ -340,9 +413,14 @@ export const compareConfigToolMetadata = {
 
 Détection multi-niveaux :
 - Configuration Roo (modes, MCPs, settings) - CRITICAL
+- Environment (EMBEDDING_*, QDRANT_*) - CRITICAL/WARNING
 - Hardware (CPU, RAM, disques, GPU) - IMPORTANT
 - Software (PowerShell, Node, Python) - WARNING
 - System (OS, architecture) - INFO
+
+Vérification des variables d'environnement critiques (#495):
+- EMBEDDING_MODEL, EMBEDDING_DIMENSIONS, EMBEDDING_API_BASE_URL, EMBEDDING_API_KEY
+- QDRANT_URL, QDRANT_API_KEY
 
 Supporte également la comparaison avec des profils (ex: target='profile:dev').
 Utilise Get-MachineInventory.ps1 pour collecte d'inventaire complet avec cache TTL 1h.
