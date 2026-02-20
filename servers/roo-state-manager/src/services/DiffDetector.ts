@@ -174,6 +174,74 @@ export class DiffDetector implements IDiffDetector {
       });
     }
 
+    // #498: Comparer les profils de modèle Roo
+    const baselineProfile = baselineRoo?.modelProfile;
+    const machineProfile = machineRoo?.modelProfile;
+
+    if (baselineProfile && machineProfile) {
+      // Comparer le profil actif
+      if (baselineProfile.activeProfile !== machineProfile.activeProfile) {
+        differences.push({
+          category: 'config',
+          severity: 'CRITICAL',
+          path: 'roo.modelProfile.activeProfile',
+          description: `Profil de modèle différent: "${baselineProfile.activeProfile}" vs "${machineProfile.activeProfile}"`,
+          baselineValue: baselineProfile.activeProfile,
+          actualValue: machineProfile.activeProfile,
+          recommendedAction: 'Synchroniser le profil de modèle avec la baseline pour éviter les erreurs 404'
+        });
+      }
+
+      // Comparer le hash du profil pour détecter les dérives
+      if (baselineProfile.profileHash && machineProfile.profileHash &&
+          baselineProfile.profileHash !== machineProfile.profileHash) {
+        differences.push({
+          category: 'config',
+          severity: 'IMPORTANT',
+          path: 'roo.modelProfile.profileHash',
+          description: 'Configuration des modes différente du profil baseline',
+          baselineValue: baselineProfile.profileHash,
+          actualValue: machineProfile.profileHash,
+          recommendedAction: 'Vérifier les modeApiConfigs dans model-configs.json'
+        });
+      }
+
+      // Comparer les modeApiConfigs pour chaque mode
+      if (baselineProfile.modeApiConfigs && machineProfile.modeApiConfigs) {
+        const allModes = new Set([
+          ...Object.keys(baselineProfile.modeApiConfigs),
+          ...Object.keys(machineProfile.modeApiConfigs)
+        ]);
+
+        for (const mode of allModes) {
+          const baselineConfig = baselineProfile.modeApiConfigs[mode];
+          const machineConfig = machineProfile.modeApiConfigs[mode];
+
+          if (baselineConfig !== machineConfig) {
+            differences.push({
+              category: 'config',
+              severity: 'IMPORTANT',
+              path: `roo.modelProfile.modeApiConfigs.${mode}`,
+              description: `Configuration API différente pour le mode "${mode}"`,
+              baselineValue: baselineConfig || 'non défini',
+              actualValue: machineConfig || 'non défini',
+              recommendedAction: `Synchroniser la configuration du mode ${mode}`
+            });
+          }
+        }
+      }
+    } else if (baselineProfile && !machineProfile) {
+      differences.push({
+        category: 'config',
+        severity: 'WARNING',
+        path: 'roo.modelProfile',
+        description: 'Profil de modèle non détecté sur la machine cible',
+        baselineValue: baselineProfile.activeProfile,
+        actualValue: 'non détecté',
+        recommendedAction: 'Vérifier que model-configs.json est accessible'
+      });
+    }
+
     // Comparer les paramètres MCP - utiliser compareNestedObjects pour gérer les structures imbriquées
     const mcpDiffs = this.compareNestedObjects(
       baselineRoo.mcpSettings || {},

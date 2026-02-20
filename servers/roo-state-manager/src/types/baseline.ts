@@ -26,6 +26,15 @@ export interface BaselineConfig {
       modes: string[];
       mcpSettings: Record<string, any>;
       userSettings: Record<string, any>;
+      /**
+       * #498: Profil de modèle Roo actif
+       */
+      modelProfile?: {
+        activeProfile: string;
+        modeApiConfigs: Record<string, string>;
+        availableProfiles: string[];
+        profileHash?: string;
+      };
     };
     hardware: {
       cpu: {
@@ -280,6 +289,15 @@ export interface MachineInventory {
       modes: string[];
       mcpSettings: Record<string, any>;
       userSettings: Record<string, any>;
+      /**
+       * #498: Profil de modèle Roo actif
+       */
+      modelProfile?: {
+        activeProfile: string;
+        modeApiConfigs: Record<string, string>;
+        availableProfiles: string[];
+        profileHash?: string;
+      };
     };
     hardware: {
       cpu: {

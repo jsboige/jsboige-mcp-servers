@@ -987,4 +987,131 @@ describe('DiffDetector', () => {
       expect(pathDiffs).toHaveLength(0);
     });
   });
+
+  // #498: Tests pour la détection de dérive des profils de modèle
+  describe('Model Profile Detection (#498)', () => {
+    it('should detect different active profiles', async () => {
+      const baseline = createBaselineConfig();
+      baseline.config.roo.modelProfile = {
+        activeProfile: 'Production SDDD (GLM-5 full)',
+        modeApiConfigs: { 'code-complex': 'sddd-complex-glm5' },
+        availableProfiles: ['Production SDDD (GLM-5 full)'],
+        profileHash: 'abc123'
+      };
+
+      const machine = createMachineInventoryWithPaths();
+      machine.config.roo.modelProfile = {
+        activeProfile: 'Configuration Gemini',
+        modeApiConfigs: { 'code-complex': 'gemini-pro' },
+        availableProfiles: ['Configuration Gemini'],
+        profileHash: 'def456'
+      };
+
+      const diffs = await detector.compareBaselineWithMachine(baseline, machine);
+      const profileDiff = diffs.find(d => d.path === 'roo.modelProfile.activeProfile');
+
+      expect(profileDiff).toBeDefined();
+      expect(profileDiff!.severity).toBe('CRITICAL');
+      expect(profileDiff!.baselineValue).toBe('Production SDDD (GLM-5 full)');
+      expect(profileDiff!.actualValue).toBe('Configuration Gemini');
+    });
+
+    it('should detect profile hash drift', async () => {
+      const baseline = createBaselineConfig();
+      baseline.config.roo.modelProfile = {
+        activeProfile: 'Production SDDD',
+        modeApiConfigs: { 'code-complex': 'sddd-complex-glm5' },
+        availableProfiles: ['Production SDDD'],
+        profileHash: 'hash-baseline'
+      };
+
+      const machine = createMachineInventoryWithPaths();
+      machine.config.roo.modelProfile = {
+        activeProfile: 'Production SDDD',
+        modeApiConfigs: { 'code-complex': 'sddd-complex-glm47' },
+        availableProfiles: ['Production SDDD'],
+        profileHash: 'hash-different'
+      };
+
+      const diffs = await detector.compareBaselineWithMachine(baseline, machine);
+      const hashDiff = diffs.find(d => d.path === 'roo.modelProfile.profileHash');
+
+      expect(hashDiff).toBeDefined();
+      expect(hashDiff!.severity).toBe('IMPORTANT');
+    });
+
+    it('should detect modeApiConfig differences', async () => {
+      const baseline = createBaselineConfig();
+      baseline.config.roo.modelProfile = {
+        activeProfile: 'Production SDDD',
+        modeApiConfigs: {
+          'code-complex': 'sddd-complex-glm5',
+          'debug-complex': 'sddd-complex-glm5'
+        },
+        availableProfiles: ['Production SDDD'],
+        profileHash: 'hash1'
+      };
+
+      const machine = createMachineInventoryWithPaths();
+      machine.config.roo.modelProfile = {
+        activeProfile: 'Production SDDD',
+        modeApiConfigs: {
+          'code-complex': 'sddd-complex-glm5',
+          'debug-complex': 'local-simple-tgwui'  // Différent!
+        },
+        availableProfiles: ['Production SDDD'],
+        profileHash: 'hash2'
+      };
+
+      const diffs = await detector.compareBaselineWithMachine(baseline, machine);
+      const modeDiff = diffs.find(d => d.path === 'roo.modelProfile.modeApiConfigs.debug-complex');
+
+      expect(modeDiff).toBeDefined();
+      expect(modeDiff!.baselineValue).toBe('sddd-complex-glm5');
+      expect(modeDiff!.actualValue).toBe('local-simple-tgwui');
+    });
+
+    it('should warn when modelProfile is missing on target', async () => {
+      const baseline = createBaselineConfig();
+      baseline.config.roo.modelProfile = {
+        activeProfile: 'Production SDDD',
+        modeApiConfigs: {},
+        availableProfiles: [],
+        profileHash: 'hash'
+      };
+
+      const machine = createMachineInventoryWithPaths();
+      // machine.config.roo.modelProfile is undefined
+
+      const diffs = await detector.compareBaselineWithMachine(baseline, machine);
+      const profileDiff = diffs.find(d => d.path === 'roo.modelProfile');
+
+      expect(profileDiff).toBeDefined();
+      expect(profileDiff!.severity).toBe('WARNING');
+      expect(profileDiff!.actualValue).toBe('non détecté');
+    });
+
+    it('should not report diffs when profiles are identical', async () => {
+      const baseline = createBaselineConfig();
+      baseline.config.roo.modelProfile = {
+        activeProfile: 'Production SDDD',
+        modeApiConfigs: { 'code-complex': 'sddd-complex-glm5' },
+        availableProfiles: ['Production SDDD'],
+        profileHash: 'same-hash'
+      };
+
+      const machine = createMachineInventoryWithPaths();
+      machine.config.roo.modelProfile = {
+        activeProfile: 'Production SDDD',
+        modeApiConfigs: { 'code-complex': 'sddd-complex-glm5' },
+        availableProfiles: ['Production SDDD'],
+        profileHash: 'same-hash'
+      };
+
+      const diffs = await detector.compareBaselineWithMachine(baseline, machine);
+      const profileDiffs = diffs.filter(d => d.path.startsWith('roo.modelProfile'));
+
+      expect(profileDiffs).toHaveLength(0);
+    });
+  });
 });

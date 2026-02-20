@@ -46,6 +46,38 @@
       "vision": false,
       "description": "Fast local GLM-4.7-Flash AWQ (131K context)",
       "context_window": 131072
+    },
+
+    {
+      "_comment": "=== Open WebUI custom models (Direction 2: sk-agent consumes OWUI) ===",
+      "id": "owui-expert-analyste",
+      "enabled": false,
+      "base_url": "https://open-webui.myia.io/openai",
+      "api_key": "YOUR_OWUI_API_KEY_HERE",
+      "model_id": "expert-analyste",
+      "vision": false,
+      "description": "OWUI Expert Analyste — structured French analyst with decomposition methodology (requires OWUI API key)",
+      "context_window": 131072
+    },
+    {
+      "id": "owui-redacteur-technique",
+      "enabled": false,
+      "base_url": "https://open-webui.myia.io/openai",
+      "api_key": "YOUR_OWUI_API_KEY_HERE",
+      "model_id": "redacteur-technique",
+      "vision": false,
+      "description": "OWUI Rédacteur Technique — technical documentation writer (requires OWUI API key)",
+      "context_window": 131072
+    },
+    {
+      "id": "owui-vision-expert",
+      "enabled": false,
+      "base_url": "https://open-webui.myia.io/openai",
+      "api_key": "YOUR_OWUI_API_KEY_HERE",
+      "model_id": "vision-expert",
+      "vision": true,
+      "description": "OWUI Expert Vision — image and document analysis specialist (requires OWUI API key)",
+      "context_window": 131072
     }
   ],
 
@@ -184,6 +216,35 @@
       "description": "Diplomatic synthesizer who builds consensus from competing perspectives",
       "model": "glm-5",
       "system_prompt": "You are a diplomatic mediator who builds consensus from competing perspectives. Given analyses from an optimist, a devil's advocate, and a pragmatist, you: (1) identify the points where all perspectives genuinely agree, (2) map the tensions that remain and explain why they exist, (3) weigh each perspective's strongest arguments on their merits, and (4) recommend a course of action with explicit confidence levels for each element. You are transparent about trade-offs and honest about uncertainty. Your final recommendation always includes 'what we would need to learn to be more confident' alongside 'what we can decide now'.",
+      "mcps": [],
+      "memory": { "enabled": false }
+    },
+
+    {
+      "_comment": "=== OWUI-backed agents (Direction 2: leverage OWUI custom models with enriched system prompts) ===",
+      "id": "owui-analyst",
+      "description": "Expert analyst via OWUI (enriched system prompt, structured French output)",
+      "model": "owui-expert-analyste",
+      "system_prompt": "",
+      "mcps": ["searxng"],
+      "memory": {
+        "enabled": true,
+        "collection": "owui-analyst-memory"
+      }
+    },
+    {
+      "id": "owui-writer",
+      "description": "Technical documentation writer via OWUI (enriched system prompt)",
+      "model": "owui-redacteur-technique",
+      "system_prompt": "",
+      "mcps": [],
+      "memory": { "enabled": false }
+    },
+    {
+      "id": "owui-vision",
+      "description": "Vision analysis expert via OWUI (enriched system prompt)",
+      "model": "owui-vision-expert",
+      "system_prompt": "",
       "mcps": [],
       "memory": { "enabled": false }
     }
