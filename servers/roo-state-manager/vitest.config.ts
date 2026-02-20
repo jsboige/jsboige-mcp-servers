@@ -10,6 +10,8 @@ export default defineConfig({
     environment: 'node',
 
     // Patterns de tests (équivalent à testMatch de Jest)
+    // NOTE: tests/e2e sont EXCLUS du run par défaut car ils envoient de vrais messages
+    // à la production RooSync (GDrive). Utiliser vitest.config.real-machines.ts pour les e2e.
     include: [
       'tests/unit/**/*.test.ts',
       'tests/unit/**/*.test.js',
@@ -17,8 +19,6 @@ export default defineConfig({
       'tests/integration/**/*.test.js',
       'tests/performance/**/*.test.ts',
       'tests/performance/**/*.test.js',
-      'tests/e2e/**/*.test.ts',
-      'tests/e2e/**/*.test.js',
       'src/**/__tests__/**/*.test.ts',
       'src/**/__tests__/**/*.test.js'
     ],

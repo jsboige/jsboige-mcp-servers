@@ -23,6 +23,7 @@ import { describe, it, expect, beforeAll, afterAll, beforeEach } from 'vitest';
 import { sendMessage } from '../../src/tools/roosync/send_message.js';
 import { readInbox } from '../../src/tools/roosync/read_inbox.js';
 import { replyMessage } from '../../src/tools/roosync/reply_message.js';
+import { archiveMessage } from '../../src/tools/roosync/archive_message.js';
 import { roosyncCollectConfig } from '../../src/tools/roosync/collect-config.js';
 import { roosyncPublishConfig } from '../../src/tools/roosync/publish-config.js';
 import { roosyncCompareConfig } from '../../src/tools/roosync/compare-config.js';
@@ -69,6 +70,18 @@ describe('RooSync E2E - Synchronisation Multi-Machines', () => {
   let service: RooSyncService;
   let infrastructureAvailable = false;
   let infrastructureCheckDetails: string[] = [];
+  // Track all message IDs created during tests for cleanup
+  const createdMessageIds: string[] = [];
+
+  /** Extract message ID from sendMessage/replyMessage result and track it for cleanup */
+  function trackMessageId(contentText: string): string | null {
+    const match = contentText.match(/\*\*ID :\*\*\s*`?([^`\n]+)`?/);
+    const messageId = match ? match[1].trim() : null;
+    if (messageId) {
+      createdMessageIds.push(messageId);
+    }
+    return messageId;
+  }
 
   beforeAll(() => {
     console.log('🚀 Initialisation des tests E2E RooSync - Synchronisation Multi-Machines');
@@ -128,7 +141,19 @@ describe('RooSync E2E - Synchronisation Multi-Machines', () => {
     }
   });
 
-  afterAll(() => {
+  afterAll(async () => {
+    // Cleanup: archive all messages created during tests to avoid polluting production inbox
+    if (createdMessageIds.length > 0) {
+      console.log(`🧹 Nettoyage: archivage de ${createdMessageIds.length} messages créés pendant les tests`);
+      for (const msgId of createdMessageIds) {
+        try {
+          await archiveMessage({ message_id: msgId });
+          console.log(`   ✅ Archivé: ${msgId}`);
+        } catch (error: any) {
+          console.warn(`   ⚠️ Impossible d'archiver ${msgId}: ${error.message}`);
+        }
+      }
+    }
     if (service) {
       RooSyncService.resetInstance();
     }
@@ -161,10 +186,9 @@ describe('RooSync E2E - Synchronisation Multi-Machines', () => {
         expect(result.content).toBeDefined();
         expect(result.content.length).toBeGreaterThan(0);
 
-        // Extraire l'ID du message du contenu
+        // Extraire l'ID du message et le tracker pour cleanup
         const contentText = result.content[0].text;
-        const messageIdMatch = contentText.match(/\*\*ID :\*\*([^\n]+)/);
-        const messageId = messageIdMatch ? messageIdMatch[1].trim() : null;
+        const messageId = trackMessageId(contentText);
 
         expect(messageId).toBeDefined();
 
@@ -247,10 +271,9 @@ describe('RooSync E2E - Synchronisation Multi-Machines', () => {
         expect(result.content).toBeDefined();
         expect(result.content.length).toBeGreaterThan(0);
 
-        // Extraire l'ID de la réponse
+        // Extraire l'ID de la réponse et tracker pour cleanup
         const replyContentText = result.content[0].text;
-        const replyIdMatch = replyContentText.match(/\*\*ID :\*\*([^\n]+)/);
-        const replyId = replyIdMatch ? replyIdMatch[1].trim() : null;
+        const replyId = trackMessageId(replyContentText);
 
         expect(replyId).toBeDefined();
 
@@ -284,10 +307,9 @@ describe('RooSync E2E - Synchronisation Multi-Machines', () => {
         expect(result.content).toBeDefined();
         expect(result.content.length).toBeGreaterThan(0);
 
-        // Extraire l'ID du message
+        // Extraire l'ID du message et tracker pour cleanup
         const contentText = result.content[0].text;
-        const messageIdMatch = contentText.match(/\*\*ID :\*\*([^\n]+)/);
-        const messageId = messageIdMatch ? messageIdMatch[1].trim() : null;
+        const messageId = trackMessageId(contentText);
 
         expect(messageId).toBeDefined();
 
@@ -638,6 +660,10 @@ describe('RooSync E2E - Synchronisation Multi-Machines', () => {
         });
         expect(message.content).toBeDefined();
         expect(message.content.length).toBeGreaterThan(0);
+        // Track for cleanup
+        if (message.content[0]?.text) {
+          trackMessageId(message.content[0].text);
+        }
         console.log('   ✅ Message envoyé');
 
         // Étape 4: Vérifier l'état final
@@ -683,6 +709,10 @@ describe('RooSync E2E - Synchronisation Multi-Machines', () => {
 
       expect(result.content).toBeDefined();
       expect(result.content.length).toBeGreaterThan(0);
+      // Track for cleanup
+      if (result.content[0]?.text) {
+        trackMessageId(result.content[0].text);
+      }
       expect(duration).toBeLessThan(5000);
 
       console.log(`⏱️ Temps d'envoi message: ${duration}ms`);
