@@ -189,13 +189,28 @@ vi.mock('../../../src/types/errors.js', () => {
 });
 
 describe('Workflow Complet RooSync - E2E Tests', () => {
+  // Store original env to restore after tests (#495)
+  const originalEnv = process.env;
+
   beforeAll(() => {
     // Setup global pour tous les tests
     console.log('🧪 Début tests E2E workflow complet RooSync');
+    // Set all CRITICAL_ENV_VARS to prevent extra diffs from checkMissingEnvVars (#495)
+    process.env = {
+      ...originalEnv,
+      EMBEDDING_MODEL: 'text-embedding-3-small',
+      EMBEDDING_DIMENSIONS: '1536',
+      EMBEDDING_API_BASE_URL: 'https://api.openai.com/v1',
+      EMBEDDING_API_KEY: 'test-key',
+      QDRANT_URL: 'http://localhost:6333',
+      QDRANT_API_KEY: 'test-qdrant-key'
+    };
   });
 
   afterAll(() => {
     console.log('✅ Fin tests E2E workflow complet RooSync');
+    // Restore original env
+    process.env = originalEnv;
   });
 
   describe('Test 1 - Compare Config entre 2 machines', () => {

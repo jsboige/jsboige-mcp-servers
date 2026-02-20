@@ -40,12 +40,26 @@ vi.mock('../../../../src/services/GranularDiffDetector.js', () => ({
 }));
 
 describe('roosync_compare_config', () => {
+  // Set env vars to prevent checkMissingEnvVars from adding diffs (#495)
+  const originalEnv = process.env;
+
   beforeEach(() => {
     vi.clearAllMocks();
+    // Set all CRITICAL_ENV_VARS to prevent extra diffs
+    process.env = {
+      ...originalEnv,
+      EMBEDDING_MODEL: 'text-embedding-3-small',
+      EMBEDDING_DIMENSIONS: '1536',
+      EMBEDDING_API_BASE_URL: 'https://api.openai.com/v1',
+      EMBEDDING_API_KEY: 'test-key',
+      QDRANT_URL: 'http://localhost:6333',
+      QDRANT_API_KEY: 'test-qdrant-key'
+    };
   });
 
   afterEach(() => {
     vi.restoreAllMocks();
+    process.env = originalEnv;
   });
 
   it('devrait avoir les métadonnées correctes', () => {
