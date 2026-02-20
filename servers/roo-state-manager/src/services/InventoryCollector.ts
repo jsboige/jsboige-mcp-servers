@@ -64,6 +64,20 @@ export interface MachineInventory {
     }>;
     sdddSpecs?: any[];
     scripts?: any;
+    /**
+     * #498: Profil de modèle Roo actif
+     * Identifie le profil utilisé (ex: "Production SDDD (GLM-5 full)")
+     */
+    modelProfile?: {
+      /** Nom du profil actif */
+      activeProfile: string;
+      /** Mapping mode -> apiConfigId */
+      modeApiConfigs: Record<string, string>;
+      /** Profils disponibles dans model-configs.json */
+      availableProfiles: string[];
+      /** Hash du profil pour détection de dérive */
+      profileHash?: string;
+    };
   };
   paths: {
     rooExtensions?: string;
