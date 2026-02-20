@@ -133,6 +133,128 @@ describe('roosync_get_message - Validation', () => {
       expect(result.content[0]).toHaveProperty('text');
     });
   });
+
+  describe('mark_as_read', () => {
+    it('devrait marquer le message comme lu quand mark_as_read=true et status=unread', async () => {
+      const args = {
+        message_id: 'msg-20260115T100000-abc123',
+        mark_as_read: true
+      };
+
+      const result = await getMessage(args);
+
+      // Le message est unread dans le mock, il doit être marqué comme lu
+      expect(result.content[0].text).toContain('Test Message');
+    });
+
+    it('ne devrait pas marquer comme lu quand mark_as_read=false', async () => {
+      const args = {
+        message_id: 'msg-20260115T100000-abc123',
+        mark_as_read: false
+      };
+
+      const result = await getMessage(args);
+
+      expect(result.content[0].text).toContain('Test Message');
+    });
+  });
+
+  // Helper : crée une instance fraîche de getMessage avec un message personnalisé.
+  // Nécessite vi.resetModules() pour contourner le cache de beforeEach.
+  const createGetMessageWith = async (messageData: object) => {
+    vi.resetModules();
+    vi.doMock('../../../../src/services/MessageManager.js', () => ({
+      MessageManager: vi.fn().mockImplementation(() => ({
+        getMessage: vi.fn().mockResolvedValue(messageData),
+        markAsRead: vi.fn()
+      }))
+    }));
+    vi.doMock('../../../../src/utils/server-helpers.js', () => ({
+      getSharedStatePath: vi.fn().mockReturnValue('/mock/shared-state')
+    }));
+    vi.doMock('../../../../src/utils/logger.js', () => ({
+      createLogger: vi.fn().mockReturnValue({
+        info: vi.fn(), debug: vi.fn(), error: vi.fn(), warn: vi.fn()
+      })
+    }));
+    const module = await import('../../../../src/tools/roosync/get_message.js');
+    return module.getMessage;
+  };
+
+  describe('icônes de priorité', () => {
+    it('devrait afficher 🔥 pour URGENT', async () => {
+      const getMessage = await createGetMessageWith({ ...mockMessage, priority: 'URGENT' });
+      const result = await getMessage({ message_id: 'msg-20260115T100000-abc123' });
+      expect(result.content[0].text).toContain('🔥');
+    });
+
+    it('devrait afficher 📝 pour MEDIUM', async () => {
+      const getMessage = await createGetMessageWith({ ...mockMessage, priority: 'MEDIUM' });
+      const result = await getMessage({ message_id: 'msg-20260115T100000-abc123' });
+      expect(result.content[0].text).toContain('📝');
+    });
+
+    it('devrait afficher 📋 pour LOW', async () => {
+      const getMessage = await createGetMessageWith({ ...mockMessage, priority: 'LOW' });
+      const result = await getMessage({ message_id: 'msg-20260115T100000-abc123' });
+      expect(result.content[0].text).toContain('📋');
+    });
+
+    it('devrait afficher 📝 pour priorité inconnue', async () => {
+      const getMessage = await createGetMessageWith({ ...mockMessage, priority: 'UNKNOWN' });
+      const result = await getMessage({ message_id: 'msg-20260115T100000-abc123' });
+      expect(result.content[0].text).toContain('📝');
+    });
+  });
+
+  describe('icônes de statut', () => {
+    it('devrait afficher ✅ pour read', async () => {
+      const getMessage = await createGetMessageWith({ ...mockMessage, status: 'read' });
+      const result = await getMessage({ message_id: 'msg-20260115T100000-abc123' });
+      expect(result.content[0].text).toContain('✅');
+    });
+
+    it('devrait afficher 📦 pour archived', async () => {
+      const getMessage = await createGetMessageWith({ ...mockMessage, status: 'archived' });
+      const result = await getMessage({ message_id: 'msg-20260115T100000-abc123' });
+      expect(result.content[0].text).toContain('📦');
+    });
+
+    it('devrait afficher 📧 pour statut inconnu', async () => {
+      const getMessage = await createGetMessageWith({ ...mockMessage, status: 'unknown' });
+      const result = await getMessage({ message_id: 'msg-20260115T100000-abc123' });
+      expect(result.content[0].text).toContain('📧');
+    });
+  });
+
+  describe('message sans métadonnées optionnelles', () => {
+    it('devrait afficher correctement un message sans tags, thread_id, reply_to', async () => {
+      const getMessage = await createGetMessageWith({
+        id: 'msg-minimal',
+        from: 'source-machine',
+        to: 'dest-machine',
+        subject: 'Minimal Message',
+        body: 'Just a simple body',
+        priority: 'MEDIUM',
+        timestamp: '2026-01-15T10:00:00.000Z',
+        status: 'read'
+        // pas de tags, thread_id, reply_to
+      });
+
+      const result = await getMessage({ message_id: 'msg-minimal' });
+
+      expect(result.content[0].text).toContain('Minimal Message');
+      expect(result.content[0].text).not.toContain('**Tags');
+      expect(result.content[0].text).not.toContain('**Thread');
+    });
+
+    it('devrait ne pas afficher l\'action "Archiver" quand déjà archivé', async () => {
+      const getMessage = await createGetMessageWith({ ...mockMessage, status: 'archived' });
+      const result = await getMessage({ message_id: 'msg-20260115T100000-abc123' });
+      // Message archivé : pas d'action "Archiver"
+      expect(result.content[0].text).not.toContain('**Archiver**');
+    });
+  });
 });
 
 describe('roosync_get_message - Interface', () => {
