@@ -84,3 +84,6 @@ servers/quickfiles-server/.jest-cache/
 servers/jinavigator-server/.jest-cache/
 servers/roo-state-manager/src/__test-data__/shared-state/
 servers/sk-agent/__pycache__/
+
+# Coverage output
+coverage-output.txt

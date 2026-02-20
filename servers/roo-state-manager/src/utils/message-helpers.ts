@@ -2,10 +2,11 @@
  * Fonctions utilitaires partagées pour les outils RooSync de messagerie
  *
  * @module utils/message-helpers
- * @version 1.0.0
+ * @version 1.1.0 - Auto-détection workspace depuis process.cwd()
  */
 
 import os from 'os';
+import path from 'path';
 
 /**
  * Récupère l'ID de la machine locale depuis le hostname OS
@@ -30,39 +31,59 @@ export function getLocalMachineId(): string {
 }
 
 /**
- * Récupère l'ID du workspace local (optionnel)
+ * Récupère l'ID du workspace local
  *
- * @returns ID du workspace ou undefined si non configuré
+ * Stratégie de détection (par ordre de priorité) :
+ * 1. Variable d'environnement ROOSYNC_WORKSPACE_ID (override manuel)
+ * 2. Nom du répertoire courant (process.cwd()) - AUTO-DETECTION
+ *
+ * @returns ID du workspace (jamais undefined, utilise 'default' si impossible à détecter)
  *
  * @example
  * ```typescript
- * // With ROOSYNC_WORKSPACE_ID=roo-extensions
+ * // Dans d:/dev/roo-extensions
  * getLocalWorkspaceId(); // "roo-extensions"
- * // Without env var
- * getLocalWorkspaceId(); // undefined
+ * // Avec override manuel
+ * // ROOSYNC_WORKSPACE_ID=my-custom-workspace
+ * getLocalWorkspaceId(); // "my-custom-workspace"
  * ```
  */
-export function getLocalWorkspaceId(): string | undefined {
-  return process.env.ROOSYNC_WORKSPACE_ID || undefined;
+export function getLocalWorkspaceId(): string {
+  // 1. Override manuel via env var (pour tests ou cas spéciaux)
+  if (process.env.ROOSYNC_WORKSPACE_ID) {
+    return process.env.ROOSYNC_WORKSPACE_ID;
+  }
+
+  // 2. Auto-détection depuis le répertoire courant
+  const cwd = process.cwd();
+  const workspaceName = path.basename(cwd);
+
+  // Validation basique : le nom doit être significatif
+  if (workspaceName && workspaceName !== '.' && workspaceName.length >= 2) {
+    return workspaceName;
+  }
+
+  // 3. Fallback ultime (ne devrait jamais arriver en production)
+  return 'default';
 }
 
 /**
- * Récupère l'identifiant complet local (machine + workspace optionnel)
+ * Récupère l'identifiant complet local (machine + workspace)
  *
- * @returns "machineId:workspaceId" si workspace configuré, sinon "machineId"
+ * @returns "machineId:workspaceId" - toujours avec workspace depuis auto-détection
  *
  * @example
  * ```typescript
- * // With ROOSYNC_WORKSPACE_ID=roo-extensions on myia-ai-01
+ * // Sur myia-ai-01 dans d:/dev/roo-extensions
  * getLocalFullId(); // "myia-ai-01:roo-extensions"
- * // Without workspace
- * getLocalFullId(); // "myia-ai-01"
+ * // Sur myia-po-2023 dans c:/projects/my-app
+ * getLocalFullId(); // "myia-po-2023:my-app"
  * ```
  */
 export function getLocalFullId(): string {
   const machineId = getLocalMachineId();
   const workspaceId = getLocalWorkspaceId();
-  return workspaceId ? `${machineId}:${workspaceId}` : machineId;
+  return `${machineId}:${workspaceId}`;
 }
 
 /**
@@ -100,13 +121,13 @@ export function parseMachineWorkspace(id: string): { machineId: string; workspac
  *
  * @param messageTo Destinataire du message
  * @param localMachineId ID machine locale
- * @param localWorkspaceId ID workspace local (optionnel)
+ * @param localWorkspaceId ID workspace local (auto-détecté)
  * @returns true si le message correspond au destinataire local
  */
 export function matchesRecipient(
   messageTo: string,
   localMachineId: string,
-  localWorkspaceId?: string
+  localWorkspaceId: string
 ): boolean {
   // Broadcast
   if (messageTo === 'all' || messageTo === 'All') {

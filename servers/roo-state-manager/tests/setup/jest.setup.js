@@ -25,6 +25,7 @@ if (!process.env.QDRANT_API_KEY) process.env.QDRANT_API_KEY = 'test-key';
 if (!process.env.OPENAI_API_KEY) process.env.OPENAI_API_KEY = 'sk-test-key';
 if (!process.env.OPENAI_CHAT_MODEL_ID) process.env.OPENAI_CHAT_MODEL_ID = 'gpt-4o-mini';
 if (!process.env.QDRANT_COLLECTION_NAME) process.env.QDRANT_COLLECTION_NAME = 'roo_tasks_semantic_index';
+if (!process.env.ROOSYNC_SHARED_PATH) process.env.ROOSYNC_SHARED_PATH = process.env.TMPDIR || process.env.TMP || '/tmp';
 
 // Mock des APIs externes
 vi.mock('openai', () => ({
@@ -256,15 +257,28 @@ vi.mock('path', async (importOriginal) => {
 });
 
 // Mock du module os
-vi.mock('os', () => ({
-  platform: vi.fn(() => 'win32'),
-  arch: vi.fn(() => 'x64'),
-  cpus: vi.fn(() => [{ model: 'test-cpu' }]),
-  totalmem: vi.fn(() => 8000000000),
-  freemem: vi.fn(() => 4000000000),
-  homedir: vi.fn(() => '/mock/home'),
-  tmpdir: vi.fn(() => '/mock/tmp')
-}));
+// IMPORTANT: tmpdir doit pointer vers un vrai repertoire pour les tests qui
+// utilisent mkdtempSync (HeartbeatService, apply-decision) sans passer par le mock fs.
+// /tmp existe sur Linux (CI) et macOS. Sur Windows, ces tests utilisent le mock fs.
+// NOTE: Node 20+ exige un export `default` pour les modules mockes utilises via `import os from 'os'`.
+vi.mock('os', () => {
+  const osMock = {
+    platform: vi.fn(() => 'win32'),
+    arch: vi.fn(() => 'x64'),
+    cpus: vi.fn(() => [{ model: 'test-cpu' }]),
+    totalmem: vi.fn(() => 8000000000),
+    freemem: vi.fn(() => 4000000000),
+    homedir: vi.fn(() => '/mock/home'),
+    hostname: vi.fn(() => 'test-machine'),
+    tmpdir: vi.fn(() => process.env.TMPDIR || process.env.TMP || '/tmp'),
+    EOL: '\n',
+    type: vi.fn(() => 'Windows_NT'),
+    release: vi.fn(() => '10.0.26200'),
+    networkInterfaces: vi.fn(() => ({})),
+    userInfo: vi.fn(() => ({ username: 'test-user', homedir: '/mock/home' }))
+  };
+  return { ...osMock, default: osMock };
+});
 
 // Mock du module uuid
 vi.mock('uuid', () => ({

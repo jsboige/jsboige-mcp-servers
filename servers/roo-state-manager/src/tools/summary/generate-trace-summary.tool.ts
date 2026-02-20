@@ -133,8 +133,9 @@ export async function handleGenerateTraceSummary(
         }
 
         // Préparer les options de génération
+        // BUGFIX #491: Défaut 'Summary' au lieu de 'Full' pour retourner un résumé condensé
         const summaryOptions: SummaryOptions = {
-            detailLevel: args.detailLevel || 'Full',
+            detailLevel: args.detailLevel || 'Summary',
             outputFormat: args.outputFormat || 'markdown',
             truncationChars: args.truncationChars || 0,
             compactStats: args.compactStats || false,
@@ -233,27 +234,8 @@ if (args.filePath) {
     }
 }
 
-// Préparer la réponse avec métadonnées (cas où pas de filePath)
-const response = [
-    `**Résumé généré avec succès pour la tâche ${args.taskId}**`,
-    ``,
-    `**Statistiques:**`,
-    `- Total sections: ${result.statistics.totalSections}`,
-    `- Messages utilisateur: ${result.statistics.userMessages}`,
-    `- Réponses assistant: ${result.statistics.assistantMessages}`,
-    `- Résultats d'outils: ${result.statistics.toolResults}`,
-    `- Taille totale: ${Math.round(result.statistics.totalContentSize / 1024 * 10) / 10} KB`,
-    result.statistics.compressionRatio ? `- Ratio de compression: ${result.statistics.compressionRatio}x` : '',
-    ``,
-    `**Mode de génération:** ${summaryOptions.detailLevel}`,
-    `**Format:** ${summaryOptions.outputFormat}`,
-    ``,
-    `---`,
-    ``,
-    result.content
-].filter(line => line !== '').join('\n');
-
-return response;
+// Retourner SEULEMENT le contenu du résumé (pas la conversation complète)
+return result.content;
 
     } catch (error) {
         if (error instanceof StateManagerError) {
