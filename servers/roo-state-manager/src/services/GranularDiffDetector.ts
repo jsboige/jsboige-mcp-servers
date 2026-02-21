@@ -115,6 +115,39 @@ export class GranularDiffDetector {
         path: /^(system\.)/,
         severity: 'CRITICAL',
         category: 'system'
+      },
+      // #498: Détection des écarts de profils de modèles Roo
+      {
+        name: 'Roo model profile changes',
+        path: /^(roo\.modelProfile\.activeProfile)/,
+        severity: 'CRITICAL',
+        category: 'roo_config',
+        handler: (oldValue: any, newValue: any, path: string) => {
+          // Vérifier si le profil a changé
+          if (oldValue !== newValue) {
+            return {
+              id: `profile-change-${Date.now()}`,
+              path,
+              type: 'modified',
+              severity: 'CRITICAL',
+              category: 'roo_config',
+              description: `Profil de modèle Roo modifié: "${oldValue}" → "${newValue}"`,
+              oldValue,
+              newValue,
+              metadata: {
+                semanticChange: 'model_profile_drift',
+                valueType: 'string'
+              }
+            };
+          }
+          return null;
+        }
+      },
+      {
+        name: 'Roo model profile hash changes',
+        path: /^(roo\.modelProfile\.profileHash)/,
+        severity: 'WARNING',
+        category: 'roo_config'
       }
     ];
   }

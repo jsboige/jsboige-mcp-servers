@@ -153,6 +153,7 @@ describe('roosyncUpdateBaseline - Standard Mode', () => {
   test('should use provided version', async () => {
     const result = await roosyncUpdateBaseline({
       machineId: 'new-machine',
+      mode: 'standard',
       version: '5.0.0'
     });
 
@@ -162,7 +163,8 @@ describe('roosyncUpdateBaseline - Standard Mode', () => {
 
   test('should auto-generate version when not provided', async () => {
     const result = await roosyncUpdateBaseline({
-      machineId: 'new-machine'
+      machineId: 'new-machine',
+      mode: 'standard'
     });
 
     // Format attendu: YYYY.MM.DD-HHMM
@@ -171,7 +173,8 @@ describe('roosyncUpdateBaseline - Standard Mode', () => {
 
   test('should create backup by default', async () => {
     const result = await roosyncUpdateBaseline({
-      machineId: 'new-machine'
+      machineId: 'new-machine',
+      mode: 'standard'
     });
 
     expect(result.backupCreated).toBe(true);
@@ -182,6 +185,7 @@ describe('roosyncUpdateBaseline - Standard Mode', () => {
   test('should not create backup when createBackup is false', async () => {
     const result = await roosyncUpdateBaseline({
       machineId: 'new-machine',
+      mode: 'standard',
       createBackup: false
     });
 
@@ -192,6 +196,7 @@ describe('roosyncUpdateBaseline - Standard Mode', () => {
   test('should include updateReason in message', async () => {
     const result = await roosyncUpdateBaseline({
       machineId: 'new-machine',
+      mode: 'standard',
       updateReason: 'Scheduled maintenance update'
     });
 
@@ -203,6 +208,7 @@ describe('roosyncUpdateBaseline - Standard Mode', () => {
 
     const result = await roosyncUpdateBaseline({
       machineId: 'first-machine',
+      mode: 'standard',
       createBackup: false
     });
 
@@ -301,6 +307,7 @@ describe('roosyncUpdateBaseline - Dashboard & Roadmap Updates', () => {
 
     const result = await roosyncUpdateBaseline({
       machineId: 'new-machine',
+      mode: 'standard',
       createBackup: false
     });
 
@@ -322,6 +329,7 @@ describe('roosyncUpdateBaseline - Dashboard & Roadmap Updates', () => {
 
     const result = await roosyncUpdateBaseline({
       machineId: 'new-machine',
+      mode: 'standard',
       createBackup: false,
       updateReason: 'Test roadmap update'
     });
@@ -338,6 +346,7 @@ describe('roosyncUpdateBaseline - Dashboard & Roadmap Updates', () => {
   test('should succeed even when dashboard does not exist', async () => {
     const result = await roosyncUpdateBaseline({
       machineId: 'new-machine',
+      mode: 'standard',
       createBackup: false
     });
 

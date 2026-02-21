@@ -11,22 +11,19 @@ describe('NoResultsStrategy', () => {
   const strategy = new NoResultsStrategy();
 
   const createContent = (
-    id: string,
-    subType: string,
+    index: number,
+    subType: ClassifiedContent['subType'],
     size: number,
-    score: number = 0.8,
-    index: number = 0
+    score: number = 0.8
   ): ClassifiedContent => ({
-    id,
     content: 'x'.repeat(size),
     contentSize: size,
     confidenceScore: score,
     isRelevant: true,
     subType,
-    type: 'text',
-    role: 'assistant',
+    type: 'Assistant',
     index
-  } as ClassifiedContent);
+  });
 
   describe('getStrategyName', () => {
     it('should return "NoResults"', () => {
@@ -37,21 +34,21 @@ describe('NoResultsStrategy', () => {
   describe('apply', () => {
     it('should exclude ToolResult content', () => {
       const content = [
-        createContent('1', 'UserMessage', 100),
-        createContent('2', 'ToolCall', 100),
-        createContent('3', 'ToolResult', 100)
+        createContent(0, 'UserMessage', 100),
+        createContent(1, 'ToolCall', 100),
+        createContent(2, 'ToolResult', 100)
       ];
 
       const result = strategy.apply(content);
 
       expect(result).toHaveLength(2);
-      expect(result.map(c => c.id)).toEqual(['1', '2']);
+      expect(result.map(c => c.index)).toEqual([0, 1]);
     });
 
     it('should keep ToolCall content', () => {
       const content = [
-        createContent('1', 'ToolCall', 100),
-        createContent('2', 'ToolResult', 100)
+        createContent(0, 'ToolCall', 100),
+        createContent(1, 'ToolResult', 100)
       ];
 
       const result = strategy.apply(content);
@@ -62,8 +59,8 @@ describe('NoResultsStrategy', () => {
 
     it('should keep all content when no ToolResult', () => {
       const content = [
-        createContent('1', 'UserMessage', 100),
-        createContent('2', 'Completion', 100)
+        createContent(0, 'UserMessage', 100),
+        createContent(1, 'Completion', 100)
       ];
 
       const result = strategy.apply(content);
@@ -73,8 +70,8 @@ describe('NoResultsStrategy', () => {
 
     it('should return empty when only ToolResult', () => {
       const content = [
-        createContent('1', 'ToolResult', 100),
-        createContent('2', 'ToolResult', 100)
+        createContent(0, 'ToolResult', 100),
+        createContent(1, 'ToolResult', 100)
       ];
 
       const result = strategy.apply(content);
@@ -110,8 +107,8 @@ describe('NoResultsStrategy', () => {
   describe('filterByRelevance', () => {
     it('should exclude ToolResult even if relevant', () => {
       const content = [
-        createContent('1', 'UserMessage', 50, 0.9),
-        createContent('2', 'ToolResult', 50, 0.9)  // High relevance but ToolResult
+        createContent(0, 'UserMessage', 50, 0.9),
+        createContent(1, 'ToolResult', 50, 0.9)  // High relevance but ToolResult
       ];
 
       const result = strategy.filterByRelevance(content, 0.5);
@@ -121,8 +118,8 @@ describe('NoResultsStrategy', () => {
 
     it('should keep ToolCall content', () => {
       const content = [
-        createContent('1', 'ToolCall', 50, 0.9),
-        createContent('2', 'ToolResult', 50, 0.9)
+        createContent(0, 'ToolCall', 50, 0.9),
+        createContent(1, 'ToolResult', 50, 0.9)
       ];
 
       const result = strategy.filterByRelevance(content, 0.5);
@@ -133,14 +130,14 @@ describe('NoResultsStrategy', () => {
 
   describe('applyIntelligentTruncation', () => {
     it('should return content unchanged when maxChars is 0', () => {
-      const content = [createContent('1', 'UserMessage', 100)];
+      const content = [createContent(0, 'UserMessage', 100)];
       const result = strategy.applyIntelligentTruncation(content, 0);
 
       expect(result).toEqual(content);
     });
 
     it('should return content unchanged when maxChars is negative', () => {
-      const content = [createContent('1', 'UserMessage', 100)];
+      const content = [createContent(0, 'UserMessage', 100)];
       const result = strategy.applyIntelligentTruncation(content, -1);
 
       expect(result).toEqual(content);
@@ -148,8 +145,8 @@ describe('NoResultsStrategy', () => {
 
     it('should prioritize UserMessage over ToolResult', () => {
       const content = [
-        createContent('1', 'ToolResult', 50, 0.8, 0),
-        createContent('2', 'UserMessage', 50, 0.8, 1)
+        createContent(0, 'ToolResult', 50, 0.8),
+        createContent(1, 'UserMessage', 50, 0.8)
       ];
 
       const result = strategy.applyIntelligentTruncation(content, 80);
@@ -161,8 +158,8 @@ describe('NoResultsStrategy', () => {
 
     it('should prioritize ToolCall over ToolResult', () => {
       const content = [
-        createContent('1', 'ToolCall', 30, 0.8, 0),
-        createContent('2', 'ToolResult', 30, 0.8, 1)
+        createContent(0, 'ToolCall', 30, 0.8),
+        createContent(1, 'ToolResult', 30, 0.8)
       ];
 
       const result = strategy.applyIntelligentTruncation(content, 60);
@@ -173,8 +170,8 @@ describe('NoResultsStrategy', () => {
 
     it('should sort results by index', () => {
       const content = [
-        createContent('1', 'Completion', 30, 0.8, 1),
-        createContent('2', 'UserMessage', 30, 0.8, 0)
+        createContent(1, 'Completion', 30, 0.8),
+        createContent(0, 'UserMessage', 30, 0.8)
       ];
 
       const result = strategy.applyIntelligentTruncation(content, 200);
@@ -187,8 +184,8 @@ describe('NoResultsStrategy', () => {
 
     it('should include all content that fits', () => {
       const content = [
-        createContent('1', 'UserMessage', 40, 0.8, 0),
-        createContent('2', 'Completion', 40, 0.8, 1)
+        createContent(0, 'UserMessage', 40, 0.8),
+        createContent(1, 'Completion', 40, 0.8)
       ];
 
       const result = strategy.applyIntelligentTruncation(content, 200);
@@ -198,8 +195,8 @@ describe('NoResultsStrategy', () => {
 
     it('should penalize ToolResult heavily', () => {
       const content = [
-        createContent('1', 'ToolResult', 50, 0.9, 0),  // High score but penalized
-        createContent('2', 'UserMessage', 50, 0.5, 1)  // Low score but boosted
+        createContent(0, 'ToolResult', 50, 0.9),  // High score but penalized
+        createContent(1, 'UserMessage', 50, 0.5)  // Low score but boosted
       ];
 
       const result = strategy.applyIntelligentTruncation(content, 60);
