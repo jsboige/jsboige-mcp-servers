@@ -77,16 +77,16 @@ describe('roosyncSend', () => {
       const result = await roosyncSend({} as any);
 
       expect(result.content).toHaveLength(1);
-      expect(result.content[0].text).toContain('Erreur');
-      expect(result.content[0].text).toContain('action');
+      expect((result.content[0] as any).text).toContain('Erreur');
+      expect((result.content[0] as any).text).toContain('action');
     });
 
     test('should return error when action is invalid', async () => {
       const result = await roosyncSend({ action: 'invalid' as any });
 
       expect(result.content).toHaveLength(1);
-      expect(result.content[0].text).toContain('Erreur');
-      expect(result.content[0].text).toContain('invalid');
+      expect((result.content[0] as any).text).toContain('Erreur');
+      expect((result.content[0] as any).text).toContain('invalid');
     });
   });
 
@@ -104,9 +104,9 @@ describe('roosyncSend', () => {
       });
 
       expect(result.content).toHaveLength(1);
-      expect(result.content[0].text).toContain('Message envoyé avec succès');
-      expect(result.content[0].text).toContain('target-machine');
-      expect(result.content[0].text).toContain('Test Subject');
+      expect((result.content[0] as any).text).toContain('Message envoyé avec succès');
+      expect((result.content[0] as any).text).toContain('target-machine');
+      expect((result.content[0] as any).text).toContain('Test Subject');
     });
 
     test('should send message with optional fields', async () => {
@@ -119,8 +119,8 @@ describe('roosyncSend', () => {
         tags: ['urgent', 'cons-1']
       });
 
-      expect(result.content[0].text).toContain('Message envoyé avec succès');
-      expect(result.content[0].text).toContain('HIGH');
+      expect((result.content[0] as any).text).toContain('Message envoyé avec succès');
+      expect((result.content[0] as any).text).toContain('HIGH');
     });
 
     test('should return error when "to" is missing', async () => {
@@ -130,8 +130,8 @@ describe('roosyncSend', () => {
         body: 'Body'
       });
 
-      expect(result.content[0].text).toContain('Erreur');
-      expect(result.content[0].text).toContain('to');
+      expect((result.content[0] as any).text).toContain('Erreur');
+      expect((result.content[0] as any).text).toContain('to');
     });
 
     test('should return error when "subject" is missing', async () => {
@@ -141,8 +141,8 @@ describe('roosyncSend', () => {
         body: 'Body'
       });
 
-      expect(result.content[0].text).toContain('Erreur');
-      expect(result.content[0].text).toContain('subject');
+      expect((result.content[0] as any).text).toContain('Erreur');
+      expect((result.content[0] as any).text).toContain('subject');
     });
 
     test('should return error when "body" is missing', async () => {
@@ -152,8 +152,8 @@ describe('roosyncSend', () => {
         subject: 'Test'
       });
 
-      expect(result.content[0].text).toContain('Erreur');
-      expect(result.content[0].text).toContain('body');
+      expect((result.content[0] as any).text).toContain('Erreur');
+      expect((result.content[0] as any).text).toContain('body');
     });
 
     test('should create files in inbox and sent folders', async () => {
@@ -165,7 +165,7 @@ describe('roosyncSend', () => {
       });
 
       // Extraire l'ID du message du résultat
-      const match = result.content[0].text.match(/\*\*ID :\*\* (msg-[a-z0-9T-]+)/);
+      const match = (result.content[0] as any).text.match(/\*\*ID :\*\* (msg-[a-z0-9T-]+)/);
       expect(match).not.toBeNull();
       const messageId = match![1];
 
@@ -204,9 +204,9 @@ describe('roosyncSend', () => {
         body: 'This is my reply'
       });
 
-      expect(result.content[0].text).toContain('Réponse envoyée avec succès');
-      expect(result.content[0].text).toContain('Re: Original Subject');
-      expect(result.content[0].text).toContain('This is my reply');
+      expect((result.content[0] as any).text).toContain('Réponse envoyée avec succès');
+      expect((result.content[0] as any).text).toContain('Re: Original Subject');
+      expect((result.content[0] as any).text).toContain('This is my reply');
     });
 
     test('should return error when message_id is missing', async () => {
@@ -215,8 +215,8 @@ describe('roosyncSend', () => {
         body: 'Reply body'
       });
 
-      expect(result.content[0].text).toContain('Erreur');
-      expect(result.content[0].text).toContain('message_id');
+      expect((result.content[0] as any).text).toContain('Erreur');
+      expect((result.content[0] as any).text).toContain('message_id');
     });
 
     test('should return error when body is missing', async () => {
@@ -225,8 +225,8 @@ describe('roosyncSend', () => {
         message_id: originalMessageId
       });
 
-      expect(result.content[0].text).toContain('Erreur');
-      expect(result.content[0].text).toContain('body');
+      expect((result.content[0] as any).text).toContain('Erreur');
+      expect((result.content[0] as any).text).toContain('body');
     });
 
     test('should return error when original message not found', async () => {
@@ -236,7 +236,7 @@ describe('roosyncSend', () => {
         body: 'Reply body'
       });
 
-      expect(result.content[0].text).toContain('introuvable');
+      expect((result.content[0] as any).text).toContain('introuvable');
     });
 
     test('should preserve thread_id in reply', async () => {
@@ -246,7 +246,7 @@ describe('roosyncSend', () => {
         body: 'Reply with thread'
       });
 
-      expect(result.content[0].text).toContain('Thread ID');
+      expect((result.content[0] as any).text).toContain('Thread ID');
     });
 
     test('should invert from/to in reply', async () => {
@@ -257,9 +257,9 @@ describe('roosyncSend', () => {
       });
 
       // La réponse doit aller de test-machine vers other-machine
-      expect(result.content[0].text).toContain('test-machine');
-      expect(result.content[0].text).toContain('other-machine');
-      expect(result.content[0].text).toContain('inversé');
+      expect((result.content[0] as any).text).toContain('test-machine');
+      expect((result.content[0] as any).text).toContain('other-machine');
+      expect((result.content[0] as any).text).toContain('inversé');
     });
   });
 
@@ -290,8 +290,8 @@ describe('roosyncSend', () => {
         reason: 'Correction de typo'
       });
 
-      expect(result.content[0].text).toContain('amendé avec succès');
-      expect(result.content[0].text).toContain('Correction de typo');
+      expect((result.content[0] as any).text).toContain('amendé avec succès');
+      expect((result.content[0] as any).text).toContain('Correction de typo');
     });
 
     test('should return error when message_id is missing', async () => {
@@ -300,8 +300,8 @@ describe('roosyncSend', () => {
         new_content: 'New content'
       });
 
-      expect(result.content[0].text).toContain('Erreur');
-      expect(result.content[0].text).toContain('message_id');
+      expect((result.content[0] as any).text).toContain('Erreur');
+      expect((result.content[0] as any).text).toContain('message_id');
     });
 
     test('should return error when new_content is missing', async () => {
@@ -310,8 +310,8 @@ describe('roosyncSend', () => {
         message_id: sentMessageId
       });
 
-      expect(result.content[0].text).toContain('Erreur');
-      expect(result.content[0].text).toContain('new_content');
+      expect((result.content[0] as any).text).toContain('Erreur');
+      expect((result.content[0] as any).text).toContain('new_content');
     });
 
     test('should preserve original content in metadata', async () => {
@@ -321,8 +321,8 @@ describe('roosyncSend', () => {
         new_content: 'Updated content'
       });
 
-      expect(result.content[0].text).toContain('Contenu original préservé');
-      expect(result.content[0].text).toContain('Oui');
+      expect((result.content[0] as any).text).toContain('Contenu original préservé');
+      expect((result.content[0] as any).text).toContain('Oui');
     });
   });
 
@@ -364,7 +364,7 @@ describe('roosyncSend', () => {
 
       // Tous les envois devraient réussir
       for (const result of results) {
-        expect(result.content[0].text).toContain('envoyé avec succès');
+        expect((result.content[0] as any).text).toContain('envoyé avec succès');
       }
 
       // Les IDs devraient être uniques

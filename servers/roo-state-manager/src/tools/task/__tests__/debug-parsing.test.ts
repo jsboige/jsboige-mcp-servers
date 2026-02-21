@@ -17,7 +17,7 @@ import { CallToolResult } from '@modelcontextprotocol/sdk/types.js';
 // Helper to extract text content from result
 function getTextContent(result: CallToolResult): string {
     if (result.content[0] && result.content[0].type === 'text') {
-        return result.content[0].text;
+        return (result.content[0] as any).text;
     }
     return '';
 }

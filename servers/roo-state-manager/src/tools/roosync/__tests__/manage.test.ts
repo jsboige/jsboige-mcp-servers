@@ -73,16 +73,16 @@ describe('roosyncManage', () => {
       const result = await roosyncManage({ message_id: 'test-id' } as any);
 
       expect(result.content).toHaveLength(1);
-      expect(result.content[0].text).toContain('Erreur');
-      expect(result.content[0].text).toContain('action');
+      expect((result.content[0] as any).text).toContain('Erreur');
+      expect((result.content[0] as any).text).toContain('action');
     });
 
     test('should return error when action is invalid', async () => {
       const result = await roosyncManage({ action: 'invalid' as any, message_id: 'test-id' });
 
       expect(result.content).toHaveLength(1);
-      expect(result.content[0].text).toContain('Erreur');
-      expect(result.content[0].text).toContain('invalid');
+      expect((result.content[0] as any).text).toContain('Erreur');
+      expect((result.content[0] as any).text).toContain('invalid');
     });
   });
 
@@ -111,8 +111,8 @@ describe('roosyncManage', () => {
         message_id: unreadMessageId
       });
 
-      expect(result.content[0].text).toContain('Message marqué comme lu');
-      expect(result.content[0].text).toContain('UNREAD → ✅ READ');
+      expect((result.content[0] as any).text).toContain('Message marqué comme lu');
+      expect((result.content[0] as any).text).toContain('UNREAD → ✅ READ');
     });
 
     test('should return info when message already read', async () => {
@@ -124,7 +124,7 @@ describe('roosyncManage', () => {
         message_id: unreadMessageId
       });
 
-      expect(result.content[0].text).toContain('déjà marqué comme lu');
+      expect((result.content[0] as any).text).toContain('déjà marqué comme lu');
     });
 
     test('should return error when message_id is missing', async () => {
@@ -132,8 +132,8 @@ describe('roosyncManage', () => {
         action: 'mark_read'
       } as any);
 
-      expect(result.content[0].text).toContain('Erreur');
-      expect(result.content[0].text).toContain('message_id');
+      expect((result.content[0] as any).text).toContain('Erreur');
+      expect((result.content[0] as any).text).toContain('message_id');
     });
 
     test('should return error when message not found', async () => {
@@ -142,7 +142,7 @@ describe('roosyncManage', () => {
         message_id: 'msg-nonexistent'
       });
 
-      expect(result.content[0].text).toContain('introuvable');
+      expect((result.content[0] as any).text).toContain('introuvable');
     });
 
     test('should display message details after marking as read', async () => {
@@ -151,9 +151,9 @@ describe('roosyncManage', () => {
         message_id: unreadMessageId
       });
 
-      expect(result.content[0].text).toContain('Test Subject');
-      expect(result.content[0].text).toContain('sender-machine');
-      expect(result.content[0].text).toContain('test-machine');
+      expect((result.content[0] as any).text).toContain('Test Subject');
+      expect((result.content[0] as any).text).toContain('sender-machine');
+      expect((result.content[0] as any).text).toContain('test-machine');
     });
   });
 
@@ -182,8 +182,8 @@ describe('roosyncManage', () => {
         message_id: messageToArchiveId
       });
 
-      expect(result.content[0].text).toContain('Message archivé avec succès');
-      expect(result.content[0].text).toContain('ARCHIVED');
+      expect((result.content[0] as any).text).toContain('Message archivé avec succès');
+      expect((result.content[0] as any).text).toContain('ARCHIVED');
     });
 
     test('should return info when message already archived', async () => {
@@ -195,7 +195,7 @@ describe('roosyncManage', () => {
         message_id: messageToArchiveId
       });
 
-      expect(result.content[0].text).toContain('déjà archivé');
+      expect((result.content[0] as any).text).toContain('déjà archivé');
     });
 
     test('should return error when message_id is missing', async () => {
@@ -203,8 +203,8 @@ describe('roosyncManage', () => {
         action: 'archive'
       } as any);
 
-      expect(result.content[0].text).toContain('Erreur');
-      expect(result.content[0].text).toContain('message_id');
+      expect((result.content[0] as any).text).toContain('Erreur');
+      expect((result.content[0] as any).text).toContain('message_id');
     });
 
     test('should return error when message not found', async () => {
@@ -213,7 +213,7 @@ describe('roosyncManage', () => {
         message_id: 'msg-nonexistent'
       });
 
-      expect(result.content[0].text).toContain('introuvable');
+      expect((result.content[0] as any).text).toContain('introuvable');
     });
 
     test('should move message to archive folder', async () => {
@@ -233,7 +233,7 @@ describe('roosyncManage', () => {
         message_id: messageToArchiveId
       });
 
-      expect(result.content[0].text).toContain(`messages/archive/${messageToArchiveId}.json`);
+      expect((result.content[0] as any).text).toContain(`messages/archive/${messageToArchiveId}.json`);
     });
 
     test('should preserve thread_id info in archive message', async () => {
@@ -253,7 +253,7 @@ describe('roosyncManage', () => {
         message_id: threadMsg.id
       });
 
-      expect(result.content[0].text).toContain('thread-123');
+      expect((result.content[0] as any).text).toContain('thread-123');
     });
   });
 
@@ -304,8 +304,8 @@ describe('roosyncManage', () => {
         message_id: msg.id
       });
 
-      expect(result.content[0].text).toContain('archivé avec succès');
-      expect(result.content[0].text).toContain('UNREAD → 📦 ARCHIVED');
+      expect((result.content[0] as any).text).toContain('archivé avec succès');
+      expect((result.content[0] as any).text).toContain('UNREAD → 📦 ARCHIVED');
     });
 
     test('should handle multiple operations on different messages', async () => {

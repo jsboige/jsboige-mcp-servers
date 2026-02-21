@@ -88,7 +88,7 @@ describe('roosyncRead - Edge Cases', () => {
         limit: 50
       });
 
-      expect(result.content[0].text).toContain('50 message');
+      expect((result.content[0] as any).text).toContain('50 message');
     });
 
     test('should limit results to specified limit', async () => {
@@ -108,7 +108,7 @@ describe('roosyncRead - Edge Cases', () => {
         limit: 5
       });
 
-      expect(result.content[0].text).toContain('5 message');
+      expect((result.content[0] as any).text).toContain('5 message');
     });
 
     test('should handle pagination correctly', async () => {
@@ -154,7 +154,7 @@ describe('roosyncRead - Edge Cases', () => {
         message_id: msg.id
       });
 
-      expect(result.content[0].text).toContain('Long Body Message');
+      expect((result.content[0] as any).text).toContain('Long Body Message');
       expect(result.content.length).toBe(1);
     });
 
@@ -172,8 +172,8 @@ describe('roosyncRead - Edge Cases', () => {
         message_id: msg.id
       });
 
-      expect(result.content[0].text).toContain('🚀');
-      expect(result.content[0].text).toContain('✅');
+      expect((result.content[0] as any).text).toContain('🚀');
+      expect((result.content[0] as any).text).toContain('✅');
     });
 
     test('should display message with unicode characters', async () => {
@@ -190,8 +190,8 @@ describe('roosyncRead - Edge Cases', () => {
         message_id: msg.id
       });
 
-      expect(result.content[0].text).toContain('你好世界');
-      expect(result.content[0].text).toContain('café');
+      expect((result.content[0] as any).text).toContain('你好世界');
+      expect((result.content[0] as any).text).toContain('café');
     });
 
     test('should display message with markdown content', async () => {
@@ -221,8 +221,8 @@ const x = 1;
         message_id: msg.id
       });
 
-      expect(result.content[0].text).toContain('Markdown Message');
-      expect(result.content[0].text).toContain('# Header');
+      expect((result.content[0] as any).text).toContain('Markdown Message');
+      expect((result.content[0] as any).text).toContain('# Header');
     });
 
     test('should display message with many tags', async () => {
@@ -242,8 +242,8 @@ const x = 1;
         message_id: msg.id
       });
 
-      expect(result.content[0].text).toContain('tag-0');
-      expect(result.content[0].text).toContain('tag-19');
+      expect((result.content[0] as any).text).toContain('tag-0');
+      expect((result.content[0] as any).text).toContain('tag-19');
     });
   });
 
@@ -259,7 +259,7 @@ const x = 1;
       });
 
       expect(result.content).toHaveLength(1);
-      expect(result.content[0].text).toContain('introuvable');
+      expect((result.content[0] as any).text).toContain('introuvable');
     });
 
     test('should handle empty message_id', async () => {
@@ -269,7 +269,7 @@ const x = 1;
       });
 
       expect(result.content).toHaveLength(1);
-      expect(result.content[0].text).toBeDefined();
+      expect((result.content[0] as any).text).toBeDefined();
     });
 
     test('should handle very long message_id', async () => {
@@ -307,7 +307,7 @@ const x = 1;
 
       // Devrait indiquer inbox vide pour les non-lus
       // Soit "Aucun message" soit "0 message"
-      const text = result.content[0].text;
+      const text = (result.content[0] as any).text;
       expect(
         text.includes('Aucun message') ||
         text.includes('0 message') ||
@@ -361,10 +361,10 @@ const x = 1;
         mode: 'inbox'
       });
 
-      expect(result.content[0].text).toContain('LOW');
-      expect(result.content[0].text).toContain('MEDIUM');
-      expect(result.content[0].text).toContain('HIGH');
-      expect(result.content[0].text).toContain('URGENT');
+      expect((result.content[0] as any).text).toContain('LOW');
+      expect((result.content[0] as any).text).toContain('MEDIUM');
+      expect((result.content[0] as any).text).toContain('HIGH');
+      expect((result.content[0] as any).text).toContain('URGENT');
     });
   });
 
@@ -389,7 +389,7 @@ const x = 1;
         message_id: msg.id
       });
 
-      expect(result.content[0].text).toContain('thread-12345');
+      expect((result.content[0] as any).text).toContain('thread-12345');
     });
 
     test('should handle messages with reply_to reference', async () => {
@@ -419,7 +419,7 @@ const x = 1;
         message_id: reply.id
       });
 
-      expect(result.content[0].text).toContain(original.id);
+      expect((result.content[0] as any).text).toContain(original.id);
     });
   });
 });
