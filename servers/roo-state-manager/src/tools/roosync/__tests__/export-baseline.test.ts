@@ -83,7 +83,10 @@ describe('roosync_export_baseline - Functional', () => {
   test('should export to JSON format', async () => {
     const result = await roosync_export_baseline({
       format: 'json',
-      outputPath: join(testSharedStatePath, 'exports', 'test.json')
+      outputPath: join(testSharedStatePath, 'exports', 'test.json'),
+      includeMetadata: true,
+      prettyPrint: true,
+      includeHistory: false
     });
 
     expect(result.success).toBe(true);
@@ -97,7 +100,10 @@ describe('roosync_export_baseline - Functional', () => {
   test('should export to YAML format', async () => {
     const result = await roosync_export_baseline({
       format: 'yaml',
-      outputPath: join(testSharedStatePath, 'exports', 'test.yaml')
+      outputPath: join(testSharedStatePath, 'exports', 'test.yaml'),
+      includeMetadata: true,
+      prettyPrint: true,
+      includeHistory: false
     });
 
     expect(result.success).toBe(true);
@@ -109,7 +115,10 @@ describe('roosync_export_baseline - Functional', () => {
   test('should export to CSV format', async () => {
     const result = await roosync_export_baseline({
       format: 'csv',
-      outputPath: join(testSharedStatePath, 'exports', 'test.csv')
+      outputPath: join(testSharedStatePath, 'exports', 'test.csv'),
+      includeMetadata: true,
+      prettyPrint: true,
+      includeHistory: false
     });
 
     expect(result.success).toBe(true);
@@ -126,7 +135,10 @@ describe('roosync_export_baseline - Functional', () => {
     await expect(
       roosync_export_baseline({
         format: 'json',
-        outputPath: join(testSharedStatePath, 'exports', 'nope.json')
+        outputPath: join(testSharedStatePath, 'exports', 'nope.json'),
+        includeMetadata: true,
+        prettyPrint: true,
+        includeHistory: false
       })
     ).rejects.toThrow('Baseline non trouvée');
   });
@@ -134,7 +146,10 @@ describe('roosync_export_baseline - Functional', () => {
   test('should include metadata by default', async () => {
     const result = await roosync_export_baseline({
       format: 'json',
-      outputPath: join(testSharedStatePath, 'exports', 'meta.json')
+      outputPath: join(testSharedStatePath, 'exports', 'meta.json'),
+      includeMetadata: true,
+      prettyPrint: true,
+      includeHistory: false
     });
 
     expect(result.includeMetadata).toBe(true);
@@ -147,7 +162,9 @@ describe('roosync_export_baseline - Functional', () => {
     const result = await roosync_export_baseline({
       format: 'json',
       includeMetadata: false,
-      outputPath: join(testSharedStatePath, 'exports', 'nometa.json')
+      outputPath: join(testSharedStatePath, 'exports', 'nometa.json'),
+      prettyPrint: true,
+      includeHistory: false
     });
 
     expect(result.includeMetadata).toBe(false);
@@ -159,7 +176,9 @@ describe('roosync_export_baseline - Functional', () => {
     const result = await roosync_export_baseline({
       format: 'json',
       includeHistory: true,
-      outputPath: join(testSharedStatePath, 'exports', 'history.json')
+      outputPath: join(testSharedStatePath, 'exports', 'history.json'),
+      includeMetadata: true,
+      prettyPrint: true
     });
 
     expect(result.includeHistory).toBe(true);
@@ -172,7 +191,9 @@ describe('roosync_export_baseline - Functional', () => {
     const result = await roosync_export_baseline({
       format: 'json',
       prettyPrint: false,
-      outputPath: join(testSharedStatePath, 'exports', 'compact.json')
+      outputPath: join(testSharedStatePath, 'exports', 'compact.json'),
+      includeMetadata: true,
+      includeHistory: false
     });
 
     expect(result.success).toBe(true);
@@ -184,7 +205,10 @@ describe('roosync_export_baseline - Functional', () => {
   test('should include statistics in export', async () => {
     const result = await roosync_export_baseline({
       format: 'json',
-      outputPath: join(testSharedStatePath, 'exports', 'stats.json')
+      outputPath: join(testSharedStatePath, 'exports', 'stats.json'),
+      includeMetadata: true,
+      prettyPrint: true,
+      includeHistory: false
     });
 
     const content = JSON.parse(readFileSync(result.outputPath, 'utf-8'));
@@ -196,7 +220,9 @@ describe('roosync_export_baseline - Functional', () => {
     const result = await roosync_export_baseline({
       format: 'csv',
       includeMetadata: true,
-      outputPath: join(testSharedStatePath, 'exports', 'with-meta.csv')
+      outputPath: join(testSharedStatePath, 'exports', 'with-meta.csv'),
+      prettyPrint: true,
+      includeHistory: false
     });
 
     const content = readFileSync(result.outputPath, 'utf-8');
@@ -217,7 +243,10 @@ describe('roosync_export_baseline - Functional', () => {
 
     const result = await roosync_export_baseline({
       format: 'csv',
-      outputPath: join(testSharedStatePath, 'exports', 'special.csv')
+      outputPath: join(testSharedStatePath, 'exports', 'special.csv'),
+      includeMetadata: true,
+      prettyPrint: true,
+      includeHistory: false
     });
 
     expect(result.success).toBe(true);
@@ -228,7 +257,10 @@ describe('roosync_export_baseline - Functional', () => {
   test('should return correct machineId and version', async () => {
     const result = await roosync_export_baseline({
       format: 'json',
-      outputPath: join(testSharedStatePath, 'exports', 'check.json')
+      outputPath: join(testSharedStatePath, 'exports', 'check.json'),
+      includeMetadata: true,
+      prettyPrint: true,
+      includeHistory: false
     });
 
     expect(result.machineId).toBe('test-machine');

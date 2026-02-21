@@ -11,14 +11,15 @@ describe('FullStrategy', () => {
   const strategy = new FullStrategy();
 
   // Sample content for testing
-  const createContent = (id: string, size: number, score: number = 0.8): ClassifiedContent => ({
-    id,
+  const createContent = (index: number, size: number, score: number = 0.8): ClassifiedContent => ({
     content: 'x'.repeat(size),
     contentSize: size,
     confidenceScore: score,
-    type: 'text',
-    role: 'assistant'
-  } as ClassifiedContent);
+    type: 'Assistant',
+    subType: 'Completion',
+    index,
+    isRelevant: true
+  });
 
   describe('getStrategyName', () => {
     it('should return "Full"', () => {
@@ -29,8 +30,8 @@ describe('FullStrategy', () => {
   describe('apply', () => {
     it('should return content unchanged', () => {
       const content = [
-        createContent('1', 100),
-        createContent('2', 200)
+        createContent(0, 100),
+        createContent(1, 200)
       ];
 
       const result = strategy.apply(content);
@@ -71,14 +72,14 @@ describe('FullStrategy', () => {
 
   describe('applyIntelligentTruncation', () => {
     it('should return content unchanged when maxChars is 0', () => {
-      const content = [createContent('1', 100)];
+      const content = [createContent(0, 100)];
       const result = strategy.applyIntelligentTruncation(content, 0);
 
       expect(result).toEqual(content);
     });
 
     it('should return content unchanged when maxChars is negative', () => {
-      const content = [createContent('1', 100)];
+      const content = [createContent(0, 100)];
       const result = strategy.applyIntelligentTruncation(content, -1);
 
       expect(result).toEqual(content);
@@ -86,8 +87,8 @@ describe('FullStrategy', () => {
 
     it('should include all content that fits within maxChars', () => {
       const content = [
-        createContent('1', 50),
-        createContent('2', 50)
+        createContent(0, 50),
+        createContent(1, 50)
       ];
       const result = strategy.applyIntelligentTruncation(content, 150);
 
@@ -96,9 +97,9 @@ describe('FullStrategy', () => {
 
     it('should stop when content exceeds maxChars', () => {
       const content = [
-        createContent('1', 50),
-        createContent('2', 50),
-        createContent('3', 50)
+        createContent(0, 50),
+        createContent(1, 50),
+        createContent(2, 50)
       ];
       const result = strategy.applyIntelligentTruncation(content, 100);
 
@@ -106,7 +107,7 @@ describe('FullStrategy', () => {
     });
 
     it('should truncate first element if it exceeds maxChars', () => {
-      const content = [createContent('1', 200)];
+      const content = [createContent(0, 200)];
       const result = strategy.applyIntelligentTruncation(content, 100);
 
       expect(result).toHaveLength(1);
@@ -116,22 +117,22 @@ describe('FullStrategy', () => {
 
     it('should preserve order of content', () => {
       const content = [
-        createContent('first', 30),
-        createContent('second', 30)
+        createContent(0, 30),
+        createContent(1, 30)
       ];
       const result = strategy.applyIntelligentTruncation(content, 100);
 
-      expect(result[0].id).toBe('first');
-      expect(result[1].id).toBe('second');
+      expect(result[0].index).toBe(0);
+      expect(result[1].index).toBe(1);
     });
   });
 
   describe('filterByRelevance', () => {
     it('should filter content with low confidence scores', () => {
       const content = [
-        createContent('1', 50, 0.9),
-        createContent('2', 50, 0.2),
-        createContent('3', 50, 0.8)
+        createContent(0, 50, 0.9),
+        createContent(1, 50, 0.2),
+        createContent(2, 50, 0.8)
       ];
       const result = strategy.filterByRelevance(content, 0.5);
 
@@ -142,19 +143,19 @@ describe('FullStrategy', () => {
 
     it('should lower threshold significantly', () => {
       const content = [
-        createContent('1', 50, 0.2),  // Below normal threshold but above lowered
-        createContent('2', 50, 0.05)  // Below even lowered threshold
+        createContent(0, 50, 0.2),  // Below normal threshold but above lowered
+        createContent(1, 50, 0.05)  // Below even lowered threshold
       ];
       const result = strategy.filterByRelevance(content, 0.5);
 
       // Threshold is max(0.1, 0.5 * 0.3) = 0.15
       // So content with 0.2 should pass, 0.05 should not
-      expect(result.some(c => c.id === '1')).toBe(true);
+      expect(result.some(c => c.index === 0)).toBe(true);
     });
 
     it('should use minimum threshold of 0.1', () => {
       const content = [
-        createContent('1', 50, 0.15)
+        createContent(0, 50, 0.15)
       ];
       const result = strategy.filterByRelevance(content, 0.1);
 
@@ -164,8 +165,8 @@ describe('FullStrategy', () => {
 
     it('should include all content when minConfidenceScore is very low', () => {
       const content = [
-        createContent('1', 50, 0.5),
-        createContent('2', 50, 0.5)
+        createContent(0, 50, 0.5),
+        createContent(1, 50, 0.5)
       ];
       const result = strategy.filterByRelevance(content, 0.1);
 
