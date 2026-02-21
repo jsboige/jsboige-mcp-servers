@@ -10,6 +10,7 @@
 import { MessageManager } from '../../services/MessageManager.js';
 import { getSharedStatePath } from '../../utils/server-helpers.js';
 import { createLogger, Logger } from '../../utils/logger.js';
+import { recordRooSyncActivityAsync } from './heartbeat-activity.js';
 import { MessageManagerError, MessageManagerErrorCode } from '../../types/errors.js';
 import {
   formatDate,
@@ -475,6 +476,9 @@ export async function roosyncSend(
           { action: args.action }
         );
     }
+
+    // Enregistrer l'activité comme preuve de vie heartbeat (#501)
+    recordRooSyncActivityAsync('send', { action: args.action });
 
     return {
       content: [{ type: 'text', text: result }]

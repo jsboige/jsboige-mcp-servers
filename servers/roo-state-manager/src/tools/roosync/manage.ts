@@ -11,6 +11,7 @@ import { MessageManager } from '../../services/MessageManager.js';
 import { getSharedStatePath } from '../../utils/server-helpers.js';
 import { createLogger, Logger } from '../../utils/logger.js';
 import { MessageManagerError, MessageManagerErrorCode } from '../../types/errors.js';
+import { recordRooSyncActivityAsync } from './heartbeat-activity.js';
 import {
   formatDate,
   formatDateFull,
@@ -300,6 +301,9 @@ export async function roosyncManage(
           { action: args.action }
         );
     }
+
+    // Enregistrer l'activité comme preuve de vie heartbeat (#501)
+    recordRooSyncActivityAsync('manage', { action: args.action });
 
     return {
       content: [{ type: 'text', text: result }]
