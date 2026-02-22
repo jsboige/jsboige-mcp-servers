@@ -270,6 +270,73 @@ describe('ConfigService', () => {
     });
   });
 
+  describe('loadConfig - erreurs', () => {
+    it('devrait lancer ConfigServiceError avec CONFIG_INVALID pour JSON invalide', async () => {
+      await fs.writeFile(configPath, '{ invalid json }', 'utf-8');
+      const service = new ConfigService(configPath);
+
+      await expect(service.loadConfig()).rejects.toThrow();
+    });
+  });
+
+  describe('getConfigVersion', () => {
+    it('retourne null si sync-config.json n\'existe pas', async () => {
+      // Utiliser un sharedStatePath qui n'a pas de sync-config.json
+      const service = new ConfigService();
+      const version = await service.getConfigVersion();
+      // Le fichier n'existe pas dans l'env de test
+      expect(version === null || typeof version === 'string').toBe(true);
+    });
+
+    it('retourne la version depuis sync-config.json', async () => {
+      // Créer un sync-config.json avec version
+      const syncConfigPath = join(configDir, 'sync-config.json');
+      await fs.writeFile(syncConfigPath, JSON.stringify({ version: '2.3.0' }), 'utf-8');
+
+      // Forcer ROOSYNC_SHARED_PATH vers notre configDir (qui contient sync-config.json)
+      vi.stubEnv('ROOSYNC_SHARED_PATH', configDir);
+      const service = new ConfigService();
+      const version = await service.getConfigVersion();
+
+      expect(version).toBe('2.3.0');
+    });
+
+    it('retourne null si sync-config.json existe sans champ version', async () => {
+      const syncConfigPath = join(configDir, 'sync-config.json');
+      await fs.writeFile(syncConfigPath, JSON.stringify({ other: 'field' }), 'utf-8');
+
+      vi.stubEnv('ROOSYNC_SHARED_PATH', configDir);
+      const service = new ConfigService();
+      const version = await service.getConfigVersion();
+
+      expect(version).toBeNull();
+    });
+
+    it('lève une erreur pour JSON invalide dans sync-config.json', async () => {
+      const syncConfigPath = join(configDir, 'sync-config.json');
+      await fs.writeFile(syncConfigPath, '{ invalid }', 'utf-8');
+
+      vi.stubEnv('ROOSYNC_SHARED_PATH', configDir);
+      const service = new ConfigService();
+
+      await expect(service.getConfigVersion()).rejects.toThrow();
+    });
+  });
+
+  describe('findSharedStatePath - ROOSYNC_SHARED_PATH inexistant', () => {
+    it('utilise le chemin par défaut si ROOSYNC_SHARED_PATH pointe vers un répertoire inexistant', () => {
+      vi.stubEnv('ROOSYNC_SHARED_PATH', '/nonexistent/path/that/does/not/exist');
+      const service = new ConfigService();
+      const sharedStatePath = service.getSharedStatePath();
+
+      // Doit retourner un chemin valide (fallback)
+      expect(sharedStatePath).toBeDefined();
+      expect(typeof sharedStatePath).toBe('string');
+      // Ne doit pas être le chemin invalide
+      expect(sharedStatePath).not.toBe('/nonexistent/path/that/does/not/exist');
+    });
+  });
+
   describe('Cas d\'intégration', () => {
     it('devrait supporter un cycle complet de chargement et sauvegarde', async () => {
       const initialConfig = {

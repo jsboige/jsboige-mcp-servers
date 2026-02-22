@@ -6,8 +6,8 @@
  * - Déduplication et filtrage
  * - Cas limites (vide, court, null)
  */
-import { describe, it, expect } from 'vitest';
-import { extractSubInstructions } from '../sub-instruction-extractor.js';
+import { describe, it, expect, vi } from 'vitest';
+import { extractSubInstructions, testSubInstructionExtraction } from '../sub-instruction-extractor.js';
 
 describe('extractSubInstructions', () => {
   // === Pattern 1: new_task XML tags ===
@@ -161,6 +161,68 @@ describe('extractSubInstructions', () => {
       expect(result.length).toBeGreaterThanOrEqual(4);
       expect(result.some(r => r.includes('UserManager.ts'))).toBe(true);
       expect(result.some(r => r.includes('Documente l\'API'))).toBe(true);
+    });
+  });
+
+  // === Pattern 2: Code blocks ===
+
+  describe('Pattern 2: Code blocks', () => {
+    it('should extract content from code blocks', () => {
+      const text = '```typescript\nexport class UserManager {\n  createUser() { return true; }\n}\n```';
+      const result = extractSubInstructions(text);
+      // Code block content (> 20 chars) should be extracted
+      expect(result.some(r => r.includes('UserManager'))).toBe(true);
+    });
+
+    it('should ignore code blocks shorter than 20 chars', () => {
+      const text = '```js\nhello\n```';
+      const result = extractSubInstructions(text);
+      // 'hello' is less than 20 chars
+      expect(result.every(r => r !== 'hello')).toBe(true);
+    });
+
+    it('should extract multiple code blocks', () => {
+      const text = '```typescript\nconst service = new AuthService();\nservice.login(user, pass);\n```\n```bash\ngit commit -m "feat: add authentication service layer"\n```';
+      const result = extractSubInstructions(text);
+      expect(result.length).toBeGreaterThan(0);
+    });
+  });
+
+  // === Pattern 6: Indented/nested patterns ===
+
+  describe('Pattern 6: Indented instructions', () => {
+    it('should extract indented lines as instructions', () => {
+      const text = `Main task:
+  Analyser les dépendances externes du projet
+  Créer les fichiers de configuration nécessaires`;
+      const result = extractSubInstructions(text);
+      expect(result.some(r => r.includes('Analyser'))).toBe(true);
+    });
+
+    it('should skip indented comment lines starting with //', () => {
+      const text = `Code:
+  // This is just a comment line here
+  Implémenter la validation des données entrantes`;
+      const result = extractSubInstructions(text);
+      expect(result.every(r => !r.startsWith('//'))).toBe(true);
+    });
+
+    it('should ignore short indented lines', () => {
+      const text = `Section:
+  short
+  also`;
+      const result = extractSubInstructions(text);
+      expect(result.filter(r => r === 'short' || r === 'also')).toHaveLength(0);
+    });
+  });
+
+  // === testSubInstructionExtraction ===
+
+  describe('testSubInstructionExtraction', () => {
+    it('s\'exécute sans erreur', () => {
+      const consoleSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
+      expect(() => testSubInstructionExtraction()).not.toThrow();
+      consoleSpy.mockRestore();
     });
   });
 
