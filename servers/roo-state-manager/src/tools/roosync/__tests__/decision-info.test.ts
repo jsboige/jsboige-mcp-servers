@@ -50,6 +50,10 @@ vi.mock('path', async () => {
 
 import { roosyncDecisionInfo } from '../decision-info.js';
 
+// Helper: Zod infer gives OUTPUT type (boolean required), but tests use optional fields
+const decisionInfo = (args: { decisionId: string; includeHistory?: boolean; includeLogs?: boolean }) =>
+  roosyncDecisionInfo({ includeHistory: true, includeLogs: true, ...args });
+
 describe('roosyncDecisionInfo', () => {
   const baseDecision = {
     id: 'DEC-001',
@@ -75,7 +79,7 @@ describe('roosyncDecisionInfo', () => {
 
   describe('cas de base', () => {
     test('retourne la décision avec champs essentiels', async () => {
-      const result = await roosyncDecisionInfo({ decisionId: 'DEC-001' });
+      const result = await decisionInfo({ decisionId: 'DEC-001' });
 
       expect(result.decision.id).toBe('DEC-001');
       expect(result.decision.title).toBe('Test Decision');
@@ -86,7 +90,7 @@ describe('roosyncDecisionInfo', () => {
     });
 
     test('retourne un historique avec created par défaut', async () => {
-      const result = await roosyncDecisionInfo({ decisionId: 'DEC-001' });
+      const result = await decisionInfo({ decisionId: 'DEC-001' });
 
       expect(result.history).toBeDefined();
       expect(result.history!.created.at).toBe('2026-01-01T00:00:00.000Z');
@@ -94,14 +98,14 @@ describe('roosyncDecisionInfo', () => {
     });
 
     test('retourne le rollbackPoint', async () => {
-      const result = await roosyncDecisionInfo({ decisionId: 'DEC-001' });
+      const result = await decisionInfo({ decisionId: 'DEC-001' });
 
       expect(result.rollbackPoint).toBeDefined();
       expect(result.rollbackPoint!.available).toBe(false); // pending status
     });
 
     test('appelle parseRoadmapMarkdown avec le bon chemin', async () => {
-      await roosyncDecisionInfo({ decisionId: 'DEC-001' });
+      await decisionInfo({ decisionId: 'DEC-001' });
 
       expect(mockParseRoadmapMarkdown).toHaveBeenCalledWith(
         expect.stringContaining('sync-roadmap.md')
@@ -109,7 +113,7 @@ describe('roosyncDecisionInfo', () => {
     });
 
     test('appelle findDecisionById avec le bon ID', async () => {
-      await roosyncDecisionInfo({ decisionId: 'DEC-001' });
+      await decisionInfo({ decisionId: 'DEC-001' });
 
       expect(mockFindDecisionById).toHaveBeenCalledWith(
         expect.any(Array),
@@ -126,7 +130,7 @@ describe('roosyncDecisionInfo', () => {
     test('lève une erreur si la décision n\'existe pas', async () => {
       mockFindDecisionById.mockReturnValue(null);
 
-      await expect(roosyncDecisionInfo({ decisionId: 'NONEXISTENT' }))
+      await expect(decisionInfo({ decisionId: 'NONEXISTENT' }))
         .rejects.toThrow("Décision 'NONEXISTENT' introuvable");
     });
 
@@ -134,7 +138,7 @@ describe('roosyncDecisionInfo', () => {
       mockFindDecisionById.mockReturnValue(null);
 
       try {
-        await roosyncDecisionInfo({ decisionId: 'NONEXISTENT' });
+        await decisionInfo({ decisionId: 'NONEXISTENT' });
         expect.fail('Should have thrown');
       } catch (err: any) {
         expect(err.code).toBe('DECISION_NOT_FOUND');
@@ -148,7 +152,7 @@ describe('roosyncDecisionInfo', () => {
 
   describe('includeHistory: false', () => {
     test('ne retourne pas l\'historique', async () => {
-      const result = await roosyncDecisionInfo({
+      const result = await decisionInfo({
         decisionId: 'DEC-001',
         includeHistory: false
       });
@@ -157,7 +161,7 @@ describe('roosyncDecisionInfo', () => {
     });
 
     test('retourne quand même la décision', async () => {
-      const result = await roosyncDecisionInfo({
+      const result = await decisionInfo({
         decisionId: 'DEC-001',
         includeHistory: false
       });
@@ -172,7 +176,7 @@ describe('roosyncDecisionInfo', () => {
 
   describe('includeLogs: false', () => {
     test('ne retourne pas les logs quand absent', async () => {
-      const result = await roosyncDecisionInfo({
+      const result = await decisionInfo({
         decisionId: 'DEC-001',
         includeLogs: false
       });
@@ -187,7 +191,7 @@ describe('roosyncDecisionInfo', () => {
       };
       mockFindDecisionById.mockReturnValue(decisionWithLogs);
 
-      const result = await roosyncDecisionInfo({
+      const result = await decisionInfo({
         decisionId: 'DEC-001',
         includeLogs: true
       });
@@ -202,7 +206,7 @@ describe('roosyncDecisionInfo', () => {
       };
       mockFindDecisionById.mockReturnValue(decisionWithLogs);
 
-      const result = await roosyncDecisionInfo({
+      const result = await decisionInfo({
         decisionId: 'DEC-001',
         includeLogs: false
       });
@@ -226,7 +230,7 @@ describe('roosyncDecisionInfo', () => {
       };
       mockFindDecisionById.mockReturnValue(approvedDecision);
 
-      const result = await roosyncDecisionInfo({ decisionId: 'DEC-001' });
+      const result = await decisionInfo({ decisionId: 'DEC-001' });
 
       expect(result.history!.approved).toBeDefined();
       expect(result.history!.approved!.at).toBe('2026-01-02T00:00:00.000Z');
@@ -238,7 +242,7 @@ describe('roosyncDecisionInfo', () => {
       const approvedDecision = { ...baseDecision, status: 'approved' };
       mockFindDecisionById.mockReturnValue(approvedDecision);
 
-      const result = await roosyncDecisionInfo({ decisionId: 'DEC-001' });
+      const result = await decisionInfo({ decisionId: 'DEC-001' });
 
       expect(result.rollbackPoint!.available).toBe(false);
     });
@@ -255,7 +259,7 @@ describe('roosyncDecisionInfo', () => {
       };
       mockFindDecisionById.mockReturnValue(rejectedDecision);
 
-      const result = await roosyncDecisionInfo({ decisionId: 'DEC-001' });
+      const result = await decisionInfo({ decisionId: 'DEC-001' });
 
       expect(result.history!.rejected).toBeDefined();
       expect(result.history!.rejected!.at).toBe('2026-01-02T00:00:00.000Z');
@@ -273,7 +277,7 @@ describe('roosyncDecisionInfo', () => {
       };
       mockFindDecisionById.mockReturnValue(rejectedDecision);
 
-      const result = await roosyncDecisionInfo({ decisionId: 'DEC-001' });
+      const result = await decisionInfo({ decisionId: 'DEC-001' });
 
       expect(result.history!.rejected!.reason).toBe('No reason provided');
     });
@@ -294,7 +298,7 @@ describe('roosyncDecisionInfo', () => {
       };
       mockFindDecisionById.mockReturnValue(appliedDecision);
 
-      const result = await roosyncDecisionInfo({ decisionId: 'DEC-001' });
+      const result = await decisionInfo({ decisionId: 'DEC-001' });
 
       expect(result.history!.applied).toBeDefined();
       expect(result.history!.applied!.at).toBe('2026-01-03T00:00:00.000Z');
@@ -313,7 +317,7 @@ describe('roosyncDecisionInfo', () => {
       };
       mockFindDecisionById.mockReturnValue(appliedDecision);
 
-      const result = await roosyncDecisionInfo({ decisionId: 'DEC-001' });
+      const result = await decisionInfo({ decisionId: 'DEC-001' });
 
       expect(result.rollbackPoint!.available).toBe(true);
     });
@@ -330,7 +334,7 @@ describe('roosyncDecisionInfo', () => {
       };
       mockFindDecisionById.mockReturnValue(rolledBackDecision);
 
-      const result = await roosyncDecisionInfo({ decisionId: 'DEC-001' });
+      const result = await decisionInfo({ decisionId: 'DEC-001' });
 
       expect(result.history!.rolledBack).toBeDefined();
       expect(result.history!.rolledBack!.at).toBe('2026-01-04T00:00:00.000Z');
@@ -348,7 +352,7 @@ describe('roosyncDecisionInfo', () => {
       };
       mockFindDecisionById.mockReturnValue(rolledBackDecision);
 
-      const result = await roosyncDecisionInfo({ decisionId: 'DEC-001' });
+      const result = await decisionInfo({ decisionId: 'DEC-001' });
 
       expect(result.history!.rolledBack!.reason).toBe('No reason provided');
     });
@@ -364,7 +368,7 @@ describe('roosyncDecisionInfo', () => {
       delete (decisionWithoutType as any).type;
       mockFindDecisionById.mockReturnValue(decisionWithoutType);
 
-      const result = await roosyncDecisionInfo({ decisionId: 'DEC-001' });
+      const result = await decisionInfo({ decisionId: 'DEC-001' });
 
       expect(result.decision.type).toBe('config');
     });
@@ -374,7 +378,7 @@ describe('roosyncDecisionInfo', () => {
       delete (decisionWithoutSource as any).sourceMachine;
       mockFindDecisionById.mockReturnValue(decisionWithoutSource);
 
-      const result = await roosyncDecisionInfo({ decisionId: 'DEC-001' });
+      const result = await decisionInfo({ decisionId: 'DEC-001' });
 
       expect(result.decision.sourceMachine).toBe('test-machine');
     });
@@ -384,7 +388,7 @@ describe('roosyncDecisionInfo', () => {
       delete (decisionWithoutTargets as any).targetMachines;
       mockFindDecisionById.mockReturnValue(decisionWithoutTargets);
 
-      const result = await roosyncDecisionInfo({ decisionId: 'DEC-001' });
+      const result = await decisionInfo({ decisionId: 'DEC-001' });
 
       expect(result.decision.targetMachines).toEqual([]);
     });
@@ -394,7 +398,7 @@ describe('roosyncDecisionInfo', () => {
       delete (decisionWithoutCreatedBy as any).createdBy;
       mockFindDecisionById.mockReturnValue(decisionWithoutCreatedBy);
 
-      const result = await roosyncDecisionInfo({ decisionId: 'DEC-001' });
+      const result = await decisionInfo({ decisionId: 'DEC-001' });
 
       expect(result.history!.created.by).toBe('source-machine');
     });

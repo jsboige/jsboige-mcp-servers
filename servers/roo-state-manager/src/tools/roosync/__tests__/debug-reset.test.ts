@@ -20,7 +20,7 @@ const mockGetConfig = vi.fn(() => ({ machineId: 'test-machine', sharedPath: '/mo
 const mockClearCache = vi.fn();
 const mockLoadDashboard = vi.fn(() => Promise.resolve({ machines: [] }));
 const mockResetInstance = vi.fn();
-const mockGetInstance = vi.fn(() => ({
+const mockGetInstance = vi.fn((_opts?: { enabled: boolean }) => ({
   getConfig: mockGetConfig,
   clearCache: mockClearCache,
   loadDashboard: mockLoadDashboard
