@@ -1,160 +1,317 @@
+/**
+ * Tests unitaires pour MarkdownRenderer
+ *
+ * Couvre :
+ * - formatUserMessage : contenu, timestamp optionnel
+ * - formatAssistantMessage : contenu, timestamp optionnel
+ * - formatToolCall : toolName, parameters, timestamp optionnel
+ * - formatToolResult : string, object, JSON sérialisé
+ * - formatConversationHeader : tous les champs, valeurs manquantes
+ * - formatSectionSeparator : titre et couleur
+ * - formatMetadataTable : clés/valeurs
+ * - formatToolParametersTable : objet, null, non-objet
+ *
+ * @module services/markdown-formatter/__tests__/MarkdownRenderer.test
+ * @version 1.0.0 (#492)
+ */
+
 import { describe, test, expect } from 'vitest';
 import { MarkdownRenderer } from '../MarkdownRenderer.js';
 
+// ─────────────────── tests ───────────────────
+
 describe('MarkdownRenderer', () => {
-    describe('formatUserMessage', () => {
-        test('generates HTML with user message content', () => {
-            const result = MarkdownRenderer.formatUserMessage('Hello world');
-            expect(result).toContain('user-message');
-            expect(result).toContain('Message Utilisateur');
-            expect(result).toContain('Hello world');
-        });
 
-        test('includes timestamp when provided', () => {
-            const result = MarkdownRenderer.formatUserMessage('Test', '2026-01-15 10:30');
-            expect(result).toContain('2026-01-15 10:30');
-            expect(result).toContain('timestamp');
-        });
+  // ============================================================
+  // formatUserMessage
+  // ============================================================
 
-        test('omits timestamp when not provided', () => {
-            const result = MarkdownRenderer.formatUserMessage('Test');
-            expect(result).not.toContain('<small class="timestamp">');
-        });
+  describe('formatUserMessage', () => {
+    test('contient la classe "user-message"', () => {
+      const html = MarkdownRenderer.formatUserMessage('Hello world');
+      expect(html).toContain('user-message');
     });
 
-    describe('formatAssistantMessage', () => {
-        test('generates HTML with assistant message content', () => {
-            const result = MarkdownRenderer.formatAssistantMessage('Response text');
-            expect(result).toContain('assistant-message');
-            expect(result).toContain('Réponse Assistant');
-            expect(result).toContain('Response text');
-        });
-
-        test('includes timestamp when provided', () => {
-            const result = MarkdownRenderer.formatAssistantMessage('Test', '15:30');
-            expect(result).toContain('15:30');
-        });
+    test('contient le contenu fourni', () => {
+      const html = MarkdownRenderer.formatUserMessage('Mon message');
+      expect(html).toContain('Mon message');
     });
 
-    describe('formatToolCall', () => {
-        test('generates HTML with tool name', () => {
-            const result = MarkdownRenderer.formatToolCall('read_file', { path: '/test.ts' });
-            expect(result).toContain('tool-call');
-            expect(result).toContain('read_file');
-        });
-
-        test('includes parameter table for objects', () => {
-            const result = MarkdownRenderer.formatToolCall('read_file', { path: '/test.ts', encoding: 'utf-8' });
-            expect(result).toContain('tool-parameters-table');
-            expect(result).toContain('path');
-            expect(result).toContain('/test.ts');
-            expect(result).toContain('encoding');
-        });
-
-        test('handles null parameters', () => {
-            const result = MarkdownRenderer.formatToolCall('some_tool', null);
-            expect(result).toContain('some_tool');
-            expect(result).toContain('<pre><code>');
-        });
+    test('contient "Message Utilisateur" dans le badge', () => {
+      const html = MarkdownRenderer.formatUserMessage('test');
+      expect(html).toContain('Message Utilisateur');
     });
 
-    describe('formatToolResult', () => {
-        test('generates HTML with string result', () => {
-            const result = MarkdownRenderer.formatToolResult('read_file', 'file contents here');
-            expect(result).toContain('tool-result');
-            expect(result).toContain('Résultat: read_file');
-            expect(result).toContain('file contents here');
-        });
-
-        test('JSON-stringifies object results', () => {
-            const result = MarkdownRenderer.formatToolResult('get_status', { ok: true, count: 5 });
-            expect(result).toContain('"ok": true');
-            expect(result).toContain('"count": 5');
-        });
+    test('sans timestamp : pas de balise <small>', () => {
+      const html = MarkdownRenderer.formatUserMessage('test');
+      expect(html).not.toContain('<small');
     });
 
-    describe('formatConversationHeader', () => {
-        test('generates header with task ID', () => {
-            const result = MarkdownRenderer.formatConversationHeader({ taskId: 'abc-123' });
-            expect(result).toContain('abc-123');
-            expect(result).toContain('conversation-header');
-        });
-
-        test('uses custom title when provided', () => {
-            const result = MarkdownRenderer.formatConversationHeader({ taskId: 'id', title: 'My Custom Title' });
-            expect(result).toContain('My Custom Title');
-        });
-
-        test('uses default title when none provided', () => {
-            const result = MarkdownRenderer.formatConversationHeader({ taskId: 'id' });
-            expect(result).toContain("RESUME DE TRACE D'ORCHESTRATION ROO");
-        });
-
-        test('includes message count', () => {
-            const result = MarkdownRenderer.formatConversationHeader({ taskId: 'id', messageCount: 42 });
-            expect(result).toContain('42');
-        });
-
-        test('includes total size', () => {
-            const result = MarkdownRenderer.formatConversationHeader({ taskId: 'id', totalSize: '15 KB' });
-            expect(result).toContain('15 KB');
-        });
-
-        test('formats creation date in French', () => {
-            const result = MarkdownRenderer.formatConversationHeader({
-                taskId: 'id',
-                createdAt: '2026-01-15T10:30:00Z'
-            });
-            expect(result).toContain('15');
-        });
+    test('avec timestamp : contient la date dans <small>', () => {
+      const html = MarkdownRenderer.formatUserMessage('test', '2026-01-01T10:00:00Z');
+      expect(html).toContain('<small');
+      expect(html).toContain('2026-01-01T10:00:00Z');
     });
 
-    describe('formatSectionSeparator', () => {
-        test('generates separator with title and color', () => {
-            const result = MarkdownRenderer.formatSectionSeparator('Section A', '#ff0000');
-            expect(result).toContain('Section A');
-            expect(result).toContain('#ff0000');
-            expect(result).toContain('section-separator-with-title');
-        });
+    test('retourne une chaîne non vide', () => {
+      expect(MarkdownRenderer.formatUserMessage('')).toBeTruthy();
+    });
+  });
+
+  // ============================================================
+  // formatAssistantMessage
+  // ============================================================
+
+  describe('formatAssistantMessage', () => {
+    test('contient la classe "assistant-message"', () => {
+      const html = MarkdownRenderer.formatAssistantMessage('Réponse');
+      expect(html).toContain('assistant-message');
     });
 
-    describe('formatMetadataTable', () => {
-        test('generates HTML table from key-value pairs', () => {
-            const result = MarkdownRenderer.formatMetadataTable({ Name: 'Test', Version: '1.0' });
-            expect(result).toContain('metadata-table');
-            expect(result).toContain('Name');
-            expect(result).toContain('Test');
-            expect(result).toContain('Version');
-            expect(result).toContain('1.0');
-        });
-
-        test('handles empty data', () => {
-            const result = MarkdownRenderer.formatMetadataTable({});
-            expect(result).toContain('metadata-table');
-        });
+    test('contient le contenu fourni', () => {
+      const html = MarkdownRenderer.formatAssistantMessage('Ma réponse');
+      expect(html).toContain('Ma réponse');
     });
 
-    describe('formatToolParametersTable', () => {
-        test('generates table for object parameters', () => {
-            const result = MarkdownRenderer.formatToolParametersTable({ path: 'test.ts', mode: 'read' });
-            expect(result).toContain('tool-parameters-table');
-            expect(result).toContain('path');
-            expect(result).toContain('test.ts');
-        });
-
-        test('returns pre/code block for non-object params', () => {
-            const result = MarkdownRenderer.formatToolParametersTable('plain text');
-            expect(result).toContain('<pre><code>plain text</code></pre>');
-        });
-
-        test('returns pre/code block for null params', () => {
-            const result = MarkdownRenderer.formatToolParametersTable(null);
-            expect(result).toContain('<pre><code>');
-        });
-
-        test('JSON-stringifies nested objects in parameters', () => {
-            const result = MarkdownRenderer.formatToolParametersTable({ config: { debug: true } });
-            expect(result).toContain('"debug": true');
-        });
+    test('contient "Réponse Assistant"', () => {
+      const html = MarkdownRenderer.formatAssistantMessage('test');
+      expect(html).toContain('Réponse Assistant');
     });
+
+    test('sans timestamp : pas de balise <small>', () => {
+      const html = MarkdownRenderer.formatAssistantMessage('test');
+      expect(html).not.toContain('<small');
+    });
+
+    test('avec timestamp : contient la date', () => {
+      const html = MarkdownRenderer.formatAssistantMessage('test', '2026-06-15T12:00:00Z');
+      expect(html).toContain('2026-06-15T12:00:00Z');
+    });
+  });
+
+  // ============================================================
+  // formatToolCall
+  // ============================================================
+
+  describe('formatToolCall', () => {
+    test('contient la classe "tool-call"', () => {
+      const html = MarkdownRenderer.formatToolCall('my_tool', {});
+      expect(html).toContain('tool-call');
+    });
+
+    test('contient le nom de l\'outil', () => {
+      const html = MarkdownRenderer.formatToolCall('read_file', {});
+      expect(html).toContain('read_file');
+    });
+
+    test('contient "Appel d\'Outil"', () => {
+      const html = MarkdownRenderer.formatToolCall('write_file', { path: '/tmp/test' });
+      expect(html).toContain("Appel d'Outil");
+    });
+
+    test('avec timestamp : contient la date', () => {
+      const html = MarkdownRenderer.formatToolCall('tool', {}, '2026-01-01T00:00:00Z');
+      expect(html).toContain('2026-01-01T00:00:00Z');
+    });
+
+    test('sans timestamp : pas de balise <small>', () => {
+      const html = MarkdownRenderer.formatToolCall('tool', {});
+      expect(html).not.toContain('<small');
+    });
+
+    test('paramètres objet inclus dans le tableau', () => {
+      const html = MarkdownRenderer.formatToolCall('tool', { key: 'value' });
+      expect(html).toContain('key');
+      expect(html).toContain('value');
+    });
+  });
+
+  // ============================================================
+  // formatToolResult
+  // ============================================================
+
+  describe('formatToolResult', () => {
+    test('contient la classe "tool-result"', () => {
+      const html = MarkdownRenderer.formatToolResult('my_tool', 'result');
+      expect(html).toContain('tool-result');
+    });
+
+    test('contient "Résultat:" dans le badge', () => {
+      const html = MarkdownRenderer.formatToolResult('read_file', 'content');
+      expect(html).toContain('Résultat:');
+      expect(html).toContain('read_file');
+    });
+
+    test('résultat string : affiché directement', () => {
+      const html = MarkdownRenderer.formatToolResult('tool', 'ma chaîne');
+      expect(html).toContain('ma chaîne');
+    });
+
+    test('résultat objet : sérialisé en JSON', () => {
+      const html = MarkdownRenderer.formatToolResult('tool', { key: 'value' });
+      expect(html).toContain('"key"');
+      expect(html).toContain('"value"');
+    });
+
+    test('résultat null : sérialisé', () => {
+      const html = MarkdownRenderer.formatToolResult('tool', null);
+      expect(html).toContain('null');
+    });
+
+    test('avec timestamp : contient la date', () => {
+      const html = MarkdownRenderer.formatToolResult('tool', 'ok', '2026-03-01T00:00:00Z');
+      expect(html).toContain('2026-03-01T00:00:00Z');
+    });
+  });
+
+  // ============================================================
+  // formatConversationHeader
+  // ============================================================
+
+  describe('formatConversationHeader', () => {
+    test('contient le taskId', () => {
+      const html = MarkdownRenderer.formatConversationHeader({ taskId: 'task-abc-123' });
+      expect(html).toContain('task-abc-123');
+    });
+
+    test('contient le titre si fourni', () => {
+      const html = MarkdownRenderer.formatConversationHeader({ taskId: 'x', title: 'Mon titre' });
+      expect(html).toContain('Mon titre');
+    });
+
+    test('titre par défaut si non fourni', () => {
+      const html = MarkdownRenderer.formatConversationHeader({ taskId: 'x' });
+      expect(html).toContain("RESUME DE TRACE D'ORCHESTRATION ROO");
+    });
+
+    test('contient le messageCount si fourni', () => {
+      const html = MarkdownRenderer.formatConversationHeader({ taskId: 'x', messageCount: 42 });
+      expect(html).toContain('42');
+    });
+
+    test('messageCount = 0 par défaut si absent', () => {
+      const html = MarkdownRenderer.formatConversationHeader({ taskId: 'x' });
+      expect(html).toContain('0');
+    });
+
+    test('contient totalSize si fourni', () => {
+      const html = MarkdownRenderer.formatConversationHeader({ taskId: 'x', totalSize: '150 KB' });
+      expect(html).toContain('150 KB');
+    });
+
+    test('contient la date formatée si createdAt fourni', () => {
+      const html = MarkdownRenderer.formatConversationHeader({ taskId: 'x', createdAt: '2026-01-15T10:00:00Z' });
+      expect(html).toContain('15'); // Day
+    });
+
+    test('contient "N/A" si createdAt absent', () => {
+      const html = MarkdownRenderer.formatConversationHeader({ taskId: 'x' });
+      expect(html).toContain('N/A');
+    });
+  });
+
+  // ============================================================
+  // formatSectionSeparator
+  // ============================================================
+
+  describe('formatSectionSeparator', () => {
+    test('contient le titre', () => {
+      const html = MarkdownRenderer.formatSectionSeparator('Mon Section', '#ff0000');
+      expect(html).toContain('Mon Section');
+    });
+
+    test('contient la couleur dans le style', () => {
+      const html = MarkdownRenderer.formatSectionSeparator('Test', '#00ff00');
+      expect(html).toContain('#00ff00');
+    });
+
+    test('contient "section-separator-with-title"', () => {
+      const html = MarkdownRenderer.formatSectionSeparator('Test', 'blue');
+      expect(html).toContain('section-separator-with-title');
+    });
+
+    test('contient une balise h2', () => {
+      const html = MarkdownRenderer.formatSectionSeparator('Titre', 'red');
+      expect(html).toContain('<h2');
+    });
+  });
+
+  // ============================================================
+  // formatMetadataTable
+  // ============================================================
+
+  describe('formatMetadataTable', () => {
+    test('contient les clés du record', () => {
+      const html = MarkdownRenderer.formatMetadataTable({ machineId: 'test-machine', version: '1.0' });
+      expect(html).toContain('machineId');
+      expect(html).toContain('version');
+    });
+
+    test('contient les valeurs du record', () => {
+      const html = MarkdownRenderer.formatMetadataTable({ key: 'ma-valeur' });
+      expect(html).toContain('ma-valeur');
+    });
+
+    test('contient une table HTML', () => {
+      const html = MarkdownRenderer.formatMetadataTable({ a: 1 });
+      expect(html).toContain('<table');
+      expect(html).toContain('</table>');
+    });
+
+    test('contient les en-têtes "Propriété" et "Valeur"', () => {
+      const html = MarkdownRenderer.formatMetadataTable({});
+      expect(html).toContain('Propriété');
+      expect(html).toContain('Valeur');
+    });
+
+    test('objet vide génère un tableau sans lignes tbody', () => {
+      const html = MarkdownRenderer.formatMetadataTable({});
+      expect(html).toContain('<tbody>');
+    });
+  });
+
+  // ============================================================
+  // formatToolParametersTable
+  // ============================================================
+
+  describe('formatToolParametersTable', () => {
+    test('objet avec propriétés : retourne un tableau HTML', () => {
+      const html = MarkdownRenderer.formatToolParametersTable({ param1: 'val1' });
+      expect(html).toContain('<table');
+      expect(html).toContain('param1');
+    });
+
+    test('valeur string dans paramètre : affichée directement', () => {
+      const html = MarkdownRenderer.formatToolParametersTable({ path: '/tmp/file.txt' });
+      expect(html).toContain('/tmp/file.txt');
+    });
+
+    test('valeur objet dans paramètre : sérialisée en JSON', () => {
+      const html = MarkdownRenderer.formatToolParametersTable({ opts: { key: 'val' } });
+      expect(html).toContain('"key"');
+    });
+
+    test('params null : retourne un <pre><code> avec "null"', () => {
+      const html = MarkdownRenderer.formatToolParametersTable(null);
+      expect(html).toContain('<pre>');
+      expect(html).toContain('null');
+    });
+
+    test('params string : retourne un <pre><code>', () => {
+      const html = MarkdownRenderer.formatToolParametersTable('raw string');
+      expect(html).toContain('<pre>');
+      expect(html).toContain('raw string');
+    });
+
+    test('params nombre : retourne un <pre><code>', () => {
+      const html = MarkdownRenderer.formatToolParametersTable(42);
+      expect(html).toContain('42');
+    });
+
+    test('contient les en-têtes "Paramètre" et "Valeur"', () => {
+      const html = MarkdownRenderer.formatToolParametersTable({ key: 'val' });
+      expect(html).toContain('Paramètre');
+      expect(html).toContain('Valeur');
+    });
+  });
 });

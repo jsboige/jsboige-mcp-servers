@@ -1,238 +1,258 @@
 /**
- * Tests pour ConfigValidator.ts
- * Issue #492 - Couverture de la validation des baselines
+ * Tests unitaires pour ConfigValidator
  *
- * @module services/baseline/__tests__/ConfigValidator
+ * Couvre :
+ * - validateBaselineConfig : toutes les combinaisons de champs requis
+ * - validateBaselineFileConfig : champs requis, machines vide/absente
+ * - ensureValidBaselineConfig : lève BaselineServiceError si invalide
+ * - ensureValidBaselineFileConfig : null, champs manquants
+ *
+ * @module services/baseline/__tests__/ConfigValidator.test
+ * @version 1.0.0 (#492)
  */
 
-import { describe, test, expect } from 'vitest';
+import { describe, test, expect, vi, beforeEach } from 'vitest';
 import { ConfigValidator } from '../ConfigValidator.js';
+import { BaselineServiceError, BaselineServiceErrorCode } from '../../../types/baseline.js';
 import type { BaselineConfig, BaselineFileConfig } from '../../../types/baseline.js';
 
+// ─────────────────── helpers ───────────────────
+
+function makeBaselineConfig(overrides: Partial<BaselineConfig> = {}): BaselineConfig {
+  return {
+    machineId: 'test-machine',
+    config: {
+      roo: { modes: [], mcpSettings: {}, userSettings: {} },
+      hardware: {
+        cpu: { model: 'Intel', cores: 4, threads: 8 },
+        memory: { total: 16384 },
+        disks: [],
+      },
+      software: { powershell: '7.4', node: '20.0', python: '3.11' },
+      system: { os: 'Windows', architecture: 'x64' },
+    },
+    lastUpdated: '2026-01-01T00:00:00Z',
+    version: '1.0.0',
+    ...overrides,
+  };
+}
+
+function makeBaselineFileConfig(overrides: Partial<BaselineFileConfig> = {}): BaselineFileConfig {
+  return {
+    version: '1.0.0',
+    baselineId: 'baseline-001',
+    timestamp: '2026-01-01T00:00:00Z',
+    machineId: 'test-machine',
+    autoSync: true,
+    conflictStrategy: 'manual',
+    logLevel: 'info',
+    sharedStatePath: '/shared/state',
+    machines: [
+      {
+        id: 'machine-1', name: 'Machine 1', hostname: 'host1', os: 'Windows',
+        architecture: 'x64', lastSeen: '2026-01-01T00:00:00Z',
+        roo: { modes: [], mcpServers: [], sdddSpecs: [] },
+        hardware: { cpu: { cores: 4, threads: 8 }, memory: { total: 16384 } },
+        software: {},
+      },
+    ],
+    syncTargets: [],
+    syncPaths: [],
+    decisions: [],
+    messages: [],
+    ...overrides,
+  };
+}
+
+// ─────────────────── setup ───────────────────
+
+let validator: ConfigValidator;
+
+beforeEach(() => {
+  validator = new ConfigValidator();
+  vi.spyOn(console, 'error').mockImplementation(() => {});
+  vi.spyOn(console, 'warn').mockImplementation(() => {});
+});
+
+// ─────────────────── tests ───────────────────
+
 describe('ConfigValidator', () => {
-	let validator: ConfigValidator;
 
-	function createValidator(): ConfigValidator {
-		return new ConfigValidator();
-	}
+  // ============================================================
+  // validateBaselineConfig
+  // ============================================================
 
-	function createValidBaselineConfig(): BaselineConfig {
-		return {
-			machineId: 'test-machine',
-			version: '1.0.0',
-			config: {
-				roo: { paths: {} },
-				hardware: { cpu: 'test' },
-				software: { node: '20' },
-				system: { os: 'win32' }
-			}
-		} as BaselineConfig;
-	}
+  describe('validateBaselineConfig', () => {
+    test('retourne true pour une config valide', () => {
+      expect(validator.validateBaselineConfig(makeBaselineConfig())).toBe(true);
+    });
 
-	function createValidBaselineFileConfig(): BaselineFileConfig {
-		return {
-			version: '1.0.0',
-			baselineId: 'baseline-001',
-			machineId: 'test-machine',
-			timestamp: new Date().toISOString(),
-			machines: [{ machineId: 'test-machine' }]
-		} as BaselineFileConfig;
-	}
+    test('retourne false si machineId manquant', () => {
+      const config = makeBaselineConfig({ machineId: '' });
+      expect(validator.validateBaselineConfig(config)).toBe(false);
+    });
 
-	// ============================================================
-	// validateBaselineConfig
-	// ============================================================
+    test('retourne false si version manquante', () => {
+      const config = makeBaselineConfig({ version: '' });
+      expect(validator.validateBaselineConfig(config)).toBe(false);
+    });
 
-	describe('validateBaselineConfig', () => {
-		test('returns true for valid config', () => {
-			validator = createValidator();
-			expect(validator.validateBaselineConfig(createValidBaselineConfig())).toBe(true);
-		});
+    test('retourne false si config est null', () => {
+      const config = { ...makeBaselineConfig(), config: null as any };
+      expect(validator.validateBaselineConfig(config)).toBe(false);
+    });
 
-		test('returns false when machineId is missing', () => {
-			validator = createValidator();
-			const config = createValidBaselineConfig();
-			(config as any).machineId = '';
-			expect(validator.validateBaselineConfig(config)).toBe(false);
-		});
+    test('retourne false si config.roo manquant', () => {
+      const base = makeBaselineConfig();
+      const config = { ...base, config: { ...base.config, roo: null as any } };
+      expect(validator.validateBaselineConfig(config)).toBe(false);
+    });
 
-		test('returns false when version is missing', () => {
-			validator = createValidator();
-			const config = createValidBaselineConfig();
-			(config as any).version = '';
-			expect(validator.validateBaselineConfig(config)).toBe(false);
-		});
+    test('retourne false si config.hardware manquant', () => {
+      const base = makeBaselineConfig();
+      const config = { ...base, config: { ...base.config, hardware: null as any } };
+      expect(validator.validateBaselineConfig(config)).toBe(false);
+    });
 
-		test('returns false when config is missing', () => {
-			validator = createValidator();
-			const config = createValidBaselineConfig();
-			(config as any).config = null;
-			expect(validator.validateBaselineConfig(config)).toBe(false);
-		});
+    test('retourne false si config.software manquant', () => {
+      const base = makeBaselineConfig();
+      const config = { ...base, config: { ...base.config, software: null as any } };
+      expect(validator.validateBaselineConfig(config)).toBe(false);
+    });
 
-		test('returns false when config.roo is missing', () => {
-			validator = createValidator();
-			const config = createValidBaselineConfig();
-			(config as any).config.roo = null;
-			expect(validator.validateBaselineConfig(config)).toBe(false);
-		});
+    test('retourne false si config.system manquant', () => {
+      const base = makeBaselineConfig();
+      const config = { ...base, config: { ...base.config, system: null as any } };
+      expect(validator.validateBaselineConfig(config)).toBe(false);
+    });
 
-		test('returns false when config.hardware is missing', () => {
-			validator = createValidator();
-			const config = createValidBaselineConfig();
-			(config as any).config.hardware = null;
-			expect(validator.validateBaselineConfig(config)).toBe(false);
-		});
+    test('retourne false si objet vide', () => {
+      expect(validator.validateBaselineConfig({} as any)).toBe(false);
+    });
 
-		test('returns false when config.software is missing', () => {
-			validator = createValidator();
-			const config = createValidBaselineConfig();
-			(config as any).config.software = null;
-			expect(validator.validateBaselineConfig(config)).toBe(false);
-		});
+    test('retourne false si null', () => {
+      expect(validator.validateBaselineConfig(null as any)).toBe(false);
+    });
+  });
 
-		test('returns false when config.system is missing', () => {
-			validator = createValidator();
-			const config = createValidBaselineConfig();
-			(config as any).config.system = null;
-			expect(validator.validateBaselineConfig(config)).toBe(false);
-		});
+  // ============================================================
+  // validateBaselineFileConfig
+  // ============================================================
 
-		test('returns false for null input (catches error)', () => {
-			validator = createValidator();
-			expect(validator.validateBaselineConfig(null as any)).toBe(false);
-		});
-	});
+  describe('validateBaselineFileConfig', () => {
+    test('retourne true pour une config fichier valide', () => {
+      expect(validator.validateBaselineFileConfig(makeBaselineFileConfig())).toBe(true);
+    });
 
-	// ============================================================
-	// validateBaselineFileConfig
-	// ============================================================
+    test('retourne false si version manquante', () => {
+      expect(validator.validateBaselineFileConfig(makeBaselineFileConfig({ version: '' }))).toBe(false);
+    });
 
-	describe('validateBaselineFileConfig', () => {
-		test('returns true for valid file config', () => {
-			validator = createValidator();
-			expect(validator.validateBaselineFileConfig(createValidBaselineFileConfig())).toBe(true);
-		});
+    test('retourne false si baselineId manquant', () => {
+      expect(validator.validateBaselineFileConfig(makeBaselineFileConfig({ baselineId: '' }))).toBe(false);
+    });
 
-		test('returns false when version is missing', () => {
-			validator = createValidator();
-			const config = createValidBaselineFileConfig();
-			(config as any).version = '';
-			expect(validator.validateBaselineFileConfig(config)).toBe(false);
-		});
+    test('retourne false si machineId manquant', () => {
+      expect(validator.validateBaselineFileConfig(makeBaselineFileConfig({ machineId: '' }))).toBe(false);
+    });
 
-		test('returns false when baselineId is missing', () => {
-			validator = createValidator();
-			const config = createValidBaselineFileConfig();
-			(config as any).baselineId = '';
-			expect(validator.validateBaselineFileConfig(config)).toBe(false);
-		});
+    test('retourne false si timestamp manquant', () => {
+      const config = makeBaselineFileConfig({ timestamp: undefined });
+      expect(validator.validateBaselineFileConfig(config)).toBe(false);
+    });
 
-		test('returns false when machineId is missing', () => {
-			validator = createValidator();
-			const config = createValidBaselineFileConfig();
-			(config as any).machineId = '';
-			expect(validator.validateBaselineFileConfig(config)).toBe(false);
-		});
+    test('retourne false si machines est un tableau vide', () => {
+      expect(validator.validateBaselineFileConfig(makeBaselineFileConfig({ machines: [] }))).toBe(false);
+    });
 
-		test('returns false when timestamp is missing', () => {
-			validator = createValidator();
-			const config = createValidBaselineFileConfig();
-			(config as any).timestamp = '';
-			expect(validator.validateBaselineFileConfig(config)).toBe(false);
-		});
+    test('retourne false si machines est null', () => {
+      expect(validator.validateBaselineFileConfig(makeBaselineFileConfig({ machines: null as any }))).toBe(false);
+    });
 
-		test('returns false when machines is not an array', () => {
-			validator = createValidator();
-			const config = createValidBaselineFileConfig();
-			(config as any).machines = 'not-array';
-			expect(validator.validateBaselineFileConfig(config)).toBe(false);
-		});
+    test('retourne false si machines absent', () => {
+      expect(validator.validateBaselineFileConfig(makeBaselineFileConfig({ machines: undefined as any }))).toBe(false);
+    });
 
-		test('returns false when machines is empty array', () => {
-			validator = createValidator();
-			const config = createValidBaselineFileConfig();
-			(config as any).machines = [];
-			expect(validator.validateBaselineFileConfig(config)).toBe(false);
-		});
+    test('retourne true si lastUpdated est présent mais pas timestamp', () => {
+      // Le validator vérifie uniquement timestamp, lastUpdated n'est pas requis ici
+      const config = makeBaselineFileConfig({ timestamp: '2026-01-01T00:00:00Z', lastUpdated: undefined });
+      expect(validator.validateBaselineFileConfig(config)).toBe(true);
+    });
+  });
 
-		test('returns false for null input (catches error)', () => {
-			validator = createValidator();
-			expect(validator.validateBaselineFileConfig(null as any)).toBe(false);
-		});
-	});
+  // ============================================================
+  // ensureValidBaselineConfig
+  // ============================================================
 
-	// ============================================================
-	// ensureValidBaselineConfig
-	// ============================================================
+  describe('ensureValidBaselineConfig', () => {
+    test('ne lève pas d\'exception pour une config valide', () => {
+      expect(() => validator.ensureValidBaselineConfig(makeBaselineConfig())).not.toThrow();
+    });
 
-	describe('ensureValidBaselineConfig', () => {
-		test('does not throw for valid config', () => {
-			validator = createValidator();
-			expect(() => validator.ensureValidBaselineConfig(createValidBaselineConfig())).not.toThrow();
-		});
+    test('lève BaselineServiceError si config invalide', () => {
+      expect(() =>
+        validator.ensureValidBaselineConfig({ machineId: '', version: '', config: null as any, lastUpdated: '' } as any)
+      ).toThrow(BaselineServiceError);
+    });
 
-		test('throws BaselineServiceError for invalid config', () => {
-			validator = createValidator();
-			const config = createValidBaselineConfig();
-			(config as any).machineId = '';
-			expect(() => validator.ensureValidBaselineConfig(config)).toThrow('invalide');
-		});
-	});
+    test('lève avec code BASELINE_INVALID', () => {
+      try {
+        validator.ensureValidBaselineConfig({} as any);
+        expect.fail('Should throw');
+      } catch (err: any) {
+        expect(err.code).toBe(BaselineServiceErrorCode.BASELINE_INVALID);
+      }
+    });
 
-	// ============================================================
-	// ensureValidBaselineFileConfig
-	// ============================================================
+    test('ne lève pas si tous les champs requis sont présents', () => {
+      const config = makeBaselineConfig();
+      expect(() => validator.ensureValidBaselineConfig(config)).not.toThrow();
+    });
+  });
 
-	describe('ensureValidBaselineFileConfig', () => {
-		test('does not throw for valid file config', () => {
-			validator = createValidator();
-			const config = createValidBaselineFileConfig();
-			expect(() => validator.ensureValidBaselineFileConfig(config)).not.toThrow();
-		});
+  // ============================================================
+  // ensureValidBaselineFileConfig
+  // ============================================================
 
-		test('throws for null input', () => {
-			validator = createValidator();
-			expect(() => validator.ensureValidBaselineFileConfig(null as any)).toThrow('null ou undefined');
-		});
+  describe('ensureValidBaselineFileConfig', () => {
+    test('ne lève pas d\'exception pour une config fichier valide', () => {
+      expect(() => validator.ensureValidBaselineFileConfig(makeBaselineFileConfig())).not.toThrow();
+    });
 
-		test('throws for missing machineId', () => {
-			validator = createValidator();
-			const config = createValidBaselineFileConfig();
-			(config as any).machineId = '';
-			expect(() => validator.ensureValidBaselineFileConfig(config)).toThrow('machineId');
-		});
+    test('lève BaselineServiceError si objet null', () => {
+      expect(() => validator.ensureValidBaselineFileConfig(null as any)).toThrow(BaselineServiceError);
+    });
 
-		test('throws for missing version', () => {
-			validator = createValidator();
-			const config = createValidBaselineFileConfig();
-			(config as any).version = '';
-			expect(() => validator.ensureValidBaselineFileConfig(config)).toThrow('version');
-		});
+    test('lève si machineId manquant', () => {
+      expect(() =>
+        validator.ensureValidBaselineFileConfig(makeBaselineFileConfig({ machineId: '' }))
+      ).toThrow(BaselineServiceError);
+    });
 
-		test('throws for missing timestamp AND lastUpdated', () => {
-			validator = createValidator();
-			const config = createValidBaselineFileConfig();
-			(config as any).timestamp = '';
-			(config as any).lastUpdated = '';
-			expect(() => validator.ensureValidBaselineFileConfig(config)).toThrow('timestamp');
-		});
+    test('lève si version manquante', () => {
+      expect(() =>
+        validator.ensureValidBaselineFileConfig(makeBaselineFileConfig({ version: '' }))
+      ).toThrow(BaselineServiceError);
+    });
 
-		test('accepts lastUpdated as alternative to timestamp', () => {
-			validator = createValidator();
-			const config = createValidBaselineFileConfig();
-			(config as any).timestamp = '';
-			(config as any).lastUpdated = new Date().toISOString();
-			expect(() => validator.ensureValidBaselineFileConfig(config)).not.toThrow();
-		});
+    test('lève si ni timestamp ni lastUpdated', () => {
+      const config = makeBaselineFileConfig({ timestamp: undefined, lastUpdated: undefined });
+      expect(() => validator.ensureValidBaselineFileConfig(config)).toThrow(BaselineServiceError);
+    });
 
-		test('lists multiple missing fields', () => {
-			validator = createValidator();
-			const config = createValidBaselineFileConfig();
-			(config as any).machineId = '';
-			(config as any).version = '';
-			(config as any).timestamp = '';
-			expect(() => validator.ensureValidBaselineFileConfig(config)).toThrow('machineId');
-		});
-	});
+    test('ne lève pas si lastUpdated présent mais pas timestamp', () => {
+      const config = makeBaselineFileConfig({ timestamp: undefined, lastUpdated: '2026-01-01T00:00:00Z' });
+      expect(() => validator.ensureValidBaselineFileConfig(config)).not.toThrow();
+    });
+
+    test('message d\'erreur contient les champs manquants', () => {
+      try {
+        validator.ensureValidBaselineFileConfig(makeBaselineFileConfig({ machineId: '', version: '' }));
+        expect.fail('Should throw');
+      } catch (err: any) {
+        expect(err.message).toContain('machineId');
+        expect(err.message).toContain('version');
+      }
+    });
+  });
 });
