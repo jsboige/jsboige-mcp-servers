@@ -182,6 +182,22 @@ describe('background-services', () => {
 
       expect(cache.size).toBe(0);
     });
+
+    it('should strip BOM UTF-8 from skeleton file content', async () => {
+      const cache = new Map<string, ConversationSkeleton>();
+      const skeleton = createMockSkeleton('task-bom');
+
+      mockDetector.detectStorageLocations.mockResolvedValue(['/mock/storage']);
+      mockFs.readdir.mockResolvedValue(['task-bom.json']);
+      // Content with BOM at start (charCode 0xFEFF)
+      const contentWithBom = '\uFEFF' + JSON.stringify(skeleton);
+      mockFs.readFile.mockResolvedValueOnce(contentWithBom);
+
+      await loadSkeletonsFromDisk(cache);
+
+      expect(cache.size).toBe(1);
+      expect(cache.get('task-bom')).toEqual(skeleton);
+    });
   });
 
   // === startProactiveMetadataRepair ===
