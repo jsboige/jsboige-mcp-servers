@@ -10,6 +10,7 @@
 import { MessageManager } from '../../services/MessageManager.js';
 import { getSharedStatePath } from '../../utils/server-helpers.js';
 import { createLogger, Logger } from '../../utils/logger.js';
+import { recordRooSyncActivityAsync } from './heartbeat-activity.js';
 import { MessageManagerError, MessageManagerErrorCode } from '../../types/errors.js';
 import {
   formatDate,
@@ -19,6 +20,7 @@ import {
   getLocalMachineId,
   getLocalFullId
 } from '../../utils/message-helpers.js';
+import { getRooSyncService } from '../../services/RooSyncService.js';
 
 // Logger instance for send tool
 const logger: Logger = createLogger('RooSyncSendTool');
@@ -127,6 +129,10 @@ ${args.tags && args.tags.length > 0 ? `**Tags :** ${args.tags.join(', ')}\n` : '
 - 📤 **Répondre** : Utilisez \`roosync_send\` avec \`action: reply\` et \`message_id: ${message.id}\``;
 
   logger.info('✅ Message sent successfully', { messageId: message.id, to: args.to });
+  // Fire-and-forget heartbeat update: sending a message proves the machine is active
+  getRooSyncService().getHeartbeatService()
+    .registerHeartbeat(getLocalMachineId(), { lastActivity: 'roosync_send', messageId: message.id })
+    .catch(err => logger.debug('Heartbeat update skipped (non-critical)', { error: String(err) }));
   return result;
 }
 
@@ -268,6 +274,10 @@ ${args.body}
 - 📦 **Archiver l'original** : Utilisez \`roosync_archive_message\` avec l'ID \`${originalMessage.id}\``;
 
   logger.info('✅ Reply sent successfully', { replyId: replyMessageObj.id, threadId });
+  // Fire-and-forget heartbeat update: sending a reply proves the machine is active
+  getRooSyncService().getHeartbeatService()
+    .registerHeartbeat(getLocalMachineId(), { lastActivity: 'roosync_reply', messageId: replyMessageObj.id })
+    .catch(err => logger.debug('Heartbeat update skipped (non-critical)', { error: String(err) }));
   return result;
 }
 
@@ -466,6 +476,9 @@ export async function roosyncSend(
           { action: args.action }
         );
     }
+
+    // Enregistrer l'activité comme preuve de vie heartbeat (#501)
+    recordRooSyncActivityAsync('send', { action: args.action });
 
     return {
       content: [{ type: 'text', text: result }]

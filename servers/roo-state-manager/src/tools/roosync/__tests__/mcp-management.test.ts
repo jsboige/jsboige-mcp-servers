@@ -586,6 +586,185 @@ describe('roosyncMcpManagement', () => {
     });
 
     // ============================================================
+    // Tests pour action: 'manage' - subAction: 'update_server_field'
+    // ============================================================
+
+    describe('action: manage - subAction: update_server_field', () => {
+        test('should throw if server_name missing', async () => {
+            await expect(roosyncMcpManagement({
+                action: 'manage',
+                subAction: 'update_server_field'
+            })).rejects.toThrow('server_name');
+        });
+
+        test('should throw if server_config missing or empty', async () => {
+            await expect(roosyncMcpManagement({
+                action: 'manage',
+                subAction: 'update_server_field',
+                server_name: 'test-server',
+                server_config: {}
+            })).rejects.toThrow('server_config');
+        });
+
+        test('should merge fields into existing server config', async () => {
+            const mockSettings = {
+                mcpServers: {
+                    'test-server': { command: 'node', args: ['old.js'], disabled: false }
+                }
+            };
+            vi.mocked(fs.readFile).mockResolvedValue(JSON.stringify(mockSettings));
+            vi.mocked(fs.writeFile).mockResolvedValue();
+
+            await roosyncMcpManagement({ action: 'manage', subAction: 'read' });
+
+            const result = await roosyncMcpManagement({
+                action: 'manage',
+                subAction: 'update_server_field',
+                server_name: 'test-server',
+                server_config: { disabled: true },
+                backup: false
+            });
+
+            expect(result.success).toBe(true);
+            expect(result.subAction).toBe('update_server_field');
+            expect(result.details?.updatedFields).toContain('disabled');
+        });
+
+        test('should preserve unmodified fields (merge semantics)', async () => {
+            const mockSettings = {
+                mcpServers: {
+                    'test-server': { command: 'node', args: ['old.js'], disabled: false }
+                }
+            };
+            vi.mocked(fs.readFile).mockResolvedValue(JSON.stringify(mockSettings));
+            vi.mocked(fs.writeFile).mockResolvedValue();
+
+            await roosyncMcpManagement({ action: 'manage', subAction: 'read' });
+
+            const result = await roosyncMcpManagement({
+                action: 'manage',
+                subAction: 'update_server_field',
+                server_name: 'test-server',
+                server_config: { disabled: true },
+                backup: false
+            });
+
+            expect(result.details?.preservedFields).toContain('command');
+            expect(result.details?.preservedFields).toContain('args');
+        });
+
+        test('should throw SERVER_NOT_FOUND if server does not exist', async () => {
+            vi.mocked(fs.readFile).mockResolvedValue(JSON.stringify({ mcpServers: {} }));
+
+            await roosyncMcpManagement({ action: 'manage', subAction: 'read' });
+
+            await expect(roosyncMcpManagement({
+                action: 'manage',
+                subAction: 'update_server_field',
+                server_name: 'nonexistent',
+                server_config: { disabled: true }
+            })).rejects.toThrow('nonexistent');
+        });
+    });
+
+    // ============================================================
+    // Tests pour action: 'manage' - subAction: 'sync_always_allow'
+    // ============================================================
+
+    describe('action: manage - subAction: sync_always_allow', () => {
+        test('should throw if server_name missing', async () => {
+            await expect(roosyncMcpManagement({
+                action: 'manage',
+                subAction: 'sync_always_allow'
+            })).rejects.toThrow('server_name');
+        });
+
+        test('should set alwaysAllow to provided tools list', async () => {
+            const mockSettings = {
+                mcpServers: {
+                    'test-server': { command: 'node', alwaysAllow: ['tool-a'] }
+                }
+            };
+            vi.mocked(fs.readFile).mockResolvedValue(JSON.stringify(mockSettings));
+            vi.mocked(fs.writeFile).mockResolvedValue();
+
+            await roosyncMcpManagement({ action: 'manage', subAction: 'read' });
+
+            const result = await roosyncMcpManagement({
+                action: 'manage',
+                subAction: 'sync_always_allow',
+                server_name: 'test-server',
+                tools: ['tool-b', 'tool-c'],
+                backup: false
+            });
+
+            expect(result.success).toBe(true);
+            expect(result.subAction).toBe('sync_always_allow');
+            expect(result.details?.alwaysAllow).toContain('tool-b');
+            expect(result.details?.alwaysAllow).toContain('tool-c');
+            expect(result.details?.added).toContain('tool-b');
+        });
+
+        test('should report removed tools when replacing list', async () => {
+            const mockSettings = {
+                mcpServers: {
+                    'test-server': { command: 'node', alwaysAllow: ['old-tool'] }
+                }
+            };
+            vi.mocked(fs.readFile).mockResolvedValue(JSON.stringify(mockSettings));
+            vi.mocked(fs.writeFile).mockResolvedValue();
+
+            await roosyncMcpManagement({ action: 'manage', subAction: 'read' });
+
+            const result = await roosyncMcpManagement({
+                action: 'manage',
+                subAction: 'sync_always_allow',
+                server_name: 'test-server',
+                tools: ['new-tool'],
+                backup: false
+            });
+
+            expect(result.details?.removed).toContain('old-tool');
+        });
+
+        test('no-op when no tools provided (keeps existing)', async () => {
+            const mockSettings = {
+                mcpServers: {
+                    'test-server': { command: 'node', alwaysAllow: ['existing'] }
+                }
+            };
+            vi.mocked(fs.readFile).mockResolvedValue(JSON.stringify(mockSettings));
+            vi.mocked(fs.writeFile).mockResolvedValue();
+
+            await roosyncMcpManagement({ action: 'manage', subAction: 'read' });
+
+            const result = await roosyncMcpManagement({
+                action: 'manage',
+                subAction: 'sync_always_allow',
+                server_name: 'test-server',
+                backup: false
+            });
+
+            expect(result.details?.added).toEqual([]);
+            expect(result.details?.removed).toEqual([]);
+            expect(result.details?.alwaysAllow).toContain('existing');
+        });
+
+        test('should throw SERVER_NOT_FOUND if server does not exist', async () => {
+            vi.mocked(fs.readFile).mockResolvedValue(JSON.stringify({ mcpServers: {} }));
+
+            await roosyncMcpManagement({ action: 'manage', subAction: 'read' });
+
+            await expect(roosyncMcpManagement({
+                action: 'manage',
+                subAction: 'sync_always_allow',
+                server_name: 'nonexistent',
+                tools: ['tool-a']
+            })).rejects.toThrow('nonexistent');
+        });
+    });
+
+    // ============================================================
     // Tests pour résultats et format de sortie
     // ============================================================
 

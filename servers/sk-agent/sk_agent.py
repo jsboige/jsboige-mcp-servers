@@ -22,6 +22,7 @@ Transport modes:
     python sk_agent.py                  -> stdio  (default, for Claude Code / Roo Code)
     python sk_agent.py streamable-http  -> HTTP on port 8100 (for Open WebUI, LAN clients)
     SK_AGENT_PORT env var               -> override default HTTP port (8100)
+    SK_AGENT_API_KEY env var            -> require Bearer token auth on HTTP mode (optional)
 
 Core tools:
     call_agent(prompt, agent?, attachment?, options?, ...)  -- unified agent call
@@ -982,6 +983,7 @@ class SKAgentManager:
 # Detect transport mode early (needed for FastMCP host/port settings at construction)
 _transport_mode = sys.argv[1] if len(sys.argv) > 1 else "stdio"
 _http_port = int(os.environ.get("SK_AGENT_PORT", "8100"))
+_http_api_key = os.environ.get("SK_AGENT_API_KEY", "")
 
 _mcp_kwargs: dict[str, Any] = dict(
     name="sk-agent",
@@ -1568,12 +1570,39 @@ async def list_models() -> str:
 
 def main():
     if _transport_mode == "streamable-http":
+        auth_label = "API key required" if _http_api_key else "NO AUTH (open)"
         log.info(
-            "Starting sk-agent MCP server v2.0 [streamable-http on 0.0.0.0:%d] "
+            "Starting sk-agent MCP server v2.0 [streamable-http on 0.0.0.0:%d, %s] "
             "(config: %s, depth=%d)",
-            _http_port, CONFIG_PATH, SK_AGENT_DEPTH,
+            _http_port, auth_label, CONFIG_PATH, SK_AGENT_DEPTH,
         )
-        mcp_server.run(transport="streamable-http")
+
+        if _http_api_key:
+            # Inject Bearer token auth middleware, then run with uvicorn directly
+            import uvicorn
+            from starlette.requests import Request
+            from starlette.responses import JSONResponse
+            from starlette.middleware.base import BaseHTTPMiddleware
+
+            app = mcp_server.streamable_http_app()
+
+            class BearerAuthMiddleware(BaseHTTPMiddleware):
+                """Reject HTTP requests that lack a valid Bearer token."""
+
+                async def dispatch(self, request: Request, call_next):
+                    auth = request.headers.get("authorization", "")
+                    if not auth.startswith("Bearer ") or auth[7:] != _http_api_key:
+                        return JSONResponse(
+                            {"error": "Unauthorized – set Authorization: Bearer <SK_AGENT_API_KEY>"},
+                            status_code=401,
+                        )
+                    return await call_next(request)
+
+            app.add_middleware(BearerAuthMiddleware)
+            uvicorn.run(app, host="0.0.0.0", port=_http_port, log_level="info")
+        else:
+            log.warning("SK_AGENT_API_KEY not set – HTTP endpoint is unauthenticated!")
+            mcp_server.run(transport="streamable-http")
     else:
         log.info(
             "Starting sk-agent MCP server v2.0 [stdio] (config: %s, depth=%d)",

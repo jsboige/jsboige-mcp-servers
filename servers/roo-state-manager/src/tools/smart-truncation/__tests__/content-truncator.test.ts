@@ -1,5 +1,5 @@
 import { describe, test, expect } from 'vitest';
-import { ContentTruncator } from '../content-truncator.js';
+import { ContentTruncator, SmartOutputFormatter } from '../content-truncator.js';
 import {
     TaskTruncationPlan,
     ElementTruncationPlan,
@@ -357,5 +357,158 @@ describe('ContentTruncator', () => {
             const firstMsg = result[0].sequence[0];
             expect(isMessage(firstMsg) && firstMsg.content).toBe('Content'); // Unchanged
         });
+    });
+});
+
+// ─────────────────────────────────────────────────────────────
+// SmartOutputFormatter
+// ─────────────────────────────────────────────────────────────
+
+describe('SmartOutputFormatter', () => {
+    const createMockTask = (taskId: string): ConversationSkeleton => ({
+        taskId,
+        parentTaskId: undefined,
+        metadata: {
+            title: `Task ${taskId}`,
+            lastActivity: new Date().toISOString(),
+            createdAt: new Date().toISOString(),
+            messageCount: 1,
+            actionCount: 0,
+            totalSize: 100,
+            workspace: '/test'
+        },
+        sequence: []
+    });
+
+    function makePlan(overrides: Partial<TaskTruncationPlan> = {}): TaskTruncationPlan {
+        return {
+            taskId: 'task-1',
+            position: 0,
+            distanceFromCenter: 0,
+            preservationWeight: 1.0,
+            originalSize: 1000,
+            truncationBudget: 0,
+            targetSize: 1000,
+            elementPlans: [],
+            ...overrides,
+        };
+    }
+
+    test('formatTruncatedOutput - sans troncature : header sans compression', () => {
+        const tasks = [createMockTask('task-1')];
+        const plans = [makePlan({ truncationBudget: 0 })];
+
+        const result = SmartOutputFormatter.formatTruncatedOutput(tasks, plans, 'chain', 'summary');
+
+        expect(result).toContain('chain');
+        expect(result).toContain('summary');
+        expect(result).not.toContain('Smart Truncation Applied');
+    });
+
+    test('formatTruncatedOutput - avec troncature : header avec compression', () => {
+        const tasks = [createMockTask('task-1')];
+        const plans = [makePlan({ originalSize: 1000, truncationBudget: 200, targetSize: 800 })];
+
+        const result = SmartOutputFormatter.formatTruncatedOutput(tasks, plans, 'cluster', 'full');
+
+        expect(result).toContain('Smart Truncation Applied');
+        expect(result).toContain('Compression');
+    });
+
+    test('formatTruncatedOutput - avec troncature : contient info gradient', () => {
+        const tasks = [createMockTask('task-1')];
+        const plans = [makePlan({ position: 0, originalSize: 1000, truncationBudget: 300, targetSize: 700 })];
+
+        const result = SmartOutputFormatter.formatTruncatedOutput(tasks, plans, 'single', 'skeleton');
+
+        expect(result).toContain('gradient');
+    });
+
+    test('formatTruncatedOutput - plusieurs plans : ratio de compression global', () => {
+        const tasks = [createMockTask('t1'), createMockTask('t2')];
+        const plans = [
+            makePlan({ taskId: 't1', position: 0, originalSize: 2000, truncationBudget: 1000, targetSize: 1000 }),
+            makePlan({ taskId: 't2', position: 1, originalSize: 2000, truncationBudget: 500, targetSize: 1500 }),
+        ];
+
+        const result = SmartOutputFormatter.formatTruncatedOutput(tasks, plans, 'cluster', 'full');
+
+        // Total original: 4000, total final: 2500 → compression ratio 37.5%
+        expect(result).toContain('Smart Truncation Applied');
+    });
+});
+
+// ─────────────────────────────────────────────────────────────
+// ContentTruncator - branche 'summary'
+// ─────────────────────────────────────────────────────────────
+
+describe('ContentTruncator - summary truncation', () => {
+    const createTask = (content: string): ConversationSkeleton => ({
+        taskId: 'task-summary',
+        parentTaskId: undefined,
+        metadata: {
+            title: 'Task summary',
+            lastActivity: new Date().toISOString(),
+            createdAt: new Date().toISOString(),
+            messageCount: 1,
+            actionCount: 0,
+            totalSize: content.length,
+            workspace: '/test'
+        },
+        sequence: [{ role: 'user', content, timestamp: '2026-01-01T00:00:00.000Z' }]
+    });
+
+    test('summary : contenu court → non tronqué', () => {
+        const shortContent = 'Short content';
+        const task = createTask(shortContent);
+        const plans: TaskTruncationPlan[] = [{
+            taskId: 'task-summary',
+            position: 0,
+            distanceFromCenter: 0,
+            preservationWeight: 1.0,
+            originalSize: shortContent.length,
+            truncationBudget: 100,
+            targetSize: 50,
+            elementPlans: [{
+                sequenceIndex: 0,
+                type: 'user_message',
+                originalSize: shortContent.length,
+                targetSize: 50,
+                truncationMethod: 'summary',
+                truncationParams: { summaryLength: 200 }
+            }]
+        }];
+
+        const result = ContentTruncator.applyTruncationPlans([task], plans);
+        const firstMsg = result[0].sequence[0];
+        expect((firstMsg as any).content).toBe(shortContent);
+    });
+
+    test('summary : contenu long → tronqué avec résumé', () => {
+        const longContent = 'A'.repeat(500);
+        const task = createTask(longContent);
+        const plans: TaskTruncationPlan[] = [{
+            taskId: 'task-summary',
+            position: 0,
+            distanceFromCenter: 0,
+            preservationWeight: 1.0,
+            originalSize: longContent.length,
+            truncationBudget: 300,
+            targetSize: 200,
+            elementPlans: [{
+                sequenceIndex: 0,
+                type: 'user_message',
+                originalSize: longContent.length,
+                targetSize: 100,
+                truncationMethod: 'summary',
+                truncationParams: { summaryLength: 100 }
+            }]
+        }];
+
+        const result = ContentTruncator.applyTruncationPlans([task], plans);
+        const firstMsg = result[0].sequence[0];
+        const content = (firstMsg as any).content as string;
+        expect(content).toContain('résumé tronqué');
+        expect(content.length).toBeLessThan(longContent.length);
     });
 });

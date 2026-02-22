@@ -1,0 +1,411 @@
+/**
+ * Tests pour roosync_search (outil actif #2, AUCUN test existant)
+ * Issue #492 - Couverture des outils actifs
+ *
+ * @module tools/search/__tests__/roosync-search
+ */
+
+import { describe, test, expect, vi, beforeEach } from 'vitest';
+
+// Hoisted mocks for ESM compatibility
+const { mockSemanticHandler, mockFallbackHandler } = vi.hoisted(() => ({
+	mockSemanticHandler: vi.fn(),
+	mockFallbackHandler: vi.fn()
+}));
+
+// Mock semantic search tool
+vi.mock('../search-semantic.tool.js', () => ({
+	searchTasksByContentTool: {
+		handler: mockSemanticHandler
+	},
+	// Re-export the type stub
+	SearchTasksByContentArgs: {}
+}));
+
+// Mock fallback search
+vi.mock('../search-fallback.tool.js', () => ({
+	handleSearchTasksSemanticFallback: mockFallbackHandler,
+	SearchFallbackArgs: {}
+}));
+
+import { handleRooSyncSearch, RooSyncSearchArgs } from '../roosync-search.tool.js';
+import type { ConversationSkeleton } from '../../../types/index.js';
+
+// Helpers
+function getTextContent(result: any, index = 0): string {
+	const content = result.content[index];
+	return content?.type === 'text' ? content.text : '';
+}
+
+describe('roosync_search', () => {
+	let mockCache: Map<string, ConversationSkeleton>;
+	let mockEnsureCache: (args?: { workspace?: string }) => Promise<boolean>;
+	let mockDiagnoseHandler: () => Promise<any>;
+
+	beforeEach(() => {
+		vi.clearAllMocks();
+		mockCache = new Map();
+		mockEnsureCache = vi.fn(async () => true);
+		mockDiagnoseHandler = vi.fn(async () => ({
+			content: [{ type: 'text', text: 'diagnostic result' }]
+		}));
+
+		// Default mock returns
+		mockSemanticHandler.mockResolvedValue({
+			content: [{ type: 'text', text: 'semantic results' }]
+		});
+		mockFallbackHandler.mockResolvedValue({
+			content: [{ type: 'text', text: 'text results' }]
+		});
+	});
+
+	// ============================================================
+	// Validation
+	// ============================================================
+
+	describe('validation', () => {
+		test('rejects missing action', async () => {
+			const result = await handleRooSyncSearch(
+				{} as RooSyncSearchArgs,
+				mockCache,
+				mockEnsureCache,
+				mockFallbackHandler
+			);
+			expect(result.isError).toBe(true);
+			expect(getTextContent(result)).toContain('action');
+			expect(getTextContent(result)).toContain('requis');
+		});
+
+		test('rejects invalid action', async () => {
+			const result = await handleRooSyncSearch(
+				{ action: 'invalid' as any },
+				mockCache,
+				mockEnsureCache,
+				mockFallbackHandler
+			);
+			expect(result.isError).toBe(true);
+			expect(getTextContent(result)).toContain('invalide');
+		});
+
+		test('semantic requires search_query', async () => {
+			const result = await handleRooSyncSearch(
+				{ action: 'semantic' },
+				mockCache,
+				mockEnsureCache,
+				mockFallbackHandler
+			);
+			expect(result.isError).toBe(true);
+			expect(getTextContent(result)).toContain('search_query');
+		});
+
+		test('text requires search_query', async () => {
+			const result = await handleRooSyncSearch(
+				{ action: 'text' },
+				mockCache,
+				mockEnsureCache,
+				mockFallbackHandler
+			);
+			expect(result.isError).toBe(true);
+			expect(getTextContent(result)).toContain('search_query');
+		});
+
+		test('diagnose does not require search_query', async () => {
+			const result = await handleRooSyncSearch(
+				{ action: 'diagnose' },
+				mockCache,
+				mockEnsureCache,
+				mockFallbackHandler,
+				mockDiagnoseHandler
+			);
+			expect(result.isError).toBeFalsy();
+		});
+	});
+
+	// ============================================================
+	// Action: semantic
+	// ============================================================
+
+	describe('action: semantic', () => {
+		test('delegates to semantic handler with correct args', async () => {
+			await handleRooSyncSearch(
+				{
+					action: 'semantic',
+					search_query: 'rate limiting',
+					conversation_id: 'conv-123',
+					max_results: 5,
+					workspace: 'test-ws'
+				},
+				mockCache,
+				mockEnsureCache,
+				mockFallbackHandler,
+				mockDiagnoseHandler
+			);
+
+			expect(mockSemanticHandler).toHaveBeenCalledWith(
+				expect.objectContaining({
+					search_query: 'rate limiting',
+					conversation_id: 'conv-123',
+					max_results: 5,
+					workspace: 'test-ws',
+					diagnose_index: false
+				}),
+				mockCache,
+				mockEnsureCache,
+				mockFallbackHandler,
+				mockDiagnoseHandler
+			);
+		});
+
+		test('returns semantic handler result', async () => {
+			mockSemanticHandler.mockResolvedValue({
+				content: [{ type: 'text', text: '{"results": []}' }]
+			});
+
+			const result = await handleRooSyncSearch(
+				{ action: 'semantic', search_query: 'test query' },
+				mockCache,
+				mockEnsureCache,
+				mockFallbackHandler
+			);
+
+			expect(getTextContent(result)).toBe('{"results": []}');
+		});
+
+		test('passes diagnose_index=false for semantic', async () => {
+			await handleRooSyncSearch(
+				{ action: 'semantic', search_query: 'test' },
+				mockCache,
+				mockEnsureCache,
+				mockFallbackHandler
+			);
+
+			const callArgs = mockSemanticHandler.mock.calls[0][0];
+			expect(callArgs.diagnose_index).toBe(false);
+		});
+	});
+
+	// ============================================================
+	// Action: text
+	// ============================================================
+
+	describe('action: text', () => {
+		test('refreshes cache before text search', async () => {
+			await handleRooSyncSearch(
+				{ action: 'text', search_query: 'heartbeat', workspace: 'my-ws' },
+				mockCache,
+				mockEnsureCache,
+				mockFallbackHandler
+			);
+
+			expect(mockEnsureCache).toHaveBeenCalledWith({ workspace: 'my-ws' });
+		});
+
+		test('calls fallback handler directly (not semantic)', async () => {
+			await handleRooSyncSearch(
+				{ action: 'text', search_query: 'config sync' },
+				mockCache,
+				mockEnsureCache,
+				mockFallbackHandler
+			);
+
+			expect(mockFallbackHandler).toHaveBeenCalledWith(
+				expect.objectContaining({
+					query: 'config sync'
+				}),
+				mockCache
+			);
+			expect(mockSemanticHandler).not.toHaveBeenCalled();
+		});
+
+		test('passes workspace filter to fallback', async () => {
+			await handleRooSyncSearch(
+				{ action: 'text', search_query: 'test', workspace: 'd:\\roo-extensions' },
+				mockCache,
+				mockEnsureCache,
+				mockFallbackHandler
+			);
+
+			expect(mockFallbackHandler).toHaveBeenCalledWith(
+				expect.objectContaining({
+					query: 'test',
+					workspace: 'd:\\roo-extensions'
+				}),
+				mockCache
+			);
+		});
+
+		test('returns fallback handler result', async () => {
+			mockFallbackHandler.mockResolvedValue({
+				content: [{ type: 'text', text: '{"success":true,"totalFound":3}' }]
+			});
+
+			const result = await handleRooSyncSearch(
+				{ action: 'text', search_query: 'query' },
+				mockCache,
+				mockEnsureCache,
+				mockFallbackHandler
+			);
+
+			expect(getTextContent(result)).toBe('{"success":true,"totalFound":3}');
+		});
+	});
+
+	// ============================================================
+	// Action: diagnose
+	// ============================================================
+
+	describe('action: diagnose', () => {
+		test('delegates to semantic handler with diagnose_index=true', async () => {
+			await handleRooSyncSearch(
+				{ action: 'diagnose' },
+				mockCache,
+				mockEnsureCache,
+				mockFallbackHandler,
+				mockDiagnoseHandler
+			);
+
+			expect(mockSemanticHandler).toHaveBeenCalledWith(
+				expect.objectContaining({
+					search_query: 'diagnose',
+					diagnose_index: true
+				}),
+				mockCache,
+				mockEnsureCache,
+				mockFallbackHandler,
+				mockDiagnoseHandler
+			);
+		});
+
+		test('does not require search_query parameter', async () => {
+			const result = await handleRooSyncSearch(
+				{ action: 'diagnose' },
+				mockCache,
+				mockEnsureCache,
+				mockFallbackHandler,
+				mockDiagnoseHandler
+			);
+
+			expect(result.isError).toBeFalsy();
+		});
+
+		test('returns diagnostic result', async () => {
+			mockSemanticHandler.mockResolvedValue({
+				content: [{ type: 'text', text: 'Collection: exists, Points: 1234' }]
+			});
+
+			const result = await handleRooSyncSearch(
+				{ action: 'diagnose' },
+				mockCache,
+				mockEnsureCache,
+				mockFallbackHandler,
+				mockDiagnoseHandler
+			);
+
+			expect(getTextContent(result)).toContain('1234');
+		});
+	});
+
+	// ============================================================
+	// Error handling
+	// ============================================================
+
+	describe('error handling', () => {
+		test('propagates semantic handler errors', async () => {
+			mockSemanticHandler.mockRejectedValue(new Error('Qdrant down'));
+
+			await expect(
+				handleRooSyncSearch(
+					{ action: 'semantic', search_query: 'test' },
+					mockCache,
+					mockEnsureCache,
+					mockFallbackHandler
+				)
+			).rejects.toThrow('Qdrant down');
+		});
+
+		test('propagates text handler errors', async () => {
+			mockFallbackHandler.mockRejectedValue(new Error('Cache corrupt'));
+
+			await expect(
+				handleRooSyncSearch(
+					{ action: 'text', search_query: 'test' },
+					mockCache,
+					mockEnsureCache,
+					mockFallbackHandler
+				)
+			).rejects.toThrow('Cache corrupt');
+		});
+
+		test('propagates diagnose handler errors', async () => {
+			mockSemanticHandler.mockRejectedValue(new Error('Connection refused'));
+
+			await expect(
+				handleRooSyncSearch(
+					{ action: 'diagnose' },
+					mockCache,
+					mockEnsureCache,
+					mockFallbackHandler,
+					mockDiagnoseHandler
+				)
+			).rejects.toThrow('Connection refused');
+		});
+	});
+
+	// ============================================================
+	// Optional parameter handling
+	// ============================================================
+
+	describe('optional parameters', () => {
+		test('semantic works without optional params', async () => {
+			await handleRooSyncSearch(
+				{ action: 'semantic', search_query: 'minimal query' },
+				mockCache,
+				mockEnsureCache,
+				mockFallbackHandler
+			);
+
+			const callArgs = mockSemanticHandler.mock.calls[0][0];
+			expect(callArgs.search_query).toBe('minimal query');
+			expect(callArgs.conversation_id).toBeUndefined();
+			expect(callArgs.max_results).toBeUndefined();
+			expect(callArgs.workspace).toBeUndefined();
+		});
+
+		test('text works without workspace', async () => {
+			await handleRooSyncSearch(
+				{ action: 'text', search_query: 'no workspace' },
+				mockCache,
+				mockEnsureCache,
+				mockFallbackHandler
+			);
+
+			expect(mockFallbackHandler).toHaveBeenCalledWith(
+				expect.objectContaining({
+					query: 'no workspace',
+					workspace: undefined
+				}),
+				mockCache
+			);
+		});
+
+		test('diagnose handler is optional', async () => {
+			// Call without diagnoseHandler parameter
+			const result = await handleRooSyncSearch(
+				{ action: 'diagnose' },
+				mockCache,
+				mockEnsureCache,
+				mockFallbackHandler
+				// No diagnoseHandler
+			);
+
+			// Should still delegate to semantic handler
+			expect(mockSemanticHandler).toHaveBeenCalledWith(
+				expect.anything(),
+				mockCache,
+				mockEnsureCache,
+				mockFallbackHandler,
+				undefined // diagnoseHandler passed as undefined
+			);
+		});
+	});
+});

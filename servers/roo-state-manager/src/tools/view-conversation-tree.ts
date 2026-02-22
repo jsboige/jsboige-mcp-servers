@@ -509,6 +509,21 @@ async function handleSmartTruncationAsync(
 }
 
 /**
+ * FIX P0-1d: Limites de troncature adaptées au detail_level
+ * Quand smart_truncation est activé, ces limites garantissent que
+ * le moteur de troncature se déclenche effectivement au lieu de
+ * laisser passer tout à 300K (bug "0% compression")
+ */
+function getSmartTruncationLimit(detail_level: string): number {
+    switch (detail_level) {
+        case 'skeleton': return 15000;   // ~3-4 pages de squelette
+        case 'summary':  return 50000;   // ~12 pages de résumé
+        case 'full':     return 150000;  // ~35 pages de détail
+        default:         return 50000;
+    }
+}
+
+/**
  * ✨ NOUVEL ALGORITHME DE TRONCATURE INTELLIGENTE
  */
 function handleSmartTruncation(
@@ -520,10 +535,18 @@ function handleSmartTruncation(
     currentTaskId: string | null
 ): CallToolResult {
     try {
+        // FIX P0-1d: Utiliser des limites adaptées au detail_level quand smart_truncation est activé
+        // Le default de 300K est trop haut - les conversations ne l'atteignent jamais,
+        // donc excessSize = 0 et aucune troncature ne se déclenche (bug "0% compression")
+        const wasExplicitlySet = args.smart_truncation_config?.maxOutputLength !== undefined;
+        const effectiveMaxOutput = wasExplicitlySet
+            ? max_output_length
+            : Math.min(max_output_length, getSmartTruncationLimit(detail_level));
+
         // Configuration avec overrides utilisateur
         const smartConfig = {
             ...DEFAULT_SMART_TRUNCATION_CONFIG,
-            maxOutputLength: max_output_length,
+            maxOutputLength: effectiveMaxOutput,
             ...args.smart_truncation_config
         };
         

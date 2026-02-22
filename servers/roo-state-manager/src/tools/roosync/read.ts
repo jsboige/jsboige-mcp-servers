@@ -11,6 +11,7 @@ import { MessageManager } from '../../services/MessageManager.js';
 import { getSharedStatePath } from '../../utils/server-helpers.js';
 import { createLogger, Logger } from '../../utils/logger.js';
 import { MessageManagerError, MessageManagerErrorCode } from '../../types/errors.js';
+import { recordRooSyncActivityAsync } from './heartbeat-activity.js';
 import {
   formatDate,
   formatDateFull,
@@ -19,6 +20,7 @@ import {
   getLocalMachineId,
   getLocalWorkspaceId
 } from '../../utils/message-helpers.js';
+import { getRooSyncService } from '../../services/RooSyncService.js';
 
 // Logger instance for read tool
 const logger: Logger = createLogger('RooSyncReadTool');
@@ -65,6 +67,11 @@ async function readInboxMode(
 
   // Lire les messages via MessageManager (workspace-aware)
   const messages = await messageManager.readInbox(localMachineId, status, limit, localWorkspaceId);
+
+  // Fire-and-forget heartbeat update: reading inbox proves the machine is active
+  getRooSyncService().getHeartbeatService()
+    .registerHeartbeat(localMachineId, { lastActivity: 'roosync_read_inbox', messageCount: messages.length })
+    .catch(err => logger.debug('Heartbeat update skipped (non-critical)', { error: String(err) }));
 
   // Cas : aucun message
   if (messages.length === 0) {
@@ -300,6 +307,9 @@ export async function roosyncRead(
     }
 
     logger.info('✅ roosync_read operation completed', { mode: args.mode });
+
+    // Enregistrer l'activité comme preuve de vie heartbeat (#501)
+    recordRooSyncActivityAsync('read', { mode: args.mode });
 
     return {
       content: [{ type: 'text', text: result }]

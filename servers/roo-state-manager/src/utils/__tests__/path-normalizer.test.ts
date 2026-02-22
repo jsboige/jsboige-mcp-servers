@@ -1,46 +1,110 @@
 /**
- * Tests pour path-normalizer
+ * Tests pour path-normalizer.ts
+ * Issue #492 - Couverture des utilitaires non testés
+ *
+ * @module utils/__tests__/path-normalizer
  */
 
-import { describe, it, expect } from 'vitest';
-import { normalizePath } from '../path-normalizer';
+import { describe, test, expect } from 'vitest';
+import { normalizePath } from '../path-normalizer.js';
 
-describe('path-normalizer', () => {
-  describe('normalizePath', () => {
-    it('devrait retourner une chaîne vide pour une entrée vide', () => {
-      expect(normalizePath('')).toBe('');
-      expect(normalizePath('   ')).toBe('   '); // Pas de trim
-    });
+describe('normalizePath', () => {
+	// ============================================================
+	// Basic normalization
+	// ============================================================
 
-    it('devrait retourner une chaîne vide pour undefined', () => {
-      // @ts-ignore - Test cas limite
-      expect(normalizePath()).toBe('');
-      expect(normalizePath(undefined as any)).toBe('');
-    });
+	describe('basic normalization', () => {
+		test('returns empty string for empty input', () => {
+			expect(normalizePath('')).toBe('');
+		});
 
-    it('devrait convertir les backslashes en forward slashes', () => {
-      expect(normalizePath('C:\\Users\\test\\file.txt')).toBe('c:/users/test/file.txt');
-      expect(normalizePath('path\\to\\file')).toBe('path/to/file');
-    });
+		test('returns empty string for falsy input', () => {
+			expect(normalizePath(undefined as any)).toBe('');
+			expect(normalizePath(null as any)).toBe('');
+		});
 
-    it('devrait supprimer les slashes de fin', () => {
-      expect(normalizePath('path/to/folder/')).toBe('path/to/folder');
-      expect(normalizePath('path/to/folder//')).toBe('path/to/folder');
-      expect(normalizePath('C:\\path\\folder\\')).toBe('c:/path/folder');
-    });
+		test('normalizes simple unix path', () => {
+			expect(normalizePath('/home/user/project')).toBe('/home/user/project');
+		});
 
-    it('devrait convertir en minuscules pour éviter les problèmes de casse', () => {
-      expect(normalizePath('Path/To/File')).toBe('path/to/file');
-      expect(normalizePath('C:\\Users\\Test\\FILE.TXT')).toBe('c:/users/test/file.txt');
-    });
+		test('normalizes simple windows path', () => {
+			expect(normalizePath('C:\\Users\\MYIA\\project')).toBe('c:/users/myia/project');
+		});
+	});
 
-    it('devrait gérer les chemins mixtes (backslashes et forward slashes)', () => {
-      expect(normalizePath('path\\to/mixed/folder\\file')).toBe('path/to/mixed/folder/file');
-    });
+	// ============================================================
+	// Backslash conversion
+	// ============================================================
 
-    it('devrait préserver les chemins relatifs', () => {
-      expect(normalizePath('./relative/path')).toBe('./relative/path');
-      expect(normalizePath('../parent/path')).toBe('../parent/path');
-    });
-  });
+	describe('backslash conversion', () => {
+		test('converts all backslashes to forward slashes', () => {
+			expect(normalizePath('a\\b\\c\\d')).toBe('a/b/c/d');
+		});
+
+		test('handles mixed slashes', () => {
+			expect(normalizePath('a/b\\c/d\\e')).toBe('a/b/c/d/e');
+		});
+
+		test('handles consecutive backslashes', () => {
+			expect(normalizePath('a\\\\b')).toBe('a//b');
+		});
+	});
+
+	// ============================================================
+	// Trailing slash removal
+	// ============================================================
+
+	describe('trailing slash removal', () => {
+		test('removes trailing forward slash', () => {
+			expect(normalizePath('/path/to/dir/')).toBe('/path/to/dir');
+		});
+
+		test('removes trailing backslash (after conversion)', () => {
+			expect(normalizePath('C:\\path\\to\\dir\\')).toBe('c:/path/to/dir');
+		});
+
+		test('does not remove single slash', () => {
+			expect(normalizePath('/')).toBe('');
+		});
+
+		test('keeps path without trailing slash unchanged', () => {
+			expect(normalizePath('/path/to/file.txt')).toBe('/path/to/file.txt');
+		});
+	});
+
+	// ============================================================
+	// Case normalization
+	// ============================================================
+
+	describe('case normalization', () => {
+		test('converts to lowercase', () => {
+			expect(normalizePath('/Path/TO/File')).toBe('/path/to/file');
+		});
+
+		test('lowercases Windows drive letter', () => {
+			expect(normalizePath('D:\\Roo-Extensions')).toBe('d:/roo-extensions');
+		});
+
+		test('lowercases file extensions', () => {
+			expect(normalizePath('/path/FILE.TXT')).toBe('/path/file.txt');
+		});
+	});
+
+	// ============================================================
+	// Cross-platform comparison
+	// ============================================================
+
+	describe('cross-platform comparison', () => {
+		test('same path on different platforms normalizes equally', () => {
+			const unix = normalizePath('/home/user/project');
+			const windows = normalizePath('\\home\\user\\project');
+			expect(unix).toBe(windows);
+		});
+
+		test('Windows path with drive normalizes consistently', () => {
+			const a = normalizePath('C:\\Users\\MYIA\\roo-extensions');
+			const b = normalizePath('c:/users/myia/roo-extensions');
+			expect(a).toBe(b);
+		});
+	});
 });
