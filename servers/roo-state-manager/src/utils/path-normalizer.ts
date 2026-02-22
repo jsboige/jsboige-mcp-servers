@@ -12,8 +12,8 @@ export function normalizePath(inputPath: string): string {
     // Convertir les slashes en forward slashes pour une comparaison uniforme
     const normalized = inputPath.replace(/\\/g, '/');
     
-    // Supprimer les slashes de fin
-    const trimmed = normalized.endsWith('/') ? normalized.slice(0, -1) : normalized;
+    // Supprimer tous les slashes de fin
+    const trimmed = normalized.replace(/\/+$/, '');
     
     // Convertir en minuscules pour éviter les problèmes de casse (principalement Windows)
     return trimmed.toLowerCase();
