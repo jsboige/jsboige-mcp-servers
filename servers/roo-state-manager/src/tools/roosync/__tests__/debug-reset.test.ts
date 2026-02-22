@@ -34,7 +34,7 @@ vi.mock('../../../services/RooSyncService.js', () => ({
   })),
   RooSyncService: {
     resetInstance: () => mockResetInstance(),
-    getInstance: (opts?: any) => mockGetInstance(opts)
+    getInstance: (opts?: { enabled: boolean }) => mockGetInstance(opts)
   },
   RooSyncServiceError: class RooSyncServiceError extends Error {
     constructor(message: string, public code: string) {
