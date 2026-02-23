@@ -356,8 +356,8 @@ describe('ValidationEngine', () => {
   // ============================================================
 
   describe('generateValidationReport', () => {
-    it('returns object with validation, cacheCompliance, recommendations', () => {
-      const report = ValidationEngine.generateValidationReport(
+    it('returns object with validation, cacheCompliance, recommendations', async () => {
+      const report = await ValidationEngine.generateValidationReport(
         DisplayPreset.QUICK_OVERVIEW,
         { detailLevel: 'summary' },
         ToolCategory.DISPLAY
@@ -368,8 +368,8 @@ describe('ValidationEngine', () => {
       expect(report).toHaveProperty('recommendations');
     });
 
-    it('adds recommendation for QUICK_OVERVIEW preset', () => {
-      const report = ValidationEngine.generateValidationReport(
+    it('adds recommendation for QUICK_OVERVIEW preset', async () => {
+      const report = await ValidationEngine.generateValidationReport(
         DisplayPreset.QUICK_OVERVIEW,
         {},
         ToolCategory.DISPLAY
@@ -378,8 +378,8 @@ describe('ValidationEngine', () => {
       expect(report.recommendations.some(r => r.includes('skeleton'))).toBe(true);
     });
 
-    it('adds recommendation for EXPORT category without prettyPrint', () => {
-      const report = ValidationEngine.generateValidationReport(
+    it('adds recommendation for EXPORT category without prettyPrint', async () => {
+      const report = await ValidationEngine.generateValidationReport(
         DisplayPreset.SEARCH_RESULTS,
         { prettyPrint: false },
         ToolCategory.EXPORT
@@ -388,8 +388,8 @@ describe('ValidationEngine', () => {
       expect(report.recommendations.some(r => r.includes('prettyPrint'))).toBe(true);
     });
 
-    it('adds recommendation for maxResults > 100', () => {
-      const report = ValidationEngine.generateValidationReport(
+    it('adds recommendation for maxResults > 100', async () => {
+      const report = await ValidationEngine.generateValidationReport(
         DisplayPreset.SEARCH_RESULTS,
         { maxResults: 200 },
         ToolCategory.SEARCH
@@ -398,8 +398,8 @@ describe('ValidationEngine', () => {
       expect(report.recommendations.some(r => r.includes('pagination'))).toBe(true);
     });
 
-    it('no recommendation for safe maxResults', () => {
-      const report = ValidationEngine.generateValidationReport(
+    it('no recommendation for safe maxResults', async () => {
+      const report = await ValidationEngine.generateValidationReport(
         DisplayPreset.SEARCH_RESULTS,
         { maxResults: 50 },
         ToolCategory.SEARCH
@@ -408,8 +408,8 @@ describe('ValidationEngine', () => {
       expect(report.recommendations.some(r => r.includes('pagination'))).toBe(false);
     });
 
-    it('cacheCompliance reflects options correctly', () => {
-      const report = ValidationEngine.generateValidationReport(
+    it('cacheCompliance reflects options correctly', async () => {
+      const report = await ValidationEngine.generateValidationReport(
         DisplayPreset.QUICK_OVERVIEW,
         { forceRebuild: true },
         ToolCategory.DISPLAY
