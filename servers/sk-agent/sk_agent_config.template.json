@@ -82,7 +82,7 @@
   ],
 
   "embeddings": {
-    "base_url": "https://embeddings.myia.io/v1/embeddings",
+    "base_url": "https://embeddings.myia.io/v1",
     "api_key": "YOUR_EMBEDDINGS_API_KEY_HERE",
     "model_id": "qwen3-4b-awq-embedding",
     "dimensions": 2560
