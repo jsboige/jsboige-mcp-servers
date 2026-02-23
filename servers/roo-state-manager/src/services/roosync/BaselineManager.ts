@@ -93,9 +93,11 @@ export class BaselineManager {
         const registryContent = readFileSync(this.machineRegistry.registryPath, 'utf-8');
         const registryData = JSON.parse(registryContent);
 
-        // Reconstruire la Map depuis les données JSON
+        // Reconstruire la Map depuis les données JSON (normaliser les clés en lowercase)
         this.machineRegistry.machines = new Map(
-          Object.entries(registryData.machines || {})
+          Object.entries(registryData.machines || {}).map(
+            ([key, value]) => [key.toLowerCase(), value as any]
+          )
         );
 
         console.log(`[BaselineManager] Registre des machines chargé: ${this.machineRegistry.machines.size} machines`);
@@ -133,6 +135,7 @@ export class BaselineManager {
    * Valider l'unicité d'un machineId avant ajout
    */
   private validateMachineUniqueness(machineId: string, source: string): UniquenessValidationResult {
+    machineId = machineId.toLowerCase();
     const existingMachine = this.machineRegistry.machines.get(machineId);
 
     if (!existingMachine) {
@@ -172,6 +175,7 @@ export class BaselineManager {
     source: 'dashboard' | 'presence' | 'baseline' | 'config',
     status: 'online' | 'offline' | 'conflict' = 'online'
   ): Promise<UniquenessValidationResult> {
+    machineId = machineId.toLowerCase();
     const validation = this.validateMachineUniqueness(machineId, source);
 
     if (!validation.isValid) {
@@ -210,14 +214,14 @@ export class BaselineManager {
    * Vérifier si une machine existe dans le registre
    */
   private machineExistsInRegistry(machineId: string): boolean {
-    return this.machineRegistry.machines.has(machineId);
+    return this.machineRegistry.machines.has(machineId.toLowerCase());
   }
 
   /**
    * Obtenir les informations d'une machine depuis le registre
    */
   private getMachineFromRegistry(machineId: string) {
-    return this.machineRegistry.machines.get(machineId);
+    return this.machineRegistry.machines.get(machineId.toLowerCase());
   }
 
   /**

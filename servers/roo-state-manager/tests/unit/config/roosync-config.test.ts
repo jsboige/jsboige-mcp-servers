@@ -36,7 +36,7 @@ describe('RooSync Configuration', () => {
 
       // Assert
       expect(config.sharedPath).toBeDefined();
-      expect(config.machineId).toBe('PC-PRINCIPAL');
+      expect(config.machineId).toBe('pc-principal');
       expect(config.autoSync).toBe(false);
       expect(config.conflictStrategy).toBe('manual');
       expect(config.logLevel).toBe('info');

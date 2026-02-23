@@ -31,7 +31,7 @@ describe('RooSyncService', () => {
       lastUpdate: '2025-10-07T12:00:00Z',
       overallStatus: 'synced',
       machines: {
-        'PC-PRINCIPAL': {
+        'pc-principal': {
           lastSync: '2025-10-07T11:00:00Z',
           status: 'online',
           diffsCount: 0,
@@ -61,14 +61,14 @@ describe('RooSyncService', () => {
     const baseline = {
       version: '2.1.0',
       baselineId: 'test-baseline-001',
-      machineId: 'PC-PRINCIPAL',
+      machineId: 'pc-principal',
       timestamp: '2025-10-07T10:00:00Z',
       autoSync: false,
       conflictStrategy: 'manual',
       logLevel: 'info',
       sharedStatePath: testDir,
       machines: [{
-        id: 'PC-PRINCIPAL',
+        id: 'pc-principal',
         name: 'PC Principal',
         hostname: 'test-hostname',
         os: 'Windows 11',
@@ -141,8 +141,8 @@ describe('RooSyncService', () => {
 
       // Assert
       expect(dashboard.version).toBe('2.0.0');
-      expect(dashboard.machines['PC-PRINCIPAL']).toBeDefined();
-      expect(dashboard.machines['PC-PRINCIPAL'].diffsCount).toBe(0);
+      expect(dashboard.machines['pc-principal']).toBeDefined();
+      expect(dashboard.machines['pc-principal'].diffsCount).toBe(0);
     });
 
     it('devrait utiliser le cache', async () => {
@@ -248,7 +248,7 @@ describe('RooSyncService', () => {
       const status = await service.getStatus();
 
       // Assert
-      expect(status.machineId).toBe('PC-PRINCIPAL');
+      expect(status.machineId).toBe('pc-principal');
       expect(status.overallStatus).toBe('synced');
       expect(status.diffsCount).toBe(0);
       expect(status.pendingDecisions).toBe(0);
