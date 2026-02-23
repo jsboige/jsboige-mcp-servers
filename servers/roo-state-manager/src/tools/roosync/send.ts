@@ -26,6 +26,21 @@ import { getRooSyncService } from '../../services/RooSyncService.js';
 const logger: Logger = createLogger('RooSyncSendTool');
 
 /**
+ * Tronque un body pour l'aperçu dans la sortie MCP.
+ * Montre les 2 premières et 2 dernières lignes non-vides.
+ * Utile car Claude Code (VS Code) n'affiche pas les paramètres d'input.
+ */
+function truncateBodyPreview(body: string, headLines: number = 2, tailLines: number = 2): string {
+  const lines = body.split('\n').filter(l => l.trim().length > 0);
+  if (lines.length <= headLines + tailLines) {
+    return lines.join('\n');
+  }
+  const head = lines.slice(0, headLines).join('\n');
+  const tail = lines.slice(-tailLines).join('\n');
+  return `${head}\n[... ${lines.length - headLines - tailLines} lignes masquées ...]\n${tail}`;
+}
+
+/**
  * Arguments de l'outil roosync_send
  */
 interface RooSyncSendArgs {
@@ -116,9 +131,9 @@ ${args.tags && args.tags.length > 0 ? `**Tags :** ${args.tags.join(', ')}\n` : '
 
 ---
 
-📁 **Fichiers créés :**
-- \`messages/inbox/${message.id}.json\` (destinataire)
-- \`messages/sent/${message.id}.json\` (expéditeur)
+## 📄 Aperçu du contenu envoyé
+
+${truncateBodyPreview(args.body!)}
 
 ---
 
@@ -261,9 +276,9 @@ Impossible de répondre car le message original n'a pas été trouvé dans :
 
 ---
 
-## 📄 Contenu de la Réponse
+## 📄 Aperçu du contenu envoyé
 
-${args.body}
+${truncateBodyPreview(args.body!)}
 
 ---
 
@@ -332,6 +347,12 @@ async function amendMessage(
 **Raison :** ${result.reason || 'Non spécifiée'}
 
 📋 **Contenu original préservé :** ${result.original_content_preserved ? '✅ Oui (sauvegardé dans metadata)' : '❌ Non'}
+
+---
+
+## 📄 Aperçu du nouveau contenu
+
+${truncateBodyPreview(args.new_content!)}
 
 ---
 
