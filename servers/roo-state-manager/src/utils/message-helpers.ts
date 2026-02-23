@@ -122,7 +122,9 @@ export function parseMachineWorkspace(id: string): { machineId: string; workspac
  * @returns Basename normalisé en lowercase
  */
 export function normalizeWorkspaceId(workspaceId: string): string {
-  return path.basename(workspaceId).toLowerCase();
+  // Replace backslashes with forward slashes for cross-platform compatibility
+  // (path.basename on Linux doesn't handle Windows backslashes)
+  return path.basename(workspaceId.replace(/\\/g, '/')).toLowerCase();
 }
 
 /**
