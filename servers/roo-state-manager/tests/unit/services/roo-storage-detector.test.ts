@@ -1,10 +1,15 @@
 /**
  * Tests unitaires pour le détecteur de stockage Roo
  * Focus SDDD Phase 2: Validation de l'alignement des préfixes via computeInstructionPrefix(K=192)
+ * + #440: Validation de la lecture de history_item.json pour parentTaskId
  */
 
-import { describe, test, expect } from 'vitest';
+import { describe, test, expect, vi, beforeEach, afterEach } from 'vitest';
 import { computeInstructionPrefix } from '../../../src/utils/task-instruction-index.js';
+import { RooStorageDetector } from '../../../src/utils/roo-storage-detector.js';
+import fs from 'fs/promises';
+import path from 'path';
+import os from 'os';
 
 describe('Storage Detector — Exact Prefix normalization (K=192)', () => {
     
@@ -102,20 +107,181 @@ describe('Storage Detector — Exact Prefix normalization (K=192)', () => {
         // Test que les préfixes très courts sont filtrés (> 10 caractères requis)
         const shortMessage = "Test";
         const prefix = computeInstructionPrefix(shortMessage, 192);
-        
+
         expect(prefix).toBe("test");
         expect(prefix.length).toBeLessThanOrEqual(10); // Devrait être filtré par la logique métier
-        
+
         // Test avec un message de longueur limite (exactement 10 caractères)
         const limitMessage = "0123456789"; // 10 caractères
         const limitPrefix = computeInstructionPrefix(limitMessage, 192);
         expect(limitPrefix).toBe("0123456789");
         expect(limitPrefix.length).toBe(10);
-        
+
         // Test avec un message valide (> 10 caractères)
         const validMessage = "Valid message for testing purposes";
         const validPrefix = computeInstructionPrefix(validMessage, 192);
         expect(validPrefix.length).toBeGreaterThan(10);
         expect(validPrefix).toBe("valid message for testing purposes");
+    });
+});
+
+describe('Storage Detector — history_item.json parentTaskId fallback (#440)', () => {
+    let tmpDir: string;
+
+    beforeEach(async () => {
+        tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), 'roo-test-'));
+    });
+
+    afterEach(async () => {
+        await fs.rm(tmpDir, { recursive: true, force: true }).catch(() => {});
+    });
+
+    test('should extract parentTaskId from history_item.json when task_metadata.json lacks it', async () => {
+        const taskId = 'test-child-task-001';
+        const parentId = 'test-parent-task-001';
+        const taskDir = path.join(tmpDir, taskId);
+        await fs.mkdir(taskDir, { recursive: true });
+
+        // task_metadata.json WITHOUT parentTaskId (common in newer Roo versions)
+        await fs.writeFile(
+            path.join(taskDir, 'task_metadata.json'),
+            JSON.stringify({ files_in_context: [] })
+        );
+
+        // history_item.json WITH parentTaskId
+        await fs.writeFile(
+            path.join(taskDir, 'history_item.json'),
+            JSON.stringify({
+                id: taskId,
+                parentTaskId: parentId,
+                ts: Date.now(),
+                task: 'Test task instruction',
+                workspace: tmpDir,
+                mode: 'code-simple',
+                status: 'completed'
+            })
+        );
+
+        // Minimal ui_messages.json
+        await fs.writeFile(
+            path.join(taskDir, 'ui_messages.json'),
+            JSON.stringify([
+                { ts: Date.now(), type: 'say', say: 'text', text: 'Test task instruction' }
+            ])
+        );
+
+        // Minimal api_conversation_history.json
+        await fs.writeFile(
+            path.join(taskDir, 'api_conversation_history.json'),
+            JSON.stringify([{ role: 'user', content: [{ type: 'text', text: 'Test' }], ts: Date.now() }])
+        );
+
+        const skeleton = await RooStorageDetector.analyzeConversation(taskId, taskDir);
+
+        expect(skeleton).not.toBeNull();
+        expect(skeleton!.parentTaskId).toBe(parentId);
+    });
+
+    test('should prefer task_metadata.json parentTaskId over history_item.json', async () => {
+        const taskId = 'test-child-task-002';
+        const metadataParentId = 'metadata-parent';
+        const historyParentId = 'history-parent';
+        const taskDir = path.join(tmpDir, taskId);
+        await fs.mkdir(taskDir, { recursive: true });
+
+        // task_metadata.json WITH parentTaskId (takes priority)
+        await fs.writeFile(
+            path.join(taskDir, 'task_metadata.json'),
+            JSON.stringify({ parentTaskId: metadataParentId, files_in_context: [] })
+        );
+
+        // history_item.json with DIFFERENT parentTaskId
+        await fs.writeFile(
+            path.join(taskDir, 'history_item.json'),
+            JSON.stringify({
+                id: taskId,
+                parentTaskId: historyParentId,
+                ts: Date.now(),
+                task: 'Test',
+                workspace: tmpDir,
+                mode: 'code-simple'
+            })
+        );
+
+        await fs.writeFile(
+            path.join(taskDir, 'ui_messages.json'),
+            JSON.stringify([{ ts: Date.now(), type: 'say', say: 'text', text: 'Test task' }])
+        );
+
+        await fs.writeFile(
+            path.join(taskDir, 'api_conversation_history.json'),
+            JSON.stringify([{ role: 'user', content: [{ type: 'text', text: 'Test' }], ts: Date.now() }])
+        );
+
+        const skeleton = await RooStorageDetector.analyzeConversation(taskId, taskDir);
+
+        expect(skeleton).not.toBeNull();
+        // task_metadata.json parentTaskId should take priority
+        expect(skeleton!.parentTaskId).toBe(metadataParentId);
+    });
+
+    test('should handle missing history_item.json gracefully', async () => {
+        const taskId = 'test-no-history-003';
+        const taskDir = path.join(tmpDir, taskId);
+        await fs.mkdir(taskDir, { recursive: true });
+
+        // Only task_metadata.json, no history_item.json
+        await fs.writeFile(
+            path.join(taskDir, 'task_metadata.json'),
+            JSON.stringify({ files_in_context: [] })
+        );
+
+        await fs.writeFile(
+            path.join(taskDir, 'ui_messages.json'),
+            JSON.stringify([{ ts: Date.now(), type: 'say', say: 'text', text: 'Test task' }])
+        );
+
+        await fs.writeFile(
+            path.join(taskDir, 'api_conversation_history.json'),
+            JSON.stringify([{ role: 'user', content: [{ type: 'text', text: 'Test' }], ts: Date.now() }])
+        );
+
+        const skeleton = await RooStorageDetector.analyzeConversation(taskId, taskDir);
+
+        expect(skeleton).not.toBeNull();
+        expect(skeleton!.parentTaskId).toBeUndefined();
+    });
+
+    test('should handle corrupted history_item.json gracefully', async () => {
+        const taskId = 'test-corrupt-history-004';
+        const taskDir = path.join(tmpDir, taskId);
+        await fs.mkdir(taskDir, { recursive: true });
+
+        await fs.writeFile(
+            path.join(taskDir, 'task_metadata.json'),
+            JSON.stringify({ files_in_context: [] })
+        );
+
+        // Corrupted history_item.json
+        await fs.writeFile(
+            path.join(taskDir, 'history_item.json'),
+            '{invalid json content'
+        );
+
+        await fs.writeFile(
+            path.join(taskDir, 'ui_messages.json'),
+            JSON.stringify([{ ts: Date.now(), type: 'say', say: 'text', text: 'Test task' }])
+        );
+
+        await fs.writeFile(
+            path.join(taskDir, 'api_conversation_history.json'),
+            JSON.stringify([{ role: 'user', content: [{ type: 'text', text: 'Test' }], ts: Date.now() }])
+        );
+
+        const skeleton = await RooStorageDetector.analyzeConversation(taskId, taskDir);
+
+        // Should not crash, just ignore the corrupted file
+        expect(skeleton).not.toBeNull();
+        expect(skeleton!.parentTaskId).toBeUndefined();
     });
 });

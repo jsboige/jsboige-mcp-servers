@@ -348,6 +348,7 @@ export class RooStorageDetector {
     const metadataPath = path.join(taskPath, 'task_metadata.json');
     const apiHistoryPath = path.join(taskPath, 'api_conversation_history.json');
     const uiMessagesPath = path.join(taskPath, 'ui_messages.json');
+    const historyItemPath = path.join(taskPath, 'history_item.json');
 
     // Mode comparaison : exécuter ancien + nouveau
     if (isComparisonMode()) {
@@ -355,7 +356,7 @@ export class RooStorageDetector {
         taskId,
         taskPath,
         useProductionHierarchy,
-        { metadataPath, apiHistoryPath, uiMessagesPath }
+        { metadataPath, apiHistoryPath, uiMessagesPath, historyItemPath }
       );
     }
 
@@ -365,7 +366,7 @@ export class RooStorageDetector {
         taskId,
         taskPath,
         useProductionHierarchy,
-        { metadataPath, apiHistoryPath, uiMessagesPath }
+        { metadataPath, apiHistoryPath, uiMessagesPath, historyItemPath }
       );
     }
 
@@ -374,7 +375,7 @@ export class RooStorageDetector {
       taskId,
       taskPath,
       useProductionHierarchy,
-      { metadataPath, apiHistoryPath, uiMessagesPath }
+      { metadataPath, apiHistoryPath, uiMessagesPath, historyItemPath }
     );
   }
 
@@ -385,7 +386,7 @@ export class RooStorageDetector {
     taskId: string,
     taskPath: string,
     useProductionHierarchy: boolean,
-    paths: { metadataPath: string; apiHistoryPath: string; uiMessagesPath: string }
+    paths: { metadataPath: string; apiHistoryPath: string; uiMessagesPath: string; historyItemPath: string }
   ): Promise<ConversationSkeleton | null> {
     try {
       // Charger les messages UI
@@ -445,16 +446,17 @@ export class RooStorageDetector {
     taskId: string,
     taskPath: string,
     useProductionHierarchy: boolean,
-    paths: { metadataPath: string; apiHistoryPath: string; uiMessagesPath: string }
+    paths: { metadataPath: string; apiHistoryPath: string; uiMessagesPath: string; historyItemPath: string }
   ): Promise<ConversationSkeleton | null> {
-    const { metadataPath, apiHistoryPath, uiMessagesPath } = paths;
+    const { metadataPath, apiHistoryPath, uiMessagesPath, historyItemPath } = paths;
 
     try {
-        const [taskDirStats, metadataStats, apiHistoryStats, uiMessagesStats] = await Promise.all([
+        const [taskDirStats, metadataStats, apiHistoryStats, uiMessagesStats, historyItemStats] = await Promise.all([
             fs.stat(taskPath).catch(() => null), //
             fs.stat(metadataPath).catch(() => null),
             fs.stat(apiHistoryPath).catch(() => null),
-            fs.stat(uiMessagesPath).catch(() => null)
+            fs.stat(uiMessagesPath).catch(() => null),
+            fs.stat(historyItemPath).catch(() => null)
         ]);
 
         // Validation robuste : accepter la conversation si au moins UN fichier existe
@@ -478,8 +480,28 @@ export class RooStorageDetector {
             rawMetadata = {} as TaskMetadata; // Fallback to an empty object
         }
 
+        // 🔄 Lire history_item.json pour parentTaskId/childIds (disponible dans les versions récentes de Roo)
+        let historyItemData: { parentTaskId?: string; childIds?: string[] } = {};
+        if (historyItemStats) {
+            try {
+                let historyContent = await fs.readFile(historyItemPath, 'utf-8');
+                if (historyContent.charCodeAt(0) === 0xFEFF) {
+                    historyContent = historyContent.slice(1);
+                }
+                const parsed = JSON.parse(historyContent);
+                historyItemData = {
+                    parentTaskId: parsed.parentTaskId,
+                    childIds: Array.isArray(parsed.childIds) ? parsed.childIds : undefined
+                };
+            } catch (error) {
+                // history_item.json is optional, don't fail on parse errors
+                console.warn(`[analyzeConversation] Failed to parse history_item.json for ${taskId}:`, error);
+            }
+        }
+
         // 🚀 PRODUCTION : Logique de reconstruction hiérarchique en deux passes
-        let parentTaskId = rawMetadata.parentTaskId || rawMetadata.parent_task_id;
+        // Priorité: task_metadata.json > history_item.json (fallback pour versions récentes de Roo)
+        let parentTaskId = rawMetadata.parentTaskId || rawMetadata.parent_task_id || historyItemData.parentTaskId;
         let childTaskInstructionPrefixes: string[] = [];
 
         if (useProductionHierarchy) {
@@ -689,7 +711,7 @@ export class RooStorageDetector {
     taskId: string,
     taskPath: string,
     useProductionHierarchy: boolean,
-    paths: { metadataPath: string; apiHistoryPath: string; uiMessagesPath: string }
+    paths: { metadataPath: string; apiHistoryPath: string; uiMessagesPath: string; historyItemPath: string }
   ): Promise<ConversationSkeleton | null> {
     const config = getParsingConfig();
 
