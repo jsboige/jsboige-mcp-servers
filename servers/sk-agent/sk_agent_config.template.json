@@ -33,8 +33,8 @@
       "base_url": "https://api.mini.text-generation-webui.myia.io/v1",
       "api_key": "YOUR_MINI_API_KEY_HERE",
       "model_id": "zwz-8b",
-      "vision": false,
-      "description": "Fast local text model (ZwZ 8B AWQ - 131K context)",
+      "vision": true,
+      "description": "Fast local vision model (ZwZ-8B-AWQ, Qwen-VL finetune - 131K context)",
       "context_window": 131072
     },
     {

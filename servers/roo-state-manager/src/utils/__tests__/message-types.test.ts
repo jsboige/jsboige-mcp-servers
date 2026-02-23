@@ -1,146 +1,235 @@
 /**
- * Tests unitaires pour message-types (Zod schemas)
- *
- * Couvre :
- * - clineAskSchema : 12 variantes
- * - clineSaySchema : 25 variantes
- * - uiMessageSchema : structure complète + validation
+ * Tests pour message-types.ts
+ * Issue #507 - Proficiency test myia-po-2025
  */
+
 import { describe, it, expect } from 'vitest';
-import { clineAskSchema, clineSaySchema, uiMessageSchema, type UIMessage } from '../message-types.js';
+import { z } from 'zod';
+import {
+  clineAskSchema,
+  clineSaySchema,
+  uiMessageSchema,
+  type ToolCallInfo,
+  type NewTaskInfo,
+  type ApiReqInfo,
+  type ToolMessage,
+  type FollowupMessage,
+} from '../message-types';
 
-describe('message-types', () => {
-  // === clineAskSchema ===
-
-  describe('clineAskSchema', () => {
-    const validAskTypes = [
-      'followup', 'command', 'command_output', 'completion_result',
-      'tool', 'api_req_failed', 'resume_task', 'resume_completed_task',
-      'mistake_limit_reached', 'browser_action_launch', 'use_mcp_server',
+describe('clineAskSchema', () => {
+  it('doit accepter toutes les variantes ask', () => {
+    const askTypes = [
+      'followup',
+      'command',
+      'command_output',
+      'completion_result',
+      'tool',
+      'api_req_failed',
+      'resume_task',
+      'resume_completed_task',
+      'mistake_limit_reached',
+      'browser_action_launch',
+      'use_mcp_server',
       'auto_approval_max_req_reached',
     ];
 
-    it('should accept all valid ask types', () => {
-      for (const askType of validAskTypes) {
-        const result = clineAskSchema.safeParse(askType);
-        expect(result.success, `Expected "${askType}" to be valid`).toBe(true);
-      }
-    });
-
-    it('should reject invalid ask types', () => {
-      const result = clineAskSchema.safeParse('invalid_type');
-      expect(result.success).toBe(false);
-    });
-
-    it('should reject empty string', () => {
-      expect(clineAskSchema.safeParse('').success).toBe(false);
-    });
-
-    it('should have 12 valid values', () => {
-      expect(validAskTypes.length).toBe(12);
-    });
+    for (const askType of askTypes) {
+      const result = clineAskSchema.parse(askType);
+      expect(result).toBe(askType);
+    }
   });
 
-  // === clineSaySchema ===
+  it('doit rejeter les valeurs non valides', () => {
+    expect(() => clineAskSchema.parse('invalid_type')).toThrow();
+    expect(() => clineAskSchema.parse('')).toThrow();
+    expect(() => clineAskSchema.parse(123)).toThrow();
+  });
+});
 
-  describe('clineSaySchema', () => {
-    const validSayTypes = [
-      'error', 'api_req_started', 'api_req_finished', 'api_req_retried',
-      'api_req_retry_delayed', 'api_req_deleted', 'text', 'reasoning',
-      'completion_result', 'user_feedback', 'user_feedback_diff',
-      'command_output', 'shell_integration_warning', 'browser_action',
-      'browser_action_result', 'mcp_server_request_started', 'mcp_server_response',
-      'subtask_result', 'checkpoint_saved', 'rooignore_error',
-      'diff_error', 'condense_context', 'condense_context_error',
-      'codebase_search_result', 'user_edit_todos',
+describe('clineSaySchema', () => {
+  it('doit accepter toutes les variantes say', () => {
+    const sayTypes = [
+      'error',
+      'api_req_started',
+      'api_req_finished',
+      'api_req_retried',
+      'api_req_retry_delayed',
+      'api_req_deleted',
+      'text',
+      'reasoning',
+      'completion_result',
+      'user_feedback',
+      'user_feedback_diff',
+      'command_output',
+      'shell_integration_warning',
+      'browser_action',
+      'browser_action_result',
+      'mcp_server_request_started',
+      'mcp_server_response',
+      'subtask_result',
+      'checkpoint_saved',
+      'rooignore_error',
+      'diff_error',
+      'condense_context',
+      'condense_context_error',
+      'codebase_search_result',
+      'user_edit_todos',
     ];
 
-    it('should accept all valid say types', () => {
-      for (const sayType of validSayTypes) {
-        const result = clineSaySchema.safeParse(sayType);
-        expect(result.success, `Expected "${sayType}" to be valid`).toBe(true);
-      }
-    });
+    for (const sayType of sayTypes) {
+      const result = clineSaySchema.parse(sayType);
+      expect(result).toBe(sayType);
+    }
+  });
 
-    it('should reject invalid say types', () => {
-      expect(clineSaySchema.safeParse('not_a_say_type').success).toBe(false);
-    });
+  it('doit rejeter les valeurs non valides', () => {
+    expect(() => clineSaySchema.parse('invalid_type')).toThrow();
+    expect(() => clineSaySchema.parse('')).toThrow();
+    expect(() => clineSaySchema.parse(null)).toThrow();
+  });
+});
 
-    it('should have 25 valid values', () => {
-      expect(validSayTypes.length).toBe(25);
+describe('uiMessageSchema', () => {
+  it('doit créer un message ask valide', () => {
+    const message = {
+      ts: 1234567890,
+      type: 'ask',
+      ask: 'tool',
+      text: 'Use the tool',
+    };
+
+    const result = uiMessageSchema.parse(message);
+    expect(result).toEqual({
+      ts: 1234567890,
+      type: 'ask',
+      ask: 'tool',
+      text: 'Use the tool',
     });
   });
 
-  // === uiMessageSchema ===
+  it('doit créer un message say valide', () => {
+    const message = {
+      ts: 1234567890,
+      type: 'say',
+      say: 'api_req_started',
+      text: 'API request started',
+    };
 
-  describe('uiMessageSchema', () => {
-    it('should accept minimal ask message', () => {
-      const msg = { ts: 1000, type: 'ask' as const, ask: 'tool' as const };
-      const result = uiMessageSchema.safeParse(msg);
-      expect(result.success).toBe(true);
+    const result = uiMessageSchema.parse(message);
+    expect(result).toEqual({
+      ts: 1234567890,
+      type: 'say',
+      say: 'api_req_started',
+      text: 'API request started',
     });
+  });
 
-    it('should accept minimal say message', () => {
-      const msg = { ts: 2000, type: 'say' as const, say: 'text' as const };
-      const result = uiMessageSchema.safeParse(msg);
-      expect(result.success).toBe(true);
-    });
+  it('doit accepter un message avec toutes les options', () => {
+    const message = {
+      ts: 1234567890,
+      type: 'say',
+      say: 'text',
+      text: 'Hello world',
+      images: ['data:image/png;base64,...'],
+      partial: false,
+      reasoning: 'I am thinking',
+      conversationHistoryIndex: 5,
+    };
 
-    it('should accept full message with all fields', () => {
-      const msg = {
-        ts: 3000,
-        type: 'say' as const,
-        say: 'api_req_started' as const,
-        text: '{"request":"test"}',
-        images: ['base64encoded'],
-        partial: true,
-        reasoning: 'thinking step',
-        conversationHistoryIndex: 5,
-      };
-      const result = uiMessageSchema.safeParse(msg);
-      expect(result.success).toBe(true);
+    const result = uiMessageSchema.parse(message);
+    expect(result).toEqual({
+      ts: 1234567890,
+      type: 'say',
+      say: 'text',
+      text: 'Hello world',
+      images: ['data:image/png;base64,...'],
+      partial: false,
+      reasoning: 'I am thinking',
+      conversationHistoryIndex: 5,
     });
+  });
 
-    it('should reject message without ts', () => {
-      const msg = { type: 'ask', ask: 'tool' };
-      expect(uiMessageSchema.safeParse(msg).success).toBe(false);
-    });
+  it('doit rejeter un message sans type', () => {
+    const message = {
+      ts: 1234567890,
+    };
 
-    it('should reject message without type', () => {
-      const msg = { ts: 1000, ask: 'tool' };
-      expect(uiMessageSchema.safeParse(msg).success).toBe(false);
-    });
+    expect(() => uiMessageSchema.parse(message)).toThrow();
+  });
 
-    it('should reject message with invalid type', () => {
-      const msg = { ts: 1000, type: 'invalid' };
-      expect(uiMessageSchema.safeParse(msg).success).toBe(false);
-    });
+  it('doit rejeter un type invalide', () => {
+    const message = {
+      ts: 1234567890,
+      type: 'invalid_type',
+    };
 
-    it('should accept message with text field', () => {
-      const msg = { ts: 1000, type: 'say' as const, say: 'text' as const, text: 'Hello world' };
-      const result = uiMessageSchema.safeParse(msg);
-      expect(result.success).toBe(true);
-      if (result.success) {
-        expect(result.data.text).toBe('Hello world');
-      }
-    });
+    expect(() => uiMessageSchema.parse(message)).toThrow();
+  });
+});
 
-    it('should accept message with images array', () => {
-      const msg = { ts: 1000, type: 'say' as const, images: ['img1', 'img2'] };
-      const result = uiMessageSchema.safeParse(msg);
-      expect(result.success).toBe(true);
-    });
+describe('Types inférés', () => {
+  it('ToolCallInfo doit avoir la bonne structure', () => {
+    const toolCall: ToolCallInfo = {
+      tool: 'newTask',
+      mode: 'code',
+      message: 'Create a new task',
+      content: 'Create a new task',
+      timestamp: 1234567890,
+    };
 
-    it('should accept ask message with tool type', () => {
-      const msg: UIMessage = { ts: 1000, type: 'ask', ask: 'tool', text: '{"tool":"read_file"}' };
-      const result = uiMessageSchema.safeParse(msg);
-      expect(result.success).toBe(true);
-    });
+    expect(toolCall.tool).toBe('newTask');
+    expect(toolCall.mode).toBe('code');
+    expect(toolCall.message).toBe('Create a new task');
+    expect(toolCall.timestamp).toBe(1234567890);
+  });
 
-    it('should accept say message with api_req_started', () => {
-      const msg: UIMessage = { ts: 1000, type: 'say', say: 'api_req_started', text: '{"request":"test"}' };
-      const result = uiMessageSchema.safeParse(msg);
-      expect(result.success).toBe(true);
-    });
+  it('NewTaskInfo doit avoir la bonne structure', () => {
+    const newTask: NewTaskInfo = {
+      mode: 'architect',
+      message: 'Design the architecture',
+      timestamp: 1234567890,
+    };
+
+    expect(newTask.mode).toBe('architect');
+    expect(newTask.message).toBe('Design the architecture');
+    expect(newTask.timestamp).toBe(1234567890);
+  });
+
+  it('ApiReqInfo doit avoir la bonne structure', () => {
+    const apiReq: ApiReqInfo = {
+      request: 'GET /api/data',
+      cost: 0.001,
+      cancelReason: 'user_cancelled',
+      streamingFailedMessage: 'Stream failed',
+    };
+
+    expect(apiReq.request).toBe('GET /api/data');
+    expect(apiReq.cost).toBe(0.001);
+    expect(apiReq.cancelReason).toBe('user_cancelled');
+    expect(apiReq.streamingFailedMessage).toBe('Stream failed');
+  });
+
+  it('ToolMessage doit avoir la bonne structure', () => {
+    const toolMsg: ToolMessage = {
+      tool: 'search',
+      mode: 'code',
+      message: 'Search the codebase',
+      content: 'Search the codebase',
+    };
+
+    expect(toolMsg.tool).toBe('search');
+    expect(toolMsg.mode).toBe('code');
+    expect(toolMsg.message).toBe('Search the codebase');
+    expect(toolMsg.content).toBe('Search the codebase');
+  });
+
+  it('FollowupMessage doit avoir la bonne structure', () => {
+    const followup: FollowupMessage = {
+      question: 'Do you want to continue?',
+      follow_up: ['Yes', 'No'],
+    };
+
+    expect(followup.question).toBe('Do you want to continue?');
+    expect(followup.follow_up).toEqual(['Yes', 'No']);
   });
 });

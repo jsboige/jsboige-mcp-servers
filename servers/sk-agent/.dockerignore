@@ -1,0 +1,8 @@
+__pycache__/
+*.pyc
+venv/
+.venv/
+sk_agent_config.json
+*.log
+.git
+test_*.py

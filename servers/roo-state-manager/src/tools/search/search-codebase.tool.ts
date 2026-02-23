@@ -157,7 +157,7 @@ function interpretScore(score: number): string {
 /**
  * Extrait un snippet centré autour des mots-clés de la requête
  */
-function extractSnippet(codeChunk: string, query: string, maxChars: number = 200): string {
+function extractSnippet(codeChunk: string, query: string, maxChars: number = 500): string {
 	if (!codeChunk) return '';
 
 	const lowerChunk = codeChunk.toLowerCase();
@@ -302,7 +302,7 @@ export async function handleCodebaseSearch(args: CodebaseSearchArgs): Promise<Ca
 				file_path: point.payload.filePath,
 				score: point.score,
 				relevance: interpretScore(point.score),
-				snippet: extractSnippet(point.payload.codeChunk || '', query, 200),
+				snippet: extractSnippet(point.payload.codeChunk || '', query),
 				start_line: point.payload.startLine,
 				end_line: point.payload.endLine,
 				lines: point.payload.startLine && point.payload.endLine
