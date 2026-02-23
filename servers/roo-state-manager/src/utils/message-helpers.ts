@@ -112,12 +112,27 @@ export function parseMachineWorkspace(id: string): { machineId: string; workspac
 }
 
 /**
+ * Normalise un identifiant de workspace pour comparaison.
+ *
+ * Gère les cas où l'expéditeur utilise un chemin complet (ex: "D:\vllm")
+ * alors que le récepteur utilise un basename (ex: "vllm").
+ * Comparaison case-insensitive pour compatibilité Windows.
+ *
+ * @param workspaceId Identifiant brut du workspace
+ * @returns Basename normalisé en lowercase
+ */
+export function normalizeWorkspaceId(workspaceId: string): string {
+  return path.basename(workspaceId).toLowerCase();
+}
+
+/**
  * Vérifie si un message correspond au destinataire local
  *
  * Règles de matching :
  * - "all" / "All" → match tous
  * - "machineId" (sans workspace) → match toutes les instances sur cette machine
  * - "machineId:workspaceId" → match UNIQUEMENT ce workspace spécifique
+ *   (comparaison normalisée : basename, case-insensitive)
  *
  * @param messageTo Destinataire du message
  * @param localMachineId ID machine locale
@@ -142,8 +157,9 @@ export function matchesRecipient(
   }
 
   // If message targets a specific workspace, only that workspace should see it
+  // Normalize both sides: basename + lowercase (handles "D:\vllm" vs "vllm")
   if (parsed.workspaceId) {
-    return localWorkspaceId === parsed.workspaceId;
+    return normalizeWorkspaceId(localWorkspaceId) === normalizeWorkspaceId(parsed.workspaceId);
   }
 
   // Message targets the whole machine (no workspace specified) → all workspaces see it
