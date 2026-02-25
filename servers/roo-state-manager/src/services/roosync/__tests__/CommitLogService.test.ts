@@ -27,6 +27,7 @@ vi.mock('fs', async () => {
       readFile: vi.fn().mockResolvedValue('{}'),
       writeFile: vi.fn().mockResolvedValue(undefined),
       unlink: vi.fn().mockResolvedValue(undefined),
+      rename: vi.fn().mockResolvedValue(undefined),
     },
   };
 });
@@ -449,9 +450,66 @@ describe('CommitLogService', () => {
 
     it('should return 0 for fresh entries (not yet compressed)', async () => {
       await service.appendCommit(createCommitEntry());
+      // Reset mock so lock file doesn't exist
+      (existsSync as any).mockReturnValue(false);
       const count = await service.compressOldEntries();
-      // Currently returns 0 (TODO in source)
+      // Entries are fresh (< 24h), so nothing to compress
       expect(count).toBe(0);
+    });
+
+    it('should compress entries older than compressionAge', async () => {
+      // Create a service with short compression age (1ms for testing)
+      const compressService = new CommitLogService({
+        commitLogPath: '/tmp/test-compress',
+        enableCompression: true,
+        compressionAge: 1, // 1ms - entries will be immediately eligible
+      });
+      await compressService.waitForInitialization();
+
+      // Reset mock so lock file doesn't exist
+      (existsSync as any).mockReturnValue(false);
+
+      // Add some entries
+      await compressService.appendCommit(createCommitEntry({ status: CommitStatus.APPLIED }));
+      await compressService.appendCommit(createCommitEntry({ status: CommitStatus.APPLIED }));
+      await compressService.appendCommit(createCommitEntry({ status: CommitStatus.APPLIED }));
+
+      // Wait a bit to ensure entries are older than compressionAge
+      await new Promise(resolve => setTimeout(resolve, 10));
+
+      // Compress
+      const count = await compressService.compressOldEntries();
+
+      // Should have compressed 3 entries
+      expect(count).toBe(3);
+
+      // Entries should be removed from state
+      const state = compressService.getState();
+      expect(state.entries.size).toBe(0);
+      expect(state.entriesByStatus.applied).toHaveLength(0);
+    });
+
+    it('should only compress entries older than threshold', async () => {
+      const compressService = new CommitLogService({
+        commitLogPath: '/tmp/test-partial-compress',
+        enableCompression: true,
+        compressionAge: 3600000, // 1 hour
+      });
+      await compressService.waitForInitialization();
+
+      (existsSync as any).mockReturnValue(false);
+
+      // Add entries at different times by manipulating timestamps
+      await compressService.appendCommit(createCommitEntry({ status: CommitStatus.APPLIED }));
+      await compressService.appendCommit(createCommitEntry({ status: CommitStatus.APPLIED }));
+
+      // All entries are fresh (< 1 hour old)
+      const count = await compressService.compressOldEntries();
+      expect(count).toBe(0);
+
+      // State should still have all entries
+      const state = compressService.getState();
+      expect(state.entries.size).toBe(2);
     });
   });
 

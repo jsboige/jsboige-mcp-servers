@@ -272,6 +272,7 @@ vi.mock('os', () => {
     homedir: vi.fn(() => '/mock/home'),
     hostname: vi.fn(() => 'test-machine'),
     tmpdir: vi.fn(() => process.env.TMPDIR || process.env.TMP || '/tmp'),
+    uptime: vi.fn(() => 86400),
     EOL: '\n',
     type: vi.fn(() => 'Windows_NT'),
     release: vi.fn(() => '10.0.26200'),

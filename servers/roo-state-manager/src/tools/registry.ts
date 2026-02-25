@@ -104,8 +104,7 @@ export function registerCallToolHandler(
     server: Server,
     state: ServerState,
     handleTouchMcpSettings: () => Promise<CallToolResult>,
-    handleExportConversationJson: (args: any) => Promise<CallToolResult>,
-    handleExportConversationCsv: (args: any) => Promise<CallToolResult>,
+    // #519: handleExportConversationJson et handleExportConversationCsv retirés (CONS-10 legacy)
     ensureSkeletonCacheIsFresh: (args?: { workspace?: string }) => Promise<boolean>,
     saveSkeletonToDisk: (skeleton: any) => Promise<void>
 ): void {
@@ -119,16 +118,7 @@ export function registerCallToolHandler(
            case 'storage_info':
                result = await toolExports.handleStorageInfo(args as any);
                break;
-           // [DEPRECATED] Anciens outils storage
-           case toolExports.detectStorageTool.definition.name:
-               result = await toolExports.detectStorageTool.handler({});
-               break;
-          case toolExports.getStorageStatsTool.definition.name:
-                result = await toolExports.getStorageStatsTool.handler({});
-                break;
-            case toolExports.listConversationsTool.definition.name:
-                result = await toolExports.listConversationsTool.handler(args as any, state.conversationCache);
-                break;
+           // #519: Anciens outils storage retirés (detect_storage, get_storage_stats, list_conversations)
             case 'touch_mcp_settings':
                 result = await handleTouchMcpSettings();
                 break;
@@ -350,26 +340,7 @@ export function registerCallToolHandler(
            }
            // CLEANUP-2: Legacy summary tools handlers retirés (generate_trace_summary, generate_cluster_summary, get_conversation_synthesis)
            // Remplacés par roosync_summarize (CONS-12)
-           // CONS-10: [DEPRECATED] Handlers conservés pour backward compatibility
-           // Ces outils seront retirés dans une version future - utiliser export_data et export_config
-           case toolExports.exportConversationJsonTool.name:
-              result = await handleExportConversationJson(args as any);
-              break;
-           case toolExports.exportConversationCsvTool.name:
-              result = await handleExportConversationCsv(args as any);
-              break;
-          case toolExports.exportTasksXmlTool.name:
-             result = await toolExports.handleExportTasksXml(args as any, state.conversationCache, state.xmlExporterService, async () => { await ensureSkeletonCacheIsFresh(); });
-             break;
-         case toolExports.exportConversationXmlTool.name:
-             result = await toolExports.handleExportConversationXml(args as any, state.conversationCache, state.xmlExporterService, async () => { await ensureSkeletonCacheIsFresh(); });
-             break;
-         case toolExports.exportProjectXmlTool.name:
-             result = await toolExports.handleExportProjectXml(args as any, state.conversationCache, state.xmlExporterService, async (options?: { workspace?: string }) => { await ensureSkeletonCacheIsFresh(options); });
-             break;
-         case toolExports.configureXmlExportTool.name:
-             result = await toolExports.handleConfigureXmlExport(args as any, state.exportConfigManager);
-             break;
+           // #519: Legacy export tools handlers retirés (CONS-10) - utiliser export_data et export_config
             case toolExports.getRawConversationTool.definition.name:
                 result = await toolExports.getRawConversationTool.handler(args as any);
                 break;
