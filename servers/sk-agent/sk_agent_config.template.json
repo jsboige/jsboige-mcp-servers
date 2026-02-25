@@ -38,13 +38,23 @@
       "context_window": 131072
     },
     {
-      "id": "glm-4.7-flash",
+      "id": "qwen3.5-35b-a3b",
       "enabled": false,
       "base_url": "https://api.medium.text-generation-webui.myia.io/v1",
       "api_key": "YOUR_MEDIUM_API_KEY_HERE",
-      "model_id": "glm-4.7-flash",
+      "model_id": "qwen3.5-35b-a3b",
+      "vision": true,
+      "description": "Qwen 3.5 35B A3B MoE AWQ (262K context, FP8 KV cache, vision+thinking — replaced glm-4.7-flash on vLLM medium GPU 0+1)",
+      "context_window": 262144
+    },
+    {
+      "id": "glm-4.7-flash-fast",
+      "enabled": false,
+      "base_url": "https://open-webui.myia.io/openai",
+      "api_key": "YOUR_OWUI_API_KEY_HERE",
+      "model_id": "Local.glm-4.7-flash-fast",
       "vision": false,
-      "description": "Fast local GLM-4.7-Flash AWQ (131K context)",
+      "description": "GLM-4.7-Flash AWQ without thinking mode via OWUI custom model (131K context, ~1-5s per response — use for simple/fast tasks)",
       "context_window": 131072
     },
 
@@ -150,8 +160,8 @@
     },
     {
       "id": "fast",
-      "description": "Quick local responses, no tools",
-      "model": "glm-4.7-flash",
+      "description": "Quick local responses (~1-5s), no tools, no thinking",
+      "model": "glm-4.7-flash-fast",
       "system_prompt": "Respond concisely and accurately. Always respond in the same language as the user.",
       "mcps": [],
       "memory": { "enabled": false }

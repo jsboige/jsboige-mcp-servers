@@ -1,0 +1,31 @@
+# Standalone docker-compose for sk-agent HTTP container
+# Manages the streamable-http container behind skagents.myia.io reverse proxy
+#
+# Usage:
+#   docker compose -f docker-compose.sk-agent.yml up -d
+#   docker compose -f docker-compose.sk-agent.yml down
+#   docker compose -f docker-compose.sk-agent.yml logs -f
+#
+# Config: sk_agent_config.json is bind-mounted read-only.
+# After editing config, restart: docker compose -f docker-compose.sk-agent.yml up -d --force-recreate
+#
+# OWUI integration: This container is also referenced in OWUI's docker-compose-myia.yaml
+# as a sidecar. Both compose files manage the same container. Coordinate via RooSync.
+
+services:
+  sk-agent:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: sk-agent:latest
+    container_name: sk-agent
+    ports:
+      - "8100:8100"
+    environment:
+      - SK_AGENT_API_KEY=${SK_AGENT_API_KEY:-181ecbaa03674f028e4dbb3c7efc8cb6}
+      - SK_AGENT_CONFIG=/app/sk_agent_config.json
+    volumes:
+      - ./sk_agent_config.json:/app/sk_agent_config.json:ro
+    extra_hosts:
+      - host.docker.internal:host-gateway
+    restart: unless-stopped
