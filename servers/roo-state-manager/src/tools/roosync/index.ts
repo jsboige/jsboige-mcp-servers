@@ -364,14 +364,14 @@ const exportBaselineToolMetadata = {
 
 /**
  * Liste de tous les outils RooSync pour enregistrement MCP
- * Version 3.12 : 18 outils (CONS-#443 Groupe 5: Diagnostic 3→1, 19→18 outils)
+ * Version 3.13 : 18 outils (#533: roosync_sync_event retiré - jamais utilisé en production)
  *
  * - Configuration: init, compare-config, roosync_config (CONS-3), baseline (CONS-4)
  * - Services: inventory (CONS-6), machines (CONS-6)
  * - Presentation: get-status, list-diffs, refresh-dashboard
  * - Decision (CONS-5): roosync_decision, roosync_decision_info
  * - Heartbeat (CONS-#443 Groupe 1): roosync_heartbeat
- * - Synchronisation automatique (CONS-#443 Groupe 2): roosync_sync_event
+ * - [DEPRECATED] Synchronisation automatique (CONS-#443 Groupe 2): roosync_sync_event retiré (#533)
  * - Messagerie (CONS-1): roosync_send, roosync_read, roosync_manage
  * - Gestion MCP (CONS-#443 Groupe 3): roosync_mcp_management
  * - Gestion stockage (CONS-#443 Groupe 4): roosync_storage_management
@@ -391,8 +391,9 @@ export const roosyncTools = [
   machinesToolMetadata, // CONS-6: Outil consolidé Machines (offline + warning)
   // CONS-#443 Groupe 1: Outil consolidé de heartbeat (heartbeat_status + heartbeat_service → roosync_heartbeat)
   heartbeatToolMetadata,
-  // CONS-#443 Groupe 2: Outil consolidé de synchronisation (sync-on-offline + sync-on-online → roosync_sync_event)
-  syncEventToolMetadata,
+  // [DEPRECATED] #533: roosync_sync_event retiré de ListTools - jamais utilisé en production
+  // CallTool handler conservé pour backward compat
+  // syncEventToolMetadata,
   // CONS-#443 Groupe 3: Outil consolidé de gestion MCP (manage_mcp_settings + rebuild_and_restart_mcp + touch_mcp_settings → roosync_mcp_management)
   mcpManagementToolMetadata,
   // CONS-#443 Groupe 4: Outil consolidé de gestion du stockage (storage_info + maintenance → roosync_storage_management)
