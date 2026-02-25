@@ -47,12 +47,18 @@ describe('message-helpers', () => {
 
   describe('getLocalWorkspaceId', () => {
     const origEnv = process.env.ROOSYNC_WORKSPACE_ID;
+    const origWorkspacePath = process.env.WORKSPACE_PATH;
 
     afterEach(() => {
       if (origEnv !== undefined) {
         process.env.ROOSYNC_WORKSPACE_ID = origEnv;
       } else {
         delete process.env.ROOSYNC_WORKSPACE_ID;
+      }
+      if (origWorkspacePath !== undefined) {
+        process.env.WORKSPACE_PATH = origWorkspacePath;
+      } else {
+        delete process.env.WORKSPACE_PATH;
       }
     });
 
@@ -61,8 +67,27 @@ describe('message-helpers', () => {
       expect(getLocalWorkspaceId()).toBe('custom-workspace');
     });
 
-    test('should auto-detect from process.cwd() when env not set', () => {
+    test('should use WORKSPACE_PATH basename when ROOSYNC_WORKSPACE_ID not set', () => {
       delete process.env.ROOSYNC_WORKSPACE_ID;
+      process.env.WORKSPACE_PATH = 'd:\\roo-extensions';
+      expect(getLocalWorkspaceId()).toBe('roo-extensions');
+    });
+
+    test('should use WORKSPACE_PATH with forward slashes', () => {
+      delete process.env.ROOSYNC_WORKSPACE_ID;
+      process.env.WORKSPACE_PATH = 'D:/Open-WebUI/myia-open-webui';
+      expect(getLocalWorkspaceId()).toBe('myia-open-webui');
+    });
+
+    test('should prefer ROOSYNC_WORKSPACE_ID over WORKSPACE_PATH', () => {
+      process.env.ROOSYNC_WORKSPACE_ID = 'explicit-override';
+      process.env.WORKSPACE_PATH = 'd:\\some-other-workspace';
+      expect(getLocalWorkspaceId()).toBe('explicit-override');
+    });
+
+    test('should auto-detect from process.cwd() when no env vars set', () => {
+      delete process.env.ROOSYNC_WORKSPACE_ID;
+      delete process.env.WORKSPACE_PATH;
       const id = getLocalWorkspaceId();
       // Should return the current directory name (not undefined anymore)
       expect(id).toBeTruthy();
@@ -72,6 +97,7 @@ describe('message-helpers', () => {
 
     test('should auto-detect even for empty string env var', () => {
       process.env.ROOSYNC_WORKSPACE_ID = '';
+      delete process.env.WORKSPACE_PATH;
       const id = getLocalWorkspaceId();
       // Empty string should trigger auto-detection
       expect(id).toBeTruthy();
@@ -193,6 +219,17 @@ describe('message-helpers', () => {
 
     test('workspace target with full path does NOT match different workspace', () => {
       expect(matchesRecipient('myia-ai-01:D:\\vllm', 'myia-ai-01', 'roo-extensions')).toBe(false);
+    });
+
+    // Ghost workspace backward compatibility (cwd bug fix)
+    test('ghost workspace "roo-state-manager" matches ANY workspace on same machine', () => {
+      expect(matchesRecipient('myia-ai-01:roo-state-manager', 'myia-ai-01', 'roo-extensions')).toBe(true);
+      expect(matchesRecipient('myia-ai-01:roo-state-manager', 'myia-ai-01', 'myia-open-webui')).toBe(true);
+      expect(matchesRecipient('myia-ai-01:roo-state-manager', 'myia-ai-01', 'livresagites')).toBe(true);
+    });
+
+    test('ghost workspace does NOT match different machine', () => {
+      expect(matchesRecipient('myia-ai-01:roo-state-manager', 'myia-po-2024', 'roo-extensions')).toBe(false);
     });
   });
 

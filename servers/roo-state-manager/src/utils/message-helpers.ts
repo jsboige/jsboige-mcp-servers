@@ -35,15 +35,20 @@ export function getLocalMachineId(): string {
  *
  * Stratégie de détection (par ordre de priorité) :
  * 1. Variable d'environnement ROOSYNC_WORKSPACE_ID (override manuel)
- * 2. Nom du répertoire courant (process.cwd()) - AUTO-DETECTION
+ * 2. Variable d'environnement WORKSPACE_PATH (basename) - set by mcp-wrapper or ${workspaceFolder}
+ * 3. Nom du répertoire courant (process.cwd()) - AUTO-DETECTION (fallback)
+ *
+ * Note: process.cwd() is unreliable when the MCP server runs with cwd set to its
+ * own directory (e.g., mcp-wrapper.cjs uses cwd: __dirname). WORKSPACE_PATH is
+ * set by the wrapper from the original cwd (which is the VS Code workspace folder).
  *
  * @returns ID du workspace (jamais undefined, utilise 'default' si impossible à détecter)
  *
  * @example
  * ```typescript
- * // Dans d:/dev/roo-extensions
+ * // WORKSPACE_PATH=d:/roo-extensions (set by wrapper)
  * getLocalWorkspaceId(); // "roo-extensions"
- * // Avec override manuel
+ * // Override manuel
  * // ROOSYNC_WORKSPACE_ID=my-custom-workspace
  * getLocalWorkspaceId(); // "my-custom-workspace"
  * ```
@@ -54,7 +59,16 @@ export function getLocalWorkspaceId(): string {
     return process.env.ROOSYNC_WORKSPACE_ID;
   }
 
-  // 2. Auto-détection depuis le répertoire courant
+  // 2. WORKSPACE_PATH from launcher (mcp-wrapper captures original cwd,
+  //    or Roo injects ${workspaceFolder} via config)
+  if (process.env.WORKSPACE_PATH) {
+    const wsName = path.basename(process.env.WORKSPACE_PATH.replace(/\\/g, '/'));
+    if (wsName && wsName !== '.' && wsName.length >= 2) {
+      return wsName;
+    }
+  }
+
+  // 3. Auto-détection depuis le répertoire courant (fallback)
   const cwd = process.cwd();
   const workspaceName = path.basename(cwd);
 
@@ -63,7 +77,7 @@ export function getLocalWorkspaceId(): string {
     return workspaceName;
   }
 
-  // 3. Fallback ultime (ne devrait jamais arriver en production)
+  // 4. Fallback ultime (ne devrait jamais arriver en production)
   return 'default';
 }
 
@@ -127,12 +141,20 @@ export function normalizeWorkspaceId(workspaceId: string): string {
   return path.basename(workspaceId.replace(/\\/g, '/')).toLowerCase();
 }
 
+// TEMPORARY: Ghost workspace IDs that were used due to the cwd bug (getLocalWorkspaceId
+// returned the MCP directory name instead of the VS Code workspace name).
+// Messages addressed to these IDs are treated as machine-level (visible by all workspaces
+// on that machine). This ensures old messages remain visible after the fix.
+// TODO: Remove this constant once all legacy messages have been processed (after 2026-04-01).
+const GHOST_WORKSPACE_IDS = new Set(['roo-state-manager']);
+
 /**
  * Vérifie si un message correspond au destinataire local
  *
  * Règles de matching :
  * - "all" / "All" → match tous
  * - "machineId" (sans workspace) → match toutes les instances sur cette machine
+ * - "machineId:ghostWorkspace" → match toutes les instances (backward compat)
  * - "machineId:workspaceId" → match UNIQUEMENT ce workspace spécifique
  *   (comparaison normalisée : basename, case-insensitive)
  *
@@ -156,6 +178,12 @@ export function matchesRecipient(
   // Machine must match
   if (parsed.machineId !== localMachineId) {
     return false;
+  }
+
+  // Ghost workspace: old messages addressed to the MCP directory name
+  // are treated as machine-level (visible by all workspaces on that machine)
+  if (parsed.workspaceId && GHOST_WORKSPACE_IDS.has(normalizeWorkspaceId(parsed.workspaceId))) {
+    return true;
   }
 
   // If message targets a specific workspace, only that workspace should see it

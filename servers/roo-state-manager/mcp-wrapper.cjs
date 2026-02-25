@@ -38,10 +38,21 @@ let buffer = '';
 
 logDebug('Starting roo-state-manager MCP server v4.0 (pass-through + anti-duplicate)...');
 
+// Capture the original cwd BEFORE overriding with __dirname.
+// When launched by Claude Code or VS Code, cwd is the workspace folder.
+// The server needs this to correctly identify which workspace it serves
+// (critical for RooSync cross-workspace message routing).
+const originalCwd = process.cwd();
+
 // Spawn le serveur avec stdout et stderr redirigés pour filtrage
 const server = spawn('node', [serverPath], {
     cwd: __dirname,
-    env: process.env,
+    env: {
+        ...process.env,
+        // Pass workspace path from the original cwd (set by VS Code/Claude Code)
+        // unless already explicitly set via config
+        WORKSPACE_PATH: process.env.WORKSPACE_PATH || originalCwd,
+    },
     stdio: ['inherit', 'pipe', 'pipe']
 });
 
