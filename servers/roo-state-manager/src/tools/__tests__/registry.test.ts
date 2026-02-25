@@ -156,8 +156,7 @@ describe('registry.ts - Tool Registration', () => {
         let mockServer: any;
         let mockState: ServerState;
         let mockHandleTouchMcpSettings: () => Promise<any>;
-        let mockHandleExportConversationJson: (args: any) => Promise<any>;
-        let mockHandleExportConversationCsv: (args: any) => Promise<any>;
+        // #519: mockHandleExportConversationJson/Csv retirés (CONS-10 legacy)
         let mockEnsureSkeletonCacheIsFresh: (args?: any) => Promise<boolean>;
         let mockSaveSkeletonToDisk: (skeleton: any) => Promise<void>;
 
@@ -178,14 +177,6 @@ describe('registry.ts - Tool Registration', () => {
                 content: [{ type: 'text', text: 'Settings touched' }]
             });
 
-            mockHandleExportConversationJson = vi.fn().mockResolvedValue({
-                content: [{ type: 'text', text: 'JSON export' }]
-            });
-
-            mockHandleExportConversationCsv = vi.fn().mockResolvedValue({
-                content: [{ type: 'text', text: 'CSV export' }]
-            });
-
             mockEnsureSkeletonCacheIsFresh = vi.fn().mockResolvedValue(true);
             mockSaveSkeletonToDisk = vi.fn().mockResolvedValue(undefined);
         });
@@ -195,8 +186,6 @@ describe('registry.ts - Tool Registration', () => {
                 mockServer,
                 mockState,
                 mockHandleTouchMcpSettings,
-                mockHandleExportConversationJson,
-                mockHandleExportConversationCsv,
                 mockEnsureSkeletonCacheIsFresh,
                 mockSaveSkeletonToDisk
             );
@@ -212,8 +201,6 @@ describe('registry.ts - Tool Registration', () => {
                 mockServer,
                 mockState,
                 mockHandleTouchMcpSettings,
-                mockHandleExportConversationJson,
-                mockHandleExportConversationCsv,
                 mockEnsureSkeletonCacheIsFresh,
                 mockSaveSkeletonToDisk
             );
@@ -237,8 +224,6 @@ describe('registry.ts - Tool Registration', () => {
                 mockServer,
                 mockState,
                 mockHandleTouchMcpSettings,
-                mockHandleExportConversationJson,
-                mockHandleExportConversationCsv,
                 mockEnsureSkeletonCacheIsFresh,
                 mockSaveSkeletonToDisk
             );
@@ -263,8 +248,6 @@ describe('registry.ts - Tool Registration', () => {
                 mockServer,
                 mockState,
                 mockHandleTouchMcpSettings,
-                mockHandleExportConversationJson,
-                mockHandleExportConversationCsv,
                 mockEnsureSkeletonCacheIsFresh,
                 mockSaveSkeletonToDisk
             );
@@ -288,8 +271,6 @@ describe('registry.ts - Tool Registration', () => {
                 mockServer,
                 mockState,
                 mockHandleTouchMcpSettings,
-                mockHandleExportConversationJson,
-                mockHandleExportConversationCsv,
                 mockEnsureSkeletonCacheIsFresh,
                 mockSaveSkeletonToDisk
             );
@@ -313,8 +294,6 @@ describe('registry.ts - Tool Registration', () => {
                 mockServer,
                 mockState,
                 mockHandleTouchMcpSettings,
-                mockHandleExportConversationJson,
-                mockHandleExportConversationCsv,
                 mockEnsureSkeletonCacheIsFresh,
                 mockSaveSkeletonToDisk
             );
@@ -338,8 +317,6 @@ describe('registry.ts - Tool Registration', () => {
                 mockServer,
                 mockState,
                 mockHandleTouchMcpSettings,
-                mockHandleExportConversationJson,
-                mockHandleExportConversationCsv,
                 mockEnsureSkeletonCacheIsFresh,
                 mockSaveSkeletonToDisk
             );
@@ -363,8 +340,6 @@ describe('registry.ts - Tool Registration', () => {
                 mockServer,
                 mockState,
                 mockHandleTouchMcpSettings,
-                mockHandleExportConversationJson,
-                mockHandleExportConversationCsv,
                 mockEnsureSkeletonCacheIsFresh,
                 mockSaveSkeletonToDisk
             );
@@ -388,8 +363,6 @@ describe('registry.ts - Tool Registration', () => {
                 mockServer,
                 mockState,
                 mockHandleTouchMcpSettings,
-                mockHandleExportConversationJson,
-                mockHandleExportConversationCsv,
                 mockEnsureSkeletonCacheIsFresh,
                 mockSaveSkeletonToDisk
             );
@@ -413,8 +386,6 @@ describe('registry.ts - Tool Registration', () => {
                 mockServer,
                 mockState,
                 mockHandleTouchMcpSettings,
-                mockHandleExportConversationJson,
-                mockHandleExportConversationCsv,
                 mockEnsureSkeletonCacheIsFresh,
                 mockSaveSkeletonToDisk
             );
@@ -438,8 +409,6 @@ describe('registry.ts - Tool Registration', () => {
                 mockServer,
                 mockState,
                 mockHandleTouchMcpSettings,
-                mockHandleExportConversationJson,
-                mockHandleExportConversationCsv,
                 mockEnsureSkeletonCacheIsFresh,
                 mockSaveSkeletonToDisk
             );
@@ -463,8 +432,6 @@ describe('registry.ts - Tool Registration', () => {
                 mockServer,
                 mockState,
                 mockHandleTouchMcpSettings,
-                mockHandleExportConversationJson,
-                mockHandleExportConversationCsv,
                 mockEnsureSkeletonCacheIsFresh,
                 mockSaveSkeletonToDisk
             );
@@ -488,8 +455,6 @@ describe('registry.ts - Tool Registration', () => {
                 mockServer,
                 mockState,
                 mockHandleTouchMcpSettings,
-                mockHandleExportConversationJson,
-                mockHandleExportConversationCsv,
                 mockEnsureSkeletonCacheIsFresh,
                 mockSaveSkeletonToDisk
             );
@@ -533,8 +498,6 @@ describe('registry.ts - Tool Registration', () => {
                     mockServer,
                     mockState,
                     vi.fn().mockResolvedValue({ content: [] }),
-                    vi.fn().mockResolvedValue({ content: [] }),
-                    vi.fn().mockResolvedValue({ content: [] }),
                     vi.fn().mockResolvedValue(true),
                     vi.fn().mockResolvedValue(undefined)
                 );
@@ -558,8 +521,6 @@ describe('registry.ts - Tool Registration', () => {
                 registerCallToolHandler(
                     mockServer,
                     mockState,
-                    vi.fn().mockResolvedValue({ content: [] }),
-                    vi.fn().mockResolvedValue({ content: [] }),
                     vi.fn().mockResolvedValue({ content: [] }),
                     vi.fn().mockResolvedValue(true),
                     vi.fn().mockResolvedValue(undefined)

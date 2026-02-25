@@ -63,7 +63,7 @@ console.log('🔧 [DEBUG] ROOSYNC_SHARED_PATH =', process.env.ROOSYNC_SHARED_PAT
 import { createMcpServer, SERVER_CONFIG } from './config/server-config.js';
 import { StateManager } from './services/state-manager.service.js';
 import { registerListToolsHandler, registerCallToolHandler } from './tools/registry.js';
-import { truncateResult, handleTouchMcpSettings, handleExportConversationJson, handleExportConversationCsv } from './utils/server-helpers.js';
+import { truncateResult, handleTouchMcpSettings } from './utils/server-helpers.js';
 import { initializeBackgroundServices, saveSkeletonToDisk } from './services/background-services.js';
 import { RooStorageDetector } from './utils/roo-storage-detector.js';
 import { promises as fs } from 'fs';
@@ -167,12 +167,11 @@ class RooStateManagerServer {
         // Enregistrer le handler ListTools
         registerListToolsHandler(this.server);
         // Enregistrer le handler CallTool avec toutes les dépendances
+        // #519: handleExportConversationJson/Csv retirés (CONS-10 legacy)
         registerCallToolHandler(
             this.server,
             state,
             handleTouchMcpSettings,
-            (args) => handleExportConversationJson(args, state.conversationCache),
-            (args) => handleExportConversationCsv(args, state.conversationCache),
             this.ensureSkeletonCacheIsFresh.bind(this),
             saveSkeletonToDisk
         );

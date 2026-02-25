@@ -240,15 +240,8 @@ export { roosyncMachines, machinesToolMetadata } from './machines.js';
 // [DEPRECATED] Legacy inventory tool - utiliser inventoryTool à la place
 export { getMachineInventoryTool } from './get-machine-inventory.js';
 
-// Export des outils Heartbeat (T3.16)
-// @deprecated Ces 7 outils seront remplaces par heartbeat_status et heartbeat_service dans une future version
-export { roosyncRegisterHeartbeat, registerHeartbeatToolMetadata } from './register-heartbeat.js';
-export { roosyncGetOfflineMachines, getOfflineMachinesToolMetadata } from './get-offline-machines.js';
-export { roosyncGetWarningMachines, getWarningMachinesToolMetadata } from './get-warning-machines.js';
-export { roosyncGetHeartbeatState, getHeartbeatStateToolMetadata } from './get-heartbeat-state.js';
-export { roosyncStartHeartbeatService, startHeartbeatServiceToolMetadata } from './start-heartbeat-service.js';
-export { roosyncStopHeartbeatService, stopHeartbeatServiceToolMetadata } from './stop-heartbeat-service.js';
-export { roosyncCheckHeartbeats, checkHeartbeatsToolMetadata } from './check-heartbeats.js';
+// #519: Legacy heartbeat tools retirés (7 outils) - utiliser roosync_heartbeat consolidé
+// Modules conservés pour les tests unitaires existants mais non exportés publiquement
 
 // CONS-#443 Groupe 1: Outil consolidé de heartbeat (2→1)
 // Remplace heartbeat_status + heartbeat_service
