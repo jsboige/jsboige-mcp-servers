@@ -39,10 +39,12 @@ describe('roosync_send_message - Validation', () => {
     }));
 
     // Mock de os pour getLocalMachineId() + tmpdir() used by logger
-    vi.doMock('os', () => ({
+    // Inclure 'default' car send_message.ts utilise 'import os from "os"' (default import)
+    const osMock = {
       hostname: vi.fn().mockReturnValue('test-machine'),
       tmpdir: vi.fn().mockReturnValue('/tmp')
-    }));
+    };
+    vi.doMock('os', () => ({ default: osMock, ...osMock }));
 
     // Importer le module après les mocks
     const module = await import('../../../../src/tools/roosync/send_message.js');
@@ -101,6 +103,77 @@ describe('roosync_send_message - Validation', () => {
       expect(Array.isArray(result.content)).toBe(true);
       expect(result.content[0]).toHaveProperty('type', 'text');
       expect(result.content[0]).toHaveProperty('text');
+    });
+  });
+
+  describe('paramètres optionnels', () => {
+    it('devrait inclure les tags dans la réponse quand fournis', async () => {
+      const args = {
+        to: 'target-machine',
+        subject: 'Test',
+        body: 'Body',
+        tags: ['coordination', 'urgent']
+      };
+
+      const result = await sendMessage(args);
+
+      expect(result.content[0].text).toContain('coordination');
+      expect(result.content[0].text).toContain('urgent');
+    });
+
+    it('devrait inclure le thread_id dans la réponse quand fourni', async () => {
+      const args = {
+        to: 'target-machine',
+        subject: 'Test',
+        body: 'Body',
+        thread_id: 'thread-abc123'
+      };
+
+      const result = await sendMessage(args);
+
+      expect(result.content[0].text).toContain('thread-abc123');
+    });
+
+    it('devrait inclure reply_to dans la réponse quand fourni', async () => {
+      const args = {
+        to: 'target-machine',
+        subject: 'Test',
+        body: 'Body',
+        reply_to: 'msg-original-456'
+      };
+
+      const result = await sendMessage(args);
+
+      expect(result.content[0].text).toContain('msg-original-456');
+    });
+
+    it('devrait réussir sans paramètres optionnels', async () => {
+      const args = {
+        to: 'target-machine',
+        subject: 'Test',
+        body: 'Body'
+      };
+
+      const result = await sendMessage(args);
+
+      expect(result.content[0].text).toContain('Message envoyé');
+      // Les sections tags/thread/reply ne doivent pas apparaître
+      expect(result.content[0].text).not.toContain('**Tags');
+      expect(result.content[0].text).not.toContain('**Thread');
+      expect(result.content[0].text).not.toContain('**En réponse');
+    });
+
+    it('devrait envoyer avec priorité HIGH', async () => {
+      const args = {
+        to: 'target-machine',
+        subject: 'Test',
+        body: 'Body',
+        priority: 'HIGH' as const
+      };
+
+      const result = await sendMessage(args);
+
+      expect(result.content[0].text).toContain('Message envoyé');
     });
   });
 });

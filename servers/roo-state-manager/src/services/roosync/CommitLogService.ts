@@ -722,18 +722,78 @@ export class CommitLogService {
       return 0;
     }
 
-    const now = Date.now();
-    const compressedCount = 0;
-
-    for (const entry of this.state.entries.values()) {
-      const entryAge = now - new Date(entry.timestamp).getTime();
-      if (entryAge > this.config.compressionAge) {
-        // TODO: Implémenter la compression
-        logger.debug(`Entrée ${entry.sequenceNumber} éligible pour compression`);
-      }
+    const lockAcquired = await this.acquireLock();
+    if (!lockAcquired) {
+      logger.warn('Impossible d\'acquérir le lock pour la compression');
+      return 0;
     }
 
-    return compressedCount;
+    try {
+      const now = Date.now();
+      let compressedCount = 0;
+      const toCompress: number[] = [];
+
+      // Identifier les entrées à compresser
+      for (const entry of this.state.entries.values()) {
+        const entryAge = now - new Date(entry.timestamp).getTime();
+        if (entryAge > this.config.compressionAge) {
+          toCompress.push(entry.sequenceNumber);
+        }
+      }
+
+      // Compresser chaque entrée éligible
+      for (const sequenceNumber of toCompress) {
+        const entry = this.state.entries.get(sequenceNumber);
+        if (!entry) continue;
+
+        try {
+          // Déplacer le fichier vers l'archive
+          const sourceFileName = this.getCommitFileName(sequenceNumber);
+          const sourcePath = join(this.commitLogDir, sourceFileName);
+          const archivePath = join(this.archiveDir, sourceFileName);
+
+          await fs.rename(sourcePath, archivePath);
+
+          // Retirer de l'état actuel
+          this.state.entries.delete(sequenceNumber);
+
+          // Retirer des listes de statut
+          const statusKey = entry.status === CommitStatus.PENDING ? 'pending' :
+                           entry.status === CommitStatus.APPLIED ? 'applied' :
+                           entry.status === CommitStatus.FAILED ? 'failed' : 'rolledBack';
+          const statusArray = this.state.entriesByStatus[statusKey];
+          const index = statusArray.indexOf(sequenceNumber);
+          if (index !== -1) {
+            statusArray.splice(index, 1);
+          }
+
+          compressedCount++;
+          logger.debug(`Entrée ${sequenceNumber} compressée`, {
+            timestamp: entry.timestamp,
+            age: Math.round((now - new Date(entry.timestamp).getTime()) / 1000 / 60) // en minutes
+          });
+        } catch (error) {
+          logger.error(`Erreur compression entrée ${sequenceNumber}`, error);
+        }
+      }
+
+      if (compressedCount > 0) {
+        // Mettre à jour les statistiques
+        this.updateStatistics();
+
+        // Sauvegarder l'état
+        await this.saveState();
+
+        logger.info(`Compression terminée`, {
+          compressedEntries: compressedCount,
+          remainingEntries: this.state.entries.size
+        });
+      }
+
+      return compressedCount;
+    } finally {
+      await this.releaseLock();
+    }
   }
 
   /**

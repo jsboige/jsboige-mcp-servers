@@ -267,6 +267,306 @@ describe('git-helpers', () => {
     });
   });
 
+  describe('execGitCommand with logSHA', () => {
+    it('should log SHA before and after when SHA unchanged', async () => {
+      const sha = 'abc123def456abc123def456abc123def456abc1';
+      // 1. verifyGitAvailable
+      mockExec.mockImplementationOnce((_cmd: any, _options: any, callback: any) => {
+        callback(null, { stdout: 'git version 2.40.0', stderr: '' });
+        return {} as any;
+      });
+      // 2. SHA before
+      mockExec.mockImplementationOnce((_cmd: any, _options: any, callback: any) => {
+        callback(null, { stdout: sha, stderr: '' });
+        return {} as any;
+      });
+      // 3. Actual command
+      mockExec.mockImplementationOnce((_cmd: any, _options: any, callback: any) => {
+        callback(null, { stdout: 'Already up to date.', stderr: '' });
+        return {} as any;
+      });
+      // 4. SHA after (same)
+      mockExec.mockImplementationOnce((_cmd: any, _options: any, callback: any) => {
+        callback(null, { stdout: sha, stderr: '' });
+        return {} as any;
+      });
+
+      const result = await gitHelpers.execGitCommand(
+        'git pull origin',
+        'Pull from origin',
+        { cwd: '/test/path', logSHA: true }
+      );
+
+      expect(result.success).toBe(true);
+      expect(mockExec).toHaveBeenCalledTimes(4);
+    });
+
+    it('should log SHA changed when SHA differs', async () => {
+      const shaBeforeVal = 'aaa123def456abc123def456abc123def456abc1';
+      const shaAfterVal = 'bbb456def456abc123def456abc123def456abc1';
+      mockExec.mockImplementationOnce((_cmd: any, _options: any, callback: any) => {
+        callback(null, { stdout: 'git version 2.40.0', stderr: '' });
+        return {} as any;
+      });
+      mockExec.mockImplementationOnce((_cmd: any, _options: any, callback: any) => {
+        callback(null, { stdout: shaBeforeVal, stderr: '' });
+        return {} as any;
+      });
+      mockExec.mockImplementationOnce((_cmd: any, _options: any, callback: any) => {
+        callback(null, { stdout: 'Fast-forward', stderr: '' });
+        return {} as any;
+      });
+      mockExec.mockImplementationOnce((_cmd: any, _options: any, callback: any) => {
+        callback(null, { stdout: shaAfterVal, stderr: '' });
+        return {} as any;
+      });
+
+      const result = await gitHelpers.execGitCommand(
+        'git pull origin',
+        'Pull from origin',
+        { cwd: '/test/path', logSHA: true }
+      );
+
+      expect(result.success).toBe(true);
+    });
+
+    it('should handle SHA retrieval failure gracefully (non-fatal)', async () => {
+      // 1. verifyGitAvailable
+      mockExec.mockImplementationOnce((_cmd: any, _options: any, callback: any) => {
+        callback(null, { stdout: 'git version 2.40.0', stderr: '' });
+        return {} as any;
+      });
+      // 2. SHA before fails
+      mockExec.mockImplementationOnce((_cmd: any, _options: any, callback: any) => {
+        callback(new Error('not a git repo'), { stdout: '', stderr: '' });
+        return {} as any;
+      });
+      // 3. Actual command succeeds
+      mockExec.mockImplementationOnce((_cmd: any, _options: any, callback: any) => {
+        callback(null, { stdout: 'ok', stderr: '' });
+        return {} as any;
+      });
+
+      const result = await gitHelpers.execGitCommand(
+        'git status',
+        'Status',
+        { cwd: '/test/path', logSHA: true }
+      );
+
+      // Should still succeed (SHA retrieval failure is non-fatal)
+      expect(result.success).toBe(true);
+    });
+
+    it('should log stderr as warning on success with stderr output', async () => {
+      mockExec.mockImplementationOnce((_cmd: any, _options: any, callback: any) => {
+        callback(null, { stdout: 'git version 2.40.0', stderr: '' });
+        return {} as any;
+      });
+      mockExec.mockImplementationOnce((_cmd: any, _options: any, callback: any) => {
+        callback(null, { stdout: 'On branch main', stderr: 'warning: LF will be replaced by CRLF' });
+        return {} as any;
+      });
+
+      const result = await gitHelpers.execGitCommand('git status', 'Check status');
+
+      expect(result.success).toBe(true);
+      expect(result.output).toBe('On branch main');
+    });
+  });
+
+  describe('safePull', () => {
+    const sha = 'abc123def456abc123def456abc123def456abc1';
+
+    it('should pull successfully with default remote', async () => {
+      // 1. verifyGitAvailable (cached after)
+      mockExec.mockImplementationOnce((_cmd: any, _options: any, callback: any) => {
+        callback(null, { stdout: 'git version 2.40.0', stderr: '' }); return {} as any;
+      });
+      // 2. getHeadSHA before pull
+      mockExec.mockImplementationOnce((_cmd: any, _options: any, callback: any) => {
+        callback(null, { stdout: sha, stderr: '' }); return {} as any;
+      });
+      // 3. SHA before in logSHA
+      mockExec.mockImplementationOnce((_cmd: any, _options: any, callback: any) => {
+        callback(null, { stdout: sha, stderr: '' }); return {} as any;
+      });
+      // 4. git pull origin
+      mockExec.mockImplementationOnce((_cmd: any, _options: any, callback: any) => {
+        callback(null, { stdout: 'Already up to date.', stderr: '' }); return {} as any;
+      });
+      // 5. SHA after in logSHA
+      mockExec.mockImplementationOnce((_cmd: any, _options: any, callback: any) => {
+        callback(null, { stdout: sha, stderr: '' }); return {} as any;
+      });
+      // 6. verifyHeadValid after pull
+      mockExec.mockImplementationOnce((_cmd: any, _options: any, callback: any) => {
+        callback(null, { stdout: sha, stderr: '' }); return {} as any;
+      });
+
+      const result = await gitHelpers.safePull('/test/path');
+
+      expect(result.success).toBe(true);
+      expect(result.output).toBe('Already up to date.');
+    });
+
+    it('should pull with custom remote and branch', async () => {
+      mockExec.mockImplementationOnce((_cmd: any, _options: any, callback: any) => {
+        callback(null, { stdout: 'git version 2.40.0', stderr: '' }); return {} as any;
+      });
+      mockExec.mockImplementationOnce((_cmd: any, _options: any, callback: any) => {
+        callback(null, { stdout: sha, stderr: '' }); return {} as any;
+      });
+      mockExec.mockImplementationOnce((_cmd: any, _options: any, callback: any) => {
+        callback(null, { stdout: sha, stderr: '' }); return {} as any;
+      });
+      mockExec.mockImplementationOnce((_cmd: any, options: any, callback: any) => {
+        // Verify the command includes custom remote and branch
+        expect(_cmd).toContain('git pull upstream dev');
+        callback(null, { stdout: 'Fast-forward', stderr: '' }); return {} as any;
+      });
+      mockExec.mockImplementationOnce((_cmd: any, _options: any, callback: any) => {
+        callback(null, { stdout: sha, stderr: '' }); return {} as any;
+      });
+      mockExec.mockImplementationOnce((_cmd: any, _options: any, callback: any) => {
+        callback(null, { stdout: sha, stderr: '' }); return {} as any;
+      });
+
+      const result = await gitHelpers.safePull('/test/path', 'upstream', 'dev');
+
+      expect(result.success).toBe(true);
+    });
+
+    it('should return failure when HEAD is invalid before pull', async () => {
+      // verifyGitAvailable → git not found → verifyHeadValid → false
+      mockExec.mockImplementation((_cmd: any, _options: any, callback: any) => {
+        callback(new Error('git: command not found'), { stdout: '', stderr: '' });
+        return {} as any;
+      });
+
+      const result = await gitHelpers.safePull('/test/path');
+
+      expect(result.success).toBe(false);
+      expect(result.error).toBe('HEAD SHA invalid before pull');
+    });
+
+    it('should return failure when HEAD corrupted after pull', async () => {
+      // Pull succeeds but HEAD is invalid afterwards
+      mockExec.mockImplementationOnce((_cmd: any, _options: any, callback: any) => {
+        callback(null, { stdout: 'git version 2.40.0', stderr: '' }); return {} as any;
+      });
+      // getHeadSHA before - valid sha
+      mockExec.mockImplementationOnce((_cmd: any, _options: any, callback: any) => {
+        callback(null, { stdout: sha, stderr: '' }); return {} as any;
+      });
+      // SHA before in logSHA
+      mockExec.mockImplementationOnce((_cmd: any, _options: any, callback: any) => {
+        callback(null, { stdout: sha, stderr: '' }); return {} as any;
+      });
+      // git pull - success
+      mockExec.mockImplementationOnce((_cmd: any, _options: any, callback: any) => {
+        callback(null, { stdout: 'Fast-forward', stderr: '' }); return {} as any;
+      });
+      // SHA after in logSHA
+      mockExec.mockImplementationOnce((_cmd: any, _options: any, callback: any) => {
+        callback(null, { stdout: sha, stderr: '' }); return {} as any;
+      });
+      // verifyHeadValid after - git returns invalid sha
+      mockExec.mockImplementationOnce((_cmd: any, _options: any, callback: any) => {
+        callback(null, { stdout: 'invalid-sha', stderr: '' }); return {} as any;
+      });
+
+      const result = await gitHelpers.safePull('/test/path');
+
+      expect(result.success).toBe(false);
+      expect(result.error).toBe('HEAD SHA corrupted after pull');
+    });
+  });
+
+  describe('safeCheckout', () => {
+    const sha = 'abc123def456abc123def456abc123def456abc1';
+
+    it('should checkout successfully', async () => {
+      // 1. verifyGitAvailable
+      mockExec.mockImplementationOnce((_cmd: any, _options: any, callback: any) => {
+        callback(null, { stdout: 'git version 2.40.0', stderr: '' }); return {} as any;
+      });
+      // 2. getHeadSHA before checkout
+      mockExec.mockImplementationOnce((_cmd: any, _options: any, callback: any) => {
+        callback(null, { stdout: sha, stderr: '' }); return {} as any;
+      });
+      // 3. SHA before in logSHA
+      mockExec.mockImplementationOnce((_cmd: any, _options: any, callback: any) => {
+        callback(null, { stdout: sha, stderr: '' }); return {} as any;
+      });
+      // 4. git checkout
+      mockExec.mockImplementationOnce((_cmd: any, _options: any, callback: any) => {
+        callback(null, { stdout: "Switched to branch 'feature'", stderr: '' }); return {} as any;
+      });
+      // 5. SHA after in logSHA
+      const newSha = 'def456abc123def456abc123def456abc123def4';
+      mockExec.mockImplementationOnce((_cmd: any, _options: any, callback: any) => {
+        callback(null, { stdout: newSha, stderr: '' }); return {} as any;
+      });
+      // 6. getHeadSHA after checkout (verification)
+      mockExec.mockImplementationOnce((_cmd: any, _options: any, callback: any) => {
+        callback(null, { stdout: newSha, stderr: '' }); return {} as any;
+      });
+
+      const result = await gitHelpers.safeCheckout('/test/path', 'feature');
+
+      expect(result.success).toBe(true);
+    });
+
+    it('should return failure when HEAD cannot be retrieved before checkout', async () => {
+      // git not found → getHeadSHA returns null
+      mockExec.mockImplementation((_cmd: any, _options: any, callback: any) => {
+        callback(new Error('git: command not found'), { stdout: '', stderr: '' });
+        return {} as any;
+      });
+
+      const result = await gitHelpers.safeCheckout('/test/path', 'feature');
+
+      expect(result.success).toBe(false);
+      expect(result.error).toBe('Cannot get HEAD SHA before checkout');
+    });
+
+    it('should rollback and return failure when HEAD invalid after checkout', async () => {
+      // 1. verifyGitAvailable
+      mockExec.mockImplementationOnce((_cmd: any, _options: any, callback: any) => {
+        callback(null, { stdout: 'git version 2.40.0', stderr: '' }); return {} as any;
+      });
+      // 2. getHeadSHA before - valid
+      mockExec.mockImplementationOnce((_cmd: any, _options: any, callback: any) => {
+        callback(null, { stdout: sha, stderr: '' }); return {} as any;
+      });
+      // 3. SHA before in logSHA
+      mockExec.mockImplementationOnce((_cmd: any, _options: any, callback: any) => {
+        callback(null, { stdout: sha, stderr: '' }); return {} as any;
+      });
+      // 4. git checkout - success
+      mockExec.mockImplementationOnce((_cmd: any, _options: any, callback: any) => {
+        callback(null, { stdout: "Switched to branch 'feature'", stderr: '' }); return {} as any;
+      });
+      // 5. SHA after in logSHA - valid sha
+      mockExec.mockImplementationOnce((_cmd: any, _options: any, callback: any) => {
+        callback(null, { stdout: sha, stderr: '' }); return {} as any;
+      });
+      // 6. getHeadSHA after checkout - fails (returns null)
+      mockExec.mockImplementationOnce((_cmd: any, _options: any, callback: any) => {
+        callback(new Error('corruption'), { stdout: '', stderr: '' }); return {} as any;
+      });
+      // 7. Rollback git checkout (attempt)
+      mockExec.mockImplementationOnce((_cmd: any, _options: any, callback: any) => {
+        callback(null, { stdout: 'HEAD is now at abc123d', stderr: '' }); return {} as any;
+      });
+
+      const result = await gitHelpers.safeCheckout('/test/path', 'feature');
+
+      expect(result.success).toBe(false);
+      expect(result.error).toBe('HEAD SHA invalid after checkout, rolled back');
+    });
+  });
+
   describe('getGitHelpers singleton', () => {
     it('should return same instance on multiple calls', () => {
       const instance1 = getGitHelpers();

@@ -26,6 +26,7 @@ if (!process.env.OPENAI_API_KEY) process.env.OPENAI_API_KEY = 'sk-test-key';
 if (!process.env.OPENAI_CHAT_MODEL_ID) process.env.OPENAI_CHAT_MODEL_ID = 'gpt-4o-mini';
 if (!process.env.QDRANT_COLLECTION_NAME) process.env.QDRANT_COLLECTION_NAME = 'roo_tasks_semantic_index';
 if (!process.env.ROOSYNC_SHARED_PATH) process.env.ROOSYNC_SHARED_PATH = process.env.TMPDIR || process.env.TMP || '/tmp';
+if (!process.env.ROOSYNC_MACHINE_ID) process.env.ROOSYNC_MACHINE_ID = 'ci-test-machine';
 
 // Mock des APIs externes
 vi.mock('openai', () => ({
@@ -271,6 +272,7 @@ vi.mock('os', () => {
     homedir: vi.fn(() => '/mock/home'),
     hostname: vi.fn(() => 'test-machine'),
     tmpdir: vi.fn(() => process.env.TMPDIR || process.env.TMP || '/tmp'),
+    uptime: vi.fn(() => 86400),
     EOL: '\n',
     type: vi.fn(() => 'Windows_NT'),
     release: vi.fn(() => '10.0.26200'),

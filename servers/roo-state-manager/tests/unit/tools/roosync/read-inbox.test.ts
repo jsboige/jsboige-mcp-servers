@@ -120,9 +120,106 @@ describe('roosync_read_inbox - Interface', () => {
   });
 });
 
-describe('roosync_read_inbox - Helpers', () => {
-  it('devrait formater correctement les priorités', () => {
-    // Test des helpers internes via le comportement observé
-    // Ces tests vérifient que le format de sortie contient les icônes attendues
+describe('roosync_read_inbox - Inbox vide', () => {
+  let readInbox: typeof import('../../../../src/tools/roosync/read_inbox.js').readInbox;
+
+  beforeEach(async () => {
+    vi.resetModules();
+
+    vi.doMock('../../../../src/services/MessageManager.js', () => ({
+      MessageManager: vi.fn().mockImplementation(() => ({
+        readInbox: vi.fn().mockResolvedValue([])
+      }))
+    }));
+
+    vi.doMock('../../../../src/utils/server-helpers.js', () => ({
+      getSharedStatePath: vi.fn().mockReturnValue('/mock/shared-state')
+    }));
+
+    // Inclure 'default' car read_inbox.ts utilise 'import os from "os"' (default import)
+    const osMock = { hostname: vi.fn().mockReturnValue('test-machine'), tmpdir: vi.fn().mockReturnValue('/tmp') };
+    vi.doMock('os', () => ({ default: osMock, ...osMock }));
+
+    const module = await import('../../../../src/tools/roosync/read_inbox.js');
+    readInbox = module.readInbox;
+  });
+
+  it('devrait indiquer que l\'inbox est vide sans filtre', async () => {
+    const result = await readInbox({});
+    expect(result.content[0].text).toContain('Aucun message');
+  });
+
+  it('devrait mentionner le filtre actif quand inbox vide avec status', async () => {
+    const result = await readInbox({ status: 'unread' });
+    expect(result.content[0].text).toContain('unread');
+  });
+});
+
+describe('roosync_read_inbox - Couverture icônes et troncature', () => {
+  let readInbox: typeof import('../../../../src/tools/roosync/read_inbox.js').readInbox;
+
+  const messagesWithAllVariants = [
+    {
+      id: 'msg-1', from: 'machine-1', to: 'test-machine',
+      subject: 'Ce sujet est très long et devrait être tronqué car il dépasse 25 caractères',
+      body: 'Body 1', preview: 'Preview 1', priority: 'URGENT',
+      timestamp: '2026-01-15T10:00:00.000Z', status: 'unread', tags: []
+    },
+    {
+      id: 'msg-2', from: 'machine-2', to: 'test-machine',
+      subject: 'Short', body: 'Body 2', preview: 'Preview 2', priority: 'LOW',
+      timestamp: '2026-01-15T09:00:00.000Z', status: 'archived', tags: []
+    },
+    {
+      id: 'msg-3', from: 'machine-3', to: 'test-machine',
+      subject: 'Unknown prio', body: 'Body 3', preview: 'Preview 3', priority: 'UNKNOWN_PRIO',
+      timestamp: '2026-01-15T08:00:00.000Z', status: 'unknown_status', tags: []
+    }
+  ];
+
+  beforeEach(async () => {
+    vi.resetModules();
+
+    vi.doMock('../../../../src/services/MessageManager.js', () => ({
+      MessageManager: vi.fn().mockImplementation(() => ({
+        readInbox: vi.fn().mockResolvedValue([...messagesWithAllVariants])
+      }))
+    }));
+
+    vi.doMock('../../../../src/utils/server-helpers.js', () => ({
+      getSharedStatePath: vi.fn().mockReturnValue('/mock/shared-state')
+    }));
+
+    // Inclure 'default' car read_inbox.ts utilise 'import os from "os"' (default import)
+    const osMock = { hostname: vi.fn().mockReturnValue('test-machine'), tmpdir: vi.fn().mockReturnValue('/tmp') };
+    vi.doMock('os', () => ({ default: osMock, ...osMock }));
+
+    const module = await import('../../../../src/tools/roosync/read_inbox.js');
+    readInbox = module.readInbox;
+  });
+
+  it('devrait afficher l\'icône 🔥 pour URGENT', async () => {
+    const result = await readInbox({});
+    expect(result.content[0].text).toContain('🔥');
+  });
+
+  it('devrait afficher l\'icône 📋 pour LOW', async () => {
+    const result = await readInbox({});
+    expect(result.content[0].text).toContain('📋');
+  });
+
+  it('devrait afficher l\'icône 📦 pour archived', async () => {
+    const result = await readInbox({});
+    expect(result.content[0].text).toContain('📦');
+  });
+
+  it('devrait tronquer les sujets longs', async () => {
+    const result = await readInbox({});
+    expect(result.content[0].text).toContain('...');
+  });
+
+  it('devrait utiliser le pluriel pour plusieurs messages', async () => {
+    const result = await readInbox({});
+    expect(result.content[0].text).toContain('messages');
   });
 });

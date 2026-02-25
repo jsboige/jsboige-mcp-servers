@@ -353,6 +353,21 @@ describe('roosync_init - roosyncInit function', () => {
     });
   });
 
+  describe('Global inventory integration', () => {
+    it('should skip inventory integration when script does not exist (default case)', async () => {
+      // This is the default behavior - the PowerShell inventory script
+      // does not exist in the test environment, so integration is skipped
+      const { roosyncInit } = await import('../../../../src/tools/roosync/roosync_init.js');
+
+      const result = await roosyncInit({});
+
+      expect(result).toHaveProperty('success', true);
+      expect(result).toHaveProperty('filesCreated');
+      // Inventory integration is optional - should not be in filesCreated
+      expect(result.filesCreated).not.toContain('sync-config.json (inventaire intégré)');
+    });
+  });
+
   describe('Error handling', () => {
     it('should handle RooSyncServiceError correctly', async () => {
       const { RooSyncServiceError } = await import('../../../../src/services/RooSyncService.js');

@@ -479,35 +479,35 @@ export class ValidationEngine {
   /**
    * Génération d'un rapport de validation détaillé
    */
-  static generateValidationReport(
+  static async generateValidationReport(
     preset: DisplayPreset,
     options: DisplayOptions,
     category: ToolCategory
-  ): { 
-    validation: ValidationResult; 
-    cacheCompliance: ValidationResult; 
-    recommendations: string[] 
-  } {
-    
-    const validation = this.validatePresetOptions(preset, options, category);
+  ): Promise<{
+    validation: ValidationResult;
+    cacheCompliance: ValidationResult;
+    recommendations: string[]
+  }> {
+
+    const validation = await this.validatePresetOptions(preset, options, category);
     const cacheCompliance = this.validateCacheAntiLeakCompliance(options);
     const recommendations: string[] = [];
-    
+
     // Générer des recommandations basées sur l'audit
     if (preset === DisplayPreset.QUICK_OVERVIEW) {
       recommendations.push('Consider using detailLevel: "skeleton" for optimal quick overview performance');
     }
-    
+
     if (category === ToolCategory.EXPORT && !options.prettyPrint) {
       recommendations.push('Consider enabling prettyPrint for better export readability');
     }
-    
+
     if (options.maxResults && options.maxResults > 100) {
       recommendations.push('Large result sets may benefit from pagination or truncation');
     }
-    
+
     return {
-      validation: validation instanceof Promise ? { isValid: false, errors: ['Async validation not resolved'] } : validation,
+      validation,
       cacheCompliance,
       recommendations
     };

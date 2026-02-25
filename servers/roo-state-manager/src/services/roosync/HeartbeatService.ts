@@ -187,9 +187,11 @@ export class HeartbeatService {
         const content = readFileSync(this.heartbeatPath, 'utf-8');
         const data = JSON.parse(content);
         
-        // Reconstruire la Map depuis les données JSON
+        // Reconstruire la Map depuis les données JSON (normaliser les clés en lowercase)
         this.state.heartbeats = new Map(
-          Object.entries(data.heartbeats || {})
+          Object.entries(data.heartbeats || {}).map(
+            ([key, value]) => [key.toLowerCase(), value as any]
+          )
         );
         
         // Recalculer les listes de machines à partir des données de heartbeat
@@ -241,8 +243,9 @@ export class HeartbeatService {
     machineId: string,
     metadata?: Record<string, any>
   ): Promise<void> {
+    machineId = machineId.toLowerCase();
     const now = new Date().toISOString();
-    
+
     let heartbeatData = this.state.heartbeats.get(machineId);
     
     if (!heartbeatData) {
@@ -410,12 +413,13 @@ export class HeartbeatService {
     onOfflineDetected?: (machineId: string) => void,
     onOnlineRestored?: (machineId: string) => void
   ): Promise<void> {
+    machineId = machineId.toLowerCase();
     logger.info(`Démarrage du service heartbeat pour: ${machineId}`);
-    
+
     // Stocker les callbacks comme propriétés de classe
     this.onOfflineDetectedCallback = onOfflineDetected;
     this.onOnlineRestoredCallback = onOnlineRestored;
-    
+
     // Enregistrer le heartbeat initial
     await this.registerHeartbeat(machineId);
     
@@ -528,7 +532,7 @@ export class HeartbeatService {
    * Obtient les données de heartbeat d'une machine
    */
   public getHeartbeatData(machineId: string): HeartbeatData | undefined {
-    return this.state.heartbeats.get(machineId);
+    return this.state.heartbeats.get(machineId.toLowerCase());
   }
   
   /**
@@ -590,7 +594,7 @@ export class HeartbeatService {
    * Supprime une machine du service de heartbeat
    */
   public async removeMachine(machineId: string): Promise<void> {
-    this.state.heartbeats.delete(machineId);
+    this.state.heartbeats.delete(machineId.toLowerCase());
     this.updateMachineStatus();
     await this.saveState();
     

@@ -12,6 +12,7 @@ export default defineConfig({
     // Patterns de tests (équivalent à testMatch de Jest)
     // NOTE: tests/e2e sont EXCLUS du run par défaut car ils envoient de vrais messages
     // à la production RooSync (GDrive). Utiliser vitest.config.real-machines.ts pour les e2e.
+    // NOTE: vitest-migration/backups sont des anciennes sauvegardes, ne pas les inclure
     include: [
       'tests/unit/**/*.test.ts',
       'tests/unit/**/*.test.js',
@@ -31,6 +32,12 @@ export default defineConfig({
       '**/node_modules/**',
       '**/build/**',
       '**/dist/**',
+      // Backups vitest-migration - anciennes sauvegardes à ne pas exécuter
+      // Chemin: vitest-migration/backups/tests-DATE/heures/tests/
+      // IMPORTANT: Exclure avant que include ne les matche
+      '**/backups/**',
+      '**/vitest-migration/backups/**',
+      'vitest-migration/backups/**',
       // Fichiers causant des boucles infinies ou timeouts (scan massif de 3870+ tâches)
       'tests/unit/parent-child-validation.test.ts',
       'tests/unit/skeleton-cache-reconstruction.test.ts',

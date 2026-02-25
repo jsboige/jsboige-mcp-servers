@@ -83,7 +83,7 @@ describe('roosyncSend - Edge Cases', () => {
         body: longBody
       });
 
-      expect(result.content[0].text).toContain('envoyé avec succès');
+      expect((result.content[0] as any).text).toContain('envoyé avec succès');
     });
 
     test('should handle very long subject (500 chars)', async () => {
@@ -96,8 +96,8 @@ describe('roosyncSend - Edge Cases', () => {
         body: 'Normal body'
       });
 
-      expect(result.content[0].text).toContain('envoyé avec succès');
-      expect(result.content[0].text).toContain('Subject:');
+      expect((result.content[0] as any).text).toContain('envoyé avec succès');
+      expect((result.content[0] as any).text).toContain('Subject:');
     });
 
     test('should handle many tags (50 tags)', async () => {
@@ -111,7 +111,7 @@ describe('roosyncSend - Edge Cases', () => {
         tags: manyTags
       });
 
-      expect(result.content[0].text).toContain('envoyé avec succès');
+      expect((result.content[0] as any).text).toContain('envoyé avec succès');
     });
 
     test('should handle empty body gracefully', async () => {
@@ -124,7 +124,7 @@ describe('roosyncSend - Edge Cases', () => {
       });
 
       // Soit erreur de validation, soit envoi réussi selon l'implémentation
-      expect(result.content[0].text).toBeDefined();
+      expect((result.content[0] as any).text).toBeDefined();
     });
   });
 
@@ -141,8 +141,8 @@ describe('roosyncSend - Edge Cases', () => {
         body: 'Body with more emojis: ✅❌⚠️🔧'
       });
 
-      expect(result.content[0].text).toContain('envoyé avec succès');
-      expect(result.content[0].text).toContain('🚀');
+      expect((result.content[0] as any).text).toContain('envoyé avec succès');
+      expect((result.content[0] as any).text).toContain('🚀');
     });
 
     test('should handle non-ASCII characters (accents, cyrillic, chinese)', async () => {
@@ -153,7 +153,7 @@ describe('roosyncSend - Edge Cases', () => {
         body: 'Cyrillic: Привет мир\nChinese: 你好世界\nJapanese: こんにちは'
       });
 
-      expect(result.content[0].text).toContain('envoyé avec succès');
+      expect((result.content[0] as any).text).toContain('envoyé avec succès');
     });
 
     test('should handle markdown formatting in body', async () => {
@@ -180,7 +180,7 @@ const code = "block";
         body: markdownBody
       });
 
-      expect(result.content[0].text).toContain('envoyé avec succès');
+      expect((result.content[0] as any).text).toContain('envoyé avec succès');
     });
 
     test('should handle special JSON characters', async () => {
@@ -191,7 +191,7 @@ const code = "block";
         body: 'Line1\nLine2\tTabbed\r\nWindows line ending\nSpecial: {}[]\\\"'
       });
 
-      expect(result.content[0].text).toContain('envoyé avec succès');
+      expect((result.content[0] as any).text).toContain('envoyé avec succès');
     });
   });
 
@@ -212,8 +212,8 @@ const code = "block";
           priority
         });
 
-        expect(result.content[0].text).toContain('envoyé avec succès');
-        expect(result.content[0].text).toContain(priority);
+        expect((result.content[0] as any).text).toContain('envoyé avec succès');
+        expect((result.content[0] as any).text).toContain(priority);
       }
     });
 
@@ -225,7 +225,7 @@ const code = "block";
         body: 'Test body'
       });
 
-      expect(result.content[0].text).toContain('MEDIUM');
+      expect((result.content[0] as any).text).toContain('MEDIUM');
     });
   });
 
@@ -242,8 +242,8 @@ const code = "block";
         body: 'Test body'
       });
 
-      expect(result.content[0].text).toContain('envoyé avec succès');
-      expect(result.content[0].text).toContain('myia-ai-01:roo-extensions');
+      expect((result.content[0] as any).text).toContain('envoyé avec succès');
+      expect((result.content[0] as any).text).toContain('myia-ai-01:roo-extensions');
     });
 
     test('should handle simple machine name', async () => {
@@ -254,8 +254,8 @@ const code = "block";
         body: 'Test body'
       });
 
-      expect(result.content[0].text).toContain('envoyé avec succès');
-      expect(result.content[0].text).toContain('myia-po-2023');
+      expect((result.content[0] as any).text).toContain('envoyé avec succès');
+      expect((result.content[0] as any).text).toContain('myia-po-2023');
     });
 
     test('should handle broadcast to "all"', async () => {
@@ -266,7 +266,7 @@ const code = "block";
         body: 'Test body'
       });
 
-      expect(result.content[0].text).toContain('envoyé avec succès');
+      expect((result.content[0] as any).text).toContain('envoyé avec succès');
     });
   });
 
@@ -289,7 +289,7 @@ const code = "block";
 
       // Tous devraient réussir
       for (const result of results) {
-        expect(result.content[0].text).toContain('envoyé avec succès');
+        expect((result.content[0] as any).text).toContain('envoyé avec succès');
       }
 
       // Vérifier que tous les IDs sont uniques
@@ -340,7 +340,7 @@ const code = "block";
 
       // Devrait retourner un message d'erreur élégant, pas crasher
       expect(result.content).toHaveLength(1);
-      expect(result.content[0].text).toContain('introuvable');
+      expect((result.content[0] as any).text).toContain('introuvable');
     });
 
     test('should handle amend of non-existent message gracefully', async () => {
@@ -351,7 +351,7 @@ const code = "block";
       });
 
       expect(result.content).toHaveLength(1);
-      expect(result.content[0].text).toBeDefined();
+      expect((result.content[0] as any).text).toBeDefined();
     });
 
     test('should handle whitespace-only body', async () => {
@@ -396,8 +396,8 @@ const code = "block";
         thread_id: customThreadId
       });
 
-      expect(result.content[0].text).toContain('envoyé avec succès');
-      expect(result.content[0].text).toContain(customThreadId);
+      expect((result.content[0] as any).text).toContain('envoyé avec succès');
+      expect((result.content[0] as any).text).toContain(customThreadId);
     });
 
     test('should include reply_to reference when provided', async () => {
@@ -411,8 +411,8 @@ const code = "block";
         reply_to: originalId
       });
 
-      expect(result.content[0].text).toContain('envoyé avec succès');
-      expect(result.content[0].text).toContain(originalId);
+      expect((result.content[0] as any).text).toContain('envoyé avec succès');
+      expect((result.content[0] as any).text).toContain(originalId);
     });
   });
 });

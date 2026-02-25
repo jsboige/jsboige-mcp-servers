@@ -14,6 +14,7 @@ import {
   getLocalFullId,
   parseMachineWorkspace,
   matchesRecipient,
+  normalizeWorkspaceId,
   formatDate,
   getPriorityIcon,
   getStatusIcon
@@ -170,6 +171,46 @@ describe('message-helpers', () => {
 
     test('workspace-specific target does NOT match different machine (even with same workspace)', () => {
       expect(matchesRecipient('myia-ai-01:roo-extensions', 'myia-po-2024', 'roo-extensions')).toBe(false);
+    });
+
+    // Bug fix: full Windows path vs basename (#msg-20260223T133031-9r2dvm)
+    test('workspace target with full Windows path matches basename', () => {
+      expect(matchesRecipient('myia-ai-01:D:\\vllm', 'myia-ai-01', 'vllm')).toBe(true);
+    });
+
+    test('workspace target with full Windows path (forward slashes) matches basename', () => {
+      expect(matchesRecipient('myia-ai-01:D:/vllm', 'myia-ai-01', 'vllm')).toBe(true);
+    });
+
+    test('workspace target with full Unix path matches basename', () => {
+      expect(matchesRecipient('myia-ai-01:/home/user/roo-extensions', 'myia-ai-01', 'roo-extensions')).toBe(true);
+    });
+
+    test('workspace comparison is case-insensitive (Windows compat)', () => {
+      expect(matchesRecipient('myia-ai-01:Vllm', 'myia-ai-01', 'vllm')).toBe(true);
+      expect(matchesRecipient('myia-ai-01:vllm', 'myia-ai-01', 'VLLM')).toBe(true);
+    });
+
+    test('workspace target with full path does NOT match different workspace', () => {
+      expect(matchesRecipient('myia-ai-01:D:\\vllm', 'myia-ai-01', 'roo-extensions')).toBe(false);
+    });
+  });
+
+  describe('normalizeWorkspaceId', () => {
+    test('returns basename of full Windows path', () => {
+      expect(normalizeWorkspaceId('D:\\vllm')).toBe('vllm');
+    });
+
+    test('returns basename of full Unix path', () => {
+      expect(normalizeWorkspaceId('/home/user/roo-extensions')).toBe('roo-extensions');
+    });
+
+    test('returns lowercase basename', () => {
+      expect(normalizeWorkspaceId('D:\\MyProject')).toBe('myproject');
+    });
+
+    test('returns simple name unchanged (lowercased)', () => {
+      expect(normalizeWorkspaceId('roo-extensions')).toBe('roo-extensions');
     });
   });
 

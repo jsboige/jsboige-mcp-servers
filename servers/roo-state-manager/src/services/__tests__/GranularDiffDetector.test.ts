@@ -700,9 +700,9 @@ describe('GranularDiffDetector', () => {
   // === Default Rules ===
 
   describe('default rules', () => {
-    it('should have 4 default rules', () => {
+    it('should have 6 default rules', () => {
       const rules = detector.getCustomRules();
-      expect(rules.length).toBe(4);
+      expect(rules.length).toBe(6);
     });
 
     it('should include critical config rule', () => {

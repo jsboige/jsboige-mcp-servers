@@ -11,10 +11,13 @@ import { MessageManager } from '../../services/MessageManager.js';
 import { getSharedStatePath } from '../../utils/server-helpers.js';
 import { createLogger, Logger } from '../../utils/logger.js';
 import { MessageManagerError, MessageManagerErrorCode } from '../../types/errors.js';
+import { recordRooSyncActivityAsync } from './heartbeat-activity.js';
 import {
   formatDate,
-  formatDateFull
+  formatDateFull,
+  getLocalMachineId
 } from '../../utils/message-helpers.js';
+import { getRooSyncService } from '../../services/RooSyncService.js';
 
 // Logger instance for manage tool
 const logger: Logger = createLogger('RooSyncManageTool');
@@ -90,6 +93,11 @@ Le message était déjà marqué comme lu. Aucune modification nécessaire.`;
   // Marquer comme lu
   logger.info('✉️ Marking message as read');
   await messageManager.markAsRead(args.message_id);
+
+  // Fire-and-forget heartbeat update: marking a message read proves the machine is active
+  getRooSyncService().getHeartbeatService()
+    .registerHeartbeat(getLocalMachineId(), { lastActivity: 'roosync_mark_read', messageId: args.message_id })
+    .catch(err => logger.debug('Heartbeat update skipped (non-critical)', { error: String(err) }));
 
   // Formater le résultat
   const result = `✅ **Message marqué comme lu**
@@ -178,6 +186,11 @@ Le message est déjà archivé. Il se trouve dans le dossier \`messages/archive/
   // Archiver le message
   logger.info('📦 Archiving message');
   await messageManager.archiveMessage(args.message_id);
+
+  // Fire-and-forget heartbeat update: archiving a message proves the machine is active
+  getRooSyncService().getHeartbeatService()
+    .registerHeartbeat(getLocalMachineId(), { lastActivity: 'roosync_archive', messageId: args.message_id })
+    .catch(err => logger.debug('Heartbeat update skipped (non-critical)', { error: String(err) }));
 
   // Date d'archivage
   const archivedAt = new Date().toISOString();
@@ -288,6 +301,9 @@ export async function roosyncManage(
           { action: args.action }
         );
     }
+
+    // Enregistrer l'activité comme preuve de vie heartbeat (#501)
+    recordRooSyncActivityAsync('manage', { action: args.action });
 
     return {
       content: [{ type: 'text', text: result }]

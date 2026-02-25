@@ -106,7 +106,7 @@ describe('view-details.tool', () => {
       );
 
       expect(result.content).toHaveLength(1);
-      const text = result.content[0].text as string;
+      const text = (result.content[0] as any).text as string;
       expect(text).toContain('task-with-actions');
       expect(text).toContain('Test Task with Actions');
       expect(text).toContain('Actions techniques trouvées: 3');
@@ -118,7 +118,7 @@ describe('view-details.tool', () => {
         conversationCache
       );
 
-      const text = result.content[0].text as string;
+      const text = (result.content[0] as any).text as string;
       expect(text).toContain('read_file');
       expect(text).toContain('execute_command');
       expect(text).toContain('write_file');
@@ -130,7 +130,7 @@ describe('view-details.tool', () => {
         conversationCache
       );
 
-      const text = result.content[0].text as string;
+      const text = (result.content[0] as any).text as string;
       expect(text).toContain('execute_command');
       expect(text).not.toContain('read_file'); // Other actions not shown
     });
@@ -141,7 +141,7 @@ describe('view-details.tool', () => {
         conversationCache
       );
 
-      const text = result.content[0].text as string;
+      const text = (result.content[0] as any).text as string;
       expect(text).toContain('Paramètres:');
       expect(text).toContain('/test/file.txt');
     });
@@ -152,7 +152,7 @@ describe('view-details.tool', () => {
         conversationCache
       );
 
-      const text = result.content[0].text as string;
+      const text = (result.content[0] as any).text as string;
       expect(text).toContain('Résultat:');
       expect(text).toContain('file contents');
     });
@@ -163,7 +163,7 @@ describe('view-details.tool', () => {
         conversationCache
       );
 
-      const text = result.content[0].text as string;
+      const text = (result.content[0] as any).text as string;
       expect(text).toContain('❌ Erreur:');
       expect(text).toContain('Permission denied');
     });
@@ -174,7 +174,7 @@ describe('view-details.tool', () => {
         conversationCache
       );
 
-      const text = result.content[0].text as string;
+      const text = (result.content[0] as any).text as string;
       expect(text).toContain('Métadonnées:');
     });
 
@@ -184,7 +184,7 @@ describe('view-details.tool', () => {
         conversationCache
       );
 
-      const text = result.content[0].text as string;
+      const text = (result.content[0] as any).text as string;
       expect(text).toContain('Timestamp:');
     });
   });
@@ -216,7 +216,7 @@ describe('view-details.tool', () => {
         conversationCache
       );
 
-      const text = result.content[0].text as string;
+      const text = (result.content[0] as any).text as string;
       expect(text).toContain('lignes omises');
     });
 
@@ -245,7 +245,7 @@ describe('view-details.tool', () => {
         conversationCache
       );
 
-      const text = result.content[0].text as string;
+      const text = (result.content[0] as any).text as string;
       expect(text).not.toContain('omises');
     });
   });
@@ -257,7 +257,7 @@ describe('view-details.tool', () => {
         conversationCache
       );
 
-      const text = result.content[0].text as string;
+      const text = (result.content[0] as any).text as string;
       expect(text).toContain('❌');
       expect(text).toContain('non-existent');
     });
@@ -268,7 +268,7 @@ describe('view-details.tool', () => {
         conversationCache
       );
 
-      const text = result.content[0].text as string;
+      const text = (result.content[0] as any).text as string;
       expect(text).toContain('Aucune action technique trouvée');
     });
 
@@ -278,7 +278,7 @@ describe('view-details.tool', () => {
         conversationCache
       );
 
-      const text = result.content[0].text as string;
+      const text = (result.content[0] as any).text as string;
       expect(text).toContain('Index 99 invalide');
     });
 
@@ -288,7 +288,7 @@ describe('view-details.tool', () => {
         conversationCache
       );
 
-      const text = result.content[0].text as string;
+      const text = (result.content[0] as any).text as string;
       expect(text).toContain('Index -1 invalide');
     });
 
@@ -310,7 +310,7 @@ describe('view-details.tool', () => {
         conversationCache
       );
 
-      const text = result.content[0].text as string;
+      const text = (result.content[0] as any).text as string;
       expect(text).toContain('task-no-title');
     });
   });
@@ -322,7 +322,7 @@ describe('view-details.tool', () => {
         conversationCache
       );
 
-      const text = result.content[0].text as string;
+      const text = (result.content[0] as any).text as string;
       expect(text).toContain('⚙️'); // Command icon
     });
 
@@ -332,7 +332,7 @@ describe('view-details.tool', () => {
         conversationCache
       );
 
-      const text = result.content[0].text as string;
+      const text = (result.content[0] as any).text as string;
       expect(text).toContain('🛠️'); // Tool icon
     });
   });

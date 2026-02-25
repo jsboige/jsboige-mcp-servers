@@ -91,7 +91,7 @@ export function loadRooSyncConfig(): RooSyncConfig {
 
     return {
       sharedPath: process.env.ROOSYNC_SHARED_PATH!,
-      machineId: process.env.ROOSYNC_MACHINE_ID!,
+      machineId: process.env.ROOSYNC_MACHINE_ID!.toLowerCase(),
       autoSync,
       conflictStrategy: conflictStrategy as 'manual' | 'auto-local' | 'auto-remote',
       logLevel: logLevel as 'debug' | 'info' | 'warn' | 'error'

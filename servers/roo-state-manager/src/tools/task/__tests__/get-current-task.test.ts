@@ -97,7 +97,7 @@ describe('get-current-task.tool', () => {
       expect(result.content).toHaveLength(1);
       expect(result.content[0].type).toBe('text');
 
-      const data = JSON.parse(result.content[0].text as string);
+      const data = JSON.parse((result.content[0] as any).text as string);
       expect(data.task_id).toBe('task-2'); // Most recent in /workspace/test
       expect(data.title).toBe('Test Task');
       expect(data.mode).toBe('code-simple');
@@ -111,7 +111,7 @@ describe('get-current-task.tool', () => {
         undefined
       );
 
-      const data = JSON.parse(result.content[0].text as string);
+      const data = JSON.parse((result.content[0] as any).text as string);
       expect(data.task_id).toBe('task-3'); // Only task in /workspace/other
     });
 
@@ -123,7 +123,7 @@ describe('get-current-task.tool', () => {
         undefined
       );
 
-      const data = JSON.parse(result.content[0].text as string);
+      const data = JSON.parse((result.content[0] as any).text as string);
       expect(data.task_id).toBe('task-2'); // From args workspace
     });
 
@@ -135,7 +135,7 @@ describe('get-current-task.tool', () => {
         undefined
       );
 
-      const data = JSON.parse(result.content[0].text as string);
+      const data = JSON.parse((result.content[0] as any).text as string);
 
       expect(data).toHaveProperty('task_id');
       expect(data).toHaveProperty('created_at');
@@ -219,7 +219,7 @@ describe('get-current-task.tool', () => {
         undefined
       );
 
-      const data = JSON.parse(result.content[0].text as string);
+      const data = JSON.parse((result.content[0] as any).text as string);
       expect(data.task_id).toBe('new-task-from-disk'); // Newest task wins
     });
 
@@ -275,7 +275,7 @@ describe('get-current-task.tool', () => {
         undefined
       );
 
-      const data = JSON.parse(result.content[0].text as string);
+      const data = JSON.parse((result.content[0] as any).text as string);
       expect(data.task_id).toBe('minimal');
       expect(data.title).toBeUndefined();
       expect(data.parent_task_id).toBeUndefined();

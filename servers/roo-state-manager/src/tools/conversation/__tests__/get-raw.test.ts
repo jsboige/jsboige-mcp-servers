@@ -79,7 +79,7 @@ describe('get-raw.tool', () => {
       expect(result.content).toHaveLength(1);
       expect(result.content[0].type).toBe('text');
 
-      const data = JSON.parse(result.content[0].text as string);
+      const data = JSON.parse((result.content[0] as any).text as string);
       expect(data.taskId).toBe('test-task-123');
       expect(data.api_conversation_history).toBeDefined();
       expect(data.ui_messages).toBeDefined();
@@ -104,7 +104,7 @@ describe('get-raw.tool', () => {
 
       const result = await getRawConversationTool.handler({ taskId: 'test-task' });
 
-      const data = JSON.parse(result.content[0].text as string);
+      const data = JSON.parse((result.content[0] as any).text as string);
       // Should parse successfully despite BOM
       expect(data.api_conversation_history).toEqual([{ role: 'user', content: 'test' }]);
     });
@@ -131,7 +131,7 @@ describe('get-raw.tool', () => {
 
       const result = await getRawConversationTool.handler({ taskId: 'test-task' });
 
-      const data = JSON.parse(result.content[0].text as string);
+      const data = JSON.parse((result.content[0] as any).text as string);
       expect(data.metadata).toBeNull();
     });
 
@@ -142,7 +142,7 @@ describe('get-raw.tool', () => {
 
       const result = await getRawConversationTool.handler({ taskId: 'test-task' });
 
-      const data = JSON.parse(result.content[0].text as string);
+      const data = JSON.parse((result.content[0] as any).text as string);
       expect(data.taskStats).toBeNull();
     });
   });
@@ -191,7 +191,7 @@ describe('get-raw.tool', () => {
       const result = await getRawConversationTool.handler({ taskId: 'test-task' });
 
       expect(mockAccess).toHaveBeenCalledTimes(2);
-      const data = JSON.parse(result.content[0].text as string);
+      const data = JSON.parse((result.content[0] as any).text as string);
       expect(data.location).toContain('secondary');
     });
   });
@@ -207,7 +207,7 @@ describe('get-raw.tool', () => {
       });
 
       const result = await getRawConversationTool.handler({ taskId: 'test-task' });
-      const data = JSON.parse(result.content[0].text as string);
+      const data = JSON.parse((result.content[0] as any).text as string);
 
       expect(data).toHaveProperty('taskId');
       expect(data).toHaveProperty('location');

@@ -292,7 +292,14 @@ export class InventoryCollector {
             allowedFilePatterns: mode.allowedFilePatterns
           })),
           sdddSpecs: rawInventory.inventory?.sdddSpecs,
-          scripts: rawInventory.inventory?.scripts
+          scripts: rawInventory.inventory?.scripts,
+          // #498: Profil de modèle Roo actif
+          modelProfile: rawInventory.inventory?.rooConfig?.modelProfile ? {
+            activeProfile: rawInventory.inventory.rooConfig.modelProfile.activeProfile,
+            modeApiConfigs: rawInventory.inventory.rooConfig.modelProfile.modeApiConfigs,
+            availableProfiles: rawInventory.inventory.rooConfig.modelProfile.availableProfiles,
+            profileHash: rawInventory.inventory.rooConfig.modelProfile.profileHash
+          } : undefined
         },
         paths: rawInventory.paths
       };

@@ -74,16 +74,16 @@ describe('roosyncRead', () => {
       const result = await roosyncRead({} as any);
 
       expect(result.content).toHaveLength(1);
-      expect(result.content[0].text).toContain('Erreur');
-      expect(result.content[0].text).toContain('mode');
+      expect((result.content[0] as any).text).toContain('Erreur');
+      expect((result.content[0] as any).text).toContain('mode');
     });
 
     test('should return error when mode is invalid', async () => {
       const result = await roosyncRead({ mode: 'invalid' as any });
 
       expect(result.content).toHaveLength(1);
-      expect(result.content[0].text).toContain('Erreur');
-      expect(result.content[0].text).toContain('invalid');
+      expect((result.content[0] as any).text).toContain('Erreur');
+      expect((result.content[0] as any).text).toContain('invalid');
     });
   });
 
@@ -98,7 +98,7 @@ describe('roosyncRead', () => {
       });
 
       expect(result.content).toHaveLength(1);
-      expect(result.content[0].text).toContain('Aucun message');
+      expect((result.content[0] as any).text).toContain('Aucun message');
     });
 
     test('should list messages in inbox', async () => {
@@ -122,9 +122,9 @@ describe('roosyncRead', () => {
         mode: 'inbox'
       });
 
-      expect(result.content[0].text).toContain('Boîte de Réception');
-      expect(result.content[0].text).toContain('test-machine');
-      expect(result.content[0].text).toContain('2 message');
+      expect((result.content[0] as any).text).toContain('Boîte de Réception');
+      expect((result.content[0] as any).text).toContain('test-machine');
+      expect((result.content[0] as any).text).toContain('2 message');
     });
 
     test('should filter by status unread', async () => {
@@ -152,9 +152,9 @@ describe('roosyncRead', () => {
         status: 'unread'
       });
 
-      expect(result.content[0].text).toContain('Boîte de Réception');
+      expect((result.content[0] as any).text).toContain('Boîte de Réception');
       // Should show the unread message
-      expect(result.content[0].text).toContain('sender-2');
+      expect((result.content[0] as any).text).toContain('sender-2');
     });
 
     test('should respect limit parameter', async () => {
@@ -168,9 +168,9 @@ describe('roosyncRead', () => {
         limit: 2
       });
 
-      expect(result.content[0].text).toContain('Boîte de Réception');
+      expect((result.content[0] as any).text).toContain('Boîte de Réception');
       // When status='all' (default) and limit=2, both displayed list and count are limited
-      expect(result.content[0].text).toContain('2 message');
+      expect((result.content[0] as any).text).toContain('2 message');
     });
 
     test('should show preview of most recent message', async () => {
@@ -186,8 +186,8 @@ describe('roosyncRead', () => {
         mode: 'inbox'
       });
 
-      expect(result.content[0].text).toContain('Aperçu du message le plus récent');
-      expect(result.content[0].text).toContain('Latest Subject');
+      expect((result.content[0] as any).text).toContain('Aperçu du message le plus récent');
+      expect((result.content[0] as any).text).toContain('Latest Subject');
     });
 
     test('should show actions available', async () => {
@@ -203,8 +203,8 @@ describe('roosyncRead', () => {
         mode: 'inbox'
       });
 
-      expect(result.content[0].text).toContain('Actions disponibles');
-      expect(result.content[0].text).toContain('roosync_read');
+      expect((result.content[0] as any).text).toContain('Actions disponibles');
+      expect((result.content[0] as any).text).toContain('roosync_read');
     });
   });
 
@@ -234,8 +234,8 @@ describe('roosyncRead', () => {
         mode: 'message'
       });
 
-      expect(result.content[0].text).toContain('Erreur');
-      expect(result.content[0].text).toContain('message_id');
+      expect((result.content[0] as any).text).toContain('Erreur');
+      expect((result.content[0] as any).text).toContain('message_id');
     });
 
     test('should return error when message not found', async () => {
@@ -244,7 +244,7 @@ describe('roosyncRead', () => {
         message_id: 'msg-nonexistent'
       });
 
-      expect(result.content[0].text).toContain('introuvable');
+      expect((result.content[0] as any).text).toContain('introuvable');
     });
 
     test('should display full message details', async () => {
@@ -253,11 +253,11 @@ describe('roosyncRead', () => {
         message_id: testMessageId
       });
 
-      expect(result.content[0].text).toContain('Test Subject');
-      expect(result.content[0].text).toContain('sender-machine');
-      expect(result.content[0].text).toContain('test-machine');
-      expect(result.content[0].text).toContain('HIGH');
-      expect(result.content[0].text).toContain('Test body content');
+      expect((result.content[0] as any).text).toContain('Test Subject');
+      expect((result.content[0] as any).text).toContain('sender-machine');
+      expect((result.content[0] as any).text).toContain('test-machine');
+      expect((result.content[0] as any).text).toContain('HIGH');
+      expect((result.content[0] as any).text).toContain('Test body content');
     });
 
     test('should display tags', async () => {
@@ -266,8 +266,8 @@ describe('roosyncRead', () => {
         message_id: testMessageId
       });
 
-      expect(result.content[0].text).toContain('tag1');
-      expect(result.content[0].text).toContain('tag2');
+      expect((result.content[0] as any).text).toContain('tag1');
+      expect((result.content[0] as any).text).toContain('tag2');
     });
 
     test('should display thread_id', async () => {
@@ -276,7 +276,7 @@ describe('roosyncRead', () => {
         message_id: testMessageId
       });
 
-      expect(result.content[0].text).toContain('thread-123');
+      expect((result.content[0] as any).text).toContain('thread-123');
     });
 
     test('should mark message as read when mark_as_read is true', async () => {
@@ -286,7 +286,7 @@ describe('roosyncRead', () => {
         mark_as_read: true
       });
 
-      expect(result.content[0].text).toContain('READ');
+      expect((result.content[0] as any).text).toContain('READ');
 
       // Verify the message is actually marked as read
       const msg = await messageManager.getMessage(testMessageId);
@@ -310,9 +310,9 @@ describe('roosyncRead', () => {
         message_id: testMessageId
       });
 
-      expect(result.content[0].text).toContain('Actions disponibles');
-      expect(result.content[0].text).toContain('roosync_manage');
-      expect(result.content[0].text).toContain('roosync_send');
+      expect((result.content[0] as any).text).toContain('Actions disponibles');
+      expect((result.content[0] as any).text).toContain('roosync_manage');
+      expect((result.content[0] as any).text).toContain('roosync_send');
     });
   });
 

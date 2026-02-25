@@ -207,4 +207,229 @@ describe('ValidationEngine', () => {
       expect(result.isValid).toBe(true);
     });
   });
+
+  // ============================================================
+  // validateToolInput
+  // ============================================================
+
+  describe('validateToolInput', () => {
+    it('returns isValid=true for valid SEARCH input', async () => {
+      const result = await ValidationEngine.validateToolInput(
+        'search_tasks',
+        { maxResults: 10 },
+        ToolCategory.SEARCH
+      );
+
+      expect(result.isValid).toBe(true);
+    });
+
+    it('returns isValid=false for invalid DISPLAY input', async () => {
+      const result = await ValidationEngine.validateToolInput(
+        'view_task',
+        { detailLevel: 'invalid_level' },
+        ToolCategory.DISPLAY
+      );
+
+      expect(result.isValid).toBe(false);
+      expect(result.errors.length).toBeGreaterThan(0);
+    });
+
+    it('includes toolName in error messages', async () => {
+      const result = await ValidationEngine.validateToolInput(
+        'my_tool',
+        { detailLevel: 'bad_value' },
+        ToolCategory.DISPLAY
+      );
+
+      expect(result.errors[0]).toContain('my_tool');
+    });
+
+    it('validates search_tasks_semantic: returns error if no searchQuery or query', async () => {
+      const result = await ValidationEngine.validateToolInput(
+        'search_tasks_semantic',
+        {},
+        ToolCategory.SEARCH
+      );
+
+      expect(result.isValid).toBe(false);
+      expect(result.errors.some(e => e.includes('searchQuery'))).toBe(true);
+    });
+
+    it('validates export_conversation_json: returns error if no taskId', async () => {
+      const result = await ValidationEngine.validateToolInput(
+        'export_conversation_json',
+        {},
+        ToolCategory.EXPORT
+      );
+
+      expect(result.isValid).toBe(false);
+      expect(result.errors.some(e => e.includes('taskId'))).toBe(true);
+    });
+
+    it('validates generate_trace_summary: returns error if no taskId', async () => {
+      const result = await ValidationEngine.validateToolInput(
+        'generate_trace_summary',
+        {},
+        ToolCategory.SUMMARY
+      );
+
+      expect(result.isValid).toBe(false);
+      expect(result.errors.some(e => e.includes('taskId'))).toBe(true);
+    });
+
+    it('validates export_conversation_json with taskId: returns isValid=true', async () => {
+      const result = await ValidationEngine.validateToolInput(
+        'export_conversation_json',
+        { taskId: 'task-123' },
+        ToolCategory.EXPORT
+      );
+
+      expect(result.isValid).toBe(true);
+    });
+
+    it('validates search_tasks_semantic with searchQuery: returns isValid=true', async () => {
+      const result = await ValidationEngine.validateToolInput(
+        'search_tasks_semantic',
+        { searchQuery: 'my query' },
+        ToolCategory.SEARCH
+      );
+
+      expect(result.isValid).toBe(true);
+    });
+  });
+
+  // ============================================================
+  // validateCacheAntiLeakCompliance
+  // ============================================================
+
+  describe('validateCacheAntiLeakCompliance', () => {
+    it('returns isValid=true for safe options', () => {
+      const result = ValidationEngine.validateCacheAntiLeakCompliance({ truncate: 100 });
+
+      expect(result.isValid).toBe(true);
+      expect(result.errors).toEqual([]);
+    });
+
+    it('adds warning for forceRebuild=true', () => {
+      const result = ValidationEngine.validateCacheAntiLeakCompliance({ forceRebuild: true });
+
+      expect(result.warnings).toBeDefined();
+      expect(result.warnings!.some(w => w.includes('Cache Anti-Leak'))).toBe(true);
+    });
+
+    it('adds warning for force_rebuild=true', () => {
+      const result = ValidationEngine.validateCacheAntiLeakCompliance({ force_rebuild: true } as any);
+
+      expect(result.warnings).toBeDefined();
+      expect(result.warnings!.some(w => w.includes('rebuild'))).toBe(true);
+    });
+
+    it('adds warning for maxResults > 1000', () => {
+      const result = ValidationEngine.validateCacheAntiLeakCompliance({ maxResults: 1500 });
+
+      expect(result.warnings).toBeDefined();
+      expect(result.warnings!.some(w => w.includes('maxResults'))).toBe(true);
+    });
+
+    it('adds warning for truncate=0 with includeContent=true', () => {
+      const result = ValidationEngine.validateCacheAntiLeakCompliance({
+        truncate: 0,
+        includeContent: true
+      });
+
+      expect(result.warnings).toBeDefined();
+      expect(result.warnings!.some(w => w.includes('Full content'))).toBe(true);
+    });
+
+    it('no warnings when options are within safe limits', () => {
+      const result = ValidationEngine.validateCacheAntiLeakCompliance({
+        maxResults: 50,
+        truncate: 500,
+      });
+
+      expect(result.warnings).toBeUndefined();
+    });
+  });
+
+  // ============================================================
+  // generateValidationReport
+  // ============================================================
+
+  describe('generateValidationReport', () => {
+    it('returns object with validation, cacheCompliance, recommendations', async () => {
+      const report = await ValidationEngine.generateValidationReport(
+        DisplayPreset.QUICK_OVERVIEW,
+        { detailLevel: 'summary' },
+        ToolCategory.DISPLAY
+      );
+
+      expect(report).toHaveProperty('validation');
+      expect(report).toHaveProperty('cacheCompliance');
+      expect(report).toHaveProperty('recommendations');
+    });
+
+    it('adds recommendation for QUICK_OVERVIEW preset', async () => {
+      const report = await ValidationEngine.generateValidationReport(
+        DisplayPreset.QUICK_OVERVIEW,
+        {},
+        ToolCategory.DISPLAY
+      );
+
+      expect(report.recommendations.some(r => r.includes('skeleton'))).toBe(true);
+    });
+
+    it('adds recommendation for EXPORT category without prettyPrint', async () => {
+      const report = await ValidationEngine.generateValidationReport(
+        DisplayPreset.SEARCH_RESULTS,
+        { prettyPrint: false },
+        ToolCategory.EXPORT
+      );
+
+      expect(report.recommendations.some(r => r.includes('prettyPrint'))).toBe(true);
+    });
+
+    it('adds recommendation for maxResults > 100', async () => {
+      const report = await ValidationEngine.generateValidationReport(
+        DisplayPreset.SEARCH_RESULTS,
+        { maxResults: 200 },
+        ToolCategory.SEARCH
+      );
+
+      expect(report.recommendations.some(r => r.includes('pagination'))).toBe(true);
+    });
+
+    it('no recommendation for safe maxResults', async () => {
+      const report = await ValidationEngine.generateValidationReport(
+        DisplayPreset.SEARCH_RESULTS,
+        { maxResults: 50 },
+        ToolCategory.SEARCH
+      );
+
+      expect(report.recommendations.some(r => r.includes('pagination'))).toBe(false);
+    });
+
+    it('cacheCompliance reflects options correctly', async () => {
+      const report = await ValidationEngine.generateValidationReport(
+        DisplayPreset.QUICK_OVERVIEW,
+        { forceRebuild: true },
+        ToolCategory.DISPLAY
+      );
+
+      expect(report.cacheCompliance.isValid).toBe(true);
+      expect(report.cacheCompliance.warnings).toBeDefined();
+    });
+  });
+
+  // ============================================================
+  // createValidationEngine factory
+  // ============================================================
+
+  describe('createValidationEngine', () => {
+    it('returns a ValidationEngine instance', async () => {
+      const { createValidationEngine } = await import('../ValidationEngine.js');
+      const engine = createValidationEngine();
+
+      expect(engine).toBeInstanceOf(ValidationEngine);
+    });
+  });
 });

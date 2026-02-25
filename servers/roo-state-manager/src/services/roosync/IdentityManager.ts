@@ -85,7 +85,7 @@ export class IdentityManager {
 
         const registry = new Map<string, IdentityInfo>();
         for (const [machineId, info] of Object.entries(data.identities || {})) {
-          registry.set(machineId, info as IdentityInfo);
+          registry.set(machineId.toLowerCase(), info as IdentityInfo);
         }
 
         console.log(`[IdentityManager] Registre d'identité chargé: ${registry.size} identités`);

@@ -165,7 +165,7 @@ describe('roosync_config - Schema Validation - Action Publish', () => {
     vi.resetModules();
   });
 
-  it('devrait rejeter action=publish sans version et description', async () => {
+  it('devait rejeter action=publish sans version et description', async () => {
     const module = await import('../../../../src/tools/roosync/config.js');
     const result = module.ConfigArgsSchema.safeParse({
       action: 'publish'
@@ -174,7 +174,7 @@ describe('roosync_config - Schema Validation - Action Publish', () => {
     expect(result.success).toBe(false);
   });
 
-  it('devrait accepter action=publish avec packagePath, version, et description', async () => {
+  it('devait accepter action=publish avec packagePath, version, et description', async () => {
     const module = await import('../../../../src/tools/roosync/config.js');
     const result = module.ConfigArgsSchema.safeParse({
       action: 'publish',
@@ -186,7 +186,7 @@ describe('roosync_config - Schema Validation - Action Publish', () => {
     expect(result.success).toBe(true);
   });
 
-  it('devrait accepter action=publish avec targets (workflow atomique collect+publish)', async () => {
+  it('devait accepter action=publish avec targets (workflow atomique collect+publish)', async () => {
     const module = await import('../../../../src/tools/roosync/config.js');
     const result = module.ConfigArgsSchema.safeParse({
       action: 'publish',
@@ -198,7 +198,7 @@ describe('roosync_config - Schema Validation - Action Publish', () => {
     expect(result.success).toBe(true);
   });
 
-  it('devrait accepter action=publish avec machineId', async () => {
+  it('devait accepter action=publish avec machineId', async () => {
     const module = await import('../../../../src/tools/roosync/config.js');
     const result = module.ConfigArgsSchema.safeParse({
       action: 'publish',
@@ -211,7 +211,7 @@ describe('roosync_config - Schema Validation - Action Publish', () => {
     expect(result.success).toBe(true);
   });
 
-  it('devrait rejeter action=publish avec version mais sans description', async () => {
+  it('devait rejeter action=publish avec version mais sans description', async () => {
     const module = await import('../../../../src/tools/roosync/config.js');
     const result = module.ConfigArgsSchema.safeParse({
       action: 'publish',
@@ -471,6 +471,153 @@ describe('roosync_config - Retrocompatibilité', () => {
   });
 });
 
+describe('roosync_config - Integration Tests - Action Collect', () => {
+  beforeEach(() => {
+    vi.resetModules();
+    vi.mock('../../../../src/services/RooSyncService.js', () => ({
+      getRooSyncService: vi.fn(() => ({
+        getConfigSharingService: vi.fn(() => ({
+          collectConfig: vi.fn()
+        }))
+      }))
+    }));
+  });
+
+  it('devrait collecter avec targets vides', async () => {
+    const { roosyncConfig } = await import('../../../../src/tools/roosync/config.js');
+    
+    const mockConfigSharingService = vi.fn(() => ({
+      collectConfig: vi.fn().mockResolvedValue({
+        packagePath: '/tmp/package.tar.gz',
+        totalSize: 0,
+        manifest: {}
+      })
+    }));
+    
+    vi.mocked(
+      (await import('../../../../src/services/RooSyncService.js')).getRooSyncService
+    ).mockReturnValue({
+      getConfigSharingService: mockConfigSharingService
+    });
+
+    const result = await roosyncConfig({ action: 'collect' });
+
+    expect(result.status).toBe('success');
+    expect(result.totalSize).toBe(0);
+    expect(result.manifest).toEqual({});
+  });
+
+  it('devrait collecter avec targets multiples (modes, mcp, profiles)', async () => {
+    const { roosyncConfig } = await import('../../../../src/tools/roosync/config.js');
+    
+    const mockConfigSharingService = vi.fn(() => ({
+      collectConfig: vi.fn().mockResolvedValue({
+        packagePath: '/tmp/package.tar.gz',
+        totalSize: 1024000,
+        manifest: {
+          modes: { count: 5, files: ['modes.json'] },
+          mcp: { count: 8, files: ['mcp.json'] },
+          profiles: { count: 2, files: ['profiles.json'] }
+        }
+      })
+    }));
+    
+    vi.mocked(
+      (await import('../../../../src/services/RooSyncService.js')).getRooSyncService
+    ).mockReturnValue({
+      getConfigSharingService: mockConfigSharingService
+    });
+
+    const result = await roosyncConfig({
+      action: 'collect',
+      targets: ['modes', 'mcp', 'profiles']
+    });
+
+    expect(result.status).toBe('success');
+    expect(result.totalSize).toBe(1024000);
+    expect(result.manifest.modes.count).toBe(5);
+    expect(result.manifest.mcp.count).toBe(8);
+    expect(result.manifest.profiles.count).toBe(2);
+  });
+
+  it('devrait collecter avec dryRun=true', async () => {
+    const { roosyncConfig } = await import('../../../../src/tools/roosync/config.js');
+    
+    const mockConfigSharingService = vi.fn(() => ({
+      collectConfig: vi.fn().mockResolvedValue({
+        packagePath: '/tmp/package-dryrun.tar.gz',
+        totalSize: 512000,
+        manifest: { modes: { count: 5 } }
+      })
+    }));
+    
+    vi.mocked(
+      (await import('../../../../src/services/RooSyncService.js')).getRooSyncService
+    ).mockReturnValue({
+      getConfigSharingService: mockConfigSharingService
+    });
+
+    const result = await roosyncConfig({
+      action: 'collect',
+      dryRun: true
+    });
+
+    expect(result.status).toBe('success');
+    expect(result.message).toContain('Configuration collectée');
+    expect(result.packagePath).toBe('/tmp/package-dryrun.tar.gz');
+    expect(result.totalSize).toBe(512000);
+  });
+
+  it('devrait gérer l\'erreur de lecture fichier', async () => {
+    const { roosyncConfig } = await import('../../../../src/tools/roosync/config.js');
+    
+    const mockConfigSharingService = vi.fn(() => ({
+      collectConfig: vi.fn().mockRejectedValue(
+        new Error('Erreur de lecture du fichier modes.json')
+      )
+    }));
+    
+    vi.mocked(
+      (await import('../../../../src/services/RooSyncService.js')).getRooSyncService
+    ).mockReturnValue({
+      getConfigSharingService: mockConfigSharingService
+    });
+
+    await expect(roosyncConfig({ action: 'collect' }))
+      .rejects
+      .toThrow('Erreur de lecture du fichier modes.json');
+  });
+
+  it('devrait collecter avec targets granulaires (mcp:jupyter)', async () => {
+    const { roosyncConfig } = await import('../../../../src/tools/roosync/config.js');
+    
+    const mockConfigSharingService = vi.fn(() => ({
+      collectConfig: vi.fn().mockResolvedValue({
+        packagePath: '/tmp/package-mcp.tar.gz',
+        totalSize: 256000,
+        manifest: {
+          'mcp:jupyter': { count: 3, files: ['jupyter.json'] }
+        }
+      })
+    }));
+    
+    vi.mocked(
+      (await import('../../../../src/services/RooSyncService.js')).getRooSyncService
+    ).mockReturnValue({
+      getConfigSharingService: mockConfigSharingService
+    });
+
+    const result = await roosyncConfig({
+      action: 'collect',
+      targets: ['mcp:jupyter']
+    });
+
+    expect(result.status).toBe('success');
+    expect(result.totalSize).toBe(256000);
+    expect(result.manifest['mcp:jupyter'].count).toBe(3);
+  });
+});
+
 describe('roosync_config - Metadata New Targets', () => {
   it('devrait documenter les nouveaux targets dans la description', async () => {
     const module = await import('../../../../src/tools/roosync/config.js');
@@ -488,5 +635,362 @@ describe('roosync_config - Metadata New Targets', () => {
     expect(metadata.inputSchema.properties.targets.description).toContain('roomodes');
     expect(metadata.inputSchema.properties.targets.description).toContain('model-configs');
     expect(metadata.inputSchema.properties.targets.description).toContain('rules');
+  });
+});
+
+describe('roosync_config - Integration Tests - Action Publish', () => {
+  beforeEach(() => {
+    vi.resetModules();
+    vi.mock('../../../../src/services/RooSyncService.js', () => ({
+      getRooSyncService: vi.fn(() => ({
+        getConfigSharingService: vi.fn(() => ({
+          collectConfig: vi.fn(),
+          publishConfig: vi.fn()
+        }))
+      }))
+    }));
+  });
+
+  it('devrait publier avec packagePath valide', async () => {
+    const { roosyncConfig } = await import('../../../../src/tools/roosync/config.js');
+    const mockService = await import('../../../../src/services/RooSyncService.js');
+    
+    mockService.getRooSyncService.mockReturnValue({
+      getConfigSharingService: vi.fn(() => ({
+        collectConfig: vi.fn(),
+        publishConfig: vi.fn().mockResolvedValue({
+          version: '2.3.0',
+          path: '/storage/configs/2.3.0.tar.gz',
+          machineId: 'myia-ai-01'
+        })
+      }))
+    });
+
+    const result = await roosyncConfig({
+      action: 'publish',
+      packagePath: '/tmp/package.tar.gz',
+      version: '2.3.0',
+      description: 'Test publish'
+    });
+
+    expect(result.status).toBe('success');
+    expect(result.version).toBe('2.3.0');
+    expect(result.targetPath).toBe('/storage/configs/2.3.0.tar.gz');
+    expect(result.machineId).toBe('myia-ai-01');
+  });
+
+  it('devrait publier avec version et description', async () => {
+    const { roosyncConfig } = await import('../../../../src/tools/roosync/config.js');
+    const mockService = await import('../../../../src/services/RooSyncService.js');
+    
+    mockService.getRooSyncService.mockReturnValue({
+      getConfigSharingService: vi.fn(() => ({
+        collectConfig: vi.fn(),
+        publishConfig: vi.fn().mockResolvedValue({
+          version: '2.4.0',
+          path: '/storage/configs/2.4.0.tar.gz',
+          machineId: 'myia-po-2025'
+        })
+      }))
+    });
+
+    const result = await roosyncConfig({
+      action: 'publish',
+      packagePath: '/tmp/package.tar.gz',
+      version: '2.4.0',
+      description: 'Version 2.4.0'
+    });
+
+    expect(result.status).toBe('success');
+    expect(result.version).toBe('2.4.0');
+    expect(result.message).toContain('myia-po-2025');
+  });
+
+  it('devrait publier avec targets atomiques', async () => {
+    const { roosyncConfig } = await import('../../../../src/tools/roosync/config.js');
+    const mockService = await import('../../../../src/services/RooSyncService.js');
+    
+    mockService.getRooSyncService.mockReturnValue({
+      getConfigSharingService: vi.fn(() => ({
+        collectConfig: vi.fn().mockResolvedValue({
+          filesCount: 10,
+          packagePath: '/tmp/atomic-package.tar.gz',
+          totalSize: 512000,
+          manifest: { modes: { count: 5 } }
+        }),
+        publishConfig: vi.fn().mockResolvedValue({
+          version: '2.5.0',
+          path: '/storage/configs/2.5.0.tar.gz',
+          machineId: 'myia-ai-01'
+        })
+      }))
+    });
+
+    const result = await roosyncConfig({
+      action: 'publish',
+      targets: ['modes', 'mcp'],
+      version: '2.5.0',
+      description: 'Atomic collect+publish'
+    });
+
+    expect(result.status).toBe('success');
+    expect(result.version).toBe('2.5.0');
+    expect(result.message).toContain('myia-ai-01');
+  });
+
+  it('devrait gérer l\'erreur d\'écriture', async () => {
+    const { roosyncConfig } = await import('../../../../src/tools/roosync/config.js');
+    const mockService = await import('../../../../src/services/RooSyncService.js');
+    
+    mockService.getRooSyncService.mockReturnValue({
+      getConfigSharingService: vi.fn(() => ({
+        collectConfig: vi.fn(),
+        publishConfig: vi.fn().mockRejectedValue(
+          new Error('Erreur d\'écriture sur le stockage')
+        )
+      }))
+    });
+
+    await expect(roosyncConfig({
+      action: 'publish',
+      packagePath: '/tmp/package.tar.gz',
+      version: '2.3.0',
+      description: 'Test'
+    }))
+      .rejects
+      .toThrow('Erreur d\'écriture sur le stockage');
+  });
+
+  it('devrait gérer le cas où packagePath est manquant', async () => {
+    const { roosyncConfig } = await import('../../../../src/tools/roosync/config.js');
+    const mockService = await import('../../../../src/services/RooSyncService.js');
+    
+    mockService.getRooSyncService.mockReturnValue({
+      getConfigSharingService: vi.fn(() => ({
+        collectConfig: vi.fn(),
+        publishConfig: vi.fn()
+      }))
+    });
+
+    await expect(roosyncConfig({
+      action: 'publish',
+      version: '2.3.0',
+      description: 'Test'
+    }))
+      .rejects
+      .toThrow('packagePath requis pour publish');
+  });
+});
+
+describe('roosync_config - Integration Tests - Action Apply', () => {
+  beforeEach(() => {
+    vi.resetModules();
+    vi.mock('../../../../src/services/RooSyncService.js', () => ({
+      getRooSyncService: vi.fn(() => ({
+        getConfigSharingService: vi.fn(() => ({
+          applyConfig: vi.fn()
+        })),
+        getConfigService: vi.fn(() => ({
+          getConfigVersion: vi.fn().mockResolvedValue('2.3.0')
+        }))
+      }))
+    }));
+  });
+
+  it('devrait appliquer avec version spécifique', async () => {
+    const { roosyncConfig } = await import('../../../../src/tools/roosync/config.js');
+    const mockService = await import('../../../../src/services/RooSyncService.js');
+    
+    mockService.getRooSyncService.mockReturnValue({
+      getConfigSharingService: vi.fn(() => ({
+        applyConfig: vi.fn().mockResolvedValue({
+          success: true,
+          filesApplied: 15,
+          backupPath: '/backup/config-2.3.0-20260221.tar.gz',
+          errors: []
+        })
+      })),
+      getConfigService: vi.fn(() => ({
+        getConfigVersion: vi.fn().mockResolvedValue('2.3.0')
+      }))
+    });
+
+    const result = await roosyncConfig({
+      action: 'apply',
+      version: '2.3.0',
+      targets: ['modes', 'mcp']
+    });
+
+    expect(result.status).toBe('success');
+    expect(result.filesApplied).toBe(15);
+    expect(result.backupPath).toContain('2.3.0');
+    expect(result.errors).toEqual([]);
+  });
+
+  it('devrait appliquer avec version=latest', async () => {
+    const { roosyncConfig } = await import('../../../../src/tools/roosync/config.js');
+    const mockService = await import('../../../../src/services/RooSyncService.js');
+    
+    mockService.getRooSyncService.mockReturnValue({
+      getConfigSharingService: vi.fn(() => ({
+        applyConfig: vi.fn().mockResolvedValue({
+          success: true,
+          filesApplied: 10,
+          backupPath: '/backup/config-latest-20260221.tar.gz',
+          errors: []
+        })
+      })),
+      getConfigService: vi.fn(() => ({
+        getConfigVersion: vi.fn().mockResolvedValue('2.3.0')
+      }))
+    });
+
+    const result = await roosyncConfig({
+      action: 'apply',
+      version: 'latest'
+    });
+
+    expect(result.status).toBe('success');
+    expect(result.filesApplied).toBe(10);
+    expect(result.backupPath).toContain('latest');
+  });
+
+  it('devrait appliquer avec backup=false', async () => {
+    const { roosyncConfig } = await import('../../../../src/tools/roosync/config.js');
+    const mockService = await import('../../../../src/services/RooSyncService.js');
+    
+    mockService.getRooSyncService.mockReturnValue({
+      getConfigSharingService: vi.fn(() => ({
+        applyConfig: vi.fn().mockResolvedValue({
+          success: true,
+          filesApplied: 8,
+          backupPath: null,
+          errors: []
+        })
+      })),
+      getConfigService: vi.fn(() => ({
+        getConfigVersion: vi.fn().mockResolvedValue('2.3.0')
+      }))
+    });
+
+    const result = await roosyncConfig({
+      action: 'apply',
+      version: '2.3.0',
+      backup: false
+    });
+
+    expect(result.status).toBe('success');
+    expect(result.filesApplied).toBe(8);
+    expect(result.backupPath).toBeNull();
+  });
+
+  it('devrait appliquer avec dryRun=true', async () => {
+    const { roosyncConfig } = await import('../../../../src/tools/roosync/config.js');
+    const mockService = await import('../../../../src/services/RooSyncService.js');
+    
+    mockService.getRooSyncService.mockReturnValue({
+      getConfigSharingService: vi.fn(() => ({
+        applyConfig: vi.fn().mockResolvedValue({
+          success: true,
+          filesApplied: 12,
+          backupPath: null,
+          errors: []
+        })
+      })),
+      getConfigService: vi.fn(() => ({
+        getConfigVersion: vi.fn().mockResolvedValue('2.3.0')
+      }))
+    });
+
+    const result = await roosyncConfig({
+      action: 'apply',
+      version: '2.3.0',
+      dryRun: true
+    });
+
+    expect(result.status).toBe('success');
+    expect(result.filesApplied).toBe(12);
+    expect(result.backupPath).toBeNull();
+    expect(result.message).toBe('Configuration appliquée avec succès');
+  });
+
+  it('devrait appliquer avec targets granulaires', async () => {
+    const { roosyncConfig } = await import('../../../../src/tools/roosync/config.js');
+    const mockService = await import('../../../../src/services/RooSyncService.js');
+    
+    mockService.getRooSyncService.mockReturnValue({
+      getConfigSharingService: vi.fn(() => ({
+        applyConfig: vi.fn().mockResolvedValue({
+          success: true,
+          filesApplied: 5,
+          backupPath: '/backup/config-mcp-jupyter-20260221.tar.gz',
+          errors: []
+        })
+      })),
+      getConfigService: vi.fn(() => ({
+        getConfigVersion: vi.fn().mockResolvedValue('2.3.0')
+      }))
+    });
+
+    const result = await roosyncConfig({
+      action: 'apply',
+      version: '2.3.0',
+      targets: ['mcp:jupyter']
+    });
+
+    expect(result.status).toBe('success');
+    expect(result.filesApplied).toBe(5);
+    expect(result.backupPath).toContain('mcp-jupyter');
+  });
+
+  it('devrait gérer l\'erreur d\'incompatibilité de version', async () => {
+    const { roosyncConfig } = await import('../../../../src/tools/roosync/config.js');
+    const mockService = await import('../../../../src/services/RooSyncService.js');
+    
+    mockService.getRooSyncService.mockReturnValue({
+      getConfigSharingService: vi.fn(() => ({
+        applyConfig: vi.fn()
+      })),
+      getConfigService: vi.fn(() => ({
+        // currentVersion=1.x vs requested=2.x → major mismatch → erreur d'incompatibilité
+        getConfigVersion: vi.fn().mockResolvedValue('1.5.0')
+      }))
+    });
+
+    await expect(roosyncConfig({
+      action: 'apply',
+      version: '2.3.0'
+    }))
+      .rejects
+      .toThrow('Incompatibilité de version');
+  });
+
+  it('devrait gérer l\'erreur d\'application', async () => {
+    const { roosyncConfig } = await import('../../../../src/tools/roosync/config.js');
+    const mockService = await import('../../../../src/services/RooSyncService.js');
+    
+    mockService.getRooSyncService.mockReturnValue({
+      getConfigSharingService: vi.fn(() => ({
+        applyConfig: vi.fn().mockResolvedValue({
+          success: false,
+          filesApplied: 0,
+          backupPath: null,
+          errors: ['Erreur lors de l\'application des fichiers']
+        })
+      })),
+      getConfigService: vi.fn(() => ({
+        getConfigVersion: vi.fn().mockResolvedValue('2.3.0')
+      }))
+    });
+
+    const result = await roosyncConfig({
+      action: 'apply',
+      version: '2.3.0'
+    });
+
+    expect(result.status).toBe('error');
+    expect(result.filesApplied).toBe(0);
+    expect(result.errors).toHaveLength(1);
+    expect(result.errors[0]).toContain('Erreur lors de l\'application');
   });
 });

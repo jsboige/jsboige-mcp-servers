@@ -130,7 +130,7 @@ async function handleStorageAction(
     const result = await handleStorageInfo({ action: storageAction });
 
     // Extraire les données du résultat
-    const dataText = result.content[0]?.type === 'text' ? result.content[0].text : '';
+    const dataText = result.content[0]?.type === 'text' ? (result.content[0] as { type: 'text'; text: string }).text : '';
     let data: any;
     try {
         data = JSON.parse(dataText);
@@ -186,7 +186,7 @@ async function handleMaintenanceAction(
     const result = await handleMaintenance(maintenanceArgs, conversationCache, state);
 
     // Extraire les données du résultat
-    const dataText = result.content[0]?.type === 'text' ? result.content[0].text : '';
+    const dataText = result.content[0]?.type === 'text' ? (result.content[0] as { type: 'text'; text: string }).text : '';
     let data: any;
     try {
         data = JSON.parse(dataText);

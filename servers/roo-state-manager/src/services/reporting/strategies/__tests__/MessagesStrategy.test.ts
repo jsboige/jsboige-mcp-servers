@@ -12,23 +12,20 @@ describe('MessagesStrategy', () => {
 
   // Helper to create content
   const createContent = (
-    id: string,
-    subType: string,
+    index: number,
+    subType: ClassifiedContent['subType'],
     size: number,
     score: number = 0.8,
-    relevant: boolean = true,
-    index: number = 0
+    relevant: boolean = true
   ): ClassifiedContent => ({
-    id,
     content: 'x'.repeat(size),
     contentSize: size,
     confidenceScore: score,
     isRelevant: relevant,
     subType,
-    type: 'text',
-    role: subType === 'UserMessage' ? 'user' : 'assistant',
+    type: subType === 'UserMessage' ? 'User' : 'Assistant',
     index
-  } as ClassifiedContent);
+  });
 
   describe('getStrategyName', () => {
     it('should return "Messages"', () => {
@@ -39,22 +36,22 @@ describe('MessagesStrategy', () => {
   describe('apply', () => {
     it('should filter content to UserMessage and Completion only', () => {
       const content = [
-        createContent('1', 'UserMessage', 100),
-        createContent('2', 'Completion', 100),
-        createContent('3', 'ToolUse', 100),
-        createContent('4', 'ToolResult', 100)
+        createContent(0, 'UserMessage', 100),
+        createContent(1, 'Completion', 100),
+        createContent(2, 'ToolCall', 100),
+        createContent(3, 'ToolResult', 100)
       ];
 
       const result = strategy.apply(content);
 
       expect(result).toHaveLength(2);
-      expect(result.map(c => c.id)).toEqual(['1', '2']);
+      expect(result.map(c => c.index)).toEqual([0, 1]);
     });
 
     it('should return empty array when no UserMessage or Completion', () => {
       const content = [
-        createContent('1', 'ToolUse', 100),
-        createContent('2', 'ToolResult', 100)
+        createContent(0, 'ToolCall', 100),
+        createContent(1, 'ToolResult', 100)
       ];
 
       const result = strategy.apply(content);
@@ -64,14 +61,14 @@ describe('MessagesStrategy', () => {
 
     it('should return only UserMessage when no Completion', () => {
       const content = [
-        createContent('1', 'UserMessage', 100),
-        createContent('2', 'ToolUse', 100)
+        createContent(0, 'UserMessage', 100),
+        createContent(1, 'ToolCall', 100)
       ];
 
       const result = strategy.apply(content);
 
       expect(result).toHaveLength(1);
-      expect(result[0].id).toBe('1');
+      expect(result[0].index).toBe(0);
     });
   });
 
@@ -102,9 +99,9 @@ describe('MessagesStrategy', () => {
   describe('filterByRelevance', () => {
     it('should filter by adjusted threshold and relevance', () => {
       const content = [
-        createContent('1', 'UserMessage', 50, 0.9, true),
-        createContent('2', 'UserMessage', 50, 0.5, true),
-        createContent('3', 'UserMessage', 50, 0.9, false)  // Not relevant
+        createContent(0, 'UserMessage', 50, 0.9, true),
+        createContent(1, 'UserMessage', 50, 0.5, true),
+        createContent(2, 'UserMessage', 50, 0.9, false)  // Not relevant
       ];
 
       const result = strategy.filterByRelevance(content, 0.5);
@@ -116,8 +113,8 @@ describe('MessagesStrategy', () => {
 
     it('should cap threshold at 0.9', () => {
       const content = [
-        createContent('1', 'Completion', 50, 0.95, true),
-        createContent('2', 'Completion', 50, 0.85, true)
+        createContent(0, 'Completion', 50, 0.95, true),
+        createContent(1, 'Completion', 50, 0.85, true)
       ];
 
       const result = strategy.filterByRelevance(content, 1.0);
@@ -128,8 +125,8 @@ describe('MessagesStrategy', () => {
 
     it('should filter to UserMessage and Completion subtypes', () => {
       const content = [
-        createContent('1', 'UserMessage', 50, 0.9, true),
-        createContent('2', 'ToolUse', 50, 0.9, true)  // Not in allowed subtypes
+        createContent(0, 'UserMessage', 50, 0.9, true),
+        createContent(1, 'ToolCall', 50, 0.9, true)  // Not in allowed subtypes
       ];
 
       const result = strategy.filterByRelevance(content, 0.5);
@@ -140,14 +137,14 @@ describe('MessagesStrategy', () => {
 
   describe('applyIntelligentTruncation', () => {
     it('should return content unchanged when maxChars is 0', () => {
-      const content = [createContent('1', 'UserMessage', 100)];
+      const content = [createContent(0, 'UserMessage', 100)];
       const result = strategy.applyIntelligentTruncation(content, 0);
 
       expect(result).toEqual(content);
     });
 
     it('should return content unchanged when maxChars is negative', () => {
-      const content = [createContent('1', 'UserMessage', 100)];
+      const content = [createContent(0, 'UserMessage', 100)];
       const result = strategy.applyIntelligentTruncation(content, -1);
 
       expect(result).toEqual(content);
@@ -155,8 +152,8 @@ describe('MessagesStrategy', () => {
 
     it('should return all content if it fits within maxChars', () => {
       const content = [
-        createContent('1', 'UserMessage', 50, 0.8, true, 0),
-        createContent('2', 'Completion', 50, 0.8, true, 1)
+        createContent(0, 'UserMessage', 50, 0.8, true),
+        createContent(1, 'Completion', 50, 0.8, true)
       ];
 
       const result = strategy.applyIntelligentTruncation(content, 200);
@@ -166,8 +163,8 @@ describe('MessagesStrategy', () => {
 
     it('should balance user messages and completions', () => {
       const content = [
-        createContent('1', 'UserMessage', 50, 0.8, true, 0),
-        createContent('2', 'Completion', 50, 0.8, true, 1)
+        createContent(0, 'UserMessage', 50, 0.8, true),
+        createContent(1, 'Completion', 50, 0.8, true)
       ];
 
       const result = strategy.applyIntelligentTruncation(content, 200);
@@ -178,8 +175,8 @@ describe('MessagesStrategy', () => {
 
     it('should maintain minimum 30% for each type', () => {
       const content = [
-        createContent('1', 'UserMessage', 10, 0.8, true, 0),
-        createContent('2', 'Completion', 100, 0.8, true, 1)
+        createContent(0, 'UserMessage', 10, 0.8, true),
+        createContent(1, 'Completion', 100, 0.8, true)
       ];
 
       const result = strategy.applyIntelligentTruncation(content, 50);
@@ -190,9 +187,9 @@ describe('MessagesStrategy', () => {
 
     it('should sort results by index', () => {
       const content = [
-        createContent('1', 'UserMessage', 30, 0.8, true, 0),
-        createContent('2', 'Completion', 30, 0.9, true, 1),
-        createContent('3', 'UserMessage', 30, 0.7, true, 2)
+        createContent(0, 'UserMessage', 30, 0.8, true),
+        createContent(1, 'Completion', 30, 0.9, true),
+        createContent(2, 'UserMessage', 30, 0.7, true)
       ];
 
       const result = strategy.applyIntelligentTruncation(content, 500);

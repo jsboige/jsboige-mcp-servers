@@ -11,27 +11,24 @@ describe('SummaryStrategy', () => {
   const strategy = new SummaryStrategy();
 
   const createContent = (
-    id: string,
-    subType: string,
+    index: number,
+    subType: ClassifiedContent['subType'],
     size: number,
     score: number = 0.8,
     relevant: boolean = true,
-    index: number = 0,
-    toolCallDetails?: { toolName: string },
-    toolResultDetails?: { success: boolean }
+    toolCallDetails?: ClassifiedContent['toolCallDetails'],
+    toolResultDetails?: ClassifiedContent['toolResultDetails']
   ): ClassifiedContent => ({
-    id,
     content: 'x'.repeat(size),
     contentSize: size,
     confidenceScore: score,
     isRelevant: relevant,
     subType,
-    type: 'text',
-    role: subType === 'UserMessage' ? 'user' : 'assistant',
+    type: subType === 'UserMessage' ? 'User' : 'Assistant',
     index,
     toolCallDetails,
     toolResultDetails
-  } as ClassifiedContent);
+  });
 
   describe('getStrategyName', () => {
     it('should return "Summary"', () => {
@@ -42,9 +39,9 @@ describe('SummaryStrategy', () => {
   describe('apply', () => {
     it('should filter to relevant subtypes only', () => {
       const content = [
-        createContent('1', 'UserMessage', 100, 0.8, true),
-        createContent('2', 'Thinking', 100, 0.8, true),  // Not in allowed subtypes
-        createContent('3', 'Completion', 100, 0.8, true)
+        createContent(0, 'UserMessage', 100, 0.8, true),
+        createContent(1, 'Thinking', 100, 0.8, true),  // Not in allowed subtypes
+        createContent(2, 'Completion', 100, 0.8, true)
       ];
 
       const result = strategy.apply(content);
@@ -54,8 +51,8 @@ describe('SummaryStrategy', () => {
 
     it('should filter by high confidence threshold (>=0.7)', () => {
       const content = [
-        createContent('1', 'UserMessage', 100, 0.9, true),
-        createContent('2', 'UserMessage', 100, 0.5, true)  // Below threshold
+        createContent(0, 'UserMessage', 100, 0.9, true),
+        createContent(1, 'UserMessage', 100, 0.5, true)  // Below threshold
       ];
 
       const result = strategy.apply(content);
@@ -65,8 +62,8 @@ describe('SummaryStrategy', () => {
 
     it('should filter by isRelevant', () => {
       const content = [
-        createContent('1', 'UserMessage', 100, 0.8, true),
-        createContent('2', 'UserMessage', 100, 0.8, false)  // Not relevant
+        createContent(0, 'UserMessage', 100, 0.8, true),
+        createContent(1, 'UserMessage', 100, 0.8, false)  // Not relevant
       ];
 
       const result = strategy.apply(content);
@@ -76,7 +73,7 @@ describe('SummaryStrategy', () => {
 
     it('should limit to max 20% of original content', () => {
       const content = Array(50).fill(null).map((_, i) =>
-        createContent(`id-${i}`, 'UserMessage', 100, 0.8, true, i)
+        createContent(i, 'UserMessage', 100, 0.8, true)
       );
 
       const result = strategy.apply(content);
@@ -87,8 +84,8 @@ describe('SummaryStrategy', () => {
 
     it('should return empty when no high-confidence content', () => {
       const content = [
-        createContent('1', 'UserMessage', 100, 0.5, true),
-        createContent('2', 'Completion', 100, 0.4, true)
+        createContent(0, 'UserMessage', 100, 0.5, true),
+        createContent(1, 'Completion', 100, 0.4, true)
       ];
 
       const result = strategy.apply(content);
@@ -124,8 +121,8 @@ describe('SummaryStrategy', () => {
   describe('filterByRelevance', () => {
     it('should use minimum threshold of 0.75', () => {
       const content = [
-        createContent('1', 'UserMessage', 100, 0.8, true),
-        createContent('2', 'UserMessage', 100, 0.7, true)  // Below 0.75
+        createContent(0, 'UserMessage', 100, 0.8, true),
+        createContent(1, 'UserMessage', 100, 0.7, true)  // Below 0.75
       ];
 
       const result = strategy.filterByRelevance(content, 0.5);
@@ -136,8 +133,8 @@ describe('SummaryStrategy', () => {
 
     it('should filter to critical content only', () => {
       const content = [
-        createContent('1', 'UserMessage', 100, 0.9, true),  // Critical
-        createContent('2', 'Thinking', 100, 0.9, true)      // Not critical
+        createContent(0, 'UserMessage', 100, 0.9, true),  // Critical
+        createContent(1, 'Thinking', 100, 0.9, true)      // Not critical
       ];
 
       const result = strategy.filterByRelevance(content, 0.5);
@@ -148,14 +145,14 @@ describe('SummaryStrategy', () => {
 
   describe('applyIntelligentTruncation', () => {
     it('should return content unchanged when maxChars is 0', () => {
-      const content = [createContent('1', 'UserMessage', 100)];
+      const content = [createContent(0, 'UserMessage', 100)];
       const result = strategy.applyIntelligentTruncation(content, 0);
 
       expect(result).toEqual(content);
     });
 
     it('should return content unchanged when maxChars is negative', () => {
-      const content = [createContent('1', 'UserMessage', 100)];
+      const content = [createContent(0, 'UserMessage', 100)];
       const result = strategy.applyIntelligentTruncation(content, -1);
 
       expect(result).toEqual(content);
@@ -163,8 +160,8 @@ describe('SummaryStrategy', () => {
 
     it('should include content that fits', () => {
       const content = [
-        createContent('1', 'UserMessage', 50, 0.8, true, 0),
-        createContent('2', 'Completion', 50, 0.8, true, 1)
+        createContent(0, 'UserMessage', 50, 0.8, true),
+        createContent(1, 'Completion', 50, 0.8, true)
       ];
 
       const result = strategy.applyIntelligentTruncation(content, 200);
@@ -174,8 +171,8 @@ describe('SummaryStrategy', () => {
 
     it('should sort results by index', () => {
       const content = [
-        createContent('1', 'UserMessage', 30, 0.8, true, 1),
-        createContent('2', 'Completion', 30, 0.8, true, 0)
+        createContent(1, 'UserMessage', 30, 0.8, true),
+        createContent(0, 'Completion', 30, 0.8, true)
       ];
 
       const result = strategy.applyIntelligentTruncation(content, 200);
@@ -185,8 +182,8 @@ describe('SummaryStrategy', () => {
 
     it('should stop when capacity exceeded (no partial truncation)', () => {
       const content = [
-        createContent('1', 'UserMessage', 100, 0.8, true, 0),
-        createContent('2', 'Completion', 100, 0.8, true, 1)
+        createContent(0, 'UserMessage', 100, 0.8, true),
+        createContent(1, 'Completion', 100, 0.8, true)
       ];
 
       const result = strategy.applyIntelligentTruncation(content, 50);
@@ -197,8 +194,8 @@ describe('SummaryStrategy', () => {
 
     it('should prioritize UserMessage over other content', () => {
       const content = [
-        createContent('1', 'ToolCall', 50, 0.8, true, 0),
-        createContent('2', 'UserMessage', 50, 0.8, true, 1)
+        createContent(0, 'ToolCall', 50, 0.8, true),
+        createContent(1, 'UserMessage', 50, 0.8, true)
       ];
 
       const result = strategy.applyIntelligentTruncation(content, 60);
@@ -211,7 +208,12 @@ describe('SummaryStrategy', () => {
   describe('isCriticalTool', () => {
     it('should identify write_to_file as critical', () => {
       const content = [
-        createContent('1', 'ToolCall', 50, 0.8, true, 0, { toolName: 'write_to_file' })
+        createContent(0, 'ToolCall', 50, 0.8, true, {
+          toolName: 'write_to_file',
+          arguments: {},
+          rawXml: '<write_to_file>test</write_to_file>',
+          parseSuccess: true
+        })
       ];
 
       const result = strategy.apply(content);
@@ -222,7 +224,12 @@ describe('SummaryStrategy', () => {
 
     it('should identify execute_command as critical', () => {
       const content = [
-        createContent('1', 'ToolCall', 50, 0.8, true, 0, { toolName: 'execute_command' })
+        createContent(0, 'ToolCall', 50, 0.8, true, {
+          toolName: 'execute_command',
+          arguments: {},
+          rawXml: '<execute_command>test</execute_command>',
+          parseSuccess: true
+        })
       ];
 
       const result = strategy.apply(content);
@@ -232,7 +239,12 @@ describe('SummaryStrategy', () => {
 
     it('should identify apply_diff as critical', () => {
       const content = [
-        createContent('1', 'ToolCall', 50, 0.8, true, 0, { toolName: 'apply_diff' })
+        createContent(0, 'ToolCall', 50, 0.8, true, {
+          toolName: 'apply_diff',
+          arguments: {},
+          rawXml: '<apply_diff>test</apply_diff>',
+          parseSuccess: true
+        })
       ];
 
       const result = strategy.apply(content);
@@ -244,7 +256,12 @@ describe('SummaryStrategy', () => {
   describe('ToolResult filtering', () => {
     it('should keep successful small ToolResults', () => {
       const content = [
-        createContent('1', 'ToolResult', 200, 0.9, true, 0, undefined, { success: true })
+        createContent(0, 'ToolResult', 200, 0.9, true, undefined, {
+          success: true,
+          outputSize: 200,
+          resultType: 'text',
+          truncated: false
+        })
       ];
 
       const result = strategy.filterByRelevance(content, 0.5);
@@ -255,7 +272,12 @@ describe('SummaryStrategy', () => {
 
     it('should exclude large ToolResults', () => {
       const content = [
-        createContent('1', 'ToolResult', 1000, 0.9, true, 0, undefined, { success: true })
+        createContent(0, 'ToolResult', 1000, 0.9, true, undefined, {
+          success: true,
+          outputSize: 1000,
+          resultType: 'text',
+          truncated: false
+        })
       ];
 
       const result = strategy.filterByRelevance(content, 0.5);
@@ -268,8 +290,8 @@ describe('SummaryStrategy', () => {
   describe('content size bonuses', () => {
     it('should give bonus to concise content (<=200 chars)', () => {
       const content = [
-        createContent('1', 'UserMessage', 100, 0.8, true, 0),
-        createContent('2', 'UserMessage', 2000, 0.8, true, 1)
+        createContent(0, 'UserMessage', 100, 0.8, true),
+        createContent(1, 'UserMessage', 2000, 0.8, true)
       ];
 
       const result = strategy.applyIntelligentTruncation(content, 350);

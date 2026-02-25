@@ -10,6 +10,7 @@
 import { MessageManager } from '../../services/MessageManager.js';
 import { getSharedStatePath } from '../../utils/server-helpers.js';
 import { createLogger, Logger } from '../../utils/logger.js';
+import { recordRooSyncActivityAsync } from './heartbeat-activity.js';
 import { MessageManagerError, MessageManagerErrorCode } from '../../types/errors.js';
 import {
   formatDate,
@@ -19,9 +20,25 @@ import {
   getLocalMachineId,
   getLocalFullId
 } from '../../utils/message-helpers.js';
+import { getRooSyncService } from '../../services/RooSyncService.js';
 
 // Logger instance for send tool
 const logger: Logger = createLogger('RooSyncSendTool');
+
+/**
+ * Tronque un body pour l'aperçu dans la sortie MCP.
+ * Montre les 2 premières et 2 dernières lignes non-vides.
+ * Utile car Claude Code (VS Code) n'affiche pas les paramètres d'input.
+ */
+function truncateBodyPreview(body: string, headLines: number = 2, tailLines: number = 2): string {
+  const lines = body.split('\n').filter(l => l.trim().length > 0);
+  if (lines.length <= headLines + tailLines) {
+    return lines.join('\n');
+  }
+  const head = lines.slice(0, headLines).join('\n');
+  const tail = lines.slice(-tailLines).join('\n');
+  return `${head}\n[... ${lines.length - headLines - tailLines} lignes masquées ...]\n${tail}`;
+}
 
 /**
  * Arguments de l'outil roosync_send
@@ -114,9 +131,9 @@ ${args.tags && args.tags.length > 0 ? `**Tags :** ${args.tags.join(', ')}\n` : '
 
 ---
 
-📁 **Fichiers créés :**
-- \`messages/inbox/${message.id}.json\` (destinataire)
-- \`messages/sent/${message.id}.json\` (expéditeur)
+## 📄 Aperçu du contenu envoyé
+
+${truncateBodyPreview(args.body!)}
 
 ---
 
@@ -127,6 +144,10 @@ ${args.tags && args.tags.length > 0 ? `**Tags :** ${args.tags.join(', ')}\n` : '
 - 📤 **Répondre** : Utilisez \`roosync_send\` avec \`action: reply\` et \`message_id: ${message.id}\``;
 
   logger.info('✅ Message sent successfully', { messageId: message.id, to: args.to });
+  // Fire-and-forget heartbeat update: sending a message proves the machine is active
+  getRooSyncService().getHeartbeatService()
+    .registerHeartbeat(getLocalMachineId(), { lastActivity: 'roosync_send', messageId: message.id })
+    .catch(err => logger.debug('Heartbeat update skipped (non-critical)', { error: String(err) }));
   return result;
 }
 
@@ -255,9 +276,9 @@ Impossible de répondre car le message original n'a pas été trouvé dans :
 
 ---
 
-## 📄 Contenu de la Réponse
+## 📄 Aperçu du contenu envoyé
 
-${args.body}
+${truncateBodyPreview(args.body!)}
 
 ---
 
@@ -268,6 +289,10 @@ ${args.body}
 - 📦 **Archiver l'original** : Utilisez \`roosync_archive_message\` avec l'ID \`${originalMessage.id}\``;
 
   logger.info('✅ Reply sent successfully', { replyId: replyMessageObj.id, threadId });
+  // Fire-and-forget heartbeat update: sending a reply proves the machine is active
+  getRooSyncService().getHeartbeatService()
+    .registerHeartbeat(getLocalMachineId(), { lastActivity: 'roosync_reply', messageId: replyMessageObj.id })
+    .catch(err => logger.debug('Heartbeat update skipped (non-critical)', { error: String(err) }));
   return result;
 }
 
@@ -322,6 +347,12 @@ async function amendMessage(
 **Raison :** ${result.reason || 'Non spécifiée'}
 
 📋 **Contenu original préservé :** ${result.original_content_preserved ? '✅ Oui (sauvegardé dans metadata)' : '❌ Non'}
+
+---
+
+## 📄 Aperçu du nouveau contenu
+
+${truncateBodyPreview(args.new_content!)}
 
 ---
 
@@ -466,6 +497,9 @@ export async function roosyncSend(
           { action: args.action }
         );
     }
+
+    // Enregistrer l'activité comme preuve de vie heartbeat (#501)
+    recordRooSyncActivityAsync('send', { action: args.action });
 
     return {
       content: [{ type: 'text', text: result }]
