@@ -1,5 +1,5 @@
 import { ConversationSkeleton } from '../../types/conversation.js';
-import { SummaryOptions, SummaryStatistics, MsgType } from '../TraceSummaryService.js';
+import { SummaryOptions, SummaryStatistics, MsgType } from '../../types/trace-summary.js';
 import { ClassifiedContent, ContentClassifier } from './ContentClassifier.js';
 
 /**

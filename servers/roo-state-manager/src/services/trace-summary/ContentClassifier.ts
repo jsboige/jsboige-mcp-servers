@@ -1,7 +1,7 @@
 import * as path from 'path';
 import * as fs from 'fs';
 import { ConversationSkeleton, MessageSkeleton } from '../../types/conversation.js';
-import { SummaryOptions } from '../TraceSummaryService.js';
+import { SummaryOptions } from '../../types/trace-summary.js';
 
 /**
  * Contenu classifié après parsing

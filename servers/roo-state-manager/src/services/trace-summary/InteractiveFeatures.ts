@@ -1,4 +1,4 @@
-import { SummaryOptions } from '../TraceSummaryService.js';
+import { SummaryOptions } from '../../types/trace-summary.js';
 import { ClassifiedContent, ContentClassifier } from './ContentClassifier.js';
 import { ExportRenderer } from './ExportRenderer.js';
 import { DetailLevelStrategyFactory } from '../reporting/DetailLevelStrategyFactory.js';

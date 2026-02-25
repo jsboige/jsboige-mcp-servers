@@ -1,5 +1,5 @@
 import { ConversationSkeleton, MessageSkeleton } from '../../types/conversation.js';
-import { SummaryOptions, SummaryResult, SummaryStatistics } from '../TraceSummaryService.js';
+import { SummaryOptions, SummaryResult, SummaryStatistics } from '../../types/trace-summary.js';
 import { ContentClassifier, ClassifiedContent } from './ContentClassifier.js';
 import { ExportRenderer } from './ExportRenderer.js';
 import { InteractiveFeatures } from './InteractiveFeatures.js';
