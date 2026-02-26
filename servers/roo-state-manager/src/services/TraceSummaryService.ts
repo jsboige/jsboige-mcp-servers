@@ -28,6 +28,7 @@ import { ClassifiedContent as EnhancedClassifiedContent } from '../types/enhance
 import { SummaryGenerator } from './trace-summary/SummaryGenerator.js';
 import { ContentClassifier, ClassifiedContent } from './trace-summary/ContentClassifier.js';
 import { sanitizeSectionHtml } from './trace-summary/ExportRenderer.js';
+import { JsonCsvExporter } from './trace-summary/JsonCsvExporter.js';
 import { TraceSummaryServiceError, TraceSummaryServiceErrorCode } from '../types/errors.js';
 
 export { sanitizeSectionHtml };
@@ -87,12 +88,14 @@ export class TraceSummaryService {
 
     private summaryGenerator: SummaryGenerator;
     private classifier: ContentClassifier;
+    private jsonCsvExporter: JsonCsvExporter;
 
     constructor(
         private readonly exportConfigManager: ExportConfigManager
     ) {
         this.summaryGenerator = new SummaryGenerator();
         this.classifier = new ContentClassifier();
+        this.jsonCsvExporter = new JsonCsvExporter(this.classifier);
     }
 
     /**
@@ -108,9 +111,19 @@ export class TraceSummaryService {
             // Dispatcher selon le format de sortie
             switch (fullOptions.outputFormat) {
                 case 'json':
-                    return await this.generateJsonSummary(conversation, fullOptions);
+                    return await this.jsonCsvExporter.generateJsonSummary(conversation, fullOptions, {
+                        truncateContent: (c, m) => this.truncateContent(c, m),
+                        isContentTruncated: (c, m) => this.isContentTruncated(c, m),
+                        getEmptyStatistics: () => this.getEmptyStatistics(),
+                        getOriginalContentSize: (c) => this.getOriginalContentSize(c),
+                        calculateCompressionRatio: (o, f) => this.calculateCompressionRatio(o, f)
+                    });
                 case 'csv':
-                    return await this.generateCsvSummary(conversation, fullOptions);
+                    return await this.jsonCsvExporter.generateCsvSummary(conversation, fullOptions, {
+                        isContentTruncated: (c, m) => this.isContentTruncated(c, m),
+                        getEmptyStatistics: () => this.getEmptyStatistics(),
+                        truncateText: (t, m) => this.truncateText(t, m)
+                    });
                 case 'markdown':
                 case 'html':
                 default:
