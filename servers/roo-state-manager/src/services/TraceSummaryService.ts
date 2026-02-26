@@ -94,7 +94,7 @@ export class TraceSummaryService {
         this.summaryGenerator = new SummaryGenerator();
         this.classifier = new ContentClassifier();
         this.jsonCsvExporter = new JsonCsvExporter(this.classifier);
-        this.clusterSummaryService = new ClusterSummaryService(this.summaryGenerator, this.classifier);
+        this.clusterSummaryService = new ClusterSummaryService();
     }
 
     /**
@@ -158,8 +158,7 @@ export class TraceSummaryService {
             childTasks,
             options,
             async (conversation, opts) => {
-                const result = await this.generateSummary(conversation, opts);
-                return { content: result.content };
+                return await this.generateSummary(conversation, opts);
             }
         );
     }
