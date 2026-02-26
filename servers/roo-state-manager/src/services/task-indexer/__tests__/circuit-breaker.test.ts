@@ -119,7 +119,7 @@ describe('Circuit Breaker - Issue #531', () => {
 
 			const blockedResult = await safeQdrantUpsert(points);
 			expect(blockedResult).toBe(false);
-		});
+		}, 30000); // Extended timeout due to rate limiter + retries
 	});
 
 	// ============================================================
