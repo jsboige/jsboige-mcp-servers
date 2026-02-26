@@ -246,8 +246,8 @@ export async function roosyncCompareConfig(args: CompareConfigArgs): Promise<Com
         );
       }
 
-      // Convertir au format CompareConfigResult
-      return formatGranularReport(granularReport, filteredDiffs, sourceMachineId, targetMachineId);
+      // Convertir au format CompareConfigResult (avec comparaison model profiles #498)
+      return formatGranularReport(granularReport, filteredDiffs, sourceMachineId, targetMachineId, sourceInventory, targetInventory);
     }
 
     // Comparaison standard (sans granularité)
@@ -605,10 +605,15 @@ function formatGranularReport(
   report: GranularDiffReport,
   filteredDiffs: GranularDiffResult[],
   sourceMachineId: string,
-  targetMachineId: string
+  targetMachineId: string,
+  sourceInventory?: any,
+  targetInventory?: any
 ): CompareConfigResult {
   // Vérifier les variables d'environnement critiques manquantes (#495)
   const envDiffs = checkMissingEnvVars();
+
+  // #498: Comparer les profils de modèle
+  const modelProfileDiffs = compareModelProfiles(sourceInventory, targetInventory);
 
   const allDifferences = [
     ...filteredDiffs.map(diff => ({
@@ -618,10 +623,11 @@ function formatGranularReport(
       description: diff.description,
       action: getRecommendedAction(diff)
     })),
-    ...envDiffs
+    ...envDiffs,
+    ...modelProfileDiffs
   ];
 
-  // Recalculer le summary basé sur tous les diffs (incluant env vars)
+  // Recalculer le summary basé sur tous les diffs (incluant env vars et model profiles)
   const summary = {
     total: allDifferences.length,
     critical: allDifferences.filter(d => d.severity === 'CRITICAL').length,
@@ -637,6 +643,116 @@ function formatGranularReport(
     differences: allDifferences,
     summary
   };
+}
+
+/**
+ * Compare les profils de modèle entre deux machines (#498)
+ * Détecte les différences dans model-configs.json
+ */
+function compareModelProfiles(
+  sourceInventory: any,
+  targetInventory: any
+): Array<{
+  category: string;
+  severity: string;
+  path: string;
+  description: string;
+  action?: string;
+}> {
+  const diffs: Array<{
+    category: string;
+    severity: string;
+    path: string;
+    description: string;
+    action?: string;
+  }> = [];
+
+  const sourceProfile = sourceInventory?.roo?.modelProfile || sourceInventory?.inventory?.rooConfig?.modelProfile;
+  const targetProfile = targetInventory?.roo?.modelProfile || targetInventory?.inventory?.rooConfig?.modelProfile;
+
+  // Pas de profil sur la source
+  if (!sourceProfile) {
+    if (targetProfile) {
+      diffs.push({
+        category: 'roo_config',
+        severity: 'WARNING',
+        path: 'roo.modelProfile',
+        description: `Profil modèle non configuré sur cette machine, mais présent sur ${targetInventory?.machineId || 'cible'}`,
+        action: 'Vérifier si model-configs.json doit être collecté'
+      });
+    }
+    return diffs;
+  }
+
+  // Pas de profil sur la cible
+  if (!targetProfile) {
+    diffs.push({
+      category: 'roo_config',
+      severity: 'WARNING',
+      path: 'roo.modelProfile',
+      description: `Profil modèle non configuré sur la machine cible (${targetInventory?.machineId || 'inconnue'})`,
+      action: 'Exécuter Get-MachineInventory.ps1 sur la machine cible'
+    });
+    return diffs;
+  }
+
+  // Comparer les hashes
+  if (sourceProfile.hash !== targetProfile.hash) {
+    // Vérifier si les modeApiConfigs diffèrent
+    const sourceModes = JSON.stringify(sourceProfile.modeApiConfigs || {});
+    const targetModes = JSON.stringify(targetProfile.modeApiConfigs || {});
+
+    if (sourceModes !== targetModes) {
+      diffs.push({
+        category: 'roo_config',
+        severity: 'CRITICAL',
+        path: 'roo.modelProfile.modeApiConfigs',
+        description: `Configuration des modes différente. Source: ${Object.keys(sourceProfile.modeApiConfigs || {}).length} modes, Cible: ${Object.keys(targetProfile.modeApiConfigs || {}).length} modes`,
+        action: 'Synchroniser model-configs.json entre les machines'
+      });
+    } else {
+      diffs.push({
+        category: 'roo_config',
+        severity: 'IMPORTANT',
+        path: 'roo.modelProfile.hash',
+        description: `Hash model-configs.json différent (source: ${sourceProfile.hash}, cible: ${targetProfile.hash}) mais modeApiConfigs identiques. Probablement formatage/whitespace.`,
+        action: 'Vérifier si la différence est significative'
+      });
+    }
+  }
+
+  // Comparer les profils disponibles
+  const sourceProfiles = sourceProfile.profiles || [];
+  const targetProfiles = targetProfile.profiles || [];
+  const missingProfiles = sourceProfiles.filter((p: string) => !targetProfiles.includes(p));
+
+  if (missingProfiles.length > 0) {
+    diffs.push({
+      category: 'roo_config',
+      severity: 'WARNING',
+      path: 'roo.modelProfile.profiles',
+      description: `Profils manquants sur la cible: ${missingProfiles.join(', ')}`,
+      action: 'Ajouter les profils manquants dans model-configs.json'
+    });
+  }
+
+  // Comparer les seuils de condensation
+  const sourceThresholds = sourceProfile.profileThresholds || {};
+  const targetThresholds = targetProfile.profileThresholds || {};
+
+  for (const [profile, threshold] of Object.entries(sourceThresholds)) {
+    if (targetThresholds[profile] !== threshold) {
+      diffs.push({
+        category: 'roo_config',
+        severity: 'IMPORTANT',
+        path: `roo.modelProfile.profileThresholds.${profile}`,
+        description: `Seuil condensation ${profile}: source=${threshold}%, cible=${targetThresholds[profile] || 'non défini'}%`,
+        action: 'Harmoniser les seuils de condensation (#502)'
+      });
+    }
+  }
+
+  return diffs;
 }
 
 /**
