@@ -34,7 +34,7 @@
       "api_key": "YOUR_MINI_API_KEY_HERE",
       "model_id": "zwz-8b",
       "vision": true,
-      "description": "Fast local vision model (ZwZ-8B-AWQ, Qwen-VL finetune - 131K context)",
+      "description": "ZwZ-8B AWQ — 135 tok/s, 131K ctx. Fine-grained vision specialist (MMStar 63%, MME 1248). Beats Qwen3.5 on spatial/OCR tasks (+9.8 pts MMStar)",
       "context_window": 131072
     },
     {
@@ -44,7 +44,7 @@
       "api_key": "YOUR_MEDIUM_API_KEY_HERE",
       "model_id": "qwen3.5-35b-a3b",
       "vision": true,
-      "description": "Qwen 3.5 35B A3B MoE AWQ (262K context, FP8 KV cache, vision+thinking — replaced glm-4.7-flash on vLLM medium GPU 0+1)",
+      "description": "Qwen3.5 35B MoE AWQ — 86 tok/s, 262K ctx, vision+thinking. Benchmarks: GSM8K 88%, IFEval 88.5%, MME 1294.7, SWE-bench 69.2%. Primary model (GPU 0+1)",
       "context_window": 262144
     },
     {
@@ -54,7 +54,7 @@
       "api_key": "YOUR_OWUI_API_KEY_HERE",
       "model_id": "Local.glm-4.7-flash-fast",
       "vision": false,
-      "description": "GLM-4.7-Flash AWQ without thinking mode via OWUI custom model (131K context, ~1-5s per response — use for simple/fast tasks)",
+      "description": "GLM-4.7-Flash AWQ via OWUI (no thinking). NOTE: vLLM backend now serves Qwen3.5, OWUI model may need reconfiguration",
       "context_window": 131072
     },
 
@@ -133,7 +133,7 @@
     {
       "_comment": "=== Core utility agents ===",
       "id": "analyst",
-      "description": "General analyst with web search and persistent memory",
+      "description": "General analyst with web search and memory. Local: Qwen3.5 (86 tok/s, 262K ctx, GSM8K 88%, SWE-bench 69.2%). Cloud: GLM-5",
       "model": "glm-5",
       "system_prompt": "You are a helpful analyst with web search and memory capabilities. Use them when needed. Always respond in the same language as the user.",
       "mcps": ["searxng", "playwright"],
@@ -144,7 +144,7 @@
     },
     {
       "id": "vision-analyst",
-      "description": "Image and document analysis specialist (cloud vision model)",
+      "description": "Image and document analysis specialist. Cloud: GLM-4.6V. Local alternative: vision-local (ZwZ-8B, faster, better fine-grained)",
       "model": "glm-4.6v",
       "system_prompt": "You are a vision analysis specialist. Describe images in detail, focusing on relevant visual elements. Be precise and thorough.",
       "mcps": ["searxng"],
@@ -152,7 +152,7 @@
     },
     {
       "id": "vision-local",
-      "description": "Fast local vision analysis (self-hosted ZwZ model)",
+      "description": "Fast local fine-grained vision (ZwZ-8B — 135 tok/s, MMStar 63%). Best for OCR, spatial reasoning, detailed analysis",
       "model": "zwz-8b",
       "system_prompt": "You are a vision analysis assistant. Analyze images carefully and describe what you see. Be concise but thorough.",
       "mcps": [],
@@ -170,7 +170,7 @@
     {
       "_comment": "=== Deep Search conversation agents (also usable standalone) ===",
       "id": "researcher",
-      "description": "Investigative researcher with web search and persistent memory for multi-source research",
+      "description": "Investigative researcher with web search and memory. Local: Qwen3.5 (IFEval 88.5%, 262K ctx). Cloud: GLM-5",
       "model": "glm-5",
       "system_prompt": "You are a meticulous investigative researcher. Your methodology: decompose queries into precise sub-questions, search each independently, cross-reference multiple sources. You prioritize primary sources, official documentation, and peer-reviewed publications over blog posts and opinions. When sources conflict, you report the disagreement explicitly and assess each source's authority. Always provide complete citations with URLs. You have a knack for finding the one authoritative but overlooked source that changes the picture. Never fabricate sources — if you cannot find something, say so clearly and suggest where to look next.",
       "mcps": ["searxng", "playwright"],
