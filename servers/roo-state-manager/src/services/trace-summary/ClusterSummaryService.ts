@@ -1,13 +1,8 @@
 /**
- * ClusterSummaryService - Génération de résumés pour les grappes de tâches
+ * ClusterSummaryService - Service de génération de résumés pour les grappes de tâches
  *
- * Extrait de TraceSummaryService.ts pour modularisation (#521)
- *
- * Responsable de:
- * - Validation et organisation des tâches en grappe
- * - Classification du contenu agrégé
- * - Calcul des statistiques de grappe
- * - Rendu multi-mode (aggregated, detailed, comparative)
+ * Extrait de TraceSummaryService.ts pour modularisation.
+ * Gère la logique spécifique aux résumés multi-tâches (clusters).
  */
 
 import {
@@ -20,19 +15,31 @@ import {
     ClassifiedClusterContent,
     CrossTaskPattern
 } from '../../types/conversation.js';
-import { SummaryOptions, SummaryStatistics } from '../../types/trace-summary.js';
-import { SummaryGenerator } from './SummaryGenerator.js';
+import { SummaryOptions, SummaryResult, SummaryStatistics } from '../../types/trace-summary.js';
 import { ContentClassifier, ClassifiedContent } from './ContentClassifier.js';
+import { SummaryGenerator } from './SummaryGenerator.js';
 import { TraceSummaryServiceError, TraceSummaryServiceErrorCode } from '../../types/errors.js';
+
+/**
+ * Type de callback pour la génération de résumé individuel
+ * (évite la dépendance circulaire avec TraceSummaryService)
+ */
+export type GenerateSummaryCallback = (
+    conversation: ConversationSkeleton,
+    options: Partial<SummaryOptions>
+) => Promise<SummaryResult>;
 
 /**
  * Service de génération de résumés pour les grappes de tâches
  */
 export class ClusterSummaryService {
-    constructor(
-        private readonly summaryGenerator: SummaryGenerator,
-        private readonly classifier: ContentClassifier
-    ) {}
+    private classifier: ContentClassifier;
+    private summaryGenerator: SummaryGenerator;
+
+    constructor() {
+        this.classifier = new ContentClassifier();
+        this.summaryGenerator = new SummaryGenerator();
+    }
 
     /**
      * Génère un résumé complet pour une grappe de tâches
@@ -40,14 +47,14 @@ export class ClusterSummaryService {
      * @param rootTask Tâche racine de la grappe (parent principal)
      * @param childTasks Liste des tâches enfantes de la grappe
      * @param options Options de génération spécifiques aux grappes
-     * @param generateSummaryFn Fonction de génération de résumé individuel
+     * @param generateSummary Callback pour générer les résumés individuels
      * @returns Résumé structuré de la grappe complète
      */
     async generateClusterSummary(
         rootTask: ConversationSkeleton,
         childTasks: ConversationSkeleton[],
         options: Partial<ClusterSummaryOptions> = {},
-        generateSummaryFn: (conversation: ConversationSkeleton, opts: Partial<SummaryOptions>) => Promise<{ content: string }>
+        generateSummary?: GenerateSummaryCallback
     ): Promise<ClusterSummaryResult> {
         try {
             // 1. Validation des entrées
@@ -70,7 +77,7 @@ export class ClusterSummaryService {
                 organizedTasks,
                 clusterStats,
                 finalOptions,
-                generateSummaryFn
+                generateSummary
             );
 
             // 7. Construction du résultat
@@ -96,9 +103,12 @@ export class ClusterSummaryService {
     }
 
     // ============================================================================
-    // MÉTHODES PRIVÉES - VALIDATION ET CONFIGURATION
+    // MÉTHODES DE VALIDATION ET CONFIGURATION
     // ============================================================================
 
+    /**
+     * Valide les entrées pour la génération de résumé de grappe
+     */
     private validateClusterInput(rootTask: ConversationSkeleton, childTasks: ConversationSkeleton[]): void {
         if (!rootTask || !rootTask.taskId) {
             throw new TraceSummaryServiceError(
@@ -124,6 +134,9 @@ export class ClusterSummaryService {
         }
     }
 
+    /**
+     * Fusionne les options avec les valeurs par défaut pour les grappes
+     */
     private mergeClusterOptions(options: Partial<ClusterSummaryOptions>): ClusterSummaryOptions {
         return {
             // Options héritées des résumés standards
@@ -147,9 +160,12 @@ export class ClusterSummaryService {
     }
 
     // ============================================================================
-    // MÉTHODES PRIVÉES - ORGANISATION DES TÂCHES
+    // MÉTHODES D'ORGANISATION ET TRI
     // ============================================================================
 
+    /**
+     * Organise et trie les tâches de la grappe selon les options
+     */
     private organizeClusterTasks(
         rootTask: ConversationSkeleton,
         childTasks: ConversationSkeleton[],
@@ -190,22 +206,34 @@ export class ClusterSummaryService {
         };
     }
 
+    /**
+     * Tri chronologique des tâches (par date de création)
+     */
     private sortTasksByChronology(tasks: ConversationSkeleton[]): ConversationSkeleton[] {
         return [...tasks].sort((a, b) =>
             new Date(a.metadata.createdAt).getTime() - new Date(b.metadata.createdAt).getTime()
         );
     }
 
+    /**
+     * Tri par taille de contenu
+     */
     private sortTasksBySize(tasks: ConversationSkeleton[]): ConversationSkeleton[] {
         return [...tasks].sort((a, b) => b.metadata.totalSize - a.metadata.totalSize);
     }
 
+    /**
+     * Tri par activité récente
+     */
     private sortTasksByActivity(tasks: ConversationSkeleton[]): ConversationSkeleton[] {
         return [...tasks].sort((a, b) =>
             new Date(b.metadata.lastActivity).getTime() - new Date(a.metadata.lastActivity).getTime()
         );
     }
 
+    /**
+     * Tri alphabétique par titre
+     */
     private sortTasksAlphabetically(tasks: ConversationSkeleton[]): ConversationSkeleton[] {
         return [...tasks].sort((a, b) => {
             const titleA = a.metadata.title || a.taskId;
@@ -215,9 +243,12 @@ export class ClusterSummaryService {
     }
 
     // ============================================================================
-    // MÉTHODES PRIVÉES - CLASSIFICATION DU CONTENU
+    // MÉTHODES DE CLASSIFICATION
     // ============================================================================
 
+    /**
+     * Classifie le contenu agrégé de toutes les tâches de la grappe
+     */
     private async classifyClusterContent(organizedTasks: OrganizedClusterTasks, options?: ClusterSummaryOptions): Promise<ClassifiedClusterContent> {
         const allClassifiedContent: ClassifiedContent[] = [];
         const perTaskContent = new Map<string, ClassifiedContent[]>();
@@ -251,10 +282,12 @@ export class ClusterSummaryService {
         };
     }
 
+    /**
+     * Identifie les patterns communs à travers les tâches
+     */
     private identifyCrossTaskPatterns(perTaskContent: Map<string, ClassifiedContent[]>): CrossTaskPattern[] {
         const patterns: CrossTaskPattern[] = [];
         const toolUsage = new Map<string, string[]>();
-        const modeUsage = new Map<string, string[]>();
 
         // Analyse des outils utilisés par tâche
         for (const [taskId, content] of perTaskContent) {
@@ -290,9 +323,12 @@ export class ClusterSummaryService {
     }
 
     // ============================================================================
-    // MÉTHODES PRIVÉES - STATISTIQUES
+    // MÉTHODES DE CALCUL DES STATISTIQUES
     // ============================================================================
 
+    /**
+     * Calcule les statistiques complètes de la grappe
+     */
     private calculateClusterStatistics(
         organizedTasks: OrganizedClusterTasks,
         classifiedContent: ClassifiedClusterContent
@@ -334,11 +370,17 @@ export class ClusterSummaryService {
         };
     }
 
+    /**
+     * Calcule la profondeur de la grappe (niveau hiérarchique)
+     */
     private calculateClusterDepth(organizedTasks: OrganizedClusterTasks): number {
         // Pour l'instant, nous gérons seulement 1 niveau (parent + enfants)
         return organizedTasks.allTasks.length > 1 ? 2 : 1;
     }
 
+    /**
+     * Calcule la distribution des tâches par différents critères
+     */
     private calculateTaskDistribution(tasks: ConversationSkeleton[]) {
         const byMode: Record<string, number> = {};
         const bySize = { small: 0, medium: 0, large: 0 };
@@ -363,6 +405,9 @@ export class ClusterSummaryService {
         return { byMode, bySize, byActivity };
     }
 
+    /**
+     * Calcule le span temporel de la grappe
+     */
     private calculateClusterTimeSpan(tasks: ConversationSkeleton[]) {
         const dates = tasks.map(task => new Date(task.metadata.createdAt));
         const startTime = new Date(Math.min(...dates.map(d => d.getTime())));
@@ -376,6 +421,9 @@ export class ClusterSummaryService {
         };
     }
 
+    /**
+     * Agrège les statistiques de contenu de toutes les tâches
+     */
     private aggregateContentStats(tasks: ConversationSkeleton[]) {
         let totalUserMessages = 0;
         let totalAssistantMessages = 0;
@@ -412,6 +460,9 @@ export class ClusterSummaryService {
         };
     }
 
+    /**
+     * Analyse les patterns communs dans le contenu classifié
+     */
     private analyzeCommonPatterns(classifiedContent: ClassifiedClusterContent) {
         const frequentTools: Record<string, number> = {};
         const commonModes: Record<string, number> = {};
@@ -438,8 +489,11 @@ export class ClusterSummaryService {
         };
     }
 
+    /**
+     * Génère les statistiques vides pour les cas d'erreur
+     */
     private getEmptyClusterStatistics(): ClusterSummaryStatistics {
-        const emptyStats: SummaryStatistics = {
+        return {
             totalSections: 0,
             userMessages: 0,
             assistantMessages: 0,
@@ -450,10 +504,7 @@ export class ClusterSummaryService {
             totalContentSize: 0,
             userPercentage: 0,
             assistantPercentage: 0,
-            toolResultsPercentage: 0
-        };
-        return {
-            ...emptyStats,
+            toolResultsPercentage: 0,
             totalTasks: 0,
             clusterDepth: 0,
             averageTaskSize: 0,
@@ -478,14 +529,17 @@ export class ClusterSummaryService {
     }
 
     // ============================================================================
-    // MÉTHODES PRIVÉES - RENDU
+    // MÉTHODES DE RENDU
     // ============================================================================
 
+    /**
+     * Pipeline de rendu complet du résumé de grappe selon le mode choisi
+     */
     private async renderClusterSummary(
         organizedTasks: OrganizedClusterTasks,
         statistics: ClusterSummaryStatistics,
         options: ClusterSummaryOptions,
-        generateSummaryFn: (conversation: ConversationSkeleton, opts: Partial<SummaryOptions>) => Promise<{ content: string }>
+        generateSummary?: GenerateSummaryCallback
     ): Promise<string> {
 
         const parts: string[] = [];
@@ -514,16 +568,16 @@ export class ClusterSummaryService {
         // Contenu selon le mode
         switch (options.clusterMode) {
             case 'aggregated':
-                parts.push(await this.renderAggregatedContent(organizedTasks, statistics, options, generateSummaryFn));
+                parts.push(await this.renderAggregatedContent(organizedTasks, statistics, options, generateSummary));
                 break;
             case 'detailed':
-                parts.push(await this.renderDetailedContent(organizedTasks, statistics, options, generateSummaryFn));
+                parts.push(await this.renderDetailedContent(organizedTasks, statistics, options, generateSummary));
                 break;
             case 'comparative':
-                parts.push(await this.renderComparativeContent(organizedTasks, statistics, options, generateSummaryFn));
+                parts.push(await this.renderComparativeContent(organizedTasks, statistics, options));
                 break;
             default:
-                parts.push(await this.renderAggregatedContent(organizedTasks, statistics, options, generateSummaryFn));
+                parts.push(await this.renderAggregatedContent(organizedTasks, statistics, options, generateSummary));
         }
 
         // Analyse cross-task
@@ -534,6 +588,9 @@ export class ClusterSummaryService {
         return parts.join('\n\n');
     }
 
+    /**
+     * Rendu de l'en-tête de grappe avec métadonnées principales
+     */
     private renderClusterHeader(
         rootTask: ConversationSkeleton,
         statistics: ClusterSummaryStatistics,
@@ -563,6 +620,9 @@ export class ClusterSummaryService {
         }
     }
 
+    /**
+     * Rendu des métadonnées de grappe (informations générales)
+     */
     private renderClusterMetadata(
         organizedTasks: OrganizedClusterTasks,
         statistics: ClusterSummaryStatistics,
@@ -617,6 +677,9 @@ export class ClusterSummaryService {
         }
     }
 
+    /**
+     * Rendu des statistiques détaillées de grappe
+     */
     private renderClusterStatistics(statistics: ClusterSummaryStatistics, options: ClusterSummaryOptions): string {
         const dist = statistics.taskDistribution;
         const patterns = statistics.commonPatterns;
@@ -681,16 +744,22 @@ ${Object.entries(patterns.frequentTools).map(([tool, count]) =>
 
 - **Messages utilisateur :** ${statistics.clusterContentStats.totalUserMessages}
 - **Messages assistant :** ${statistics.clusterContentStats.totalAssistantMessages}
-- **Résultats d'outils :** ${statistics.clusterContentStats.totalToolResults}
+- **Messages assistant :** ${statistics.clusterContentStats.totalToolResults}
 - **Moyenne messages/tâche :** ${Math.round(statistics.clusterContentStats.averageMessagesPerTask * 10) / 10}`;
         }
     }
 
+    /**
+     * Rendu compact des statistiques (version courte)
+     */
     private renderCompactClusterStats(statistics: ClusterSummaryStatistics): string {
         const content = statistics.clusterContentStats;
         return `**Statistiques :** ${statistics.totalTasks} tâches, ${content.totalUserMessages + content.totalAssistantMessages} messages, ${content.totalToolResults} outils, ${this.formatDuration(statistics.clusterTimeSpan.totalDurationHours)}`;
     }
 
+    /**
+     * Génère la table des matières pour une grappe
+     */
     private renderClusterTableOfContents(organizedTasks: OrganizedClusterTasks, options: ClusterSummaryOptions): string {
         if (options.outputFormat === 'html') {
             return `<div class="cluster-toc" id="table-des-matieres">
@@ -718,6 +787,9 @@ ${organizedTasks.sortedTasks.slice(1).map((task, index) =>
         }
     }
 
+    /**
+     * Génère une timeline chronologique de la grappe
+     */
     private renderClusterTimeline(organizedTasks: OrganizedClusterTasks, statistics: ClusterSummaryStatistics): string {
         const sortedByDate = [...organizedTasks.allTasks].sort((a, b) =>
             new Date(a.metadata.createdAt).getTime() - new Date(b.metadata.createdAt).getTime()
@@ -734,11 +806,14 @@ ${sortedByDate.map(task => {
         }).join('\n')}`;
     }
 
+    /**
+     * Rendu du contenu en mode agrégé (fusion de tous les contenus)
+     */
     private async renderAggregatedContent(
         organizedTasks: OrganizedClusterTasks,
         statistics: ClusterSummaryStatistics,
         options: ClusterSummaryOptions,
-        generateSummaryFn: (conversation: ConversationSkeleton, opts: Partial<SummaryOptions>) => Promise<{ content: string }>
+        generateSummary?: GenerateSummaryCallback
     ): Promise<string> {
         const parts: string[] = [];
 
@@ -753,21 +828,28 @@ ${sortedByDate.map(task => {
         parts.push(`### Contenu des Tâches`);
 
         for (const task of organizedTasks.sortedTasks) {
-            const taskSummary = await generateSummaryFn(task, {
-                detailLevel: 'Summary',
-                truncationChars: options.clusterTruncationChars || 1000,
-                compactStats: true,
-                includeCss: false,
-                generateToc: false,
-                outputFormat: options.outputFormat
-            });
+            let taskContent = '';
+
+            if (generateSummary) {
+                const taskSummary = await generateSummary(task, {
+                    detailLevel: 'Summary',
+                    truncationChars: options.clusterTruncationChars || 1000,
+                    compactStats: true,
+                    includeCss: false,
+                    generateToc: false,
+                    outputFormat: options.outputFormat
+                });
+                taskContent = taskSummary.content;
+            } else {
+                taskContent = `*Contenu non disponible (pas de callback generateSummary)*`;
+            }
 
             const icon = task === organizedTasks.rootTask ? '🎯' : '📝';
             const taskId = this.sanitizeId(task.taskId);
             const title = task.metadata.title || task.taskId;
 
             parts.push(`#### ${icon} ${title} {#tache${task === organizedTasks.rootTask ? '-racine' : ''}-${taskId}}`);
-            parts.push(taskSummary.content);
+            parts.push(taskContent);
 
             if (options.showTaskRelationships && task !== organizedTasks.rootTask) {
                 parts.push(`*Tâche enfante de : ${organizedTasks.rootTask.metadata.title || organizedTasks.rootTask.taskId}*`);
@@ -779,6 +861,9 @@ ${sortedByDate.map(task => {
         return parts.join('\n\n');
     }
 
+    /**
+     * Génère un résumé global de toute la grappe
+     */
     private async generateGlobalClusterSummary(
         organizedTasks: OrganizedClusterTasks,
         options: ClusterSummaryOptions
@@ -828,25 +913,35 @@ ${allInteractions.slice(0, 3).join('\n')}${allInteractions.length > 3 ? '\n*...e
         return summary;
     }
 
+    /**
+     * Rendu du contenu en mode détaillé (chaque tâche complète)
+     */
     private async renderDetailedContent(
         organizedTasks: OrganizedClusterTasks,
         statistics: ClusterSummaryStatistics,
         options: ClusterSummaryOptions,
-        generateSummaryFn: (conversation: ConversationSkeleton, opts: Partial<SummaryOptions>) => Promise<{ content: string }>
+        generateSummary?: GenerateSummaryCallback
     ): Promise<string> {
         const parts: string[] = [];
 
         parts.push(`## 📋 Contenu Détaillé de la Grappe`);
 
         for (const task of organizedTasks.sortedTasks) {
-            const taskSummary = await generateSummaryFn(task, {
-                detailLevel: options.detailLevel,
-                truncationChars: options.truncationChars,
-                compactStats: false,
-                includeCss: false,
-                generateToc: false,
-                outputFormat: options.outputFormat
-            });
+            let taskContent = '';
+
+            if (generateSummary) {
+                const taskSummary = await generateSummary(task, {
+                    detailLevel: options.detailLevel,
+                    truncationChars: options.truncationChars,
+                    compactStats: false,
+                    includeCss: false,
+                    generateToc: false,
+                    outputFormat: options.outputFormat
+                });
+                taskContent = taskSummary.content;
+            } else {
+                taskContent = `*Contenu non disponible (pas de callback generateSummary)*`;
+            }
 
             const icon = task === organizedTasks.rootTask ? '🎯' : '📝';
             const taskId = this.sanitizeId(task.taskId);
@@ -861,7 +956,7 @@ ${allInteractions.slice(0, 3).join('\n')}${allInteractions.length > 3 ? '\n*...e
 **Taille :** ${this.formatBytes(task.metadata.totalSize)}
 ${task !== organizedTasks.rootTask ? `**Parent :** ${organizedTasks.rootTask.metadata.title || organizedTasks.rootTask.taskId}` : '**Type :** Tâche racine de la grappe'}`);
 
-            parts.push(taskSummary.content);
+            parts.push(taskContent);
 
             parts.push('---'); // Séparateur entre tâches
         }
@@ -869,11 +964,13 @@ ${task !== organizedTasks.rootTask ? `**Parent :** ${organizedTasks.rootTask.met
         return parts.join('\n\n');
     }
 
+    /**
+     * Rendu du contenu en mode comparatif (analyse côte à côte)
+     */
     private async renderComparativeContent(
         organizedTasks: OrganizedClusterTasks,
         statistics: ClusterSummaryStatistics,
-        options: ClusterSummaryOptions,
-        generateSummaryFn: (conversation: ConversationSkeleton, opts: Partial<SummaryOptions>) => Promise<{ content: string }>
+        options: ClusterSummaryOptions
     ): Promise<string> {
         const parts: string[] = [];
 
@@ -926,6 +1023,9 @@ ${organizedTasks.sortedTasks.map(task => {
         return parts.join('\n\n');
     }
 
+    /**
+     * Génère une analyse comparative des patterns de contenu
+     */
     private async generateComparativeAnalysis(organizedTasks: OrganizedClusterTasks): Promise<string> {
         const analysis: string[] = [];
 
@@ -993,6 +1093,9 @@ ${organizedTasks.sortedTasks.map(task => {
         return analysis.join('\n\n');
     }
 
+    /**
+     * Rendu de l'analyse cross-task (patterns inter-tâches)
+     */
     private renderCrossTaskAnalysis(organizedTasks: OrganizedClusterTasks, statistics: ClusterSummaryStatistics): string {
         const parts: string[] = [];
 
@@ -1045,6 +1148,9 @@ ${organizedTasks.sortedTasks.map(task => {
         return parts.join('\n\n');
     }
 
+    /**
+     * Construction du résultat final
+     */
     private buildClusterResult(
         content: string,
         statistics: ClusterSummaryStatistics,
@@ -1079,6 +1185,9 @@ ${organizedTasks.sortedTasks.map(task => {
     // MÉTHODES UTILITAIRES
     // ============================================================================
 
+    /**
+     * Formate une durée en heures vers un format lisible
+     */
     private formatDuration(hours: number): string {
         if (hours < 1) {
             return `${Math.round(hours * 60)} minutes`;
@@ -1091,6 +1200,9 @@ ${organizedTasks.sortedTasks.map(task => {
         }
     }
 
+    /**
+     * Formate les bytes en format lisible
+     */
     private formatBytes(bytes: number): string {
         if (bytes < 1024) return `${bytes} B`;
         if (bytes < 1024 * 1024) return `${Math.round(bytes / 1024 * 10) / 10} KB`;
@@ -1098,6 +1210,9 @@ ${organizedTasks.sortedTasks.map(task => {
         return `${Math.round(bytes / (1024 * 1024 * 1024) * 10) / 10} GB`;
     }
 
+    /**
+     * Sanitise un ID pour les ancres HTML/Markdown
+     */
     private sanitizeId(id: string): string {
         return id.toLowerCase()
             .replace(/[^a-z0-9-_]/g, '-')
