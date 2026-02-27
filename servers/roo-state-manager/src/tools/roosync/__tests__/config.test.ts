@@ -20,7 +20,8 @@ vi.mock('../../../services/RooSyncService.js', () => ({
     getConfigSharingService: () => ({
       collectConfig: mockCollectConfig,
       publishConfig: mockPublishConfig,
-      applyConfig: mockApplyConfig
+      applyConfig: mockApplyConfig,
+      applyProfile: vi.fn()
     }),
     getConfigService: () => ({
       getConfigVersion: mockGetConfigVersion

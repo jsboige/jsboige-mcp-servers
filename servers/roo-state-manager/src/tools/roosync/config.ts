@@ -7,7 +7,7 @@ import { ConfigSharingServiceError, ConfigSharingServiceErrorCode } from '../../
  */
 export const ConfigArgsSchema = z.object({
   // Action requise
-  action: z.enum(['collect', 'publish', 'apply']).describe('Action à effectuer: collect (collecte config locale), publish (publication vers GDrive), apply (application depuis GDrive)'),
+  action: z.enum(['collect', 'publish', 'apply', 'apply_profile']).describe('Action à effectuer: collect (collecte config locale), publish (publication vers GDrive), apply (application depuis GDrive), apply_profile (appliquer un profil de modèle)'),
 
   // Paramètres communs
   machineId: z.string().optional().describe('ID de la machine (optionnel, utilise ROOSYNC_MACHINE_ID par défaut)'),
@@ -39,7 +39,11 @@ export const ConfigArgsSchema = z.object({
   description: z.string().optional().describe('Description des changements. Requis pour action=publish'),
 
   // Pour apply
-  backup: z.boolean().optional().describe('Créer un backup local avant application (défaut: true). Pour action=apply uniquement')
+  backup: z.boolean().optional().describe('Créer un backup local avant application (défaut: true). Pour action=apply et apply_profile'),
+
+  // Pour apply_profile (#498 Phase 2)
+  profileName: z.string().optional().describe('Nom du profil à appliquer (requis pour action=apply_profile). Ex: "Production (Qwen 3.5 local + GLM-5 cloud)"'),
+  sourceMachineId: z.string().optional().describe('ID de la machine source pour charger model-configs.json depuis sa config publiée (optionnel, défaut: fichier local)')
 }).refine(
   (data) => {
     // Validation spécifique par action
@@ -53,10 +57,16 @@ export const ConfigArgsSchema = z.object({
         return false;
       }
     }
+    if (data.action === 'apply_profile') {
+      // apply_profile requiert profileName
+      if (!data.profileName) {
+        return false;
+      }
+    }
     return true;
   },
   {
-    message: "Pour action=publish: 'version' et 'description' sont requis, ainsi que 'packagePath' OU 'targets'"
+    message: "Pour action=publish: 'version' et 'description' requis + 'packagePath' OU 'targets'. Pour action=apply_profile: 'profileName' requis."
   }
 );
 
@@ -216,9 +226,42 @@ export async function roosyncConfig(args: ConfigArgs) {
         };
       }
 
+      case 'apply_profile': {
+        // Action apply_profile: Applique un profil de modèle (#498 Phase 2)
+        const { profileName, sourceMachineId, backup = true } = args;
+
+        if (!profileName) {
+          throw new ConfigSharingServiceError(
+            'profileName est requis pour action=apply_profile',
+            ConfigSharingServiceErrorCode.COLLECTION_FAILED,
+            { args }
+          );
+        }
+
+        const result = await configSharingService.applyProfile({
+          profileName,
+          sourceMachineId,
+          backup,
+          dryRun
+        });
+
+        return {
+          status: result.success ? 'success' : 'error',
+          message: result.success
+            ? `Profil '${result.profileName}' appliqué avec succès (${result.modesConfigured} modes, ${result.apiConfigsCount} configs API)`
+            : `Échec de l'application du profil '${result.profileName}'`,
+          profileName: result.profileName,
+          modesConfigured: result.modesConfigured,
+          apiConfigsCount: result.apiConfigsCount,
+          backupPath: result.backupPath,
+          changes: result.changes,
+          errors: result.errors
+        };
+      }
+
       default:
         throw new ConfigSharingServiceError(
-          `Action invalide: ${action}. Valeurs acceptées: collect, publish, apply`,
+          `Action invalide: ${action}. Valeurs acceptées: collect, publish, apply, apply_profile`,
           ConfigSharingServiceErrorCode.COLLECTION_FAILED,
           { action }
         );
@@ -240,14 +283,14 @@ export async function roosyncConfig(args: ConfigArgs) {
  */
 export const configToolMetadata = {
   name: 'roosync_config',
-  description: 'Gestion de configuration RooSync. Actions : collect (collecte locale), publish (publication GDrive), apply (application depuis GDrive). Cibles : modes, mcp, profiles, roomodes, model-configs, rules, mcp:<nomServeur>. Stocke par machineId.',
+  description: 'Gestion de configuration RooSync. Actions : collect (collecte locale), publish (publication GDrive), apply (application depuis GDrive), apply_profile (appliquer un profil de modèle). Cibles : modes, mcp, profiles, roomodes, model-configs, rules, mcp:<nomServeur>. Stocke par machineId.',
   inputSchema: {
     type: 'object' as const,
     properties: {
       action: {
         type: 'string',
-        enum: ['collect', 'publish', 'apply'],
-        description: 'Action à effectuer: collect (collecte config locale), publish (publication vers GDrive), apply (application depuis GDrive)'
+        enum: ['collect', 'publish', 'apply', 'apply_profile'],
+        description: 'Action à effectuer: collect (collecte config locale), publish (publication vers GDrive), apply (application depuis GDrive), apply_profile (appliquer un profil de modèle)'
       },
       machineId: {
         type: 'string',
@@ -276,7 +319,15 @@ export const configToolMetadata = {
       },
       backup: {
         type: 'boolean',
-        description: 'Créer un backup local avant application (défaut: true). Pour action=apply uniquement'
+        description: 'Créer un backup local avant application (défaut: true). Pour action=apply et apply_profile'
+      },
+      profileName: {
+        type: 'string',
+        description: 'Nom du profil à appliquer (requis pour action=apply_profile). Ex: "Production (Qwen 3.5 local + GLM-5 cloud)"'
+      },
+      sourceMachineId: {
+        type: 'string',
+        description: 'ID de la machine source pour charger model-configs.json depuis sa config publiée (optionnel, défaut: fichier local)'
       }
     },
     required: ['action'],

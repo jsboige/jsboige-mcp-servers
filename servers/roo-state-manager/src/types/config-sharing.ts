@@ -59,6 +59,39 @@ export interface ApplyConfigResult {
   errors?: string[];
 }
 
+/**
+ * Options pour appliquer un profil de modèle depuis model-configs.json
+ * #498 Phase 2: apply_profile action
+ */
+export interface ApplyProfileOptions {
+  /** Nom du profil à appliquer (doit exister dans model-configs.json) */
+  profileName: string;
+  /** ID de la machine source (optionnel, défaut: locale). Charge model-configs.json depuis la config publiée de cette machine */
+  sourceMachineId?: string;
+  /** Créer un backup avant modification (défaut: true) */
+  backup?: boolean;
+  /** Simulation sans modification (défaut: false) */
+  dryRun?: boolean;
+}
+
+export interface ApplyProfileResult {
+  success: boolean;
+  /** Nom du profil appliqué */
+  profileName: string;
+  /** Nombre de modes configurés par le profil */
+  modesConfigured: number;
+  /** Nombre de configs API définies */
+  apiConfigsCount: number;
+  /** Chemin du backup créé */
+  backupPath?: string;
+  /** Détails des changements */
+  changes?: {
+    modeApiConfigs: Record<string, string>;
+    profileThresholds: Record<string, number>;
+  };
+  errors?: string[];
+}
+
 export interface ConfigChange {
   id: string;
   path: string[];
@@ -85,5 +118,6 @@ export interface IConfigSharingService {
   collectConfig(options: CollectConfigOptions): Promise<CollectConfigResult>;
   publishConfig(options: PublishConfigOptions): Promise<PublishConfigResult>;
   applyConfig(options: ApplyConfigOptions): Promise<ApplyConfigResult>;
+  applyProfile(options: ApplyProfileOptions): Promise<ApplyProfileResult>;
   compareWithBaseline(config: any): Promise<DiffResult>;
 }

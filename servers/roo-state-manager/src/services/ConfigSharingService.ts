@@ -13,6 +13,8 @@ import { IConfigSharingService,
    PublishConfigResult,
    ApplyConfigOptions,
    ApplyConfigResult,
+   ApplyProfileOptions,
+   ApplyProfileResult,
    ConfigManifest,
    ConfigManifestFile,
    DiffResult
@@ -489,6 +491,196 @@ export class ConfigSharingService implements IConfigSharingService {
       filesApplied,
       errors
     };
+  }
+
+  /**
+   * Applique un profil de modèle depuis model-configs.json
+   * #498 Phase 2: Déploie un profil nommé (modeApiConfigs, apiConfigs, thresholds)
+   *
+   * @param options - Options avec profileName, sourceMachineId optionnel, backup, dryRun
+   * @returns Résultat avec les changements appliqués
+   */
+  public async applyProfile(options: ApplyProfileOptions): Promise<ApplyProfileResult> {
+    this.logger.info('Application du profil de modèle', options);
+
+    const errors: string[] = [];
+
+    try {
+      // 1. Charger model-configs.json depuis la source
+      let modelConfigs: any;
+
+      if (options.sourceMachineId) {
+        // Charger depuis la config publiée d'une autre machine
+        const sharedStatePath = this.configService.getSharedStatePath();
+        const machineConfigDir = join(sharedStatePath, 'configs', options.sourceMachineId);
+        const latestPath = join(machineConfigDir, 'latest.json');
+
+        if (!existsSync(latestPath)) {
+          throw new ConfigSharingServiceError(
+            `Aucune configuration publiée trouvée pour la machine '${options.sourceMachineId}'`,
+            ConfigSharingServiceErrorCode.PATH_NOT_AVAILABLE,
+            { sourceMachineId: options.sourceMachineId, latestPath }
+          );
+        }
+
+        const latestData = JSON.parse(await fs.readFile(latestPath, 'utf-8'));
+        const modelConfigPath = join(latestData.path, 'model-configs', 'model-configs.json');
+
+        if (!existsSync(modelConfigPath)) {
+          throw new ConfigSharingServiceError(
+            `model-configs.json non trouvé dans la config publiée de '${options.sourceMachineId}'. La machine doit publier avec targets=['model-configs']`,
+            ConfigSharingServiceErrorCode.PATH_NOT_AVAILABLE,
+            { sourceMachineId: options.sourceMachineId, modelConfigPath }
+          );
+        }
+
+        modelConfigs = JSON.parse(await fs.readFile(modelConfigPath, 'utf-8'));
+        this.logger.info(`model-configs.json chargé depuis ${options.sourceMachineId}`);
+      } else {
+        // Charger depuis le fichier local
+        const inventory = await this.inventoryService.getMachineInventory() as any;
+        if (!inventory?.paths?.rooExtensions) {
+          throw new ConfigSharingServiceError(
+            'Inventaire incomplet: paths.rooExtensions non disponible',
+            ConfigSharingServiceErrorCode.INVENTORY_INCOMPLETE,
+            { missingPath: 'rooExtensions' }
+          );
+        }
+
+        const localModelConfigPath = join(inventory.paths.rooExtensions, 'roo-config', 'model-configs.json');
+        if (!existsSync(localModelConfigPath)) {
+          throw new ConfigSharingServiceError(
+            `model-configs.json non trouvé localement: ${localModelConfigPath}`,
+            ConfigSharingServiceErrorCode.PATH_NOT_AVAILABLE,
+            { localModelConfigPath }
+          );
+        }
+
+        modelConfigs = JSON.parse(await fs.readFile(localModelConfigPath, 'utf-8'));
+        this.logger.info('model-configs.json chargé depuis fichier local');
+      }
+
+      // 2. Trouver le profil demandé
+      if (!modelConfigs.profiles || !Array.isArray(modelConfigs.profiles)) {
+        throw new ConfigSharingServiceError(
+          'model-configs.json ne contient pas de section "profiles" valide',
+          ConfigSharingServiceErrorCode.COLLECTION_FAILED,
+          { keys: Object.keys(modelConfigs) }
+        );
+      }
+
+      const profile = modelConfigs.profiles.find(
+        (p: any) => p.name === options.profileName
+      );
+
+      if (!profile) {
+        const availableNames = modelConfigs.profiles.map((p: any) => p.name);
+        throw new ConfigSharingServiceError(
+          `Profil '${options.profileName}' non trouvé. Profils disponibles: ${availableNames.join(', ')}`,
+          ConfigSharingServiceErrorCode.COLLECTION_FAILED,
+          { profileName: options.profileName, availableProfiles: availableNames }
+        );
+      }
+
+      this.logger.info(`Profil trouvé: ${profile.name} - ${profile.description || ''}`);
+
+      // 3. Construire la nouvelle configuration
+      const newModeApiConfigs: Record<string, string> = { ...profile.modeOverrides };
+
+      // Ajouter les modes base (sans suffixe) pointant vers "default"
+      const baseModes = ['code', 'architect', 'ask', 'debug', 'orchestrator'];
+      for (const mode of baseModes) {
+        if (!newModeApiConfigs[mode]) {
+          newModeApiConfigs[mode] = 'default';
+        }
+      }
+
+      // Extraire les profileThresholds depuis modelConfigs (ou defaults)
+      const newThresholds: Record<string, number> = modelConfigs.profileThresholds || { simple: 80, default: 80 };
+
+      // 4. Appliquer au fichier local
+      const inventory = await this.inventoryService.getMachineInventory() as any;
+      if (!inventory?.paths?.rooExtensions) {
+        throw new ConfigSharingServiceError(
+          'Inventaire incomplet: paths.rooExtensions non disponible',
+          ConfigSharingServiceErrorCode.INVENTORY_INCOMPLETE,
+          { missingPath: 'rooExtensions' }
+        );
+      }
+
+      const localModelConfigPath = join(inventory.paths.rooExtensions, 'roo-config', 'model-configs.json');
+
+      // Backup si demandé
+      let backupPath: string | undefined;
+      if (options.backup !== false && existsSync(localModelConfigPath) && !options.dryRun) {
+        const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
+        backupPath = `${localModelConfigPath}.backup_${timestamp}`;
+        await fs.copyFile(localModelConfigPath, backupPath);
+        this.logger.info(`Backup créé: ${backupPath}`);
+      }
+
+      // Construire le nouveau model-configs.json complet
+      const currentConfig = existsSync(localModelConfigPath)
+        ? JSON.parse(await fs.readFile(localModelConfigPath, 'utf-8'))
+        : {};
+
+      const updatedConfig = {
+        ...currentConfig,
+        profiles: modelConfigs.profiles, // Garder tous les profils
+        apiConfigs: modelConfigs.apiConfigs, // Garder les configs API
+        modeApiConfigs: newModeApiConfigs,
+        profileThresholds: newThresholds,
+        notes: [
+          ...(modelConfigs.notes || []),
+          `Profil '${profile.name}' appliqué le ${new Date().toISOString().split('T')[0]}`
+        ]
+      };
+
+      // Validation JSON avant écriture
+      const jsonString = JSON.stringify(updatedConfig, null, 2);
+      try {
+        JSON.parse(jsonString); // Validation round-trip
+      } catch (parseErr: any) {
+        throw new ConfigSharingServiceError(
+          `Validation JSON échouée après construction du profil: ${parseErr.message}`,
+          ConfigSharingServiceErrorCode.COLLECTION_FAILED,
+          { profileName: options.profileName }
+        );
+      }
+
+      if (!options.dryRun) {
+        await fs.mkdir(dirname(localModelConfigPath), { recursive: true });
+        await fs.writeFile(localModelConfigPath, jsonString, 'utf-8');
+        this.logger.info(`model-configs.json mis à jour avec le profil '${profile.name}'`);
+      }
+
+      return {
+        success: true,
+        profileName: profile.name,
+        modesConfigured: Object.keys(newModeApiConfigs).length,
+        apiConfigsCount: Object.keys(modelConfigs.apiConfigs || {}).length,
+        backupPath,
+        changes: {
+          modeApiConfigs: newModeApiConfigs,
+          profileThresholds: newThresholds
+        }
+      };
+
+    } catch (err: any) {
+      if (err instanceof ConfigSharingServiceError) throw err;
+
+      const errorMsg = `Erreur applyProfile: ${err.message}`;
+      this.logger.error(errorMsg);
+      errors.push(errorMsg);
+
+      return {
+        success: false,
+        profileName: options.profileName,
+        modesConfigured: 0,
+        apiConfigsCount: 0,
+        errors
+      };
+    }
   }
 
   /**

@@ -375,7 +375,7 @@ describe('roosync_config - Metadata', () => {
     const module = await import('../../../../src/tools/roosync/config.js');
     const metadata = module.configToolMetadata;
 
-    expect(metadata.inputSchema.properties.action.enum).toEqual(['collect', 'publish', 'apply']);
+    expect(metadata.inputSchema.properties.action.enum).toEqual(['collect', 'publish', 'apply', 'apply_profile']);
   });
 });
 
