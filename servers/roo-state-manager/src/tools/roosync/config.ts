@@ -18,7 +18,7 @@ export const ConfigArgsSchema = z.object({
     (targets) => {
       if (!targets) return true;
       return targets.every(target => {
-        if (target === 'modes' || target === 'mcp' || target === 'profiles' || target === 'roomodes' || target === 'model-configs' || target === 'rules') {
+        if (target === 'modes' || target === 'mcp' || target === 'profiles' || target === 'roomodes' || target === 'model-configs' || target === 'rules' || target === 'settings') {
           return true;
         }
         if (target.startsWith('mcp:')) {
@@ -29,9 +29,9 @@ export const ConfigArgsSchema = z.object({
       });
     },
     {
-      message: "Target invalide. Valeurs acceptées: modes, mcp, profiles, roomodes, model-configs, rules, ou mcp:<nomServeur>"
+      message: "Target invalide. Valeurs acceptées: modes, mcp, profiles, roomodes, model-configs, rules, settings, ou mcp:<nomServeur>"
     }
-  ).describe('Liste des cibles à collecter/appliquer (modes, mcp, profiles, roomodes, model-configs, rules, ou mcp:<nomServeur>). Défaut: ["modes", "mcp"]'),
+  ).describe('Liste des cibles à collecter/appliquer (modes, mcp, profiles, roomodes, model-configs, rules, settings, ou mcp:<nomServeur>). Défaut: ["modes", "mcp"]'),
 
   // Pour publish (requiert collect préalable OU packagePath)
   packagePath: z.string().optional().describe('Chemin du package créé par collect. Si omis avec action=publish et targets fourni, fait collect+publish atomique'),
@@ -94,12 +94,12 @@ function parseTargets(targets?: string[]): ('modes' | 'mcp' | 'profiles' | `mcp:
       return target as `mcp:${string}`;
     }
 
-    if (target === 'modes' || target === 'mcp' || target === 'profiles' || target === 'roomodes' || target === 'model-configs' || target === 'rules') {
+    if (target === 'modes' || target === 'mcp' || target === 'profiles' || target === 'roomodes' || target === 'model-configs' || target === 'rules' || target === 'settings') {
       return target as any;
     }
 
     throw new ConfigSharingServiceError(
-      `Target invalide: '${target}'. Valeurs acceptées: modes, mcp, profiles, roomodes, model-configs, rules, ou mcp:<nomServeur>`,
+      `Target invalide: '${target}'. Valeurs acceptées: modes, mcp, profiles, roomodes, model-configs, rules, settings, ou mcp:<nomServeur>`,
       ConfigSharingServiceErrorCode.INVALID_TARGET_FORMAT,
       { target }
     );
@@ -283,7 +283,7 @@ export async function roosyncConfig(args: ConfigArgs) {
  */
 export const configToolMetadata = {
   name: 'roosync_config',
-  description: 'Gestion de configuration RooSync. Actions : collect (collecte locale), publish (publication GDrive), apply (application depuis GDrive), apply_profile (appliquer un profil de modèle). Cibles : modes, mcp, profiles, roomodes, model-configs, rules, mcp:<nomServeur>. Stocke par machineId.',
+  description: 'Gestion de configuration RooSync. Actions : collect (collecte locale), publish (publication GDrive), apply (application depuis GDrive), apply_profile (appliquer un profil de modèle). Cibles : modes, mcp, profiles, roomodes, model-configs, rules, settings, mcp:<nomServeur>. Stocke par machineId.',
   inputSchema: {
     type: 'object' as const,
     properties: {
@@ -303,7 +303,7 @@ export const configToolMetadata = {
       targets: {
         type: 'array',
         items: { type: 'string' },
-        description: 'Liste des cibles à collecter/appliquer (modes, mcp, profiles, roomodes, model-configs, rules, ou mcp:<nomServeur>). Défaut: ["modes", "mcp"]'
+        description: 'Liste des cibles à collecter/appliquer (modes, mcp, profiles, roomodes, model-configs, rules, settings, ou mcp:<nomServeur>). Défaut: ["modes", "mcp"]'
       },
       packagePath: {
         type: 'string',
