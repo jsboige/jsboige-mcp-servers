@@ -25,6 +25,7 @@ import { IInventoryCollector, IConfigService } from '../types/baseline.js';
 import { createLogger, Logger } from '../utils/logger.js';
 import { ConfigSharingServiceError, ConfigSharingServiceErrorCode } from '../types/errors.js';
 import { InventoryService } from './roosync/InventoryService.js';
+import { readJSONFileWithoutBOM } from '../utils/encoding-helpers.js';
 
 export class ConfigSharingService implements IConfigSharingService {
   private logger: Logger;
@@ -843,8 +844,8 @@ export class ConfigSharingService implements IConfigSharingService {
     if (existsSync(mcpSettingsPath)) {
       const destPath = join(mcpDir, 'mcp_settings.json');
 
-      // Lecture et normalisation
-      const content = JSON.parse(await fs.readFile(mcpSettingsPath, 'utf-8'));
+      // Lecture et normalisation (avec gestion BOM)
+      const content = await readJSONFileWithoutBOM(mcpSettingsPath);
       
       // Filtrage des serveurs MCP spécifiques si demandé
       if (mcpServerNames && mcpServerNames.length > 0) {
