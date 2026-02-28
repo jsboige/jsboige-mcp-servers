@@ -349,34 +349,22 @@ describe('RooSyncService', () => {
         // Enregistrer un heartbeat pour une machine
         await heartbeatService.registerHeartbeat('test-machine-1');
 
-        // Simuler une machine offline en modifiant directement le fichier heartbeat.json
-        const heartbeatPath = join(testDir, 'heartbeat.json');
-        const heartbeatData = {
-          heartbeats: {
-            'test-machine-1': {
-              machineId: 'test-machine-1',
-              lastHeartbeat: new Date(Date.now() - 300000).toISOString(), // 5 minutes avant
-              status: 'offline',
-              missedHeartbeats: 10,
-              metadata: {
-                firstSeen: new Date().toISOString(),
-                lastUpdated: new Date().toISOString(),
-                version: '3.0.0'
-              }
-            }
-          },
-          onlineMachines: [],
-          offlineMachines: ['test-machine-1'],
-          warningMachines: [],
-          statistics: {
-            totalMachines: 1,
-            onlineCount: 0,
-            offlineCount: 1,
-            warningCount: 0,
-            lastHeartbeatCheck: new Date().toISOString()
+        // Simuler une machine offline en écrivant directement le fichier per-machine
+        const heartbeatsDir = join(testDir, 'heartbeats');
+        mkdirSync(heartbeatsDir, { recursive: true });
+        const machineFile = join(heartbeatsDir, 'test-machine-1.json');
+        const machineData = {
+          machineId: 'test-machine-1',
+          lastHeartbeat: new Date(Date.now() - 300000).toISOString(), // 5 minutes avant
+          status: 'offline',
+          missedHeartbeats: 10,
+          metadata: {
+            firstSeen: new Date().toISOString(),
+            lastUpdated: new Date().toISOString(),
+            version: '3.1.0'
           }
         };
-        writeFileSync(heartbeatPath, JSON.stringify(heartbeatData, null, 2), 'utf-8');
+        writeFileSync(machineFile, JSON.stringify(machineData, null, 2), 'utf-8');
 
         // Recharger l'état du service de heartbeat
         // Le HeartbeatService recharge l'état lors de l'initialisation
@@ -401,34 +389,22 @@ describe('RooSyncService', () => {
         // Enregistrer un heartbeat pour une machine
         await heartbeatService.registerHeartbeat('test-machine-2');
 
-        // Simuler une machine en avertissement
-        const heartbeatPath = join(testDir, 'heartbeat.json');
-        const heartbeatData = {
-          heartbeats: {
-            'test-machine-2': {
-              machineId: 'test-machine-2',
-              lastHeartbeat: new Date(Date.now() - 90000).toISOString(), // 90 secondes avant
-              status: 'warning',
-              missedHeartbeats: 3,
-              metadata: {
-                firstSeen: new Date().toISOString(),
-                lastUpdated: new Date().toISOString(),
-                version: '3.0.0'
-              }
-            }
-          },
-          onlineMachines: [],
-          offlineMachines: [],
-          warningMachines: ['test-machine-2'],
-          statistics: {
-            totalMachines: 1,
-            onlineCount: 0,
-            offlineCount: 0,
-            warningCount: 1,
-            lastHeartbeatCheck: new Date().toISOString()
+        // Simuler une machine en avertissement en écrivant directement le fichier per-machine
+        const heartbeatsDir = join(testDir, 'heartbeats');
+        mkdirSync(heartbeatsDir, { recursive: true });
+        const machineFile = join(heartbeatsDir, 'test-machine-2.json');
+        const machineData = {
+          machineId: 'test-machine-2',
+          lastHeartbeat: new Date(Date.now() - 90000).toISOString(), // 90 secondes avant
+          status: 'warning',
+          missedHeartbeats: 3,
+          metadata: {
+            firstSeen: new Date().toISOString(),
+            lastUpdated: new Date().toISOString(),
+            version: '3.1.0'
           }
         };
-        writeFileSync(heartbeatPath, JSON.stringify(heartbeatData, null, 2), 'utf-8');
+        writeFileSync(machineFile, JSON.stringify(machineData, null, 2), 'utf-8');
 
         // Recharger l'état du service de heartbeat
         RooSyncService.resetInstance();
