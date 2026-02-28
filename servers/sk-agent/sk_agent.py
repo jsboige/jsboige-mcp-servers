@@ -145,6 +145,23 @@ _VIDEO_EXTENSIONS = {".mp4", ".avi", ".mov", ".mkv", ".webm", ".flv", ".wmv"}
 _DOCUMENT_EXTENSIONS = {".pdf", ".ppt", ".pptx", ".doc", ".docx", ".xls", ".xlsx"}
 
 
+def file_uri_to_path(uri: str) -> str:
+    """Convert file:/// URI to local filesystem path.
+
+    Handles both Unix-style (file:///path) and Windows-style (file:///C:/path) URIs.
+    Returns the original string if not a file:/// URI.
+    """
+    if not uri.startswith("file:///"):
+        return uri
+    from urllib.parse import urlparse, unquote
+    parsed = urlparse(uri)
+    path = unquote(parsed.path)
+    # On Windows, remove leading slash before drive letter
+    if len(path) > 2 and path[0] == '/' and path[2] == ':':
+        path = path[1:]
+    return path
+
+
 def classify_attachment(path: str) -> str | None:
     """Classify an attachment by file extension or URL pattern.
 
@@ -152,6 +169,9 @@ def classify_attachment(path: str) -> str | None:
     """
     if not path:
         return None
+
+    # Convert file:/// URI to local path
+    path = file_uri_to_path(path)
 
     # URL: check extension from URL path
     if path.startswith(("http://", "https://")):
@@ -175,8 +195,11 @@ def classify_attachment(path: str) -> str | None:
 # ---------------------------------------------------------------------------
 
 async def resolve_attachment(source: str) -> tuple[str, str]:
-    """Convert a local file path or URL to (base64_data, media_type)."""
+    """Convert a local file path, file:/// URI, or URL to (base64_data, media_type)."""
     source = source.strip()
+
+    # Convert file:/// URI to local path
+    source = file_uri_to_path(source)
 
     if source.startswith(("http://", "https://")):
         async with httpx.AsyncClient(timeout=30) as client:
@@ -669,6 +692,9 @@ class SKAgentManager:
     ) -> dict[str, Any]:
         """Handle image region analysis (zoom)."""
         try:
+            # Convert file:/// URI to local path
+            image_source = file_uri_to_path(image_source)
+
             if image_source.startswith(("http://", "https://")):
                 async with httpx.AsyncClient(timeout=30) as client:
                     resp = await client.get(image_source, follow_redirects=True)
@@ -734,6 +760,8 @@ class SKAgentManager:
         num_frames: int = 8,
     ) -> dict[str, Any]:
         """Handle video analysis."""
+        # Convert file:/// URI to local path
+        video_source = file_uri_to_path(video_source)
         video_path = Path(video_source)
         if not video_path.exists():
             return {"error": f"Video file not found: {video_source}"}
@@ -806,6 +834,9 @@ class SKAgentManager:
 
         if mode not in ("visual", "text", "hybrid"):
             return {"error": f"Invalid mode '{mode}'. Must be: visual, text, or hybrid"}
+
+        # Convert file:/// URI to local path
+        document_source = file_uri_to_path(document_source)
 
         # Get context window for auto-limiting
         model_id = self._get_agent_model_id(agent_id)
