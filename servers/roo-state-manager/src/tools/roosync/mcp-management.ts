@@ -50,7 +50,7 @@ const MCP_SETTINGS_PATH = path.join(
 // ====================================================================
 
 let lastReadTimestamp: number | null = null;
-const WRITE_AUTHORIZATION_TIMEOUT = 60000; // 1 minute
+const WRITE_AUTHORIZATION_TIMEOUT = 300000; // 5 minutes (fix #496: operations with file reads need more time)
 
 function checkWriteAuthorization(): { isAuthorized: boolean; message: string } {
     if (lastReadTimestamp === null) {
@@ -174,7 +174,7 @@ async function handleManageAction(args: McpManagementArgs): Promise<McpManagemen
                 action: 'manage',
                 subAction: 'read',
                 timestamp,
-                message: `✅ Configuration MCP lue depuis ${MCP_SETTINGS_PATH}\n\n🔒 **AUTORISATION D'ÉCRITURE ACCORDÉE** (valable 1 minute)`,
+                message: `✅ Configuration MCP lue depuis ${MCP_SETTINGS_PATH}\n\n🔒 **AUTORISATION D'ÉCRITURE ACCORDÉE** (valable 5 minutes)`,
                 details: mcpSettings
             };
         }
