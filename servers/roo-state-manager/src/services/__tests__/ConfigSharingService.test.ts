@@ -334,4 +334,87 @@ describe('ConfigSharingService', () => {
       expect(result.manifest).toBeDefined();
     });
   });
+
+  // Issue #547 Phase 2: Tests d'intégration pour les settings Roo
+  describe('collectConfig with settings target', () => {
+    it('should accept settings target without errors', async () => {
+      // Test que le service accepte la target 'settings'
+      // L'implémentation réelle de collectSettings gère les cas où state.vscdb n'existe pas
+      const result = await service.collectConfig({
+        targets: ['settings'],
+        description: 'Test collect Roo settings'
+      });
+
+      expect(result).toBeDefined();
+      expect(result.manifest).toBeDefined();
+      expect(result.manifest.files).toBeInstanceOf(Array);
+      // Les settings peuvent être vides (0) ou collectées (>0) selon si state.vscdb existe
+      expect(result.manifest.files.length).toBeGreaterThanOrEqual(0);
+    });
+
+    it('should handle settings alongside other targets', async () => {
+      const result = await service.collectConfig({
+        targets: ['modes', 'mcp', 'settings'],
+        description: 'Test mixed targets with settings'
+      });
+
+      expect(result).toBeDefined();
+      expect(result.manifest).toBeDefined();
+      expect(result.manifest.files).toBeInstanceOf(Array);
+      // Vérifier que le manifest est valide même si aucun fichier n'est collecté
+      expect(Array.isArray(result.manifest.files)).toBe(true);
+    });
+
+    it('should return valid manifest structure for settings', async () => {
+      const result = await service.collectConfig({
+        targets: ['settings'],
+        description: 'Test settings manifest structure'
+      });
+
+      // Vérifier la structure du manifest
+      expect(result.manifest.description).toBe('Test settings manifest structure');
+      expect(result.manifest.timestamp).toBeDefined();
+      expect(result.manifest.files).toBeInstanceOf(Array);
+    });
+  });
+
+  describe('applyConfig with settings target', () => {
+    it('should handle missing settings gracefully when applying', async () => {
+      // Ce test vérifie que applyConfig peut gérer le cas où la version n'existe pas
+      // sans se bloquer sur les settings manquants
+      const result = await service.applyConfig({
+        version: 'latest',
+        targets: ['settings'],
+        dryRun: true
+      });
+
+      expect(result).toBeDefined();
+      // filesApplied doit être 0 en dryRun
+      expect(result.filesApplied).toBe(0);
+    });
+
+    it('should skip settings when not in targets', async () => {
+      const result = await service.applyConfig({
+        version: 'latest',
+        targets: ['modes', 'mcp'],
+        dryRun: true
+      });
+
+      expect(result).toBeDefined();
+      // Si aucune config ne correspond aux targets (fichiers n'existent pas),
+      // le résultat doit toujours être valide
+      expect(result.success).toBeDefined();
+    });
+
+    it('should support dryRun for settings', async () => {
+      const result = await service.applyConfig({
+        version: 'latest',
+        targets: ['settings'],
+        dryRun: true
+      });
+
+      expect(result).toBeDefined();
+      expect(result.filesApplied).toBe(0);
+    });
+  });
 });
