@@ -118,7 +118,14 @@ export function registerCallToolHandler(
            case 'storage_info':
                result = await toolExports.handleStorageInfo(args as any);
                break;
-           // #519: Anciens outils storage retirés (detect_storage, get_storage_stats, list_conversations)
+           // [DEPRECATED] list_conversations → conversation_browser action='list'
+           case 'list_conversations':
+               result = await toolExports.listConversationsTool.handler(
+                   args as any,
+                   state.conversationCache
+               );
+               break;
+           // #519: Anciens outils storage retirés (detect_storage, get_storage_stats)
             case 'touch_mcp_settings':
                 result = await handleTouchMcpSettings();
                 break;

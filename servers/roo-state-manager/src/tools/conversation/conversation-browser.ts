@@ -3,13 +3,14 @@
  * CONS-X (#457) : Consolide task_browse + view_conversation_tree + roosync_summarize → 1 outil
  *
  * Actions disponibles :
+ * - 'list'      : Lister les conversations récentes avec filtres et tri (anciennement list_conversations)
  * - 'tree'      : Vue arborescente des tâches (anciennement task_browse action=tree)
  * - 'current'   : Tâche actuellement active (anciennement task_browse action=current)
  * - 'view'      : Vue arborescente d'une conversation (anciennement view_conversation_tree)
  * - 'summarize' : Résumé/synthèse de conversation (anciennement roosync_summarize)
  *
  * Changement tool count : -2 (3 outils → 1 dans ListTools)
- * Backward compat : Les 3 anciens noms restent fonctionnels via CallTool dans registry.ts
+ * Backward compat : Les anciens noms restent fonctionnels via CallTool dans registry.ts
  */
 
 import { CallToolResult, Tool } from '@modelcontextprotocol/sdk/types.js';
@@ -18,11 +19,12 @@ import { ConversationSkeleton } from '../../types/conversation.js';
 import { handleTaskBrowse, TaskBrowseArgs } from '../task/browse.js';
 import { viewConversationTree } from '../view-conversation-tree.js';
 import { handleRooSyncSummarize, RooSyncSummarizeArgs } from '../summary/roosync-summarize.tool.js';
+import { listConversationsTool } from './list-conversations.tool.js';
 
 /**
  * Type union pour les actions supportées
  */
-export type ConversationBrowserAction = 'tree' | 'current' | 'view' | 'summarize';
+export type ConversationBrowserAction = 'list' | 'tree' | 'current' | 'view' | 'summarize';
 
 /**
  * Arguments pour l'outil conversation_browser
@@ -31,6 +33,18 @@ export type ConversationBrowserAction = 'tree' | 'current' | 'view' | 'summarize
 export interface ConversationBrowserArgs {
     /** Action à effectuer */
     action: ConversationBrowserAction;
+
+    // ===== Arguments pour action='list' (via list_conversations) =====
+    /** [list] Nombre maximum de conversations à retourner */
+    limit?: number;
+    /** [list] Critère de tri */
+    sortBy?: 'lastActivity' | 'messageCount' | 'totalSize';
+    /** [list] Ordre de tri */
+    sortOrder?: 'asc' | 'desc';
+    /** [list] Ne retourner que les tâches avec sous-tâche en attente */
+    pendingSubtaskOnly?: boolean;
+    /** [list] Filtre par contenu (recherche insensible à la casse) */
+    contentPattern?: string;
 
     // ===== Arguments pour action='tree' (via task_browse) =====
     /** [tree] ID de la conversation (requis si action='tree') */
@@ -124,14 +138,39 @@ export interface ConversationBrowserArgs {
  */
 export const conversationBrowserTool: Tool = {
     name: 'conversation_browser',
-    description: 'Outil consolidé pour naviguer, visualiser et résumer les conversations. Actions: "tree" (arbre des tâches), "current" (tâche active), "view" (vue conversation), "summarize" (résumé/synthèse).',
+    description: 'Outil consolidé pour naviguer, visualiser et résumer les conversations. Actions: "list" (lister les conversations récentes), "tree" (arbre des tâches), "current" (tâche active), "view" (vue conversation), "summarize" (résumé/synthèse). Commencez par "list" pour découvrir les IDs de tâches.',
     inputSchema: {
         type: 'object',
         properties: {
             action: {
                 type: 'string',
-                enum: ['tree', 'current', 'view', 'summarize'],
-                description: 'Action à effectuer.'
+                enum: ['list', 'tree', 'current', 'view', 'summarize'],
+                description: 'Action à effectuer. Utilisez "list" pour découvrir les conversations disponibles et leurs IDs.'
+            },
+            // --- Arguments list ---
+            limit: {
+                type: 'number',
+                description: '[list] Nombre maximum de conversations à retourner (défaut: toutes).'
+            },
+            sortBy: {
+                type: 'string',
+                enum: ['lastActivity', 'messageCount', 'totalSize'],
+                description: '[list] Critère de tri.',
+                default: 'lastActivity'
+            },
+            sortOrder: {
+                type: 'string',
+                enum: ['asc', 'desc'],
+                description: '[list] Ordre de tri.',
+                default: 'desc'
+            },
+            pendingSubtaskOnly: {
+                type: 'boolean',
+                description: '[list] Ne retourner que les tâches avec sous-tâche en attente.'
+            },
+            contentPattern: {
+                type: 'string',
+                description: '[list] Filtre les tâches contenant ce texte dans leurs messages.'
             },
             // --- Arguments tree ---
             conversation_id: {
@@ -335,14 +374,14 @@ export const conversationBrowserTool: Tool = {
 function validateArgs(args: ConversationBrowserArgs): void {
     if (!args.action) {
         throw new StateManagerError(
-            'Le paramètre "action" est requis. Valeurs possibles: "tree", "current", "view", "summarize".',
+            'Le paramètre "action" est requis. Valeurs possibles: "list", "tree", "current", "view", "summarize".',
             'VALIDATION_FAILED',
             'ConversationBrowserTool',
             { providedArgs: Object.keys(args) }
         );
     }
 
-    const validActions: ConversationBrowserAction[] = ['tree', 'current', 'view', 'summarize'];
+    const validActions: ConversationBrowserAction[] = ['list', 'tree', 'current', 'view', 'summarize'];
     if (!validActions.includes(args.action)) {
         throw new StateManagerError(
             `Action invalide: "${args.action}". Valeurs possibles: ${validActions.join(', ')}.`,
@@ -405,6 +444,20 @@ export async function handleConversationBrowser(
         validateArgs(args);
 
         switch (args.action) {
+            case 'list': {
+                return await listConversationsTool.handler(
+                    {
+                        limit: args.limit,
+                        sortBy: args.sortBy,
+                        sortOrder: args.sortOrder,
+                        workspace: args.workspace,
+                        pendingSubtaskOnly: args.pendingSubtaskOnly,
+                        contentPattern: args.contentPattern
+                    },
+                    conversationCache
+                );
+            }
+
             case 'tree': {
                 const treeArgs: TaskBrowseArgs = {
                     action: 'tree',

@@ -424,4 +424,73 @@ describe('conversation_browser', () => {
 			expect(getTextContent(result)).toContain('Summary failed');
 		});
 	});
+
+	// ============================================================
+	// Action: list (REGRESSION FIX - was removed by CLEANUP-3)
+	// ============================================================
+
+	describe('action: list', () => {
+		test('list does not require extra params (returns all conversations)', async () => {
+			const result = await handleConversationBrowser(
+				{ action: 'list' },
+				mockCache,
+				mockEnsureCache
+			);
+			// Should succeed (empty cache = empty list, not an error)
+			expect(result.isError).toBeFalsy();
+		});
+
+		test('list returns JSON array from cache', async () => {
+			// Add a skeleton to the cache
+			const skeleton = {
+				taskId: 'test-task-1',
+				metadata: {
+					lastActivity: '2026-03-02T12:00:00Z',
+					createdAt: '2026-03-02T10:00:00Z',
+					messageCount: 10,
+					actionCount: 5,
+					totalSize: 1000,
+					workspace: 'd:\\roo-extensions'
+				}
+			} as any;
+			mockCache.set('test-task-1', skeleton);
+
+			const result = await handleConversationBrowser(
+				{ action: 'list', limit: 10 },
+				mockCache,
+				mockEnsureCache
+			);
+
+			expect(result.isError).toBeFalsy();
+			const parsed = JSON.parse(getTextContent(result));
+			expect(Array.isArray(parsed)).toBe(true);
+			expect(parsed.length).toBe(1);
+			expect(parsed[0].taskId).toBe('test-task-1');
+		});
+
+		test('list accepts workspace filter', async () => {
+			const result = await handleConversationBrowser(
+				{ action: 'list', workspace: 'd:\\roo-extensions', limit: 5 },
+				mockCache,
+				mockEnsureCache
+			);
+			expect(result.isError).toBeFalsy();
+		});
+
+		test('list accepts sortBy and sortOrder', async () => {
+			const result = await handleConversationBrowser(
+				{ action: 'list', sortBy: 'messageCount', sortOrder: 'asc' },
+				mockCache,
+				mockEnsureCache
+			);
+			expect(result.isError).toBeFalsy();
+		});
+
+		test('list is listed as a valid action in the tool schema', async () => {
+			// Import the tool definition to verify the schema
+			const { conversationBrowserTool } = await import('../conversation-browser.js');
+			const actionEnum = (conversationBrowserTool.inputSchema as any).properties.action.enum;
+			expect(actionEnum).toContain('list');
+		});
+	});
 });

@@ -79,17 +79,22 @@ describe('conversation_browser - CONS-X (#457)', () => {
             expect(conversationBrowserTool.name).toBe('conversation_browser');
         });
 
-        it('devrait avoir les 4 actions dans le schema', () => {
+        it('devrait avoir les 5 actions dans le schema', () => {
             const actionProp = (conversationBrowserTool.inputSchema as any).properties.action;
-            expect(actionProp.enum).toEqual(['tree', 'current', 'view', 'summarize']);
+            expect(actionProp.enum).toEqual(['list', 'tree', 'current', 'view', 'summarize']);
         });
 
         it('devrait avoir action comme seul champ requis', () => {
             expect((conversationBrowserTool.inputSchema as any).required).toEqual(['action']);
         });
 
-        it('devrait contenir les paramètres des 3 outils originaux', () => {
+        it('devrait contenir les paramètres des 4 outils originaux', () => {
             const props = Object.keys((conversationBrowserTool.inputSchema as any).properties);
+            // Paramètres de list_conversations
+            expect(props).toContain('limit');
+            expect(props).toContain('sortBy');
+            expect(props).toContain('sortOrder');
+            expect(props).toContain('contentPattern');
             // Paramètres de task_browse
             expect(props).toContain('conversation_id');
             expect(props).toContain('max_depth');

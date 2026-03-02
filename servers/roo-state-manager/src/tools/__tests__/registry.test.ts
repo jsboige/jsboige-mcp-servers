@@ -528,4 +528,113 @@ describe('registry.ts - Tool Registration', () => {
             }).not.toThrow();
         });
     });
+
+    describe('REGRESSION: Essential Tool Discoverability', () => {
+        /**
+         * CRITICAL regression test.
+         * Agents MUST be able to discover task IDs from scratch (no prior knowledge).
+         * If conversation_browser doesn't expose a 'list' action, agents cannot bootstrap
+         * their exploration of Roo tasks and must resort to manual filesystem browsing.
+         * This was broken by CLEANUP-3 which removed list_conversations from ListTools
+         * without adding equivalent capability to conversation_browser.
+         */
+        it('conversation_browser MUST include "list" in its action enum', async () => {
+            const mockServer = {
+                setRequestHandler: vi.fn()
+            } as any;
+
+            registerListToolsHandler(mockServer);
+
+            const handler = mockServer.setRequestHandler.mock.calls[0][1];
+            const result = await handler();
+
+            const conversationBrowser = result.tools.find((t: any) => t.name === 'conversation_browser');
+            expect(conversationBrowser).toBeDefined();
+
+            const actionEnum = conversationBrowser.inputSchema.properties.action.enum;
+            expect(actionEnum).toContain('list');
+            expect(actionEnum).toContain('tree');
+            expect(actionEnum).toContain('current');
+            expect(actionEnum).toContain('view');
+            expect(actionEnum).toContain('summarize');
+        });
+
+        it('conversation_browser description MUST mention "list" for discoverability', async () => {
+            const mockServer = {
+                setRequestHandler: vi.fn()
+            } as any;
+
+            registerListToolsHandler(mockServer);
+
+            const handler = mockServer.setRequestHandler.mock.calls[0][1];
+            const result = await handler();
+
+            const conversationBrowser = result.tools.find((t: any) => t.name === 'conversation_browser');
+            expect(conversationBrowser.description).toMatch(/list/i);
+        });
+
+        it('ListTools MUST expose all essential navigation tools', async () => {
+            const mockServer = {
+                setRequestHandler: vi.fn()
+            } as any;
+
+            registerListToolsHandler(mockServer);
+
+            const handler = mockServer.setRequestHandler.mock.calls[0][1];
+            const result = await handler();
+
+            const toolNames = result.tools.map((t: any) => t.name);
+
+            // These tools form the minimum viable agent workflow:
+            // 1. conversation_browser (list → get IDs, tree → navigate, current → active task, view → inspect)
+            // 2. roosync_search (find tasks by content)
+            // 3. roosync_send/read/manage (communicate)
+            const essentialTools = [
+                'conversation_browser',
+                'roosync_search',
+                'roosync_send',
+                'roosync_read',
+                'roosync_manage',
+            ];
+
+            for (const tool of essentialTools) {
+                expect(toolNames).toContain(tool);
+            }
+        });
+
+        it('CallTool should route list_conversations for backward compat', async () => {
+            const mockServer = {
+                setRequestHandler: vi.fn()
+            } as any;
+
+            const mockState = {
+                conversationCache: new Map(),
+                qdrantIndexQueue: new Set(),
+                isQdrantIndexingEnabled: false
+            } as any;
+
+            registerCallToolHandler(
+                mockServer,
+                mockState,
+                vi.fn().mockResolvedValue({ content: [] }),
+                vi.fn().mockResolvedValue(true),
+                vi.fn().mockResolvedValue(undefined)
+            );
+
+            const handler = mockServer.setRequestHandler.mock.calls[0][1];
+            const request = {
+                params: {
+                    name: 'list_conversations',
+                    arguments: { limit: 5 }
+                }
+            };
+
+            const result = await handler(request);
+
+            expect(result).toBeDefined();
+            expect(result).toHaveProperty('content');
+            // Should return a valid JSON array (possibly empty on test machine)
+            expect(result.content[0].type).toBe('text');
+        });
+    });
 });
