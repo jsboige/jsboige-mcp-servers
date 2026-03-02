@@ -5,7 +5,7 @@
  * Supporte implicitement le mode "profils" via l'ID de cible.
  *
  * @module tools/roosync/compare-config
- * @version 2.2.0 - Added granularity and filter params (#339)
+ * @version 2.3.0 - Added settings granularity for state.vscdb comparison (#547)
  */
 
 import { z } from 'zod';
@@ -13,6 +13,10 @@ import { zodToJsonSchema } from 'zod-to-json-schema';
 import { getRooSyncService, RooSyncServiceError } from '../../services/RooSyncService.js';
 import { GranularDiffDetector } from '../../services/GranularDiffDetector.js';
 import type { GranularDiffReport, GranularDiffResult } from '../../services/GranularDiffDetector.js';
+import { RooSettingsService, SYNC_SAFE_KEYS } from '../../services/RooSettingsService.js';
+import { promises as fsPromises } from 'fs';
+import { existsSync } from 'fs';
+import { join } from 'path';
 
 /**
  * Variables d'environnement critiques pour le fonctionnement du MCP
@@ -72,8 +76,8 @@ export const CompareConfigArgsSchema = z.object({
     .describe('ID de la machine cible (optionnel, défaut: remote_machine)'),
   force_refresh: z.boolean().optional()
     .describe('Forcer la collecte d\'inventaire même si cache valide (défaut: false)'),
-  granularity: z.enum(['mcp', 'mode', 'full']).optional()
-    .describe('Niveau de granularité: mcp (MCPs uniquement), mode (modes Roo), full (comparaison complète GranularDiffDetector)'),
+  granularity: z.enum(['mcp', 'mode', 'settings', 'full']).optional()
+    .describe('Niveau de granularité: mcp (MCPs uniquement), mode (modes Roo), settings (Roo settings state.vscdb), full (comparaison complète GranularDiffDetector)'),
   filter: z.string().optional()
     .describe('Filtre optionnel sur les paths (ex: "jupyter" pour filtrer un MCP spécifique)')
 });
@@ -146,6 +150,12 @@ export async function roosyncCompareConfig(args: CompareConfigArgs): Promise<Com
       // Gérer l'alias 'local-machine' qui doit être mappé vers le vrai machineId
       const sourceMachineId = (args.source === 'local-machine') ? config.machineId : (args.source || config.machineId);
       const targetMachineId = (args.target === 'local-machine') ? config.machineId : (args.target || await getDefaultTargetMachine(service, sourceMachineId));
+
+    // Settings comparison: uses RooSettingsService + GDrive published settings
+    if (args.granularity === 'settings') {
+      debugLog('Mode settings activé', { filter: args.filter });
+      return await compareSettings(sourceMachineId, targetMachineId, service, args.filter);
+    }
 
     // Si granularity est fourni, utiliser GranularDiffDetector
     if (args.granularity) {
@@ -236,8 +246,8 @@ export async function roosyncCompareConfig(args: CompareConfigArgs): Promise<Com
         );
       }
 
-      // Convertir au format CompareConfigResult
-      return formatGranularReport(granularReport, filteredDiffs, sourceMachineId, targetMachineId);
+      // Convertir au format CompareConfigResult (avec comparaison model profiles #498)
+      return formatGranularReport(granularReport, filteredDiffs, sourceMachineId, targetMachineId, sourceInventory, targetInventory);
     }
 
     // Comparaison standard (sans granularité)
@@ -282,6 +292,253 @@ export async function roosyncCompareConfig(args: CompareConfigArgs): Promise<Com
       'ROOSYNC_COMPARE_ERROR'
     );
   }
+}
+
+/**
+ * Settings categories for severity classification
+ */
+const SETTINGS_CATEGORIES: Record<string, { severity: string; label: string }> = {
+  // Model & API - CRITICAL (affects which model is used)
+  apiProvider: { severity: 'CRITICAL', label: 'Model Configuration' },
+  openAiBaseUrl: { severity: 'CRITICAL', label: 'Model Configuration' },
+  openAiModelId: { severity: 'CRITICAL', label: 'Model Configuration' },
+  currentApiConfigName: { severity: 'CRITICAL', label: 'Model Configuration' },
+  listApiConfigMeta: { severity: 'CRITICAL', label: 'Model Configuration' },
+  profileThresholds: { severity: 'IMPORTANT', label: 'Model Configuration' },
+
+  // Condensation - IMPORTANT (affects context management)
+  autoCondenseContext: { severity: 'IMPORTANT', label: 'Condensation' },
+  autoCondenseContextPercent: { severity: 'IMPORTANT', label: 'Condensation' },
+  condensingApiConfigId: { severity: 'IMPORTANT', label: 'Condensation' },
+
+  // Auto-approval - IMPORTANT (affects security posture)
+  autoApprovalEnabled: { severity: 'IMPORTANT', label: 'Auto-Approval' },
+  alwaysAllowReadOnly: { severity: 'WARNING', label: 'Auto-Approval' },
+  alwaysAllowWrite: { severity: 'IMPORTANT', label: 'Auto-Approval' },
+  alwaysAllowBrowser: { severity: 'IMPORTANT', label: 'Auto-Approval' },
+  alwaysAllowMcp: { severity: 'WARNING', label: 'Auto-Approval' },
+  alwaysAllowExecute: { severity: 'IMPORTANT', label: 'Auto-Approval' },
+};
+
+/**
+ * Compare settings between local machine and target machine's published settings
+ */
+async function compareSettings(
+  sourceMachineId: string,
+  targetMachineId: string,
+  service: any,
+  filter?: string
+): Promise<CompareConfigResult> {
+  const differences: Array<{
+    category: string;
+    severity: string;
+    path: string;
+    description: string;
+    action?: string;
+  }> = [];
+
+  // 1. Load source settings (local machine = live from state.vscdb)
+  const settingsService = new RooSettingsService();
+  let sourceSettings: Record<string, unknown> = {};
+  let sourceLabel = sourceMachineId;
+
+  const config = service.getConfig();
+  const isSourceLocal = sourceMachineId === config.machineId;
+
+  if (isSourceLocal && settingsService.isAvailable()) {
+    try {
+      const extract = await settingsService.extractSettings('safe');
+      sourceSettings = extract.settings;
+      sourceLabel = `${sourceMachineId} (live)`;
+    } catch (err) {
+      // Fallback to published settings
+      sourceSettings = await loadPublishedSettings(service, sourceMachineId);
+      sourceLabel = `${sourceMachineId} (published)`;
+    }
+  } else {
+    sourceSettings = await loadPublishedSettings(service, sourceMachineId);
+    sourceLabel = `${sourceMachineId} (published)`;
+  }
+
+  // 2. Load target settings (always from published GDrive)
+  const targetSettings = await loadPublishedSettings(service, targetMachineId);
+
+  if (Object.keys(sourceSettings).length === 0 && Object.keys(targetSettings).length === 0) {
+    return {
+      source: sourceLabel,
+      target: `${targetMachineId} (published)`,
+      differences: [{
+        category: 'roo_settings',
+        severity: 'WARNING',
+        path: 'settings',
+        description: 'Aucun settings publié trouvé pour les deux machines. Exécutez roosync_config(action: "collect", targets: ["settings"]) puis publish.',
+        action: 'Publier les settings des deux machines'
+      }],
+      summary: { total: 1, critical: 0, important: 0, warning: 1, info: 0 }
+    };
+  }
+
+  // 3. Compare all sync-safe keys
+  const allKeys = new Set([...Object.keys(sourceSettings), ...Object.keys(targetSettings)]);
+
+  for (const key of allKeys) {
+    if (!SYNC_SAFE_KEYS.has(key)) continue; // Only compare sync-safe keys
+
+    const sourceVal = sourceSettings[key];
+    const targetVal = targetSettings[key];
+    const sourceJson = JSON.stringify(sourceVal);
+    const targetJson = JSON.stringify(targetVal);
+
+    if (sourceJson === targetJson) continue;
+
+    const catInfo = SETTINGS_CATEGORIES[key] || { severity: 'INFO', label: 'Other' };
+    const path = `settings.${key}`;
+
+    // Apply filter if provided
+    if (filter) {
+      const filterLower = filter.toLowerCase();
+      if (!path.toLowerCase().includes(filterLower) &&
+          !key.toLowerCase().includes(filterLower) &&
+          !catInfo.label.toLowerCase().includes(filterLower)) {
+        continue;
+      }
+    }
+
+    let description: string;
+    if (sourceVal === undefined) {
+      description = `[${catInfo.label}] "${key}" absent sur source, présent sur cible`;
+    } else if (targetVal === undefined) {
+      description = `[${catInfo.label}] "${key}" présent sur source, absent sur cible`;
+    } else {
+      // Truncate long values for display
+      const srcDisplay = truncateValue(sourceVal);
+      const tgtDisplay = truncateValue(targetVal);
+      description = `[${catInfo.label}] "${key}" diffère: ${srcDisplay} → ${tgtDisplay}`;
+    }
+
+    differences.push({
+      category: 'roo_settings',
+      severity: catInfo.severity,
+      path,
+      description,
+      action: catInfo.severity === 'CRITICAL' ? 'Synchroniser ce paramètre' : undefined
+    });
+  }
+
+  // Sort by severity
+  const severityOrder: Record<string, number> = { CRITICAL: 0, IMPORTANT: 1, WARNING: 2, INFO: 3 };
+  differences.sort((a, b) => (severityOrder[a.severity] ?? 4) - (severityOrder[b.severity] ?? 4));
+
+  const summary = {
+    total: differences.length,
+    critical: differences.filter(d => d.severity === 'CRITICAL').length,
+    important: differences.filter(d => d.severity === 'IMPORTANT').length,
+    warning: differences.filter(d => d.severity === 'WARNING').length,
+    info: differences.filter(d => d.severity === 'INFO').length
+  };
+
+  return {
+    source: sourceLabel,
+    target: `${targetMachineId} (published)`,
+    host_id: config.machineId,
+    differences,
+    summary
+  };
+}
+
+/**
+ * Load published settings from GDrive for a specific machine
+ * Checks multiple locations:
+ * 1. configs/{machineId}/roo-settings-safe.json (standalone, from Python script)
+ * 2. configs/{machineId}/latest versioned package with roo-settings/roo-settings.json
+ */
+async function loadPublishedSettings(service: any, machineId: string): Promise<Record<string, unknown>> {
+  const config = service.getConfig();
+  const sharedStatePath = process.env.ROOSYNC_SHARED_PATH || config.sharedStatePath;
+
+  if (!sharedStatePath) return {};
+
+  const configsDir = join(sharedStatePath, 'configs', machineId);
+  if (!existsSync(configsDir)) return {};
+
+  // Try standalone files (multiple naming conventions from Python script)
+  const standaloneNames = [
+    'roo-settings-safe.json',
+    'roo-settings.json',
+    'settings-extract.json',
+  ];
+
+  for (const name of standaloneNames) {
+    const path = join(configsDir, name);
+    if (existsSync(path)) {
+      try {
+        const raw = await fsPromises.readFile(path, 'utf-8');
+        const parsed = JSON.parse(raw);
+        return parsed.settings ?? parsed;
+      } catch {
+        continue;
+      }
+    }
+  }
+
+  // Try dated standalone files (e.g., settings-extract-2026-02-28.json)
+  try {
+    const entries = await fsPromises.readdir(configsDir);
+    const settingsFiles = entries
+      .filter(e => e.startsWith('settings-extract') && e.endsWith('.json'))
+      .sort()
+      .reverse();
+
+    if (settingsFiles.length > 0) {
+      const raw = await fsPromises.readFile(join(configsDir, settingsFiles[0]), 'utf-8');
+      const parsed = JSON.parse(raw);
+      return parsed.settings ?? parsed;
+    }
+  } catch {
+    // Continue to versioned packages
+  }
+
+  // Try versioned packages (find latest with roo-settings)
+  try {
+    const entries = await fsPromises.readdir(configsDir, { withFileTypes: true });
+    const versionDirs = entries
+      .filter(e => e.isDirectory() && e.name.startsWith('v'))
+      .map(e => e.name)
+      .sort()
+      .reverse();
+
+    for (const dir of versionDirs) {
+      const settingsPath = join(configsDir, dir, 'roo-settings', 'roo-settings.json');
+      if (existsSync(settingsPath)) {
+        const raw = await fsPromises.readFile(settingsPath, 'utf-8');
+        const parsed = JSON.parse(raw);
+        return parsed.settings ?? parsed;
+      }
+    }
+  } catch {
+    // No versioned packages found
+  }
+
+  return {};
+}
+
+/**
+ * Truncate a value for display in diff description
+ */
+function truncateValue(value: unknown): string {
+  if (value === null || value === undefined) return String(value);
+  if (typeof value === 'boolean' || typeof value === 'number') return String(value);
+  if (typeof value === 'string') {
+    return value.length > 50 ? `"${value.substring(0, 47)}..."` : `"${value}"`;
+  }
+  if (Array.isArray(value)) {
+    return `[${value.length} items]`;
+  }
+  if (typeof value === 'object') {
+    const keys = Object.keys(value as object);
+    return `{${keys.length} keys}`;
+  }
+  return String(value);
 }
 
 /**
@@ -348,10 +605,15 @@ function formatGranularReport(
   report: GranularDiffReport,
   filteredDiffs: GranularDiffResult[],
   sourceMachineId: string,
-  targetMachineId: string
+  targetMachineId: string,
+  sourceInventory?: any,
+  targetInventory?: any
 ): CompareConfigResult {
   // Vérifier les variables d'environnement critiques manquantes (#495)
   const envDiffs = checkMissingEnvVars();
+
+  // #498: Comparer les profils de modèle
+  const modelProfileDiffs = compareModelProfiles(sourceInventory, targetInventory);
 
   const allDifferences = [
     ...filteredDiffs.map(diff => ({
@@ -361,10 +623,11 @@ function formatGranularReport(
       description: diff.description,
       action: getRecommendedAction(diff)
     })),
-    ...envDiffs
+    ...envDiffs,
+    ...modelProfileDiffs
   ];
 
-  // Recalculer le summary basé sur tous les diffs (incluant env vars)
+  // Recalculer le summary basé sur tous les diffs (incluant env vars et model profiles)
   const summary = {
     total: allDifferences.length,
     critical: allDifferences.filter(d => d.severity === 'CRITICAL').length,
@@ -380,6 +643,116 @@ function formatGranularReport(
     differences: allDifferences,
     summary
   };
+}
+
+/**
+ * Compare les profils de modèle entre deux machines (#498)
+ * Détecte les différences dans model-configs.json
+ */
+function compareModelProfiles(
+  sourceInventory: any,
+  targetInventory: any
+): Array<{
+  category: string;
+  severity: string;
+  path: string;
+  description: string;
+  action?: string;
+}> {
+  const diffs: Array<{
+    category: string;
+    severity: string;
+    path: string;
+    description: string;
+    action?: string;
+  }> = [];
+
+  const sourceProfile = sourceInventory?.roo?.modelProfile || sourceInventory?.inventory?.rooConfig?.modelProfile;
+  const targetProfile = targetInventory?.roo?.modelProfile || targetInventory?.inventory?.rooConfig?.modelProfile;
+
+  // Pas de profil sur la source
+  if (!sourceProfile) {
+    if (targetProfile) {
+      diffs.push({
+        category: 'roo_config',
+        severity: 'WARNING',
+        path: 'roo.modelProfile',
+        description: `Profil modèle non configuré sur cette machine, mais présent sur ${targetInventory?.machineId || 'cible'}`,
+        action: 'Vérifier si model-configs.json doit être collecté'
+      });
+    }
+    return diffs;
+  }
+
+  // Pas de profil sur la cible
+  if (!targetProfile) {
+    diffs.push({
+      category: 'roo_config',
+      severity: 'WARNING',
+      path: 'roo.modelProfile',
+      description: `Profil modèle non configuré sur la machine cible (${targetInventory?.machineId || 'inconnue'})`,
+      action: 'Exécuter Get-MachineInventory.ps1 sur la machine cible'
+    });
+    return diffs;
+  }
+
+  // Comparer les hashes
+  if (sourceProfile.hash !== targetProfile.hash) {
+    // Vérifier si les modeApiConfigs diffèrent
+    const sourceModes = JSON.stringify(sourceProfile.modeApiConfigs || {});
+    const targetModes = JSON.stringify(targetProfile.modeApiConfigs || {});
+
+    if (sourceModes !== targetModes) {
+      diffs.push({
+        category: 'roo_config',
+        severity: 'CRITICAL',
+        path: 'roo.modelProfile.modeApiConfigs',
+        description: `Configuration des modes différente. Source: ${Object.keys(sourceProfile.modeApiConfigs || {}).length} modes, Cible: ${Object.keys(targetProfile.modeApiConfigs || {}).length} modes`,
+        action: 'Synchroniser model-configs.json entre les machines'
+      });
+    } else {
+      diffs.push({
+        category: 'roo_config',
+        severity: 'IMPORTANT',
+        path: 'roo.modelProfile.hash',
+        description: `Hash model-configs.json différent (source: ${sourceProfile.hash}, cible: ${targetProfile.hash}) mais modeApiConfigs identiques. Probablement formatage/whitespace.`,
+        action: 'Vérifier si la différence est significative'
+      });
+    }
+  }
+
+  // Comparer les profils disponibles
+  const sourceProfiles = sourceProfile.profiles || [];
+  const targetProfiles = targetProfile.profiles || [];
+  const missingProfiles = sourceProfiles.filter((p: string) => !targetProfiles.includes(p));
+
+  if (missingProfiles.length > 0) {
+    diffs.push({
+      category: 'roo_config',
+      severity: 'WARNING',
+      path: 'roo.modelProfile.profiles',
+      description: `Profils manquants sur la cible: ${missingProfiles.join(', ')}`,
+      action: 'Ajouter les profils manquants dans model-configs.json'
+    });
+  }
+
+  // Comparer les seuils de condensation
+  const sourceThresholds = sourceProfile.profileThresholds || {};
+  const targetThresholds = targetProfile.profileThresholds || {};
+
+  for (const [profile, threshold] of Object.entries(sourceThresholds)) {
+    if (targetThresholds[profile] !== threshold) {
+      diffs.push({
+        category: 'roo_config',
+        severity: 'IMPORTANT',
+        path: `roo.modelProfile.profileThresholds.${profile}`,
+        description: `Seuil condensation ${profile}: source=${threshold}%, cible=${targetThresholds[profile] || 'non défini'}%`,
+        action: 'Harmoniser les seuils de condensation (#502)'
+      });
+    }
+  }
+
+  return diffs;
 }
 
 /**
@@ -428,6 +801,7 @@ Utilise Get-MachineInventory.ps1 pour collecte d'inventaire complet avec cache T
 Modes de granularité (nouveau) :
 - mcp: Compare uniquement les configurations MCP
 - mode: Compare uniquement les modes Roo
+- settings: Compare les settings Roo (state.vscdb) entre machines (#547)
 - full: Comparaison granulaire complète avec GranularDiffDetector`,
   inputSchema: {
     type: 'object' as const,
@@ -446,8 +820,8 @@ Modes de granularité (nouveau) :
       },
       granularity: {
         type: 'string',
-        enum: ['mcp', 'mode', 'full'],
-        description: 'Niveau de granularité: mcp (MCPs uniquement), mode (modes Roo), full (comparaison complète)'
+        enum: ['mcp', 'mode', 'settings', 'full'],
+        description: 'Niveau de granularité: mcp (MCPs uniquement), mode (modes Roo), settings (Roo settings state.vscdb), full (comparaison complète)'
       },
       filter: {
         type: 'string',

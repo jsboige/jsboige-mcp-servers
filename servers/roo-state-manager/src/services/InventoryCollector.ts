@@ -66,17 +66,21 @@ export interface MachineInventory {
     scripts?: any;
     /**
      * #498: Profil de modèle Roo actif
-     * Identifie le profil utilisé (ex: "Production SDDD (GLM-5 full)")
+     * Capturé depuis model-configs.json pour détecter la dérive de configuration
      */
     modelProfile?: {
-      /** Nom du profil actif */
-      activeProfile: string;
+      /** Hash SHA256 du fichier model-configs.json (16 premiers caractères) */
+      hash: string;
+      /** Liste des noms de profils disponibles */
+      profiles: string[];
+      /** Liste des noms d'API configs */
+      apiConfigs: string[];
       /** Mapping mode -> apiConfigId */
       modeApiConfigs: Record<string, string>;
-      /** Profils disponibles dans model-configs.json */
-      availableProfiles: string[];
-      /** Hash du profil pour détection de dérive */
-      profileHash?: string;
+      /** Seuils de condensation par profil */
+      profileThresholds?: Record<string, number>;
+      /** Date de dernière modification du fichier */
+      lastModified?: string;
     };
   };
   paths: {
@@ -293,12 +297,14 @@ export class InventoryCollector {
           })),
           sdddSpecs: rawInventory.inventory?.sdddSpecs,
           scripts: rawInventory.inventory?.scripts,
-          // #498: Profil de modèle Roo actif
+          // #498: Profil de modèle Roo depuis model-configs.json
           modelProfile: rawInventory.inventory?.rooConfig?.modelProfile ? {
-            activeProfile: rawInventory.inventory.rooConfig.modelProfile.activeProfile,
+            hash: rawInventory.inventory.rooConfig.modelProfile.hash,
+            profiles: rawInventory.inventory.rooConfig.modelProfile.profiles,
+            apiConfigs: rawInventory.inventory.rooConfig.modelProfile.apiConfigs,
             modeApiConfigs: rawInventory.inventory.rooConfig.modelProfile.modeApiConfigs,
-            availableProfiles: rawInventory.inventory.rooConfig.modelProfile.availableProfiles,
-            profileHash: rawInventory.inventory.rooConfig.modelProfile.profileHash
+            profileThresholds: rawInventory.inventory.rooConfig.modelProfile.profileThresholds,
+            lastModified: rawInventory.inventory.rooConfig.modelProfile.lastModified
           } : undefined
         },
         paths: rawInventory.paths
@@ -505,7 +511,16 @@ export class InventoryCollector {
               allowedFilePatterns: mode.allowedFilePatterns
             })),
             sdddSpecs: raw.inventory?.sdddSpecs,
-            scripts: raw.inventory?.scripts
+            scripts: raw.inventory?.scripts,
+            // #498: Profil de modèle Roo depuis model-configs.json
+            modelProfile: raw.inventory?.rooConfig?.modelProfile ? {
+              hash: raw.inventory.rooConfig.modelProfile.hash,
+              profiles: raw.inventory.rooConfig.modelProfile.profiles,
+              apiConfigs: raw.inventory.rooConfig.modelProfile.apiConfigs,
+              modeApiConfigs: raw.inventory.rooConfig.modelProfile.modeApiConfigs,
+              profileThresholds: raw.inventory.rooConfig.modelProfile.profileThresholds,
+              lastModified: raw.inventory.rooConfig.modelProfile.lastModified
+            } : undefined
           },
           paths: raw.paths
         };

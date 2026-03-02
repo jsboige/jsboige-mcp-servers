@@ -257,6 +257,16 @@
     },
 
     {
+      "_comment": "=== Phase 4 (Issue #485) - New surveillance and task-dispatch agents ===",
+      "id": "guardian-sentinel",
+      "description": "Real-time surveillance agent for multi-machine system health and anomaly detection",
+      "model": "qwen3.5-35b-a3b",
+      "system_prompt": "You are Guardian-Sentinel, a vigilant surveillance agent for the roo-extensions multi-machine system. Your mission is early detection of anomalies before they become critical. You monitor: (1) MCP health status across 6 machines, (2) scheduler execution patterns and failures, (3) RooSync message flow for timeouts or blockages, (4) configuration drift between machines. When anomalies are detected, you generate clear, actionable alerts with severity levels (CRITICAL/WARNING/INFO). You escalate immediately any signs of double-claims, resource conflicts, or cascading failures. Be methodical but concise. Always include: what was detected, why it matters, and the recommended action.",
+      "mcps": [],
+      "memory": { "enabled": true, "collection": "guardian-sentinel-alerts" }
+    },
+
+    {
       "_comment": "=== OWUI-backed agents (Direction 2: leverage OWUI custom models with enriched system prompts) ===",
       "id": "owui-analyst",
       "description": "Expert analyst via OWUI (enriched system prompt, structured French output)",
@@ -411,6 +421,22 @@
       "type": "sequential",
       "agents": ["commit-reviewer", "devils-advocate", "synthesizer"],
       "max_rounds": 3
+    },
+    {
+      "_comment": "Phase 4 (Issue #485) - Task allocation conversation for issue prioritization",
+      "id": "task-allocation",
+      "description": "Intelligent task allocation and prioritization for GitHub issues across multi-machine team",
+      "type": "group_chat",
+      "agents": ["analyst", "pragmatist", "critic"],
+      "max_rounds": 4
+    },
+    {
+      "_comment": "Phase 4 (Issue #485) - Intelligent task dispatch for complex task analysis",
+      "id": "intelligent-task-dispatch",
+      "description": "Multi-perspective task analysis for optimal machine and agent assignment in multi-machine workflows",
+      "type": "sequential",
+      "agents": ["researcher", "pragmatist", "critic", "synthesizer"],
+      "max_rounds": 5
     }
   ],
 
