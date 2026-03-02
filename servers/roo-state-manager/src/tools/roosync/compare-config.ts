@@ -461,17 +461,41 @@ async function loadPublishedSettings(service: any, machineId: string): Promise<R
   const configsDir = join(sharedStatePath, 'configs', machineId);
   if (!existsSync(configsDir)) return {};
 
-  // Try standalone file first (published by Python script)
-  const standalonePath = join(configsDir, 'roo-settings-safe.json');
-  if (existsSync(standalonePath)) {
-    try {
-      const raw = await fsPromises.readFile(standalonePath, 'utf-8');
-      const parsed = JSON.parse(raw);
-      // Support wrapped format { metadata, settings } or raw dict
-      return parsed.settings ?? parsed;
-    } catch {
-      // Continue to next source
+  // Try standalone files (multiple naming conventions from Python script)
+  const standaloneNames = [
+    'roo-settings-safe.json',
+    'roo-settings.json',
+    'settings-extract.json',
+  ];
+
+  for (const name of standaloneNames) {
+    const path = join(configsDir, name);
+    if (existsSync(path)) {
+      try {
+        const raw = await fsPromises.readFile(path, 'utf-8');
+        const parsed = JSON.parse(raw);
+        return parsed.settings ?? parsed;
+      } catch {
+        continue;
+      }
     }
+  }
+
+  // Try dated standalone files (e.g., settings-extract-2026-02-28.json)
+  try {
+    const entries = await fsPromises.readdir(configsDir);
+    const settingsFiles = entries
+      .filter(e => e.startsWith('settings-extract') && e.endsWith('.json'))
+      .sort()
+      .reverse();
+
+    if (settingsFiles.length > 0) {
+      const raw = await fsPromises.readFile(join(configsDir, settingsFiles[0]), 'utf-8');
+      const parsed = JSON.parse(raw);
+      return parsed.settings ?? parsed;
+    }
+  } catch {
+    // Continue to versioned packages
   }
 
   // Try versioned packages (find latest with roo-settings)
