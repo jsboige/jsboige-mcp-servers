@@ -3,11 +3,10 @@ import { join, dirname, basename } from 'path';
 import { existsSync, mkdirSync } from 'fs';
 import { createHash } from 'crypto';
 import { homedir } from 'os';
-import { promisify } from 'util';
-import sqlite3 from 'sqlite3';
 import { ConfigNormalizationService } from './ConfigNormalizationService.js';
 import { ConfigDiffService } from './ConfigDiffService.js';
 import { JsonMerger } from '../utils/JsonMerger.js';
+import { RooSettingsService } from './RooSettingsService.js';
 import { IConfigSharingService,
    CollectConfigOptions,
    CollectConfigResult,
@@ -381,34 +380,33 @@ export class ConfigSharingService implements IConfigSharingService {
 
           if (!destPath) continue;
 
-          // Traitement spécial pour les settings Roo (state.vscdb SQLite) - Issue #509
+          // Traitement spécial pour les settings Roo (state.vscdb SQLite) - Issue #509, #547
           const isSettingsFile = file.type === 'roo_settings';
           if (isSettingsFile) {
-            const settingsContent = JSON.parse(await fs.readFile(sourcePath, 'utf-8'));
+            const rawContent = JSON.parse(await fs.readFile(sourcePath, 'utf-8'));
+            // Support both wrapped format { metadata, settings } and raw dict
+            const settingsToInject = rawContent.settings ?? rawContent;
 
-            if (!options.dryRun) {
-              try {
-                // Appliquer les settings à state.vscdb
-                await this.applyRooSettings(destPath, settingsContent);
+            const settingsService = new RooSettingsService();
+            try {
+              const result = await settingsService.injectSettings(settingsToInject, {
+                dryRun: options.dryRun,
+              });
+
+              if (!options.dryRun) {
                 filesApplied++;
-                details.push({
-                  file: file.path,
-                  dest: destPath,
-                  action: 'update_sqlite',
-                  settings: settingsContent
-                });
-                this.logger.info(`Settings Roo appliqués: seuil global ${settingsContent.globalThreshold}%`);
-              } catch (error) {
-                errors.push(`Erreur application settings ${file.path}: ${error}`);
-                this.logger.error(`Erreur application settings: ${error}`);
               }
-            } else {
               details.push({
                 file: file.path,
                 dest: destPath,
-                action: 'would_update_sqlite',
-                settings: settingsContent
+                action: options.dryRun ? 'would_update_sqlite' : 'update_sqlite',
+                settingsApplied: result.applied,
+                settingsChanges: result.changes.length,
               });
+              this.logger.info(`Settings Roo appliqués: ${result.applied} changements`);
+            } catch (error) {
+              errors.push(`Erreur application settings ${file.path}: ${error}`);
+              this.logger.error(`Erreur application settings: ${error}`);
             }
             continue;
           }
@@ -1141,118 +1139,44 @@ export class ConfigSharingService implements IConfigSharingService {
   }
 
   /**
-   * Collecte les settings Roo (condensation, etc.) depuis state.vscdb
-   * Issue #509: Déploiement automatique des seuils de condensation
+   * Collecte les settings Roo depuis state.vscdb
+   * Issue #509, #547: Extraction complète des 80+ settings sync-safe
    */
   private async collectSettings(tempDir: string): Promise<ConfigManifestFile[]> {
     const files: ConfigManifestFile[] = [];
     const settingsDir = join(tempDir, 'roo-settings');
     await fs.mkdir(settingsDir, { recursive: true });
 
-    // state.vscdb est dans %APPDATA%\Code\User\globalStorage\
-    const stateDbPath = join(homedir(), 'AppData', 'Roaming', 'Code', 'User', 'globalStorage', 'state.vscdb');
+    const settingsService = new RooSettingsService();
 
-    this.logger.info(`Collecte des settings Roo depuis: ${stateDbPath}`);
-
-    if (!existsSync(stateDbPath)) {
-      this.logger.warn(`state.vscdb non trouvé: ${stateDbPath}`);
+    if (!settingsService.isAvailable()) {
+      this.logger.warn(`state.vscdb non trouvé: ${settingsService.getStateDbPath()}`);
       return files;
     }
 
     try {
-      // Utiliser le module vscode-global-state existant pour lire les settings
-      const { collectCondensationSettings } = await import('../tools/roosync/__tests__/condensation-settings-collect.prototype.js');
+      const extract = await settingsService.extractSettings('safe');
 
-      const settings = await collectCondensationSettings();
-
-      const destPath = join(settingsDir, 'condensation-settings.json');
-      await fs.writeFile(destPath, JSON.stringify(settings, null, 2));
+      const destPath = join(settingsDir, 'roo-settings.json');
+      await fs.writeFile(destPath, JSON.stringify(extract, null, 2));
 
       const hash = await this.calculateHash(destPath);
       const stats = await fs.stat(destPath);
 
       files.push({
-        path: 'roo-settings/condensation-settings.json',
+        path: 'roo-settings/roo-settings.json',
         hash,
         type: 'roo_settings',
         size: stats.size
       });
 
-      this.logger.info(`Settings de condensation collectés: seuil global ${settings.globalThreshold}%`);
+      this.logger.info(`Settings Roo collectés: ${extract.metadata.keysCount} clés sync-safe (sur ${extract.metadata.totalKeys} totales)`);
     } catch (error) {
       this.logger.error(`Erreur lors de la collecte des settings Roo: ${error}`);
       // Ne pas faire échouer toute la collecte si les settings ne sont pas disponibles
     }
 
     return files;
-  }
-
-  /**
-   * Applique les settings Roo à state.vscdb (SQLite)
-   * Issue #509: Déploiement automatique des seuils de condensation
-   */
-  private async applyRooSettings(dbPath: string, settings: any): Promise<void> {
-    // Backup de la base avant modification
-    const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
-    const backupPath = `${dbPath}.backup_${timestamp}`;
-    await fs.copyFile(dbPath, backupPath);
-    this.logger.info(`Backup state.vscdb créé: ${backupPath}`);
-
-    // Ouvrir la base de données
-    const db = await new Promise<sqlite3.Database>((resolve, reject) => {
-      const dbInstance = new sqlite3.Database(dbPath, sqlite3.OPEN_READWRITE, (err) => {
-        if (err) reject(err);
-        else resolve(dbInstance);
-      });
-    });
-
-    try {
-      const get = promisify(db.get.bind(db)) as (sql: string, params?: unknown[]) => Promise<{ value: string } | undefined>;
-
-      // Lire l'état actuel
-      const row = await get("SELECT value FROM ItemTable WHERE key = 'RooVeterinaryInc.roo-cline'");
-      if (!row) {
-        throw new Error('Clé RooVeterinaryInc.roo-cline non trouvée dans state.vscdb');
-      }
-
-      const state = JSON.parse(row.value);
-
-      // Mettre à jour les settings de condensation
-      if (settings.enabled !== undefined) {
-        state.autoCondenseContext = settings.enabled;
-      }
-      if (settings.globalThreshold !== undefined) {
-        state.autoCondenseContextPercent = settings.globalThreshold;
-      }
-      if (settings.profileThresholds !== undefined) {
-        // Convertir profileThresholds au format attendu par Roo
-        state.profileThresholds = {};
-        for (const [profileId, data] of Object.entries(settings.profileThresholds)) {
-          state.profileThresholds[profileId] = (data as { threshold: number }).threshold;
-        }
-      }
-
-      // Écrire les modifications
-      await new Promise<void>((resolve, reject) => {
-        db.run(
-          "UPDATE ItemTable SET value = ? WHERE key = 'RooVeterinaryInc.roo-cline'",
-          [JSON.stringify(state)],
-          (err) => {
-            if (err) reject(err);
-            else resolve();
-          }
-        );
-      });
-
-      this.logger.info('Settings Roo appliqués avec succès à state.vscdb');
-    } finally {
-      await new Promise<void>((resolve, reject) => {
-        db.close((err) => {
-          if (err) reject(err);
-          else resolve();
-        });
-      });
-    }
   }
 
   // Utilitaires
