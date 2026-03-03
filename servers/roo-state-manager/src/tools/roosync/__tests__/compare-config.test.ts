@@ -18,6 +18,14 @@ const { mockCompareGranular } = vi.hoisted(() => ({
 	mockCompareGranular: vi.fn()
 }));
 
+const { mockIsAvailable, mockExtractSettings, mockExistsSync, mockReadFile, mockReaddir } = vi.hoisted(() => ({
+	mockIsAvailable: vi.fn().mockReturnValue(true),
+	mockExtractSettings: vi.fn(),
+	mockExistsSync: vi.fn().mockReturnValue(false),
+	mockReadFile: vi.fn(),
+	mockReaddir: vi.fn().mockResolvedValue([])
+}));
+
 vi.mock('../../../services/RooSyncService.js', () => ({
 	getRooSyncService: vi.fn(() => ({
 		getConfig: mockGetConfig,
@@ -40,6 +48,32 @@ vi.mock('../../../services/GranularDiffDetector.js', () => ({
 		compareGranular(...args: any[]) { return mockCompareGranular(...args); }
 	}
 }));
+
+vi.mock('../../../services/RooSettingsService.js', () => ({
+	RooSettingsService: class {
+		isAvailable() { return mockIsAvailable(); }
+		extractSettings(...args: any[]) { return mockExtractSettings(...args); }
+	},
+	SYNC_SAFE_KEYS: new Set([
+		'currentApiConfigName', 'listApiConfigMeta', 'apiProvider',
+		'autoCondenseContext', 'autoCondenseContextPercent',
+		'autoApprovalEnabled', 'alwaysAllowReadOnly',
+		'openAiBaseUrl', 'openAiModelId'
+	])
+}));
+
+vi.mock('fs', async () => {
+	const actual = await vi.importActual<typeof import('fs')>('fs');
+	return {
+		...actual,
+		existsSync: (...args: any[]) => mockExistsSync(...args),
+		promises: {
+			...actual.promises,
+			readFile: (...args: any[]) => mockReadFile(...args),
+			readdir: (...args: any[]) => mockReaddir(...args)
+		}
+	};
+});
 
 describe('compare-config', () => {
 	beforeEach(() => {
@@ -70,7 +104,7 @@ describe('compare-config', () => {
 		});
 
 		test('accepts granularity enum values', () => {
-			for (const g of ['mcp', 'mode', 'full']) {
+			for (const g of ['mcp', 'mode', 'settings', 'full']) {
 				const result = CompareConfigArgsSchema.parse({ granularity: g });
 				expect(result.granularity).toBe(g);
 			}
@@ -317,6 +351,166 @@ describe('compare-config', () => {
 
 			// local-machine should be resolved to config.machineId = 'ai-01'
 			expect(mockCompareRealConfigurations).toHaveBeenCalledWith('ai-01', 'po-2023', false);
+		});
+
+		// ============================================================
+		// Settings granularity tests (#498/#547)
+		// ============================================================
+
+		test('settings granularity compares local live settings vs published target', async () => {
+			// Clear env var to use mock config path
+			const origEnv = process.env.ROOSYNC_SHARED_PATH;
+			delete process.env.ROOSYNC_SHARED_PATH;
+
+			try {
+				// Must re-set after vi.clearAllMocks() in beforeEach
+				mockIsAvailable.mockReturnValue(true);
+
+				// Mock local live settings
+				mockExtractSettings.mockResolvedValue({
+					settings: {
+						currentApiConfigName: 'Production GLM-5',
+						apiProvider: 'openai',
+						autoCondenseContext: true,
+						autoCondenseContextPercent: 80
+					},
+					metadata: { machine: 'ai-01', keysCount: 4, totalKeys: 4, mode: 'safe' }
+				});
+
+				// Mock published target settings (different profile)
+				// Use normalize to handle both / and \ path separators
+				mockExistsSync.mockImplementation((p: string) => {
+					const norm = typeof p === 'string' ? p.replace(/\\/g, '/') : '';
+					if (norm.includes('configs/po-2023')) return true;
+					if (norm.includes('roo-settings-safe.json')) return true;
+					return false;
+				});
+				mockReadFile.mockResolvedValue(JSON.stringify({
+					settings: {
+						currentApiConfigName: 'Dev Local GLM-4.7',
+						apiProvider: 'openai',
+						autoCondenseContext: true,
+						autoCondenseContextPercent: 50
+					}
+				}));
+
+				mockGetConfig.mockReturnValue({
+					machineId: 'ai-01',
+					sharedPath: '/shared/path',
+					sharedStatePath: '/shared/path'
+				});
+
+				const { roosyncCompareConfig } = await import('../compare-config.js');
+				const result = await roosyncCompareConfig({
+					target: 'po-2023',
+					granularity: 'settings'
+				});
+
+				expect(result.source).toContain('ai-01');
+				expect(result.target).toContain('po-2023');
+
+				// Should detect currentApiConfigName as CRITICAL
+				const profileDiff = result.differences.find(
+					d => d.path === 'settings.currentApiConfigName'
+				);
+				expect(profileDiff).toBeDefined();
+				expect(profileDiff!.severity).toBe('CRITICAL');
+
+				// Should detect autoCondenseContextPercent as IMPORTANT
+				const condenseDiff = result.differences.find(
+					d => d.path === 'settings.autoCondenseContextPercent'
+				);
+				expect(condenseDiff).toBeDefined();
+				expect(condenseDiff!.severity).toBe('IMPORTANT');
+
+				// Should NOT flag identical settings (apiProvider, autoCondenseContext)
+				const providerDiff = result.differences.find(
+					d => d.path === 'settings.apiProvider'
+				);
+				expect(providerDiff).toBeUndefined();
+			} finally {
+				if (origEnv !== undefined) process.env.ROOSYNC_SHARED_PATH = origEnv;
+			}
+		});
+
+		test('settings granularity returns warning when no published settings found', async () => {
+			const origEnv = process.env.ROOSYNC_SHARED_PATH;
+			delete process.env.ROOSYNC_SHARED_PATH;
+
+			try {
+				mockIsAvailable.mockReturnValue(false);
+				mockExistsSync.mockReturnValue(false);
+
+				mockGetConfig.mockReturnValue({
+					machineId: 'ai-01',
+					sharedPath: '/shared/path',
+					sharedStatePath: '/shared/path'
+				});
+
+				const { roosyncCompareConfig } = await import('../compare-config.js');
+				const result = await roosyncCompareConfig({
+					target: 'po-2023',
+					granularity: 'settings'
+				});
+
+				expect(result.differences.length).toBeGreaterThanOrEqual(1);
+				expect(result.differences[0].severity).toBe('WARNING');
+				expect(result.differences[0].description).toContain('Aucun settings publié');
+			} finally {
+				if (origEnv !== undefined) process.env.ROOSYNC_SHARED_PATH = origEnv;
+			}
+		});
+
+		test('settings granularity applies filter correctly', async () => {
+			const origEnv = process.env.ROOSYNC_SHARED_PATH;
+			delete process.env.ROOSYNC_SHARED_PATH;
+
+			try {
+				mockIsAvailable.mockReturnValue(true);
+
+				mockExtractSettings.mockResolvedValue({
+					settings: {
+						currentApiConfigName: 'Production',
+						autoCondenseContextPercent: 80,
+						autoApprovalEnabled: true
+					},
+					metadata: { machine: 'ai-01', keysCount: 3, totalKeys: 3, mode: 'safe' }
+				});
+
+				mockExistsSync.mockImplementation((p: string) => {
+					const norm = typeof p === 'string' ? p.replace(/\\/g, '/') : '';
+					if (norm.includes('configs/po-2023')) return true;
+					if (norm.includes('roo-settings-safe.json')) return true;
+					return false;
+				});
+				mockReadFile.mockResolvedValue(JSON.stringify({
+					settings: {
+						currentApiConfigName: 'Development',
+						autoCondenseContextPercent: 50,
+						autoApprovalEnabled: false
+					}
+				}));
+
+				mockGetConfig.mockReturnValue({
+					machineId: 'ai-01',
+					sharedPath: '/shared/path',
+					sharedStatePath: '/shared/path'
+				});
+
+				const { roosyncCompareConfig } = await import('../compare-config.js');
+				const result = await roosyncCompareConfig({
+					target: 'po-2023',
+					granularity: 'settings',
+					filter: 'condense'
+				});
+
+				// Only condense-related diffs should be returned
+				const settingsDiffs = result.differences.filter(d => d.category === 'roo_settings');
+				expect(settingsDiffs.length).toBe(1);
+				expect(settingsDiffs[0].path).toBe('settings.autoCondenseContextPercent');
+			} finally {
+				if (origEnv !== undefined) process.env.ROOSYNC_SHARED_PATH = origEnv;
+			}
 		});
 	});
 });
