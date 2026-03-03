@@ -2,6 +2,7 @@ import { promises as fs } from 'fs';
 import { join, dirname, basename } from 'path';
 import { existsSync, mkdirSync } from 'fs';
 import { createHash } from 'crypto';
+import { execSync } from 'child_process';
 import { homedir } from 'os';
 import { ConfigNormalizationService } from './ConfigNormalizationService.js';
 import { ConfigDiffService } from './ConfigDiffService.js';
@@ -701,12 +702,40 @@ export class ConfigSharingService implements IConfigSharingService {
         this.logger.info(`model-configs.json mis à jour avec le profil '${profile.name}'`);
       }
 
+      // 5. Générer et déployer .roomodes avec le profil (si pas dryRun)
+      let roomodesGenerated = false;
+      if (!options.dryRun) {
+        const generateModesPath = join(inventory.paths.rooExtensions, 'roo-config', 'scripts', 'generate-modes.js');
+        if (existsSync(generateModesPath)) {
+          const command = `node "${generateModesPath}" --profile "${profile.name}" --deploy`;
+          this.logger.info(`Génération .roomodes: ${command}`);
+          try {
+            const output = execSync(command, {
+              encoding: 'utf-8',
+              cwd: inventory.paths.rooExtensions,
+              timeout: 30000
+            });
+            this.logger.info('.roomodes généré et déployé avec succès');
+            this.logger.debug(output);
+            roomodesGenerated = true;
+          } catch (genErr: any) {
+            const errMsg = `Échec génération .roomodes: ${genErr.message}`;
+            this.logger.warn(errMsg);
+            errors.push(errMsg);
+          }
+        } else {
+          this.logger.warn(`Script generate-modes.js non trouvé: ${generateModesPath}`);
+          errors.push(`Script generate-modes.js non trouvé`);
+        }
+      }
+
       return {
         success: true,
         profileName: profile.name,
         modesConfigured: Object.keys(newModeApiConfigs).length,
         apiConfigsCount: Object.keys(modelConfigs.apiConfigs || {}).length,
         backupPath,
+        roomodesGenerated,
         changes: {
           modeApiConfigs: newModeApiConfigs,
           profileThresholds: newThresholds

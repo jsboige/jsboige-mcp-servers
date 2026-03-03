@@ -84,6 +84,8 @@ export interface ApplyProfileResult {
   apiConfigsCount: number;
   /** Chemin du backup créé */
   backupPath?: string;
+  /** Indique si .roomodes a été généré et déployé */
+  roomodesGenerated?: boolean;
   /** Détails des changements */
   changes?: {
     modeApiConfigs: Record<string, string>;
