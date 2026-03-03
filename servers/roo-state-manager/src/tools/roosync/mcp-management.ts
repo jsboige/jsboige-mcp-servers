@@ -200,6 +200,8 @@ async function handleManageAction(args: McpManagementArgs): Promise<McpManagemen
                 await backupMcpSettings();
             }
 
+            // #552: Clean up empty autoApprove arrays before writing
+            cleanupEmptyAutoApprove(settings);
             await fs.writeFile(MCP_SETTINGS_PATH, JSON.stringify(settings, null, 2), 'utf-8');
 
             return {
@@ -401,6 +403,17 @@ async function handleManageAction(args: McpManagementArgs): Promise<McpManagemen
             }
 
             mcpSettings.mcpServers[server_name].alwaysAllow = updatedAlwaysAllow;
+
+            // Fix #552: Clean up empty autoApprove arrays before writing
+            for (const server of Object.keys(mcpSettings.mcpServers)) {
+                const serverConfig = mcpSettings.mcpServers[server];
+                if (serverConfig.autoApprove &&
+                    Array.isArray(serverConfig.autoApprove) &&
+                    serverConfig.autoApprove.length === 0) {
+                    delete serverConfig.autoApprove;
+                }
+            }
+
             await fs.writeFile(MCP_SETTINGS_PATH, JSON.stringify(mcpSettings, null, 2), 'utf-8');
 
             return {
@@ -556,6 +569,33 @@ async function touchFile(filePath: string): Promise<void> {
             }
         });
     });
+}
+
+/**
+ * #552: Nettoie les tableaux autoApprove vides d'une configuration MCP
+ * Les tableaux vides 'autoApprove: []' causent des erreurs de validation JSON dans VS Code
+ * @param settings Configuration MCP (peut être McpSettings ou Record<string, any>)
+ */
+function cleanupEmptyAutoApprove(settings: McpSettings | Record<string, any>): void {
+    if (!settings.mcpServers || typeof settings.mcpServers !== 'object') {
+        return; // Pas de mcpServers, rien à nettoyer
+    }
+    for (const serverName of Object.keys(settings.mcpServers)) {
+        const serverConfig = settings.mcpServers[serverName];
+        if (serverConfig?.autoApprove &&
+            Array.isArray(serverConfig.autoApprove) &&
+            serverConfig.autoApprove.length === 0) {
+            delete serverConfig.autoApprove;
+        }
+    }
+}
+
+/**
+ * Écrit la configuration MCP avec nettoyage automatique des autoApprove vides
+ */
+async function writeMcpSettingsWithCleanup(settings: McpSettings): Promise<void> {
+    cleanupEmptyAutoApprove(settings);
+    await fs.writeFile(MCP_SETTINGS_PATH, JSON.stringify(settings, null, 2), 'utf-8');
 }
 
 // ====================================================================
