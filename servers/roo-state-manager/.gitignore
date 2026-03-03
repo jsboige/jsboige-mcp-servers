@@ -52,3 +52,22 @@ tmpclaude-*/
 
 # Exports (machine-specific baseline exports, never version)
 exports/
+
+# Analysis artifacts (development/debugging)
+analysis-consolidation/
+analysis-reports/
+analysis-tests/
+
+# Temporary files and runtime state
+temp/
+test-results/
+test-data/
+test-shared-state/
+
+# Runtime state directories (should not be versioned)
+.roo-state-manager/
+.shared-state/
+
+# Backup files
+*.backup*
+src/index.ts.backup*
