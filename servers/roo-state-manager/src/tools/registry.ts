@@ -643,6 +643,15 @@ export function registerCallToolHandler(
                    result = { content: [{ type: 'text', text: `Error: ${(error as Error).message}` }], isError: true };
                }
                break;
+           // #546: Dashboard hiérarchique
+           case 'roosync_update_dashboard':
+               try {
+                   const roosyncResult = await toolExports.roosyncUpdateDashboard(args as any);
+                   result = { content: [{ type: 'text', text: JSON.stringify(roosyncResult, null, 2) }] };
+               } catch (error) {
+                   result = { content: [{ type: 'text', text: `Error: ${(error as Error).message}` }], isError: true };
+               }
+               break;
            // CONS-#443 Groupe 2: Consolidation sync events (sync_on_offline + sync_on_online → roosync_sync_event)
            case 'roosync_sync_event':
                try {
