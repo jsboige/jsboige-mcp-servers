@@ -265,6 +265,13 @@ export { roosyncDiagnose, diagnoseToolMetadata } from './diagnose.js';
 
 // Export des outils de dashboard (T3.17)
 export { roosyncRefreshDashboard, refreshDashboardToolMetadata } from './refresh-dashboard.js';
+// #546: Dashboard hiérarchique
+export { roosyncUpdateDashboard, UpdateDashboardArgsSchema, UpdateDashboardResultSchema, updateDashboardToolMetadata } from './update-dashboard.js';
+
+export type {
+	UpdateDashboardArgs,
+	UpdateDashboardResult
+} from './update-dashboard.js';
 
 // Import des métadonnées pour l'array
 import { getStatusToolMetadata } from './get-status.js';
@@ -303,6 +310,8 @@ import { storageManagementToolMetadata } from './storage-management.js';
 
 // Import des métadonnées des outils de dashboard (T3.17)
 import { refreshDashboardToolMetadata } from './refresh-dashboard.js';
+// #546: Dashboard hiérarchique
+import { updateDashboardToolMetadata } from './update-dashboard.js';
 
 // CONS-1: Import des métadonnées des outils de messagerie consolidés
 import { sendToolMetadata } from './send.js';
@@ -364,6 +373,7 @@ const exportBaselineToolMetadata = {
 
 /**
  * Liste de tous les outils RooSync pour enregistrement MCP
+ * Version 3.14 : 19 outils (#546: roosync_update_dashboard ajouté)
  * Version 3.13 : 18 outils (#533: roosync_sync_event retiré - jamais utilisé en production)
  *
  * - Configuration: init, compare-config, roosync_config (CONS-3), baseline (CONS-4)
@@ -402,6 +412,8 @@ export const roosyncTools = [
   diagnoseToolMetadata,
   // Outils de dashboard (T3.17)
   refreshDashboardToolMetadata,
+  // #546: Dashboard hiérarchique
+  updateDashboardToolMetadata,
   // CONS-1: Outils de messagerie consolidés (6→3)
   sendToolMetadata,
   readToolMetadata,
