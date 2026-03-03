@@ -469,3 +469,176 @@ describe('Category 4: Essential Tools for Agent Workflows', () => {
         expect(broken).toEqual([]);
     });
 });
+
+// ============================================================================
+// Category 5: Description Discoverability (#549)
+// Tool descriptions must contain keywords for agent discovery
+// ============================================================================
+
+describe('Category 5: Description Discoverability', () => {
+    /**
+     * Mapping of tools to keywords that MUST appear in their description.
+     * Agents rely on these keywords to discover the right tool.
+     * At minimum, each tool description should mention its primary action verbs.
+     */
+    const DESCRIPTION_KEYWORDS: Record<string, string[]> = {
+        // Keywords matched case-insensitively against description text
+        // Descriptions are mostly in French, so use French keywords where applicable
+        'conversation_browser': ['conversation'],
+        'roosync_search': ['recherche', 'tâche'],       // "Outil unifié de recherche dans les tâches Roo"
+        'roosync_send': ['message'],                     // "Envoyer un message structuré"
+        'roosync_read': ['réception', 'message'],        // "Lire la boîte de réception des messages"
+        'roosync_config': ['config'],                    // "Gestion de configuration RooSync"
+        'roosync_compare_config': ['compare', 'config'], // "Compare les configurations Roo"
+        'roosync_heartbeat': ['heartbeat'],              // "Gestion complète du heartbeat"
+        'roosync_diagnose': ['diagnos'],                 // "diagnostic et debug"
+        'roosync_mcp_management': ['MCP'],               // "Gestion complète des serveurs MCP"
+        'roosync_decision': ['décision'],                // "workflow de décision RooSync"
+        'roosync_baseline': ['baseline'],                // "baselines RooSync"
+        'roosync_indexing': ['index'],                   // "index sémantique"
+        'export_data': ['export'],                       // "exporter des données"
+        'export_config': ['export', 'config'],           // "paramètres de configuration des exports"
+        'task_export': ['export', 'tâche'],              // "exporter/diagnostiquer les tâches"
+        'maintenance': ['maintenance'],                  // "Opérations de maintenance"
+        'storage_info': ['stockage'],                    // "Informations sur le stockage Roo"
+        'codebase_search': ['recherche', 'code'],        // "Recherche sémantique dans le code"
+        'view_task_details': ['tâche', 'détail'],        // "détails techniques complets... tâche spécifique"
+    };
+
+    it('tool descriptions contain discoverable keywords', async () => {
+        const tools = await getListToolsDefinitions();
+        const missingKeywords: string[] = [];
+
+        for (const [toolName, keywords] of Object.entries(DESCRIPTION_KEYWORDS)) {
+            const tool = tools.find((t: any) => t.name === toolName);
+            if (!tool) {
+                missingKeywords.push(`${toolName} (not found in ListTools)`);
+                continue;
+            }
+
+            const descLower = (tool.description || '').toLowerCase();
+            for (const keyword of keywords) {
+                if (!descLower.includes(keyword.toLowerCase())) {
+                    missingKeywords.push(`${toolName} missing keyword "${keyword}" in description`);
+                }
+            }
+        }
+
+        expect(missingKeywords).toEqual([]);
+    });
+
+    it('all tools have non-empty descriptions (minimum 20 chars)', async () => {
+        const tools = await getListToolsDefinitions();
+        const tooShort: string[] = [];
+
+        for (const tool of tools) {
+            if (!tool.description || tool.description.length < 20) {
+                tooShort.push(`${tool.name} (${tool.description?.length || 0} chars)`);
+            }
+        }
+
+        expect(tooShort).toEqual([]);
+    });
+});
+
+// ============================================================================
+// Category 6: Backward Compatibility Routes (#549)
+// Deprecated tools must route to their consolidated replacement
+// ============================================================================
+
+describe('Category 6: Backward Compatibility Routes', () => {
+    /**
+     * Deprecated tool names and the consolidated tool they should route to.
+     * Each entry: [deprecated_name, expected_action_or_route]
+     *
+     * When a deprecated tool is called, it should NOT throw "Tool not found".
+     * Instead, it should delegate to the consolidated handler.
+     */
+    const BACKWARD_COMPAT_ROUTES: Record<string, string> = {
+        // CONS-9: task_browse → conversation_browser
+        'task_browse': 'conversation_browser',
+        // #457: view_conversation_tree → conversation_browser(view)
+        'view_conversation_tree': 'conversation_browser',
+        // CONS-12→#457: roosync_summarize → conversation_browser(summarize)
+        'roosync_summarize': 'conversation_browser',
+        // list_conversations → conversation_browser(list)
+        'list_conversations': 'conversation_browser',
+        // CONS-11: search_tasks_by_content → roosync_search
+        'search_tasks_by_content': 'roosync_search',
+        // CONS-11: Indexing tools → roosync_indexing
+        'index_task_semantic': 'roosync_indexing',
+        'reset_qdrant_collection': 'roosync_indexing',
+        'rebuild_task_index': 'roosync_indexing',
+        // CONS-13: BOM tools → maintenance
+        'diagnose_conversation_bom': 'maintenance',
+        'repair_conversation_bom': 'maintenance',
+        // CLEANUP-3: cache → maintenance
+        'build_skeleton_cache': 'maintenance',
+        // CLEANUP-3: debug → task_export
+        'debug_analyze_conversation': 'task_export',
+        // CONS-1: Legacy messaging → roosync_send/read/manage
+        'roosync_send_message': 'roosync_send',
+        'roosync_read_inbox': 'roosync_read',
+        'roosync_get_message': 'roosync_read',
+        'roosync_mark_message_read': 'roosync_manage',
+        'roosync_archive_message': 'roosync_manage',
+        'roosync_reply_message': 'roosync_send',
+        // Legacy decision tools → roosync_decision
+        'roosync_get_decision_details': 'roosync_decision_info',
+        'roosync_approve_decision': 'roosync_decision',
+        'roosync_reject_decision': 'roosync_decision',
+        'roosync_apply_decision': 'roosync_decision',
+        'roosync_rollback_decision': 'roosync_decision',
+        // Legacy baseline tools → roosync_baseline
+        'roosync_update_baseline': 'roosync_baseline',
+        'roosync_manage_baseline': 'roosync_baseline',
+        'roosync_export_baseline': 'roosync_baseline',
+        // Legacy config tools → roosync_config
+        'roosync_collect_config': 'roosync_config',
+        'roosync_publish_config': 'roosync_config',
+        'roosync_apply_config': 'roosync_config',
+        // Legacy inventory → roosync_inventory
+        'roosync_get_machine_inventory': 'roosync_inventory',
+    };
+
+    it('all deprecated tools have working CallTool handlers', async () => {
+        const { handler } = createCallToolHandler();
+        const broken: string[] = [];
+
+        for (const deprecatedName of Object.keys(BACKWARD_COMPAT_ROUTES)) {
+            const hasHandler = await hasCallToolHandler(handler, deprecatedName);
+            if (!hasHandler) {
+                broken.push(deprecatedName);
+            }
+        }
+
+        expect(broken).toEqual([]);
+    });
+
+    it('deprecated tools are NOT in ListTools (hidden from agents)', async () => {
+        const toolNames = await getListToolsNames();
+        const leaked: string[] = [];
+
+        for (const deprecatedName of Object.keys(BACKWARD_COMPAT_ROUTES)) {
+            if (toolNames.includes(deprecatedName)) {
+                leaked.push(deprecatedName);
+            }
+        }
+
+        expect(leaked).toEqual([]);
+    });
+
+    it('consolidated replacements ARE in ListTools', async () => {
+        const toolNames = await getListToolsNames();
+        const replacements = new Set(Object.values(BACKWARD_COMPAT_ROUTES));
+        const missing: string[] = [];
+
+        for (const replacement of replacements) {
+            if (!toolNames.includes(replacement)) {
+                missing.push(replacement);
+            }
+        }
+
+        expect(missing).toEqual([]);
+    });
+});
