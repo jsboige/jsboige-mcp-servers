@@ -21,6 +21,7 @@ import {
   getLocalFullId
 } from '../../utils/message-helpers.js';
 import { getRooSyncService } from '../../services/RooSyncService.js';
+import { updateDashboardActivityAsync } from '../../utils/dashboard-helpers.js';
 
 // Logger instance for send tool
 const logger: Logger = createLogger('RooSyncSendTool');
@@ -148,6 +149,9 @@ ${truncateBodyPreview(args.body!)}
   getRooSyncService().getHeartbeatService()
     .registerHeartbeat(getLocalMachineId(), { lastActivity: 'roosync_send', messageId: message.id })
     .catch(err => logger.debug('Heartbeat update skipped (non-critical)', { error: String(err) }));
+  // Fire-and-forget dashboard update: track last activity (#546 Phase 2)
+  updateDashboardActivityAsync(`Message envoyé à ${args.to}`, { messageId: message.id, subject: args.subject })
+    .catch(err => logger.debug('Dashboard update skipped (non-critical)', { error: String(err) }));
   return result;
 }
 
@@ -293,6 +297,9 @@ ${truncateBodyPreview(args.body!)}
   getRooSyncService().getHeartbeatService()
     .registerHeartbeat(getLocalMachineId(), { lastActivity: 'roosync_reply', messageId: replyMessageObj.id })
     .catch(err => logger.debug('Heartbeat update skipped (non-critical)', { error: String(err) }));
+  // Fire-and-forget dashboard update: track last activity (#546 Phase 2)
+  updateDashboardActivityAsync(`Réponse envoyée à ${replyTo}`, { messageId: replyMessageObj.id, subject: replySubject })
+    .catch(err => logger.debug('Dashboard update skipped (non-critical)', { error: String(err) }));
   return result;
 }
 
