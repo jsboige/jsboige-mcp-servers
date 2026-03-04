@@ -245,16 +245,23 @@ export async function roosyncConfig(args: ConfigArgs) {
           dryRun
         });
 
+        const modesMsg = result.roomodesGenerated
+          ? ` + .roomodes régénéré`
+          : result.errors?.some(e => e.includes('génération') || e.includes('generation'))
+            ? ` (⚠️ .roomodes non régénéré)`
+            : '';
+
         return {
           status: result.success ? 'success' : 'error',
           message: result.success
-            ? `Profil '${result.profileName}' appliqué avec succès (${result.modesConfigured} modes, ${result.apiConfigsCount} configs API)`
+            ? `Profil '${result.profileName}' appliqué avec succès (${result.modesConfigured} modes, ${result.apiConfigsCount} configs API${modesMsg})`
             : `Échec de l'application du profil '${result.profileName}'`,
           profileName: result.profileName,
           modesConfigured: result.modesConfigured,
           apiConfigsCount: result.apiConfigsCount,
           backupPath: result.backupPath,
           changes: result.changes,
+          roomodesGenerated: result.roomodesGenerated,
           errors: result.errors
         };
       }

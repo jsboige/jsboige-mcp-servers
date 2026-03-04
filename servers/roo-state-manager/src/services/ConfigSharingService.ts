@@ -702,9 +702,9 @@ export class ConfigSharingService implements IConfigSharingService {
         this.logger.info(`model-configs.json mis à jour avec le profil '${profile.name}'`);
       }
 
-      // 5. Générer et déployer .roomodes avec le profil (si pas dryRun)
+      // 5. Générer et déployer .roomodes avec le profil (sauf si explicitement désactivé)
       let roomodesGenerated = false;
-      if (!options.dryRun) {
+      if (options.generateModes !== false && !options.dryRun) {
         const generateModesPath = join(inventory.paths.rooExtensions, 'roo-config', 'scripts', 'generate-modes.js');
         if (existsSync(generateModesPath)) {
           const command = `node "${generateModesPath}" --profile "${profile.name}" --deploy`;
@@ -739,7 +739,8 @@ export class ConfigSharingService implements IConfigSharingService {
         changes: {
           modeApiConfigs: newModeApiConfigs,
           profileThresholds: newThresholds
-        }
+        },
+        errors: errors.length > 0 ? errors : undefined
       };
 
     } catch (err: any) {

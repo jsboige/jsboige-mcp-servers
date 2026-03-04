@@ -72,6 +72,8 @@ export interface ApplyProfileOptions {
   backup?: boolean;
   /** Simulation sans modification (défaut: false) */
   dryRun?: boolean;
+  /** Régénérer .roomodes après application du profil (défaut: true). Appelle generate-modes.js --profile --deploy */
+  generateModes?: boolean;
 }
 
 export interface ApplyProfileResult {
