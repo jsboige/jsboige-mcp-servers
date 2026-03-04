@@ -90,6 +90,81 @@ describe('ConfigNormalizationService', () => {
 
       expect(result.apiKey).toBe('{{SECRET:apiKey}}');
     });
+
+    it('should preserve Roo ${env:...} references in sensitive keys', async () => {
+      const service = new ConfigNormalizationService(windowsContext);
+      const input = {
+        openRouterApiKey: '${env:OPENROUTER_API_KEY}',
+        openAiApiKey: '${env:OPENAI_API_KEY}',
+        apiKey: '${env:MY_API_KEY}'
+      };
+
+      const result = await service.normalize(input, 'mcp_config');
+
+      expect(result.openRouterApiKey).toBe('${env:OPENROUTER_API_KEY}');
+      expect(result.openAiApiKey).toBe('${env:OPENAI_API_KEY}');
+      expect(result.apiKey).toBe('${env:MY_API_KEY}');
+    });
+
+    it('should NOT preserve non-env sensitive values (still mask real secrets)', async () => {
+      const service = new ConfigNormalizationService(windowsContext);
+      const input = {
+        apiKey: 'sk-real-secret-value',
+        openAiApiKey: 'real-key-value'
+      };
+
+      const result = await service.normalize(input, 'mcp_config');
+
+      expect(result.apiKey).toBe('{{SECRET:apiKey}}');
+      expect(result.openAiApiKey).toBe('{{SECRET:openAiApiKey}}');
+    });
+
+    it('should NOT corrupt regex patterns with backslashes (Bug #537)', async () => {
+      const service = new ConfigNormalizationService(windowsContext);
+      const input = {
+        fileRegex: '\\.md$',
+        anotherRegex: '\\.(ts|js)$',
+        name: 'code-simple',
+        description: 'A simple mode for coding'
+      };
+
+      const result = await service.normalize(input, 'roomodes_config');
+
+      // Regex patterns must NOT have backslashes converted to forward slashes
+      expect(result.fileRegex).toBe('\\.md$');
+      expect(result.anotherRegex).toBe('\\.(ts|js)$');
+      // Non-path strings should be returned as-is
+      expect(result.name).toBe('code-simple');
+      expect(result.description).toBe('A simple mode for coding');
+    });
+
+    it('should still normalize actual file paths correctly', async () => {
+      const service = new ConfigNormalizationService(windowsContext);
+      const input = {
+        configPath: 'C:\\Users\\TestUser\\config.json',
+        relativePath: './src/index.ts',
+        unixPath: '/home/user/file.txt'
+      };
+
+      const result = await service.normalize(input, 'mode_definition');
+
+      expect(result.configPath).toBe('%USERPROFILE%/config.json');
+      // Relative and unix paths should be handled
+      expect(result.relativePath).toBe('./src/index.ts');
+    });
+
+    it('should handle URLs without corruption', async () => {
+      const service = new ConfigNormalizationService(windowsContext);
+      const input = {
+        openAiBaseUrl: 'https://api.z.ai/api/anthropic',
+        endpoint: 'http://localhost:3000/v1'
+      };
+
+      const result = await service.normalize(input, 'model_config');
+
+      expect(result.openAiBaseUrl).toBe('https://api.z.ai/api/anthropic');
+      expect(result.endpoint).toBe('http://localhost:3000/v1');
+    });
   });
 
   describe('denormalize', () => {

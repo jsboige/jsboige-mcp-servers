@@ -66,13 +66,16 @@ export class ConfigNormalizationService implements INormalizationService {
           // Si la valeur est déjà un placeholder de secret, on la laisse telle quelle
           if (typeof value === 'string' && value.startsWith('{{SECRET:') && value.endsWith('}}')) {
              result[key] = value;
+          } else if (typeof value === 'string' && /^\$\{env:[^}]+\}$/.test(value)) {
+             // Préserver les références d'environnement Roo (${env:VAR_NAME})
+             result[key] = value;
           } else {
              result[key] = `{{SECRET:${key}}}`;
           }
         } else {
           // En mode dénormalisation, on garde le placeholder si on n'a pas de valeur de remplacement
           // TODO: Implémenter la récupération depuis une config locale existante si nécessaire
-          result[key] = value; 
+          result[key] = value;
         }
         continue;
       }
@@ -97,6 +100,12 @@ export class ConfigNormalizationService implements INormalizationService {
   private normalizePath(value: string, context: MachineContext): string {
     // Helper: convertir tous les backslashes en forward slashes (indépendant de la plateforme)
     const toForwardSlash = (s: string) => s.replace(/\\/g, '/');
+
+    // 0. Ne normaliser que les valeurs qui ressemblent à des chemins de fichiers
+    // Les chaînes comme des regex ("\\.md$"), URLs, identifiants, etc. ne doivent PAS être modifiées
+    if (!this.looksLikePath(value)) {
+      return value;
+    }
 
     // 1. Préservation des variables d'environnement existantes (ex: %APPDATA%)
     // On ne touche pas si ça ressemble déjà à une variable d'env Windows ou Unix
@@ -126,6 +135,25 @@ export class ConfigNormalizationService implements INormalizationService {
     }
 
     return normalized;
+  }
+
+  /**
+   * Détermine si une chaîne ressemble à un chemin de fichier.
+   * Retourne false pour les regex patterns, URLs simples, identifiants, etc.
+   */
+  private looksLikePath(value: string): boolean {
+    // Chemins Windows absolus (C:\, D:\, etc.)
+    if (/^[A-Za-z]:[/\\]/.test(value)) return true;
+    // Chemins Unix absolus (/home/..., /opt/..., etc.)
+    if (/^\/[a-zA-Z]/.test(value)) return true;
+    // Chemins relatifs (./..., ../...)
+    if (/^\.\.?[/\\]/.test(value)) return true;
+    // Contient un placeholder de chemin connu
+    if (value.includes('%USERPROFILE%') || value.includes('%ROO_ROOT%') || value.includes('%APPDATA%')) return true;
+    // Variables d'environnement dans des chemins (%VAR%\path ou $VAR/path)
+    if (/%[A-Z_]+%[/\\]/.test(value) || /\$[A-Z_]+\//.test(value)) return true;
+    // Pas un chemin
+    return false;
   }
 
   private denormalizePath(value: string, context: MachineContext): string {
