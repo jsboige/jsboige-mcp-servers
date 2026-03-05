@@ -347,6 +347,77 @@ describe('ToolUsageInterceptor', () => {
   });
 
   // ============================================================
+  // refreshCache - cache integration (regression: scan results were discarded)
+  // ============================================================
+
+  describe('interceptToolCall - refreshCache integrates new tasks into cache', () => {
+    test('new tasks from disk scan are added to conversationCache', async () => {
+      const newTask = {
+        taskId: 'discovered-task-123',
+        metadata: {
+          title: 'New Task',
+          createdAt: '2026-03-05T01:00:00.000Z',
+          lastActivity: '2026-03-05T01:00:00.000Z',
+          mode: 'code-simple',
+          messageCount: 5,
+          actionCount: 2,
+          totalSize: 512,
+          workspace: '/test/workspace',
+        },
+        parentTaskId: undefined,
+        sequence: [],
+      };
+      mockScanDiskForNewTasks.mockResolvedValue([newTask]);
+
+      const interceptor = new ToolUsageInterceptor(
+        notificationService,
+        makeMockMessageManager() as any,
+        conversationCache,
+        makeConfig({ refreshCache: true })
+      );
+
+      await interceptor.interceptToolCall('tool', {}, async () => 'ok');
+
+      // Wait for the non-blocking cache refresh to complete
+      await new Promise(r => setTimeout(r, 50));
+
+      // The cache should now contain the discovered task
+      expect(conversationCache.has('discovered-task-123')).toBe(true);
+      expect(conversationCache.get('discovered-task-123')?.taskId).toBe('discovered-task-123');
+    });
+
+    test('empty scan results do not corrupt cache', async () => {
+      conversationCache.set('existing-task', {
+        taskId: 'existing-task',
+        metadata: {
+          title: 'Existing',
+          createdAt: '2026-01-01T00:00:00.000Z',
+          lastActivity: '2026-01-01T00:00:00.000Z',
+          mode: 'code-simple',
+          messageCount: 1,
+          actionCount: 0,
+          totalSize: 100,
+        },
+      } as any);
+      mockScanDiskForNewTasks.mockResolvedValue([]);
+
+      const interceptor = new ToolUsageInterceptor(
+        notificationService,
+        makeMockMessageManager() as any,
+        conversationCache,
+        makeConfig({ refreshCache: true })
+      );
+
+      await interceptor.interceptToolCall('tool', {}, async () => 'ok');
+      await new Promise(r => setTimeout(r, 50));
+
+      // Existing task should still be there
+      expect(conversationCache.has('existing-task')).toBe(true);
+      expect(conversationCache.size).toBe(1);
+    });
+  });
+
+  // ============================================================
   // calculateHighestPriority (indirect via notifyNewMessages)
   // ============================================================
 

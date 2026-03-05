@@ -6,6 +6,7 @@ import { CallToolResult } from '@modelcontextprotocol/sdk/types.js';
 import { ConversationSkeleton } from '../../types/conversation.js';
 import { SkeletonCacheService } from '../../services/skeleton-cache.service.js';
 import { normalizePath } from '../../utils/path-normalizer.js';
+import { scanDiskForNewTasks } from '../task/disk-scanner.js';
 import { promises as fs } from 'fs';
 import path from 'path';
 import os from 'os';
@@ -130,10 +131,20 @@ export const listConversationsTool = {
         },
         conversationCache: Map<string, ConversationSkeleton>
     ): Promise<CallToolResult> => {
-        // 🔇 LOGS VERBEUX COMMENTÉS (explosion contexte)
-        // console.log('[🔧 FIXED VERSION] list_conversations called with:', JSON.stringify(args));
-        // console.log('[🔧 FIXED VERSION] This is the corrected version without sequence property');
-        
+        // FIX: Scan disk for new tasks not yet in cache before listing
+        // Without this, tasks created after MCP startup are invisible to list
+        try {
+            const newTasks = await scanDiskForNewTasks(conversationCache);
+            for (const task of newTasks) {
+                conversationCache.set(task.taskId, task);
+            }
+            if (newTasks.length > 0) {
+                console.log(`📊 list_conversations: Discovered ${newTasks.length} new tasks from disk`);
+            }
+        } catch (scanError) {
+            console.warn('⚠️ list_conversations: Disk scan failed, using cache only:', scanError);
+        }
+
         let allSkeletons = Array.from(conversationCache.values()).filter(skeleton =>
             skeleton.metadata
         );

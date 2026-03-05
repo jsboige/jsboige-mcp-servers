@@ -237,10 +237,14 @@ class RooStateManagerServer {
             // Vérifier les modifications récentes dans chaque emplacement
             for (const location of storageLocations) {
                 try {
-                    const conversationDirs = await fs.readdir(location, { withFileTypes: true });
+                    // FIX: Read tasks/ subdirectory, not the base storage location
+                    // detectStorageLocations() returns base paths (e.g., .../rooveterinaryinc.roo-cline)
+                    // but task directories live under .../rooveterinaryinc.roo-cline/tasks/{taskId}/
+                    const tasksDir = path.join(location, 'tasks');
+                    const conversationDirs = await fs.readdir(tasksDir, { withFileTypes: true });
                     for (const convDir of conversationDirs) { // Traitement de toutes les conversations
                         if (convDir.isDirectory() && convDir.name !== '.skeletons') {
-                            const taskPath = path.join(location, convDir.name);
+                            const taskPath = path.join(tasksDir, convDir.name);
                             const metadataPath = path.join(taskPath, 'task_metadata.json');
                             try {
                                 const metadataStat = await fs.stat(metadataPath);

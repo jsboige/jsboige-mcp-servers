@@ -20,7 +20,18 @@
  * @version 1.0.0 (#492)
  */
 
-import { describe, test, expect, beforeEach } from 'vitest';
+import { describe, test, expect, beforeEach, vi } from 'vitest';
+
+// ─────────────────── mocks ───────────────────
+
+const { mockScanDiskForNewTasks } = vi.hoisted(() => ({
+  mockScanDiskForNewTasks: vi.fn().mockResolvedValue([]),
+}));
+
+vi.mock('../../task/disk-scanner.js', () => ({
+  scanDiskForNewTasks: (...args: any[]) => mockScanDiskForNewTasks(...args),
+}));
+
 import { listConversationsTool } from '../list-conversations.tool.js';
 import type { ConversationSkeleton } from '../../../types/conversation.js';
 
@@ -56,7 +67,9 @@ function makeCache(...skeletons: ConversationSkeleton[]): Map<string, Conversati
 let emptyCache: Map<string, ConversationSkeleton>;
 
 beforeEach(() => {
+  vi.clearAllMocks();
   emptyCache = new Map();
+  mockScanDiskForNewTasks.mockResolvedValue([]);
 });
 
 // ─────────────────── tests ───────────────────
@@ -391,6 +404,85 @@ describe('listConversationsTool.handler', () => {
       const parsed = JSON.parse((result.content[0] as any).text);
 
       expect(parsed[0].completionMessage).toContain('Successfully');
+    });
+  });
+
+  // ============================================================
+  // Disk scan integration (regression: new tasks after MCP startup)
+  // ============================================================
+
+  describe('disk scan integration', () => {
+    test('calls scanDiskForNewTasks before listing', async () => {
+      const cache = makeCache(makeConversation('existing-task'));
+
+      await listConversationsTool.handler({}, cache);
+
+      expect(mockScanDiskForNewTasks).toHaveBeenCalledWith(cache);
+    });
+
+    test('integrates newly discovered tasks into results', async () => {
+      const cache = makeCache(makeConversation('existing-task'));
+      const newTask: ConversationSkeleton = {
+        taskId: 'new-disk-task',
+        metadata: {
+          workspace: '/workspace/default',
+          mode: 'code-simple',
+          timestamp: '2026-03-05T01:00:00.000Z',
+          lastActivity: '2026-03-05T01:00:00.000Z',
+          createdAt: '2026-03-05T01:00:00.000Z',
+          messageCount: 5,
+          actionCount: 2,
+          totalSize: 512,
+        },
+        messages: [],
+      } as ConversationSkeleton;
+
+      mockScanDiskForNewTasks.mockResolvedValue([newTask]);
+
+      const result = await listConversationsTool.handler({}, cache);
+      const parsed = JSON.parse((result.content[0] as any).text);
+
+      // Should contain both the existing and the newly discovered task
+      const taskIds = parsed.map((t: any) => t.taskId);
+      expect(taskIds).toContain('existing-task');
+      expect(taskIds).toContain('new-disk-task');
+    });
+
+    test('new task is added to the cache map (side effect)', async () => {
+      const cache = makeCache(makeConversation('existing-task'));
+      const newTask: ConversationSkeleton = {
+        taskId: 'side-effect-task',
+        metadata: {
+          workspace: '/workspace/default',
+          mode: 'code-simple',
+          timestamp: '2026-03-05T01:00:00.000Z',
+          lastActivity: '2026-03-05T01:00:00.000Z',
+          createdAt: '2026-03-05T01:00:00.000Z',
+          messageCount: 3,
+          actionCount: 1,
+          totalSize: 256,
+        },
+        messages: [],
+      } as ConversationSkeleton;
+
+      mockScanDiskForNewTasks.mockResolvedValue([newTask]);
+
+      await listConversationsTool.handler({}, cache);
+
+      // The cache should now contain the new task
+      expect(cache.has('side-effect-task')).toBe(true);
+    });
+
+    test('scan failure does not break listing', async () => {
+      const cache = makeCache(makeConversation('safe-task'));
+      mockScanDiskForNewTasks.mockRejectedValue(new Error('Disk scan failed'));
+
+      const result = await listConversationsTool.handler({}, cache);
+      const parsed = JSON.parse((result.content[0] as any).text);
+
+      // Should still return the cached task
+      expect(parsed.length).toBe(1);
+      expect(parsed[0].taskId).toBe('safe-task');
     });
   });
 

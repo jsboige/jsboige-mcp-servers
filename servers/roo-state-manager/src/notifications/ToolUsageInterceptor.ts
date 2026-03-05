@@ -136,12 +136,16 @@ export class ToolUsageInterceptor {
    * @private
    */
   private async refreshConversationCache(): Promise<void> {
-    console.error('🔄 [ToolUsageInterceptor] Refreshing conversation cache...');
-    
     try {
-      // Utiliser la fonction existante de scan disque
-      await scanDiskForNewTasks(this.conversationCache);
-      console.error('✅ [ToolUsageInterceptor] Cache refresh completed');
+      // FIX: Actually integrate discovered tasks into the cache
+      // Previously, scanDiskForNewTasks return value was discarded
+      const newTasks = await scanDiskForNewTasks(this.conversationCache);
+      if (newTasks.length > 0) {
+        for (const task of newTasks) {
+          this.conversationCache.set(task.taskId, task);
+        }
+        console.error(`✅ [ToolUsageInterceptor] Cache refresh: added ${newTasks.length} new tasks`);
+      }
     } catch (error) {
       console.error('❌ [ToolUsageInterceptor] Cache refresh failed:', error);
       throw error;
