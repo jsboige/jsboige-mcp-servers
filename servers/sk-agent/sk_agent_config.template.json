@@ -126,6 +126,16 @@
       "description": "Self-inclusion for recursive tool chaining",
       "command": "python",
       "args": ["path/to/sk_agent.py"]
+    },
+    {
+      "id": "open_terminal",
+      "description": "Remote terminal access (shell commands, file operations, grep/glob) via Open Terminal API",
+      "command": "python",
+      "args": ["../open-terminal-mcp/open_terminal_mcp.py"],
+      "env": {
+        "OPEN_TERMINAL_URL": "http://open-terminal-myia:8000",
+        "OPEN_TERMINAL_API_KEY": "YOUR_OPEN_TERMINAL_API_KEY_HERE"
+      }
     }
   ],
 
