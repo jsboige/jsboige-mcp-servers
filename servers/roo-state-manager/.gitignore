@@ -1,4 +1,4 @@
-﻿# Dependencies
+# Dependencies
 /node_modules/
 
 # Build artifacts
@@ -23,11 +23,11 @@
 
 # Test results
 test-results.json
+test-results/
+coverage/
 
 # Debug outputs
-# Temporary debug files
 tmp-debug/
-
 mcp-debugging/
 
 # Reports and documentation
@@ -39,16 +39,23 @@ vitest-migration/
 
 # Test outputs
 synthesis-test-output.txt
-"test-results.txt"
+test-results.txt
+test_output.txt
+test-errors.log
+
+test-diagnostic-*.log
 
 # Test fixtures (generated during tests)
 tests/fixtures/roosync-service-test/
 
 # Test data (generated/modified by tests)
 src/__test-data__/
+test-data/
+test-shared-state/
 
 # Claude Code temporary working directories
-tmpclaude-*/
+tmpclaude-/
+temp/
 
 # Exports (machine-specific baseline exports, never version)
 exports/

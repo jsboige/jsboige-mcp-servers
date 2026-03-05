@@ -26,6 +26,8 @@ import { createLogger, Logger } from '../utils/logger.js';
 import { ConfigSharingServiceError, ConfigSharingServiceErrorCode } from '../types/errors.js';
 import { InventoryService } from './roosync/InventoryService.js';
 import { readJSONFileWithoutBOM } from '../utils/encoding-helpers.js';
+import { RollbackManager } from './RollbackManager.js';
+import { ConfigHealthCheckService, type ConfigType as HealthCheckConfigType } from './ConfigHealthCheckService.js';
 
 export class ConfigSharingService implements IConfigSharingService {
   private logger: Logger;
@@ -191,6 +193,8 @@ export class ConfigSharingService implements IConfigSharingService {
     const errors: string[] = [];
     let filesApplied = 0;
     const details: any[] = []; // Pour stocker les détails des changements
+    const rollback = new RollbackManager(this.logger);
+    const appliedFilePaths: Array<{ path: string; type: string }> = []; // For post-apply health check
 
     try {
       // 1. Localiser la version source
@@ -420,12 +424,9 @@ export class ConfigSharingService implements IConfigSharingService {
 
             if (existsSync(destPath)) {
               action = 'update';
-              // Backup si non dryRun
+              // Backup via RollbackManager (#537 Phase 2)
               if (!options.dryRun) {
-                const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
-                const backupPath = `${destPath}.backup_${timestamp}`;
-                await fs.copyFile(destPath, backupPath);
-                this.logger.info(`Backup créé: ${backupPath}`);
+                await rollback.createAndTrack(destPath);
               }
             }
 
@@ -440,6 +441,7 @@ export class ConfigSharingService implements IConfigSharingService {
               await fs.mkdir(dirname(destPath), { recursive: true });
               await fs.writeFile(destPath, rawContent, 'utf-8');
               filesApplied++;
+              appliedFilePaths.push({ path: destPath, type: file.type || 'rules_config' });
             }
             continue;
           }
@@ -487,12 +489,9 @@ export class ConfigSharingService implements IConfigSharingService {
               finalContent = JsonMerger.merge(finalContent, localContent, { arrayStrategy: 'replace' });
             }
 
-            // Backup si non dryRun
+            // Backup via RollbackManager (#537 Phase 2)
             if (!options.dryRun) {
-                const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
-                const backupPath = `${destPath}.backup_${timestamp}`;
-                await fs.copyFile(destPath, backupPath);
-                this.logger.info(`Backup créé: ${backupPath}`);
+                await rollback.createAndTrack(destPath);
             }
           }
 
@@ -509,6 +508,7 @@ export class ConfigSharingService implements IConfigSharingService {
             await fs.mkdir(dirname(destPath), { recursive: true });
             await fs.writeFile(destPath, JSON.stringify(finalContent, null, 2));
             filesApplied++;
+            appliedFilePaths.push({ path: destPath, type: file.type || 'mcp_config' });
           }
 
         } catch (err: any) {
@@ -518,10 +518,75 @@ export class ConfigSharingService implements IConfigSharingService {
         }
       }
 
+      // 3. Post-apply health check (#537 Phase 2)
+      if (!options.dryRun && appliedFilePaths.length > 0 && errors.length === 0) {
+        const healthChecker = new ConfigHealthCheckService(this.logger);
+        const healthErrors: string[] = [];
+
+        for (const { path: filePath, type } of appliedFilePaths) {
+          // Map file type to health check ConfigType
+          const configTypeMap: Record<string, HealthCheckConfigType> = {
+            'mcp_config': 'mcp_config',
+            'mode_definition': 'mode_definition',
+            'roomodes_config': 'roomodes_config',
+            'model_config': 'model_config',
+            'rules_config': 'rules_config',
+            'profile_settings': 'profile_settings',
+            'settings_config': 'settings_config'
+          };
+          const healthConfigType = configTypeMap[type] || 'mcp_config';
+
+          // Only check JSON files (rules are text, skip them)
+          if (type === 'rules_config') continue;
+
+          try {
+            const result = await healthChecker.checkHealth(filePath, healthConfigType, {
+              checks: ['file_readable', 'json_valid']
+            });
+
+            if (!result.healthy) {
+              const msg = `Health check FAILED for ${filePath}: ${result.errors.join('; ')}`;
+              this.logger.error(msg);
+              healthErrors.push(msg);
+            }
+          } catch (err: any) {
+            this.logger.warn(`Health check error for ${filePath}: ${err.message}`);
+          }
+        }
+
+        // If health checks failed, rollback all changes
+        if (healthErrors.length > 0) {
+          this.logger.warn(`Rolling back ${rollback.size} files due to health check failures`);
+          const rollbackResult = await rollback.restoreAll(true);
+          if (!rollbackResult.success) {
+            errors.push(`Rollback partially failed: ${rollbackResult.failedFiles.length} files could not be restored`);
+          }
+          errors.push(...healthErrors);
+          filesApplied = 0; // All changes rolled back
+        } else {
+          // All checks passed, release backups (keep for history)
+          await rollback.release(false);
+          this.logger.info(`Post-apply health check passed for ${appliedFilePaths.length} files`);
+        }
+      }
+
     } catch (err: any) {
       const errorMsg = `Erreur globale applyConfig: ${err.message}`;
       this.logger.error(errorMsg);
       errors.push(errorMsg);
+
+      // Rollback tracked backups on global failure (#537 Phase 2)
+      if (rollback.size > 0) {
+        this.logger.warn(`Rolling back ${rollback.size} files due to global error`);
+        try {
+          const rollbackResult = await rollback.restoreAll(true);
+          if (!rollbackResult.success) {
+            errors.push(`Rollback partially failed: ${rollbackResult.failedFiles.length} files could not be restored`);
+          }
+        } catch (rollbackErr: any) {
+          errors.push(`Rollback failed: ${rollbackErr.message}`);
+        }
+      }
     }
 
     if (options.dryRun) {
@@ -702,9 +767,9 @@ export class ConfigSharingService implements IConfigSharingService {
         this.logger.info(`model-configs.json mis à jour avec le profil '${profile.name}'`);
       }
 
-      // 5. Générer et déployer .roomodes avec le profil (si pas dryRun)
+      // 5. Générer et déployer .roomodes avec le profil (sauf si explicitement désactivé)
       let roomodesGenerated = false;
-      if (!options.dryRun) {
+      if (options.generateModes !== false && !options.dryRun) {
         const generateModesPath = join(inventory.paths.rooExtensions, 'roo-config', 'scripts', 'generate-modes.js');
         if (existsSync(generateModesPath)) {
           const command = `node "${generateModesPath}" --profile "${profile.name}" --deploy`;
@@ -739,7 +804,8 @@ export class ConfigSharingService implements IConfigSharingService {
         changes: {
           modeApiConfigs: newModeApiConfigs,
           profileThresholds: newThresholds
-        }
+        },
+        errors: errors.length > 0 ? errors : undefined
       };
 
     } catch (err: any) {
