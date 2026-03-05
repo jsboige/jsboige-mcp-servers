@@ -87,3 +87,4 @@ servers/sk-agent/__pycache__/
 
 # Coverage output
 coverage-output.txt
+roo-config/

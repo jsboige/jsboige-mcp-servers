@@ -78,3 +78,4 @@ test-shared-state/
 # Backup files
 *.backup*
 src/index.ts.backup*
+roo-config/
