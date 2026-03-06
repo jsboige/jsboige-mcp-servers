@@ -249,17 +249,16 @@ describe('roosyncSend', () => {
       expect((result.content[0] as any).text).toContain('Thread ID');
     });
 
-    test('should invert from/to in reply', async () => {
+    test('should use local machine as sender in reply', async () => {
       const result = await roosyncSend({
         action: 'reply',
         message_id: originalMessageId,
         body: 'Reply body'
       });
 
-      // La réponse doit aller de test-machine vers other-machine
+      // FIX #583: La réponse doit aller de test-machine (local) vers other-machine (original sender)
       expect((result.content[0] as any).text).toContain('test-machine');
       expect((result.content[0] as any).text).toContain('other-machine');
-      expect((result.content[0] as any).text).toContain('inversé');
     });
   });
 

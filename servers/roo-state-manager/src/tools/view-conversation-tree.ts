@@ -10,6 +10,7 @@ import {
 import { promises as fs } from 'fs';
 import * as path from 'path';
 import { GenericError, GenericErrorCode } from '../types/errors.js';
+import { RooStorageDetector } from '../utils/roo-storage-detector.js';
 
 /**
  * Tronque un message en gardant le début et la fin
@@ -196,9 +197,47 @@ async function handleViewConversationTreeExecutionAsync(
     };
 
     let tasksToDisplay: ConversationSkeleton[] = [];
-    const mainTask = skeletonMap.get(task_id);
+    let mainTask = skeletonMap.get(task_id);
     if (!mainTask) {
         throw new GenericError(`Task with ID '${task_id}' not found in cache.`, GenericErrorCode.INVALID_ARGUMENT);
+    }
+
+    // FIX #584: Lazy load full skeleton if sequence is empty but messageCount suggests content exists
+    // This happens when scanDiskForNewTasks creates minimal skeletons for discovery
+    if (mainTask.sequence.length === 0 && mainTask.metadata.messageCount > 0) {
+        try {
+            console.log(`[view] Lazy loading full skeleton for ${task_id} (messageCount: ${mainTask.metadata.messageCount})`);
+            // Find the task path by checking all storage locations
+            const storageLocations = await RooStorageDetector.detectStorageLocations();
+            let taskPath: string | null = null;
+            for (const locationPath of storageLocations) {
+                const potentialPath = path.join(locationPath, 'tasks', task_id);
+                try {
+                    const stats = await fs.stat(potentialPath);
+                    if (stats.isDirectory()) {
+                        taskPath = potentialPath;
+                        break;
+                    }
+                } catch {
+                    // Location doesn't have this task, continue to next
+                }
+            }
+            if (taskPath) {
+                const fullSkeleton = await RooStorageDetector.analyzeConversation(task_id, taskPath);
+                if (fullSkeleton && fullSkeleton.sequence.length > 0) {
+                    // Update the cache with complete skeleton
+                    conversationCache.set(task_id, fullSkeleton);
+                    // Refresh mainTask reference
+                    mainTask = fullSkeleton;
+                    console.log(`[view] Successfully loaded ${fullSkeleton.sequence.length} sequence items for ${task_id}`);
+                }
+            } else {
+                console.warn(`[view] Task path not found for ${task_id}, cannot lazy load`);
+            }
+        } catch (error) {
+            console.warn(`[view] Failed to lazy load skeleton for ${task_id}:`, error);
+            // Continue with minimal skeleton - user will see empty content but no crash
+        }
     }
 
     switch (view_mode) {

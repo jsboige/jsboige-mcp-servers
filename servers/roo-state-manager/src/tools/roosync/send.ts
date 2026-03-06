@@ -209,8 +209,8 @@ Impossible de répondre car le message original n'a pas été trouvé dans :
   // Construire la réponse
   logger.debug('💬 Building reply message');
 
-  // La réponse doit venir de la machine du replier, pas de la destination du message original
-  // (qui peut être "all" ou une autre machine)
+  // FIX #583: L'expéditeur de la réponse est la machine locale, PAS le destinataire original
+  // L'ancien code utilisait originalMessage.to (ex: "all") au lieu de getLocalFullId()
   const replyFrom = getLocalFullId();
   const replyTo = originalMessage.from;
 
@@ -271,8 +271,8 @@ Impossible de répondre car le message original n'a pas été trouvé dans :
 
 **ID :** \`${replyMessageObj.id}\`
 **Sujet :** ${replySubject}
-**De :** ${replyFrom} *(inversé)*
-**À :** ${replyTo} *(inversé)*
+**De :** ${replyFrom}
+**À :** ${replyTo}
 **Date :** ${formatDateFull(replyMessageObj.timestamp)}
 **Priorité :** ${replyPriorityIcon} ${priority}
 **Tags :** ${replyTags.map(t => `\`${t}\``).join(', ')}
