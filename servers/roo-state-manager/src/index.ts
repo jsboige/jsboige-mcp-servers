@@ -87,6 +87,9 @@ class RooStateManagerServer {
     private stateManager: StateManager;
     private notificationService: NotificationService;
     private toolInterceptor: ToolUsageInterceptor | null = null;
+    // FIX: Store initialization promise to prevent race condition
+    // Tool handlers can await this to ensure cache is loaded before proceeding
+    private initializationPromise: Promise<void>;
 
     constructor() {
         // Initialisation de l'état global via StateManager
@@ -98,10 +101,19 @@ class RooStateManagerServer {
         this.initializeNotificationSystem();
         // Enregistrement des handlers
         this.registerHandlers();
-        // Initialisation des services background
-        this.initializeBackgroundServices().catch((error: Error) => {
+        // FIX: Store the promise so handlers can await it
+        this.initializationPromise = this.initializeBackgroundServices();
+        this.initializationPromise.catch((error: Error) => {
             logger.error("Error during background services initialization:", { error });
         });
+    }
+
+    /**
+     * Wait for background services initialization to complete
+     * Call this at the start of tool handlers that depend on the cache
+     */
+    async waitForInitialization(): Promise<void> {
+        await this.initializationPromise;
     }
 
     /**
@@ -179,6 +191,10 @@ class RooStateManagerServer {
         const originalCallTool = this.server['_requestHandlers'].get('tools/call');
         if (originalCallTool) {
             this.server['_requestHandlers'].set('tools/call', async (request: any) => {
+                // FIX: Wait for background services initialization to prevent race condition
+                // This ensures the skeleton cache is loaded before any tool that depends on it
+                await this.initializationPromise;
+
                 // Si l'intercepteur est activé, l'utiliser
                 if (this.toolInterceptor) {
                     const wrappedResult = await this.toolInterceptor.interceptToolCall(

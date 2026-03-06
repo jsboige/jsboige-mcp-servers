@@ -488,12 +488,16 @@ export class MessageManager {
         );
       }
 
-      // Validation : Vérifier que l'émetteur correspond
-      if (message.from !== senderId) {
+      // Validation : Vérifier que l'émetteur correspond (comparaison par machineId uniquement)
+      // The sender may use a different workspace suffix (e.g., worktree vs main workspace)
+      // so we compare at the machine level, not the full "machine:workspace" string
+      const messageSender = parseMachineWorkspace(message.from);
+      const currentSender = parseMachineWorkspace(senderId);
+      if (messageSender.machineId !== currentSender.machineId) {
         throw new MessageManagerError(
           `Permission refusée : seul l'émetteur (${message.from}) peut amender ce message.`,
           MessageManagerErrorCode.MESSAGE_SEND_FAILED,
-          { messageId, expectedSender: message.from, actualSender: senderId, action: 'amend' }
+          { messageId, expectedSender: message.from, actualSender: currentSender.machineId, action: 'amend' }
         );
       }
 
