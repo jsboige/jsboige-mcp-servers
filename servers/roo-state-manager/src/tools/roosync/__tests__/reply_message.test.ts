@@ -48,6 +48,10 @@ vi.mock('../../../types/errors.js', () => ({
 	}
 }));
 
+vi.mock('../../../utils/message-helpers.js', () => ({
+	getLocalFullId: vi.fn(() => 'myia-ai-01:roo-extensions')  // Mock local machine ID
+}));
+
 describe('reply_message', () => {
 	beforeEach(() => {
 		vi.clearAllMocks();
@@ -105,9 +109,9 @@ describe('reply_message', () => {
 			const { replyMessage } = await import('../reply_message.js');
 			await replyMessage({ message_id: 'msg-original', body: 'My reply' });
 
-			// from should be original.to, to should be original.from
+			// from should be replier's machine, to should be original.from
 			expect(mockSendMessage).toHaveBeenCalledWith(
-				'po-2023',      // from = original.to
+				'myia-ai-01:roo-extensions',      // from = replier's machine
 				'ai-01',        // to = original.from
 				'Re: Test Subject',
 				'My reply',

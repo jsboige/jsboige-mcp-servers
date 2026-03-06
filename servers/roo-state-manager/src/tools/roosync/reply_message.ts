@@ -10,6 +10,7 @@ import { MessageManager } from '../../services/MessageManager.js';
 import { getSharedStatePath } from '../../utils/server-helpers.js';
 import { createLogger, Logger } from '../../utils/logger.js';
 import { MessageManagerError, MessageManagerErrorCode } from '../../types/errors.js';
+import { getLocalFullId } from '../../utils/message-helpers.js';
 
 // Logger instance for reply_message tool
 const logger: Logger = createLogger('ReplyMessageTool');
@@ -127,9 +128,10 @@ Impossible de répondre car le message original n'a pas été trouvé dans :
 
     // Construire la réponse
     logger.debug('💬 Building reply message');
-    
-    // Inversion from/to pour la réponse
-    const replyFrom = originalMessage.to;
+
+    // La réponse doit venir de la machine du replier, pas de la destination du message original
+    // (qui peut être "all" ou une autre machine)
+    const replyFrom = getLocalFullId();
     const replyTo = originalMessage.from;
     
     // Sujet avec préfixe "Re: "
