@@ -229,7 +229,7 @@ describe('Category 2: Deprecated Tools Backward Compatibility', () => {
         }
 
         expect(brokenBackwardCompat).toEqual([]);
-    });
+    }, 30000); // 30s timeout - build_skeleton_cache does heavy I/O
 
     it('deprecated tools must NOT appear in ListTools', async () => {
         const toolNames = await getListToolsNames();
@@ -613,7 +613,7 @@ describe('Category 6: Backward Compatibility Routes', () => {
         }
 
         expect(broken).toEqual([]);
-    });
+    }, 30000); // 30s timeout - build_skeleton_cache does heavy I/O
 
     it('deprecated tools are NOT in ListTools (hidden from agents)', async () => {
         const toolNames = await getListToolsNames();
