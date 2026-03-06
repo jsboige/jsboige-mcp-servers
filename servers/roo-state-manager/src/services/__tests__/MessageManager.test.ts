@@ -615,4 +615,99 @@ describe('MessageManager', () => {
       expect(inbox).toHaveLength(5);
     });
   });
+
+  // ============================================================
+  // amendMessage - Permission check (#576)
+  // ============================================================
+
+  describe('amendMessage', () => {
+    test('allows amend when sender matches exactly', async () => {
+      // Send a message from machine-a:workspace1
+      const msg = await messageManager.sendMessage(
+        'machine-a:workspace1', 'machine-b:workspace1',
+        'Test subject', 'Original body'
+      );
+
+      // Amend from same full ID
+      const result = await messageManager.amendMessage(
+        msg.id, 'machine-a:workspace1', 'Updated body', 'typo fix'
+      );
+
+      expect(result.message_id).toBe(msg.id);
+      expect(result.original_content_preserved).toBe(true);
+    });
+
+    test('allows amend when same machine but different workspace (#576)', async () => {
+      // Send from machine-a:workspace1
+      const msg = await messageManager.sendMessage(
+        'machine-a:workspace1', 'machine-b:workspace1',
+        'Test subject', 'Original body'
+      );
+
+      // Amend from machine-a:different-workspace (same machine, different workspace)
+      const result = await messageManager.amendMessage(
+        msg.id, 'machine-a:other-workspace', 'Updated body', 'workspace switch'
+      );
+
+      expect(result.message_id).toBe(msg.id);
+      expect(result.original_content_preserved).toBe(true);
+    });
+
+    test('allows amend when sender has no workspace suffix', async () => {
+      // Send from machine-a:workspace1
+      const msg = await messageManager.sendMessage(
+        'machine-a:workspace1', 'machine-b:workspace1',
+        'Test subject', 'Original body'
+      );
+
+      // Amend from machine-a (no workspace suffix)
+      const result = await messageManager.amendMessage(
+        msg.id, 'machine-a', 'Updated body', 'no workspace'
+      );
+
+      expect(result.message_id).toBe(msg.id);
+    });
+
+    test('rejects amend from different machine', async () => {
+      const msg = await messageManager.sendMessage(
+        'machine-a:workspace1', 'machine-b:workspace1',
+        'Test subject', 'Original body'
+      );
+
+      await expect(
+        messageManager.amendMessage(msg.id, 'machine-c:workspace1', 'Hack', 'unauthorized')
+      ).rejects.toThrow('Permission refusée');
+    });
+
+    test('rejects amend of already-read message', async () => {
+      const msg = await messageManager.sendMessage(
+        'machine-a:workspace1', 'machine-b:workspace1',
+        'Test subject', 'Original body'
+      );
+
+      // Mark as read
+      await messageManager.markAsRead(msg.id);
+
+      await expect(
+        messageManager.amendMessage(msg.id, 'machine-a:workspace1', 'Too late', 'already read')
+      ).rejects.toThrow(/lu|archivé/i);
+    });
+
+    test('preserves original content on first amend', async () => {
+      const msg = await messageManager.sendMessage(
+        'machine-a:workspace1', 'machine-b:workspace1',
+        'Test subject', 'Original body'
+      );
+
+      await messageManager.amendMessage(
+        msg.id, 'machine-a:workspace1', 'Updated body', 'first amend'
+      );
+
+      // Read the message to check metadata
+      const updated = await messageManager.getMessage(msg.id);
+      expect(updated).toBeTruthy();
+      expect(updated!.metadata?.original_content).toBe('Original body');
+      expect(updated!.body).toBe('Updated body');
+    });
+  });
 });
