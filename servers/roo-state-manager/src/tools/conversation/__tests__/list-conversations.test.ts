@@ -32,6 +32,24 @@ vi.mock('../../task/disk-scanner.js', () => ({
   scanDiskForNewTasks: (...args: any[]) => mockScanDiskForNewTasks(...args),
 }));
 
+// Mock fs for contentPattern tests (loadApiMessages uses `import { promises as fs } from 'fs'`)
+const { mockFsReadFile } = vi.hoisted(() => ({
+  mockFsReadFile: vi.fn().mockRejectedValue(new Error('Not mocked for this test')),
+}));
+
+vi.mock('fs', async () => {
+  const actual = await vi.importActual<typeof import('fs')>('fs');
+  return {
+    ...actual,
+    default: {
+      ...actual,
+      promises: { ...actual.promises, readFile: mockFsReadFile },
+    },
+    promises: { ...actual.promises, readFile: mockFsReadFile },
+    existsSync: actual.existsSync,
+  };
+});
+
 import { listConversationsTool } from '../list-conversations.tool.js';
 import type { ConversationSkeleton } from '../../../types/conversation.js';
 
@@ -483,6 +501,152 @@ describe('listConversationsTool.handler', () => {
       // Should still return the cached task
       expect(parsed.length).toBe(1);
       expect(parsed[0].taskId).toBe('safe-task');
+    });
+  });
+
+  // ============================================================
+  // contentPattern filter (regression #567 S1 - was untested)
+  // ============================================================
+
+  describe('contentPattern filter', () => {
+    // We need to mock fs/promises for loadApiMessages used by matchesContentPattern
+    // The mock is set up via vi.mock at the top of this file's scope
+
+    test('contentPattern filters tasks matching text in messages', async () => {
+      const task1 = makeConversation('task-match');
+      const task2 = makeConversation('task-nomatch');
+      const cache = makeCache(task1, task2);
+
+      // task-match has "deploy" in messages, task-nomatch does not
+      mockFsReadFile.mockImplementation(async (filePath: any) => {
+        const pathStr = String(filePath);
+        if (pathStr.includes('task-match')) {
+          return JSON.stringify([
+            { role: 'user', content: 'Please deploy the application' },
+            { role: 'assistant', content: 'Deploying now...' }
+          ]);
+        }
+        if (pathStr.includes('task-nomatch')) {
+          return JSON.stringify([
+            { role: 'user', content: 'Fix the bug' },
+            { role: 'assistant', content: 'Fixed' }
+          ]);
+        }
+        throw new Error('File not found');
+      });
+
+      const result = await listConversationsTool.handler({ contentPattern: 'deploy' }, cache);
+      const parsed = JSON.parse((result.content[0] as any).text);
+
+      expect(parsed.length).toBe(1);
+      expect(parsed[0].taskId).toBe('task-match');
+    });
+
+    test('contentPattern is case-insensitive', async () => {
+      const task = makeConversation('task-ci');
+      const cache = makeCache(task);
+
+      mockFsReadFile.mockImplementation(async () => {
+        return JSON.stringify([
+          { role: 'user', content: 'Run the BUILD process' }
+        ]);
+      });
+
+      const result = await listConversationsTool.handler({ contentPattern: 'build' }, cache);
+      const parsed = JSON.parse((result.content[0] as any).text);
+
+      expect(parsed.length).toBe(1);
+      expect(parsed[0].taskId).toBe('task-ci');
+    });
+
+    test('contentPattern handles fs errors gracefully (task excluded)', async () => {
+      const task = makeConversation('task-fserr');
+      const cache = makeCache(task);
+
+      mockFsReadFile.mockRejectedValue(new Error('ENOENT'));
+
+      const result = await listConversationsTool.handler({ contentPattern: 'test' }, cache);
+      const parsed = JSON.parse((result.content[0] as any).text);
+
+      // Task should be excluded (error = no match)
+      expect(parsed.length).toBe(0);
+    });
+
+    test('empty contentPattern does not filter', async () => {
+      const cache = makeCache(makeConversation('task-1'), makeConversation('task-2'));
+
+      const result = await listConversationsTool.handler({ contentPattern: '  ' }, cache);
+      const parsed = JSON.parse((result.content[0] as any).text);
+
+      expect(parsed.length).toBe(2);
+    });
+  });
+
+  // ============================================================
+  // Concurrent access (regression #567 S2 - race condition)
+  // ============================================================
+
+  describe('concurrent access', () => {
+    test('two simultaneous list calls do not corrupt the cache', async () => {
+      const cache = makeCache(
+        makeConversation('task-a'),
+        makeConversation('task-b'),
+        makeConversation('task-c'),
+      );
+
+      // Run two list calls in parallel
+      const [result1, result2] = await Promise.all([
+        listConversationsTool.handler({ sortBy: 'lastActivity' }, cache),
+        listConversationsTool.handler({ sortBy: 'messageCount' }, cache),
+      ]);
+
+      const parsed1 = JSON.parse((result1.content[0] as any).text);
+      const parsed2 = JSON.parse((result2.content[0] as any).text);
+
+      // Both should return valid results with all 3 tasks
+      expect(parsed1.length).toBe(3);
+      expect(parsed2.length).toBe(3);
+
+      // Cache should still be intact
+      expect(cache.size).toBe(3);
+    });
+
+    test('concurrent list with disk scan adding tasks', async () => {
+      const cache = makeCache(makeConversation('existing'));
+
+      // First call: disk scan returns new-task-1
+      // Second call: disk scan returns new-task-2
+      let callCount = 0;
+      mockScanDiskForNewTasks.mockImplementation(async () => {
+        callCount++;
+        return [makeConversation(`new-task-${callCount}`, {
+          metadata: {
+            workspace: '/workspace/default',
+            mode: 'code-simple',
+            timestamp: '2026-03-06T00:00:00.000Z',
+            lastActivity: '2026-03-06T00:00:00.000Z',
+            createdAt: '2026-03-06T00:00:00.000Z',
+            messageCount: 1,
+            actionCount: 0,
+            totalSize: 100,
+          }
+        } as any)];
+      });
+
+      const [result1, result2] = await Promise.all([
+        listConversationsTool.handler({}, cache),
+        listConversationsTool.handler({}, cache),
+      ]);
+
+      const parsed1 = JSON.parse((result1.content[0] as any).text);
+      const parsed2 = JSON.parse((result2.content[0] as any).text);
+
+      // Both calls should succeed with valid JSON
+      expect(parsed1.length).toBeGreaterThanOrEqual(1);
+      expect(parsed2.length).toBeGreaterThanOrEqual(1);
+
+      // Cache should have grown (original + new tasks from both scans)
+      expect(cache.size).toBeGreaterThanOrEqual(2);
     });
   });
 
