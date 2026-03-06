@@ -58,6 +58,15 @@ vi.mock('../../../utils/logger.js', () => ({
 	Logger: class {}
 }));
 
+// Mock message-helpers to control getLocalFullId behavior
+const { mockGetLocalFullId } = vi.hoisted(() => ({
+	mockGetLocalFullId: vi.fn()
+}));
+
+vi.mock('../../../utils/message-helpers.js', () => ({
+	getLocalFullId: mockGetLocalFullId
+}));
+
 vi.mock('../../../types/errors.js', () => ({
 	StateManagerError: class extends Error {
 		code: string;
@@ -78,6 +87,7 @@ describe('amend_message', () => {
 		vi.clearAllMocks();
 		mockGetSharedStatePath.mockReturnValue('/shared/state');
 		mockHostname.mockReturnValue('TEST-MACHINE');
+		mockGetLocalFullId.mockReturnValue('test-machine:roo-extensions');
 		delete process.env.ROOSYNC_MACHINE_ID;
 	});
 
@@ -114,6 +124,7 @@ describe('amend_message', () => {
 	describe('machine ID resolution', () => {
 		test('uses ROOSYNC_MACHINE_ID env var when set', async () => {
 			process.env.ROOSYNC_MACHINE_ID = 'env-machine';
+			mockGetLocalFullId.mockReturnValue('env-machine:roo-extensions');
 			mockAmendMessage.mockResolvedValue({
 				message_id: 'msg-123',
 				amended_at: '2026-01-01T00:00:00Z',
@@ -129,7 +140,7 @@ describe('amend_message', () => {
 
 			expect(mockAmendMessage).toHaveBeenCalledWith(
 				'msg-123',
-				'env-machine',
+				'env-machine:roo-extensions',
 				'updated content',
 				undefined
 			);
@@ -137,6 +148,7 @@ describe('amend_message', () => {
 
 		test('falls back to os.hostname when env not set', async () => {
 			mockHostname.mockReturnValue('My-Machine-01');
+			mockGetLocalFullId.mockReturnValue('my-machine-01:roo-extensions');
 			mockAmendMessage.mockResolvedValue({
 				message_id: 'msg-456',
 				amended_at: '2026-01-01T00:00:00Z',
@@ -150,10 +162,10 @@ describe('amend_message', () => {
 				new_content: 'new text'
 			});
 
-			// hostname is lowercased and sanitized
+			// getLocalFullId returns full ID with workspace
 			expect(mockAmendMessage).toHaveBeenCalledWith(
 				'msg-456',
-				'my-machine-01',
+				'my-machine-01:roo-extensions',
 				'new text',
 				undefined
 			);
@@ -187,6 +199,7 @@ describe('amend_message', () => {
 
 		test('passes reason to MessageManager', async () => {
 			process.env.ROOSYNC_MACHINE_ID = 'test-machine';
+			mockGetLocalFullId.mockReturnValue('test-machine:roo-extensions');
 			mockAmendMessage.mockResolvedValue({
 				message_id: 'msg-100',
 				amended_at: '2026-01-01T00:00:00Z',
@@ -203,7 +216,7 @@ describe('amend_message', () => {
 
 			expect(mockAmendMessage).toHaveBeenCalledWith(
 				'msg-100',
-				'test-machine',
+				'test-machine:roo-extensions',
 				'updated',
 				'my reason'
 			);

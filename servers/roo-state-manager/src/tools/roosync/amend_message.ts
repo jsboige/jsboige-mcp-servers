@@ -13,6 +13,7 @@ import { join } from 'path';
 import os from 'os';
 import { createLogger, Logger } from '../../utils/logger.js';
 import { StateManagerError } from '../../types/errors.js';
+import { getLocalFullId } from '../../utils/message-helpers.js';
 
 // Logger instance for amend_message tool
 const logger: Logger = createLogger('AmendMessageTool');
@@ -82,8 +83,8 @@ export async function amendMessage(
     const sharedStatePath = getSharedStatePath();
     const messageManager = new MessageManager(sharedStatePath);
 
-    // Obtenir l'ID de la machine locale (émetteur)
-    const senderId = getLocalMachineId();
+    // Obtenir l'ID complet local (émetteur, inclut workspace si configuré)
+    const senderId = getLocalFullId();
     logger.debug('🔐 Sender ID identified', { senderId });
 
     // Amender le message via MessageManager
