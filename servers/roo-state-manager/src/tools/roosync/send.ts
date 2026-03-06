@@ -209,8 +209,9 @@ Impossible de répondre car le message original n'a pas été trouvé dans :
   // Construire la réponse
   logger.debug('💬 Building reply message');
 
-  // FIX #583: L'expéditeur de la réponse est la machine locale, PAS le destinataire original
-  // L'ancien code utilisait originalMessage.to (ex: "all") au lieu de getLocalFullId()
+  // Inversion from/to pour la réponse
+  // replyFrom = la machine locale (celle qui répond), pas originalMessage.to
+  // car si originalMessage.to = "all", on ne veut pas "all" comme expéditeur
   const replyFrom = getLocalFullId();
   const replyTo = originalMessage.from;
 
@@ -271,8 +272,8 @@ Impossible de répondre car le message original n'a pas été trouvé dans :
 
 **ID :** \`${replyMessageObj.id}\`
 **Sujet :** ${replySubject}
-**De :** ${replyFrom}
-**À :** ${replyTo}
+**De :** ${replyFrom} *(inversé)*
+**À :** ${replyTo} *(inversé)*
 **Date :** ${formatDateFull(replyMessageObj.timestamp)}
 **Priorité :** ${replyPriorityIcon} ${priority}
 **Tags :** ${replyTags.map(t => `\`${t}\``).join(', ')}
