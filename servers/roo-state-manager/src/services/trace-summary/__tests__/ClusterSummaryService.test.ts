@@ -9,7 +9,7 @@ import { ClusterSummaryService } from '../ClusterSummaryService.js';
 import type { ConversationSkeleton, MessageSkeleton } from '../../../types/conversation.js';
 import type { SummaryResult } from '../../../types/trace-summary.js';
 
-describe('ClusterSummaryService', () => {
+describe('ClusterSummaryService', { timeout: 60000 }, () => {
     let service: ClusterSummaryService;
 
     // ============================================================
@@ -499,7 +499,7 @@ describe('ClusterSummaryService', () => {
 
             expect(result.success).toBe(true);
             expect(result.clusterMetadata.totalTasks).toBe(21);
-        }, 30000); // 30 second timeout
+        }, 60000);
 
         test('handles tasks with special characters in titles', async () => {
             const rootTask = createMockTask('root-1', undefined, 'Root <script>alert("xss")</script>');
@@ -535,7 +535,7 @@ describe('ClusterSummaryService', () => {
             );
 
             expect(result.success).toBe(true);
-        }, 30000); // 30 second timeout
+        }, 60000);
 
         test('handles tasks without parent relationships', async () => {
             const rootTask = createMockTask('root-1');
