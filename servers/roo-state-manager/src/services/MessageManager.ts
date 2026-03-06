@@ -497,7 +497,7 @@ export class MessageManager {
         throw new MessageManagerError(
           `Permission refusée : seul l'émetteur (${message.from}) peut amender ce message.`,
           MessageManagerErrorCode.MESSAGE_SEND_FAILED,
-          { messageId, expectedSender: message.from, actualSender: parsed.machineId, action: 'amend' }
+          { messageId, expectedSender: message.from, actualSender: currentSender.machineId, action: 'amend' }
         );
       }
 

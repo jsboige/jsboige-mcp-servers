@@ -240,18 +240,36 @@ async function handleUpdateAction(args: BaselineArgs, timestamp: string): Promis
       args.aggregationConfig
     );
 
+    // #570: Profile mode also needs v2.x format with machines array
+    const profileTimestamp = new Date().toISOString();
     newBaseline = {
-      machineId: `profile:${nonNominativeBaseline.baselineId}`,
       version: nonNominativeBaseline.version,
-      lastUpdated: new Date().toISOString(),
-      config: {
-        roo: { modes: [], mcpSettings: {}, userSettings: {} },
-        hardware: { cpu: 'Profile', ram: 'Profile', disks: [] },
-        software: { powershell: 'N/A', node: 'N/A', python: 'N/A' },
-        system: { os: 'Profile', architecture: 'N/A' }
-      },
+      baselineId: nonNominativeBaseline.baselineId,
+      timestamp: profileTimestamp,
+      lastUpdated: profileTimestamp,
+      machineId: `profile:${nonNominativeBaseline.baselineId}`,
+      autoSync: true,
+      conflictStrategy: 'merge',
+      logLevel: 'info',
+      sharedStatePath: '',
       isNonNominative: true,
-      profiles: nonNominativeBaseline.profiles
+      profiles: nonNominativeBaseline.profiles,
+      machines: [{
+        id: `profile:${nonNominativeBaseline.baselineId}`,
+        name: `Profile: ${nonNominativeBaseline.baselineId}`,
+        hostname: 'profile',
+        os: 'Profile',
+        architecture: 'N/A',
+        lastSeen: profileTimestamp,
+        roo: { modes: [], mcpServers: [], sdddSpecs: [], rules: [] },
+        hardware: {
+          cpu: { model: 'Profile', cores: 0, threads: 0 },
+          memory: { total: 0 },
+          disks: [],
+          gpu: 'N/A'
+        },
+        software: { powershell: 'N/A', node: 'N/A', python: 'N/A' }
+      }]
     };
   } else {
     // Mode standard (machine)
@@ -850,32 +868,54 @@ function generateBaselineVersion(): string {
   return `${year}.${month}.${day}-${hours}${minutes}`;
 }
 
+/**
+ * Crée une baseline au format v2.x avec tableau machines
+ * #570: Fix format mismatch - BaselineLoader expects v2.x format with machines array
+ */
 function createBaselineFromInventory(machineId: string, inventory: any, version: string): any {
+  const timestamp = new Date().toISOString();
+
   return {
-    machineId,
     version,
-    lastUpdated: new Date().toISOString(),
-    config: {
+    baselineId: `baseline-${version}`,
+    timestamp,
+    lastUpdated: timestamp,
+    machineId,
+    autoSync: true,
+    conflictStrategy: 'merge',
+    logLevel: 'info',
+    sharedStatePath: '',  // Will be set by the caller if needed
+    machines: [{
+      id: machineId,
+      name: machineId,
+      hostname: inventory.system?.hostname || machineId,
+      os: inventory.system?.os || 'Unknown',
+      architecture: inventory.system?.architecture || 'Unknown',
+      lastSeen: timestamp,
       roo: {
-        modes: inventory.config?.roo?.modes || [],
-        mcpSettings: inventory.config?.roo?.mcpSettings || {},
-        userSettings: inventory.config?.roo?.userSettings || {}
+        modes: inventory.roo?.modes || inventory.config?.roo?.modes || [],
+        mcpServers: inventory.roo?.mcpServers || inventory.config?.roo?.mcpServers || [],
+        sdddSpecs: inventory.roo?.sdddSpecs || [],
+        rules: inventory.roo?.rules || []
       },
       hardware: {
-        cpu: inventory.config?.hardware?.cpu || 'Unknown',
-        ram: inventory.config?.hardware?.ram || 'Unknown',
-        disks: inventory.config?.hardware?.disks || []
+        cpu: {
+          model: inventory.hardware?.cpu?.model || inventory.config?.hardware?.cpu || 'Unknown',
+          cores: inventory.hardware?.cpu?.cores || 0,
+          threads: inventory.hardware?.cpu?.threads || 0
+        },
+        memory: {
+          total: inventory.hardware?.memory?.total || 0
+        },
+        disks: inventory.hardware?.disks || inventory.config?.hardware?.disks || [],
+        gpu: inventory.hardware?.gpu || 'Unknown'
       },
       software: {
-        powershell: inventory.config?.software?.powershell || 'Unknown',
-        node: inventory.config?.software?.node || 'N/A',
-        python: inventory.config?.software?.python || 'N/A'
-      },
-      system: {
-        os: inventory.config?.system?.os || 'Unknown',
-        architecture: inventory.config?.system?.architecture || 'Unknown'
+        powershell: inventory.software?.powershell || inventory.config?.software?.powershell || 'Unknown',
+        node: inventory.software?.node || inventory.config?.software?.node || 'N/A',
+        python: inventory.software?.python || inventory.config?.software?.python || 'N/A'
       }
-    }
+    }]
   };
 }
 
