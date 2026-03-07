@@ -309,30 +309,24 @@ class SKAgentManager:
         # Memory
         self._memory_stores: dict[str, Any] = {}                 # agent_id -> SemanticTextMemory
 
+        # Lazy MCP loading: track which MCPs are being loaded to avoid duplicates
+        self._loading_mcps: set[str] = set()
+        self._mcp_configs: dict[str, McpConfig] = {cfg.id: cfg for cfg in self.config.mcps}
+
     async def start(self):
         """Initialize shared pools and per-agent resources."""
         # 1. Create shared model pool
         await self._init_model_pool()
 
-        # 2. Load shared MCP plugins
-        max_depth = self.config.max_recursion_depth
-        if SK_AGENT_DEPTH < max_depth:
-            await self._init_mcp_pool()
-        else:
-            log.info("Skipping MCP plugins (depth=%d >= max_depth=%d)", SK_AGENT_DEPTH, max_depth)
+        # 2. MCP plugins are now loaded lazily on-demand (see _ensure_mcp_loaded)
+        # This prevents blocking if an MCP fails to start
+        log.info("MCP plugins will be loaded lazily when agents need them")
 
-        # 3. Create per-agent resources
-        for agent_cfg in self.config.agents:
-            model = self.config.get_model(agent_cfg.model)
-            if not model or not model.enabled:
-                log.info("Skipping agent '%s': model '%s' not available", agent_cfg.id, agent_cfg.model)
-                continue
-
-            await self._create_agent(agent_cfg, model)
-
+        # 3. Agents are now created lazily on-demand (see _get_or_create_agent)
+        # This prevents blocking if agent initialization (MCP loading) fails
         log.info(
-            "SK Agent Manager ready: %d agents, %d models, %d MCP plugins",
-            len(self._sk_agents), len(self._openai_clients), len(self._mcp_plugins),
+            "SK Agent Manager ready: %d agent configs, %d models ready",
+            len(self.config.agents), len(self._openai_clients),
         )
 
     async def _init_model_pool(self):
@@ -353,33 +347,64 @@ class SKAgentManager:
             self._services[model_cfg.id] = service
             log.info("Model pool: %s -> %s at %s", model_cfg.id, model_cfg.model_id, model_cfg.base_url)
 
+    async def _ensure_mcp_loaded(self, mcp_id: str) -> bool:
+        """Ensure a specific MCP is loaded (lazy loading). Returns True if successful."""
+        # Already loaded?
+        if mcp_id in self._mcp_plugins:
+            return True
+
+        # Already loading?
+        if mcp_id in self._loading_mcps:
+            # Wait for existing load to complete (simple polling)
+            for _ in range(50):  # Max 5 seconds
+                if mcp_id in self._mcp_plugins:
+                    return True
+                if mcp_id not in self._loading_mcps:
+                    # Loading failed
+                    return False
+                await asyncio.sleep(0.1)
+            return False
+
+        # Start loading
+        mcp_cfg = self._mcp_configs.get(mcp_id)
+        if not mcp_cfg:
+            log.warning("MCP '%s' not found in config", mcp_id)
+            return False
+
+        self._loading_mcps.add(mcp_id)
+        try:
+            env = {**os.environ, **mcp_cfg.env}
+
+            # Detect self-inclusion
+            mcp_args = " ".join(mcp_cfg.args)
+            is_self = "sk_agent.py" in mcp_args or "sk_agent" in mcp_cfg.id.lower()
+
+            if is_self:
+                env["SK_AGENT_DEPTH"] = str(SK_AGENT_DEPTH + 1)
+                log.info("Self-inclusion: spawning child sk-agent with depth=%d", SK_AGENT_DEPTH + 1)
+
+            plugin = MCPStdioPlugin(
+                name=mcp_cfg.id,
+                description=mcp_cfg.description,
+                command=mcp_cfg.command,
+                args=mcp_cfg.args,
+                env=env,
+            )
+            connected = await self._exit_stack.enter_async_context(plugin)
+            self._mcp_plugins[mcp_cfg.id] = connected
+            self._mcp_plugin_list.append(connected)
+            log.info("MCP pool: %s loaded (lazy)", mcp_cfg.id)
+            return True
+        except Exception:
+            log.exception("Failed to load MCP plugin: %s", mcp_id)
+            return False
+        finally:
+            self._loading_mcps.discard(mcp_id)
+
     async def _init_mcp_pool(self):
-        """Load all MCP plugins from config (shared pool)."""
+        """Load all MCP plugins from config (shared pool). DEPRECATED: Use lazy loading instead."""
         for mcp_cfg in self.config.mcps:
-            try:
-                env = {**os.environ, **mcp_cfg.env}
-
-                # Detect self-inclusion
-                mcp_args = " ".join(mcp_cfg.args)
-                is_self = "sk_agent.py" in mcp_args or "sk_agent" in mcp_cfg.id.lower()
-
-                if is_self:
-                    env["SK_AGENT_DEPTH"] = str(SK_AGENT_DEPTH + 1)
-                    log.info("Self-inclusion: spawning child sk-agent with depth=%d", SK_AGENT_DEPTH + 1)
-
-                plugin = MCPStdioPlugin(
-                    name=mcp_cfg.id,
-                    description=mcp_cfg.description,
-                    command=mcp_cfg.command,
-                    args=mcp_cfg.args,
-                    env=env,
-                )
-                connected = await self._exit_stack.enter_async_context(plugin)
-                self._mcp_plugins[mcp_cfg.id] = connected
-                self._mcp_plugin_list.append(connected)
-                log.info("MCP pool: %s loaded", mcp_cfg.id)
-            except Exception:
-                log.exception("Failed to load MCP plugin: %s", mcp_cfg.id)
+            await self._ensure_mcp_loaded(mcp_cfg.id)
 
     async def _create_agent(self, agent_cfg: AgentConfig, model_cfg: ModelConfig):
         """Create a SK agent with its own kernel, model service, and plugins."""
@@ -391,11 +416,14 @@ class SKAgentManager:
         if service:
             kernel.add_service(service)
 
-        # Collect agent-specific MCP plugins
+        # Collect agent-specific MCP plugins (lazy load if needed)
         agent_plugins = []
         for mcp_id in agent_cfg.mcps:
-            if mcp_id in self._mcp_plugins:
+            # Try to lazy-load the MCP if not already loaded
+            if await self._ensure_mcp_loaded(mcp_id):
                 agent_plugins.append(self._mcp_plugins[mcp_id])
+            else:
+                log.warning("Agent '%s': MCP '%s' failed to load, agent will not have it", agent_id, mcp_id)
 
         # Set up memory if enabled
         if agent_cfg.memory.enabled and HAS_MEMORY:
@@ -425,6 +453,33 @@ class SKAgentManager:
         self._sk_agents[agent_id] = agent
         log.info("Agent created: %s (model=%s, mcps=%s, memory=%s)",
                  agent_id, model_cfg.id, agent_cfg.mcps, agent_cfg.memory.enabled)
+
+    async def _get_or_create_agent(self, agent_id: str) -> ChatCompletionAgent | None:
+        """Get an agent by ID, creating it lazily if needed."""
+        # Already created?
+        if agent_id in self._sk_agents:
+            return self._sk_agents[agent_id]
+
+        # Find agent config
+        agent_cfg = None
+        for cfg in self.config.agents:
+            if cfg.id == agent_id:
+                agent_cfg = cfg
+                break
+
+        if not agent_cfg:
+            log.warning("Agent '%s' not found in config", agent_id)
+            return None
+
+        # Get model config
+        model = self.config.get_model(agent_cfg.model)
+        if not model or not model.enabled:
+            log.warning("Agent '%s': model '%s' not available", agent_id, agent_cfg.model)
+            return None
+
+        # Create the agent
+        await self._create_agent(agent_cfg, model)
+        return self._sk_agents.get(agent_id)
 
     async def _setup_memory(self, agent_cfg: AgentConfig, kernel: Kernel) -> Any | None:
         """Set up vector memory for an agent. Returns TextMemoryPlugin or None."""
@@ -480,48 +535,61 @@ class SKAgentManager:
     # Agent Resolution
     # -----------------------------------------------------------------------
 
-    def _resolve_agent(
+    async def _resolve_agent(
         self,
         agent_id: str | None = None,
         needs_vision: bool = False,
         model_id: str | None = None,
     ) -> tuple[str, ChatCompletionAgent] | tuple[None, None]:
-        """Resolve which agent to use.
+        """Resolve which agent to use (lazy creation).
 
         Priority:
         1. Explicit agent_id
         2. Backward compat: model_id -> find agent using that model
         3. needs_vision -> default_vision_agent
         4. default_agent
-        5. First available agent
+        5. First available agent config
         """
-        if not self._sk_agents:
+        if not self.config.agents:
             return None, None
 
         # 1. Explicit agent_id
-        if agent_id and agent_id in self._sk_agents:
-            return agent_id, self._sk_agents[agent_id]
+        if agent_id:
+            agent = await self._get_or_create_agent(agent_id)
+            if agent:
+                return agent_id, agent
 
         # 2. Backward compat: model_id
         if model_id:
             agent_cfg = self.config.find_agent_for_model(model_id)
-            if agent_cfg and agent_cfg.id in self._sk_agents:
-                return agent_cfg.id, self._sk_agents[agent_cfg.id]
+            if agent_cfg:
+                agent = await self._get_or_create_agent(agent_cfg.id)
+                if agent:
+                    return agent_cfg.id, agent
 
         # 3. Vision default
         if needs_vision:
             vision_cfg = self.config.get_default_vision_agent()
-            if vision_cfg and vision_cfg.id in self._sk_agents:
-                return vision_cfg.id, self._sk_agents[vision_cfg.id]
+            if vision_cfg:
+                agent = await self._get_or_create_agent(vision_cfg.id)
+                if agent:
+                    return vision_cfg.id, agent
 
         # 4. Default agent
         default_cfg = self.config.get_default_agent()
-        if default_cfg and default_cfg.id in self._sk_agents:
-            return default_cfg.id, self._sk_agents[default_cfg.id]
+        if default_cfg:
+            agent = await self._get_or_create_agent(default_cfg.id)
+            if agent:
+                return default_cfg.id, agent
 
-        # 5. First available
-        first_id = next(iter(self._sk_agents))
-        return first_id, self._sk_agents[first_id]
+        # 5. First available agent config
+        first_cfg = self.config.agents[0]
+        if first_cfg:
+            agent = await self._get_or_create_agent(first_cfg.id)
+            if agent:
+                return first_cfg.id, agent
+
+        return None, None
 
     def _get_or_create_thread(self, conversation_id: str | None) -> tuple[str, ChatHistoryAgentThread]:
         """Get existing thread or create new one."""
@@ -549,8 +617,8 @@ class SKAgentManager:
         model_id: str | None = None,
     ) -> dict[str, Any]:
         """Unified agent invocation with optional attachment routing."""
-        if not self._sk_agents:
-            return {"error": "No agents initialized"}
+        if not self.config.agents:
+            return {"error": "No agents configured"}
 
         options = options or {}
         attachment_type = classify_attachment(attachment) if attachment else None
@@ -561,7 +629,7 @@ class SKAgentManager:
             needs_vision = False
 
         # Resolve agent
-        resolved_id, agent = self._resolve_agent(
+        resolved_id, agent = await self._resolve_agent(
             agent_id=agent_id,
             needs_vision=needs_vision,
             model_id=model_id,
