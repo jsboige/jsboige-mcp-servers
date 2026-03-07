@@ -1,6 +1,7 @@
 {
   "name": "jinavigator-server",
   "version": "1.0.0",
+  "type": "module",
   "description": "MCP server for converting web pages to Markdown using Jina API",
   "main": "dist/index.js",
   "scripts": {
