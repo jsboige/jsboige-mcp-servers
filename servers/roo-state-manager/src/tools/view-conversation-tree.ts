@@ -204,39 +204,56 @@ async function handleViewConversationTreeExecutionAsync(
 
     // FIX #584: Lazy load full skeleton if sequence is empty but messageCount suggests content exists
     // This happens when scanDiskForNewTasks creates minimal skeletons for discovery
+    // FIX #594: Throw explicit error instead of failing silently when lazy loading fails
     if (mainTask.sequence.length === 0 && mainTask.metadata.messageCount > 0) {
-        try {
-            console.log(`[view] Lazy loading full skeleton for ${task_id} (messageCount: ${mainTask.metadata.messageCount})`);
-            // Find the task path by checking all storage locations
-            const storageLocations = await RooStorageDetector.detectStorageLocations();
-            let taskPath: string | null = null;
-            for (const locationPath of storageLocations) {
-                const potentialPath = path.join(locationPath, 'tasks', task_id);
-                try {
-                    const stats = await fs.stat(potentialPath);
-                    if (stats.isDirectory()) {
-                        taskPath = potentialPath;
-                        break;
-                    }
-                } catch {
-                    // Location doesn't have this task, continue to next
+        console.log(`[view] Lazy loading full skeleton for ${task_id} (messageCount: ${mainTask.metadata.messageCount})`);
+
+        // Find the task path by checking all storage locations
+        const storageLocations = await RooStorageDetector.detectStorageLocations();
+        let taskPath: string | null = null;
+        let locationsChecked: string[] = [];
+
+        for (const locationPath of storageLocations) {
+            const potentialPath = path.join(locationPath, 'tasks', task_id);
+            locationsChecked.push(potentialPath);
+            try {
+                const stats = await fs.stat(potentialPath);
+                if (stats.isDirectory()) {
+                    taskPath = potentialPath;
+                    break;
                 }
+            } catch {
+                // Location doesn't have this task, continue to next
             }
-            if (taskPath) {
-                const fullSkeleton = await RooStorageDetector.analyzeConversation(task_id, taskPath);
-                if (fullSkeleton && fullSkeleton.sequence.length > 0) {
-                    // Update the cache with complete skeleton
-                    conversationCache.set(task_id, fullSkeleton);
-                    // Refresh mainTask reference
-                    mainTask = fullSkeleton;
-                    console.log(`[view] Successfully loaded ${fullSkeleton.sequence.length} sequence items for ${task_id}`);
-                }
+        }
+
+        if (taskPath) {
+            const fullSkeleton = await RooStorageDetector.analyzeConversation(task_id, taskPath);
+            if (fullSkeleton && fullSkeleton.sequence.length > 0) {
+                // Update the cache with complete skeleton
+                conversationCache.set(task_id, fullSkeleton);
+                // Refresh mainTask reference
+                mainTask = fullSkeleton;
+                console.log(`[view] Successfully loaded ${fullSkeleton.sequence.length} sequence items for ${task_id}`);
             } else {
-                console.warn(`[view] Task path not found for ${task_id}, cannot lazy load`);
+                // Task found but analyzeConversation returned null/empty
+                throw new GenericError(
+                    `Task '${task_id}' found at path but analysis failed. ` +
+                    `The task files may be corrupted or in an unexpected format. ` +
+                    `Checked ${locationsChecked.length} storage locations.`,
+                    GenericErrorCode.INVALID_ARGUMENT,
+                    { taskId: task_id, locationsChecked, taskPath }
+                );
             }
-        } catch (error) {
-            console.warn(`[view] Failed to lazy load skeleton for ${task_id}:`, error);
-            // Continue with minimal skeleton - user will see empty content but no crash
+        } else {
+            // Task path not found in any storage location
+            throw new GenericError(
+                `Task '${task_id}' has ${mainTask.metadata.messageCount} messages but the task directory was not found in any storage location. ` +
+                `Checked ${locationsChecked.length} location(s): ${storageLocations.slice(0, 3).join(', ')}${storageLocations.length > 3 ? '...' : ''}. ` +
+                `The task may have been deleted or the storage locations may be misconfigured.`,
+                GenericErrorCode.INVALID_ARGUMENT,
+                { taskId: task_id, messageCount: mainTask.metadata.messageCount, locationsChecked, storageLocations }
+            );
         }
     }
 
