@@ -150,52 +150,76 @@ export class BaselineLoader {
 
   /**
    * Transforme la structure du fichier baseline pour le DiffDetector
+   * Supporte deux formats:
+   * - Format agrégé v2.x: { machines: [{ roo, hardware, software, ... }] }
+   * - Format par machine: { machineId, config: { roo }, hardware, software, system }
    * @throws {BaselineLoaderError} Si la transformation échoue
    */
   public transformBaselineForDiffDetector(baselineFile: BaselineFileConfig): BaselineConfig {
     try {
-      // Récupérer la première machine du fichier baseline
-      const firstMachine = baselineFile.machines?.[0];
+      // Détecter le format de la baseline
+      const anyFile = baselineFile as any;
+      const isPerMachineFormat = !baselineFile.machines?.length && anyFile.config?.roo;
 
-      if (!firstMachine) {
-        throw new BaselineLoaderError(
-          'Aucune machine trouvée dans le fichier baseline',
-          BaselineLoaderErrorCode.BASELINE_INVALID,
-          { baselineId: baselineFile.baselineId, machineCount: baselineFile.machines?.length || 0 }
-        );
+      // Sources de données selon le format
+      let rooSource: any;
+      let hardwareSource: any;
+      let softwareSource: any;
+      let systemSource: any;
+
+      if (isPerMachineFormat) {
+        // Format par machine: données à la racine
+        rooSource = anyFile.config.roo || {};
+        hardwareSource = anyFile.hardware || {};
+        softwareSource = anyFile.software || {};
+        systemSource = anyFile.system || {};
+      } else {
+        // Format agrégé v2.x: données dans machines[0]
+        const firstMachine = baselineFile.machines?.[0];
+        if (!firstMachine) {
+          throw new BaselineLoaderError(
+            'Aucune machine trouvée dans le fichier baseline (format agrégé)',
+            BaselineLoaderErrorCode.BASELINE_INVALID,
+            { baselineId: baselineFile.baselineId, machineCount: baselineFile.machines?.length || 0 }
+          );
+        }
+        rooSource = firstMachine.roo || {};
+        hardwareSource = firstMachine.hardware || {};
+        softwareSource = firstMachine.software || {};
+        systemSource = { os: firstMachine.os, architecture: firstMachine.architecture };
       }
 
       return {
-        machineId: baselineFile.machineId || 'unknown',
+        machineId: baselineFile.machineId || anyFile.machineId || 'unknown',
         config: {
           roo: {
-            modes: firstMachine?.roo?.modes || [],
-            mcpSettings: this.extractMcpSettings(firstMachine?.roo?.mcpServers || []),
+            modes: rooSource.modes || [],
+            mcpSettings: this.extractMcpSettings(rooSource.mcpServers || []),
             userSettings: {}
           },
           hardware: {
             cpu: {
               model: 'Unknown CPU',
-              cores: firstMachine?.hardware?.cpu?.cores || 0,
-              threads: firstMachine?.hardware?.cpu?.threads || 0
+              cores: hardwareSource?.cpu?.cores || 0,
+              threads: hardwareSource?.cpu?.threads || 0
             },
             memory: {
-              total: firstMachine?.hardware?.memory?.total || 0
+              total: hardwareSource?.memory?.total || 0
             },
             disks: [],
             gpu: 'Unknown'
           },
           software: {
-            powershell: 'Unknown',
-            node: firstMachine?.software?.node || 'Unknown',
-            python: firstMachine?.software?.python || 'Unknown'
+            powershell: softwareSource?.powershell || 'Unknown',
+            node: softwareSource?.node || 'Unknown',
+            python: softwareSource?.python || 'Unknown'
           },
           system: {
-            os: firstMachine?.os || 'Unknown',
-            architecture: firstMachine?.architecture || 'Unknown'
+            os: systemSource?.os || 'Unknown',
+            architecture: systemSource?.architecture || 'Unknown'
           }
         },
-        lastUpdated: baselineFile.timestamp || new Date().toISOString(),
+        lastUpdated: baselineFile.timestamp || anyFile.lastUpdated || new Date().toISOString(),
         version: baselineFile.version || '2.1'
       };
     } catch (error) {
@@ -206,7 +230,7 @@ export class BaselineLoader {
       throw new BaselineLoaderError(
         `Erreur lors de la transformation de la baseline: ${error instanceof Error ? error.message : String(error)}`,
         BaselineLoaderErrorCode.BASELINE_TRANSFORM_FAILED,
-        { baselineId: baselineFile.baselineId },
+        { baselineId: (baselineFile as any).baselineId },
         error instanceof Error ? error : undefined
       );
     }
