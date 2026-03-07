@@ -90,6 +90,7 @@ export type CompareConfigArgs = z.infer<typeof CompareConfigArgsSchema>;
 export const CompareConfigResultSchema = z.object({
   source: z.string().describe('Machine source'),
   target: z.string().describe('Machine cible'),
+  granularity: z.string().optional().describe('Granularité de comparaison (mcp, mode, settings, full)'),
   host_id: z.string().optional().describe('Identifiant de l\'hôte local'),
   differences: z.array(z.object({
     category: z.string().describe('Catégorie de différence'),
@@ -160,16 +161,36 @@ export async function roosyncCompareConfig(args: CompareConfigArgs): Promise<Com
     // Si granularity est fourni, utiliser GranularDiffDetector
     if (args.granularity) {
       debugLog('Mode granulaire activé', { granularity: args.granularity, filter: args.filter });
+      console.log('[DEBUG-564] LINE 164 REACHED - About to call getInventory');
+      debugLog('About to call getInventory', { sourceMachineId, targetMachineId });
 
       // Charger les inventaires complets des deux machines
       const sourceInventory = await service.getInventory(sourceMachineId, args.force_refresh || false);
+      console.log('[DEBUG-564] ✅ sourceInventory returned:', sourceInventory ? 'HAS_DATA' : 'NULL');
       const targetInventory = await service.getInventory(targetMachineId, args.force_refresh || false);
+      console.log('[DEBUG-564] ✅ targetInventory returned:', targetInventory ? 'HAS_DATA' : 'NULL');
 
       if (!sourceInventory || !targetInventory) {
-        throw new RooSyncServiceError(
-          `Inventaire manquant: source=${!!sourceInventory}, target=${!!targetInventory}`,
-          'INVENTORY_MISSING'
-        );
+        // Gestion gracieuse : retourner un avertissement au lieu de lancer une erreur
+        const missingInventories: string[] = [];
+        if (!sourceInventory) missingInventories.push(`source "${sourceMachineId}"`);
+        if (!targetInventory) missingInventories.push(`target "${targetMachineId}"`);
+
+        return {
+          source: sourceMachineId,
+          target: targetMachineId,
+          granularity: args.granularity,
+          differences: [{
+            category: 'inventory',
+            severity: 'CRITICAL',
+            path: 'inventory',
+            description: `Inventaire(s) manquant(s) : ${missingInventories.join(', ')}. Exécutez Get-MachineInventory.ps1 sur la/les machine(s) concernée(s).`,
+            action: missingInventories.length === 2
+              ? 'Générer les inventaires des deux machines'
+              : `Générer l'inventaire de ${missingInventories[0]}`
+          }],
+          summary: { total: 1, critical: 1, important: 0, warning: 0, info: 0 }
+        };
       }
 
       // Déterminer les données à comparer selon la granularité
@@ -247,7 +268,7 @@ export async function roosyncCompareConfig(args: CompareConfigArgs): Promise<Com
       }
 
       // Convertir au format CompareConfigResult (avec comparaison model profiles #498)
-      return formatGranularReport(granularReport, filteredDiffs, sourceMachineId, targetMachineId, sourceInventory, targetInventory);
+      return formatGranularReport(granularReport, filteredDiffs, sourceMachineId, targetMachineId, args.granularity, sourceInventory, targetInventory);
     }
 
     // Comparaison standard (sans granularité)
@@ -265,7 +286,7 @@ export async function roosyncCompareConfig(args: CompareConfigArgs): Promise<Com
     }
 
     // Formatter le rapport pour l'affichage
-    return formatComparisonReport(report);
+    return formatComparisonReport(report, 'full');
     
   } catch (error) {
     // CORRECTION SDDD: Laisser remonter les erreurs détaillées du BaselineService
@@ -367,6 +388,7 @@ async function compareSettings(
     return {
       source: sourceLabel,
       target: `${targetMachineId} (published)`,
+      granularity: 'settings',
       differences: [{
         category: 'roo_settings',
         severity: 'WARNING',
@@ -440,6 +462,7 @@ async function compareSettings(
   return {
     source: sourceLabel,
     target: `${targetMachineId} (published)`,
+    granularity: 'settings',
     host_id: config.machineId,
     differences,
     summary
@@ -565,7 +588,7 @@ async function getDefaultTargetMachine(service: any, sourceMachineId: string): P
 /**
  * Formate le rapport de comparaison pour l'affichage MCP
  */
-function formatComparisonReport(report: any): CompareConfigResult {
+function formatComparisonReport(report: any, granularity: string = 'full'): CompareConfigResult {
   // Vérifier les variables d'environnement critiques manquantes (#495)
   const envDiffs = checkMissingEnvVars();
 
@@ -592,6 +615,7 @@ function formatComparisonReport(report: any): CompareConfigResult {
   return {
     source: report.sourceMachine,
     target: report.targetMachine,
+    granularity,
     host_id: report.hostId || 'unknown',
     differences: allDifferences,
     summary
@@ -606,6 +630,7 @@ function formatGranularReport(
   filteredDiffs: GranularDiffResult[],
   sourceMachineId: string,
   targetMachineId: string,
+  granularity: string,
   sourceInventory?: any,
   targetInventory?: any
 ): CompareConfigResult {
@@ -639,6 +664,7 @@ function formatGranularReport(
   return {
     source: sourceMachineId,
     target: targetMachineId,
+    granularity,
     host_id: report.sourceLabel,
     differences: allDifferences,
     summary
