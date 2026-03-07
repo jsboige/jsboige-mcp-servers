@@ -260,6 +260,31 @@ describe('roosyncSend', () => {
       expect((result.content[0] as any).text).toContain('test-machine');
       expect((result.content[0] as any).text).toContain('other-machine');
     });
+
+    test('should use local machine ID as sender when replying to broadcast (to=all)', async () => {
+      // Bug #583: replyFrom utilisait originalMessage.to ("all") au lieu de l'ID local
+      const broadcastMessage = await messageManager.sendMessage(
+        'sender-machine',
+        'all',  // Broadcast
+        'Broadcast Test',
+        'Broadcast body',
+        'MEDIUM'
+      );
+
+      const result = await roosyncSend({
+        action: 'reply',
+        message_id: broadcastMessage.id,
+        body: 'Reply to broadcast'
+      });
+
+      // La réponse doit avoir :
+      // - De: test-machine (la machine locale, PAS "all")
+      // - À: sender-machine (l'expéditeur original)
+      const responseText = (result.content[0] as any).text;
+      expect(responseText).toContain('**De :** test-machine');
+      expect(responseText).toContain('**À :** sender-machine');
+      expect(responseText).not.toContain('**De :** all');
+    });
   });
 
   // ============================================================
