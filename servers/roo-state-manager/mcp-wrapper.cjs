@@ -19,6 +19,18 @@
 
 const { spawn } = require('child_process');
 const path = require('path');
+const dotenv = require('dotenv');
+
+// Charger le .env du projet AVANT de lancer le serveur
+// Cela évite de dupliquer les variables dans settings.json
+const envPath = path.join(__dirname, '.env');
+const envResult = dotenv.config({ path: envPath });
+if (envResult.error) {
+    console.error(`[MCP-WRAPPER] ⚠️  Warning: Could not load .env from ${envPath}`);
+    console.error(`[MCP-WRAPPER] Error: ${envResult.error.message}`);
+} else {
+    console.log(`[MCP-WRAPPER] ✅ Loaded .env from ${envPath}`);
+}
 
 // Chemin vers le serveur MCP réel
 const serverPath = path.join(__dirname, 'build', 'index.js');
