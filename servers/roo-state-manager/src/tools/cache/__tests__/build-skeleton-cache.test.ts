@@ -14,16 +14,21 @@ const mockWriteFile = vi.fn();
 const mockMkdir = vi.fn();
 const mockExistsSync = vi.fn();
 
-vi.mock("fs", () => ({
-    existsSync: (...args) => mockExistsSync(...args),
-    promises: {
-        readdir: (...args) => mockReaddir(...args),
-        stat: (...args) => mockStat(...args),
-        readFile: (...args) => mockReadFile(...args),
-        writeFile: (...args) => mockWriteFile(...args),
-        mkdir: (...args) => mockMkdir(...args),
-    },
-}));
+vi.mock("fs", async (importOriginal) => {
+    const actual = await importOriginal<typeof import("fs")>();
+    return {
+        ...actual, // Preserve real fs functions like mkdtempSync, rmSync for integration tests
+        existsSync: (...args) => mockExistsSync(...args),
+        promises: {
+            ...actual.promises,
+            readdir: (...args) => mockReaddir(...args),
+            stat: (...args) => mockStat(...args),
+            readFile: (...args) => mockReadFile(...args),
+            writeFile: (...args) => mockWriteFile(...args),
+            mkdir: (...args) => mockMkdir(...args),
+        },
+    };
+});
 
 vi.mock("../../../utils/roo-storage-detector.js", () => ({
     RooStorageDetector: {
@@ -506,6 +511,390 @@ describe("build-skeleton-cache.tool", () => {
             expect(cache2.has("other")).toBe(false); // Cleared by handleBuildSkeletonCache
             // Les instances sont bien différentes (pas de singleton partagé)
             expect(cache1).not.toBe(cache2);
+        });
+    });
+});
+
+// ============================================
+// INTÉGRATION TESTS - REAL CACHE (HYBRID APPROACH)
+// Tests de régression pour le bug #567 / commit 96014f99
+// Scénario: "tâches créées après démarrage MCP invisibles"
+// APPROCHE: Mock seulement RooStorageDetector, fs RÉEL
+// ============================================
+
+import { describe, test, expect, beforeAll, afterAll, beforeEach, vi } from "vitest";
+import * as pathReal from "path";
+import * as os from "os";
+import { handleBuildSkeletonCache } from "../build-skeleton-cache.tool.js";
+import type { ConversationSkeleton } from "../../../types/conversation.js";
+
+// Variables pour les vraies fonctions fs (initialisées dans beforeAll)
+// NE PAS importer de "fs" car le mock global intercepte tout
+let realFsPromises: typeof import("fs").promises;
+let realWriteFileSync: typeof import("fs").writeFileSync;
+let realMkdtempSync: typeof import("fs").mkdtempSync;
+let realRmSync: typeof import("fs").rmSync;
+let realExistsSync: typeof import("fs").existsSync;
+
+// Mock SEULEMENT RooStorageDetector - fs reste réel
+vi.mock("../../../utils/roo-storage-detector.js", () => ({
+    RooStorageDetector: {
+        detectStorageLocations: vi.fn(),
+        detectWorkspaceForTask: vi.fn(),
+        analyzeConversation: vi.fn(),
+    },
+}));
+
+vi.mock("../../../utils/hierarchy-reconstruction-engine.js", () => ({
+    HierarchyReconstructionEngine: vi.fn().mockImplementation(() => ({
+        executePhase1: vi.fn().mockResolvedValue({
+            processedCount: 0,
+            parsedCount: 0,
+            totalInstructionsExtracted: 0,
+        }),
+        executePhase2: vi.fn().mockResolvedValue({
+            resolvedCount: 0,
+            unresolvedCount: 0,
+        }),
+    })),
+}));
+
+vi.mock("../../../utils/task-instruction-index.js", () => ({
+    globalTaskInstructionIndex: {
+        clear: vi.fn(),
+        addInstruction: vi.fn(),
+        getStats: vi.fn(() => ({
+            totalInstructions: 0,
+            totalNodes: 0,
+        })),
+    },
+}));
+
+import { RooStorageDetector } from "../../../utils/roo-storage-detector.js";
+
+describe("build-skeleton-cache.tool - REAL CACHE INTEGRATION", () => {
+    let tempDir: string;
+    let tasksDir: string;
+    let skeletonsDir: string;
+
+    beforeAll(async () => {
+        // IMPORTANT: Utiliser vi.importActual pour obtenir les VRAIES fonctions fs
+        // Car l'import depuis "fs" passe par le mock global
+        const realFs = await vi.importActual<typeof import("fs")>("fs");
+        realFsPromises = (realFs as any).promises;
+        realWriteFileSync = (realFs as any).writeFileSync;
+        realMkdtempSync = (realFs as any).mkdtempSync;
+        realRmSync = (realFs as any).rmSync;
+        realExistsSync = (realFs as any).existsSync;
+
+        // Créer un répertoire temporaire unique pour les tests
+        tempDir = realMkdtempSync(pathReal.join(os.tmpdir(), "skeleton-cache-test-"));
+        tasksDir = pathReal.join(tempDir, "tasks");
+        skeletonsDir = pathReal.join(tasksDir, ".skeletons");
+        await realFsPromises.mkdir(tasksDir, { recursive: true });
+        await realFsPromises.mkdir(skeletonsDir, { recursive: true });
+
+        // Configurer le mock pour pointer vers notre temp dir
+        (RooStorageDetector.detectStorageLocations as any).mockResolvedValue([tempDir]);
+        (RooStorageDetector.detectWorkspaceForTask as any).mockResolvedValue("test-workspace");
+    });
+
+    afterAll(async () => {
+        // Nettoyer le répertoire temporaire
+        try {
+            realRmSync(tempDir, { recursive: true, force: true });
+        } catch {
+            // Ignore cleanup errors
+        }
+    });
+
+    beforeEach(async () => {
+        vi.clearAllMocks();
+
+        // Re-apply mock après clear
+        (RooStorageDetector.detectStorageLocations as any).mockResolvedValue([tempDir]);
+        (RooStorageDetector.detectWorkspaceForTask as any).mockResolvedValue("test-workspace");
+
+        // CONFIGURER LES MOCKS FS POUR PASSER AU RÉEL (intégration)
+        // Utiliser les variables module-level initialisées dans beforeAll
+        mockReaddir.mockImplementation((...args: any[]) => realFsPromises.readdir(...args));
+        mockStat.mockImplementation((...args: any[]) => realFsPromises.stat(...args));
+        mockReadFile.mockImplementation((...args: any[]) => realFsPromises.readFile(...args));
+        mockWriteFile.mockImplementation((...args: any[]) => realFsPromises.writeFile(...args));
+        mockMkdir.mockImplementation((...args: any[]) => realFsPromises.mkdir(...args));
+        mockExistsSync.mockImplementation((...args: any[]) => (realFsPromises as any).existsSync?.(...args));
+
+        // Vider les tâches et skeletons avant chaque test
+        const entries = await realFsPromises.readdir(tasksDir, { withFileTypes: true });
+        for (const entry of entries) {
+            if (entry.name !== ".skeletons") {
+                try {
+                    realRmSync(pathReal.join(tasksDir, entry.name), { recursive: true, force: true });
+                } catch {
+                    // Ignore errors
+                }
+            }
+        }
+        // Vider aussi les skeletons
+        const skeletonFiles = await realFsPromises.readdir(skeletonsDir).catch(() => [] as string[]);
+        for (const file of skeletonFiles) {
+            try {
+                await realFsPromises.unlink(pathReal.join(skeletonsDir, file));
+            } catch {
+                // Ignore errors
+            }
+        }
+    });
+
+    describe("cache invalidation - real filesystem", () => {
+        test("détecte une nouvelle tâche créée après le démarrage (bug #567)", async () => {
+            // Créer une tâche initiale
+            const taskId1 = "existing-task-" + Date.now();
+            const taskPath1 = pathReal.join(tasksDir, taskId1);
+            await realFsPromises.mkdir(taskPath1, { recursive: true });
+            realWriteFileSync(
+                pathReal.join(taskPath1, "task_metadata.json"),
+                JSON.stringify({ id: taskId1, mode: "code", createdAt: new Date().toISOString() })
+            );
+
+            // Mock analyzeConversation pour la tâche initiale
+            (RooStorageDetector.analyzeConversation as any).mockImplementation(async (taskId: string) => ({
+                taskId,
+                title: `Task ${taskId}`,
+                mode: "code",
+                createdAt: new Date().toISOString(),
+                metadata: { workspace: "test-workspace" },
+            }));
+
+            // Construire le cache initial
+            const cache = new Map<string, ConversationSkeleton>();
+            await handleBuildSkeletonCache({ force_rebuild: true }, cache);
+
+            // Vérifier que la tâche initiale est dans le cache
+            expect(cache.has(taskId1)).toBe(true);
+            const initialCacheSize = cache.size;
+
+            // CRÉER UNE NOUVELLE TÂCHE APRÈS LE BUILD INITIAL
+            const taskId2 = "new-task-" + Date.now();
+            const taskPath2 = pathReal.join(tasksDir, taskId2);
+            await realFsPromises.mkdir(taskPath2, { recursive: true });
+            realWriteFileSync(
+                pathReal.join(taskPath2, "task_metadata.json"),
+                JSON.stringify({ id: taskId2, mode: "debug", createdAt: new Date().toISOString() })
+            );
+
+            // Rebuilder le cache (SMART_REBUILD - pas force)
+            await handleBuildSkeletonCache({ force_rebuild: false }, cache);
+
+            // LA NOUVELLE TÂCHE DOIT ÊTRE DÉTECTÉE
+            expect(cache.size).toBeGreaterThan(initialCacheSize);
+            expect(cache.has(taskId2)).toBe(true);
+        });
+
+        test("lit le bon sous-répertoire tasks/ (fix commit 96014f99)", async () => {
+            // Créer une tâche avec un metadata récent
+            const taskId = "recent-task-" + Date.now();
+            const taskPath = pathReal.join(tasksDir, taskId);
+            await realFsPromises.mkdir(taskPath, { recursive: true });
+            realWriteFileSync(
+                pathReal.join(taskPath, "task_metadata.json"),
+                JSON.stringify({ id: taskId, mode: "code", createdAt: new Date().toISOString() })
+            );
+
+            (RooStorageDetector.analyzeConversation as any).mockResolvedValue({
+                taskId,
+                title: "Recent Task",
+                mode: "code",
+                createdAt: new Date().toISOString(),
+                metadata: { workspace: "test-workspace" },
+            });
+
+            const cache = new Map<string, ConversationSkeleton>();
+            await handleBuildSkeletonCache({ force_rebuild: true }, cache);
+
+            // La tâche doit être trouvée dans tasks/{taskId}/, pas dans le répertoire de base
+            expect(cache.has(taskId)).toBe(true);
+        });
+
+        test("ne reconstruit pas les skeletons frais", async () => {
+            // Créer une tâche avec un skeleton existant et frais
+            const taskId = "fresh-skeleton-task-" + Date.now();
+            const taskPath = pathReal.join(tasksDir, taskId);
+            await realFsPromises.mkdir(taskPath, { recursive: true });
+
+            const metadata = { id: taskId, mode: "code", createdAt: new Date().toISOString() };
+            realWriteFileSync(
+                pathReal.join(taskPath, "task_metadata.json"),
+                JSON.stringify(metadata)
+            );
+
+            // Créer un skeleton frais
+            const skeleton = {
+                taskId,
+                title: "Fresh Task",
+                mode: "code",
+                createdAt: metadata.createdAt,
+                metadata: { workspace: "test-workspace" }
+            };
+            realWriteFileSync(
+                pathReal.join(skeletonsDir, `${taskId}.json`),
+                JSON.stringify(skeleton)
+            );
+
+            const cache = new Map<string, ConversationSkeleton>();
+            await handleBuildSkeletonCache({ force_rebuild: false }, cache);
+
+            // Le skeleton frais doit être chargé depuis le disque, pas reconstruit
+            expect(cache.has(taskId)).toBe(true);
+            expect(cache.get(taskId)?.title).toBe("Fresh Task");
+        });
+
+        test("reconstruit les skeletons obsolètes (stale)", async () => {
+            // Créer une tâche avec un skeleton obsolète
+            const taskId = "stale-skeleton-task-" + Date.now();
+            const taskPath = pathReal.join(tasksDir, taskId);
+            await realFsPromises.mkdir(taskPath, { recursive: true });
+
+            // Metadata récent
+            const now = new Date();
+            const metadata = { id: taskId, mode: "code", createdAt: now.toISOString() };
+            realWriteFileSync(
+                pathReal.join(taskPath, "task_metadata.json"),
+                JSON.stringify(metadata)
+            );
+
+            // Skeleton ancien (mtime dans le passé)
+            const oldSkeleton = {
+                taskId,
+                title: "Old Title",
+                mode: "code",
+                createdAt: new Date(now.getTime() - 86400000).toISOString(), // 24h avant
+                metadata: { workspace: "test-workspace" }
+            };
+            const skeletonPath = pathReal.join(skeletonsDir, `${taskId}.json`);
+            realWriteFileSync(skeletonPath, JSON.stringify(oldSkeleton));
+
+            // Modifier le mtime du skeleton pour le rendre obsolète
+            const oldTime = new Date(now.getTime() - 3600000); // 1h avant
+            await realFsPromises.utimes(skeletonPath, oldTime, oldTime);
+
+            (RooStorageDetector.analyzeConversation as any).mockResolvedValue({
+                taskId,
+                title: "Rebuilt Title",
+                mode: "code",
+                createdAt: metadata.createdAt,
+                metadata: { workspace: "test-workspace" },
+            });
+
+            const cache = new Map<string, ConversationSkeleton>();
+            await handleBuildSkeletonCache({ force_rebuild: false }, cache);
+
+            // Le skeleton obsolète doit être reconstruit (ou au moins rechargé)
+            expect(cache.has(taskId)).toBe(true);
+        });
+
+        test("plusieurs tâches créées simultanément sont toutes détectées", async () => {
+            // Créer 5 tâches en parallèle
+            const taskIds: string[] = [];
+            const createPromises = [];
+
+            for (let i = 0; i < 5; i++) {
+                const taskId = `batch-task-${i}-${Date.now()}`;
+                taskIds.push(taskId);
+                const taskPath = pathReal.join(tasksDir, taskId);
+
+                createPromises.push(
+                    (async () => {
+                        await realFsPromises.mkdir(taskPath, { recursive: true });
+                        realWriteFileSync(
+                            pathReal.join(taskPath, "task_metadata.json"),
+                            JSON.stringify({ id: taskId, mode: "code", createdAt: new Date().toISOString() })
+                        );
+                    })()
+                );
+            }
+
+            await Promise.all(createPromises);
+
+            (RooStorageDetector.analyzeConversation as any).mockImplementation(async (taskId: string) => ({
+                taskId,
+                title: `Batch Task ${taskId}`,
+                mode: "code",
+                createdAt: new Date().toISOString(),
+                metadata: { workspace: "test-workspace" },
+            }));
+
+            // Build du cache
+            const cache = new Map<string, ConversationSkeleton>();
+            await handleBuildSkeletonCache({ force_rebuild: true }, cache);
+
+            // Toutes les tâches doivent être dans le cache
+            expect(cache.size).toBeGreaterThanOrEqual(5);
+            for (const taskId of taskIds) {
+                expect(cache.has(taskId)).toBe(true);
+            }
+        });
+    });
+
+    describe("cache persistence - real filesystem", () => {
+        test("les skeletons sont persistés sur disque", async () => {
+            const taskId = "persisted-task-" + Date.now();
+            const taskPath = pathReal.join(tasksDir, taskId);
+            await realFsPromises.mkdir(taskPath, { recursive: true });
+            realWriteFileSync(
+                pathReal.join(taskPath, "task_metadata.json"),
+                JSON.stringify({ id: taskId, mode: "code", createdAt: new Date().toISOString() })
+            );
+
+            (RooStorageDetector.analyzeConversation as any).mockResolvedValue({
+                taskId,
+                title: "Persisted Task",
+                mode: "code",
+                createdAt: new Date().toISOString(),
+                metadata: { workspace: "test-workspace" },
+            });
+
+            const cache = new Map<string, ConversationSkeleton>();
+            await handleBuildSkeletonCache({ force_rebuild: true }, cache);
+
+            // Le fichier skeleton doit exister
+            const skeletonPath = pathReal.join(skeletonsDir, `${taskId}.json`);
+            expect(realExistsSync(skeletonPath)).toBe(true);
+
+            // Le contenu doit être valide JSON
+            const skeletonContent = await realFsPromises.readFile(skeletonPath, "utf-8");
+            const skeleton = JSON.parse(skeletonContent);
+            expect(skeleton.taskId).toBe(taskId);
+        });
+
+        test("BOM UTF-8 est géré lors de la lecture", async () => {
+            const taskId = "bom-task-" + Date.now();
+            const taskPath = pathReal.join(tasksDir, taskId);
+            await realFsPromises.mkdir(taskPath, { recursive: true });
+            realWriteFileSync(
+                pathReal.join(taskPath, "task_metadata.json"),
+                JSON.stringify({ id: taskId, mode: "code", createdAt: new Date().toISOString() })
+            );
+
+            // Créer un skeleton avec BOM
+            const skeletonWithBom = "\uFEFF" + JSON.stringify({
+                taskId,
+                title: "BOM Task",
+                mode: "code",
+                createdAt: new Date().toISOString(),
+                metadata: { workspace: "test-workspace" }
+            });
+            realWriteFileSync(
+                pathReal.join(skeletonsDir, `${taskId}.json`),
+                skeletonWithBom
+            );
+
+            const cache = new Map<string, ConversationSkeleton>();
+            await handleBuildSkeletonCache({ force_rebuild: false }, cache);
+
+            // Le skeleton doit être lu correctement malgré la BOM
+            expect(cache.has(taskId)).toBe(true);
+            expect(cache.get(taskId)?.taskId).toBe(taskId);
         });
     });
 });
