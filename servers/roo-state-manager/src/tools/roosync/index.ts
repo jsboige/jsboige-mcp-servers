@@ -234,6 +234,11 @@ export { roosyncRead, readToolMetadata } from './read.js';
 export { roosyncSend, sendToolMetadata } from './send.js';
 export { roosyncManage, manageToolMetadata } from './manage.js';
 
+// NOTE: modes-management.ts est une API INTERNE (pas un outil MCP séparé).
+// La gestion des modes sera intégrée dans le mécanisme unifié de config (#603).
+// Voir #595 (subsumed by #603). Ne PAS exposer comme outil MCP indépendant.
+// Usage interne uniquement: import { readCustomModes, compareModes } from './modes-management.js';
+
 // CONS-6: Outils consolidés Inventory (4→2)
 export { inventoryTool, inventoryToolMetadata } from './inventory.js';
 export { roosyncMachines, machinesToolMetadata } from './machines.js';
@@ -317,6 +322,8 @@ import { updateDashboardToolMetadata } from './update-dashboard.js';
 import { sendToolMetadata } from './send.js';
 import { readToolMetadata } from './read.js';
 import { manageToolMetadata } from './manage.js';
+
+// NOTE: modes-management.ts = API interne only, pas d'import MCP ici (#595/#603)
 
 // Métadonnées pour l'outil d'inventaire (format JSON Schema standard)
 // CONS-6: Remplacé par inventoryToolMetadata
@@ -418,4 +425,5 @@ export const roosyncTools = [
   sendToolMetadata,
   readToolMetadata,
   manageToolMetadata
+  // NOTE: modes-management = API interne, pas d'outil MCP (#595/#603)
 ];
