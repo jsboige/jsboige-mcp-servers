@@ -201,7 +201,7 @@ async function handleUpdateAction(args: BaselineArgs, timestamp: string): Promis
   const baselineService = new BaselineService(configService, inventoryCollector as any, diffDetector);
 
   // Charger l'ancienne baseline
-  const oldBaseline = await baselineService.loadBaseline();
+  const oldBaseline = await baselineService.loadBaseline(args.machineId);
   let previousBaseline = null;
   let backupPath = undefined;
 
@@ -390,7 +390,7 @@ async function handleVersionAction(args: BaselineArgs, timestamp: string): Promi
   const baselineService = new BaselineService(configService, {} as any, {} as any);
 
   // Charger la baseline actuelle
-  const currentBaseline = await baselineService.loadBaseline();
+  const currentBaseline = await baselineService.loadBaseline(config.machineId);
   if (!currentBaseline) {
     throw new RooSyncServiceError(
       'Aucune baseline trouvée. Créez une baseline avant de la versionner.',
@@ -574,7 +574,7 @@ async function handleRestoreAction(args: BaselineArgs, timestamp: string): Promi
   // Récupérer la baseline actuelle pour sauvegarde
   let currentBaseline: BaselineConfig | null = null;
   try {
-    currentBaseline = await baselineService.loadBaseline();
+    currentBaseline = await baselineService.loadBaseline(config.machineId);
   } catch (error) {
     logger.warn('Impossible de charger la baseline actuelle', { error: (error as Error).message });
   }
@@ -757,7 +757,7 @@ async function handleExportAction(args: BaselineArgs, timestamp: string): Promis
   const baselineService = new BaselineService(configService, {} as any, {} as any);
 
   // Récupérer la baseline
-  const baseline = await baselineService.loadBaseline();
+  const baseline = await baselineService.loadBaseline(args.machineId);
   if (!baseline) {
     throw new StateManagerError(
       `Baseline non trouvée pour machineId: ${args.machineId || 'actuelle'}`,

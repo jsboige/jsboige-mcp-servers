@@ -122,10 +122,11 @@
       "args": ["-y", "@playwright/mcp@latest"]
     },
     {
+      "_comment": "Self-inclusion: DEPLOYMENT MUST REPLACE the placeholder paths below with actual installation paths",
       "id": "sk_agent",
       "description": "Self-inclusion for recursive tool chaining",
-      "command": "python",
-      "args": ["path/to/sk_agent.py"]
+      "command": "VENV_PATH/Scripts/python.exe",
+      "args": ["INSTALLATION_PATH/sk_agent.py"]
     },
     {
       "id": "open_terminal",

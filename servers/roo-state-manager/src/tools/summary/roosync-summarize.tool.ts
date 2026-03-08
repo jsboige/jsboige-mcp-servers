@@ -410,10 +410,19 @@ async function dispatchTraceHandler(
         endIndex: args.endIndex
     };
 
-    return await handleGenerateTraceSummary(
+    const result = await handleGenerateTraceSummary(
         traceArgs as GenerateTraceSummaryArgs,
         getConversationSkeleton
     );
+
+    // Injecter type discrimination pour JSON
+    if (args.outputFormat === 'json') {
+        const parsed = JSON.parse(result);
+        parsed.type = 'trace';
+        return JSON.stringify(parsed, null, 2);
+    }
+
+    return result;
 }
 
 /**
@@ -446,11 +455,20 @@ async function dispatchClusterHandler(
         endIndex: args.endIndex
     };
 
-    return await handleGenerateClusterSummary(
+    const result = await handleGenerateClusterSummary(
         clusterArgs as GenerateClusterSummaryArgs,
         getConversationSkeleton,
         findChildTasks
     );
+
+    // Injecter type discrimination pour JSON
+    if (args.outputFormat === 'json') {
+        const parsed = JSON.parse(result);
+        parsed.type = 'cluster';
+        return JSON.stringify(parsed, null, 2);
+    }
+
+    return result;
 }
 
 /**
