@@ -673,7 +673,7 @@ export function registerCallToolHandler(
            // #595: Gestion des modes Roo globaux (custom_modes.yaml)
            case 'roosync_modes_management':
                try {
-                   const modesManagementResult = await toolExports.roosyncModesManagement(args as any);
+                   const modesManagementResult = await toolExports.roosyncMcpManagement(args as any);
                    result = { content: [{ type: 'text', text: JSON.stringify(modesManagementResult, null, 2) }] };
                } catch (error) {
                    result = { content: [{ type: 'text', text: `Error: ${(error as Error).message}` }], isError: true };

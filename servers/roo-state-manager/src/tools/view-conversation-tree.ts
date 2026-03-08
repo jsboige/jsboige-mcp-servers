@@ -62,13 +62,14 @@ async function handleViewConversationTreeExecutionAsync(
     let { truncate = 0 } = args;
     
     // Gestion intelligente de truncate selon detail_level si non spécifié explicitement
+    // NOTE: truncate valeur LIGNES (pas caractères) - pour summary, 100 permet ~200 lignes/message
     if (truncate === 0) {
         switch (detail_level) {
             case 'skeleton':
                 truncate = 3;
                 break;
             case 'summary':
-                truncate = 10;
+                truncate = 100; // #594 Fix: 10→100 pour éviter résumés vides sur grosses tâches Roo
                 break;
             case 'full':
                 truncate = 0;
@@ -304,13 +305,14 @@ function handleViewConversationTreeExecution(
     let { truncate = 0 } = args;
     
     // Gestion intelligente de truncate selon detail_level si non spécifié explicitement
+    // NOTE: truncate valeur LIGNES (pas caractères) - pour summary, 100 permet ~200 lignes/message
     if (truncate === 0) {
         switch (detail_level) {
             case 'skeleton':
                 truncate = 3;
                 break;
             case 'summary':
-                truncate = 10;
+                truncate = 100; // #594 Fix: 10→100 pour éviter résumés vides sur grosses tâches Roo
                 break;
             case 'full':
                 truncate = 0;
