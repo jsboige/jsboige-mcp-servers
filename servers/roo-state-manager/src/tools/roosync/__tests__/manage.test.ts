@@ -26,7 +26,7 @@ vi.mock('../../../utils/message-helpers.js', async () => {
 });
 
 // Mock getSharedStatePath pour utiliser un chemin de test
-const testSharedStatePath = join(__dirname, '../../../__test-data__/shared-state-manage');
+const testSharedStatePath = join(__dirname, '../../../__test-data__/shared-state-manage-unit');
 vi.mock('../../../utils/server-helpers.js', () => ({
   getSharedStatePath: () => testSharedStatePath
 }));
