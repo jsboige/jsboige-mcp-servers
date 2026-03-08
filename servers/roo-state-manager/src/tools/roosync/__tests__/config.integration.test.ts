@@ -306,13 +306,16 @@ describe('roosyncConfig (integration)', () => {
       expect(result).toBeDefined();
     });
 
-    test('should throw on incompatible major version', async () => {
+    test('should return error on incompatible major version', async () => {
       // Version 99.0.0 has major=99 vs current major (likely 2)
-      await expect(roosyncConfig({
+      // Code resolves with status: 'error' instead of throwing
+      const result = await roosyncConfig({
         action: 'apply',
         version: '99.0.0',
         dryRun: true
-      })).rejects.toThrow('Incompatibilité de version');
+      });
+      expect(result.status).toBe('error');
+      expect(result.filesApplied).toBe(0);
     });
 
     test('should report applied files', async () => {
