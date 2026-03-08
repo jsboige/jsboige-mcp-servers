@@ -670,6 +670,15 @@ export function registerCallToolHandler(
                    result = { content: [{ type: 'text', text: `Error: ${(error as Error).message}` }], isError: true };
                }
                break;
+           // #595: Gestion des modes Roo globaux (custom_modes.yaml)
+           case 'roosync_modes_management':
+               try {
+                   const modesManagementResult = await toolExports.roosyncModesManagement(args as any);
+                   result = { content: [{ type: 'text', text: JSON.stringify(modesManagementResult, null, 2) }] };
+               } catch (error) {
+                   result = { content: [{ type: 'text', text: `Error: ${(error as Error).message}` }], isError: true };
+               }
+               break;
            // CONS-#443 Groupe 4: Consolidation Storage management (storage_info + maintenance → roosync_storage_management)
            case 'roosync_storage_management':
                try {
