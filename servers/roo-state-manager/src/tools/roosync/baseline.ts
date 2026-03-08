@@ -9,7 +9,7 @@
 
 import { z } from 'zod';
 import { getRooSyncService, RooSyncServiceError } from '../../services/RooSyncService.js';
-import { existsSync, readFileSync, writeFileSync, copyFileSync } from 'fs';
+import { existsSync, readFileSync, writeFileSync, copyFileSync, mkdirSync } from 'fs';
 import { join } from 'path';
 import { createLogger, Logger } from '../../utils/logger.js';
 import { BaselineService } from '../../services/BaselineService.js';
@@ -214,15 +214,31 @@ async function handleUpdateAction(args: BaselineArgs, timestamp: string): Promis
 
     // Créer une sauvegarde si demandé
     if (args.createBackup !== false) {
-      const baselinePath = join(config.sharedPath, 'sync-config.ref.json');
-      const backupTimestamp = new Date().toISOString().replace(/[:.]/g, '-');
-      backupPath = join(config.sharedPath, '.rollback', `sync-config.ref.backup.${backupTimestamp}.json`);
+      // #571: Utiliser le fichier baseline de la machine spécifique, pas sync-config.ref.json
+      const machineBaselinePath = join(config.sharedPath, 'baselines', `${args.machineId}.json`);
+      const legacyBaselinePath = join(config.sharedPath, 'sync-config.ref.json');
 
-      try {
-        copyFileSync(baselinePath, backupPath);
-        logger.info('✅ Baseline backup created', { backupPath });
-      } catch (backupError) {
-        logger.warn('⚠️ Could not create backup', { error: backupError });
+      // Préférer le fichier machine, fallback vers legacy
+      const baselinePath = existsSync(machineBaselinePath) ? machineBaselinePath :
+                           existsSync(legacyBaselinePath) ? legacyBaselinePath : null;
+
+      if (baselinePath) {
+        const backupTimestamp = new Date().toISOString().replace(/[:.]/g, '-');
+        backupPath = join(config.sharedPath, '.rollback', `baseline.${args.machineId}.backup.${backupTimestamp}.json`);
+
+        try {
+          // S'assurer que le répertoire .rollback existe
+          const rollbackDir = join(config.sharedPath, '.rollback');
+          if (!existsSync(rollbackDir)) {
+            mkdirSync(rollbackDir, { recursive: true });
+          }
+          copyFileSync(baselinePath, backupPath);
+          logger.info('✅ Baseline backup created', { backupPath, sourcePath: baselinePath });
+        } catch (backupError) {
+          logger.warn('⚠️ Could not create backup', { error: backupError });
+        }
+      } else {
+        logger.info('ℹ️ No existing baseline to backup, skipping backup', { machineId: args.machineId });
       }
     }
   }

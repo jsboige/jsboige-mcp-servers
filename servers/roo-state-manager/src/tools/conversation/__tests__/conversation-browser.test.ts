@@ -493,4 +493,259 @@ describe('conversation_browser', () => {
 			expect(actionEnum).toContain('list');
 		});
 	});
+
+	// ============================================================
+	// REGRESSION #567 - Section 1: New Tasks Visibility
+	// Tests for scanDiskForNewTasks integration
+	// ============================================================
+
+	describe('regression #567 section 1: new tasks visibility', () => {
+		test('list discovers new tasks on disk not in cache', async () => {
+			// Setup: Add one task to cache, expect disk scan to find more
+			const cachedTask: ConversationSkeleton = {
+				taskId: 'cached-task-1',
+				metadata: {
+					title: 'Cached Task',
+					lastActivity: '2026-03-01T10:00:00Z',
+					createdAt: '2026-03-01T10:00:00Z',
+					messageCount: 5,
+					actionCount: 2,
+					totalSize: 500,
+					workspace: 'd:\\roo-extensions'
+				}
+			};
+			mockCache.set('cached-task-1', cachedTask);
+
+			const result = await handleConversationBrowser(
+				{ action: 'list' },
+				mockCache,
+				mockEnsureCache
+			);
+
+			expect(result.isError).toBeFalsy();
+			const parsed = JSON.parse(getTextContent(result));
+			// Should include the cached task
+			expect(parsed.some((t: any) => t.taskId === 'cached-task-1')).toBe(true);
+		});
+
+		test('list handles empty cache gracefully', async () => {
+			// Empty cache - should not error
+			const result = await handleConversationBrowser(
+				{ action: 'list' },
+				mockCache,
+				mockEnsureCache
+			);
+
+			expect(result.isError).toBeFalsy();
+			const parsed = JSON.parse(getTextContent(result));
+			expect(Array.isArray(parsed)).toBe(true);
+		});
+	});
+
+	// ============================================================
+	// REGRESSION #567 - Section 2: Sorting and Filtering
+	// ============================================================
+
+	describe('regression #567 section 2: sorting and filtering', () => {
+		beforeEach(() => {
+			// Setup multiple tasks with different dates
+			const task1: ConversationSkeleton = {
+				taskId: 'task-old',
+				metadata: {
+					title: 'Old Task',
+					lastActivity: '2026-03-01T10:00:00Z',
+					createdAt: '2026-03-01T10:00:00Z',
+					messageCount: 5,
+					actionCount: 2,
+					totalSize: 500,
+					workspace: 'd:\\roo-extensions'
+				}
+			};
+			const task2: ConversationSkeleton = {
+				taskId: 'task-new',
+				metadata: {
+					title: 'New Task',
+					lastActivity: '2026-03-05T15:00:00Z',
+					createdAt: '2026-03-05T15:00:00Z',
+					messageCount: 10,
+					actionCount: 5,
+					totalSize: 1000,
+					workspace: 'd:\\roo-extensions'
+				}
+			};
+			const task3: ConversationSkeleton = {
+				taskId: 'task-middle',
+				metadata: {
+					title: 'Middle Task',
+					lastActivity: '2026-03-03T12:00:00Z',
+					createdAt: '2026-03-03T12:00:00Z',
+					messageCount: 7,
+					actionCount: 3,
+					totalSize: 750,
+					workspace: 'd:\\roo-extensions'
+				}
+			};
+			mockCache.set('task-old', task1);
+			mockCache.set('task-new', task2);
+			mockCache.set('task-middle', task3);
+		});
+
+		test('list sorts by lastActivity descending by default', async () => {
+			const result = await handleConversationBrowser(
+				{ action: 'list', sortBy: 'lastActivity', sortOrder: 'desc' },
+				mockCache,
+				mockEnsureCache
+			);
+
+			expect(result.isError).toBeFalsy();
+			const parsed = JSON.parse(getTextContent(result));
+			expect(parsed.length).toBe(3);
+			// First should be most recent
+			expect(parsed[0].taskId).toBe('task-new');
+			expect(parsed[1].taskId).toBe('task-middle');
+			expect(parsed[2].taskId).toBe('task-old');
+		});
+
+		test('list sorts by lastActivity ascending when specified', async () => {
+			const result = await handleConversationBrowser(
+				{ action: 'list', sortBy: 'lastActivity', sortOrder: 'asc' },
+				mockCache,
+				mockEnsureCache
+			);
+
+			expect(result.isError).toBeFalsy();
+			const parsed = JSON.parse(getTextContent(result));
+			expect(parsed.length).toBe(3);
+			// First should be oldest
+			expect(parsed[0].taskId).toBe('task-old');
+			expect(parsed[1].taskId).toBe('task-middle');
+			expect(parsed[2].taskId).toBe('task-new');
+		});
+
+		test('list sorts by messageCount correctly', async () => {
+			const result = await handleConversationBrowser(
+				{ action: 'list', sortBy: 'messageCount', sortOrder: 'desc' },
+				mockCache,
+				mockEnsureCache
+			);
+
+			expect(result.isError).toBeFalsy();
+			const parsed = JSON.parse(getTextContent(result));
+			expect(parsed[0].taskId).toBe('task-new'); // 10 messages
+			expect(parsed[1].taskId).toBe('task-middle'); // 7 messages
+			expect(parsed[2].taskId).toBe('task-old'); // 5 messages
+		});
+
+		test('list respects limit parameter', async () => {
+			const result = await handleConversationBrowser(
+				{ action: 'list', limit: 2, sortBy: 'lastActivity', sortOrder: 'desc' },
+				mockCache,
+				mockEnsureCache
+			);
+
+			expect(result.isError).toBeFalsy();
+			const parsed = JSON.parse(getTextContent(result));
+			expect(parsed.length).toBe(2);
+			expect(parsed[0].taskId).toBe('task-new');
+			expect(parsed[1].taskId).toBe('task-middle');
+		});
+
+		test('list filters by workspace when specified', async () => {
+			// Add a task with different workspace
+			const otherTask: ConversationSkeleton = {
+				taskId: 'task-other-workspace',
+				metadata: {
+					title: 'Other Workspace Task',
+					lastActivity: '2026-03-06T10:00:00Z',
+					createdAt: '2026-03-06T10:00:00Z',
+					messageCount: 3,
+					actionCount: 1,
+					totalSize: 300,
+					workspace: 'd:\\other-project'
+				}
+			};
+			mockCache.set('task-other-workspace', otherTask);
+
+			const result = await handleConversationBrowser(
+				{ action: 'list', workspace: 'd:\\roo-extensions' },
+				mockCache,
+				mockEnsureCache
+			);
+
+			expect(result.isError).toBeFalsy();
+			const parsed = JSON.parse(getTextContent(result));
+			// Should only include tasks from roo-extensions
+			expect(parsed.every((t: any) => t.metadata.workspace === 'd:\\roo-extensions')).toBe(true);
+		});
+	});
+
+	// ============================================================
+	// REGRESSION #567 - Thread Safety
+	// ============================================================
+
+	describe('regression #567: thread safety', () => {
+		test('concurrent list calls do not corrupt cache', async () => {
+			// Setup tasks
+			for (let i = 0; i < 10; i++) {
+				const task: ConversationSkeleton = {
+					taskId: `concurrent-task-${i}`,
+					metadata: {
+						title: `Concurrent Task ${i}`,
+						lastActivity: new Date(2026, 2, 1 + i).toISOString(),
+						createdAt: new Date(2026, 2, 1 + i).toISOString(),
+						messageCount: i + 1,
+						actionCount: i,
+						totalSize: (i + 1) * 100,
+						workspace: 'd:\\roo-extensions'
+					}
+				};
+				mockCache.set(`concurrent-task-${i}`, task);
+			}
+
+			// Execute 3 concurrent list calls
+			const results = await Promise.all([
+				handleConversationBrowser({ action: 'list' }, mockCache, mockEnsureCache),
+				handleConversationBrowser({ action: 'list', sortBy: 'messageCount' }, mockCache, mockEnsureCache),
+				handleConversationBrowser({ action: 'list', limit: 5 }, mockCache, mockEnsureCache)
+			]);
+
+			// All should succeed
+			for (const result of results) {
+				expect(result.isError).toBeFalsy();
+				const parsed = JSON.parse(getTextContent(result));
+				expect(Array.isArray(parsed)).toBe(true);
+			}
+
+			// Cache should still have all tasks
+			expect(mockCache.size).toBe(10);
+		});
+
+		test('cache remains consistent after multiple operations', async () => {
+			// Initial setup
+			const task: ConversationSkeleton = {
+				taskId: 'consistency-task',
+				metadata: {
+					title: 'Consistency Task',
+					lastActivity: '2026-03-07T10:00:00Z',
+					createdAt: '2026-03-07T10:00:00Z',
+					messageCount: 1,
+					actionCount: 1,
+					totalSize: 100,
+					workspace: 'd:\\roo-extensions'
+				}
+			};
+			mockCache.set('consistency-task', task);
+
+			// Multiple operations
+			await handleConversationBrowser({ action: 'list' }, mockCache, mockEnsureCache);
+			await handleConversationBrowser({ action: 'list', sortBy: 'messageCount' }, mockCache, mockEnsureCache);
+			await handleConversationBrowser({ action: 'list', workspace: 'd:\\roo-extensions' }, mockCache, mockEnsureCache);
+
+			// Original task should still be in cache unchanged
+			const cachedTask = mockCache.get('consistency-task');
+			expect(cachedTask).toBeDefined();
+			expect(cachedTask?.taskId).toBe('consistency-task');
+			expect(cachedTask?.metadata.title).toBe('Consistency Task');
+		});
+	});
 });

@@ -9,8 +9,8 @@
  */
 
 import { promises as fs } from 'fs';
-import { join, resolve } from 'path';
-import { existsSync, copyFileSync } from 'fs';
+import { join, resolve, dirname } from 'path';
+import { existsSync, copyFileSync, mkdirSync } from 'fs';
 import {
   BaselineConfig,
   BaselineFileConfig,
@@ -102,30 +102,66 @@ export class BaselineService {
   }
 
   /**
-   * Charge la configuration baseline depuis sync-config.ref.json
-   * Crée une baseline par défaut si le fichier n'existe pas
+   * Charge la configuration baseline
+   *
+   * #571: Supporte les chemins par machine (baselines/{machineId}.json)
+   * pour éviter les conflits GDrive entre machines.
+   *
+   * @param machineId - Optionnel, ID de la machine pour charger sa baseline spécifique
+   * @returns La configuration baseline ou null si non trouvée
    */
-  public async loadBaseline(): Promise<BaselineConfig | null> {
+  public async loadBaseline(machineId?: string): Promise<BaselineConfig | null> {
     try {
-      this.logInfo('Chargement de la baseline', { path: this.baselinePath });
-      
+      // #571: Déterminer le chemin de la baseline selon le machineId
+      const sharedPath = dirname(this.baselinePath);
+      let targetPath = this.baselinePath; // Défaut: legacy sync-config.ref.json
+
+      if (machineId) {
+        const baselineDir = join(sharedPath, 'baselines');
+        const machineBaselinePath = join(baselineDir, `${machineId}.json`);
+
+        // Préférer le fichier machine s'il existe
+        if (existsSync(machineBaselinePath)) {
+          targetPath = machineBaselinePath;
+          this.logInfo('Utilisation de la baseline machine', { machineId, path: targetPath });
+        } else if (existsSync(this.baselinePath)) {
+          // Fallback vers legacy si le fichier machine n'existe pas
+          this.logInfo('Baseline machine non trouvée, fallback vers legacy', { machineId, path: targetPath });
+        }
+      }
+
+      this.logInfo('Chargement de la baseline', { path: targetPath });
+
       // Vérifier si le fichier existe, sinon créer une baseline par défaut
-      if (!existsSync(this.baselinePath)) {
+      if (!existsSync(targetPath)) {
         this.logWarn('Fichier baseline non trouvé, création d\'une baseline par défaut', {
-          path: this.baselinePath
+          path: targetPath
         });
-        
+
         const defaultBaselineFile = this.createDefaultBaseline();
-        await fs.writeFile(this.baselinePath, JSON.stringify(defaultBaselineFile, null, 2), 'utf-8');
-        
+
+        // #571: Créer le répertoire baselines si nécessaire
+        if (machineId) {
+          const baselineDir = join(sharedPath, 'baselines');
+          if (!existsSync(baselineDir)) {
+            mkdirSync(baselineDir, { recursive: true });
+          }
+          // Écrire dans le fichier machine
+          const machineBaselinePath = join(baselineDir, `${machineId}.json`);
+          await fs.writeFile(machineBaselinePath, JSON.stringify(defaultBaselineFile, null, 2), 'utf-8');
+          targetPath = machineBaselinePath;
+        } else {
+          await fs.writeFile(targetPath, JSON.stringify(defaultBaselineFile, null, 2), 'utf-8');
+        }
+
         this.logInfo('Baseline par défaut créée avec succès', {
-          path: this.baselinePath,
+          path: targetPath,
           machineId: defaultBaselineFile.machineId,
           version: defaultBaselineFile.version
         });
       }
-      
-      const baseline = await this.baselineLoader.loadBaseline(this.baselinePath);
+
+      const baseline = await this.baselineLoader.loadBaseline(targetPath);
 
       if (baseline) {
         this.state.isBaselineLoaded = true;
@@ -138,7 +174,7 @@ export class BaselineService {
           lastUpdated: baseline.lastUpdated
         });
       } else {
-        this.logWarn('Fichier baseline non trouvé', { path: this.baselinePath });
+        this.logWarn('Fichier baseline non trouvé', { path: targetPath });
       }
 
       return baseline;
@@ -150,33 +186,62 @@ export class BaselineService {
 
   /**
    * Lit le fichier baseline de configuration (format BaselineFileConfig)
-   * Crée une baseline par défaut si le fichier n'existe pas
+   *
+   * #571: Supporte les chemins par machine (baselines/{machineId}.json)
+   *
+   * @param machineId - Optionnel, ID de la machine pour charger sa baseline spécifique
    */
-  public async readBaselineFile(): Promise<BaselineFileConfig | null> {
+  public async readBaselineFile(machineId?: string): Promise<BaselineFileConfig | null> {
     try {
+      // #571: Déterminer le chemin de la baseline selon le machineId
+      const sharedPath = dirname(this.baselinePath);
+      let targetPath = this.baselinePath; // Défaut: legacy sync-config.ref.json
+
+      if (machineId) {
+        const baselineDir = join(sharedPath, 'baselines');
+        const machineBaselinePath = join(baselineDir, `${machineId}.json`);
+
+        // Préférer le fichier machine s'il existe
+        if (existsSync(machineBaselinePath)) {
+          targetPath = machineBaselinePath;
+        } else if (existsSync(this.baselinePath)) {
+          // Fallback vers legacy
+          this.logInfo('Baseline machine non trouvée, fallback vers legacy', { machineId });
+        }
+      }
+
       // Vérifier si le fichier existe
-      if (!existsSync(this.baselinePath)) {
+      if (!existsSync(targetPath)) {
         this.logWarn('Fichier baseline non trouvé, création d\'une baseline par défaut', {
-          path: this.baselinePath
+          path: targetPath
         });
-        
+
         // Créer une baseline par défaut
         const defaultBaseline = this.createDefaultBaseline();
-        
+
+        // #571: Créer le répertoire baselines si nécessaire
+        if (machineId) {
+          const baselineDir = join(sharedPath, 'baselines');
+          if (!existsSync(baselineDir)) {
+            mkdirSync(baselineDir, { recursive: true });
+          }
+          targetPath = join(baselineDir, `${machineId}.json`);
+        }
+
         // Sauvegarder la baseline par défaut
-        await fs.writeFile(this.baselinePath, JSON.stringify(defaultBaseline, null, 2), 'utf-8');
-        
+        await fs.writeFile(targetPath, JSON.stringify(defaultBaseline, null, 2), 'utf-8');
+
         this.logInfo('Baseline par défaut créée avec succès', {
-          path: this.baselinePath,
+          path: targetPath,
           machineId: defaultBaseline.machineId,
           version: defaultBaseline.version
         });
-        
+
         return defaultBaseline;
       }
-      
-      const baselineFile = await this.baselineLoader.readBaselineFile(this.baselinePath);
-      
+
+      const baselineFile = await this.baselineLoader.readBaselineFile(targetPath);
+
       if (baselineFile) {
         this.logInfo('Fichier baseline lu avec succès', {
           machineId: baselineFile.machineId,
@@ -424,6 +489,9 @@ export class BaselineService {
 
   /**
    * Met à jour la configuration baseline (pour maintenance)
+   *
+   * #571: Utilise baselines/{machineId}.json au lieu de sync-config.ref.json
+   * pour éviter les conflits GDrive entre machines.
    */
   public async updateBaseline(
     newBaseline: BaselineConfig,
@@ -439,15 +507,27 @@ export class BaselineService {
       // Validation de la nouvelle baseline
       this.configValidator.ensureValidBaselineConfig(newBaseline);
 
+      // #571: Déterminer le chemin de la baseline selon le machineId
+      // Utiliser baselines/{machineId}.json pour éviter les conflits GDrive
+      const sharedPath = process.env.ROOSYNC_SHARED_PATH || process.env.SHARED_STATE_PATH || '';
+      const baselineDir = join(sharedPath, 'baselines');
+      const machineBaselinePath = join(baselineDir, `${newBaseline.machineId}.json`);
+
+      // S'assurer que le répertoire baselines existe
+      if (!existsSync(baselineDir)) {
+        await fs.mkdir(baselineDir, { recursive: true });
+        this.logInfo('Répertoire baselines créé', { path: baselineDir });
+      }
+
       // Sauvegarder l'ancienne baseline si demandé
-      if (options.createBackup && existsSync(this.baselinePath)) {
-        const backupPath = `${this.baselinePath}.backup.${Date.now()}`;
-        copyFileSync(this.baselinePath, backupPath);
+      if (options.createBackup && existsSync(machineBaselinePath)) {
+        const backupPath = `${machineBaselinePath}.backup.${Date.now()}`;
+        copyFileSync(machineBaselinePath, backupPath);
         this.logInfo('Ancienne baseline sauvegardée', { backupPath });
       }
 
       // Écrire la nouvelle baseline
-      await fs.writeFile(this.baselinePath, JSON.stringify(newBaseline, null, 2));
+      await fs.writeFile(machineBaselinePath, JSON.stringify(newBaseline, null, 2));
 
       // Mettre à jour l'état
       this.state.baselineMachine = newBaseline.machineId;
@@ -456,13 +536,14 @@ export class BaselineService {
 
       this.logInfo('Baseline mise à jour avec succès', {
         machineId: newBaseline.machineId,
-        version: newBaseline.version
+        version: newBaseline.version,
+        path: machineBaselinePath
       });
 
       return true;
     } catch (error) {
       this.logError('Erreur lors de la mise à jour de la baseline', error);
-      
+
       if (error instanceof BaselineServiceError) {
         throw error;
       }
