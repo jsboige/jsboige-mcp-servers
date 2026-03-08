@@ -21,10 +21,10 @@ const logger = createLogger('HeartbeatService');
  * Configuration du heartbeat
  */
 export interface HeartbeatConfig {
-  /** Intervalle de heartbeat en millisecondes (défaut: 30s) */
+  /** Intervalle de heartbeat en millisecondes (défaut: 60s) */
   heartbeatInterval: number;
 
-  /** Timeout avant de considérer une machine offline en millisecondes (défaut: 2min) */
+  /** Timeout avant de considérer une machine offline en millisecondes (défaut: 10min) */
   offlineTimeout: number;
 
   /** Nombre de heartbeats manqués avant alerte */
@@ -35,6 +35,13 @@ export interface HeartbeatConfig {
 
   /** Intervalle de synchronisation automatique en millisecondes */
   autoSyncInterval: number;
+
+  /**
+   * Intervalle minimal entre deux écritures sur disque en millisecondes (défaut: 5min).
+   * Réduit les syncs GDrive en n'écrivant que lors de changements de statut
+   * ou après ce délai minimum. Fix #607.
+   */
+  persistenceInterval: number;
 }
 
 /**
@@ -136,6 +143,8 @@ export class HeartbeatService {
   private config: HeartbeatConfig;
   private onOfflineDetectedCallback?: (machineId: string) => void;
   private onOnlineRestoredCallback?: (machineId: string) => void;
+  /** Tracks last disk write timestamp per machine for dirty-flag optimization (#607) */
+  private lastDiskWrite: Map<string, number> = new Map();
 
   constructor(
     private sharedPath: string,
@@ -144,13 +153,14 @@ export class HeartbeatService {
     this.heartbeatsDir = join(sharedPath, 'heartbeats');
     this.legacyHeartbeatPath = join(sharedPath, 'heartbeat.json');
 
-    // Configuration par défaut
+    // Configuration par défaut (#607 fix: réduit fréquence d'écriture GDrive)
     this.config = {
-      heartbeatInterval: 30000, // 30 secondes
-      offlineTimeout: 120000, // 2 minutes
-      missedHeartbeatThreshold: 4, // 4 heartbeats manqués
+      heartbeatInterval: 60000,  // 1 minute (réduit de 30s)
+      offlineTimeout: 600000,    // 10 minutes (réduit faux positifs avec dirty-flag)
+      missedHeartbeatThreshold: 4,
       autoSyncEnabled: true,
-      autoSyncInterval: 60000, // 1 minute
+      autoSyncInterval: 60000,   // 1 minute
+      persistenceInterval: 300000, // 5 minutes entre écritures GDrive (#607)
       ...config
     };
 
@@ -364,11 +374,15 @@ export class HeartbeatService {
   ): Promise<void> {
     machineId = machineId.toLowerCase();
     const now = new Date().toISOString();
+    const nowMs = Date.now();
 
     let heartbeatData = this.state.heartbeats.get(machineId);
+    let isNew = false;
+    let statusChanged = false;
 
     if (!heartbeatData) {
-      // Nouvelle machine
+      // Nouvelle machine - toujours écrire sur disque
+      isNew = true;
       heartbeatData = {
         machineId,
         lastHeartbeat: now,
@@ -383,6 +397,15 @@ export class HeartbeatService {
 
       logger.info(`Nouvelle machine enregistrée: ${machineId}`);
     } else {
+      const previousStatus = heartbeatData.status;
+
+      // Si la machine était offline/warning, logger le retour online
+      if (heartbeatData.offlineSince) {
+        logger.info(`Machine redevenue online: ${machineId}`, {
+          offlineDuration: nowMs - new Date(heartbeatData.offlineSince).getTime()
+        });
+      }
+
       // Mise à jour heartbeat existant
       heartbeatData.lastHeartbeat = now;
       heartbeatData.status = 'online';
@@ -390,17 +413,26 @@ export class HeartbeatService {
       heartbeatData.offlineSince = undefined;
       heartbeatData.metadata.lastUpdated = now;
 
-      // Si la machine était offline, logger le retour online
-      if (heartbeatData.offlineSince) {
-        logger.info(`Machine redevenue online: ${machineId}`, {
-          offlineDuration: Date.now() - new Date(heartbeatData.offlineSince).getTime()
-        });
+      // Détecter si le statut a changé (non-online → online)
+      if (previousStatus !== 'online') {
+        statusChanged = true;
       }
     }
 
     this.state.heartbeats.set(machineId, heartbeatData);
     this.updateMachineStatus();
-    await this.saveMachineHeartbeat(machineId);
+
+    // Fix #607: Dirty-flag write optimization - évite sync GDrive perpétuelle.
+    // N'écrire sur disque que si: nouvelle machine, changement de statut,
+    // ou > persistenceInterval depuis dernière écriture.
+    const lastWrite = this.lastDiskWrite.get(machineId) ?? 0;
+    const timeSinceLastWrite = nowMs - lastWrite;
+    const shouldWrite = isNew || statusChanged || timeSinceLastWrite >= this.config.persistenceInterval;
+
+    if (shouldWrite) {
+      await this.saveMachineHeartbeat(machineId);
+      this.lastDiskWrite.set(machineId, nowMs);
+    }
   }
 
   /**
