@@ -342,7 +342,7 @@ describe('roosync_compare_config', () => {
   });
 
   describe('error handling with granularity', () => {
-    it('devrait lever une erreur si inventaire source manquant', async () => {
+    it('devrait retourner un avertissement si inventaire source manquant', async () => {
       const args = {
         source: 'machine-a',
         target: 'machine-b',
@@ -353,10 +353,16 @@ describe('roosync_compare_config', () => {
       mockRooSyncService.getInventory.mockResolvedValueOnce(null);  // source null
       mockRooSyncService.getInventory.mockResolvedValueOnce({ machineId: 'machine-b' });  // target ok
 
-      await expect(roosyncCompareConfig(args)).rejects.toThrow('Inventaire manquant');
+      // Code handles null inventory gracefully: returns a CRITICAL diff instead of throwing
+      const result = await roosyncCompareConfig(args);
+      expect(result.differences).toHaveLength(1);
+      expect(result.differences[0].severity).toBe('CRITICAL');
+      expect(result.differences[0].description).toContain('Inventaire');
+      expect(result.differences[0].description).toContain('source');
+      expect(result.summary.critical).toBe(1);
     });
 
-    it('devrait lever une erreur si inventaire target manquant', async () => {
+    it('devrait retourner un avertissement si inventaire target manquant', async () => {
       const args = {
         source: 'machine-a',
         target: 'machine-b',
@@ -367,7 +373,13 @@ describe('roosync_compare_config', () => {
       mockRooSyncService.getInventory.mockResolvedValueOnce({ machineId: 'machine-a' });  // source ok
       mockRooSyncService.getInventory.mockResolvedValueOnce(null);  // target null
 
-      await expect(roosyncCompareConfig(args)).rejects.toThrow('Inventaire manquant');
+      // Code handles null inventory gracefully: returns a CRITICAL diff instead of throwing
+      const result = await roosyncCompareConfig(args);
+      expect(result.differences).toHaveLength(1);
+      expect(result.differences[0].severity).toBe('CRITICAL');
+      expect(result.differences[0].description).toContain('Inventaire');
+      expect(result.differences[0].description).toContain('target');
+      expect(result.summary.critical).toBe(1);
     });
   });
 });

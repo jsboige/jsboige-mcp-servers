@@ -541,12 +541,10 @@ describe('roosyncCompareConfig (integration)', () => {
       // Supprimer tout le shared state
       rmSync(testSharedStatePath, { recursive: true, force: true });
 
-      const result = await roosyncCompareConfig({
+      // Without shared state, getDefaultTargetMachine() throws because no machines are found
+      await expect(roosyncCompareConfig({
         granularity: 'mcp'
-      });
-
-      expect(result).toBeDefined();
-      // Devrait créer les répertoires nécessaires ou retourner un résultat par défaut
+      })).rejects.toThrow('Aucune autre machine trouvée pour la comparaison');
     });
   });
 

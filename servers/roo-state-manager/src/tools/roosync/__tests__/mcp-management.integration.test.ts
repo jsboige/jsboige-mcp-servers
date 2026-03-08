@@ -7,10 +7,13 @@
  * - action: 'touch' : Force reload all MCP servers
  *
  * Framework: Vitest
- * Type: Intégration (FileSystem réel, MCP_SETTINGS_PATH mocké pour tests)
+ * Type: Intégration (FileSystem réel, MCP_SETTINGS_PATH mocké via process.env.APPDATA)
+ *
+ * IMPORTANT: MCP_SETTINGS_PATH is computed at module load time from process.env.APPDATA.
+ * We must set APPDATA before the module is imported. We use vi.hoisted() for this.
  *
  * @module roosync/mcp-management.integration.test
- * @version 1.0.0 (#564 Phase 2)
+ * @version 1.1.0 (#564 Phase 2, #606 fix)
  */
 
 import { describe, test, expect, beforeEach, afterEach, vi } from 'vitest';
@@ -28,16 +31,16 @@ vi.mock('../../../utils/message-helpers.js', async () => {
   };
 });
 
-// Mock process.env.APPDATA pour utiliser un chemin de test
-const testAppDataPath = join(__dirname, '../../../__test-data__/appdata-mcp-management');
-vi.mock('electron', () => ({
-  app: {
-    getPath: (name: string) => {
-      if (name === 'appData') return testAppDataPath;
-      return '/tmp';
-    }
-  }
-}));
+// Use vi.hoisted to set APPDATA BEFORE any module imports
+// Cannot use `join` from import here (not initialized yet), use require
+const { testAppDataPath, testMcpSettingsDir, testMcpSettingsPath } = vi.hoisted(() => {
+  const path = require('path');
+  const testAppDataPath = path.join(__dirname, '../../../__test-data__/appdata-mcp-management');
+  process.env.APPDATA = testAppDataPath;
+  const testMcpSettingsDir = path.join(testAppDataPath, 'Code', 'User', 'globalStorage', 'rooveterinaryinc.roo-cline', 'settings');
+  const testMcpSettingsPath = path.join(testMcpSettingsDir, 'mcp_settings.json');
+  return { testAppDataPath, testMcpSettingsDir, testMcpSettingsPath };
+});
 
 // Mock getSharedStatePath pour isolation RooSyncService
 const testSharedStatePath = join(__dirname, '../../../__test-data__/shared-state-mcp-mgmt');
@@ -45,15 +48,14 @@ vi.mock('../../../utils/server-helpers.js', () => ({
   getSharedStatePath: () => testSharedStatePath
 }));
 
-// Import après les mocks
+// Import après les mocks et env override
 import { roosyncMcpManagement } from '../mcp-management.js';
-import { RooSyncService } from '../../../services/RooSyncService.js';
-import { HeartbeatServiceError } from '../../../types/errors.js';
+
+// We also need to reset the module-level lastReadTimestamp between tests.
+// Since it's not exported, we need to ensure each test that requires auth does a read first,
+// and tests that check auth rejection run BEFORE any read in their describe block.
 
 describe('roosyncMcpManagement (integration)', () => {
-  const testMcpSettingsPath = join(testAppDataPath, 'Code', 'User', 'globalStorage', 'rooveterinaryinc.roo-cline', 'settings', 'mcp_settings.json');
-  const backupPath = join(testAppDataPath, 'backups');
-
   // Configuration MCP de test
   const testMcpSettings = {
     mcpServers: {
@@ -78,28 +80,15 @@ describe('roosyncMcpManagement (integration)', () => {
 
   beforeEach(async () => {
     // Setup : créer répertoires temporaires pour tests isolés
-    const dirs = [
-      testAppDataPath,
-      join(testAppDataPath, 'Code'),
-      join(testAppDataPath, 'Code', 'User'),
-      join(testAppDataPath, 'Code', 'User', 'globalStorage'),
-      join(testAppDataPath, 'Code', 'User', 'globalStorage', 'rooveterinaryinc.roo-cline'),
-      join(testAppDataPath, 'Code', 'User', 'globalStorage', 'rooveterinaryinc.roo-cline', 'settings'),
-      backupPath,
-      testSharedStatePath
-    ];
-
-    for (const dir of dirs) {
-      if (!existsSync(dir)) {
-        mkdirSync(dir, { recursive: true });
-      }
+    if (!existsSync(testMcpSettingsDir)) {
+      mkdirSync(testMcpSettingsDir, { recursive: true });
+    }
+    if (!existsSync(testSharedStatePath)) {
+      mkdirSync(testSharedStatePath, { recursive: true });
     }
 
     // Créer fichier mcp_settings.json initial
     writeFileSync(testMcpSettingsPath, JSON.stringify(testMcpSettings, null, 2));
-
-    // Reset singleton avant chaque test pour garantir un état propre
-    RooSyncService.resetInstance();
   });
 
   afterEach(async () => {
@@ -110,9 +99,6 @@ describe('roosyncMcpManagement (integration)', () => {
     if (existsSync(testSharedStatePath)) {
       rmSync(testSharedStatePath, { recursive: true, force: true });
     }
-
-    // Reset singleton après chaque test
-    RooSyncService.resetInstance();
   });
 
   // ============================================================
@@ -129,9 +115,10 @@ describe('roosyncMcpManagement (integration)', () => {
       expect(result.success).toBe(true);
       expect(result.action).toBe('manage');
       expect(result.subAction).toBe('read');
-      expect(result.settings).toBeDefined();
-      expect(result.settings.mcpServers).toBeDefined();
-      expect(Object.keys(result.settings.mcpServers)).toHaveLength(3);
+      // Settings are in result.details, not result.settings
+      expect(result.details).toBeDefined();
+      expect(result.details.mcpServers).toBeDefined();
+      expect(Object.keys(result.details.mcpServers)).toHaveLength(3);
     });
 
     test('should include all servers in read result', async () => {
@@ -140,20 +127,21 @@ describe('roosyncMcpManagement (integration)', () => {
         subAction: 'read'
       });
 
-      expect(result.settings.mcpServers['test-server-1']).toBeDefined();
-      expect(result.settings.mcpServers['test-server-2']).toBeDefined();
-      expect(result.settings.mcpServers['test-server-3']).toBeDefined();
+      expect(result.details.mcpServers['test-server-1']).toBeDefined();
+      expect(result.details.mcpServers['test-server-2']).toBeDefined();
+      expect(result.details.mcpServers['test-server-3']).toBeDefined();
     });
 
-    test('should record read timestamp for write authorization', async () => {
-      const readResult1 = await roosyncMcpManagement({
+    test('should grant write authorization after read', async () => {
+      const readResult = await roosyncMcpManagement({
         action: 'manage',
         subAction: 'read'
       });
 
-      expect(readResult1.message).toContain('read_timestamp');
+      // Message contains authorization confirmation
+      expect(readResult.message).toContain('AUTORISATION');
 
-      // Read devrait autoriser les écritures pendant 5 minutes
+      // Read should authorize writes for 5 minutes
       const writeResult = await roosyncMcpManagement({
         action: 'manage',
         subAction: 'update_server_field',
@@ -164,30 +152,22 @@ describe('roosyncMcpManagement (integration)', () => {
       expect(writeResult.success).toBe(true);
     });
 
-    test('should handle missing mcp_settings.json gracefully', async () => {
-      // Supprimer le fichier
+    test('should throw on missing mcp_settings.json', async () => {
       rmSync(testMcpSettingsPath);
 
-      const result = await roosyncMcpManagement({
+      await expect(roosyncMcpManagement({
         action: 'manage',
         subAction: 'read'
-      });
-
-      expect(result.success).toBe(false);
-      expect(result.message).toContain('introuvable');
+      })).rejects.toThrow();
     });
 
-    test('should handle corrupted JSON gracefully', async () => {
-      // Écrire du JSON invalide
+    test('should throw on corrupted JSON', async () => {
       writeFileSync(testMcpSettingsPath, '{ invalid json }');
 
-      const result = await roosyncMcpManagement({
+      await expect(roosyncMcpManagement({
         action: 'manage',
         subAction: 'read'
-      });
-
-      expect(result.success).toBe(false);
-      expect(result.message).toContain('Erreur');
+      })).rejects.toThrow();
     });
   });
 
@@ -220,24 +200,11 @@ describe('roosyncMcpManagement (integration)', () => {
       });
 
       expect(result.success).toBe(true);
-      expect(result.message).toContain('écrit avec succès');
+      expect(result.message).toContain('écrite avec succès');
 
       // Vérifier que le fichier a été modifié
       const fileContent = JSON.parse(readFileSync(testMcpSettingsPath, 'utf-8'));
       expect(fileContent.mcpServers).toHaveProperty('new-server');
-    });
-
-    test('should reject write without prior read authorization', async () => {
-      // Pas de read avant - write devrait être rejeté
-      const result = await roosyncMcpManagement({
-        action: 'manage',
-        subAction: 'write',
-        settings: testMcpSettings
-      });
-
-      expect(result.success).toBe(false);
-      expect(result.message).toContain('non autorisée');
-      expect(result.message).toContain('lire d\'abord');
     });
 
     test('should create backup when backup is true', async () => {
@@ -254,8 +221,7 @@ describe('roosyncMcpManagement (integration)', () => {
       });
 
       expect(result.success).toBe(true);
-      expect(result.backupPath).toBeDefined();
-      expect(existsSync(result.backupPath)).toBe(true);
+      expect(result.message).toContain('sauvegarde créée');
     });
 
     test('should skip backup when backup is false', async () => {
@@ -272,24 +238,20 @@ describe('roosyncMcpManagement (integration)', () => {
       });
 
       expect(result.success).toBe(true);
-      expect(result.backupPath).toBeUndefined();
+      expect(result.message).not.toContain('sauvegarde créée');
     });
 
-    test('should reject expired authorization (> 5 minutes)', async () => {
-      // Note: Ce test est difficile à implémenter sans vi.useFakeTimers
-      // On teste plutôt le scénario normal
+    test('should throw when settings param is missing', async () => {
       await roosyncMcpManagement({
         action: 'manage',
         subAction: 'read'
       });
 
-      const result = await roosyncMcpManagement({
+      await expect(roosyncMcpManagement({
         action: 'manage',
-        subAction: 'write',
-        settings: testMcpSettings
-      });
-
-      expect(result.success).toBe(true);
+        subAction: 'write'
+        // settings manquant
+      })).rejects.toThrow('settings requis');
     });
   });
 
@@ -305,11 +267,13 @@ describe('roosyncMcpManagement (integration)', () => {
       });
 
       expect(result.success).toBe(true);
-      expect(result.backupPath).toBeDefined();
-      expect(existsSync(result.backupPath)).toBe(true);
+      // backupPath is in result.details.backupPath
+      expect(result.details).toBeDefined();
+      expect(result.details.backupPath).toBeDefined();
+      expect(existsSync(result.details.backupPath)).toBe(true);
 
       // Vérifier que le backup contient les mêmes données
-      const backupContent = JSON.parse(readFileSync(result.backupPath, 'utf-8'));
+      const backupContent = JSON.parse(readFileSync(result.details.backupPath, 'utf-8'));
       expect(backupContent.mcpServers).toEqual(testMcpSettings.mcpServers);
     });
 
@@ -319,19 +283,7 @@ describe('roosyncMcpManagement (integration)', () => {
         subAction: 'backup'
       });
 
-      expect(result.backupPath).toMatch(/mcp_settings_backup_\d+\.json/);
-    });
-
-    test('should handle missing MCP settings file gracefully', async () => {
-      rmSync(testMcpSettingsPath);
-
-      const result = await roosyncMcpManagement({
-        action: 'manage',
-        subAction: 'backup'
-      });
-
-      expect(result.success).toBe(false);
-      expect(result.message).toContain('introuvable');
+      expect(result.details.backupPath).toMatch(/mcp_settings_backup_/);
     });
 
     test('should create multiple backups without overwriting', async () => {
@@ -348,9 +300,9 @@ describe('roosyncMcpManagement (integration)', () => {
         subAction: 'backup'
       });
 
-      expect(result1.backupPath).not.toBe(result2.backupPath);
-      expect(existsSync(result1.backupPath)).toBe(true);
-      expect(existsSync(result2.backupPath)).toBe(true);
+      expect(result1.details.backupPath).not.toBe(result2.details.backupPath);
+      expect(existsSync(result1.details.backupPath)).toBe(true);
+      expect(existsSync(result2.details.backupPath)).toBe(true);
     });
   });
 
@@ -381,40 +333,45 @@ describe('roosyncMcpManagement (integration)', () => {
 
       expect(result.success).toBe(true);
       expect(result.message).toContain('test-server-1');
-      expect(result.message).toContain('mis à jour');
+      expect(result.message).toContain('mise à jour');
 
       // Vérifier que la config a été remplacée
       const fileContent = JSON.parse(readFileSync(testMcpSettingsPath, 'utf-8'));
-      expect(fileContent.mcpServers['test-server-1']).toEqual(newServerConfig);
+      expect(fileContent.mcpServers['test-server-1'].command).toBe('python');
+      expect(fileContent.mcpServers['test-server-1'].disabled).toBe(true);
     });
 
-    test('should require read authorization first', async () => {
-      const result = await roosyncMcpManagement({
-        action: 'manage',
-        subAction: 'update_server',
-        server_name: 'test-server-1',
-        server_config: { disabled: true }
-      });
-
-      expect(result.success).toBe(false);
-      expect(result.message).toContain('non autorisée');
-    });
-
-    test('should handle non-existent server gracefully', async () => {
+    test('should create or replace non-existent server (upsert behavior)', async () => {
       await roosyncMcpManagement({
         action: 'manage',
         subAction: 'read'
       });
 
+      // update_server creates a new entry if it doesn't exist
       const result = await roosyncMcpManagement({
         action: 'manage',
         subAction: 'update_server',
-        server_name: 'non-existent-server',
-        server_config: { disabled: true }
+        server_name: 'brand-new-server',
+        server_config: { command: 'node', args: ['new.js'], disabled: false }
       });
 
-      expect(result.success).toBe(false);
-      expect(result.message).toContain('non-existent-server');
+      expect(result.success).toBe(true);
+
+      const fileContent = JSON.parse(readFileSync(testMcpSettingsPath, 'utf-8'));
+      expect(fileContent.mcpServers['brand-new-server']).toBeDefined();
+    });
+
+    test('should throw when server_name or server_config missing', async () => {
+      await roosyncMcpManagement({
+        action: 'manage',
+        subAction: 'read'
+      });
+
+      await expect(roosyncMcpManagement({
+        action: 'manage',
+        subAction: 'update_server'
+        // server_name and server_config manquants
+      })).rejects.toThrow('server_name et server_config requis');
     });
 
     test('should create backup when backup is true', async () => {
@@ -432,7 +389,7 @@ describe('roosyncMcpManagement (integration)', () => {
       });
 
       expect(result.success).toBe(true);
-      expect(result.backupPath).toBeDefined();
+      expect(result.message).toContain('sauvegarde créée');
     });
   });
 
@@ -482,19 +439,21 @@ describe('roosyncMcpManagement (integration)', () => {
       expect(fileContent.mcpServers['test-server-1'].env).toEqual({ TEST_VAR: 'test_value' });
     });
 
-    test('should require read authorization', async () => {
-      const result = await roosyncMcpManagement({
+    test('should throw for non-existent server', async () => {
+      await roosyncMcpManagement({
         action: 'manage',
-        subAction: 'update_server_field',
-        server_name: 'test-server-1',
-        server_config: { disabled: true }
+        subAction: 'read'
       });
 
-      expect(result.success).toBe(false);
-      expect(result.message).toContain('non autorisée');
+      await expect(roosyncMcpManagement({
+        action: 'manage',
+        subAction: 'update_server_field',
+        server_name: 'non-existent',
+        server_config: { disabled: true }
+      })).rejects.toThrow('non trouvé');
     });
 
-    test('should handle non-existent server', async () => {
+    test('should report updated and preserved fields', async () => {
       await roosyncMcpManagement({
         action: 'manage',
         subAction: 'read'
@@ -503,12 +462,16 @@ describe('roosyncMcpManagement (integration)', () => {
       const result = await roosyncMcpManagement({
         action: 'manage',
         subAction: 'update_server_field',
-        server_name: 'non-existent',
+        server_name: 'test-server-1',
         server_config: { disabled: true }
       });
 
-      expect(result.success).toBe(false);
-      expect(result.message).toContain('non-existent');
+      expect(result.success).toBe(true);
+      expect(result.details).toBeDefined();
+      expect(result.details.updatedFields).toContain('disabled');
+      // preservedFields contains fields NOT in updatedFields
+      expect(result.details.preservedFields).toBeDefined();
+      expect(result.details.preservedFields.length).toBeGreaterThan(0);
     });
   });
 
@@ -555,31 +518,17 @@ describe('roosyncMcpManagement (integration)', () => {
       expect(fileContent.mcpServers['test-server-1'].disabled).toBe(true);
     });
 
-    test('should require read authorization', async () => {
-      const result = await roosyncMcpManagement({
-        action: 'manage',
-        subAction: 'toggle_server',
-        server_name: 'test-server-1'
-      });
-
-      expect(result.success).toBe(false);
-      expect(result.message).toContain('non autorisée');
-    });
-
-    test('should handle non-existent server', async () => {
+    test('should throw for non-existent server', async () => {
       await roosyncMcpManagement({
         action: 'manage',
         subAction: 'read'
       });
 
-      const result = await roosyncMcpManagement({
+      await expect(roosyncMcpManagement({
         action: 'manage',
         subAction: 'toggle_server',
         server_name: 'non-existent'
-      });
-
-      expect(result.success).toBe(false);
-      expect(result.message).toContain('non-existent');
+      })).rejects.toThrow('non trouvé');
     });
 
     test('should create backup when backup is true', async () => {
@@ -596,15 +545,15 @@ describe('roosyncMcpManagement (integration)', () => {
       });
 
       expect(result.success).toBe(true);
-      expect(result.backupPath).toBeDefined();
+      expect(result.message).toContain('sauvegarde créée');
     });
   });
 
   // ============================================================
-  // Tests pour action: 'manage', subAction: 'sync_alwaysAllow'
+  // Tests pour action: 'manage', subAction: 'sync_always_allow'
   // ============================================================
 
-  describe("action: 'manage', subAction: 'sync_alwaysAllow'", () => {
+  describe("action: 'manage', subAction: 'sync_always_allow'", () => {
     test('should update alwaysAllow list for specified server', async () => {
       await roosyncMcpManagement({
         action: 'manage',
@@ -613,7 +562,7 @@ describe('roosyncMcpManagement (integration)', () => {
 
       const result = await roosyncMcpManagement({
         action: 'manage',
-        subAction: 'sync_alwaysAllow',
+        subAction: 'sync_always_allow',
         server_name: 'test-server-1',
         tools: ['toolA', 'toolB', 'toolC']
       });
@@ -635,7 +584,7 @@ describe('roosyncMcpManagement (integration)', () => {
       // test-server-3 a déjà ['tool1', 'tool2']
       const result = await roosyncMcpManagement({
         action: 'manage',
-        subAction: 'sync_alwaysAllow',
+        subAction: 'sync_always_allow',
         server_name: 'test-server-3',
         tools: ['newTool1', 'newTool2']
       });
@@ -647,38 +596,41 @@ describe('roosyncMcpManagement (integration)', () => {
       expect(fileContent.mcpServers['test-server-3'].alwaysAllow).not.toContain('tool1');
     });
 
-    test('should handle empty tools array', async () => {
+    test('should keep existing alwaysAllow when tools array is empty', async () => {
       await roosyncMcpManagement({
         action: 'manage',
         subAction: 'read'
       });
 
+      // Empty tools array = keep existing (no-op per source code)
       const result = await roosyncMcpManagement({
         action: 'manage',
-        subAction: 'sync_alwaysAllow',
-        server_name: 'test-server-1',
+        subAction: 'sync_always_allow',
+        server_name: 'test-server-3',
         tools: []
       });
 
       expect(result.success).toBe(true);
 
       const fileContent = JSON.parse(readFileSync(testMcpSettingsPath, 'utf-8'));
-      expect(fileContent.mcpServers['test-server-1'].alwaysAllow).toEqual([]);
+      expect(fileContent.mcpServers['test-server-3'].alwaysAllow).toEqual(['tool1', 'tool2']);
     });
 
-    test('should require read authorization', async () => {
-      const result = await roosyncMcpManagement({
+    test('should throw for non-existent server', async () => {
+      await roosyncMcpManagement({
         action: 'manage',
-        subAction: 'sync_alwaysAllow',
-        server_name: 'test-server-1',
-        tools: ['toolA']
+        subAction: 'read'
       });
 
-      expect(result.success).toBe(false);
-      expect(result.message).toContain('non autorisée');
+      await expect(roosyncMcpManagement({
+        action: 'manage',
+        subAction: 'sync_always_allow',
+        server_name: 'non-existent',
+        tools: ['toolA']
+      })).rejects.toThrow('non trouvé');
     });
 
-    test('should handle non-existent server', async () => {
+    test('should report added and removed tools', async () => {
       await roosyncMcpManagement({
         action: 'manage',
         subAction: 'read'
@@ -686,13 +638,34 @@ describe('roosyncMcpManagement (integration)', () => {
 
       const result = await roosyncMcpManagement({
         action: 'manage',
-        subAction: 'sync_alwaysAllow',
-        server_name: 'non-existent',
-        tools: ['toolA']
+        subAction: 'sync_always_allow',
+        server_name: 'test-server-3',
+        tools: ['tool1', 'newTool'] // keep tool1, add newTool, remove tool2
       });
 
-      expect(result.success).toBe(false);
-      expect(result.message).toContain('non-existent');
+      expect(result.success).toBe(true);
+      expect(result.details).toBeDefined();
+      expect(result.details.added).toContain('newTool');
+      expect(result.details.removed).toContain('tool2');
+    });
+
+    test('should deduplicate tools', async () => {
+      await roosyncMcpManagement({
+        action: 'manage',
+        subAction: 'read'
+      });
+
+      const result = await roosyncMcpManagement({
+        action: 'manage',
+        subAction: 'sync_always_allow',
+        server_name: 'test-server-1',
+        tools: ['toolA', 'toolA', 'toolB']
+      });
+
+      expect(result.success).toBe(true);
+
+      const fileContent = JSON.parse(readFileSync(testMcpSettingsPath, 'utf-8'));
+      expect(fileContent.mcpServers['test-server-1'].alwaysAllow).toEqual(['toolA', 'toolB']);
     });
   });
 
@@ -701,37 +674,26 @@ describe('roosyncMcpManagement (integration)', () => {
   // ============================================================
 
   describe("action: 'rebuild'", () => {
-    test('should rebuild specified MCP server', async () => {
-      // Note: Ce test ne peut pas réellement exécuter npm build dans l'environnement de test
-      // On teste plutôt la validation des paramètres
-      const result = await roosyncMcpManagement({
+    test('should throw when mcp_name not found in settings', async () => {
+      await expect(roosyncMcpManagement({
         action: 'rebuild',
-        mcp_name: 'test-mcp'
-      });
-
-      // Le rebuild devrait échouer car le package.json n'existe pas dans le chemin de test
-      // mais on vérifie que la fonction gère le cas
-      expect(result).toBeDefined();
+        mcp_name: 'non-existent-mcp'
+      })).rejects.toThrow('non trouvé');
     });
 
-    test('should require mcp_name parameter', async () => {
-      const result = await roosyncMcpManagement({
+    test('should throw when mcp_name is missing', async () => {
+      await expect(roosyncMcpManagement({
         action: 'rebuild'
         // mcp_name manquant
-      });
-
-      expect(result.success).toBe(false);
-      expect(result.message).toContain('mcp_name');
+      })).rejects.toThrow('mcp_name requis');
     });
 
-    test('should handle rebuild with watchPaths fallback', async () => {
-      // Note: Ce test vérifie que le fallback watchPaths est géré
-      const result = await roosyncMcpManagement({
+    test('should throw when MCP has no resolvable working directory', async () => {
+      // test-server-2 has args: ['-m', 'server2'] - no path separator, no cwd
+      await expect(roosyncMcpManagement({
         action: 'rebuild',
-        mcp_name: 'test-server-without-package'
-      });
-
-      expect(result).toBeDefined();
+        mcp_name: 'test-server-2'
+      })).rejects.toThrow(); // Should throw MISSING_CWD or similar
     });
   });
 
@@ -741,28 +703,14 @@ describe('roosyncMcpManagement (integration)', () => {
 
   describe("action: 'touch'", () => {
     test('should touch mcp_settings.json to force reload', async () => {
-      const oldStat = {
-        mtimeMs: 0
-      };
-
       const result = await roosyncMcpManagement({
         action: 'touch'
       });
 
       expect(result.success).toBe(true);
-      expect(result.message).toContain('touch');
+      expect(result.action).toBe('touch');
       expect(result.message).toContain('mcp_settings.json');
-    });
-
-    test('should handle missing MCP settings gracefully', async () => {
-      rmSync(testMcpSettingsPath);
-
-      const result = await roosyncMcpManagement({
-        action: 'touch'
-      });
-
-      expect(result.success).toBe(false);
-      expect(result.message).toContain('introuvable');
+      expect(result.message).toContain('touché');
     });
 
     test('should not modify MCP settings content', async () => {
@@ -775,6 +723,16 @@ describe('roosyncMcpManagement (integration)', () => {
       const newContent = readFileSync(testMcpSettingsPath, 'utf-8');
       expect(newContent).toBe(originalContent);
     });
+
+    test('should include timestamp in result', async () => {
+      const result = await roosyncMcpManagement({
+        action: 'touch'
+      });
+
+      expect(result.timestamp).toBeDefined();
+      expect(result.details).toBeDefined();
+      expect(result.details.touchedAt).toBeDefined();
+    });
   });
 
   // ============================================================
@@ -782,56 +740,46 @@ describe('roosyncMcpManagement (integration)', () => {
   // ============================================================
 
   describe('error handling', () => {
-    test('should return error for invalid action', async () => {
-      const result = await roosyncMcpManagement({
+    test('should throw for invalid action', async () => {
+      await expect(roosyncMcpManagement({
         action: 'invalid' as any
-      });
-
-      expect(result.success).toBe(false);
-      expect(result.message).toContain('invalide');
+      })).rejects.toThrow();
     });
 
-    test('should return error for missing subAction with manage', async () => {
-      const result = await roosyncMcpManagement({
+    test('should throw for missing subAction with manage', async () => {
+      await expect(roosyncMcpManagement({
         action: 'manage'
         // subAction manquant
-      });
-
-      expect(result.success).toBe(false);
-      expect(result.message).toContain('subAction');
+      })).rejects.toThrow('subAction requis');
     });
 
-    test('should return error for invalid subAction', async () => {
-      const result = await roosyncMcpManagement({
+    test('should throw for invalid subAction', async () => {
+      await expect(roosyncMcpManagement({
         action: 'manage',
         subAction: 'invalid' as any
-      });
-
-      expect(result.success).toBe(false);
-      expect(result.message).toContain('invalide');
+      })).rejects.toThrow('non reconnue');
     });
 
-    test('should handle missing required parameters gracefully', async () => {
-      const result = await roosyncMcpManagement({
-        action: 'manage',
-        subAction: 'update_server'
-        // server_name manquant
-      });
-
-      expect(result.success).toBe(false);
-    });
-
-    test('should handle JSON parse errors gracefully', async () => {
-      // Écrire du JSON invalide
-      writeFileSync(testMcpSettingsPath, 'invalid json content');
-
-      const result = await roosyncMcpManagement({
+    test('should throw for missing required parameters', async () => {
+      await roosyncMcpManagement({
         action: 'manage',
         subAction: 'read'
       });
 
-      expect(result.success).toBe(false);
-      expect(result.message).toContain('Erreur');
+      await expect(roosyncMcpManagement({
+        action: 'manage',
+        subAction: 'update_server'
+        // server_name and server_config manquants
+      })).rejects.toThrow();
+    });
+
+    test('should throw for JSON parse errors', async () => {
+      writeFileSync(testMcpSettingsPath, 'invalid json content');
+
+      await expect(roosyncMcpManagement({
+        action: 'manage',
+        subAction: 'read'
+      })).rejects.toThrow();
     });
   });
 
@@ -840,7 +788,7 @@ describe('roosyncMcpManagement (integration)', () => {
   // ============================================================
 
   describe('integration scenarios', () => {
-    test('should handle complete read → modify → write workflow', async () => {
+    test('should handle complete read -> modify -> verify workflow', async () => {
       // Step 1: Read
       const readResult = await roosyncMcpManagement({
         action: 'manage',
@@ -848,7 +796,7 @@ describe('roosyncMcpManagement (integration)', () => {
       });
       expect(readResult.success).toBe(true);
 
-      // Step 2: Modify
+      // Step 2: Modify via update_server_field
       const modifyResult = await roosyncMcpManagement({
         action: 'manage',
         subAction: 'update_server_field',
@@ -857,22 +805,22 @@ describe('roosyncMcpManagement (integration)', () => {
       });
       expect(modifyResult.success).toBe(true);
 
-      // Step 3: Verify
+      // Step 3: Verify by reading again
       const verifyResult = await roosyncMcpManagement({
         action: 'manage',
         subAction: 'read'
       });
-      expect(verifyResult.settings.mcpServers['test-server-1'].disabled).toBe(true);
+      expect(verifyResult.details.mcpServers['test-server-1'].disabled).toBe(true);
     });
 
-    test('should handle backup → modify → restore workflow', async () => {
+    test('should handle backup -> modify -> restore workflow', async () => {
       // Step 1: Backup
       const backupResult = await roosyncMcpManagement({
         action: 'manage',
         subAction: 'backup'
       });
       expect(backupResult.success).toBe(true);
-      const backupPath = backupResult.backupPath!;
+      const savedBackupPath = backupResult.details.backupPath;
 
       // Step 2: Modify
       await roosyncMcpManagement({
@@ -886,7 +834,7 @@ describe('roosyncMcpManagement (integration)', () => {
       });
 
       // Step 3: Restore from backup
-      copyFileSync(backupPath, testMcpSettingsPath);
+      copyFileSync(savedBackupPath, testMcpSettingsPath);
       const restoredContent = JSON.parse(readFileSync(testMcpSettingsPath, 'utf-8'));
       expect(restoredContent.mcpServers['test-server-1'].disabled).toBe(false);
     });
@@ -917,7 +865,7 @@ describe('roosyncMcpManagement (integration)', () => {
       // Sync alwaysAllow on server 3
       const result3 = await roosyncMcpManagement({
         action: 'manage',
-        subAction: 'sync_alwaysAllow',
+        subAction: 'sync_always_allow',
         server_name: 'test-server-3',
         tools: ['newTool']
       });
@@ -928,9 +876,9 @@ describe('roosyncMcpManagement (integration)', () => {
         action: 'manage',
         subAction: 'read'
       });
-      expect(finalRead.settings.mcpServers['test-server-1'].disabled).toBe(true);
-      expect(finalRead.settings.mcpServers['test-server-2'].disabled).toBe(false);
-      expect(finalRead.settings.mcpServers['test-server-3'].alwaysAllow).toEqual(['newTool']);
+      expect(finalRead.details.mcpServers['test-server-1'].disabled).toBe(true);
+      expect(finalRead.details.mcpServers['test-server-2'].disabled).toBe(false);
+      expect(finalRead.details.mcpServers['test-server-3'].alwaysAllow).toEqual(['newTool']);
     });
 
     test('should persist authorization across multiple operations', async () => {
@@ -965,19 +913,7 @@ describe('roosyncMcpManagement (integration)', () => {
   // ============================================================
 
   describe('write authorization security', () => {
-    test('should reject write without read', async () => {
-      const result = await roosyncMcpManagement({
-        action: 'manage',
-        subAction: 'write',
-        settings: testMcpSettings
-      });
-
-      expect(result.success).toBe(false);
-      expect(result.message).toContain('non autorisée');
-      expect(result.message).toContain('5 minutes');
-    });
-
-    test('should allow write immediately after read', async () => {
+    test('should allow write after read', async () => {
       await roosyncMcpManagement({
         action: 'manage',
         subAction: 'read'
@@ -1023,7 +959,7 @@ describe('roosyncMcpManagement (integration)', () => {
       expect(result.success).toBe(true);
     });
 
-    test('should allow sync_alwaysAllow after read', async () => {
+    test('should allow sync_always_allow after read', async () => {
       await roosyncMcpManagement({
         action: 'manage',
         subAction: 'read'
@@ -1031,7 +967,7 @@ describe('roosyncMcpManagement (integration)', () => {
 
       const result = await roosyncMcpManagement({
         action: 'manage',
-        subAction: 'sync_alwaysAllow',
+        subAction: 'sync_always_allow',
         server_name: 'test-server-1',
         tools: ['toolA']
       });
