@@ -27,9 +27,10 @@ export { getHostIdentifier };
  * sélectivement et en les stockant dans Qdrant.
  * @param taskId L'ID de la tâche à indexer.
  * @param taskPath Le chemin complet vers le répertoire de la tâche.
+ * @param source Source de la tâche ('roo' ou 'claude-code'), défaut: 'roo'
  */
-export async function indexTask(taskId: string, taskPath: string): Promise<PointStruct[]> {
-    return indexTaskVector(taskId, taskPath);
+export async function indexTask(taskId: string, taskPath: string, source: 'roo' | 'claude-code' = 'roo'): Promise<PointStruct[]> {
+    return indexTaskVector(taskId, taskPath, source);
 }
 
 /**
@@ -93,7 +94,7 @@ export class TaskIndexer {
     /**
      * Indexe une tâche à partir de son ID (trouve automatiquement le chemin)
      */
-    async indexTask(taskId: string): Promise<PointStruct[]> {
+    async indexTask(taskId: string, source: 'roo' | 'claude-code' = 'roo'): Promise<PointStruct[]> {
         try {
             const { RooStorageDetector } = await import('../utils/roo-storage-detector.js');
             const locations = await RooStorageDetector.detectStorageLocations();
@@ -102,7 +103,7 @@ export class TaskIndexer {
                 const taskPath = path.join(location, 'tasks', taskId);
                 try {
                     await fs.access(taskPath);
-                    const points = await indexTask(taskId, taskPath);
+                    const points = await indexTask(taskId, taskPath, source);
 
                     // FIX ARCHITECTURAL: Mettre à jour le squelette ICI, pas dans index.ts
                     await this.updateSkeletonIndexTimestamp(taskId, location);

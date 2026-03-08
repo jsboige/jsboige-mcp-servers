@@ -15,6 +15,7 @@ export interface SearchTasksByContentArgs {
     max_results?: number;
     diagnose_index?: boolean;
     workspace?: string;
+    source?: 'roo' | 'claude-code';
 }
 
 /**
@@ -216,6 +217,11 @@ export const searchTasksByContentTool = {
                     type: 'boolean',
                     description: 'Mode diagnostic : retourne des informations sur l\'état de l\'indexation sémantique.'
                 },
+                source: {
+                    type: 'string',
+                    enum: ['roo', 'claude-code'],
+                    description: 'Filtre les résultats par source (tâches Roo ou sessions Claude Code).'
+                },
             },
             required: ['search_query'],
         }
@@ -231,7 +237,7 @@ export const searchTasksByContentTool = {
         fallbackHandler: (args: any, cache: Map<string, ConversationSkeleton>) => Promise<CallToolResult>,
         diagnoseHandler?: () => Promise<CallToolResult>
     ): Promise<CallToolResult> => {
-        const { conversation_id, search_query, max_results, diagnose_index = false, workspace } = args;
+        const { conversation_id, search_query, max_results, diagnose_index = false, workspace, source } = args;
 
         // **FAILSAFE: Auto-rebuild cache si nécessaire avec filtre workspace**
         await ensureCacheFreshCallback({ workspace });

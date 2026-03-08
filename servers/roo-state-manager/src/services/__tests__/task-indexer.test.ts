@@ -84,7 +84,7 @@ describe('indexTask (standalone)', () => {
 
 		const result = await indexTask('task-1', '/path/to/task');
 
-		expect(mockIndexTask).toHaveBeenCalledWith('task-1', '/path/to/task');
+		expect(mockIndexTask).toHaveBeenCalledWith('task-1', '/path/to/task', 'roo');
 		expect(result).toEqual([{ id: '1' }]);
 	});
 });

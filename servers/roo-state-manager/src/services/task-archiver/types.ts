@@ -18,6 +18,10 @@ export interface ArchivedTaskMetadata {
     messageCount: number;
     isCompleted: boolean;
     parentTaskId?: string;
+    /**
+     * Source de la tâche: "roo" pour tâches Roo, "claude-code" pour sessions Claude Code
+     */
+    source?: 'roo' | 'claude-code';
 }
 
 export interface ArchivedTask {

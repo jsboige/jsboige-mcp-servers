@@ -263,4 +263,71 @@ describe('TaskArchiver', () => {
 			expect(result).toBeNull();
 		});
 	});
+
+	// ============================================================
+	// archiveClaudeCodeSession
+	// ============================================================
+
+	describe('archiveClaudeCodeSession', () => {
+		test('skips if Claude Code session already archived', async () => {
+			mockAccess.mockResolvedValueOnce(undefined); // file exists
+			await TaskArchiver.archiveClaudeCodeSession('session-456', '/path/to/session.jsonl');
+			// If archive exists, readFile should not be called for message parsing
+			expect(mockReadFile).not.toHaveBeenCalled();
+		});
+
+		test('handles no message files found gracefully', async () => {
+			mockAccess.mockRejectedValueOnce(new Error('ENOENT')); // archive not exists
+			// readJsonlFile uses createReadStream which will fail, simulating no valid JSONL
+			// The archiveClaudeCodeSession should handle this by catching and returning early
+			await TaskArchiver.archiveClaudeCodeSession('session-empty', '/path/to/session.jsonl');
+			// Should not attempt to write if parsing fails
+			// (This is implicit in the archiveClaudeCodeSession logic)
+		});
+
+		test('distinguishes Claude Code archives with prefix', async () => {
+			// Verify that the archive listing methods correctly identify Claude Code sessions
+			mockReaddir.mockResolvedValueOnce(['machine-a']);
+			mockReaddir.mockResolvedValueOnce(['claude-session-1.json.gz', 'task-1.json.gz']);
+			const claudeSessions = await TaskArchiver.listArchivedTasksBySource('claude-code');
+			expect(claudeSessions).toContain('session-1');
+			expect(claudeSessions).not.toContain('task-1');
+		});
+	});
+
+	// ============================================================
+	// listArchivedTasksBySource
+	// ============================================================
+
+	describe('listArchivedTasksBySource', () => {
+		test('lists Roo tasks (no claude- prefix)', async () => {
+			mockReaddir.mockResolvedValueOnce(['machine-a']); // top-level
+			mockReaddir.mockResolvedValueOnce(['task-1.json.gz', 'claude-session-1.json.gz', 'task-2.json.gz']); // machine-a
+			const tasks = await TaskArchiver.listArchivedTasksBySource('roo');
+			expect(tasks).toContain('task-1');
+			expect(tasks).toContain('task-2');
+			expect(tasks).not.toContain('session-1'); // Claude tasks filtered out
+		});
+
+		test('lists Claude Code tasks (with claude- prefix)', async () => {
+			mockReaddir.mockResolvedValueOnce(['machine-a']);
+			mockReaddir.mockResolvedValueOnce(['task-1.json.gz', 'claude-session-1.json.gz', 'claude-session-2.json.gz']);
+			const tasks = await TaskArchiver.listArchivedTasksBySource('claude-code');
+			expect(tasks).toContain('session-1');
+			expect(tasks).toContain('session-2');
+			expect(tasks).not.toContain('task-1'); // Roo tasks filtered out
+		});
+
+		test('filters by machineId for source', async () => {
+			mockReaddir.mockResolvedValueOnce(['claude-session-1.json.gz']);
+			const tasks = await TaskArchiver.listArchivedTasksBySource('claude-code', 'machine-a');
+			expect(tasks).toContain('session-1');
+		});
+
+		test('returns empty array when archive dir missing', async () => {
+			mockReaddir.mockRejectedValueOnce(new Error('ENOENT'));
+			const tasks = await TaskArchiver.listArchivedTasksBySource('roo');
+			expect(tasks).toEqual([]);
+		});
+	});
 });

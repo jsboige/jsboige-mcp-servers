@@ -367,8 +367,8 @@ export async function safeQdrantUpsert(points: PointStruct[]): Promise<boolean> 
  * @param taskId L'ID de la tâche à indexer.
  * @param taskPath Le chemin complet vers le répertoire de la tâche.
  */
-export async function indexTask(taskId: string, taskPath: string): Promise<PointStruct[]> {
-    console.log(`Starting granular indexing for task: ${taskId}`);
+export async function indexTask(taskId: string, taskPath: string, source: 'roo' | 'claude-code' = 'roo'): Promise<PointStruct[]> {
+    console.log(`Starting granular indexing for task: ${taskId} (source: ${source})`);
 
     try {
         await ensureCollectionExists();
@@ -445,7 +445,7 @@ export async function indexTask(taskId: string, taskPath: string): Promise<Point
                     const point: PointStruct = {
                         id: subChunk.chunk_id,
                         vector: vector,
-                        payload: { ...subChunk },
+                        payload: { ...subChunk, source: source },
                     };
                     pointsToIndex.push(point);
                 }
