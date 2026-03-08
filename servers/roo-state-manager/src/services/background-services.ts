@@ -162,20 +162,26 @@ export async function initializeBackgroundServices(state: ServerState): Promise<
         // Niveau 2: Initialisation du service d'indexation Qdrant asynchrone
         await initializeQdrantIndexingService(state);
 
-        // Auto-start heartbeat service
-        try {
-            const rooSyncService = RooSyncService.getInstance();
-            await rooSyncService.startHeartbeatService(
-                (machineId: string) => {
-                    console.log(`[Heartbeat] Machine offline: ${machineId}`);
-                },
-                (machineId: string) => {
-                    console.log(`[Heartbeat] Machine online: ${machineId}`);
-                }
-            );
-            console.log('✅ Heartbeat service auto-started');
-        } catch (error: any) {
-            console.warn('⚠️ Heartbeat init failed (non-blocking):', error.message);
+        // Heartbeat service: disabled by default to prevent GDrive sync storm (#607)
+        // Each 30s write × 6 machines = 720 GDrive syncs/hour
+        // Use HEARTBEAT_AUTO_START=true to enable, or call roosync_heartbeat tool on-demand
+        if (process.env.HEARTBEAT_AUTO_START === 'true') {
+            try {
+                const rooSyncService = RooSyncService.getInstance();
+                await rooSyncService.startHeartbeatService(
+                    (machineId: string) => {
+                        console.log(`[Heartbeat] Machine offline: ${machineId}`);
+                    },
+                    (machineId: string) => {
+                        console.log(`[Heartbeat] Machine online: ${machineId}`);
+                    }
+                );
+                console.log('✅ Heartbeat service auto-started');
+            } catch (error: any) {
+                console.warn('⚠️ Heartbeat init failed (non-blocking):', error.message);
+            }
+        } else {
+            console.log('ℹ️ Heartbeat auto-start disabled (#607). Use roosync_heartbeat tool or set HEARTBEAT_AUTO_START=true');
         }
 
         console.log('✅ Services background initialisés avec succès');
