@@ -164,13 +164,19 @@ describe('roosyncCompareConfig (integration)', () => {
   });
 
   afterEach(async () => {
-    // Cleanup : supprimer répertoire test pour isolation
-    if (existsSync(testSharedStatePath)) {
-      rmSync(testSharedStatePath, { recursive: true, force: true });
-    }
-
-    // Reset singleton après chaque test
+    // Reset singleton après chaque test (before cleanup to release file handles)
     RooSyncService.resetInstance();
+
+    // Cleanup : supprimer répertoire test pour isolation
+    // Wrapped in try-catch: rmSync can fail with ENOTEMPTY on Linux/CI
+    // when async operations still hold file handles
+    try {
+      if (existsSync(testSharedStatePath)) {
+        rmSync(testSharedStatePath, { recursive: true, force: true });
+      }
+    } catch {
+      // Best-effort cleanup — CI tmpdir is ephemeral anyway
+    }
 
     // Restaurer process.env
     process.env = { ...originalEnv };
