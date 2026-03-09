@@ -23,53 +23,28 @@ export function registerListToolsHandler(server: Server): void {
     server.setRequestHandler(ListToolsRequestSchema, async () => {
         return {
             tools: [
-                // CONS-13: Outil Storage consolidé (2→1)
-                toolExports.storageInfoTool.definition,
-                // CLEANUP-3: detect_storage, get_storage_stats, list_conversations retirés de ListTools
-                // (CallTool handlers conservés pour backward compat)
-                {
-                    name: 'touch_mcp_settings',
-                    description: 'Touche le fichier de paramètres pour forcer le rechargement des MCPs Roo.',
-                    inputSchema: { type: 'object', properties: {}, required: [] },
-                },
-                // CONS-13: Outil Maintenance consolidé (3→1)
-                toolExports.maintenanceToolDefinition,
-                // CLEANUP-3: build_skeleton_cache retiré de ListTools (backward compat via CallTool)
+                // B4 (#603): storage_info, touch_mcp_settings, maintenance, manage_mcp_settings, rebuild_and_restart
+                // retirés de ListTools — couverts par roosync_storage_management et roosync_mcp_management (CONS-#443)
+                // CallTool handlers conservés pour backward compat
+
                 // CONS-X (#457): Outil consolidé conversation_browser (task_browse + view_conversation_tree + roosync_summarize → 1)
                 toolExports.conversationBrowserTool,
-                // [DEPRECATED] task_browse, view_conversation_tree, roosync_summarize retirés de ListTools
-                // (CallTool handlers conservés pour backward compat)
                 toolExports.taskExportTool,
                 // CONS-11: Outils Search/Indexing consolidés (4→2)
                 toolExports.roosyncSearchTool,
                 toolExports.roosyncIndexingTool,
                 // #452 Phase 2: Recherche sémantique dans le code workspace (Roo index)
                 toolExports.codebaseSearchTool,
-                // CLEANUP-3: search_tasks_by_content, debug_analyze retirés de ListTools (backward compat via CallTool)
                 {
                     name: toolExports.readVscodeLogs.name,
                     description: toolExports.readVscodeLogs.description,
                     inputSchema: toolExports.readVscodeLogs.inputSchema,
                 },
                 {
-                    name: toolExports.manageMcpSettings.name,
-                    description: toolExports.manageMcpSettings.description,
-                    inputSchema: toolExports.manageMcpSettings.inputSchema,
-                },
-                // CLEANUP-3: index_task_semantic, reset_qdrant_collection, rebuild_task_index_fixed retirés de ListTools
-                // (remplacés par roosync_indexing, CallTool handlers conservés pour backward compat)
-                {
-                   name: toolExports.rebuildAndRestart.name,
-                   description: toolExports.rebuildAndRestart.description,
-                   inputSchema: toolExports.rebuildAndRestart.inputSchema,
-                },
-                {
                    name: toolExports.getMcpBestPractices.name,
                    description: toolExports.getMcpBestPractices.description,
                    inputSchema: toolExports.getMcpBestPractices.inputSchema,
                 },
-                // CLEANUP-3: diagnose_conversation_bom, repair_conversation_bom retirés de ListTools
-                // (remplacés par maintenance action=diagnose_bom/repair_bom, CallTool handlers conservés)
                 // CONS-10: Outils Export consolidés (6→2)
                 toolExports.exportDataTool,
                 toolExports.exportConfigTool,
