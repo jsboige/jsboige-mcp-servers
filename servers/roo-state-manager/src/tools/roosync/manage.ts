@@ -26,11 +26,23 @@ const logger: Logger = createLogger('RooSyncManageTool');
  * Arguments de l'outil roosync_manage
  */
 interface RooSyncManageArgs {
-  /** Action à effectuer : 'mark_read' ou 'archive' */
-  action: 'mark_read' | 'archive';
+  /** Action à effectuer */
+  action: 'mark_read' | 'archive' | 'bulk_mark_read' | 'bulk_archive' | 'cleanup' | 'stats';
 
-  /** ID du message à traiter */
-  message_id: string;
+  /** ID du message à traiter (required for mark_read/archive) */
+  message_id?: string;
+
+  // Bulk operation filters (for bulk_mark_read, bulk_archive, cleanup)
+  /** Filter by sender machine ID (substring match) */
+  from?: string;
+  /** Filter by priority level */
+  priority?: 'LOW' | 'MEDIUM' | 'HIGH' | 'URGENT';
+  /** Filter messages older than this date (ISO-8601 or YYYY-MM-DD) */
+  before_date?: string;
+  /** Filter by subject substring (case-insensitive) */
+  subject_contains?: string;
+  /** Filter by tag */
+  tag?: string;
 }
 
 /**
@@ -233,6 +245,151 @@ Il n'apparaîtra plus dans la boîte de réception (\`roosync_read\`).
 }
 
 /**
+ * Performs a bulk mark_read or bulk_archive operation with filters
+ */
+async function bulkOperationHandler(
+  args: RooSyncManageArgs,
+  messageManager: MessageManager,
+  operation: 'mark_read' | 'archive'
+): Promise<string> {
+  const opName = operation === 'mark_read' ? 'marquer comme lus' : 'archiver';
+  logger.info(`🔄 Starting bulk ${operation}`, { filters: { from: args.from, priority: args.priority, before_date: args.before_date, subject_contains: args.subject_contains, tag: args.tag } });
+
+  const result = await messageManager.bulkOperation(
+    getLocalMachineId(),
+    operation,
+    {
+      from: args.from,
+      priority: args.priority,
+      before_date: args.before_date,
+      subject_contains: args.subject_contains,
+      tag: args.tag,
+      status: operation === 'mark_read' ? 'unread' : undefined
+    }
+  );
+
+  const filtersDesc: string[] = [];
+  if (args.from) filtersDesc.push(`de: ${args.from}`);
+  if (args.priority) filtersDesc.push(`priorité: ${args.priority}`);
+  if (args.before_date) filtersDesc.push(`avant: ${args.before_date}`);
+  if (args.subject_contains) filtersDesc.push(`sujet contient: "${args.subject_contains}"`);
+  if (args.tag) filtersDesc.push(`tag: ${args.tag}`);
+
+  return `✅ **Opération bulk terminée : ${opName}**
+
+---
+
+**Filtres appliqués :** ${filtersDesc.length > 0 ? filtersDesc.join(', ') : 'aucun (tous les messages)'}
+**Messages trouvés :** ${result.matched}
+**Messages traités :** ${result.processed}
+**Erreurs :** ${result.errors}
+
+${result.message_ids.length > 0 ? `**IDs traités :** ${result.message_ids.slice(0, 10).map(id => `\`${id}\``).join(', ')}${result.message_ids.length > 10 ? ` ... et ${result.message_ids.length - 10} autres` : ''}` : '**Aucun message ne correspond aux filtres.**'}`;
+}
+
+/**
+ * Cleanup action: auto-mark test messages and old LOW priority messages
+ */
+async function cleanupMessages(
+  args: RooSyncManageArgs,
+  messageManager: MessageManager
+): Promise<string> {
+  logger.info('🧹 Starting cleanup operation');
+  const machineId = getLocalMachineId();
+  const results: string[] = [];
+
+  // 1. Mark test messages as read
+  const testResult = await messageManager.bulkOperation(
+    machineId, 'mark_read',
+    { from: 'test', status: 'unread' }
+  );
+  if (testResult.processed > 0) {
+    results.push(`- 🧪 Messages de test marqués lus : **${testResult.processed}**`);
+  }
+
+  // 2. Archive old read messages (>30 days)
+  const thirtyDaysAgo = new Date();
+  thirtyDaysAgo.setDate(thirtyDaysAgo.getDate() - 30);
+  const oldReadResult = await messageManager.bulkOperation(
+    machineId, 'archive',
+    { before_date: thirtyDaysAgo.toISOString(), status: 'read' }
+  );
+  if (oldReadResult.processed > 0) {
+    results.push(`- 📦 Messages lus >30j archivés : **${oldReadResult.processed}**`);
+  }
+
+  // 3. Mark old LOW priority messages as read (>7 days)
+  const sevenDaysAgo = new Date();
+  sevenDaysAgo.setDate(sevenDaysAgo.getDate() - 7);
+  const oldLowResult = await messageManager.bulkOperation(
+    machineId, 'mark_read',
+    { before_date: sevenDaysAgo.toISOString(), priority: 'LOW', status: 'unread' }
+  );
+  if (oldLowResult.processed > 0) {
+    results.push(`- 📭 Messages LOW >7j marqués lus : **${oldLowResult.processed}**`);
+  }
+
+  // 4. Get current stats
+  const stats = await messageManager.getInboxStats(machineId);
+
+  return `🧹 **Cleanup terminé**
+
+---
+
+${results.length > 0 ? `### Actions effectuées\n${results.join('\n')}` : '### Aucune action nécessaire\nTous les messages sont déjà dans un état propre.'}
+
+### État de la boîte après cleanup
+
+| Métrique | Valeur |
+|----------|--------|
+| **Total inbox** | ${stats.total} |
+| **Non-lus** | ${stats.unread} |
+| **Lus** | ${stats.read} |
+${stats.oldest_unread ? `| **Plus ancien non-lu** | ${formatDate(stats.oldest_unread)} |` : ''}
+
+### Par priorité
+${Object.entries(stats.by_priority).map(([p, c]) => `- ${p}: ${c}`).join('\n') || '- (vide)'}
+
+### Par expéditeur (top 5)
+${Object.entries(stats.by_sender).sort((a, b) => b[1] - a[1]).slice(0, 5).map(([s, c]) => `- ${s}: ${c}`).join('\n') || '- (vide)'}`;
+}
+
+/**
+ * Stats action: show inbox statistics
+ */
+async function showStats(
+  messageManager: MessageManager
+): Promise<string> {
+  logger.info('📊 Getting inbox stats');
+  const machineId = getLocalMachineId();
+  const stats = await messageManager.getInboxStats(machineId);
+
+  return `📊 **Statistiques inbox - ${machineId}**
+
+---
+
+| Métrique | Valeur |
+|----------|--------|
+| **Total** | ${stats.total} |
+| **Non-lus** | ${stats.unread} |
+| **Lus** | ${stats.read} |
+${stats.oldest_unread ? `| **Plus ancien non-lu** | ${formatDate(stats.oldest_unread)} |` : ''}
+
+### Par priorité
+${Object.entries(stats.by_priority).map(([p, c]) => `| ${p} | ${c} |`).join('\n') || '(aucun)'}
+
+### Par expéditeur
+${Object.entries(stats.by_sender).sort((a, b) => b[1] - a[1]).map(([s, c]) => `| ${s} | ${c} |`).join('\n') || '(aucun)'}
+
+---
+
+**Actions disponibles :**
+- \`roosync_manage(action: "cleanup")\` - Nettoyage automatique
+- \`roosync_manage(action: "bulk_mark_read", from: "test")\` - Marquer test messages
+- \`roosync_manage(action: "bulk_archive", before_date: "2026-02-01")\` - Archiver anciens`;
+}
+
+/**
  * Fonction principale de l'outil roosync_manage
  *
  * Route vers la fonction appropriée selon l'action demandée
@@ -245,21 +402,42 @@ Il n'apparaîtra plus dans la boîte de réception (\`roosync_read\`).
  */
 export const manageToolMetadata = {
   name: 'roosync_manage',
-  description: 'Gérer le cycle de vie des messages RooSync : marquer comme lu ou archiver',
+  description: 'Gérer le cycle de vie des messages RooSync : marquer lu, archiver, opérations bulk, cleanup automatique, statistiques inbox',
   inputSchema: {
     type: 'object',
     properties: {
       action: {
         type: 'string',
-        enum: ['mark_read', 'archive'],
-        description: 'Action à effectuer sur le message'
+        enum: ['mark_read', 'archive', 'bulk_mark_read', 'bulk_archive', 'cleanup', 'stats'],
+        description: 'Action: mark_read/archive (un message), bulk_mark_read/bulk_archive (avec filtres), cleanup (auto-nettoyage), stats (statistiques inbox)'
       },
       message_id: {
         type: 'string',
-        description: 'ID du message à traiter'
+        description: 'ID du message (requis pour mark_read/archive)'
+      },
+      from: {
+        type: 'string',
+        description: 'Filtre par expéditeur (substring, pour bulk/cleanup)'
+      },
+      priority: {
+        type: 'string',
+        enum: ['LOW', 'MEDIUM', 'HIGH', 'URGENT'],
+        description: 'Filtre par priorité (pour bulk)'
+      },
+      before_date: {
+        type: 'string',
+        description: 'Filtre messages avant cette date ISO-8601 (pour bulk)'
+      },
+      subject_contains: {
+        type: 'string',
+        description: 'Filtre par sujet contenant ce texte (pour bulk)'
+      },
+      tag: {
+        type: 'string',
+        description: 'Filtre par tag (pour bulk)'
       }
     },
-    required: ['action', 'message_id']
+    required: ['action']
   }
 };
 
@@ -287,16 +465,46 @@ export async function roosyncManage(
 
     switch (args.action) {
       case 'mark_read':
-        result = await markMessageAsRead(args, messageManager);
+        if (!args.message_id) {
+          throw new MessageManagerError(
+            'Paramètre "message_id" requis pour mark_read',
+            MessageManagerErrorCode.INVALID_MESSAGE_FORMAT,
+            { missingParam: 'message_id' }
+          );
+        }
+        result = await markMessageAsRead(args as RooSyncManageArgs & { message_id: string }, messageManager);
         break;
 
       case 'archive':
-        result = await archiveMessageFunc(args, messageManager);
+        if (!args.message_id) {
+          throw new MessageManagerError(
+            'Paramètre "message_id" requis pour archive',
+            MessageManagerErrorCode.INVALID_MESSAGE_FORMAT,
+            { missingParam: 'message_id' }
+          );
+        }
+        result = await archiveMessageFunc(args as RooSyncManageArgs & { message_id: string }, messageManager);
+        break;
+
+      case 'bulk_mark_read':
+        result = await bulkOperationHandler(args, messageManager, 'mark_read');
+        break;
+
+      case 'bulk_archive':
+        result = await bulkOperationHandler(args, messageManager, 'archive');
+        break;
+
+      case 'cleanup':
+        result = await cleanupMessages(args, messageManager);
+        break;
+
+      case 'stats':
+        result = await showStats(messageManager);
         break;
 
       default:
         throw new MessageManagerError(
-          `Action non reconnue : ${args.action}. Actions valides : mark_read, archive`,
+          `Action non reconnue : ${args.action}. Actions valides : mark_read, archive, bulk_mark_read, bulk_archive, cleanup, stats`,
           MessageManagerErrorCode.INVALID_MESSAGE_FORMAT,
           { action: args.action }
         );
@@ -327,9 +535,11 @@ export async function roosyncManage(
 - Les permissions d'écriture sont-elles correctes ?
 
 **Suggestions :**
-- Vérifiez que l'action est correcte (mark_read, archive)
-- Pour \`mark_read\` : message_id est requis
-- Pour \`archive\` : message_id est requis`
+- Vérifiez que l'action est correcte (mark_read, archive, bulk_mark_read, bulk_archive, cleanup, stats)
+- Pour \`mark_read\` / \`archive\` : message_id est requis
+- Pour \`bulk_mark_read\` / \`bulk_archive\` : utilisez les filtres (from, priority, before_date, subject_contains, tag)
+- Pour \`cleanup\` : nettoyage automatique (test messages, anciens messages LOW)
+- Pour \`stats\` : aucun paramètre requis`
       }]
     };
   }

@@ -560,4 +560,191 @@ export class MessageManager {
     logger.info(`Checking for new messages for: ${machineId}${workspaceId ? ':' + workspaceId : ''}`);
     return await this.readInbox(machineId, 'unread', undefined, workspaceId);
   }
+
+  /**
+   * Performs a bulk operation (mark_read or archive) on messages matching filter criteria.
+   *
+   * All filter criteria are ANDed together. Only messages matching ALL criteria are affected.
+   *
+   * @param machineId ID of the receiving machine
+   * @param operation Operation to perform: 'mark_read' or 'archive'
+   * @param filters Filter criteria
+   * @param workspaceId Optional workspace ID for recipient filtering
+   * @returns Summary of the operation
+   */
+  async bulkOperation(
+    machineId: string,
+    operation: 'mark_read' | 'archive',
+    filters: {
+      /** Filter by sender machine ID (substring match) */
+      from?: string;
+      /** Filter by priority level */
+      priority?: 'LOW' | 'MEDIUM' | 'HIGH' | 'URGENT';
+      /** Filter by messages older than this ISO date */
+      before_date?: string;
+      /** Filter by subject substring (case-insensitive) */
+      subject_contains?: string;
+      /** Filter by tag */
+      tag?: string;
+      /** Only affect messages with this status */
+      status?: 'unread' | 'read';
+    },
+    workspaceId?: string
+  ): Promise<{
+    operation: string;
+    matched: number;
+    processed: number;
+    errors: number;
+    message_ids: string[];
+  }> {
+    const effectiveWorkspaceId = workspaceId || getLocalWorkspaceId();
+    logger.info(`Bulk ${operation} for ${machineId}:${effectiveWorkspaceId}`, { filters });
+
+    if (!existsSync(this.inboxPath)) {
+      return { operation, matched: 0, processed: 0, errors: 0, message_ids: [] };
+    }
+
+    const files = (await fs.readdir(this.inboxPath)).filter(f => f.endsWith('.json'));
+    const matchedIds: string[] = [];
+    let errors = 0;
+
+    for (const file of files) {
+      try {
+        const content = await fs.readFile(join(this.inboxPath, file), 'utf-8');
+        const message: Message = JSON.parse(content);
+
+        // Check recipient match
+        if (!matchesRecipient(message.to, machineId, effectiveWorkspaceId)) {
+          continue;
+        }
+
+        // Apply filters (AND logic)
+        if (filters.from && !message.from.toLowerCase().includes(filters.from.toLowerCase())) {
+          continue;
+        }
+        if (filters.priority && message.priority !== filters.priority) {
+          continue;
+        }
+        if (filters.before_date && new Date(message.timestamp) >= new Date(filters.before_date)) {
+          continue;
+        }
+        if (filters.subject_contains && !message.subject.toLowerCase().includes(filters.subject_contains.toLowerCase())) {
+          continue;
+        }
+        if (filters.tag && (!message.tags || !message.tags.includes(filters.tag))) {
+          continue;
+        }
+        if (filters.status && message.status !== filters.status) {
+          continue;
+        }
+
+        matchedIds.push(message.id);
+      } catch (error) {
+        logger.error(`Error reading message ${file}`, error);
+        errors++;
+      }
+    }
+
+    // Apply the operation to matched messages
+    let processed = 0;
+    for (const id of matchedIds) {
+      try {
+        if (operation === 'mark_read') {
+          const success = await this.markAsRead(id);
+          if (success) processed++;
+          else errors++;
+        } else if (operation === 'archive') {
+          const success = await this.archiveMessage(id);
+          if (success) processed++;
+          else errors++;
+        }
+      } catch (error) {
+        logger.error(`Error processing message ${id}`, error);
+        errors++;
+      }
+    }
+
+    logger.info(`Bulk ${operation} complete: ${processed}/${matchedIds.length} processed`);
+    return {
+      operation,
+      matched: matchedIds.length,
+      processed,
+      errors,
+      message_ids: matchedIds
+    };
+  }
+
+  /**
+   * Returns inbox statistics for a machine
+   *
+   * @param machineId ID of the receiving machine
+   * @param workspaceId Optional workspace ID
+   * @returns Inbox statistics
+   */
+  async getInboxStats(
+    machineId: string,
+    workspaceId?: string
+  ): Promise<{
+    total: number;
+    unread: number;
+    read: number;
+    by_priority: Record<string, number>;
+    by_sender: Record<string, number>;
+    oldest_unread: string | null;
+  }> {
+    const effectiveWorkspaceId = workspaceId || getLocalWorkspaceId();
+    logger.info(`Getting inbox stats for ${machineId}:${effectiveWorkspaceId}`);
+
+    const stats = {
+      total: 0,
+      unread: 0,
+      read: 0,
+      by_priority: {} as Record<string, number>,
+      by_sender: {} as Record<string, number>,
+      oldest_unread: null as string | null
+    };
+
+    if (!existsSync(this.inboxPath)) {
+      return stats;
+    }
+
+    const files = (await fs.readdir(this.inboxPath)).filter(f => f.endsWith('.json'));
+    let oldestUnreadDate: Date | null = null;
+
+    for (const file of files) {
+      try {
+        const content = await fs.readFile(join(this.inboxPath, file), 'utf-8');
+        const message: Message = JSON.parse(content);
+
+        if (!matchesRecipient(message.to, machineId, effectiveWorkspaceId)) {
+          continue;
+        }
+
+        stats.total++;
+
+        if (message.status === 'unread') {
+          stats.unread++;
+          const msgDate = new Date(message.timestamp);
+          if (!oldestUnreadDate || msgDate < oldestUnreadDate) {
+            oldestUnreadDate = msgDate;
+            stats.oldest_unread = message.timestamp;
+          }
+        } else {
+          stats.read++;
+        }
+
+        // Count by priority
+        const prio = message.priority || 'MEDIUM';
+        stats.by_priority[prio] = (stats.by_priority[prio] || 0) + 1;
+
+        // Count by sender (machine ID only)
+        const sender = parseMachineWorkspace(message.from).machineId;
+        stats.by_sender[sender] = (stats.by_sender[sender] || 0) + 1;
+      } catch (error) {
+        logger.error(`Error reading message ${file}`, error);
+      }
+    }
+
+    return stats;
+  }
 }
