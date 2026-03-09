@@ -3,102 +3,109 @@
  *
  * Vérifie les schemas et métadonnées de l'outil d'application de configuration.
  *
+ * Pattern modifié (#609) : Utilise beforeAll pour l'import unique et vi.mock()
+ * au niveau module au lieu de vi.resetModules() + vi.doMock() qui causait
+ * des timeouts dans le suite complet.
+ *
  * @module roosync/apply-config.test
+ * @version 1.1.0 (#609 fix)
  */
 
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, beforeAll } from 'vitest';
 
 // Désactiver le mock global de fs
 vi.unmock('fs');
 
+// Module-level mock factory for RooSyncService
+// This avoids vi.resetModules() while still allowing fresh mocks per test
+const createMockRooSyncService = () => ({
+  getConfigService: vi.fn(),
+  getConfigSharingService: vi.fn(),
+});
+
+vi.mock('../../../../src/services/RooSyncService.js', () => ({
+  getRooSyncService: vi.fn(() => createMockRooSyncService()),
+}));
+
 describe('roosync_apply_config - Interface', () => {
-  beforeEach(() => {
-    vi.resetModules();
+  let module: any;
+
+  beforeAll(async () => {
+    module = await import('../../../../src/tools/roosync/apply-config.js');
   });
 
-  it('devrait exporter roosyncApplyConfig', async () => {
-    const module = await import('../../../../src/tools/roosync/apply-config.js');
-
+  it('devrait exporter roosyncApplyConfig', () => {
     expect(module.roosyncApplyConfig).toBeDefined();
     expect(typeof module.roosyncApplyConfig).toBe('function');
   });
 
-  it('devrait exporter ApplyConfigArgsSchema', async () => {
-    const module = await import('../../../../src/tools/roosync/apply-config.js');
-
+  it('devrait exporter ApplyConfigArgsSchema', () => {
     expect(module.ApplyConfigArgsSchema).toBeDefined();
   });
 
-  it('devrait exporter applyConfigToolMetadata', async () => {
-    const module = await import('../../../../src/tools/roosync/apply-config.js');
-
+  it('devrait exporter applyConfigToolMetadata', () => {
     expect(module.applyConfigToolMetadata).toBeDefined();
     expect(module.applyConfigToolMetadata.name).toBe('roosync_apply_config');
   });
 });
 
 describe('roosync_apply_config - Schema Validation', () => {
-  beforeEach(() => {
-    vi.resetModules();
+  let module: any;
+
+  beforeAll(async () => {
+    module = await import('../../../../src/tools/roosync/apply-config.js');
   });
 
-  it('devrait accepter un objet vide (tous optionnels)', async () => {
-    const module = await import('../../../../src/tools/roosync/apply-config.js');
+  it('devrait accepter un objet vide (tous optionnels)', () => {
     const result = module.ApplyConfigArgsSchema.safeParse({});
-
     expect(result.success).toBe(true);
   });
 
-  it('devrait accepter version latest', async () => {
-    const module = await import('../../../../src/tools/roosync/apply-config.js');
+  it('devrait accepter version latest', () => {
     const result = module.ApplyConfigArgsSchema.safeParse({
       version: 'latest'
     });
-
     expect(result.success).toBe(true);
   });
 
-  it('devrait accepter une version spécifique', async () => {
-    const module = await import('../../../../src/tools/roosync/apply-config.js');
+  it('devrait accepter une version spécifique', () => {
     const result = module.ApplyConfigArgsSchema.safeParse({
       version: '2.1.0'
     });
-
     expect(result.success).toBe(true);
   });
 
-  it('devrait accepter dryRun et backup', async () => {
-    const module = await import('../../../../src/tools/roosync/apply-config.js');
+  it('devrait accepter dryRun et backup', () => {
     const result = module.ApplyConfigArgsSchema.safeParse({
       dryRun: true,
       backup: false
     });
-
     expect(result.success).toBe(true);
   });
 
-  it('devrait accepter targets array', async () => {
-    const module = await import('../../../../src/tools/roosync/apply-config.js');
+  it('devrait accepter targets array', () => {
     const result = module.ApplyConfigArgsSchema.safeParse({
       targets: ['modes', 'mcp']
     });
-
     expect(result.success).toBe(true);
   });
 
-  it('devrait accepter machineId', async () => {
-    const module = await import('../../../../src/tools/roosync/apply-config.js');
+  it('devrait accepter machineId', () => {
     const result = module.ApplyConfigArgsSchema.safeParse({
       machineId: 'myia-ai-01'
     });
-
     expect(result.success).toBe(true);
   });
 });
 
 describe('roosync_apply_config - Metadata', () => {
-  it('devrait avoir les métadonnées correctes', async () => {
-    const module = await import('../../../../src/tools/roosync/apply-config.js');
+  let module: any;
+
+  beforeAll(async () => {
+    module = await import('../../../../src/tools/roosync/apply-config.js');
+  });
+
+  it('devrait avoir les métadonnées correctes', () => {
     const metadata = module.applyConfigToolMetadata;
 
     expect(metadata.name).toBe('roosync_apply_config');
@@ -116,19 +123,27 @@ describe('roosync_apply_config - Metadata', () => {
 // =============================================================================
 
 describe('roosync_apply_config - Tests Fonctionnels', () => {
+  let module: any;
   let mockRooSyncService: any;
   let mockConfigService: any;
   let mockConfigSharingService: any;
+  let getRooSyncServiceMock: any;
+
+  beforeAll(async () => {
+    // Import the mocked service module
+    const rooSyncServiceModule = await import('../../../../src/services/RooSyncService.js');
+    getRooSyncServiceMock = rooSyncServiceModule.getRooSyncService;
+
+    // Import the module under test
+    module = await import('../../../../src/tools/roosync/apply-config.js');
+  });
 
   beforeEach(() => {
-    vi.resetModules();
-
-    // Mock ConfigService
+    // Fresh mock implementations for each test
     mockConfigService = {
       getConfigVersion: vi.fn().mockResolvedValue('1.0.0'),
     };
 
-    // Mock ConfigSharingService
     mockConfigSharingService = {
       applyConfig: vi.fn().mockResolvedValue({
         success: true,
@@ -138,20 +153,16 @@ describe('roosync_apply_config - Tests Fonctionnels', () => {
       })
     };
 
-    // Mock RooSyncService
     mockRooSyncService = {
       getConfigService: vi.fn().mockReturnValue(mockConfigService),
       getConfigSharingService: vi.fn().mockReturnValue(mockConfigSharingService)
     };
 
-    // Mock getRooSyncService
-    vi.doMock('../../../../src/services/RooSyncService.js', () => ({
-      getRooSyncService: vi.fn().mockReturnValue(mockRooSyncService)
-    }));
+    // Update the mock to return fresh services
+    getRooSyncServiceMock.mockReturnValue(mockRooSyncService);
   });
 
   it('devrait réussir avec version latest', async () => {
-    const module = await import('../../../../src/tools/roosync/apply-config.js');
     const result = await module.roosyncApplyConfig({ version: 'latest' });
 
     expect(result.status).toBe('success');
@@ -167,7 +178,6 @@ describe('roosync_apply_config - Tests Fonctionnels', () => {
   });
 
   it('devrait réussir avec version spécifique', async () => {
-    const module = await import('../../../../src/tools/roosync/apply-config.js');
     const result = await module.roosyncApplyConfig({ version: '1.2.3' });
 
     expect(result.status).toBe('success');
@@ -182,7 +192,6 @@ describe('roosync_apply_config - Tests Fonctionnels', () => {
   });
 
   it('devrait réussir avec machineId explicite', async () => {
-    const module = await import('../../../../src/tools/roosync/apply-config.js');
     const result = await module.roosyncApplyConfig({
       version: 'latest',
       machineId: 'myia-ai-01'
@@ -199,7 +208,6 @@ describe('roosync_apply_config - Tests Fonctionnels', () => {
   });
 
   it('devrait réussir avec ROOSYNC_MACHINE_ID (machineId non fourni)', async () => {
-    const module = await import('../../../../src/tools/roosync/apply-config.js');
     const result = await module.roosyncApplyConfig({ version: 'latest' });
 
     expect(result.status).toBe('success');
@@ -219,13 +227,19 @@ describe('roosync_apply_config - Tests Fonctionnels', () => {
 // =============================================================================
 
 describe('roosync_apply_config - Tests Backup', () => {
+  let module: any;
   let mockRooSyncService: any;
   let mockConfigService: any;
   let mockConfigSharingService: any;
+  let getRooSyncServiceMock: any;
+
+  beforeAll(async () => {
+    const rooSyncServiceModule = await import('../../../../src/services/RooSyncService.js');
+    getRooSyncServiceMock = rooSyncServiceModule.getRooSyncService;
+    module = await import('../../../../src/tools/roosync/apply-config.js');
+  });
 
   beforeEach(() => {
-    vi.resetModules();
-
     mockConfigService = {
       getConfigVersion: vi.fn().mockResolvedValue('1.0.0'),
     };
@@ -244,13 +258,10 @@ describe('roosync_apply_config - Tests Backup', () => {
       getConfigSharingService: vi.fn().mockReturnValue(mockConfigSharingService)
     };
 
-    vi.doMock('../../../../src/services/RooSyncService.js', () => ({
-      getRooSyncService: vi.fn().mockReturnValue(mockRooSyncService)
-    }));
+    getRooSyncServiceMock.mockReturnValue(mockRooSyncService);
   });
 
   it('devrait créer un backup activé (défaut)', async () => {
-    const module = await import('../../../../src/tools/roosync/apply-config.js');
     const result = await module.roosyncApplyConfig({ version: 'latest' });
 
     expect(result.status).toBe('success');
@@ -272,7 +283,6 @@ describe('roosync_apply_config - Tests Backup', () => {
       errors: []
     });
 
-    const module = await import('../../../../src/tools/roosync/apply-config.js');
     const result = await module.roosyncApplyConfig({
       version: 'latest',
       backup: false
@@ -290,7 +300,6 @@ describe('roosync_apply_config - Tests Backup', () => {
   });
 
   it('devrait retourner le chemin de backup', async () => {
-    const module = await import('../../../../src/tools/roosync/apply-config.js');
     const result = await module.roosyncApplyConfig({ version: 'latest' });
 
     expect(result.backupPath).toBeDefined();
@@ -299,7 +308,6 @@ describe('roosync_apply_config - Tests Backup', () => {
   });
 
   it('devrait avoir un format de nom de backup valide', async () => {
-    const module = await import('../../../../src/tools/roosync/apply-config.js');
     const result = await module.roosyncApplyConfig({ version: 'latest' });
 
     // Le format attendu: backup-YYYYMMDD-HHMMSS
@@ -315,13 +323,19 @@ describe('roosync_apply_config - Tests Backup', () => {
 // =============================================================================
 
 describe('roosync_apply_config - Tests DryRun', () => {
+  let module: any;
   let mockRooSyncService: any;
   let mockConfigService: any;
   let mockConfigSharingService: any;
+  let getRooSyncServiceMock: any;
+
+  beforeAll(async () => {
+    const rooSyncServiceModule = await import('../../../../src/services/RooSyncService.js');
+    getRooSyncServiceMock = rooSyncServiceModule.getRooSyncService;
+    module = await import('../../../../src/tools/roosync/apply-config.js');
+  });
 
   beforeEach(() => {
-    vi.resetModules();
-
     mockConfigService = {
       getConfigVersion: vi.fn().mockResolvedValue('1.0.0'),
     };
@@ -340,13 +354,10 @@ describe('roosync_apply_config - Tests DryRun', () => {
       getConfigSharingService: vi.fn().mockReturnValue(mockConfigSharingService)
     };
 
-    vi.doMock('../../../../src/services/RooSyncService.js', () => ({
-      getRooSyncService: vi.fn().mockReturnValue(mockRooSyncService)
-    }));
+    getRooSyncServiceMock.mockReturnValue(mockRooSyncService);
   });
 
   it('devrait faire un dryRun true (aucune modification)', async () => {
-    const module = await import('../../../../src/tools/roosync/apply-config.js');
     const result = await module.roosyncApplyConfig({
       version: 'latest',
       dryRun: true
@@ -371,7 +382,6 @@ describe('roosync_apply_config - Tests DryRun', () => {
       errors: []
     });
 
-    const module = await import('../../../../src/tools/roosync/apply-config.js');
     const result = await module.roosyncApplyConfig({
       version: 'latest',
       dryRun: false
@@ -396,7 +406,6 @@ describe('roosync_apply_config - Tests DryRun', () => {
       errors: []
     });
 
-    const module = await import('../../../../src/tools/roosync/apply-config.js');
     const result = await module.roosyncApplyConfig({
       version: 'latest',
       dryRun: true
@@ -410,7 +419,6 @@ describe('roosync_apply_config - Tests DryRun', () => {
   });
 
   it('devrait faire un dryRun sans backup', async () => {
-    const module = await import('../../../../src/tools/roosync/apply-config.js');
     const result = await module.roosyncApplyConfig({
       version: 'latest',
       dryRun: true,
@@ -430,17 +438,23 @@ describe('roosync_apply_config - Tests DryRun', () => {
 });
 
 // =============================================================================
-// TESTS PRIORITÉ 1 - Tests Targets (5 tests)
+// TESTS PRIORITÉ 1 - Tests Targets (8 tests)
 // =============================================================================
 
 describe('roosync_apply_config - Tests Targets', () => {
+  let module: any;
   let mockRooSyncService: any;
   let mockConfigService: any;
   let mockConfigSharingService: any;
+  let getRooSyncServiceMock: any;
+
+  beforeAll(async () => {
+    const rooSyncServiceModule = await import('../../../../src/services/RooSyncService.js');
+    getRooSyncServiceMock = rooSyncServiceModule.getRooSyncService;
+    module = await import('../../../../src/tools/roosync/apply-config.js');
+  });
 
   beforeEach(() => {
-    vi.resetModules();
-
     mockConfigService = {
       getConfigVersion: vi.fn().mockResolvedValue('1.0.0'),
     };
@@ -459,13 +473,10 @@ describe('roosync_apply_config - Tests Targets', () => {
       getConfigSharingService: vi.fn().mockReturnValue(mockConfigSharingService)
     };
 
-    vi.doMock('../../../../src/services/RooSyncService.js', () => ({
-      getRooSyncService: vi.fn().mockReturnValue(mockRooSyncService)
-    }));
+    getRooSyncServiceMock.mockReturnValue(mockRooSyncService);
   });
 
   it('devrait appliquer targets: modes uniquement', async () => {
-    const module = await import('../../../../src/tools/roosync/apply-config.js');
     const result = await module.roosyncApplyConfig({
       version: 'latest',
       targets: ['modes']
@@ -482,7 +493,6 @@ describe('roosync_apply_config - Tests Targets', () => {
   });
 
   it('devrait appliquer targets: mcp uniquement', async () => {
-    const module = await import('../../../../src/tools/roosync/apply-config.js');
     const result = await module.roosyncApplyConfig({
       version: 'latest',
       targets: ['mcp']
@@ -499,7 +509,6 @@ describe('roosync_apply_config - Tests Targets', () => {
   });
 
   it('devrait appliquer targets: profiles uniquement', async () => {
-    const module = await import('../../../../src/tools/roosync/apply-config.js');
     const result = await module.roosyncApplyConfig({
       version: 'latest',
       targets: ['profiles']
@@ -516,7 +525,6 @@ describe('roosync_apply_config - Tests Targets', () => {
   });
 
   it('devrait appliquer targets: multiples', async () => {
-    const module = await import('../../../../src/tools/roosync/apply-config.js');
     const result = await module.roosyncApplyConfig({
       version: 'latest',
       targets: ['modes', 'mcp', 'profiles']
@@ -533,7 +541,6 @@ describe('roosync_apply_config - Tests Targets', () => {
   });
 
   it('devrait appliquer targets: vide (tous)', async () => {
-    const module = await import('../../../../src/tools/roosync/apply-config.js');
     const result = await module.roosyncApplyConfig({
       version: 'latest',
       targets: []
@@ -554,7 +561,6 @@ describe('roosync_apply_config - Tests Targets', () => {
   // =============================================================================
 
   it('devrait appliquer targets: mcp:github uniquement (#349)', async () => {
-    const module = await import('../../../../src/tools/roosync/apply-config.js');
     const result = await module.roosyncApplyConfig({
       version: 'latest',
       targets: ['mcp:github']
@@ -571,7 +577,6 @@ describe('roosync_apply_config - Tests Targets', () => {
   });
 
   it('devrait appliquer targets: multiples MCP spécifiques (#349)', async () => {
-    const module = await import('../../../../src/tools/roosync/apply-config.js');
     const result = await module.roosyncApplyConfig({
       version: 'latest',
       targets: ['mcp:win-cli', 'mcp:markitdown']
@@ -588,7 +593,6 @@ describe('roosync_apply_config - Tests Targets', () => {
   });
 
   it('devrait appliquer targets: mélange modes et mcp spécifique (#349)', async () => {
-    const module = await import('../../../../src/tools/roosync/apply-config.js');
     const result = await module.roosyncApplyConfig({
       version: 'latest',
       targets: ['modes', 'mcp:jupyter']
@@ -610,12 +614,13 @@ describe('roosync_apply_config - Tests Targets', () => {
 // =============================================================================
 
 describe('roosync_apply_config - Schema Validation Targets (#349)', () => {
-  beforeEach(() => {
-    vi.resetModules();
+  let module: any;
+
+  beforeAll(async () => {
+    module = await import('../../../../src/tools/roosync/apply-config.js');
   });
 
   it('devrait accepter target mcp:github', async () => {
-    const module = await import('../../../../src/tools/roosync/apply-config.js');
     const result = module.ApplyConfigArgsSchema.safeParse({
       targets: ['mcp:github']
     });
@@ -624,7 +629,6 @@ describe('roosync_apply_config - Schema Validation Targets (#349)', () => {
   });
 
   it('devrait accepter multiples targets mcp:*', async () => {
-    const module = await import('../../../../src/tools/roosync/apply-config.js');
     const result = module.ApplyConfigArgsSchema.safeParse({
       targets: ['mcp:win-cli', 'mcp:markitdown', 'mcp:jupyter']
     });
@@ -633,7 +637,6 @@ describe('roosync_apply_config - Schema Validation Targets (#349)', () => {
   });
 
   it('devrait rejeter target mcp: sans nom de serveur', async () => {
-    const module = await import('../../../../src/tools/roosync/apply-config.js');
     const result = module.ApplyConfigArgsSchema.safeParse({
       targets: ['mcp:']
     });
@@ -642,7 +645,6 @@ describe('roosync_apply_config - Schema Validation Targets (#349)', () => {
   });
 
   it('devrait rejeter target invalide', async () => {
-    const module = await import('../../../../src/tools/roosync/apply-config.js');
     const result = module.ApplyConfigArgsSchema.safeParse({
       targets: ['invalid-target']
     });
@@ -651,7 +653,6 @@ describe('roosync_apply_config - Schema Validation Targets (#349)', () => {
   });
 
   it('devrait accepter mélange modes + mcp spécifiques', async () => {
-    const module = await import('../../../../src/tools/roosync/apply-config.js');
     const result = module.ApplyConfigArgsSchema.safeParse({
       targets: ['modes', 'mcp:github', 'profiles']
     });
@@ -665,12 +666,22 @@ describe('roosync_apply_config - Schema Validation Targets (#349)', () => {
 // =============================================================================
 
 describe('roosync_apply_config - Tests Version Incompatible', () => {
+  let module: any;
   let mockRooSyncService: any;
   let mockConfigService: any;
   let mockConfigSharingService: any;
+  let getRooSyncServiceMock: any;
+
+  beforeAll(async () => {
+    const rooSyncServiceModule = await import('../../../../src/services/RooSyncService.js');
+    getRooSyncServiceMock = rooSyncServiceModule.getRooSyncService;
+    module = await import('../../../../src/tools/roosync/apply-config.js');
+  });
 
   beforeEach(() => {
-    vi.resetModules();
+    mockConfigService = {
+      getConfigVersion: vi.fn().mockResolvedValue('1.0.0'),
+    };
 
     mockConfigSharingService = {
       applyConfig: vi.fn().mockResolvedValue({
@@ -686,33 +697,16 @@ describe('roosync_apply_config - Tests Version Incompatible', () => {
       getConfigSharingService: vi.fn().mockReturnValue(mockConfigSharingService)
     };
 
-    vi.doMock('../../../../src/services/RooSyncService.js', () => ({
-      getRooSyncService: vi.fn().mockReturnValue(mockRooSyncService)
-    }));
+    getRooSyncServiceMock.mockReturnValue(mockRooSyncService);
   });
 
   it('devrait rejeter une version majeure incompatible', async () => {
-    // Configurer le mock avant l'import
-    mockConfigService = {
-      getConfigVersion: vi.fn().mockResolvedValue('1.0.0'),
-    };
-    mockRooSyncService.getConfigService = vi.fn().mockReturnValue(mockConfigService);
-
-    const module = await import('../../../../src/tools/roosync/apply-config.js');
-    
     await expect(
       module.roosyncApplyConfig({ version: '2.0.0' })
     ).rejects.toThrow('Incompatibilité de version de configuration');
   });
 
   it('devrait accepter une version compatible', async () => {
-    // Configurer le mock avant l'import
-    mockConfigService = {
-      getConfigVersion: vi.fn().mockResolvedValue('1.0.0'),
-    };
-    mockRooSyncService.getConfigService = vi.fn().mockReturnValue(mockConfigService);
-
-    const module = await import('../../../../src/tools/roosync/apply-config.js');
     const result = await module.roosyncApplyConfig({ version: '1.2.3' });
 
     expect(result.status).toBe('success');
@@ -720,13 +714,12 @@ describe('roosync_apply_config - Tests Version Incompatible', () => {
   });
 
   it('devrait gérer version null (Bug #305)', async () => {
-    // Configurer le mock avant l'import
     mockConfigService = {
       getConfigVersion: vi.fn().mockResolvedValue(null),
     };
     mockRooSyncService.getConfigService = vi.fn().mockReturnValue(mockConfigService);
+    getRooSyncServiceMock.mockReturnValue(mockRooSyncService);
 
-    const module = await import('../../../../src/tools/roosync/apply-config.js');
     const result = await module.roosyncApplyConfig({ version: '1.2.3' });
 
     // Quand currentVersion est null, la validation est ignorée et la version demandée est utilisée
@@ -741,14 +734,6 @@ describe('roosync_apply_config - Tests Version Incompatible', () => {
   });
 
   it('devrait avoir un message d\'erreur détaillé pour version incompatible', async () => {
-    // Configurer le mock avant l'import
-    mockConfigService = {
-      getConfigVersion: vi.fn().mockResolvedValue('1.0.0'),
-    };
-    mockRooSyncService.getConfigService = vi.fn().mockReturnValue(mockConfigService);
-
-    const module = await import('../../../../src/tools/roosync/apply-config.js');
-    
     await expect(
       module.roosyncApplyConfig({ version: '2.0.0' })
     ).rejects.toThrow('Incompatibilité de version de configuration');
@@ -768,15 +753,8 @@ describe('roosync_apply_config - Tests Version Incompatible', () => {
   });
 
   it('devrait avoir le code d\'erreur correct pour version incompatible', async () => {
-    // Configurer le mock avant l'import
-    mockConfigService = {
-      getConfigVersion: vi.fn().mockResolvedValue('1.0.0'),
-    };
-    mockRooSyncService.getConfigService = vi.fn().mockReturnValue(mockConfigService);
-
-    const module = await import('../../../../src/tools/roosync/apply-config.js');
     const { ConfigSharingServiceError, ConfigSharingServiceErrorCode } = await import('../../../../src/types/errors.js');
-    
+
     await expect(
       module.roosyncApplyConfig({ version: '2.0.0' })
     ).rejects.toThrow('Incompatibilité de version de configuration');
@@ -795,13 +773,19 @@ describe('roosync_apply_config - Tests Version Incompatible', () => {
 // =============================================================================
 
 describe('roosync_apply_config - Tests Erreurs', () => {
+  let module: any;
   let mockRooSyncService: any;
   let mockConfigService: any;
   let mockConfigSharingService: any;
+  let getRooSyncServiceMock: any;
+
+  beforeAll(async () => {
+    const rooSyncServiceModule = await import('../../../../src/services/RooSyncService.js');
+    getRooSyncServiceMock = rooSyncServiceModule.getRooSyncService;
+    module = await import('../../../../src/tools/roosync/apply-config.js');
+  });
 
   beforeEach(() => {
-    vi.resetModules();
-
     mockConfigService = {
       getConfigVersion: vi.fn().mockResolvedValue('1.0.0'),
     };
@@ -820,14 +804,12 @@ describe('roosync_apply_config - Tests Erreurs', () => {
       getConfigSharingService: vi.fn().mockReturnValue(mockConfigSharingService)
     };
 
-    vi.doMock('../../../../src/services/RooSyncService.js', () => ({
-      getRooSyncService: vi.fn().mockReturnValue(mockRooSyncService)
-    }));
+    getRooSyncServiceMock.mockReturnValue(mockRooSyncService);
   });
 
   it('devrait rejeter une configuration non trouvée', async () => {
     const { ConfigSharingServiceError, ConfigSharingServiceErrorCode } = await import('../../../../src/types/errors.js');
-    
+
     mockConfigSharingService.applyConfig.mockRejectedValue(
       new ConfigSharingServiceError(
         'Configuration non trouvée: 1.5.0 (machineId: myia-ai-01)',
@@ -836,8 +818,6 @@ describe('roosync_apply_config - Tests Erreurs', () => {
       )
     );
 
-    const module = await import('../../../../src/tools/roosync/apply-config.js');
-    
     await expect(
       module.roosyncApplyConfig({ version: '1.5.0', machineId: 'myia-ai-01' })
     ).rejects.toThrow('Configuration non trouvée');
@@ -854,7 +834,7 @@ describe('roosync_apply_config - Tests Erreurs', () => {
 
   it('devrait rejeter un manifeste non trouvé', async () => {
     const { ConfigSharingServiceError, ConfigSharingServiceErrorCode } = await import('../../../../src/types/errors.js');
-    
+
     mockConfigSharingService.applyConfig.mockRejectedValue(
       new ConfigSharingServiceError(
         'Manifeste non trouvé: /path/to/manifest.json',
@@ -863,8 +843,6 @@ describe('roosync_apply_config - Tests Erreurs', () => {
       )
     );
 
-    const module = await import('../../../../src/tools/roosync/apply-config.js');
-    
     await expect(
       module.roosyncApplyConfig({ version: '1.0.0' })
     ).rejects.toThrow('Manifeste non trouvé');
@@ -880,7 +858,7 @@ describe('roosync_apply_config - Tests Erreurs', () => {
 
   it('devrait rejeter un inventaire incomplet', async () => {
     const { ConfigSharingServiceError, ConfigSharingServiceErrorCode } = await import('../../../../src/types/errors.js');
-    
+
     mockConfigSharingService.applyConfig.mockRejectedValue(
       new ConfigSharingServiceError(
         'Inventaire incomplet: paths.rooExtensions non disponible. Impossible d\'appliquer la configuration.',
@@ -889,8 +867,6 @@ describe('roosync_apply_config - Tests Erreurs', () => {
       )
     );
 
-    const module = await import('../../../../src/tools/roosync/apply-config.js');
-    
     await expect(
       module.roosyncApplyConfig({ version: 'latest' })
     ).rejects.toThrow('Inventaire incomplet');
@@ -906,7 +882,7 @@ describe('roosync_apply_config - Tests Erreurs', () => {
 
   it('devrait gérer une erreur de lecture fichier', async () => {
     const { ConfigSharingServiceError, ConfigSharingServiceErrorCode } = await import('../../../../src/types/errors.js');
-    
+
     mockConfigSharingService.applyConfig.mockResolvedValue({
       success: false,
       filesApplied: 0,
@@ -914,7 +890,6 @@ describe('roosync_apply_config - Tests Erreurs', () => {
       errors: ['Erreur lors du traitement de roo-modes/test.json: ENOENT: no such file or directory']
     });
 
-    const module = await import('../../../../src/tools/roosync/apply-config.js');
     const result = await module.roosyncApplyConfig({ version: 'latest' });
 
     expect(result.status).toBe('error');
@@ -928,7 +903,7 @@ describe('roosync_apply_config - Tests Erreurs', () => {
 
   it('devrait gérer une erreur d\'écriture fichier', async () => {
     const { ConfigSharingServiceError, ConfigSharingServiceErrorCode } = await import('../../../../src/types/errors.js');
-    
+
     mockConfigSharingService.applyConfig.mockResolvedValue({
       success: false,
       filesApplied: 2,
@@ -939,7 +914,6 @@ describe('roosync_apply_config - Tests Erreurs', () => {
       ]
     });
 
-    const module = await import('../../../../src/tools/roosync/apply-config.js');
     const result = await module.roosyncApplyConfig({ version: 'latest' });
 
     expect(result.status).toBe('error');
@@ -957,13 +931,19 @@ describe('roosync_apply_config - Tests Erreurs', () => {
 // =============================================================================
 
 describe('roosync_apply_config - Tests Résultat', () => {
+  let module: any;
   let mockRooSyncService: any;
   let mockConfigService: any;
   let mockConfigSharingService: any;
+  let getRooSyncServiceMock: any;
+
+  beforeAll(async () => {
+    const rooSyncServiceModule = await import('../../../../src/services/RooSyncService.js');
+    getRooSyncServiceMock = rooSyncServiceModule.getRooSyncService;
+    module = await import('../../../../src/tools/roosync/apply-config.js');
+  });
 
   beforeEach(() => {
-    vi.resetModules();
-
     mockConfigService = {
       getConfigVersion: vi.fn().mockResolvedValue('1.0.0'),
     };
@@ -982,13 +962,10 @@ describe('roosync_apply_config - Tests Résultat', () => {
       getConfigSharingService: vi.fn().mockReturnValue(mockConfigSharingService)
     };
 
-    vi.doMock('../../../../src/services/RooSyncService.js', () => ({
-      getRooSyncService: vi.fn().mockReturnValue(mockRooSyncService)
-    }));
+    getRooSyncServiceMock.mockReturnValue(mockRooSyncService);
   });
 
   it('devrait avoir la structure du résultat succès correcte', async () => {
-    const module = await import('../../../../src/tools/roosync/apply-config.js');
     const result = await module.roosyncApplyConfig({ version: 'latest' });
 
     expect(result).toHaveProperty('status');
@@ -1012,7 +989,6 @@ describe('roosync_apply_config - Tests Résultat', () => {
       errors: ['Erreur de test']
     });
 
-    const module = await import('../../../../src/tools/roosync/apply-config.js');
     const result = await module.roosyncApplyConfig({ version: 'latest' });
 
     expect(result).toHaveProperty('status');
@@ -1037,7 +1013,6 @@ describe('roosync_apply_config - Tests Résultat', () => {
       errors: []
     });
 
-    const module = await import('../../../../src/tools/roosync/apply-config.js');
     const result = await module.roosyncApplyConfig({ version: 'latest' });
 
     expect(result.filesApplied).toBe(7);
@@ -1057,7 +1032,6 @@ describe('roosync_apply_config - Tests Résultat', () => {
       ]
     });
 
-    const module = await import('../../../../src/tools/roosync/apply-config.js');
     const result = await module.roosyncApplyConfig({ version: 'latest' });
 
     expect(result.errors).toBeDefined();
