@@ -147,6 +147,49 @@ export async function startProactiveMetadataRepair(): Promise<void> {
 }
 
 /**
+ * #604: Discover and load Claude Code sessions into the conversation cache
+ * Scans ~/.claude/projects/ for JSONL files and creates skeletons
+ */
+export async function loadClaudeCodeSessions(conversationCache: Map<string, ConversationSkeleton>): Promise<void> {
+    try {
+        const { ClaudeStorageDetector } = await import('../utils/claude-storage-detector.js');
+        const locations = await ClaudeStorageDetector.detectStorageLocations();
+
+        if (locations.length === 0) {
+            console.log('[Claude] No Claude Code project directories found');
+            return;
+        }
+
+        let loaded = 0;
+        for (const location of locations) {
+            try {
+                const taskId = `claude-${path.basename(location.projectPath)}`;
+
+                // Skip if already in cache
+                if (conversationCache.has(taskId)) continue;
+
+                const skeleton = await ClaudeStorageDetector.analyzeConversation(
+                    taskId, location.projectPath
+                );
+                if (skeleton && skeleton.sequence.length > 0) {
+                    // Mark as Claude source for background indexer
+                    if (!skeleton.metadata) skeleton.metadata = {} as any;
+                    skeleton.metadata.dataSource = 'claude';
+                    conversationCache.set(taskId, skeleton);
+                    loaded++;
+                }
+            } catch (error) {
+                console.warn(`[Claude] Failed to load session from ${location.projectPath}:`, error);
+            }
+        }
+
+        console.log(`[Claude] Loaded ${loaded} Claude Code sessions into cache (from ${locations.length} project dirs)`);
+    } catch (error) {
+        console.warn('[Claude] Claude Code session discovery failed (non-blocking):', error);
+    }
+}
+
+/**
  * Initialise les services background
  */
 export async function initializeBackgroundServices(state: ServerState): Promise<void> {
@@ -155,6 +198,9 @@ export async function initializeBackgroundServices(state: ServerState): Promise<
 
         // Niveau 1: Chargement initial des squelettes depuis le disque
         await loadSkeletonsFromDisk(state.conversationCache);
+
+        // #604: Discover Claude Code sessions for background indexation
+        await loadClaudeCodeSessions(state.conversationCache);
 
         // Auto-réparation proactive: Génération des métadonnées manquantes
         await startProactiveMetadataRepair();
@@ -380,8 +426,10 @@ async function indexTaskInQdrant(taskId: string, state: ServerState): Promise<vo
 
         console.log(`[INDEX] Task ${taskId}: ${decision.reason}`);
 
+        // #604: Determine source from skeleton metadata
+        const source: 'roo' | 'claude-code' = skeleton.metadata?.dataSource === 'claude' ? 'claude-code' : 'roo';
         const taskIndexer = new TaskIndexer();
-        await taskIndexer.indexTask(taskId);
+        await taskIndexer.indexTask(taskId, source);
 
         state.indexingDecisionService.markIndexingSuccess(skeleton);
         await saveSkeletonToDisk(skeleton);

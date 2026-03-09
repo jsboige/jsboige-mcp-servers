@@ -96,6 +96,28 @@ export class TaskIndexer {
      */
     async indexTask(taskId: string, source: 'roo' | 'claude-code' = 'roo'): Promise<PointStruct[]> {
         try {
+            // #604: For Claude Code sessions, resolve path via ClaudeStorageDetector
+            if (source === 'claude-code') {
+                const { ClaudeStorageDetector } = await import('../utils/claude-storage-detector.js');
+                const locations = await ClaudeStorageDetector.detectStorageLocations();
+                // taskId format: claude-{projectHash} — match against projectPath basename
+                const suffix = taskId.replace(/^claude-/, '');
+                for (const loc of locations) {
+                    if (path.basename(loc.projectPath) === suffix) {
+                        // For Claude sessions, taskPath = projectPath (contains JSONL files)
+                        const points = await indexTask(taskId, loc.projectPath, source);
+                        return points;
+                    }
+                }
+                throw new StateManagerError(
+                    `Claude Code session ${taskId} not found`,
+                    'TASK_NOT_FOUND',
+                    'TaskIndexer',
+                    { taskId }
+                );
+            }
+
+            // Standard Roo task resolution
             const { RooStorageDetector } = await import('../utils/roo-storage-detector.js');
             const locations = await RooStorageDetector.detectStorageLocations();
 
