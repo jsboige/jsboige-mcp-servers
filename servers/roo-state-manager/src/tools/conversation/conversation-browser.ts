@@ -21,6 +21,7 @@ import { viewConversationTree } from '../view-conversation-tree.js';
 import { handleRooSyncSummarize, RooSyncSummarizeArgs } from '../summary/roosync-summarize.tool.js';
 import { listConversationsTool } from './list-conversations.tool.js';
 import { handleBuildSkeletonCache } from '../cache/build-skeleton-cache.tool.js';
+import { handleGetConversationSynthesis } from '../summary/get-conversation-synthesis.tool.js';
 import { ServerState } from '../../services/state-manager.service.js';
 
 /**
@@ -92,7 +93,7 @@ export interface ConversationBrowserArgs {
 
     // ===== Arguments pour action='summarize' (via roosync_summarize) =====
     /** [summarize] Type de résumé (requis si action='summarize') */
-    summarize_type?: 'trace' | 'cluster';
+    summarize_type?: 'trace' | 'cluster' | 'synthesis';
     /** [summarize] ID de la tâche (alias pour task_id en contexte summarize) */
     taskId?: string;
     /** [list/summarize] Source des conversations: 'roo' (défaut), 'claude', ou 'all' */
@@ -134,6 +135,10 @@ export interface ConversationBrowserArgs {
     /** [summarize/cluster] Montrer relations */
     showTaskRelationships?: boolean;
 
+    // ===== Arguments pour action='summarize', summarize_type='synthesis' =====
+    /** [summarize/synthesis] Format de sortie pour la synthèse LLM */
+    synthesis_output_format?: 'json' | 'markdown';
+
     // ===== Arguments pour action='rebuild' (via build_skeleton_cache) =====
     /** [rebuild] Si true, reconstruit TOUS les squelettes. Si false, ne reconstruit que les manquants/obsolètes */
     force_rebuild?: boolean;
@@ -146,7 +151,7 @@ export interface ConversationBrowserArgs {
  */
 export const conversationBrowserTool: Tool = {
     name: 'conversation_browser',
-    description: 'Outil consolidé pour naviguer, visualiser et résumer les conversations. Actions: "list" (lister les conversations récentes), "tree" (arbre des tâches), "current" (tâche active), "view" (vue conversation), "summarize" (résumé/synthèse), "rebuild" (reconstruire le cache de squelettes sur disque). Commencez par "list" pour découvrir les IDs de tâches.',
+    description: 'Outil consolidé pour naviguer, visualiser et résumer les conversations. Actions: "list" (lister les conversations récentes), "tree" (arbre des tâches), "current" (tâche active), "view" (vue conversation), "summarize" (résumé/synthèse — types: "trace", "cluster", "synthesis" pour analyse LLM complète), "rebuild" (reconstruire le cache de squelettes sur disque). Commencez par "list" pour découvrir les IDs de tâches.',
     inputSchema: {
         type: 'object',
         properties: {
@@ -267,8 +272,8 @@ export const conversationBrowserTool: Tool = {
             // --- Arguments summarize ---
             summarize_type: {
                 type: 'string',
-                enum: ['trace', 'cluster'],
-                description: '[summarize] Type de résumé (requis si action=summarize). "synthesis" retiré (mock non fonctionnel).'
+                enum: ['trace', 'cluster', 'synthesis'],
+                description: '[summarize] Type de résumé (requis si action=summarize). "synthesis" appelle le pipeline LLM réel (OpenAI-compatible) pour générer une analyse structurée de la conversation.'
             },
             taskId: {
                 type: 'string',
@@ -371,6 +376,13 @@ export const conversationBrowserTool: Tool = {
                 description: '[summarize/cluster] Montrer les relations entre tâches.',
                 default: true
             },
+            // --- Arguments synthesis ---
+            synthesis_output_format: {
+                type: 'string',
+                enum: ['json', 'markdown'],
+                description: '[summarize/synthesis] Format de sortie pour la synthèse LLM. "json" retourne l\'analyse complète, "markdown" retourne la section narrative.',
+                default: 'json'
+            },
             // --- Arguments rebuild ---
             force_rebuild: {
                 type: 'boolean',
@@ -422,7 +434,7 @@ function validateArgs(args: ConversationBrowserArgs): void {
     if (args.action === 'summarize') {
         if (!args.summarize_type) {
             throw new StateManagerError(
-                'Le paramètre "summarize_type" est requis pour l\'action "summarize". Valeurs: "trace", "cluster".',
+                'Le paramètre "summarize_type" est requis pour l\'action "summarize". Valeurs: "trace", "cluster", "synthesis".',
                 'VALIDATION_FAILED',
                 'ConversationBrowserTool',
                 { action: args.action, missingParam: 'summarize_type' }
@@ -438,6 +450,46 @@ function validateArgs(args: ConversationBrowserArgs): void {
                 { action: args.action, missingParam: 'taskId' }
             );
         }
+    }
+}
+
+/**
+ * Handler pour summarize_type='synthesis' : appelle le pipeline LLM complet
+ * via get-conversation-synthesis.tool.ts (SynthesisOrchestratorService)
+ */
+async function handleSynthesisAction(
+    taskId: string,
+    outputFormat: 'json' | 'markdown',
+    filePath?: string,
+    getConversationSkeleton?: (id: string) => Promise<ConversationSkeleton | null>
+): Promise<CallToolResult> {
+    if (!getConversationSkeleton) {
+        return {
+            content: [{ type: 'text', text: 'Erreur: getConversationSkeleton non disponible pour la synthèse LLM.' }],
+            isError: true
+        };
+    }
+
+    try {
+        const result = await handleGetConversationSynthesis(
+            { taskId, filePath, outputFormat },
+            getConversationSkeleton
+        );
+
+        // handleGetConversationSynthesis returns string (if filePath or markdown) or ConversationAnalysis object
+        const text = typeof result === 'string'
+            ? result
+            : JSON.stringify(result, null, 2);
+
+        return {
+            content: [{ type: 'text', text }]
+        };
+    } catch (error) {
+        const errorMessage = error instanceof Error ? error.message : 'Erreur inconnue';
+        return {
+            content: [{ type: 'text', text: `Erreur lors de la synthèse LLM: ${errorMessage}` }],
+            isError: true
+        };
     }
 }
 
@@ -532,6 +584,16 @@ export async function handleConversationBrowser(
             case 'summarize': {
                 // Résoudre taskId depuis taskId ou task_id
                 const resolvedTaskId = (args.taskId || args.task_id)!;
+
+                // === Synthesis: pipeline LLM via SynthesisOrchestratorService ===
+                if (args.summarize_type === 'synthesis') {
+                    return await handleSynthesisAction(
+                        resolvedTaskId,
+                        args.synthesis_output_format || 'json',
+                        args.filePath,
+                        getConversationSkeleton
+                    );
+                }
 
                 // Resolve source for summarize: 'all' not supported, auto-detect from taskId prefix
                 const summarizeSource = args.source === 'all'
