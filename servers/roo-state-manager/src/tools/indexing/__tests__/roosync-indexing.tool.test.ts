@@ -1,17 +1,38 @@
 /**
  * Tests for roosync-indexing.tool.ts
  * Issue #492 - Coverage for unified indexing dispatcher
+ * Issue #611 - Claude Code session archiving support
  *
  * @module tools/indexing/__tests__/roosync-indexing.tool
  */
 
 import { describe, test, expect, vi, beforeEach } from 'vitest';
 
-const { mockIndexHandler, mockResetHandler, mockDiagnoseHandler, mockRebuildHandler } = vi.hoisted(() => ({
+const { mockIndexHandler, mockResetHandler, mockDiagnoseHandler, mockRebuildHandler,
+	mockArchiveTask, mockArchiveClaudeCodeSessions, mockListArchivedTasks, mockFindConversationById
+} = vi.hoisted(() => ({
 	mockIndexHandler: vi.fn(),
 	mockResetHandler: vi.fn(),
 	mockDiagnoseHandler: vi.fn(),
-	mockRebuildHandler: vi.fn()
+	mockRebuildHandler: vi.fn(),
+	mockArchiveTask: vi.fn(),
+	mockArchiveClaudeCodeSessions: vi.fn(),
+	mockListArchivedTasks: vi.fn(),
+	mockFindConversationById: vi.fn()
+}));
+
+vi.mock('../../../services/task-archiver/index.js', () => ({
+	TaskArchiver: {
+		archiveTask: mockArchiveTask,
+		archiveClaudeCodeSessions: mockArchiveClaudeCodeSessions,
+		listArchivedTasks: mockListArchivedTasks
+	}
+}));
+
+vi.mock('../../../utils/roo-storage-detector.js', () => ({
+	RooStorageDetector: {
+		findConversationById: mockFindConversationById
+	}
 }));
 
 vi.mock('../index-task.tool.js', () => ({
@@ -171,5 +192,112 @@ describe('roosyncIndexingTool', () => {
 
 		expect(mockDiagnoseHandler).toHaveBeenCalledWith(cache);
 		expect(result).toBe(expected);
+	});
+
+	// ============================================================
+	// Archive action - Roo tasks
+	// ============================================================
+
+	test('archive action with task_id archives Roo task', async () => {
+		const conversation = { path: '/path/to/task' };
+		mockFindConversationById.mockResolvedValue(conversation);
+		mockArchiveTask.mockResolvedValue(undefined);
+
+		const skeleton = {
+			metadata: { title: 'Test Task' },
+			isCompleted: true
+		};
+		cache.set('task-123', skeleton as any);
+
+		const result = await handleRooSyncIndexing(
+			{ action: 'archive', task_id: 'task-123' },
+			cache, ensureFresh, saveSkeleton, indexQueue, setEnabled, mockRebuildHandler
+		);
+
+		expect(mockArchiveTask).toHaveBeenCalledWith('task-123', '/path/to/task', skeleton);
+		expect((result as any).isError).toBe(false);
+	});
+
+	test('archive action without task_id lists archived tasks', async () => {
+		mockListArchivedTasks.mockResolvedValue(['task-1', 'task-2']);
+
+		const result = await handleRooSyncIndexing(
+			{ action: 'archive' },
+			cache, ensureFresh, saveSkeleton, indexQueue, setEnabled, mockRebuildHandler
+		);
+
+		expect(mockListArchivedTasks).toHaveBeenCalledWith(undefined);
+		expect((result as any).isError).toBe(false);
+		const response = JSON.parse(result.content[0].text);
+		expect(response.action).toBe('archive_list');
+		expect(response.total).toBe(2);
+	});
+
+	test('archive action with machine_id filters by machine', async () => {
+		mockListArchivedTasks.mockResolvedValue(['task-1']);
+
+		const result = await handleRooSyncIndexing(
+			{ action: 'archive', machine_id: 'myia-po-2023' },
+			cache, ensureFresh, saveSkeleton, indexQueue, setEnabled, mockRebuildHandler
+		);
+
+		expect(mockListArchivedTasks).toHaveBeenCalledWith('myia-po-2023');
+	});
+
+	// ============================================================
+	// Archive action - Claude Code sessions (#611)
+	// ============================================================
+
+	test('archive action with claude_code_sessions=true archives Claude Code sessions', async () => {
+		mockArchiveClaudeCodeSessions.mockResolvedValue({
+			archived: 5,
+			failed: 1
+		});
+
+		const result = await handleRooSyncIndexing(
+			{ action: 'archive', claude_code_sessions: true },
+			cache, ensureFresh, saveSkeleton, indexQueue, setEnabled, mockRebuildHandler
+		);
+
+		expect(mockArchiveClaudeCodeSessions).toHaveBeenCalled();
+		expect((result as any).isError).toBe(false);
+		expect(result.content[0].text).toContain('Sessions Claude Code archivées');
+		expect(result.content[0].text).toContain('5 réussies');
+		expect(result.content[0].text).toContain('1 échecs');
+	});
+
+	test('archive action with claude_code_sessions and max_sessions limits archiving', async () => {
+		mockArchiveClaudeCodeSessions.mockResolvedValue({
+			archived: 10,
+			failed: 0
+		});
+
+		const result = await handleRooSyncIndexing(
+			{ action: 'archive', claude_code_sessions: true, max_sessions: 10 },
+			cache, ensureFresh, saveSkeleton, indexQueue, setEnabled, mockRebuildHandler
+		);
+
+		expect(mockArchiveClaudeCodeSessions).toHaveBeenCalledWith(expect.any(String), 10);
+		expect(result.content[0].text).toContain('Sessions Claude Code archivées');
+		expect(result.content[0].text).toContain('10 réussies');
+		expect(result.content[0].text).toContain('0 échecs');
+	});
+
+	test('archive action returns error on Claude Code archiving failure', async () => {
+		let errorCaught = false;
+		mockArchiveClaudeCodeSessions.mockRejectedValueOnce(new Error('Directory not found'));
+
+		try {
+			await handleRooSyncIndexing(
+				{ action: 'archive', claude_code_sessions: true },
+				cache, ensureFresh, saveSkeleton, indexQueue, setEnabled, mockRebuildHandler
+			);
+		} catch (e) {
+			errorCaught = true;
+			expect(e).toBeInstanceOf(Error);
+			expect((e as Error).message).toContain('Directory not found');
+		}
+
+		expect(errorCaught).toBe(true);
 	});
 });
