@@ -79,9 +79,9 @@ describe('conversation_browser - CONS-X (#457)', () => {
             expect(conversationBrowserTool.name).toBe('conversation_browser');
         });
 
-        it('devrait avoir les 5 actions dans le schema', () => {
+        it('devrait avoir les 6 actions dans le schema', () => {
             const actionProp = (conversationBrowserTool.inputSchema as any).properties.action;
-            expect(actionProp.enum).toEqual(['list', 'tree', 'current', 'view', 'summarize']);
+            expect(actionProp.enum).toEqual(['list', 'tree', 'current', 'view', 'summarize', 'rebuild']);
         });
 
         it('devrait avoir action comme seul champ requis', () => {

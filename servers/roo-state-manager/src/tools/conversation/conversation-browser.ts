@@ -20,11 +20,13 @@ import { handleTaskBrowse, TaskBrowseArgs } from '../task/browse.js';
 import { viewConversationTree } from '../view-conversation-tree.js';
 import { handleRooSyncSummarize, RooSyncSummarizeArgs } from '../summary/roosync-summarize.tool.js';
 import { listConversationsTool } from './list-conversations.tool.js';
+import { handleBuildSkeletonCache } from '../cache/build-skeleton-cache.tool.js';
+import { ServerState } from '../../services/state-manager.service.js';
 
 /**
  * Type union pour les actions supportées
  */
-export type ConversationBrowserAction = 'list' | 'tree' | 'current' | 'view' | 'summarize';
+export type ConversationBrowserAction = 'list' | 'tree' | 'current' | 'view' | 'summarize' | 'rebuild';
 
 /**
  * Arguments pour l'outil conversation_browser
@@ -131,6 +133,12 @@ export interface ConversationBrowserArgs {
     clusterTruncationChars?: number;
     /** [summarize/cluster] Montrer relations */
     showTaskRelationships?: boolean;
+
+    // ===== Arguments pour action='rebuild' (via build_skeleton_cache) =====
+    /** [rebuild] Si true, reconstruit TOUS les squelettes. Si false, ne reconstruit que les manquants/obsolètes */
+    force_rebuild?: boolean;
+    /** [rebuild] Liste d'IDs de tâches spécifiques à reconstruire */
+    task_ids?: string[];
 }
 
 /**
@@ -138,14 +146,14 @@ export interface ConversationBrowserArgs {
  */
 export const conversationBrowserTool: Tool = {
     name: 'conversation_browser',
-    description: 'Outil consolidé pour naviguer, visualiser et résumer les conversations. Actions: "list" (lister les conversations récentes), "tree" (arbre des tâches), "current" (tâche active), "view" (vue conversation), "summarize" (résumé/synthèse). Commencez par "list" pour découvrir les IDs de tâches.',
+    description: 'Outil consolidé pour naviguer, visualiser et résumer les conversations. Actions: "list" (lister les conversations récentes), "tree" (arbre des tâches), "current" (tâche active), "view" (vue conversation), "summarize" (résumé/synthèse), "rebuild" (reconstruire le cache de squelettes sur disque). Commencez par "list" pour découvrir les IDs de tâches.',
     inputSchema: {
         type: 'object',
         properties: {
             action: {
                 type: 'string',
-                enum: ['list', 'tree', 'current', 'view', 'summarize'],
-                description: 'Action à effectuer. Utilisez "list" pour découvrir les conversations disponibles et leurs IDs.'
+                enum: ['list', 'tree', 'current', 'view', 'summarize', 'rebuild'],
+                description: 'Action à effectuer. Utilisez "list" pour découvrir les conversations disponibles et leurs IDs. "rebuild" force la reconstruction du cache de squelettes.'
             },
             // --- Arguments list ---
             limit: {
@@ -362,6 +370,17 @@ export const conversationBrowserTool: Tool = {
                 type: 'boolean',
                 description: '[summarize/cluster] Montrer les relations entre tâches.',
                 default: true
+            },
+            // --- Arguments rebuild ---
+            force_rebuild: {
+                type: 'boolean',
+                description: '[rebuild] Si true, reconstruit TOUS les squelettes (lent). Si false/omis, ne reconstruit que les manquants/obsolètes.',
+                default: false
+            },
+            task_ids: {
+                type: 'array',
+                items: { type: 'string' },
+                description: '[rebuild] Liste optionnelle d\'IDs de tâches spécifiques à reconstruire.'
             }
         },
         required: ['action']
@@ -381,7 +400,7 @@ function validateArgs(args: ConversationBrowserArgs): void {
         );
     }
 
-    const validActions: ConversationBrowserAction[] = ['list', 'tree', 'current', 'view', 'summarize'];
+    const validActions: ConversationBrowserAction[] = ['list', 'tree', 'current', 'view', 'summarize', 'rebuild'];
     if (!validActions.includes(args.action)) {
         throw new StateManagerError(
             `Action invalide: "${args.action}". Valeurs possibles: ${validActions.join(', ')}.`,
@@ -438,7 +457,8 @@ export async function handleConversationBrowser(
     ensureSkeletonCacheIsFresh: () => Promise<void>,
     contextWorkspace?: string,
     getConversationSkeleton?: (id: string) => Promise<ConversationSkeleton | null>,
-    findChildTasks?: (rootId: string) => Promise<ConversationSkeleton[]>
+    findChildTasks?: (rootId: string) => Promise<ConversationSkeleton[]>,
+    serverState?: ServerState
 ): Promise<CallToolResult> {
     try {
         validateArgs(args);
@@ -545,6 +565,19 @@ export async function handleConversationBrowser(
                 return {
                     content: [{ type: 'text', text: summaryResult }]
                 };
+            }
+
+            case 'rebuild': {
+                // Delegate to the existing build_skeleton_cache handler
+                return await handleBuildSkeletonCache(
+                    {
+                        force_rebuild: args.force_rebuild,
+                        workspace_filter: args.workspace,
+                        task_ids: args.task_ids
+                    },
+                    conversationCache,
+                    serverState
+                );
             }
 
             default:

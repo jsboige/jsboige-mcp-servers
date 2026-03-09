@@ -264,7 +264,7 @@ describe('Category 3: Consolidated Tool Action Completeness', () => {
     const CONSOLIDATED_TOOLS_ACTIONS: Record<string, { field: string; actions: string[] }> = {
         'conversation_browser': {
             field: 'action',
-            actions: ['tree', 'current', 'view', 'summarize'],
+            actions: ['tree', 'current', 'view', 'summarize', 'rebuild'],
             // Note: 'list' is NOT in registry's action enum but handled via list_conversations backward compat
         },
         'maintenance': {

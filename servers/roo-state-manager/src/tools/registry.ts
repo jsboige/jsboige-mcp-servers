@@ -180,7 +180,8 @@ export function registerCallToolHandler(
                         } catch { /* ignore disk errors */ }
                         const allTasks = Array.from(state.conversationCache.values());
                         return allTasks.filter(task => task.metadata?.parentTaskId === rootId);
-                    }
+                    },
+                    state // Pass serverState for rebuild action
                 );
                 break;
             // [DEPRECATED] CONS-9: task_browse conservé pour backward compat
