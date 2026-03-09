@@ -4,6 +4,7 @@
  * Vérifie les schemas et métadonnées de l'outil de gestion de baseline.
  *
  * @module roosync/manage-baseline.test
+ * @version 1.1.0 (#609 - timeout fix)
  */
 
 import { describe, it, expect, vi, beforeAll } from 'vitest';
@@ -16,7 +17,7 @@ describe('roosync_manage_baseline - Interface', () => {
 
   beforeAll(async () => {
     module = await import('../../../../src/tools/roosync/manage-baseline.js');
-  });
+  }, 30000); // 30s timeout for module import (Issue #609)
 
   it('devrait exporter roosync_manage_baseline', () => {
     expect(module.roosync_manage_baseline).toBeDefined();
@@ -38,7 +39,7 @@ describe('roosync_manage_baseline - Schema Validation', () => {
 
   beforeAll(async () => {
     module = await import('../../../../src/tools/roosync/manage-baseline.js');
-  });
+  }, 30000); // 30s timeout for module import (Issue #609)
 
   it('devrait accepter action version', () => {
     const result = module.ManageBaselineArgsSchema.safeParse({
@@ -99,7 +100,7 @@ describe('roosync_manage_baseline - Metadata', () => {
 
   beforeAll(async () => {
     module = await import('../../../../src/tools/roosync/manage-baseline.js');
-  });
+  }, 30000); // 30s timeout for module import (Issue #609)
 
   it('devrait avoir les métadonnées correctes', () => {
     const metadata = module.manageBaselineToolMetadata;
