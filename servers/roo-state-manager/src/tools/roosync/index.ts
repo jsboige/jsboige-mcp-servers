@@ -234,6 +234,10 @@ export { roosyncRead, readToolMetadata } from './read.js';
 export { roosyncSend, sendToolMetadata } from './send.js';
 export { roosyncManage, manageToolMetadata } from './manage.js';
 
+// #613 ISS-1: Outil de cleanup en masse des messages RooSync
+export { cleanupMessages, cleanupToolMetadata } from './cleanup.js';
+export type { CleanupMessagesArgs } from './cleanup.js';
+
 // NOTE: modes-management.ts est une API INTERNE (pas un outil MCP séparé).
 // La gestion des modes sera intégrée dans le mécanisme unifié de config (#603).
 // Voir #595 (subsumed by #603). Ne PAS exposer comme outil MCP indépendant.
@@ -323,6 +327,9 @@ import { sendToolMetadata } from './send.js';
 import { readToolMetadata } from './read.js';
 import { manageToolMetadata } from './manage.js';
 
+// #613 ISS-1: Import des métadonnées de l'outil cleanup
+import { cleanupToolMetadata } from './cleanup.js';
+
 // NOTE: modes-management.ts = API interne only, pas d'import MCP ici (#595/#603)
 
 // Métadonnées pour l'outil d'inventaire (format JSON Schema standard)
@@ -380,6 +387,7 @@ const exportBaselineToolMetadata = {
 
 /**
  * Liste de tous les outils RooSync pour enregistrement MCP
+ * Version 3.15 : 20 outils (#613 ISS-1: roosync_cleanup_messages ajouté)
  * Version 3.14 : 19 outils (#546: roosync_update_dashboard ajouté)
  * Version 3.13 : 18 outils (#533: roosync_sync_event retiré - jamais utilisé en production)
  *
@@ -389,7 +397,7 @@ const exportBaselineToolMetadata = {
  * - Decision (CONS-5): roosync_decision, roosync_decision_info
  * - Heartbeat (CONS-#443 Groupe 1): roosync_heartbeat
  * - [DEPRECATED] Synchronisation automatique (CONS-#443 Groupe 2): roosync_sync_event retiré (#533)
- * - Messagerie (CONS-1): roosync_send, roosync_read, roosync_manage
+ * - Messagerie (CONS-1): roosync_send, roosync_read, roosync_manage, roosync_cleanup_messages
  * - Gestion MCP (CONS-#443 Groupe 3): roosync_mcp_management
  * - Gestion stockage (CONS-#443 Groupe 4): roosync_storage_management
  * - Diagnostic (CONS-#443 Groupe 5): roosync_diagnose
@@ -424,6 +432,8 @@ export const roosyncTools = [
   // CONS-1: Outils de messagerie consolidés (6→3)
   sendToolMetadata,
   readToolMetadata,
-  manageToolMetadata
+  manageToolMetadata,
+  // #613 ISS-1: Outil de cleanup en masse
+  cleanupToolMetadata
   // NOTE: modes-management = API interne, pas d'outil MCP (#595/#603)
 ];
