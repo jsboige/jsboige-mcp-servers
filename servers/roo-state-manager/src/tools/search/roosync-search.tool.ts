@@ -35,6 +35,9 @@ export interface RooSyncSearchArgs {
 
     /** Filtre par workspace */
     workspace?: string;
+
+    /** #604: Filtre par source (roo ou claude-code) */
+    source?: 'roo' | 'claude-code';
 }
 
 /**
@@ -66,6 +69,11 @@ export const roosyncSearchTool: Tool = {
             workspace: {
                 type: 'string',
                 description: 'Filtre les résultats par workspace spécifique'
+            },
+            source: {
+                type: 'string',
+                enum: ['roo', 'claude-code'],
+                description: '#604: Filtre par source de conversation (tâches Roo ou sessions Claude Code)'
             }
         },
         required: ['action']
@@ -112,6 +120,7 @@ export async function handleRooSyncSearch(
                 conversation_id: args.conversation_id,
                 max_results: args.max_results,
                 workspace: args.workspace,
+                source: args.source,
                 diagnose_index: false
             };
             return await searchTasksByContentTool.handler(

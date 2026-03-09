@@ -49,6 +49,9 @@ export interface RooSyncIndexingArgs {
 
     /** Nombre max de sessions Claude Code à archiver (pour action=archive avec claude_code_sessions=true) */
     max_sessions?: number;
+
+    /** #604: Source de la conversation (pour action=index, détermine l'extracteur de chunks) */
+    source?: 'roo' | 'claude-code';
 }
 
 /**
@@ -101,6 +104,11 @@ export const roosyncIndexingTool: Tool = {
                 type: 'number',
                 description: 'Nombre max de sessions Claude Code à archiver (pour action=archive avec claude_code_sessions=true, 0 = toutes)',
                 default: 0
+            },
+            source: {
+                type: 'string',
+                enum: ['roo', 'claude-code'],
+                description: "#604: Source de la conversation (pour action=index). 'roo' = tâche Roo standard, 'claude-code' = session Claude Code JSONL. Par défaut: 'roo'"
             }
         },
         required: ['action']
@@ -144,7 +152,7 @@ export async function handleRooSyncIndexing(
                 };
             }
             return await indexTaskSemanticTool.handler(
-                { task_id: args.task_id },
+                { task_id: args.task_id, source: args.source },
                 conversationCache,
                 ensureCacheFreshCallback
             );

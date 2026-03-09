@@ -35,6 +35,7 @@ export interface Chunk {
   total_messages?: number;
   role?: 'user' | 'assistant' | 'system';
   host_os?: string;
+  source?: 'roo' | 'claude-code';
   // Nouveaux champs pour la traçabilité du chunking
   chunk_index?: number;  // Index de ce chunk (commence à 1)
   total_chunks?: number; // Nombre total de chunks pour ce message
@@ -282,4 +283,95 @@ export function splitChunk(chunk: Chunk, maxSize: number): Chunk[] {
 
     console.log(`🔪 Split large chunk into ${totalChunks} parts (original size: ${chunk.content.length} chars)`);
     return subChunks;
+}
+
+/**
+ * Extract chunks from a Claude Code JSONL session file.
+ * Reads the JSONL format (one JSON object per line) and converts
+ * user/assistant messages to indexable chunks.
+ *
+ * @param taskId The session identifier (prefixed with 'claude-')
+ * @param jsonlPath Path to the .jsonl file
+ * @param metadata Optional metadata (workspace, title)
+ * @returns Chunk array suitable for Qdrant indexation
+ */
+export async function extractChunksFromClaudeSession(
+    taskId: string,
+    jsonlPath: string,
+    metadata?: { workspace?: string; title?: string }
+): Promise<Chunk[]> {
+    const chunks: Chunk[] = [];
+    let sequenceOrder = 0;
+    let messageIndex = 0;
+
+    try {
+        const content = await fs.readFile(jsonlPath, 'utf-8');
+        const lines = content.split('\n').filter(line => line.trim());
+
+        for (const line of lines) {
+            try {
+                const entry = JSON.parse(line);
+
+                // Claude Code JSONL has entries with type and message fields
+                const entryType = entry.type;
+                const message = entry.message;
+
+                // Only index user and assistant messages (not tool results, system, etc.)
+                if (!message || !message.content) continue;
+                if (entryType !== 'user' && entryType !== 'assistant') continue;
+
+                const role: 'user' | 'assistant' = entryType === 'user' ? 'user' : 'assistant';
+
+                // Extract text content (can be string or array of content blocks)
+                let contentText = '';
+                if (typeof message.content === 'string') {
+                    contentText = message.content;
+                } else if (Array.isArray(message.content)) {
+                    contentText = message.content
+                        .filter((block: any) => block && block.type === 'text' && typeof block.text === 'string')
+                        .map((block: any) => block.text)
+                        .join(' ')
+                        .trim();
+                }
+
+                if (!contentText.trim()) continue;
+
+                messageIndex++;
+                chunks.push({
+                    chunk_id: uuidv4(),
+                    task_id: taskId,
+                    parent_task_id: null,
+                    root_task_id: null,
+                    chunk_type: 'message_exchange',
+                    sequence_order: sequenceOrder++,
+                    timestamp: entry.timestamp || new Date().toISOString(),
+                    indexed: true,
+                    content: contentText,
+                    content_summary: contentText.substring(0, 200),
+                    participants: [role],
+                    tool_details: null,
+                    workspace: metadata?.workspace,
+                    task_title: metadata?.title,
+                    message_index: messageIndex,
+                    role,
+                    host_os: getHostIdentifier(),
+                    source: 'claude-code',
+                });
+            } catch {
+                // Skip malformed lines
+                continue;
+            }
+        }
+    } catch (error) {
+        console.error(`❌ Error extracting chunks from Claude session ${jsonlPath}:`, error);
+        throw new StateManagerError(
+            `Extraction chunks échouée pour Claude session ${taskId}: ${error instanceof Error ? error.message : String(error)}`,
+            'CHUNK_EXTRACTION_FAILED',
+            'ChunkExtractor',
+            { taskId, jsonlPath },
+            error instanceof Error ? error : undefined
+        );
+    }
+
+    return chunks.sort((a, b) => a.sequence_order - b.sequence_order);
 }

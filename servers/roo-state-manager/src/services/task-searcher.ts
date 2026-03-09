@@ -153,6 +153,7 @@ export async function searchTasks(
     contextAfterCount?: number; // M
     filter?: any; // Filtre Qdrant
     scoreThreshold?: number; // Seuil de score
+    source?: 'roo' | 'claude-code' | 'all'; // #604: Filter by conversation source
   } = {}
 ): Promise<ContextWindow[]> {
 
@@ -170,11 +171,32 @@ export async function searchTasks(
   });
   const vector = embeddingResponse.data[0].embedding;
 
+  // Build Qdrant filter with optional source filtering (#604)
+  let searchFilter = options.filter;
+  if (options.source && options.source !== 'all') {
+    const sourceCondition = {
+      must: [
+        { key: 'source', match: { value: options.source } }
+      ]
+    };
+    if (searchFilter) {
+      // Merge with existing filter
+      searchFilter = {
+        must: [
+          ...(searchFilter.must || []),
+          ...sourceCondition.must
+        ]
+      };
+    } else {
+      searchFilter = sourceCondition;
+    }
+  }
+
   // 2. Étape 1: Recherche des Chunks Initiaux dans Qdrant
   const searchResult = await qdrant.search(collectionName, {
     vector,
     limit,
-    filter: options.filter,
+    filter: searchFilter,
     score_threshold: options.scoreThreshold,
     with_payload: true,
   });

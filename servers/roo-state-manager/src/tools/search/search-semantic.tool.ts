@@ -327,6 +327,16 @@ export const searchTasksByContentTool = {
                 });
             }
 
+            // #604: Filter by conversation source (roo vs claude-code)
+            if (source) {
+                filterConditions.push({
+                    key: "source",
+                    match: {
+                        value: source
+                    }
+                });
+            }
+
             if (filterConditions.length > 0) {
                 filter = {
                     must: filterConditions

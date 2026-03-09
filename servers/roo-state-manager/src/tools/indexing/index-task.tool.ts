@@ -10,6 +10,7 @@ import { GenericError, GenericErrorCode } from '../../types/errors.js';
 
 export interface IndexTaskSemanticArgs {
     task_id: string;
+    source?: 'roo' | 'claude-code';
 }
 
 /**
@@ -69,8 +70,9 @@ export const indexTaskSemanticTool = {
             
             console.log(`[DEBUG] Attempting to import indexTask from task-indexer.js`);
             const { indexTask } = await import('../../services/task-indexer.js');
-            console.log(`[DEBUG] Import successful, calling indexTask with taskId=${task_id}, taskPath=${taskPath}`);
-            const indexedPoints = await indexTask(task_id, taskPath);
+            const source = args.source || 'roo';
+            console.log(`[DEBUG] Import successful, calling indexTask with taskId=${task_id}, taskPath=${taskPath}, source=${source}`);
+            const indexedPoints = await indexTask(task_id, taskPath, source);
             console.log(`[DEBUG] indexTask completed, returned ${indexedPoints.length} points`);
             
             return {

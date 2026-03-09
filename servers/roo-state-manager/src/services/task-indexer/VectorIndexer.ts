@@ -5,7 +5,7 @@ import { Schemas } from '@qdrant/js-client-rest';
 import { getQdrantClient } from '../qdrant.js';
 import getOpenAIClient, { getEmbeddingModel, getEmbeddingDimensions } from '../openai.js';
 import { validateVectorGlobal, sanitizePayload } from './EmbeddingValidator.js';
-import { extractChunksFromTask, splitChunk, Chunk } from './ChunkExtractor.js';
+import { extractChunksFromTask, extractChunksFromClaudeSession, splitChunk, Chunk } from './ChunkExtractor.js';
 import { networkMetrics } from './QdrantHealthMonitor.js';
 
 type PointStruct = Schemas['PointStruct'];
@@ -373,7 +373,10 @@ export async function indexTask(taskId: string, taskPath: string, source: 'roo' 
     try {
         await ensureCollectionExists();
 
-        const chunks = await extractChunksFromTask(taskId, taskPath);
+        // Dispatch to appropriate chunk extractor based on source
+        const chunks = source === 'claude-code'
+            ? await extractChunksFromClaudeSession(taskId, taskPath)
+            : await extractChunksFromTask(taskId, taskPath);
 
         if (chunks.length === 0) {
             console.log(`No chunks found for task ${taskId}. Skipping.`);
