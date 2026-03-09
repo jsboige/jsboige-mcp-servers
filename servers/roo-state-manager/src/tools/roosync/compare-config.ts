@@ -76,8 +76,8 @@ export const CompareConfigArgsSchema = z.object({
     .describe('ID de la machine cible (optionnel, défaut: remote_machine)'),
   force_refresh: z.boolean().optional()
     .describe('Forcer la collecte d\'inventaire même si cache valide (défaut: false)'),
-  granularity: z.enum(['mcp', 'mode', 'settings', 'full']).optional()
-    .describe('Niveau de granularité: mcp (MCPs uniquement), mode (modes Roo), settings (Roo settings state.vscdb), full (comparaison complète GranularDiffDetector)'),
+  granularity: z.enum(['mcp', 'mode', 'settings', 'claude', 'modes-yaml', 'full']).optional()
+    .describe('Niveau de granularité: mcp (MCPs uniquement), mode (modes Roo), settings (Roo settings state.vscdb), claude (config Claude Code ~/.claude.json), modes-yaml (custom_modes.yaml global), full (comparaison complète GranularDiffDetector)'),
   filter: z.string().optional()
     .describe('Filtre optionnel sur les paths (ex: "jupyter" pour filtrer un MCP spécifique)')
 });
@@ -90,7 +90,7 @@ export type CompareConfigArgs = z.infer<typeof CompareConfigArgsSchema>;
 export const CompareConfigResultSchema = z.object({
   source: z.string().describe('Machine source'),
   target: z.string().describe('Machine cible'),
-  granularity: z.string().optional().describe('Granularité de comparaison (mcp, mode, settings, full)'),
+  granularity: z.string().optional().describe('Granularité de comparaison (mcp, mode, settings, claude, modes-yaml, full)'),
   host_id: z.string().optional().describe('Identifiant de l\'hôte local'),
   differences: z.array(z.object({
     category: z.string().describe('Catégorie de différence'),
@@ -220,6 +220,26 @@ export async function roosyncCompareConfig(args: CompareConfigArgs): Promise<Com
                        (targetInventory as any).rooModes ||
                        {};
           break;
+        case 'claude':
+          // Compare Claude Code config (~/.claude.json) — mcpServers + env + model
+          sourceData = (sourceInventory as any).inventory?.claudeConfig ||
+                       (sourceInventory as any).claudeConfig ||
+                       {};
+          targetData = (targetInventory as any).inventory?.claudeConfig ||
+                       (targetInventory as any).claudeConfig ||
+                       {};
+          break;
+        case 'modes-yaml':
+          // Compare global custom_modes.yaml — same data as 'mode' but explicitly for YAML global source
+          sourceData = (sourceInventory as any).inventory?.rooModes ||
+                       (sourceInventory as any).roo?.modes ||
+                       (sourceInventory as any).rooModes ||
+                       {};
+          targetData = (targetInventory as any).inventory?.rooModes ||
+                       (targetInventory as any).roo?.modes ||
+                       (targetInventory as any).rooModes ||
+                       {};
+          break;
         case 'full':
         default:
           sourceData = sourceInventory;
@@ -249,11 +269,17 @@ export async function roosyncCompareConfig(args: CompareConfigArgs): Promise<Com
           path: `inventory.mcpServers.${diff.path}`,
           category: 'roo_config' as any
         }));
-      } else if (args.granularity === 'mode') {
+      } else if (args.granularity === 'mode' || args.granularity === 'modes-yaml') {
         diffs = diffs.map(diff => ({
           ...diff,
           path: `inventory.rooModes.${diff.path}`,
           category: 'roo_config' as any
+        }));
+      } else if (args.granularity === 'claude') {
+        diffs = diffs.map(diff => ({
+          ...diff,
+          path: `inventory.claudeConfig.${diff.path}`,
+          category: 'claude_config' as any
         }));
       }
 
