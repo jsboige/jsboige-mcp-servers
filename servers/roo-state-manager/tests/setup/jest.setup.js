@@ -388,57 +388,112 @@ vi.mock('../src/services/PowerShellExecutor.js', () => ({
 }));
 
 // Mock pour RooSyncService
+const mockRooSyncServiceInstance = {
+  loadDashboard: vi.fn().mockResolvedValue({
+    version: '2.1.0',
+    status: 'synced',
+    overallStatus: 'synced',
+    lastSync: new Date().toISOString(),
+    lastUpdate: new Date().toISOString(),
+    machines: {
+      'myia-ai-01': {
+        status: 'online',
+        lastSync: new Date().toISOString(),
+        diffsCount: 0,
+        pendingDecisions: 0
+      },
+      'myia-po-2024': {
+        status: 'online',
+        lastSync: new Date().toISOString(),
+        diffsCount: 0,
+        pendingDecisions: 0
+      },
+    },
+    machinesArray: [],
+    stats: {
+      totalDecisions: 0,
+      appliedDecisions: 0,
+      pendingDecisions: 0,
+      totalDiffs: 0,
+    },
+    summary: {
+      totalMachines: 0,
+      onlineMachines: 0,
+      totalDiffs: 0,
+      totalPendingDecisions: 0,
+    },
+  }),
+  getConfig: vi.fn().mockReturnValue({}),
+  resetInstance: vi.fn(),
+};
+
+// Named export for getRooSyncService
+const getRooSyncService = vi.fn(() => mockRooSyncServiceInstance);
+
+// Named export for RooSyncServiceError
+class MockRooSyncServiceError extends Error {
+  constructor(message, code, details) {
+    super(`[RooSync Service] ${message}`);
+    this.name = 'RooSyncServiceError';
+    this.code = code;
+    this.details = details;
+  }
+}
+
 vi.mock('../src/services/RooSyncService.js', () => ({
-  default: vi.fn().mockImplementation(() => ({
-    loadDashboard: vi.fn().mockResolvedValue({
-      version: '2.1.0',
-      status: 'synced',
-      overallStatus: 'synced',
-      lastSync: new Date().toISOString(),
-      lastUpdate: new Date().toISOString(),
-      machines: {
-        'myia-ai-01': {
-          status: 'online',
-          lastSync: new Date().toISOString(),
-          diffsCount: 0,
-          pendingDecisions: 0
-        },
-        'myia-po-2024': {
-          status: 'online',
-          lastSync: new Date().toISOString(),
-          diffsCount: 0,
-          pendingDecisions: 0
-        },
-      },
-      machinesArray: [],
-      stats: {
-        totalDecisions: 0,
-        appliedDecisions: 0,
-        pendingDecisions: 0,
-        totalDiffs: 0,
-      },
-      summary: {
-        totalMachines: 0,
-        onlineMachines: 0,
-        totalDiffs: 0,
-        totalPendingDecisions: 0,
-      },
-    }),
-  }))
+  RooSyncService: vi.fn().mockImplementation(() => mockRooSyncServiceInstance),
+  getRooSyncService,
+  RooSyncServiceError: MockRooSyncServiceError,
+  default: vi.fn().mockImplementation(() => mockRooSyncServiceInstance),
 }));
 
 // Mock pour BaselineService
+const mockBaselineServiceInstance = {
+  loadBaseline: vi.fn().mockRejectedValue(new Error('Baseline not found')),
+  compareWithBaseline: vi.fn().mockResolvedValue(null),
+  createSyncDecisions: vi.fn().mockResolvedValue([]),
+  applyDecision: vi.fn().mockRejectedValue(new Error('Decision not approved')),
+  updateBaseline: vi.fn().mockRejectedValue(new Error('Invalid baseline')),
+  getState: vi.fn().mockReturnValue({
+    currentBaseline: null,
+    lastComparison: null,
+    decisions: [],
+  }),
+};
+
 vi.mock('../src/services/BaselineService.js', () => ({
-  default: vi.fn().mockImplementation(() => ({
-    loadBaseline: vi.fn().mockRejectedValue(new Error('Baseline not found')),
-    compareWithBaseline: vi.fn().mockResolvedValue(null),
-    createSyncDecisions: vi.fn().mockResolvedValue([]),
-    applyDecision: vi.fn().mockRejectedValue(new Error('Decision not approved')),
-    updateBaseline: vi.fn().mockRejectedValue(new Error('Invalid baseline')),
-    getState: vi.fn().mockReturnValue({
-      currentBaseline: null,
-      lastComparison: null,
-      decisions: [],
+  BaselineService: vi.fn().mockImplementation(() => mockBaselineServiceInstance),
+  default: vi.fn().mockImplementation(() => mockBaselineServiceInstance),
+}));
+
+// Mock pour ConfigService
+vi.mock('../src/services/ConfigService.js', () => ({
+  ConfigService: vi.fn().mockImplementation(() => ({
+    loadConfig: vi.fn().mockResolvedValue({}),
+    saveConfig: vi.fn().mockResolvedValue(undefined),
+    getConfig: vi.fn().mockReturnValue({}),
+  })),
+}));
+
+// Mock pour InventoryCollector
+vi.mock('../src/services/InventoryCollector.js', () => ({
+  InventoryCollector: vi.fn().mockImplementation(() => ({
+    collect: vi.fn().mockResolvedValue({
+      machineId: 'test-machine',
+      hostname: 'test-host',
+      platform: 'win32',
+      arch: 'x64',
+      cpus: [{ model: 'test-cpu' }],
+      totalMemory: 8000000000,
+      freeMemory: 4000000000,
     }),
-  }))
+  })),
+}));
+
+// Mock pour DiffDetector
+vi.mock('../src/services/DiffDetector.js', () => ({
+  DiffDetector: vi.fn().mockImplementation(() => ({
+    detectDiffs: vi.fn().mockResolvedValue([]),
+    compareConfigs: vi.fn().mockResolvedValue({}),
+  })),
 }));

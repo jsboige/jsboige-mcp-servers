@@ -565,6 +565,14 @@ export function registerCallToolHandler(
                    result = { content: [{ type: 'text', text: `Error: ${(error as Error).message}` }], isError: true };
                }
                break;
+           // #613 ISS-1: Outil de cleanup en masse des messages RooSync
+           case 'roosync_cleanup_messages':
+               try {
+                   result = await toolExports.cleanupMessages(args as any) as CallToolResult;
+               } catch (error) {
+                   result = { content: [{ type: 'text', text: `Error: ${(error as Error).message}` }], isError: true };
+               }
+               break;
           // [DEPRECATED] Legacy messaging tools - backward compat via CONS-1
            case 'roosync_send_message':
                try {
