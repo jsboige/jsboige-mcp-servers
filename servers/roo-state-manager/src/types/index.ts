@@ -43,3 +43,6 @@ export * from './enhanced-hierarchy.js';
 
 // Types de définitions d'outils
 export * from './tool-definitions.js';
+
+// Types MachineConfig unifiés (#603 B3)
+export * from './machine-config.js';
