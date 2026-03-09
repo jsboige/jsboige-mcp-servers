@@ -5,6 +5,8 @@ import { ConversationSkeleton } from '../../types/conversation.js';
 export interface SearchFallbackArgs {
   query: string;
   workspace?: string;
+  /** #604: Filter by conversation source (roo tasks or claude-code sessions) */
+  source?: 'roo' | 'claude-code';
 }
 
 /**
@@ -15,7 +17,7 @@ export async function searchFallbackTool(
   conversationCache: Map<string, ConversationSkeleton>
 ): Promise<CallToolResult> {
   try {
-    const { query, workspace } = args;
+    const { query, workspace, source } = args;
 
     if (!query || query.trim().length === 0) {
       return {
@@ -43,6 +45,14 @@ export async function searchFallbackTool(
       // Filtrer par workspace si spécifié
       if (workspace && skeleton.metadata?.workspace !== workspace) {
         continue;
+      }
+
+      // #604: Filtrer par source si spécifié
+      if (source) {
+        const taskSource = skeleton.metadata?.dataSource || (taskId.startsWith('claude-') ? 'claude-code' : 'roo');
+        if (taskSource !== source) {
+          continue;
+        }
       }
 
       // Recherche textuelle simple dans le titre, l'instruction et les messages

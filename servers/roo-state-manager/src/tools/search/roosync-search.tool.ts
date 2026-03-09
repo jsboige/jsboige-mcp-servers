@@ -143,7 +143,8 @@ export async function handleRooSyncSearch(
             await ensureCacheFreshCallback({ workspace: args.workspace });
             const fallbackArgs: SearchFallbackArgs = {
                 query: args.search_query,
-                workspace: args.workspace
+                workspace: args.workspace,
+                source: args.source
             };
             return await handleSearchTasksSemanticFallback(fallbackArgs, conversationCache);
         }
