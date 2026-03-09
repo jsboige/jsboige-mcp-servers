@@ -123,7 +123,7 @@ describe('roosync_compare_config', () => {
   describe('granularity parameter', () => {
     it('devrait inclure granularity dans les métadonnées', () => {
       expect(compareConfigToolMetadata.inputSchema.properties.granularity).toBeDefined();
-      expect(compareConfigToolMetadata.inputSchema.properties.granularity.enum).toEqual(['mcp', 'mode', 'settings', 'full']);
+      expect(compareConfigToolMetadata.inputSchema.properties.granularity.enum).toEqual(['mcp', 'mode', 'settings', 'claude', 'modes-yaml', 'full']);
     });
 
     it('devrait utiliser GranularDiffDetector quand granularity=full', async () => {

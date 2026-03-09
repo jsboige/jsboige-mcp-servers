@@ -123,28 +123,8 @@ export type CompareConfigResult = z.infer<typeof CompareConfigResultSchema>;
  * @throws {RooSyncServiceError} En cas d'erreur
  */
 export async function roosyncCompareConfig(args: CompareConfigArgs): Promise<CompareConfigResult> {
-  // SDDD Debug: Logging direct dans fichier pour contourner le problème de visibilité
-  const debugLog = (message: string, data?: any) => {
-    const timestamp = new Date().toISOString();
-    const logEntry = `[${timestamp}] ${message}${data ? ` | ${JSON.stringify(data)}` : ''}\n`;
-    
-    // Écrire directement dans un fichier de log
-    try {
-      const fs = require('fs');
-      fs.appendFileSync('c:/dev/roo-extensions/debug-roosync-compare.log', logEntry);
-    } catch (e) {
-      // Ignorer les erreurs de logging
-    }
-    
-    // Garder le console.log pour compatibilité
-    console.log(message, data);
-  };
-  
-  debugLog('roosyncCompareConfig appelé avec args', args);
   try {
-    debugLog('Avant getRooSyncService()');
       const service = getRooSyncService();
-      debugLog('Après getRooSyncService(), service obtenu', { serviceExists: !!service });
       const config = service.getConfig();
       
       // Déterminer machines source et cible
@@ -154,21 +134,14 @@ export async function roosyncCompareConfig(args: CompareConfigArgs): Promise<Com
 
     // Settings comparison: uses RooSettingsService + GDrive published settings
     if (args.granularity === 'settings') {
-      debugLog('Mode settings activé', { filter: args.filter });
       return await compareSettings(sourceMachineId, targetMachineId, service, args.filter);
     }
 
     // Si granularity est fourni, utiliser GranularDiffDetector
     if (args.granularity) {
-      debugLog('Mode granulaire activé', { granularity: args.granularity, filter: args.filter });
-      console.log('[DEBUG-564] LINE 164 REACHED - About to call getInventory');
-      debugLog('About to call getInventory', { sourceMachineId, targetMachineId });
-
       // Charger les inventaires complets des deux machines
       const sourceInventory = await service.getInventory(sourceMachineId, args.force_refresh || false);
-      console.log('[DEBUG-564] ✅ sourceInventory returned:', sourceInventory ? 'HAS_DATA' : 'NULL');
       const targetInventory = await service.getInventory(targetMachineId, args.force_refresh || false);
-      console.log('[DEBUG-564] ✅ targetInventory returned:', targetInventory ? 'HAS_DATA' : 'NULL');
 
       if (!sourceInventory || !targetInventory) {
         // Gestion gracieuse : retourner un avertissement au lieu de lancer une erreur
@@ -315,25 +288,11 @@ export async function roosyncCompareConfig(args: CompareConfigArgs): Promise<Com
     return formatComparisonReport(report, 'full');
     
   } catch (error) {
-    // CORRECTION SDDD: Laisser remonter les erreurs détaillées du BaselineService
     if (error instanceof RooSyncServiceError) {
-      debugLog('RooSyncServiceError interceptée', {
-        name: error.name,
-        message: error.message,
-        code: error.code
-      });
       throw error;
     }
-    
-    // Conserver le message d'erreur original pour le debugging
+
     const originalError = error as Error;
-    debugLog('Erreur originale dans compare-config', {
-      errorType: typeof error,
-      errorMessage: originalError.message,
-      errorStack: originalError.stack,
-      errorName: originalError.name
-    });
-    
     throw new RooSyncServiceError(
       `Erreur lors de la comparaison: ${originalError.message}`,
       'ROOSYNC_COMPARE_ERROR'
@@ -850,10 +809,12 @@ Vérification des variables d'environnement critiques (#495):
 Supporte également la comparaison avec des profils (ex: target='profile:dev').
 Utilise Get-MachineInventory.ps1 pour collecte d'inventaire complet avec cache TTL 1h.
 
-Modes de granularité (nouveau) :
+Modes de granularité :
 - mcp: Compare uniquement les configurations MCP
 - mode: Compare uniquement les modes Roo
 - settings: Compare les settings Roo (state.vscdb) entre machines (#547)
+- claude: Compare la configuration Claude Code (~/.claude.json) entre machines
+- modes-yaml: Compare le custom_modes.yaml global entre machines
 - full: Comparaison granulaire complète avec GranularDiffDetector`,
   inputSchema: {
     type: 'object' as const,
@@ -872,8 +833,8 @@ Modes de granularité (nouveau) :
       },
       granularity: {
         type: 'string',
-        enum: ['mcp', 'mode', 'settings', 'full'],
-        description: 'Niveau de granularité: mcp (MCPs uniquement), mode (modes Roo), settings (Roo settings state.vscdb), full (comparaison complète)'
+        enum: ['mcp', 'mode', 'settings', 'claude', 'modes-yaml', 'full'],
+        description: 'Niveau de granularité: mcp (MCPs uniquement), mode (modes Roo), settings (Roo settings state.vscdb), claude (config Claude Code ~/.claude.json), modes-yaml (custom_modes.yaml global), full (comparaison complète)'
       },
       filter: {
         type: 'string',
