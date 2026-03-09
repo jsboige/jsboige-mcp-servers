@@ -451,4 +451,155 @@ describe('roosyncConfig', () => {
       await expect(roosyncConfig(args)).rejects.toThrow('Erreur lors de l\'opération collect');
     });
   });
+
+  // Issue #601: Claude Code scope support
+  describe('Claude Code scope (Issue #601)', () => {
+    test('should accept valid scope values', () => {
+      expect(() => ConfigArgsSchema.parse({
+        action: 'collect',
+        scope: 'user'
+      })).not.toThrow();
+
+      expect(() => ConfigArgsSchema.parse({
+        action: 'collect',
+        scope: 'project'
+      })).not.toThrow();
+
+      expect(() => ConfigArgsSchema.parse({
+        action: 'collect',
+        scope: 'settings'
+      })).not.toThrow();
+    });
+
+    test('should reject invalid scope value', () => {
+      expect(() => ConfigArgsSchema.parse({
+        action: 'collect',
+        scope: 'invalid'
+      })).toThrow();
+    });
+
+    test('should pass scope to collectConfig for user scope', async () => {
+      mockCollectConfig.mockResolvedValue({
+        packagePath: '/tmp/config-user',
+        filesCount: 1,
+        totalSize: 512,
+        manifest: { files: [] }
+      });
+
+      const args: ConfigArgs = {
+        action: 'collect',
+        targets: ['mcp'],
+        scope: 'user'
+      };
+
+      await roosyncConfig(args);
+
+      expect(mockCollectConfig).toHaveBeenCalledWith({
+        targets: ['mcp'],
+        dryRun: false,
+        scope: 'user'
+      });
+    });
+
+    test('should pass scope to collectConfig for project scope', async () => {
+      mockCollectConfig.mockResolvedValue({
+        packagePath: '/tmp/config-project',
+        filesCount: 1,
+        totalSize: 256,
+        manifest: { files: [] }
+      });
+
+      const args: ConfigArgs = {
+        action: 'collect',
+        targets: ['mcp'],
+        scope: 'project'
+      };
+
+      await roosyncConfig(args);
+
+      expect(mockCollectConfig).toHaveBeenCalledWith({
+        targets: ['mcp'],
+        dryRun: false,
+        scope: 'project'
+      });
+    });
+
+    test('should pass scope to collectConfig for settings scope', async () => {
+      mockCollectConfig.mockResolvedValue({
+        packagePath: '/tmp/config-settings',
+        filesCount: 0,
+        totalSize: 0,
+        manifest: { files: [] }
+      });
+
+      const args: ConfigArgs = {
+        action: 'collect',
+        targets: ['mcp'],
+        scope: 'settings'
+      };
+
+      await roosyncConfig(args);
+
+      expect(mockCollectConfig).toHaveBeenCalledWith({
+        targets: ['mcp'],
+        dryRun: false,
+        scope: 'settings'
+      });
+    });
+
+    test('should pass scope to applyConfig', async () => {
+      mockApplyConfig.mockResolvedValue({
+        success: true,
+        filesApplied: 1,
+        backupPath: '/tmp/backup',
+        errors: []
+      });
+
+      const args: ConfigArgs = {
+        action: 'apply',
+        targets: ['mcp'],
+        scope: 'user'
+      };
+
+      await roosyncConfig(args);
+
+      expect(mockApplyConfig).toHaveBeenCalledWith(
+        expect.objectContaining({
+          scope: 'user'
+        })
+      );
+    });
+
+    test('should support scope in atomic publish (collect+publish)', async () => {
+      mockCollectConfig.mockResolvedValue({
+        packagePath: '/tmp/config-auto',
+        filesCount: 1,
+        totalSize: 256,
+        manifest: { files: [] }
+      });
+
+      mockPublishConfig.mockResolvedValue({
+        machineId: 'test-machine',
+        version: '1.0.0',
+        path: '/shared/configs/1.0.0'
+      });
+
+      const args: ConfigArgs = {
+        action: 'publish',
+        version: '1.0.0',
+        description: 'Test with scope',
+        targets: ['mcp'],
+        scope: 'project'
+      };
+
+      await roosyncConfig(args);
+
+      expect(mockCollectConfig).toHaveBeenCalledWith(
+        expect.objectContaining({
+          scope: 'project'
+        })
+      );
+      expect(mockPublishConfig).toHaveBeenCalled();
+    });
+  });
 });
