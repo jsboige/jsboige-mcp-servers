@@ -1,4 +1,5 @@
 /**
+ * @deprecated Superseded by roosync_heartbeat_status. Kept for backward compatibility in registry.ts.
  * Outil MCP : roosync_check_heartbeats
  *
  * Vérifie les heartbeats et détecte les changements de statut des machines.

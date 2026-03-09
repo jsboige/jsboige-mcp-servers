@@ -1,4 +1,5 @@
 /**
+ * @deprecated Superseded by roosync_decision_info. Kept for backward compatibility in registry.ts.
  * Outil MCP : roosync_get_decision_details
  * 
  * Obtient les détails complets d'une décision de synchronisation.

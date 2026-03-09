@@ -1,4 +1,5 @@
 /**
+ * @deprecated Superseded by roosync_decision(action: 'apply'). Kept for backward compatibility in registry.ts.
  * Outil MCP : roosync_apply_decision
  * 
  * Applique une décision de synchronisation approuvée.

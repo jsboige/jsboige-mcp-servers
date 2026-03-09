@@ -1,4 +1,5 @@
 /**
+ * @deprecated Superseded by roosync_manage(action: 'mark_read'). Kept for backward compatibility in registry.ts.
  * Outil MCP : roosync_mark_message_read
  * 
  * Marque un message comme lu en mettant à jour son statut

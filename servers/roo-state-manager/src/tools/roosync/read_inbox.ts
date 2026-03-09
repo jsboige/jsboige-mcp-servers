@@ -1,4 +1,5 @@
 /**
+ * @deprecated Superseded by roosync_read(mode: 'inbox'). Kept for backward compatibility in registry.ts.
  * Outil MCP : roosync_read_inbox
  * 
  * Lit la boîte de réception des messages RooSync

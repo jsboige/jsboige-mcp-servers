@@ -1,4 +1,5 @@
 /**
+ * @deprecated Superseded by roosync_send(action: 'amend'). Kept for backward compatibility in registry.ts.
  * Outil MCP : roosync_amend_message
  * 
  * Modifie le contenu d'un message envoyé avant qu'il ne soit lu
