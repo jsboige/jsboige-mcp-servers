@@ -211,12 +211,13 @@ describe('🛡️ TaskIndexer - Validation Vectorielle Améliorée', () => {
       await expect(
         (taskIndexer as any).upsertPointsBatch(points, { batchSize: 10, waitOnLast: false })
       ).resolves.not.toThrow();
-      
+
       // upsertPointsBatch ne fait que valider et insérer des vecteurs existants
       // Elle n'appelle PAS le client OpenAI pour créer des embeddings
       expect(mockOpenAIClient.embeddings.create).not.toHaveBeenCalled();
+      const expectedCollection = process.env.QDRANT_COLLECTION_NAME || 'roo_tasks_semantic_index';
       expect(mockUpsert).toHaveBeenCalledWith(
-        'roo_tasks_semantic_index',
+        expectedCollection,
         {
           points: points,
           wait: false

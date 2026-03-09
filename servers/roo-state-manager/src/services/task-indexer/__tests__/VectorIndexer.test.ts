@@ -150,9 +150,10 @@ describe('VectorIndexer', () => {
 	describe('ensureCollectionExists', () => {
 		test('does nothing if collection already exists', async () => {
 			const { ensureCollectionExists } = await import('../VectorIndexer.js');
+			const expectedCollection = process.env.QDRANT_COLLECTION_NAME || 'roo_tasks_semantic_index';
 
 			mockGetCollections.mockResolvedValue({
-				collections: [{ name: 'roo_tasks_semantic_index' }]
+				collections: [{ name: expectedCollection }]
 			});
 
 			await ensureCollectionExists();
@@ -161,6 +162,7 @@ describe('VectorIndexer', () => {
 
 		test('creates collection if not found', async () => {
 			const { ensureCollectionExists } = await import('../VectorIndexer.js');
+			const expectedCollection = process.env.QDRANT_COLLECTION_NAME || 'roo_tasks_semantic_index';
 
 			mockGetCollections.mockResolvedValue({
 				collections: [{ name: 'other_collection' }]
@@ -168,7 +170,7 @@ describe('VectorIndexer', () => {
 
 			await ensureCollectionExists();
 			expect(mockCreateCollection).toHaveBeenCalledWith(
-				'roo_tasks_semantic_index',
+				expectedCollection,
 				expect.objectContaining({
 					vectors: expect.objectContaining({
 						size: 1536,
@@ -253,15 +255,16 @@ describe('VectorIndexer', () => {
 	describe('resetCollection', () => {
 		test('deletes and recreates collection', async () => {
 			const { resetCollection } = await import('../VectorIndexer.js');
+			const expectedCollection = process.env.QDRANT_COLLECTION_NAME || 'roo_tasks_semantic_index';
 
 			mockDeleteCollection.mockResolvedValue(undefined);
 			mockCreateCollection.mockResolvedValue(undefined);
 
 			await resetCollection();
 
-			expect(mockDeleteCollection).toHaveBeenCalledWith('roo_tasks_semantic_index');
+			expect(mockDeleteCollection).toHaveBeenCalledWith(expectedCollection);
 			expect(mockCreateCollection).toHaveBeenCalledWith(
-				'roo_tasks_semantic_index',
+				expectedCollection,
 				expect.objectContaining({
 					vectors: expect.objectContaining({
 						size: 1536,
@@ -304,8 +307,9 @@ describe('VectorIndexer', () => {
 
 			const result = await countPointsByHostOs('win32-x64-MYHOST');
 			expect(result).toBe(42);
+			const expectedCollection = process.env.QDRANT_COLLECTION_NAME || 'roo_tasks_semantic_index';
 			expect(mockCount).toHaveBeenCalledWith(
-				'roo_tasks_semantic_index',
+				expectedCollection,
 				expect.objectContaining({
 					filter: expect.objectContaining({
 						must: expect.arrayContaining([
@@ -337,9 +341,10 @@ describe('VectorIndexer', () => {
 	describe('indexTask', () => {
 		test('returns empty array when no chunks extracted', async () => {
 			const { indexTask } = await import('../VectorIndexer.js');
+			const expectedCollection = process.env.QDRANT_COLLECTION_NAME || 'roo_tasks_semantic_index';
 
 			mockGetCollections.mockResolvedValue({
-				collections: [{ name: 'roo_tasks_semantic_index' }]
+				collections: [{ name: expectedCollection }]
 			});
 
 			const result = await indexTask('task-123', '/fake/path');

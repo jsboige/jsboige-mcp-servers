@@ -65,8 +65,9 @@ describe('QdrantHealthMonitor', () => {
 
   describe('getCollectionStatus', () => {
     it('should return exists=true if collection exists', async () => {
+      const testCollectionName = process.env.QDRANT_COLLECTION_NAME || 'roo_tasks_semantic_index';
       mockQdrantClient.getCollections.mockResolvedValue({
-        collections: [{ name: 'roo_tasks_semantic_index' }]
+        collections: [{ name: testCollectionName }]
       });
       mockQdrantClient.getCollection.mockResolvedValue({ points_count: 50 });
 
