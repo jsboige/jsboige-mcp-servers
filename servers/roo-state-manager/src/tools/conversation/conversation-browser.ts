@@ -92,7 +92,7 @@ export interface ConversationBrowserArgs {
 
     // ===== Arguments pour action='summarize' (via roosync_summarize) =====
     /** [summarize] Type de résumé (requis si action='summarize') */
-    summarize_type?: 'trace' | 'cluster' | 'synthesis';
+    summarize_type?: 'trace' | 'cluster';
     /** [summarize] ID de la tâche (alias pour task_id en contexte summarize) */
     taskId?: string;
     /** [list/summarize] Source des conversations: 'roo' (défaut), 'claude', ou 'all' */
@@ -267,8 +267,8 @@ export const conversationBrowserTool: Tool = {
             // --- Arguments summarize ---
             summarize_type: {
                 type: 'string',
-                enum: ['trace', 'cluster', 'synthesis'],
-                description: '[summarize] Type de résumé (requis si action=summarize).'
+                enum: ['trace', 'cluster'],
+                description: '[summarize] Type de résumé (requis si action=summarize). "synthesis" retiré (mock non fonctionnel).'
             },
             taskId: {
                 type: 'string',
@@ -422,7 +422,7 @@ function validateArgs(args: ConversationBrowserArgs): void {
     if (args.action === 'summarize') {
         if (!args.summarize_type) {
             throw new StateManagerError(
-                'Le paramètre "summarize_type" est requis pour l\'action "summarize". Valeurs: "trace", "cluster", "synthesis".',
+                'Le paramètre "summarize_type" est requis pour l\'action "summarize". Valeurs: "trace", "cluster".',
                 'VALIDATION_FAILED',
                 'ConversationBrowserTool',
                 { action: args.action, missingParam: 'summarize_type' }
