@@ -225,6 +225,15 @@ describe('Category 2: Deprecated Tools Backward Compatibility', () => {
 
         // list_conversations replaced by conversation_browser action=list
         'list_conversations',
+
+        // B4 (#603): Pre-consolidation tools removed from ListTools
+        // Covered by roosync_storage_management (CONS-#443 Groupe 4)
+        'storage_info',
+        'maintenance',
+        // Covered by roosync_mcp_management (CONS-#443 Groupe 3)
+        'touch_mcp_settings',
+        'manage_mcp_settings',
+        'rebuild_and_restart_mcp',
     ];
 
     it('deprecated tools must still have CallTool handlers for backward compat', async () => {
@@ -277,10 +286,8 @@ describe('Category 3: Consolidated Tool Action Completeness', () => {
             actions: ['tree', 'current', 'view', 'summarize', 'rebuild'],
             // Note: 'list' is NOT in registry's action enum but handled via list_conversations backward compat
         },
-        'maintenance': {
-            field: 'action',
-            actions: ['cache_rebuild', 'diagnose_bom', 'repair_bom'],
-        },
+        // B4: maintenance removed from ListTools — covered by roosync_storage_management(action: 'maintenance')
+        // CallTool handler preserved for backward compat
         'task_export': {
             field: 'action',
             actions: ['markdown', 'debug'],
@@ -341,10 +348,8 @@ describe('Category 3: Consolidated Tool Action Completeness', () => {
             field: 'action',
             actions: ['mark_read', 'archive'],
         },
-        'storage_info': {
-            field: 'action',
-            actions: ['detect', 'stats'],
-        },
+        // B4: storage_info removed from ListTools — covered by roosync_storage_management(action: 'storage')
+        // CallTool handler preserved for backward compat
     };
 
     it('consolidated tools must declare their action/mode enum in inputSchema', async () => {
@@ -509,8 +514,8 @@ describe('Category 5: Description Discoverability', () => {
         'export_data': ['export'],                       // "exporter des données"
         'export_config': ['export', 'config'],           // "paramètres de configuration des exports"
         'task_export': ['export', 'tâche'],              // "exporter/diagnostiquer les tâches"
-        'maintenance': ['maintenance'],                  // "Opérations de maintenance"
-        'storage_info': ['stockage'],                    // "Informations sur le stockage Roo"
+        // B4: maintenance removed from ListTools — covered by roosync_storage_management(action: 'maintenance')
+        // B4: storage_info removed from ListTools — covered by roosync_storage_management(action: 'storage')
         'codebase_search': ['recherche', 'code'],        // "Recherche sémantique dans le code"
         'view_task_details': ['tâche', 'détail'],        // "détails techniques complets... tâche spécifique"
     };
@@ -579,11 +584,11 @@ describe('Category 6: Backward Compatibility Routes', () => {
         'index_task_semantic': 'roosync_indexing',
         'reset_qdrant_collection': 'roosync_indexing',
         'rebuild_task_index': 'roosync_indexing',
-        // CONS-13: BOM tools → maintenance
-        'diagnose_conversation_bom': 'maintenance',
-        'repair_conversation_bom': 'maintenance',
-        // CLEANUP-3: cache → maintenance
-        'build_skeleton_cache': 'maintenance',
+        // CONS-13: BOM tools → roosync_storage_management (via maintenance, B4)
+        'diagnose_conversation_bom': 'roosync_storage_management',
+        'repair_conversation_bom': 'roosync_storage_management',
+        // CLEANUP-3: cache → roosync_storage_management (via maintenance, B4)
+        'build_skeleton_cache': 'roosync_storage_management',
         // CLEANUP-3: debug → task_export
         'debug_analyze_conversation': 'task_export',
         // CONS-1: Legacy messaging → roosync_send/read/manage

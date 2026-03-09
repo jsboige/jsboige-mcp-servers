@@ -56,9 +56,10 @@ describe('registry.ts - Tool Registration', () => {
 
             // Vérifier que les outils principaux sont présents
             const toolNames = result.tools.map((t: any) => t.name);
-            expect(toolNames).toContain('touch_mcp_settings');
-            expect(toolNames).toContain('storage_info');
-            expect(toolNames).toContain('maintenance');
+            // B4: Pre-consolidation tools removed from ListTools
+            // Replaced by consolidated versions (CONS-#443)
+            expect(toolNames).toContain('roosync_storage_management');
+            expect(toolNames).toContain('roosync_mcp_management');
         });
 
         it('should include conversation_browser tool', async () => {
