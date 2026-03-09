@@ -12,6 +12,7 @@
 import { Tool } from '@modelcontextprotocol/sdk/types.js';
 import { CallToolResult } from '@modelcontextprotocol/sdk/types.js';
 import { ConversationSkeleton } from '../../types/conversation.js';
+import * as path from 'path';
 
 // Import des handlers existants
 import { indexTaskSemanticTool } from './index-task.tool.js';
@@ -42,6 +43,12 @@ export interface RooSyncIndexingArgs {
 
     /** Filtre par machine (pour action=archive sans task_id) */
     machine_id?: string;
+
+    /** Archiver les sessions Claude Code (pour action=archive) */
+    claude_code_sessions?: boolean;
+
+    /** Nombre max de sessions Claude Code à archiver (pour action=archive avec claude_code_sessions=true) */
+    max_sessions?: number;
 }
 
 /**
@@ -49,14 +56,14 @@ export interface RooSyncIndexingArgs {
  */
 export const roosyncIndexingTool: Tool = {
     name: 'roosync_indexing',
-    description: "Outil unifié de gestion de l'index sémantique et du cache (indexation, reset, rebuild, diagnostic)",
+    description: "Outil unifié de gestion de l'index sémantique, du cache et de l'archivage (indexation, reset, rebuild, diagnostic, archive Roo/Claude Code)",
     inputSchema: {
         type: 'object',
         properties: {
             action: {
                 type: 'string',
                 enum: ['index', 'reset', 'rebuild', 'diagnose', 'archive'],
-                description: "Action: 'index' (indexer une tâche dans Qdrant), 'reset' (réinitialiser la collection Qdrant), 'rebuild' (reconstruire l'index SQLite VS Code), 'diagnose' (diagnostic complet de l'index), 'archive' (archiver une tâche sur GDrive ou lister les archives)"
+                description: "Action: 'index' (indexer une tâche dans Qdrant), 'reset' (réinitialiser la collection Qdrant), 'rebuild' (reconstruire l'index SQLite VS Code), 'diagnose' (diagnostic complet de l'index), 'archive' (archiver une tâche Roo ou les sessions Claude Code sur GDrive)"
             },
             task_id: {
                 type: 'string',
@@ -84,6 +91,16 @@ export const roosyncIndexingTool: Tool = {
             machine_id: {
                 type: 'string',
                 description: 'Filtre par machine (pour action=archive, liste les archives de cette machine uniquement)'
+            },
+            claude_code_sessions: {
+                type: 'boolean',
+                description: 'Archiver les sessions Claude Code (pour action=archive)',
+                default: false
+            },
+            max_sessions: {
+                type: 'number',
+                description: 'Nombre max de sessions Claude Code à archiver (pour action=archive avec claude_code_sessions=true, 0 = toutes)',
+                default: 0
             }
         },
         required: ['action']
@@ -159,6 +176,24 @@ export async function handleRooSyncIndexing(
             const { TaskArchiver } = await import('../../services/task-archiver/index.js');
             const { RooStorageDetector } = await import('../../utils/roo-storage-detector.js');
 
+            // Support pour l'archivage des sessions Claude Code
+            if (args.claude_code_sessions) {
+                const os = await import('os');
+                const claudeProjectsPath = path.join(os.homedir(), '.claude', 'projects');
+                const result = await TaskArchiver.archiveClaudeCodeSessions(
+                    claudeProjectsPath,
+                    args.max_sessions || 0
+                );
+                return {
+                    isError: false,
+                    content: [{
+                        type: 'text',
+                        text: `Sessions Claude Code archivées: ${result.archived} réussies, ${result.failed} échecs`
+                    }]
+                };
+            }
+
+            // Archivage de tâches Roo existant
             if (args.task_id) {
                 // Archiver une tache specifique
                 const conversation = await RooStorageDetector.findConversationById(args.task_id);
