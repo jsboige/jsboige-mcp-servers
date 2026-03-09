@@ -309,13 +309,13 @@ describe('roosyncConfig (integration)', () => {
     test('should throw on incompatible major version', async () => {
       // Version 99.0.0 has major=99 vs current major (likely 2)
       // Code throws ConfigSharingServiceError for major version mismatch
-      await expect(async () => {
-        await roosyncConfig({
+      await expect(
+        roosyncConfig({
           action: 'apply',
           version: '99.0.0',
           dryRun: true
-        });
-      }).rejects.toThrow('Incompatibilité de version de configuration');
+        })
+      ).rejects.toThrow('Incompatibilité de version de configuration');
     });
 
     test('should report applied files', async () => {
