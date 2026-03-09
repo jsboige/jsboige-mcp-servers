@@ -204,16 +204,17 @@ describe('🛡️ TaskIndexer Anti-Leak Protections & Circuit Breaker Tests', ()
   });
 
   test('Collection Status - Vérification état Qdrant', async () => {
+    const expectedCollection = process.env.QDRANT_COLLECTION_NAME || 'roo_tasks_semantic_index';
     mockQdrantClient.getCollections.mockResolvedValueOnce({
-      collections: [{ name: 'roo_tasks_semantic_index' }]
+      collections: [{ name: expectedCollection }]
     });
-    
+
     mockQdrantClient.getCollection.mockResolvedValueOnce({
       points_count: 1250
     });
 
     const status = await taskIndexer.getCollectionStatus();
-    
+
     expect(status).toEqual({
       exists: true,
       count: 1250
@@ -221,14 +222,15 @@ describe('🛡️ TaskIndexer Anti-Leak Protections & Circuit Breaker Tests', ()
   });
 
   test('Reset Collection - Nettoyage complet', async () => {
+    const expectedCollection = process.env.QDRANT_COLLECTION_NAME || 'roo_tasks_semantic_index';
     mockQdrantClient.deleteCollection.mockResolvedValueOnce({});
     mockQdrantClient.createCollection.mockResolvedValueOnce({});
 
     await taskIndexer.resetCollection();
 
-    expect(mockQdrantClient.deleteCollection).toHaveBeenCalledWith('roo_tasks_semantic_index');
+    expect(mockQdrantClient.deleteCollection).toHaveBeenCalledWith(expectedCollection);
     expect(mockQdrantClient.createCollection).toHaveBeenCalledWith(
-      'roo_tasks_semantic_index',
+      expectedCollection,
       expect.objectContaining({
         vectors: {
           size: 1536,

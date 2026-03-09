@@ -137,8 +137,9 @@ describe('searchTasks', () => {
         test('utilise le nom de collection par défaut', async () => {
             await searchTasks('test');
 
+            const expectedCollection = process.env.QDRANT_COLLECTION_NAME || 'roo_tasks_semantic_index';
             expect(mockQdrantSearch).toHaveBeenCalledWith(
-                'roo_tasks_semantic_index',
+                expectedCollection,
                 expect.any(Object)
             );
         });
