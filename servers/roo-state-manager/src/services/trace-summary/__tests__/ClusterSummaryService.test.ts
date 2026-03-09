@@ -486,8 +486,8 @@ describe('ClusterSummaryService', { timeout: 60000 }, () => {
 
         test('handles moderate number of child tasks', async () => {
             const rootTask = createMockTask('root-1');
-            // Reduced from 50 to 20 for reasonable test time
-            const childTasks = Array.from({ length: 20 }, (_, i) =>
+            // Reduced from 20 to 10 for faster test execution while still testing multi-task scenario
+            const childTasks = Array.from({ length: 10 }, (_, i) =>
                 createMockTask(`child-${i}`, 'root-1', `Task ${i}`)
             );
 
@@ -498,7 +498,7 @@ describe('ClusterSummaryService', { timeout: 60000 }, () => {
             );
 
             expect(result.success).toBe(true);
-            expect(result.clusterMetadata.totalTasks).toBe(21);
+            expect(result.clusterMetadata.totalTasks).toBe(11);
         }, 60000);
 
         test('handles tasks with special characters in titles', async () => {

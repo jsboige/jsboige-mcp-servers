@@ -309,20 +309,13 @@ describe('roosyncConfig (integration)', () => {
     test('should throw on incompatible major version', async () => {
       // Version 99.0.0 has major=99 vs current major (likely 2)
       // Code throws ConfigSharingServiceError for major version mismatch
-      // NOTE: If currentVersion is null (e.g., in test environment without GDrive),
-      // the version check is skipped and applyConfig returns an error object instead
-      const result = await roosyncConfig({
-        action: 'apply',
-        version: '99.0.0',
-        dryRun: true
-      });
-
-      // Either throws with version mismatch error, or returns error status if version check is skipped
-      if (result.status === 'error') {
-        expect(result.errors?.[0]).toContain('Configuration non trouvée');
-      } else {
-        throw new Error('Expected error status');
-      }
+      await expect(async () => {
+        await roosyncConfig({
+          action: 'apply',
+          version: '99.0.0',
+          dryRun: true
+        });
+      }).rejects.toThrow('Incompatibilité de version de configuration');
     });
 
     test('should report applied files', async () => {
