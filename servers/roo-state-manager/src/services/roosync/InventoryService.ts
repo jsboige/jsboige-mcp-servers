@@ -15,6 +15,8 @@ export class InventoryService {
   private readonly ROO_CONFIG_PATH: string;
   private readonly SCRIPTS_PATH: string;
   private readonly CLAUDE_JSON_PATH: string; // #489: Ajout chemin vers ~/.claude.json
+  private readonly PROJECT_MCP_JSON_PATH: string; // #601: Ajout chemin vers .mcp.json (project scope)
+  private readonly CLAUDE_SETTINGS_PATH: string; // #601: Ajout chemin vers ~/.claude/settings.json (settings scope)
 
   /**
    * Détecte la racine roo-extensions en remontant l'arborescence depuis process.cwd()
@@ -52,6 +54,9 @@ export class InventoryService {
     this.ROO_CONFIG_PATH = path.join(this.ROO_EXTENSIONS_PATH, 'roo-config');
     this.SCRIPTS_PATH = path.join(this.ROO_EXTENSIONS_PATH, 'scripts');
     this.CLAUDE_JSON_PATH = path.join(userHome, '.claude.json'); // #489: Ajout chemin ~/.claude.json
+    // #601: Claude Code scopes - project and settings
+    this.PROJECT_MCP_JSON_PATH = path.join(this.ROO_EXTENSIONS_PATH, '.mcp.json'); // Project MCPs
+    this.CLAUDE_SETTINGS_PATH = path.join(userHome, '.claude', 'settings.json'); // Settings scope (env, hooks, permissions)
   }
 
   public static getInstance(): InventoryService {
@@ -103,7 +108,10 @@ export class InventoryService {
       mcpSettings: this.MCP_SETTINGS_PATH,
       rooConfig: this.ROO_CONFIG_PATH,
       scripts: this.SCRIPTS_PATH,
-      claudeJson: this.CLAUDE_JSON_PATH // #489: Ajout chemin ~/.claude.json
+      claudeJson: this.CLAUDE_JSON_PATH, // #489: Ajout chemin ~/.claude.json
+      // #601: Claude Code scopes - project and settings
+      projectMcpJson: this.PROJECT_MCP_JSON_PATH, // Project scope (.mcp.json)
+      claudeSettings: this.CLAUDE_SETTINGS_PATH // Settings scope (~/.claude/settings.json)
     }
   };
 

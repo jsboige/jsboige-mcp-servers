@@ -3,7 +3,14 @@ import { getRooSyncService } from '../../services/RooSyncService.js';
 import { ConfigSharingServiceError, ConfigSharingServiceErrorCode } from '../../types/errors.js';
 
 /**
+ * Claude Code scope pour les configurations MCP
+ * Issue #601 - Support scopes officiels Claude Code
+ */
+export type ClaudeCodeScope = 'user' | 'project' | 'settings';
+
+/**
  * Schema Zod pour roosync_config - Outil unifié de gestion de configuration
+ * Issue #601 - Ajout support scope Claude Code
  */
 export const ConfigArgsSchema = z.object({
   // Action requise
@@ -12,6 +19,9 @@ export const ConfigArgsSchema = z.object({
   // Paramètres communs
   machineId: z.string().optional().describe('ID de la machine (optionnel, utilise ROOSYNC_MACHINE_ID par défaut)'),
   dryRun: z.boolean().optional().describe('Si true, simule l\'opération sans modifier les fichiers. Défaut: false'),
+
+  // Scope Claude Code (#601)
+  scope: z.enum(['user', 'project', 'settings']).optional().describe('Scope Claude Code pour les configs MCP: user (~/.claude.json), project (.mcp.json), settings (~/.claude/settings.json). Défaut: user'),
 
   // Pour collect et apply
   targets: z.array(z.string()).optional().refine(
@@ -114,7 +124,7 @@ function parseTargets(targets?: string[]): ('modes' | 'mcp' | 'profiles' | `mcp:
  * @throws ConfigSharingServiceError en cas d'erreur
  */
 export async function roosyncConfig(args: ConfigArgs) {
-  const { action, machineId, dryRun = false } = args;
+  const { action, machineId, dryRun = false, scope } = args;
 
   try {
     const rooSyncService = getRooSyncService();
@@ -127,7 +137,8 @@ export async function roosyncConfig(args: ConfigArgs) {
 
         const result = await configSharingService.collectConfig({
           targets: targets as ('modes' | 'mcp' | 'profiles')[],
-          dryRun
+          dryRun,
+          scope // Issue #601 - Pass scope to collect
         });
 
         return {
@@ -149,7 +160,8 @@ export async function roosyncConfig(args: ConfigArgs) {
           // Collect automatique
           const collectResult = await configSharingService.collectConfig({
             targets: targets as ('modes' | 'mcp' | 'profiles')[],
-            dryRun
+            dryRun,
+            scope // Issue #601 - Pass scope to collect
           });
           finalPackagePath = collectResult.packagePath;
         }
@@ -214,7 +226,8 @@ export async function roosyncConfig(args: ConfigArgs) {
           machineId,
           targets: parseTargets(targets),
           backup,
-          dryRun
+          dryRun,
+          scope // Issue #601 - Pass scope to apply
         });
 
         return {
@@ -290,7 +303,7 @@ export async function roosyncConfig(args: ConfigArgs) {
  */
 export const configToolMetadata = {
   name: 'roosync_config',
-  description: 'Gestion de configuration RooSync. Actions : collect (collecte locale), publish (publication GDrive), apply (application depuis GDrive), apply_profile (appliquer un profil de modèle). Cibles : modes, mcp, profiles, roomodes, model-configs, rules, settings, claude-config, modes-yaml, mcp:<nomServeur>. Stocke par machineId.',
+  description: 'Gestion de configuration RooSync. Actions : collect (collecte locale), publish (publication GDrive), apply (application depuis GDrive), apply_profile (appliquer un profil de modèle). Cibles : modes, mcp, profiles, roomodes, model-configs, rules, settings, claude-config, modes-yaml, mcp:<nomServeur>. Stocke par machineId. Issue #601: Support scope Claude Code (user/project/settings).',
   inputSchema: {
     type: 'object' as const,
     properties: {
@@ -306,6 +319,11 @@ export const configToolMetadata = {
       dryRun: {
         type: 'boolean',
         description: 'Si true, simule l\'opération sans modifier les fichiers. Défaut: false'
+      },
+      scope: {
+        type: 'string',
+        enum: ['user', 'project', 'settings'],
+        description: 'Scope Claude Code pour les configs MCP: user (~/.claude.json global), project (.mcp.json projet), settings (~/.claude/settings.json env/hooks). Défaut: user. Issue #601.'
       },
       targets: {
         type: 'array',

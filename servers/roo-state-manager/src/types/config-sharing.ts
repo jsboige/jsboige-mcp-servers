@@ -1,6 +1,13 @@
 /**
  * Types pour le service de configuration partagée (ConfigSharingService)
+ * Issue #601 - Support scope Claude Code
  */
+
+/**
+ * Claude Code scope pour les configurations MCP
+ * Issue #601 - Support scopes officiels Claude Code
+ */
+export type ClaudeCodeScope = 'user' | 'project' | 'settings';
 
 export interface ConfigManifestFile {
   path: string;
@@ -21,6 +28,7 @@ export interface CollectConfigOptions {
   targets: ('modes' | 'mcp' | 'profiles' | 'roomodes' | 'model-configs' | 'rules' | 'settings' | `mcp:${string}`)[];
   dryRun?: boolean;
   description?: string;
+  scope?: ClaudeCodeScope; // Issue #601 - Scope Claude Code (user/project/settings)
 }
 
 export interface CollectConfigResult {
@@ -50,6 +58,7 @@ export interface ApplyConfigOptions {
   targets?: ('modes' | 'mcp' | 'profiles' | 'roomodes' | 'model-configs' | 'rules' | 'settings' | `mcp:${string}`)[];
   backup?: boolean; // Défaut: true
   dryRun?: boolean;
+  scope?: ClaudeCodeScope; // Issue #601 - Scope Claude Code (user/project/settings)
 }
 
 export interface ApplyConfigResult {

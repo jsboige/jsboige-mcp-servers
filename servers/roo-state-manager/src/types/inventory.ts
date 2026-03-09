@@ -135,5 +135,8 @@ export interface FullInventory {
     rooConfig: string;
     scripts: string;
     claudeJson?: string; // #489: Ajout chemin ~/.claude.json
+    // #601: Claude Code scopes - project and settings
+    projectMcpJson?: string; // Project scope (.mcp.json)
+    claudeSettings?: string; // Settings scope (~/.claude/settings.json)
   };
 }

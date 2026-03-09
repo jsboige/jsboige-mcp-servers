@@ -19,7 +19,8 @@ import { IConfigSharingService,
    ApplyProfileResult,
    ConfigManifest,
    ConfigManifestFile,
-   DiffResult
+   DiffResult,
+   ClaudeCodeScope // #601: Import ClaudeCodeScope type
 } from '../types/config-sharing.js';
 import { IInventoryCollector, IConfigService } from '../types/baseline.js';
 import { createLogger, Logger } from '../utils/logger.js';
@@ -74,7 +75,8 @@ export class ConfigSharingService implements IConfigSharingService {
     const mcpTargets = options.targets.filter(t => t.startsWith('mcp:'));
     if (options.targets.includes('mcp') || mcpTargets.length > 0) {
       const mcpServerNames = mcpTargets.map(t => t.slice(4));
-      const mcpFiles = await this.collectMcpSettings(tempDir, mcpServerNames);
+      // #601: Pass scope parameter to collectMcpSettings
+      const mcpFiles = await this.collectMcpSettings(tempDir, mcpServerNames, options.scope);
       manifest.files.push(...mcpFiles);
     }
 
@@ -353,6 +355,9 @@ export class ConfigSharingService implements IConfigSharingService {
             shouldProcess = hasClaudeConfigTarget;
           } else if (file.path.startsWith('modes-yaml/')) {
             shouldProcess = hasModesYamlTarget;
+          } else if (file.path.startsWith('mcp-settings/')) {
+            // #601: Handle all MCP settings files (mcp_settings.json, mcp_user.json, mcp_project.json)
+            shouldProcess = hasMcpTarget || hasMcpTargets;
           }
 
           if (!shouldProcess) {
@@ -381,6 +386,20 @@ export class ConfigSharingService implements IConfigSharingService {
               continue;
             }
             destPath = inventory.paths.mcpSettings;
+          } else if (file.path === 'mcp-settings/mcp_user.json') {
+            // #601: User scope - ~/.claude.json (mcpServers section)
+            if (!inventory.paths.claudeJson) {
+              this.logger.warn('Chemin ~/.claude.json non disponible dans l\'inventaire');
+              continue;
+            }
+            destPath = inventory.paths.claudeJson;
+          } else if (file.path === 'mcp-settings/mcp_project.json') {
+            // #601: Project scope - .mcp.json (project root)
+            if (!inventory.paths.projectMcpJson) {
+              this.logger.warn('Chemin .mcp.json non disponible dans l\'inventaire');
+              continue;
+            }
+            destPath = inventory.paths.projectMcpJson;
           } else if (file.path.startsWith('roomodes/')) {
             // .roomodes -> workspace root
             destPath = join(inventory.paths.rooExtensions, '.roomodes');
@@ -934,62 +953,121 @@ export class ConfigSharingService implements IConfigSharingService {
     return files;
   }
 
-  private async collectMcpSettings(tempDir: string, mcpServerNames?: string[]): Promise<ConfigManifestFile[]> {
+  /**
+   * Collecte les settings MCP selon le scope Claude Code
+   * #601: Support scopes officiels Claude Code (user/project/settings)
+   *
+   * @param tempDir - Répertoire temporaire pour la collecte
+   * @param mcpServerNames - Optionnel, noms des serveurs MCP spécifiques à collecter
+   * @param scope - Scope Claude Code: 'user' (~/.claude.json), 'project' (.mcp.json), 'settings' (skip)
+   */
+  private async collectMcpSettings(tempDir: string, mcpServerNames?: string[], scope?: ClaudeCodeScope): Promise<ConfigManifestFile[]> {
     const files: ConfigManifestFile[] = [];
     const mcpDir = join(tempDir, 'mcp-settings');
     await fs.mkdir(mcpDir, { recursive: true });
 
+    // #601: Pour scope 'settings', skip la collecte MCP (settings.json n'a pas de mcpServers)
+    if (scope === 'settings') {
+      this.logger.info('Scope=settings: Skipping MCP collection (settings.json does not contain MCPs)');
+      return files;
+    }
+
     // Récupérer l'inventaire pour trouver les chemins
-    // CORRECTION SDDD : Utiliser InventoryService pour charger l'inventaire depuis le fichier JSON
-    // CORRECTION SDDD : Utiliser ROOSYNC_MACHINE_ID au lieu de COMPUTERNAME
-    // CORRECTION Bug collect_config : Appeler sans argument pour forcer collecte locale
     const machineId = process.env.ROOSYNC_MACHINE_ID || process.env.COMPUTERNAME || 'localhost';
     const inventory = await this.inventoryService.getMachineInventory() as any;
 
-    // CORRECTION SDDD : Utiliser uniquement l'inventaire, pas de fallback process.cwd()
-    if (!inventory?.paths?.mcpSettings) {
-      throw new ConfigSharingServiceError(
-        'Inventaire incomplet: paths.mcpSettings non disponible. Impossible de collecter les settings MCP.',
-        ConfigSharingServiceErrorCode.INVENTORY_INCOMPLETE,
-        { machineId, missingPath: 'mcpSettings' }
-      );
+    // #601: Déterminer le chemin selon le scope
+    let mcpSettingsPath: string;
+    let destFileName: string;
+    let sourceDescription: string;
+
+    if (scope === 'project') {
+      // Project scope: .mcp.json (projet local)
+      if (!inventory?.paths?.projectMcpJson) {
+        throw new ConfigSharingServiceError(
+          'Inventaire incomplet: paths.projectMcpJson non disponible. Impossible de collecter les settings MCP.',
+          ConfigSharingServiceErrorCode.INVENTORY_INCOMPLETE,
+          { machineId, missingPath: 'projectMcpJson', scope }
+        );
+      }
+      mcpSettingsPath = inventory.paths.projectMcpJson;
+      destFileName = 'mcp_project.json';
+      sourceDescription = '.mcp.json (project scope)';
+    } else if (scope === 'user') {
+      // User scope: ~/.claude.json (mcpServers section)
+      if (!inventory?.paths?.claudeJson) {
+        throw new ConfigSharingServiceError(
+          'Inventaire incomplet: paths.claudeJson non disponible. Impossible de collecter les settings MCP.',
+          ConfigSharingServiceErrorCode.INVENTORY_INCOMPLETE,
+          { machineId, missingPath: 'claudeJson', scope }
+        );
+      }
+      mcpSettingsPath = inventory.paths.claudeJson;
+      destFileName = 'mcp_user.json';
+      sourceDescription = '~/.claude.json (user scope)';
+    } else {
+      // Défaut: VS Code extension settings (rétrocompatibilité)
+      if (!inventory?.paths?.mcpSettings) {
+        throw new ConfigSharingServiceError(
+          'Inventaire incomplet: paths.mcpSettings non disponible. Impossible de collecter les settings MCP.',
+          ConfigSharingServiceErrorCode.INVENTORY_INCOMPLETE,
+          { machineId, missingPath: 'mcpSettings', scope }
+        );
+      }
+      mcpSettingsPath = inventory.paths.mcpSettings;
+      destFileName = 'mcp_settings.json';
+      sourceDescription = 'mcp_settings.json (VS Code extension)';
     }
 
-    const mcpSettingsPath = inventory.paths.mcpSettings;
-
-    this.logger.info(`Collecte des settings MCP depuis: ${mcpSettingsPath}`);
+    this.logger.info(`Collecte des settings MCP depuis: ${mcpSettingsPath} (${sourceDescription})`);
 
     if (existsSync(mcpSettingsPath)) {
-      const destPath = join(mcpDir, 'mcp_settings.json');
+      const destPath = join(mcpDir, destFileName);
 
       // Lecture et normalisation (avec gestion BOM)
       const content = await readJSONFileWithoutBOM(mcpSettingsPath);
-      
+
+      // #601: Pour ~/.claude.json, extraire uniquement la section mcpServers
+      let mcpContent = content;
+      if (scope === 'user') {
+        if (!content.mcpServers) {
+          this.logger.warn('Aucun serveur MCP trouvé dans ~/.claude.json (section mcpServers)');
+          return files;
+        }
+        mcpContent = { mcpServers: content.mcpServers };
+      } else if (scope === 'project') {
+        // .mcp.json contient directement mcpServers
+        if (!content.mcpServers) {
+          this.logger.warn('Aucun serveur MCP trouvé dans .mcp.json');
+          return files;
+        }
+      }
+
       // Filtrage des serveurs MCP spécifiques si demandé
       if (mcpServerNames && mcpServerNames.length > 0) {
-        if (!content.mcpServers) {
+        if (!mcpContent.mcpServers) {
           this.logger.warn('Aucun serveur MCP trouvé dans la configuration');
           return files;
         }
-        
+
         const filteredServers: any = {};
         for (const serverName of mcpServerNames) {
-          if (content.mcpServers[serverName]) {
-            filteredServers[serverName] = content.mcpServers[serverName];
+          if (mcpContent.mcpServers[serverName]) {
+            filteredServers[serverName] = mcpContent.mcpServers[serverName];
           } else {
             this.logger.warn(`Serveur MCP non trouvé: ${serverName}`);
           }
         }
-        
+
         if (Object.keys(filteredServers).length === 0) {
           this.logger.warn('Aucun serveur MCP correspondant trouvé');
           return files;
         }
-        
-        content.mcpServers = filteredServers;
+
+        mcpContent.mcpServers = filteredServers;
       }
-      
-      const normalized = await this.normalizationService.normalize(content, 'mcp_config');
+
+      const normalized = await this.normalizationService.normalize(mcpContent, 'mcp_config');
 
       // Écriture du fichier normalisé
       await fs.writeFile(destPath, JSON.stringify(normalized, null, 2));
@@ -998,13 +1076,13 @@ export class ConfigSharingService implements IConfigSharingService {
       const stats = await fs.stat(destPath);
 
       files.push({
-        path: 'mcp-settings/mcp_settings.json',
+        path: `mcp-settings/${destFileName}`,
         hash,
         type: 'mcp_config',
         size: stats.size
       });
     } else {
-        this.logger.warn(`Fichier mcp_settings.json non trouvé: ${mcpSettingsPath}`);
+        this.logger.warn(`Fichier MCP non trouvé: ${mcpSettingsPath}`);
     }
 
     return files;
