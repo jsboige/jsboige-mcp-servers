@@ -79,18 +79,28 @@ function createCallToolHandler(): { handler: (request: any) => Promise<any> } {
 
 /**
  * Helper: Test if a tool name has a CallTool handler (doesn't throw "Tool not found")
+ * Uses a 5-second timeout to avoid hanging on heavy I/O operations
  */
 async function hasCallToolHandler(handler: (req: any) => Promise<any>, toolName: string): Promise<boolean> {
+    const TIMEOUT_MS = 5000; // 5s timeout per tool
+
+    const timeoutPromise = new Promise<boolean>((_, reject) => {
+        setTimeout(() => reject(new Error('Tool check timeout')), TIMEOUT_MS);
+    });
+
     try {
-        await handler({
-            params: { name: toolName, arguments: {} }
-        });
+        await Promise.race([
+            handler({
+                params: { name: toolName, arguments: {} }
+            }),
+            timeoutPromise
+        ]);
         return true;
     } catch (error: any) {
         if (error.message?.includes('Tool not found')) {
             return false;
         }
-        // Other errors (e.g., invalid args) mean the handler EXISTS but the args are wrong
+        // Other errors (including timeout) mean the handler EXISTS but the operation failed
         return true;
     }
 }
