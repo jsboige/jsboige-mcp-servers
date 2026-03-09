@@ -32,7 +32,7 @@ describe('roosync_apply_config - Interface', () => {
 
   beforeAll(async () => {
     module = await import('../../../../src/tools/roosync/apply-config.js');
-  });
+  }, 30000); // 30s timeout for module import (Issue #609)
 
   it('devrait exporter roosyncApplyConfig', () => {
     expect(module.roosyncApplyConfig).toBeDefined();
@@ -54,7 +54,7 @@ describe('roosync_apply_config - Schema Validation', () => {
 
   beforeAll(async () => {
     module = await import('../../../../src/tools/roosync/apply-config.js');
-  });
+  }, 30000); // 30s timeout for module import (Issue #609)
 
   it('devrait accepter un objet vide (tous optionnels)', () => {
     const result = module.ApplyConfigArgsSchema.safeParse({});
@@ -103,7 +103,7 @@ describe('roosync_apply_config - Metadata', () => {
 
   beforeAll(async () => {
     module = await import('../../../../src/tools/roosync/apply-config.js');
-  });
+  }, 30000); // 30s timeout for module import (Issue #609)
 
   it('devrait avoir les métadonnées correctes', () => {
     const metadata = module.applyConfigToolMetadata;
@@ -136,7 +136,7 @@ describe('roosync_apply_config - Tests Fonctionnels', () => {
 
     // Import the module under test
     module = await import('../../../../src/tools/roosync/apply-config.js');
-  });
+  }, 30000); // 30s timeout for module import (Issue #609)
 
   beforeEach(() => {
     // Fresh mock implementations for each test
@@ -237,7 +237,7 @@ describe('roosync_apply_config - Tests Backup', () => {
     const rooSyncServiceModule = await import('../../../../src/services/RooSyncService.js');
     getRooSyncServiceMock = rooSyncServiceModule.getRooSyncService;
     module = await import('../../../../src/tools/roosync/apply-config.js');
-  });
+  }, 30000); // 30s timeout for module import (Issue #609)
 
   beforeEach(() => {
     mockConfigService = {
@@ -333,7 +333,7 @@ describe('roosync_apply_config - Tests DryRun', () => {
     const rooSyncServiceModule = await import('../../../../src/services/RooSyncService.js');
     getRooSyncServiceMock = rooSyncServiceModule.getRooSyncService;
     module = await import('../../../../src/tools/roosync/apply-config.js');
-  });
+  }, 30000); // 30s timeout for module import (Issue #609)
 
   beforeEach(() => {
     mockConfigService = {
@@ -452,7 +452,7 @@ describe('roosync_apply_config - Tests Targets', () => {
     const rooSyncServiceModule = await import('../../../../src/services/RooSyncService.js');
     getRooSyncServiceMock = rooSyncServiceModule.getRooSyncService;
     module = await import('../../../../src/tools/roosync/apply-config.js');
-  });
+  }, 30000); // 30s timeout for module import (Issue #609)
 
   beforeEach(() => {
     mockConfigService = {
@@ -618,7 +618,7 @@ describe('roosync_apply_config - Schema Validation Targets (#349)', () => {
 
   beforeAll(async () => {
     module = await import('../../../../src/tools/roosync/apply-config.js');
-  });
+  }, 30000); // 30s timeout for module import (Issue #609)
 
   it('devrait accepter target mcp:github', async () => {
     const result = module.ApplyConfigArgsSchema.safeParse({
@@ -676,7 +676,7 @@ describe('roosync_apply_config - Tests Version Incompatible', () => {
     const rooSyncServiceModule = await import('../../../../src/services/RooSyncService.js');
     getRooSyncServiceMock = rooSyncServiceModule.getRooSyncService;
     module = await import('../../../../src/tools/roosync/apply-config.js');
-  });
+  }, 30000); // 30s timeout for module import (Issue #609)
 
   beforeEach(() => {
     mockConfigService = {
@@ -783,7 +783,7 @@ describe('roosync_apply_config - Tests Erreurs', () => {
     const rooSyncServiceModule = await import('../../../../src/services/RooSyncService.js');
     getRooSyncServiceMock = rooSyncServiceModule.getRooSyncService;
     module = await import('../../../../src/tools/roosync/apply-config.js');
-  });
+  }, 30000); // 30s timeout for module import (Issue #609)
 
   beforeEach(() => {
     mockConfigService = {
@@ -941,7 +941,7 @@ describe('roosync_apply_config - Tests Résultat', () => {
     const rooSyncServiceModule = await import('../../../../src/services/RooSyncService.js');
     getRooSyncServiceMock = rooSyncServiceModule.getRooSyncService;
     module = await import('../../../../src/tools/roosync/apply-config.js');
-  });
+  }, 30000); // 30s timeout for module import (Issue #609)
 
   beforeEach(() => {
     mockConfigService = {
