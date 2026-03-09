@@ -5,7 +5,7 @@
 export interface ConfigManifestFile {
   path: string;
   hash: string;
-  type: 'mode_definition' | 'mcp_config' | 'profile_settings' | 'roomodes_config' | 'model_config' | 'rules_config' | 'roo_settings' | 'other';
+  type: 'mode_definition' | 'mcp_config' | 'profile_settings' | 'roomodes_config' | 'model_config' | 'rules_config' | 'roo_settings' | 'claude_config' | 'modes_yaml' | 'other';
   size: number;
 }
 

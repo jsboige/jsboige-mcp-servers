@@ -108,6 +108,18 @@ export class ConfigSharingService implements IConfigSharingService {
       manifest.files.push(...settingsFiles);
     }
 
+    // Collecte de ~/.claude.json (Claude Code MCP configuration) - #603 B2.1
+    if (options.targets.includes('claude-config' as any)) {
+      const claudeConfigFiles = await this.collectClaudeConfig(tempDir);
+      manifest.files.push(...claudeConfigFiles);
+    }
+
+    // Collecte de custom_modes.yaml (modes globaux Roo) - #603 B2.1
+    if (options.targets.includes('modes-yaml' as any)) {
+      const modesYamlFiles = await this.collectModesYaml(tempDir);
+      manifest.files.push(...modesYamlFiles);
+    }
+
     // Calcul de la taille totale
     for (const file of manifest.files) {
       totalSize += file.size;
@@ -297,6 +309,8 @@ export class ConfigSharingService implements IConfigSharingService {
       const hasModelConfigsTarget = options.targets?.includes('model-configs') || false;
       const hasRulesTarget = options.targets?.includes('rules') || false;
       const hasSettingsTarget = options.targets?.includes('settings') || false;
+      const hasClaudeConfigTarget = options.targets?.includes('claude-config' as any) || false;
+      const hasModesYamlTarget = options.targets?.includes('modes-yaml' as any) || false;
 
       // Si aucun target n'est spécifié, tout appliquer par défaut
       const applyAll = options.targets === undefined || options.targets.length === 0;
@@ -335,6 +349,10 @@ export class ConfigSharingService implements IConfigSharingService {
             shouldProcess = hasRulesTarget;
           } else if (file.path.startsWith('roo-settings/')) {
             shouldProcess = hasSettingsTarget;
+          } else if (file.path.startsWith('claude-config/')) {
+            shouldProcess = hasClaudeConfigTarget;
+          } else if (file.path.startsWith('modes-yaml/')) {
+            shouldProcess = hasModesYamlTarget;
           }
 
           if (!shouldProcess) {
@@ -378,6 +396,13 @@ export class ConfigSharingService implements IConfigSharingService {
             // roo-settings/*.json -> state.vscdb (SQLite)
             // Special handling: destPath is the state.vscdb file
             destPath = join(homedir(), 'AppData', 'Roaming', 'Code', 'User', 'globalStorage', 'state.vscdb');
+          } else if (file.path.startsWith('claude-config/')) {
+            // claude-config/.claude.json -> ~/.claude.json
+            destPath = join(homedir(), '.claude.json');
+          } else if (file.path.startsWith('modes-yaml/')) {
+            // modes-yaml/custom_modes.yaml -> %APPDATA%/.../custom_modes.yaml
+            destPath = join(homedir(), 'AppData', 'Roaming', 'Code', 'User', 'globalStorage',
+              'rooveterinaryinc.roo-cline', 'settings', 'custom_modes.yaml');
           } else {
             this.logger.warn(`Type de fichier non supporté ou chemin inconnu: ${file.path}`);
             continue;
@@ -1237,6 +1262,84 @@ export class ConfigSharingService implements IConfigSharingService {
    * Collecte les settings Roo depuis state.vscdb
    * Issue #509, #547: Extraction complète des 80+ settings sync-safe
    */
+  /**
+   * Collecte ~/.claude.json (Claude Code MCP configuration)
+   * #603 B2.1
+   */
+  private async collectClaudeConfig(tempDir: string): Promise<ConfigManifestFile[]> {
+    const files: ConfigManifestFile[] = [];
+    const claudeDir = join(tempDir, 'claude-config');
+    await fs.mkdir(claudeDir, { recursive: true });
+
+    const claudeJsonPath = join(homedir(), '.claude.json');
+
+    if (!existsSync(claudeJsonPath)) {
+      this.logger.warn(`Fichier ~/.claude.json non trouvé: ${claudeJsonPath}`);
+      return files;
+    }
+
+    try {
+      const destPath = join(claudeDir, '.claude.json');
+      await fs.copyFile(claudeJsonPath, destPath);
+      const hash = await this.calculateHash(destPath);
+      const stats = await fs.stat(destPath);
+
+      files.push({
+        path: 'claude-config/.claude.json',
+        hash,
+        type: 'claude_config',
+        size: stats.size
+      });
+
+      this.logger.info(`Claude Code config collectée depuis: ${claudeJsonPath}`);
+    } catch (error) {
+      this.logger.error(`Erreur lors de la collecte de ~/.claude.json: ${error}`);
+    }
+
+    return files;
+  }
+
+  /**
+   * Collecte custom_modes.yaml (modes globaux Roo)
+   * #603 B2.1
+   */
+  private async collectModesYaml(tempDir: string): Promise<ConfigManifestFile[]> {
+    const files: ConfigManifestFile[] = [];
+    const modesYamlDir = join(tempDir, 'modes-yaml');
+    await fs.mkdir(modesYamlDir, { recursive: true });
+
+    const rooSettingsDir = join(
+      homedir(), 'AppData', 'Roaming', 'Code', 'User', 'globalStorage',
+      'rooveterinaryinc.roo-cline', 'settings'
+    );
+    const yamlPath = join(rooSettingsDir, 'custom_modes.yaml');
+
+    if (!existsSync(yamlPath)) {
+      this.logger.warn(`Fichier custom_modes.yaml non trouvé: ${yamlPath}`);
+      return files;
+    }
+
+    try {
+      const destPath = join(modesYamlDir, 'custom_modes.yaml');
+      await fs.copyFile(yamlPath, destPath);
+      const hash = await this.calculateHash(destPath);
+      const stats = await fs.stat(destPath);
+
+      files.push({
+        path: 'modes-yaml/custom_modes.yaml',
+        hash,
+        type: 'modes_yaml',
+        size: stats.size
+      });
+
+      this.logger.info(`Modes YAML collectés depuis: ${yamlPath}`);
+    } catch (error) {
+      this.logger.error(`Erreur lors de la collecte de custom_modes.yaml: ${error}`);
+    }
+
+    return files;
+  }
+
   private async collectSettings(tempDir: string): Promise<ConfigManifestFile[]> {
     const files: ConfigManifestFile[] = [];
     const settingsDir = join(tempDir, 'roo-settings');
