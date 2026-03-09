@@ -565,7 +565,7 @@ export function registerCallToolHandler(
                    result = { content: [{ type: 'text', text: `Error: ${(error as Error).message}` }], isError: true };
                }
                break;
-           // #613 ISS-1: Outil de cleanup en masse des messages RooSync
+          // #613 ISS-1: Cleanup en masse des messages RooSync
            case 'roosync_cleanup_messages':
                try {
                    result = await toolExports.cleanupMessages(args as any) as CallToolResult;
