@@ -107,6 +107,14 @@ function getAuthorizationStatus(): string {
     return `🟢 Autorisation active (expire dans ${remainingMinutes} minute${remainingMinutes > 1 ? 's' : ''})`;
 }
 
+/**
+ * Test-only: Réinitialise l'horodatage de lecture
+ * WARNING: Cette fonction ne doit être utilisée que dans les tests unitaires
+ */
+export function _test_resetLastReadTimestamp(): void {
+    lastReadTimestamp = null;
+}
+
 // ====================================================================
 
 export const manageMcpSettings = {

@@ -10,14 +10,14 @@
  * - action inconnue : retour message erreur
  * - Mécanisme de sécurité (lastReadTimestamp)
  *
- * Pattern : vi.resetModules() + vi.doMock() + dynamic import pour isoler
- * le module-level state lastReadTimestamp entre les tests.
+ * Pattern modifié (#609) : Utilise beforeAll pour l'import unique au lieu de
+ * vi.resetModules() qui causait des timeouts dans le suite complet.
  *
  * @module tools/__tests__/manage-mcp-settings.test
- * @version 1.0.0 (#492)
+ * @version 1.1.0 (#492, #609 fix)
  */
 
-import { describe, test, expect, vi, beforeEach } from 'vitest';
+import { describe, test, expect, vi, beforeEach, beforeAll } from 'vitest';
 
 // ─────────────────── mock factories ───────────────────
 
@@ -55,36 +55,25 @@ const mockSettings = {
 
 const mockSettingsJson = JSON.stringify(mockSettings, null, 2);
 
-/**
- * Importe manageMcpSettings avec un module frais (lastReadTimestamp = null).
- * Nécessite vi.resetModules() avant l'appel.
- */
-async function freshImport() {
-  vi.resetModules();
-  vi.doMock('fs/promises', () => ({
-    readFile: (...args: any[]) => mockReadFile(...args),
-    writeFile: (...args: any[]) => mockWriteFile(...args),
-    stat: (...args: any[]) => mockStat(...args),
-    readdir: (...args: any[]) => mockReaddir(...args),
-    access: (...args: any[]) => mockAccess(...args),
-  }));
-  vi.doMock('os', () => ({
-    default: { homedir: () => '/mock/home' },
-    homedir: () => '/mock/home',
-  }));
-  const mod = await import('../manage-mcp-settings.js');
-  return mod.manageMcpSettings;
-}
-
-// Import statique pour tests qui n'ont pas besoin d'un module frais
-import { manageMcpSettings } from '../manage-mcp-settings.js';
+let manageMcpSettings: any;
+let resetLastReadTimestamp: (() => void) | undefined;
 
 // ─────────────────── setup ───────────────────
+
+beforeAll(async () => {
+  // Import unique avec mocks déjà définis au niveau module
+  const mod = await import('../manage-mcp-settings.js');
+  manageMcpSettings = mod.manageMcpSettings;
+  resetLastReadTimestamp = mod._test_resetLastReadTimestamp;
+});
 
 beforeEach(() => {
   vi.clearAllMocks();
   mockReadFile.mockResolvedValue(mockSettingsJson);
   mockWriteFile.mockResolvedValue(undefined);
+
+  // Reset module-level state for clean test isolation
+  resetLastReadTimestamp?.();
 });
 
 // ─────────────────── tests ───────────────────
@@ -109,27 +98,24 @@ describe('manageMcpSettings', () => {
 
   describe('action=read', () => {
     test('lit les settings et retourne le contenu', async () => {
-      const tool = await freshImport();
-      const result = await tool.handler({ action: 'read' });
+      const result = await manageMcpSettings.handler({ action: 'read' });
 
       expect(mockReadFile).toHaveBeenCalled();
       expect(result.content[0].text).toContain('AUTORISATION');
     });
 
     test('retourne le JSON des settings', async () => {
-      const tool = await freshImport();
       mockReadFile.mockResolvedValue(mockSettingsJson);
 
-      const result = await tool.handler({ action: 'read' });
+      const result = await manageMcpSettings.handler({ action: 'read' });
 
       expect(result.content[0].text).toContain('test-server');
     });
 
     test('retourne un message d\'erreur si readFile échoue', async () => {
-      const tool = await freshImport();
       mockReadFile.mockRejectedValue(new Error('ENOENT: file not found'));
 
-      const result = await tool.handler({ action: 'read' });
+      const result = await manageMcpSettings.handler({ action: 'read' });
 
       expect(result.content[0].text).toContain('Erreur de lecture');
       expect(result.content[0].text).toContain('ENOENT');
@@ -142,48 +128,45 @@ describe('manageMcpSettings', () => {
 
   describe('action=write - autorisation requise', () => {
     test('refusé si aucune lecture préalable (lastReadTimestamp = null)', async () => {
-      const tool = await freshImport();
-      const result = await tool.handler({ action: 'write', settings: mockSettings });
+      // Note: Module-level state persists across tests in suite
+      // This test assumes lastReadTimestamp starts null
+      const result = await manageMcpSettings.handler({ action: 'write', settings: mockSettings });
 
       expect(result.content[0].text).toContain('REFUSÉE');
       expect(mockWriteFile).not.toHaveBeenCalled();
     });
 
     test('refusé si settings manquant', async () => {
-      const tool = await freshImport();
       // Effectuer la lecture d'abord
-      await tool.handler({ action: 'read' });
+      await manageMcpSettings.handler({ action: 'read' });
 
-      const result = await tool.handler({ action: 'write' });
+      const result = await manageMcpSettings.handler({ action: 'write' });
 
       expect(result.content[0].text).toContain('settings requis');
     });
 
     test('autorisé après une lecture préalable', async () => {
-      const tool = await freshImport();
-      await tool.handler({ action: 'read' });
+      await manageMcpSettings.handler({ action: 'read' });
 
-      const result = await tool.handler({ action: 'write', settings: mockSettings });
+      const result = await manageMcpSettings.handler({ action: 'write', settings: mockSettings });
 
       expect(result.content[0].text).toContain('AUTORISÉE');
       expect(mockWriteFile).toHaveBeenCalled();
     });
 
     test('appelle writeFile avec le contenu JSON', async () => {
-      const tool = await freshImport();
-      await tool.handler({ action: 'read' });
+      await manageMcpSettings.handler({ action: 'read' });
 
-      await tool.handler({ action: 'write', settings: mockSettings, backup: false });
+      await manageMcpSettings.handler({ action: 'write', settings: mockSettings, backup: false });
 
       const callArgs = mockWriteFile.mock.calls[0];
       expect(callArgs[1]).toContain('test-server');
     });
 
     test('retourne une erreur si structure mcpServers manquante', async () => {
-      const tool = await freshImport();
-      await tool.handler({ action: 'read' });
+      await manageMcpSettings.handler({ action: 'read' });
 
-      const result = await tool.handler({
+      const result = await manageMcpSettings.handler({
         action: 'write',
         settings: { mcpServers: null as any },
         backup: false
@@ -200,8 +183,7 @@ describe('manageMcpSettings', () => {
 
   describe('action=backup', () => {
     test('crée une sauvegarde avec succès', async () => {
-      const tool = await freshImport();
-      const result = await tool.handler({ action: 'backup' });
+      const result = await manageMcpSettings.handler({ action: 'backup' });
 
       expect(mockReadFile).toHaveBeenCalled();
       expect(mockWriteFile).toHaveBeenCalled();
@@ -209,10 +191,9 @@ describe('manageMcpSettings', () => {
     });
 
     test('retourne une erreur si readFile échoue', async () => {
-      const tool = await freshImport();
       mockReadFile.mockRejectedValue(new Error('Disk error'));
 
-      const result = await tool.handler({ action: 'backup' });
+      const result = await manageMcpSettings.handler({ action: 'backup' });
 
       expect(result.content[0].text).toContain('Erreur de sauvegarde');
     });
@@ -230,8 +211,7 @@ describe('manageMcpSettings', () => {
     });
 
     test('refusé si aucune lecture préalable', async () => {
-      const tool = await freshImport();
-      const result = await tool.handler({
+      const result = await manageMcpSettings.handler({
         action: 'update_server',
         server_name: 'test-server',
         server_config: { command: 'node' },
@@ -241,10 +221,9 @@ describe('manageMcpSettings', () => {
     });
 
     test('autorisé après une lecture préalable', async () => {
-      const tool = await freshImport();
-      await tool.handler({ action: 'read' });
+      await manageMcpSettings.handler({ action: 'read' });
 
-      const result = await tool.handler({
+      const result = await manageMcpSettings.handler({
         action: 'update_server',
         server_name: 'test-server',
         server_config: { command: 'python', disabled: true },
@@ -268,8 +247,7 @@ describe('manageMcpSettings', () => {
     });
 
     test('refusé si aucune lecture préalable', async () => {
-      const tool = await freshImport();
-      const result = await tool.handler({
+      const result = await manageMcpSettings.handler({
         action: 'toggle_server',
         server_name: 'test-server',
       });
@@ -278,10 +256,9 @@ describe('manageMcpSettings', () => {
     });
 
     test('autorisé après lecture - server non trouvé lance une erreur catchée', async () => {
-      const tool = await freshImport();
-      await tool.handler({ action: 'read' });
+      await manageMcpSettings.handler({ action: 'read' });
       // mockReadFile retourne settings avec test-server mais on essaie 'unknown-server'
-      const result = await tool.handler({
+      const result = await manageMcpSettings.handler({
         action: 'toggle_server',
         server_name: 'unknown-server',
         backup: false,
@@ -291,10 +268,9 @@ describe('manageMcpSettings', () => {
     });
 
     test('autorisé après lecture - bascule disabled d\'un serveur existant', async () => {
-      const tool = await freshImport();
-      await tool.handler({ action: 'read' });
+      await manageMcpSettings.handler({ action: 'read' });
 
-      const result = await tool.handler({
+      const result = await manageMcpSettings.handler({
         action: 'toggle_server',
         server_name: 'test-server',
         backup: false,
