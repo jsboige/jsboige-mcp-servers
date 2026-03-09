@@ -7,13 +7,19 @@
  * - action: 'touch' : Force reload all MCP servers
  *
  * Framework: Vitest
- * Type: Intégration (FileSystem réel, MCP_SETTINGS_PATH mocké via process.env.APPDATA)
+ * Type: Intégration (FileSystem réel, getMcpSettingsPath() mocké via process.env.APPDATA)
  *
- * IMPORTANT: MCP_SETTINGS_PATH is computed at module load time from process.env.APPDATA.
- * We must set APPDATA before the module is imported. We use vi.hoisted() for this.
+ * IMPORTANT: getMcpSettingsPath() reads process.env.APPDATA at CALL TIME (not module load).
+ * We still set APPDATA via vi.hoisted() for safety, and verify isolation in beforeEach.
+ *
+ * INCIDENT 2026-03-08: Previous version used a module-level constant MCP_SETTINGS_PATH
+ * that was evaluated at import time. vi.hoisted() failed to override APPDATA before ESM
+ * module caching kicked in, causing the test to write to the REAL mcp_settings.json.
+ * This wiped ALL Roo MCP configs on ai-01 (753 backup files created).
+ * Fix: MCP_SETTINGS_PATH → getMcpSettingsPath() (lazy function).
  *
  * @module roosync/mcp-management.integration.test
- * @version 1.1.0 (#564 Phase 2, #606 fix)
+ * @version 1.2.0 (#564 Phase 2, #606 fix, mcp_settings wipe fix)
  */
 
 import { describe, test, expect, beforeEach, afterEach, vi } from 'vitest';
@@ -49,7 +55,7 @@ vi.mock('../../../utils/server-helpers.js', () => ({
 }));
 
 // Import après les mocks et env override
-import { roosyncMcpManagement } from '../mcp-management.js';
+import { roosyncMcpManagement, getMcpSettingsPath } from '../mcp-management.js';
 
 // We also need to reset the module-level lastReadTimestamp between tests.
 // Since it's not exported, we need to ensure each test that requires auth does a read first,
@@ -79,6 +85,20 @@ describe('roosyncMcpManagement (integration)', () => {
   };
 
   beforeEach(async () => {
+    // SAFETY CHECK: Verify that getMcpSettingsPath() points to the test directory,
+    // NOT the real mcp_settings.json. This prevents the 2026-03-08 incident where
+    // the test wiped all production MCP configs.
+    const resolvedPath = getMcpSettingsPath();
+    if (!resolvedPath.includes('__test-data__')) {
+      throw new Error(
+        `SAFETY ABORT: getMcpSettingsPath() resolves to REAL mcp_settings.json!\n` +
+        `  Resolved: ${resolvedPath}\n` +
+        `  Expected: path containing __test-data__\n` +
+        `  process.env.APPDATA: ${process.env.APPDATA}\n` +
+        `This would wipe all Roo MCP configs. Fix the APPDATA mock.`
+      );
+    }
+
     // Setup : créer répertoires temporaires pour tests isolés
     if (!existsSync(testMcpSettingsDir)) {
       mkdirSync(testMcpSettingsDir, { recursive: true });
