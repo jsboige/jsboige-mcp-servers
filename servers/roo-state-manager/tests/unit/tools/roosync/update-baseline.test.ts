@@ -6,44 +6,41 @@
  * @module roosync/update-baseline.test
  */
 
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, vi, beforeAll } from 'vitest';
 
 // Désactiver le mock global de fs
 vi.unmock('fs');
 
 describe('roosync_update_baseline - Interface', () => {
-  beforeEach(() => {
-    vi.resetModules();
+  let module: any;
+
+  beforeAll(async () => {
+    module = await import('../../../../src/tools/roosync/update-baseline.js');
   });
 
-  it('devrait exporter roosyncUpdateBaseline', async () => {
-    const module = await import('../../../../src/tools/roosync/update-baseline.js');
-
+  it('devrait exporter roosyncUpdateBaseline', () => {
     expect(module.roosyncUpdateBaseline).toBeDefined();
     expect(typeof module.roosyncUpdateBaseline).toBe('function');
   });
 
-  it('devrait exporter UpdateBaselineArgsSchema', async () => {
-    const module = await import('../../../../src/tools/roosync/update-baseline.js');
-
+  it('devrait exporter UpdateBaselineArgsSchema', () => {
     expect(module.UpdateBaselineArgsSchema).toBeDefined();
   });
 
-  it('devrait exporter updateBaselineToolMetadata', async () => {
-    const module = await import('../../../../src/tools/roosync/update-baseline.js');
-
+  it('devrait exporter updateBaselineToolMetadata', () => {
     expect(module.updateBaselineToolMetadata).toBeDefined();
     expect(module.updateBaselineToolMetadata.name).toBe('roosync_update_baseline');
   });
 });
 
 describe('roosync_update_baseline - Schema Validation', () => {
-  beforeEach(() => {
-    vi.resetModules();
+  let module: any;
+
+  beforeAll(async () => {
+    module = await import('../../../../src/tools/roosync/update-baseline.js');
   });
 
-  it('devrait accepter machineId seul', async () => {
-    const module = await import('../../../../src/tools/roosync/update-baseline.js');
+  it('devrait accepter machineId seul', () => {
     const result = module.UpdateBaselineArgsSchema.safeParse({
       machineId: 'myia-ai-01'
     });
@@ -51,8 +48,7 @@ describe('roosync_update_baseline - Schema Validation', () => {
     expect(result.success).toBe(true);
   });
 
-  it('devrait accepter mode standard', async () => {
-    const module = await import('../../../../src/tools/roosync/update-baseline.js');
+  it('devrait accepter mode standard', () => {
     const result = module.UpdateBaselineArgsSchema.safeParse({
       machineId: 'myia-ai-01',
       mode: 'standard'
@@ -61,8 +57,7 @@ describe('roosync_update_baseline - Schema Validation', () => {
     expect(result.success).toBe(true);
   });
 
-  it('devrait accepter mode profile', async () => {
-    const module = await import('../../../../src/tools/roosync/update-baseline.js');
+  it('devrait accepter mode profile', () => {
     const result = module.UpdateBaselineArgsSchema.safeParse({
       machineId: 'dev-profile',
       mode: 'profile'
@@ -71,8 +66,7 @@ describe('roosync_update_baseline - Schema Validation', () => {
     expect(result.success).toBe(true);
   });
 
-  it('devrait accepter tous les paramètres optionnels', async () => {
-    const module = await import('../../../../src/tools/roosync/update-baseline.js');
+  it('devrait accepter tous les paramètres optionnels', () => {
     const result = module.UpdateBaselineArgsSchema.safeParse({
       machineId: 'myia-ai-01',
       mode: 'standard',
@@ -85,8 +79,7 @@ describe('roosync_update_baseline - Schema Validation', () => {
     expect(result.success).toBe(true);
   });
 
-  it('devrait rejeter un mode invalide', async () => {
-    const module = await import('../../../../src/tools/roosync/update-baseline.js');
+  it('devrait rejeter un mode invalide', () => {
     const result = module.UpdateBaselineArgsSchema.safeParse({
       machineId: 'myia-ai-01',
       mode: 'invalid'
@@ -95,8 +88,7 @@ describe('roosync_update_baseline - Schema Validation', () => {
     expect(result.success).toBe(false);
   });
 
-  it('devrait rejeter si machineId est manquant', async () => {
-    const module = await import('../../../../src/tools/roosync/update-baseline.js');
+  it('devrait rejeter si machineId est manquant', () => {
     const result = module.UpdateBaselineArgsSchema.safeParse({});
 
     expect(result.success).toBe(false);
@@ -104,8 +96,13 @@ describe('roosync_update_baseline - Schema Validation', () => {
 });
 
 describe('roosync_update_baseline - Metadata', () => {
-  it('devrait avoir les métadonnées correctes', async () => {
-    const module = await import('../../../../src/tools/roosync/update-baseline.js');
+  let module: any;
+
+  beforeAll(async () => {
+    module = await import('../../../../src/tools/roosync/update-baseline.js');
+  });
+
+  it('devrait avoir les métadonnées correctes', () => {
     const metadata = module.updateBaselineToolMetadata;
 
     expect(metadata.name).toBe('roosync_update_baseline');

@@ -6,25 +6,24 @@
  * @module roosync/get-machine-inventory.test
  */
 
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, vi, beforeAll } from 'vitest';
 
 // Désactiver le mock global de fs
 vi.unmock('fs');
 
 describe('roosync_get_machine_inventory - Interface', () => {
-  beforeEach(() => {
-    vi.resetModules();
+  let module: any;
+
+  beforeAll(async () => {
+    module = await import('../../../../src/tools/roosync/get-machine-inventory.js');
   });
 
-  it('devrait exporter getMachineInventoryTool', async () => {
-    const module = await import('../../../../src/tools/roosync/get-machine-inventory.js');
-
+  it('devrait exporter getMachineInventoryTool', () => {
     expect(module.getMachineInventoryTool).toBeDefined();
     expect(module.getMachineInventoryTool.name).toBe('roosync_get_machine_inventory');
   });
 
-  it('devrait avoir les métadonnées correctes', async () => {
-    const module = await import('../../../../src/tools/roosync/get-machine-inventory.js');
+  it('devrait avoir les métadonnées correctes', () => {
     const tool = module.getMachineInventoryTool;
 
     expect(tool.name).toBe('roosync_get_machine_inventory');
@@ -32,8 +31,7 @@ describe('roosync_get_machine_inventory - Interface', () => {
     expect(tool.version).toBe('1.0.0');
   });
 
-  it('devrait avoir un schema d\'entrée valide', async () => {
-    const module = await import('../../../../src/tools/roosync/get-machine-inventory.js');
+  it('devrait avoir un schema d\'entrée valide', () => {
     const tool = module.getMachineInventoryTool;
 
     expect(tool.inputSchema).toBeDefined();
@@ -47,8 +45,10 @@ describe('roosync_get_machine_inventory - Interface', () => {
 });
 
 describe('roosync_get_machine_inventory - Execution', () => {
-  beforeEach(async () => {
-    vi.resetModules();
+  let module: any;
+
+  beforeAll(async () => {
+    module = await import('../../../../src/tools/roosync/get-machine-inventory.js');
   });
 
   // Créer des mocks pour les interfaces requises
@@ -129,7 +129,6 @@ describe('roosync_get_machine_inventory - Execution', () => {
       }
     }));
 
-    const module = await import('../../../../src/tools/roosync/get-machine-inventory.js');
     const tool = module.getMachineInventoryTool;
 
     const result = await tool.execute({}, {
@@ -157,7 +156,6 @@ describe('roosync_get_machine_inventory - Execution', () => {
       }
     }));
 
-    const module = await import('../../../../src/tools/roosync/get-machine-inventory.js');
     const tool = module.getMachineInventoryTool;
 
     const result = await tool.execute({}, {

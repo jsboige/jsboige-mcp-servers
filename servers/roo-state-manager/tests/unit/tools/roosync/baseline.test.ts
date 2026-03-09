@@ -7,50 +7,45 @@
  * @module roosync/baseline.test
  */
 
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, vi, beforeAll } from 'vitest';
 
 // Désactiver le mock global de fs
 vi.unmock('fs');
 
 describe('roosync_baseline - Interface', () => {
-  beforeEach(() => {
-    vi.resetModules();
+  let module: any;
+
+  beforeAll(async () => {
+    module = await import('../../../../src/tools/roosync/baseline.js');
   });
 
-  it('devrait exporter roosync_baseline', async () => {
-    const module = await import('../../../../src/tools/roosync/baseline.js');
-
+  it('devrait exporter roosync_baseline', () => {
     expect(module.roosync_baseline).toBeDefined();
     expect(typeof module.roosync_baseline).toBe('function');
   });
 
-  it('devrait exporter BaselineArgsSchema', async () => {
-    const module = await import('../../../../src/tools/roosync/baseline.js');
-
+  it('devrait exporter BaselineArgsSchema', () => {
     expect(module.BaselineArgsSchema).toBeDefined();
   });
 
-  it('devrait exporter BaselineResultSchema', async () => {
-    const module = await import('../../../../src/tools/roosync/baseline.js');
-
+  it('devrait exporter BaselineResultSchema', () => {
     expect(module.BaselineResultSchema).toBeDefined();
   });
 
-  it('devrait exporter baselineToolMetadata', async () => {
-    const module = await import('../../../../src/tools/roosync/baseline.js');
-
+  it('devrait exporter baselineToolMetadata', () => {
     expect(module.baselineToolMetadata).toBeDefined();
     expect(module.baselineToolMetadata.name).toBe('roosync_baseline');
   });
 });
 
 describe('roosync_baseline - Schema Validation - Action: update', () => {
-  beforeEach(() => {
-    vi.resetModules();
+  let module: any;
+
+  beforeAll(async () => {
+    module = await import('../../../../src/tools/roosync/baseline.js');
   });
 
-  it('devrait accepter action update avec machineId seul', async () => {
-    const module = await import('../../../../src/tools/roosync/baseline.js');
+  it('devrait accepter action update avec machineId seul', () => {
     const result = module.BaselineArgsSchema.safeParse({
       action: 'update',
       machineId: 'myia-ai-01'
@@ -59,8 +54,7 @@ describe('roosync_baseline - Schema Validation - Action: update', () => {
     expect(result.success).toBe(true);
   });
 
-  it('devrait accepter action update avec mode standard', async () => {
-    const module = await import('../../../../src/tools/roosync/baseline.js');
+  it('devrait accepter action update avec mode standard', () => {
     const result = module.BaselineArgsSchema.safeParse({
       action: 'update',
       machineId: 'myia-ai-01',
@@ -70,8 +64,7 @@ describe('roosync_baseline - Schema Validation - Action: update', () => {
     expect(result.success).toBe(true);
   });
 
-  it('devrait accepter action update avec mode profile', async () => {
-    const module = await import('../../../../src/tools/roosync/baseline.js');
+  it('devrait accepter action update avec mode profile', () => {
     const result = module.BaselineArgsSchema.safeParse({
       action: 'update',
       machineId: 'dev-profile',
@@ -81,8 +74,7 @@ describe('roosync_baseline - Schema Validation - Action: update', () => {
     expect(result.success).toBe(true);
   });
 
-  it('devrait accepter tous les paramètres optionnels pour update', async () => {
-    const module = await import('../../../../src/tools/roosync/baseline.js');
+  it('devrait accepter tous les paramètres optionnels pour update', () => {
     const result = module.BaselineArgsSchema.safeParse({
       action: 'update',
       machineId: 'myia-ai-01',
@@ -98,12 +90,13 @@ describe('roosync_baseline - Schema Validation - Action: update', () => {
 });
 
 describe('roosync_baseline - Schema Validation - Action: version', () => {
-  beforeEach(() => {
-    vi.resetModules();
+  let module: any;
+
+  beforeAll(async () => {
+    module = await import('../../../../src/tools/roosync/baseline.js');
   });
 
-  it('devrait accepter action version avec version seule', async () => {
-    const module = await import('../../../../src/tools/roosync/baseline.js');
+  it('devrait accepter action version avec version seule', () => {
     const result = module.BaselineArgsSchema.safeParse({
       action: 'version',
       version: '2.3.0'
@@ -112,8 +105,7 @@ describe('roosync_baseline - Schema Validation - Action: version', () => {
     expect(result.success).toBe(true);
   });
 
-  it('devrait accepter action version avec tous les paramètres', async () => {
-    const module = await import('../../../../src/tools/roosync/baseline.js');
+  it('devrait accepter action version avec tous les paramètres', () => {
     const result = module.BaselineArgsSchema.safeParse({
       action: 'version',
       version: '2.3.0',
@@ -127,12 +119,13 @@ describe('roosync_baseline - Schema Validation - Action: version', () => {
 });
 
 describe('roosync_baseline - Schema Validation - Action: restore', () => {
-  beforeEach(() => {
-    vi.resetModules();
+  let module: any;
+
+  beforeAll(async () => {
+    module = await import('../../../../src/tools/roosync/baseline.js');
   });
 
-  it('devrait accepter action restore avec source seule', async () => {
-    const module = await import('../../../../src/tools/roosync/baseline.js');
+  it('devrait accepter action restore avec source seule', () => {
     const result = module.BaselineArgsSchema.safeParse({
       action: 'restore',
       source: 'baseline-v2.3.0'
@@ -141,8 +134,7 @@ describe('roosync_baseline - Schema Validation - Action: restore', () => {
     expect(result.success).toBe(true);
   });
 
-  it('devrait accepter action restore avec tous les paramètres', async () => {
-    const module = await import('../../../../src/tools/roosync/baseline.js');
+  it('devrait accepter action restore avec tous les paramètres', () => {
     const result = module.BaselineArgsSchema.safeParse({
       action: 'restore',
       source: 'baseline-v2.3.0',
@@ -155,8 +147,7 @@ describe('roosync_baseline - Schema Validation - Action: restore', () => {
     expect(result.success).toBe(true);
   });
 
-  it('devrait accepter action restore depuis un backup file', async () => {
-    const module = await import('../../../../src/tools/roosync/baseline.js');
+  it('devrait accepter action restore depuis un backup file', () => {
     const result = module.BaselineArgsSchema.safeParse({
       action: 'restore',
       source: '/path/to/sync-config.ref.backup.2026-01-29.json'
@@ -167,12 +158,13 @@ describe('roosync_baseline - Schema Validation - Action: restore', () => {
 });
 
 describe('roosync_baseline - Schema Validation - Action: export', () => {
-  beforeEach(() => {
-    vi.resetModules();
+  let module: any;
+
+  beforeAll(async () => {
+    module = await import('../../../../src/tools/roosync/baseline.js');
   });
 
-  it('devrait accepter action export avec format json', async () => {
-    const module = await import('../../../../src/tools/roosync/baseline.js');
+  it('devrait accepter action export avec format json', () => {
     const result = module.BaselineArgsSchema.safeParse({
       action: 'export',
       format: 'json'
@@ -181,8 +173,7 @@ describe('roosync_baseline - Schema Validation - Action: export', () => {
     expect(result.success).toBe(true);
   });
 
-  it('devrait accepter action export avec format yaml', async () => {
-    const module = await import('../../../../src/tools/roosync/baseline.js');
+  it('devrait accepter action export avec format yaml', () => {
     const result = module.BaselineArgsSchema.safeParse({
       action: 'export',
       format: 'yaml'
@@ -191,8 +182,7 @@ describe('roosync_baseline - Schema Validation - Action: export', () => {
     expect(result.success).toBe(true);
   });
 
-  it('devrait accepter action export avec format csv', async () => {
-    const module = await import('../../../../src/tools/roosync/baseline.js');
+  it('devrait accepter action export avec format csv', () => {
     const result = module.BaselineArgsSchema.safeParse({
       action: 'export',
       format: 'csv'
@@ -201,8 +191,7 @@ describe('roosync_baseline - Schema Validation - Action: export', () => {
     expect(result.success).toBe(true);
   });
 
-  it('devrait accepter tous les paramètres optionnels pour export', async () => {
-    const module = await import('../../../../src/tools/roosync/baseline.js');
+  it('devrait accepter tous les paramètres optionnels pour export', () => {
     const result = module.BaselineArgsSchema.safeParse({
       action: 'export',
       format: 'json',
@@ -216,8 +205,7 @@ describe('roosync_baseline - Schema Validation - Action: export', () => {
     expect(result.success).toBe(true);
   });
 
-  it('devrait rejeter un format invalide', async () => {
-    const module = await import('../../../../src/tools/roosync/baseline.js');
+  it('devrait rejeter un format invalide', () => {
     const result = module.BaselineArgsSchema.safeParse({
       action: 'export',
       format: 'xml'
@@ -228,12 +216,13 @@ describe('roosync_baseline - Schema Validation - Action: export', () => {
 });
 
 describe('roosync_baseline - Schema Validation - Errors', () => {
-  beforeEach(() => {
-    vi.resetModules();
+  let module: any;
+
+  beforeAll(async () => {
+    module = await import('../../../../src/tools/roosync/baseline.js');
   });
 
-  it('devrait rejeter si action est manquante', async () => {
-    const module = await import('../../../../src/tools/roosync/baseline.js');
+  it('devrait rejeter si action est manquante', () => {
     const result = module.BaselineArgsSchema.safeParse({
       machineId: 'myia-ai-01'
     });
@@ -241,8 +230,7 @@ describe('roosync_baseline - Schema Validation - Errors', () => {
     expect(result.success).toBe(false);
   });
 
-  it('devrait rejeter une action invalide', async () => {
-    const module = await import('../../../../src/tools/roosync/baseline.js');
+  it('devrait rejeter une action invalide', () => {
     const result = module.BaselineArgsSchema.safeParse({
       action: 'invalid-action'
     });
@@ -250,8 +238,7 @@ describe('roosync_baseline - Schema Validation - Errors', () => {
     expect(result.success).toBe(false);
   });
 
-  it('devrait rejeter un mode invalide pour action update', async () => {
-    const module = await import('../../../../src/tools/roosync/baseline.js');
+  it('devrait rejeter un mode invalide pour action update', () => {
     const result = module.BaselineArgsSchema.safeParse({
       action: 'update',
       machineId: 'myia-ai-01',
@@ -263,19 +250,19 @@ describe('roosync_baseline - Schema Validation - Errors', () => {
 });
 
 describe('roosync_baseline - Metadata', () => {
-  beforeEach(() => {
-    vi.resetModules();
+  let module: any;
+
+  beforeAll(async () => {
+    module = await import('../../../../src/tools/roosync/baseline.js');
   });
 
-  it('devrait avoir le nom correct', async () => {
-    const module = await import('../../../../src/tools/roosync/baseline.js');
+  it('devrait avoir le nom correct', () => {
     const metadata = module.baselineToolMetadata;
 
     expect(metadata.name).toBe('roosync_baseline');
   });
 
-  it('devrait avoir une description', async () => {
-    const module = await import('../../../../src/tools/roosync/baseline.js');
+  it('devrait avoir une description', () => {
     const metadata = module.baselineToolMetadata;
 
     expect(metadata.description).toBeDefined();
@@ -283,8 +270,7 @@ describe('roosync_baseline - Metadata', () => {
     expect(metadata.description.length).toBeGreaterThan(0);
   });
 
-  it('devrait avoir un inputSchema valide', async () => {
-    const module = await import('../../../../src/tools/roosync/baseline.js');
+  it('devrait avoir un inputSchema valide', () => {
     const metadata = module.baselineToolMetadata;
 
     expect(metadata.inputSchema).toBeDefined();
@@ -295,8 +281,7 @@ describe('roosync_baseline - Metadata', () => {
     expect(metadata.inputSchema.required).toEqual(['action']);
   });
 
-  it('devrait documenter tous les paramètres des 4 actions', async () => {
-    const module = await import('../../../../src/tools/roosync/baseline.js');
+  it('devrait documenter tous les paramètres des 4 actions', () => {
     const metadata = module.baselineToolMetadata;
     const props = metadata.inputSchema.properties;
 

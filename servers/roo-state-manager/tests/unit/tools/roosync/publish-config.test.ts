@@ -6,44 +6,41 @@
  * @module roosync/publish-config.test
  */
 
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, vi, beforeAll } from 'vitest';
 
 // Désactiver le mock global de fs
 vi.unmock('fs');
 
 describe('roosync_publish_config - Interface', () => {
-  beforeEach(() => {
-    vi.resetModules();
+  let module: any;
+
+  beforeAll(async () => {
+    module = await import('../../../../src/tools/roosync/publish-config.js');
   });
 
-  it('devrait exporter roosyncPublishConfig', async () => {
-    const module = await import('../../../../src/tools/roosync/publish-config.js');
-
+  it('devrait exporter roosyncPublishConfig', () => {
     expect(module.roosyncPublishConfig).toBeDefined();
     expect(typeof module.roosyncPublishConfig).toBe('function');
   });
 
-  it('devrait exporter PublishConfigArgsSchema', async () => {
-    const module = await import('../../../../src/tools/roosync/publish-config.js');
-
+  it('devrait exporter PublishConfigArgsSchema', () => {
     expect(module.PublishConfigArgsSchema).toBeDefined();
   });
 
-  it('devrait exporter publishConfigToolMetadata', async () => {
-    const module = await import('../../../../src/tools/roosync/publish-config.js');
-
+  it('devrait exporter publishConfigToolMetadata', () => {
     expect(module.publishConfigToolMetadata).toBeDefined();
     expect(module.publishConfigToolMetadata.name).toBe('roosync_publish_config');
   });
 });
 
 describe('roosync_publish_config - Schema Validation', () => {
-  beforeEach(() => {
-    vi.resetModules();
+  let module: any;
+
+  beforeAll(async () => {
+    module = await import('../../../../src/tools/roosync/publish-config.js');
   });
 
-  it('devrait accepter tous les paramètres requis', async () => {
-    const module = await import('../../../../src/tools/roosync/publish-config.js');
+  it('devrait accepter tous les paramètres requis', () => {
     const result = module.PublishConfigArgsSchema.safeParse({
       packagePath: '/tmp/config-package',
       version: '2.2.0',
@@ -53,8 +50,7 @@ describe('roosync_publish_config - Schema Validation', () => {
     expect(result.success).toBe(true);
   });
 
-  it('devrait accepter machineId optionnel', async () => {
-    const module = await import('../../../../src/tools/roosync/publish-config.js');
+  it('devrait accepter machineId optionnel', () => {
     const result = module.PublishConfigArgsSchema.safeParse({
       packagePath: '/tmp/config-package',
       version: '2.2.0',
@@ -65,8 +61,7 @@ describe('roosync_publish_config - Schema Validation', () => {
     expect(result.success).toBe(true);
   });
 
-  it('devrait rejeter si packagePath est manquant', async () => {
-    const module = await import('../../../../src/tools/roosync/publish-config.js');
+  it('devrait rejeter si packagePath est manquant', () => {
     const result = module.PublishConfigArgsSchema.safeParse({
       version: '2.2.0',
       description: 'Test'
@@ -75,8 +70,7 @@ describe('roosync_publish_config - Schema Validation', () => {
     expect(result.success).toBe(false);
   });
 
-  it('devrait rejeter si version est manquante', async () => {
-    const module = await import('../../../../src/tools/roosync/publish-config.js');
+  it('devrait rejeter si version est manquante', () => {
     const result = module.PublishConfigArgsSchema.safeParse({
       packagePath: '/tmp/config-package',
       description: 'Test'
@@ -85,8 +79,7 @@ describe('roosync_publish_config - Schema Validation', () => {
     expect(result.success).toBe(false);
   });
 
-  it('devrait rejeter si description est manquante', async () => {
-    const module = await import('../../../../src/tools/roosync/publish-config.js');
+  it('devrait rejeter si description est manquante', () => {
     const result = module.PublishConfigArgsSchema.safeParse({
       packagePath: '/tmp/config-package',
       version: '2.2.0'
@@ -97,8 +90,13 @@ describe('roosync_publish_config - Schema Validation', () => {
 });
 
 describe('roosync_publish_config - Metadata', () => {
-  it('devrait avoir les métadonnées correctes', async () => {
-    const module = await import('../../../../src/tools/roosync/publish-config.js');
+  let module: any;
+
+  beforeAll(async () => {
+    module = await import('../../../../src/tools/roosync/publish-config.js');
+  });
+
+  it('devrait avoir les métadonnées correctes', () => {
     const metadata = module.publishConfigToolMetadata;
 
     expect(metadata.name).toBe('roosync_publish_config');

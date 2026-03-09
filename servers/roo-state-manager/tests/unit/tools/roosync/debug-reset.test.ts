@@ -6,44 +6,41 @@
  * @module roosync/debug-reset.test
  */
 
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, vi, beforeAll } from 'vitest';
 
 // Désactiver le mock global de fs
 vi.unmock('fs');
 
 describe('roosync_debug_reset - Interface', () => {
-  beforeEach(() => {
-    vi.resetModules();
+  let module: any;
+
+  beforeAll(async () => {
+    module = await import('../../../../src/tools/roosync/debug-reset.js');
   });
 
-  it('devrait exporter roosync_debug_reset', async () => {
-    const module = await import('../../../../src/tools/roosync/debug-reset.js');
-
+  it('devrait exporter roosync_debug_reset', () => {
     expect(module.roosync_debug_reset).toBeDefined();
     expect(typeof module.roosync_debug_reset).toBe('function');
   });
 
-  it('devrait exporter DebugResetArgsSchema', async () => {
-    const module = await import('../../../../src/tools/roosync/debug-reset.js');
-
+  it('devrait exporter DebugResetArgsSchema', () => {
     expect(module.DebugResetArgsSchema).toBeDefined();
   });
 
-  it('devrait exporter debugResetToolMetadata', async () => {
-    const module = await import('../../../../src/tools/roosync/debug-reset.js');
-
+  it('devrait exporter debugResetToolMetadata', () => {
     expect(module.debugResetToolMetadata).toBeDefined();
     expect(module.debugResetToolMetadata.name).toBe('roosync_debug_reset');
   });
 });
 
 describe('roosync_debug_reset - Schema Validation', () => {
-  beforeEach(() => {
-    vi.resetModules();
+  let module: any;
+
+  beforeAll(async () => {
+    module = await import('../../../../src/tools/roosync/debug-reset.js');
   });
 
-  it('devrait accepter action debug', async () => {
-    const module = await import('../../../../src/tools/roosync/debug-reset.js');
+  it('devrait accepter action debug', () => {
     const result = module.DebugResetArgsSchema.safeParse({
       action: 'debug'
     });
@@ -51,8 +48,7 @@ describe('roosync_debug_reset - Schema Validation', () => {
     expect(result.success).toBe(true);
   });
 
-  it('devrait accepter action reset', async () => {
-    const module = await import('../../../../src/tools/roosync/debug-reset.js');
+  it('devrait accepter action reset', () => {
     const result = module.DebugResetArgsSchema.safeParse({
       action: 'reset'
     });
@@ -60,8 +56,7 @@ describe('roosync_debug_reset - Schema Validation', () => {
     expect(result.success).toBe(true);
   });
 
-  it('devrait accepter les options de debug', async () => {
-    const module = await import('../../../../src/tools/roosync/debug-reset.js');
+  it('devrait accepter les options de debug', () => {
     const result = module.DebugResetArgsSchema.safeParse({
       action: 'debug',
       verbose: true,
@@ -71,8 +66,7 @@ describe('roosync_debug_reset - Schema Validation', () => {
     expect(result.success).toBe(true);
   });
 
-  it('devrait accepter les options de reset', async () => {
-    const module = await import('../../../../src/tools/roosync/debug-reset.js');
+  it('devrait accepter les options de reset', () => {
     const result = module.DebugResetArgsSchema.safeParse({
       action: 'reset',
       confirm: true,
@@ -82,8 +76,7 @@ describe('roosync_debug_reset - Schema Validation', () => {
     expect(result.success).toBe(true);
   });
 
-  it('devrait rejeter une action invalide', async () => {
-    const module = await import('../../../../src/tools/roosync/debug-reset.js');
+  it('devrait rejeter une action invalide', () => {
     const result = module.DebugResetArgsSchema.safeParse({
       action: 'invalid'
     });
@@ -91,15 +84,13 @@ describe('roosync_debug_reset - Schema Validation', () => {
     expect(result.success).toBe(false);
   });
 
-  it('devrait rejeter si action est manquante', async () => {
-    const module = await import('../../../../src/tools/roosync/debug-reset.js');
+  it('devrait rejeter si action est manquante', () => {
     const result = module.DebugResetArgsSchema.safeParse({});
 
     expect(result.success).toBe(false);
   });
 
-  it('devrait avoir des valeurs par défaut', async () => {
-    const module = await import('../../../../src/tools/roosync/debug-reset.js');
+  it('devrait avoir des valeurs par défaut', () => {
     const result = module.DebugResetArgsSchema.safeParse({
       action: 'debug'
     });
@@ -114,8 +105,13 @@ describe('roosync_debug_reset - Schema Validation', () => {
 });
 
 describe('roosync_debug_reset - Metadata', () => {
-  it('devrait avoir les métadonnées correctes', async () => {
-    const module = await import('../../../../src/tools/roosync/debug-reset.js');
+  let module: any;
+
+  beforeAll(async () => {
+    module = await import('../../../../src/tools/roosync/debug-reset.js');
+  });
+
+  it('devrait avoir les métadonnées correctes', () => {
     const metadata = module.debugResetToolMetadata;
 
     expect(metadata.name).toBe('roosync_debug_reset');
