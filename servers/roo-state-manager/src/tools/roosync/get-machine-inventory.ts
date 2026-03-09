@@ -1,3 +1,6 @@
+/**
+ * @deprecated Superseded by roosync_inventory. Kept for backward compatibility in registry.ts.
+ */
 import { z } from 'zod';
 import { UnifiedToolContract, ToolCategory, ProcessingLevel, ToolResult } from '../../interfaces/UnifiedToolInterface.js';
 import { InventoryService } from '../../services/roosync/InventoryService.js';

@@ -1,4 +1,5 @@
 /**
+ * @deprecated Superseded by roosync_heartbeat_service. Kept for backward compatibility in registry.ts.
  * Outil MCP : roosync_stop_heartbeat_service
  *
  * Arrête le service de heartbeat automatique.

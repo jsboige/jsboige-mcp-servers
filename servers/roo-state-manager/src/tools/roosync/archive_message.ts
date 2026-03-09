@@ -1,4 +1,5 @@
 /**
+ * @deprecated Superseded by roosync_manage(action: 'archive'). Kept for backward compatibility in registry.ts.
  * Outil MCP : roosync_archive_message
  * 
  * Archive un message en le déplaçant de inbox/ vers archive/

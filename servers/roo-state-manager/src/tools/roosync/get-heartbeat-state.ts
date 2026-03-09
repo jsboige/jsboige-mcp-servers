@@ -1,4 +1,5 @@
 /**
+ * @deprecated Superseded by roosync_heartbeat_status. Kept for backward compatibility in registry.ts.
  * Outil MCP : roosync_get_heartbeat_state
  *
  * Obtient l'état complet du service de heartbeat dans le système RooSync.

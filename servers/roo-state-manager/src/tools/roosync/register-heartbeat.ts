@@ -1,4 +1,5 @@
 /**
+ * @deprecated Superseded by roosync_heartbeat(action: 'register'). Kept for backward compatibility in registry.ts.
  * Outil MCP : roosync_register_heartbeat
  *
  * Enregistre un heartbeat pour une machine dans le système RooSync.

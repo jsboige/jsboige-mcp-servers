@@ -1,4 +1,5 @@
 /**
+ * @deprecated Superseded by roosync_sync_event. Kept for backward compatibility in registry.ts.
  * Outil MCP : roosync_sync_on_offline
  *
  * Synchronise automatiquement les baselines lors de la détection offline d'une machine.

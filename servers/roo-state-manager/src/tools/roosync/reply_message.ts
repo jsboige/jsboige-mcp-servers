@@ -1,4 +1,5 @@
 /**
+ * @deprecated Superseded by roosync_send(action: 'reply'). Kept for backward compatibility in registry.ts.
  * Outil MCP : roosync_reply_message
  * 
  * Répond à un message existant en créant un nouveau message lié

@@ -1,4 +1,5 @@
 /**
+ * @deprecated Superseded by roosync_send(action: 'send'). Kept for backward compatibility in registry.ts.
  * Outil MCP : roosync_send_message
  * 
  * Envoie un message structuré à une autre machine via RooSync

@@ -1,4 +1,5 @@
 /**
+ * @deprecated Superseded by roosync_decision(action: 'rollback'). Kept for backward compatibility in registry.ts.
  * Outil MCP : roosync_rollback_decision
  *
  * Annule une décision de synchronisation appliquée.

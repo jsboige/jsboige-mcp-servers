@@ -1,4 +1,5 @@
 /**
+ * @deprecated Superseded by roosync_heartbeat_status. Kept for backward compatibility in registry.ts.
  * Outil MCP : roosync_get_offline_machines
  *
  * Obtient la liste des machines actuellement offline dans le système RooSync.

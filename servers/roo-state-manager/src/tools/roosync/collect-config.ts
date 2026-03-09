@@ -1,3 +1,6 @@
+/**
+ * @deprecated Superseded by roosync_config(action: 'collect'). Kept for backward compatibility in registry.ts.
+ */
 import { z } from 'zod';
 import { getRooSyncService } from '../../services/RooSyncService.js';
 import { ConfigSharingServiceError, ConfigSharingServiceErrorCode } from '../../types/errors.js';

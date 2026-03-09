@@ -1,4 +1,5 @@
 /**
+ * @deprecated Superseded by roosync_read(mode: 'message'). Kept for backward compatibility in registry.ts.
  * Outil MCP : roosync_get_message
  * 
  * Obtient les détails complets d'un message spécifique
