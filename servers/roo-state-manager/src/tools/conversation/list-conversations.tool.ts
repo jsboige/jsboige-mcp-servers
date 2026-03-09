@@ -7,6 +7,7 @@ import { ConversationSkeleton } from '../../types/conversation.js';
 import { SkeletonCacheService } from '../../services/skeleton-cache.service.js';
 import { normalizePath } from '../../utils/path-normalizer.js';
 import { scanDiskForNewTasks } from '../task/disk-scanner.js';
+import { ClaudeStorageDetector } from '../../utils/claude-storage-detector.js';
 import { promises as fs } from 'fs';
 import path from 'path';
 import os from 'os';
@@ -127,27 +128,48 @@ export const listConversationsTool = {
             sortOrder?: 'asc' | 'desc',
             workspace?: string,
             pendingSubtaskOnly?: boolean,
-            contentPattern?: string
+            contentPattern?: string,
+            source?: 'roo' | 'claude' | 'all'
         },
         conversationCache: Map<string, ConversationSkeleton>
     ): Promise<CallToolResult> => {
-        // FIX: Scan disk for new tasks not yet in cache before listing
-        // Without this, tasks created after MCP startup are invisible to list
-        try {
-            const newTasks = await scanDiskForNewTasks(conversationCache);
-            for (const task of newTasks) {
-                conversationCache.set(task.taskId, task);
+        const source = args.source || 'roo';
+        const includeRoo = source === 'roo' || source === 'all';
+        const includeClaude = source === 'claude' || source === 'all';
+
+        let allSkeletons: ConversationSkeleton[] = [];
+
+        // Include Roo conversations (default behavior)
+        if (includeRoo) {
+            // FIX: Scan disk for new tasks not yet in cache before listing
+            // Without this, tasks created after MCP startup are invisible to list
+            try {
+                const newTasks = await scanDiskForNewTasks(conversationCache);
+                for (const task of newTasks) {
+                    conversationCache.set(task.taskId, task);
+                }
+                if (newTasks.length > 0) {
+                    console.log(`📊 list_conversations: Discovered ${newTasks.length} new Roo tasks from disk`);
+                }
+            } catch (scanError) {
+                console.warn('⚠️ list_conversations: Disk scan failed, using cache only:', scanError);
             }
-            if (newTasks.length > 0) {
-                console.log(`📊 list_conversations: Discovered ${newTasks.length} new tasks from disk`);
-            }
-        } catch (scanError) {
-            console.warn('⚠️ list_conversations: Disk scan failed, using cache only:', scanError);
+
+            allSkeletons = Array.from(conversationCache.values()).filter(skeleton =>
+                skeleton.metadata
+            );
         }
 
-        let allSkeletons = Array.from(conversationCache.values()).filter(skeleton =>
-            skeleton.metadata
-        );
+        // Include Claude Code sessions
+        if (includeClaude) {
+            try {
+                const claudeSkeletons = await scanClaudeSessions(args.workspace);
+                allSkeletons = allSkeletons.concat(claudeSkeletons);
+                console.log(`📊 list_conversations: Found ${claudeSkeletons.length} Claude Code sessions`);
+            } catch (claudeError) {
+                console.warn('⚠️ list_conversations: Claude session scan failed:', claudeError);
+            }
+        }
 
         // Filtrage par workspace
         let workspaceFilteredCount = 0;
@@ -387,6 +409,67 @@ function extractTextFromMessage(message: ApiMessage): string {
     }
     
     return '';
+}
+
+/**
+ * Scan Claude Code sessions from ~/.claude/projects/ and build ConversationSkeletons
+ * Each conversation gets a 'claude-' prefix on its taskId to distinguish from Roo tasks
+ */
+async function scanClaudeSessions(workspaceFilter?: string): Promise<ConversationSkeleton[]> {
+    const locations = await ClaudeStorageDetector.detectStorageLocations();
+    const skeletons: ConversationSkeleton[] = [];
+    const seenProjects = new Set<string>();
+
+    for (const location of locations) {
+        // Deduplicate by projectPath
+        if (seenProjects.has(location.projectPath)) continue;
+        seenProjects.add(location.projectPath);
+
+        try {
+            // List JSONL files in this project directory
+            let files: string[];
+            try {
+                files = (await fs.readdir(location.projectPath)).filter(f => f.endsWith('.jsonl'));
+            } catch {
+                continue;
+            }
+
+            for (const file of files) {
+                try {
+                    const taskId = `claude-${file.replace('.jsonl', '')}`;
+                    const skeleton = await ClaudeStorageDetector.analyzeConversation(
+                        taskId,
+                        location.projectPath,
+                        { maxContentLength: 200 }
+                    );
+
+                    if (skeleton) {
+                        // Apply workspace filter if provided
+                        if (workspaceFilter) {
+                            const normalizedFilter = normalizePath(workspaceFilter);
+                            const skeletonWs = skeleton.metadata?.workspace;
+                            if (!skeletonWs || normalizePath(skeletonWs) !== normalizedFilter) {
+                                continue;
+                            }
+                        }
+
+                        // Ensure dataSource is set for identification
+                        if (skeleton.metadata) {
+                            skeleton.metadata.dataSource = skeleton.metadata.dataSource || 'claude';
+                        }
+
+                        skeletons.push(skeleton);
+                    }
+                } catch {
+                    // Skip individual file errors silently
+                }
+            }
+        } catch (err) {
+            console.warn(`⚠️ scanClaudeSessions: Error scanning project ${location.projectPath}:`, err);
+        }
+    }
+
+    return skeletons;
 }
 
 /**

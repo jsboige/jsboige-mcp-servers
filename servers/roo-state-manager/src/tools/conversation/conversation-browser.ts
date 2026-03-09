@@ -95,8 +95,8 @@ export interface ConversationBrowserArgs {
     summarize_type?: 'trace' | 'cluster' | 'synthesis';
     /** [summarize] ID de la tâche (alias pour task_id en contexte summarize) */
     taskId?: string;
-    /** [summarize] Source des conversations */
-    source?: 'roo' | 'claude';
+    /** [list/summarize] Source des conversations: 'roo' (défaut), 'claude', ou 'all' */
+    source?: 'roo' | 'claude' | 'all';
     /** [summarize] Chemin pour sauvegarder */
     filePath?: string;
     /** [summarize] Format de sortie */
@@ -276,8 +276,8 @@ export const conversationBrowserTool: Tool = {
             },
             source: {
                 type: 'string',
-                enum: ['roo', 'claude'],
-                description: '[summarize] Source des conversations.',
+                enum: ['roo', 'claude', 'all'],
+                description: '[list/summarize] Source des conversations: "roo" (défaut, Roo Code), "claude" (Claude Code sessions), "all" (les deux).',
                 default: 'roo'
             },
             filePath: {
@@ -472,7 +472,8 @@ export async function handleConversationBrowser(
                         sortOrder: args.sortOrder,
                         workspace: args.workspace,
                         pendingSubtaskOnly: args.pendingSubtaskOnly,
-                        contentPattern: args.contentPattern
+                        contentPattern: args.contentPattern,
+                        source: args.source
                     },
                     conversationCache
                 );
@@ -532,10 +533,15 @@ export async function handleConversationBrowser(
                 // Résoudre taskId depuis taskId ou task_id
                 const resolvedTaskId = (args.taskId || args.task_id)!;
 
+                // Resolve source for summarize: 'all' not supported, auto-detect from taskId prefix
+                const summarizeSource = args.source === 'all'
+                    ? (resolvedTaskId.startsWith('claude-') ? 'claude' : 'roo')
+                    : args.source;
+
                 const summarizeArgs: RooSyncSummarizeArgs = {
                     type: args.summarize_type!,
                     taskId: resolvedTaskId,
-                    source: args.source,
+                    source: summarizeSource,
                     filePath: args.filePath,
                     outputFormat: args.summarize_output_format,
                     detailLevel: args.detailLevel,

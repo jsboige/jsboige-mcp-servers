@@ -11,6 +11,7 @@ import { ServerState } from '../services/state-manager.service.js';
 import * as toolExports from './index.js';
 import { GenericError, GenericErrorCode } from '../types/errors.js';
 import { RooStorageDetector } from '../utils/roo-storage-detector.js';
+import { ClaudeStorageDetector } from '../utils/claude-storage-detector.js';
 import * as path from 'path';
 import { existsSync } from 'fs';
 import { CACHE_CONFIG } from '../config/server-config.js';
@@ -148,7 +149,18 @@ export function registerCallToolHandler(
                         // 1. Try RAM cache first
                         const cached = state.conversationCache.get(id);
                         if (cached) return cached;
-                        // 2. Fallback: scan disk for Roo conversations
+                        // 2. Claude Code sessions (taskId starts with 'claude-')
+                        if (id.startsWith('claude-')) {
+                            try {
+                                const skeleton = await ClaudeStorageDetector.findConversationById(id);
+                                if (skeleton) {
+                                    state.conversationCache.set(id, skeleton);
+                                    return skeleton;
+                                }
+                            } catch { /* Claude fallback failed */ }
+                            return null;
+                        }
+                        // 3. Fallback: scan disk for Roo conversations
                         try {
                             const locations = await RooStorageDetector.detectStorageLocations();
                             for (const loc of locations) {
