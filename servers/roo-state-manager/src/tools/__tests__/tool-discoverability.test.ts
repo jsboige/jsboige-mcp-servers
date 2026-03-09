@@ -623,7 +623,7 @@ describe('Category 6: Backward Compatibility Routes', () => {
         }
 
         expect(broken).toEqual([]);
-    }, 30000); // 30s timeout - build_skeleton_cache does heavy I/O
+    }, 120000); // 120s timeout: ~18 tools * 5s timeout each + buffer
 
     it('deprecated tools are NOT in ListTools (hidden from agents)', async () => {
         const toolNames = await getListToolsNames();
