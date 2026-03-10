@@ -155,11 +155,12 @@ export class SkeletonCacheService {
 
     /**
      * Charger les skeletons depuis le disque
+     * FIX #623: Also creates missing skeletons for existing conversations
      */
     private async loadSkeletonsFromDisk(): Promise<void> {
         try {
             const storageLocations = await RooStorageDetector.detectStorageLocations();
-            
+
             if (storageLocations.length === 0) {
                 console.warn('[SkeletonCacheService] Aucun storage Roo détecté');
                 return;
@@ -167,37 +168,48 @@ export class SkeletonCacheService {
 
             // Utiliser le premier emplacement de stockage détecté
             const storagePath = storageLocations[0];
-            const skeletonDir = path.join(storagePath, SKELETON_CACHE_DIR_NAME);
-            
-            if (!(await this.directoryExists(skeletonDir))) {
-                console.warn(`[SkeletonCacheService] Répertoire de cache introuvable: ${skeletonDir}`);
+            // FIX #623: Correct path is storagePath/tasks/.skeletons
+            const tasksDir = path.join(storagePath, 'tasks');
+            const skeletonDir = path.join(tasksDir, SKELETON_CACHE_DIR_NAME);
+
+            // Check if tasks directory exists
+            if (!(await this.directoryExists(tasksDir))) {
+                console.warn(`[SkeletonCacheService] Répertoire tasks introuvable: ${tasksDir}`);
                 return;
             }
-
-            const files = await fs.readdir(skeletonDir);
-            const jsonFiles = files.filter(f => f.endsWith('.json'));
-
-            console.log(`[SkeletonCacheService] Chargement de ${jsonFiles.length} skeletons...`);
 
             this.cache.clear();
             let loadedCount = 0;
 
-            for (const file of jsonFiles) {
-                try {
-                    const filePath = path.join(skeletonDir, file);
-                    const content = await fs.readFile(filePath, 'utf-8');
-                    const skeleton: ConversationSkeleton = JSON.parse(content);
-                    
-                    if (skeleton.taskId) {
-                        this.cache.set(skeleton.taskId, skeleton);
-                        loadedCount++;
+            // Load existing skeletons if directory exists
+            if (await this.directoryExists(skeletonDir)) {
+                const files = await fs.readdir(skeletonDir);
+                const jsonFiles = files.filter(f => f.endsWith('.json'));
+
+                console.log(`[SkeletonCacheService] Chargement de ${jsonFiles.length} skeletons existants...`);
+
+                for (const file of jsonFiles) {
+                    try {
+                        const filePath = path.join(skeletonDir, file);
+                        const content = await fs.readFile(filePath, 'utf-8');
+                        const skeleton: ConversationSkeleton = JSON.parse(content);
+
+                        if (skeleton.taskId) {
+                            this.cache.set(skeleton.taskId, skeleton);
+                            loadedCount++;
+                        }
+                    } catch (err) {
+                        console.error(`[SkeletonCacheService] Erreur lors du chargement de ${file}:`, err);
                     }
-                } catch (err) {
-                    console.error(`[SkeletonCacheService] Erreur lors du chargement de ${file}:`, err);
                 }
+
+                console.log(`[SkeletonCacheService] ${loadedCount}/${jsonFiles.length} skeletons chargés avec succès`);
+            } else {
+                console.log(`[SkeletonCacheService] Répertoire de squelettes inexistant, sera créé automatiquement`);
             }
 
-            console.log(`[SkeletonCacheService] ${loadedCount}/${jsonFiles.length} skeletons chargés avec succès`);
+            // FIX #623: Build missing skeletons for conversations that don't have one yet
+            await this.buildMissingSkeletons(tasksDir, skeletonDir);
         } catch (error) {
             console.error('[SkeletonCacheService] Erreur lors du chargement des skeletons:', error);
         }
@@ -205,12 +217,15 @@ export class SkeletonCacheService {
 
     /**
      * Resolve the skeleton cache directory path
+     * Note: Skeletons are stored in storagePath/tasks/.skeletons
      */
     private async getSkeletonDir(): Promise<string | null> {
         try {
             const storageLocations = await RooStorageDetector.detectStorageLocations();
             if (storageLocations.length === 0) return null;
-            return path.join(storageLocations[0], SKELETON_CACHE_DIR_NAME);
+            // FIX #623: Correct path is storagePath/tasks/.skeletons, not storagePath/.skeletons
+            const tasksDir = path.join(storageLocations[0], 'tasks');
+            return path.join(tasksDir, SKELETON_CACHE_DIR_NAME);
         } catch {
             return null;
         }
@@ -225,6 +240,59 @@ export class SkeletonCacheService {
             return stats.isDirectory();
         } catch {
             return false;
+        }
+    }
+
+    /**
+     * FIX #623: Build skeletons for conversations that don't have one yet
+     * This ensures that when ensureFreshCache() is called, all existing conversations
+     * get their skeletons created automatically (not just loaded from disk).
+     */
+    private async buildMissingSkeletons(tasksDir: string, skeletonDir: string): Promise<void> {
+        try {
+            // Make sure skeleton directory exists
+            await fs.mkdir(skeletonDir, { recursive: true });
+
+            // List all conversations in tasks directory
+            const conversationDirs = await fs.readdir(tasksDir, { withFileTypes: true });
+            let builtCount = 0;
+            let skippedCount = 0;
+
+            for (const convDir of conversationDirs) {
+                if (convDir.isDirectory() && convDir.name !== SKELETON_CACHE_DIR_NAME) {
+                    const conversationId = convDir.name;
+                    const skeletonPath = path.join(skeletonDir, `${conversationId}.json`);
+
+                    // Check if skeleton already exists
+                    try {
+                        await fs.access(skeletonPath);
+                        skippedCount++;
+                        continue;
+                    } catch {
+                        // Skeleton doesn't exist, build it
+                    }
+
+                    try {
+                        const taskPath = path.join(tasksDir, conversationId);
+                        const skeleton = await RooStorageDetector.analyzeConversation(conversationId, taskPath);
+
+                        if (skeleton && skeleton.taskId) {
+                            await fs.writeFile(skeletonPath, JSON.stringify(skeleton, null, 2));
+                            this.cache.set(skeleton.taskId, skeleton);
+                            builtCount++;
+                            console.log(`[SkeletonCacheService] Built missing skeleton for ${conversationId}`);
+                        }
+                    } catch (error) {
+                        console.error(`[SkeletonCacheService] Failed to build skeleton for ${conversationId}:`, error);
+                    }
+                }
+            }
+
+            if (builtCount > 0) {
+                console.log(`[SkeletonCacheService] Built ${builtCount} missing skeletons (${skippedCount} already existed)`);
+            }
+        } catch (error) {
+            console.error('[SkeletonCacheService] Error building missing skeletons:', error);
         }
     }
 

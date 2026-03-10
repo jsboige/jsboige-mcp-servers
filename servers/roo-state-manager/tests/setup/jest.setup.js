@@ -1,9 +1,5 @@
 import { vi, beforeEach } from 'vitest';
-import dotenv from 'dotenv';
-import path from 'path';
-
-// Charger les variables d'environnement depuis le fichier .env
-dotenv.config({ path: path.resolve(__dirname, '../../.env') });
+// dotenv already loaded by setup-env.ts (setupFiles order)
 
 // Configuration globale des mocks pour la console
 global.console = {

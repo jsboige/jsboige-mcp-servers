@@ -43,6 +43,18 @@ describe('ClaudeStorageDetector - TDD Suite', () => {
             expect(projects).toContain('c--project-2');
         });
 
+        it('DEVRAIT détecter les projets avec toute lettre de disque (pas juste c--)', async () => {
+            await fs.mkdir(path.join(claudeProjectsDir, 'd--roo-extensions'), { recursive: true });
+            await fs.mkdir(path.join(claudeProjectsDir, 'D--roo-extensions--worktree'), { recursive: true });
+            await fs.mkdir(path.join(claudeProjectsDir, 'g--Mon-Drive-Project'), { recursive: true });
+
+            const projects = await ClaudeStorageDetector.listProjects(claudeProjectsDir);
+
+            expect(projects).toContain('d--roo-extensions');
+            expect(projects).toContain('D--roo-extensions--worktree');
+            expect(projects).toContain('g--Mon-Drive-Project');
+        });
+
         it('DEVRAIT valider un chemin de stockage Claude existant', async () => {
             const isValid = await ClaudeStorageDetector.validateCustomPath(claudeProjectsDir);
             expect(isValid).toBe(true);
