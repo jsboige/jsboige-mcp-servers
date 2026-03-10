@@ -8,4 +8,4 @@ export type { StorageInfoArgs, StorageInfoAction } from './storage-info.js';
 
 // [DEPRECATED] Anciens outils conservés pour backward compatibility
 export { detectStorageTool } from './detect-storage.tool.js';
-export { getStorageStatsTool } from './get-stats.tool.js';
+// #519: get_storage_stats retiré (remplacé par roosync_storage_management action='stats')
