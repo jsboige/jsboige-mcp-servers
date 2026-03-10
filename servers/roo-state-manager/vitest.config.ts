@@ -64,12 +64,11 @@ export default defineConfig({
     testTimeout: 15000,
     hookTimeout: 30000,
 
-    // Pool configuration - utiliser 'forks' avec un seul worker
-    // (équivalent à maxWorkers: 1 de Jest pour éviter les problèmes de mémoire)
-    pool: 'threads',
+    // Pool configuration - forks is faster for isolated tests with heavy setup
+    pool: 'forks',
     poolOptions: {
-      threads: {
-        maxThreads: Math.max(1, 4)  // Utiliser 4 threads fixes pour éviter le require('os')
+      forks: {
+        maxForks: 4
       }
     },
 
@@ -108,7 +107,16 @@ export default defineConfig({
     isolate: true,
 
     // Reporters
-    reporters: ['default']
+    reporters: ['default'],
+
+    // Optimize dependency pre-bundling for faster collection
+    deps: {
+      optimizer: {
+        ssr: {
+          enabled: true
+        }
+      }
+    }
   },
 
   // Résolution des modules (équivalent à moduleNameMapper)
