@@ -43,16 +43,22 @@ export interface Message {
   
   /** Statut du message */
   status: 'unread' | 'read' | 'archived';
-  
+
   /** Tags optionnels */
   tags?: string[];
-  
+
   /** ID de thread pour regrouper les conversations */
   thread_id?: string;
-  
+
   /** ID du message auquel on répond */
   reply_to?: string;
-  
+
+  /** Machines/workspaces ayant lu ce message (tracking multi-lecteurs #629) */
+  read_by?: string[];
+
+  /** Timestamps de lecture par machine (machineId → ISO timestamp) */
+  acknowledged_at?: Record<string, string>;
+
   /** Métadonnées optionnelles (amendements, etc.) */
   metadata?: {
     amended?: boolean;
@@ -286,9 +292,19 @@ export class MessageManager {
             continue;
           }
 
-          // Filtrer par status
-          if (status && status !== 'all' && message.status !== status) {
-            continue;
+          // Filtrer par status — per-machine for broadcasts (#629)
+          if (status && status !== 'all') {
+            const isBroadcast = message.to === 'all' || message.to === 'All';
+            if (isBroadcast && message.read_by) {
+              // For broadcasts, check per-machine read_by instead of global status
+              const readerMachineId = parseMachineWorkspace(machineId).machineId;
+              const hasRead = message.read_by.includes(readerMachineId);
+              if (status === 'unread' && hasRead) continue;
+              if (status === 'read' && !hasRead) continue;
+            } else {
+              // For targeted messages or broadcasts without read_by, use global status
+              if (message.status !== status) continue;
+            }
           }
 
           messages.push({
@@ -355,15 +371,19 @@ export class MessageManager {
   }
 
   /**
-   * Marque un message comme lu
-   * 
-   * Met à jour le statut du message dans l'inbox.
-   * 
+   * Marque un message comme lu par une machine spécifique.
+   *
+   * Pour les messages broadcast (to: "all"), utilise le tracking per-machine
+   * via read_by[]. Le status global ne passe à 'read' que quand la machine
+   * spécifiée a lu (pour les messages ciblés) ou reste 'unread' pour les
+   * broadcasts tant que d'autres machines ne l'ont pas lu.
+   *
    * @param messageId ID du message à marquer comme lu
+   * @param readerId ID de la machine qui lit (optionnel, défaut: machine locale)
    * @returns true si succès, false sinon
    */
-  async markAsRead(messageId: string): Promise<boolean> {
-    logger.info(`Marking message as read: ${messageId}`);
+  async markAsRead(messageId: string, readerId?: string): Promise<boolean> {
+    logger.info(`Marking message as read: ${messageId}${readerId ? ` by ${readerId}` : ''}`);
 
     const filePath = join(this.inboxPath, `${messageId}.json`);
     if (!existsSync(filePath)) {
@@ -374,17 +394,41 @@ export class MessageManager {
     try {
       const content = await fs.readFile(filePath, 'utf-8');
       const message: Message = JSON.parse(content);
-      message.status = 'read';
+
+      // Track per-machine read status (#629)
+      if (readerId) {
+        const readerMachineId = parseMachineWorkspace(readerId).machineId;
+        if (!message.read_by) {
+          message.read_by = [];
+        }
+        if (!message.read_by.includes(readerMachineId)) {
+          message.read_by.push(readerMachineId);
+        }
+        if (!message.acknowledged_at) {
+          message.acknowledged_at = {};
+        }
+        if (!message.acknowledged_at[readerMachineId]) {
+          message.acknowledged_at[readerMachineId] = new Date().toISOString();
+        }
+        logger.info(`Reader ${readerMachineId} tracked in read_by (${message.read_by.length} readers)`);
+      }
+
+      // For targeted messages (not broadcast), set global status to 'read'
+      // For broadcasts (to: "all"/"All"), keep status as-is — per-machine filtering uses read_by
+      const isBroadcast = message.to === 'all' || message.to === 'All';
+      if (!isBroadcast) {
+        message.status = 'read';
+      }
 
       await fs.writeFile(filePath, JSON.stringify(message, null, 2), 'utf-8');
-      
+
       // Also update sent/ directory if message was sent from this machine
       const sentPath = join(this.sentPath, `${messageId}.json`);
       if (existsSync(sentPath)) {
         await fs.writeFile(sentPath, JSON.stringify(message, null, 2), 'utf-8');
-        logger.info('Message also marked as read in sent/');
+        logger.info('Message also updated in sent/');
       }
-      
+
       logger.info('Message marked as read');
       return true;
     } catch (error) {
@@ -634,8 +678,16 @@ export class MessageManager {
         if (filters.tag && (!message.tags || !message.tags.includes(filters.tag))) {
           continue;
         }
-        if (filters.status && message.status !== filters.status) {
-          continue;
+        if (filters.status) {
+          const isBroadcast = message.to === 'all' || message.to === 'All';
+          if (isBroadcast && message.read_by) {
+            const readerMachineId = parseMachineWorkspace(machineId).machineId;
+            const hasRead = message.read_by.includes(readerMachineId);
+            if (filters.status === 'unread' && hasRead) continue;
+            if (filters.status === 'read' && !hasRead) continue;
+          } else {
+            if (message.status !== filters.status) continue;
+          }
         }
 
         matchedIds.push(message.id);
@@ -650,7 +702,7 @@ export class MessageManager {
     for (const id of matchedIds) {
       try {
         if (operation === 'mark_read') {
-          const success = await this.markAsRead(id);
+          const success = await this.markAsRead(id, machineId);
           if (success) processed++;
           else errors++;
         } else if (operation === 'archive') {
@@ -722,7 +774,17 @@ export class MessageManager {
 
         stats.total++;
 
-        if (message.status === 'unread') {
+        // Per-machine read status for broadcasts (#629)
+        const isBroadcast = message.to === 'all' || message.to === 'All';
+        let isUnreadForThisMachine: boolean;
+        if (isBroadcast && message.read_by) {
+          const readerMachineId = parseMachineWorkspace(machineId).machineId;
+          isUnreadForThisMachine = !message.read_by.includes(readerMachineId);
+        } else {
+          isUnreadForThisMachine = message.status === 'unread';
+        }
+
+        if (isUnreadForThisMachine) {
           stats.unread++;
           const msgDate = new Date(message.timestamp);
           if (!oldestUnreadDate || msgDate < oldestUnreadDate) {

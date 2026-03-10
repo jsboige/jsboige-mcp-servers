@@ -136,7 +136,7 @@ describe('get_message', () => {
 			const { getMessage } = await import('../get_message.js');
 			await getMessage({ message_id: 'msg-100', mark_as_read: true });
 
-			expect(mockMarkAsRead).toHaveBeenCalledWith('msg-100');
+			expect(mockMarkAsRead).toHaveBeenCalledWith('msg-100', expect.any(String));
 		});
 
 		test('does not mark as read when not requested', async () => {

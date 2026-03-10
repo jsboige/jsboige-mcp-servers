@@ -169,9 +169,9 @@ Le message n'a pas été trouvé dans :
 - Utilisez \`roosync_read\` avec \`mode: "inbox"\` pour lister les messages disponibles`;
   }
 
-  // Marquer comme lu si demandé
+  // Marquer comme lu si demandé (avec tracking per-machine #629)
   if (markAsRead && message.status === 'unread') {
-    await messageManager.markAsRead(messageId);
+    await messageManager.markAsRead(messageId, getLocalMachineId());
     message.status = 'read';
   }
 

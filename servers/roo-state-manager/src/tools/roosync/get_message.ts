@@ -11,6 +11,7 @@ import { MessageManager } from '../../services/MessageManager.js';
 import { getSharedStatePath } from '../../utils/server-helpers.js';
 import { createLogger, Logger } from '../../utils/logger.js';
 import { MessageManagerError, MessageManagerErrorCode } from '../../types/errors.js';
+import { getLocalMachineId } from '../../utils/message-helpers.js';
 
 // Logger instance for get_message tool
 const logger: Logger = createLogger('GetMessageTool');
@@ -127,10 +128,10 @@ Le message n'a pas été trouvé dans :
       };
     }
 
-    // Marquer comme lu si demandé
+    // Marquer comme lu si demandé (avec tracking per-machine #629)
     if (args.mark_as_read && message.status === 'unread') {
       logger.debug('✉️ Marking message as read');
-      await messageManager.markAsRead(args.message_id);
+      await messageManager.markAsRead(args.message_id, getLocalMachineId());
       message.status = 'read';
     }
 

@@ -15,7 +15,8 @@ import { recordRooSyncActivityAsync } from './heartbeat-activity.js';
 import {
   formatDate,
   formatDateFull,
-  getLocalMachineId
+  getLocalMachineId,
+  parseMachineWorkspace
 } from '../../utils/message-helpers.js';
 import { getRooSyncService } from '../../services/RooSyncService.js';
 
@@ -88,8 +89,14 @@ Le message n'a pas été trouvé dans :
 - Utilisez \`roosync_read\` avec \`action: inbox\` pour lister les messages disponibles`;
   }
 
-  // Vérifier si déjà lu
-  if (message.status === 'read') {
+  // Vérifier si déjà lu (per-machine for broadcasts #629)
+  const localMachine = getLocalMachineId();
+  const isBroadcast = message.to === 'all' || message.to === 'All';
+  const alreadyReadByMe = isBroadcast
+    ? (message.read_by?.includes(parseMachineWorkspace(localMachine).machineId) ?? false)
+    : message.status === 'read';
+
+  if (alreadyReadByMe) {
     return `ℹ️ **Message déjà marqué comme lu**
 
 **ID :** \`${args.message_id}\`
@@ -97,14 +104,14 @@ Le message n'a pas été trouvé dans :
 **De :** ${message.from}
 **À :** ${message.to}
 **Date :** ${formatDateFull(message.timestamp)}
-**Statut actuel :** ✅ READ
+**Statut actuel :** ✅ READ${isBroadcast && message.read_by ? ` (lu par ${message.read_by.length} machine(s): ${message.read_by.join(', ')})` : ''}
 
 Le message était déjà marqué comme lu. Aucune modification nécessaire.`;
   }
 
-  // Marquer comme lu
+  // Marquer comme lu (avec tracking per-machine #629)
   logger.info('✉️ Marking message as read');
-  await messageManager.markAsRead(args.message_id);
+  await messageManager.markAsRead(args.message_id, localMachine);
 
   // Fire-and-forget heartbeat update: marking a message read proves the machine is active
   getRooSyncService().getHeartbeatService()

@@ -89,7 +89,7 @@ describe('mark_message_read', () => {
 		expect(result.content[0].text).toContain('Message marqué comme lu');
 		expect(result.content[0].text).toContain('UNREAD');
 		expect(result.content[0].text).toContain('READ');
-		expect(mockMarkAsRead).toHaveBeenCalledWith('msg-2');
+		expect(mockMarkAsRead).toHaveBeenCalledWith('msg-2', expect.any(String));
 	});
 
 	test('returns error on failure', async () => {
