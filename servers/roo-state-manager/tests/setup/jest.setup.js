@@ -435,6 +435,41 @@ const mockRooSyncServiceInstance = {
     updateConfig: vi.fn().mockResolvedValue(undefined),
     startHeartbeatService: vi.fn().mockResolvedValue(undefined),
     stopHeartbeatService: vi.fn().mockResolvedValue(undefined)
+  })),
+  // getConfigSharingService mock - returns ConfigSharingService instance methods
+  // Note: Returns the raw service result format, not the tool-wrapped format
+  getConfigSharingService: vi.fn(() => ({
+    collectConfig: vi.fn().mockResolvedValue({
+      packagePath: '/mock/config-collect',
+      manifest: {
+        version: '0.0.0',
+        timestamp: new Date().toISOString(),
+        author: 'test-machine',
+        description: 'Mock collect',
+        files: []
+      },
+      filesCount: 0,
+      totalSize: 0
+    }),
+    publishConfig: vi.fn().mockResolvedValue({
+      success: true,
+      version: '1.0.0',
+      publishedPath: '/mock/configs/test-machine/config-1.0.0.json'
+    }),
+    applyConfig: vi.fn().mockResolvedValue({
+      success: true,
+      appliedFiles: [],
+      backupCreated: false
+    }),
+    applyProfile: vi.fn().mockResolvedValue({
+      success: true,
+      profileName: 'test-profile'
+    }),
+    getDiff: vi.fn().mockResolvedValue({
+      added: [],
+      modified: [],
+      removed: []
+    })
   }))
 };
 
@@ -511,10 +546,5 @@ vi.mock('../../src/services/InventoryCollector.js', () => ({
   })),
 }));
 
-// Mock pour DiffDetector
-vi.mock('../../src/services/DiffDetector.js', () => ({
-  DiffDetector: vi.fn().mockImplementation(() => ({
-    detectDiffs: vi.fn().mockResolvedValue([]),
-    compareConfigs: vi.fn().mockResolvedValue({}),
-  })),
-}));
+// DiffDetector: Unit tests need the real implementation, not a mock
+// Tests that depend on DiffDetector should mock it locally in their test files
