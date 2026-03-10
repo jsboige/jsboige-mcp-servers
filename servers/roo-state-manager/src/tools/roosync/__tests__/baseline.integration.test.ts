@@ -9,16 +9,47 @@
  *
  * @module tools/roosync/baseline.integration.test
  * @version 1.0.0 (#564 Phase 3)
+ * @bugfix #636 - Use temp directory instead of real RooSync to prevent file pollution
  */
 
-import { describe, test, expect, beforeAll } from 'vitest';
+import { describe, test, expect, beforeAll, afterAll } from 'vitest';
 import { globalCacheManager } from '../../../utils/cache-manager.js';
+import { mkdtemp, rm } from 'fs/promises';
+import { join } from 'path';
+import { existsSync } from 'fs';
 
 describe('roosync_baseline (integration)', () => {
+  let tempRooSyncDir: string;
+  let originalRooSyncPath: string | undefined;
+
   beforeAll(async () => {
+    // #636: Create temp directory to avoid polluting real RooSync
+    tempRooSyncDir = await mkdtemp(join(process.env.TEMP || '/tmp', 'roosync-test-'));
+    originalRooSyncPath = process.env.ROOSYNC_SHARED_PATH;
+    process.env.ROOSYNC_SHARED_PATH = tempRooSyncDir;
+
     // Clear cache pour éviter les résultats cachés d'exécutions précédentes
     await globalCacheManager.invalidate({ all: true });
   }, 30000); // 30s timeout for module import (Issue #609)
+
+  afterAll(async () => {
+    // Restore original ROOSYNC_SHARED_PATH
+    if (originalRooSyncPath) {
+      process.env.ROOSYNC_SHARED_PATH = originalRooSyncPath;
+    } else {
+      delete process.env.ROOSYNC_SHARED_PATH;
+    }
+
+    // Clean up temp directory
+    if (tempRooSyncDir && existsSync(tempRooSyncDir)) {
+      try {
+        await rm(tempRooSyncDir, { recursive: true, force: true });
+      } catch (cleanupError) {
+        // Log but don't fail test if cleanup fails
+        console.warn(`[TEST WARNING] Could not clean up temp directory: ${tempRooSyncDir}`, cleanupError);
+      }
+    }
+  });
 
   // ============================================================
   // Tests de validation des entrées

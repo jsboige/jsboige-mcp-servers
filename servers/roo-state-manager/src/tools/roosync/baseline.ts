@@ -10,7 +10,7 @@
 import { z } from 'zod';
 import { getRooSyncService, RooSyncServiceError } from '../../services/RooSyncService.js';
 import { existsSync, readFileSync, writeFileSync, copyFileSync, mkdirSync } from 'fs';
-import { join } from 'path';
+import { join, dirname } from 'path';
 import { createLogger, Logger } from '../../utils/logger.js';
 import { BaselineService } from '../../services/BaselineService.js';
 import { ConfigService } from '../../services/ConfigService.js';
@@ -832,9 +832,9 @@ async function handleExportAction(args: BaselineArgs, timestamp: string): Promis
   }
 
   // Créer le répertoire de sortie si nécessaire
-  const outputDir = outputPath.substring(0, outputPath.lastIndexOf('/'));
-  if (outputDir && !existsSync(outputDir)) {
-    require('fs').mkdirSync(outputDir, { recursive: true });
+  const outputDir = dirname(outputPath);
+  if (!existsSync(outputDir)) {
+    mkdirSync(outputDir, { recursive: true });
   }
 
   // Écrire le fichier
