@@ -41,16 +41,26 @@ import { HeartbeatResult } from '../heartbeat.js';
 import { RooSyncService } from '../../../services/RooSyncService.js';
 
 describe('roosyncHeartbeat (integration)', () => {
+  // Fix #634: Save original env var to restore after tests.
+  // The system env ROOSYNC_SHARED_PATH points to real GDrive, and dotenv
+  // won't override it. We must set it explicitly to the test path so that
+  // RooSyncService singleton (via loadRooSyncConfig) uses the test directory.
+  const originalSharedPath = process.env.ROOSYNC_SHARED_PATH;
+
   beforeEach(async () => {
-    // CRITICAL: Reset singleton RooSyncService avant chaque test
-    // pour s'assurer que le mock getSharedStatePath est pris en compte
-    // Sinon le singleton capture le vrai chemin GDrive à la première initialisation
+    // Fix #634: Override env var BEFORE singleton recreation.
+    // Without this, loadRooSyncConfig() reads the system env var (GDrive path)
+    // and HeartbeatService writes ghost machine files to production GDrive.
+    process.env.ROOSYNC_SHARED_PATH = testSharedStatePath;
+
+    // Reset singleton so it gets recreated with the test path
     RooSyncService.resetInstance();
 
     // Setup : créer répertoire temporaire pour tests isolés
     const dirs = [
       testSharedStatePath,
       join(testSharedStatePath, 'heartbeat'),
+      join(testSharedStatePath, 'heartbeats'),
       join(testSharedStatePath, 'machines')
     ];
 
@@ -62,51 +72,19 @@ describe('roosyncHeartbeat (integration)', () => {
   });
 
   afterEach(async () => {
+    // Reset singleton to prevent leaking test state to other test files
+    RooSyncService.resetInstance();
+
+    // Restore original env var
+    if (originalSharedPath !== undefined) {
+      process.env.ROOSYNC_SHARED_PATH = originalSharedPath;
+    } else {
+      delete process.env.ROOSYNC_SHARED_PATH;
+    }
+
     // Cleanup : supprimer répertoire test pour isolation
     if (existsSync(testSharedStatePath)) {
       rmSync(testSharedStatePath, { recursive: true, force: true });
-    }
-  });
-
-  afterAll(async () => {
-    // VERIFICATION: S'assurer qu'aucun fichier fantôme n'existe sur le vrai GDrive
-    // Les IDs de machines de test utilisés dans ces tests sont :
-    // test-machine, test-machine-2, persistent-machine, workflow-machine,
-    // machine-1, machine-2, online-machine, monitored-machine
-    const testMachineIds = [
-      'test-machine',
-      'test-machine-2',
-      'persistent-machine',
-      'workflow-machine',
-      'machine-1',
-      'machine-2',
-      'online-machine',
-      'monitored-machine'
-    ];
-
-    // Obtenir le vrai sharedPath (pas le mock)
-    const { getSharedStatePath } = await import('../../../utils/server-helpers.js');
-    const realSharedPath = getSharedStatePath();
-    const realHeartbeatDir = join(realSharedPath, 'heartbeat');
-
-    const ghostFiles: string[] = [];
-    for (const machineId of testMachineIds) {
-      const heartbeatPath = join(realHeartbeatDir, `${machineId}.json`);
-      if (existsSync(heartbeatPath)) {
-        ghostFiles.push(heartbeatPath);
-      }
-    }
-
-    // Si des fichiers fantômes sont détectés, les supprimer et avertir
-    if (ghostFiles.length > 0) {
-      console.warn(`[TEST POLLUTION] ${ghostFiles.length} fichiers fantômes détectés sur GDrive:`);
-      for (const file of ghostFiles) {
-        console.warn(`  - ${file}`);
-        rmSync(file, { force: true });
-      }
-      console.warn('[TEST POLLUTION] Fichiers supprimés. Le fix singleton reset ne fonctionne pas complètement.');
-    } else {
-      console.log('[TEST OK] Aucun fichier fantôme détecté sur GDrive.');
     }
   });
 
