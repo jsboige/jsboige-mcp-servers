@@ -124,13 +124,43 @@ export type CompareConfigResult = z.infer<typeof CompareConfigResultSchema>;
  */
 export async function roosyncCompareConfig(args: CompareConfigArgs): Promise<CompareConfigResult> {
   try {
-      const service = getRooSyncService();
-      const config = service.getConfig();
-      
-      // Déterminer machines source et cible
-      // Gérer l'alias 'local-machine' qui doit être mappé vers le vrai machineId
-      const sourceMachineId = (args.source === 'local-machine') ? config.machineId : (args.source || config.machineId);
-      const targetMachineId = (args.target === 'local-machine') ? config.machineId : (args.target || await getDefaultTargetMachine(service, sourceMachineId));
+      let service;
+      let config;
+      let sourceMachineId;
+      let targetMachineId;
+
+      // Gestion gracieuse : si RooSyncService ne peut pas être initialisé (répertoire manquant, etc.)
+      // retourner un résultat CRITICAL au lieu de lancer une exception
+      try {
+          service = getRooSyncService();
+          config = service.getConfig();
+
+          // Déterminer machines source et cible
+          // Gérer l'alias 'local-machine' qui doit être mappé vers le vrai machineId
+          sourceMachineId = (args.source === 'local-machine') ? config.machineId : (args.source || config.machineId);
+          targetMachineId = (args.target === 'local-machine') ? config.machineId : (args.target || await getDefaultTargetMachine(service, sourceMachineId));
+      } catch (initError) {
+          // Le service ne peut pas être initialisé (répertoire manquant, config invalide, etc.)
+          // Retourner un résultat CRITICAL cohérent avec le comportement attendu
+          const errorMsg = initError instanceof Error ? initError.message : String(initError);
+          const isEnoent = errorMsg.includes('ENOENT') || errorMsg.includes('no such file');
+
+          return {
+              source: args.source || 'local-machine',
+              target: args.target || 'unknown',
+              granularity: args.granularity || 'full',
+              differences: [{
+                  category: 'infrastructure',
+                  severity: 'CRITICAL',
+                  path: 'roo-sync.infrastructure',
+                  description: isEnoent
+                      ? 'État partagé RooSync manquant ou inaccessible. Le répertoire ROOSYNC_SHARED_PATH n\'existe pas ou contient des fichiers manquants.'
+                      : `Erreur d'initialisation RooSync: ${errorMsg}`,
+                  action: 'Vérifier que ROOSYNC_SHARED_PATH est correctement configuré et que le répertoire existe.'
+              }],
+              summary: { total: 1, critical: 1, important: 0, warning: 0, info: 0 }
+          };
+      }
 
     // Settings comparison: uses RooSettingsService + GDrive published settings
     if (args.granularity === 'settings') {

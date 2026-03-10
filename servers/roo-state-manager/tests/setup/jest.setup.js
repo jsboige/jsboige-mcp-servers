@@ -426,8 +426,25 @@ const mockRooSyncServiceInstance = {
       totalPendingDecisions: 0,
     },
   }),
-  getConfig: vi.fn().mockReturnValue({}),
+  getConfig: vi.fn().mockReturnValue({
+    sharedPath: '/mock/roosync/shared-path',
+    machineId: 'ci-test-machine',
+    autoSync: true,
+    conflictStrategy: 'manual',
+    logLevel: 'info'
+  }),
   resetInstance: vi.fn(),
+  getInventory: vi.fn().mockResolvedValue({
+    machineId: 'ci-test-machine',
+    hostname: 'test-host',
+    platform: 'win32',
+    arch: 'x64',
+    cpus: [{ model: 'test-cpu' }],
+    totalMemory: 8000000000,
+    freeMemory: 4000000000,
+    lastUpdate: new Date().toISOString()
+  }),
+  clearCache: vi.fn(),
   // getHeartbeatService mock - returns HeartbeatService instance methods
   getHeartbeatService: vi.fn(() => ({
     getHeartbeatData: vi.fn().mockResolvedValue({}),
@@ -543,6 +560,8 @@ vi.mock('../../src/services/InventoryCollector.js', () => ({
       totalMemory: 8000000000,
       freeMemory: 4000000000,
     }),
+    clearCache: vi.fn(),
+    getCacheStats: vi.fn().mockReturnValue({ size: 0, entries: [] }),
   })),
 }));
 

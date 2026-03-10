@@ -37,10 +37,26 @@ vi.mock('../../../utils/server-helpers.js', () => ({
 
 // Import après les mocks
 import { roosyncDiagnose } from '../diagnose.js';
+
+// Fix #634: Integration tests need REAL RooSyncService, not the mock from jest.setup.js
+// Unmock the service so we get the real singleton with actual filesystem operations
+vi.unmock('../../../services/RooSyncService.js');
 import { RooSyncService } from '../../../services/RooSyncService.js';
 
 describe('roosyncDiagnose (integration)', () => {
+  // Fix #634: Save original env var to restore after tests.
+  // The system env ROOSYNC_SHARED_PATH points to real GDrive, and dotenv
+  // won't override it. We must set it explicitly to the test path so that
+  // RooSyncService singleton (via loadRooSyncConfig) uses the test directory.
+  const originalSharedPath = process.env.ROOSYNC_SHARED_PATH;
+  const originalMachineId = process.env.ROOSYNC_MACHINE_ID;
+
   beforeEach(async () => {
+    // Fix #634: Override env var BEFORE singleton recreation.
+    // Without this, loadRooSyncConfig() reads the system env var (GDrive path)
+    // and RooSyncService writes ghost files to production GDrive.
+    process.env.ROOSYNC_SHARED_PATH = testSharedStatePath;
+    process.env.ROOSYNC_MACHINE_ID = 'test-machine';
     // Setup : créer répertoire temporaire pour tests isolés
     const dirs = [
       testSharedStatePath,
@@ -64,13 +80,25 @@ describe('roosyncDiagnose (integration)', () => {
   });
 
   afterEach(async () => {
+    // Reset singleton to prevent leaking test state to other test files
+    RooSyncService.resetInstance();
+
+    // Restore original env var
+    if (originalSharedPath !== undefined) {
+      process.env.ROOSYNC_SHARED_PATH = originalSharedPath;
+    } else {
+      delete process.env.ROOSYNC_SHARED_PATH;
+    }
+    if (originalMachineId !== undefined) {
+      process.env.ROOSYNC_MACHINE_ID = originalMachineId;
+    } else {
+      delete process.env.ROOSYNC_MACHINE_ID;
+    }
+
     // Cleanup : supprimer répertoire test pour isolation
     if (existsSync(testSharedStatePath)) {
       rmSync(testSharedStatePath, { recursive: true, force: true });
     }
-
-    // Reset singleton après chaque test
-    RooSyncService.resetInstance();
   });
 
   // ============================================================
