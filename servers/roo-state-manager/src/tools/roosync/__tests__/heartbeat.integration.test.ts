@@ -38,9 +38,15 @@ vi.mock('../../../utils/server-helpers.js', () => ({
 // Import après les mocks
 import { roosyncHeartbeat } from '../heartbeat.js';
 import { HeartbeatResult } from '../heartbeat.js';
+import { RooSyncService } from '../../../services/RooSyncService.js';
 
 describe('roosyncHeartbeat (integration)', () => {
   beforeEach(async () => {
+    // CRITICAL: Reset singleton RooSyncService avant chaque test
+    // pour s'assurer que le mock getSharedStatePath est pris en compte
+    // Sinon le singleton capture le vrai chemin GDrive à la première initialisation
+    RooSyncService.resetInstance();
+
     // Setup : créer répertoire temporaire pour tests isolés
     const dirs = [
       testSharedStatePath,
@@ -59,6 +65,48 @@ describe('roosyncHeartbeat (integration)', () => {
     // Cleanup : supprimer répertoire test pour isolation
     if (existsSync(testSharedStatePath)) {
       rmSync(testSharedStatePath, { recursive: true, force: true });
+    }
+  });
+
+  afterAll(async () => {
+    // VERIFICATION: S'assurer qu'aucun fichier fantôme n'existe sur le vrai GDrive
+    // Les IDs de machines de test utilisés dans ces tests sont :
+    // test-machine, test-machine-2, persistent-machine, workflow-machine,
+    // machine-1, machine-2, online-machine, monitored-machine
+    const testMachineIds = [
+      'test-machine',
+      'test-machine-2',
+      'persistent-machine',
+      'workflow-machine',
+      'machine-1',
+      'machine-2',
+      'online-machine',
+      'monitored-machine'
+    ];
+
+    // Obtenir le vrai sharedPath (pas le mock)
+    const { getSharedStatePath } = await import('../../../utils/server-helpers.js');
+    const realSharedPath = getSharedStatePath();
+    const realHeartbeatDir = join(realSharedPath, 'heartbeat');
+
+    const ghostFiles: string[] = [];
+    for (const machineId of testMachineIds) {
+      const heartbeatPath = join(realHeartbeatDir, `${machineId}.json`);
+      if (existsSync(heartbeatPath)) {
+        ghostFiles.push(heartbeatPath);
+      }
+    }
+
+    // Si des fichiers fantômes sont détectés, les supprimer et avertir
+    if (ghostFiles.length > 0) {
+      console.warn(`[TEST POLLUTION] ${ghostFiles.length} fichiers fantômes détectés sur GDrive:`);
+      for (const file of ghostFiles) {
+        console.warn(`  - ${file}`);
+        rmSync(file, { force: true });
+      }
+      console.warn('[TEST POLLUTION] Fichiers supprimés. Le fix singleton reset ne fonctionne pas complètement.');
+    } else {
+      console.log('[TEST OK] Aucun fichier fantôme détecté sur GDrive.');
     }
   });
 
