@@ -125,16 +125,20 @@ describe('roosync_baseline (integration)', () => {
       }).rejects.toThrow(RooSyncServiceError);
     });
 
-    test('should handle export action with JSON format - may fail without baseline', async () => {
-      const { roosync_baseline, RooSyncServiceError, StateManagerError } = await import('../baseline.js');
+    test('should handle export action with JSON format - creates default baseline if needed', async () => {
+      const { roosync_baseline } = await import('../baseline.js');
 
-      // L'export peut échouer si aucune baseline n'existe pour la machine
-      await expect(async () => {
-        await roosync_baseline({
-          action: 'export',
-          format: 'json'
-        });
-      }).rejects.toThrow(RooSyncServiceError);
+      // L'export crée une baseline par défaut si aucune n'existe
+      // Note: BaselineService.loadBaseline() crée automatiquement une baseline par défaut
+      const result = await roosync_baseline({
+        action: 'export',
+        format: 'json'
+      });
+
+      // Le résultat doit être défini et contenir les informations d'export
+      expect(result).toBeDefined();
+      expect(result.success).toBe(true);
+      expect(result.action).toBe('export');
     });
   });
 
