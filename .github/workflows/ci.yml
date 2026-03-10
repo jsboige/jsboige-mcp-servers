@@ -11,36 +11,36 @@ jobs:
     runs-on: ubuntu-22.04
     strategy:
       matrix:
-        server: [quickfiles-server, jupyter-mcp-server, jinavigator-server]
+        server: [jupyter-mcp-server, jinavigator-server]
 
     steps:
     - uses: actions/checkout@v3
-    
+
     - name: Set up Node.js
       uses: actions/setup-node@v3
       with:
         node-version: '20.18.0'
-    
+
     - name: Install dependencies
       run: |
         cd servers/${{ matrix.server }}
         npm install
-    
+
     - name: Build
       run: |
         cd servers/${{ matrix.server }}
         npm run build
-    
+
     - name: Run tests
       run: |
         cd servers/${{ matrix.server }}
         npm test
-    
+
     - name: Run coverage tests
       run: |
         cd servers/${{ matrix.server }}
         npm run test:coverage
-    
+
     - name: Upload coverage reports
       uses: codecov/codecov-action@v3
       with:
@@ -49,11 +49,36 @@ jobs:
         name: ${{ matrix.server }}-coverage
         fail_ci_if_error: false
 
+  roo-state-manager:
+    runs-on: ubuntu-22.04
+    steps:
+    - uses: actions/checkout@v3
+
+    - name: Set up Node.js
+      uses: actions/setup-node@v3
+      with:
+        node-version: '20.18.0'
+
+    - name: Install dependencies
+      run: |
+        cd servers/roo-state-manager
+        npm install
+
+    - name: Build
+      run: |
+        cd servers/roo-state-manager
+        npm run build
+
+    - name: Run tests
+      run: |
+        cd servers/roo-state-manager
+        npx vitest run
+
   lint:
     runs-on: ubuntu-22.04
     strategy:
       matrix:
-        server: [quickfiles-server, jupyter-mcp-server, jinavigator-server]
+        server: [jupyter-mcp-server, jinavigator-server]
 
     steps:
     - uses: actions/checkout@v3
@@ -78,8 +103,8 @@ jobs:
     - name: Check Jest config exists
       run: |
         cd servers/${{ matrix.server }}
-        if [ ! -f jest.config.js ]; then
-          echo "jest.config.js is missing for ${{ matrix.server }}"
+        if [ ! -f jest.config.js ] && [ ! -f jest.config.cjs ]; then
+          echo "jest.config.js or jest.config.cjs is missing for ${{ matrix.server }}"
           exit 1
         fi
     
@@ -138,7 +163,7 @@ jobs:
     
     - name: Check server README files
       run: |
-        for server in quickfiles-server jupyter-mcp-server jinavigator-server; do
+        for server in jupyter-mcp-server jinavigator-server roo-state-manager; do
           if [ ! -f servers/$server/README.md ]; then
             echo "README.md is missing for $server"
             exit 1
