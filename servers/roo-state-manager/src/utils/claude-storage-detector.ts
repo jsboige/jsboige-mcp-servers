@@ -31,8 +31,10 @@ export class ClaudeStorageDetector {
     private static readonly CLAUDE_CONFIG_DIR = '.claude';
 
     // Patterns pour détecter les noms de projets Claude
+    // Format: {drive-letter}--{project-name} (e.g., d--roo-extensions, D--roo-extensions--worktree)
+    // or {drive-letter}--{path-segments} (e.g., g--Mon-Drive-MyIA-Comptes-LivresAgit-s)
     private static readonly PROJECT_NAME_PATTERNS = [
-        /^c--.+$/,           // Format: c--project-name
+        /^[a-zA-Z]--.+$/,   // Format: {letter}--project-name (any drive letter)
         /^[a-f0-9-]{36}$/,   // UUID
     ];
 
