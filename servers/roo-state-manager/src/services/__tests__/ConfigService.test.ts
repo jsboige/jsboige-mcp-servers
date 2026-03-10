@@ -227,15 +227,16 @@ describe('ConfigService', () => {
       expect(sharedStatePath).toBe(customSharedPath);
     });
 
-    it('devrait utiliser le chemin par défaut si ROOSYNC_SHARED_PATH n\'est pas défini', () => {
+    it('devrait utiliser ROOSYNC_SHARED_PATH si défini (pas de fallback)', () => {
+      // Ce test nécessite que ROOSYNC_SHARED_PATH soit défini
+      // Sinon getSharedStatePath() lancera une erreur
+      vi.stubEnv('ROOSYNC_SHARED_PATH', join(testDir, 'shared-state'));
+
       const service = new ConfigService();
       const sharedStatePath = service.getSharedStatePath();
 
       expect(sharedStatePath).toBeDefined();
-      // Le chemin peut varier selon l'environnement, on vérifie juste qu'il est défini et valide
-      expect(typeof sharedStatePath).toBe('string');
-      expect(sharedStatePath.length).toBeGreaterThan(0);
-      // On ne vérifie pas le contenu exact du chemin car il peut varier selon l'environnement
+      expect(sharedStatePath).toBe(join(testDir, 'shared-state'));
     });
   });
 
@@ -323,17 +324,16 @@ describe('ConfigService', () => {
     });
   });
 
-  describe('findSharedStatePath - ROOSYNC_SHARED_PATH inexistant', () => {
-    it('utilise le chemin par défaut si ROOSYNC_SHARED_PATH pointe vers un répertoire inexistant', () => {
+  describe('findSharedStatePath - ROOSYNC_SHARED_PATH', () => {
+    it('retourne ROOSYNC_SHARED_PATH même si le chemin n\'existe pas', () => {
+      // getSharedStatePath() ne vérifie pas l'existence, elle retourne simplement la valeur
+      // La vérification de l'existence est faite ailleurs (loadRooSyncConfig)
       vi.stubEnv('ROOSYNC_SHARED_PATH', '/nonexistent/path/that/does/not/exist');
       const service = new ConfigService();
       const sharedStatePath = service.getSharedStatePath();
 
-      // Doit retourner un chemin valide (fallback)
-      expect(sharedStatePath).toBeDefined();
-      expect(typeof sharedStatePath).toBe('string');
-      // Ne doit pas être le chemin invalide
-      expect(sharedStatePath).not.toBe('/nonexistent/path/that/does/not/exist');
+      // Doit retourner le chemin indiqué (pas de fallback)
+      expect(sharedStatePath).toBe('/nonexistent/path/that/does/not/exist');
     });
   });
 

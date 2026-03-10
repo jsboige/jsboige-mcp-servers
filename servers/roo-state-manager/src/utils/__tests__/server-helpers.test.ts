@@ -93,18 +93,14 @@ describe('server-helpers', () => {
             expect(result).toBe('/custom/shared-state');
         });
 
-        test('should return fallback path when env var is not set', () => {
+        test('should throw error when env var is not set', () => {
             delete process.env.ROOSYNC_SHARED_PATH;
-            const result = getSharedStatePath();
-            // Should contain roo-config/shared-state in the path
-            expect(result).toContain('shared-state');
+            expect(() => getSharedStatePath()).toThrow('ROOSYNC_SHARED_PATH environment variable is not set');
         });
 
-        test('should return fallback path when env var is empty string', () => {
+        test('should throw error when env var is empty string', () => {
             process.env.ROOSYNC_SHARED_PATH = '';
-            const result = getSharedStatePath();
-            // Empty string is falsy, so should use fallback
-            expect(result).toContain('shared-state');
+            expect(() => getSharedStatePath()).toThrow('ROOSYNC_SHARED_PATH environment variable is not set');
         });
     });
 

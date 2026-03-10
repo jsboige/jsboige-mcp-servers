@@ -14,22 +14,22 @@ import * as toolExports from '../tools/index.js';
 import { GenericError, GenericErrorCode } from '../types/errors.js';
 
 /**
- /**
-  * Obtenir le chemin du répertoire shared-state RooSync
-  */
- export function getSharedStatePath(): string {
-     // Priorité : Variable d'environnement ROOSYNC_SHARED_PATH
-     if (process.env.ROOSYNC_SHARED_PATH) {
-         return process.env.ROOSYNC_SHARED_PATH;
-     }
-     
-     // CORRECTION Bug #322 : Fallback vers le chemin par défaut
-     // Le process.cwd() dans le contexte MCP est dans mcps/internal/servers/roo-state-manager
-     // Il faut remonter 4 niveaux pour atteindre le workspace racine
-     const workspaceRoot = path.join(process.cwd(), '..', '..', '..', '..');
-     const defaultPath = path.join(workspaceRoot, 'roo-config', 'shared-state');
-     return defaultPath;
- }
+ * Obtenir le chemin du répertoire shared-state RooSync
+ *
+ * @throws {Error} Si ROOSYNC_SHARED_PATH n'est pas défini
+ * @returns {string} Le chemin vers le répertoire shared-state
+ */
+export function getSharedStatePath(): string {
+    // ROOSYNC_SHARED_PATH est OBLIGATOIRE - pas de fallback pour éviter la pollution du dépôt
+    if (!process.env.ROOSYNC_SHARED_PATH) {
+        throw new Error(
+            'ROOSYNC_SHARED_PATH environment variable is not set. ' +
+            'This variable is required to prevent file pollution in the repository. ' +
+            'Please set ROOSYNC_SHARED_PATH to your Google Drive shared state path.'
+        );
+    }
+    return process.env.ROOSYNC_SHARED_PATH;
+}
 /**
  * Tronque les résultats trop longs
  */

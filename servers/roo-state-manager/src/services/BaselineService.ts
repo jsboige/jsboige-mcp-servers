@@ -34,6 +34,7 @@ import { BaselineLoader } from './baseline/BaselineLoader.js';
 import { DifferenceDetector } from './baseline/DifferenceDetector.js';
 import { ChangeApplier } from './baseline/ChangeApplier.js';
 import { ConfigValidator } from './baseline/ConfigValidator.js';
+import { getSharedStatePath } from '../utils/server-helpers.js';
 
 /**
  * Service BaselineService - Cœur de l'architecture baseline-driven
@@ -59,8 +60,8 @@ export class BaselineService {
     console.log('[DEBUG] BaselineService.constructor() appelé');
 
     this.config = configService.getBaselineServiceConfig();
-    // CORRECTION SDDD : Utiliser la variable d'environnement ROOSYNC_SHARED_PATH (prioritaire) ou SHARED_STATE_PATH (legacy)
-    const sharedStatePath = process.env.ROOSYNC_SHARED_PATH || process.env.SHARED_STATE_PATH || configService.getSharedStatePath();
+    // Utiliser getSharedStatePath() qui gère ROOSYNC_SHARED_PATH (et lève une erreur si non défini)
+    const sharedStatePath = getSharedStatePath();
     console.log('[DEBUG] sharedStatePath:', sharedStatePath);
 
     // PRIORITÉ ABSOLUE : Forcer l'utilisation du chemin mocké en environnement de test
@@ -273,7 +274,7 @@ export class BaselineService {
       autoSync: false,
       conflictStrategy: 'manual',
       logLevel: 'info',
-      sharedStatePath: this.config.baselinePath || process.env.ROOSYNC_SHARED_PATH || '',
+      sharedStatePath: this.config.baselinePath || getSharedStatePath(),
       machines: [
         {
           id: machineId,
@@ -509,7 +510,7 @@ export class BaselineService {
 
       // #571: Déterminer le chemin de la baseline selon le machineId
       // Utiliser baselines/{machineId}.json pour éviter les conflits GDrive
-      const sharedPath = process.env.ROOSYNC_SHARED_PATH || process.env.SHARED_STATE_PATH || '';
+      const sharedPath = getSharedStatePath();
       const baselineDir = join(sharedPath, 'baselines');
       const machineBaselinePath = join(baselineDir, `${newBaseline.machineId}.json`);
 
