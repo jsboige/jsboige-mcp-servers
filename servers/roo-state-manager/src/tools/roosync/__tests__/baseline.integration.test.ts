@@ -18,7 +18,7 @@ describe('roosync_baseline (integration)', () => {
   beforeAll(async () => {
     // Clear cache pour éviter les résultats cachés d'exécutions précédentes
     await globalCacheManager.invalidate({ all: true });
-  });
+  }, 30000); // 30s timeout for module import (Issue #609)
 
   // ============================================================
   // Tests de validation des entrées

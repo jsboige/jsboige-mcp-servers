@@ -19,7 +19,7 @@ describe('analyze_roosync_problems (integration)', () => {
   beforeAll(async () => {
     // Clear cache pour éviter les résultats cachés d'exécutions précédentes
     await globalCacheManager.invalidate({ all: true });
-  });
+  }, 30000); // 30s timeout for module import (Issue #609)
 
   // ============================================================
   // Tests de base - L'outil ne doit pas planter
@@ -39,7 +39,7 @@ describe('analyze_roosync_problems (integration)', () => {
       const text = result.content[0].text;
       expect(typeof text).toBe('string');
       expect(text.length).toBeGreaterThan(0);
-    });
+    }, 30000); // 30s timeout for slow module import (Issue #609)
 
     test('should return valid JSON report', async () => {
       const { analyzeRooSyncProblems } = await import('../analyze_problems.js');
