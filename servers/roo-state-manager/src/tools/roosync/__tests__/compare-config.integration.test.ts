@@ -543,17 +543,22 @@ describe('roosyncCompareConfig (integration)', () => {
       // Devrait ignorer les fichiers corrompus
     });
 
-    test('should handle missing shared state directory', async () => {
+    test('should handle missing shared state directory gracefully', async () => {
       // Supprimer tout le shared state
       rmSync(testSharedStatePath, { recursive: true, force: true });
 
-      // Without shared state, various errors can occur depending on environment:
-      // - "Aucune autre machine trouvée" (no machines discovered)
-      // - ENOENT on sync-config.ref.json (config file missing)
-      // - Other RooSync Service errors
-      await expect(roosyncCompareConfig({
+      // La fonction devrait gérer l'erreur gracieusement et retourner un résultat CRITICAL
+      // au lieu de lancer une exception (comportement cohérent avec autres outils roosync)
+      const result = await roosyncCompareConfig({
         granularity: 'mcp'
-      })).rejects.toThrow();
+      });
+
+      expect(result).toBeDefined();
+      // Soit on a une erreur CRITICAL (inventaires manquants), soit pas de machine cible
+      expect(
+        result.differences.some(d => d.severity === 'CRITICAL') ||
+        result.differences.some(d => d.description.includes('Aucune autre machine'))
+      ).toBe(true);
     });
   });
 
