@@ -66,6 +66,7 @@ import { registerListToolsHandler, registerCallToolHandler } from './tools/regis
 import { truncateResult, handleTouchMcpSettings } from './utils/server-helpers.js';
 import { initializeBackgroundServices, saveSkeletonToDisk } from './services/background-services.js';
 import { RooStorageDetector } from './utils/roo-storage-detector.js';
+import { ClaudeStorageDetector } from './utils/claude-storage-detector.js';
 import { promises as fs } from 'fs';
 import { createRequire } from 'module';
 import { handleBuildSkeletonCache } from './tools/index.js';
@@ -279,6 +280,51 @@ class RooStateManagerServer {
                     if (needsUpdate) break;
                 } catch (readdirError) {
                     logger.warn(`[FAILSAFE] Could not read directory ${location}:`, { error: readdirError });
+                }
+            }
+
+            // FIX #623: Also check for new Claude Code sessions
+            // Claude Code sessions are stored in ~/.claude/projects/ as .jsonl files
+            // and are loaded with a 'claude-' prefix on their taskId
+            if (!needsUpdate) {
+                try {
+                    const claudeLocations = await ClaudeStorageDetector.detectStorageLocations();
+                    const seenProjects = new Set<string>();
+
+                    for (const location of claudeLocations) {
+                        // Deduplicate by projectPath
+                        if (seenProjects.has(location.projectPath)) continue;
+                        seenProjects.add(location.projectPath);
+
+                        try {
+                            // List JSONL files in this project directory
+                            const files = (await fs.readdir(location.projectPath)).filter(f => f.endsWith('.jsonl'));
+
+                            for (const file of files) {
+                                try {
+                                    const taskId = `claude-${file.replace('.jsonl', '')}`;
+                                    const filePath = path.join(location.projectPath, file);
+                                    const fileStat = await fs.stat(filePath);
+                                    const ageMs = now - fileStat.mtime.getTime();
+
+                                    // If file is recent AND not in cache, trigger rebuild
+                                    if (ageMs < CACHE_VALIDITY_MS && !state.conversationCache.has(taskId)) {
+                                        logger.debug(`[FAILSAFE] New Claude session detected: ${taskId}, age: ${Math.round(ageMs/1000)}s`);
+                                        needsUpdate = true;
+                                        break;
+                                    }
+                                } catch (statError) {
+                                    // Skip individual file errors
+                                }
+                            }
+
+                            if (needsUpdate) break;
+                        } catch (readdirError) {
+                            logger.debug(`[FAILSAFE] Could not read Claude project ${location.projectPath}`);
+                        }
+                    }
+                } catch (claudeError) {
+                    logger.warn('[FAILSAFE] Error checking Claude sessions:', { error: claudeError });
                 }
             }
 
