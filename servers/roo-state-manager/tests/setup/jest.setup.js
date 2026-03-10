@@ -428,6 +428,14 @@ const mockRooSyncServiceInstance = {
   }),
   getConfig: vi.fn().mockReturnValue({}),
   resetInstance: vi.fn(),
+  // getHeartbeatService mock - returns HeartbeatService instance methods
+  getHeartbeatService: vi.fn(() => ({
+    getHeartbeatData: vi.fn().mockResolvedValue({}),
+    registerHeartbeat: vi.fn().mockResolvedValue(undefined),
+    updateConfig: vi.fn().mockResolvedValue(undefined),
+    startHeartbeatService: vi.fn().mockResolvedValue(undefined),
+    stopHeartbeatService: vi.fn().mockResolvedValue(undefined)
+  }))
 };
 
 // Named export for getRooSyncService
