@@ -38,6 +38,10 @@ vi.mock('../../../utils/server-helpers.js', () => ({
 // Import après les mocks
 import { roosyncHeartbeat } from '../heartbeat.js';
 import { HeartbeatResult } from '../heartbeat.js';
+
+// Fix #634: Integration tests need REAL RooSyncService, not the mock from jest.setup.js
+// Unmock the service so we get the real singleton with actual filesystem operations
+vi.unmock('../../../services/RooSyncService.js');
 import { RooSyncService } from '../../../services/RooSyncService.js';
 
 describe('roosyncHeartbeat (integration)', () => {

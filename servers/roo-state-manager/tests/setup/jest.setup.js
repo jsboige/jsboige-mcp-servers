@@ -77,7 +77,7 @@ global.setMockErrorMode = (enabled) => {
   console.error(`[MOCK SETUP] setMockErrorMode called with: ${enabled}`);
 };
 
-vi.mock('../src/services/synthesis/SynthesisOrchestratorService.js', () => {
+vi.mock('../../src/services/synthesis/SynthesisOrchestratorService.js', () => {
   const mockInstance = {
     synthesizeConversation: vi.fn().mockImplementation(async (taskId, options) => {
       // Toujours retourner une réponse de succès pour les tests
@@ -306,7 +306,7 @@ vi.mock('winston', () => ({
 }));
 
 // Mock pour les services de parsing et d'extraction
-vi.mock('../src/services/xml-parsing.service.js', () => ({
+vi.mock('../../src/services/xml-parsing.service.js', () => ({
   extractNewTaskInstructions: vi.fn(() => [
     {
       mode: 'task',
@@ -317,7 +317,7 @@ vi.mock('../src/services/xml-parsing.service.js', () => ({
 }));
 
 // Mock pour RooStorageDetector
-vi.mock('../src/utils/RooStorageDetector.js', () => ({
+vi.mock('../../src/utils/RooStorageDetector.js', () => ({
   default: {
     analyzeConversation: vi.fn(() => ({
       metadata: {
@@ -337,7 +337,7 @@ vi.mock('../src/utils/RooStorageDetector.js', () => ({
 }));
 
 // Mock pour HierarchyReconstructionEngine
-vi.mock('../src/services/HierarchyReconstructionEngine.js', () => ({
+vi.mock('../../src/services/HierarchyReconstructionEngine.js', () => ({
   default: vi.fn().mockImplementation(() => ({
     executePhase1: vi.fn().mockResolvedValue({
       processedCount: 5,
@@ -363,7 +363,7 @@ vi.mock('../src/services/HierarchyReconstructionEngine.js', () => ({
 }));
 
 // Mock pour TaskIndexer
-vi.mock('../src/services/task-indexer.js', () => ({
+vi.mock('../../src/services/task-indexer.js', () => ({
   default: vi.fn().mockImplementation(() => ({
     getCollectionStatus: vi.fn().mockResolvedValue({
       exists: true,
@@ -376,11 +376,18 @@ vi.mock('../src/services/task-indexer.js', () => ({
   }))
 }));
 
-// Mock pour PowerShellExecutor
-vi.mock('../src/services/PowerShellExecutor.js', () => ({
-  default: vi.fn().mockImplementation(() => ({
-    executeScript: vi.fn().mockRejectedValue(new Error('PowerShell execution failed: spawn pwsh.exe ENOENT')),
-  }))
+// Mock pour PowerShellExecutor - Fix #634: Add named export for TypeScript imports
+// The import is: import { PowerShellExecutor } from './PowerShellExecutor.js';
+// So we need to export both PowerShellExecutor (named) and default
+const mockPowerShellExecutorInstance = {
+  executeScript: vi.fn().mockRejectedValue(new Error('PowerShell execution failed: spawn pwsh.exe ENOENT')),
+};
+
+const MockPowerShellExecutor = vi.fn().mockImplementation(() => mockPowerShellExecutorInstance);
+
+vi.mock('../../src/services/PowerShellExecutor.js', () => ({
+  PowerShellExecutor: MockPowerShellExecutor,
+  default: MockPowerShellExecutor,
 }));
 
 // Mock pour RooSyncService
@@ -436,11 +443,21 @@ class MockRooSyncServiceError extends Error {
   }
 }
 
-vi.mock('../src/services/RooSyncService.js', () => ({
-  RooSyncService: vi.fn().mockImplementation(() => mockRooSyncServiceInstance),
+// Fix #634: Correct mock path from tests/setup/jest.setup.js to src/services/RooSyncService.js
+// Was '../src/services/RooSyncService.js' which resolves to tests/src/ (wrong, doesn't exist)
+// Now '../../src/services/RooSyncService.js' which resolves to src/ (correct)
+const mockRooSyncServiceClass = vi.fn().mockImplementation(() => mockRooSyncServiceInstance);
+// Add static methods for tests that call them
+// getInstance returns the singleton instance (used by most unit tests)
+mockRooSyncServiceClass.getInstance = vi.fn((cacheOptions, config) => mockRooSyncServiceInstance);
+// resetInstance is called in beforeEach to reset the singleton
+mockRooSyncServiceClass.resetInstance = vi.fn();
+
+vi.mock('../../src/services/RooSyncService.js', () => ({
+  RooSyncService: mockRooSyncServiceClass,
   getRooSyncService,
   RooSyncServiceError: MockRooSyncServiceError,
-  default: vi.fn().mockImplementation(() => mockRooSyncServiceInstance),
+  default: mockRooSyncServiceClass,
 }));
 
 // Mock pour BaselineService
@@ -457,13 +474,13 @@ const mockBaselineServiceInstance = {
   }),
 };
 
-vi.mock('../src/services/BaselineService.js', () => ({
+vi.mock('../../src/services/BaselineService.js', () => ({
   BaselineService: vi.fn().mockImplementation(() => mockBaselineServiceInstance),
   default: vi.fn().mockImplementation(() => mockBaselineServiceInstance),
 }));
 
 // Mock pour ConfigService
-vi.mock('../src/services/ConfigService.js', () => ({
+vi.mock('../../src/services/ConfigService.js', () => ({
   ConfigService: vi.fn().mockImplementation(() => ({
     loadConfig: vi.fn().mockResolvedValue({}),
     saveConfig: vi.fn().mockResolvedValue(undefined),
@@ -472,7 +489,7 @@ vi.mock('../src/services/ConfigService.js', () => ({
 }));
 
 // Mock pour InventoryCollector
-vi.mock('../src/services/InventoryCollector.js', () => ({
+vi.mock('../../src/services/InventoryCollector.js', () => ({
   InventoryCollector: vi.fn().mockImplementation(() => ({
     collect: vi.fn().mockResolvedValue({
       machineId: 'test-machine',
@@ -487,7 +504,7 @@ vi.mock('../src/services/InventoryCollector.js', () => ({
 }));
 
 // Mock pour DiffDetector
-vi.mock('../src/services/DiffDetector.js', () => ({
+vi.mock('../../src/services/DiffDetector.js', () => ({
   DiffDetector: vi.fn().mockImplementation(() => ({
     detectDiffs: vi.fn().mockResolvedValue([]),
     compareConfigs: vi.fn().mockResolvedValue({}),
