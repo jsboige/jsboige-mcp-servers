@@ -41,6 +41,13 @@ import { roosyncDiagnose } from '../diagnose.js';
 // Fix #634: Integration tests need REAL RooSyncService, not the mock from jest.setup.js
 // Unmock the service so we get the real singleton with actual filesystem operations
 vi.unmock('../../../services/RooSyncService.js');
+// Also unmock InventoryCollector - the jest.setup.js mock has wrong method names (collect vs collectInventory)
+// and is missing clearCache method needed by clearCache() in RooSyncService
+vi.unmock('../../../services/InventoryCollector.js');
+// Also unmock BaselineService - jest.setup.js mock is missing loadBaseline method
+vi.unmock('../../../services/BaselineService.js');
+// Also unmock ConfigService - BaselineService depends on it and jest.setup.js mock is incomplete
+vi.unmock('../../../services/ConfigService.js');
 import { RooSyncService } from '../../../services/RooSyncService.js';
 
 describe('roosyncDiagnose (integration)', () => {
