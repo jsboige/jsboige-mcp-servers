@@ -4,10 +4,6 @@ export * from './rebuild-and-restart.js';
 export { getMcpBestPractices } from './get_mcp_best_practices.js';
 export * from './manage-mcp-settings.js';
 export { rebuildTaskIndexFixed } from './manage-mcp-settings.js';
-// export * from './vscode-global-state.js'; // Problème runtime - désactivé temporairement
-// export { examineRooGlobalStateTool } from './examine-roo-global-state.js'; // Depends on vscode-global-state
-// export { repairTaskHistoryTool } from './repair-task-history.js'; // Depends on vscode-global-state
-// export * from './normalize-workspace-paths.js'; // Depends on vscode-global-state
 export { viewConversationTree } from './view-conversation-tree.js';
 
 // Conversation tools - Batch 2 refactoring
