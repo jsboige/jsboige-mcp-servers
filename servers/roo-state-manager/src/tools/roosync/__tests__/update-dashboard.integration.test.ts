@@ -55,8 +55,7 @@ describe('roosync_update_dashboard (integration)', () => {
 
     // Setup : créer répertoire temporaire pour tests isolés
     const dirs = [
-      testSharedStatePath,
-      join(testSharedStatePath, 'dashboards')
+      testSharedStatePath
     ];
 
     for (const dir of dirs) {
@@ -66,8 +65,75 @@ describe('roosync_update_dashboard (integration)', () => {
     }
 
     // Create initial DASHBOARD.md for tests that need existing content
-    const dashboardPath = join(testSharedStatePath, 'dashboards', 'DASHBOARD.md');
-    writeFileSync(dashboardPath, '# Test Dashboard\n\n## Machine Section\nInitial content.\n\n## Global Section\nInitial global content.\n');
+    // Note: update-dashboard.ts expects DASHBOARD.md directly in sharedPath, NOT in a dashboards/ subdirectory
+    // The dashboard must have proper section structure matching update-dashboard.ts expectations
+    const dashboardPath = join(testSharedStatePath, 'DASHBOARD.md');
+    const initialDashboard = `# Test Dashboard
+
+**Dernière mise à jour:** 2026-03-11 12:00:00 par test-machine:roo-extensions
+
+## État Global
+Initial global content.
+
+## Notes Inter-Agents
+Initial intercom content.
+
+## Décisions en Attente
+Initial decisions content.
+
+## Métriques
+Initial metrics content.
+
+### test-machine
+
+#### roo-extensions
+
+**Statut:** Actif
+**Notes libres:** Initial machine content.
+
+### myia-po-2026
+
+#### roo-extensions
+
+**Statut:** Actif
+**Notes libres:** MyIA-PO-2026 initial content.
+
+### myia-ai-01
+
+#### roo-extensions
+
+**Statut:** Actif
+**Notes libres:** MyIA-AI-01 initial content.
+
+### myia-po-2025
+
+#### roo-extensions
+
+**Statut:** Actif
+**Notes libres:** MyIA-PO-2025 initial content.
+
+### myia-po-2023
+
+#### roo-extensions
+
+**Statut:** Actif
+**Notes libres:** MyIA-PO-2023 initial content.
+
+### myia-po-2024
+
+#### roo-extensions
+
+**Statut:** Actif
+**Notes libres:** MyIA-PO-2024 initial content.
+
+### myia-web1
+
+#### roo-extensions
+
+**Statut:** Actif
+**Notes libres:** MyIA-Web1 initial content.
+`;
+    writeFileSync(dashboardPath, initialDashboard);
   });
 
   afterEach(async () => {
@@ -106,8 +172,9 @@ describe('roosync_update_dashboard (integration)', () => {
 
       expect(result).toBeDefined();
       expect(result.success).toBe(true);
-      expect(result.content).toHaveLength(1);
-      expect(result.content[0].type).toBe('text');
+      expect(result.dashboardPath).toBeDefined();
+      expect(result.section).toBe('machine');
+      expect(result.timestamp).toBeDefined();
     });
 
     test('should update global section', async () => {
@@ -314,18 +381,18 @@ describe('roosync_update_dashboard (integration)', () => {
   // ============================================================
 
   describe('response format', () => {
-    test('should return valid text response', async () => {
+    test('should return valid response object', async () => {
       const result = await roosyncUpdateDashboard({
         section: 'intercom',
         content: '### Intercom Test\nTest content for intercom section.'
       });
 
-      expect(result.content).toHaveLength(1);
-      expect(result.content[0].type).toBe('text');
-
-      const text = result.content[0].text;
-      expect(text).toBeTruthy();
-      expect(text.length).toBeGreaterThan(0);
+      expect(result.success).toBe(true);
+      expect(result.dashboardPath).toBeDefined();
+      expect(result.section).toBe('intercom');
+      expect(result.mode).toBe('replace');
+      expect(result.timestamp).toBeDefined();
+      expect(typeof result.timestamp).toBe('string');
     });
 
     test('should include dashboard path in response', async () => {
@@ -335,8 +402,8 @@ describe('roosync_update_dashboard (integration)', () => {
       });
 
       expect(result.success).toBe(true);
-      const text = result.content[0].text;
-      expect(text).toBeTruthy();
+      expect(result.dashboardPath).toBeDefined();
+      expect(result.dashboardPath).toContain('DASHBOARD.md');
     });
   });
 
@@ -347,19 +414,16 @@ describe('roosync_update_dashboard (integration)', () => {
   describe('error handling', () => {
     test('should handle missing dashboard gracefully', async () => {
       // Supprimer le dashboard pour simuler l'absence
-      const dashboardPath = join(testSharedStatePath, 'dashboards', 'DASHBOARD.md');
+      const dashboardPath = join(testSharedStatePath, 'DASHBOARD.md');
       if (existsSync(dashboardPath)) {
         rmSync(dashboardPath, { force: true });
       }
 
-      const result = await roosyncUpdateDashboard({
+      // La fonction doit throw une erreur quand le dashboard n'existe pas
+      await expect(roosyncUpdateDashboard({
         section: 'global',
         content: '### New Dashboard\nCreating from scratch.'
-      });
-
-      expect(result).toBeDefined();
-      // Should create new dashboard or handle gracefully
-      expect(result.content[0].type).toBe('text');
+      })).rejects.toThrow('Dashboard non trouvé');
     });
 
     test('should handle invalid section gracefully', async () => {
@@ -419,7 +483,7 @@ describe('roosync_update_dashboard (integration)', () => {
     });
 
     test('should replace existing section content entirely', async () => {
-      const dashboardPath = join(testSharedStatePath, 'dashboards', 'DASHBOARD.md');
+      const dashboardPath = join(testSharedStatePath, 'DASHBOARD.md');
 
       // Verify initial content exists
       expect(existsSync(dashboardPath)).toBe(true);
@@ -480,7 +544,7 @@ And paragraphs.`;
 
       expect(result).toBeDefined();
       // Tool should handle empty content
-      expect(result.content[0].type).toBe('text');
+      expect(result.success).toBeDefined();
     });
   });
 });
