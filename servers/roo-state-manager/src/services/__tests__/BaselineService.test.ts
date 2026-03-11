@@ -289,7 +289,8 @@ describe('BaselineService', () => {
   describe('constructor', () => {
     it('devrait initialiser le service avec les dependances fournies', () => {
       expect(service).toBeDefined();
-      expect(configService.getBaselineServiceConfig).toHaveBeenCalledOnce();
+      // Note: Constructor no longer calls getBaselineServiceConfig() - uses default config
+      // See BaselineService.ts line 62-63
     });
 
     it('devrait initialiser l\'etat par defaut', () => {
