@@ -6,80 +6,65 @@
  * @module roosync/export-baseline.test
  */
 
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect } from 'vitest';
 
-// Désactiver le mock global de fs
-vi.unmock('fs');
+// Import direct - les schemas Zod ne nécessitent pas de mocks spéciaux
+import {
+  roosync_export_baseline,
+  ExportBaselineArgsSchema,
+  ExportBaselineResultSchema
+} from '../../../../src/tools/roosync/export-baseline.js';
 
 describe('roosync_export_baseline - Interface', () => {
-  beforeEach(() => {
-    vi.resetModules();
+  it('devrait exporter roosync_export_baseline', () => {
+    expect(roosync_export_baseline).toBeDefined();
+    expect(typeof roosync_export_baseline).toBe('function');
   });
 
-  it('devrait exporter roosync_export_baseline', async () => {
-    const module = await import('../../../../src/tools/roosync/export-baseline.js');
-
-    expect(module.roosync_export_baseline).toBeDefined();
-    expect(typeof module.roosync_export_baseline).toBe('function');
+  it('devrait exporter ExportBaselineArgsSchema', () => {
+    expect(ExportBaselineArgsSchema).toBeDefined();
   });
 
-  it('devrait exporter ExportBaselineArgsSchema', async () => {
-    const module = await import('../../../../src/tools/roosync/export-baseline.js');
-
-    expect(module.ExportBaselineArgsSchema).toBeDefined();
-  });
-
-  it('devrait exporter ExportBaselineResultSchema', async () => {
-    const module = await import('../../../../src/tools/roosync/export-baseline.js');
-
-    expect(module.ExportBaselineResultSchema).toBeDefined();
+  it('devrait exporter ExportBaselineResultSchema', () => {
+    expect(ExportBaselineResultSchema).toBeDefined();
   });
 });
 
 describe('roosync_export_baseline - Schema Validation', () => {
-  beforeEach(() => {
-    vi.resetModules();
-  });
-
-  it('devrait accepter format json', async () => {
-    const module = await import('../../../../src/tools/roosync/export-baseline.js');
-    const result = module.ExportBaselineArgsSchema.safeParse({
+  it('devrait accepter format json', () => {
+    const result = ExportBaselineArgsSchema.safeParse({
       format: 'json'
     });
 
     expect(result.success).toBe(true);
   });
 
-  it('devrait accepter format yaml', async () => {
-    const module = await import('../../../../src/tools/roosync/export-baseline.js');
-    const result = module.ExportBaselineArgsSchema.safeParse({
+  it('devrait accepter format yaml', () => {
+    const result = ExportBaselineArgsSchema.safeParse({
       format: 'yaml'
     });
 
     expect(result.success).toBe(true);
   });
 
-  it('devrait accepter format csv', async () => {
-    const module = await import('../../../../src/tools/roosync/export-baseline.js');
-    const result = module.ExportBaselineArgsSchema.safeParse({
+  it('devrait accepter format csv', () => {
+    const result = ExportBaselineArgsSchema.safeParse({
       format: 'csv'
     });
 
     expect(result.success).toBe(true);
   });
 
-  it('devrait rejeter un format invalide', async () => {
-    const module = await import('../../../../src/tools/roosync/export-baseline.js');
-    const result = module.ExportBaselineArgsSchema.safeParse({
+  it('devrait rejeter un format invalide', () => {
+    const result = ExportBaselineArgsSchema.safeParse({
       format: 'xml'
     });
 
     expect(result.success).toBe(false);
   });
 
-  it('devrait accepter tous les paramètres optionnels', async () => {
-    const module = await import('../../../../src/tools/roosync/export-baseline.js');
-    const result = module.ExportBaselineArgsSchema.safeParse({
+  it('devrait accepter tous les paramètres optionnels', () => {
+    const result = ExportBaselineArgsSchema.safeParse({
       format: 'json',
       outputPath: '/tmp/export.json',
       machineId: 'myia-ai-01',
@@ -91,9 +76,8 @@ describe('roosync_export_baseline - Schema Validation', () => {
     expect(result.success).toBe(true);
   });
 
-  it('devrait avoir des valeurs par défaut', async () => {
-    const module = await import('../../../../src/tools/roosync/export-baseline.js');
-    const result = module.ExportBaselineArgsSchema.safeParse({
+  it('devrait avoir des valeurs par défaut', () => {
+    const result = ExportBaselineArgsSchema.safeParse({
       format: 'json'
     });
 
@@ -107,9 +91,8 @@ describe('roosync_export_baseline - Schema Validation', () => {
 });
 
 describe('roosync_export_baseline - Result Schema', () => {
-  it('devrait valider une structure de résultat complète', async () => {
-    const module = await import('../../../../src/tools/roosync/export-baseline.js');
-    const result = module.ExportBaselineResultSchema.safeParse({
+  it('devrait valider une structure de résultat complète', () => {
+    const result = ExportBaselineResultSchema.safeParse({
       success: true,
       machineId: 'myia-ai-01',
       version: '2.1.0',

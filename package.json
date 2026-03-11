@@ -8,12 +8,11 @@
     "install-all": "node scripts/install-all.js",
     "setup-config": "node scripts/setup-config.js",
     "test": "npm run test:all",
-    "test:all": "npm run test:quickfiles && npm run test:jupyter && npm run test:jinavigator",
-    "test:quickfiles": "cd servers/quickfiles-server && npm test",
+    "test:all": "npm run test:jupyter && npm run test:jinavigator && npm run test:roo",
     "test:jupyter": "cd servers/jupyter-papermill-mcp-server && python -m pytest",
     "test:jinavigator": "cd servers/jinavigator-server && npm test",
-    "test:coverage": "npm run test:quickfiles:coverage && npm run test:jupyter:coverage && npm run test:jinavigator:coverage",
-    "test:quickfiles:coverage": "cd servers/quickfiles-server && npm run test:coverage",
+    "test:roo": "cd servers/roo-state-manager && npx vitest run",
+    "test:coverage": "npm run test:jupyter:coverage && npm run test:jinavigator:coverage",
     "test:jupyter:coverage": "cd servers/jupyter-papermill-mcp-server && python -m pytest --cov=papermill_mcp",
     "test:jinavigator:coverage": "cd servers/jinavigator-server && npm run test:coverage",
     "commit": "node scripts/commit-and-push.js"
@@ -27,7 +26,8 @@
     "model-context-protocol",
     "llm",
     "ai",
-    "tools"
+    "tools",
+    "roosync"
   ],
   "author": "jsboige",
   "license": "MIT",

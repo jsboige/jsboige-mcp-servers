@@ -303,47 +303,109 @@ vi.mock('../../src/services/HierarchyReconstructionEngine.js', () => ({
 }));
 
 // Mock pour TaskIndexer - Fix #634: Add named export for TypeScript imports
-// The import is: import TaskIndexer from './task-indexer.js';
-// So we need to export both TaskIndexer (named) and default
-const MockTaskIndexer = vi.fn().mockImplementation(() => ({
-  getCollectionStatus: vi.fn().mockResolvedValue({
-    exists: true,
-    pointsCount: 100,
-    vectorSize: 1536
-  }),
-  resetCollection: vi.fn().mockResolvedValue(undefined),
-  safeQdrantUpsert: vi.fn().mockResolvedValue(undefined),
-  upsertPointsBatch: vi.fn().mockResolvedValue(undefined),
-  validateVector: vi.fn().mockResolvedValue(true),
-}));
+// The import is: import { TaskIndexer, indexTask } from './task-indexer.js';
+// So we need to export both TaskIndexer (named) and indexTask (standalone function)
 
-vi.mock('../../src/services/task-indexer.js', () => ({
-  TaskIndexer: MockTaskIndexer,
-  default: MockTaskIndexer,
-}));
+const { mockTaskIndexerModule } = vi.hoisted(() => {
+  // Create a mock for the standalone indexTask function
+  const mockIndexTask = vi.fn().mockRejectedValue(new Error('Task not found in any storage location'));
 
-// Mock pour PowerShellExecutor - Fix #634: Add named export for TypeScript imports
-// The import is: import { PowerShellExecutor } from './PowerShellExecutor.js';
-// So we need to export both PowerShellExecutor (named) and default
+  // Create a factory function that returns a fresh instance each time
+  // This prevents clearAllMocks/reset from breaking the mock
+  const createMockInstance = () => ({
+    indexTask: vi.fn().mockRejectedValue(new Error('Task not found in any storage location')),
+    getCollectionStatus: vi.fn().mockResolvedValue({
+      exists: true,
+      count: 100
+    }),
+    resetCollection: vi.fn().mockResolvedValue(undefined),
+    safeQdrantUpsert: vi.fn().mockResolvedValue(undefined),
+    upsertPointsBatch: vi.fn().mockResolvedValue(undefined),
+    startHealthCheck: vi.fn(),
+    stopHealthCheck: vi.fn(),
+    updateSkeletonIndexTimestamp: vi.fn().mockResolvedValue(undefined),
+    countPointsByHostOs: vi.fn().mockResolvedValue(0),
+  });
+
+  // Create the mock TaskIndexer class
+  const MockTaskIndexer = class MockTaskIndexer {
+    constructor() {
+      Object.assign(this, createMockInstance());
+    }
+  };
+
+  return {
+    mockTaskIndexerModule: {
+      TaskIndexer: MockTaskIndexer,
+      indexTask: mockIndexTask,
+    }
+  };
+});
+
+vi.mock('../../src/services/task-indexer.js', () => mockTaskIndexerModule);
+
+// Mock pour PowerShellExecutor - Fix #634: Add named exports for TypeScript imports
+// Exports: PowerShellExecutor (class), getDefaultExecutor (function), resetDefaultExecutor (function)
 const mockPowerShellExecutorInstance = {
   executeScript: vi.fn().mockRejectedValue(new Error('PowerShell execution failed: spawn pwsh.exe ENOENT')),
 };
 
 const MockPowerShellExecutor = vi.fn().mockImplementation(() => mockPowerShellExecutorInstance);
 
-// Static methods for PowerShellExecutor
-MockPowerShellExecutor.setMockPowerShellPath = vi.fn();
-MockPowerShellExecutor.parseJsonOutput = vi.fn().mockReturnValue({ success: true, result: {} });
-MockPowerShellExecutor.isPowerShellAvailable = vi.fn().mockReturnValue(true);
-MockPowerShellExecutor.getPowerShellVersion = vi.fn().mockReturnValue('7.4.0');
-MockPowerShellExecutor.getSystemPowerShellPath = vi.fn().mockReturnValue('C:\\Windows\\System32\\pwsh.exe');
-MockPowerShellExecutor.getDefaultExecutor = vi.fn().mockReturnValue(mockPowerShellExecutorInstance);
+// Add static methods and state for testing
+MockPowerShellExecutor.mockPowerShellPath = null;
+MockPowerShellExecutor.resolvedPowerShellPath = null;
+
+MockPowerShellExecutor.setMockPowerShellPath = function(path) {
+  this.mockPowerShellPath = path;
+  this.resolvedPowerShellPath = null;
+};
+
+MockPowerShellExecutor.getSystemPowerShellPath = function() {
+  if (this.mockPowerShellPath) {
+    return this.mockPowerShellPath;
+  }
+  if (this.resolvedPowerShellPath) {
+    return this.resolvedPowerShellPath;
+  }
+  return 'pwsh.exe';
+};
+
+MockPowerShellExecutor.parseJsonOutput = function(stdout) {
+  const openBrace = stdout.indexOf('{');
+  const closeBrace = stdout.lastIndexOf('}');
+  if (openBrace === -1 || closeBrace === -1 || openBrace > closeBrace) {
+    const error = new Error('No valid JSON object found in PowerShell output');
+    error.name = 'PowerShellExecutorError';
+    throw error;
+  }
+  const jsonStr = stdout.substring(openBrace, closeBrace + 1);
+  try {
+    return JSON.parse(jsonStr);
+  } catch (e) {
+    const error = new Error('Failed to parse PowerShell JSON output: ' + e.message);
+    error.name = 'PowerShellExecutorError';
+    throw error;
+  }
+};
+
+// Mock functions for named exports
+let defaultExecutorInstance = null;
+const mockGetDefaultExecutor = vi.fn(() => {
+  if (!defaultExecutorInstance) {
+    defaultExecutorInstance = mockPowerShellExecutorInstance;
+  }
+  return defaultExecutorInstance;
+});
+const mockResetDefaultExecutor = vi.fn(() => {
+  defaultExecutorInstance = null;
+});
 
 vi.mock('../../src/services/PowerShellExecutor.js', () => ({
   PowerShellExecutor: MockPowerShellExecutor,
+  getDefaultExecutor: mockGetDefaultExecutor,
+  resetDefaultExecutor: mockResetDefaultExecutor,
   default: MockPowerShellExecutor,
-  resetDefaultExecutor: vi.fn(),
-  getDefaultExecutor: MockPowerShellExecutor.getDefaultExecutor,
 }));
 
 // Mock pour RooSyncService
@@ -401,6 +463,30 @@ const mockRooSyncServiceInstance = {
     lastUpdate: new Date().toISOString()
   }),
   clearCache: vi.fn(),
+  // getDecision mock - returns decision by ID or null
+  getDecision: vi.fn().mockResolvedValue(null),
+  // getConfigService mock - returns ConfigService instance
+  getConfigService: vi.fn().mockReturnValue({
+    loadConfig: vi.fn().mockResolvedValue({}),
+    saveConfig: vi.fn().mockResolvedValue(undefined),
+    getConfig: vi.fn().mockReturnValue({}),
+    getSharedStatePath: vi.fn().mockReturnValue(process.env.ROOSYNC_SHARED_PATH || process.env.SHARED_STATE_PATH || '/mock/shared-state'),
+    getBaselineServiceConfig: vi.fn().mockReturnValue({
+      baselinePath: '/mock/baseline',
+      roadmapPath: '/mock/roadmap.md',
+      cacheEnabled: false,
+      cacheTTL: 300,
+      logLevel: 'INFO'
+    }),
+  }),
+  // loadDecisions mock - returns empty array of decisions
+  loadDecisions: vi.fn().mockResolvedValue([]),
+  // restoreFromRollbackPoint mock - simulates rollback restoration
+  restoreFromRollbackPoint: vi.fn().mockResolvedValue({
+    success: true,
+    restoredFiles: [],
+    rollbackDirectory: '/mock/rollback'
+  }),
   // getHeartbeatService mock - returns HeartbeatService instance methods
   getHeartbeatService: vi.fn(() => ({
     getHeartbeatData: vi.fn().mockResolvedValue({}),
@@ -524,28 +610,40 @@ vi.mock('../../src/services/RooSyncService.js', () => ({
 // BaselineService tests need the real implementation with locally-mocked dependencies.
 // Tests that use BaselineService as a dependency should mock it locally in their test files.
 
-// NOTE: ConfigService mock removed from jest.setup.js (ROOT CAUSE FIX #636)
-// ConfigService tests need the real implementation with all its methods.
-// The global mock only provided 3 methods (loadConfig, saveConfig, getConfig) but
-// the real ConfigService has many more methods, causing "not a function" errors.
-// Tests that use ConfigService as a dependency should mock it locally in their test files.
+// Mock pour ConfigService
+// Add methods to prototype for vi.spyOn compatibility and real class usage
+const mockBaselineServiceConfig = {
+  baselinePath: '/mock/baseline',
+  roadmapPath: '/mock/roadmap.md',
+  cacheEnabled: false,
+  cacheTTL: 300,
+  logLevel: 'INFO'
+};
 
-// Mock pour InventoryCollector
-vi.mock('../../src/services/InventoryCollector.js', () => ({
-  InventoryCollector: vi.fn().mockImplementation(() => ({
-    collect: vi.fn().mockResolvedValue({
-      machineId: 'test-machine',
-      hostname: 'test-host',
-      platform: 'win32',
-      arch: 'x64',
-      cpus: [{ model: 'test-cpu' }],
-      totalMemory: 8000000000,
-      freeMemory: 4000000000,
-    }),
-    clearCache: vi.fn(),
-    getCacheStats: vi.fn().mockReturnValue({ size: 0, entries: [] }),
-  })),
+const mockConfigServiceInstance = {
+  loadConfig: vi.fn().mockResolvedValue({}),
+  saveConfig: vi.fn().mockResolvedValue(undefined),
+  getConfig: vi.fn().mockReturnValue({}),
+  getSharedStatePath: vi.fn().mockReturnValue(process.env.ROOSYNC_SHARED_PATH || process.env.SHARED_STATE_PATH || '/mock/shared-state'),
+  getBaselineServiceConfig: vi.fn().mockReturnValue(mockBaselineServiceConfig),
+};
+
+const MockConfigService = vi.fn().mockImplementation(() => mockConfigServiceInstance);
+
+// Add methods to prototype for vi.spyOn - return same object each time
+MockConfigService.prototype.loadConfig = mockConfigServiceInstance.loadConfig;
+MockConfigService.prototype.saveConfig = mockConfigServiceInstance.saveConfig;
+MockConfigService.prototype.getConfig = mockConfigServiceInstance.getConfig;
+MockConfigService.prototype.getSharedStatePath = mockConfigServiceInstance.getSharedStatePath;
+MockConfigService.prototype.getBaselineServiceConfig = mockConfigServiceInstance.getBaselineServiceConfig;
+
+vi.mock('../../src/services/ConfigService.js', () => ({
+  ConfigService: MockConfigService,
 }));
+
+// NOTE: InventoryCollector mock removed - tests need the real implementation
+// Unit tests mock dependencies locally with vi.hoisted() pattern
+// See tests/unit/services/InventoryCollector.test.ts
 
 // DiffDetector: Unit tests need the real implementation, not a mock
 // Tests that depend on DiffDetector should mock it locally in their test files

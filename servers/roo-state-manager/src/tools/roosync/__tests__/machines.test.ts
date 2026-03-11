@@ -100,7 +100,9 @@ const mockExecutionContext: any = {
 };
 
 // Import après les mocks
+// Fix #636 timeout: Use static import instead of dynamic imports
 import { machinesTool, machinesToolMetadata } from '../machines.js';
+import { getRooSyncService } from '../../../services/RooSyncService.js';
 
 describe('machinesTool', () => {
   beforeEach(() => {
@@ -142,7 +144,6 @@ describe('machinesTool', () => {
 
     test('should handle errors gracefully', async () => {
       // Mock pour simuler une erreur
-      const { getRooSyncService } = await import('../../../services/RooSyncService.js');
       vi.mocked(getRooSyncService).mockImplementationOnce(() => {
         throw new Error('Heartbeat service error');
       });

@@ -17,6 +17,9 @@ vi.mock('child_process', () => {
   };
 });
 
+// Unmock PowerShellExecutor to use real implementation with locally mocked dependencies
+vi.unmock('../../../src/services/PowerShellExecutor.js');
+
 import { spawn } from 'child_process';
 
 describe('PowerShellExecutor', () => {

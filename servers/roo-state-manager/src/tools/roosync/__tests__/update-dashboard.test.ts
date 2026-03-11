@@ -31,6 +31,9 @@ vi.mock('../../../utils/logger.js', () => ({
 	Logger: class {}
 }));
 
+// Fix #636 timeout: Use static import instead of dynamic imports
+import { roosyncUpdateDashboard } from '../update-dashboard.js';
+
 describe('roosync_update_dashboard', () => {
 	beforeEach(() => {
 		vi.clearAllMocks();
@@ -88,7 +91,6 @@ _Aucune décision en attente._
 
 	describe('parameter validation', () => {
 		test('rejects missing section parameter', async () => {
-			const { roosyncUpdateDashboard } = await import('../update-dashboard.js');
 
 			await expect(roosyncUpdateDashboard({
 				// @ts-expect-error - Testing missing required parameter
@@ -98,7 +100,6 @@ _Aucune décision en attente._
 		});
 
 		test('rejects invalid section value', async () => {
-			const { roosyncUpdateDashboard } = await import('../update-dashboard.js');
 
 			await expect(roosyncUpdateDashboard({
 				// @ts-expect-error - Testing invalid enum value
@@ -108,7 +109,6 @@ _Aucune décision en attente._
 		});
 
 		test('rejects missing content parameter', async () => {
-			const { roosyncUpdateDashboard } = await import('../update-dashboard.js');
 
 			await expect(roosyncUpdateDashboard({
 				// @ts-expect-error - Testing missing required parameter
@@ -118,7 +118,6 @@ _Aucune décision en attente._
 		});
 
 		test('accepts valid parameters with default values', async () => {
-			const { roosyncUpdateDashboard } = await import('../update-dashboard.js');
 
 			const result = await roosyncUpdateDashboard({
 				section: 'global',
@@ -133,7 +132,6 @@ _Aucune décision en attente._
 
 	describe('section types', () => {
 		test('updates global section', async () => {
-			const { roosyncUpdateDashboard } = await import('../update-dashboard.js');
 
 			const result = await roosyncUpdateDashboard({
 				section: 'global',
@@ -147,7 +145,6 @@ _Aucune décision en attente._
 		});
 
 		test('updates machine section', async () => {
-			const { roosyncUpdateDashboard } = await import('../update-dashboard.js');
 
 			const result = await roosyncUpdateDashboard({
 				section: 'machine',
@@ -163,7 +160,6 @@ _Aucune décision en attente._
 		});
 
 		test('updates intercom section', async () => {
-			const { roosyncUpdateDashboard } = await import('../update-dashboard.js');
 
 			const result = await roosyncUpdateDashboard({
 				section: 'intercom',
@@ -176,7 +172,6 @@ _Aucune décision en attente._
 		});
 
 		test('updates decisions section', async () => {
-			const { roosyncUpdateDashboard } = await import('../update-dashboard.js');
 
 			const result = await roosyncUpdateDashboard({
 				section: 'decisions',
@@ -189,7 +184,6 @@ _Aucune décision en attente._
 		});
 
 		test('updates metrics section', async () => {
-			const { roosyncUpdateDashboard } = await import('../update-dashboard.js');
 
 			const result = await roosyncUpdateDashboard({
 				section: 'metrics',
@@ -204,7 +198,6 @@ _Aucune décision en attente._
 
 	describe('update modes', () => {
 		test('replace mode replaces content', async () => {
-			const { roosyncUpdateDashboard } = await import('../update-dashboard.js');
 
 			const result = await roosyncUpdateDashboard({
 				section: 'global',
@@ -218,7 +211,6 @@ _Aucune décision en attente._
 		});
 
 		test('append mode adds content to end', async () => {
-			const { roosyncUpdateDashboard } = await import('../update-dashboard.js');
 
 			const result = await roosyncUpdateDashboard({
 				section: 'intercom',
@@ -231,7 +223,6 @@ _Aucune décision en attente._
 		});
 
 		test('prepend mode adds content to beginning', async () => {
-			const { roosyncUpdateDashboard } = await import('../update-dashboard.js');
 
 			const result = await roosyncUpdateDashboard({
 				section: 'intercom',
@@ -248,8 +239,6 @@ _Aucune décision en attente._
 		test('throws error when DASHBOARD.md does not exist', async () => {
 			mockAccess.mockRejectedValue(new Error('File not found'));
 
-			const { roosyncUpdateDashboard } = await import('../update-dashboard.js');
-
 			await expect(roosyncUpdateDashboard({
 				section: 'global',
 				content: 'Test'
@@ -258,8 +247,6 @@ _Aucune décision en attente._
 
 		test('throws error when ROOSYNC_SHARED_PATH is not set', async () => {
 			delete process.env.ROOSYNC_SHARED_PATH;
-
-			const { roosyncUpdateDashboard } = await import('../update-dashboard.js');
 
 			await expect(roosyncUpdateDashboard({
 				section: 'global',
@@ -286,8 +273,6 @@ _Aucune décision en attente._
 - Note
 `);
 
-			const { roosyncUpdateDashboard } = await import('../update-dashboard.js');
-
 			await expect(roosyncUpdateDashboard({
 				section: 'machine',
 				machine: 'nonexistent-machine',
@@ -309,8 +294,6 @@ _Aucune décision en attente._
 - Note
 `);
 
-			const { roosyncUpdateDashboard } = await import('../update-dashboard.js');
-
 			await expect(roosyncUpdateDashboard({
 				section: 'global',
 				content: 'Test'
@@ -320,7 +303,6 @@ _Aucune décision en attente._
 
 	describe('default values', () => {
 		test('uses default workspace when not specified', async () => {
-			const { roosyncUpdateDashboard } = await import('../update-dashboard.js');
 
 			const result = await roosyncUpdateDashboard({
 				section: 'machine',
@@ -335,8 +317,6 @@ _Aucune décision en attente._
 		test('uses default machine ID from env when not specified', async () => {
 			process.env.ROOSYNC_MACHINE_ID = 'myia-web1'; // Use existing machine in mock
 
-			const { roosyncUpdateDashboard } = await import('../update-dashboard.js');
-
 			const result = await roosyncUpdateDashboard({
 				section: 'machine',
 				content: 'Test'
@@ -349,7 +329,6 @@ _Aucune décision en attente._
 		});
 
 		test('uses default mode replace when not specified', async () => {
-			const { roosyncUpdateDashboard } = await import('../update-dashboard.js');
 
 			const result = await roosyncUpdateDashboard({
 				section: 'global',
@@ -363,7 +342,6 @@ _Aucune décision en attente._
 
 	describe('timestamp update', () => {
 		test('updates dashboard timestamp on successful update', async () => {
-			const { roosyncUpdateDashboard } = await import('../update-dashboard.js');
 
 			const result = await roosyncUpdateDashboard({
 				section: 'global',

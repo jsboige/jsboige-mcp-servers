@@ -4,7 +4,8 @@
  */
 
 import { describe, test, expect, vi, beforeEach } from 'vitest';
-import { RollbackDecisionArgsSchema, RollbackDecisionResultSchema } from '../rollback-decision.js';
+// Fix #636 timeout: Use static import instead of dynamic imports
+import { RollbackDecisionArgsSchema, RollbackDecisionResultSchema, roosyncRollbackDecision } from '../rollback-decision.js';
 
 const { mockGetConfig, mockGetDecision, mockRestoreFromRollbackPoint, mockClearCache } = vi.hoisted(() => ({
 	mockGetConfig: vi.fn(),
@@ -96,24 +97,21 @@ describe('rollback-decision', () => {
 	describe('roosyncRollbackDecision', () => {
 		test('throws when decision not found', async () => {
 			mockGetDecision.mockResolvedValue(null);
-			const { roosyncRollbackDecision } = await import('../rollback-decision.js');
-			await expect(roosyncRollbackDecision({
+				await expect(roosyncRollbackDecision({
 				decisionId: 'nope', reason: 'test'
 			})).rejects.toThrow('introuvable');
 		});
 
 		test('throws when decision not applied', async () => {
 			mockGetDecision.mockResolvedValue({ id: 'dec-1', status: 'pending' });
-			const { roosyncRollbackDecision } = await import('../rollback-decision.js');
-			await expect(roosyncRollbackDecision({
+				await expect(roosyncRollbackDecision({
 				decisionId: 'dec-1', reason: 'test'
 			})).rejects.toThrow('pas encore appliquée');
 		});
 
 		test('throws when decision approved but not applied', async () => {
 			mockGetDecision.mockResolvedValue({ id: 'dec-1', status: 'approved' });
-			const { roosyncRollbackDecision } = await import('../rollback-decision.js');
-			await expect(roosyncRollbackDecision({
+				await expect(roosyncRollbackDecision({
 				decisionId: 'dec-1', reason: 'test'
 			})).rejects.toThrow('pas encore appliquée');
 		});
@@ -129,8 +127,7 @@ describe('rollback-decision', () => {
 				'<!-- DECISION_BLOCK_START -->\n**ID:** `dec-2`\n**Statut:** applied\n<!-- DECISION_BLOCK_END -->'
 			);
 
-			const { roosyncRollbackDecision } = await import('../rollback-decision.js');
-			const result = await roosyncRollbackDecision({
+				const result = await roosyncRollbackDecision({
 				decisionId: 'dec-2', reason: 'Regression detected'
 			});
 
@@ -151,8 +148,7 @@ describe('rollback-decision', () => {
 				'<!-- DECISION_BLOCK_START -->\n**ID:** `dec-3`\n**Statut:** applied\n<!-- DECISION_BLOCK_END -->'
 			);
 
-			const { roosyncRollbackDecision } = await import('../rollback-decision.js');
-			await roosyncRollbackDecision({ decisionId: 'dec-3', reason: 'Bad config' });
+				await roosyncRollbackDecision({ decisionId: 'dec-3', reason: 'Bad config' });
 
 			const writtenContent = mockWriteFileSync.mock.calls[0][1] as string;
 			expect(writtenContent).toContain('rolled_back');
@@ -166,8 +162,7 @@ describe('rollback-decision', () => {
 				success: false, error: 'Backup not found', restoredFiles: [], logs: []
 			});
 
-			const { roosyncRollbackDecision } = await import('../rollback-decision.js');
-			await expect(roosyncRollbackDecision({
+				await expect(roosyncRollbackDecision({
 				decisionId: 'dec-4', reason: 'test'
 			})).rejects.toThrow('Backup not found');
 		});
@@ -179,8 +174,7 @@ describe('rollback-decision', () => {
 			});
 			mockExistsSync.mockReturnValue(false);
 
-			const { roosyncRollbackDecision } = await import('../rollback-decision.js');
-			await expect(roosyncRollbackDecision({
+				await expect(roosyncRollbackDecision({
 				decisionId: 'dec-5', reason: 'test'
 			})).rejects.toThrow('introuvable');
 		});
@@ -192,8 +186,7 @@ describe('rollback-decision', () => {
 			});
 			mockReadFileSync.mockReturnValue('# Empty roadmap');
 
-			const { roosyncRollbackDecision } = await import('../rollback-decision.js');
-			await expect(roosyncRollbackDecision({
+				await expect(roosyncRollbackDecision({
 				decisionId: 'dec-6', reason: 'test'
 			})).rejects.toThrow('introuvable dans sync-roadmap');
 		});
@@ -207,8 +200,7 @@ describe('rollback-decision', () => {
 				'<!-- DECISION_BLOCK_START -->\n**ID:** `dec-7`\n**Statut:** applied\n<!-- DECISION_BLOCK_END -->'
 			);
 
-			const { roosyncRollbackDecision } = await import('../rollback-decision.js');
-			await roosyncRollbackDecision({ decisionId: 'dec-7', reason: 'test' });
+				await roosyncRollbackDecision({ decisionId: 'dec-7', reason: 'test' });
 
 			expect(mockClearCache).toHaveBeenCalled();
 		});
@@ -222,8 +214,7 @@ describe('rollback-decision', () => {
 				'<!-- DECISION_BLOCK_START -->\n**ID:** `dec-8`\n**Statut:** applied\n<!-- DECISION_BLOCK_END -->'
 			);
 
-			const { roosyncRollbackDecision } = await import('../rollback-decision.js');
-			const result = await roosyncRollbackDecision({ decisionId: 'dec-8', reason: 'test' });
+				const result = await roosyncRollbackDecision({ decisionId: 'dec-8', reason: 'test' });
 
 			expect(result.executionLog.length).toBeGreaterThan(0);
 			expect(result.executionLog.some(l => l.includes('ROLLBACK_DECISION'))).toBe(true);

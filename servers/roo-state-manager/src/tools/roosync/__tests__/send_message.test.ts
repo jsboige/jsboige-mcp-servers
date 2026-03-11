@@ -60,6 +60,9 @@ vi.mock('../../../types/errors.js', () => ({
 	}
 }));
 
+// Fix #636 timeout: Use static import instead of dynamic imports
+import { sendMessage } from '../send_message.js';
+
 describe('send_message', () => {
 	beforeEach(() => {
 		vi.clearAllMocks();
@@ -69,19 +72,16 @@ describe('send_message', () => {
 
 	describe('parameter validation', () => {
 		test('rejects missing to', async () => {
-			const { sendMessage } = await import('../send_message.js');
 			const result = await sendMessage({ to: '', subject: 'Test', body: 'Hello' });
 			expect(result.content[0].text).toContain('Erreur');
 		});
 
 		test('rejects missing subject', async () => {
-			const { sendMessage } = await import('../send_message.js');
 			const result = await sendMessage({ to: 'ai-01', subject: '', body: 'Hello' });
 			expect(result.content[0].text).toContain('Erreur');
 		});
 
 		test('rejects missing body', async () => {
-			const { sendMessage } = await import('../send_message.js');
 			const result = await sendMessage({ to: 'ai-01', subject: 'Test', body: '' });
 			expect(result.content[0].text).toContain('Erreur');
 		});
@@ -98,7 +98,6 @@ describe('send_message', () => {
 				timestamp: '2026-01-01T00:00:00Z'
 			});
 
-			const { sendMessage } = await import('../send_message.js');
 			const result = await sendMessage({
 				to: 'ai-01',
 				subject: 'Test',
@@ -119,7 +118,6 @@ describe('send_message', () => {
 				timestamp: '2026-01-01T00:00:00Z'
 			});
 
-			const { sendMessage } = await import('../send_message.js');
 			await sendMessage({
 				to: 'po-2023',
 				subject: 'Urgent',
@@ -144,7 +142,6 @@ describe('send_message', () => {
 				timestamp: '2026-01-01T00:00:00Z'
 			});
 
-			const { sendMessage } = await import('../send_message.js');
 			await sendMessage({
 				to: 'ai-01',
 				subject: 'Re: Thread',
@@ -164,7 +161,6 @@ describe('send_message', () => {
 		test('returns error on send failure', async () => {
 			mockSendMessage.mockRejectedValue(new Error('Write permission denied'));
 
-			const { sendMessage } = await import('../send_message.js');
 			const result = await sendMessage({
 				to: 'ai-01',
 				subject: 'Test',

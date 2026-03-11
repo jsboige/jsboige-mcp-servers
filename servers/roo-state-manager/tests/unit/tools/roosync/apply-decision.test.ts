@@ -5,6 +5,15 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { writeFileSync, mkdirSync, rmSync, readFileSync } from 'fs';
 import { join } from 'path';
+
+// Fix #634: Unit tests with real RooSyncService need vi.unmock before imports
+// Désactiver le mock global de fs pour ce test qui utilise le système de fichiers réel
+vi.unmock('fs');
+
+// Fix #634: Integration-like tests need REAL RooSyncService and ConfigService
+vi.unmock('../../../../src/services/RooSyncService.js');
+vi.unmock('../../../../src/services/ConfigService.js');
+
 import { tmpdir } from 'os';
 
 // Set environment variables BEFORE the mock
@@ -121,6 +130,9 @@ describe('roosync_apply_decision', () => {
   
     // Mock createRollbackPoint pour éviter les appels PowerShell réels
     vi.spyOn(service, 'createRollbackPoint').mockResolvedValue(undefined);
+
+    // Mock clearCache pour éviter les appels de cache réel
+    vi.spyOn(service, 'clearCache').mockResolvedValue(undefined);
 
     // Créer dashboard de test
     const dashboard = {

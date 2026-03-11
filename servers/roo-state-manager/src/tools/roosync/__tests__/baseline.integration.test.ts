@@ -12,11 +12,24 @@
  * @bugfix #636 - Use temp directory instead of real RooSync to prevent file pollution
  */
 
-import { describe, test, expect, beforeAll, afterAll } from 'vitest';
+import { describe, test, expect, beforeAll, afterAll, vi } from 'vitest';
 import { globalCacheManager } from '../../../utils/cache-manager.js';
 import { mkdtemp, rm } from 'fs/promises';
 import { join } from 'path';
 import { existsSync } from 'fs';
+
+// Fix #634: Integration tests need REAL RooSyncService and ConfigService
+// Unmock before importing to get real implementation with getBaselineServiceConfig()
+vi.unmock('../../../services/RooSyncService.js');
+vi.unmock('../../../services/ConfigService.js');
+
+// Fix #636 timeout: Use static imports instead of dynamic imports
+import {
+  roosync_baseline,
+  RooSyncServiceError,
+  BaselineArgsSchema,
+  BaselineResultSchema
+} from '../baseline.js';
 
 describe('roosync_baseline (integration)', () => {
   let tempRooSyncDir: string;
@@ -81,8 +94,6 @@ describe('roosync_baseline (integration)', () => {
 
   describe('input validation', () => {
     test('should require action parameter', async () => {
-      const { roosync_baseline, RooSyncServiceError } = await import('../baseline.js');
-
       // L'outil doit lancer une RooSyncServiceError si l'action est manquante
       await expect(async () => {
         await roosync_baseline({} as any);
@@ -90,8 +101,6 @@ describe('roosync_baseline (integration)', () => {
     });
 
     test('should reject invalid action', async () => {
-      const { roosync_baseline, RooSyncServiceError } = await import('../baseline.js');
-
       // L'outil doit lancer une RooSyncServiceError pour une action invalide
       await expect(async () => {
         await roosync_baseline({ action: 'invalid' as any });
@@ -99,8 +108,6 @@ describe('roosync_baseline (integration)', () => {
     });
 
     test('should require machineId for update action', async () => {
-      const { roosync_baseline, RooSyncServiceError } = await import('../baseline.js');
-
       // L'outil doit lancer une RooSyncServiceError si machineId est manquant pour update
       await expect(async () => {
         await roosync_baseline({ action: 'update' });
@@ -108,8 +115,6 @@ describe('roosync_baseline (integration)', () => {
     });
 
     test('should require source for restore action', async () => {
-      const { roosync_baseline, RooSyncServiceError } = await import('../baseline.js');
-
       // L'outil doit lancer une RooSyncServiceError si source est manquant pour restore
       await expect(async () => {
         await roosync_baseline({ action: 'restore' });
@@ -123,8 +128,6 @@ describe('roosync_baseline (integration)', () => {
 
   describe('response format', () => {
     test('should have BaselineArgsSchema with proper structure', async () => {
-      const { BaselineArgsSchema } = await import('../baseline.js');
-
       // Vérifier que le schema a la bonne structure
       expect(BaselineArgsSchema).toBeDefined();
       const shape = BaselineArgsSchema.shape;
@@ -135,8 +138,6 @@ describe('roosync_baseline (integration)', () => {
     });
 
     test('should have BaselineResultSchema with proper structure', async () => {
-      const { BaselineResultSchema } = await import('../baseline.js');
-
       // Vérifier que le schema de retour a la bonne structure
       expect(BaselineResultSchema).toBeDefined();
       const shape = BaselineResultSchema.shape;
@@ -148,8 +149,6 @@ describe('roosync_baseline (integration)', () => {
     });
 
     test('should include action enum with correct values', async () => {
-      const { BaselineArgsSchema } = await import('../baseline.js');
-
       // Vérifier que l'enum action contient les bonnes valeurs
       const shape = BaselineArgsSchema.shape;
       expect(shape.action).toBeDefined();
@@ -157,8 +156,6 @@ describe('roosync_baseline (integration)', () => {
     });
 
     test('should include format enum for export action', async () => {
-      const { BaselineArgsSchema } = await import('../baseline.js');
-
       // Vérifier que l'enum format contient les bonnes valeurs
       const shape = BaselineArgsSchema.shape;
       expect(shape.format).toBeDefined();
@@ -172,8 +169,6 @@ describe('roosync_baseline (integration)', () => {
 
   describe('action handling', () => {
     test('should handle version action - requires version parameter', async () => {
-      const { roosync_baseline, RooSyncServiceError } = await import('../baseline.js');
-
       // L'action version requiert le paramètre version
       await expect(async () => {
         await roosync_baseline({ action: 'version' });
@@ -181,8 +176,6 @@ describe('roosync_baseline (integration)', () => {
     });
 
     test('should handle export action with JSON format - creates default baseline if needed', async () => {
-      const { roosync_baseline } = await import('../baseline.js');
-
       // L'export crée une baseline par défaut si aucune n'existe
       // Note: BaselineService.loadBaseline() crée automatiquement une baseline par défaut
       const result = await roosync_baseline({
@@ -203,8 +196,6 @@ describe('roosync_baseline (integration)', () => {
 
   describe('error handling', () => {
     test('should handle non-existent machineId gracefully', async () => {
-      const { roosync_baseline, RooSyncServiceError } = await import('../baseline.js');
-
       // L'outil doit lancer une RooSyncServiceError pour une machine inexistante
       await expect(async () => {
         await roosync_baseline({
@@ -215,8 +206,6 @@ describe('roosync_baseline (integration)', () => {
     });
 
     test('should handle invalid restore source gracefully', async () => {
-      const { roosync_baseline, RooSyncServiceError } = await import('../baseline.js');
-
       // L'outil doit lancer une RooSyncServiceError pour une source invalide
       await expect(async () => {
         await roosync_baseline({

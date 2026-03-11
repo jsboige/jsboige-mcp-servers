@@ -48,6 +48,9 @@ vi.mock('../../../types/errors.js', () => ({
 	}
 }));
 
+// Fix #636 timeout: Use static import instead of dynamic imports
+import { getMessage } from '../get_message.js';
+
 describe('get_message', () => {
 	beforeEach(() => {
 		vi.clearAllMocks();
@@ -56,7 +59,6 @@ describe('get_message', () => {
 
 	describe('parameter validation', () => {
 		test('rejects missing message_id', async () => {
-			const { getMessage } = await import('../get_message.js');
 			const result = await getMessage({ message_id: '' });
 			expect(result.content[0].text).toContain('Erreur');
 		});
@@ -66,7 +68,6 @@ describe('get_message', () => {
 		test('returns not found message', async () => {
 			mockGetMessage.mockResolvedValue(null);
 
-			const { getMessage } = await import('../get_message.js');
 			const result = await getMessage({ message_id: 'nonexistent' });
 
 			expect(result.content[0].text).toContain('Message introuvable');
@@ -92,7 +93,6 @@ describe('get_message', () => {
 		test('returns formatted message details', async () => {
 			mockGetMessage.mockResolvedValue(mockMsg);
 
-			const { getMessage } = await import('../get_message.js');
 			const result = await getMessage({ message_id: 'msg-100' });
 
 			expect(result.content[0].text).toContain('Test Message');
@@ -104,7 +104,6 @@ describe('get_message', () => {
 		test('shows tags when present', async () => {
 			mockGetMessage.mockResolvedValue(mockMsg);
 
-			const { getMessage } = await import('../get_message.js');
 			const result = await getMessage({ message_id: 'msg-100' });
 
 			expect(result.content[0].text).toContain('info');
@@ -114,7 +113,6 @@ describe('get_message', () => {
 		test('shows thread_id when present', async () => {
 			mockGetMessage.mockResolvedValue(mockMsg);
 
-			const { getMessage } = await import('../get_message.js');
 			const result = await getMessage({ message_id: 'msg-100' });
 
 			expect(result.content[0].text).toContain('thread-1');
@@ -123,7 +121,6 @@ describe('get_message', () => {
 		test('shows reply_to when present', async () => {
 			mockGetMessage.mockResolvedValue(mockMsg);
 
-			const { getMessage } = await import('../get_message.js');
 			const result = await getMessage({ message_id: 'msg-100' });
 
 			expect(result.content[0].text).toContain('msg-99');
@@ -133,7 +130,6 @@ describe('get_message', () => {
 			mockGetMessage.mockResolvedValue({ ...mockMsg });
 			mockMarkAsRead.mockResolvedValue(undefined);
 
-			const { getMessage } = await import('../get_message.js');
 			await getMessage({ message_id: 'msg-100', mark_as_read: true });
 
 			expect(mockMarkAsRead).toHaveBeenCalledWith('msg-100', expect.any(String));
@@ -142,7 +138,6 @@ describe('get_message', () => {
 		test('does not mark as read when not requested', async () => {
 			mockGetMessage.mockResolvedValue({ ...mockMsg, status: 'unread' });
 
-			const { getMessage } = await import('../get_message.js');
 			await getMessage({ message_id: 'msg-100' });
 
 			expect(mockMarkAsRead).not.toHaveBeenCalled();
@@ -151,7 +146,6 @@ describe('get_message', () => {
 		test('does not mark already-read messages', async () => {
 			mockGetMessage.mockResolvedValue({ ...mockMsg, status: 'read' });
 
-			const { getMessage } = await import('../get_message.js');
 			await getMessage({ message_id: 'msg-100', mark_as_read: true });
 
 			expect(mockMarkAsRead).not.toHaveBeenCalled();
@@ -160,7 +154,6 @@ describe('get_message', () => {
 		test('suggests mark as read for unread messages', async () => {
 			mockGetMessage.mockResolvedValue({ ...mockMsg, status: 'unread' });
 
-			const { getMessage } = await import('../get_message.js');
 			const result = await getMessage({ message_id: 'msg-100' });
 
 			expect(result.content[0].text).toContain('Marquer comme lu');
@@ -171,7 +164,6 @@ describe('get_message', () => {
 		test('returns error on failure', async () => {
 			mockGetMessage.mockRejectedValue(new Error('File read error'));
 
-			const { getMessage } = await import('../get_message.js');
 			const result = await getMessage({ message_id: 'msg-err' });
 
 			expect(result.content[0].text).toContain('Erreur');

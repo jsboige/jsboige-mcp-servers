@@ -5,6 +5,13 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { writeFileSync, mkdirSync, rmSync, readFileSync } from 'fs';
 import { join } from 'path';
+
+// Désactiver le mock global de fs pour ce test qui utilise le système de fichiers réel
+vi.unmock('fs');
+// Désactiver le mock global de RooSyncService et ConfigService pour utiliser l'implémentation réelle
+vi.unmock('../../../../src/services/RooSyncService.js');
+vi.unmock('../../../../src/services/ConfigService.js');
+
 import { tmpdir } from 'os';
 
 // Set environment variables BEFORE the mock

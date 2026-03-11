@@ -44,7 +44,9 @@ vi.mock('../../../services/RooSyncService.js', () => ({
   }
 }));
 
+// Fix #636 timeout: Use static import instead of dynamic imports
 import { roosync_debug_reset } from '../debug-reset.js';
+import { RooSyncServiceError } from '../../../services/RooSyncService.js';
 
 describe('roosync_debug_reset', () => {
   beforeEach(() => {
@@ -174,7 +176,6 @@ describe('roosync_debug_reset', () => {
 
   describe('gestion des erreurs', () => {
     test('propage RooSyncServiceError depuis loadDashboard', async () => {
-      const { RooSyncServiceError } = await import('../../../services/RooSyncService.js');
       mockLoadDashboard.mockRejectedValue(new RooSyncServiceError('Dashboard error', 'LOAD_ERROR'));
 
       await expect(roosync_debug_reset({ action: 'debug', clearCache: false, verbose: false, confirm: false }))

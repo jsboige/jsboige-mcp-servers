@@ -15,12 +15,7 @@ const mockValidateDecisionStatus = vi.fn();
 const mockFormatDecisionResult = vi.fn();
 const mockLoadDecisionDetails = vi.fn();
 
-vi.mock('../../../../src/tools/roosync/utils/decision-helpers.js', () => ({
-  updateRoadmapStatus: mockUpdateRoadmapStatus,
-  validateDecisionStatus: mockValidateDecisionStatus,
-  formatDecisionResult: mockFormatDecisionResult,
-  loadDecisionDetails: mockLoadDecisionDetails
-}));
+// Note: vi.mock() moved to beforeEach for proper re-application after reset
 
 // Mock du service RooSync
 vi.mock('../../../../src/services/RooSyncService.js', () => ({
@@ -43,6 +38,15 @@ describe('roosync_decision - Execution - Action Approve', () => {
   beforeEach(() => {
     vi.resetModules();
     vi.clearAllMocks();
+
+    // Re-apply mocks after module reset
+    vi.doMock('../../../../src/tools/roosync/utils/decision-helpers.js', () => ({
+      updateRoadmapStatus: mockUpdateRoadmapStatus,
+      validateDecisionStatus: mockValidateDecisionStatus,
+      formatDecisionResult: mockFormatDecisionResult,
+      loadDecisionDetails: mockLoadDecisionDetails,
+      moveDecisionFile: vi.fn()
+    }));
   });
 
   afterEach(() => {
@@ -114,6 +118,14 @@ describe('roosync_decision - Execution - Action Reject', () => {
   beforeEach(() => {
     vi.resetModules();
     vi.clearAllMocks();
+
+    vi.doMock('../../../../src/tools/roosync/utils/decision-helpers.js', () => ({
+      updateRoadmapStatus: mockUpdateRoadmapStatus,
+      validateDecisionStatus: mockValidateDecisionStatus,
+      formatDecisionResult: mockFormatDecisionResult,
+      loadDecisionDetails: mockLoadDecisionDetails,
+      moveDecisionFile: vi.fn()
+    }));
   });
 
   afterEach(() => {
@@ -162,6 +174,14 @@ describe('roosync_decision - Execution - Action Apply', () => {
   beforeEach(() => {
     vi.resetModules();
     vi.clearAllMocks();
+
+    vi.doMock('../../../../src/tools/roosync/utils/decision-helpers.js', () => ({
+      updateRoadmapStatus: mockUpdateRoadmapStatus,
+      validateDecisionStatus: mockValidateDecisionStatus,
+      formatDecisionResult: mockFormatDecisionResult,
+      loadDecisionDetails: mockLoadDecisionDetails,
+      moveDecisionFile: vi.fn()
+    }));
   });
 
   afterEach(() => {
@@ -244,6 +264,14 @@ describe('roosync_decision - Execution - Action Rollback', () => {
   beforeEach(() => {
     vi.resetModules();
     vi.clearAllMocks();
+
+    vi.doMock('../../../../src/tools/roosync/utils/decision-helpers.js', () => ({
+      updateRoadmapStatus: mockUpdateRoadmapStatus,
+      validateDecisionStatus: mockValidateDecisionStatus,
+      formatDecisionResult: mockFormatDecisionResult,
+      loadDecisionDetails: mockLoadDecisionDetails,
+      moveDecisionFile: vi.fn()
+    }));
   });
 
   afterEach(() => {
@@ -288,24 +316,35 @@ describe('roosync_decision - Execution - Error Handling', () => {
   beforeEach(() => {
     vi.resetModules();
     vi.clearAllMocks();
+
+    vi.doMock('../../../../src/tools/roosync/utils/decision-helpers.js', () => ({
+      updateRoadmapStatus: mockUpdateRoadmapStatus,
+      validateDecisionStatus: mockValidateDecisionStatus,
+      formatDecisionResult: mockFormatDecisionResult,
+      loadDecisionDetails: mockLoadDecisionDetails,
+      moveDecisionFile: vi.fn()
+    }));
   });
 
   afterEach(() => {
     vi.clearAllMocks();
   });
 
-  it('devrait lever une erreur si la décision n\'existe pas', async () => {
+  it('devrait retourner success: false si la décision n\'existe pas', async () => {
     mockLoadDecisionDetails.mockResolvedValueOnce(null);
 
     const { roosyncDecision } = await import('../../../../src/tools/roosync/decision.js');
 
-    await expect(roosyncDecision({
+    const result = await roosyncDecision({
       action: 'approve',
       decisionId: 'NON-EXISTENT'
-    })).rejects.toThrow('introuvable');
+    });
+
+    expect(result.success).toBe(false);
+    expect(result.error).toContain('introuvable');
   });
 
-  it('devrait lever une erreur si la transition de statut est invalide', async () => {
+  it('devrait retourner success: false si la transition de statut est invalide', async () => {
     mockLoadDecisionDetails.mockResolvedValueOnce({
       decisionId: 'DEC-007',
       status: 'rejected' // Impossible d'approuver une décision déjà rejetée
@@ -315,10 +354,13 @@ describe('roosync_decision - Execution - Error Handling', () => {
 
     const { roosyncDecision } = await import('../../../../src/tools/roosync/decision.js');
 
-    await expect(roosyncDecision({
+    const result = await roosyncDecision({
       action: 'approve',
       decisionId: 'DEC-007'
-    })).rejects.toThrow('non permise');
+    });
+
+    expect(result.success).toBe(false);
+    expect(result.error).toContain('non permise');
   });
 });
 
