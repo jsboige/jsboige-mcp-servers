@@ -59,6 +59,24 @@ export interface Message {
   /** Timestamps de lecture par machine (machineId → ISO timestamp) */
   acknowledged_at?: Record<string, string>;
 
+  /** Auto-destruction activée (#629) */
+  auto_destruct?: boolean;
+
+  /** Lecteurs requis avant destruction (si auto_destruct=true) */
+  destruct_after_read_by?: string[];
+
+  /** Durée TTL avant destruction (ex: "30m", "2h", "1d") */
+  destruct_after?: string;
+
+  /** Timestamp d'expiration calculé (ISO-8601) */
+  expires_at?: string;
+
+  /** Timestamp de destruction effective (ISO-8601) */
+  destroyed_at?: string;
+
+  /** Raison de la destruction */
+  destroyed_reason?: 'read_by_recipient' | 'read_by_all' | 'ttl_expired';
+
   /** Métadonnées optionnelles (amendements, etc.) */
   metadata?: {
     amended?: boolean;
@@ -265,6 +283,23 @@ export class MessageManager {
    * @param replyTo ID du message auquel on répond
    * @returns Le message créé
    */
+  /**
+   * Parse a duration string (e.g. "30m", "2h", "1d") to milliseconds.
+   * Supported units: m (minutes), h (hours), d (days).
+   * @returns Duration in ms, or null if invalid
+   */
+  static parseDuration(duration: string): number | null {
+    const match = duration.match(/^(\d+)(m|h|d)$/);
+    if (!match) return null;
+    const value = parseInt(match[1], 10);
+    switch (match[2]) {
+      case 'm': return value * 60 * 1000;
+      case 'h': return value * 60 * 60 * 1000;
+      case 'd': return value * 24 * 60 * 60 * 1000;
+      default: return null;
+    }
+  }
+
   async sendMessage(
     from: string,
     to: string,
@@ -273,7 +308,12 @@ export class MessageManager {
     priority: 'LOW' | 'MEDIUM' | 'HIGH' | 'URGENT' = 'MEDIUM',
     tags?: string[],
     threadId?: string,
-    replyTo?: string
+    replyTo?: string,
+    options?: {
+      auto_destruct?: boolean;
+      destruct_after_read_by?: string[];
+      destruct_after?: string;
+    }
   ): Promise<Message> {
     logger.info(`Sending message from ${from} to ${to}`);
 
@@ -291,6 +331,20 @@ export class MessageManager {
       );
     }
 
+    // Compute expires_at from destruct_after TTL
+    let expiresAt: string | undefined;
+    if (options?.destruct_after) {
+      const ms = MessageManager.parseDuration(options.destruct_after);
+      if (ms === null) {
+        throw new MessageManagerError(
+          `Invalid destruct_after format: "${options.destruct_after}". Use "30m", "2h", or "1d".`,
+          MessageManagerErrorCode.INVALID_MESSAGE_FORMAT,
+          { destruct_after: options.destruct_after }
+        );
+      }
+      expiresAt = new Date(Date.now() + ms).toISOString();
+    }
+
     const message: Message = {
       id: this.generateMessageId(),
       from,
@@ -302,7 +356,13 @@ export class MessageManager {
       status: 'unread',
       tags,
       thread_id: threadId,
-      reply_to: replyTo
+      reply_to: replyTo,
+      ...(options?.auto_destruct ? {
+        auto_destruct: true,
+        ...(options.destruct_after_read_by ? { destruct_after_read_by: options.destruct_after_read_by } : {}),
+        ...(options.destruct_after ? { destruct_after: options.destruct_after } : {}),
+        ...(expiresAt ? { expires_at: expiresAt } : {})
+      } : {})
     };
 
     try {
@@ -541,6 +601,15 @@ export class MessageManager {
       }
 
       this.invalidateCache();
+
+      // Check auto-destruct conditions after read (#629)
+      if (message.auto_destruct) {
+        const shouldDestroy = this.checkAutoDestructCondition(message);
+        if (shouldDestroy) {
+          await this.destroyMessage(messageId, shouldDestroy);
+        }
+      }
+
       logger.info('Message marked as read');
       return true;
     } catch (error) {
@@ -550,11 +619,134 @@ export class MessageManager {
   }
 
   /**
+   * Check if auto-destruct conditions are met for a message.
+   * @returns The destruction reason, or null if not yet ready
+   */
+  private checkAutoDestructCondition(message: Message): 'read_by_recipient' | 'read_by_all' | null {
+    if (!message.auto_destruct) return null;
+
+    // Mode: destruct after specific readers
+    if (message.destruct_after_read_by && message.destruct_after_read_by.length > 0) {
+      const readBy = message.read_by || [];
+      const allRead = message.destruct_after_read_by.every(m => readBy.includes(m));
+      return allRead ? 'read_by_all' : null;
+    }
+
+    // Mode: destruct after recipient reads (default auto-destruct)
+    const isBroadcast = message.to === 'all' || message.to === 'All';
+    if (isBroadcast) {
+      // For broadcasts, no auto-destruct on single read (need destruct_after_read_by)
+      return null;
+    }
+
+    // For targeted messages: destruct when the recipient has read
+    const recipientMachine = parseMachineWorkspace(message.to).machineId;
+    const readBy = message.read_by || [];
+    return readBy.includes(recipientMachine) ? 'read_by_recipient' : null;
+  }
+
+  /**
+   * Destroy a message: wipe body content but keep metadata for traceability.
+   * The message file remains but with body replaced by "[DESTROYED]".
+   *
+   * @param messageId ID of the message to destroy
+   * @param reason Reason for destruction
+   * @returns true if success
+   */
+  async destroyMessage(
+    messageId: string,
+    reason: 'read_by_recipient' | 'read_by_all' | 'ttl_expired'
+  ): Promise<boolean> {
+    logger.info(`Destroying message ${messageId} (reason: ${reason})`);
+
+    const filePath = join(this.inboxPath, `${messageId}.json`);
+    if (!existsSync(filePath)) {
+      logger.warn(`Message not found for destruction: ${messageId}`);
+      return false;
+    }
+
+    try {
+      const content = await fs.readFile(filePath, 'utf-8');
+      const message: Message = JSON.parse(content);
+
+      // Already destroyed
+      if (message.destroyed_at) {
+        logger.info(`Message ${messageId} already destroyed`);
+        return true;
+      }
+
+      // Wipe sensitive content
+      message.body = '[DESTROYED]';
+      message.destroyed_at = new Date().toISOString();
+      message.destroyed_reason = reason;
+
+      await fs.writeFile(filePath, JSON.stringify(message, null, 2), 'utf-8');
+
+      // Also update sent/ if exists
+      const sentPath = join(this.sentPath, `${messageId}.json`);
+      if (existsSync(sentPath)) {
+        await fs.writeFile(sentPath, JSON.stringify(message, null, 2), 'utf-8');
+      }
+
+      // Also update archive/ if exists
+      const archivePath = join(this.archivePath, `${messageId}.json`);
+      if (existsSync(archivePath)) {
+        await fs.writeFile(archivePath, JSON.stringify(message, null, 2), 'utf-8');
+      }
+
+      this.invalidateCache();
+      logger.info(`Message ${messageId} destroyed (${reason})`);
+      return true;
+    } catch (error) {
+      logger.error(`Error destroying message ${messageId}`, error);
+      return false;
+    }
+  }
+
+  /**
+   * Clean up expired auto-destruct messages (TTL-based).
+   * Scans inbox for messages with expires_at in the past and destroys them.
+   *
+   * @returns Number of messages destroyed
+   */
+  async cleanupExpiredMessages(): Promise<number> {
+    const now = new Date();
+    let destroyed = 0;
+
+    for (const dir of [this.inboxPath, this.sentPath]) {
+      if (!existsSync(dir)) continue;
+      const files = (await fs.readdir(dir)).filter(f => f.endsWith('.json'));
+      for (const file of files) {
+        try {
+          const content = await fs.readFile(join(dir, file), 'utf-8');
+          const message: Message = JSON.parse(content);
+          if (message.auto_destruct && message.expires_at && !message.destroyed_at) {
+            if (new Date(message.expires_at) <= now) {
+              // Only destroy from inbox (sent will be updated by destroyMessage)
+              if (dir === this.inboxPath) {
+                await this.destroyMessage(message.id, 'ttl_expired');
+                destroyed++;
+              }
+            }
+          }
+        } catch {
+          // Skip corrupted files
+        }
+      }
+    }
+
+    if (destroyed > 0) {
+      logger.info(`Cleaned up ${destroyed} expired messages`);
+    }
+    return destroyed;
+  }
+
+  /**
    * Archive un message
-   * 
+   *
    * Déplace le message de l'inbox vers le répertoire archive
    * et met à jour son statut.
-   * 
+   *
    * @param messageId ID du message à archiver
    * @returns true si succès, false sinon
    */
