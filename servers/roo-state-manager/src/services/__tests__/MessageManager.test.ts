@@ -283,6 +283,93 @@ describe('MessageManager', () => {
     });
   });
 
+  describe('page/perPage pagination (#638)', () => {
+    test('should paginate with page and perPage', async () => {
+      for (let i = 0; i < 10; i++) {
+        await messageManager.sendMessage('m1', 'machine2', `Msg${i}`, `Body${i}`);
+      }
+
+      // Page 1 (3 per page)
+      const page1 = await messageManager.readInbox('machine2', 'all', undefined, undefined, 1, 3);
+      expect(page1).toHaveLength(3);
+
+      // Page 2
+      const page2 = await messageManager.readInbox('machine2', 'all', undefined, undefined, 2, 3);
+      expect(page2).toHaveLength(3);
+
+      // Pages should have different messages
+      expect(page1[0].id).not.toBe(page2[0].id);
+
+      // Last page (page 4 = 1 remaining)
+      const page4 = await messageManager.readInbox('machine2', 'all', undefined, undefined, 4, 3);
+      expect(page4).toHaveLength(1);
+    });
+
+    test('should return empty array for page beyond data', async () => {
+      await messageManager.sendMessage('m1', 'machine2', 'Msg1', 'Body1');
+
+      const result = await messageManager.readInbox('machine2', 'all', undefined, undefined, 100, 10);
+      expect(result).toHaveLength(0);
+    });
+  });
+
+  describe('getFilteredCount (#638)', () => {
+    test('should return total, unread, and read counts', async () => {
+      const msg1 = await messageManager.sendMessage('m1', 'machine2', 'Msg1', 'Body1');
+      await messageManager.sendMessage('m1', 'machine2', 'Msg2', 'Body2');
+      await messageManager.sendMessage('m1', 'machine2', 'Msg3', 'Body3');
+
+      // Mark one as read
+      await messageManager.markAsRead(msg1.id);
+
+      const counts = await messageManager.getFilteredCount('machine2');
+      expect(counts.total).toBe(3);
+      expect(counts.unread).toBe(2);
+      expect(counts.read).toBe(1);
+    });
+
+    test('should return zeros for machine with no messages', async () => {
+      const counts = await messageManager.getFilteredCount('nonexistent');
+      expect(counts.total).toBe(0);
+      expect(counts.unread).toBe(0);
+      expect(counts.read).toBe(0);
+    });
+  });
+
+  describe('inbox cache (#638)', () => {
+    test('should invalidate cache after sendMessage', async () => {
+      await messageManager.sendMessage('m1', 'machine2', 'Msg1', 'Body1');
+      const inbox1 = await messageManager.readInbox('machine2');
+      expect(inbox1).toHaveLength(1);
+
+      // Send another — cache should be invalidated
+      await messageManager.sendMessage('m1', 'machine2', 'Msg2', 'Body2');
+      const inbox2 = await messageManager.readInbox('machine2');
+      expect(inbox2).toHaveLength(2);
+    });
+
+    test('should invalidate cache after markAsRead', async () => {
+      const msg = await messageManager.sendMessage('m1', 'machine2', 'Msg1', 'Body1');
+      const countsBefore = await messageManager.getFilteredCount('machine2');
+      expect(countsBefore.unread).toBe(1);
+
+      await messageManager.markAsRead(msg.id);
+      const countsAfter = await messageManager.getFilteredCount('machine2');
+      expect(countsAfter.unread).toBe(0);
+      expect(countsAfter.read).toBe(1);
+    });
+
+    test('should invalidate cache after archiveMessage', async () => {
+      const msg = await messageManager.sendMessage('m1', 'machine2', 'Msg1', 'Body1');
+      const inbox1 = await messageManager.readInbox('machine2');
+      expect(inbox1).toHaveLength(1);
+
+      await messageManager.archiveMessage(msg.id);
+      const inbox2 = await messageManager.readInbox('machine2');
+      expect(inbox2).toHaveLength(0);
+    });
+  });
+
   describe('getMessage', () => {
     test('should retrieve message by ID from inbox', async () => {
       const sent = await messageManager.sendMessage(
