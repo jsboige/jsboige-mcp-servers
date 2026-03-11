@@ -18,6 +18,8 @@ import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 // Unmock fs to use real filesystem for integration tests
 vi.unmock('fs/promises');
 vi.unmock('fs');
+// Unmock RooSyncService to use real implementation (not jest.setup.js global mock)
+vi.unmock('../../src/services/RooSyncService.js');
 
 import { RooSyncService } from '../../src/services/RooSyncService.js';
 import { join } from 'path';
@@ -54,6 +56,9 @@ describe('CommitLogService - Tests d\'Intégration', () => {
   let commitLogService: CommitLogService;
 
   beforeEach(async () => {
+    // Reset RooSyncService singleton before each test
+    RooSyncService.resetInstance();
+
     tempDir = await mkdtemp(join(tmpdir(), 'commit-log-integration-test-'));
     sharedPath = join(tempDir, 'shared');
     commitLogPath = join(sharedPath, 'commit-log');
@@ -205,6 +210,7 @@ describe('CommitLogService - Tests d\'Intégration', () => {
   describe('Intégration avec RooSyncService', () => {
     it('devrait être accessible via RooSyncService', async () => {
       // Arrange - Créer un RooSyncService
+      console.log('[TEST] Before getInstance');
       const rooSyncService = RooSyncService.getInstance(
         undefined,
         {
@@ -215,9 +221,13 @@ describe('CommitLogService - Tests d\'Intégration', () => {
           logLevel: 'info'
         }
       );
+      console.log('[TEST] After getInstance, rooSyncService:', rooSyncService);
+      console.log('[TEST] rooSyncService type:', typeof rooSyncService);
+      console.log('[TEST] rooSyncService.commitLogService:', (rooSyncService as any).commitLogService);
 
       // Act - Accéder au CommitLogService
       const commitLogService = rooSyncService.getCommitLogService();
+      console.log('[TEST] commitLogService from getter:', commitLogService);
 
       // Assert
       expect(commitLogService).toBeDefined();

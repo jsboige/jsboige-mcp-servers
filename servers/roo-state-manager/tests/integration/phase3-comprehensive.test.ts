@@ -4,6 +4,11 @@ import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 vi.unmock('fs/promises');
 vi.unmock('fs');
 
+// Unmock TaskIndexer to use real implementation
+vi.unmock('../../src/services/task-indexer.js');
+// Unmock RooSyncService to use real implementation (not jest.setup.js global mock)
+vi.unmock('../../src/services/RooSyncService.js');
+
 import { TraceSummaryService } from '../../src/services/TraceSummaryService.js';
 import { ExportConfigManager } from '../../src/services/ExportConfigManager.js';
 import { TaskIndexer } from '../../src/services/task-indexer.js';
