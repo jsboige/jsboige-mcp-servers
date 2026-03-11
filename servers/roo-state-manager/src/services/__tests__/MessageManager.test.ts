@@ -984,4 +984,105 @@ describe('MessageManager', () => {
       expect(MessageManager.parseDuration('30s')).toBeNull();
     });
   });
+
+  describe('sendExpiryReminders (#629)', () => {
+    test('should send reminder when TTL is approaching', async () => {
+      // Send message with 10-minute TTL
+      const msg = await messageManager.sendMessage(
+        'sender', 'recipient', 'Expiring secret', 'secret data',
+        'HIGH', ['secret'], undefined, undefined,
+        { auto_destruct: true, destruct_after: '10m' }
+      );
+
+      // Manually set expires_at to 3 minutes from now (within 10% threshold = 1min, but min 5min)
+      // threshold = max(5min, 10min*10%) = max(5min, 1min) = 5min
+      // So expires_at 3 minutes from now is within the 5min threshold
+      const inboxFile = join(testSharedStatePath, 'messages', 'inbox', `${msg.id}.json`);
+      const content = JSON.parse(await fs.readFile(inboxFile, 'utf-8'));
+      content.expires_at = new Date(Date.now() + 3 * 60 * 1000).toISOString(); // 3min from now
+      await fs.writeFile(inboxFile, JSON.stringify(content, null, 2));
+
+      const reminders = await messageManager.sendExpiryReminders();
+      expect(reminders).toBe(1);
+
+      // Verify reminder_sent flag was set
+      const updated = JSON.parse(await fs.readFile(inboxFile, 'utf-8'));
+      expect(updated.reminder_sent).toBe(true);
+
+      // Verify a reminder message was sent
+      const sentFiles = await fs.readdir(join(testSharedStatePath, 'messages', 'sent'));
+      const reminderFiles = [];
+      for (const f of sentFiles.filter(f => f.endsWith('.json'))) {
+        const sentMsg = JSON.parse(await fs.readFile(join(testSharedStatePath, 'messages', 'sent', f), 'utf-8'));
+        if (sentMsg.subject.includes('[REMINDER]')) {
+          reminderFiles.push(sentMsg);
+        }
+      }
+      expect(reminderFiles.length).toBe(1);
+      expect(reminderFiles[0].from).toBe('system');
+      expect(reminderFiles[0].to).toBe('recipient');
+      expect(reminderFiles[0].priority).toBe('HIGH');
+    });
+
+    test('should NOT send reminder when TTL is far away', async () => {
+      // Send message with 2-hour TTL (expires in 2h, threshold = max(5min, 12min) = 12min)
+      await messageManager.sendMessage(
+        'sender', 'recipient', 'Far away', 'secret data',
+        'MEDIUM', [], undefined, undefined,
+        { auto_destruct: true, destruct_after: '2h' }
+      );
+      // expires_at is 2h from now, well beyond 12min threshold
+
+      const reminders = await messageManager.sendExpiryReminders();
+      expect(reminders).toBe(0);
+    });
+
+    test('should NOT send reminder twice (idempotent)', async () => {
+      const msg = await messageManager.sendMessage(
+        'sender', 'recipient', 'Expiring soon', 'data',
+        'MEDIUM', [], undefined, undefined,
+        { auto_destruct: true, destruct_after: '10m' }
+      );
+
+      // Set expires_at to 2 minutes from now (within 5min threshold)
+      const inboxFile = join(testSharedStatePath, 'messages', 'inbox', `${msg.id}.json`);
+      const content = JSON.parse(await fs.readFile(inboxFile, 'utf-8'));
+      content.expires_at = new Date(Date.now() + 2 * 60 * 1000).toISOString();
+      await fs.writeFile(inboxFile, JSON.stringify(content, null, 2));
+
+      // First call sends reminder
+      const first = await messageManager.sendExpiryReminders();
+      expect(first).toBe(1);
+
+      // Second call should NOT send again
+      const second = await messageManager.sendExpiryReminders();
+      expect(second).toBe(0);
+    });
+
+    test('should NOT send reminder for already destroyed messages', async () => {
+      const msg = await messageManager.sendMessage(
+        'sender', 'recipient', 'Already dead', 'data',
+        'MEDIUM', [], undefined, undefined,
+        { auto_destruct: true, destruct_after: '10m' }
+      );
+
+      // Destroy the message first
+      await messageManager.destroyMessage(msg.id, 'ttl_expired');
+
+      const reminders = await messageManager.sendExpiryReminders();
+      expect(reminders).toBe(0);
+    });
+
+    test('should NOT send reminder for messages without destruct_after', async () => {
+      // auto_destruct without TTL (read-based only)
+      await messageManager.sendMessage(
+        'sender', 'recipient', 'Read-based only', 'data',
+        'MEDIUM', [], undefined, undefined,
+        { auto_destruct: true }
+      );
+
+      const reminders = await messageManager.sendExpiryReminders();
+      expect(reminders).toBe(0);
+    });
+  });
 });

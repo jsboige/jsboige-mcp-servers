@@ -305,10 +305,16 @@ async function cleanupMessages(
   const machineId = getLocalMachineId();
   const results: string[] = [];
 
-  // 0. Cleanup expired auto-destruct messages (#629)
+  // 0a. Cleanup expired auto-destruct messages (#629)
   const expiredCount = await messageManager.cleanupExpiredMessages();
   if (expiredCount > 0) {
     results.push(`- 💀 Messages auto-destruct expirés détruits : **${expiredCount}**`);
+  }
+
+  // 0b. Send expiry reminders for approaching TTL (#629)
+  const remindersCount = await messageManager.sendExpiryReminders();
+  if (remindersCount > 0) {
+    results.push(`- ⏰ Rappels d'expiration envoyés : **${remindersCount}**`);
   }
 
   // 1. Mark test messages as read

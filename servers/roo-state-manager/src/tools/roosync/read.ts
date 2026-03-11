@@ -96,6 +96,11 @@ async function readInboxMode(
     .then(n => { if (n > 0) logger.info(`Destroyed ${n} expired auto-destruct messages`); })
     .catch(err => logger.debug('Auto-destruct cleanup skipped (non-critical)', { error: String(err) }));
 
+  // Fire-and-forget expiry reminders for approaching TTL (#629)
+  messageManager.sendExpiryReminders()
+    .then(n => { if (n > 0) logger.info(`Sent ${n} expiry reminders`); })
+    .catch(err => logger.debug('Expiry reminders skipped (non-critical)', { error: String(err) }));
+
   // Cas : aucun message
   if (messages.length === 0 && counts.total === 0) {
     return `📭 **Aucun message dans votre boîte de réception (${status})**
