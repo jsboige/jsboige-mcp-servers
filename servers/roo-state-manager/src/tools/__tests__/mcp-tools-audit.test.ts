@@ -11,7 +11,7 @@
  * Phase 3: Tests d'intégration manquants
  */
 
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, beforeAll } from 'vitest';
 import { existsSync, readFileSync, readdirSync } from 'fs';
 import * as path from 'path';
 import { glob } from 'glob';
