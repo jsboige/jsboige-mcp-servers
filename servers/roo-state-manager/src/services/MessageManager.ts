@@ -113,9 +113,20 @@ export class MessageManager {
   private sentPath: string;
   private archivePath: string;
 
+  /** In-memory metadata cache for inbox messages (#638 perf) */
+  private inboxCache: MessageListItem[] | null = null;
+  /** Full message cache keyed by id (for status/read_by checks) */
+  private inboxFullCache: Map<string, Message> = new Map();
+  /** Timestamp of last cache build */
+  private cacheBuiltAt: number = 0;
+  /** Cache TTL in ms (30 seconds - shared filesystem can change) */
+  private static readonly CACHE_TTL_MS = 30_000;
+  /** Last known file count in inbox dir (cheap invalidation check) */
+  private lastInboxFileCount: number = -1;
+
   /**
    * Constructeur du MessageManager
-   * 
+   *
    * @param sharedStatePath Chemin vers le répertoire .shared-state
    */
   constructor(sharedStatePath: string) {
@@ -154,9 +165,78 @@ export class MessageManager {
   }
 
   /**
+   * Invalidate the in-memory inbox cache.
+   * Called after mutations (send, markAsRead, archive, amend).
+   */
+  invalidateCache(): void {
+    this.inboxCache = null;
+    this.inboxFullCache.clear();
+    this.cacheBuiltAt = 0;
+    this.lastInboxFileCount = -1;
+  }
+
+  /**
+   * Build or return the cached inbox metadata.
+   * Reads all inbox JSON files once, caches results for CACHE_TTL_MS.
+   * Uses file count as a cheap invalidation heuristic for external changes.
+   * @private
+   */
+  private async ensureInboxCache(): Promise<{ items: MessageListItem[]; full: Map<string, Message> }> {
+    if (!existsSync(this.inboxPath)) {
+      return { items: [], full: new Map() };
+    }
+
+    const now = Date.now();
+    const files = (await fs.readdir(this.inboxPath)).filter(f => f.endsWith('.json'));
+
+    // Cache is valid if: within TTL AND file count hasn't changed
+    if (
+      this.inboxCache !== null &&
+      (now - this.cacheBuiltAt) < MessageManager.CACHE_TTL_MS &&
+      files.length === this.lastInboxFileCount
+    ) {
+      return { items: this.inboxCache, full: this.inboxFullCache };
+    }
+
+    logger.info(`Building inbox cache (${files.length} files)`);
+    const items: MessageListItem[] = [];
+    const full = new Map<string, Message>();
+
+    for (const file of files) {
+      try {
+        const content = await fs.readFile(join(this.inboxPath, file), 'utf-8');
+        const message: Message = JSON.parse(content);
+        full.set(message.id, message);
+        items.push({
+          id: message.id,
+          from: message.from,
+          to: message.to,
+          subject: message.subject,
+          priority: message.priority,
+          timestamp: message.timestamp,
+          status: message.status,
+          preview: message.body.substring(0, 100) + (message.body.length > 100 ? '...' : '')
+        });
+      } catch (error) {
+        logger.error(`Error reading message ${file}`, error);
+      }
+    }
+
+    // Sort by timestamp descending (most recent first) once
+    items.sort((a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime());
+
+    this.inboxCache = items;
+    this.inboxFullCache = full;
+    this.cacheBuiltAt = now;
+    this.lastInboxFileCount = files.length;
+
+    return { items, full };
+  }
+
+  /**
    * Génère un ID unique pour un message
    * Format: msg-YYYYMMDDHHMMSS-{random}
-   * 
+   *
    * @returns ID unique du message
    * @private
    */
@@ -236,6 +316,7 @@ export class MessageManager {
       await fs.writeFile(sentFile, JSON.stringify(message, null, 2), 'utf-8');
       logger.info(`Message saved to sent: ${sentFile}`);
 
+      this.invalidateCache();
       logger.info(`Message sent successfully: ${message.id}`);
       return message;
     } catch (error) {
@@ -265,75 +346,105 @@ export class MessageManager {
     machineId: string,
     status?: 'unread' | 'read' | 'all',
     limit?: number,
-    workspaceId?: string
+    workspaceId?: string,
+    page?: number,
+    perPage?: number
   ): Promise<MessageListItem[]> {
     // Auto-détection du workspace si non fourni
     const effectiveWorkspaceId = workspaceId || getLocalWorkspaceId();
     logger.info(`Reading inbox for: ${machineId}:${effectiveWorkspaceId}`);
 
-    if (!existsSync(this.inboxPath)) {
-      logger.warn(`Inbox path does not exist: ${this.inboxPath}`);
-      return [];
-    }
-
     try {
-      const files = (await fs.readdir(this.inboxPath)).filter(f => f.endsWith('.json'));
-      logger.info(`Found ${files.length} message files`);
+      // Use cached data (#638 perf optimization)
+      const { items, full } = await this.ensureInboxCache();
 
-      const messages: MessageListItem[] = [];
-
-      for (const file of files) {
-        try {
-          const content = await fs.readFile(join(this.inboxPath, file), 'utf-8');
-          const message: Message = JSON.parse(content);
-
-          // Filtrer par destinataire (workspace-aware)
-          if (!matchesRecipient(message.to, machineId, effectiveWorkspaceId)) {
-            continue;
-          }
-
-          // Filtrer par status — per-machine for broadcasts (#629)
-          if (status && status !== 'all') {
-            const isBroadcast = message.to === 'all' || message.to === 'All';
-            if (isBroadcast && message.read_by) {
-              // For broadcasts, check per-machine read_by instead of global status
-              const readerMachineId = parseMachineWorkspace(machineId).machineId;
-              const hasRead = message.read_by.includes(readerMachineId);
-              if (status === 'unread' && hasRead) continue;
-              if (status === 'read' && !hasRead) continue;
-            } else {
-              // For targeted messages or broadcasts without read_by, use global status
-              if (message.status !== status) continue;
-            }
-          }
-
-          messages.push({
-            id: message.id,
-            from: message.from,
-            to: message.to,
-            subject: message.subject,
-            priority: message.priority,
-            timestamp: message.timestamp,
-            status: message.status,
-            preview: message.body.substring(0, 100) + (message.body.length > 100 ? '...' : '')
-          });
-        } catch (error) {
-          logger.error(`Error reading message ${file}`, error);
-        }
+      if (items.length === 0) {
+        return [];
       }
 
-      // Trier par timestamp décroissant (plus récents en premier)
-      messages.sort((a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime());
+      // Filter from cache (items are already sorted by timestamp desc)
+      const filtered: MessageListItem[] = [];
 
-      // Limiter le nombre de résultats
-      const result = limit ? messages.slice(0, limit) : messages;
-      logger.info(`Returning ${result.length} messages`);
+      for (const item of items) {
+        // Filter by recipient (workspace-aware) — need full message for broadcast read_by
+        const fullMsg = full.get(item.id);
+        if (!fullMsg) continue;
 
+        if (!matchesRecipient(fullMsg.to, machineId, effectiveWorkspaceId)) {
+          continue;
+        }
+
+        // Filter by status — per-machine for broadcasts (#629)
+        if (status && status !== 'all') {
+          const isBroadcast = fullMsg.to === 'all' || fullMsg.to === 'All';
+          if (isBroadcast && fullMsg.read_by) {
+            const readerMachineId = parseMachineWorkspace(machineId).machineId;
+            const hasRead = fullMsg.read_by.includes(readerMachineId);
+            if (status === 'unread' && hasRead) continue;
+            if (status === 'read' && !hasRead) continue;
+          } else {
+            if (fullMsg.status !== status) continue;
+          }
+        }
+
+        filtered.push(item);
+      }
+
+      // Apply pagination (#638)
+      let result: MessageListItem[];
+      if (page !== undefined && perPage !== undefined && perPage > 0) {
+        const startIdx = (page - 1) * perPage;
+        result = filtered.slice(startIdx, startIdx + perPage);
+      } else if (limit) {
+        result = filtered.slice(0, limit);
+      } else {
+        result = filtered;
+      }
+
+      logger.info(`Returning ${result.length}/${filtered.length} messages (cached)`);
       return result;
     } catch (error) {
       logger.error('Error reading inbox', error);
       return [];
     }
+  }
+
+  /**
+   * Returns the total count of filtered messages (for pagination metadata).
+   * Uses the same cache as readInbox for consistency.
+   */
+  async getFilteredCount(
+    machineId: string,
+    status?: 'unread' | 'read' | 'all',
+    workspaceId?: string
+  ): Promise<{ total: number; unread: number; read: number }> {
+    const effectiveWorkspaceId = workspaceId || getLocalWorkspaceId();
+    const { items, full } = await this.ensureInboxCache();
+
+    let total = 0;
+    let unread = 0;
+    let read = 0;
+
+    for (const item of items) {
+      const fullMsg = full.get(item.id);
+      if (!fullMsg) continue;
+      if (!matchesRecipient(fullMsg.to, machineId, effectiveWorkspaceId)) continue;
+
+      total++;
+      const isBroadcast = fullMsg.to === 'all' || fullMsg.to === 'All';
+      let isUnreadForMachine: boolean;
+      if (isBroadcast && fullMsg.read_by) {
+        const readerMachineId = parseMachineWorkspace(machineId).machineId;
+        isUnreadForMachine = !fullMsg.read_by.includes(readerMachineId);
+      } else {
+        isUnreadForMachine = fullMsg.status === 'unread';
+      }
+
+      if (isUnreadForMachine) unread++;
+      else read++;
+    }
+
+    return { total, unread, read };
   }
 
   /**
@@ -429,6 +540,7 @@ export class MessageManager {
         logger.info('Message also updated in sent/');
       }
 
+      this.invalidateCache();
       logger.info('Message marked as read');
       return true;
     } catch (error) {
@@ -466,7 +578,7 @@ export class MessageManager {
 
       // Supprimer de inbox
       await fs.unlink(inboxFile);
-      
+
       // Also update sent/ directory if message was sent from this machine
       const sentPath = join(this.sentPath, `${messageId}.json`);
       if (existsSync(sentPath)) {
@@ -474,6 +586,7 @@ export class MessageManager {
         logger.info('Message also archived in sent/');
       }
 
+      this.invalidateCache();
       logger.info('Message archived');
       return true;
     } catch (error) {
@@ -574,8 +687,9 @@ export class MessageManager {
         logger.info('Message updated in inbox as well');
       }
 
+      this.invalidateCache();
       logger.info('Message amended successfully');
-      
+
       return {
         success: true,
         message_id: message.id,
@@ -648,53 +762,49 @@ export class MessageManager {
       return { operation, matched: 0, processed: 0, errors: 0, message_ids: [] };
     }
 
-    const files = (await fs.readdir(this.inboxPath)).filter(f => f.endsWith('.json'));
+    // Use cached data for filtering (#638 perf optimization)
+    const { items, full } = await this.ensureInboxCache();
     const matchedIds: string[] = [];
     let errors = 0;
 
-    for (const file of files) {
-      try {
-        const content = await fs.readFile(join(this.inboxPath, file), 'utf-8');
-        const message: Message = JSON.parse(content);
+    for (const item of items) {
+      const message = full.get(item.id);
+      if (!message) continue;
 
-        // Check recipient match
-        if (!matchesRecipient(message.to, machineId, effectiveWorkspaceId)) {
-          continue;
-        }
-
-        // Apply filters (AND logic)
-        if (filters.from && !message.from.toLowerCase().includes(filters.from.toLowerCase())) {
-          continue;
-        }
-        if (filters.priority && message.priority !== filters.priority) {
-          continue;
-        }
-        if (filters.before_date && new Date(message.timestamp) >= new Date(filters.before_date)) {
-          continue;
-        }
-        if (filters.subject_contains && !message.subject.toLowerCase().includes(filters.subject_contains.toLowerCase())) {
-          continue;
-        }
-        if (filters.tag && (!message.tags || !message.tags.includes(filters.tag))) {
-          continue;
-        }
-        if (filters.status) {
-          const isBroadcast = message.to === 'all' || message.to === 'All';
-          if (isBroadcast && message.read_by) {
-            const readerMachineId = parseMachineWorkspace(machineId).machineId;
-            const hasRead = message.read_by.includes(readerMachineId);
-            if (filters.status === 'unread' && hasRead) continue;
-            if (filters.status === 'read' && !hasRead) continue;
-          } else {
-            if (message.status !== filters.status) continue;
-          }
-        }
-
-        matchedIds.push(message.id);
-      } catch (error) {
-        logger.error(`Error reading message ${file}`, error);
-        errors++;
+      // Check recipient match
+      if (!matchesRecipient(message.to, machineId, effectiveWorkspaceId)) {
+        continue;
       }
+
+      // Apply filters (AND logic)
+      if (filters.from && !message.from.toLowerCase().includes(filters.from.toLowerCase())) {
+        continue;
+      }
+      if (filters.priority && message.priority !== filters.priority) {
+        continue;
+      }
+      if (filters.before_date && new Date(message.timestamp) >= new Date(filters.before_date)) {
+        continue;
+      }
+      if (filters.subject_contains && !message.subject.toLowerCase().includes(filters.subject_contains.toLowerCase())) {
+        continue;
+      }
+      if (filters.tag && (!message.tags || !message.tags.includes(filters.tag))) {
+        continue;
+      }
+      if (filters.status) {
+        const isBroadcast = message.to === 'all' || message.to === 'All';
+        if (isBroadcast && message.read_by) {
+          const readerMachineId = parseMachineWorkspace(machineId).machineId;
+          const hasRead = message.read_by.includes(readerMachineId);
+          if (filters.status === 'unread' && hasRead) continue;
+          if (filters.status === 'read' && !hasRead) continue;
+        } else {
+          if (message.status !== filters.status) continue;
+        }
+      }
+
+      matchedIds.push(message.id);
     }
 
     // Apply the operation to matched messages
@@ -756,55 +866,48 @@ export class MessageManager {
       oldest_unread: null as string | null
     };
 
-    if (!existsSync(this.inboxPath)) {
-      return stats;
-    }
-
-    const files = (await fs.readdir(this.inboxPath)).filter(f => f.endsWith('.json'));
+    // Use cached data (#638 perf optimization)
+    const { items, full } = await this.ensureInboxCache();
     let oldestUnreadDate: Date | null = null;
 
-    for (const file of files) {
-      try {
-        const content = await fs.readFile(join(this.inboxPath, file), 'utf-8');
-        const message: Message = JSON.parse(content);
+    for (const item of items) {
+      const message = full.get(item.id);
+      if (!message) continue;
 
-        if (!matchesRecipient(message.to, machineId, effectiveWorkspaceId)) {
-          continue;
-        }
-
-        stats.total++;
-
-        // Per-machine read status for broadcasts (#629)
-        const isBroadcast = message.to === 'all' || message.to === 'All';
-        let isUnreadForThisMachine: boolean;
-        if (isBroadcast && message.read_by) {
-          const readerMachineId = parseMachineWorkspace(machineId).machineId;
-          isUnreadForThisMachine = !message.read_by.includes(readerMachineId);
-        } else {
-          isUnreadForThisMachine = message.status === 'unread';
-        }
-
-        if (isUnreadForThisMachine) {
-          stats.unread++;
-          const msgDate = new Date(message.timestamp);
-          if (!oldestUnreadDate || msgDate < oldestUnreadDate) {
-            oldestUnreadDate = msgDate;
-            stats.oldest_unread = message.timestamp;
-          }
-        } else {
-          stats.read++;
-        }
-
-        // Count by priority
-        const prio = message.priority || 'MEDIUM';
-        stats.by_priority[prio] = (stats.by_priority[prio] || 0) + 1;
-
-        // Count by sender (machine ID only)
-        const sender = parseMachineWorkspace(message.from).machineId;
-        stats.by_sender[sender] = (stats.by_sender[sender] || 0) + 1;
-      } catch (error) {
-        logger.error(`Error reading message ${file}`, error);
+      if (!matchesRecipient(message.to, machineId, effectiveWorkspaceId)) {
+        continue;
       }
+
+      stats.total++;
+
+      // Per-machine read status for broadcasts (#629)
+      const isBroadcast = message.to === 'all' || message.to === 'All';
+      let isUnreadForThisMachine: boolean;
+      if (isBroadcast && message.read_by) {
+        const readerMachineId = parseMachineWorkspace(machineId).machineId;
+        isUnreadForThisMachine = !message.read_by.includes(readerMachineId);
+      } else {
+        isUnreadForThisMachine = message.status === 'unread';
+      }
+
+      if (isUnreadForThisMachine) {
+        stats.unread++;
+        const msgDate = new Date(message.timestamp);
+        if (!oldestUnreadDate || msgDate < oldestUnreadDate) {
+          oldestUnreadDate = msgDate;
+          stats.oldest_unread = message.timestamp;
+        }
+      } else {
+        stats.read++;
+      }
+
+      // Count by priority
+      const prio = message.priority || 'MEDIUM';
+      stats.by_priority[prio] = (stats.by_priority[prio] || 0) + 1;
+
+      // Count by sender (machine ID only)
+      const sender = parseMachineWorkspace(message.from).machineId;
+      stats.by_sender[sender] = (stats.by_sender[sender] || 0) + 1;
     }
 
     return stats;

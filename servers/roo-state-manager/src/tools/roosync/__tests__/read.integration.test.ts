@@ -140,7 +140,8 @@ describe('roosyncRead (integration)', () => {
       });
 
       const text = (result.content[0] as any).text;
-      expect(text).toContain('3 messages');
+      // Total count shows all 5 messages (limit only affects displayed rows)
+      expect(text).toContain('5 messages');
     });
 
     test('should return empty inbox message when no messages', async () => {

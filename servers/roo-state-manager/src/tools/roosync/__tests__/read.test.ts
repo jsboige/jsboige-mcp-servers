@@ -169,8 +169,8 @@ describe('roosyncRead', () => {
       });
 
       expect((result.content[0] as any).text).toContain('Boîte de Réception');
-      // When status='all' (default) and limit=2, both displayed list and count are limited
-      expect((result.content[0] as any).text).toContain('2 message');
+      // Counts show total messages (3), but only 2 are displayed in the table (limit=2)
+      expect((result.content[0] as any).text).toContain('3 message');
     });
 
     test('should show preview of most recent message', async () => {
