@@ -302,18 +302,24 @@ vi.mock('../../src/services/HierarchyReconstructionEngine.js', () => ({
   }))
 }));
 
-// Mock pour TaskIndexer
+// Mock pour TaskIndexer - Fix #634: Add named export for TypeScript imports
+// The import is: import TaskIndexer from './task-indexer.js';
+// So we need to export both TaskIndexer (named) and default
+const MockTaskIndexer = vi.fn().mockImplementation(() => ({
+  getCollectionStatus: vi.fn().mockResolvedValue({
+    exists: true,
+    pointsCount: 100,
+    vectorSize: 1536
+  }),
+  resetCollection: vi.fn().mockResolvedValue(undefined),
+  safeQdrantUpsert: vi.fn().mockResolvedValue(undefined),
+  upsertPointsBatch: vi.fn().mockResolvedValue(undefined),
+  validateVector: vi.fn().mockResolvedValue(true),
+}));
+
 vi.mock('../../src/services/task-indexer.js', () => ({
-  default: vi.fn().mockImplementation(() => ({
-    getCollectionStatus: vi.fn().mockResolvedValue({
-      exists: true,
-      pointsCount: 100,
-      vectorSize: 1536
-    }),
-    resetCollection: vi.fn().mockResolvedValue(undefined),
-    safeQdrantUpsert: vi.fn().mockResolvedValue(undefined),
-    upsertPointsBatch: vi.fn().mockResolvedValue(undefined),
-  }))
+  TaskIndexer: MockTaskIndexer,
+  default: MockTaskIndexer,
 }));
 
 // Mock pour PowerShellExecutor - Fix #634: Add named export for TypeScript imports
@@ -325,9 +331,19 @@ const mockPowerShellExecutorInstance = {
 
 const MockPowerShellExecutor = vi.fn().mockImplementation(() => mockPowerShellExecutorInstance);
 
+// Static methods for PowerShellExecutor
+MockPowerShellExecutor.setMockPowerShellPath = vi.fn();
+MockPowerShellExecutor.parseJsonOutput = vi.fn().mockReturnValue({ success: true, result: {} });
+MockPowerShellExecutor.isPowerShellAvailable = vi.fn().mockReturnValue(true);
+MockPowerShellExecutor.getPowerShellVersion = vi.fn().mockReturnValue('7.4.0');
+MockPowerShellExecutor.getSystemPowerShellPath = vi.fn().mockReturnValue('C:\\Windows\\System32\\pwsh.exe');
+MockPowerShellExecutor.getDefaultExecutor = vi.fn().mockReturnValue(mockPowerShellExecutorInstance);
+
 vi.mock('../../src/services/PowerShellExecutor.js', () => ({
   PowerShellExecutor: MockPowerShellExecutor,
   default: MockPowerShellExecutor,
+  resetDefaultExecutor: vi.fn(),
+  getDefaultExecutor: MockPowerShellExecutor.getDefaultExecutor,
 }));
 
 // Mock pour RooSyncService
@@ -426,8 +442,52 @@ const mockRooSyncServiceInstance = {
       added: [],
       modified: [],
       removed: []
-    })
-  }))
+    }),
+    getConfigVersion: vi.fn().mockResolvedValue('1.0.0')
+  })),
+  // getDecision mock - delegates to SyncDecisionManager
+  // Signature: async getDecision(id: string): Promise<RooSyncDecision | null>
+  getDecision: vi.fn().mockResolvedValue({
+    id: 'test-decision-id',
+    machineId: 'test-machine',
+    status: 'applied',
+    action: 'apply',
+    targetType: 'config',
+    targetId: 'test-target',
+    createdAt: new Date().toISOString(),
+    updatedAt: new Date().toISOString(),
+    changes: [],
+    rollbackPoint: '/mock/rollback-point'
+  }),
+  // restoreFromRollbackPoint mock - delegates to BaselineManager
+  // Signature: async restoreFromRollbackPoint(decisionId: string): Promise<RollbackRestoreResult>
+  restoreFromRollbackPoint: vi.fn().mockResolvedValue({
+    success: true,
+    restored: true,
+    decisionId: 'test-decision-id',
+    timestamp: new Date().toISOString()
+  }),
+  // getConfigService mock - returns ConfigService instance
+  // Signature: getConfigService(): ConfigService
+  getConfigService: vi.fn().mockReturnValue({
+    loadConfig: vi.fn().mockResolvedValue({}),
+    saveConfig: vi.fn().mockResolvedValue(undefined),
+    getConfig: vi.fn().mockReturnValue({})
+  }),
+  // getCommitLogService mock - returns CommitLogService instance
+  // Signature: getCommitLogService(): CommitLogService
+  getCommitLogService: vi.fn().mockReturnValue({
+    logCommit: vi.fn().mockResolvedValue(undefined),
+    getRecentCommits: vi.fn().mockResolvedValue([]),
+    start: vi.fn().mockResolvedValue(undefined),
+    stop: vi.fn().mockResolvedValue(undefined)
+  }),
+  // startCommitLogService mock - initializes the commit log service
+  // Signature: async startCommitLogService(): Promise<void>
+  startCommitLogService: vi.fn().mockResolvedValue(undefined),
+  // stopCommitLogService mock - stops the commit log service
+  // Signature: async stopCommitLogService(): Promise<void>
+  stopCommitLogService: vi.fn().mockResolvedValue(undefined)
 };
 
 // Named export for getRooSyncService
@@ -464,14 +524,11 @@ vi.mock('../../src/services/RooSyncService.js', () => ({
 // BaselineService tests need the real implementation with locally-mocked dependencies.
 // Tests that use BaselineService as a dependency should mock it locally in their test files.
 
-// Mock pour ConfigService
-vi.mock('../../src/services/ConfigService.js', () => ({
-  ConfigService: vi.fn().mockImplementation(() => ({
-    loadConfig: vi.fn().mockResolvedValue({}),
-    saveConfig: vi.fn().mockResolvedValue(undefined),
-    getConfig: vi.fn().mockReturnValue({}),
-  })),
-}));
+// NOTE: ConfigService mock removed from jest.setup.js (ROOT CAUSE FIX #636)
+// ConfigService tests need the real implementation with all its methods.
+// The global mock only provided 3 methods (loadConfig, saveConfig, getConfig) but
+// the real ConfigService has many more methods, causing "not a function" errors.
+// Tests that use ConfigService as a dependency should mock it locally in their test files.
 
 // Mock pour InventoryCollector
 vi.mock('../../src/services/InventoryCollector.js', () => ({

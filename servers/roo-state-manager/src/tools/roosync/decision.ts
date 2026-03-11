@@ -147,31 +147,20 @@ export async function roosyncDecision(args: RooSyncDecisionArgs): Promise<RooSyn
     // Charger la décision
     const decisionDetails = await loadDecisionDetails(args.decisionId, config);
     if (!decisionDetails) {
-      return {
-        success: false,
-        decisionId: args.decisionId,
-        action: args.action,
-        timestamp: new Date().toISOString(),
-        machineId,
-        error: `Décision '${args.decisionId}' introuvable`,
-        nextSteps: ['Vérifiez que la décision existe dans sync-roadmap.md']
-      };
+      throw new RooSyncServiceError(
+        `Décision '${args.decisionId}' introuvable`,
+        'DECISION_NOT_FOUND'
+      );
     }
 
     const previousStatus = decisionDetails.status;
 
     // Valider la transition de statut
     if (!validateDecisionStatus(previousStatus, args.action)) {
-      return {
-        success: false,
-        decisionId: args.decisionId,
-        action: args.action,
-        previousStatus,
-        timestamp: new Date().toISOString(),
-        machineId,
-        error: `Action '${args.action}' non permise depuis le statut '${previousStatus}'`,
-        nextSteps: ['Vérifiez le statut actuel de la décision']
-      };
+      throw new RooSyncServiceError(
+        `Action '${args.action}' non permise depuis le statut '${previousStatus}'`,
+        'INVALID_STATUS_TRANSITION'
+      );
     }
 
     // Mapper l'action vers le nouveau statut
@@ -227,16 +216,10 @@ export async function roosyncDecision(args: RooSyncDecisionArgs): Promise<RooSyn
           rollbackAvailable = true;
         } catch (backupError) {
           if (!args.force) {
-            return {
-              success: false,
-              decisionId: args.decisionId,
-              action: args.action,
-              previousStatus,
-              timestamp: new Date().toISOString(),
-              machineId,
-              error: 'Impossible de créer le backup. Utilisez force=true pour continuer sans backup.',
-              nextSteps: ['Réessayez avec force=true ou corrigez le problème de backup']
-            };
+            throw new RooSyncServiceError(
+              'Impossible de créer le backup. Utilisez force=true pour continuer sans backup.',
+              'BACKUP_FAILED'
+            );
           }
           executionLog.push(`[WARN] Backup échoué, continuant car force=true`);
         }
@@ -255,16 +238,10 @@ export async function roosyncDecision(args: RooSyncDecisionArgs): Promise<RooSyn
           restoredFiles = [];
           executionLog.push(`[INFO] Rollback effectué pour ${args.decisionId}`);
         } catch (restoreError) {
-          return {
-            success: false,
-            decisionId: args.decisionId,
-            action: args.action,
-            previousStatus,
-            timestamp: new Date().toISOString(),
-            machineId,
-            error: `Échec du rollback: ${restoreError instanceof Error ? restoreError.message : String(restoreError)}`,
-            nextSteps: ['Vérifiez que le backup existe et est accessible']
-          };
+          throw new RooSyncServiceError(
+            `Échec du rollback: ${restoreError instanceof Error ? restoreError.message : String(restoreError)}`,
+            'ROLLBACK_FAILED'
+          );
         }
 
         updateRoadmapStatus(config, args.decisionId, newStatus, {
@@ -284,16 +261,8 @@ export async function roosyncDecision(args: RooSyncDecisionArgs): Promise<RooSyn
       restoredFiles
     });
   } catch (error) {
-    // Gérer toute erreur non capturée
-    return {
-      success: false,
-      decisionId: args.decisionId,
-      action: args.action,
-      timestamp: new Date().toISOString(),
-      machineId,
-      error: error instanceof Error ? error.message : String(error),
-      nextSteps: ['Consultez les logs pour plus de détails']
-    };
+    // Re-lancer l'erreur pour que le MCP handler puisse la propager
+    throw error;
   }
 }
 

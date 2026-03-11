@@ -133,6 +133,7 @@ describe('decision', () => {
 	describe('RooSyncDecisionResultSchema', () => {
 		test('validates a complete result', () => {
 			const result = RooSyncDecisionResultSchema.parse({
+				success: true,
 				decisionId: 'DEC-001',
 				action: 'approve',
 				previousStatus: 'pending',
@@ -146,6 +147,7 @@ describe('decision', () => {
 
 		test('accepts apply result with changes and logs', () => {
 			const result = RooSyncDecisionResultSchema.parse({
+				success: true,
 				decisionId: 'DEC-001',
 				action: 'apply',
 				previousStatus: 'approved',
@@ -167,6 +169,7 @@ describe('decision', () => {
 
 		test('accepts rollback result with restored files', () => {
 			const result = RooSyncDecisionResultSchema.parse({
+				success: true,
 				decisionId: 'DEC-001',
 				action: 'rollback',
 				previousStatus: 'applied',
