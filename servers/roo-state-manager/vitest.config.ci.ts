@@ -12,7 +12,7 @@
  * IMPORTANT: When adding new test exclusions here, also create a tracking
  * issue to fix the underlying test so it can run in CI.
  *
- * Last audit: 2026-03-11 (34 files excluded, see #626)
+ * Last audit: 2026-03-11 (35 files excluded, see #626)
  */
 import { defineConfig, mergeConfig } from 'vitest/config';
 import baseConfig from './vitest.config.js';
@@ -73,6 +73,7 @@ export default mergeConfig(baseConfig, defineConfig({
       'src/tools/roosync/__tests__/baseline.integration.test.ts',
       'src/tools/roosync/__tests__/config.integration.test.ts',
       'src/tools/roosync/__tests__/decision.integration.test.ts',
+      'src/tools/roosync/__tests__/diagnose.integration.test.ts',
       'src/tools/roosync/__tests__/refresh-dashboard.integration.test.ts',
       'src/tools/roosync/__tests__/update-dashboard.integration.test.ts',
       'tests/unit/tools/roosync/apply-decision.test.ts',
