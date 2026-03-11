@@ -77,13 +77,18 @@ export default mergeConfig(baseConfig, defineConfig({
       'src/tools/roosync/__tests__/diagnose.integration.test.ts',
       'src/tools/roosync/__tests__/refresh-dashboard.integration.test.ts',
       'src/tools/roosync/__tests__/update-dashboard.integration.test.ts',
-      'tests/unit/tools/roosync/apply-decision.test.ts',
       'tests/unit/tools/roosync/baseline.test.ts',
 
-      // ===== CI-excluded: Decision tools (service.getDecision not a function) =====
-      'tests/unit/tools/roosync/approve-decision.test.ts',
-      'tests/unit/tools/roosync/reject-decision.test.ts',
-      'tests/unit/tools/roosync/rollback-decision.test.ts',
+      // ===== CI-excluded: DEBUG (debug files for local development) =====
+      // These are debug test files created to diagnose mock path resolution issues.
+      // They are not meant to run in CI - use them locally for troubleshooting.
+      'tests/unit/tools/roosync/console-test.test.ts',
+      'tests/unit/tools/roosync/debug-instance-check.test.ts',
+      'tests/unit/tools/roosync/debug-mock-direct.test.ts',
+      'tests/unit/tools/roosync/debug-mock-factory.test.ts',
+      'tests/unit/tools/roosync/debug-mock.test.ts',
+      'tests/unit/tools/roosync/debug-other-methods.test.ts',
+      'tests/unit/tools/roosync/debug-source-import.test.ts',
 
       // ===== CI-excluded: Export baseline (schema mismatch) =====
       'tests/unit/tools/roosync/export-baseline.test.ts',
