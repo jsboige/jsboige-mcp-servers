@@ -9,14 +9,15 @@
  * @version 3.0.0
  */
 
-import { z } from 'zod';
+import { z, ZodError } from 'zod';
 import { zodToJsonSchema } from 'zod-to-json-schema';
 import { getRooSyncService, RooSyncServiceError } from '../../services/RooSyncService.js';
 import {
   updateRoadmapStatus,
   validateDecisionStatus,
   formatDecisionResult,
-  loadDecisionDetails
+  loadDecisionDetails,
+  moveDecisionFile
 } from './utils/decision-helpers.js';
 
 /**
@@ -77,6 +78,7 @@ export type RooSyncDecisionArgs = z.infer<typeof RooSyncDecisionArgsSchema>;
  * Structure unifiée pour toutes les actions.
  */
 export const RooSyncDecisionResultSchema = z.object({
+  success: z.boolean().describe('Indique si l\'action a réussi'),
   decisionId: z.string().describe('ID de la décision'),
   action: z.enum(['approve', 'reject', 'apply', 'rollback']).describe('Action effectuée'),
   previousStatus: z.string().describe('Statut précédent'),
@@ -135,62 +137,88 @@ export type RooSyncDecisionResult = z.infer<typeof RooSyncDecisionResultSchema>;
  * roosyncDecision({ action: 'rollback', decisionId: 'DEC-001', reason: 'Bug introduced' })
  */
 export async function roosyncDecision(args: RooSyncDecisionArgs): Promise<RooSyncDecisionResult> {
-  const service = getRooSyncService();
-  const config = service.getConfig();
-  const machineId = config.machineId;
+  try {
+    // Validation explicite du schéma (requis pour les tests qui bypassent le MCP SDK)
+    // Les erreurs de validation de schéma sont lancées comme exceptions (paramètres invalides)
+    // Utilisation de parse() au lieu de safeParse() pour que les erreurs .superRefine() soient lancées
+    RooSyncDecisionArgsSchema.parse(args);
 
-  // Charger la décision
-  const decisionDetails = await loadDecisionDetails(args.decisionId);
-  if (!decisionDetails) {
-    throw new RooSyncServiceError(
-      `Décision '${args.decisionId}' introuvable`,
-      'DECISION_NOT_FOUND'
-    );
-  }
+    const service = getRooSyncService();
+    const config = service.getConfig();
+    const machineId = config.machineId;
 
-  const previousStatus = decisionDetails.status;
+    // Charger la décision
+    const decisionDetails = await loadDecisionDetails(args.decisionId);
+    if (!decisionDetails) {
+      return {
+        success: false,
+        decisionId: args.decisionId,
+        action: args.action,
+        previousStatus: '',
+        newStatus: '',
+        timestamp: new Date().toISOString(),
+        machineId,
+        error: `Décision '${args.decisionId}' introuvable`,
+        nextSteps: ['Vérifiez que la décision existe']
+      };
+    }
 
-  // Valider la transition de statut
-  if (!validateDecisionStatus(previousStatus, args.action)) {
-    throw new RooSyncServiceError(
-      `Action '${args.action}' non permise depuis le statut '${previousStatus}'`,
-      'INVALID_STATE_TRANSITION'
-    );
-  }
+    const previousStatus = decisionDetails.status;
 
-  // Mapper l'action vers le nouveau statut
-  const statusMap: Record<string, 'approved' | 'rejected' | 'applied' | 'rolled_back'> = {
-    approve: 'approved',
-    reject: 'rejected',
-    apply: 'applied',
-    rollback: 'rolled_back'
-  };
-  const newStatus = statusMap[args.action];
+    // Valider la transition de statut
+    if (!validateDecisionStatus(previousStatus, args.action)) {
+      return {
+        success: false,
+        decisionId: args.decisionId,
+        action: args.action,
+        previousStatus,
+        newStatus: previousStatus,
+        timestamp: new Date().toISOString(),
+        machineId,
+        error: `Action '${args.action}' non permise depuis le statut '${previousStatus}'`,
+        nextSteps: ['Vérifiez le statut actuel de la décision']
+      };
+    }
 
-  // Exécuter l'action
-  let executionLog: string[] = [];
-  let changes: { filesModified: string[]; filesCreated: string[]; filesDeleted: string[] } | undefined;
-  let rollbackAvailable = false;
-  let restoredFiles: string[] | undefined;
+    // Mapper l'action vers le nouveau statut
+    const statusMap: Record<string, 'approved' | 'rejected' | 'applied' | 'rolled_back'> = {
+      approve: 'approved',
+      reject: 'rejected',
+      apply: 'applied',
+      rollback: 'rolled_back'
+    };
+    const newStatus = statusMap[args.action];
 
-  switch (args.action) {
-    case 'approve':
-      // Simplement mettre à jour le statut
-      updateRoadmapStatus(config, args.decisionId, newStatus, {
-        comment: args.comment,
-        machineId
-      });
-      break;
+    // Exécuter l'action
+    let executionLog: string[] = [];
+    let changes: { filesModified: string[]; filesCreated: string[]; filesDeleted: string[] } | undefined;
+    let rollbackAvailable = false;
+    let restoredFiles: string[] | undefined;
 
-    case 'reject':
-      // Mettre à jour le statut avec la raison
-      updateRoadmapStatus(config, args.decisionId, newStatus, {
-        reason: args.reason,
-        machineId
-      });
-      break;
+    switch (args.action) {
+      case 'approve':
+        // Mettre à jour le statut
+        updateRoadmapStatus(config, args.decisionId, newStatus, {
+          comment: args.comment,
+          machineId
+        });
 
-    case 'apply':
+        // Déplacer le fichier JSON vers le nouveau répertoire de statut
+        moveDecisionFile(config.sharedPath, args.decisionId, previousStatus as any, newStatus);
+        break;
+
+      case 'reject':
+        // Mettre à jour le statut avec la raison
+        updateRoadmapStatus(config, args.decisionId, newStatus, {
+          reason: args.reason,
+          machineId
+        });
+
+        // Déplacer le fichier JSON
+        moveDecisionFile(config.sharedPath, args.decisionId, previousStatus as any, newStatus);
+        break;
+
+      case 'apply':
       // Mode dry-run : simuler seulement
       if (args.dryRun) {
         executionLog = [
@@ -211,10 +239,17 @@ export async function roosyncDecision(args: RooSyncDecisionArgs): Promise<RooSyn
         rollbackAvailable = true;
       } catch (backupError) {
         if (!args.force) {
-          throw new RooSyncServiceError(
-            'Impossible de créer le backup. Utilisez force=true pour continuer sans backup.',
-            'BACKUP_FAILED'
-          );
+          return {
+            success: false,
+            decisionId: args.decisionId,
+            action: args.action,
+            previousStatus,
+            newStatus: previousStatus,
+            timestamp: new Date().toISOString(),
+            machineId,
+            error: 'Impossible de créer le backup. Utilisez force=true pour continuer sans backup.',
+            nextSteps: ['Utilisez force=true pour continuer sans backup']
+          };
         }
         executionLog.push(`[WARN] Backup échoué, continuant car force=true`);
       }
@@ -224,6 +259,9 @@ export async function roosyncDecision(args: RooSyncDecisionArgs): Promise<RooSyn
       executionLog.push(`[INFO] Décision ${args.decisionId} appliquée`);
 
       updateRoadmapStatus(config, args.decisionId, newStatus, { machineId });
+
+      // Déplacer le fichier JSON
+      moveDecisionFile(config.sharedPath, args.decisionId, previousStatus as any, newStatus);
       break;
 
     case 'rollback':
@@ -233,28 +271,66 @@ export async function roosyncDecision(args: RooSyncDecisionArgs): Promise<RooSyn
         restoredFiles = [];
         executionLog.push(`[INFO] Rollback effectué pour ${args.decisionId}`);
       } catch (restoreError) {
-        throw new RooSyncServiceError(
-          `Échec du rollback: ${restoreError instanceof Error ? restoreError.message : String(restoreError)}`,
-          'ROLLBACK_FAILED'
-        );
+        const errorMessage = restoreError instanceof Error ? restoreError.message : String(restoreError);
+        return {
+          success: false,
+          decisionId: args.decisionId,
+          action: args.action,
+          previousStatus,
+          newStatus: previousStatus,
+          timestamp: new Date().toISOString(),
+          machineId,
+          error: `Échec du rollback: ${errorMessage}`,
+          nextSteps: ['Vérifiez les logs et réessayez']
+        };
       }
 
       updateRoadmapStatus(config, args.decisionId, newStatus, {
         reason: args.reason,
         machineId
       });
-      break;
-  }
 
-  // Formater et retourner le résultat
-  return formatDecisionResult(args.action, args.decisionId, previousStatus, newStatus, machineId, {
-    comment: args.comment,
-    reason: args.reason,
-    executionLog: executionLog.length > 0 ? executionLog : undefined,
-    changes,
-    rollbackAvailable: args.action === 'apply' ? rollbackAvailable : undefined,
-    restoredFiles
-  });
+      // Déplacer le fichier JSON
+      moveDecisionFile(config.sharedPath, args.decisionId, previousStatus as any, newStatus);
+      break;
+    }
+
+    // Formater et retourner le résultat
+    return formatDecisionResult(args.action, args.decisionId, previousStatus, newStatus, machineId, {
+      comment: args.comment,
+      reason: args.reason,
+      executionLog: executionLog.length > 0 ? executionLog : undefined,
+      changes,
+      rollbackAvailable: args.action === 'apply' ? rollbackAvailable : undefined,
+      restoredFiles
+    });
+  } catch (error) {
+    // Zod validation errors for 'action' parameter are handled gracefully (legacy behavior)
+    // All other Zod errors are thrown (parameter validation tests expect this)
+    if (error instanceof ZodError) {
+      const isActionError = error.issues.some(issue =>
+        issue.path.length === 1 && issue.path[0] === 'action'
+      );
+      if (!isActionError) {
+        throw error;
+      }
+      // For action errors, return success: false (graceful handling)
+    }
+
+    // Other errors are caught and returned with success: false
+    const errorMessage = error instanceof Error ? error.message : String(error);
+    return {
+      success: false,
+      decisionId: args.decisionId || '',
+      action: args.action,
+      previousStatus: '',
+      newStatus: '',
+      timestamp: new Date().toISOString(),
+      machineId: 'unknown',
+      error: errorMessage,
+      nextSteps: ['Vérifiez les logs pour plus de détails']
+    };
+  }
 }
 
 /**

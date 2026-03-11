@@ -184,24 +184,14 @@ export class ConfigService implements IConfigService {
    * @throws {ConfigServiceError} Si aucun chemin valide n'est trouvé
    */
   private findSharedStatePath(): string {
-    // Essayer d'utiliser la variable d'environnement ROOSYNC_SHARED_PATH
+    // Utiliser ROOSYNC_SHARED_PATH si défini (sans vérifier l'existence)
+    // La validation de l'existence est faite par les méthodes qui utilisent ce chemin
     if (process.env.ROOSYNC_SHARED_PATH) {
-      const envPath = process.env.ROOSYNC_SHARED_PATH;
-      if (existsSync(envPath)) {
-        return envPath;
-      }
-      logger.warn('ROOSYNC_SHARED_PATH défini mais le répertoire n\'existe pas', { envPath });
+      return process.env.ROOSYNC_SHARED_PATH;
     }
 
     // Fallback : utiliser le chemin par défaut dans le workspace
     const defaultPath = join(process.cwd(), 'roo-config');
-
-    if (!existsSync(defaultPath)) {
-      logger.warn('Chemin d\'état partagé par défaut non trouvé', { defaultPath });
-      // On retourne quand même le chemin par défaut pour éviter de bloquer l'instanciation
-      // Les méthodes qui utilisent ce chemin géreront l'erreur
-    }
-
     return defaultPath;
   }
 }

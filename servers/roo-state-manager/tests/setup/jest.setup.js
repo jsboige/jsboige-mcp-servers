@@ -306,14 +306,18 @@ vi.mock('../../src/services/HierarchyReconstructionEngine.js', () => ({
 // The import is: import { TaskIndexer } from './task-indexer.js';
 // So we need to export both TaskIndexer (named) and default
 const mockTaskIndexerInstance = {
+  indexTask: vi.fn().mockRejectedValue(new Error('Task not found in any storage location')),
   getCollectionStatus: vi.fn().mockResolvedValue({
     exists: true,
-    pointsCount: 100,
-    vectorSize: 1536
+    count: 100
   }),
   resetCollection: vi.fn().mockResolvedValue(undefined),
   safeQdrantUpsert: vi.fn().mockResolvedValue(undefined),
   upsertPointsBatch: vi.fn().mockResolvedValue(undefined),
+  startHealthCheck: vi.fn(),
+  stopHealthCheck: vi.fn(),
+  updateSkeletonIndexTimestamp: vi.fn().mockResolvedValue(undefined),
+  countPointsByHostOs: vi.fn().mockResolvedValue(0),
 };
 
 const MockTaskIndexer = vi.fn().mockImplementation(() => mockTaskIndexerInstance);

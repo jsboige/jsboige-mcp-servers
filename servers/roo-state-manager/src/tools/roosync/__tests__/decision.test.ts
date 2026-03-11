@@ -134,6 +134,7 @@ describe('decision', () => {
 	describe('RooSyncDecisionResultSchema', () => {
 		test('validates a complete result', () => {
 			const result = RooSyncDecisionResultSchema.parse({
+				success: true,
 				decisionId: 'DEC-001',
 				action: 'approve',
 				previousStatus: 'pending',
@@ -147,6 +148,7 @@ describe('decision', () => {
 
 		test('accepts apply result with changes and logs', () => {
 			const result = RooSyncDecisionResultSchema.parse({
+				success: true,
 				decisionId: 'DEC-001',
 				action: 'apply',
 				previousStatus: 'approved',
@@ -168,6 +170,7 @@ describe('decision', () => {
 
 		test('accepts rollback result with restored files', () => {
 			const result = RooSyncDecisionResultSchema.parse({
+				success: true,
 				decisionId: 'DEC-001',
 				action: 'rollback',
 				previousStatus: 'applied',
@@ -192,21 +195,23 @@ describe('decision', () => {
 	// ============================================================
 
 	describe('roosyncDecision', () => {
-		test('throws when decision not found', async () => {
+		test('returns success: false when decision not found', async () => {
 			mockLoadDecisionDetails.mockResolvedValue(null);
 
-			await expect(
-				roosyncDecision({ action: 'approve', decisionId: 'DEC-999' })
-			).rejects.toThrow('introuvable');
+			const result = await roosyncDecision({ action: 'approve', decisionId: 'DEC-999' });
+
+			expect(result.success).toBe(false);
+			expect(result.error).toContain('introuvable');
 		});
 
-		test('throws on invalid state transition', async () => {
+		test('returns success: false on invalid state transition', async () => {
 			mockLoadDecisionDetails.mockResolvedValue({ status: 'applied' });
 			mockValidateDecisionStatus.mockReturnValue(false);
 
-			await expect(
-				roosyncDecision({ action: 'approve', decisionId: 'DEC-001' })
-			).rejects.toThrow('non permise');
+			const result = await roosyncDecision({ action: 'approve', decisionId: 'DEC-001' });
+
+			expect(result.success).toBe(false);
+			expect(result.error).toContain('non permise');
 		});
 	});
 });

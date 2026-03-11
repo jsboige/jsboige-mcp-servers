@@ -271,14 +271,21 @@ describe('compare-config', () => {
 				await expect(roosyncCompareConfig({ target: 'po-2023' })).rejects.toThrow();
 		});
 
-		test('throws when no target machines available', async () => {
+		test('returns CRITICAL diff when no target machines available (graceful handling)', async () => {
 			mockLoadDashboard.mockResolvedValue({
 				machines: {
 					'ai-01': { status: 'online' }
 				}
 			});
 
-				await expect(roosyncCompareConfig({})).rejects.toThrow('Aucune autre machine');
+				const result = await roosyncCompareConfig({});
+
+				// Should resolve (not reject) with CRITICAL infrastructure difference
+				expect(result).toBeDefined();
+				expect(result.differences.length).toBeGreaterThan(0);
+				const criticalDiff = result.differences.find(d => d.severity === 'CRITICAL');
+				expect(criticalDiff).toBeDefined();
+				expect(criticalDiff!.description).toContain('Aucune autre machine');
 		});
 
 		test('applies filter to granular diffs', async () => {

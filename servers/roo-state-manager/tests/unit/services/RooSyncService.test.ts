@@ -3,9 +3,15 @@
  */
 
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
-// Unmock fs to ensure we use the real filesystem for tests
+// Unmock fs and RooSyncService to use real implementations
 vi.unmock('fs');
 vi.unmock('../../../src/services/RooSyncService.js');
+// Unmock dependencies of RooSyncService to use real implementations
+vi.unmock('../../../src/services/ConfigService.js');
+vi.unmock('../../../src/services/BaselineService.js');
+vi.unmock('../../../src/services/InventoryCollector.js');
+vi.unmock('../../../src/services/DiffDetector.js');
+vi.unmock('../../../src/services/PowerShellExecutor.js');
 
 import { writeFileSync, mkdirSync, rmSync, readFileSync } from 'fs';
 import { join } from 'path';

@@ -35,6 +35,16 @@ vi.mock('../../../utils/server-helpers.js', () => ({
   getSharedStatePath: () => testSharedStatePath
 }));
 
+// Fix #634: Integration tests need REAL RooSyncService, not the mock from jest.setup.js
+// Unmock the service so we get the real singleton with actual filesystem operations
+vi.unmock('../../../services/RooSyncService.js');
+// Also unmock InventoryCollector - the jest.setup.js mock has wrong method names (collect vs collectInventory)
+vi.unmock('../../../services/InventoryCollector.js');
+// Also unmock BaselineService - jest.setup.js mock is missing loadBaseline method
+vi.unmock('../../../services/BaselineService.js');
+// Also unmock ConfigService - BaselineService depends on it and jest.setup.js mock is incomplete
+vi.unmock('../../../services/ConfigService.js');
+
 // Import après les mocks
 import { roosyncDecision } from '../decision.js';
 import { RooSyncService } from '../../../services/RooSyncService.js';
@@ -42,10 +52,15 @@ import { RooSyncService } from '../../../services/RooSyncService.js';
 describe('roosync_decision (integration)', () => {
   // Fix #634: Save original env var to restore after tests
   const originalSharedPath = process.env.ROOSYNC_SHARED_PATH;
+  const originalMachineId = process.env.ROOSYNC_MACHINE_ID;
+  const originalNodeEnv = process.env.NODE_ENV;
 
   beforeEach(async () => {
     // Fix #634: Override env var BEFORE singleton recreation
+    // loadRooSyncConfig() requires NODE_ENV='test' to use test mode (roosync-config.ts lines 54-98)
+    process.env.NODE_ENV = 'test';
     process.env.ROOSYNC_SHARED_PATH = testSharedStatePath;
+    process.env.ROOSYNC_MACHINE_ID = 'test-machine';
 
     // Reset singleton so it gets recreated with the test path
     RooSyncService.resetInstance();
@@ -72,11 +87,23 @@ describe('roosync_decision (integration)', () => {
     // Reset singleton to prevent leaking test state to other test files
     RooSyncService.resetInstance();
 
-    // Restore original env var
+    // Restore original env vars
     if (originalSharedPath !== undefined) {
       process.env.ROOSYNC_SHARED_PATH = originalSharedPath;
     } else {
       delete process.env.ROOSYNC_SHARED_PATH;
+    }
+
+    if (originalMachineId !== undefined) {
+      process.env.ROOSYNC_MACHINE_ID = originalMachineId;
+    } else {
+      delete process.env.ROOSYNC_MACHINE_ID;
+    }
+
+    if (originalNodeEnv !== undefined) {
+      process.env.NODE_ENV = originalNodeEnv;
+    } else {
+      delete process.env.NODE_ENV;
     }
 
     // Cleanup : supprimer répertoire test pour isolation

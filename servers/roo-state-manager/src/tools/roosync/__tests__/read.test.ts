@@ -13,6 +13,16 @@
  */
 
 import { describe, test, expect, beforeEach, afterEach, vi } from 'vitest';
+
+// Unmock fs to use real filesystem for message fixtures
+vi.unmock('fs');
+vi.unmock('fs/promises');
+
+// Unmock MessageManager and its dependencies to use real implementation
+vi.unmock('../../../services/MessageManager.js');
+vi.unmock('../../../utils/logger.js');
+vi.unmock('../../../types/errors.js');
+
 import { existsSync, rmSync, mkdirSync } from 'fs';
 import { join } from 'path';
 
@@ -36,7 +46,9 @@ vi.mock('../../../utils/server-helpers.js', () => ({
 import { roosyncRead } from '../read.js';
 import { MessageManager } from '../../../services/MessageManager.js';
 
-describe('roosyncRead', () => {
+// Sequential execution required because tests share the same testSharedStatePath
+// and cleanup in afterEach can interfere with parallel tests
+describe.sequential('roosyncRead', () => {
   let messageManager: MessageManager;
 
   beforeEach(async () => {

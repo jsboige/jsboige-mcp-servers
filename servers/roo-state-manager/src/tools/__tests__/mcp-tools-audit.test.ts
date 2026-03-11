@@ -42,7 +42,7 @@ const TOOL_MAPPINGS: Record<string, string> = {
   'debug_analyze_task_parsing': 'conversation/debug-analyze.tool.ts',
 
   // Search/Indexing tools
-  'roosync_search': 'indexing/roosync-indexing.tool.ts',
+  'roosync_search': 'search/roosync-search.tool.ts',
   'codebase_search': 'indexing/codebase-search.tool.ts',
   'roosync_indexing': 'indexing/roosync-indexing.tool.ts',
   'search_tasks_by_content': 'indexing/roosync-indexing.tool.ts', // deprecated
