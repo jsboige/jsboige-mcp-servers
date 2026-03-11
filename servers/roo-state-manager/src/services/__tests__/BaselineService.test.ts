@@ -46,6 +46,13 @@ const {
 
 // --- Mocks des modules externes ---
 
+// IMPORTANT: Mock server-helpers BEFORE importing BaselineService
+// The mock must return a plain function, not a vi.fn() wrapper
+vi.mock('../../utils/server-helpers.ts', () => ({
+  getSharedStatePath: () => '/mock/shared',
+  truncateResult: vi.fn((result) => result),
+}));
+
 vi.mock('fs', () => {
   return {
     promises: {
@@ -263,6 +270,8 @@ describe('BaselineService', () => {
     configService = createMockConfigService();
     inventoryCollector = createMockInventoryCollector();
     diffDetector = createMockDiffDetector();
+    // Set SHARED_STATE_PATH to avoid getSharedStatePath() throwing in constructor
+    process.env.SHARED_STATE_PATH = '/test/shared';
     service = new BaselineService(configService, inventoryCollector, diffDetector);
   });
 

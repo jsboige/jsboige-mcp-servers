@@ -36,7 +36,16 @@ describe('Performance & Concurrency', () => {
     it('should handle concurrent baseline comparisons', async () => {
         const configService = new ConfigService();
         vi.spyOn(configService, 'getSharedStatePath').mockReturnValue(sharedPath);
-        
+
+        // Mock getBaselineServiceConfig to return config with logLevel
+        vi.spyOn(configService, 'getBaselineServiceConfig').mockReturnValue({
+            baselinePath: '/mock/baseline',
+            roadmapPath: '/mock/roadmap.md',
+            cacheEnabled: false,
+            cacheTTL: 300,
+            logLevel: 'INFO'
+        });
+
         const baseCollector = new InventoryCollector();
         const inventoryCollector = new InventoryCollectorWrapper(baseCollector);
         

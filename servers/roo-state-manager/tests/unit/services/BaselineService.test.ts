@@ -130,14 +130,10 @@ describe('BaselineService', () => {
     delete process.env.ROOSYNC_SHARED_PATH;
     delete process.env.SHARED_STATE_PATH;
 
-    // On doit mocker getSharedStatePath pour qu'il lance une erreur comme la vraie implémentation
-    mockConfigService.getSharedStatePath.mockImplementation(() => {
-        throw new Error("Configuration manquante : ROOSYNC_SHARED_PATH n'est pas définie.");
-    });
-
+    // BaselineService appelle getSharedStatePath() depuis server-helpers.ts qui lève cette erreur
     expect(() => {
         new BaselineService(mockConfigService, mockInventoryCollector, mockDiffDetector);
-    }).toThrow("Configuration manquante");
+    }).toThrow("ROOSYNC_SHARED_PATH environment variable is not set");
   });
 
   it('should load baseline', async () => {

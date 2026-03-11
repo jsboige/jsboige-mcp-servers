@@ -12,6 +12,17 @@
  */
 
 import { describe, test, expect, beforeEach, vi } from 'vitest';
+
+// Unmock to use real RooSyncService implementation for testing the class itself
+vi.unmock('../RooSyncService.js');
+vi.unmock('../ConfigService.js');
+vi.unmock('../PowerShellExecutor.js');
+vi.unmock('../InventoryCollector.js');
+vi.unmock('../DiffDetector.js');
+vi.unmock('../BaselineService.js');
+vi.unmock('../InventoryCollectorWrapper.js');
+vi.unmock('../ConfigSharingService.js');
+
 import { RooSyncService, RooSyncServiceError } from '../RooSyncService.js';
 import type { CacheOptions } from '../RooSyncService.js';
 

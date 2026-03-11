@@ -17,7 +17,7 @@ import * as path from 'path';
 import { glob } from 'glob';
 
 const TOOLS_SRC_DIR = path.join(__dirname, '../');
-const TOOLS_TEST_DIR = path.join(__dirname, '__tests__');
+const TOOLS_TEST_DIR = __dirname;
 
 // Liste des outils MCP extraite du registry.ts
 interface MCPTool {
@@ -37,18 +37,19 @@ const TOOL_MAPPINGS: Record<string, string> = {
   'task_export': 'conversation/conversation-browser.ts',
   'view_conversation_tree': 'conversation/view-details.tool.ts',
   'view_task_details': 'conversation/view-details.tool.ts',
-  'list_conversations': 'conversation/list-conversations.tool.ts', // deprecated
+  // 'list_conversations': removed - file no longer exists
   'get_raw_conversation': 'conversation/get-raw.tool.ts',
   'debug_analyze_task_parsing': 'conversation/debug-analyze.tool.ts',
+  'roosync_summarize': 'summary/roosync-summarize.tool.ts', // deprecated but has handler
 
   // Search/Indexing tools
   'roosync_search': 'search/roosync-search.tool.ts',
-  'codebase_search': 'indexing/codebase-search.tool.ts',
+  'codebase_search': 'search/search-codebase.tool.ts',
   'roosync_indexing': 'indexing/roosync-indexing.tool.ts',
   'search_tasks_by_content': 'indexing/roosync-indexing.tool.ts', // deprecated
   'index_task_semantic': 'indexing/index-task.tool.ts',
   'reset_qdrant_collection': 'indexing/reset-collection.tool.ts',
-  'rebuild_task_index_fixed': 'indexing/rebuild-and-restart.ts',
+  'rebuild_task_index_fixed': 'rebuild-and-restart.ts',
 
   // Export tools
   'export_data': 'export/export-data.ts',
@@ -57,15 +58,16 @@ const TOOL_MAPPINGS: Record<string, string> = {
   // Diagnostic tools
   'analyze_roosync_problems': 'diagnostic/analyze_problems.ts',
   'diagnose_env': 'diagnostic/diagnose_env.ts',
-  'read_vscode_logs': '../read-vscode-logs.ts',
+  'read_vscode_logs': 'read-vscode-logs.ts',
 
   // Maintenance/Config tools
-  'get_mcp_best_practices': '../get_mcp_best_practices.ts',
-  'manage_mcp_settings': '../manage-mcp-settings.ts',
-  'rebuild_and_restart': '../rebuild-and-restart.ts',
-  'storage_info': 'maintenance/maintenance.ts',
+  'get_mcp_best_practices': 'get_mcp_best_practices.ts',
+  'manage_mcp_settings': 'manage-mcp-settings.ts',
+  'rebuild_and_restart': 'rebuild-and-restart.ts',
+  'storage_info': 'storage/storage-info.ts',
   'maintenance': 'maintenance/maintenance.ts',
   'build_skeleton_cache': 'cache/build-skeleton-cache.tool.ts', // deprecated
+  'touch_mcp_settings': 'manage-mcp-settings.ts', // Alias to manage_mcp_settings (backward compat)
 
   // BOM repair tools
   'diagnose_conversation_bom': 'repair/diagnose-conversation-bom.tool.ts',
@@ -80,7 +82,7 @@ const TOOL_MAPPINGS: Record<string, string> = {
   'roosync_reject_decision': 'roosync/apply-decision.ts',
   'roosync_apply_decision': 'roosync/apply-decision.ts',
   'roosync_rollback_decision': 'roosync/apply-decision.ts',
-  'roosync_init': 'roosync/init.ts',
+  'roosync_init': 'roosync/roosync_init.ts',
   'roosync_update_baseline': 'roosync/baseline.ts',
   'roosync_manage_baseline': 'roosync/baseline.ts',
   'roosync_diagnose': 'roosync/debug-reset.ts',
@@ -94,23 +96,23 @@ const TOOL_MAPPINGS: Record<string, string> = {
   'roosync_config': 'roosync/config.ts',
   'roosync_inventory': 'roosync/inventory.ts',
   'roosync_machines': 'roosync/machines.ts',
-  'roosync_heartbeat': 'roosync/check-heartbeats.ts',
-  'roosync_send': 'roosync/send-message.ts',
-  'roosync_read': 'roosync/read-message.ts',
-  'roosync_manage': 'roosync/archive-message.ts',
+  'roosync_heartbeat': 'roosync/heartbeat.ts',
+  'roosync_send': 'roosync/send.ts',
+  'roosync_read': 'roosync/read.ts',
+  'roosync_manage': 'roosync/manage.ts',
   'roosync_cleanup_messages': 'roosync/cleanup.ts',
-  'roosync_send_message': 'roosync/send-message.ts', // deprecated
-  'roosync_read_inbox': 'roosync/read-message.ts', // deprecated
-  'roosync_get_message': 'roosync/read-message.ts', // deprecated
+  'roosync_send_message': 'roosync/send_message.ts', // deprecated
+  'roosync_read_inbox': 'roosync/read_inbox.ts', // deprecated
+  'roosync_get_message': 'roosync/get_message.ts', // deprecated
   'roosync_mark_message_read': 'roosync/archive-message.ts', // deprecated
-  'roosync_archive_message': 'roosync/archive-message.ts',
-  'roosync_reply_message': 'roosync/amend-message.ts',
-  'roosync_get_machine_inventory': 'roosync/inventory.ts',
+  'roosync_archive_message': 'roosync/archive_message.ts',
+  'roosync_reply_message': 'roosync/reply_message.ts',
+  'roosync_get_machine_inventory': 'roosync/get-machine-inventory.ts',
   'roosync_refresh_dashboard': 'roosync/refresh-dashboard.ts',
   'roosync_update_dashboard': 'roosync/update-dashboard.ts',
   'roosync_sync_event': 'roosync/sync-event.ts',
-  'roosync_mcp_management': '../manage-mcp-settings.ts',
-  'roosync_storage_management': 'maintenance/maintenance.ts',
+  'roosync_mcp_management': 'roosync/mcp-management.ts',
+  'roosync_storage_management': 'roosync/storage-management.ts',
 };
 
 // Liste complète des outils d'après registry.ts (ordre alphabétique)
@@ -124,7 +126,7 @@ const ALL_MCP_TOOLS = [
   'get_mcp_best_practices',
   'get_raw_conversation',
   'index_task_semantic',
-  'list_conversations',
+  // 'list_conversations': removed - file no longer exists
   'maintenance',
   'manage_mcp_settings',
   'rebuild_and_restart',
