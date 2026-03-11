@@ -45,7 +45,7 @@ const TOOL_MAPPINGS: Record<string, string> = {
   'roosync_search': 'indexing/roosync-indexing.tool.ts',
   'codebase_search': 'indexing/codebase-search.tool.ts',
   'roosync_indexing': 'indexing/roosync-indexing.tool.ts',
-  'search_tasks_by_content': 'indexing/roosync-indexing.tool.ts', // deprecated
+  // [REMOVED #625] search_tasks_by_content — handler removed
   'index_task_semantic': 'indexing/index-task.tool.ts',
   'reset_qdrant_collection': 'indexing/reset-collection.tool.ts',
   'rebuild_task_index_fixed': 'indexing/rebuild-and-restart.ts',
@@ -65,7 +65,7 @@ const TOOL_MAPPINGS: Record<string, string> = {
   'rebuild_and_restart': '../rebuild-and-restart.ts',
   'storage_info': 'maintenance/maintenance.ts',
   'maintenance': 'maintenance/maintenance.ts',
-  'build_skeleton_cache': 'cache/build-skeleton-cache.tool.ts', // deprecated
+  // [REMOVED #625] build_skeleton_cache — handler removed
 
   // BOM repair tools
   'diagnose_conversation_bom': 'repair/diagnose-conversation-bom.tool.ts',
@@ -99,12 +99,7 @@ const TOOL_MAPPINGS: Record<string, string> = {
   'roosync_read': 'roosync/read-message.ts',
   'roosync_manage': 'roosync/archive-message.ts',
   'roosync_cleanup_messages': 'roosync/cleanup.ts',
-  'roosync_send_message': 'roosync/send-message.ts', // deprecated
-  'roosync_read_inbox': 'roosync/read-message.ts', // deprecated
-  'roosync_get_message': 'roosync/read-message.ts', // deprecated
-  'roosync_mark_message_read': 'roosync/archive-message.ts', // deprecated
-  'roosync_archive_message': 'roosync/archive-message.ts',
-  'roosync_reply_message': 'roosync/amend-message.ts',
+  // [REMOVED #625] 6 legacy messaging handlers removed
   'roosync_get_machine_inventory': 'roosync/inventory.ts',
   'roosync_refresh_dashboard': 'roosync/refresh-dashboard.ts',
   'roosync_update_dashboard': 'roosync/update-dashboard.ts',
@@ -116,7 +111,7 @@ const TOOL_MAPPINGS: Record<string, string> = {
 // Liste complète des outils d'après registry.ts (ordre alphabétique)
 const ALL_MCP_TOOLS = [
   'analyze_roosync_problems',
-  'build_skeleton_cache',
+  // [REMOVED #625] build_skeleton_cache
   'codebase_search',
   'debug_analyze_task_parsing',
   'diagnose_conversation_bom',
@@ -134,7 +129,7 @@ const ALL_MCP_TOOLS = [
   'roosync_apply_config',
   'roosync_apply_decision',
   'roosync_approve_decision',
-  'roosync_archive_message',
+  // [REMOVED #625] roosync_archive_message
   'roosync_baseline',
   'roosync_cleanup_messages',
   'roosync_collect_config',
@@ -145,7 +140,7 @@ const ALL_MCP_TOOLS = [
   'roosync_export_baseline',
   'roosync_get_decision_details',
   'roosync_get_machine_inventory',
-  'roosync_get_message',
+  // [REMOVED #625] roosync_get_message
   'roosync_get_status',
   'roosync_heartbeat',
   'roosync_init',
@@ -156,13 +151,13 @@ const ALL_MCP_TOOLS = [
   'roosync_mcp_management',
   'roosync_publish_config',
   'roosync_read',
-  'roosync_read_inbox',
+  // [REMOVED #625] roosync_read_inbox
   'roosync_refresh_dashboard',
   'roosync_reject_decision',
-  'roosync_reply_message',
+  // [REMOVED #625] roosync_reply_message
   'roosync_rollback_decision',
   'roosync_send',
-  'roosync_send_message',
+  // [REMOVED #625] roosync_send_message
   'roosync_storage_management',
   'roosync_sync_event',
   'roosync_update_baseline',
@@ -172,7 +167,7 @@ const ALL_MCP_TOOLS = [
   'roosync_indexing',
   'roosync_compare_config',
   'storage_info',
-  'search_tasks_by_content',
+  // [REMOVED #625] search_tasks_by_content
   'task_browse',
   'task_export',
   'view_conversation_tree',
