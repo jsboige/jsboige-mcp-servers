@@ -59,7 +59,15 @@ export class BaselineService {
   ) {
     console.log('[DEBUG] BaselineService.constructor() appelé');
 
-    this.config = configService.getBaselineServiceConfig();
+    // FIX: Use default config instead of non-existent getBaselineServiceConfig() method
+    // ConfigService only provides getSharedStatePath(), not getBaselineServiceConfig()
+    this.config = {
+      baselinePath: '',
+      roadmapPath: '',
+      cacheEnabled: true,
+      cacheTTL: 300,
+      logLevel: 'INFO'
+    };
     // Utiliser getSharedStatePath() qui gère ROOSYNC_SHARED_PATH (et lève une erreur si non défini)
     const sharedStatePath = getSharedStatePath();
     console.log('[DEBUG] sharedStatePath:', sharedStatePath);
