@@ -4,7 +4,8 @@
  */
 
 import { describe, test, expect, vi, beforeEach } from 'vitest';
-import { InitArgsSchema, InitResultSchema } from '../roosync_init.js';
+// Fix #636 timeout: Use static import instead of dynamic imports
+import { InitArgsSchema, InitResultSchema, roosyncInit } from '../roosync_init.js';
 
 // Mock all external dependencies
 const { mockGetConfig, mockExistsSync, mockMkdirSync, mockWriteFileSync, mockReadFileSync, mockUnlinkSync } = vi.hoisted(() => ({
@@ -125,7 +126,6 @@ describe('roosync_init', () => {
 			// First call: sharedPath doesn't exist; subsequent calls: dashboard/roadmap/rollback don't exist
 			mockExistsSync.mockReturnValue(false);
 
-			const { roosyncInit } = await import('../roosync_init.js');
 			const result = await roosyncInit({});
 
 			expect(result.success).toBe(true);
@@ -140,7 +140,6 @@ describe('roosync_init', () => {
 				return false;
 			});
 
-			const { roosyncInit } = await import('../roosync_init.js');
 			const result = await roosyncInit({});
 
 			expect(result.success).toBe(true);
@@ -153,7 +152,6 @@ describe('roosync_init', () => {
 				machines: { 'test-machine': {} }
 			}));
 
-			const { roosyncInit } = await import('../roosync_init.js');
 			const result = await roosyncInit({ force: true });
 
 			expect(result.success).toBe(true);
@@ -163,7 +161,6 @@ describe('roosync_init', () => {
 		test('skips roadmap when createRoadmap is false', async () => {
 			mockExistsSync.mockReturnValue(false);
 
-			const { roosyncInit } = await import('../roosync_init.js');
 			const result = await roosyncInit({ createRoadmap: false });
 
 			expect(result.success).toBe(true);
@@ -175,7 +172,6 @@ describe('roosync_init', () => {
 		test('returns filesCreated and filesSkipped arrays', async () => {
 			mockExistsSync.mockReturnValue(false);
 
-			const { roosyncInit } = await import('../roosync_init.js');
 			const result = await roosyncInit({});
 
 			expect(Array.isArray(result.filesCreated)).toBe(true);
@@ -193,7 +189,6 @@ describe('roosync_init', () => {
 				lastUpdate: '2026-01-01'
 			}));
 
-			const { roosyncInit } = await import('../roosync_init.js');
 			const result = await roosyncInit({});
 
 			expect(result.success).toBe(true);
@@ -204,7 +199,6 @@ describe('roosync_init', () => {
 		test('message includes force warning when force is true', async () => {
 			mockExistsSync.mockReturnValue(false);
 
-			const { roosyncInit } = await import('../roosync_init.js');
 			const result = await roosyncInit({ force: true });
 
 			expect(result.message).toContain('force');

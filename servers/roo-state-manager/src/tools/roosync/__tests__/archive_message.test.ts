@@ -48,6 +48,9 @@ vi.mock('../../../types/errors.js', () => ({
 	}
 }));
 
+// Fix #636 timeout: Use static import instead of dynamic imports
+import { archiveMessage } from '../archive_message.js';
+
 describe('archive_message', () => {
 	beforeEach(() => {
 		vi.clearAllMocks();
@@ -57,7 +60,6 @@ describe('archive_message', () => {
 
 	describe('parameter validation', () => {
 		test('rejects missing message_id', async () => {
-			const { archiveMessage } = await import('../archive_message.js');
 			const result = await archiveMessage({ message_id: '' });
 			expect(result.content[0].text).toContain('Erreur');
 		});
@@ -67,7 +69,6 @@ describe('archive_message', () => {
 		test('returns not found message', async () => {
 			mockGetMessage.mockResolvedValue(null);
 
-			const { archiveMessage } = await import('../archive_message.js');
 			const result = await archiveMessage({ message_id: 'nonexistent' });
 
 			expect(result.content[0].text).toContain('Message introuvable');
@@ -85,7 +86,6 @@ describe('archive_message', () => {
 				status: 'archived'
 			});
 
-			const { archiveMessage } = await import('../archive_message.js');
 			const result = await archiveMessage({ message_id: 'msg-archived' });
 
 			expect(result.content[0].text).toContain('déjà archivé');
@@ -109,7 +109,6 @@ describe('archive_message', () => {
 			mockGetMessage.mockResolvedValueOnce(mockMsg).mockResolvedValueOnce({ ...mockMsg, status: 'archived' });
 			mockArchiveMessage.mockResolvedValue(undefined);
 
-			const { archiveMessage } = await import('../archive_message.js');
 			const result = await archiveMessage({ message_id: 'msg-200' });
 
 			expect(result.content[0].text).toContain('Message archivé avec succès');
@@ -120,7 +119,6 @@ describe('archive_message', () => {
 			mockGetMessage.mockResolvedValueOnce(mockMsg).mockResolvedValueOnce({ ...mockMsg, status: 'archived' });
 			mockArchiveMessage.mockResolvedValue(undefined);
 
-			const { archiveMessage } = await import('../archive_message.js');
 			const result = await archiveMessage({ message_id: 'msg-200' });
 
 			expect(result.content[0].text).toContain('READ');
@@ -131,7 +129,6 @@ describe('archive_message', () => {
 			mockGetMessage.mockResolvedValueOnce(mockMsg).mockResolvedValueOnce({ ...mockMsg, status: 'archived' });
 			mockArchiveMessage.mockResolvedValue(undefined);
 
-			const { archiveMessage } = await import('../archive_message.js');
 			const result = await archiveMessage({ message_id: 'msg-200' });
 
 			expect(result.content[0].text).toContain('messages/archive/msg-200.json');
@@ -141,7 +138,6 @@ describe('archive_message', () => {
 			mockGetMessage.mockResolvedValueOnce(mockMsg).mockResolvedValueOnce({ ...mockMsg, status: 'archived' });
 			mockArchiveMessage.mockResolvedValue(undefined);
 
-			const { archiveMessage } = await import('../archive_message.js');
 			const result = await archiveMessage({ message_id: 'msg-200' });
 
 			expect(result.content[0].text).toContain('thread');
@@ -156,7 +152,6 @@ describe('archive_message', () => {
 			});
 			mockArchiveMessage.mockRejectedValue(new Error('Permission denied'));
 
-			const { archiveMessage } = await import('../archive_message.js');
 			const result = await archiveMessage({ message_id: 'msg-fail' });
 
 			expect(result.content[0].text).toContain('Erreur');

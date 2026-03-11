@@ -4,7 +4,8 @@
  */
 
 import { describe, test, expect, vi, beforeEach } from 'vitest';
-import { RejectDecisionArgsSchema, RejectDecisionResultSchema } from '../reject-decision.js';
+// Fix #636 timeout: Use static import instead of dynamic imports
+import { RejectDecisionArgsSchema, RejectDecisionResultSchema, roosyncRejectDecision } from '../reject-decision.js';
 
 const { mockGetConfig, mockGetDecision } = vi.hoisted(() => ({
 	mockGetConfig: vi.fn(),
@@ -74,7 +75,6 @@ describe('reject-decision', () => {
 	describe('roosyncRejectDecision', () => {
 		test('throws when decision not found', async () => {
 			mockGetDecision.mockResolvedValue(null);
-			const { roosyncRejectDecision } = await import('../reject-decision.js');
 			await expect(roosyncRejectDecision({
 				decisionId: 'nope', reason: 'test'
 			})).rejects.toThrow('introuvable');
@@ -82,7 +82,6 @@ describe('reject-decision', () => {
 
 		test('throws when decision already processed', async () => {
 			mockGetDecision.mockResolvedValue({ id: 'dec-1', status: 'rejected' });
-			const { roosyncRejectDecision } = await import('../reject-decision.js');
 			await expect(roosyncRejectDecision({
 				decisionId: 'dec-1', reason: 'test'
 			})).rejects.toThrow('déjà traitée');
@@ -94,7 +93,6 @@ describe('reject-decision', () => {
 				'<!-- DECISION_BLOCK_START -->\n**ID:** `dec-2`\n**Statut:** pending\n<!-- DECISION_BLOCK_END -->'
 			);
 
-			const { roosyncRejectDecision } = await import('../reject-decision.js');
 			const result = await roosyncRejectDecision({
 				decisionId: 'dec-2', reason: 'Config incompatible'
 			});
@@ -111,7 +109,6 @@ describe('reject-decision', () => {
 				'<!-- DECISION_BLOCK_START -->\n**ID:** `dec-3`\n**Statut:** pending\n<!-- DECISION_BLOCK_END -->'
 			);
 
-			const { roosyncRejectDecision } = await import('../reject-decision.js');
 			await roosyncRejectDecision({ decisionId: 'dec-3', reason: 'Bad timing' });
 
 			const writtenContent = mockWriteFileSync.mock.calls[0][1] as string;
@@ -125,7 +122,6 @@ describe('reject-decision', () => {
 				'<!-- DECISION_BLOCK_START -->\n**ID:** `dec-4`\n**Statut:** pending\n<!-- DECISION_BLOCK_END -->'
 			);
 
-			const { roosyncRejectDecision } = await import('../reject-decision.js');
 			const result = await roosyncRejectDecision({ decisionId: 'dec-4', reason: 'test' });
 			expect(result.nextSteps.length).toBeGreaterThan(0);
 		});

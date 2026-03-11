@@ -42,6 +42,9 @@ vi.mock('../../../types/errors.js', () => ({
 	MessageManagerErrorCode: { INVALID_MESSAGE_FORMAT: 'INVALID_MESSAGE_FORMAT' }
 }));
 
+// Fix #636 timeout: Use static import instead of dynamic imports
+import { markMessageRead } from '../mark_message_read.js';
+
 describe('mark_message_read', () => {
 	beforeEach(() => {
 		vi.clearAllMocks();
@@ -49,14 +52,12 @@ describe('mark_message_read', () => {
 	});
 
 	test('rejects missing message_id', async () => {
-		const { markMessageRead } = await import('../mark_message_read.js');
 		const result = await markMessageRead({ message_id: '' });
 		expect(result.content[0].text).toContain('Erreur');
 	});
 
 	test('returns not found for nonexistent message', async () => {
 		mockGetMessage.mockResolvedValue(null);
-		const { markMessageRead } = await import('../mark_message_read.js');
 		const result = await markMessageRead({ message_id: 'missing' });
 		expect(result.content[0].text).toContain('Message introuvable');
 	});
@@ -66,7 +67,6 @@ describe('mark_message_read', () => {
 			id: 'msg-1', from: 'ai-01', to: 'po-2023',
 			subject: 'Test', timestamp: '2026-01-01T00:00:00Z', status: 'read'
 		});
-		const { markMessageRead } = await import('../mark_message_read.js');
 		const result = await markMessageRead({ message_id: 'msg-1' });
 		expect(result.content[0].text).toContain('déjà marqué comme lu');
 	});
@@ -83,7 +83,6 @@ describe('mark_message_read', () => {
 			});
 		mockMarkAsRead.mockResolvedValue(undefined);
 
-		const { markMessageRead } = await import('../mark_message_read.js');
 		const result = await markMessageRead({ message_id: 'msg-2' });
 
 		expect(result.content[0].text).toContain('Message marqué comme lu');
@@ -99,7 +98,6 @@ describe('mark_message_read', () => {
 		});
 		mockMarkAsRead.mockRejectedValue(new Error('Write failed'));
 
-		const { markMessageRead } = await import('../mark_message_read.js');
 		const result = await markMessageRead({ message_id: 'msg-3' });
 		expect(result.content[0].text).toContain('Erreur');
 		expect(result.content[0].text).toContain('Write failed');

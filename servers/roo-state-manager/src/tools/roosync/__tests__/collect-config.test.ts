@@ -4,7 +4,8 @@
  */
 
 import { describe, test, expect, vi, beforeEach } from 'vitest';
-import { CollectConfigArgsSchema } from '../collect-config.js';
+// Fix #636 timeout: Use static import instead of dynamic imports
+import { CollectConfigArgsSchema, roosyncCollectConfig } from '../collect-config.js';
 
 // Mock RooSyncService
 const { mockGetConfig, mockCollectConfig } = vi.hoisted(() => ({
@@ -94,7 +95,6 @@ describe('collect-config', () => {
 				manifest: { modes: ['default'], mcp: ['win-cli'] }
 			});
 
-			const { roosyncCollectConfig } = await import('../collect-config.js');
 			const result = await roosyncCollectConfig({});
 
 			expect(result.status).toBe('success');
@@ -110,7 +110,6 @@ describe('collect-config', () => {
 				manifest: {}
 			});
 
-			const { roosyncCollectConfig } = await import('../collect-config.js');
 			await roosyncCollectConfig({});
 
 			expect(mockCollectConfig).toHaveBeenCalledWith({
@@ -127,7 +126,6 @@ describe('collect-config', () => {
 				manifest: {}
 			});
 
-			const { roosyncCollectConfig } = await import('../collect-config.js');
 			await roosyncCollectConfig({ targets: ['profiles'] });
 
 			expect(mockCollectConfig).toHaveBeenCalledWith({
@@ -144,7 +142,6 @@ describe('collect-config', () => {
 				manifest: {}
 			});
 
-			const { roosyncCollectConfig } = await import('../collect-config.js');
 			await roosyncCollectConfig({ dryRun: true });
 
 			expect(mockCollectConfig).toHaveBeenCalledWith({
@@ -156,7 +153,6 @@ describe('collect-config', () => {
 		test('throws ConfigSharingServiceError on failure', async () => {
 			mockCollectConfig.mockRejectedValue(new Error('Collection failed'));
 
-			const { roosyncCollectConfig } = await import('../collect-config.js');
 			await expect(roosyncCollectConfig({})).rejects.toThrow('Collection failed');
 		});
 
@@ -168,7 +164,6 @@ describe('collect-config', () => {
 				manifest: {}
 			});
 
-			const { roosyncCollectConfig } = await import('../collect-config.js');
 			const result = await roosyncCollectConfig({});
 
 			expect(result.message).toContain('7');

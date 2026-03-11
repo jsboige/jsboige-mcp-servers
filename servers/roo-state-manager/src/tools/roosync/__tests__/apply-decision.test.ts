@@ -4,7 +4,8 @@
  */
 
 import { describe, test, expect, vi, beforeEach } from 'vitest';
-import { ApplyDecisionArgsSchema, ApplyDecisionResultSchema } from '../apply-decision.js';
+// Fix #636 timeout: Use static import instead of dynamic imports
+import { ApplyDecisionArgsSchema, ApplyDecisionResultSchema, roosyncApplyDecision } from '../apply-decision.js';
 
 const { mockGetConfig, mockGetDecision, mockExecuteDecision, mockCreateRollbackPoint, mockRestoreFromRollbackPoint, mockClearCache } = vi.hoisted(() => ({
 	mockGetConfig: vi.fn(),
@@ -124,13 +125,11 @@ describe('apply-decision', () => {
 	describe('roosyncApplyDecision', () => {
 		test('throws when decision not found', async () => {
 			mockGetDecision.mockResolvedValue(null);
-			const { roosyncApplyDecision } = await import('../apply-decision.js');
 			await expect(roosyncApplyDecision({ decisionId: 'nope' })).rejects.toThrow('introuvable');
 		});
 
 		test('throws when decision not approved', async () => {
 			mockGetDecision.mockResolvedValue({ id: 'dec-1', status: 'pending' });
-			const { roosyncApplyDecision } = await import('../apply-decision.js');
 			await expect(roosyncApplyDecision({ decisionId: 'dec-1' })).rejects.toThrow('pas encore approuvée');
 		});
 
@@ -146,7 +145,6 @@ describe('apply-decision', () => {
 				'<!-- DECISION_BLOCK_START -->\n**ID:** `dec-2`\n**Statut:** approved\n<!-- DECISION_BLOCK_END -->'
 			);
 
-			const { roosyncApplyDecision } = await import('../apply-decision.js');
 			const result = await roosyncApplyDecision({ decisionId: 'dec-2' });
 
 			expect(result.newStatus).toBe('applied');
@@ -165,7 +163,6 @@ describe('apply-decision', () => {
 				changes: { filesModified: ['mcp.json'], filesCreated: [], filesDeleted: [] }
 			});
 
-			const { roosyncApplyDecision } = await import('../apply-decision.js');
 			const result = await roosyncApplyDecision({ decisionId: 'dec-3', dryRun: true });
 
 			expect(result.rollbackAvailable).toBe(false);
@@ -187,7 +184,6 @@ describe('apply-decision', () => {
 				'<!-- DECISION_BLOCK_START -->\n**ID:** `dec-4`\n**Statut:** approved\n<!-- DECISION_BLOCK_END -->'
 			);
 
-			const { roosyncApplyDecision } = await import('../apply-decision.js');
 			const result = await roosyncApplyDecision({ decisionId: 'dec-4' });
 
 			expect(result.newStatus).toBe('failed');
@@ -205,7 +201,6 @@ describe('apply-decision', () => {
 				'<!-- DECISION_BLOCK_START -->\n**ID:** `dec-5`\n**Statut:** approved\n<!-- DECISION_BLOCK_END -->'
 			);
 
-			const { roosyncApplyDecision } = await import('../apply-decision.js');
 			await roosyncApplyDecision({ decisionId: 'dec-5', force: true });
 
 			expect(mockExecuteDecision).toHaveBeenCalledWith('dec-5', { dryRun: false, force: true });
@@ -221,7 +216,6 @@ describe('apply-decision', () => {
 				'<!-- DECISION_BLOCK_START -->\n**ID:** `dec-6`\n**Statut:** approved\n<!-- DECISION_BLOCK_END -->'
 			);
 
-			const { roosyncApplyDecision } = await import('../apply-decision.js');
 			await roosyncApplyDecision({ decisionId: 'dec-6' });
 
 			const writtenContent = mockWriteFileSync.mock.calls[0][1] as string;

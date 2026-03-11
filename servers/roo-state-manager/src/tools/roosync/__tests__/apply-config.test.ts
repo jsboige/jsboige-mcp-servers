@@ -4,7 +4,8 @@
  */
 
 import { describe, test, expect, vi, beforeEach } from 'vitest';
-import { ApplyConfigArgsSchema } from '../apply-config.js';
+// Fix #636 timeout: Use static import instead of dynamic imports
+import { ApplyConfigArgsSchema, roosyncApplyConfig } from '../apply-config.js';
 
 // Mock RooSyncService
 const { mockApplyConfig, mockGetConfigVersion } = vi.hoisted(() => ({
@@ -123,7 +124,6 @@ describe('apply-config', () => {
 
 	describe('roosyncApplyConfig', () => {
 		test('returns success on service success', async () => {
-			const { roosyncApplyConfig } = await import('../apply-config.js');
 			const result = await roosyncApplyConfig({ targets: ['modes'] });
 			expect(result.status).toBe('success');
 			expect(result.filesApplied).toEqual(['modes.json']);
@@ -136,13 +136,11 @@ describe('apply-config', () => {
 				errors: ['Config not found']
 			});
 
-			const { roosyncApplyConfig } = await import('../apply-config.js');
 			const result = await roosyncApplyConfig({});
 			expect(result.status).toBe('error');
 		});
 
 		test('defaults backup to true', async () => {
-			const { roosyncApplyConfig } = await import('../apply-config.js');
 			await roosyncApplyConfig({});
 			expect(mockApplyConfig).toHaveBeenCalledWith(
 				expect.objectContaining({ backup: true })
@@ -150,7 +148,6 @@ describe('apply-config', () => {
 		});
 
 		test('defaults dryRun to false', async () => {
-			const { roosyncApplyConfig } = await import('../apply-config.js');
 			await roosyncApplyConfig({});
 			expect(mockApplyConfig).toHaveBeenCalledWith(
 				expect.objectContaining({ dryRun: false })
@@ -160,7 +157,6 @@ describe('apply-config', () => {
 		test('throws on service exception', async () => {
 			mockApplyConfig.mockRejectedValueOnce(new Error('Network error'));
 
-			const { roosyncApplyConfig } = await import('../apply-config.js');
 			await expect(roosyncApplyConfig({})).rejects.toThrow('application de la configuration');
 		});
 	});

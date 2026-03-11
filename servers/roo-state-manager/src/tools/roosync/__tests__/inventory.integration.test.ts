@@ -11,8 +11,15 @@
  * @version 1.0.0 (#564 Phase 3)
  */
 
-import { describe, test, expect, beforeAll } from 'vitest';
+import { describe, test, expect, beforeAll, vi } from 'vitest';
 import { globalCacheManager } from '../../../utils/cache-manager.js';
+
+// Fix #634: Integration tests need REAL RooSyncService and ConfigService
+vi.unmock('../../../services/RooSyncService.js');
+vi.unmock('../../../services/ConfigService.js');
+
+// Fix #636 timeout: Use static imports instead of dynamic imports
+import { inventoryTool, InventoryArgsSchema, InventoryResultSchema, HeartbeatDataSchema, HeartbeatStatisticsSchema } from '../inventory.js';
 
 describe('roosync_inventory (integration)', () => {
   beforeAll(async () => {
@@ -26,8 +33,6 @@ describe('roosync_inventory (integration)', () => {
 
   describe('input validation', () => {
     test('should accept type parameter with valid values', async () => {
-      const { inventoryTool } = await import('../inventory.js');
-
       // Les valeurs valides sont: machine, heartbeat, all
       const types = ['machine', 'heartbeat', 'all'] as const;
 
@@ -41,8 +46,6 @@ describe('roosync_inventory (integration)', () => {
     }, 30000); // 30 second timeout - each inventory call takes ~8 seconds
 
     test('should accept optional machineId parameter', async () => {
-      const { inventoryTool } = await import('../inventory.js');
-
       // Sans machineId - utilise hostname par défaut
       const result1 = await inventoryTool.execute({ type: 'machine' }, null);
 
@@ -60,8 +63,6 @@ describe('roosync_inventory (integration)', () => {
     });
 
     test('should accept optional includeHeartbeats parameter', async () => {
-      const { inventoryTool } = await import('../inventory.js');
-
       const result = await inventoryTool.execute({
         type: 'heartbeat',
         includeHeartbeats: true
@@ -77,9 +78,7 @@ describe('roosync_inventory (integration)', () => {
   // ============================================================
 
   describe('response format', () => {
-    test('should have InventoryArgsSchema with proper structure', async () => {
-      const { InventoryArgsSchema } = await import('../inventory.js');
-
+    test('should have InventoryArgsSchema with proper structure', () => {
       // Vérifier que le schema a la bonne structure
       expect(InventoryArgsSchema).toBeDefined();
       const shape = InventoryArgsSchema.shape;
@@ -88,9 +87,7 @@ describe('roosync_inventory (integration)', () => {
       expect(shape.includeHeartbeats).toBeDefined();
     });
 
-    test('should have InventoryResultSchema with proper structure', async () => {
-      const { InventoryResultSchema } = await import('../inventory.js');
-
+    test('should have InventoryResultSchema with proper structure', () => {
       // Vérifier que le schema de retour a la bonne structure
       expect(InventoryResultSchema).toBeDefined();
       const shape = InventoryResultSchema.shape;
@@ -100,17 +97,13 @@ describe('roosync_inventory (integration)', () => {
       expect(shape.retrievedAt).toBeDefined();
     });
 
-    test('should include type enum with correct values', async () => {
-      const { InventoryArgsSchema } = await import('../inventory.js');
-
+    test('should include type enum with correct values', () => {
       // Vérifier que l'enum type contient les bonnes valeurs
       const shape = InventoryArgsSchema.shape;
       expect(shape.type).toBeDefined();
     });
 
-    test('should have HeartbeatDataSchema with required fields', async () => {
-      const { HeartbeatDataSchema } = await import('../inventory.js');
-
+    test('should have HeartbeatDataSchema with required fields', () => {
       // Vérifier que le schema de heartbeat a les bons champs
       expect(HeartbeatDataSchema).toBeDefined();
       const shape = HeartbeatDataSchema.shape;
@@ -121,9 +114,7 @@ describe('roosync_inventory (integration)', () => {
       expect(shape.metadata).toBeDefined();
     });
 
-    test('should have HeartbeatStatisticsSchema with required fields', async () => {
-      const { HeartbeatStatisticsSchema } = await import('../inventory.js');
-
+    test('should have HeartbeatStatisticsSchema with required fields', () => {
       // Vérifier que le schema de statistiques a les bons champs
       expect(HeartbeatStatisticsSchema).toBeDefined();
       const shape = HeartbeatStatisticsSchema.shape;
@@ -141,8 +132,6 @@ describe('roosync_inventory (integration)', () => {
 
   describe('inventory types', () => {
     test('should handle type=machine', async () => {
-      const { inventoryTool } = await import('../inventory.js');
-
       const result = await inventoryTool.execute({ type: 'machine' }, null);
 
       expect(result).toBeDefined();
@@ -152,8 +141,6 @@ describe('roosync_inventory (integration)', () => {
     });
 
     test('should handle type=heartbeat', async () => {
-      const { inventoryTool } = await import('../inventory.js');
-
       const result = await inventoryTool.execute({
         type: 'heartbeat',
         includeHeartbeats: true
@@ -167,8 +154,6 @@ describe('roosync_inventory (integration)', () => {
     });
 
     test('should handle type=all', async () => {
-      const { inventoryTool } = await import('../inventory.js');
-
       const result = await inventoryTool.execute({
         type: 'all',
         includeHeartbeats: true
@@ -188,8 +173,6 @@ describe('roosync_inventory (integration)', () => {
 
   describe('error handling', () => {
     test('should handle PowerShell script unavailable gracefully', async () => {
-      const { inventoryTool } = await import('../inventory.js');
-
       // Si le script PowerShell n'est pas disponible, l'outil doit retourner une erreur cohérente
       const result = await inventoryTool.execute({
         type: 'machine',
@@ -210,8 +193,6 @@ describe('roosync_inventory (integration)', () => {
     });
 
     test('should handle RooSync service unavailable gracefully', async () => {
-      const { inventoryTool } = await import('../inventory.js');
-
       // Si le service RooSync n'est pas disponible, l'outil doit retourner une erreur cohérente
       const result = await inventoryTool.execute({
         type: 'heartbeat'

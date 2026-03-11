@@ -302,31 +302,43 @@ vi.mock('../../src/services/HierarchyReconstructionEngine.js', () => ({
   }))
 }));
 
-// Mock pour TaskIndexer
+// Mock pour TaskIndexer - Fix #634: Add named export for TypeScript imports
+// The import is: import { TaskIndexer } from './task-indexer.js';
+// So we need to export both TaskIndexer (named) and default
+const mockTaskIndexerInstance = {
+  getCollectionStatus: vi.fn().mockResolvedValue({
+    exists: true,
+    pointsCount: 100,
+    vectorSize: 1536
+  }),
+  resetCollection: vi.fn().mockResolvedValue(undefined),
+  safeQdrantUpsert: vi.fn().mockResolvedValue(undefined),
+  upsertPointsBatch: vi.fn().mockResolvedValue(undefined),
+};
+
+const MockTaskIndexer = vi.fn().mockImplementation(() => mockTaskIndexerInstance);
+
 vi.mock('../../src/services/task-indexer.js', () => ({
-  default: vi.fn().mockImplementation(() => ({
-    getCollectionStatus: vi.fn().mockResolvedValue({
-      exists: true,
-      pointsCount: 100,
-      vectorSize: 1536
-    }),
-    resetCollection: vi.fn().mockResolvedValue(undefined),
-    safeQdrantUpsert: vi.fn().mockResolvedValue(undefined),
-    upsertPointsBatch: vi.fn().mockResolvedValue(undefined),
-  }))
+  TaskIndexer: MockTaskIndexer,
+  default: MockTaskIndexer,
 }));
 
-// Mock pour PowerShellExecutor - Fix #634: Add named export for TypeScript imports
-// The import is: import { PowerShellExecutor } from './PowerShellExecutor.js';
-// So we need to export both PowerShellExecutor (named) and default
+// Mock pour PowerShellExecutor - Fix #634: Add named exports for TypeScript imports
+// Exports: PowerShellExecutor (class), getDefaultExecutor (function), resetDefaultExecutor (function)
 const mockPowerShellExecutorInstance = {
   executeScript: vi.fn().mockRejectedValue(new Error('PowerShell execution failed: spawn pwsh.exe ENOENT')),
 };
 
 const MockPowerShellExecutor = vi.fn().mockImplementation(() => mockPowerShellExecutorInstance);
 
+// Mock functions for named exports
+const mockGetDefaultExecutor = vi.fn(() => mockPowerShellExecutorInstance);
+const mockResetDefaultExecutor = vi.fn();
+
 vi.mock('../../src/services/PowerShellExecutor.js', () => ({
   PowerShellExecutor: MockPowerShellExecutor,
+  getDefaultExecutor: mockGetDefaultExecutor,
+  resetDefaultExecutor: mockResetDefaultExecutor,
   default: MockPowerShellExecutor,
 }));
 
@@ -385,6 +397,14 @@ const mockRooSyncServiceInstance = {
     lastUpdate: new Date().toISOString()
   }),
   clearCache: vi.fn(),
+  // getDecision mock - returns decision by ID or null
+  getDecision: vi.fn().mockResolvedValue(null),
+  // restoreFromRollbackPoint mock - simulates rollback restoration
+  restoreFromRollbackPoint: vi.fn().mockResolvedValue({
+    success: true,
+    restoredFiles: [],
+    rollbackDirectory: '/mock/rollback'
+  }),
   // getHeartbeatService mock - returns HeartbeatService instance methods
   getHeartbeatService: vi.fn(() => ({
     getHeartbeatData: vi.fn().mockResolvedValue({}),
@@ -470,6 +490,13 @@ vi.mock('../../src/services/ConfigService.js', () => ({
     loadConfig: vi.fn().mockResolvedValue({}),
     saveConfig: vi.fn().mockResolvedValue(undefined),
     getConfig: vi.fn().mockReturnValue({}),
+    getBaselineServiceConfig: vi.fn().mockReturnValue({
+      baselinePath: '/mock/baseline',
+      roadmapPath: '/mock/roadmap.md',
+      cacheEnabled: false,
+      cacheTTL: 300,
+      logLevel: 'INFO'
+    }),
   })),
 }));
 

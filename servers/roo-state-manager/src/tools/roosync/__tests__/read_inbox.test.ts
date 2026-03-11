@@ -38,6 +38,9 @@ vi.mock('os', () => ({
 	hostname: () => mockHostname()
 }));
 
+// Fix #636 timeout: Use static import instead of dynamic imports
+import { readInbox } from '../read_inbox.js';
+
 describe('read_inbox', () => {
 	beforeEach(() => {
 		vi.clearAllMocks();
@@ -48,7 +51,6 @@ describe('read_inbox', () => {
 	test('returns empty inbox message when no messages', async () => {
 		mockReadInbox.mockResolvedValue([]);
 
-		const { readInbox } = await import('../read_inbox.js');
 		const result = await readInbox({});
 
 		expect(result.content[0].text).toContain('Aucun message');
@@ -58,7 +60,6 @@ describe('read_inbox', () => {
 	test('filters by status', async () => {
 		mockReadInbox.mockResolvedValue([]);
 
-		const { readInbox } = await import('../read_inbox.js');
 		const result = await readInbox({ status: 'unread' });
 
 		expect(mockReadInbox).toHaveBeenCalledWith('myia-ai-01', 'unread', undefined);
@@ -68,7 +69,6 @@ describe('read_inbox', () => {
 	test('passes limit parameter', async () => {
 		mockReadInbox.mockResolvedValue([]);
 
-		const { readInbox } = await import('../read_inbox.js');
 		await readInbox({ limit: 5 });
 
 		expect(mockReadInbox).toHaveBeenCalledWith('myia-ai-01', 'all', 5);
@@ -90,7 +90,6 @@ describe('read_inbox', () => {
 			}
 		]);
 
-		const { readInbox } = await import('../read_inbox.js');
 		const result = await readInbox({});
 
 		expect(result.content[0].text).toContain('msg-100');
@@ -107,7 +106,6 @@ describe('read_inbox', () => {
 			{ id: 'msg-3', from: 'a', to: 'b', subject: 'S3', priority: 'MEDIUM', timestamp: '2026-01-01T00:00:00Z', status: 'read', preview: '' }
 		]);
 
-		const { readInbox } = await import('../read_inbox.js');
 		const result = await readInbox({});
 
 		expect(result.content[0].text).toContain('2 non-lu');
@@ -124,7 +122,6 @@ describe('read_inbox', () => {
 			}
 		]);
 
-		const { readInbox } = await import('../read_inbox.js');
 		const result = await readInbox({});
 
 		expect(result.content[0].text).toContain('Coverage Report');
@@ -136,7 +133,6 @@ describe('read_inbox', () => {
 			{ id: 'msg-1', from: 'a', to: 'b', subject: 'Urgent', priority: 'URGENT', timestamp: '2026-01-01T00:00:00Z', status: 'unread', preview: '' }
 		]);
 
-		const { readInbox } = await import('../read_inbox.js');
 		const result = await readInbox({});
 
 		expect(result.content[0].text).toContain('URGENT');
@@ -146,7 +142,6 @@ describe('read_inbox', () => {
 		mockHostname.mockReturnValue('MyIA-Web1');
 		mockReadInbox.mockResolvedValue([]);
 
-		const { readInbox } = await import('../read_inbox.js');
 		await readInbox({});
 
 		expect(mockReadInbox).toHaveBeenCalledWith('myia-web1', 'all', undefined);
@@ -155,7 +150,6 @@ describe('read_inbox', () => {
 	test('returns error on failure', async () => {
 		mockReadInbox.mockRejectedValue(new Error('Permission denied'));
 
-		const { readInbox } = await import('../read_inbox.js');
 		const result = await readInbox({});
 
 		expect(result.content[0].text).toContain('Erreur');
@@ -167,7 +161,6 @@ describe('read_inbox', () => {
 			{ id: 'msg-1', from: 'a', to: 'b', subject: 'Test', priority: 'MEDIUM', timestamp: '2026-01-01T00:00:00Z', status: 'unread', preview: '' }
 		]);
 
-		const { readInbox } = await import('../read_inbox.js');
 		const result = await readInbox({});
 
 		expect(result.content[0].text).toContain('roosync_get_message');

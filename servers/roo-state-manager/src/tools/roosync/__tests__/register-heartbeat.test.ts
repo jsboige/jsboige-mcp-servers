@@ -4,7 +4,8 @@
  */
 
 import { describe, test, expect, vi, beforeEach } from 'vitest';
-import { RegisterHeartbeatArgsSchema, RegisterHeartbeatResultSchema } from '../register-heartbeat.js';
+// Fix #636 timeout: Use static import instead of dynamic imports
+import { RegisterHeartbeatArgsSchema, RegisterHeartbeatResultSchema, roosyncRegisterHeartbeat } from '../register-heartbeat.js';
 
 const { mockGetHeartbeatService } = vi.hoisted(() => ({
 	mockGetHeartbeatService: vi.fn()
@@ -108,8 +109,7 @@ describe('register-heartbeat', () => {
 				.mockReturnValueOnce({ lastHeartbeat: '2026-01-02T00:00:00Z', status: 'online' });
 			mockRegisterHeartbeat.mockResolvedValue(undefined);
 
-			const { roosyncRegisterHeartbeat } = await import('../register-heartbeat.js');
-			const result = await roosyncRegisterHeartbeat({ machineId: 'ai-01' });
+				const result = await roosyncRegisterHeartbeat({ machineId: 'ai-01' });
 
 			expect(result.success).toBe(true);
 			expect(result.machineId).toBe('ai-01');
@@ -124,8 +124,7 @@ describe('register-heartbeat', () => {
 				.mockReturnValueOnce({ lastHeartbeat: '2026-01-01T00:00:00Z', status: 'online' });
 			mockRegisterHeartbeat.mockResolvedValue(undefined);
 
-			const { roosyncRegisterHeartbeat } = await import('../register-heartbeat.js');
-			const result = await roosyncRegisterHeartbeat({ machineId: 'new-host' });
+				const result = await roosyncRegisterHeartbeat({ machineId: 'new-host' });
 
 			expect(result.isNewMachine).toBe(true);
 		});
@@ -136,8 +135,7 @@ describe('register-heartbeat', () => {
 				.mockReturnValueOnce({ lastHeartbeat: '2026-01-01T00:00:00Z', status: 'online' });
 			mockRegisterHeartbeat.mockResolvedValue(undefined);
 
-			const { roosyncRegisterHeartbeat } = await import('../register-heartbeat.js');
-			await roosyncRegisterHeartbeat({
+				await roosyncRegisterHeartbeat({
 				machineId: 'po-2023',
 				metadata: { version: '2.3.0' }
 			});
@@ -149,8 +147,7 @@ describe('register-heartbeat', () => {
 			mockGetHeartbeatData.mockReturnValue(null);
 			mockRegisterHeartbeat.mockResolvedValue(undefined);
 
-			const { roosyncRegisterHeartbeat } = await import('../register-heartbeat.js');
-			await expect(roosyncRegisterHeartbeat({ machineId: 'broken' }))
+				await expect(roosyncRegisterHeartbeat({ machineId: 'broken' }))
 				.rejects.toThrow('Impossible de récupérer');
 		});
 
@@ -158,8 +155,7 @@ describe('register-heartbeat', () => {
 			mockGetHeartbeatData.mockReturnValueOnce(null);
 			mockRegisterHeartbeat.mockRejectedValue(new Error('Write failed'));
 
-			const { roosyncRegisterHeartbeat } = await import('../register-heartbeat.js');
-			await expect(roosyncRegisterHeartbeat({ machineId: 'fail' }))
+				await expect(roosyncRegisterHeartbeat({ machineId: 'fail' }))
 				.rejects.toThrow('Write failed');
 		});
 	});
