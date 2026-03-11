@@ -4,7 +4,8 @@
  */
 
 import { describe, test, expect, vi, beforeEach } from 'vitest';
-import { RooSyncDecisionArgsSchema, RooSyncDecisionResultSchema } from '../decision.js';
+// Fix #636 timeout: Use static import instead of dynamic imports
+import { RooSyncDecisionArgsSchema, RooSyncDecisionResultSchema, roosyncDecision } from '../decision.js';
 
 // Mock dependencies
 const { mockLoadDecisionDetails, mockValidateDecisionStatus, mockUpdateRoadmapStatus, mockFormatDecisionResult } = vi.hoisted(() => ({
@@ -194,7 +195,6 @@ describe('decision', () => {
 		test('throws when decision not found', async () => {
 			mockLoadDecisionDetails.mockResolvedValue(null);
 
-			const { roosyncDecision } = await import('../decision.js');
 			await expect(
 				roosyncDecision({ action: 'approve', decisionId: 'DEC-999' })
 			).rejects.toThrow('introuvable');
@@ -204,7 +204,6 @@ describe('decision', () => {
 			mockLoadDecisionDetails.mockResolvedValue({ status: 'applied' });
 			mockValidateDecisionStatus.mockReturnValue(false);
 
-			const { roosyncDecision } = await import('../decision.js');
 			await expect(
 				roosyncDecision({ action: 'approve', decisionId: 'DEC-001' })
 			).rejects.toThrow('non permise');

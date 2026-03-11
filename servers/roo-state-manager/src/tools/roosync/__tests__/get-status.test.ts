@@ -4,7 +4,8 @@
  */
 
 import { describe, test, expect, vi, beforeEach } from 'vitest';
-import { GetStatusArgsSchema, GetStatusResultSchema } from '../get-status.js';
+// Fix #636 timeout: Use static import instead of dynamic imports
+import { GetStatusArgsSchema, GetStatusResultSchema, roosyncGetStatus } from '../get-status.js';
 
 const { mockGetConfig, mockLoadDashboard, mockListDiffs } = vi.hoisted(() => ({
 	mockGetConfig: vi.fn(),
@@ -95,8 +96,7 @@ describe('get-status', () => {
 				}
 			});
 
-			const { roosyncGetStatus } = await import('../get-status.js');
-			const result = await roosyncGetStatus({});
+				const result = await roosyncGetStatus({});
 
 			expect(result.status).toBe('synced');
 			expect(result.machines).toHaveLength(2);
@@ -112,8 +112,7 @@ describe('get-status', () => {
 				}
 			});
 
-			const { roosyncGetStatus } = await import('../get-status.js');
-			const result = await roosyncGetStatus({ machineFilter: 'po-2023' });
+				const result = await roosyncGetStatus({ machineFilter: 'po-2023' });
 
 			expect(result.machines).toHaveLength(1);
 			expect(result.machines[0].id).toBe('po-2023');
@@ -126,8 +125,7 @@ describe('get-status', () => {
 				machines: { 'ai-01': { status: 'online', lastSync: '2026-01-01', pendingDecisions: 0, diffsCount: 0 } }
 			});
 
-			const { roosyncGetStatus } = await import('../get-status.js');
-			await expect(roosyncGetStatus({ machineFilter: 'nonexistent' })).rejects.toThrow('non trouvée');
+				await expect(roosyncGetStatus({ machineFilter: 'nonexistent' })).rejects.toThrow('non trouvée');
 		});
 
 		test('includes diffs when includeDetails is true', async () => {
@@ -145,8 +143,7 @@ describe('get-status', () => {
 				}]
 			});
 
-			const { roosyncGetStatus } = await import('../get-status.js');
-			const result = await roosyncGetStatus({ includeDetails: true });
+				const result = await roosyncGetStatus({ includeDetails: true });
 
 			expect(result.diffs).toBeDefined();
 			expect(result.diffs!.length).toBe(1);
@@ -160,8 +157,7 @@ describe('get-status', () => {
 				summary: { totalMachines: 6, onlineMachines: 4, totalDiffs: 5, totalPendingDecisions: 2 }
 			});
 
-			const { roosyncGetStatus } = await import('../get-status.js');
-			const result = await roosyncGetStatus({});
+				const result = await roosyncGetStatus({});
 
 			expect(result.summary?.totalMachines).toBe(6);
 			expect(result.summary?.onlineMachines).toBe(4);

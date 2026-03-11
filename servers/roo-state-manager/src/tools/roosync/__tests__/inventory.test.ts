@@ -122,7 +122,9 @@ const mockExecutionContext: any = {
 };
 
 // Import après les mocks
-import { inventoryTool } from '../inventory.js';
+// Fix #636 timeout: Use static import instead of dynamic imports
+import { inventoryTool, inventoryToolMetadata } from '../inventory.js';
+import { InventoryService } from '../../../services/roosync/InventoryService.js';
 
 describe('inventoryTool', () => {
   beforeEach(() => {
@@ -165,7 +167,6 @@ describe('inventoryTool', () => {
 
     test('should handle errors gracefully', async () => {
       // Mock pour simuler une erreur
-      const { InventoryService } = await import('../../../services/roosync/InventoryService.js');
       vi.mocked(InventoryService.getInstance).mockImplementationOnce(() => {
         throw new Error('Inventory service error');
       });
@@ -275,8 +276,6 @@ describe('inventoryTool', () => {
 
   describe('validation', () => {
     test('should have correct metadata', async () => {
-      const { inventoryToolMetadata } = await import('../inventory.js');
-
       expect(inventoryToolMetadata.name).toBe('roosync_inventory');
       expect(inventoryToolMetadata.description).toContain('inventaire');
       expect(inventoryToolMetadata.inputSchema.properties.type).toBeDefined();
@@ -284,8 +283,6 @@ describe('inventoryTool', () => {
     });
 
     test('should require type parameter', async () => {
-      const { inventoryToolMetadata } = await import('../inventory.js');
-
       expect(inventoryToolMetadata.inputSchema.required).toContain('type');
     });
   });
