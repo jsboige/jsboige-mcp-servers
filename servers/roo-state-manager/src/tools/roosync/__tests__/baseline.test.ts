@@ -21,8 +21,20 @@ import { join } from 'path';
 // Test directory
 const testSharedStatePath = join(__dirname, '../../../__test-data__/shared-state-baseline');
 
-// Mock execSync pour les opérations Git
+// Mock execSync pour les opérations Git, exec pour l'inventaire PowerShell
 vi.mock('child_process', () => ({
+  exec: vi.fn((cmd: string, options: any, callback?: any) => {
+    // Pour l'utilisation avec promisify: callback est le dernier argument
+    if (typeof options === 'function') {
+      callback = options;
+      options = {};
+    }
+    // Simuler l'exécution du script PowerShell d'inventaire
+    if (callback) {
+      callback(null, { stdout: '/tmp/test-inventory.json\n', stderr: '' });
+    }
+    return {};
+  }),
   execSync: vi.fn((cmd: string) => {
     if (cmd.includes('git rev-parse --verify refs/tags/')) {
       // Tag existe pas par défaut
@@ -38,6 +50,10 @@ vi.mock('child_process', () => ({
         lastUpdated: '2026-01-01T00:00:00.000Z',
         config: { roo: {}, hardware: {}, software: {}, system: {} }
       });
+    }
+    if (cmd.includes('mkdir -p')) {
+      // Mock directory creation - return empty string (success)
+      return '';
     }
     return '';
   })
@@ -75,10 +91,15 @@ vi.mock('../../../services/ConfigService.js', () => ({
   }
 }));
 
+// Mock getSharedStatePath utility function
+vi.mock('../../utils/server-helpers.js', () => ({
+  getSharedStatePath: vi.fn(() => testSharedStatePath)
+}));
+
 // Mock BaselineService
 vi.mock('../../../services/BaselineService.js', () => ({
   BaselineService: class MockBaselineService {
-    async loadBaseline() {
+    async loadBaseline(machineId?: string) {
       const baselinePath = join(testSharedStatePath, 'sync-config.ref.json');
       if (existsSync(baselinePath)) {
         const content = readFileSync(baselinePath, 'utf-8');
@@ -89,7 +110,7 @@ vi.mock('../../../services/BaselineService.js', () => ({
     async updateBaseline(baseline: any, options: any) {
       const baselinePath = join(testSharedStatePath, 'sync-config.ref.json');
       writeFileSync(baselinePath, JSON.stringify(baseline, null, 2));
-      return true;
+      return { success: true, backupCreated: options?.createBackup ?? true };
     }
   }
 }));
@@ -121,6 +142,10 @@ import { roosync_baseline, BaselineArgs } from '../baseline.js';
 
 describe('roosync_baseline', () => {
   beforeEach(async () => {
+    // Set the environment variable for this test suite
+    // This is required because getSharedStatePath() reads directly from process.env
+    process.env.ROOSYNC_SHARED_PATH = testSharedStatePath;
+
     // Setup : créer répertoire temporaire pour tests isolés
     const dirs = [
       testSharedStatePath,
