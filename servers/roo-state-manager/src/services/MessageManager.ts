@@ -843,6 +843,49 @@ export class MessageManager {
    * @param workspaceId Optional workspace ID
    * @returns Inbox statistics
    */
+  /**
+   * Auto-archive messages older than the given age threshold.
+   * Moves old read messages from inbox/ to archive/ to keep inbox small.
+   * Called opportunistically during inbox reads (#638 Phase 3).
+   *
+   * @param maxAgeDays Maximum age in days before auto-archiving (default: 30)
+   * @param onlyRead If true, only archive read messages (default: true)
+   * @returns Number of messages archived
+   */
+  async autoArchiveOld(maxAgeDays: number = 30, onlyRead: boolean = true): Promise<number> {
+    const cutoff = Date.now() - maxAgeDays * 24 * 60 * 60 * 1000;
+    logger.info(`Auto-archiving messages older than ${maxAgeDays} days (onlyRead=${onlyRead})`);
+
+    const { items, full } = await this.ensureInboxCache();
+    const toArchive: string[] = [];
+
+    for (const item of items) {
+      const msgTime = new Date(item.timestamp).getTime();
+      if (msgTime >= cutoff) continue;
+
+      if (onlyRead) {
+        const message = full.get(item.id);
+        if (!message || message.status === 'unread') continue;
+      }
+
+      toArchive.push(item.id);
+    }
+
+    if (toArchive.length === 0) {
+      logger.info('No messages to auto-archive');
+      return 0;
+    }
+
+    let archived = 0;
+    for (const id of toArchive) {
+      const success = await this.archiveMessage(id);
+      if (success) archived++;
+    }
+
+    logger.info(`Auto-archived ${archived}/${toArchive.length} messages`);
+    return archived;
+  }
+
   async getInboxStats(
     machineId: string,
     workspaceId?: string

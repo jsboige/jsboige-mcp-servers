@@ -86,6 +86,11 @@ async function readInboxMode(
     .registerHeartbeat(localMachineId, { lastActivity: 'roosync_read_inbox', messageCount: messages.length })
     .catch(err => logger.debug('Heartbeat update skipped (non-critical)', { error: String(err) }));
 
+  // Fire-and-forget auto-archive of old read messages (#638 Phase 3)
+  messageManager.autoArchiveOld(30, true)
+    .then(n => { if (n > 0) logger.info(`Auto-archived ${n} old messages`); })
+    .catch(err => logger.debug('Auto-archive skipped (non-critical)', { error: String(err) }));
+
   // Cas : aucun message
   if (messages.length === 0 && counts.total === 0) {
     return `📭 **Aucun message dans votre boîte de réception (${status})**
