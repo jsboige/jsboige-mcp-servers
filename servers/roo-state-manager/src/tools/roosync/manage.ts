@@ -305,6 +305,12 @@ async function cleanupMessages(
   const machineId = getLocalMachineId();
   const results: string[] = [];
 
+  // 0. Cleanup expired auto-destruct messages (#629)
+  const expiredCount = await messageManager.cleanupExpiredMessages();
+  if (expiredCount > 0) {
+    results.push(`- 💀 Messages auto-destruct expirés détruits : **${expiredCount}**`);
+  }
+
   // 1. Mark test messages as read
   const testResult = await messageManager.bulkOperation(
     machineId, 'mark_read',

@@ -91,6 +91,11 @@ async function readInboxMode(
     .then(n => { if (n > 0) logger.info(`Auto-archived ${n} old messages`); })
     .catch(err => logger.debug('Auto-archive skipped (non-critical)', { error: String(err) }));
 
+  // Fire-and-forget cleanup of expired auto-destruct messages (#629)
+  messageManager.cleanupExpiredMessages()
+    .then(n => { if (n > 0) logger.info(`Destroyed ${n} expired auto-destruct messages`); })
+    .catch(err => logger.debug('Auto-destruct cleanup skipped (non-critical)', { error: String(err) }));
+
   // Cas : aucun message
   if (messages.length === 0 && counts.total === 0) {
     return `📭 **Aucun message dans votre boîte de réception (${status})**
@@ -126,7 +131,13 @@ Votre inbox est vide pour le moment.
   for (const msg of messages) {
     const fullId = msg.id;
     const maxSubjectLength = 25;
-    const shortSubject = msg.subject.length > maxSubjectLength ? msg.subject.substring(0, maxSubjectLength) + '...' : msg.subject;
+    let shortSubject = msg.subject.length > maxSubjectLength ? msg.subject.substring(0, maxSubjectLength) + '...' : msg.subject;
+    // Auto-destruct indicator (#629)
+    if ((msg as any).destroyed_at) {
+      shortSubject = `💀 ${shortSubject}`;
+    } else if ((msg as any).auto_destruct) {
+      shortSubject = `⏳ ${shortSubject}`;
+    }
     result += `| ${fullId} | ${msg.from} | ${shortSubject} | ${getPriorityIcon(msg.priority)} ${msg.priority} | ${getStatusIcon(msg.status)} ${msg.status} | ${formatDate(msg.timestamp)} |\n`;
   }
 
@@ -218,9 +229,41 @@ Le message n'a pas été trouvé dans :
     result += `**En réponse à :** ${message.reply_to}\n`;
   }
 
+  // Auto-destruct info (#629)
+  if ((message as any).auto_destruct) {
+    result += `\n**🔥 Auto-destruct :** OUI`;
+    if ((message as any).destruct_after_read_by?.length) {
+      result += ` (après lecture par: ${(message as any).destruct_after_read_by.join(', ')})`;
+    }
+    if ((message as any).expires_at) {
+      const expiresAt = new Date((message as any).expires_at);
+      const isExpired = expiresAt.getTime() < Date.now();
+      result += `\n**⏰ Expiration :** ${formatDateFull((message as any).expires_at)}${isExpired ? ' ⚠️ EXPIRÉ' : ''}`;
+    }
+    if ((message as any).destroyed_at) {
+      result += `\n**💀 Détruit :** ${formatDateFull((message as any).destroyed_at)} (raison: ${(message as any).destroyed_reason || 'inconnue'})`;
+    }
+    result += `\n`;
+  }
+
+  // Multi-reader tracking (#629)
+  if ((message as any).read_by?.length) {
+    const readBy = (message as any).read_by as string[];
+    const ackAt = (message as any).acknowledged_at as Record<string, string> | undefined;
+    result += `\n**👁️ Lu par :** ${readBy.map(m => {
+      const ts = ackAt?.[m];
+      return ts ? `${m} (${formatDate(ts)})` : m;
+    }).join(', ')}\n`;
+  }
+
   result += `\n---\n\n`;
   result += `## 📄 Contenu\n\n`;
-  result += message.body;
+  // Show destroyed placeholder or actual body (#629)
+  if ((message as any).destroyed_at) {
+    result += `_💀 Ce message a été détruit le ${formatDateFull((message as any).destroyed_at)}. Le contenu n'est plus disponible._`;
+  } else {
+    result += message.body;
+  }
   result += `\n\n---\n\n`;
   result += `## 💡 Actions disponibles\n\n`;
 
