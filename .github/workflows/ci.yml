@@ -69,10 +69,10 @@ jobs:
         cd servers/roo-state-manager
         npm run build
 
-    - name: Run tests
+    - name: Run tests (CI config - excludes platform-dependent tests)
       run: |
         cd servers/roo-state-manager
-        npx vitest run
+        npx vitest run --config vitest.config.ci.ts
 
   lint:
     runs-on: ubuntu-22.04
