@@ -254,9 +254,16 @@ describe('BaselineService', () => {
 
   beforeEach(() => {
     reinitMocks();
-    delete process.env.ROOSYNC_SHARED_PATH;
-    delete process.env.SHARED_STATE_PATH;
-    delete process.env.ROOSYNC_MACHINE_ID;
+    // Clear all fs mock calls to ensure test isolation
+    vi.mocked(fs.readFile).mockClear();
+    vi.mocked(fs.writeFile).mockClear();
+    vi.mocked(fs.mkdir).mockClear();
+    vi.mocked(fs.readdir).mockClear();
+    vi.mocked(fs.stat).mockClear();
+    vi.mocked(existsSync).mockClear();
+    vi.mocked(copyFileSync).mockClear();
+    // NOTE: ROOSYNC_SHARED_PATH, SHARED_STATE_PATH, and ROOSYNC_MACHINE_ID are now loaded from .env.test
+    // Do NOT delete them - BaselineService constructor requires ROOSYNC_SHARED_PATH
     vi.spyOn(console, 'log').mockImplementation(() => {});
     vi.spyOn(console, 'warn').mockImplementation(() => {});
     vi.spyOn(console, 'error').mockImplementation(() => {});

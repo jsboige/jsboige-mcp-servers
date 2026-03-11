@@ -35,30 +35,71 @@ vi.mock('../../../utils/server-helpers.js', () => ({
   getSharedStatePath: () => testSharedStatePath
 }));
 
+// Fix #634: Integration tests need REAL RooSyncService, not the mock from jest.setup.js
+// Unmock the service so we get the real singleton with actual filesystem operations
+vi.unmock('../../../services/RooSyncService.js');
+// Also unmock InventoryCollector - the jest.setup.js mock has wrong method names (collect vs collectInventory)
+// and is missing clearCache method needed by clearCache() in RooSyncService
+vi.unmock('../../../services/InventoryCollector.js');
+// Also unmock BaselineService - jest.setup.js mock is missing loadBaseline method
+vi.unmock('../../../services/BaselineService.js');
+// Also unmock ConfigService - BaselineService depends on it and jest.setup.js mock is incomplete
+vi.unmock('../../../services/ConfigService.js');
+
 // Import après les mocks
 import { roosyncDecision } from '../decision.js';
 import { RooSyncService } from '../../../services/RooSyncService.js';
 
 describe('roosync_decision (integration)', () => {
-  // Fix #634: Save original env var to restore after tests
+  // Fix #634: Save original env vars to restore after tests
   const originalSharedPath = process.env.ROOSYNC_SHARED_PATH;
+  const originalMachineId = process.env.ROOSYNC_MACHINE_ID;
+
+  // Helper function to create a decision block in sync-roadmap.md format
+  function createDecisionBlock(
+    id: string,
+    title: string,
+    status: 'pending' | 'approved' | 'rejected' | 'applied' | 'rolled_back',
+    type: string = 'config'
+  ): string {
+    const now = new Date().toISOString();
+    return `<!-- DECISION_BLOCK_START -->
+**ID:** \`${id}\`
+**Titre:** ${title}
+**Statut:** ${status}
+**Type:** ${type}
+**Machine Source:** test-machine
+**Machines Cibles:** test-machine
+**Créé:** ${now}
+<!-- DECISION_BLOCK_END -->`;
+  }
+
+  // Helper to write sync-roadmap.md with decisions
+  function writeRoadmap(decisionBlocks: string[]): void {
+    const header = `# RooSync Roadmap - Test
+version: 2.0.0
+machines: []
+lastSync: null
+decisions: []
+`;
+    const content = header + decisionBlocks.join('\n\n');
+    writeFileSync(join(testSharedStatePath, 'sync-roadmap.md'), content, 'utf-8');
+  }
 
   beforeEach(async () => {
-    // Fix #634: Override env var BEFORE singleton recreation
+    // Fix #634: Override env var BEFORE singleton recreation.
+    // Without this, loadRooSyncConfig() reads the system env var (GDrive path)
+    // and RooSyncService writes ghost files to production GDrive.
     process.env.ROOSYNC_SHARED_PATH = testSharedStatePath;
-
-    // Reset singleton so it gets recreated with the test path
-    RooSyncService.resetInstance();
+    process.env.ROOSYNC_MACHINE_ID = 'test-machine';
 
     // Setup : créer répertoire temporaire pour tests isolés
+    // IMPORTANT: Create directories BEFORE resetInstance(), because
+    // loadRooSyncConfig() validates that ROOSYNC_SHARED_PATH exists.
     const dirs = [
       testSharedStatePath,
-      join(testSharedStatePath, 'decisions'),
-      join(testSharedStatePath, 'decisions', 'pending'),
-      join(testSharedStatePath, 'decisions', 'approved'),
-      join(testSharedStatePath, 'decisions', 'rejected'),
-      join(testSharedStatePath, 'decisions', 'applied'),
-      join(testSharedStatePath, 'decisions', 'rolled_back')
+      join(testSharedStatePath, 'roo-config'),
+      join(testSharedStatePath, 'logs')
     ];
 
     for (const dir of dirs) {
@@ -66,17 +107,26 @@ describe('roosync_decision (integration)', () => {
         mkdirSync(dir, { recursive: true });
       }
     }
+
+    // Reset singleton avant chaque test pour garantir un état propre
+    RooSyncService.resetInstance();
   });
 
   afterEach(async () => {
     // Reset singleton to prevent leaking test state to other test files
     RooSyncService.resetInstance();
 
-    // Restore original env var
+    // Restore original env vars
     if (originalSharedPath !== undefined) {
       process.env.ROOSYNC_SHARED_PATH = originalSharedPath;
     } else {
       delete process.env.ROOSYNC_SHARED_PATH;
+    }
+
+    if (originalMachineId !== undefined) {
+      process.env.ROOSYNC_MACHINE_ID = originalMachineId;
+    } else {
+      delete process.env.ROOSYNC_MACHINE_ID;
     }
 
     // Cleanup : supprimer répertoire test pour isolation
@@ -101,17 +151,7 @@ describe('roosync_decision (integration)', () => {
     test('should approve decision with minimal parameters', async () => {
       // Créer une décision en attente
       const decisionId = 'test-decision-001';
-      const decisionPath = join(testSharedStatePath, 'decisions', 'pending', `${decisionId}.json`);
-      const testDecision = {
-        id: decisionId,
-        title: 'Test decision',
-        description: 'Test description',
-        proposedBy: 'test-machine',
-        createdAt: new Date().toISOString(),
-        status: 'pending' as const,
-        changes: [{ file: 'test.txt', action: 'create' as const }]
-      };
-      writeFileSync(decisionPath, JSON.stringify(testDecision, null, 2));
+      writeRoadmap([createDecisionBlock(decisionId, 'Test decision', 'pending')]);
 
       const result = await roosyncDecision({
         action: 'approve',
@@ -126,17 +166,7 @@ describe('roosync_decision (integration)', () => {
 
     test('should approve decision with comment', async () => {
       const decisionId = 'test-decision-002';
-      const decisionPath = join(testSharedStatePath, 'decisions', 'pending', `${decisionId}.json`);
-      const testDecision = {
-        id: decisionId,
-        title: 'Test decision with comment',
-        description: 'Test description',
-        proposedBy: 'test-machine',
-        createdAt: new Date().toISOString(),
-        status: 'pending' as const,
-        changes: []
-      };
-      writeFileSync(decisionPath, JSON.stringify(testDecision, null, 2));
+      writeRoadmap([createDecisionBlock(decisionId, 'Test decision with comment', 'pending')]);
 
       const result = await roosyncDecision({
         action: 'approve',
@@ -151,32 +181,17 @@ describe('roosync_decision (integration)', () => {
 
     test('should move decision from pending to approved', async () => {
       const decisionId = 'test-decision-003';
-      const pendingPath = join(testSharedStatePath, 'decisions', 'pending', `${decisionId}.json`);
-      const approvedPath = join(testSharedStatePath, 'decisions', 'approved', `${decisionId}.json`);
-
-      const testDecision = {
-        id: decisionId,
-        title: 'Test decision move',
-        description: 'Test',
-        proposedBy: 'test-machine',
-        createdAt: new Date().toISOString(),
-        status: 'pending' as const,
-        changes: []
-      };
-      writeFileSync(pendingPath, JSON.stringify(testDecision, null, 2));
+      writeRoadmap([createDecisionBlock(decisionId, 'Test decision move', 'pending')]);
 
       await roosyncDecision({
         action: 'approve',
         decisionId
       });
 
-      // Vérifier que le fichier a été déplacé
-      expect(existsSync(pendingPath)).toBe(false);
-      expect(existsSync(approvedPath)).toBe(true);
-
-      const updatedContent = readFileSync(approvedPath, 'utf-8');
-      const updatedDecision = JSON.parse(updatedContent);
-      expect(updatedDecision.status).toBe('approved');
+      // Vérifier que le statut a été mis à jour dans le roadmap
+      const roadmapPath = join(testSharedStatePath, 'sync-roadmap.md');
+      const roadmapContent = readFileSync(roadmapPath, 'utf-8');
+      expect(roadmapContent).toContain('**Statut:** approved');
     });
   });
 
@@ -187,17 +202,7 @@ describe('roosync_decision (integration)', () => {
   describe('action: reject', () => {
     test('should require reason parameter for reject', async () => {
       const decisionId = 'test-decision-004';
-      const decisionPath = join(testSharedStatePath, 'decisions', 'pending', `${decisionId}.json`);
-      const testDecision = {
-        id: decisionId,
-        title: 'Test decision',
-        description: 'Test',
-        proposedBy: 'test-machine',
-        createdAt: new Date().toISOString(),
-        status: 'pending' as const,
-        changes: []
-      };
-      writeFileSync(decisionPath, JSON.stringify(testDecision, null, 2));
+      writeRoadmap([createDecisionBlock(decisionId, 'Test decision', 'pending')]);
 
       // reason est requis pour reject
       await expect(roosyncDecision({
@@ -209,17 +214,7 @@ describe('roosync_decision (integration)', () => {
 
     test('should reject decision with reason', async () => {
       const decisionId = 'test-decision-005';
-      const decisionPath = join(testSharedStatePath, 'decisions', 'pending', `${decisionId}.json`);
-      const testDecision = {
-        id: decisionId,
-        title: 'Test decision reject',
-        description: 'Test',
-        proposedBy: 'test-machine',
-        createdAt: new Date().toISOString(),
-        status: 'pending' as const,
-        changes: []
-      };
-      writeFileSync(decisionPath, JSON.stringify(testDecision, null, 2));
+      writeRoadmap([createDecisionBlock(decisionId, 'Test decision reject', 'pending')]);
 
       const result = await roosyncDecision({
         action: 'reject',
@@ -234,19 +229,7 @@ describe('roosync_decision (integration)', () => {
 
     test('should move decision from pending to rejected', async () => {
       const decisionId = 'test-decision-006';
-      const pendingPath = join(testSharedStatePath, 'decisions', 'pending', `${decisionId}.json`);
-      const rejectedPath = join(testSharedStatePath, 'decisions', 'rejected', `${decisionId}.json`);
-
-      const testDecision = {
-        id: decisionId,
-        title: 'Test decision reject move',
-        description: 'Test',
-        proposedBy: 'test-machine',
-        createdAt: new Date().toISOString(),
-        status: 'pending' as const,
-        changes: []
-      };
-      writeFileSync(pendingPath, JSON.stringify(testDecision, null, 2));
+      writeRoadmap([createDecisionBlock(decisionId, 'Test decision reject move', 'pending')]);
 
       await roosyncDecision({
         action: 'reject',
@@ -254,13 +237,10 @@ describe('roosync_decision (integration)', () => {
         reason: 'Incomplete implementation'
       });
 
-      // Vérifier que le fichier a été déplacé
-      expect(existsSync(pendingPath)).toBe(false);
-      expect(existsSync(rejectedPath)).toBe(true);
-
-      const updatedContent = readFileSync(rejectedPath, 'utf-8');
-      const updatedDecision = JSON.parse(updatedContent);
-      expect(updatedDecision.status).toBe('rejected');
+      // Vérifier que le statut a été mis à jour dans le roadmap
+      const roadmapPath = join(testSharedStatePath, 'sync-roadmap.md');
+      const roadmapContent = readFileSync(roadmapPath, 'utf-8');
+      expect(roadmapContent).toContain('**Statut:** rejected');
     });
   });
 
@@ -271,19 +251,7 @@ describe('roosync_decision (integration)', () => {
   describe('action: apply', () => {
     test('should apply approved decision', async () => {
       const decisionId = 'test-decision-007';
-      const decisionPath = join(testSharedStatePath, 'decisions', 'approved', `${decisionId}.json`);
-      const testDecision = {
-        id: decisionId,
-        title: 'Test decision apply',
-        description: 'Test',
-        proposedBy: 'test-machine',
-        createdAt: new Date().toISOString(),
-        status: 'approved' as const,
-        changes: [],
-        approvedBy: 'test-machine',
-        approvedAt: new Date().toISOString()
-      };
-      writeFileSync(decisionPath, JSON.stringify(testDecision, null, 2));
+      writeRoadmap([createDecisionBlock(decisionId, 'Test decision apply', 'approved')]);
 
       const result = await roosyncDecision({
         action: 'apply',
@@ -297,19 +265,7 @@ describe('roosync_decision (integration)', () => {
 
     test('should support dryRun mode', async () => {
       const decisionId = 'test-decision-008';
-      const decisionPath = join(testSharedStatePath, 'decisions', 'approved', `${decisionId}.json`);
-      const testDecision = {
-        id: decisionId,
-        title: 'Test decision dryrun',
-        description: 'Test',
-        proposedBy: 'test-machine',
-        createdAt: new Date().toISOString(),
-        status: 'approved' as const,
-        changes: [],
-        approvedBy: 'test-machine',
-        approvedAt: new Date().toISOString()
-      };
-      writeFileSync(decisionPath, JSON.stringify(testDecision, null, 2));
+      writeRoadmap([createDecisionBlock(decisionId, 'Test decision dryrun', 'approved')]);
 
       const result = await roosyncDecision({
         action: 'apply',
@@ -323,19 +279,7 @@ describe('roosync_decision (integration)', () => {
 
     test('should support force flag', async () => {
       const decisionId = 'test-decision-009';
-      const decisionPath = join(testSharedStatePath, 'decisions', 'approved', `${decisionId}.json`);
-      const testDecision = {
-        id: decisionId,
-        title: 'Test decision force',
-        description: 'Test',
-        proposedBy: 'test-machine',
-        createdAt: new Date().toISOString(),
-        status: 'approved' as const,
-        changes: [],
-        approvedBy: 'test-machine',
-        approvedAt: new Date().toISOString()
-      };
-      writeFileSync(decisionPath, JSON.stringify(testDecision, null, 2));
+      writeRoadmap([createDecisionBlock(decisionId, 'Test decision force', 'approved')]);
 
       const result = await roosyncDecision({
         action: 'apply',
@@ -349,34 +293,17 @@ describe('roosync_decision (integration)', () => {
 
     test('should move decision from approved to applied', async () => {
       const decisionId = 'test-decision-010';
-      const approvedPath = join(testSharedStatePath, 'decisions', 'approved', `${decisionId}.json`);
-      const appliedPath = join(testSharedStatePath, 'decisions', 'applied', `${decisionId}.json`);
-
-      const testDecision = {
-        id: decisionId,
-        title: 'Test decision apply move',
-        description: 'Test',
-        proposedBy: 'test-machine',
-        createdAt: new Date().toISOString(),
-        status: 'approved' as const,
-        changes: [],
-        approvedBy: 'test-machine',
-        approvedAt: new Date().toISOString()
-      };
-      writeFileSync(approvedPath, JSON.stringify(testDecision, null, 2));
+      writeRoadmap([createDecisionBlock(decisionId, 'Test decision apply move', 'approved')]);
 
       await roosyncDecision({
         action: 'apply',
         decisionId
       });
 
-      // Vérifier que le fichier a été déplacé
-      expect(existsSync(approvedPath)).toBe(false);
-      expect(existsSync(appliedPath)).toBe(true);
-
-      const updatedContent = readFileSync(appliedPath, 'utf-8');
-      const updatedDecision = JSON.parse(updatedContent);
-      expect(updatedDecision.status).toBe('applied');
+      // Vérifier que le statut a été mis à jour dans le roadmap
+      const roadmapPath = join(testSharedStatePath, 'sync-roadmap.md');
+      const roadmapContent = readFileSync(roadmapPath, 'utf-8');
+      expect(roadmapContent).toContain('**Statut:** applied');
     });
   });
 
@@ -387,21 +314,7 @@ describe('roosync_decision (integration)', () => {
   describe('action: rollback', () => {
     test('should require reason parameter for rollback', async () => {
       const decisionId = 'test-decision-011';
-      const decisionPath = join(testSharedStatePath, 'decisions', 'applied', `${decisionId}.json`);
-      const testDecision = {
-        id: decisionId,
-        title: 'Test decision',
-        description: 'Test',
-        proposedBy: 'test-machine',
-        createdAt: new Date().toISOString(),
-        status: 'applied' as const,
-        changes: [],
-        approvedBy: 'test-machine',
-        approvedAt: new Date().toISOString(),
-        appliedBy: 'test-machine',
-        appliedAt: new Date().toISOString()
-      };
-      writeFileSync(decisionPath, JSON.stringify(testDecision, null, 2));
+      writeRoadmap([createDecisionBlock(decisionId, 'Test decision', 'applied')]);
 
       // reason est requis pour rollback
       await expect(roosyncDecision({
@@ -413,21 +326,7 @@ describe('roosync_decision (integration)', () => {
 
     test('should rollback applied decision with reason', async () => {
       const decisionId = 'test-decision-012';
-      const decisionPath = join(testSharedStatePath, 'decisions', 'applied', `${decisionId}.json`);
-      const testDecision = {
-        id: decisionId,
-        title: 'Test decision rollback',
-        description: 'Test',
-        proposedBy: 'test-machine',
-        createdAt: new Date().toISOString(),
-        status: 'applied' as const,
-        changes: [],
-        approvedBy: 'test-machine',
-        approvedAt: new Date().toISOString(),
-        appliedBy: 'test-machine',
-        appliedAt: new Date().toISOString()
-      };
-      writeFileSync(decisionPath, JSON.stringify(testDecision, null, 2));
+      writeRoadmap([createDecisionBlock(decisionId, 'Test decision rollback', 'applied')]);
 
       const result = await roosyncDecision({
         action: 'rollback',
@@ -442,23 +341,7 @@ describe('roosync_decision (integration)', () => {
 
     test('should move decision from applied to rolled_back', async () => {
       const decisionId = 'test-decision-013';
-      const appliedPath = join(testSharedStatePath, 'decisions', 'applied', `${decisionId}.json`);
-      const rolledBackPath = join(testSharedStatePath, 'decisions', 'rolled_back', `${decisionId}.json`);
-
-      const testDecision = {
-        id: decisionId,
-        title: 'Test decision rollback move',
-        description: 'Test',
-        proposedBy: 'test-machine',
-        createdAt: new Date().toISOString(),
-        status: 'applied' as const,
-        changes: [],
-        approvedBy: 'test-machine',
-        approvedAt: new Date().toISOString(),
-        appliedBy: 'test-machine',
-        appliedAt: new Date().toISOString()
-      };
-      writeFileSync(appliedPath, JSON.stringify(testDecision, null, 2));
+      writeRoadmap([createDecisionBlock(decisionId, 'Test decision rollback move', 'applied')]);
 
       await roosyncDecision({
         action: 'rollback',
@@ -466,13 +349,10 @@ describe('roosync_decision (integration)', () => {
         reason: 'Breaking change detected'
       });
 
-      // Vérifier que le fichier a été déplacé
-      expect(existsSync(appliedPath)).toBe(false);
-      expect(existsSync(rolledBackPath)).toBe(true);
-
-      const updatedContent = readFileSync(rolledBackPath, 'utf-8');
-      const updatedDecision = JSON.parse(updatedContent);
-      expect(updatedDecision.status).toBe('rolled_back');
+      // Vérifier que le statut a été mis à jour dans le roadmap
+      const roadmapPath = join(testSharedStatePath, 'sync-roadmap.md');
+      const roadmapContent = readFileSync(roadmapPath, 'utf-8');
+      expect(roadmapContent).toContain('**Statut:** rolled_back');
     });
   });
 
@@ -494,19 +374,7 @@ describe('roosync_decision (integration)', () => {
     test('should handle invalid status transition gracefully', async () => {
       const decisionId = 'test-decision-014';
       // Créer une décision déjà approuvée
-      const decisionPath = join(testSharedStatePath, 'decisions', 'approved', `${decisionId}.json`);
-      const testDecision = {
-        id: decisionId,
-        title: 'Test decision',
-        description: 'Test',
-        proposedBy: 'test-machine',
-        createdAt: new Date().toISOString(),
-        status: 'approved' as const,
-        changes: [],
-        approvedBy: 'test-machine',
-        approvedAt: new Date().toISOString()
-      };
-      writeFileSync(decisionPath, JSON.stringify(testDecision, null, 2));
+      writeRoadmap([createDecisionBlock(decisionId, 'Test decision', 'approved')]);
 
       // Essayer de rejeter une décision déjà approuvée (transition invalide)
       const result = await roosyncDecision({
@@ -521,9 +389,14 @@ describe('roosync_decision (integration)', () => {
 
     test('should handle corrupted decision file gracefully', async () => {
       const decisionId = 'test-decision-corrupted';
-      const decisionPath = join(testSharedStatePath, 'decisions', 'pending', `${decisionId}.json`);
-      // Écrire un JSON invalide
-      writeFileSync(decisionPath, '{ invalid json }');
+      // Écrire un fichier roadmap avec un bloc corrompu (malformed markdown)
+      const roadmapPath = join(testSharedStatePath, 'sync-roadmap.md');
+      writeFileSync(roadmapPath, `# RooSync Roadmap - Test
+version: 2.0.0
+<!-- DECISION_BLOCK_START -->
+**ID:** \`${decisionId}\`
+INVALID BLOCK FORMAT
+<!-- DECISION_BLOCK_END -->`, 'utf-8');
 
       const result = await roosyncDecision({
         action: 'approve',
@@ -544,17 +417,7 @@ describe('roosync_decision (integration)', () => {
       const decisionId = 'test-decision-workflow';
 
       // Step 1: Créer une décision en attente
-      const pendingPath = join(testSharedStatePath, 'decisions', 'pending', `${decisionId}.json`);
-      const testDecision = {
-        id: decisionId,
-        title: 'Test workflow decision',
-        description: 'Complete workflow test',
-        proposedBy: 'test-machine',
-        createdAt: new Date().toISOString(),
-        status: 'pending' as const,
-        changes: []
-      };
-      writeFileSync(pendingPath, JSON.stringify(testDecision, null, 2));
+      writeRoadmap([createDecisionBlock(decisionId, 'Test workflow decision', 'pending')]);
 
       // Step 2: Approuver
       const approveResult = await roosyncDecision({
@@ -583,50 +446,25 @@ describe('roosync_decision (integration)', () => {
     test('should persist decision state across operations', async () => {
       const decisionId = 'test-decision-persist';
 
-      // Créer et approuver
-      const pendingPath = join(testSharedStatePath, 'decisions', 'pending', `${decisionId}.json`);
-      const testDecision = {
-        id: decisionId,
-        title: 'Test persistence',
-        description: 'State persistence test',
-        proposedBy: 'test-machine',
-        createdAt: new Date().toISOString(),
-        status: 'pending' as const,
-        changes: []
-      };
-      writeFileSync(pendingPath, JSON.stringify(testDecision, null, 2));
+      // Créer une décision en attente
+      writeRoadmap([createDecisionBlock(decisionId, 'Test persistence', 'pending')]);
 
       await roosyncDecision({
         action: 'approve',
         decisionId
       });
 
-      // Vérifier que le statut a été mis à jour
-      const approvedPath = join(testSharedStatePath, 'decisions', 'approved', `${decisionId}.json`);
-      expect(existsSync(approvedPath)).toBe(true);
-
-      const content = readFileSync(approvedPath, 'utf-8');
-      const decision = JSON.parse(content);
-      expect(decision.status).toBe('approved');
-      expect(decision.approvedBy).toBe('test-machine');
-      expect(decision.approvedAt).toBeDefined();
+      // Vérifier que le statut a été mis à jour dans le roadmap
+      const roadmapPath = join(testSharedStatePath, 'sync-roadmap.md');
+      const roadmapContent = readFileSync(roadmapPath, 'utf-8');
+      expect(roadmapContent).toContain('**Statut:** approved');
+      expect(roadmapContent).toContain('**Approuvé par:** test-machine');
+      expect(roadmapContent).toContain('**Approuvé le:**');
     });
 
     test('should handle all parameters combined', async () => {
       const decisionId = 'test-decision-combined';
-      const decisionPath = join(testSharedStatePath, 'decisions', 'approved', `${decisionId}.json`);
-      const testDecision = {
-        id: decisionId,
-        title: 'Test combined parameters',
-        description: 'Test',
-        proposedBy: 'test-machine',
-        createdAt: new Date().toISOString(),
-        status: 'approved' as const,
-        changes: [],
-        approvedBy: 'test-machine',
-        approvedAt: new Date().toISOString()
-      };
-      writeFileSync(decisionPath, JSON.stringify(testDecision, null, 2));
+      writeRoadmap([createDecisionBlock(decisionId, 'Test combined parameters', 'approved')]);
 
       const result = await roosyncDecision({
         action: 'apply',
@@ -648,17 +486,7 @@ describe('roosync_decision (integration)', () => {
   describe('response format', () => {
     test('should return valid result structure for approve', async () => {
       const decisionId = 'test-decision-response-001';
-      const decisionPath = join(testSharedStatePath, 'decisions', 'pending', `${decisionId}.json`);
-      const testDecision = {
-        id: decisionId,
-        title: 'Test response format',
-        description: 'Test',
-        proposedBy: 'test-machine',
-        createdAt: new Date().toISOString(),
-        status: 'pending' as const,
-        changes: []
-      };
-      writeFileSync(decisionPath, JSON.stringify(testDecision, null, 2));
+      writeRoadmap([createDecisionBlock(decisionId, 'Test response format', 'pending')]);
 
       const result = await roosyncDecision({
         action: 'approve',
@@ -673,17 +501,7 @@ describe('roosync_decision (integration)', () => {
 
     test('should return valid result structure for reject with reason', async () => {
       const decisionId = 'test-decision-response-002';
-      const decisionPath = join(testSharedStatePath, 'decisions', 'pending', `${decisionId}.json`);
-      const testDecision = {
-        id: decisionId,
-        title: 'Test response format',
-        description: 'Test',
-        proposedBy: 'test-machine',
-        createdAt: new Date().toISOString(),
-        status: 'pending' as const,
-        changes: []
-      };
-      writeFileSync(decisionPath, JSON.stringify(testDecision, null, 2));
+      writeRoadmap([createDecisionBlock(decisionId, 'Test response format', 'pending')]);
 
       const result = await roosyncDecision({
         action: 'reject',
@@ -698,19 +516,7 @@ describe('roosync_decision (integration)', () => {
 
     test('should return valid result structure for apply', async () => {
       const decisionId = 'test-decision-response-003';
-      const decisionPath = join(testSharedStatePath, 'decisions', 'approved', `${decisionId}.json`);
-      const testDecision = {
-        id: decisionId,
-        title: 'Test response format',
-        description: 'Test',
-        proposedBy: 'test-machine',
-        createdAt: new Date().toISOString(),
-        status: 'approved' as const,
-        changes: [],
-        approvedBy: 'test-machine',
-        approvedAt: new Date().toISOString()
-      };
-      writeFileSync(decisionPath, JSON.stringify(testDecision, null, 2));
+      writeRoadmap([createDecisionBlock(decisionId, 'Test response format', 'approved')]);
 
       const result = await roosyncDecision({
         action: 'apply',
@@ -724,21 +530,7 @@ describe('roosync_decision (integration)', () => {
 
     test('should return valid result structure for rollback with reason', async () => {
       const decisionId = 'test-decision-response-004';
-      const decisionPath = join(testSharedStatePath, 'decisions', 'applied', `${decisionId}.json`);
-      const testDecision = {
-        id: decisionId,
-        title: 'Test response format',
-        description: 'Test',
-        proposedBy: 'test-machine',
-        createdAt: new Date().toISOString(),
-        status: 'applied' as const,
-        changes: [],
-        approvedBy: 'test-machine',
-        approvedAt: new Date().toISOString(),
-        appliedBy: 'test-machine',
-        appliedAt: new Date().toISOString()
-      };
-      writeFileSync(decisionPath, JSON.stringify(testDecision, null, 2));
+      writeRoadmap([createDecisionBlock(decisionId, 'Test response format', 'applied')]);
 
       const result = await roosyncDecision({
         action: 'rollback',
@@ -759,13 +551,10 @@ describe('roosync_decision (integration)', () => {
   describe('parameter validation', () => {
     test('should require action parameter', async () => {
       // @ts-expect-error - Testing missing required parameter
-      const result = await roosyncDecision({
+      await expect(roosyncDecision({
         // action manquant
         decisionId: 'test-decision'
-      });
-
-      // L'outil doit gérer le paramètre manquant
-      expect(result).toBeDefined();
+      })).rejects.toThrow();
     });
 
     test('should support all valid actions', async () => {
@@ -775,26 +564,8 @@ describe('roosync_decision (integration)', () => {
         const decisionId = `test-decision-validation-${action}`;
         const statusDir = action === 'approve' || action === 'reject' ? 'pending' :
                           action === 'apply' ? 'approved' : 'applied';
-        const decisionPath = join(testSharedStatePath, 'decisions', statusDir, `${decisionId}.json`);
-
-        const testDecision = {
-          id: decisionId,
-          title: `Test ${action}`,
-          description: 'Test',
-          proposedBy: 'test-machine',
-          createdAt: new Date().toISOString(),
-          status: statusDir as 'pending' | 'approved' | 'applied',
-          changes: [],
-          ...(statusDir === 'approved' || statusDir === 'applied' ? {
-            approvedBy: 'test-machine',
-            approvedAt: new Date().toISOString()
-          } : {}),
-          ...(statusDir === 'applied' ? {
-            appliedBy: 'test-machine',
-            appliedAt: new Date().toISOString()
-          } : {})
-        };
-        writeFileSync(decisionPath, JSON.stringify(testDecision, null, 2));
+        // Créer la décision avec le bon statut
+        writeRoadmap([createDecisionBlock(decisionId, `Test ${action}`, statusDir)]);
 
         const args: any = {
           action,
@@ -818,26 +589,29 @@ describe('roosync_decision (integration)', () => {
   // ============================================================
 
   describe('missing decision handling', () => {
-    test('should handle missing pending directory gracefully', async () => {
-      // Supprimer le répertoire pending
-      rmSync(join(testSharedStatePath, 'decisions', 'pending'), { recursive: true, force: true });
+    test('should handle missing decision in roadmap gracefully', async () => {
+      // Créer un roadmap sans décisions
+      writeRoadmap([]);
 
       const result = await roosyncDecision({
         action: 'approve',
-        decisionId: 'test-decision-missing-dir'
+        decisionId: 'test-decision-missing'
       });
 
       // Should still work with graceful error handling
       expect(result).toBeDefined();
     });
 
-    test('should handle missing decisions directory gracefully', async () => {
-      // Supprimer le répertoire decisions
-      rmSync(join(testSharedStatePath, 'decisions'), { recursive: true, force: true });
+    test('should handle missing roadmap file gracefully', async () => {
+      // Supprimer le fichier roadmap
+      const roadmapPath = join(testSharedStatePath, 'sync-roadmap.md');
+      if (existsSync(roadmapPath)) {
+        rmSync(roadmapPath);
+      }
 
       const result = await roosyncDecision({
         action: 'approve',
-        decisionId: 'test-decision-missing-decisions'
+        decisionId: 'test-decision-missing-roadmap'
       });
 
       // Should still work with graceful error handling

@@ -59,6 +59,7 @@
     "pg": "^8.13.1",
     "pg-hstore": "^2.3.4",
     "proper-lockfile": "^4.1.2",
+    "roo-state-manager": "file:",
     "sequelize": "^6.37.0",
     "sqlite3": "^5.1.7",
     "undici": "^7.3.0",

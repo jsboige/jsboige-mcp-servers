@@ -153,6 +153,7 @@ export function formatDecisionResult(
   additionalData?: Record<string, any>
 ): any {
   const baseResult = {
+    success: true,
     decisionId,
     action,
     previousStatus,
@@ -207,15 +208,17 @@ function generateNextStepsByStatus(
  * @param decisionId ID de la décision
  * @param status Nouveau statut
  * @param machineId ID de la machine effectuant la modification
+ * @param config Configuration RooSync
  * @returns Promise<void>
  */
 export async function updateRoadmapStatusAsync(
   decisionId: string,
   status: 'pending' | 'approved' | 'rejected' | 'applied' | 'rolled_back',
-  machineId: string
+  machineId: string,
+  config: RooSyncConfig
 ): Promise<void> {
   try {
-    const roadmapPath = join(process.cwd(), 'sync-roadmap.md');
+    const roadmapPath = join(config.sharedPath, 'sync-roadmap.md');
     let content = readFileSync(roadmapPath, 'utf-8');
 
     // Trouver et remplacer le bloc de décision
@@ -271,13 +274,15 @@ export async function updateRoadmapStatusAsync(
  * Charge les détails d'une décision depuis sync-roadmap.md
  *
  * @param decisionId ID de la décision
+ * @param config Configuration RooSync
  * @returns Promise<{ title: string; description: string; status: string; history: any[] } | null>
  */
 export async function loadDecisionDetails(
-  decisionId: string
+  decisionId: string,
+  config: RooSyncConfig
 ): Promise<{ title: string; description: string; status: string; history: any[] } | null> {
   try {
-    const roadmapPath = join(process.cwd(), 'sync-roadmap.md');
+    const roadmapPath = join(config.sharedPath, 'sync-roadmap.md');
     const decisions = parseRoadmapMarkdown(roadmapPath);
     const decision = findDecisionById(decisions, decisionId);
 

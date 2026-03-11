@@ -349,15 +349,25 @@ describe('decision-helpers', () => {
 
   describe('updateRoadmapStatusAsync', () => {
     it('should throw error when roadmap file does not exist', async () => {
+      const mockConfig = {
+        sharedPath: '/non/existent/path',
+        machineId: 'test-machine'
+      } as RooSyncConfig;
+
       await expect(
-        updateRoadmapStatusAsync('DEC-001', 'approved', 'test-machine')
+        updateRoadmapStatusAsync('DEC-001', 'approved', 'test-machine', mockConfig)
       ).rejects.toThrow();
     });
   });
 
   describe('loadDecisionDetails', () => {
     it('should return null when roadmap file does not exist', async () => {
-      const result = await loadDecisionDetails('DEC-001');
+      const mockConfig = {
+        sharedPath: '/non/existent/path',
+        machineId: 'test-machine'
+      } as RooSyncConfig;
+
+      const result = await loadDecisionDetails('DEC-001', mockConfig);
       expect(result).toBeNull();
     });
   });
