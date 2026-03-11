@@ -8,9 +8,26 @@ import { join } from 'path';
 
 // Mock child_process.exec before importing the module
 const mockExec = vi.fn();
+// Promisified version that returns { stdout, stderr }
+const mockExecAsync = vi.fn();
+
 vi.mock('child_process', () => ({
   exec: (...args: any[]) => mockExec(...args),
-  promisify: (fn: any) => fn
+  promisify: (fn: any) => {
+    // When promisify(mockExec) is called, return the async version
+    if (fn === mockExec) {
+      return mockExecAsync;
+    }
+    // For other functions, implement basic promisify behavior
+    return (...args: any[]) => {
+      return new Promise((resolve, reject) => {
+        fn(...args, (error: any, result: any) => {
+          if (error) reject(error);
+          else resolve(result);
+        });
+      });
+    };
+  }
 }));
 
 // Mock fs before importing the module
@@ -69,13 +86,16 @@ describe('roosync_init - roosyncInit function', () => {
     // Default: shared path doesn't exist (will be created)
     mockExistsSync.mockReturnValue(false);
 
-    // Default: PowerShell script doesn't exist
+    // Default: PowerShell script doesn't exist (callback version)
     mockExec.mockImplementation((_cmd: string, _options: any, callback: any) => {
       if (typeof callback === 'function') {
         callback(null, { stdout: '', stderr: '' });
       }
       return {} as any;
     });
+
+    // Default: PowerShell script doesn't exist (promisified version)
+    mockExecAsync.mockResolvedValue({ stdout: '', stderr: '' });
   });
 
   afterEach(() => {
