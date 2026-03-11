@@ -54,6 +54,13 @@ export interface RooSyncSearchArgs {
 
     /** Filter by LLM model used */
     model?: string;
+
+    // #636 Phase 2: Temporal filters
+    /** Filter results after this date (ISO 8601 or YYYY-MM-DD) */
+    start_date?: string;
+
+    /** Filter results before this date (ISO 8601 or YYYY-MM-DD) */
+    end_date?: string;
 }
 
 /**
@@ -112,6 +119,14 @@ export const roosyncSearchTool: Tool = {
             model: {
                 type: 'string',
                 description: '#636: Filter by LLM model (e.g., "opus", "sonnet", "glm-5")'
+            },
+            start_date: {
+                type: 'string',
+                description: '#636 P2: Filter results after this date (ISO 8601 or YYYY-MM-DD, e.g., "2026-03-01")'
+            },
+            end_date: {
+                type: 'string',
+                description: '#636 P2: Filter results before this date (ISO 8601 or YYYY-MM-DD, e.g., "2026-03-11")'
             }
         },
         required: ['action']
@@ -166,6 +181,9 @@ export async function handleRooSyncSearch(
                 tool_name: args.tool_name,
                 has_errors: args.has_errors,
                 model: args.model,
+                // #636 Phase 2: Temporal filters
+                start_date: args.start_date,
+                end_date: args.end_date,
             };
             return await searchTasksByContentTool.handler(
                 semanticArgs,

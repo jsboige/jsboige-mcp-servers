@@ -22,6 +22,9 @@ export interface SearchTasksByContentArgs {
     tool_name?: string;
     has_errors?: boolean;
     model?: string;
+    // #636 Phase 2: Temporal filters
+    start_date?: string;
+    end_date?: string;
 }
 
 /**
@@ -109,6 +112,46 @@ function formatRelativeTime(timestamp: string | undefined): string {
     }
 }
 
+/**
+ * Parse a date string (ISO 8601 or YYYY-MM-DD) into a Date object.
+ * Returns null if parsing fails.
+ */
+function parseFilterDate(dateStr: string | undefined): Date | null {
+    if (!dateStr) return null;
+    try {
+        // Support YYYY-MM-DD by appending T00:00:00Z for start, or use as-is for ISO
+        const d = new Date(dateStr.includes('T') ? dateStr : `${dateStr}T00:00:00Z`);
+        return isNaN(d.getTime()) ? null : d;
+    } catch {
+        return null;
+    }
+}
+
+/**
+ * Check if a timestamp falls within the [startDate, endDate] range.
+ * Both bounds are inclusive. Null bounds mean no constraint.
+ */
+function isWithinDateRange(timestamp: string | undefined, startDate: Date | null, endDate: Date | null): boolean {
+    if (!startDate && !endDate) return true;
+    if (!timestamp) return false;
+    try {
+        const ts = new Date(timestamp);
+        if (isNaN(ts.getTime())) return false;
+        if (startDate && ts < startDate) return false;
+        if (endDate) {
+            // For end_date given as YYYY-MM-DD, include the entire day
+            const endOfDay = new Date(endDate.getTime());
+            if (endOfDay.getHours() === 0 && endOfDay.getMinutes() === 0) {
+                endOfDay.setUTCHours(23, 59, 59, 999);
+            }
+            if (ts > endOfDay) return false;
+        }
+        return true;
+    } catch {
+        return false;
+    }
+}
+
 interface RawSearchResult {
     taskId: string;
     score: number;
@@ -143,6 +186,12 @@ interface GroupedTask {
     // #636: Enriched task-level metadata
     source: string | undefined;
     model: string | undefined;
+    // #636 Phase 2: Conversation-level statistics
+    conversation_stats?: {
+        total_messages: number;
+        workspace: string | undefined;
+        last_activity: string | undefined;
+    };
     chunks: Array<{
         score: number;
         relevance: string;
@@ -261,7 +310,7 @@ export const searchTasksByContentTool = {
         diagnoseHandler?: () => Promise<CallToolResult>
     ): Promise<CallToolResult> => {
         const { conversation_id, search_query, max_results, diagnose_index = false, workspace, source,
-                chunk_type, role, tool_name, has_errors, model } = args;
+                chunk_type, role, tool_name, has_errors, model, start_date, end_date } = args;
 
         // **FAILSAFE: Auto-rebuild cache si nécessaire avec filtre workspace**
         await ensureCacheFreshCallback({ workspace });
@@ -456,11 +505,30 @@ export const searchTasksByContentTool = {
                 };
             });
 
+            // #636 Phase 2: Temporal post-filtering (Qdrant stores timestamps as strings)
+            const parsedStartDate = parseFilterDate(start_date);
+            const parsedEndDate = parseFilterDate(end_date);
+            const filteredResults = (parsedStartDate || parsedEndDate)
+                ? results.filter(r => isWithinDateRange(r.metadata.timestamp, parsedStartDate, parsedEndDate))
+                : results;
+
             // Group by task_id: deduplicate multiple chunks from the same conversation
-            const groupedResults = groupResultsByTask(results);
+            const groupedResults = groupResultsByTask(filteredResults);
+
+            // #636 Phase 2: Enrich grouped results with conversation stats from cache
+            for (const group of groupedResults) {
+                const cached = conversationCache.get(group.taskId);
+                if (cached) {
+                    group.conversation_stats = {
+                        total_messages: cached.metadata?.messageCount || 0,
+                        workspace: cached.metadata?.workspace,
+                        last_activity: cached.metadata?.lastActivity || cached.metadata?.createdAt,
+                    };
+                }
+            }
 
             // Cross-machine analysis
-            const allHosts = results.map(r => r.metadata.host_os);
+            const allHosts = filteredResults.map(r => r.metadata.host_os);
             const machinesFound = [...new Set(allHosts)];
             const resultsByMachine: { [key: string]: number } = {};
             for (const host of allHosts) {
@@ -473,8 +541,17 @@ export const searchTasksByContentTool = {
                     host_id: currentHostId,
                     search_timestamp: new Date().toISOString(),
                     query: search_query,
-                    results_count: results.length,
-                    unique_tasks: groupedResults.length
+                    results_count: filteredResults.length,
+                    unique_tasks: groupedResults.length,
+                    // #636 Phase 2: temporal filter info
+                    ...(parsedStartDate || parsedEndDate ? {
+                        temporal_filter: {
+                            start_date: start_date || null,
+                            end_date: end_date || null,
+                            pre_filter_count: results.length,
+                            post_filter_count: filteredResults.length,
+                        }
+                    } : {})
                 },
                 cross_machine_analysis: {
                     machines_found: machinesFound,
