@@ -528,8 +528,52 @@ const mockRooSyncServiceInstance = {
       added: [],
       modified: [],
       removed: []
-    })
-  }))
+    }),
+    getConfigVersion: vi.fn().mockResolvedValue('1.0.0')
+  })),
+  // getDecision mock - delegates to SyncDecisionManager
+  // Signature: async getDecision(id: string): Promise<RooSyncDecision | null>
+  getDecision: vi.fn().mockResolvedValue({
+    id: 'test-decision-id',
+    machineId: 'test-machine',
+    status: 'applied',
+    action: 'apply',
+    targetType: 'config',
+    targetId: 'test-target',
+    createdAt: new Date().toISOString(),
+    updatedAt: new Date().toISOString(),
+    changes: [],
+    rollbackPoint: '/mock/rollback-point'
+  }),
+  // restoreFromRollbackPoint mock - delegates to BaselineManager
+  // Signature: async restoreFromRollbackPoint(decisionId: string): Promise<RollbackRestoreResult>
+  restoreFromRollbackPoint: vi.fn().mockResolvedValue({
+    success: true,
+    restored: true,
+    decisionId: 'test-decision-id',
+    timestamp: new Date().toISOString()
+  }),
+  // getConfigService mock - returns ConfigService instance
+  // Signature: getConfigService(): ConfigService
+  getConfigService: vi.fn().mockReturnValue({
+    loadConfig: vi.fn().mockResolvedValue({}),
+    saveConfig: vi.fn().mockResolvedValue(undefined),
+    getConfig: vi.fn().mockReturnValue({})
+  }),
+  // getCommitLogService mock - returns CommitLogService instance
+  // Signature: getCommitLogService(): CommitLogService
+  getCommitLogService: vi.fn().mockReturnValue({
+    logCommit: vi.fn().mockResolvedValue(undefined),
+    getRecentCommits: vi.fn().mockResolvedValue([]),
+    start: vi.fn().mockResolvedValue(undefined),
+    stop: vi.fn().mockResolvedValue(undefined)
+  }),
+  // startCommitLogService mock - initializes the commit log service
+  // Signature: async startCommitLogService(): Promise<void>
+  startCommitLogService: vi.fn().mockResolvedValue(undefined),
+  // stopCommitLogService mock - stops the commit log service
+  // Signature: async stopCommitLogService(): Promise<void>
+  stopCommitLogService: vi.fn().mockResolvedValue(undefined)
 };
 
 // Named export for getRooSyncService

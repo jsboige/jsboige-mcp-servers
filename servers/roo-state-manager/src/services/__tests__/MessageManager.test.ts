@@ -283,6 +283,93 @@ describe('MessageManager', () => {
     });
   });
 
+  describe('page/perPage pagination (#638)', () => {
+    test('should paginate with page and perPage', async () => {
+      for (let i = 0; i < 10; i++) {
+        await messageManager.sendMessage('m1', 'machine2', `Msg${i}`, `Body${i}`);
+      }
+
+      // Page 1 (3 per page)
+      const page1 = await messageManager.readInbox('machine2', 'all', undefined, undefined, 1, 3);
+      expect(page1).toHaveLength(3);
+
+      // Page 2
+      const page2 = await messageManager.readInbox('machine2', 'all', undefined, undefined, 2, 3);
+      expect(page2).toHaveLength(3);
+
+      // Pages should have different messages
+      expect(page1[0].id).not.toBe(page2[0].id);
+
+      // Last page (page 4 = 1 remaining)
+      const page4 = await messageManager.readInbox('machine2', 'all', undefined, undefined, 4, 3);
+      expect(page4).toHaveLength(1);
+    });
+
+    test('should return empty array for page beyond data', async () => {
+      await messageManager.sendMessage('m1', 'machine2', 'Msg1', 'Body1');
+
+      const result = await messageManager.readInbox('machine2', 'all', undefined, undefined, 100, 10);
+      expect(result).toHaveLength(0);
+    });
+  });
+
+  describe('getFilteredCount (#638)', () => {
+    test('should return total, unread, and read counts', async () => {
+      const msg1 = await messageManager.sendMessage('m1', 'machine2', 'Msg1', 'Body1');
+      await messageManager.sendMessage('m1', 'machine2', 'Msg2', 'Body2');
+      await messageManager.sendMessage('m1', 'machine2', 'Msg3', 'Body3');
+
+      // Mark one as read
+      await messageManager.markAsRead(msg1.id);
+
+      const counts = await messageManager.getFilteredCount('machine2');
+      expect(counts.total).toBe(3);
+      expect(counts.unread).toBe(2);
+      expect(counts.read).toBe(1);
+    });
+
+    test('should return zeros for machine with no messages', async () => {
+      const counts = await messageManager.getFilteredCount('nonexistent');
+      expect(counts.total).toBe(0);
+      expect(counts.unread).toBe(0);
+      expect(counts.read).toBe(0);
+    });
+  });
+
+  describe('inbox cache (#638)', () => {
+    test('should invalidate cache after sendMessage', async () => {
+      await messageManager.sendMessage('m1', 'machine2', 'Msg1', 'Body1');
+      const inbox1 = await messageManager.readInbox('machine2');
+      expect(inbox1).toHaveLength(1);
+
+      // Send another — cache should be invalidated
+      await messageManager.sendMessage('m1', 'machine2', 'Msg2', 'Body2');
+      const inbox2 = await messageManager.readInbox('machine2');
+      expect(inbox2).toHaveLength(2);
+    });
+
+    test('should invalidate cache after markAsRead', async () => {
+      const msg = await messageManager.sendMessage('m1', 'machine2', 'Msg1', 'Body1');
+      const countsBefore = await messageManager.getFilteredCount('machine2');
+      expect(countsBefore.unread).toBe(1);
+
+      await messageManager.markAsRead(msg.id);
+      const countsAfter = await messageManager.getFilteredCount('machine2');
+      expect(countsAfter.unread).toBe(0);
+      expect(countsAfter.read).toBe(1);
+    });
+
+    test('should invalidate cache after archiveMessage', async () => {
+      const msg = await messageManager.sendMessage('m1', 'machine2', 'Msg1', 'Body1');
+      const inbox1 = await messageManager.readInbox('machine2');
+      expect(inbox1).toHaveLength(1);
+
+      await messageManager.archiveMessage(msg.id);
+      const inbox2 = await messageManager.readInbox('machine2');
+      expect(inbox2).toHaveLength(0);
+    });
+  });
+
   describe('getMessage', () => {
     test('should retrieve message by ID from inbox', async () => {
       const sent = await messageManager.sendMessage(
@@ -708,6 +795,294 @@ describe('MessageManager', () => {
       expect(updated).toBeTruthy();
       expect(updated!.metadata?.original_content).toBe('Original body');
       expect(updated!.body).toBe('Updated body');
+    });
+  });
+
+  // ============================================================
+  // Auto-destruct (#629)
+  // ============================================================
+
+  describe('auto-destruct (#629)', () => {
+    test('should set auto_destruct fields when sending with options', async () => {
+      const msg = await messageManager.sendMessage(
+        'machine-a', 'machine2', 'Secret', 'Sensitive data', 'HIGH',
+        ['secret'], undefined, undefined,
+        { auto_destruct: true }
+      );
+
+      expect(msg.auto_destruct).toBe(true);
+      expect(msg.destroyed_at).toBeUndefined();
+
+      const saved = await messageManager.getMessage(msg.id);
+      expect(saved!.auto_destruct).toBe(true);
+    });
+
+    test('should set expires_at from destruct_after TTL', async () => {
+      const before = Date.now();
+      const msg = await messageManager.sendMessage(
+        'machine-a', 'machine2', 'TTL', 'Expires soon', 'HIGH',
+        undefined, undefined, undefined,
+        { auto_destruct: true, destruct_after: '2h' }
+      );
+
+      expect(msg.expires_at).toBeDefined();
+      const expiresMs = new Date(msg.expires_at!).getTime();
+      // Should expire ~2h from now (within 5s tolerance)
+      expect(expiresMs).toBeGreaterThanOrEqual(before + 2 * 60 * 60 * 1000 - 5000);
+      expect(expiresMs).toBeLessThanOrEqual(before + 2 * 60 * 60 * 1000 + 5000);
+    });
+
+    test('should reject invalid destruct_after format', async () => {
+      await expect(
+        messageManager.sendMessage(
+          'machine-a', 'machine2', 'Bad', 'Body', 'MEDIUM',
+          undefined, undefined, undefined,
+          { auto_destruct: true, destruct_after: 'invalid' }
+        )
+      ).rejects.toThrow('Invalid destruct_after format');
+    });
+
+    test('should set destruct_after_read_by list', async () => {
+      const msg = await messageManager.sendMessage(
+        'machine-a', 'machine2', 'Multi-reader', 'Secret', 'HIGH',
+        undefined, undefined, undefined,
+        { auto_destruct: true, destruct_after_read_by: ['machine2', 'machine3'] }
+      );
+
+      expect(msg.destruct_after_read_by).toEqual(['machine2', 'machine3']);
+    });
+
+    test('should destroy message after recipient reads (simple auto-destruct)', async () => {
+      const msg = await messageManager.sendMessage(
+        'machine-a', 'machine2', 'Secret', 'Top secret content', 'HIGH',
+        undefined, undefined, undefined,
+        { auto_destruct: true }
+      );
+
+      // Mark as read by recipient
+      await messageManager.markAsRead(msg.id, 'machine2');
+
+      // Message body should be destroyed
+      const destroyed = await messageManager.getMessage(msg.id);
+      expect(destroyed!.body).toBe('[DESTROYED]');
+      expect(destroyed!.destroyed_at).toBeDefined();
+      expect(destroyed!.destroyed_reason).toBe('read_by_recipient');
+    });
+
+    test('should NOT destroy before all required readers have read', async () => {
+      const msg = await messageManager.sendMessage(
+        'machine-a', 'machine2', 'Multi', 'Secret for two', 'HIGH',
+        undefined, undefined, undefined,
+        { auto_destruct: true, destruct_after_read_by: ['machine2', 'machine3'] }
+      );
+
+      // Only machine2 reads
+      await messageManager.markAsRead(msg.id, 'machine2');
+
+      const afterFirst = await messageManager.getMessage(msg.id);
+      expect(afterFirst!.body).toBe('Secret for two'); // NOT destroyed yet
+      expect(afterFirst!.destroyed_at).toBeUndefined();
+    });
+
+    test('should destroy after ALL required readers have read', async () => {
+      const msg = await messageManager.sendMessage(
+        'machine-a', 'machine2', 'Multi', 'Secret for two', 'HIGH',
+        undefined, undefined, undefined,
+        { auto_destruct: true, destruct_after_read_by: ['machine2', 'machine3'] }
+      );
+
+      await messageManager.markAsRead(msg.id, 'machine2');
+      await messageManager.markAsRead(msg.id, 'machine3');
+
+      const destroyed = await messageManager.getMessage(msg.id);
+      expect(destroyed!.body).toBe('[DESTROYED]');
+      expect(destroyed!.destroyed_reason).toBe('read_by_all');
+    });
+
+    test('should not destroy regular messages on read', async () => {
+      const msg = await messageManager.sendMessage(
+        'machine-a', 'machine2', 'Normal', 'Not secret', 'MEDIUM'
+      );
+
+      await messageManager.markAsRead(msg.id, 'machine2');
+
+      const read = await messageManager.getMessage(msg.id);
+      expect(read!.body).toBe('Not secret'); // Body preserved
+      expect(read!.destroyed_at).toBeUndefined();
+    });
+
+    test('destroyMessage should be idempotent', async () => {
+      const msg = await messageManager.sendMessage(
+        'machine-a', 'machine2', 'Secret', 'Data', 'HIGH',
+        undefined, undefined, undefined,
+        { auto_destruct: true }
+      );
+
+      await messageManager.destroyMessage(msg.id, 'ttl_expired');
+      await messageManager.destroyMessage(msg.id, 'ttl_expired'); // Second call
+
+      const destroyed = await messageManager.getMessage(msg.id);
+      expect(destroyed!.body).toBe('[DESTROYED]');
+    });
+
+    test('cleanupExpiredMessages should destroy TTL-expired messages', async () => {
+      // Create a message with an already-expired TTL
+      const msg = await messageManager.sendMessage(
+        'machine-a', 'machine2', 'Expired', 'Old secret', 'HIGH',
+        undefined, undefined, undefined,
+        { auto_destruct: true, destruct_after: '1m' }
+      );
+
+      // Manually set expires_at to the past
+      const filePath = join(testSharedStatePath, 'messages/inbox', `${msg.id}.json`);
+      const content = JSON.parse(await fs.readFile(filePath, 'utf-8'));
+      content.expires_at = new Date(Date.now() - 60000).toISOString();
+      await fs.writeFile(filePath, JSON.stringify(content, null, 2));
+
+      const count = await messageManager.cleanupExpiredMessages();
+      expect(count).toBe(1);
+
+      const destroyed = await messageManager.getMessage(msg.id);
+      expect(destroyed!.body).toBe('[DESTROYED]');
+      expect(destroyed!.destroyed_reason).toBe('ttl_expired');
+    });
+
+    test('cleanupExpiredMessages should not destroy non-expired messages', async () => {
+      await messageManager.sendMessage(
+        'machine-a', 'machine2', 'Future', 'Still valid', 'HIGH',
+        undefined, undefined, undefined,
+        { auto_destruct: true, destruct_after: '2h' }
+      );
+
+      const count = await messageManager.cleanupExpiredMessages();
+      expect(count).toBe(0);
+    });
+  });
+
+  // ============================================================
+  // parseDuration (#629)
+  // ============================================================
+
+  describe('parseDuration (#629)', () => {
+    test('should parse minutes', () => {
+      expect(MessageManager.parseDuration('30m')).toBe(30 * 60 * 1000);
+    });
+
+    test('should parse hours', () => {
+      expect(MessageManager.parseDuration('2h')).toBe(2 * 60 * 60 * 1000);
+    });
+
+    test('should parse days', () => {
+      expect(MessageManager.parseDuration('1d')).toBe(24 * 60 * 60 * 1000);
+    });
+
+    test('should return null for invalid formats', () => {
+      expect(MessageManager.parseDuration('invalid')).toBeNull();
+      expect(MessageManager.parseDuration('30')).toBeNull();
+      expect(MessageManager.parseDuration('m')).toBeNull();
+      expect(MessageManager.parseDuration('')).toBeNull();
+      expect(MessageManager.parseDuration('30s')).toBeNull();
+    });
+  });
+
+  describe('sendExpiryReminders (#629)', () => {
+    test('should send reminder when TTL is approaching', async () => {
+      // Send message with 10-minute TTL
+      const msg = await messageManager.sendMessage(
+        'sender', 'recipient', 'Expiring secret', 'secret data',
+        'HIGH', ['secret'], undefined, undefined,
+        { auto_destruct: true, destruct_after: '10m' }
+      );
+
+      // Manually set expires_at to 3 minutes from now (within 10% threshold = 1min, but min 5min)
+      // threshold = max(5min, 10min*10%) = max(5min, 1min) = 5min
+      // So expires_at 3 minutes from now is within the 5min threshold
+      const inboxFile = join(testSharedStatePath, 'messages', 'inbox', `${msg.id}.json`);
+      const content = JSON.parse(await fs.readFile(inboxFile, 'utf-8'));
+      content.expires_at = new Date(Date.now() + 3 * 60 * 1000).toISOString(); // 3min from now
+      await fs.writeFile(inboxFile, JSON.stringify(content, null, 2));
+
+      const reminders = await messageManager.sendExpiryReminders();
+      expect(reminders).toBe(1);
+
+      // Verify reminder_sent flag was set
+      const updated = JSON.parse(await fs.readFile(inboxFile, 'utf-8'));
+      expect(updated.reminder_sent).toBe(true);
+
+      // Verify a reminder message was sent
+      const sentFiles = await fs.readdir(join(testSharedStatePath, 'messages', 'sent'));
+      const reminderFiles = [];
+      for (const f of sentFiles.filter(f => f.endsWith('.json'))) {
+        const sentMsg = JSON.parse(await fs.readFile(join(testSharedStatePath, 'messages', 'sent', f), 'utf-8'));
+        if (sentMsg.subject.includes('[REMINDER]')) {
+          reminderFiles.push(sentMsg);
+        }
+      }
+      expect(reminderFiles.length).toBe(1);
+      expect(reminderFiles[0].from).toBe('system');
+      expect(reminderFiles[0].to).toBe('recipient');
+      expect(reminderFiles[0].priority).toBe('HIGH');
+    });
+
+    test('should NOT send reminder when TTL is far away', async () => {
+      // Send message with 2-hour TTL (expires in 2h, threshold = max(5min, 12min) = 12min)
+      await messageManager.sendMessage(
+        'sender', 'recipient', 'Far away', 'secret data',
+        'MEDIUM', [], undefined, undefined,
+        { auto_destruct: true, destruct_after: '2h' }
+      );
+      // expires_at is 2h from now, well beyond 12min threshold
+
+      const reminders = await messageManager.sendExpiryReminders();
+      expect(reminders).toBe(0);
+    });
+
+    test('should NOT send reminder twice (idempotent)', async () => {
+      const msg = await messageManager.sendMessage(
+        'sender', 'recipient', 'Expiring soon', 'data',
+        'MEDIUM', [], undefined, undefined,
+        { auto_destruct: true, destruct_after: '10m' }
+      );
+
+      // Set expires_at to 2 minutes from now (within 5min threshold)
+      const inboxFile = join(testSharedStatePath, 'messages', 'inbox', `${msg.id}.json`);
+      const content = JSON.parse(await fs.readFile(inboxFile, 'utf-8'));
+      content.expires_at = new Date(Date.now() + 2 * 60 * 1000).toISOString();
+      await fs.writeFile(inboxFile, JSON.stringify(content, null, 2));
+
+      // First call sends reminder
+      const first = await messageManager.sendExpiryReminders();
+      expect(first).toBe(1);
+
+      // Second call should NOT send again
+      const second = await messageManager.sendExpiryReminders();
+      expect(second).toBe(0);
+    });
+
+    test('should NOT send reminder for already destroyed messages', async () => {
+      const msg = await messageManager.sendMessage(
+        'sender', 'recipient', 'Already dead', 'data',
+        'MEDIUM', [], undefined, undefined,
+        { auto_destruct: true, destruct_after: '10m' }
+      );
+
+      // Destroy the message first
+      await messageManager.destroyMessage(msg.id, 'ttl_expired');
+
+      const reminders = await messageManager.sendExpiryReminders();
+      expect(reminders).toBe(0);
+    });
+
+    test('should NOT send reminder for messages without destruct_after', async () => {
+      // auto_destruct without TTL (read-based only)
+      await messageManager.sendMessage(
+        'sender', 'recipient', 'Read-based only', 'data',
+        'MEDIUM', [], undefined, undefined,
+        { auto_destruct: true }
+      );
+
+      const reminders = await messageManager.sendExpiryReminders();
+      expect(reminders).toBe(0);
     });
   });
 });

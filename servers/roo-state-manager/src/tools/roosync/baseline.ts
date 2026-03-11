@@ -12,6 +12,7 @@ import { getRooSyncService, RooSyncServiceError } from '../../services/RooSyncSe
 import { existsSync, readFileSync, writeFileSync, copyFileSync, mkdirSync } from 'fs';
 import { join, dirname } from 'path';
 import { createLogger, Logger } from '../../utils/logger.js';
+import { getSharedStatePath } from '../../utils/server-helpers.js';
 import { BaselineService } from '../../services/BaselineService.js';
 import { ConfigService } from '../../services/ConfigService.js';
 import { InventoryCollector } from '../../services/InventoryCollector.js';
@@ -195,7 +196,7 @@ async function handleUpdateAction(args: BaselineArgs, timestamp: string): Promis
   const config = service.getConfig();
 
   // Initialiser les services
-  const configService = new ConfigService();
+  const configService = new ConfigService(config.sharedPath);
   const inventoryCollector = new InventoryCollector();
   const diffDetector = new DiffDetector();
   const baselineService = new BaselineService(configService, inventoryCollector as any, diffDetector);
@@ -385,8 +386,8 @@ async function handleVersionAction(args: BaselineArgs, timestamp: string): Promi
 
   const service = getRooSyncService();
   const config = service.getConfig();
-  const configService = new ConfigService();
-  const sharedPath = configService.getSharedStatePath();
+  const sharedPath = getSharedStatePath();
+  const configService = new ConfigService(sharedPath);
   const baselineService = new BaselineService(configService, {} as any, {} as any);
 
   // Charger la baseline actuelle
@@ -567,8 +568,8 @@ async function handleRestoreAction(args: BaselineArgs, timestamp: string): Promi
 
   const service = getRooSyncService();
   const config = service.getConfig();
-  const configService = new ConfigService();
-  const sharedPath = configService.getSharedStatePath();
+  const sharedPath = getSharedStatePath();
+  const configService = new ConfigService(sharedPath);
   const baselineService = new BaselineService(configService, {} as any, {} as any);
 
   // Récupérer la baseline actuelle pour sauvegarde
@@ -751,10 +752,11 @@ async function handleExportAction(args: BaselineArgs, timestamp: string): Promis
     machineId: args.machineId
   });
 
-  const service = getRooSyncService();
-  const config = service.getConfig();
-  const configService = new ConfigService();
-  const baselineService = new BaselineService(configService, {} as any, {} as any);
+  const sharedPath = getSharedStatePath();
+  const configService = new ConfigService(sharedPath);
+  const inventoryCollector = new InventoryCollector();
+  const diffDetector = new DiffDetector();
+  const baselineService = new BaselineService(configService, inventoryCollector as any, diffDetector);
 
   // Récupérer la baseline
   const baseline = await baselineService.loadBaseline(args.machineId);
@@ -860,7 +862,7 @@ async function handleExportAction(args: BaselineArgs, timestamp: string): Promis
     version: baseline.version,
     message,
     timestamp,
-    machineId: config.machineId,
+    machineId: baseline.machineId,
     format: args.format,
     outputPath,
     size: content.length,

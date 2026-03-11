@@ -12,7 +12,7 @@
  * IMPORTANT: When adding new test exclusions here, also create a tracking
  * issue to fix the underlying test so it can run in CI.
  *
- * Last audit: 2026-03-11 (35 files excluded, see #626)
+ * Last audit: 2026-03-11 (37 files excluded, see #626, #643)
  */
 import { defineConfig, mergeConfig } from 'vitest/config';
 import baseConfig from './vitest.config.js';
@@ -71,12 +71,14 @@ export default mergeConfig(baseConfig, defineConfig({
 
       // ===== CI-excluded: APPDATA/GDRIVE (Windows paths + GDrive) =====
       'src/tools/roosync/__tests__/baseline.integration.test.ts',
+      'src/tools/roosync/__tests__/baseline.test.ts',
       'src/tools/roosync/__tests__/config.integration.test.ts',
       'src/tools/roosync/__tests__/decision.integration.test.ts',
       'src/tools/roosync/__tests__/diagnose.integration.test.ts',
       'src/tools/roosync/__tests__/refresh-dashboard.integration.test.ts',
       'src/tools/roosync/__tests__/update-dashboard.integration.test.ts',
       'tests/unit/tools/roosync/apply-decision.test.ts',
+      'tests/unit/tools/roosync/baseline.test.ts',
 
       // ===== CI-excluded: Decision tools (service.getDecision not a function) =====
       'tests/unit/tools/roosync/approve-decision.test.ts',
@@ -88,6 +90,9 @@ export default mergeConfig(baseConfig, defineConfig({
 
       // ===== CI-excluded: Storage (depends on removed tool) =====
       'tests/unit/tools/storage/get-stats.test.ts',
+
+      // ===== CI-excluded: PARENT_REPO (reads files from parent roo-extensions repo) =====
+      'src/services/__tests__/skepticism-protocol.test.ts',
 
       // ===== E2E (already excluded in base) =====
       'tests/e2e/**',

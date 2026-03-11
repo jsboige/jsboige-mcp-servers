@@ -34,12 +34,19 @@ import {
 describe('roosync_baseline (integration)', () => {
   let tempRooSyncDir: string;
   let originalRooSyncPath: string | undefined;
+  let tempSharedStateDir: string;
+  let originalSharedStatePath: string | undefined;
 
   beforeAll(async () => {
     // #636: Create temp directory to avoid polluting real RooSync
     tempRooSyncDir = await mkdtemp(join(process.env.TEMP || '/tmp', 'roosync-test-'));
     originalRooSyncPath = process.env.ROOSYNC_SHARED_PATH;
     process.env.ROOSYNC_SHARED_PATH = tempRooSyncDir;
+
+    // Create SHARED_STATE_PATH temp directory (BaselineService prioritizes this)
+    tempSharedStateDir = await mkdtemp(join(process.env.TEMP || '/tmp', 'shared-state-test-'));
+    originalSharedStatePath = process.env.SHARED_STATE_PATH;
+    process.env.SHARED_STATE_PATH = tempSharedStateDir;
 
     // Clear cache pour éviter les résultats cachés d'exécutions précédentes
     await globalCacheManager.invalidate({ all: true });
@@ -53,13 +60,30 @@ describe('roosync_baseline (integration)', () => {
       delete process.env.ROOSYNC_SHARED_PATH;
     }
 
-    // Clean up temp directory
+    // Restore original SHARED_STATE_PATH
+    if (originalSharedStatePath) {
+      process.env.SHARED_STATE_PATH = originalSharedStatePath;
+    } else {
+      delete process.env.SHARED_STATE_PATH;
+    }
+
+    // Clean up RooSync temp directory
     if (tempRooSyncDir && existsSync(tempRooSyncDir)) {
       try {
         await rm(tempRooSyncDir, { recursive: true, force: true });
       } catch (cleanupError) {
         // Log but don't fail test if cleanup fails
         console.warn(`[TEST WARNING] Could not clean up temp directory: ${tempRooSyncDir}`, cleanupError);
+      }
+    }
+
+    // Clean up SHARED_STATE_PATH temp directory
+    if (tempSharedStateDir && existsSync(tempSharedStateDir)) {
+      try {
+        await rm(tempSharedStateDir, { recursive: true, force: true });
+      } catch (cleanupError) {
+        // Log but don't fail test if cleanup fails
+        console.warn(`[TEST WARNING] Could not clean up temp directory: ${tempSharedStateDir}`, cleanupError);
       }
     }
   });

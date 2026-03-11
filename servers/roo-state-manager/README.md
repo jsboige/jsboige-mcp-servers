@@ -2,6 +2,30 @@
 
 Serveur MCP (Model Context Protocol) unifié pour la gestion des conversations et configurations Roo.
 
+## 🔒 CI & Branch Protection
+
+**Branch `main` is protected.** The `roo-state-manager` CI job must pass before merging.
+
+### Before pushing to main
+
+```bash
+cd servers/roo-state-manager
+npm run build && npx vitest run --config vitest.config.ci.ts
+```
+
+### Two Vitest configs
+
+| Config | Usage | Excludes |
+|--------|-------|----------|
+| `vitest.config.ts` | Local dev | Only e2e/timeouts |
+| `vitest.config.ci.ts` | CI (GitHub Actions) | + 33 platform-dependent test files |
+
+### CI failure notifications
+
+When CI fails on `main`, an issue is auto-created with the `ci-failure` label. Fix the issue and close the notification.
+
+---
+
 ## 🎯 Objectif
 
 Le Roo State Manager résout les problèmes de perte de conversations Roo en fournissant :

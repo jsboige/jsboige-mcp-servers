@@ -36,6 +36,10 @@ export interface Chunk {
   role?: 'user' | 'assistant' | 'system';
   host_os?: string;
   source?: 'roo' | 'claude-code';
+  // #636: Enriched metadata for advanced search filters
+  model?: string;          // LLM model used (e.g., 'opus', 'sonnet', 'glm-5')
+  tool_name?: string;      // Flattened from tool_details for Qdrant filtering
+  has_error?: boolean;     // Whether this chunk contains an error
   // Nouveaux champs pour la traçabilité du chunking
   chunk_index?: number;  // Index de ce chunk (commence à 1)
   total_chunks?: number; // Nombre total de chunks pour ce message
@@ -82,6 +86,7 @@ export async function extractChunksFromTask(taskId: string, taskPath: string): P
     let workspace : string | undefined;
     let taskTitle : string | undefined;
     let totalMessages : number | undefined;
+    let taskModel : string | undefined; // #636: Model from task metadata
 
     // 🎯 CORRECTION CRITIQUE - Extraction des métadonnées hiérarchiques
     // Utilisation de la même logique que roo-storage-detector.ts pour cohérence
@@ -104,6 +109,8 @@ export async function extractChunksFromTask(taskId: string, taskPath: string): P
 
         workspace = rawMetadata.workspace;
         taskTitle = rawMetadata.title;
+        // #636: Extract model info from metadata if available
+        taskModel = rawMetadata.model || rawMetadata.apiConfiguration?.apiModelId;
 
         console.log(`📊 [extractChunksFromTask] Extracted metadata for ${taskId}: parentTaskId=${parentTaskId}, workspace=${workspace}`);
     } catch (error) {
@@ -142,11 +149,19 @@ export async function extractChunksFromTask(taskId: string, taskPath: string): P
                 }
 
                 if (contentText.trim()) {
+                    // #636: Detect error patterns in content
+                    const lowerContent = contentText.toLowerCase();
+                    const hasError = lowerContent.includes('error') ||
+                        lowerContent.includes('failed') ||
+                        lowerContent.includes('exception') ||
+                        lowerContent.includes('❌') ||
+                        lowerContent.includes('erreur');
+
                     chunks.push({
                         chunk_id: uuidv4(),
                         task_id: taskId,
-                        parent_task_id: parentTaskId || null, // ✅ FIX: Maintenant correctement assigné
-                        root_task_id: null, // TODO: calculer la racine si nécessaire
+                        parent_task_id: parentTaskId || null,
+                        root_task_id: null,
                         chunk_type: 'message_exchange',
                         sequence_order: sequenceOrder++,
                         timestamp: msg.timestamp || new Date().toISOString(),
@@ -155,22 +170,32 @@ export async function extractChunksFromTask(taskId: string, taskPath: string): P
                         content_summary: String(contentText || '').substring(0, 200),
                         participants: [msg.role],
                         tool_details: null,
-                        // ✅ FIX: Métadonnées enrichies maintenant correctement assignées
                         workspace: workspace,
                         task_title: taskTitle,
                         message_index: messageIndex,
                         total_messages: totalMessages,
                         role: msg.role,
                         host_os: getHostIdentifier(),
+                        // #636: Enriched metadata
+                        model: taskModel,
+                        has_error: hasError || undefined,
                     });
                 }
             }
             if (msg.tool_calls) {
                 for (const toolCall of msg.tool_calls) {
+                    // Parse tool arguments safely
+                    let parsedArgs: any = {};
+                    try {
+                        parsedArgs = JSON.parse(toolCall.function.arguments || '{}');
+                    } catch {
+                        parsedArgs = { raw: toolCall.function.arguments };
+                    }
+
                     chunks.push({
                         chunk_id: uuidv4(),
                         task_id: taskId,
-                        parent_task_id: parentTaskId || null, // ✅ FIX: Utilisation cohérente de parentTaskId
+                        parent_task_id: parentTaskId || null,
                         root_task_id: null,
                         chunk_type: 'tool_interaction',
                         sequence_order: sequenceOrder++,
@@ -179,10 +204,12 @@ export async function extractChunksFromTask(taskId: string, taskPath: string): P
                         content: `Tool call: ${toolCall.function.name} with args ${toolCall.function.arguments}`,
                         tool_details: {
                             tool_name: toolCall.function.name,
-                            parameters: JSON.parse(toolCall.function.arguments || '{}'),
+                            parameters: parsedArgs,
                             status: 'success',
                         },
-                        // ✅ FIX: Ajout des métadonnées contextuelles pour les tool_calls
+                        // #636: Enriched metadata for Qdrant filtering
+                        tool_name: toolCall.function.name,
+                        model: taskModel,
                         workspace: workspace,
                         task_title: taskTitle,
                         host_os: getHostIdentifier(),
@@ -217,10 +244,14 @@ export async function extractChunksFromTask(taskId: string, taskPath: string): P
         const uiMessages: UiMessage[] = JSON.parse(uiMessagesContent);
 
         for (const msg of uiMessages) {
+            // #636: Detect error patterns
+            const uiLower = (msg.text || '').toLowerCase();
+            const uiHasError = uiLower.includes('error') || uiLower.includes('failed') || uiLower.includes('❌');
+
             chunks.push({
                 chunk_id: uuidv4(),
                 task_id: taskId,
-                parent_task_id: parentTaskId || null, // ✅ FIX: Cohérence avec l'extraction de métadonnées
+                parent_task_id: parentTaskId || null,
                 root_task_id: null,
                 chunk_type: 'message_exchange',
                 sequence_order: sequenceOrder++,
@@ -230,10 +261,12 @@ export async function extractChunksFromTask(taskId: string, taskPath: string): P
                 content_summary: (msg.text || '').substring(0, 200),
                 participants: [msg.author === 'agent' ? 'assistant' : 'user'],
                 tool_details: null,
-                // ✅ FIX: Ajout des métadonnées contextuelles pour ui_messages
                 workspace: workspace,
                 task_title: taskTitle,
                 host_os: getHostIdentifier(),
+                // #636: Enriched metadata
+                model: taskModel,
+                has_error: uiHasError || undefined,
             });
         }
     } catch (error) {
@@ -337,6 +370,10 @@ export async function extractChunksFromClaudeSession(
                 if (!contentText.trim()) continue;
 
                 messageIndex++;
+                // #636: Detect error patterns and extract model
+                const ccLower = contentText.toLowerCase();
+                const ccHasError = ccLower.includes('error') || ccLower.includes('failed') || ccLower.includes('❌');
+
                 chunks.push({
                     chunk_id: uuidv4(),
                     task_id: taskId,
@@ -356,6 +393,9 @@ export async function extractChunksFromClaudeSession(
                     role,
                     host_os: getHostIdentifier(),
                     source: 'claude-code',
+                    // #636: Enriched metadata
+                    model: entry.model || message?.model,
+                    has_error: ccHasError || undefined,
                 });
             } catch {
                 // Skip malformed lines

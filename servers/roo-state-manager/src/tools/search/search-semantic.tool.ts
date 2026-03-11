@@ -16,6 +16,15 @@ export interface SearchTasksByContentArgs {
     diagnose_index?: boolean;
     workspace?: string;
     source?: 'roo' | 'claude-code';
+    // #636: Advanced filters
+    chunk_type?: 'message_exchange' | 'tool_interaction';
+    role?: 'user' | 'assistant';
+    tool_name?: string;
+    has_errors?: boolean;
+    model?: string;
+    // #636 Phase 2: Temporal filters
+    start_date?: string;
+    end_date?: string;
 }
 
 /**
@@ -103,6 +112,46 @@ function formatRelativeTime(timestamp: string | undefined): string {
     }
 }
 
+/**
+ * Parse a date string (ISO 8601 or YYYY-MM-DD) into a Date object.
+ * Returns null if parsing fails.
+ */
+function parseFilterDate(dateStr: string | undefined): Date | null {
+    if (!dateStr) return null;
+    try {
+        // Support YYYY-MM-DD by appending T00:00:00Z for start, or use as-is for ISO
+        const d = new Date(dateStr.includes('T') ? dateStr : `${dateStr}T00:00:00Z`);
+        return isNaN(d.getTime()) ? null : d;
+    } catch {
+        return null;
+    }
+}
+
+/**
+ * Check if a timestamp falls within the [startDate, endDate] range.
+ * Both bounds are inclusive. Null bounds mean no constraint.
+ */
+function isWithinDateRange(timestamp: string | undefined, startDate: Date | null, endDate: Date | null): boolean {
+    if (!startDate && !endDate) return true;
+    if (!timestamp) return false;
+    try {
+        const ts = new Date(timestamp);
+        if (isNaN(ts.getTime())) return false;
+        if (startDate && ts < startDate) return false;
+        if (endDate) {
+            // For end_date given as YYYY-MM-DD, include the entire day
+            const endOfDay = new Date(endDate.getTime());
+            if (endOfDay.getHours() === 0 && endOfDay.getMinutes() === 0) {
+                endOfDay.setUTCHours(23, 59, 59, 999);
+            }
+            if (ts > endOfDay) return false;
+        }
+        return true;
+    } catch {
+        return false;
+    }
+}
+
 interface RawSearchResult {
     taskId: string;
     score: number;
@@ -119,6 +168,11 @@ interface RawSearchResult {
         relative_time: string;
         message_position: string | undefined;
         host_os: string;
+        // #636: Enriched metadata
+        source: string | undefined;
+        tool_name: string | undefined;
+        model: string | undefined;
+        has_error: boolean | undefined;
     };
 }
 
@@ -129,6 +183,15 @@ interface GroupedTask {
     host_os: string;
     best_score: number;
     relevance: string;
+    // #636: Enriched task-level metadata
+    source: string | undefined;
+    model: string | undefined;
+    // #636 Phase 2: Conversation-level statistics
+    conversation_stats?: {
+        total_messages: number;
+        workspace: string | undefined;
+        last_activity: string | undefined;
+    };
     chunks: Array<{
         score: number;
         relevance: string;
@@ -137,6 +200,9 @@ interface GroupedTask {
         role: string | undefined;
         relative_time: string;
         message_position: string | undefined;
+        // #636: Enriched chunk-level metadata
+        tool_name: string | undefined;
+        has_error: boolean | undefined;
     }>;
 }
 
@@ -157,6 +223,8 @@ function groupResultsByTask(results: RawSearchResult[]): GroupedTask[] {
                 role: r.metadata.role,
                 relative_time: r.metadata.relative_time,
                 message_position: r.metadata.message_position,
+                tool_name: r.metadata.tool_name,
+                has_error: r.metadata.has_error,
             });
             if (r.score > existing.best_score) {
                 existing.best_score = r.score;
@@ -170,6 +238,8 @@ function groupResultsByTask(results: RawSearchResult[]): GroupedTask[] {
                 host_os: r.metadata.host_os,
                 best_score: r.score,
                 relevance: r.relevance,
+                source: r.metadata.source,
+                model: r.metadata.model,
                 chunks: [{
                     score: r.score,
                     relevance: r.relevance,
@@ -178,6 +248,8 @@ function groupResultsByTask(results: RawSearchResult[]): GroupedTask[] {
                     role: r.metadata.role,
                     relative_time: r.metadata.relative_time,
                     message_position: r.metadata.message_position,
+                    tool_name: r.metadata.tool_name,
+                    has_error: r.metadata.has_error,
                 }],
             });
         }
@@ -237,7 +309,8 @@ export const searchTasksByContentTool = {
         fallbackHandler: (args: any, cache: Map<string, ConversationSkeleton>) => Promise<CallToolResult>,
         diagnoseHandler?: () => Promise<CallToolResult>
     ): Promise<CallToolResult> => {
-        const { conversation_id, search_query, max_results, diagnose_index = false, workspace, source } = args;
+        const { conversation_id, search_query, max_results, diagnose_index = false, workspace, source,
+                chunk_type, role, tool_name, has_errors, model, start_date, end_date } = args;
 
         // **FAILSAFE: Auto-rebuild cache si nécessaire avec filtre workspace**
         await ensureCacheFreshCallback({ workspace });
@@ -331,9 +404,43 @@ export const searchTasksByContentTool = {
             if (source) {
                 filterConditions.push({
                     key: "source",
-                    match: {
-                        value: source
-                    }
+                    match: { value: source }
+                });
+            }
+
+            // #636: Advanced filters
+            if (chunk_type) {
+                filterConditions.push({
+                    key: "chunk_type",
+                    match: { value: chunk_type }
+                });
+            }
+
+            if (role) {
+                filterConditions.push({
+                    key: "role",
+                    match: { value: role }
+                });
+            }
+
+            if (tool_name) {
+                filterConditions.push({
+                    key: "tool_name",
+                    match: { value: tool_name }
+                });
+            }
+
+            if (has_errors === true) {
+                filterConditions.push({
+                    key: "has_error",
+                    match: { value: true }
+                });
+            }
+
+            if (model) {
+                filterConditions.push({
+                    key: "model",
+                    match: { value: model }
                 });
             }
 
@@ -388,16 +495,40 @@ export const searchTasksByContentTool = {
                         message_position: result.payload?.message_index && result.payload?.total_messages
                             ? `${result.payload.message_index}/${result.payload.total_messages}`
                             : undefined,
-                        host_os: result.payload?.host_os || 'unknown'
+                        host_os: result.payload?.host_os || 'unknown',
+                        // #636: Enriched metadata
+                        source: result.payload?.source,
+                        tool_name: result.payload?.tool_name,
+                        model: result.payload?.model,
+                        has_error: result.payload?.has_error,
                     }
                 };
             });
 
+            // #636 Phase 2: Temporal post-filtering (Qdrant stores timestamps as strings)
+            const parsedStartDate = parseFilterDate(start_date);
+            const parsedEndDate = parseFilterDate(end_date);
+            const filteredResults = (parsedStartDate || parsedEndDate)
+                ? results.filter(r => isWithinDateRange(r.metadata.timestamp, parsedStartDate, parsedEndDate))
+                : results;
+
             // Group by task_id: deduplicate multiple chunks from the same conversation
-            const groupedResults = groupResultsByTask(results);
+            const groupedResults = groupResultsByTask(filteredResults);
+
+            // #636 Phase 2: Enrich grouped results with conversation stats from cache
+            for (const group of groupedResults) {
+                const cached = conversationCache.get(group.taskId);
+                if (cached) {
+                    group.conversation_stats = {
+                        total_messages: cached.metadata?.messageCount || 0,
+                        workspace: cached.metadata?.workspace,
+                        last_activity: cached.metadata?.lastActivity || cached.metadata?.createdAt,
+                    };
+                }
+            }
 
             // Cross-machine analysis
-            const allHosts = results.map(r => r.metadata.host_os);
+            const allHosts = filteredResults.map(r => r.metadata.host_os);
             const machinesFound = [...new Set(allHosts)];
             const resultsByMachine: { [key: string]: number } = {};
             for (const host of allHosts) {
@@ -410,8 +541,17 @@ export const searchTasksByContentTool = {
                     host_id: currentHostId,
                     search_timestamp: new Date().toISOString(),
                     query: search_query,
-                    results_count: results.length,
-                    unique_tasks: groupedResults.length
+                    results_count: filteredResults.length,
+                    unique_tasks: groupedResults.length,
+                    // #636 Phase 2: temporal filter info
+                    ...(parsedStartDate || parsedEndDate ? {
+                        temporal_filter: {
+                            start_date: start_date || null,
+                            end_date: end_date || null,
+                            pre_filter_count: results.length,
+                            post_filter_count: filteredResults.length,
+                        }
+                    } : {})
                 },
                 cross_machine_analysis: {
                     machines_found: machinesFound,

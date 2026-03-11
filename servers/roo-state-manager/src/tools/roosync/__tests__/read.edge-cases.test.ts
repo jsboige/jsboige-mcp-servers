@@ -108,7 +108,8 @@ describe('roosyncRead - Edge Cases', () => {
         limit: 5
       });
 
-      expect((result.content[0] as any).text).toContain('5 message');
+      // Total count shows all 20 messages, but only 5 are displayed in the table
+      expect((result.content[0] as any).text).toContain('20 message');
     });
 
     test('should handle pagination correctly', async () => {
@@ -129,7 +130,8 @@ describe('roosyncRead - Edge Cases', () => {
         limit: 10
       });
 
-      expect(page1.content[0].text).toContain('10 message');
+      // Total count shows all 100 messages
+      expect(page1.content[0].text).toContain('100 message');
     });
   });
 

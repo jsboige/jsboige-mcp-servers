@@ -38,6 +38,29 @@ export interface RooSyncSearchArgs {
 
     /** #604: Filtre par source (roo ou claude-code) */
     source?: 'roo' | 'claude-code';
+
+    // #636: Advanced search filters
+    /** Filter by chunk type */
+    chunk_type?: 'message_exchange' | 'tool_interaction';
+
+    /** Filter by message role */
+    role?: 'user' | 'assistant';
+
+    /** Filter by tool name (for tool_interaction chunks) */
+    tool_name?: string;
+
+    /** Filter chunks that contain errors */
+    has_errors?: boolean;
+
+    /** Filter by LLM model used */
+    model?: string;
+
+    // #636 Phase 2: Temporal filters
+    /** Filter results after this date (ISO 8601 or YYYY-MM-DD) */
+    start_date?: string;
+
+    /** Filter results before this date (ISO 8601 or YYYY-MM-DD) */
+    end_date?: string;
 }
 
 /**
@@ -74,6 +97,36 @@ export const roosyncSearchTool: Tool = {
                 type: 'string',
                 enum: ['roo', 'claude-code'],
                 description: '#604: Filtre par source de conversation (tâches Roo ou sessions Claude Code)'
+            },
+            chunk_type: {
+                type: 'string',
+                enum: ['message_exchange', 'tool_interaction'],
+                description: '#636: Filter by chunk type (messages vs tool calls)'
+            },
+            role: {
+                type: 'string',
+                enum: ['user', 'assistant'],
+                description: '#636: Filter by message role'
+            },
+            tool_name: {
+                type: 'string',
+                description: '#636: Filter by tool name (e.g., "write_to_file", "roosync_send")'
+            },
+            has_errors: {
+                type: 'boolean',
+                description: '#636: Filter chunks that contain error patterns'
+            },
+            model: {
+                type: 'string',
+                description: '#636: Filter by LLM model (e.g., "opus", "sonnet", "glm-5")'
+            },
+            start_date: {
+                type: 'string',
+                description: '#636 P2: Filter results after this date (ISO 8601 or YYYY-MM-DD, e.g., "2026-03-01")'
+            },
+            end_date: {
+                type: 'string',
+                description: '#636 P2: Filter results before this date (ISO 8601 or YYYY-MM-DD, e.g., "2026-03-11")'
             }
         },
         required: ['action']
@@ -121,7 +174,16 @@ export async function handleRooSyncSearch(
                 max_results: args.max_results,
                 workspace: args.workspace,
                 source: args.source,
-                diagnose_index: false
+                diagnose_index: false,
+                // #636: Advanced filters
+                chunk_type: args.chunk_type,
+                role: args.role,
+                tool_name: args.tool_name,
+                has_errors: args.has_errors,
+                model: args.model,
+                // #636 Phase 2: Temporal filters
+                start_date: args.start_date,
+                end_date: args.end_date,
             };
             return await searchTasksByContentTool.handler(
                 semanticArgs,

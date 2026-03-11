@@ -352,6 +352,78 @@ describe('roosync_search', () => {
 	});
 
 	// ============================================================
+	// #636 Phase 2: Temporal filters
+	// ============================================================
+
+	describe('#636 Phase 2: temporal filters', () => {
+		test('passes start_date and end_date to semantic handler', async () => {
+			await handleRooSyncSearch(
+				{
+					action: 'semantic',
+					search_query: 'heartbeat',
+					start_date: '2026-03-01',
+					end_date: '2026-03-11'
+				},
+				mockCache,
+				mockEnsureCache,
+				mockFallbackHandler,
+				mockDiagnoseHandler
+			);
+
+			const callArgs = mockSemanticHandler.mock.calls[0][0];
+			expect(callArgs.start_date).toBe('2026-03-01');
+			expect(callArgs.end_date).toBe('2026-03-11');
+		});
+
+		test('temporal filters are optional (undefined when not provided)', async () => {
+			await handleRooSyncSearch(
+				{ action: 'semantic', search_query: 'test' },
+				mockCache,
+				mockEnsureCache,
+				mockFallbackHandler
+			);
+
+			const callArgs = mockSemanticHandler.mock.calls[0][0];
+			expect(callArgs.start_date).toBeUndefined();
+			expect(callArgs.end_date).toBeUndefined();
+		});
+
+		test('only start_date can be provided', async () => {
+			await handleRooSyncSearch(
+				{
+					action: 'semantic',
+					search_query: 'recent tasks',
+					start_date: '2026-03-10'
+				},
+				mockCache,
+				mockEnsureCache,
+				mockFallbackHandler
+			);
+
+			const callArgs = mockSemanticHandler.mock.calls[0][0];
+			expect(callArgs.start_date).toBe('2026-03-10');
+			expect(callArgs.end_date).toBeUndefined();
+		});
+
+		test('only end_date can be provided', async () => {
+			await handleRooSyncSearch(
+				{
+					action: 'semantic',
+					search_query: 'old tasks',
+					end_date: '2026-02-28'
+				},
+				mockCache,
+				mockEnsureCache,
+				mockFallbackHandler
+			);
+
+			const callArgs = mockSemanticHandler.mock.calls[0][0];
+			expect(callArgs.start_date).toBeUndefined();
+			expect(callArgs.end_date).toBe('2026-02-28');
+		});
+	});
+
+	// ============================================================
 	// Optional parameter handling
 	// ============================================================
 

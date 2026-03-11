@@ -39,6 +39,12 @@ interface RooSyncReadArgs {
   /** Nombre maximum de messages à retourner */
   limit?: number;
 
+  /** Page number for pagination (1-based, requires per_page) */
+  page?: number;
+
+  /** Messages per page (requires page) */
+  per_page?: number;
+
   // Pour mode 'message'
   /** ID du message à récupérer (requis si mode='message') */
   message_id?: string;
@@ -62,19 +68,41 @@ async function readInboxMode(
   const localWorkspaceId = getLocalWorkspaceId();
   const status = args.status || 'all';
   const limit = args.limit;
+  const page = args.page;
+  const perPage = args.per_page;
 
-  logger.info('📬 Reading inbox', { machineId: localMachineId, workspaceId: localWorkspaceId, status, limit });
+  logger.info('📬 Reading inbox', { machineId: localMachineId, workspaceId: localWorkspaceId, status, limit, page, perPage });
 
-  // Lire les messages via MessageManager (workspace-aware)
-  const messages = await messageManager.readInbox(localMachineId, status, limit, localWorkspaceId);
+  // Get counts from cache (single scan, no double-read — #638 perf fix)
+  const counts = await messageManager.getFilteredCount(localMachineId, 'all', localWorkspaceId);
 
-  // Fire-and-forget heartbeat update: reading inbox proves the machine is active
+  // Read messages with pagination
+  const messages = await messageManager.readInbox(
+    localMachineId, status, limit, localWorkspaceId, page, perPage
+  );
+
+  // Fire-and-forget heartbeat update
   getRooSyncService().getHeartbeatService()
     .registerHeartbeat(localMachineId, { lastActivity: 'roosync_read_inbox', messageCount: messages.length })
     .catch(err => logger.debug('Heartbeat update skipped (non-critical)', { error: String(err) }));
 
+  // Fire-and-forget auto-archive of old read messages (#638 Phase 3)
+  messageManager.autoArchiveOld(30, true)
+    .then(n => { if (n > 0) logger.info(`Auto-archived ${n} old messages`); })
+    .catch(err => logger.debug('Auto-archive skipped (non-critical)', { error: String(err) }));
+
+  // Fire-and-forget cleanup of expired auto-destruct messages (#629)
+  messageManager.cleanupExpiredMessages()
+    .then(n => { if (n > 0) logger.info(`Destroyed ${n} expired auto-destruct messages`); })
+    .catch(err => logger.debug('Auto-destruct cleanup skipped (non-critical)', { error: String(err) }));
+
+  // Fire-and-forget expiry reminders for approaching TTL (#629)
+  messageManager.sendExpiryReminders()
+    .then(n => { if (n > 0) logger.info(`Sent ${n} expiry reminders`); })
+    .catch(err => logger.debug('Expiry reminders skipped (non-critical)', { error: String(err) }));
+
   // Cas : aucun message
-  if (messages.length === 0) {
+  if (messages.length === 0 && counts.total === 0) {
     return `📭 **Aucun message dans votre boîte de réception (${status})**
 
 Votre inbox est vide pour le moment.
@@ -83,30 +111,38 @@ Votre inbox est vide pour le moment.
 **Filtre :** ${status}`;
   }
 
-  // Pour les compteurs, on doit refaire la requête sans filtre
-  const allMessages = status !== 'all'
-    ? await messageManager.readInbox(localMachineId, 'all', undefined, localWorkspaceId)
-    : messages;
-
-  const totalMessages = allMessages.length;
-  const unreadMessages = allMessages.filter(msg => msg.status === 'unread').length;
-  const readMessages = allMessages.filter(msg => msg.status === 'read').length;
-
   // Formater la liste
   let result = `📬 **Boîte de Réception** - ${localMachineId}\n\n`;
-  result += `**Total :** ${totalMessages} message${totalMessages > 1 ? 's' : ''} | `;
-  result += `🆕 ${unreadMessages} non-lu${unreadMessages > 1 ? 's' : ''} | `;
-  result += `✅ ${readMessages} lu${readMessages > 1 ? 's' : ''}\n\n`;
+  result += `**Total :** ${counts.total} message${counts.total > 1 ? 's' : ''} | `;
+  result += `🆕 ${counts.unread} non-lu${counts.unread > 1 ? 's' : ''} | `;
+  result += `✅ ${counts.read} lu${counts.read > 1 ? 's' : ''}\n`;
+
+  // Pagination info
+  if (page !== undefined && perPage !== undefined) {
+    const totalPages = Math.ceil(counts.total / perPage);
+    result += `**Page :** ${page}/${totalPages} (${perPage}/page)\n`;
+  }
+  result += '\n';
+
+  if (messages.length === 0) {
+    result += `_Aucun message pour le filtre "${status}" sur cette page._\n`;
+    return result;
+  }
 
   // Tableau des messages
   result += `| ID | De | Sujet | Priorité | Status | Date |\n`;
   result += `|----|----|----|----------|--------|------|\n`;
 
   for (const msg of messages) {
-    // BUG FIX: Afficher l'ID complet (critique pour roosync_read mode message)
     const fullId = msg.id;
     const maxSubjectLength = 25;
-    const shortSubject = msg.subject.length > maxSubjectLength ? msg.subject.substring(0, maxSubjectLength) + '...' : msg.subject;
+    let shortSubject = msg.subject.length > maxSubjectLength ? msg.subject.substring(0, maxSubjectLength) + '...' : msg.subject;
+    // Auto-destruct indicator (#629)
+    if ((msg as any).destroyed_at) {
+      shortSubject = `💀 ${shortSubject}`;
+    } else if ((msg as any).auto_destruct) {
+      shortSubject = `⏳ ${shortSubject}`;
+    }
     result += `| ${fullId} | ${msg.from} | ${shortSubject} | ${getPriorityIcon(msg.priority)} ${msg.priority} | ${getStatusIcon(msg.status)} ${msg.status} | ${formatDate(msg.timestamp)} |\n`;
   }
 
@@ -119,8 +155,6 @@ Votre inbox est vide pour le moment.
     result += `**De :** ${latest.from}\n`;
     result += `**Sujet :** ${latest.subject}\n`;
     result += `**Priorité :** ${getPriorityIcon(latest.priority)} ${latest.priority}\n`;
-
-    // Tronquer le preview
     result += `**Aperçu :** ${latest.preview}\n\n`;
   }
 
@@ -128,7 +162,7 @@ Votre inbox est vide pour le moment.
   result += `**💡 Actions disponibles :**\n`;
   result += `- \`roosync_read\` avec \`mode: "message"\` et l'ID pour lire un message complet\n`;
   result += `- \`roosync_read\` avec \`status: "unread"\` pour voir uniquement les non-lus\n`;
-  result += `- \`roosync_read\` avec \`limit: 5\` pour limiter le nombre de résultats`;
+  result += `- \`roosync_read\` avec \`page: 1, per_page: 20\` pour paginer les résultats`;
 
   return result;
 }
@@ -200,9 +234,41 @@ Le message n'a pas été trouvé dans :
     result += `**En réponse à :** ${message.reply_to}\n`;
   }
 
+  // Auto-destruct info (#629)
+  if ((message as any).auto_destruct) {
+    result += `\n**🔥 Auto-destruct :** OUI`;
+    if ((message as any).destruct_after_read_by?.length) {
+      result += ` (après lecture par: ${(message as any).destruct_after_read_by.join(', ')})`;
+    }
+    if ((message as any).expires_at) {
+      const expiresAt = new Date((message as any).expires_at);
+      const isExpired = expiresAt.getTime() < Date.now();
+      result += `\n**⏰ Expiration :** ${formatDateFull((message as any).expires_at)}${isExpired ? ' ⚠️ EXPIRÉ' : ''}`;
+    }
+    if ((message as any).destroyed_at) {
+      result += `\n**💀 Détruit :** ${formatDateFull((message as any).destroyed_at)} (raison: ${(message as any).destroyed_reason || 'inconnue'})`;
+    }
+    result += `\n`;
+  }
+
+  // Multi-reader tracking (#629)
+  if ((message as any).read_by?.length) {
+    const readBy = (message as any).read_by as string[];
+    const ackAt = (message as any).acknowledged_at as Record<string, string> | undefined;
+    result += `\n**👁️ Lu par :** ${readBy.map(m => {
+      const ts = ackAt?.[m];
+      return ts ? `${m} (${formatDate(ts)})` : m;
+    }).join(', ')}\n`;
+  }
+
   result += `\n---\n\n`;
   result += `## 📄 Contenu\n\n`;
-  result += message.body;
+  // Show destroyed placeholder or actual body (#629)
+  if ((message as any).destroyed_at) {
+    result += `_💀 Ce message a été détruit le ${formatDateFull((message as any).destroyed_at)}. Le contenu n'est plus disponible._`;
+  } else {
+    result += message.body;
+  }
   result += `\n\n---\n\n`;
   result += `## 💡 Actions disponibles\n\n`;
 
@@ -247,7 +313,15 @@ export const readToolMetadata = {
       },
       limit: {
         type: 'number',
-        description: 'Nombre maximum de messages à retourner (mode inbox)'
+        description: 'Nombre maximum de messages à retourner (mode inbox). Use page/per_page for pagination instead.'
+      },
+      page: {
+        type: 'number',
+        description: 'Page number (1-based) for pagination. Requires per_page.'
+      },
+      per_page: {
+        type: 'number',
+        description: 'Messages per page. Requires page. Recommended: 20.'
       },
       message_id: {
         type: 'string',
