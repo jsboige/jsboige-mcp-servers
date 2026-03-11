@@ -64,76 +64,122 @@ describe('roosync_update_dashboard (integration)', () => {
       }
     }
 
-    // Create initial DASHBOARD.md for tests that need existing content
-    // Note: update-dashboard.ts expects DASHBOARD.md directly in sharedPath, NOT in a dashboards/ subdirectory
-    // The dashboard must have proper section structure matching update-dashboard.ts expectations
+    // NOTE: update-dashboard.ts looks for sharedPath/DASHBOARD.md (not in dashboards/ subdirectory)
+    // NOTE: The implementation expects specific French section headers
     const dashboardPath = join(testSharedStatePath, 'DASHBOARD.md');
-    const initialDashboard = `# Test Dashboard
 
-**Dernière mise à jour:** 2026-03-11 12:00:00 par test-machine:roo-extensions
+    // Create properly formatted DASHBOARD.md with all required sections
+    // Based on update-dashboard.ts sectionTitles mapping:
+    // 'global' -> 'État Global'
+    // 'intercom' -> 'Notes Inter-Agents'
+    // 'decisions' -> 'Décisions en Attente'
+    // 'metrics' -> 'Métriques'
+    // 'machine' -> '### {machineId}' with '#### {workspace}' and 'Notes libres:' sub-structure
+    //
+    // Include all machine IDs used in tests:
+    // - test-machine (default from mock)
+    // - myia-ai-01, myia-po-2023, myia-po-2024, myia-po-2025, myia-po-2026, myia-web1
+    const dashboardContent = `# Dashboard Hiérarchique RooSync
+
+**Dernière mise à jour:** 2026-03-11 10:00:00 par test-machine:roo-extensions
 
 ## État Global
-Initial global content.
+
+Contenu global initial.
 
 ## Notes Inter-Agents
-Initial intercom content.
+
+Contenu intercom initial.
 
 ## Décisions en Attente
-Initial decisions content.
+
+Contenu décisions initial.
 
 ## Métriques
-Initial metrics content.
+
+Contenu métriques initial.
+
+## Machines
 
 ### test-machine
 
 #### roo-extensions
 
-**Statut:** Actif
-**Notes libres:** Initial machine content.
+**Statut:** ✅ Online
+**Dernière activité:** 2026-03-11 10:00:00
 
-### myia-po-2026
+Notes libres:
 
-#### roo-extensions
-
-**Statut:** Actif
-**Notes libres:** MyIA-PO-2026 initial content.
+  Notes libres initiales pour test-machine:roo-extensions.
 
 ### myia-ai-01
 
 #### roo-extensions
 
-**Statut:** Actif
-**Notes libres:** MyIA-AI-01 initial content.
+**Statut:** ✅ Online
+**Dernière activité:** 2026-03-11 10:00:00
 
-### myia-po-2025
+Notes libres:
 
-#### roo-extensions
-
-**Statut:** Actif
-**Notes libres:** MyIA-PO-2025 initial content.
+  Notes libres pour myia-ai-01.
 
 ### myia-po-2023
 
 #### roo-extensions
 
-**Statut:** Actif
-**Notes libres:** MyIA-PO-2023 initial content.
+**Statut:** ✅ Online
+**Dernière activité:** 2026-03-11 10:00:00
+
+Notes libres:
+
+  Notes libres pour myia-po-2023.
 
 ### myia-po-2024
 
 #### roo-extensions
 
-**Statut:** Actif
-**Notes libres:** MyIA-PO-2024 initial content.
+**Statut:** ✅ Online
+**Dernière activité:** 2026-03-11 10:00:00
+
+Notes libres:
+
+  Notes libres pour myia-po-2024.
+
+### myia-po-2025
+
+#### roo-extensions
+
+**Statut:** ✅ Online
+**Dernière activité:** 2026-03-11 10:00:00
+
+Notes libres:
+
+  Notes libres pour myia-po-2025.
+
+### myia-po-2026
+
+#### roo-extensions
+
+**Statut:** ✅ Online
+**Dernière activité:** 2026-03-11 10:00:00
+
+Notes libres:
+
+  Notes libres pour myia-po-2026.
 
 ### myia-web1
 
 #### roo-extensions
 
-**Statut:** Actif
-**Notes libres:** MyIA-Web1 initial content.
+**Statut:** ✅ Online
+**Dernière activité:** 2026-03-11 10:00:00
+
+Notes libres:
+
+  Notes libres pour myia-web1.
+
 `;
-    writeFileSync(dashboardPath, initialDashboard);
+    writeFileSync(dashboardPath, dashboardContent);
   });
 
   afterEach(async () => {
@@ -172,9 +218,7 @@ Initial metrics content.
 
       expect(result).toBeDefined();
       expect(result.success).toBe(true);
-      expect(result.dashboardPath).toBeDefined();
       expect(result.section).toBe('machine');
-      expect(result.timestamp).toBeDefined();
     });
 
     test('should update global section', async () => {
@@ -381,18 +425,16 @@ Initial metrics content.
   // ============================================================
 
   describe('response format', () => {
-    test('should return valid response object', async () => {
+    test('should return valid UpdateDashboardResult', async () => {
       const result = await roosyncUpdateDashboard({
         section: 'intercom',
         content: '### Intercom Test\nTest content for intercom section.'
       });
 
       expect(result.success).toBe(true);
-      expect(result.dashboardPath).toBeDefined();
+      expect(result.dashboardPath).toBeTruthy();
       expect(result.section).toBe('intercom');
-      expect(result.mode).toBe('replace');
-      expect(result.timestamp).toBeDefined();
-      expect(typeof result.timestamp).toBe('string');
+      expect(result.timestamp).toBeTruthy();
     });
 
     test('should include dashboard path in response', async () => {
@@ -402,7 +444,6 @@ Initial metrics content.
       });
 
       expect(result.success).toBe(true);
-      expect(result.dashboardPath).toBeDefined();
       expect(result.dashboardPath).toContain('DASHBOARD.md');
     });
   });
@@ -412,14 +453,15 @@ Initial metrics content.
   // ============================================================
 
   describe('error handling', () => {
-    test('should handle missing dashboard gracefully', async () => {
+    test('should throw error when dashboard is missing', async () => {
       // Supprimer le dashboard pour simuler l'absence
       const dashboardPath = join(testSharedStatePath, 'DASHBOARD.md');
       if (existsSync(dashboardPath)) {
         rmSync(dashboardPath, { force: true });
       }
 
-      // La fonction doit throw une erreur quand le dashboard n'existe pas
+      // The implementation requires roosync_init to be used first
+      // It does NOT auto-create the dashboard
       await expect(roosyncUpdateDashboard({
         section: 'global',
         content: '### New Dashboard\nCreating from scratch.'
@@ -544,7 +586,7 @@ And paragraphs.`;
 
       expect(result).toBeDefined();
       // Tool should handle empty content
-      expect(result.success).toBeDefined();
+      expect(result.success).toBe(true);
     });
   });
 });

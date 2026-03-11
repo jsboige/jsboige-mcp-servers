@@ -49,13 +49,17 @@ describe('roosyncHeartbeat (integration)', () => {
   // The system env ROOSYNC_SHARED_PATH points to real GDrive, and dotenv
   // won't override it. We must set it explicitly to the test path so that
   // RooSyncService singleton (via loadRooSyncConfig) uses the test directory.
+  // Fix #640: Also save/restore ROOSYNC_MACHINE_ID
   const originalSharedPath = process.env.ROOSYNC_SHARED_PATH;
+  const originalMachineId = process.env.ROOSYNC_MACHINE_ID;
 
   beforeEach(async () => {
     // Fix #634: Override env var BEFORE singleton recreation.
     // Without this, loadRooSyncConfig() reads the system env var (GDrive path)
     // and HeartbeatService writes ghost machine files to production GDrive.
+    // Fix #640: Set both required env vars for test mode
     process.env.ROOSYNC_SHARED_PATH = testSharedStatePath;
+    process.env.ROOSYNC_MACHINE_ID = 'test-machine';
 
     // Reset singleton so it gets recreated with the test path
     RooSyncService.resetInstance();
@@ -79,11 +83,17 @@ describe('roosyncHeartbeat (integration)', () => {
     // Reset singleton to prevent leaking test state to other test files
     RooSyncService.resetInstance();
 
-    // Restore original env var
+    // Restore original env vars
     if (originalSharedPath !== undefined) {
       process.env.ROOSYNC_SHARED_PATH = originalSharedPath;
     } else {
       delete process.env.ROOSYNC_SHARED_PATH;
+    }
+
+    if (originalMachineId !== undefined) {
+      process.env.ROOSYNC_MACHINE_ID = originalMachineId;
+    } else {
+      delete process.env.ROOSYNC_MACHINE_ID;
     }
 
     // Cleanup : supprimer répertoire test pour isolation
