@@ -89,11 +89,8 @@ describe('roosync_refresh_dashboard (integration)', () => {
 
       expect(result).toBeDefined();
       expect(result.success).toBe(true);
-      expect(result.content).toHaveLength(1);
-      expect(result.content[0].type).toBe('text');
-      const text = result.content[0].text;
-      expect(typeof text).toBe('string');
-      expect(text.length).toBeGreaterThan(0);
+      expect(result.baseline).toBeDefined();
+      expect(result.dashboardPath).toBeDefined();
     });
 
     test('should accept custom baseline machine', async () => {
@@ -103,7 +100,7 @@ describe('roosync_refresh_dashboard (integration)', () => {
 
       expect(result).toBeDefined();
       expect(result.success).toBe(true);
-      expect(result.content[0].type).toBe('text');
+      expect(result.baseline).toBe('myia-po-2023');
     });
 
     test('should accept all valid machine IDs', async () => {
@@ -169,7 +166,8 @@ describe('roosync_refresh_dashboard (integration)', () => {
 
       expect(result).toBeDefined();
       expect(result.success).toBe(true);
-      expect(result.content[0].type).toBe('text');
+      expect(result.baseline).toBe('myia-po-2025');
+      expect(result.dashboardPath).toBeDefined();
     });
   });
 
@@ -178,24 +176,25 @@ describe('roosync_refresh_dashboard (integration)', () => {
   // ============================================================
 
   describe('response format', () => {
-    test('should return valid text response', async () => {
+    test('should return valid response object', async () => {
       const result = await roosyncRefreshDashboard({});
 
-      expect(result.content).toHaveLength(1);
-      expect(result.content[0].type).toBe('text');
-
-      const text = result.content[0].text;
-      expect(text).toBeTruthy();
-      expect(text.length).toBeGreaterThan(0);
+      expect(result.success).toBe(true);
+      expect(result.dashboardPath).toBeDefined();
+      expect(result.timestamp).toBeDefined();
+      expect(typeof result.timestamp).toBe('string');
+      expect(result.baseline).toBeDefined();
+      expect(result.machines).toBeDefined();
+      expect(Array.isArray(result.machines)).toBe(true);
+      expect(result.metrics).toBeDefined();
     });
 
     test('should include dashboard path in response', async () => {
       const result = await roosyncRefreshDashboard({});
 
       expect(result.success).toBe(true);
-      const text = result.content[0].text;
-      // Response should mention the dashboard path or location
-      expect(text).toBeTruthy();
+      expect(result.dashboardPath).toContain('DASHBOARD.md');
+      expect(result.dashboardPath).toBeDefined();
     });
   });
 
@@ -212,7 +211,8 @@ describe('roosync_refresh_dashboard (integration)', () => {
 
       expect(result).toBeDefined();
       // Should still work with empty state
-      expect(result.content[0].type).toBe('text');
+      expect(result.success).toBeDefined();
+      expect(result.dashboardPath).toBeDefined();
     });
 
     test('should handle invalid machine ID gracefully', async () => {
@@ -222,7 +222,8 @@ describe('roosync_refresh_dashboard (integration)', () => {
 
       expect(result).toBeDefined();
       // Tool should handle gracefully
-      expect(result.content[0].type).toBe('text');
+      expect(result.success).toBeDefined();
+      expect(result.baseline).toBe('non-existent-machine');
     });
   });
 
