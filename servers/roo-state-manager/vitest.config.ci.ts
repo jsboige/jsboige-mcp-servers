@@ -89,6 +89,9 @@ export default mergeConfig(baseConfig, defineConfig({
       // ===== CI-excluded: Storage (depends on removed tool) =====
       'tests/unit/tools/storage/get-stats.test.ts',
 
+      // ===== CI-excluded: PARENT_REPO (reads files from parent roo-extensions repo) =====
+      'src/services/__tests__/skepticism-protocol.test.ts',
+
       // ===== E2E (already excluded in base) =====
       'tests/e2e/**',
     ],
