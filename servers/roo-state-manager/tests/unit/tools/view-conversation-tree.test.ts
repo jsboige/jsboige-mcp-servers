@@ -2,17 +2,18 @@ import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { viewConversationTree } from '../../../src/tools/view-conversation-tree.js';
 import { ConversationSkeleton } from '../../../src/types/conversation.js';
 
-// Mock fs (promises as fs)
-vi.mock('fs', () => {
-    const mockWriteFile = vi.fn();
-    const mockMkdir = vi.fn();
-    return {
-        promises: {
-            writeFile: mockWriteFile,
-            mkdir: mockMkdir,
-        },
-    };
-});
+// Mock fs (promises as fs) - use vi.hoisted to create mock references before mock definition
+const { mockWriteFile, mockMkdir } = vi.hoisted(() => ({
+    mockWriteFile: vi.fn().mockResolvedValue(undefined),
+    mockMkdir: vi.fn().mockResolvedValue(undefined),
+}));
+
+vi.mock('fs', () => ({
+    promises: {
+        writeFile: mockWriteFile,
+        mkdir: mockMkdir,
+    },
+}));
 
 const createMockSkeleton = (taskId: string, parentTaskId?: string, title?: string, lastActivity?: string, sequenceContent: string = ''): ConversationSkeleton => ({
     taskId,
@@ -30,8 +31,6 @@ const createMockSkeleton = (taskId: string, parentTaskId?: string, title?: strin
 
 describe('view_conversation_tree Tool', () => {
     let mockCache: Map<string, ConversationSkeleton>;
-    let mockWriteFile: any;
-    let mockMkdir: any;
 
     beforeEach(async () => {
         mockCache = new Map<string, ConversationSkeleton>();
@@ -43,11 +42,7 @@ describe('view_conversation_tree Tool', () => {
         mockCache.set('child1', child1);
         mockCache.set('child2', child2);
         mockCache.set('grandchild1', grandchild1);
-        
-        // Récupérer les mocks fs
-        const fsModule: any = await vi.importMock('fs');
-        mockWriteFile = fsModule.promises.writeFile;
-        mockMkdir = fsModule.promises.mkdir;
+
         vi.clearAllMocks();
     });
 

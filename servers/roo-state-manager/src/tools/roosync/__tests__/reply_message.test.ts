@@ -52,6 +52,9 @@ vi.mock('../../../utils/message-helpers.js', () => ({
 	getLocalFullId: vi.fn(() => 'myia-ai-01:roo-extensions')  // Mock local machine ID
 }));
 
+// Fix #636 timeout: Use static import instead of dynamic imports
+import { replyMessage } from '../reply_message.js';
+
 describe('reply_message', () => {
 	beforeEach(() => {
 		vi.clearAllMocks();
@@ -60,13 +63,11 @@ describe('reply_message', () => {
 
 	describe('parameter validation', () => {
 		test('rejects missing message_id', async () => {
-			const { replyMessage } = await import('../reply_message.js');
 			const result = await replyMessage({ message_id: '', body: 'Reply text' });
 			expect(result.content[0].text).toContain('Erreur');
 		});
 
 		test('rejects missing body', async () => {
-			const { replyMessage } = await import('../reply_message.js');
 			const result = await replyMessage({ message_id: 'msg-1', body: '' });
 			expect(result.content[0].text).toContain('Erreur');
 		});
@@ -76,7 +77,6 @@ describe('reply_message', () => {
 		test('returns not found message', async () => {
 			mockGetMessage.mockResolvedValue(null);
 
-			const { replyMessage } = await import('../reply_message.js');
 			const result = await replyMessage({ message_id: 'nonexistent', body: 'Reply' });
 
 			expect(result.content[0].text).toContain('Message original introuvable');
@@ -106,7 +106,6 @@ describe('reply_message', () => {
 				timestamp: '2026-01-02T00:00:00Z'
 			});
 
-			const { replyMessage } = await import('../reply_message.js');
 			await replyMessage({ message_id: 'msg-original', body: 'My reply' });
 
 			// from should be replier's machine, to should be original.from
@@ -126,7 +125,6 @@ describe('reply_message', () => {
 			mockGetMessage.mockResolvedValue(mockOriginal);
 			mockSendMessage.mockResolvedValue({ id: 'msg-reply', timestamp: '2026-01-02T00:00:00Z' });
 
-			const { replyMessage } = await import('../reply_message.js');
 			const result = await replyMessage({ message_id: 'msg-original', body: 'Reply' });
 
 			expect(result.content[0].text).toContain('Re: Test Subject');
@@ -136,7 +134,6 @@ describe('reply_message', () => {
 			mockGetMessage.mockResolvedValue({ ...mockOriginal, subject: 'Re: Already replied' });
 			mockSendMessage.mockResolvedValue({ id: 'msg-reply2', timestamp: '2026-01-02T00:00:00Z' });
 
-			const { replyMessage } = await import('../reply_message.js');
 			await replyMessage({ message_id: 'msg-original', body: 'Reply again' });
 
 			// Should NOT become "Re: Re: Already replied"
@@ -147,7 +144,6 @@ describe('reply_message', () => {
 			mockGetMessage.mockResolvedValue({ ...mockOriginal, thread_id: 'existing-thread' });
 			mockSendMessage.mockResolvedValue({ id: 'msg-reply3', timestamp: '2026-01-02T00:00:00Z' });
 
-			const { replyMessage } = await import('../reply_message.js');
 			await replyMessage({ message_id: 'msg-original', body: 'Reply' });
 
 			expect(mockSendMessage.mock.calls[0][6]).toBe('existing-thread');
@@ -157,7 +153,6 @@ describe('reply_message', () => {
 			mockGetMessage.mockResolvedValue(mockOriginal);
 			mockSendMessage.mockResolvedValue({ id: 'msg-reply4', timestamp: '2026-01-02T00:00:00Z' });
 
-			const { replyMessage } = await import('../reply_message.js');
 			await replyMessage({ message_id: 'msg-original', body: 'Urgent reply', priority: 'HIGH' });
 
 			expect(mockSendMessage.mock.calls[0][4]).toBe('HIGH');
@@ -167,7 +162,6 @@ describe('reply_message', () => {
 			mockGetMessage.mockResolvedValue(mockOriginal);
 			mockSendMessage.mockResolvedValue({ id: 'msg-reply5', timestamp: '2026-01-02T00:00:00Z' });
 
-			const { replyMessage } = await import('../reply_message.js');
 			await replyMessage({ message_id: 'msg-original', body: 'Tagged', tags: ['ack', 'done'] });
 
 			expect(mockSendMessage.mock.calls[0][5]).toEqual(['ack', 'done', 'reply']);
@@ -177,7 +171,6 @@ describe('reply_message', () => {
 			mockGetMessage.mockResolvedValue(mockOriginal);
 			mockSendMessage.mockResolvedValue({ id: 'msg-reply6', timestamp: '2026-01-02T00:00:00Z' });
 
-			const { replyMessage } = await import('../reply_message.js');
 			const result = await replyMessage({ message_id: 'msg-original', body: 'My reply' });
 
 			expect(result.content[0].text).toContain('Réponse envoyée avec succès');
@@ -193,7 +186,6 @@ describe('reply_message', () => {
 			});
 			mockSendMessage.mockRejectedValue(new Error('Disk full'));
 
-			const { replyMessage } = await import('../reply_message.js');
 			const result = await replyMessage({ message_id: 'msg-1', body: 'Reply' });
 
 			expect(result.content[0].text).toContain('Erreur');

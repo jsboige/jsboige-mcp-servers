@@ -109,10 +109,7 @@ export function registerCallToolHandler(
             case 'maintenance':
                 result = await toolExports.handleMaintenance(args as any, state.conversationCache, state);
                 break;
-            // [DEPRECATED] Ancien outil cache
-            case 'build_skeleton_cache':
-                result = await toolExports.handleBuildSkeletonCache(args as any, state.conversationCache, state);
-                break;
+            // [REMOVED] build_skeleton_cache — #625 dead code cleanup (not in alwaysAllow)
             // CONS-X (#457): Outil consolidé conversation_browser
             case 'conversation_browser':
                 result = await toolExports.handleConversationBrowser(
@@ -220,16 +217,7 @@ export function registerCallToolHandler(
                     toolExports.rebuildTaskIndexFixed.handler
                 );
                 break;
-            // CONS-11 Legacy: search_tasks_by_content conservé pour backward compat
-            case toolExports.searchTasksByContentTool.definition.name:
-                result = await toolExports.searchTasksByContentTool.handler(
-                    args as any,
-                    state.conversationCache,
-                    ensureSkeletonCacheIsFresh,
-                    toolExports.handleSearchTasksSemanticFallback,
-                    () => toolExports.handleDiagnoseSemanticIndex(state.conversationCache)
-                );
-                break;
+            // [REMOVED] search_tasks_by_content — #625 dead code cleanup (not in alwaysAllow)
            case toolExports.debugAnalyzeTool.definition.name:
                result = await toolExports.debugAnalyzeTool.handler(args as any, state.conversationCache);
                break;
@@ -573,50 +561,10 @@ export function registerCallToolHandler(
                    result = { content: [{ type: 'text', text: `Error: ${(error as Error).message}` }], isError: true };
                }
                break;
-          // [DEPRECATED] Legacy messaging tools - backward compat via CONS-1
-           case 'roosync_send_message':
-               try {
-                   result = await toolExports.sendMessage(args as any) as CallToolResult;
-               } catch (error) {
-                   result = { content: [{ type: 'text', text: `Error: ${(error as Error).message}` }], isError: true };
-               }
-               break;
-           case 'roosync_read_inbox':
-               try {
-                   result = await toolExports.readInbox(args as any) as CallToolResult;
-               } catch (error) {
-                   result = { content: [{ type: 'text', text: `Error: ${(error as Error).message}` }], isError: true };
-               }
-               break;
-           case 'roosync_get_message':
-               try {
-                   result = await toolExports.getMessage(args as any) as CallToolResult;
-               } catch (error) {
-                   result = { content: [{ type: 'text', text: `Error: ${(error as Error).message}` }], isError: true };
-               }
-               break;
-           // RooSync Messaging tools - Phase 2 (Management)
-           case 'roosync_mark_message_read':
-               try {
-                   result = await toolExports.markMessageRead(args as any) as CallToolResult;
-               } catch (error) {
-                   result = { content: [{ type: 'text', text: `Error: ${(error as Error).message}` }], isError: true };
-               }
-               break;
-           case 'roosync_archive_message':
-               try {
-                   result = await toolExports.archiveMessage(args as any) as CallToolResult;
-               } catch (error) {
-                   result = { content: [{ type: 'text', text: `Error: ${(error as Error).message}` }], isError: true };
-               }
-               break;
-           case 'roosync_reply_message':
-               try {
-                   result = await toolExports.replyMessage(args as any) as CallToolResult;
-               } catch (error) {
-                   result = { content: [{ type: 'text', text: `Error: ${(error as Error).message}` }], isError: true };
-               }
-               break;
+          // [REMOVED] 6 legacy messaging wrappers — #625 dead code cleanup (not in alwaysAllow)
+           // roosync_send_message, roosync_read_inbox, roosync_get_message,
+           // roosync_mark_message_read, roosync_archive_message, roosync_reply_message
+           // Replaced by: roosync_send, roosync_read, roosync_manage
            // NOUVEAU: Outil d'inventaire
            case 'roosync_get_machine_inventory':
                try {

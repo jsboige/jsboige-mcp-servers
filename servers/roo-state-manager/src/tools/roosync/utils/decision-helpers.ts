@@ -8,10 +8,11 @@
  * @status SKELETON - En attente CONS-1 stabilisation
  */
 
-import { readFileSync, writeFileSync } from 'fs';
+import { existsSync, readFileSync, unlinkSync, writeFileSync } from 'fs';
 import { join } from 'path';
 import type { RooSyncConfig } from '../../../config/roosync-config.js';
 import { parseRoadmapMarkdown, findDecisionById, type RooSyncDecision } from '../../../utils/roosync-parsers.js';
+import { getSharedStatePath } from '../../../utils/server-helpers.js';
 
 /**
  * Met à jour le statut d'une décision dans sync-roadmap.md
@@ -208,17 +209,15 @@ function generateNextStepsByStatus(
  * @param decisionId ID de la décision
  * @param status Nouveau statut
  * @param machineId ID de la machine effectuant la modification
- * @param config Configuration RooSync
  * @returns Promise<void>
  */
 export async function updateRoadmapStatusAsync(
   decisionId: string,
   status: 'pending' | 'approved' | 'rejected' | 'applied' | 'rolled_back',
-  machineId: string,
-  config: RooSyncConfig
+  machineId: string
 ): Promise<void> {
   try {
-    const roadmapPath = join(config.sharedPath, 'sync-roadmap.md');
+    const roadmapPath = join(process.cwd(), 'sync-roadmap.md');
     let content = readFileSync(roadmapPath, 'utf-8');
 
     // Trouver et remplacer le bloc de décision
@@ -271,47 +270,120 @@ export async function updateRoadmapStatusAsync(
 }
 
 /**
- * Charge les détails d'une décision depuis sync-roadmap.md
+ * Charge les détails d'une décision depuis sync-roadmap.md ou depuis un fichier JSON
  *
  * @param decisionId ID de la décision
- * @param config Configuration RooSync
  * @returns Promise<{ title: string; description: string; status: string; history: any[] } | null>
  */
 export async function loadDecisionDetails(
-  decisionId: string,
-  config: RooSyncConfig
+  decisionId: string
 ): Promise<{ title: string; description: string; status: string; history: any[] } | null> {
   try {
-    const roadmapPath = join(config.sharedPath, 'sync-roadmap.md');
-    const decisions = parseRoadmapMarkdown(roadmapPath);
-    const decision = findDecisionById(decisions, decisionId);
+    const sharedPath = getSharedStatePath();
 
-    if (!decision) {
-      return null;
+    // Essayer d'abord depuis sync-roadmap.md
+    const roadmapPath = join(sharedPath, 'sync-roadmap.md');
+    let decisionFound = false;
+
+    // Essayer de parser le roadmap - si le fichier n'existe pas, continuer vers JSON
+    try {
+      const decisions = parseRoadmapMarkdown(roadmapPath);
+      const decision = findDecisionById(decisions, decisionId);
+
+      if (decision) {
+        decisionFound = true;
+
+        // Construire l'historique à partir des métadonnées
+        const history: any[] = [];
+        history.push({
+          event: 'created',
+          timestamp: decision.createdAt,
+          machineId: decision.createdBy || decision.sourceMachine
+        });
+
+        // Ajouter les événements de statut si présents
+        if (decision.updatedAt) {
+          history.push({
+            event: 'updated',
+            timestamp: decision.updatedAt
+          });
+        }
+
+        return {
+          title: decision.title,
+          description: decision.details || '',
+          status: decision.status,
+          history
+        };
+      }
+    } catch (roadmapError) {
+      // sync-roadmap.md n'existe pas ou erreur de parsing - continuer vers JSON
+      // C'est normal pour les tests qui utilisent des fichiers JSON
+      const errorMessage = roadmapError instanceof Error ? roadmapError.message : String(roadmapError);
+      console.debug(`sync-roadmap.md non trouvé ou erreur de parsing: ${errorMessage}`);
     }
 
-    // Construire l'historique à partir des métadonnées
-    const history: any[] = [];
-    history.push({
-      event: 'created',
-      timestamp: decision.createdAt,
-      machineId: decision.createdBy || decision.sourceMachine
-    });
+    // Fallback: chercher dans les fichiers JSON individuels
+    const { existsSync, readFileSync } = require('fs');
+    const statusDirs = ['pending', 'approved', 'rejected', 'applied', 'rolled_back'];
 
-    // Ajouter les événements de statut si présents
-    if (decision.updatedAt) {
-      history.push({
-        event: 'updated',
-        timestamp: decision.updatedAt
-      });
+    for (const statusDir of statusDirs) {
+      const jsonPath = join(sharedPath, 'decisions', statusDir, `${decisionId}.json`);
+      if (existsSync(jsonPath)) {
+        const content = readFileSync(jsonPath, 'utf-8');
+        const jsonDecision = JSON.parse(content);
+
+        // Construire l'historique depuis le JSON
+        const history: any[] = [];
+        history.push({
+          event: 'created',
+          timestamp: jsonDecision.createdAt || jsonDecision.proposedAt,
+          machineId: jsonDecision.proposedBy || jsonDecision.createdBy
+        });
+
+        if (jsonDecision.approvedAt) {
+          history.push({
+            event: 'approved',
+            timestamp: jsonDecision.approvedAt,
+            machineId: jsonDecision.approvedBy
+          });
+        }
+
+        if (jsonDecision.rejectedAt) {
+          history.push({
+            event: 'rejected',
+            timestamp: jsonDecision.rejectedAt,
+            machineId: jsonDecision.rejectedBy
+          });
+        }
+
+        if (jsonDecision.appliedAt) {
+          history.push({
+            event: 'applied',
+            timestamp: jsonDecision.appliedAt,
+            machineId: jsonDecision.appliedBy
+          });
+        }
+
+        if (jsonDecision.rolledBackAt) {
+          history.push({
+            event: 'rolled_back',
+            timestamp: jsonDecision.rolledBackAt,
+            machineId: jsonDecision.rolledBackBy
+          });
+        }
+
+        return {
+          title: jsonDecision.title,
+          description: jsonDecision.description || jsonDecision.details || '',
+          status: jsonDecision.status,
+          history
+        };
+      }
     }
 
-    return {
-      title: decision.title,
-      description: decision.details || '',
-      status: decision.status,
-      history
-    };
+    // Non trouvé ni dans roadmap ni dans les JSON
+    return null;
   } catch (error) {
     const errorMessage = error instanceof Error ? error.message : String(error);
     console.error(`Erreur lors du chargement des détails de la décision: ${errorMessage}`);
@@ -425,5 +497,65 @@ export function restoreBackup(
   } catch (error) {
     const errorMessage = error instanceof Error ? error.message : String(error);
     throw new Error(`Échec de la restauration du backup: ${errorMessage}`);
+  }
+}
+
+/**
+ * Déplace un fichier de décision entre les répertoires de statut
+ *
+ * @param sharedPath Chemin vers le shared-state
+ * @param decisionId ID de la décision
+ * @param fromStatus Statut source
+ * @param toStatus Statut destination
+ * @returns true si déplacement réussi
+ */
+export function moveDecisionFile(
+  sharedPath: string,
+  decisionId: string,
+  fromStatus: 'pending' | 'approved' | 'rejected' | 'applied' | 'rolled_back',
+  toStatus: 'pending' | 'approved' | 'rejected' | 'applied' | 'rolled_back'
+): boolean {
+  try {
+    const fromPath = join(sharedPath, 'decisions', fromStatus, `${decisionId}.json`);
+    const toPath = join(sharedPath, 'decisions', toStatus, `${decisionId}.json`);
+
+    if (!existsSync(fromPath)) {
+      return false;
+    }
+
+    // Read the decision file to update status
+    const content = readFileSync(fromPath, 'utf-8');
+    const decision = JSON.parse(content);
+
+    // Update status in the JSON
+    decision.status = toStatus;
+
+    // Add timestamp based on new status
+    const now = new Date().toISOString();
+    if (toStatus === 'approved') {
+      decision.approvedAt = now;
+      decision.approvedBy = process.env.ROOSYNC_MACHINE_ID || 'unknown';
+    } else if (toStatus === 'rejected') {
+      decision.rejectedAt = now;
+      decision.rejectedBy = process.env.ROOSYNC_MACHINE_ID || 'unknown';
+    } else if (toStatus === 'applied') {
+      decision.appliedAt = now;
+      decision.appliedBy = process.env.ROOSYNC_MACHINE_ID || 'unknown';
+    } else if (toStatus === 'rolled_back') {
+      decision.rolledBackAt = now;
+      decision.rolledBackBy = process.env.ROOSYNC_MACHINE_ID || 'unknown';
+    }
+
+    // Write to new location
+    writeFileSync(toPath, JSON.stringify(decision, null, 2));
+
+    // Remove old file (after writing to new location)
+    unlinkSync(fromPath);
+
+    return true;
+  } catch (error) {
+    const errorMessage = error instanceof Error ? error.message : String(error);
+    console.error(`Erreur lors du déplacement du fichier de décision: ${errorMessage}`);
+    return false;
   }
 }

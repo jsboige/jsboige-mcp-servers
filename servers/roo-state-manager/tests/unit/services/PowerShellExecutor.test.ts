@@ -36,6 +36,9 @@ vi.mock('path', () => ({
   join: mockJoin
 }));
 
+// Unmock PowerShellExecutor to use real implementation with locally mocked dependencies
+vi.unmock('../../../src/services/PowerShellExecutor.js');
+
 // Import after mocks
 import {
   PowerShellExecutor,

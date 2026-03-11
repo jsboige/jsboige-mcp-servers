@@ -4,7 +4,8 @@
  */
 
 import { describe, test, expect, vi, beforeEach } from 'vitest';
-import { CompareConfigArgsSchema, CompareConfigResultSchema } from '../compare-config.js';
+// Fix #636 timeout: Use static import instead of dynamic imports
+import { CompareConfigArgsSchema, CompareConfigResultSchema, roosyncCompareConfig } from '../compare-config.js';
 
 // Mock dependencies
 const { mockGetConfig, mockCompareRealConfigurations, mockLoadDashboard, mockGetInventory } = vi.hoisted(() => ({
@@ -217,8 +218,7 @@ describe('compare-config', () => {
 				]
 			});
 
-			const { roosyncCompareConfig } = await import('../compare-config.js');
-			const result = await roosyncCompareConfig({ target: 'po-2023' });
+				const result = await roosyncCompareConfig({ target: 'po-2023' });
 
 			expect(result.source).toBe('ai-01');
 			expect(result.target).toBe('po-2023');
@@ -250,8 +250,7 @@ describe('compare-config', () => {
 				stats: { added: 0, removed: 0, modified: 1, unchanged: 1 }
 			});
 
-			const { roosyncCompareConfig } = await import('../compare-config.js');
-			const result = await roosyncCompareConfig({
+				const result = await roosyncCompareConfig({
 				target: 'po-2023',
 				granularity: 'mcp'
 			});
@@ -269,19 +268,24 @@ describe('compare-config', () => {
 			});
 			mockCompareRealConfigurations.mockResolvedValue(null);
 
-			const { roosyncCompareConfig } = await import('../compare-config.js');
-			await expect(roosyncCompareConfig({ target: 'po-2023' })).rejects.toThrow();
+				await expect(roosyncCompareConfig({ target: 'po-2023' })).rejects.toThrow();
 		});
 
-		test('throws when no target machines available', async () => {
+		test('returns CRITICAL diff when no target machines available (graceful handling)', async () => {
 			mockLoadDashboard.mockResolvedValue({
 				machines: {
 					'ai-01': { status: 'online' }
 				}
 			});
 
-			const { roosyncCompareConfig } = await import('../compare-config.js');
-			await expect(roosyncCompareConfig({})).rejects.toThrow('Aucune autre machine');
+				const result = await roosyncCompareConfig({});
+
+				// Should resolve (not reject) with CRITICAL infrastructure difference
+				expect(result).toBeDefined();
+				expect(result.differences.length).toBeGreaterThan(0);
+				const criticalDiff = result.differences.find(d => d.severity === 'CRITICAL');
+				expect(criticalDiff).toBeDefined();
+				expect(criticalDiff!.description).toContain('Aucune autre machine');
 		});
 
 		test('applies filter to granular diffs', async () => {
@@ -317,8 +321,7 @@ describe('compare-config', () => {
 				stats: { added: 0, removed: 0, modified: 2, unchanged: 1 }
 			});
 
-			const { roosyncCompareConfig } = await import('../compare-config.js');
-			const result = await roosyncCompareConfig({
+				const result = await roosyncCompareConfig({
 				target: 'po-2023',
 				granularity: 'mcp',
 				filter: 'jupyter'
@@ -343,8 +346,7 @@ describe('compare-config', () => {
 				differences: []
 			});
 
-			const { roosyncCompareConfig } = await import('../compare-config.js');
-			const result = await roosyncCompareConfig({
+				const result = await roosyncCompareConfig({
 				source: 'local-machine',
 				target: 'po-2023'
 			});
@@ -400,8 +402,7 @@ describe('compare-config', () => {
 					sharedStatePath: '/shared/path'
 				});
 
-				const { roosyncCompareConfig } = await import('../compare-config.js');
-				const result = await roosyncCompareConfig({
+						const result = await roosyncCompareConfig({
 					target: 'po-2023',
 					granularity: 'settings'
 				});
@@ -447,8 +448,7 @@ describe('compare-config', () => {
 					sharedStatePath: '/shared/path'
 				});
 
-				const { roosyncCompareConfig } = await import('../compare-config.js');
-				const result = await roosyncCompareConfig({
+						const result = await roosyncCompareConfig({
 					target: 'po-2023',
 					granularity: 'settings'
 				});
@@ -497,8 +497,7 @@ describe('compare-config', () => {
 					sharedStatePath: '/shared/path'
 				});
 
-				const { roosyncCompareConfig } = await import('../compare-config.js');
-				const result = await roosyncCompareConfig({
+						const result = await roosyncCompareConfig({
 					target: 'po-2023',
 					granularity: 'settings',
 					filter: 'condense'

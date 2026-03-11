@@ -4,9 +4,11 @@
  */
 
 import { describe, test, expect, vi, beforeEach } from 'vitest';
+// Fix #636 timeout: Use static import instead of dynamic imports
 import {
 	GetDecisionDetailsArgsSchema,
-	GetDecisionDetailsResultSchema
+	GetDecisionDetailsResultSchema,
+	roosyncGetDecisionDetails
 } from '../get-decision-details.js';
 
 // Mock dependencies
@@ -178,8 +180,7 @@ describe('get-decision-details', () => {
 		test('throws when decision not found', async () => {
 			mockGetDecision.mockResolvedValue(null);
 
-			const { roosyncGetDecisionDetails } = await import('../get-decision-details.js');
-			await expect(roosyncGetDecisionDetails({
+				await expect(roosyncGetDecisionDetails({
 				decisionId: 'nonexistent'
 			})).rejects.toThrow('introuvable');
 		});
@@ -197,8 +198,7 @@ describe('get-decision-details', () => {
 				details: 'Some diff'
 			});
 
-			const { roosyncGetDecisionDetails } = await import('../get-decision-details.js');
-			const result = await roosyncGetDecisionDetails({
+				const result = await roosyncGetDecisionDetails({
 				decisionId: 'dec-1',
 				includeHistory: false,
 				includeLogs: false
@@ -232,8 +232,7 @@ describe('get-decision-details', () => {
 				'<!-- DECISION_BLOCK_END -->'
 			);
 
-			const { roosyncGetDecisionDetails } = await import('../get-decision-details.js');
-			const result = await roosyncGetDecisionDetails({
+				const result = await roosyncGetDecisionDetails({
 				decisionId: 'dec-hist'
 			});
 
@@ -257,8 +256,7 @@ describe('get-decision-details', () => {
 
 			mockReadFileSync.mockReturnValue('');
 
-			const { roosyncGetDecisionDetails } = await import('../get-decision-details.js');
-			const result = await roosyncGetDecisionDetails({
+				const result = await roosyncGetDecisionDetails({
 				decisionId: 'dec-applied'
 			});
 
@@ -281,8 +279,7 @@ describe('get-decision-details', () => {
 
 			mockReadFileSync.mockReturnValue('');
 
-			const { roosyncGetDecisionDetails } = await import('../get-decision-details.js');
-			const result = await roosyncGetDecisionDetails({
+				const result = await roosyncGetDecisionDetails({
 				decisionId: 'dec-pending'
 			});
 

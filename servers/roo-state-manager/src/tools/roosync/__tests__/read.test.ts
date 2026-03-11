@@ -13,6 +13,16 @@
  */
 
 import { describe, test, expect, beforeEach, afterEach, vi } from 'vitest';
+
+// Unmock fs to use real filesystem for message fixtures
+vi.unmock('fs');
+vi.unmock('fs/promises');
+
+// Unmock MessageManager and its dependencies to use real implementation
+vi.unmock('../../../services/MessageManager.js');
+vi.unmock('../../../utils/logger.js');
+vi.unmock('../../../types/errors.js');
+
 import { existsSync, rmSync, mkdirSync } from 'fs';
 import { join } from 'path';
 
@@ -36,7 +46,9 @@ vi.mock('../../../utils/server-helpers.js', () => ({
 import { roosyncRead } from '../read.js';
 import { MessageManager } from '../../../services/MessageManager.js';
 
-describe('roosyncRead', () => {
+// Sequential execution required because tests share the same testSharedStatePath
+// and cleanup in afterEach can interfere with parallel tests
+describe.sequential('roosyncRead', () => {
   let messageManager: MessageManager;
 
   beforeEach(async () => {
@@ -169,8 +181,8 @@ describe('roosyncRead', () => {
       });
 
       expect((result.content[0] as any).text).toContain('Boîte de Réception');
-      // When status='all' (default) and limit=2, both displayed list and count are limited
-      expect((result.content[0] as any).text).toContain('2 message');
+      // Counts show total messages (3), but only 2 are displayed in the table (limit=2)
+      expect((result.content[0] as any).text).toContain('3 message');
     });
 
     test('should show preview of most recent message', async () => {

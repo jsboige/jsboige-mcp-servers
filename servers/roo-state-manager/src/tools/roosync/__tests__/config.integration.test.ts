@@ -35,6 +35,10 @@ vi.mock('../../../utils/server-helpers.js', () => ({
   getSharedStatePath: () => testSharedStatePath
 }));
 
+// Fix #634: Integration tests need REAL RooSyncService and ConfigService
+vi.unmock('../../../services/RooSyncService.js');
+vi.unmock('../../../services/ConfigService.js');
+
 // Import après les mocks
 import { roosyncConfig } from '../config.js';
 import { RooSyncService } from '../../../services/RooSyncService.js';

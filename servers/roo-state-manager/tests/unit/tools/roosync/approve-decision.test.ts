@@ -6,10 +6,54 @@ import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { writeFileSync, mkdirSync, rmSync, readFileSync } from 'fs';
 import { join } from 'path';
 
+// Fix #634: Unit tests with real RooSyncService need vi.unmock before imports
 // Désactiver le mock global de fs pour ce test qui utilise le système de fichiers réel
 vi.unmock('fs');
+
+// Fix #634: Integration-like tests need REAL RooSyncService and ConfigService
+vi.unmock('../../../../src/services/RooSyncService.js');
+vi.unmock('../../../../src/services/ConfigService.js');
+
 import { tmpdir } from 'os';
-import { RooSyncService } from '../../../../src/services/RooSyncService.js';
+
+// Set environment variables BEFORE the mock
+process.env.ROOSYNC_MACHINE_ID = 'PC-PRINCIPAL';
+process.env.ROOSYNC_SHARED_PATH = join(tmpdir(), `roosync-approve-test-${Date.now()}`);
+
+// Mock the @/services/RooSyncService.js to ensure the source file's import works correctly
+vi.mock('@/services/RooSyncService.js', () => {
+  const sharedMockInstance = {
+    getConfig: vi.fn(() => ({
+      sharedPath: process.env.ROOSYNC_SHARED_PATH || '/mock/roosync/shared-path',
+      machineId: process.env.ROOSYNC_MACHINE_ID || 'ci-test-machine',
+      autoSync: false,
+      conflictStrategy: 'manual',
+      logLevel: 'info'
+    })),
+    loadDashboard: vi.fn(async () => ({ version: '2.1.0', machines: [] })),
+    resetInstance: vi.fn(() => undefined),
+    getDecision: vi.fn(),
+    restoreFromRollbackPoint: vi.fn(async () => ({ success: true, restoredFiles: [], logs: [] })),
+    clearCache: vi.fn(() => undefined)
+  };
+
+  return {
+    RooSyncService: {
+      getInstance: vi.fn(() => sharedMockInstance),
+      resetInstance: vi.fn(() => undefined)
+    },
+    getRooSyncService: vi.fn(() => sharedMockInstance),
+    RooSyncServiceError: class extends Error {
+      constructor(message: string, code?: string) {
+        super(message);
+        this.name = 'RooSyncServiceError';
+        this.code = code;
+      }
+    }
+  };
+});
+
+import { RooSyncService } from '@/services/RooSyncService.js';
 import { roosyncApproveDecision, ApproveDecisionArgs } from '../../../../src/tools/roosync/approve-decision.js';
 
 // Mock fs module pour contourner le bug Vitest

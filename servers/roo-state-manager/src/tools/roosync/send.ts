@@ -63,6 +63,11 @@ interface RooSyncSendArgs {
   // Pour action 'amend'
   new_content?: string;
   reason?: string;
+
+  // Auto-destruction (#629)
+  auto_destruct?: boolean;
+  destruct_after_read_by?: string[];
+  destruct_after?: string;
 }
 
 /**
@@ -107,6 +112,13 @@ async function sendNewMessage(
   const from = getLocalFullId();
   logger.debug('📍 Message routing', { from, to: args.to });
 
+  // Build auto-destruct options (#629)
+  const autoDestructOpts = args.auto_destruct ? {
+    auto_destruct: true,
+    destruct_after_read_by: args.destruct_after_read_by,
+    destruct_after: args.destruct_after
+  } : undefined;
+
   // Envoyer le message
   const message = await messageManager.sendMessage(
     from,
@@ -116,10 +128,14 @@ async function sendNewMessage(
     args.priority || 'MEDIUM',
     args.tags,
     args.thread_id,
-    args.reply_to
+    args.reply_to,
+    autoDestructOpts
   );
 
   // Formater le résultat
+  const autoDestructInfo = message.auto_destruct
+    ? `\n**🔥 Auto-destruction :** Activée${message.destruct_after ? ` (TTL: ${message.destruct_after})` : ''}${message.destruct_after_read_by ? ` (après lecture par: ${message.destruct_after_read_by.join(', ')})` : ' (après lecture par destinataire)'}${message.expires_at ? `\n**⏰ Expire :** ${formatDateFull(message.expires_at)}` : ''}`
+    : '';
   const result = `✅ **Message envoyé avec succès**
 
 **ID :** ${message.id}
@@ -128,7 +144,7 @@ async function sendNewMessage(
 **Sujet :** ${message.subject}
 **Priorité :** ${getPriorityIcon(message.priority)} ${message.priority}
 **Timestamp :** ${formatDate(message.timestamp)}
-${args.tags && args.tags.length > 0 ? `**Tags :** ${args.tags.join(', ')}\n` : ''}${args.thread_id ? `**Thread :** ${args.thread_id}\n` : ''}${args.reply_to ? `**En réponse à :** ${args.reply_to}\n` : ''}Le message a été livré dans l'inbox de **${args.to}**.
+${args.tags && args.tags.length > 0 ? `**Tags :** ${args.tags.join(', ')}\n` : ''}${args.thread_id ? `**Thread :** ${args.thread_id}\n` : ''}${args.reply_to ? `**En réponse à :** ${args.reply_to}\n` : ''}${autoDestructInfo}Le message a été livré dans l'inbox de **${args.to}**.
 
 ---
 
@@ -458,6 +474,19 @@ export const sendToolMetadata = {
       reason: {
         type: 'string',
         description: 'Raison de l\'amendement (optionnel, pour action=amend)'
+      },
+      auto_destruct: {
+        type: 'boolean',
+        description: 'Activer l\'auto-destruction du message après lecture (#629). Défaut: false'
+      },
+      destruct_after_read_by: {
+        type: 'array',
+        items: { type: 'string' },
+        description: 'Liste des machines qui doivent lire avant destruction (optionnel). Si vide, détruit après lecture par le destinataire'
+      },
+      destruct_after: {
+        type: 'string',
+        description: 'Durée TTL avant destruction (ex: "30m", "2h", "1d"). Le message est détruit après ce délai même sans lecture'
       }
     },
     required: ['action']

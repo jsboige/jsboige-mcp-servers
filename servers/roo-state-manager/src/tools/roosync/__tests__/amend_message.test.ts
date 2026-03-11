@@ -82,6 +82,9 @@ vi.mock('../../../types/errors.js', () => ({
 	}
 }));
 
+// Fix #636 timeout: Use static import instead of dynamic imports
+import { amendMessage } from '../amend_message.js';
+
 describe('amend_message', () => {
 	beforeEach(() => {
 		vi.clearAllMocks();
@@ -97,7 +100,6 @@ describe('amend_message', () => {
 
 	describe('parameter validation', () => {
 		test('rejects missing message_id', async () => {
-			const { amendMessage } = await import('../amend_message.js');
 			const result = await amendMessage({
 				message_id: '',
 				new_content: 'new content'
@@ -107,7 +109,6 @@ describe('amend_message', () => {
 		});
 
 		test('rejects missing new_content', async () => {
-			const { amendMessage } = await import('../amend_message.js');
 			const result = await amendMessage({
 				message_id: 'msg-123',
 				new_content: ''
@@ -132,7 +133,6 @@ describe('amend_message', () => {
 				original_content_preserved: true
 			});
 
-			const { amendMessage } = await import('../amend_message.js');
 			await amendMessage({
 				message_id: 'msg-123',
 				new_content: 'updated content'
@@ -156,7 +156,6 @@ describe('amend_message', () => {
 				original_content_preserved: true
 			});
 
-			const { amendMessage } = await import('../amend_message.js');
 			await amendMessage({
 				message_id: 'msg-456',
 				new_content: 'new text'
@@ -186,7 +185,6 @@ describe('amend_message', () => {
 				original_content_preserved: true
 			});
 
-			const { amendMessage } = await import('../amend_message.js');
 			const result = await amendMessage({
 				message_id: 'msg-789',
 				new_content: 'corrected content',
@@ -207,7 +205,6 @@ describe('amend_message', () => {
 				original_content_preserved: true
 			});
 
-			const { amendMessage } = await import('../amend_message.js');
 			await amendMessage({
 				message_id: 'msg-100',
 				new_content: 'updated',
@@ -231,7 +228,6 @@ describe('amend_message', () => {
 				original_content_preserved: true
 			});
 
-			const { amendMessage } = await import('../amend_message.js');
 			const result = await amendMessage({
 				message_id: 'msg-200',
 				new_content: 'new'
@@ -250,7 +246,6 @@ describe('amend_message', () => {
 			process.env.ROOSYNC_MACHINE_ID = 'test-machine';
 			mockAmendMessage.mockRejectedValue(new Error('Message already read'));
 
-			const { amendMessage } = await import('../amend_message.js');
 			const result = await amendMessage({
 				message_id: 'msg-read',
 				new_content: 'too late'
@@ -264,7 +259,6 @@ describe('amend_message', () => {
 			process.env.ROOSYNC_MACHINE_ID = 'test-machine';
 			mockAmendMessage.mockRejectedValue(new Error('Not found'));
 
-			const { amendMessage } = await import('../amend_message.js');
 			const result = await amendMessage({
 				message_id: 'msg-missing',
 				new_content: 'update'

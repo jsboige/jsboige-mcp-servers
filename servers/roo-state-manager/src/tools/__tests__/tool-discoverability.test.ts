@@ -173,8 +173,7 @@ describe('Category 2: Deprecated Tools Backward Compatibility', () => {
         // 'detect_storage',        // removed in #519
         // 'get_storage_stats',     // removed in #519
 
-        // CLEANUP-3: Cache tool replaced by maintenance
-        'build_skeleton_cache',
+        // [REMOVED #625] build_skeleton_cache — not in alwaysAllow, handler removed
 
         // CONS-9: task_browse replaced by conversation_browser
         'task_browse',
@@ -182,8 +181,7 @@ describe('Category 2: Deprecated Tools Backward Compatibility', () => {
         // #457: view_conversation_tree replaced by conversation_browser action=view
         'view_conversation_tree',
 
-        // CONS-11: search_tasks_by_content replaced by roosync_search
-        'search_tasks_by_content',
+        // [REMOVED #625] search_tasks_by_content — not in alwaysAllow, handler removed
 
         // CLEANUP-3: debug_analyze_conversation kept for backward compat
         'debug_analyze_conversation',
@@ -200,13 +198,9 @@ describe('Category 2: Deprecated Tools Backward Compatibility', () => {
         // CONS-12→#457: roosync_summarize replaced by conversation_browser action=summarize
         'roosync_summarize',
 
-        // CONS-1: Legacy messaging tools (6→3)
-        'roosync_send_message',
-        'roosync_read_inbox',
-        'roosync_get_message',
-        'roosync_mark_message_read',
-        'roosync_archive_message',
-        'roosync_reply_message',
+        // [REMOVED #625] 6 legacy messaging tools — not in alwaysAllow, handlers removed
+        // roosync_send_message, roosync_read_inbox, roosync_get_message,
+        // roosync_mark_message_read, roosync_archive_message, roosync_reply_message
 
         // Legacy RooSync tools with individual CallTool handlers
         'roosync_get_decision_details',
@@ -578,8 +572,7 @@ describe('Category 6: Backward Compatibility Routes', () => {
         'roosync_summarize': 'conversation_browser',
         // list_conversations → conversation_browser(list)
         'list_conversations': 'conversation_browser',
-        // CONS-11: search_tasks_by_content → roosync_search
-        'search_tasks_by_content': 'roosync_search',
+        // [REMOVED #625] search_tasks_by_content — handler removed
         // CONS-11: Indexing tools → roosync_indexing
         'index_task_semantic': 'roosync_indexing',
         'reset_qdrant_collection': 'roosync_indexing',
@@ -587,17 +580,10 @@ describe('Category 6: Backward Compatibility Routes', () => {
         // CONS-13: BOM tools → roosync_storage_management (via maintenance, B4)
         'diagnose_conversation_bom': 'roosync_storage_management',
         'repair_conversation_bom': 'roosync_storage_management',
-        // CLEANUP-3: cache → roosync_storage_management (via maintenance, B4)
-        'build_skeleton_cache': 'roosync_storage_management',
+        // [REMOVED #625] build_skeleton_cache — handler removed
         // CLEANUP-3: debug → task_export
         'debug_analyze_conversation': 'task_export',
-        // CONS-1: Legacy messaging → roosync_send/read/manage
-        'roosync_send_message': 'roosync_send',
-        'roosync_read_inbox': 'roosync_read',
-        'roosync_get_message': 'roosync_read',
-        'roosync_mark_message_read': 'roosync_manage',
-        'roosync_archive_message': 'roosync_manage',
-        'roosync_reply_message': 'roosync_send',
+        // [REMOVED #625] 6 legacy messaging handlers removed
         // Legacy decision tools → roosync_decision
         'roosync_get_decision_details': 'roosync_decision_info',
         'roosync_approve_decision': 'roosync_decision',

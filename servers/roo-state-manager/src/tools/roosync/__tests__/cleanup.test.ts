@@ -37,6 +37,9 @@ vi.mock('../../../utils/logger.js', () => ({
 	Logger: class {}
 }));
 
+// Fix #636 timeout: Use static import instead of dynamic imports
+import { cleanupMessages, cleanupToolMetadata } from '../cleanup.js';
+
 describe('cleanup', () => {
 	beforeEach(() => {
 		vi.clearAllMocks();
@@ -45,22 +48,19 @@ describe('cleanup', () => {
 	});
 
 	test('exports cleanupToolMetadata', async () => {
-		const module = await import('../cleanup.js');
-		expect(module.cleanupToolMetadata).toBeDefined();
-		expect(module.cleanupToolMetadata.name).toBe('roosync_cleanup_messages');
-		expect(module.cleanupToolMetadata.inputSchema.properties.operation).toBeDefined();
+		expect(cleanupToolMetadata).toBeDefined();
+		expect(cleanupToolMetadata.name).toBe('roosync_cleanup_messages');
+		expect(cleanupToolMetadata.inputSchema.properties.operation).toBeDefined();
 	});
 
 	test('exports CleanupMessagesArgs type', async () => {
-		const module = await import('../cleanup.js');
 		// Type is exported but not a runtime value, so we can't test it directly
 		// The compilation would fail if the type wasn't exported
 		// We can at least verify the module loaded successfully
-		expect(module.cleanupMessages).toBeDefined();
+		expect(cleanupMessages).toBeDefined();
 	});
 
 	test('requires operation parameter', async () => {
-		const { cleanupMessages } = await import('../cleanup.js');
 		// @ts-expect-error - testing missing required parameter
 		const result = await cleanupMessages({});
 		expect(result.content[0].text).toContain('Erreur');
@@ -75,7 +75,6 @@ describe('cleanup', () => {
 			message_ids: ['msg-1', 'msg-2', 'msg-3', 'msg-4', 'msg-5']
 		});
 
-		const { cleanupMessages } = await import('../cleanup.js');
 		const result = await cleanupMessages({
 			operation: 'mark_read',
 			priority: 'LOW'
@@ -100,7 +99,6 @@ describe('cleanup', () => {
 			message_ids: ['msg-1', 'msg-2', 'msg-3']
 		});
 
-		const { cleanupMessages } = await import('../cleanup.js');
 		const result = await cleanupMessages({
 			operation: 'archive',
 			from: 'test-machine'
@@ -123,7 +121,6 @@ describe('cleanup', () => {
 			message_ids: ['msg-1']
 		});
 
-		const { cleanupMessages } = await import('../cleanup.js');
 		await cleanupMessages({
 			operation: 'mark_read',
 			from: 'sender',
@@ -155,7 +152,6 @@ describe('cleanup', () => {
 			message_ids: Array.from({ length: 25 }, (_, i) => `msg-${i + 1}`)
 		});
 
-		const { cleanupMessages } = await import('../cleanup.js');
 		const result = await cleanupMessages({
 			operation: 'mark_read',
 			verbose: true
@@ -177,7 +173,6 @@ describe('cleanup', () => {
 			message_ids: ['msg-1', 'msg-2', 'msg-3', 'msg-4', 'msg-5']
 		});
 
-		const { cleanupMessages } = await import('../cleanup.js');
 		const result = await cleanupMessages({
 			operation: 'mark_read',
 			verbose: false
@@ -193,7 +188,6 @@ describe('cleanup', () => {
 	test('handles errors gracefully', async () => {
 		mockBulkOperation.mockRejectedValue(new Error('Storage inaccessible'));
 
-		const { cleanupMessages } = await import('../cleanup.js');
 		const result = await cleanupMessages({
 			operation: 'mark_read'
 		});
@@ -211,7 +205,6 @@ describe('cleanup', () => {
 			message_ids: ['msg-1', 'msg-2', 'msg-3', 'msg-4', 'msg-5', 'msg-6', 'msg-7', 'msg-8']
 		});
 
-		const { cleanupMessages } = await import('../cleanup.js');
 		const result = await cleanupMessages({
 			operation: 'mark_read'
 		});
@@ -223,8 +216,6 @@ describe('cleanup', () => {
 	});
 
 	test('inputSchema metadata is valid', async () => {
-		const { cleanupToolMetadata } = await import('../cleanup.js');
-
 		expect(cleanupToolMetadata.name).toBe('roosync_cleanup_messages');
 		expect(cleanupToolMetadata.inputSchema.type).toBe('object');
 		expect(cleanupToolMetadata.inputSchema.required).toContain('operation');

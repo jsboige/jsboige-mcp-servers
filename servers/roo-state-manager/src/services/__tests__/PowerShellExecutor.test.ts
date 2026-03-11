@@ -12,6 +12,10 @@ import { PowerShellExecutorError } from '../../types/errors.js';
 import fs from 'fs';
 import { spawn } from 'child_process';
 
+// Unmock PowerShellExecutor to use the real class with static methods
+// The global mock in jest.setup.js doesn't include setMockPowerShellPath
+vi.unmock('../PowerShellExecutor.js');
+
 // Mocks
 vi.mock('fs', () => ({
   default: {

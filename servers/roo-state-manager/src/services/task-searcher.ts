@@ -154,6 +154,12 @@ export async function searchTasks(
     filter?: any; // Filtre Qdrant
     scoreThreshold?: number; // Seuil de score
     source?: 'roo' | 'claude-code' | 'all'; // #604: Filter by conversation source
+    // #636: Advanced filters
+    chunk_type?: 'message_exchange' | 'tool_interaction';
+    role?: 'user' | 'assistant';
+    tool_name?: string;
+    has_errors?: boolean;
+    model?: string;
   } = {}
 ): Promise<ContextWindow[]> {
 
@@ -171,26 +177,37 @@ export async function searchTasks(
   });
   const vector = embeddingResponse.data[0].embedding;
 
-  // Build Qdrant filter with optional source filtering (#604)
-  let searchFilter = options.filter;
-  if (options.source && options.source !== 'all') {
-    const sourceCondition = {
-      must: [
-        { key: 'source', match: { value: options.source } }
-      ]
-    };
-    if (searchFilter) {
-      // Merge with existing filter
-      searchFilter = {
-        must: [
-          ...(searchFilter.must || []),
-          ...sourceCondition.must
-        ]
-      };
-    } else {
-      searchFilter = sourceCondition;
-    }
+  // Build Qdrant filter with optional filtering (#604, #636)
+  const filterConditions: Array<{ key: string; match: { value: any } }> = [];
+
+  // Merge existing filter conditions
+  if (options.filter?.must) {
+    filterConditions.push(...options.filter.must);
   }
+
+  // #604: Source filter
+  if (options.source && options.source !== 'all') {
+    filterConditions.push({ key: 'source', match: { value: options.source } });
+  }
+
+  // #636: Advanced filters
+  if (options.chunk_type) {
+    filterConditions.push({ key: 'chunk_type', match: { value: options.chunk_type } });
+  }
+  if (options.role) {
+    filterConditions.push({ key: 'role', match: { value: options.role } });
+  }
+  if (options.tool_name) {
+    filterConditions.push({ key: 'tool_name', match: { value: options.tool_name } });
+  }
+  if (options.has_errors === true) {
+    filterConditions.push({ key: 'has_error', match: { value: true } });
+  }
+  if (options.model) {
+    filterConditions.push({ key: 'model', match: { value: options.model } });
+  }
+
+  const searchFilter = filterConditions.length > 0 ? { must: filterConditions } : options.filter;
 
   // 2. Étape 1: Recherche des Chunks Initiaux dans Qdrant
   const searchResult = await qdrant.search(collectionName, {

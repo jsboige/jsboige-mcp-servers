@@ -11,6 +11,9 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { promises as fs } from 'fs';
 import { join } from 'path';
+
+// Fix #634: ConfigService tests need REAL implementation, not mock
+vi.unmock('../../services/ConfigService.js');
 import { ConfigService } from '../ConfigService.js';
 
 describe('ConfigService', () => {

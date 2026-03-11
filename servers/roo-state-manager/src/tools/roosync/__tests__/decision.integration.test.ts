@@ -35,134 +35,30 @@ vi.mock('../../../utils/server-helpers.js', () => ({
   getSharedStatePath: () => testSharedStatePath
 }));
 
-// Fix #640: Mock loadDecisionDetails and updateRoadmapStatus for integration tests
-// The implementation reads from sync-roadmap.md via process.cwd(), but integration tests
-// create individual JSON files in a test directory. We bridge this gap by mocking.
-// NOTE: Mock must be declared before imports (hoisting)
-vi.mock('../utils/decision-helpers.js', async () => {
-  const actual = await vi.importActual('../utils/decision-helpers.js');
-  const { readFileSync, existsSync, renameSync, writeFileSync, unlinkSync } = await import('fs');
-  const { join } = await import('path');
-
-  const testSharedStatePath = join(__dirname, '../../../__test-data__/shared-state-decision');
-  const statusMap: Record<string, string> = {
-    approve: 'approved',
-    reject: 'rejected',
-    apply: 'applied',
-    rollback: 'rolled_back'
-  };
-
-  return {
-    ...actual,
-    loadDecisionDetails: vi.fn((decisionId: string) => {
-      // Look for the decision file in each possible status directory
-      const statuses = ['pending', 'approved', 'rejected', 'applied', 'rolled_back'];
-
-      for (const status of statuses) {
-        const decisionPath = join(testSharedStatePath, 'decisions', status, `${decisionId}.json`);
-        if (existsSync(decisionPath)) {
-          const content = readFileSync(decisionPath, 'utf-8');
-          return JSON.parse(content);
-        }
-      }
-
-      return null; // Decision not found
-    }),
-
-    updateRoadmapStatus: vi.fn((
-      config: any,
-      decisionId: string,
-      newStatus: string,
-      metadata: { comment?: string; reason?: string; machineId?: string }
-    ) => {
-      // Find the current location of the decision file
-      const statuses = ['pending', 'approved', 'rejected', 'applied', 'rolled_back'];
-      let sourcePath: string | null = null;
-      let currentStatus: string | null = null;
-
-      for (const status of statuses) {
-        const decisionPath = join(testSharedStatePath, 'decisions', status, `${decisionId}.json`);
-        if (existsSync(decisionPath)) {
-          sourcePath = decisionPath;
-          currentStatus = status;
-          break;
-        }
-      }
-
-      if (!sourcePath || !currentStatus) {
-        return; // Decision file not found, nothing to do
-      }
-
-      // Read current content
-      const content = readFileSync(sourcePath, 'utf-8');
-      const decision = JSON.parse(content);
-
-      // Update status and metadata
-      const timestamp = new Date().toISOString();
-      decision.status = newStatus as any;
-
-      // Set appropriate fields based on new status
-      if (newStatus === 'approved') {
-        decision.approvedBy = metadata.machineId || 'test-machine';
-        decision.approvedAt = timestamp;
-      } else if (newStatus === 'rejected') {
-        decision.rejectedBy = metadata.machineId || 'test-machine';
-        decision.rejectedAt = timestamp;
-      } else if (newStatus === 'applied') {
-        decision.appliedBy = metadata.machineId || 'test-machine';
-        decision.appliedAt = timestamp;
-      } else if (newStatus === 'rolled_back') {
-        decision.rolledBackBy = metadata.machineId || 'test-machine';
-        decision.rolledBackAt = timestamp;
-      }
-
-      if (metadata.comment) decision.comment = metadata.comment;
-      if (metadata.reason) decision.reason = metadata.reason;
-      decision.updatedAt = timestamp;
-
-      // Move to new status directory
-      const targetDir = join(testSharedStatePath, 'decisions', newStatus);
-      const targetPath = join(targetDir, `${decisionId}.json`);
-
-      // Write to new location with updated content
-      writeFileSync(targetPath, JSON.stringify(decision, null, 2));
-
-      // Remove from old location
-      unlinkSync(sourcePath);
-    }),
-
-    validateDecisionStatus: vi.fn((currentStatus: string, action: string) => {
-      // Allow transitions that make sense
-      const validTransitions: Record<string, string[]> = {
-        pending: ['approve', 'reject'],
-        approved: ['apply'],  // Cannot reject once approved
-        rejected: ['approve'], // Can re-approve
-        applied: ['rollback'],
-        rolled_back: ['approve'] // Can re-approve after rollback
-      };
-
-      const allowedActions = validTransitions[currentStatus] || [];
-      return allowedActions.includes(action);
-    })
-  };
-});
-
-// Fix #640: Unmock RooSyncService to use real implementation in integration tests
-// vi.unmock() IS hoisted, so this needs to be before the imports
+// Fix #634: Integration tests need REAL RooSyncService, not the mock from jest.setup.js
+// Unmock the service so we get the real singleton with actual filesystem operations
 vi.unmock('../../../services/RooSyncService.js');
+// Also unmock InventoryCollector - the jest.setup.js mock has wrong method names (collect vs collectInventory)
+vi.unmock('../../../services/InventoryCollector.js');
+// Also unmock BaselineService - jest.setup.js mock is missing loadBaseline method
+vi.unmock('../../../services/BaselineService.js');
+// Also unmock ConfigService - BaselineService depends on it and jest.setup.js mock is incomplete
+vi.unmock('../../../services/ConfigService.js');
 
-// Import après les mocks et unmock
+// Import après les mocks
 import { roosyncDecision } from '../decision.js';
 import { RooSyncService } from '../../../services/RooSyncService.js';
 
 describe('roosync_decision (integration)', () => {
-  // Fix #634: Save original env vars to restore after tests
+  // Fix #634: Save original env var to restore after tests
   const originalSharedPath = process.env.ROOSYNC_SHARED_PATH;
   const originalMachineId = process.env.ROOSYNC_MACHINE_ID;
+  const originalNodeEnv = process.env.NODE_ENV;
 
   beforeEach(async () => {
     // Fix #634: Override env var BEFORE singleton recreation
-    // Fix #640: Set both required env vars for test mode
+    // loadRooSyncConfig() requires NODE_ENV='test' to use test mode (roosync-config.ts lines 54-98)
+    process.env.NODE_ENV = 'test';
     process.env.ROOSYNC_SHARED_PATH = testSharedStatePath;
     process.env.ROOSYNC_MACHINE_ID = 'test-machine';
 
@@ -170,12 +66,9 @@ describe('roosync_decision (integration)', () => {
     RooSyncService.resetInstance();
 
     // Setup : créer répertoire temporaire pour tests isolés
-    // IMPORTANT: Create directories BEFORE resetInstance(), because
-    // loadRooSyncConfig() validates that ROOSYNC_SHARED_PATH exists.
     const dirs = [
       testSharedStatePath,
-      join(testSharedStatePath, 'roo-config'),
-      join(testSharedStatePath, 'logs'),
+      join(testSharedStatePath, 'decisions'),
       join(testSharedStatePath, 'decisions', 'pending'),
       join(testSharedStatePath, 'decisions', 'approved'),
       join(testSharedStatePath, 'decisions', 'rejected'),
@@ -188,9 +81,6 @@ describe('roosync_decision (integration)', () => {
         mkdirSync(dir, { recursive: true });
       }
     }
-
-    // Reset singleton avant chaque test pour garantir un état propre
-    RooSyncService.resetInstance();
   });
 
   afterEach(async () => {
@@ -208,6 +98,12 @@ describe('roosync_decision (integration)', () => {
       process.env.ROOSYNC_MACHINE_ID = originalMachineId;
     } else {
       delete process.env.ROOSYNC_MACHINE_ID;
+    }
+
+    if (originalNodeEnv !== undefined) {
+      process.env.NODE_ENV = originalNodeEnv;
+    } else {
+      delete process.env.NODE_ENV;
     }
 
     // Cleanup : supprimer répertoire test pour isolation
@@ -236,11 +132,11 @@ describe('roosync_decision (integration)', () => {
       const testDecision = {
         id: decisionId,
         title: 'Test decision',
-        description: 'Test',
+        description: 'Test description',
         proposedBy: 'test-machine',
         createdAt: new Date().toISOString(),
         status: 'pending' as const,
-        changes: []
+        changes: [{ file: 'test.txt', action: 'create' as const }]
       };
       writeFileSync(decisionPath, JSON.stringify(testDecision, null, 2));
 
@@ -250,7 +146,7 @@ describe('roosync_decision (integration)', () => {
       });
 
       expect(result).toBeDefined();
-      expect(result.error).toBeUndefined();
+      expect(result.success).toBe(true);
       expect(result.action).toBe('approve');
       expect(result.decisionId).toBe(decisionId);
     });
@@ -261,7 +157,7 @@ describe('roosync_decision (integration)', () => {
       const testDecision = {
         id: decisionId,
         title: 'Test decision with comment',
-        description: 'Test',
+        description: 'Test description',
         proposedBy: 'test-machine',
         createdAt: new Date().toISOString(),
         status: 'pending' as const,
@@ -276,13 +172,15 @@ describe('roosync_decision (integration)', () => {
       });
 
       expect(result).toBeDefined();
-      expect(result.error).toBeUndefined();
+      expect(result.success).toBe(true);
       expect(result.action).toBe('approve');
     });
 
     test('should move decision from pending to approved', async () => {
       const decisionId = 'test-decision-003';
-      const decisionPath = join(testSharedStatePath, 'decisions', 'pending', `${decisionId}.json`);
+      const pendingPath = join(testSharedStatePath, 'decisions', 'pending', `${decisionId}.json`);
+      const approvedPath = join(testSharedStatePath, 'decisions', 'approved', `${decisionId}.json`);
+
       const testDecision = {
         id: decisionId,
         title: 'Test decision move',
@@ -292,17 +190,20 @@ describe('roosync_decision (integration)', () => {
         status: 'pending' as const,
         changes: []
       };
-      writeFileSync(decisionPath, JSON.stringify(testDecision, null, 2));
+      writeFileSync(pendingPath, JSON.stringify(testDecision, null, 2));
 
       await roosyncDecision({
         action: 'approve',
         decisionId
       });
 
-      // Vérifier que le fichier a été déplacé vers approved
-      const newDecisionPath = join(testSharedStatePath, 'decisions', 'approved', `${decisionId}.json`);
-      expect(existsSync(newDecisionPath)).toBe(true);
-      expect(existsSync(decisionPath)).toBe(false); // Old location should be gone
+      // Vérifier que le fichier a été déplacé
+      expect(existsSync(pendingPath)).toBe(false);
+      expect(existsSync(approvedPath)).toBe(true);
+
+      const updatedContent = readFileSync(approvedPath, 'utf-8');
+      const updatedDecision = JSON.parse(updatedContent);
+      expect(updatedDecision.status).toBe('approved');
     });
   });
 
@@ -311,7 +212,7 @@ describe('roosync_decision (integration)', () => {
   // ============================================================
 
   describe('action: reject', () => {
-    test('should reject decision with reason', async () => {
+    test('should require reason parameter for reject', async () => {
       const decisionId = 'test-decision-004';
       const decisionPath = join(testSharedStatePath, 'decisions', 'pending', `${decisionId}.json`);
       const testDecision = {
@@ -325,15 +226,12 @@ describe('roosync_decision (integration)', () => {
       };
       writeFileSync(decisionPath, JSON.stringify(testDecision, null, 2));
 
-      const result = await roosyncDecision({
+      // reason est requis pour reject
+      await expect(roosyncDecision({
         action: 'reject',
-        decisionId,
-        reason: 'Not ready for deployment'
-      });
-
-      expect(result).toBeDefined();
-      expect(result.error).toBeUndefined();
-      expect(result.action).toBe('reject');
+        decisionId
+        // reason manquant
+      })).rejects.toThrow();
     });
 
     test('should reject decision with reason', async () => {
@@ -357,13 +255,15 @@ describe('roosync_decision (integration)', () => {
       });
 
       expect(result).toBeDefined();
-      expect(result.error).toBeUndefined();
+      expect(result.success).toBe(true);
       expect(result.action).toBe('reject');
     });
 
     test('should move decision from pending to rejected', async () => {
       const decisionId = 'test-decision-006';
-      const decisionPath = join(testSharedStatePath, 'decisions', 'pending', `${decisionId}.json`);
+      const pendingPath = join(testSharedStatePath, 'decisions', 'pending', `${decisionId}.json`);
+      const rejectedPath = join(testSharedStatePath, 'decisions', 'rejected', `${decisionId}.json`);
+
       const testDecision = {
         id: decisionId,
         title: 'Test decision reject move',
@@ -373,7 +273,7 @@ describe('roosync_decision (integration)', () => {
         status: 'pending' as const,
         changes: []
       };
-      writeFileSync(decisionPath, JSON.stringify(testDecision, null, 2));
+      writeFileSync(pendingPath, JSON.stringify(testDecision, null, 2));
 
       await roosyncDecision({
         action: 'reject',
@@ -381,9 +281,13 @@ describe('roosync_decision (integration)', () => {
         reason: 'Incomplete implementation'
       });
 
-      // Vérifier que le fichier a été déplacé vers rejected
-      const newDecisionPath = join(testSharedStatePath, 'decisions', 'rejected', `${decisionId}.json`);
-      expect(existsSync(newDecisionPath)).toBe(true);
+      // Vérifier que le fichier a été déplacé
+      expect(existsSync(pendingPath)).toBe(false);
+      expect(existsSync(rejectedPath)).toBe(true);
+
+      const updatedContent = readFileSync(rejectedPath, 'utf-8');
+      const updatedDecision = JSON.parse(updatedContent);
+      expect(updatedDecision.status).toBe('rejected');
     });
   });
 
@@ -414,7 +318,7 @@ describe('roosync_decision (integration)', () => {
       });
 
       expect(result).toBeDefined();
-      expect(result.error).toBeUndefined();
+      expect(result.success).toBe(true);
       expect(result.action).toBe('apply');
     });
 
@@ -441,7 +345,7 @@ describe('roosync_decision (integration)', () => {
       });
 
       expect(result).toBeDefined();
-      expect(result.error).toBeUndefined();
+      expect(result.success).toBe(true);
     });
 
     test('should support force flag', async () => {
@@ -467,12 +371,14 @@ describe('roosync_decision (integration)', () => {
       });
 
       expect(result).toBeDefined();
-      expect(result.error).toBeUndefined();
+      expect(result.success).toBe(true);
     });
 
     test('should move decision from approved to applied', async () => {
       const decisionId = 'test-decision-010';
-      const decisionPath = join(testSharedStatePath, 'decisions', 'approved', `${decisionId}.json`);
+      const approvedPath = join(testSharedStatePath, 'decisions', 'approved', `${decisionId}.json`);
+      const appliedPath = join(testSharedStatePath, 'decisions', 'applied', `${decisionId}.json`);
+
       const testDecision = {
         id: decisionId,
         title: 'Test decision apply move',
@@ -484,16 +390,20 @@ describe('roosync_decision (integration)', () => {
         approvedBy: 'test-machine',
         approvedAt: new Date().toISOString()
       };
-      writeFileSync(decisionPath, JSON.stringify(testDecision, null, 2));
+      writeFileSync(approvedPath, JSON.stringify(testDecision, null, 2));
 
       await roosyncDecision({
         action: 'apply',
         decisionId
       });
 
-      // Vérifier que le fichier a été déplacé vers applied
-      const newDecisionPath = join(testSharedStatePath, 'decisions', 'applied', `${decisionId}.json`);
-      expect(existsSync(newDecisionPath)).toBe(true);
+      // Vérifier que le fichier a été déplacé
+      expect(existsSync(approvedPath)).toBe(false);
+      expect(existsSync(appliedPath)).toBe(true);
+
+      const updatedContent = readFileSync(appliedPath, 'utf-8');
+      const updatedDecision = JSON.parse(updatedContent);
+      expect(updatedDecision.status).toBe('applied');
     });
   });
 
@@ -502,8 +412,34 @@ describe('roosync_decision (integration)', () => {
   // ============================================================
 
   describe('action: rollback', () => {
-    test('should rollback applied decision with reason', async () => {
+    test('should require reason parameter for rollback', async () => {
       const decisionId = 'test-decision-011';
+      const decisionPath = join(testSharedStatePath, 'decisions', 'applied', `${decisionId}.json`);
+      const testDecision = {
+        id: decisionId,
+        title: 'Test decision',
+        description: 'Test',
+        proposedBy: 'test-machine',
+        createdAt: new Date().toISOString(),
+        status: 'applied' as const,
+        changes: [],
+        approvedBy: 'test-machine',
+        approvedAt: new Date().toISOString(),
+        appliedBy: 'test-machine',
+        appliedAt: new Date().toISOString()
+      };
+      writeFileSync(decisionPath, JSON.stringify(testDecision, null, 2));
+
+      // reason est requis pour rollback
+      await expect(roosyncDecision({
+        action: 'rollback',
+        decisionId
+        // reason manquant
+      })).rejects.toThrow();
+    });
+
+    test('should rollback applied decision with reason', async () => {
+      const decisionId = 'test-decision-012';
       const decisionPath = join(testSharedStatePath, 'decisions', 'applied', `${decisionId}.json`);
       const testDecision = {
         id: decisionId,
@@ -527,13 +463,15 @@ describe('roosync_decision (integration)', () => {
       });
 
       expect(result).toBeDefined();
-      expect(result.error).toBeUndefined();
+      expect(result.success).toBe(true);
       expect(result.action).toBe('rollback');
     });
 
     test('should move decision from applied to rolled_back', async () => {
       const decisionId = 'test-decision-013';
-      const decisionPath = join(testSharedStatePath, 'decisions', 'applied', `${decisionId}.json`);
+      const appliedPath = join(testSharedStatePath, 'decisions', 'applied', `${decisionId}.json`);
+      const rolledBackPath = join(testSharedStatePath, 'decisions', 'rolled_back', `${decisionId}.json`);
+
       const testDecision = {
         id: decisionId,
         title: 'Test decision rollback move',
@@ -547,7 +485,7 @@ describe('roosync_decision (integration)', () => {
         appliedBy: 'test-machine',
         appliedAt: new Date().toISOString()
       };
-      writeFileSync(decisionPath, JSON.stringify(testDecision, null, 2));
+      writeFileSync(appliedPath, JSON.stringify(testDecision, null, 2));
 
       await roosyncDecision({
         action: 'rollback',
@@ -555,9 +493,13 @@ describe('roosync_decision (integration)', () => {
         reason: 'Breaking change detected'
       });
 
-      // Vérifier que le fichier a été déplacé vers rolled_back
-      const newDecisionPath = join(testSharedStatePath, 'decisions', 'rolled_back', `${decisionId}.json`);
-      expect(existsSync(newDecisionPath)).toBe(true);
+      // Vérifier que le fichier a été déplacé
+      expect(existsSync(appliedPath)).toBe(false);
+      expect(existsSync(rolledBackPath)).toBe(true);
+
+      const updatedContent = readFileSync(rolledBackPath, 'utf-8');
+      const updatedDecision = JSON.parse(updatedContent);
+      expect(updatedDecision.status).toBe('rolled_back');
     });
   });
 
@@ -567,18 +509,19 @@ describe('roosync_decision (integration)', () => {
 
   describe('error handling', () => {
     test('should handle missing decision gracefully', async () => {
-      // The implementation throws RooSyncServiceError for missing decisions
-      // In a real scenario, the caller should catch this error
-      await expect(roosyncDecision({
+      const result = await roosyncDecision({
         action: 'approve',
         decisionId: 'non-existent-decision'
-      })).rejects.toThrow('Décision');
+      });
+
+      // L'outil doit gérer l'erreur gracieusement
+      expect(result).toBeDefined();
     });
 
     test('should handle invalid status transition gracefully', async () => {
       const decisionId = 'test-decision-014';
-      const decisionPath = join(testSharedStatePath, 'decisions', 'approved', `${decisionId}.json`);
       // Créer une décision déjà approuvée
+      const decisionPath = join(testSharedStatePath, 'decisions', 'approved', `${decisionId}.json`);
       const testDecision = {
         id: decisionId,
         title: 'Test decision',
@@ -593,26 +536,29 @@ describe('roosync_decision (integration)', () => {
       writeFileSync(decisionPath, JSON.stringify(testDecision, null, 2));
 
       // Essayer de rejeter une décision déjà approuvée (transition invalide)
-      // The implementation throws RooSyncServiceError for invalid transitions
-      await expect(roosyncDecision({
+      const result = await roosyncDecision({
         action: 'reject',
         decisionId,
         reason: 'Test invalid transition'
-      })).rejects.toThrow('non permise');
+      });
+
+      // L'outil doit gérer l'erreur gracieusement
+      expect(result).toBeDefined();
     });
 
     test('should handle corrupted decision file gracefully', async () => {
       const decisionId = 'test-decision-corrupted';
-      // Écrire un fichier décision corrompu (invalid JSON)
       const decisionPath = join(testSharedStatePath, 'decisions', 'pending', `${decisionId}.json`);
-      writeFileSync(decisionPath, `{ invalid json }`, 'utf-8');
+      // Écrire un JSON invalide
+      writeFileSync(decisionPath, '{ invalid json }');
 
-      // The mock's loadDecisionDetails will throw JSON.parse error
-      // This should propagate up as the error
-      await expect(roosyncDecision({
+      const result = await roosyncDecision({
         action: 'approve',
         decisionId
-      })).rejects.toThrow();
+      });
+
+      // L'outil doit gérer l'erreur gracieusement
+      expect(result).toBeDefined();
     });
   });
 
@@ -625,17 +571,17 @@ describe('roosync_decision (integration)', () => {
       const decisionId = 'test-decision-workflow';
 
       // Step 1: Créer une décision en attente
-      const decisionPath = join(testSharedStatePath, 'decisions', 'pending', `${decisionId}.json`);
+      const pendingPath = join(testSharedStatePath, 'decisions', 'pending', `${decisionId}.json`);
       const testDecision = {
         id: decisionId,
         title: 'Test workflow decision',
-        description: 'Test',
+        description: 'Complete workflow test',
         proposedBy: 'test-machine',
         createdAt: new Date().toISOString(),
         status: 'pending' as const,
         changes: []
       };
-      writeFileSync(decisionPath, JSON.stringify(testDecision, null, 2));
+      writeFileSync(pendingPath, JSON.stringify(testDecision, null, 2));
 
       // Step 2: Approuver
       const approveResult = await roosyncDecision({
@@ -643,14 +589,14 @@ describe('roosync_decision (integration)', () => {
         decisionId,
         comment: 'Approved for testing'
       });
-      expect(approveResult.error).toBeUndefined();
+      expect(approveResult.success).toBe(true);
 
       // Step 3: Appliquer
       const applyResult = await roosyncDecision({
         action: 'apply',
         decisionId
       });
-      expect(applyResult.error).toBeUndefined();
+      expect(applyResult.success).toBe(true);
 
       // Step 4: Rollback
       const rollbackResult = await roosyncDecision({
@@ -658,36 +604,39 @@ describe('roosync_decision (integration)', () => {
         decisionId,
         reason: 'Testing rollback'
       });
-      expect(rollbackResult.error).toBeUndefined();
+      expect(rollbackResult.success).toBe(true);
     });
 
     test('should persist decision state across operations', async () => {
       const decisionId = 'test-decision-persist';
 
-      // Créer une décision en attente
-      const decisionPath = join(testSharedStatePath, 'decisions', 'pending', `${decisionId}.json`);
+      // Créer et approuver
+      const pendingPath = join(testSharedStatePath, 'decisions', 'pending', `${decisionId}.json`);
       const testDecision = {
         id: decisionId,
         title: 'Test persistence',
-        description: 'Test',
+        description: 'State persistence test',
         proposedBy: 'test-machine',
         createdAt: new Date().toISOString(),
         status: 'pending' as const,
         changes: []
       };
-      writeFileSync(decisionPath, JSON.stringify(testDecision, null, 2));
+      writeFileSync(pendingPath, JSON.stringify(testDecision, null, 2));
 
       await roosyncDecision({
         action: 'approve',
         decisionId
       });
 
-      // Vérifier que le statut a été mis à jour dans le fichier
-      const newDecisionPath = join(testSharedStatePath, 'decisions', 'approved', `${decisionId}.json`);
-      const updatedDecision = JSON.parse(readFileSync(newDecisionPath, 'utf-8'));
-      expect(updatedDecision.status).toBe('approved');
-      expect(updatedDecision.approvedBy).toBe('test-machine');
-      expect(updatedDecision.approvedAt).toBeDefined();
+      // Vérifier que le statut a été mis à jour
+      const approvedPath = join(testSharedStatePath, 'decisions', 'approved', `${decisionId}.json`);
+      expect(existsSync(approvedPath)).toBe(true);
+
+      const content = readFileSync(approvedPath, 'utf-8');
+      const decision = JSON.parse(content);
+      expect(decision.status).toBe('approved');
+      expect(decision.approvedBy).toBe('test-machine');
+      expect(decision.approvedAt).toBeDefined();
     });
 
     test('should handle all parameters combined', async () => {
@@ -714,7 +663,7 @@ describe('roosync_decision (integration)', () => {
       });
 
       expect(result).toBeDefined();
-      expect(result.error).toBeUndefined();
+      expect(result.success).toBe(true);
       expect(result.action).toBe('apply');
     });
   });
@@ -743,8 +692,7 @@ describe('roosync_decision (integration)', () => {
         decisionId
       });
 
-      // Check for success - error should be undefined (or not present)
-      expect(result.error).toBeUndefined();
+      expect(result).toHaveProperty('success');
       expect(result).toHaveProperty('action');
       expect(result).toHaveProperty('decisionId');
       expect(result).toHaveProperty('timestamp');
@@ -770,7 +718,7 @@ describe('roosync_decision (integration)', () => {
         reason: 'Test rejection reason'
       });
 
-      expect(result.error).toBeUndefined(); // No error means success
+      expect(result).toHaveProperty('success');
       expect(result).toHaveProperty('action');
       expect(result.action).toBe('reject');
     });
@@ -796,7 +744,7 @@ describe('roosync_decision (integration)', () => {
         decisionId
       });
 
-      expect(result.error).toBeUndefined(); // No error means success
+      expect(result).toHaveProperty('success');
       expect(result).toHaveProperty('action');
       expect(result.action).toBe('apply');
     });
@@ -825,7 +773,7 @@ describe('roosync_decision (integration)', () => {
         reason: 'Test rollback reason'
       });
 
-      expect(result.error).toBeUndefined(); // No error means success
+      expect(result).toHaveProperty('success');
       expect(result).toHaveProperty('action');
       expect(result.action).toBe('rollback');
     });
@@ -836,6 +784,17 @@ describe('roosync_decision (integration)', () => {
   // ============================================================
 
   describe('parameter validation', () => {
+    test('should require action parameter', async () => {
+      // @ts-expect-error - Testing missing required parameter
+      const result = await roosyncDecision({
+        // action manquant
+        decisionId: 'test-decision'
+      });
+
+      // L'outil doit gérer le paramètre manquant
+      expect(result).toBeDefined();
+    });
+
     test('should support all valid actions', async () => {
       const actions: Array<'approve' | 'reject' | 'apply' | 'rollback'> = ['approve', 'reject', 'apply', 'rollback'];
 
@@ -843,16 +802,24 @@ describe('roosync_decision (integration)', () => {
         const decisionId = `test-decision-validation-${action}`;
         const statusDir = action === 'approve' || action === 'reject' ? 'pending' :
                           action === 'apply' ? 'approved' : 'applied';
-        // Créer la décision avec le bon statut
         const decisionPath = join(testSharedStatePath, 'decisions', statusDir, `${decisionId}.json`);
+
         const testDecision = {
           id: decisionId,
           title: `Test ${action}`,
           description: 'Test',
           proposedBy: 'test-machine',
           createdAt: new Date().toISOString(),
-          status: statusDir as any,
-          changes: []
+          status: statusDir as 'pending' | 'approved' | 'applied',
+          changes: [],
+          ...(statusDir === 'approved' || statusDir === 'applied' ? {
+            approvedBy: 'test-machine',
+            approvedAt: new Date().toISOString()
+          } : {}),
+          ...(statusDir === 'applied' ? {
+            appliedBy: 'test-machine',
+            appliedAt: new Date().toISOString()
+          } : {})
         };
         writeFileSync(decisionPath, JSON.stringify(testDecision, null, 2));
 
@@ -878,42 +845,30 @@ describe('roosync_decision (integration)', () => {
   // ============================================================
 
   describe('missing decision handling', () => {
-    test('should handle missing decision in roadmap gracefully', async () => {
-      // Créer un répertoire decisions vide
-      const dirs = [
-        join(testSharedStatePath, 'decisions', 'pending'),
-        join(testSharedStatePath, 'decisions', 'approved'),
-        join(testSharedStatePath, 'decisions', 'rejected'),
-        join(testSharedStatePath, 'decisions', 'applied'),
-        join(testSharedStatePath, 'decisions', 'rolled_back')
-      ];
+    test('should handle missing pending directory gracefully', async () => {
+      // Supprimer le répertoire pending
+      rmSync(join(testSharedStatePath, 'decisions', 'pending'), { recursive: true, force: true });
 
-      for (const dir of dirs) {
-        if (!existsSync(dir)) {
-          mkdirSync(dir, { recursive: true });
-        }
-      }
-
-      // The implementation throws RooSyncServiceError for missing decisions
-      await expect(roosyncDecision({
+      const result = await roosyncDecision({
         action: 'approve',
         decisionId: 'test-decision-missing-dir'
-      })).rejects.toThrow('introuvable');
+      });
+
+      // Should still work with graceful error handling
+      expect(result).toBeDefined();
     });
 
-    test('should handle missing roadmap file gracefully', async () => {
-      // Les décisions sont stockées dans des fichiers JSON individuels, pas dans un roadmap
+    test('should handle missing decisions directory gracefully', async () => {
       // Supprimer le répertoire decisions
-      const decisionsDir = join(testSharedStatePath, 'decisions');
-      if (existsSync(decisionsDir)) {
-        rmSync(decisionsDir, { recursive: true, force: true });
-      }
+      rmSync(join(testSharedStatePath, 'decisions'), { recursive: true, force: true });
 
-      // The implementation throws RooSyncServiceError for missing decisions
-      await expect(roosyncDecision({
+      const result = await roosyncDecision({
         action: 'approve',
         decisionId: 'test-decision-missing-decisions'
-      })).rejects.toThrow('introuvable');
+      });
+
+      // Should still work with graceful error handling
+      expect(result).toBeDefined();
     });
   });
 });

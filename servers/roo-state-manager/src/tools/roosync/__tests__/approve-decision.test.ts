@@ -4,7 +4,8 @@
  */
 
 import { describe, test, expect, vi, beforeEach } from 'vitest';
-import { ApproveDecisionArgsSchema, ApproveDecisionResultSchema } from '../approve-decision.js';
+// Fix #636 timeout: Use static import instead of dynamic imports
+import { ApproveDecisionArgsSchema, ApproveDecisionResultSchema, roosyncApproveDecision } from '../approve-decision.js';
 
 const { mockGetConfig, mockGetDecision } = vi.hoisted(() => ({
 	mockGetConfig: vi.fn(),
@@ -73,13 +74,11 @@ describe('approve-decision', () => {
 	describe('roosyncApproveDecision', () => {
 		test('throws when decision not found', async () => {
 			mockGetDecision.mockResolvedValue(null);
-			const { roosyncApproveDecision } = await import('../approve-decision.js');
 			await expect(roosyncApproveDecision({ decisionId: 'nope' })).rejects.toThrow('introuvable');
 		});
 
 		test('throws when decision already processed', async () => {
 			mockGetDecision.mockResolvedValue({ id: 'dec-1', status: 'approved' });
-			const { roosyncApproveDecision } = await import('../approve-decision.js');
 			await expect(roosyncApproveDecision({ decisionId: 'dec-1' })).rejects.toThrow('déjà traitée');
 		});
 
@@ -89,7 +88,6 @@ describe('approve-decision', () => {
 				'<!-- DECISION_BLOCK_START -->\n**ID:** `dec-2`\n**Statut:** pending\n<!-- DECISION_BLOCK_END -->'
 			);
 
-			const { roosyncApproveDecision } = await import('../approve-decision.js');
 			const result = await roosyncApproveDecision({ decisionId: 'dec-2', comment: 'Good to go' });
 
 			expect(result.newStatus).toBe('approved');
@@ -103,7 +101,6 @@ describe('approve-decision', () => {
 			mockGetDecision.mockResolvedValue({ id: 'dec-3', status: 'pending' });
 			mockReadFileSync.mockReturnValue('# Empty roadmap\nNo decisions here');
 
-			const { roosyncApproveDecision } = await import('../approve-decision.js');
 			await expect(roosyncApproveDecision({ decisionId: 'dec-3' })).rejects.toThrow('introuvable dans sync-roadmap');
 		});
 
@@ -113,7 +110,6 @@ describe('approve-decision', () => {
 				'<!-- DECISION_BLOCK_START -->\n**ID:** `dec-4`\n**Statut:** pending\n<!-- DECISION_BLOCK_END -->'
 			);
 
-			const { roosyncApproveDecision } = await import('../approve-decision.js');
 			const result = await roosyncApproveDecision({ decisionId: 'dec-4' });
 
 			expect(result.nextSteps.length).toBeGreaterThan(0);

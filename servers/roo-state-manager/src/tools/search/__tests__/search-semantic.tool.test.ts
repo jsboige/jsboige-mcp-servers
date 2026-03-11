@@ -650,4 +650,202 @@ describe('helper functions (indirect via handler)', () => {
 		expect(parsed.results[1].chunks).toHaveLength(2);
 		expect(parsed.results[1].best_score).toBe(0.7);
 	});
+
+	// ============================================================
+	// #636 Phase 2: Temporal filters
+	// ============================================================
+
+	describe('#636 Phase 2: temporal filters', () => {
+		const setupSearchWithTimestamps = () => {
+			mockOpenAIClient.embeddings.create.mockResolvedValue({
+				data: [{ embedding: [0.1, 0.2, 0.3] }]
+			});
+			mockQdrantClient.search.mockResolvedValue([
+				{ score: 0.9, payload: { task_id: 'task-recent', content: 'recent work', host_os: 'h1', timestamp: '2026-03-10T12:00:00Z' } },
+				{ score: 0.8, payload: { task_id: 'task-mid', content: 'mid work', host_os: 'h1', timestamp: '2026-03-05T12:00:00Z' } },
+				{ score: 0.7, payload: { task_id: 'task-old', content: 'old work', host_os: 'h1', timestamp: '2026-02-20T12:00:00Z' } },
+			]);
+		};
+
+		test('filters results by start_date', async () => {
+			setupSearchWithTimestamps();
+
+			const result = await searchTasksByContentTool.handler(
+				{ search_query: 'work', start_date: '2026-03-01' },
+				makeCache(),
+				mockEnsureCache,
+				defaultFallback
+			);
+
+			const parsed = JSON.parse(getTextContent(result));
+			expect(parsed.current_machine.results_count).toBe(2);
+			expect(parsed.current_machine.temporal_filter).toBeDefined();
+			expect(parsed.current_machine.temporal_filter.pre_filter_count).toBe(3);
+			expect(parsed.current_machine.temporal_filter.post_filter_count).toBe(2);
+			// task-old (Feb 20) should be filtered out
+			const taskIds = parsed.results.map((r: any) => r.taskId);
+			expect(taskIds).not.toContain('task-old');
+			expect(taskIds).toContain('task-recent');
+			expect(taskIds).toContain('task-mid');
+		});
+
+		test('filters results by end_date', async () => {
+			setupSearchWithTimestamps();
+
+			const result = await searchTasksByContentTool.handler(
+				{ search_query: 'work', end_date: '2026-03-01' },
+				makeCache(),
+				mockEnsureCache,
+				defaultFallback
+			);
+
+			const parsed = JSON.parse(getTextContent(result));
+			expect(parsed.current_machine.results_count).toBe(1);
+			// Only task-old should remain
+			expect(parsed.results[0].taskId).toBe('task-old');
+		});
+
+		test('filters results by both start_date and end_date', async () => {
+			setupSearchWithTimestamps();
+
+			const result = await searchTasksByContentTool.handler(
+				{ search_query: 'work', start_date: '2026-03-01', end_date: '2026-03-08' },
+				makeCache(),
+				mockEnsureCache,
+				defaultFallback
+			);
+
+			const parsed = JSON.parse(getTextContent(result));
+			expect(parsed.current_machine.results_count).toBe(1);
+			expect(parsed.results[0].taskId).toBe('task-mid');
+		});
+
+		test('no temporal filter when dates not provided', async () => {
+			setupSearchWithTimestamps();
+
+			const result = await searchTasksByContentTool.handler(
+				{ search_query: 'work' },
+				makeCache(),
+				mockEnsureCache,
+				defaultFallback
+			);
+
+			const parsed = JSON.parse(getTextContent(result));
+			expect(parsed.current_machine.results_count).toBe(3);
+			expect(parsed.current_machine.temporal_filter).toBeUndefined();
+		});
+
+		test('handles ISO 8601 date format for start_date', async () => {
+			setupSearchWithTimestamps();
+
+			const result = await searchTasksByContentTool.handler(
+				{ search_query: 'work', start_date: '2026-03-06T00:00:00Z' },
+				makeCache(),
+				mockEnsureCache,
+				defaultFallback
+			);
+
+			const parsed = JSON.parse(getTextContent(result));
+			expect(parsed.current_machine.results_count).toBe(1);
+			expect(parsed.results[0].taskId).toBe('task-recent');
+		});
+
+		test('handles results with no timestamp gracefully', async () => {
+			mockOpenAIClient.embeddings.create.mockResolvedValue({
+				data: [{ embedding: [0.1, 0.2, 0.3] }]
+			});
+			mockQdrantClient.search.mockResolvedValue([
+				{ score: 0.9, payload: { task_id: 'task-no-ts', content: 'no timestamp', host_os: 'h1' } },
+				{ score: 0.8, payload: { task_id: 'task-with-ts', content: 'has ts', host_os: 'h1', timestamp: '2026-03-10T12:00:00Z' } },
+			]);
+
+			const result = await searchTasksByContentTool.handler(
+				{ search_query: 'test', start_date: '2026-03-01' },
+				makeCache(),
+				mockEnsureCache,
+				defaultFallback
+			);
+
+			const parsed = JSON.parse(getTextContent(result));
+			// Only the result with a valid timestamp in range should remain
+			expect(parsed.current_machine.results_count).toBe(1);
+			expect(parsed.results[0].taskId).toBe('task-with-ts');
+		});
+
+		test('invalid date string is ignored (no filtering)', async () => {
+			setupSearchWithTimestamps();
+
+			const result = await searchTasksByContentTool.handler(
+				{ search_query: 'work', start_date: 'not-a-date' },
+				makeCache(),
+				mockEnsureCache,
+				defaultFallback
+			);
+
+			const parsed = JSON.parse(getTextContent(result));
+			// Invalid date should be parsed as null, no filtering applied
+			expect(parsed.current_machine.results_count).toBe(3);
+		});
+	});
+
+	// ============================================================
+	// #636 Phase 2: Conversation stats enrichment
+	// ============================================================
+
+	describe('#636 Phase 2: conversation stats', () => {
+		test('enriches results with conversation stats from cache', async () => {
+			mockOpenAIClient.embeddings.create.mockResolvedValue({
+				data: [{ embedding: [0.1, 0.2, 0.3] }]
+			});
+			mockQdrantClient.search.mockResolvedValue([
+				{ score: 0.9, payload: { task_id: 'task-cached', content: 'test content', host_os: 'h1' } },
+			]);
+
+			const cache = makeCache();
+			cache.set('task-cached', {
+				taskId: 'task-cached',
+				metadata: {
+					messageCount: 42,
+					actionCount: 10,
+					totalSize: 5000,
+					lastActivity: '2026-03-10T15:00:00Z',
+					createdAt: '2026-03-10T10:00:00Z',
+					workspace: 'd:\\dev\\roo-extensions',
+				},
+				sequence: [],
+			} as any);
+
+			const result = await searchTasksByContentTool.handler(
+				{ search_query: 'test' },
+				cache,
+				mockEnsureCache,
+				defaultFallback
+			);
+
+			const parsed = JSON.parse(getTextContent(result));
+			expect(parsed.results[0].conversation_stats).toBeDefined();
+			expect(parsed.results[0].conversation_stats.total_messages).toBe(42);
+			expect(parsed.results[0].conversation_stats.workspace).toBe('d:\\dev\\roo-extensions');
+			expect(parsed.results[0].conversation_stats.last_activity).toBe('2026-03-10T15:00:00Z');
+		});
+
+		test('results without cache entry have no conversation_stats', async () => {
+			mockOpenAIClient.embeddings.create.mockResolvedValue({
+				data: [{ embedding: [0.1, 0.2, 0.3] }]
+			});
+			mockQdrantClient.search.mockResolvedValue([
+				{ score: 0.9, payload: { task_id: 'task-uncached', content: 'test', host_os: 'h1' } },
+			]);
+
+			const result = await searchTasksByContentTool.handler(
+				{ search_query: 'test' },
+				makeCache(), // empty cache
+				mockEnsureCache,
+				defaultFallback
+			);
+
+			const parsed = JSON.parse(getTextContent(result));
+			expect(parsed.results[0].conversation_stats).toBeUndefined();
+		});
+	});
 });

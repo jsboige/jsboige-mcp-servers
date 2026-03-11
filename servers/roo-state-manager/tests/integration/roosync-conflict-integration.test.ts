@@ -13,11 +13,19 @@
 
 import { describe, it, expect, beforeAll, afterAll, beforeEach, vi } from 'vitest';
 
-// Unmock fs to use real filesystem for integration tests
-vi.unmock('fs/promises');
-vi.unmock('fs');
-// Unmock RooSyncService to use real implementation (not jest.setup.js global mock)
+// Unmock RooSyncService and dependencies for real implementation
 vi.unmock('../../src/services/RooSyncService.js');
+vi.unmock('../../src/services/ConfigService.js');
+vi.unmock('../../src/services/PowerShellExecutor.js');
+vi.unmock('../../src/services/InventoryCollector.js');
+vi.unmock('../../src/services/DiffDetector.js');
+vi.unmock('../../src/services/BaselineService.js');
+vi.unmock('../../src/services/InventoryCollectorWrapper.js');
+vi.unmock('../../src/services/ConfigSharingService.js');
+vi.unmock('../../src/tools/roosync/approve-decision.js');
+vi.unmock('../../src/tools/roosync/apply-decision.js');
+vi.unmock('../../src/tools/roosync/rollback-decision.js');
+vi.unmock('../../src/tools/roosync/get-decision-details.js');
 
 import { RooSyncService } from '../../src/services/RooSyncService.js';
 import { existsSync, readFileSync, writeFileSync, mkdirSync, rmSync, unlinkSync } from 'fs';
