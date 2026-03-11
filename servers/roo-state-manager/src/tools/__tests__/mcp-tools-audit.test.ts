@@ -42,13 +42,13 @@ const TOOL_MAPPINGS: Record<string, string> = {
   'debug_analyze_task_parsing': 'conversation/debug-analyze.tool.ts',
 
   // Search/Indexing tools
-  'roosync_search': 'indexing/roosync-indexing.tool.ts',
-  'codebase_search': 'indexing/codebase-search.tool.ts',
+  'roosync_search': 'search/roosync-search.tool.ts',
+  'codebase_search': 'search/search-codebase.tool.ts',
   'roosync_indexing': 'indexing/roosync-indexing.tool.ts',
   // [REMOVED #625] search_tasks_by_content — handler removed
   'index_task_semantic': 'indexing/index-task.tool.ts',
   'reset_qdrant_collection': 'indexing/reset-collection.tool.ts',
-  'rebuild_task_index_fixed': 'indexing/rebuild-and-restart.ts',
+  'rebuild_task_index_fixed': 'rebuild-and-restart.ts',
 
   // Export tools
   'export_data': 'export/export-data.ts',

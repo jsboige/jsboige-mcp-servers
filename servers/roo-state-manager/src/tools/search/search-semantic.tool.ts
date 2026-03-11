@@ -16,6 +16,12 @@ export interface SearchTasksByContentArgs {
     diagnose_index?: boolean;
     workspace?: string;
     source?: 'roo' | 'claude-code';
+    // #636: Advanced filters
+    chunk_type?: 'message_exchange' | 'tool_interaction';
+    role?: 'user' | 'assistant';
+    tool_name?: string;
+    has_errors?: boolean;
+    model?: string;
 }
 
 /**
@@ -119,6 +125,11 @@ interface RawSearchResult {
         relative_time: string;
         message_position: string | undefined;
         host_os: string;
+        // #636: Enriched metadata
+        source: string | undefined;
+        tool_name: string | undefined;
+        model: string | undefined;
+        has_error: boolean | undefined;
     };
 }
 
@@ -129,6 +140,9 @@ interface GroupedTask {
     host_os: string;
     best_score: number;
     relevance: string;
+    // #636: Enriched task-level metadata
+    source: string | undefined;
+    model: string | undefined;
     chunks: Array<{
         score: number;
         relevance: string;
@@ -137,6 +151,9 @@ interface GroupedTask {
         role: string | undefined;
         relative_time: string;
         message_position: string | undefined;
+        // #636: Enriched chunk-level metadata
+        tool_name: string | undefined;
+        has_error: boolean | undefined;
     }>;
 }
 
@@ -157,6 +174,8 @@ function groupResultsByTask(results: RawSearchResult[]): GroupedTask[] {
                 role: r.metadata.role,
                 relative_time: r.metadata.relative_time,
                 message_position: r.metadata.message_position,
+                tool_name: r.metadata.tool_name,
+                has_error: r.metadata.has_error,
             });
             if (r.score > existing.best_score) {
                 existing.best_score = r.score;
@@ -170,6 +189,8 @@ function groupResultsByTask(results: RawSearchResult[]): GroupedTask[] {
                 host_os: r.metadata.host_os,
                 best_score: r.score,
                 relevance: r.relevance,
+                source: r.metadata.source,
+                model: r.metadata.model,
                 chunks: [{
                     score: r.score,
                     relevance: r.relevance,
@@ -178,6 +199,8 @@ function groupResultsByTask(results: RawSearchResult[]): GroupedTask[] {
                     role: r.metadata.role,
                     relative_time: r.metadata.relative_time,
                     message_position: r.metadata.message_position,
+                    tool_name: r.metadata.tool_name,
+                    has_error: r.metadata.has_error,
                 }],
             });
         }
@@ -237,7 +260,8 @@ export const searchTasksByContentTool = {
         fallbackHandler: (args: any, cache: Map<string, ConversationSkeleton>) => Promise<CallToolResult>,
         diagnoseHandler?: () => Promise<CallToolResult>
     ): Promise<CallToolResult> => {
-        const { conversation_id, search_query, max_results, diagnose_index = false, workspace, source } = args;
+        const { conversation_id, search_query, max_results, diagnose_index = false, workspace, source,
+                chunk_type, role, tool_name, has_errors, model } = args;
 
         // **FAILSAFE: Auto-rebuild cache si nécessaire avec filtre workspace**
         await ensureCacheFreshCallback({ workspace });
@@ -331,9 +355,43 @@ export const searchTasksByContentTool = {
             if (source) {
                 filterConditions.push({
                     key: "source",
-                    match: {
-                        value: source
-                    }
+                    match: { value: source }
+                });
+            }
+
+            // #636: Advanced filters
+            if (chunk_type) {
+                filterConditions.push({
+                    key: "chunk_type",
+                    match: { value: chunk_type }
+                });
+            }
+
+            if (role) {
+                filterConditions.push({
+                    key: "role",
+                    match: { value: role }
+                });
+            }
+
+            if (tool_name) {
+                filterConditions.push({
+                    key: "tool_name",
+                    match: { value: tool_name }
+                });
+            }
+
+            if (has_errors === true) {
+                filterConditions.push({
+                    key: "has_error",
+                    match: { value: true }
+                });
+            }
+
+            if (model) {
+                filterConditions.push({
+                    key: "model",
+                    match: { value: model }
                 });
             }
 
@@ -388,7 +446,12 @@ export const searchTasksByContentTool = {
                         message_position: result.payload?.message_index && result.payload?.total_messages
                             ? `${result.payload.message_index}/${result.payload.total_messages}`
                             : undefined,
-                        host_os: result.payload?.host_os || 'unknown'
+                        host_os: result.payload?.host_os || 'unknown',
+                        // #636: Enriched metadata
+                        source: result.payload?.source,
+                        tool_name: result.payload?.tool_name,
+                        model: result.payload?.model,
+                        has_error: result.payload?.has_error,
                     }
                 };
             });
