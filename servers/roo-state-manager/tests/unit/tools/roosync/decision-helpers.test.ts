@@ -9,26 +9,49 @@
 
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 
+// Define mock functions using hoisted pattern before vi.mock()
+const mockFsFunctions = vi.hoisted(() => ({
+  readFileSync: vi.fn().mockReturnValue(''),
+  writeFileSync: vi.fn(),
+  mkdirSync: vi.fn(),
+  copyFileSync: vi.fn(),
+  existsSync: vi.fn().mockReturnValue(true),
+  readdirSync: vi.fn().mockReturnValue([]),
+  appendFileSync: vi.fn(),
+  statSync: vi.fn().mockReturnValue({ isDirectory: () => true, size: 100, mtime: new Date() }),
+  unlinkSync: vi.fn()
+}));
+
+const mockParserFunctions = vi.hoisted(() => ({
+  parseRoadmapMarkdown: vi.fn().mockReturnValue([]),
+  findDecisionById: vi.fn().mockReturnValue(null)
+}));
+
+// Mock fs and parsers BEFORE any imports
 vi.unmock('fs');
+vi.mock('fs', () => ({
+  readFileSync: mockFsFunctions.readFileSync,
+  writeFileSync: mockFsFunctions.writeFileSync,
+  mkdirSync: mockFsFunctions.mkdirSync,
+  copyFileSync: mockFsFunctions.copyFileSync,
+  existsSync: mockFsFunctions.existsSync,
+  readdirSync: mockFsFunctions.readdirSync,
+  appendFileSync: mockFsFunctions.appendFileSync,
+  statSync: mockFsFunctions.statSync,
+  unlinkSync: mockFsFunctions.unlinkSync
+}));
+
+vi.mock('../../../src/utils/roosync-parsers.js', () => ({
+  parseRoadmapMarkdown: mockParserFunctions.parseRoadmapMarkdown,
+  findDecisionById: mockParserFunctions.findDecisionById
+}));
 
 describe('validateDecisionStatus', () => {
   let validateDecisionStatus: typeof import('../../../../src/tools/roosync/utils/decision-helpers.js').validateDecisionStatus;
 
   beforeEach(async () => {
     vi.resetModules();
-    // Mock fs et path pour éviter les accès disque (updateRoadmapStatus les utilise)
-    vi.doMock('fs', () => ({
-      readFileSync: vi.fn().mockReturnValue(''),
-      writeFileSync: vi.fn(),
-      mkdirSync: vi.fn(),
-      copyFileSync: vi.fn(),
-      existsSync: vi.fn().mockReturnValue(true),
-      readdirSync: vi.fn().mockReturnValue([])
-    }));
-    vi.doMock('../../../src/utils/roosync-parsers.js', () => ({
-      parseRoadmapMarkdown: vi.fn().mockReturnValue([]),
-      findDecisionById: vi.fn().mockReturnValue(null)
-    }));
+    vi.clearAllMocks();
     const module = await import('../../../../src/tools/roosync/utils/decision-helpers.js');
     validateDecisionStatus = module.validateDecisionStatus;
   });
@@ -79,14 +102,7 @@ describe('formatDecisionResult', () => {
 
   beforeEach(async () => {
     vi.resetModules();
-    vi.doMock('fs', () => ({
-      readFileSync: vi.fn().mockReturnValue(''),
-      writeFileSync: vi.fn()
-    }));
-    vi.doMock('../../../src/utils/roosync-parsers.js', () => ({
-      parseRoadmapMarkdown: vi.fn().mockReturnValue([]),
-      findDecisionById: vi.fn().mockReturnValue(null)
-    }));
+    vi.clearAllMocks();
     const module = await import('../../../../src/tools/roosync/utils/decision-helpers.js');
     formatDecisionResult = module.formatDecisionResult;
   });
@@ -148,14 +164,7 @@ describe('generateNextSteps', () => {
 
   beforeEach(async () => {
     vi.resetModules();
-    vi.doMock('fs', () => ({
-      readFileSync: vi.fn().mockReturnValue(''),
-      writeFileSync: vi.fn()
-    }));
-    vi.doMock('../../../src/utils/roosync-parsers.js', () => ({
-      parseRoadmapMarkdown: vi.fn().mockReturnValue([]),
-      findDecisionById: vi.fn().mockReturnValue(null)
-    }));
+    vi.clearAllMocks();
     const module = await import('../../../../src/tools/roosync/utils/decision-helpers.js');
     generateNextSteps = module.generateNextSteps;
   });
@@ -187,6 +196,11 @@ describe('generateNextSteps', () => {
 });
 
 describe('Interface - exports', () => {
+  beforeEach(async () => {
+    vi.resetModules();
+    vi.clearAllMocks();
+  });
+
   it('devrait exporter toutes les fonctions publiques', async () => {
     const module = await import('../../../../src/tools/roosync/utils/decision-helpers.js');
 
