@@ -2,6 +2,7 @@ import OpenAI from 'openai';
 import { StateManagerError } from '../types/errors.js';
 
 let openai: OpenAI | null = null;
+let chatOpenai: OpenAI | null = null;
 
 /**
  * Returns the embedding model name from env or default.
@@ -43,6 +44,30 @@ function getOpenAIClient(): OpenAI {
     });
   }
   return openai;
+}
+
+/**
+ * Get OpenAI-compatible client for chat/synthesis operations.
+ * Uses OPENAI_API_KEY with the standard OPENAI_BASE_URL env var (auto-supported by SDK).
+ * The OpenAI Node.js SDK automatically reads OPENAI_BASE_URL from environment.
+ * Falls back to EMBEDDING_API_KEY if OPENAI_API_KEY is not set.
+ */
+export function getChatOpenAIClient(): OpenAI {
+  if (!chatOpenai) {
+    // Use OPENAI_API_KEY for chat, fallback to EMBEDDING_API_KEY
+    const apiKey = process.env.OPENAI_API_KEY || process.env.EMBEDDING_API_KEY;
+    if (!apiKey) {
+      throw new StateManagerError(
+        'No chat API key configured. Set OPENAI_API_KEY or EMBEDDING_API_KEY.',
+        'OPENAI_API_KEY_MISSING',
+        'ChatOpenAIClient',
+        { envVar: 'OPENAI_API_KEY' }
+      );
+    }
+    // OpenAI SDK automatically reads OPENAI_BASE_URL from env
+    chatOpenai = new OpenAI({ apiKey });
+  }
+  return chatOpenai;
 }
 
 export default getOpenAIClient;

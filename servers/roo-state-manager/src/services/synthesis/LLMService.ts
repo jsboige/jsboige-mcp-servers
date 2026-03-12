@@ -14,7 +14,7 @@
  */
 
 import { ConversationAnalysis, CondensedSynthesisBatch, ContextTrace, SynthesisNarrative } from '../../models/synthesis/SynthesisModels.js';
-import getOpenAIClient from '../openai.js';
+import { getChatOpenAIClient } from '../openai.js';
 import OpenAI from 'openai';
 // CORRECTION: Utiliser la méthode native d'OpenAI pour response_format
 // L'import zodResponseFormat a été remplacé par l'utilisation directe de response_format
@@ -488,8 +488,8 @@ export class LLMService {
         const startTime = Date.now();
 
         try {
-            // Obtenir le client OpenAI configuré
-            const client = getOpenAIClient();
+            // Obtenir le client OpenAI configuré pour le chat
+            const client = getChatOpenAIClient();
             
             // Configuration de l'appel
             const openaiParams = {
