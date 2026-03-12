@@ -220,6 +220,7 @@ export class ClaudeStorageDetector {
                 metadata: {
                     ...metadata,
                     workspace,
+                    machineId: os.hostname(), // Ajouter l'identifiant de la machine
                 },
             };
         } catch (error) {
@@ -415,7 +416,15 @@ export class ClaudeStorageDetector {
         entries: ClaudeJsonlEntry[],
         projectPath: string
     ): Promise<string | undefined> {
-        // Chercher dans les métadonnées des fichiers
+        // PRIORITÉ 1: Chercher le champ cwd direct (le plus fiable)
+        for (const entry of entries) {
+            if (entry.cwd) {
+                // Normaliser le chemin (backslashes → forward slashes)
+                return entry.cwd.replace(/\\/g, '/');
+            }
+        }
+
+        // PRIORITÉ 2: Chercher dans les métadonnées des fichiers
         for (const entry of entries) {
             if (entry.metadata?.files && entry.metadata.files.length > 0) {
                 const firstFile = entry.metadata.files[0];
@@ -443,7 +452,7 @@ export class ClaudeStorageDetector {
             }
         }
 
-        // Fallback: essayer d'extraire depuis le nom du projet
+        // FALLBACK: essayer d'extraire depuis le nom du projet
         const projectName = path.basename(projectPath);
         if (projectName.startsWith('c--')) {
             return projectName.replace(/^c--/, '').replace(/-/g, '/');
@@ -471,6 +480,7 @@ export class ClaudeStorageDetector {
                 actionCount: 0,
                 totalSize,
                 dataSource: projectPath,
+                machineId: os.hostname(),
             },
         };
     }

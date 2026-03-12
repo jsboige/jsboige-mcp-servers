@@ -335,8 +335,8 @@ describe('listConversationsTool.handler', () => {
       expect(parsed[0].firstUserMessage).toBe('Initial user instruction');
     });
 
-    test('tronque le premier message à 200 caractères', async () => {
-      const longContent = 'x'.repeat(300);
+    test('tronque le premier message à 300 caractères', async () => {
+      const longContent = 'x'.repeat(400);
       const task = makeConversation('task-long') as any;
       task.sequence = [{ role: 'user', content: longContent }];
       const cache = makeCache(task);
@@ -344,7 +344,7 @@ describe('listConversationsTool.handler', () => {
       const result = await listConversationsTool.handler({}, cache);
       const parsed = JSON.parse((result.content[0] as any).text);
 
-      expect(parsed[0].firstUserMessage.length).toBeLessThanOrEqual(203); // 200 + '...'
+      expect(parsed[0].firstUserMessage.length).toBeLessThanOrEqual(303); // 300 + '...'
       expect(parsed[0].firstUserMessage).toContain('...');
     });
 

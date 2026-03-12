@@ -28,13 +28,20 @@ interface SkeletonNode {
         actionCount: number;
         totalSize: number;
         workspace?: string;
+        machineId?: string;
         qdrantIndexedAt?: string;
         dataSource?: string;
         indexingState?: any;
     };
     firstUserMessage?: string;
+    lastUserMessage?: string;
     isCompleted?: boolean;
     completionMessage?: string;
+    synthesis?: {
+        available: boolean;
+        summary?: string;
+        generatedAt?: string;
+    };
     children: SkeletonNode[];
 }
 
@@ -60,8 +67,14 @@ interface ConversationSummary {
     taskId: string;
     parentTaskId?: string;
     firstUserMessage?: string;
+    lastUserMessage?: string;
     isCompleted?: boolean;
     completionMessage?: string;
+    synthesis?: {
+        available: boolean;
+        summary?: string;
+        generatedAt?: string;
+    };
     metadata: {
         title?: string;
         lastActivity: string;
@@ -71,6 +84,7 @@ interface ConversationSummary {
         actionCount: number;
         totalSize: number;
         workspace?: string;
+        machineId?: string;
     };
     children: ConversationSummary[];
 }
@@ -83,8 +97,10 @@ function toConversationSummary(node: SkeletonNode): ConversationSummary {
         taskId: node.taskId,
         parentTaskId: node.parentTaskId,
         firstUserMessage: node.firstUserMessage,
+        lastUserMessage: node.lastUserMessage,
         isCompleted: node.isCompleted,
         completionMessage: node.completionMessage,
+        synthesis: node.synthesis,
         metadata: node.metadata,
         children: node.children.map((child: SkeletonNode) => toConversationSummary(child))
     };
@@ -261,25 +277,36 @@ export const listConversationsTool = {
             
             // Variables pour les informations à extraire
             let firstUserMessage: string | undefined = undefined;
+            let lastUserMessage: string | undefined = undefined;
             let isCompleted = false;
             let completionMessage: string | undefined = undefined;
-            
+
             // Extraire les informations de la sequence si elle existe
             if (sequence && Array.isArray(sequence)) {
-                // 1. Premier message utilisateur
+                // 1. Premier message utilisateur (augmenté de 200 à 300 caractères)
                 const firstUserMsg = sequence.find((msg: any) => msg.role === 'user');
                 if (firstUserMsg && firstUserMsg.content) {
-                    // Tronquer à 200 caractères pour éviter les messages trop longs
-                    firstUserMessage = firstUserMsg.content.length > 200
-                        ? firstUserMsg.content.substring(0, 200) + '...'
+                    firstUserMessage = firstUserMsg.content.length > 300
+                        ? firstUserMsg.content.substring(0, 300) + '...'
                         : firstUserMsg.content;
                 }
-                
-                // 2. Détecter si la conversation est terminée (dernier message de type attempt_completion)
+
+                // 2. Dernier message utilisateur (NOUVEAU - permet de voir la fin de la conversation)
+                const userMessages = sequence.filter((msg: any) => msg.role === 'user');
+                if (userMessages.length > 0) {
+                    const lastUserMsg = userMessages[userMessages.length - 1];
+                    if (lastUserMsg && lastUserMsg.content) {
+                        lastUserMessage = lastUserMsg.content.length > 200
+                            ? lastUserMsg.content.substring(0, 200) + '...'
+                            : lastUserMsg.content;
+                    }
+                }
+
+                // 3. Détecter si la conversation est terminée (dernier message de type attempt_completion)
                 const lastAssistantMessages = sequence
                     .filter((msg: any) => msg.role === 'assistant')
                     .slice(-3); // Prendre les 3 derniers messages assistant pour chercher attempt_completion
-                
+
                 for (const msg of lastAssistantMessages.reverse()) {
                     if (msg.content && Array.isArray(msg.content)) {
                         for (const content of msg.content) {
@@ -287,8 +314,8 @@ export const listConversationsTool = {
                                 isCompleted = true;
                                 const result = content.input?.result;
                                 if (result) {
-                                    completionMessage = result.length > 150
-                                        ? result.substring(0, 150) + '...'
+                                    completionMessage = result.length > 200
+                                        ? result.substring(0, 200) + '...'
                                         : result;
                                 }
                                 break;
@@ -306,8 +333,10 @@ export const listConversationsTool = {
                 parentTaskId: s.parentTaskId,
                 metadata: s.metadata,
                 firstUserMessage,
+                lastUserMessage,
                 isCompleted,
                 completionMessage,
+                synthesis: undefined, // TODO: implémenter la détection de synthèse
                 children: []
             }];
         }));

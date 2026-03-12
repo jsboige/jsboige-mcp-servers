@@ -69,6 +69,9 @@ export interface ClaudeJsonlEntry {
     /** UUID unique pour cette entrée */
     uuid: string;
 
+    /** Répertoire de travail (cwd) */
+    cwd?: string;
+
     /** Métadonnées supplémentaires */
     metadata?: {
         /** ID de la tâche/conversation */

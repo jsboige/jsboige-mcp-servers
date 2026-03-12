@@ -49,6 +49,7 @@ export interface ConversationSkeleton {
      actionCount: number;
      totalSize: number; // Taille totale de la conversation sur le disque
       workspace?: string;
+      machineId?: string; // Identifiant de la machine (hostname: myia-po-2023, etc.)
       qdrantIndexedAt?: string; // DEPRECATED - utiliser indexingState.lastIndexedAt
       dataSource?: string; // Source des données pour le debug
       parentTaskId?: string; // ID de la tâche parente pour reconstruction hiérarchique
