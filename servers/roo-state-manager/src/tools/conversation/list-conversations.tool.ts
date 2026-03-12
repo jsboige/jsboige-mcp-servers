@@ -8,6 +8,7 @@ import { SkeletonCacheService } from '../../services/skeleton-cache.service.js';
 import { normalizePath } from '../../utils/path-normalizer.js';
 import { scanDiskForNewTasks } from '../task/disk-scanner.js';
 import { ClaudeStorageDetector } from '../../utils/claude-storage-detector.js';
+import { RooStorageDetector } from '../../utils/roo-storage-detector.js';
 import { promises as fs } from 'fs';
 import path from 'path';
 import os from 'os';
@@ -104,6 +105,106 @@ function toConversationSummary(node: SkeletonNode): ConversationSummary {
         metadata: node.metadata,
         children: node.children.map((child: SkeletonNode) => toConversationSummary(child))
     };
+}
+
+/**
+ * Synthesis info returned for a task
+ */
+interface SynthesisInfo {
+    available: boolean;
+    summary?: string;
+    generatedAt?: string;
+}
+
+/**
+ * Detects if a synthesis exists for a given task
+ *
+ * @param skeleton The conversation skeleton to check
+ * @returns SynthesisInfo with availability status and summary if available
+ */
+async function detectSynthesis(skeleton: ConversationSkeleton): Promise<SynthesisInfo> {
+    try {
+        // Check if skeleton has synthesis metadata
+        const synthesisMetadata = (skeleton as any).synthesisMetadata;
+        if (!synthesisMetadata) {
+            return { available: false };
+        }
+
+        // Priority 1: Condensed batch (higher priority)
+        if (synthesisMetadata.condensedBatchPath) {
+            const summary = await readSynthesisFile(synthesisMetadata.condensedBatchPath);
+            if (summary) {
+                return {
+                    available: true,
+                    summary: truncateSummary(summary, 200),
+                    generatedAt: synthesisMetadata.lastUpdated
+                };
+            }
+        }
+
+        // Priority 2: Atomic synthesis
+        if (synthesisMetadata.analysisFilePath) {
+            const summary = await readSynthesisFile(synthesisMetadata.analysisFilePath);
+            if (summary) {
+                return {
+                    available: true,
+                    summary: truncateSummary(summary, 200),
+                    generatedAt: synthesisMetadata.lastUpdated
+                };
+            }
+        }
+
+        return { available: false };
+    } catch (error) {
+        console.warn(`[detectSynthesis] Error for ${skeleton.taskId}:`, error);
+        return { available: false };
+    }
+}
+
+/**
+ * Reads a synthesis file and extracts the summary
+ *
+ * @param filePath Path to the synthesis file (relative or absolute)
+ * @returns The summary text or null if not found/error
+ */
+async function readSynthesisFile(filePath: string): Promise<string | null> {
+    try {
+        let fullPath = filePath;
+
+        // If path is relative, resolve it against the storage location
+        if (!path.isAbsolute(filePath)) {
+            const storageLocations = await RooStorageDetector.detectStorageLocations();
+            if (storageLocations.length === 0) {
+                console.warn('[readSynthesisFile] No storage location found');
+                return null;
+            }
+
+            // Relative paths are relative to storagePath/tasks
+            const tasksDir = path.join(storageLocations[0], 'tasks');
+            fullPath = path.join(tasksDir, filePath);
+        }
+
+        const content = await fs.readFile(fullPath, 'utf-8');
+        const analysis = JSON.parse(content);
+
+        // Extract the summary (different fields for different synthesis types)
+        // For atomic synthesis: finalTaskSummary
+        // For condensed batch: batchSummary
+        return analysis.finalTaskSummary || analysis.batchSummary || null;
+    } catch (error) {
+        console.warn(`[readSynthesisFile] Error reading ${filePath}:`, error);
+        return null;
+    }
+}
+
+/**
+ * Truncates a summary to a maximum length
+ */
+function truncateSummary(summary: string, maxLength: number): string {
+    if (summary.length <= maxLength) {
+        return summary;
+    }
+    return summary.substring(0, maxLength) + '...';
 }
 
 /**
@@ -336,11 +437,29 @@ export const listConversationsTool = {
                 lastUserMessage,
                 isCompleted,
                 completionMessage,
-                synthesis: undefined, // TODO: implémenter la détection de synthèse
+                // NOTE: La synthèse sera détectée en Phase 2 (après création de skeletonMap)
                 children: []
             }];
         }));
-        
+
+        // Phase 2: Détecter les synthèses pour chaque nœud
+        // NOTE: C'est une opération asynchrone qui peut prendre du temps si beaucoup de tâches
+        const synthesisDetectionPromises: Promise<void>[] = [];
+        for (const skeleton of allSkeletons) {
+            const node = skeletonMap.get(skeleton.taskId);
+            if (node) {
+                synthesisDetectionPromises.push(
+                    detectSynthesis(skeleton).then(synthesis => {
+                        node.synthesis = synthesis;
+                    }).catch(error => {
+                        console.warn(`[list_conversations] Synthesis detection failed for ${skeleton.taskId}:`, error);
+                        node.synthesis = { available: false };
+                    })
+                );
+            }
+        }
+        await Promise.all(synthesisDetectionPromises);
+
         const forest: SkeletonNode[] = [];
 
         skeletonMap.forEach(node => {
