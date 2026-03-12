@@ -69,6 +69,11 @@ export default mergeConfig(baseConfig, defineConfig({
       'tests/unit/services/InventoryCollectorWrapper.test.ts',
       'src/tools/roosync/__tests__/inventory.integration.test.ts',
 
+      // ===== CI-excluded: SMOKE (depends on real GDrive/RooSync state) =====
+      'src/tools/roosync/__tests__/send.smoke.test.ts',
+      'src/tools/roosync/__tests__/get-status.smoke.test.ts',
+      'src/tools/roosync/__tests__/storage-management.smoke.test.ts',
+
       // ===== CI-excluded: APPDATA/GDRIVE (Windows paths + GDrive) =====
       'src/tools/roosync/__tests__/baseline.integration.test.ts',
       'src/tools/roosync/__tests__/baseline.test.ts',
