@@ -7,9 +7,8 @@
 import { describe, it, expect, beforeEach, beforeAll, vi } from 'vitest';
 
 // Mock complet du service OpenAI avec structure ConversationAnalysis - AVANT les imports pour ESM
-vi.mock('../../../src/services/openai.js', () => ({
-    __esModule: true,
-    default: vi.fn(() => ({
+const { mockOpenAIClient } = vi.hoisted(() => ({
+    mockOpenAIClient: {
         chat: {
             completions: {
                 create: vi.fn().mockResolvedValue({
@@ -79,7 +78,13 @@ vi.mock('../../../src/services/openai.js', () => ({
                 })
             }
         }
-    }))
+    }
+}));
+
+vi.mock('../../../src/services/openai.js', () => ({
+    __esModule: true,
+    default: vi.fn(() => mockOpenAIClient),
+    getChatOpenAIClient: vi.fn(() => mockOpenAIClient)
 }));
 
 import { ConversationAnalysis, CondensedSynthesisBatch } from '../../../src/models/synthesis/SynthesisModels.js';
@@ -270,19 +275,32 @@ describe('Synthesis Services - Phase 1 Structure Validation', () => {
                 orchestratorOptions
             );
 
-            // Mock du buildNarrativeContext pour �viter les appels fichiers
+            // Mock du buildNarrativeContext pour éviter les appels fichiers
             vi.spyOn(contextBuilder, 'buildNarrativeContext').mockResolvedValue({
                 contextSummary: 'Test context for method validation',
                 buildTrace: { rootTaskId: 'test-task-id', previousSiblingTaskIds: [] },
                 wasCondensed: false
             });
 
+            // Mock du generateSynthesis pour éviter les appels OpenAI réels
+            vi.spyOn(llmService, 'generateSynthesis').mockResolvedValue({
+                context: { callId: 'mock-call', modelId: 'gpt-4o-mini', startTime: new Date().toISOString(), prompt: '', parameters: {}, metadata: {} },
+                response: JSON.stringify({
+                    taskId: 'test-task-id', analysisEngineVersion: '3.0.0-phase3',
+                    analysisTimestamp: new Date().toISOString(), llmModelId: 'gpt-4o-mini',
+                    contextTrace: { rootTaskId: 'test-task-id', previousSiblingTaskIds: [] },
+                    objectives: { primary_goal: 'Mock' }, strategy: { approach: 'Mock' },
+                    quality: { completeness_score: 0.9 },
+                    metrics: { contextLength: 100, wasCondensed: false },
+                    synthesis: { initialContextSummary: 'Mock', finalTaskSummary: 'Mock' }
+                }),
+                endTime: new Date().toISOString(), duration: 100,
+                usage: { promptTokens: 50, completionTokens: 25, totalTokens: 75, estimatedCost: 0.001 },
+                fromCache: false
+            });
+
             // Phase 2: Les méthodes fonctionnent et retournent des résultats
             const result = await orchestrator.synthesizeConversation('test-task-id');
-
-            if (result.analysisEngineVersion === '3.0.0-phase3-error') {
-                console.error('DEBUG FAILURE:', JSON.stringify(result.metrics, null, 2));
-            }
 
             // Validation que la méthode fonctionne et retourne une ConversationAnalysis
             expect(result).toBeDefined();
@@ -348,11 +366,29 @@ describe('Synthesis Services - Phase 1 Structure Validation', () => {
                 llmService,
                 orchestratorOptions
             );
+
+            // Mock generateSynthesis to avoid real OpenAI calls (getChatOpenAIClient mock
+            // may not intercept properly in all vitest ESM resolution scenarios)
+            vi.spyOn(llmService, 'generateSynthesis').mockResolvedValue({
+                context: { callId: 'mock-call', modelId: 'gpt-4o-mini', startTime: new Date().toISOString(), prompt: '', parameters: {}, metadata: {} },
+                response: JSON.stringify({
+                    taskId: 'mock-task-id', analysisEngineVersion: '3.0.0-phase3',
+                    analysisTimestamp: new Date().toISOString(), llmModelId: 'gpt-4o-mini',
+                    contextTrace: { rootTaskId: 'mock-root', previousSiblingTaskIds: [] },
+                    objectives: { primary_goal: 'Mock' }, strategy: { approach: 'Mock' },
+                    quality: { completeness_score: 0.9 },
+                    metrics: { contextLength: 100, wasCondensed: false },
+                    synthesis: { initialContextSummary: 'Mock', finalTaskSummary: 'Mock' }
+                }),
+                endTime: new Date().toISOString(), duration: 100,
+                usage: { promptTokens: 50, completionTokens: 25, totalTokens: 75, estimatedCost: 0.001 },
+                fromCache: false
+            });
         });
 
         describe('Pipeline Integration', () => {
             it('should execute synthesizeConversation without throwing (Phase 2)', async () => {
-                // Mock des m?thodes internes pour ?viter les appels r?els aux fichiers
+                // Mock des méthodes internes pour éviter les appels réels aux fichiers
                 const mockBuildNarrativeContext = vi.spyOn(contextBuilder, 'buildNarrativeContext')
                     .mockResolvedValue({
                         contextSummary: 'Mock context summary from NarrativeContextBuilder',
@@ -366,12 +402,12 @@ describe('Synthesis Services - Phase 1 Structure Validation', () => {
 
                 const result = await orchestrator.synthesizeConversation('test-task-id');
 
-                // V?rifications de base
+                // Vérifications de base
                 expect(result).toBeDefined();
                 expect(result.taskId).toBe('test-task-id');
                 expect(result.analysisEngineVersion).toBe('3.0.0-phase3');
 
-                // V?rification que le contexte builder a bien ?t? appel?
+                // Vérification que le contexte builder a bien été appelé
                 expect(mockBuildNarrativeContext).toHaveBeenCalledWith('test-task-id', undefined);
 
                 mockBuildNarrativeContext.mockRestore();
