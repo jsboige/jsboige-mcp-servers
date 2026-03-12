@@ -7,7 +7,16 @@
  * @see docs/testing/issue-564-phase1-audit-report.md (lines 162-176)
  */
 
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
+
+// Unmock modules that jest.setup.js mocks globally.
+// Smoke tests need real filesystem and real RooSyncService (not mocks).
+vi.unmock('fs');
+vi.unmock('fs/promises');
+vi.unmock('os');
+vi.unmock('../../../services/RooSyncService.js');
+vi.unmock('../../../services/ConfigService.js');
+
 import { roosyncGetStatus } from '../get-status.js';
 import { RooSyncService } from '../../../services/RooSyncService.js';
 import * as fs from 'fs';
