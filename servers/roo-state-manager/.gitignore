@@ -74,6 +74,7 @@ test-shared-state/
 # Runtime state directories (should not be versioned)
 .roo-state-manager/
 .shared-state/
+.shared-state-test/
 
 # Backup files
 *.backup*
