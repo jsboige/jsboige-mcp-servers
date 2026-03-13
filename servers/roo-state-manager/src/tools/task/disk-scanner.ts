@@ -9,69 +9,82 @@
 import * as fs from 'fs/promises';
 import { existsSync } from 'fs';
 import * as path from 'path';
+import os from 'os';
 import { ConversationSkeleton } from '../../types/conversation.js';
 import { RooStorageDetector } from '../../utils/roo-storage-detector.js';
 
 /**
+ * Read task_metadata.json for a task (small file, ~200 bytes).
+ * Returns parsed object or empty object if unavailable.
+ */
+async function readTaskMetadata(taskPath: string): Promise<Record<string, any>> {
+    try {
+        const metaPath = path.join(taskPath, 'task_metadata.json');
+        const content = await fs.readFile(metaPath, 'utf-8');
+        return JSON.parse(content);
+    } catch {
+        return {};
+    }
+}
+
+/**
  * Quick analysis of a conversation file to create a minimal skeleton
  * without full processing overhead.
+ * Reads both ui_messages.json (for title/timestamps) and task_metadata.json
+ * (for workspace, totalSize, accurate counts).
  */
 async function quickAnalyze(
     taskId: string,
     taskPath: string
 ): Promise<ConversationSkeleton> {
+    // Read task_metadata.json for workspace, totalSize, accurate counts
+    const taskMeta = await readTaskMetadata(taskPath);
+
     const uiPath = path.join(taskPath, 'ui_messages.json');
-    
+
     try {
         const content = await fs.readFile(uiPath, 'utf-8');
         const messages = JSON.parse(content);
-        
+
         // Extract basic metadata
         const firstMessage = messages[0] || {};
         const lastMessage = messages[messages.length - 1] || {};
-        
+
         return {
             taskId,
             metadata: {
                 title: firstMessage.text?.substring(0, 100) || 'Untitled Task',
-                createdAt: new Date(firstMessage.ts || Date.now()).toISOString(),
-                lastActivity: new Date(lastMessage.ts || firstMessage.ts || Date.now()).toISOString(),
+                createdAt: taskMeta.createdAt || new Date(firstMessage.ts || Date.now()).toISOString(),
+                lastActivity: taskMeta.lastActivity || new Date(lastMessage.ts || firstMessage.ts || Date.now()).toISOString(),
                 mode: 'unknown',
-                messageCount: messages.length,
-                actionCount: 0,
-                totalSize: 0,
-                workspace: extractWorkspace(taskPath)
+                messageCount: taskMeta.messageCount || messages.length,
+                actionCount: taskMeta.actionCount || 0,
+                totalSize: taskMeta.totalSize || 0,
+                workspace: taskMeta.workspace || '',
+                machineId: os.hostname(),
             },
             parentTaskId: undefined,
             sequence: []
         };
     } catch (error) {
-        // Fallback if file can't be read
+        // Fallback if ui_messages.json can't be read
         return {
             taskId,
             metadata: {
                 title: 'Unknown Task',
-                createdAt: new Date().toISOString(),
-                lastActivity: new Date().toISOString(),
+                createdAt: taskMeta.createdAt || new Date().toISOString(),
+                lastActivity: taskMeta.lastActivity || new Date().toISOString(),
                 mode: 'unknown',
-                messageCount: 0,
-                actionCount: 0,
-                totalSize: 0,
-                workspace: extractWorkspace(taskPath)
+                messageCount: taskMeta.messageCount || 0,
+                actionCount: taskMeta.actionCount || 0,
+                totalSize: taskMeta.totalSize || 0,
+                workspace: taskMeta.workspace || '',
+                machineId: os.hostname(),
             },
             parentTaskId: undefined,
             sequence: []
         };
     }
-}
-
-/**
- * Extract workspace from task path
- */
-function extractWorkspace(taskPath: string): string {
-    // Try to read workspace from task metadata if available
-    // For now, return empty string as fallback
-    return '';
 }
 
 // --- Incremental disk scan cache ---
