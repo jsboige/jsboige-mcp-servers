@@ -1,6 +1,14 @@
 /**
+ * Archived: 2026-03-13 - Superseded by (never integrated)
+ * Reason: Phase 5 interactive features never materialized. Demo code was never imported or used.
+ * Features: 7 demo exports (phase5Configuration, sampleMessages, demonstrateInteractiveTableOfContents, demonstrateParameterTruncation, demonstrateMessageCounters, demonstrateInteractiveScript, generateCompletePhase5Demo)
+ * Status: No imports found in codebase - confirmed dead code
+ * See: README.md in this directory for details
+ */
+
+/**
  * Phase 5 Demo - Démonstration des fonctionnalités interactives
- * 
+ *
  * Ce fichier démontre l'utilisation des nouvelles fonctionnalités Phase 5 :
  * - Table des matières interactive avec compteurs visuels
  * - Troncature intelligente des paramètres d'outils
@@ -8,13 +16,13 @@
  * - Navigation par ancres avec smooth scroll
  */
 
-import { 
-    ClassifiedContent, 
+import {
+    ClassifiedContent,
     EnhancedSummaryOptions,
     TruncationOptions,
-    InteractiveToCSOptions 
-} from '../types/enhanced-conversation.js';
-import { MarkdownFormatterService } from '../services/MarkdownFormatterService.js';
+    InteractiveToCSOptions
+} from '../../types/enhanced-conversation.js';
+import { MarkdownFormatterService } from '../../services/MarkdownFormatterService.js';
 
 // ===========================
 // CONFIGURATION PHASE 5 COMPLÈTE
@@ -26,7 +34,7 @@ const phase5Configuration: EnhancedSummaryOptions = {
     outputFormat: 'html',
     includeCss: true,
     generateToc: true,
-    
+
     // Phase 5: Configuration de troncature
     truncationOptions: {
         enableTruncation: true,
@@ -39,7 +47,7 @@ const phase5Configuration: EnhancedSummaryOptions = {
         expandButtonText: "📖 Voir le contenu complet",
         collapseButtonText: "📚 Réduire"
     } as TruncationOptions,
-    
+
     // Phase 5: Configuration de table des matières interactive
     interactiveToCSOptions: {
         enableInteractiveToC: true,
@@ -53,7 +61,7 @@ const phase5Configuration: EnhancedSummaryOptions = {
         enableCollapsibleSections: true,
         sectionIcons: true
     } as InteractiveToCSOptions,
-    
+
     // Phase 5: Feature flags avancés
     enhancementFlags: {
         // Phase 4 existant
@@ -61,7 +69,7 @@ const phase5Configuration: EnhancedSummaryOptions = {
         enableResponsiveDesign: true,
         enableSyntaxHighlighting: true,
         enableAnimations: true,
-        
+
         // Phase 5 nouvelles fonctionnalités
         enableInteractiveToC: true,
         enableParameterTruncation: true,
@@ -176,26 +184,26 @@ def analyze_csv_data(file_path):
     \"\"\"
     # Lecture des données
     df = pd.read_csv(file_path)
-    
+
     # Statistiques de base
     print("=== INFORMATIONS GÉNÉRALES ===")
     print(f"Nombre de lignes: {len(df)}")
     print(f"Nombre de colonnes: {len(df.columns)}")
     print(f"\\nAperçu des données:")
     print(df.head())
-    
+
     # Analyse statistique
     print("\\n=== STATISTIQUES DESCRIPTIVES ===")
     print(df.describe())
-    
+
     # Gestion des valeurs manquantes
     print("\\n=== VALEURS MANQUANTES ===")
     missing_data = df.isnull().sum()
     print(missing_data[missing_data > 0])
-    
+
     # Visualisations
     create_visualizations(df)
-    
+
     return df
 
 def create_visualizations(df):
@@ -203,29 +211,29 @@ def create_visualizations(df):
     Crée des graphiques d'analyse
     \"\"\"
     fig, axes = plt.subplots(2, 2, figsize=(15, 12))
-    
+
     # Distribution des âges
     df['age'].hist(bins=20, ax=axes[0,0], alpha=0.7)
     axes[0,0].set_title('Distribution des âges')
     axes[0,0].set_xlabel('Âge')
     axes[0,0].set_ylabel('Fréquence')
-    
+
     # Salaires par département
     df.boxplot(column='salary', by='department', ax=axes[0,1])
     axes[0,1].set_title('Salaires par département')
-    
+
     # Évolution des embauches
     df['start_date'] = pd.to_datetime(df['start_date'])
     df['year'] = df['start_date'].dt.year
     df['year'].value_counts().sort_index().plot(kind='bar', ax=axes[1,0])
     axes[1,0].set_title('Embauches par année')
-    
+
     # Corrélation âge/salaire
     axes[1,1].scatter(df['age'], df['salary'], alpha=0.6)
     axes[1,1].set_xlabel('Âge')
     axes[1,1].set_ylabel('Salaire')
     axes[1,1].set_title('Corrélation Âge/Salaire')
-    
+
     plt.tight_layout()
     plt.savefig('analysis_results.png', dpi=300, bbox_inches='tight')
     plt.show()
@@ -233,15 +241,15 @@ def create_visualizations(df):
 if __name__ == "__main__":
     # Utilisation du script
     df = analyze_csv_data('data/sample.csv')
-    
+
     # Analyses supplémentaires
     print("\\n=== ANALYSES AVANCÉES ===")
-    
+
     # Top 10 des salaires
     top_salaries = df.nlargest(10, 'salary')
     print("\\nTop 10 des salaires:")
     print(top_salaries[['name', 'department', 'salary']])
-    
+
     # Moyenne par département
     dept_avg = df.groupby('department')['salary'].agg(['mean', 'count']).round(2)
     print("\\nMoyennes par département:")
@@ -251,7 +259,7 @@ if __name__ == "__main__":
 Ce script fournit une analyse complète incluant :
 - Lecture et validation des données
 - Statistiques descriptives
-- Détection des valeurs manquantes  
+- Détection des valeurs manquantes
 - Visualisations automatiques
 - Analyses par département
 - Export des résultats`,
@@ -271,12 +279,12 @@ Ce script fournit une analyse complète incluant :
  */
 function demonstrateInteractiveTableOfContents(): string {
     console.log('🚀 Démonstration: Table des Matières Interactive Phase 5');
-    
+
     const tableOfContents = MarkdownFormatterService.generateTableOfContents(
-        sampleMessages, 
+        sampleMessages,
         phase5Configuration.interactiveToCSOptions
     );
-    
+
     console.log('✅ Table des matières générée avec compteurs et barres de progression');
     return tableOfContents;
 }
@@ -286,7 +294,7 @@ function demonstrateInteractiveTableOfContents(): string {
  */
 function demonstrateParameterTruncation(): string {
     console.log('🚀 Démonstration: Troncature Intelligente Phase 5');
-    
+
     const longParameters = {
         query: 'SELECT * FROM users WHERE created_at > "2023-01-01" AND status = "active" AND department IN ("Engineering", "Marketing", "Sales") ORDER BY created_at DESC',
         options: {
@@ -302,12 +310,12 @@ function demonstrateParameterTruncation(): string {
             }
         }
     };
-    
+
     const truncationResult = MarkdownFormatterService.truncateToolParameters(
-        longParameters, 
+        longParameters,
         phase5Configuration.truncationOptions
     );
-    
+
     if (truncationResult.wasTruncated) {
         console.log('✅ Paramètres tronqués intelligemment');
         const toggleHtml = MarkdownFormatterService.generateTruncationToggle(
@@ -317,7 +325,7 @@ function demonstrateParameterTruncation(): string {
         );
         return toggleHtml;
     }
-    
+
     return truncationResult.content;
 }
 
@@ -326,16 +334,16 @@ function demonstrateParameterTruncation(): string {
  */
 function demonstrateMessageCounters(): any {
     console.log('🚀 Démonstration: Compteurs Visuels Phase 5');
-    
+
     const counters = MarkdownFormatterService.generateMessageCounters(sampleMessages);
-    
+
     console.log('✅ Compteurs générés:', counters);
     console.log(`- Messages utilisateur: ${counters.User}`);
     console.log(`- Messages assistant: ${counters.Assistant}`);
     console.log(`- Appels d'outils: ${counters.ToolCall}`);
     console.log(`- Résultats d'outils: ${counters.ToolResult}`);
     console.log(`- Total: ${counters.total}`);
-    
+
     return counters;
 }
 
@@ -344,16 +352,16 @@ function demonstrateMessageCounters(): any {
  */
 function demonstrateInteractiveScript(): string {
     console.log('🚀 Démonstration: JavaScript Interactif Phase 5');
-    
+
     const interactiveScript = MarkdownFormatterService.generateInteractiveScript();
-    
+
     console.log('✅ Script JavaScript généré avec:');
     console.log('  - Smooth scroll vers les sections');
-    console.log('  - Toggle pour contenu tronqué');  
+    console.log('  - Toggle pour contenu tronqué');
     console.log('  - Copy to clipboard');
     console.log('  - Recherche dans la table des matières');
     console.log('  - Highlighting actif des liens de navigation');
-    
+
     return interactiveScript;
 }
 
@@ -362,7 +370,7 @@ function demonstrateInteractiveScript(): string {
  */
 function generateCompletePhase5Demo(): string {
     console.log('🚀 Génération: Démo HTML Complète Phase 5');
-    
+
     // CSS avancé avec styles Phase 5
     // Le CSS est directement intégré dans generateAdvancedCSS
     const cssContent = '<style>' +
@@ -373,17 +381,17 @@ function generateCompletePhase5Demo(): string {
         '.tool-call { background: #fed7aa; border-left: 4px solid #ea580c; }' +
         '.tool-result { background: #e9d5ff; border-left: 4px solid #7c3aed; }' +
         '</style>';
-    
+
     // Table des matières interactive
     const tableOfContents = demonstrateInteractiveTableOfContents();
-    
+
     // Contenu des messages avec ancres
     let bodyContent = '';
     sampleMessages.forEach((message, index) => {
         const anchor = MarkdownFormatterService.generateNavigationAnchors(index, message.subType);
-        
+
         let messageHtml = '';
-        
+
         switch (message.subType) {
             case 'UserMessage':
                 messageHtml = MarkdownFormatterService.formatUserMessage(message.content);
@@ -405,13 +413,13 @@ function generateCompletePhase5Demo(): string {
             default:
                 messageHtml = `<div class="conversation-section">${message.content}</div>`;
         }
-        
+
         bodyContent += `<div id="${anchor}">\n${messageHtml}\n</div>\n`;
     });
-    
+
     // Script interactif
     const interactiveScript = demonstrateInteractiveScript();
-    
+
     // HTML final
     const finalHtml = `<!DOCTYPE html>
 <html lang="fr">
@@ -434,22 +442,22 @@ function generateCompletePhase5Demo(): string {
             <li>📋 Copy-to-clipboard automatique</li>
         </ul>
     </header>
-    
+
     ${tableOfContents}
-    
+
     <main>
         <h2>💬 Conversation Exemple</h2>
         ${bodyContent}
     </main>
-    
+
     <footer>
         <p>Generated by Roo State Manager - Phase 5 Interactive Features</p>
     </footer>
-    
+
     ${interactiveScript}
 </body>
 </html>`;
-    
+
     console.log('✅ HTML complet généré avec toutes les fonctionnalités Phase 5');
     return finalHtml;
 }
@@ -462,7 +470,7 @@ export {
     phase5Configuration,
     sampleMessages,
     demonstrateInteractiveTableOfContents,
-    demonstrateParameterTruncation,  
+    demonstrateParameterTruncation,
     demonstrateMessageCounters,
     demonstrateInteractiveScript,
     generateCompletePhase5Demo
@@ -475,9 +483,9 @@ export {
 /*
 // Pour utiliser cette démo :
 
-import { 
-    generateCompletePhase5Demo, 
-    demonstrateMessageCounters 
+import {
+    generateCompletePhase5Demo,
+    demonstrateMessageCounters
 } from './phase5-demo.js';
 
 // Générer une démo complète
