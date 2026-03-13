@@ -26,10 +26,12 @@ vi.mock('../../../utils/roo-storage-detector.js', () => ({
 // Mock fs/promises
 const mockReaddir = vi.fn();
 const mockReadFile = vi.fn();
+const mockStat = vi.fn();
 
 vi.mock('fs/promises', () => ({
     readdir: mockReaddir,
-    readFile: mockReadFile
+    readFile: mockReadFile,
+    stat: mockStat
 }));
 
 // Mock fs existsSync - return different values based on path patterns
@@ -63,10 +65,14 @@ describe('disk-scanner', () => {
             { text: 'First message content', ts: Date.now() },
             { text: 'Last message content', ts: Date.now() + 1000 }
         ]));
+        // Return unique mtime each call to force full scan (no cache hit)
+        mockStat.mockResolvedValue({ mtimeMs: Date.now() + Math.random() });
 
         // Dynamic import after mocks are set up
         const mod = await import('../disk-scanner.js');
         scanDiskForNewTasks = mod.scanDiskForNewTasks;
+        // Invalidate cache between tests to ensure clean state
+        mod.invalidateDiskScanCache();
     });
 
     // ============================================================

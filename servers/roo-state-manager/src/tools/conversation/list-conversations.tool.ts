@@ -260,8 +260,14 @@ export const listConversationsTool = {
         if (includeRoo) {
             // FIX: Scan disk for new tasks not yet in cache before listing
             // Without this, tasks created after MCP startup are invisible to list
+            // PERF: Timeout wrapper (3s) prevents disk scan from blocking list responses
+            // when filesystem is slow or contended by background VectorIndexer I/O
             try {
-                const newTasks = await scanDiskForNewTasks(conversationCache);
+                const scanPromise = scanDiskForNewTasks(conversationCache);
+                const timeoutPromise = new Promise<ConversationSkeleton[]>((_, reject) =>
+                    setTimeout(() => reject(new Error('Disk scan timeout (3s)')), 3000)
+                );
+                const newTasks = await Promise.race([scanPromise, timeoutPromise]);
                 for (const task of newTasks) {
                     conversationCache.set(task.taskId, task);
                 }
@@ -269,7 +275,7 @@ export const listConversationsTool = {
                     console.log(`📊 list_conversations: Discovered ${newTasks.length} new Roo tasks from disk`);
                 }
             } catch (scanError) {
-                console.warn('⚠️ list_conversations: Disk scan failed, using cache only:', scanError);
+                console.warn('⚠️ list_conversations: Disk scan failed or timed out, using cache only:', scanError instanceof Error ? scanError.message : scanError);
             }
 
             allSkeletons = Array.from(conversationCache.values()).filter(skeleton =>

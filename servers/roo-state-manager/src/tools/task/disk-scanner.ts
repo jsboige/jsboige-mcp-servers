@@ -74,9 +74,27 @@ function extractWorkspace(taskPath: string): string {
     return '';
 }
 
+// --- Incremental disk scan cache ---
+// Only re-scans when the tasks/ directory has actually changed (mtime check).
+// Falls back to TTL-based invalidation as safety net.
+const DISK_SCAN_CACHE_TTL = 30_000; // 30 seconds (safety net)
+let lastScanTime = 0;
+let lastScanResults: ConversationSkeleton[] | null = null;
+let lastTasksDirMtime = 0; // mtime of the tasks/ directory at last scan
+
+/**
+ * Invalidate the disk scan cache. Useful for testing or after known filesystem changes.
+ */
+export function invalidateDiskScanCache(): void {
+    lastScanTime = 0;
+    lastScanResults = null;
+    lastTasksDirMtime = 0;
+}
+
 /**
  * Scans the tasks directory for conversations that aren't in the cache yet.
- * 
+ * Uses a 30s TTL cache to avoid re-scanning 7000+ directories on every call.
+ *
  * @param existingCache - Current skeleton cache to check against
  * @param workspace - Optional workspace filter
  * @returns Array of newly discovered conversation skeletons
@@ -85,41 +103,79 @@ export async function scanDiskForNewTasks(
     existingCache: Map<string, ConversationSkeleton>,
     workspace?: string
 ): Promise<ConversationSkeleton[]> {
+    const now = Date.now();
+
+    // If we have cached scan results and TTL hasn't expired,
+    // return only entries from the cache that aren't already in existingCache
+    if (lastScanResults !== null && (now - lastScanTime) < DISK_SCAN_CACHE_TTL) {
+        const newFromCache = lastScanResults.filter(skeleton => !existingCache.has(skeleton.taskId));
+        if (workspace) {
+            return newFromCache.filter(s =>
+                !workspace || s.metadata.workspace === workspace || !s.metadata.workspace
+            );
+        }
+        return newFromCache;
+    }
+
     const storagePaths = await RooStorageDetector.detectStorageLocations();
     if (storagePaths.length === 0) {
         return [];
     }
-    
+
     const tasksDir = path.join(storagePaths[0], 'tasks');
-    
+
     try {
         if (!existsSync(tasksDir)) {
             return [];
         }
-        
+
+        // Incremental check: only re-scan if the tasks/ directory has changed.
+        // When a new subdirectory is created, the parent directory mtime updates.
+        // This avoids iterating 7000+ entries when nothing changed.
+        const dirStat = await fs.stat(tasksDir);
+        const currentMtime = dirStat.mtimeMs;
+
+        if (lastScanResults !== null && currentMtime === lastTasksDirMtime) {
+            // Directory unchanged — return cached results filtered against existingCache
+            lastScanTime = now; // refresh TTL
+            const newFromCache = lastScanResults.filter(skeleton => !existingCache.has(skeleton.taskId));
+            if (workspace) {
+                return newFromCache.filter(s =>
+                    !workspace || s.metadata.workspace === workspace || !s.metadata.workspace
+                );
+            }
+            return newFromCache;
+        }
+
+        // Directory changed or first scan — do full readdir
         const taskDirs = await fs.readdir(tasksDir);
         const newTasks: ConversationSkeleton[] = [];
-        
+
         for (const taskId of taskDirs) {
             // Skip if already in cache
             if (existingCache.has(taskId)) {
                 continue;
             }
-            
+
             const taskPath = path.join(tasksDir, taskId);
             const uiPath = path.join(taskPath, 'ui_messages.json');
-            
+
             // Check if this is a valid conversation directory
             if (existsSync(uiPath)) {
                 const skeleton = await quickAnalyze(taskId, taskPath);
-                
+
                 // Filter by workspace if specified
                 if (!workspace || skeleton.metadata.workspace === workspace || !skeleton.metadata.workspace) {
                     newTasks.push(skeleton);
                 }
             }
         }
-        
+
+        // Update cache
+        lastScanTime = now;
+        lastScanResults = newTasks;
+        lastTasksDirMtime = currentMtime;
+
         return newTasks;
     } catch (error) {
         console.error('Error scanning disk for new tasks:', error);
