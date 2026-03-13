@@ -90,74 +90,85 @@ interface ConversationSummary {
     children: ConversationSummary[];
 }
 
+/** Max children shown inline in list output */
+const MAX_CHILDREN_SHOWN = 3;
+
 /**
- * Lightweight child summary — just the essentials (taskId, snippet, messageCount, mode)
- * ~150-200 chars per child instead of ~900
+ * Strip XML wrapper tags (<user_message>, </user_message>, <task>, etc.) from message text.
+ * These are Roo internal tags that add noise to list output.
  */
-interface ChildSummary {
-    taskId: string;
-    firstUserMessage?: string;
-    messageCount: number;
-    mode?: string;
-    isCompleted?: boolean;
+function stripXmlTags(text?: string): string | undefined {
+    if (!text) return undefined;
+    return text
+        .replace(/<\/?user_message>/g, '')
+        .replace(/<\/?task>/g, '')
+        .replace(/^\s*\n/, '') // leading blank line after tag removal
+        .trim() || undefined;
 }
 
 /**
- * Convertit un SkeletonNode vers ConversationSummary
- * Applies aggressive truncation to keep list output compact:
- * - Root: firstUserMessage ≤200 chars, lastUserMessage ≤150 chars
- * - Children: lightweight format (taskId + 80-char snippet + messageCount + mode)
- * - All children shown (lightweight format is small enough)
- * - synthesis omitted when not available
+ * Convertit un SkeletonNode vers un objet JSON compact pour le list output.
+ *
+ * Compactness strategy (target: ~500 chars/root, ~100 chars/child):
+ * - Strip XML tags from messages
+ * - Root firstUserMessage ≤150 chars, lastUserMessage ≤120 chars
+ * - Skip lastUserMessage if JSON (tool calls, not human text)
+ * - Children: max 3 shown (taskId + 50-char snippet + messageCount), rest as childrenCount
+ * - Omit falsy/default values (isCompleted:false, empty strings, actionCount:0)
+ * - Omit title when redundant with firstUserMessage
+ * - synthesis only when available
  */
-function toConversationSummary(node: SkeletonNode, depth = 0): ConversationSummary {
-    // Truncate root messages
-    let firstMsg = node.firstUserMessage;
-    let lastMsg = node.lastUserMessage;
+function toConversationSummary(node: SkeletonNode, _depth = 0): Record<string, unknown> {
+    // Clean and truncate root messages
+    let firstMsg = stripXmlTags(node.firstUserMessage);
+    let lastMsg = stripXmlTags(node.lastUserMessage);
     if (firstMsg && firstMsg.length > 200) firstMsg = firstMsg.substring(0, 200) + '...';
-    if (lastMsg && lastMsg.length > 150) lastMsg = lastMsg.substring(0, 150) + '...';
+    if (lastMsg && lastMsg.length > 200) lastMsg = lastMsg.substring(0, 200) + '...';
 
-    // Children as lightweight summaries — all included since they're tiny now
-    const childSummaries: ChildSummary[] = node.children.map((child: SkeletonNode) => {
-        let childMsg = child.firstUserMessage;
-        if (childMsg && childMsg.length > 80) childMsg = childMsg.substring(0, 80) + '...';
-        return {
-            taskId: child.taskId,
-            firstUserMessage: childMsg || undefined,
-            messageCount: child.metadata.messageCount,
-            mode: child.metadata.mode,
-            isCompleted: child.isCompleted,
-        };
-    });
+    // Build summary — always include key fields for readability
+    const summary: Record<string, unknown> = { taskId: node.taskId };
+    if (node.parentTaskId) summary.parentTaskId = node.parentTaskId;
+    if (firstMsg) summary.firstUserMessage = firstMsg;
+    if (lastMsg) summary.lastUserMessage = lastMsg;
+    summary.isCompleted = node.isCompleted || false;
+    if (node.completionMessage) summary.completionMessage = node.completionMessage;
+    if (node.synthesis?.available) summary.synthesis = node.synthesis;
 
-    const summary: ConversationSummary = {
-        taskId: node.taskId,
-        parentTaskId: node.parentTaskId,
-        firstUserMessage: firstMsg,
-        lastUserMessage: lastMsg,
-        isCompleted: node.isCompleted,
-        metadata: {
-            title: node.metadata.title,
-            createdAt: node.metadata.createdAt,
-            lastActivity: node.metadata.lastActivity,
-            mode: node.metadata.mode,
-            messageCount: node.metadata.messageCount,
-            actionCount: node.metadata.actionCount,
-            totalSize: node.metadata.totalSize,
-            workspace: node.metadata.workspace,
-            machineId: node.metadata.machineId,
-        },
-        children: childSummaries as any,
+    // Metadata — omit noise (actionCount) but keep useful fields
+    const meta: Record<string, unknown> = {
+        createdAt: node.metadata.createdAt,
+        lastActivity: node.metadata.lastActivity,
+        messageCount: node.metadata.messageCount,
     };
-
-    // Only include synthesis when available
-    if (node.synthesis?.available) {
-        summary.synthesis = node.synthesis;
+    if (node.metadata.totalSize) meta.totalSize = node.metadata.totalSize;
+    if (node.metadata.workspace) meta.workspace = node.metadata.workspace;
+    if (node.metadata.machineId) meta.machineId = node.metadata.machineId;
+    if (node.metadata.mode) meta.mode = node.metadata.mode;
+    // Always include title as main snippet. When firstUserMessage also exists,
+    // skip title if it's just a prefix of firstUserMessage (redundant).
+    if (node.metadata.title) {
+        let title = node.metadata.title;
+        if (title.length > 200) title = title.substring(0, 200) + '...';
+        const titleRedundant = firstMsg && firstMsg.startsWith(title.substring(0, Math.min(50, title.length)));
+        if (!titleRedundant) {
+            meta.title = title;
+        }
     }
+    summary.metadata = meta;
 
-    // Only include completionMessage if present
-    if (node.completionMessage) {
-        summary.completionMessage = node.completionMessage;
+    // Children: show first N as compact objects, rest as childrenCount
+    if (node.children.length > 0) {
+        const shown = node.children.slice(0, MAX_CHILDREN_SHOWN).map((child: SkeletonNode) => {
+            let childMsg = stripXmlTags(child.firstUserMessage) || child.metadata.title;
+            if (childMsg && childMsg.length > 100) childMsg = childMsg.substring(0, 100) + '...';
+            const c: Record<string, unknown> = { taskId: child.taskId, messageCount: child.metadata.messageCount };
+            if (childMsg) c.firstUserMessage = childMsg;
+            if (child.metadata.mode) c.mode = child.metadata.mode;
+            c.isCompleted = child.isCompleted || false;
+            return c;
+        });
+        summary.children = shown;
+        summary.childrenCount = node.children.length;
     }
 
     return summary;
@@ -498,7 +509,20 @@ export const listConversationsTool = {
                     }
                 }
             }
-            
+
+            // Fallback: promote metadata.title to firstUserMessage when sequence is empty/absent
+            // This covers Roo tasks loaded via quickAnalyze (sequence: []) where title IS
+            // the first user message truncated to ~100 chars from the cache
+            if (!firstUserMessage && s.metadata.title) {
+                firstUserMessage = s.metadata.title;
+            }
+
+            // Deduplicate: skip lastUserMessage if identical to firstUserMessage
+            // (happens with Claude sessions where tail chunk finds same message as head)
+            if (lastUserMessage && lastUserMessage === firstUserMessage) {
+                lastUserMessage = undefined;
+            }
+
             // Créer explicitement un SkeletonNode avec SEULEMENT les propriétés nécessaires
             // pour éviter de copier des propriétés volumineuses ou des références circulaires
             return [s.taskId, {
@@ -550,7 +574,7 @@ export const listConversationsTool = {
         const startIdx = (page - 1) * perPage;
         const paginatedForest = forest.slice(startIdx, startIdx + perPage);
 
-        // Convertir en ConversationSummary — children use lightweight ChildSummary format
+        // Convertir en objets compacts — omit falsy fields, cap children
         const summaries = paginatedForest.map(node => toConversationSummary(node));
 
         // 📊 LOG AGRÉGÉ FINAL (remplace les logs verbeux commentés)
@@ -646,6 +670,115 @@ function extractTextFromMessage(message: ApiMessage): string {
 }
 
 /**
+ * Lightweight metadata extraction from a Claude Code JSONL session file.
+ * Reads first 16KB + last 16KB to find first/last user messages and approximate count.
+ * Much faster than full parsing — O(1) I/O per file regardless of size.
+ */
+interface ClaudeSessionMeta {
+    firstUserMessage?: string;
+    lastUserMessage?: string;
+    messageCount: number;
+}
+
+async function extractClaudeSessionMeta(filePath: string, fileSize: number): Promise<ClaudeSessionMeta> {
+    const CHUNK = 16384; // 16KB
+    const result: ClaudeSessionMeta = { messageCount: 0 };
+    let handle: import('fs/promises').FileHandle | undefined;
+
+    try {
+        handle = await fs.open(filePath, 'r');
+
+        // --- Read first chunk for first user message + cwd ---
+        const headBuf = Buffer.alloc(Math.min(CHUNK, fileSize));
+        const { bytesRead: headRead } = await handle.read(headBuf, 0, headBuf.length, 0);
+        const headText = headBuf.toString('utf-8', 0, headRead);
+        const headLines = headText.split('\n').filter(l => l.trim());
+
+        let lineCount = 0;
+        for (const line of headLines) {
+            lineCount++;
+            try {
+                const entry = JSON.parse(line);
+                // Claude Code JSONL format: type="user" with message.content (string or array)
+                if (entry.type === 'user' && entry.message) {
+                    const text = extractClaudeMessageText(entry.message.content);
+                    if (text && text.length > 0) {
+                        result.firstUserMessage = text.length > 300
+                            ? text.substring(0, 300) + '...'
+                            : text;
+                        break;
+                    }
+                }
+            } catch { /* skip malformed lines */ }
+        }
+
+        // --- Read last chunk for last user message ---
+        if (fileSize > CHUNK) {
+            const tailOffset = Math.max(0, fileSize - CHUNK);
+            const tailBuf = Buffer.alloc(Math.min(CHUNK, fileSize - tailOffset));
+            const { bytesRead: tailRead } = await handle.read(tailBuf, 0, tailBuf.length, tailOffset);
+            const tailText = tailBuf.toString('utf-8', 0, tailRead);
+            const tailLines = tailText.split('\n').filter(l => l.trim());
+            lineCount += tailLines.length;
+
+            // Scan backwards for last user message
+            for (let i = tailLines.length - 1; i >= 0; i--) {
+                try {
+                    const entry = JSON.parse(tailLines[i]);
+                    if (entry.type === 'user' && entry.message) {
+                        const text = extractClaudeMessageText(entry.message.content);
+                        if (text && text.length > 0) {
+                            result.lastUserMessage = text.length > 300
+                                ? text.substring(0, 300) + '...'
+                                : text;
+                            break;
+                        }
+                    }
+                } catch { /* skip */ }
+            }
+        }
+
+        // Estimate message count: use line count from chunks as sample,
+        // extrapolate to full file based on avg bytes/line
+        const avgBytesPerLine = Math.max(100, (CHUNK * 2) / Math.max(lineCount, 1));
+        result.messageCount = Math.max(1, Math.round(fileSize / avgBytesPerLine));
+
+    } catch {
+        // Fallback — return empty meta
+    } finally {
+        await handle?.close();
+    }
+
+    return result;
+}
+
+/**
+ * Extract text from a Claude Code message content field.
+ * Content can be a string or an array of content blocks [{type:"text", text:"..."}].
+ * Strips XML wrapper tags (<command-message>, etc.) for cleaner output.
+ */
+function extractClaudeMessageText(content: unknown): string | undefined {
+    let text: string | undefined;
+    if (typeof content === 'string') {
+        text = content;
+    } else if (Array.isArray(content)) {
+        text = content
+            .filter((c: any) => c.type === 'text' && c.text)
+            .map((c: any) => c.text)
+            .join(' ');
+    }
+    if (!text) return undefined;
+    // Strip Claude Code XML wrappers
+    text = text
+        .replace(/<\/?command-message>/g, '')
+        .replace(/<\/?command-name>/g, '')
+        .replace(/<\/?ide_selection[^>]*>/g, '')
+        .replace(/<\/?system-reminder[^>]*>[\s\S]*?<\/system-reminder>/g, '')
+        .trim();
+    return text || undefined;
+}
+
+/**
  * Extract the workspace (cwd) from the first line of a JSONL file.
  * Reads only the first 4KB to minimize I/O — one read per project, not per file.
  */
@@ -738,18 +871,24 @@ async function scanClaudeSessions(workspaceFilter?: string): Promise<Conversatio
                     const taskId = `claude-${location.projectName}--${file.replace('.jsonl', '')}`;
                     const filePath = path.join(location.projectPath, file);
 
-                    // PERF: Lightweight stat-based skeleton instead of full JSONL parsing
-                    // Avoids the O(n²) issue where analyzeConversation re-reads ALL project files
                     const fileStat = await fs.stat(filePath);
+
+                    // Derive a useful title: workspace basename + short session ID
+                    const sessionId = file.replace('.jsonl', '');
+                    const wsName = derivedWorkspace ? path.basename(derivedWorkspace) : 'unknown';
+                    const claudeTitle = `[Claude] ${wsName} — ${sessionId.substring(0, 8)}`;
+
+                    // Extract first/last user messages from JSONL (lightweight: first+last 16KB only)
+                    const sessionMeta = await extractClaudeSessionMeta(filePath, fileStat.size);
 
                     const skeleton: ConversationSkeleton = {
                         taskId,
                         sequence: [], // Content loaded on-demand via view action
                         metadata: {
-                            title: file.replace('.jsonl', '').substring(0, 80),
+                            title: claudeTitle,
                             createdAt: fileStat.birthtime.toISOString(),
                             lastActivity: fileStat.mtime.toISOString(),
-                            messageCount: 0, // Unknown without parsing
+                            messageCount: sessionMeta.messageCount,
                             actionCount: 0,
                             totalSize: fileStat.size,
                             workspace: derivedWorkspace,
@@ -757,6 +896,18 @@ async function scanClaudeSessions(workspaceFilter?: string): Promise<Conversatio
                             dataSource: 'claude',
                         },
                     };
+
+                    // Inject first/last messages into sequence for toConversationSummary
+                    if (sessionMeta.firstUserMessage || sessionMeta.lastUserMessage) {
+                        const seq: any[] = [];
+                        if (sessionMeta.firstUserMessage) {
+                            seq.push({ role: 'user', content: sessionMeta.firstUserMessage });
+                        }
+                        if (sessionMeta.lastUserMessage && sessionMeta.lastUserMessage !== sessionMeta.firstUserMessage) {
+                            seq.push({ role: 'user', content: sessionMeta.lastUserMessage });
+                        }
+                        (skeleton as any).sequence = seq;
+                    }
 
                     skeletons.push(skeleton);
                 } catch {
