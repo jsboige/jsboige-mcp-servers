@@ -10,8 +10,8 @@ const __dirname = path.dirname(__filename);
 
 // Charger .env.test en priorité (ne surcharge pas si déjà défini)
 dotenv.config({ path: path.join(__dirname, '..', '.env.test') });
-// Charger .env pour les clés manquantes (ex: API keys)
-dotenv.config({ path: path.join(__dirname, '..', '.env') });
+// Charger .env pour les clés manquantes (ex: API keys) - SANS écraser les valeurs existantes
+dotenv.config({ path: path.join(__dirname, '..', '.env'), override: false });
 
 // GLOBAL SAFETY GUARD: Redirect APPDATA to a temp directory for ALL tests.
 // This prevents any test from accidentally reading/writing the real
