@@ -83,7 +83,7 @@ interface ConversationSummary {
         mode?: string;
         messageCount: number;
         actionCount: number;
-        totalSize: number;
+        totalSize?: number;
         workspace?: string;
         machineId?: string;
     };
@@ -91,26 +91,44 @@ interface ConversationSummary {
 }
 
 /**
- * Convertit un SkeletonNode vers ConversationSummary
- * @param depth Current nesting depth (0 = top-level). Children are truncated more aggressively.
- * @param maxChildDepth Maximum depth for recursive children (default: 1 — direct children only)
+ * Lightweight child summary — just the essentials (taskId, snippet, messageCount, mode)
+ * ~150-200 chars per child instead of ~900
  */
-function toConversationSummary(node: SkeletonNode, depth = 0, maxChildDepth = 1): ConversationSummary {
-    const isChild = depth > 0;
+interface ChildSummary {
+    taskId: string;
+    firstUserMessage?: string;
+    messageCount: number;
+    mode?: string;
+    isCompleted?: boolean;
+}
 
-    // Truncate messages more aggressively for children
+/**
+ * Convertit un SkeletonNode vers ConversationSummary
+ * Applies aggressive truncation to keep list output compact:
+ * - Root: firstUserMessage ≤200 chars, lastUserMessage ≤150 chars
+ * - Children: lightweight format (taskId + 80-char snippet + messageCount + mode)
+ * - All children shown (lightweight format is small enough)
+ * - synthesis omitted when not available
+ */
+function toConversationSummary(node: SkeletonNode, depth = 0): ConversationSummary {
+    // Truncate root messages
     let firstMsg = node.firstUserMessage;
     let lastMsg = node.lastUserMessage;
-    if (isChild) {
-        if (firstMsg && firstMsg.length > 120) firstMsg = firstMsg.substring(0, 120) + '...';
-        // No lastUserMessage for children — saves space
-        lastMsg = undefined;
-    }
+    if (firstMsg && firstMsg.length > 200) firstMsg = firstMsg.substring(0, 200) + '...';
+    if (lastMsg && lastMsg.length > 150) lastMsg = lastMsg.substring(0, 150) + '...';
 
-    // Children: include direct children (depth+1) but stop at maxChildDepth
-    const childSummaries = depth < maxChildDepth
-        ? node.children.map((child: SkeletonNode) => toConversationSummary(child, depth + 1, maxChildDepth))
-        : [];
+    // Children as lightweight summaries — all included since they're tiny now
+    const childSummaries: ChildSummary[] = node.children.map((child: SkeletonNode) => {
+        let childMsg = child.firstUserMessage;
+        if (childMsg && childMsg.length > 80) childMsg = childMsg.substring(0, 80) + '...';
+        return {
+            taskId: child.taskId,
+            firstUserMessage: childMsg || undefined,
+            messageCount: child.metadata.messageCount,
+            mode: child.metadata.mode,
+            isCompleted: child.isCompleted,
+        };
+    });
 
     const summary: ConversationSummary = {
         taskId: node.taskId,
@@ -118,15 +136,28 @@ function toConversationSummary(node: SkeletonNode, depth = 0, maxChildDepth = 1)
         firstUserMessage: firstMsg,
         lastUserMessage: lastMsg,
         isCompleted: node.isCompleted,
-        completionMessage: node.completionMessage,
-        synthesis: node.synthesis,
-        metadata: node.metadata,
-        children: childSummaries,
+        metadata: {
+            title: node.metadata.title,
+            createdAt: node.metadata.createdAt,
+            lastActivity: node.metadata.lastActivity,
+            mode: node.metadata.mode,
+            messageCount: node.metadata.messageCount,
+            actionCount: node.metadata.actionCount,
+            totalSize: node.metadata.totalSize,
+            workspace: node.metadata.workspace,
+            machineId: node.metadata.machineId,
+        },
+        children: childSummaries as any,
     };
 
-    // For parents with children deeper than maxChildDepth, add a count hint
-    if (depth >= maxChildDepth && node.children.length > 0) {
-        (summary as any).childrenCount = node.children.length;
+    // Only include synthesis when available
+    if (node.synthesis?.available) {
+        summary.synthesis = node.synthesis;
+    }
+
+    // Only include completionMessage if present
+    if (node.completionMessage) {
+        summary.completionMessage = node.completionMessage;
     }
 
     return summary;
@@ -519,9 +550,8 @@ export const listConversationsTool = {
         const startIdx = (page - 1) * perPage;
         const paginatedForest = forest.slice(startIdx, startIdx + perPage);
 
-        // Convertir en ConversationSummary pour EXCLURE la propriété sequence qui contient tout le contenu
-        // Children are truncated aggressively (depth=0, maxChildDepth=1)
-        const summaries = paginatedForest.map(node => toConversationSummary(node, 0, 1));
+        // Convertir en ConversationSummary — children use lightweight ChildSummary format
+        const summaries = paginatedForest.map(node => toConversationSummary(node));
 
         // 📊 LOG AGRÉGÉ FINAL (remplace les logs verbeux commentés)
         console.log(`📊 list_conversations: Found ${allSkeletons.length} conversations (workspace filtered: ${workspaceFilteredCount}), returning page ${page}/${totalPages} (${summaries.length} of ${totalCount} top-level)`);

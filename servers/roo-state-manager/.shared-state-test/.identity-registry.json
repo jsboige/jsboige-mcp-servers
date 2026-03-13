@@ -2,15 +2,15 @@
   "identities": {
     "smoke-test-machine": {
       "machineId": "smoke-test-machine",
-      "source": "presence",
-      "firstSeen": "2026-03-13T09:34:55.721Z",
-      "lastSeen": "2026-03-13T09:34:55.718Z",
-      "status": "conflict",
+      "source": "config",
+      "firstSeen": "2026-03-13T11:06:14.087Z",
+      "lastSeen": "2026-03-13T11:06:14.087Z",
+      "status": "valid",
       "metadata": {
-        "presencePath": "D:\\roo-extensions\\mcps\\internal\\servers\\roo-state-manager\\.shared-state-test\\presence\\smoke-test-machine.json"
+        "configPath": "environment"
       }
     }
   },
-  "lastUpdated": "2026-03-13T09:34:55.723Z",
+  "lastUpdated": "2026-03-13T11:06:14.089Z",
   "version": "1.0.0"
 }
