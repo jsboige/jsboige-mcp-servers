@@ -10,10 +10,10 @@ const UUID_NAMESPACE = '6ba7b810-9dad-11d1-80b4-00c04fd430c8';
 /**
  * Maximum content size (in chars) before truncation for indexing.
  * Prevents explosion: a 30M char tool result at 800 chars/chunk = 37,500 embeddings.
- * 10,000 chars ≈ 12 chunks max, capturing the essential context without waste.
+ * 20,000 chars ≈ 25 chunks max, capturing the essential context without waste.
  * Configurable via env var for tuning.
  */
-const MAX_INDEXABLE_CONTENT_SIZE = parseInt(process.env.MAX_INDEXABLE_CONTENT_SIZE || '10000', 10);
+const MAX_INDEXABLE_CONTENT_SIZE = parseInt(process.env.MAX_INDEXABLE_CONTENT_SIZE || '20000', 10);
 
 /**
  * Truncate content to MAX_INDEXABLE_CONTENT_SIZE, preserving start and end.
