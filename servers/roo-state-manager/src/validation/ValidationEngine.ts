@@ -21,6 +21,7 @@
 import { z } from 'zod';
 import {
   DisplayPreset,
+  DisplayPresetType,
   DisplayOptions,
   ToolCategory,
   ValidationResult
@@ -209,7 +210,7 @@ export class ValidationEngine {
    * Validation d'un preset avec ses options selon la catégorie
    */
   static async validatePresetOptions(
-    preset: DisplayPreset,
+    preset: DisplayPresetType,
     options: DisplayOptions = {},
     category: ToolCategory
   ): Promise<ValidationResult> {
@@ -308,7 +309,7 @@ export class ValidationEngine {
    * Basées sur les patterns découverts dans l'audit
    */
   private static validateBusinessRules(
-    preset: DisplayPreset,
+    preset: DisplayPresetType,
     options: DisplayOptions,
     category: ToolCategory
   ): ValidationResult {
@@ -480,7 +481,7 @@ export class ValidationEngine {
    * Génération d'un rapport de validation détaillé
    */
   static async generateValidationReport(
-    preset: DisplayPreset,
+    preset: DisplayPresetType,
     options: DisplayOptions,
     category: ToolCategory
   ): Promise<{

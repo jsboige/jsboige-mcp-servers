@@ -5,7 +5,7 @@
 
 import { describe, it, expect, beforeEach } from 'vitest';
 import { ValidationEngine } from '../ValidationEngine.js';
-import { ToolCategory, DisplayPreset } from '../../interfaces/UnifiedToolInterface.js';
+import { ToolCategory, DisplayPreset, DisplayPresetType } from '../../interfaces/UnifiedToolInterface.js';
 
 describe('ValidationEngine', () => {
   describe('validatePresetOptions', () => {

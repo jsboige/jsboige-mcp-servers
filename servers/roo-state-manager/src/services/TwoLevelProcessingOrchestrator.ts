@@ -24,7 +24,8 @@ import {
   ToolCategory,
   ExecutionContext,
   CacheAntiLeakConfig,
-  DisplayPreset
+  DisplayPreset,
+  DisplayPresetType
 } from '../interfaces/UnifiedToolInterface.js';
 import { CacheAntiLeakManager } from './CacheAntiLeakManager.js';
 import { StateManagerError } from '../types/errors.js';
@@ -35,7 +36,7 @@ import { StateManagerError } from '../types/errors.js';
 interface ProcessingTask {
   id: string;
   category: ToolCategory;
-  preset?: DisplayPreset;
+  preset?: DisplayPresetType;
   toolName: string;
   methodName: string;
   args: any[];
@@ -199,7 +200,7 @@ export class TwoLevelProcessingOrchestrator {
     methodName: string,
     args: any[] = [],
     context: ExecutionContext,
-    preset?: DisplayPreset
+    preset?: DisplayPresetType
   ): Promise<ProcessingResult<T>> {
     
     // Détermination du niveau de processing selon l'audit
@@ -278,7 +279,7 @@ export class TwoLevelProcessingOrchestrator {
   private determineProcessingLevel(
     category: ToolCategory, 
     toolName: string, 
-    preset?: DisplayPreset
+    preset?: DisplayPresetType
   ): ProcessingLevel {
     
     // Règles basées sur l'audit exhaustif

@@ -14,6 +14,7 @@
 import {
   ExecutionContext,
   DisplayPreset,
+  DisplayPresetType,
   DisplayOptions,
   DisplayResult,
   ToolCategory,
@@ -53,7 +54,12 @@ interface GatewayConfig {
  * Presets intelligents couvrant 90% des cas d'usage des 32 outils
  * Basé sur l'audit exhaustif réalisé
  */
-const INTELLIGENT_PRESETS = {
+const INTELLIGENT_PRESETS: Record<DisplayPresetType, {
+  category: ToolCategory;
+  processingLevel: ProcessingLevel;
+  tools: string[];
+  defaultOptions: Record<string, any>;
+}> = {
   // QUICK_OVERVIEW : Navigation rapide + métriques essentielles (8 outils)
   [DisplayPreset.QUICK_OVERVIEW]: {
     category: ToolCategory.DISPLAY,
@@ -206,7 +212,7 @@ export class UnifiedApiGateway {
    * Implémente l'interface UnifiedToolContract
    */
   async execute(
-    preset: DisplayPreset,
+    preset: DisplayPresetType,
     options?: DisplayOptions,
     context?: ExecutionContext
   ): Promise<DisplayResult> {
@@ -258,14 +264,15 @@ export class UnifiedApiGateway {
    * Validation d'entrée selon les schémas identifiés dans l'audit
    */
   private async validateInput(
-    preset: DisplayPreset, 
+    preset: DisplayPresetType,
     options?: DisplayOptions
   ): Promise<ValidationResult> {
     // Validation basique du preset
-    if (!Object.values(DisplayPreset).includes(preset)) {
+    const validPresets = Object.values(DisplayPreset);
+    if (!validPresets.includes(preset)) {
       return {
         isValid: false,
-        errors: [`Invalid preset: ${preset}. Must be one of: ${Object.values(DisplayPreset).join(', ')}`]
+        errors: [`Invalid preset: ${preset}. Must be one of: ${validPresets.join(', ')}`]
       };
     }
 
@@ -643,5 +650,9 @@ export function createUnifiedApiGateway(config?: Partial<GatewayConfig>): Unifie
 
 /**
  * Export des presets pour utilisation externe
+ * Note: DisplayPreset is now a const object, use DisplayPresetType for type annotations
  */
 export { DisplayPreset, INTELLIGENT_PRESETS };
+
+// Re-export the type for convenience
+export type { DisplayPresetType };

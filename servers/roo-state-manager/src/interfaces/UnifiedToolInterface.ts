@@ -29,14 +29,32 @@ export enum ProcessingLevel {
 
 /**
  * Presets intelligents couvrant 90% des cas d'usage des 32 outils
+ *
+ * Architecture note: Using const object + derived type instead of enum.
+ * This eliminates the enum indirection layer and provides a cleaner API.
+ * - Values are the actual strings used throughout the codebase
+ * - Type is derived from the object using keyof typeof
+ * - Import the const for runtime values, the type for type checking
  */
-export enum DisplayPreset {
-  QUICK_OVERVIEW = 'quick',
-  DETAILED_ANALYSIS = 'detailed',
-  SEARCH_RESULTS = 'search',
-  EXPORT_FORMAT = 'export',
-  TREE_NAVIGATION = 'tree'
-}
+export const DisplayPreset = {
+  QUICK_OVERVIEW: 'quick',
+  DETAILED_ANALYSIS: 'detailed',
+  SEARCH_RESULTS: 'search',
+  EXPORT_FORMAT: 'export',
+  TREE_NAVIGATION: 'tree'
+} as const;
+
+/**
+ * Display preset type derived from the const object
+ * Use this for type annotations, DisplayPreset const for runtime values
+ */
+export type DisplayPresetType = typeof DisplayPreset[keyof typeof DisplayPreset];
+
+/**
+ * Type alias for backward compatibility during transition
+ * @deprecated Use DisplayPresetType directly
+ */
+export type DisplayPreset = DisplayPresetType;
 
 /**
  * Stratégies de cache basées sur le Cache Anti-Fuite (220GB protection)
