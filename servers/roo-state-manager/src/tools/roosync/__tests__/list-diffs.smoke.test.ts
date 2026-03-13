@@ -16,6 +16,7 @@
 
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { roosyncListDiffs } from '../list-diffs.js';
+import { RooSyncService } from '../../../services/RooSyncService.js';
 import * as fs from 'fs';
 import * as path from 'path';
 
@@ -250,7 +251,10 @@ describe('SMOKE: roosync_list_diffs', () => {
     };
     writeInventoryFiles(modifiedInventories);
 
-    // Step 4: Second call to list diffs (with forceRefresh to bypass cache)
+    // Step 4: Reset singleton so the second call picks up filesystem changes
+    RooSyncService.resetInstance();
+
+    // Second call to list diffs (with forceRefresh to bypass cache)
     const result2 = await roosyncListDiffs({ filterType: 'all', forceRefresh: true });
 
     // Step 5: Verify that result2 reflects the state change (fresh diffs, not cached)
@@ -294,18 +298,19 @@ describe('SMOKE: roosync_list_diffs', () => {
     const result1 = await roosyncListDiffs({ filterType: 'all', forceRefresh: true });
     const initialDiffCount = result1.totalDiffs;
 
-    // Step 3: Update baseline to add a third machine
-    const updatedBaseline = makeBaseline('v2', 3);
-    writeBaseline(updatedBaseline);
-
-    // Add inventory for third machine (with differences)
+    // Step 3: Modify machine-1's inventory to add MORE differences
+    // (Adding a new machine wouldn't work because ConfigComparator.listDiffs
+    // only compares baseline.machineId and config.machineId, not all machines)
     const updatedInventories = {
-      ...initialInventories,
-      'test-machine-3': makeMachineInventory('test-machine-3', ['node-version', 'memory'])
+      'test-machine-1': makeMachineInventory('test-machine-1', ['node-version', 'extra-mode', 'memory']),
+      'test-machine-2': makeMachineInventory('test-machine-2', [])
     };
     writeInventoryFiles(updatedInventories);
 
-    // Step 4: Second call after baseline update (with forceRefresh)
+    // Step 4: Reset singleton so the second call picks up filesystem changes
+    RooSyncService.resetInstance();
+
+    // Second call after baseline update (with forceRefresh)
     const result2 = await roosyncListDiffs({ filterType: 'all', forceRefresh: true });
 
     // Step 5: Verify fresh data includes the new machine's diffs

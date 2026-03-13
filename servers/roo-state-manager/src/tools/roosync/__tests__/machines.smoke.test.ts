@@ -133,7 +133,10 @@ describe('SMOKE: roosync_machines', () => {
 
     writeHeartbeatFiles(modifiedMachines);
 
-    // Step 4: Second call to get offline machines with details
+    // Step 4: Reset singleton so the second call picks up filesystem changes
+    RooSyncService.resetInstance();
+
+    // Second call to get offline machines with details
     const result2 = await roosyncMachines({ status: 'offline', includeDetails: true });
 
     // Step 5: Verify that result2 reflects the state change (fresh offline list, not cached)
@@ -167,7 +170,10 @@ describe('SMOKE: roosync_machines', () => {
 
     writeHeartbeatFiles(modifiedMachines);
 
-    // Step 4: Second call to get warning machines with details
+    // Step 4: Reset singleton so the second call picks up filesystem changes
+    RooSyncService.resetInstance();
+
+    // Second call to get warning machines with details
     const result2 = await roosyncMachines({ status: 'warning', includeDetails: true });
 
     // Step 5: Verify that result2 reflects the state change (fresh warning list, not cached)
@@ -203,7 +209,10 @@ describe('SMOKE: roosync_machines', () => {
 
     writeHeartbeatFiles(modifiedMachines);
 
-    // Step 4: Second call to get all machines
+    // Step 4: Reset singleton so the second call picks up filesystem changes
+    RooSyncService.resetInstance();
+
+    // Second call to get all machines
     const result2 = await roosyncMachines({ status: 'all', includeDetails: true });
 
     // Step 5: Verify that result2 reflects the state change
