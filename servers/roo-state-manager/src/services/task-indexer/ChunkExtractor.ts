@@ -7,6 +7,30 @@ import { StateManagerError } from '../../types/errors.js';
 // Namespace pour UUID v5 (généré aléatoirement une fois, constant pour le projet)
 const UUID_NAMESPACE = '6ba7b810-9dad-11d1-80b4-00c04fd430c8';
 
+/**
+ * Maximum content size (in chars) before truncation for indexing.
+ * Prevents explosion: a 30M char tool result at 800 chars/chunk = 37,500 embeddings.
+ * 10,000 chars ≈ 12 chunks max, capturing the essential context without waste.
+ * Configurable via env var for tuning.
+ */
+const MAX_INDEXABLE_CONTENT_SIZE = parseInt(process.env.MAX_INDEXABLE_CONTENT_SIZE || '10000', 10);
+
+/**
+ * Truncate content to MAX_INDEXABLE_CONTENT_SIZE, preserving start and end.
+ * Keeps first 70% and last 30% to capture both the beginning context and final results.
+ */
+function truncateForIndexing(content: string, source?: string): string {
+    if (content.length <= MAX_INDEXABLE_CONTENT_SIZE) return content;
+
+    const headSize = Math.floor(MAX_INDEXABLE_CONTENT_SIZE * 0.7);
+    const tailSize = MAX_INDEXABLE_CONTENT_SIZE - headSize - 80; // 80 chars for truncation marker
+    const truncationMarker = `\n\n[TRUNCATED for indexing: ${content.length} chars → ${MAX_INDEXABLE_CONTENT_SIZE}. Source: ${source || 'unknown'}]\n\n`;
+
+    console.log(`✂️ [ChunkExtractor] Truncating ${content.length} chars → ${MAX_INDEXABLE_CONTENT_SIZE} (source: ${source || 'unknown'})`);
+
+    return content.substring(0, headSize) + truncationMarker + content.substring(content.length - tailSize);
+}
+
 export interface ToolDetails {
   tool_name: string;
   parameters: any;
@@ -149,6 +173,9 @@ export async function extractChunksFromTask(taskId: string, taskPath: string): P
                 }
 
                 if (contentText.trim()) {
+                    // Truncate oversized content (e.g., large tool results) to prevent embedding explosion
+                    contentText = truncateForIndexing(contentText, `${msg.role}:msg#${messageIndex}`);
+
                     // #636: Detect error patterns in content
                     const lowerContent = contentText.toLowerCase();
                     const hasError = lowerContent.includes('error') ||
@@ -192,6 +219,11 @@ export async function extractChunksFromTask(taskId: string, taskPath: string): P
                         parsedArgs = { raw: toolCall.function.arguments };
                     }
 
+                    const toolContent = truncateForIndexing(
+                        `Tool call: ${toolCall.function.name} with args ${toolCall.function.arguments}`,
+                        `tool_call:${toolCall.function.name}`
+                    );
+
                     chunks.push({
                         chunk_id: uuidv4(),
                         task_id: taskId,
@@ -201,7 +233,7 @@ export async function extractChunksFromTask(taskId: string, taskPath: string): P
                         sequence_order: sequenceOrder++,
                         timestamp: msg.timestamp || new Date().toISOString(),
                         indexed: false,
-                        content: `Tool call: ${toolCall.function.name} with args ${toolCall.function.arguments}`,
+                        content: toolContent,
                         tool_details: {
                             tool_name: toolCall.function.name,
                             parameters: parsedArgs,
@@ -248,6 +280,8 @@ export async function extractChunksFromTask(taskId: string, taskPath: string): P
             const uiLower = (msg.text || '').toLowerCase();
             const uiHasError = uiLower.includes('error') || uiLower.includes('failed') || uiLower.includes('❌');
 
+            const uiContent = truncateForIndexing(msg.text || '', `ui_message:${msg.author}`);
+
             chunks.push({
                 chunk_id: uuidv4(),
                 task_id: taskId,
@@ -257,8 +291,8 @@ export async function extractChunksFromTask(taskId: string, taskPath: string): P
                 sequence_order: sequenceOrder++,
                 timestamp: msg.timestamp || new Date().toISOString(),
                 indexed: true,
-                content: msg.text,
-                content_summary: (msg.text || '').substring(0, 200),
+                content: uiContent,
+                content_summary: (uiContent || '').substring(0, 200),
                 participants: [msg.author === 'agent' ? 'assistant' : 'user'],
                 tool_details: null,
                 workspace: workspace,
@@ -368,6 +402,9 @@ export async function extractChunksFromClaudeSession(
                 }
 
                 if (!contentText.trim()) continue;
+
+                // Truncate oversized content to prevent embedding explosion
+                contentText = truncateForIndexing(contentText, `claude-${role}:msg#${messageIndex + 1}`);
 
                 messageIndex++;
                 // #636: Detect error patterns and extract model
