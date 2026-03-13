@@ -325,7 +325,7 @@ describe('listConversationsTool.handler', () => {
       const parsed = _response.conversations ?? _response;
 
       expect(parsed[0].taskId).toBe('orphan-task');
-      // Upstream compact format omits children when empty (no children key at all)
+      // Empty children are omitted from compact output (no children key = no children)
       expect(parsed[0].children).toBeUndefined();
     });
   });
