@@ -27,15 +27,33 @@ export async function handleDiagnoseSemanticIndex(
         const qdrant = getQdrantClient();
         diagnostics.details.qdrant_connection = 'success';
 
+        // Vérifier si la collection existe en listant toutes les collections
+        let collections;
+        let getCollectionsSucceeded = false;
         try {
-            // Vérifier si la collection existe
-            const collections = await qdrant.getCollections();
-            const collection = collections.collections.find(c => c.name === collectionName);
-            
-            if (collection) {
-                diagnostics.details.collection_exists = true;
-                
-                // Obtenir des informations sur la collection
+            collections = await qdrant.getCollections();
+            getCollectionsSucceeded = true;
+        } catch (listError: any) {
+            // getCollections a échoué → problème de connexion
+            diagnostics.status = 'connection_failed';
+            diagnostics.details.qdrant_connection = 'failed';
+            diagnostics.errors.push(`Impossible de se connecter à Qdrant: ${listError.message}`);
+            // Continue to collect OpenAI and environment info despite Qdrant failure
+            collections = null; // Mark as failed but don't return early
+        }
+
+        const collection = collections?.collections?.find(c => c.name === collectionName);
+
+        // Debug: log collection search results
+        console.log('[DEBUG] collectionName:', collectionName);
+        console.log('[DEBUG] collections:', collections);
+        console.log('[DEBUG] found collection:', collection);
+
+        if (collection) {
+            diagnostics.details.collection_exists = true;
+
+            // Obtenir des informations sur la collection
+            try {
                 const collectionInfo = await qdrant.getCollection(collectionName);
                 diagnostics.details.collection_info = {
                     vectors_count: (collectionInfo as any).vectors_count,
@@ -46,60 +64,61 @@ export async function handleDiagnoseSemanticIndex(
                         size: collectionInfo.config?.params?.vectors?.size || 'unknown',
                     },
                 };
-                
+
                 if (collectionInfo.points_count === 0) {
                     diagnostics.status = 'empty_collection';
                     diagnostics.errors.push('La collection existe mais ne contient aucun point indexé');
                 } else {
                     diagnostics.status = 'healthy';
                 }
-            } else {
-                diagnostics.details.collection_exists = false;
-                diagnostics.status = 'missing_collection';
-                diagnostics.errors.push(`La collection '${collectionName}' n'existe pas dans Qdrant`);
+            } catch (collectionInfoError: any) {
+                diagnostics.errors.push(`Erreur lors de l'accès à la collection: ${collectionInfoError.message}`);
+                diagnostics.status = 'collection_error';
             }
-        } catch (collectionError: any) {
-            diagnostics.errors.push(`Erreur lors de l'accès à la collection: ${collectionError.message}`);
-            diagnostics.status = 'collection_error';
-        }
-
-        // Test de connectivité à OpenAI
-        try {
-            const openai = getOpenAIClient();
-            const testEmbedding = await openai.embeddings.create({
-                model: getEmbeddingModel(),
-                input: 'test connectivity',
-            });
-            diagnostics.details.openai_connection = testEmbedding.data[0].embedding.length > 0 ? 'success' : 'failed';
-        } catch (openaiError: any) {
-            diagnostics.errors.push(`Erreur OpenAI: ${openaiError.message}`);
-            diagnostics.details.openai_connection = 'failed';
-        }
-
-        // Vérifier les variables d'environnement nécessaires
-        const envVars = {
-            QDRANT_URL: !!process.env.QDRANT_URL,
-            QDRANT_API_KEY: !!process.env.QDRANT_API_KEY,
-            QDRANT_COLLECTION_NAME: !!process.env.QDRANT_COLLECTION_NAME,
-            EMBEDDING_API_KEY: !!process.env.EMBEDDING_API_KEY,
-            EMBEDDING_API_BASE_URL: !!process.env.EMBEDDING_API_BASE_URL,
-            EMBEDDING_MODEL: !!process.env.EMBEDDING_MODEL,
-            EMBEDDING_DIMENSIONS: !!process.env.EMBEDDING_DIMENSIONS,
-        };
-        diagnostics.details.environment_variables = envVars;
-
-        const missingEnvVars = Object.entries(envVars)
-            .filter(([, exists]) => !exists)
-            .map(([varName]) => varName);
-        
-        if (missingEnvVars.length > 0) {
-            diagnostics.errors.push(`Variables d'environnement manquantes: ${missingEnvVars.join(', ')}`);
+        } else if (getCollectionsSucceeded) {
+            // Only set missing_collection if getCollections succeeded but collection wasn't found
+            diagnostics.details.collection_exists = false;
+            diagnostics.status = 'missing_collection';
+            diagnostics.errors.push(`La collection '${collectionName}' n'existe pas dans Qdrant`);
         }
 
     } catch (connectionError: any) {
         diagnostics.status = 'connection_failed';
         diagnostics.details.qdrant_connection = 'failed';
         diagnostics.errors.push(`Impossible de se connecter à Qdrant: ${connectionError.message}`);
+    }
+
+    // Test de connectivité à OpenAI (always run, even if Qdrant fails)
+    try {
+        const openai = getOpenAIClient();
+        const testEmbedding = await openai.embeddings.create({
+            model: getEmbeddingModel(),
+            input: 'test connectivity',
+        });
+        diagnostics.details.openai_connection = testEmbedding.data[0].embedding.length > 0 ? 'success' : 'failed';
+    } catch (openaiError: any) {
+        diagnostics.errors.push(`Erreur OpenAI: ${openaiError.message}`);
+        diagnostics.details.openai_connection = 'failed';
+    }
+
+    // Vérifier les variables d'environnement nécessaires (always run, even if Qdrant fails)
+    const envVars = {
+        QDRANT_URL: !!process.env.QDRANT_URL,
+        QDRANT_API_KEY: !!process.env.QDRANT_API_KEY,
+        QDRANT_COLLECTION_NAME: !!process.env.QDRANT_COLLECTION_NAME,
+        EMBEDDING_API_KEY: !!process.env.EMBEDDING_API_KEY,
+        EMBEDDING_API_BASE_URL: !!process.env.EMBEDDING_API_BASE_URL,
+        EMBEDDING_MODEL: !!process.env.EMBEDDING_MODEL,
+        EMBEDDING_DIMENSIONS: !!process.env.EMBEDDING_DIMENSIONS,
+    };
+    diagnostics.details.environment_variables = envVars;
+
+    const missingEnvVars = Object.entries(envVars)
+        .filter(([, exists]) => !exists)
+        .map(([varName]) => varName);
+
+    if (missingEnvVars.length > 0) {
+        diagnostics.errors.push(`Variables d'environnement manquantes: ${missingEnvVars.join(', ')}`);
     }
 
     // Recommandations basées sur le diagnostic

@@ -33,20 +33,15 @@ async function testQdrantConnection(): Promise<void> {
  */
 export function getQdrantClient(): QdrantClient {
   if (!client) {
-
-    // Test direct avec fetch avant d'initialiser le client Qdrant
-    testQdrantConnection();
-    
     const qdrantConfig = {
       url: process.env.QDRANT_URL,
       apiKey: process.env.QDRANT_API_KEY,
       port: 443, // Force HTTPS port
       checkCompatibility: false,
     };
-    
+
     client = new QdrantClient(qdrantConfig);
     console.log(`Qdrant client initialized with URL: ${process.env.QDRANT_URL}`);
-  } else {
   }
   return client;
 }
