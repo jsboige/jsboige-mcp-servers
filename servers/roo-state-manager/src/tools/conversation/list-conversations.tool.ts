@@ -285,12 +285,18 @@ export const listConversationsTool = {
 
         // Include Claude Code sessions
         if (includeClaude) {
+            // PERF: Timeout wrapper (5s) prevents Claude session scan from blocking list responses
+            // Claude sessions can be 2GB+ across 200+ JSONL files — scan must not block foreground tools
             try {
-                const claudeSkeletons = await scanClaudeSessions(args.workspace);
+                const claudePromise = scanClaudeSessions(args.workspace);
+                const claudeTimeout = new Promise<ConversationSkeleton[]>((_, reject) =>
+                    setTimeout(() => reject(new Error('Claude session scan timeout (5s)')), 5000)
+                );
+                const claudeSkeletons = await Promise.race([claudePromise, claudeTimeout]);
                 allSkeletons = allSkeletons.concat(claudeSkeletons);
                 console.log(`📊 list_conversations: Found ${claudeSkeletons.length} Claude Code sessions`);
             } catch (claudeError) {
-                console.warn('⚠️ list_conversations: Claude session scan failed:', claudeError);
+                console.warn('⚠️ list_conversations: Claude session scan failed or timed out, using Roo-only:', claudeError instanceof Error ? claudeError.message : claudeError);
             }
         }
 
@@ -565,11 +571,36 @@ function extractTextFromMessage(message: ApiMessage): string {
     return '';
 }
 
+// --- Claude session scan cache ---
+// Claude sessions are expensive to scan (2GB+, 200+ JSONL files parsed individually).
+// Cache results for 60s to avoid re-parsing on every list call.
+const CLAUDE_SCAN_CACHE_TTL = 60_000; // 60 seconds
+let lastClaudeScanTime = 0;
+let lastClaudeScanResults: ConversationSkeleton[] | null = null;
+
 /**
  * Scan Claude Code sessions from ~/.claude/projects/ and build ConversationSkeletons
- * Each conversation gets a 'claude-' prefix on its taskId to distinguish from Roo tasks
+ * Each conversation gets a 'claude-' prefix on its taskId to distinguish from Roo tasks.
+ *
+ * PERF: Uses lightweight fs.stat-based scanning instead of full JSONL parsing.
+ * Full content parsing was O(n²) — analyzeConversation re-read ALL project files for each file.
+ * Now: one stat per file, metadata from filename/stat only. Content available via view action.
  */
 async function scanClaudeSessions(workspaceFilter?: string): Promise<ConversationSkeleton[]> {
+    const now = Date.now();
+
+    // Return cached results if TTL hasn't expired
+    if (lastClaudeScanResults !== null && (now - lastClaudeScanTime) < CLAUDE_SCAN_CACHE_TTL) {
+        // Apply workspace filter on cached results
+        if (workspaceFilter) {
+            const normalizedFilter = normalizePath(workspaceFilter);
+            return lastClaudeScanResults.filter(s =>
+                s.metadata?.workspace && normalizePath(s.metadata.workspace) === normalizedFilter
+            );
+        }
+        return lastClaudeScanResults;
+    }
+
     const locations = await ClaudeStorageDetector.detectStorageLocations();
     const skeletons: ConversationSkeleton[] = [];
     const seenProjects = new Set<string>();
@@ -588,32 +619,41 @@ async function scanClaudeSessions(workspaceFilter?: string): Promise<Conversatio
                 continue;
             }
 
+            // Derive workspace from project directory name
+            // Format: d--roo-extensions → d:/roo-extensions
+            const projectName = path.basename(location.projectPath);
+            let derivedWorkspace: string | undefined;
+            const driveMatch = projectName.match(/^([a-zA-Z])--(.*)/);
+            if (driveMatch) {
+                derivedWorkspace = `${driveMatch[1].toLowerCase()}:/${driveMatch[2].replace(/-/g, '/')}`;
+            }
+
             for (const file of files) {
                 try {
-                    const taskId = `claude-${file.replace('.jsonl', '')}`;
-                    const skeleton = await ClaudeStorageDetector.analyzeConversation(
+                    const taskId = `claude-${location.projectName}--${file.replace('.jsonl', '')}`;
+                    const filePath = path.join(location.projectPath, file);
+
+                    // PERF: Lightweight stat-based skeleton instead of full JSONL parsing
+                    // Avoids the O(n²) issue where analyzeConversation re-reads ALL project files
+                    const fileStat = await fs.stat(filePath);
+
+                    const skeleton: ConversationSkeleton = {
                         taskId,
-                        location.projectPath,
-                        { maxContentLength: 200 }
-                    );
+                        sequence: [], // Content loaded on-demand via view action
+                        metadata: {
+                            title: file.replace('.jsonl', '').substring(0, 80),
+                            createdAt: fileStat.birthtime.toISOString(),
+                            lastActivity: fileStat.mtime.toISOString(),
+                            messageCount: 0, // Unknown without parsing
+                            actionCount: 0,
+                            totalSize: fileStat.size,
+                            workspace: derivedWorkspace,
+                            machineId: os.hostname(),
+                            dataSource: 'claude',
+                        },
+                    };
 
-                    if (skeleton) {
-                        // Apply workspace filter if provided
-                        if (workspaceFilter) {
-                            const normalizedFilter = normalizePath(workspaceFilter);
-                            const skeletonWs = skeleton.metadata?.workspace;
-                            if (!skeletonWs || normalizePath(skeletonWs) !== normalizedFilter) {
-                                continue;
-                            }
-                        }
-
-                        // Ensure dataSource is set for identification
-                        if (skeleton.metadata) {
-                            skeleton.metadata.dataSource = skeleton.metadata.dataSource || 'claude';
-                        }
-
-                        skeletons.push(skeleton);
-                    }
+                    skeletons.push(skeleton);
                 } catch {
                     // Skip individual file errors silently
                 }
@@ -621,6 +661,18 @@ async function scanClaudeSessions(workspaceFilter?: string): Promise<Conversatio
         } catch (err) {
             console.warn(`⚠️ scanClaudeSessions: Error scanning project ${location.projectPath}:`, err);
         }
+    }
+
+    // Update cache (before workspace filtering — cache the full set)
+    lastClaudeScanTime = now;
+    lastClaudeScanResults = skeletons;
+
+    // Apply workspace filter
+    if (workspaceFilter) {
+        const normalizedFilter = normalizePath(workspaceFilter);
+        return skeletons.filter(s =>
+            s.metadata?.workspace && normalizePath(s.metadata.workspace) === normalizedFilter
+        );
     }
 
     return skeletons;
