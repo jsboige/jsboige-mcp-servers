@@ -23,7 +23,8 @@ import * as fs from 'fs';
 import * as path from 'path';
 
 describe('SMOKE: roosync_get_status', () => {
-  const testSharedStatePath = path.join(process.cwd(), '.shared-state-test');
+  // Use unique directory per test file to avoid ENOTEMPTY cleanup errors
+  const testSharedStatePath = path.join(process.cwd(), '.shared-state-test-getstatus');
   const testDashboardPath = path.join(testSharedStatePath, 'sync-dashboard.json');
   let originalEnv: NodeJS.ProcessEnv;
 
