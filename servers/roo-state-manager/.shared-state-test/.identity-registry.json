@@ -1,0 +1,16 @@
+{
+  "identities": {
+    "smoke-test-machine": {
+      "machineId": "smoke-test-machine",
+      "source": "presence",
+      "firstSeen": "2026-03-13T09:34:55.721Z",
+      "lastSeen": "2026-03-13T09:34:55.718Z",
+      "status": "conflict",
+      "metadata": {
+        "presencePath": "D:\\roo-extensions\\mcps\\internal\\servers\\roo-state-manager\\.shared-state-test\\presence\\smoke-test-machine.json"
+      }
+    }
+  },
+  "lastUpdated": "2026-03-13T09:34:55.723Z",
+  "version": "1.0.0"
+}

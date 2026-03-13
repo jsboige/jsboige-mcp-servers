@@ -112,7 +112,8 @@ describe('list-conversations', () => {
       const text = result.content[0].text as string;
 
       expect(text).toBeDefined();
-      const parsed = JSON.parse(text);
+      const _response = JSON.parse(text);
+      const parsed = _response.conversations ?? _response;
       expect(parsed).toEqual([]);
     });
 
@@ -125,7 +126,8 @@ describe('list-conversations', () => {
 
     it('should return array structure', async () => {
       const result = await listConversationsTool.handler({}, mockConversationCache);
-      const parsed = JSON.parse(result.content[0].text as string);
+      const _response = JSON.parse(result.content[0].text as string);
+      const parsed = _response.conversations ?? _response;
 
       expect(Array.isArray(parsed)).toBe(true);
     });
@@ -163,7 +165,8 @@ describe('list-conversations', () => {
         { workspace: 'workspace-a' },
         mockCache
       );
-      const parsed = JSON.parse(result.content[0].text as string);
+      const _response = JSON.parse(result.content[0].text as string);
+      const parsed = _response.conversations ?? _response;
 
       expect(parsed).toHaveLength(1);
     });
@@ -187,7 +190,8 @@ describe('list-conversations', () => {
         { workspace: 'non-existent-workspace' },
         mockCache
       );
-      const parsed = JSON.parse(result.content[0].text as string);
+      const _response = JSON.parse(result.content[0].text as string);
+      const parsed = _response.conversations ?? _response;
 
       expect(parsed).toEqual([]);
     });
@@ -232,7 +236,8 @@ describe('list-conversations', () => {
         { sortBy: 'lastActivity' },
         mockCache
       );
-      const parsed = JSON.parse(result.content[0].text as string);
+      const _response = JSON.parse(result.content[0].text as string);
+      const parsed = _response.conversations ?? _response;
 
       // Default sortOrder is desc, so task1 (latest) should be first
       expect(parsed[0].taskId).toBe('task1');
@@ -278,7 +283,8 @@ describe('list-conversations', () => {
         { sortBy: 'messageCount', sortOrder: 'asc' },
         mockCache
       );
-      const parsed = JSON.parse(result.content[0].text as string);
+      const _response = JSON.parse(result.content[0].text as string);
+      const parsed = _response.conversations ?? _response;
 
       expect(parsed[0].taskId).toBe('task2'); // 5 messages
       expect(parsed[1].taskId).toBe('task1'); // 10 messages
@@ -323,7 +329,8 @@ describe('list-conversations', () => {
         { sortBy: 'totalSize', sortOrder: 'desc' },
         mockCache
       );
-      const parsed = JSON.parse(result.content[0].text as string);
+      const _response = JSON.parse(result.content[0].text as string);
+      const parsed = _response.conversations ?? _response;
 
       expect(parsed[0].taskId).toBe('task3'); // 2000 bytes
       expect(parsed[1].taskId).toBe('task1'); // 1000 bytes
@@ -357,7 +364,8 @@ describe('list-conversations', () => {
       ]);
 
       const result = await listConversationsTool.handler({}, mockCache);
-      const parsed = JSON.parse(result.content[0].text as string);
+      const _response = JSON.parse(result.content[0].text as string);
+      const parsed = _response.conversations ?? _response;
 
       expect(parsed[0].taskId).toBe('task2'); // Latest first
     });
@@ -390,7 +398,8 @@ describe('list-conversations', () => {
         { sortOrder: 'asc' },
         mockCache
       );
-      const parsed = JSON.parse(result.content[0].text as string);
+      const _response = JSON.parse(result.content[0].text as string);
+      const parsed = _response.conversations ?? _response;
 
       expect(parsed[0].taskId).toBe('task1'); // Oldest first
     });
@@ -416,7 +425,8 @@ describe('list-conversations', () => {
         { limit: 5 },
         mockCache
       );
-      const parsed = JSON.parse(result.content[0].text as string);
+      const _response = JSON.parse(result.content[0].text as string);
+      const parsed = _response.conversations ?? _response;
 
       expect(parsed).toHaveLength(5);
     });
@@ -437,7 +447,8 @@ describe('list-conversations', () => {
       }
 
       const result = await listConversationsTool.handler({}, mockCache);
-      const parsed = JSON.parse(result.content[0].text as string);
+      const _response = JSON.parse(result.content[0].text as string);
+      const parsed = _response.conversations ?? _response;
 
       expect(parsed).toHaveLength(5);
     });
@@ -462,7 +473,8 @@ describe('list-conversations', () => {
       ]);
 
       const result = await listConversationsTool.handler({}, mockCache);
-      const parsed = JSON.parse(result.content[0].text as string);
+      const _response = JSON.parse(result.content[0].text as string);
+      const parsed = _response.conversations ?? _response;
 
       // Should handle gracefully
       expect(Array.isArray(parsed)).toBe(true);
@@ -493,7 +505,8 @@ describe('list-conversations', () => {
       ]);
 
       const result = await listConversationsTool.handler({}, mockCache);
-      const parsed = JSON.parse(result.content[0].text as string);
+      const _response = JSON.parse(result.content[0].text as string);
+      const parsed = _response.conversations ?? _response;
 
       expect(Array.isArray(parsed)).toBe(true);
       if (parsed.length > 0) {

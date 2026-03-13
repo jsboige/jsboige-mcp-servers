@@ -640,7 +640,8 @@ describe('conversation_browser', () => {
 			);
 
 			expect(result.isError).toBeFalsy();
-			const parsed = JSON.parse(getTextContent(result));
+			const _response = JSON.parse(getTextContent(result));
+			const parsed = _response.conversations ?? _response;
 			expect(Array.isArray(parsed)).toBe(true);
 			expect(parsed.length).toBe(1);
 			expect(parsed[0].taskId).toBe('test-task-1');
@@ -701,7 +702,8 @@ describe('conversation_browser', () => {
 			);
 
 			expect(result.isError).toBeFalsy();
-			const parsed = JSON.parse(getTextContent(result));
+			const _response = JSON.parse(getTextContent(result));
+			const parsed = _response.conversations ?? _response;
 			// Should include the cached task
 			expect(parsed.some((t: any) => t.taskId === 'cached-task-1')).toBe(true);
 		});
@@ -715,7 +717,8 @@ describe('conversation_browser', () => {
 			);
 
 			expect(result.isError).toBeFalsy();
-			const parsed = JSON.parse(getTextContent(result));
+			const _response = JSON.parse(getTextContent(result));
+			const parsed = _response.conversations ?? _response;
 			expect(Array.isArray(parsed)).toBe(true);
 		});
 	});
@@ -776,7 +779,8 @@ describe('conversation_browser', () => {
 			);
 
 			expect(result.isError).toBeFalsy();
-			const parsed = JSON.parse(getTextContent(result));
+			const _response = JSON.parse(getTextContent(result));
+			const parsed = _response.conversations ?? _response;
 			expect(parsed.length).toBe(3);
 			// First should be most recent
 			expect(parsed[0].taskId).toBe('task-new');
@@ -792,7 +796,8 @@ describe('conversation_browser', () => {
 			);
 
 			expect(result.isError).toBeFalsy();
-			const parsed = JSON.parse(getTextContent(result));
+			const _response = JSON.parse(getTextContent(result));
+			const parsed = _response.conversations ?? _response;
 			expect(parsed.length).toBe(3);
 			// First should be oldest
 			expect(parsed[0].taskId).toBe('task-old');
@@ -808,7 +813,8 @@ describe('conversation_browser', () => {
 			);
 
 			expect(result.isError).toBeFalsy();
-			const parsed = JSON.parse(getTextContent(result));
+			const _response = JSON.parse(getTextContent(result));
+			const parsed = _response.conversations ?? _response;
 			expect(parsed[0].taskId).toBe('task-new'); // 10 messages
 			expect(parsed[1].taskId).toBe('task-middle'); // 7 messages
 			expect(parsed[2].taskId).toBe('task-old'); // 5 messages
@@ -822,7 +828,8 @@ describe('conversation_browser', () => {
 			);
 
 			expect(result.isError).toBeFalsy();
-			const parsed = JSON.parse(getTextContent(result));
+			const _response = JSON.parse(getTextContent(result));
+			const parsed = _response.conversations ?? _response;
 			expect(parsed.length).toBe(2);
 			expect(parsed[0].taskId).toBe('task-new');
 			expect(parsed[1].taskId).toBe('task-middle');
@@ -851,7 +858,8 @@ describe('conversation_browser', () => {
 			);
 
 			expect(result.isError).toBeFalsy();
-			const parsed = JSON.parse(getTextContent(result));
+			const _response = JSON.parse(getTextContent(result));
+			const parsed = _response.conversations ?? _response;
 			// Should only include tasks from roo-extensions
 			expect(parsed.every((t: any) => t.metadata.workspace === 'd:\\roo-extensions')).toBe(true);
 		});
@@ -890,7 +898,8 @@ describe('conversation_browser', () => {
 			// All should succeed
 			for (const result of results) {
 				expect(result.isError).toBeFalsy();
-				const parsed = JSON.parse(getTextContent(result));
+				const _response = JSON.parse(getTextContent(result));
+				const parsed = _response.conversations ?? _response;
 				expect(Array.isArray(parsed)).toBe(true);
 			}
 

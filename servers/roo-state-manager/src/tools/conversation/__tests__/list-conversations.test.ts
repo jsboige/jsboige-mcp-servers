@@ -102,7 +102,8 @@ describe('listConversationsTool.handler', () => {
     test('retourne tableau JSON vide', async () => {
       const result = await listConversationsTool.handler({}, emptyCache);
       const text = (result.content[0] as any).text;
-      const parsed = JSON.parse(text);
+      const _response = JSON.parse(text);
+      const parsed = _response.conversations ?? _response;
       expect(parsed).toEqual([]);
     });
 
@@ -137,7 +138,8 @@ describe('listConversationsTool.handler', () => {
       const cache = makeCache(task1, task2);
 
       const result = await listConversationsTool.handler({ workspace: '/workspace/alpha' }, cache);
-      const parsed = JSON.parse((result.content[0] as any).text);
+      const _response = JSON.parse((result.content[0] as any).text);
+      const parsed = _response.conversations ?? _response;
 
       expect(parsed.length).toBe(1);
       expect(parsed[0].taskId).toBe('task-ws1');
@@ -147,7 +149,8 @@ describe('listConversationsTool.handler', () => {
       const cache = makeCache(makeConversation('task-1'));
 
       const result = await listConversationsTool.handler({ workspace: '/workspace/nonexistent' }, cache);
-      const parsed = JSON.parse((result.content[0] as any).text);
+      const _response = JSON.parse((result.content[0] as any).text);
+      const parsed = _response.conversations ?? _response;
 
       expect(parsed).toEqual([]);
     });
@@ -165,7 +168,8 @@ describe('listConversationsTool.handler', () => {
 
       // Filtre avec slashes normalisés (les deux doivent matcher)
       const result = await listConversationsTool.handler({ workspace: 'C:\\workspace\\project' }, cache);
-      const parsed = JSON.parse((result.content[0] as any).text);
+      const _response = JSON.parse((result.content[0] as any).text);
+      const parsed = _response.conversations ?? _response;
 
       expect(parsed.length).toBe(1);
     });
@@ -193,7 +197,8 @@ describe('listConversationsTool.handler', () => {
       const cache = makeCache(old, recent);
 
       const result = await listConversationsTool.handler({}, cache);
-      const parsed = JSON.parse((result.content[0] as any).text);
+      const _response = JSON.parse((result.content[0] as any).text);
+      const parsed = _response.conversations ?? _response;
 
       expect(parsed[0].taskId).toBe('recent-task');
       expect(parsed[1].taskId).toBe('old-task');
@@ -205,7 +210,8 @@ describe('listConversationsTool.handler', () => {
       const cache = makeCache(recent, old);
 
       const result = await listConversationsTool.handler({ sortBy: 'lastActivity', sortOrder: 'asc' }, cache);
-      const parsed = JSON.parse((result.content[0] as any).text);
+      const _response = JSON.parse((result.content[0] as any).text);
+      const parsed = _response.conversations ?? _response;
 
       expect(parsed[0].taskId).toBe('old-task');
       expect(parsed[1].taskId).toBe('recent-task');
@@ -217,7 +223,8 @@ describe('listConversationsTool.handler', () => {
       const cache = makeCache(few, many);
 
       const result = await listConversationsTool.handler({ sortBy: 'messageCount' }, cache);
-      const parsed = JSON.parse((result.content[0] as any).text);
+      const _response = JSON.parse((result.content[0] as any).text);
+      const parsed = _response.conversations ?? _response;
 
       expect(parsed[0].taskId).toBe('many-task');
       expect(parsed[1].taskId).toBe('few-task');
@@ -229,7 +236,8 @@ describe('listConversationsTool.handler', () => {
       const cache = makeCache(small, large);
 
       const result = await listConversationsTool.handler({ sortBy: 'totalSize' }, cache);
-      const parsed = JSON.parse((result.content[0] as any).text);
+      const _response = JSON.parse((result.content[0] as any).text);
+      const parsed = _response.conversations ?? _response;
 
       expect(parsed[0].taskId).toBe('large-task');
       expect(parsed[1].taskId).toBe('small-task');
@@ -251,7 +259,8 @@ describe('listConversationsTool.handler', () => {
       );
 
       const result = await listConversationsTool.handler({ limit: 3 }, cache);
-      const parsed = JSON.parse((result.content[0] as any).text);
+      const _response = JSON.parse((result.content[0] as any).text);
+      const parsed = _response.conversations ?? _response;
 
       expect(parsed.length).toBe(3);
     });
@@ -264,7 +273,8 @@ describe('listConversationsTool.handler', () => {
       );
 
       const result = await listConversationsTool.handler({}, cache);
-      const parsed = JSON.parse((result.content[0] as any).text);
+      const _response = JSON.parse((result.content[0] as any).text);
+      const parsed = _response.conversations ?? _response;
 
       expect(parsed.length).toBe(3);
     });
@@ -281,7 +291,8 @@ describe('listConversationsTool.handler', () => {
       const cache = makeCache(parent, child);
 
       const result = await listConversationsTool.handler({}, cache);
-      const parsed = JSON.parse((result.content[0] as any).text);
+      const _response = JSON.parse((result.content[0] as any).text);
+      const parsed = _response.conversations ?? _response;
 
       // parent doit être au premier niveau
       const parentNode = parsed.find((n: any) => n.taskId === 'parent-task');
@@ -297,7 +308,8 @@ describe('listConversationsTool.handler', () => {
       const cache = makeCache(parent, child);
 
       const result = await listConversationsTool.handler({}, cache);
-      const parsed = JSON.parse((result.content[0] as any).text);
+      const _response = JSON.parse((result.content[0] as any).text);
+      const parsed = _response.conversations ?? _response;
 
       // child ne doit pas être au premier niveau
       const childAtRoot = parsed.find((n: any) => n.taskId === 'child-task');
@@ -309,7 +321,8 @@ describe('listConversationsTool.handler', () => {
       const cache = makeCache(orphan);
 
       const result = await listConversationsTool.handler({}, cache);
-      const parsed = JSON.parse((result.content[0] as any).text);
+      const _response = JSON.parse((result.content[0] as any).text);
+      const parsed = _response.conversations ?? _response;
 
       expect(parsed[0].taskId).toBe('orphan-task');
       expect(parsed[0].children).toEqual([]);
@@ -330,7 +343,8 @@ describe('listConversationsTool.handler', () => {
       const cache = makeCache(task);
 
       const result = await listConversationsTool.handler({}, cache);
-      const parsed = JSON.parse((result.content[0] as any).text);
+      const _response = JSON.parse((result.content[0] as any).text);
+      const parsed = _response.conversations ?? _response;
 
       expect(parsed[0].firstUserMessage).toBe('Initial user instruction');
     });
@@ -342,7 +356,8 @@ describe('listConversationsTool.handler', () => {
       const cache = makeCache(task);
 
       const result = await listConversationsTool.handler({}, cache);
-      const parsed = JSON.parse((result.content[0] as any).text);
+      const _response = JSON.parse((result.content[0] as any).text);
+      const parsed = _response.conversations ?? _response;
 
       expect(parsed[0].firstUserMessage.length).toBeLessThanOrEqual(303); // 300 + '...'
       expect(parsed[0].firstUserMessage).toContain('...');
@@ -353,7 +368,8 @@ describe('listConversationsTool.handler', () => {
       const cache = makeCache(task);
 
       const result = await listConversationsTool.handler({}, cache);
-      const parsed = JSON.parse((result.content[0] as any).text);
+      const _response = JSON.parse((result.content[0] as any).text);
+      const parsed = _response.conversations ?? _response;
 
       expect(parsed[0].firstUserMessage).toBeUndefined();
     });
@@ -382,7 +398,8 @@ describe('listConversationsTool.handler', () => {
       const cache = makeCache(task);
 
       const result = await listConversationsTool.handler({}, cache);
-      const parsed = JSON.parse((result.content[0] as any).text);
+      const _response = JSON.parse((result.content[0] as any).text);
+      const parsed = _response.conversations ?? _response;
 
       expect(parsed[0].isCompleted).toBe(true);
     });
@@ -396,7 +413,8 @@ describe('listConversationsTool.handler', () => {
       const cache = makeCache(task);
 
       const result = await listConversationsTool.handler({}, cache);
-      const parsed = JSON.parse((result.content[0] as any).text);
+      const _response = JSON.parse((result.content[0] as any).text);
+      const parsed = _response.conversations ?? _response;
 
       expect(parsed[0].isCompleted).toBe(false);
     });
@@ -419,7 +437,8 @@ describe('listConversationsTool.handler', () => {
       const cache = makeCache(task);
 
       const result = await listConversationsTool.handler({}, cache);
-      const parsed = JSON.parse((result.content[0] as any).text);
+      const _response = JSON.parse((result.content[0] as any).text);
+      const parsed = _response.conversations ?? _response;
 
       expect(parsed[0].completionMessage).toContain('Successfully');
     });
@@ -458,7 +477,8 @@ describe('listConversationsTool.handler', () => {
       mockScanDiskForNewTasks.mockResolvedValue([newTask]);
 
       const result = await listConversationsTool.handler({}, cache);
-      const parsed = JSON.parse((result.content[0] as any).text);
+      const _response = JSON.parse((result.content[0] as any).text);
+      const parsed = _response.conversations ?? _response;
 
       // Should contain both the existing and the newly discovered task
       const taskIds = parsed.map((t: any) => t.taskId);
@@ -496,7 +516,8 @@ describe('listConversationsTool.handler', () => {
       mockScanDiskForNewTasks.mockRejectedValue(new Error('Disk scan failed'));
 
       const result = await listConversationsTool.handler({}, cache);
-      const parsed = JSON.parse((result.content[0] as any).text);
+      const _response = JSON.parse((result.content[0] as any).text);
+      const parsed = _response.conversations ?? _response;
 
       // Should still return the cached task
       expect(parsed.length).toBe(1);
@@ -536,7 +557,8 @@ describe('listConversationsTool.handler', () => {
       });
 
       const result = await listConversationsTool.handler({ contentPattern: 'deploy' }, cache);
-      const parsed = JSON.parse((result.content[0] as any).text);
+      const _response = JSON.parse((result.content[0] as any).text);
+      const parsed = _response.conversations ?? _response;
 
       expect(parsed.length).toBe(1);
       expect(parsed[0].taskId).toBe('task-match');
@@ -553,7 +575,8 @@ describe('listConversationsTool.handler', () => {
       });
 
       const result = await listConversationsTool.handler({ contentPattern: 'build' }, cache);
-      const parsed = JSON.parse((result.content[0] as any).text);
+      const _response = JSON.parse((result.content[0] as any).text);
+      const parsed = _response.conversations ?? _response;
 
       expect(parsed.length).toBe(1);
       expect(parsed[0].taskId).toBe('task-ci');
@@ -566,7 +589,8 @@ describe('listConversationsTool.handler', () => {
       mockFsReadFile.mockRejectedValue(new Error('ENOENT'));
 
       const result = await listConversationsTool.handler({ contentPattern: 'test' }, cache);
-      const parsed = JSON.parse((result.content[0] as any).text);
+      const _response = JSON.parse((result.content[0] as any).text);
+      const parsed = _response.conversations ?? _response;
 
       // Task should be excluded (error = no match)
       expect(parsed.length).toBe(0);
@@ -576,7 +600,8 @@ describe('listConversationsTool.handler', () => {
       const cache = makeCache(makeConversation('task-1'), makeConversation('task-2'));
 
       const result = await listConversationsTool.handler({ contentPattern: '  ' }, cache);
-      const parsed = JSON.parse((result.content[0] as any).text);
+      const _response = JSON.parse((result.content[0] as any).text);
+      const parsed = _response.conversations ?? _response;
 
       expect(parsed.length).toBe(2);
     });
@@ -600,8 +625,10 @@ describe('listConversationsTool.handler', () => {
         listConversationsTool.handler({ sortBy: 'messageCount' }, cache),
       ]);
 
-      const parsed1 = JSON.parse((result1.content[0] as any).text);
-      const parsed2 = JSON.parse((result2.content[0] as any).text);
+      const _response1 = JSON.parse((result1.content[0] as any).text);
+      const parsed1 = _response1.conversations ?? _response1;
+      const _response2 = JSON.parse((result2.content[0] as any).text);
+      const parsed2 = _response2.conversations ?? _response2;
 
       // Both should return valid results with all 3 tasks
       expect(parsed1.length).toBe(3);
@@ -638,8 +665,10 @@ describe('listConversationsTool.handler', () => {
         listConversationsTool.handler({}, cache),
       ]);
 
-      const parsed1 = JSON.parse((result1.content[0] as any).text);
-      const parsed2 = JSON.parse((result2.content[0] as any).text);
+      const _response1 = JSON.parse((result1.content[0] as any).text);
+      const parsed1 = _response1.conversations ?? _response1;
+      const _response2 = JSON.parse((result2.content[0] as any).text);
+      const parsed2 = _response2.conversations ?? _response2;
 
       // Both calls should succeed with valid JSON
       expect(parsed1.length).toBeGreaterThanOrEqual(1);

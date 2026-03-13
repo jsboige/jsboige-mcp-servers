@@ -146,7 +146,8 @@ describe('conversation_browser (integration)', () => {
 
       expect(result).toBeDefined();
       expect(result.content[0].type).toBe('text');
-      const output = JSON.parse(result.content[0].text);
+      const _response = JSON.parse(result.content[0].text);
+      const output = _response.conversations ?? _response;
       expect(Array.isArray(output)).toBe(true);
     });
 
@@ -162,7 +163,8 @@ describe('conversation_browser (integration)', () => {
       );
 
       expect(result).toBeDefined();
-      const output = JSON.parse(result.content[0].text);
+      const _response = JSON.parse(result.content[0].text);
+      const output = _response.conversations ?? _response;
       expect(Array.isArray(output)).toBe(true);
       expect(output.length).toBeLessThanOrEqual(1);
     });
@@ -180,7 +182,8 @@ describe('conversation_browser (integration)', () => {
       );
 
       expect(result).toBeDefined();
-      const output = JSON.parse(result.content[0].text);
+      const _response = JSON.parse(result.content[0].text);
+      const output = _response.conversations ?? _response;
       expect(Array.isArray(output)).toBe(true);
     });
 
@@ -197,7 +200,8 @@ describe('conversation_browser (integration)', () => {
       );
 
       expect(result).toBeDefined();
-      const output = JSON.parse(result.content[0].text);
+      const _response = JSON.parse(result.content[0].text);
+      const output = _response.conversations ?? _response;
       expect(Array.isArray(output)).toBe(true);
     });
 
@@ -213,7 +217,8 @@ describe('conversation_browser (integration)', () => {
       );
 
       expect(result).toBeDefined();
-      const output = JSON.parse(result.content[0].text);
+      const _response = JSON.parse(result.content[0].text);
+      const output = _response.conversations ?? _response;
       expect(Array.isArray(output)).toBe(true);
     });
 
@@ -229,7 +234,8 @@ describe('conversation_browser (integration)', () => {
       );
 
       expect(result).toBeDefined();
-      const output = JSON.parse(result.content[0].text);
+      const _response = JSON.parse(result.content[0].text);
+      const output = _response.conversations ?? _response;
       expect(Array.isArray(output)).toBe(true);
     });
   });
@@ -801,7 +807,8 @@ describe('conversation_browser (integration)', () => {
 
       expect(result).toBeDefined();
       expect(result.content[0].type).toBe('text');
-      const output = JSON.parse(result.content[0].text);
+      const _response = JSON.parse(result.content[0].text);
+      const output = _response.conversations ?? _response;
       expect(Array.isArray(output)).toBe(true);
     });
 

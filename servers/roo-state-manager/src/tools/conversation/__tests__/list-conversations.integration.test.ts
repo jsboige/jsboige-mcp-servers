@@ -60,9 +60,10 @@ describe('list_conversations (integration)', () => {
       const conversationCache = new Map();
       const result = await listConversationsTool.handler({}, conversationCache);
 
-      const parsed = JSON.parse(result.content[0].text);
+      const _response = JSON.parse(result.content[0].text);
+      const parsed = _response.conversations ?? _response;
 
-      // Le résultat est directement un tableau de conversations
+      // Le résultat est un tableau de conversations (extrait de la réponse paginée)
       expect(Array.isArray(parsed)).toBe(true);
     });
   });
@@ -96,7 +97,8 @@ describe('list_conversations (integration)', () => {
       const conversationCache = new Map();
       const result = await listConversationsTool.handler({}, conversationCache);
 
-      const parsed = JSON.parse(result.content[0].text);
+      const _response = JSON.parse(result.content[0].text);
+      const parsed = _response.conversations ?? _response;
 
       // Le résultat est un tableau dont la longueur est le nombre de conversations
       expect(Array.isArray(parsed)).toBe(true);
@@ -114,7 +116,8 @@ describe('list_conversations (integration)', () => {
       const conversationCache = new Map();
       const result = await listConversationsTool.handler({}, conversationCache);
 
-      const parsed = JSON.parse(result.content[0].text);
+      const _response = JSON.parse(result.content[0].text);
+      const parsed = _response.conversations ?? _response;
 
       // Même sans stockage Roo, l'outil doit retourner un tableau valide
       expect(Array.isArray(parsed)).toBe(true);

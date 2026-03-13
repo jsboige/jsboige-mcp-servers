@@ -63,7 +63,8 @@ describe('list_conversations tool', () => {
 
     it('should list all conversations when no filters provided', async () => {
         const result = await listConversationsTool.handler({}, mockCache);
-        const content = JSON.parse(result.content[0].text as string);
+        const _response = JSON.parse(result.content[0].text as string);
+        const content = _response.conversations ?? _response;
         
         expect(content).toHaveLength(2);
         expect(content[0].taskId).toBe('task-1'); // Default sort by lastActivity desc
@@ -72,7 +73,8 @@ describe('list_conversations tool', () => {
 
     it('should filter by workspace', async () => {
         const result = await listConversationsTool.handler({ workspace: '/workspace/a' }, mockCache);
-        const content = JSON.parse(result.content[0].text as string);
+        const _response = JSON.parse(result.content[0].text as string);
+        const content = _response.conversations ?? _response;
         
         expect(content).toHaveLength(1);
         expect(content[0].taskId).toBe('task-1');
@@ -83,7 +85,8 @@ describe('list_conversations tool', () => {
             sortBy: 'messageCount',
             sortOrder: 'asc'
         }, mockCache);
-        const content = JSON.parse(result.content[0].text as string);
+        const _response = JSON.parse(result.content[0].text as string);
+        const content = _response.conversations ?? _response;
         
         expect(content).toHaveLength(2);
         expect(content[0].taskId).toBe('task-2'); // 5 messages
@@ -92,7 +95,8 @@ describe('list_conversations tool', () => {
 
     it('should limit results', async () => {
         const result = await listConversationsTool.handler({ limit: 1 }, mockCache);
-        const content = JSON.parse(result.content[0].text as string);
+        const _response = JSON.parse(result.content[0].text as string);
+        const content = _response.conversations ?? _response;
         
         expect(content).toHaveLength(1);
     });
@@ -110,7 +114,8 @@ describe('list_conversations tool', () => {
         });
 
         const result = await listConversationsTool.handler({ pendingSubtaskOnly: true }, mockCache);
-        const content = JSON.parse(result.content[0].text as string);
+        const _response = JSON.parse(result.content[0].text as string);
+        const content = _response.conversations ?? _response;
         
         expect(content).toHaveLength(1);
         expect(content[0].taskId).toBe('task-1');
@@ -129,7 +134,8 @@ describe('list_conversations tool', () => {
         });
 
         const result = await listConversationsTool.handler({ contentPattern: 'specific pattern' }, mockCache);
-        const content = JSON.parse(result.content[0].text as string);
+        const _response = JSON.parse(result.content[0].text as string);
+        const content = _response.conversations ?? _response;
         
         expect(content).toHaveLength(1);
         expect(content[0].taskId).toBe('task-2');

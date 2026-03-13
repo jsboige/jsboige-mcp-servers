@@ -151,7 +151,8 @@ describe('list_conversations performance & caching', () => {
       mockScanDiskForNewTasks.mockResolvedValueOnce([]);
 
       const result = await listConversationsTool.handler({}, cache);
-      const parsed = JSON.parse((result.content[0] as any).text);
+      const _response = JSON.parse((result.content[0] as any).text);
+      const parsed = _response.conversations ?? _response;
 
       // Both tasks should be in the results (existing + previously discovered)
       const taskIds = parsed.map((t: any) => t.taskId);
@@ -184,13 +185,15 @@ describe('list_conversations performance & caching', () => {
       // First call: scan returns task-A
       mockScanDiskForNewTasks.mockResolvedValueOnce([makeConversation('task-A')]);
       const result1 = await listConversationsTool.handler({}, cache);
-      const parsed1 = JSON.parse((result1.content[0] as any).text);
+      const _response1 = JSON.parse((result1.content[0] as any).text);
+      const parsed1 = _response1.conversations ?? _response1;
       expect(parsed1.map((t: any) => t.taskId)).toContain('task-A');
 
       // Second call: scan returns task-B (simulating cache expiration in scanner)
       mockScanDiskForNewTasks.mockResolvedValueOnce([makeConversation('task-B')]);
       const result2 = await listConversationsTool.handler({}, cache);
-      const parsed2 = JSON.parse((result2.content[0] as any).text);
+      const _response2 = JSON.parse((result2.content[0] as any).text);
+      const parsed2 = _response2.conversations ?? _response2;
 
       // Both task-A (from cache map) and task-B (from scan) should appear
       const taskIds2 = parsed2.map((t: any) => t.taskId);
@@ -225,7 +228,8 @@ describe('list_conversations performance & caching', () => {
       // The handler should complete well within 5 seconds
       expect(elapsed).toBeLessThan(5000);
 
-      const parsed = JSON.parse((result.content[0] as any).text);
+      const _response = JSON.parse((result.content[0] as any).text);
+      const parsed = _response.conversations ?? _response;
       expect(parsed.length).toBeGreaterThanOrEqual(2);
     });
 
@@ -249,7 +253,8 @@ describe('list_conversations performance & caching', () => {
       // Must complete within 5s
       expect(elapsed).toBeLessThan(5000);
 
-      const parsed = JSON.parse((result.content[0] as any).text);
+      const _response = JSON.parse((result.content[0] as any).text);
+      const parsed = _response.conversations ?? _response;
       // Should return cached tasks
       expect(parsed.length).toBe(3);
     });
@@ -280,7 +285,8 @@ describe('list_conversations performance & caching', () => {
       // Even with 1000 cached tasks, should complete well within 5s
       expect(elapsed).toBeLessThan(5000);
 
-      const parsed = JSON.parse((result.content[0] as any).text);
+      const _response = JSON.parse((result.content[0] as any).text);
+      const parsed = _response.conversations ?? _response;
       expect(parsed.length).toBe(20); // limited to 20
     });
   });
@@ -299,7 +305,8 @@ describe('list_conversations performance & caching', () => {
       mockScanDiskForNewTasks.mockRejectedValue(new Error('Disk I/O timeout'));
 
       const result = await listConversationsTool.handler({}, cache);
-      const parsed = JSON.parse((result.content[0] as any).text);
+      const _response = JSON.parse((result.content[0] as any).text);
+      const parsed = _response.conversations ?? _response;
 
       // Should fall back to cache-only results
       expect(parsed.length).toBe(2);
@@ -316,7 +323,8 @@ describe('list_conversations performance & caching', () => {
       );
 
       const result = await listConversationsTool.handler({}, cache);
-      const parsed = JSON.parse((result.content[0] as any).text);
+      const _response = JSON.parse((result.content[0] as any).text);
+      const parsed = _response.conversations ?? _response;
 
       expect(parsed.length).toBe(1);
       expect(parsed[0].taskId).toBe('stable-task');
@@ -334,7 +342,8 @@ describe('list_conversations performance & caching', () => {
       );
 
       const result = await listConversationsTool.handler({}, cache);
-      const parsed = JSON.parse((result.content[0] as any).text);
+      const _response = JSON.parse((result.content[0] as any).text);
+      const parsed = _response.conversations ?? _response;
 
       // All cached tasks should be returned despite the scan error
       expect(parsed.length).toBe(3);
@@ -351,7 +360,8 @@ describe('list_conversations performance & caching', () => {
       // This test documents the current behavior.
       try {
         const result = await listConversationsTool.handler({}, cache);
-        const parsed = JSON.parse((result.content[0] as any).text);
+        const _response = JSON.parse((result.content[0] as any).text);
+        const parsed = _response.conversations ?? _response;
         // If it doesn't throw, it should return at least the cached task
         expect(parsed.length).toBeGreaterThanOrEqual(0);
       } catch {

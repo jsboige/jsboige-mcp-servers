@@ -92,19 +92,44 @@ interface ConversationSummary {
 
 /**
  * Convertit un SkeletonNode vers ConversationSummary
+ * @param depth Current nesting depth (0 = top-level). Children are truncated more aggressively.
+ * @param maxChildDepth Maximum depth for recursive children (default: 1 — direct children only)
  */
-function toConversationSummary(node: SkeletonNode): ConversationSummary {
-    return {
+function toConversationSummary(node: SkeletonNode, depth = 0, maxChildDepth = 1): ConversationSummary {
+    const isChild = depth > 0;
+
+    // Truncate messages more aggressively for children
+    let firstMsg = node.firstUserMessage;
+    let lastMsg = node.lastUserMessage;
+    if (isChild) {
+        if (firstMsg && firstMsg.length > 120) firstMsg = firstMsg.substring(0, 120) + '...';
+        // No lastUserMessage for children — saves space
+        lastMsg = undefined;
+    }
+
+    // Children: include direct children (depth+1) but stop at maxChildDepth
+    const childSummaries = depth < maxChildDepth
+        ? node.children.map((child: SkeletonNode) => toConversationSummary(child, depth + 1, maxChildDepth))
+        : [];
+
+    const summary: ConversationSummary = {
         taskId: node.taskId,
         parentTaskId: node.parentTaskId,
-        firstUserMessage: node.firstUserMessage,
-        lastUserMessage: node.lastUserMessage,
+        firstUserMessage: firstMsg,
+        lastUserMessage: lastMsg,
         isCompleted: node.isCompleted,
         completionMessage: node.completionMessage,
         synthesis: node.synthesis,
         metadata: node.metadata,
-        children: node.children.map((child: SkeletonNode) => toConversationSummary(child))
+        children: childSummaries,
     };
+
+    // For parents with children deeper than maxChildDepth, add a count hint
+    if (depth >= maxChildDepth && node.children.length > 0) {
+        (summary as any).childrenCount = node.children.length;
+    }
+
+    return summary;
 }
 
 /**
@@ -217,7 +242,9 @@ export const listConversationsTool = {
         inputSchema: {
             type: 'object',
             properties: {
-                limit: { type: 'number' },
+                limit: { type: 'number', description: 'Alias for per_page (backward compat). Max results per page.' },
+                page: { type: 'number', description: 'Page number (1-based). Default: 1.' },
+                per_page: { type: 'number', description: 'Results per page. Default: 20. Max: 50.' },
                 sortBy: { type: 'string', enum: ['lastActivity', 'messageCount', 'totalSize'] },
                 sortOrder: { type: 'string', enum: ['asc', 'desc'] },
                 hasApiHistory: { type: 'boolean' },
@@ -241,6 +268,8 @@ export const listConversationsTool = {
     handler: async (
         args: {
             limit?: number,
+            page?: number,
+            per_page?: number,
             sortBy?: 'lastActivity' | 'messageCount' | 'totalSize',
             sortOrder?: 'asc' | 'desc',
             workspace?: string,
@@ -482,16 +511,31 @@ export const listConversationsTool = {
             }
         });
 
-        // Appliquer la limite à la forêt de premier niveau
-        const limitedForest = args.limit ? forest.slice(0, args.limit) : forest;
-        
+        // --- Pagination ---
+        const perPage = Math.min(args.per_page || args.limit || 20, 50); // Cap at 50
+        const page = Math.max(args.page || 1, 1);
+        const totalCount = forest.length;
+        const totalPages = Math.ceil(totalCount / perPage);
+        const startIdx = (page - 1) * perPage;
+        const paginatedForest = forest.slice(startIdx, startIdx + perPage);
+
         // Convertir en ConversationSummary pour EXCLURE la propriété sequence qui contient tout le contenu
-        const summaries = limitedForest.map(node => toConversationSummary(node));
-        
+        // Children are truncated aggressively (depth=0, maxChildDepth=1)
+        const summaries = paginatedForest.map(node => toConversationSummary(node, 0, 1));
+
         // 📊 LOG AGRÉGÉ FINAL (remplace les logs verbeux commentés)
-        console.log(`📊 list_conversations: Found ${allSkeletons.length} conversations (workspace filtered: ${workspaceFilteredCount}), returning ${summaries.length} top-level results`);
-        
-        const result = JSON.stringify(summaries, null, 2);
+        console.log(`📊 list_conversations: Found ${allSkeletons.length} conversations (workspace filtered: ${workspaceFilteredCount}), returning page ${page}/${totalPages} (${summaries.length} of ${totalCount} top-level)`);
+
+        const result = JSON.stringify({
+            conversations: summaries,
+            pagination: {
+                page,
+                per_page: perPage,
+                total_count: totalCount,
+                total_pages: totalPages,
+                has_next: page < totalPages,
+            }
+        }, null, 2);
 
         return { content: [{ type: 'text', text: result }] };
     }
