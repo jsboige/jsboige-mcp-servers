@@ -8,13 +8,14 @@ import { describe, test, expect, vi, beforeEach } from 'vitest';
 import { InitArgsSchema, InitResultSchema, roosyncInit } from '../roosync_init.js';
 
 // Mock all external dependencies
-const { mockGetConfig, mockExistsSync, mockMkdirSync, mockWriteFileSync, mockReadFileSync, mockUnlinkSync } = vi.hoisted(() => ({
+const { mockGetConfig, mockExistsSync, mockMkdirSync, mockWriteFileSync, mockReadFileSync, mockUnlinkSync, mockReadJSONFileSyncWithoutBOM } = vi.hoisted(() => ({
 	mockGetConfig: vi.fn(),
 	mockExistsSync: vi.fn(),
 	mockMkdirSync: vi.fn(),
 	mockWriteFileSync: vi.fn(),
 	mockReadFileSync: vi.fn(),
-	mockUnlinkSync: vi.fn()
+	mockUnlinkSync: vi.fn(),
+	mockReadJSONFileSyncWithoutBOM: vi.fn()
 }));
 
 vi.mock('../../../services/RooSyncService.js', () => ({
@@ -43,6 +44,12 @@ vi.mock('fs', async () => {
 		unlinkSync: mockUnlinkSync
 	};
 });
+
+vi.mock('../../../utils/encoding-helpers.js', () => ({
+	readJSONFileSyncWithoutBOM: mockReadJSONFileSyncWithoutBOM,
+	readFileSyncWithoutBOM: vi.fn((path: string) => ''),
+	stripBOM: vi.fn((s: string) => s)
+}));
 
 vi.mock('../../../utils/logger.js', () => ({
 	createLogger: vi.fn(() => ({
@@ -148,9 +155,9 @@ describe('roosync_init', () => {
 
 		test('creates dashboard when force is true even if exists', async () => {
 			mockExistsSync.mockReturnValue(true);
-			mockReadFileSync.mockReturnValue(JSON.stringify({
+			mockReadJSONFileSyncWithoutBOM.mockReturnValue({
 				machines: { 'test-machine': {} }
-			}));
+			});
 
 			const result = await roosyncInit({ force: true });
 
@@ -184,10 +191,10 @@ describe('roosync_init', () => {
 				if (path === '/shared/path') return true;
 				return false;
 			});
-			mockReadFileSync.mockReturnValue(JSON.stringify({
+			mockReadJSONFileSyncWithoutBOM.mockReturnValue({
 				machines: { 'other-machine': { status: 'online' } },
 				lastUpdate: '2026-01-01'
-			}));
+			});
 
 			const result = await roosyncInit({});
 

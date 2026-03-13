@@ -45,6 +45,14 @@ vi.mock('fs', () => ({
   unlinkSync: (...args: any[]) => mockUnlinkSync(...args)
 }));
 
+// Mock encoding-helpers (readJSONFileSyncWithoutBOM is used instead of readFileSync for BOM-safe reads)
+const mockReadJSONFileSyncWithoutBOM = vi.fn();
+vi.mock('../../../../src/utils/encoding-helpers.js', () => ({
+  readJSONFileSyncWithoutBOM: (...args: any[]) => mockReadJSONFileSyncWithoutBOM(...args),
+  readFileSyncWithoutBOM: vi.fn(() => ''),
+  stripBOM: vi.fn((s: string) => s)
+}));
+
 // Mock logger
 vi.mock('../../../../src/utils/logger.js', () => ({
   createLogger: () => ({
@@ -147,16 +155,11 @@ describe('roosync_init - roosyncInit function', () => {
         return false;
       });
 
-      mockReadFileSync.mockImplementation((path: string) => {
-        if (path.includes('sync-dashboard.json')) {
-          return JSON.stringify({
-            version: '2.0.0',
-            machines: {
-              'test-machine-01': { lastSync: '2024-01-01', status: 'online' }
-            }
-          });
+      mockReadJSONFileSyncWithoutBOM.mockReturnValue({
+        version: '2.0.0',
+        machines: {
+          'test-machine-01': { lastSync: '2024-01-01', status: 'online' }
         }
-        return '';
       });
 
       const { roosyncInit } = await import('../../../../src/tools/roosync/roosync_init.js');
@@ -179,16 +182,11 @@ describe('roosync_init - roosyncInit function', () => {
         return false;
       });
 
-      mockReadFileSync.mockImplementation((path: string) => {
-        if (path.includes('sync-dashboard.json')) {
-          return JSON.stringify({
-            version: '2.0.0',
-            machines: {
-              'other-machine': { lastSync: '2024-01-01', status: 'online' }
-            }
-          });
+      mockReadJSONFileSyncWithoutBOM.mockReturnValue({
+        version: '2.0.0',
+        machines: {
+          'other-machine': { lastSync: '2024-01-01', status: 'online' }
         }
-        return '';
       });
 
       const { roosyncInit } = await import('../../../../src/tools/roosync/roosync_init.js');
@@ -223,14 +221,9 @@ describe('roosync_init - roosyncInit function', () => {
         return false;
       });
 
-      mockReadFileSync.mockImplementation((path: string) => {
-        if (path.includes('sync-dashboard.json')) {
-          return JSON.stringify({
-            version: '2.0.0',
-            machines: { 'test-machine-01': { lastSync: '2024-01-01' } }
-          });
-        }
-        return '';
+      mockReadJSONFileSyncWithoutBOM.mockReturnValue({
+        version: '2.0.0',
+        machines: { 'test-machine-01': { lastSync: '2024-01-01' } }
       });
 
       const { roosyncInit } = await import('../../../../src/tools/roosync/roosync_init.js');
@@ -266,14 +259,9 @@ describe('roosync_init - roosyncInit function', () => {
         return false;
       });
 
-      mockReadFileSync.mockImplementation((path: string) => {
-        if (path.includes('sync-dashboard.json')) {
-          return JSON.stringify({
-            version: '2.0.0',
-            machines: { 'test-machine-01': { lastSync: '2024-01-01' } }
-          });
-        }
-        return '';
+      mockReadJSONFileSyncWithoutBOM.mockReturnValue({
+        version: '2.0.0',
+        machines: { 'test-machine-01': { lastSync: '2024-01-01' } }
       });
 
       const { roosyncInit } = await import('../../../../src/tools/roosync/roosync_init.js');
