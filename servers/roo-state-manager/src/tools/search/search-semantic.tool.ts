@@ -25,6 +25,9 @@ export interface SearchTasksByContentArgs {
     // #636 Phase 2: Temporal filters
     start_date?: string;
     end_date?: string;
+    // #636 Phase 3: Convenience filter
+    /** Exclude tool_interaction chunks, returning only message_exchange chunks */
+    exclude_tool_results?: boolean;
 }
 
 /**
@@ -310,7 +313,10 @@ export const searchTasksByContentTool = {
         diagnoseHandler?: () => Promise<CallToolResult>
     ): Promise<CallToolResult> => {
         const { conversation_id, search_query, max_results, diagnose_index = false, workspace, source,
-                chunk_type, role, tool_name, has_errors, model, start_date, end_date } = args;
+                chunk_type, role, tool_name, has_errors, model, start_date, end_date, exclude_tool_results } = args;
+
+        // #636 Phase 3: resolve effective chunk_type (exclude_tool_results is a convenience alias)
+        const effectiveChunkType = chunk_type ?? (exclude_tool_results ? 'message_exchange' : undefined);
 
         // **FAILSAFE: Auto-rebuild cache si nécessaire avec filtre workspace**
         await ensureCacheFreshCallback({ workspace });
@@ -408,11 +414,11 @@ export const searchTasksByContentTool = {
                 });
             }
 
-            // #636: Advanced filters
-            if (chunk_type) {
+            // #636: Advanced filters (chunk_type resolved with exclude_tool_results alias)
+            if (effectiveChunkType) {
                 filterConditions.push({
                     key: "chunk_type",
-                    match: { value: chunk_type }
+                    match: { value: effectiveChunkType }
                 });
             }
 

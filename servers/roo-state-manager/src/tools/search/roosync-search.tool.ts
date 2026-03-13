@@ -61,6 +61,10 @@ export interface RooSyncSearchArgs {
 
     /** Filter results before this date (ISO 8601 or YYYY-MM-DD) */
     end_date?: string;
+
+    // #636 Phase 3: Convenience filter
+    /** Exclude tool_interaction chunks, returning only message_exchange chunks */
+    exclude_tool_results?: boolean;
 }
 
 /**
@@ -127,6 +131,10 @@ export const roosyncSearchTool: Tool = {
             end_date: {
                 type: 'string',
                 description: '#636 P2: Filter results before this date (ISO 8601 or YYYY-MM-DD, e.g., "2026-03-11")'
+            },
+            exclude_tool_results: {
+                type: 'boolean',
+                description: '#636 P3: Exclude tool_interaction chunks, returning only message_exchange chunks (conversation messages)'
             }
         },
         required: ['action']
@@ -184,6 +192,8 @@ export async function handleRooSyncSearch(
                 // #636 Phase 2: Temporal filters
                 start_date: args.start_date,
                 end_date: args.end_date,
+                // #636 Phase 3: Convenience filter
+                exclude_tool_results: args.exclude_tool_results,
             };
             return await searchTasksByContentTool.handler(
                 semanticArgs,

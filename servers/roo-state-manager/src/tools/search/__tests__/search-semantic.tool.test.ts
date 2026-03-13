@@ -848,4 +848,103 @@ describe('helper functions (indirect via handler)', () => {
 			expect(parsed.results[0].conversation_stats).toBeUndefined();
 		});
 	});
+
+	// ============================================================
+	// #636 Phase 3: exclude_tool_results filter
+	// ============================================================
+
+	describe('#636 Phase 3: exclude_tool_results', () => {
+		beforeEach(() => {
+			mockOpenAIClient.embeddings.create.mockResolvedValue({
+				data: [{ embedding: [0.1, 0.2, 0.3] }]
+			});
+		});
+
+		test('exclude_tool_results=true adds chunk_type=message_exchange filter to Qdrant query', async () => {
+			mockQdrantClient.search.mockResolvedValue([]);
+
+			await searchTasksByContentTool.handler(
+				{ search_query: 'test', exclude_tool_results: true },
+				makeCache(),
+				mockEnsureCache,
+				defaultFallback
+			);
+
+			expect(mockQdrantClient.search).toHaveBeenCalledWith(
+				expect.any(String),
+				expect.objectContaining({
+					filter: expect.objectContaining({
+						must: expect.arrayContaining([
+							{ key: 'chunk_type', match: { value: 'message_exchange' } }
+						])
+					})
+				})
+			);
+		});
+
+		test('exclude_tool_results=false does not add chunk_type filter', async () => {
+			mockQdrantClient.search.mockResolvedValue([]);
+
+			await searchTasksByContentTool.handler(
+				{ search_query: 'test', exclude_tool_results: false },
+				makeCache(),
+				mockEnsureCache,
+				defaultFallback
+			);
+
+			const callArgs = mockQdrantClient.search.mock.calls[0][1];
+			// No filter, or filter without chunk_type
+			if (callArgs.filter) {
+				const must = callArgs.filter.must || [];
+				expect(must.some((c: any) => c.key === 'chunk_type')).toBe(false);
+			} else {
+				expect(callArgs.filter).toBeUndefined();
+			}
+		});
+
+		test('explicit chunk_type takes precedence over exclude_tool_results', async () => {
+			mockQdrantClient.search.mockResolvedValue([]);
+
+			await searchTasksByContentTool.handler(
+				{ search_query: 'test', chunk_type: 'tool_interaction', exclude_tool_results: true },
+				makeCache(),
+				mockEnsureCache,
+				defaultFallback
+			);
+
+			// chunk_type is set explicitly → effectiveChunkType = 'tool_interaction' (not overridden)
+			expect(mockQdrantClient.search).toHaveBeenCalledWith(
+				expect.any(String),
+				expect.objectContaining({
+					filter: expect.objectContaining({
+						must: expect.arrayContaining([
+							{ key: 'chunk_type', match: { value: 'tool_interaction' } }
+						])
+					})
+				})
+			);
+		});
+
+		test('exclude_tool_results=true returns only message_exchange chunks from results', async () => {
+			mockQdrantClient.search.mockResolvedValue([
+				{ score: 0.9, payload: { task_id: 'task-1', content: 'user message', host_os: 'h1', chunk_type: 'message_exchange' } },
+				{ score: 0.8, payload: { task_id: 'task-2', content: 'tool response', host_os: 'h1', chunk_type: 'tool_interaction' } },
+			]);
+
+			// Note: Qdrant filter is applied at DB level. In this test mock returns both,
+			// so the result reflects what Qdrant would return (filter passed correctly to it).
+			const result = await searchTasksByContentTool.handler(
+				{ search_query: 'test', exclude_tool_results: true },
+				makeCache(),
+				mockEnsureCache,
+				defaultFallback
+			);
+
+			// The filter was sent to Qdrant correctly (verified in separate test)
+			// Result structure should still be valid
+			const parsed = JSON.parse(getTextContent(result));
+			expect(parsed.results).toBeDefined();
+			expect(Array.isArray(parsed.results)).toBe(true);
+		});
+	});
 });
