@@ -215,10 +215,12 @@ export function registerCallToolHandler(
                     state.qdrantIndexQueue,
                     (enabled: boolean) => { state.isQdrantIndexingEnabled = enabled; },
                     toolExports.rebuildTaskIndexFixed.handler,
-                    // #685: Paramètres additionnels pour l'action status
-                    state.isQdrantIndexingEnabled,
-                    state.qdrantIndexInterval,
-                    state.indexingMetrics
+                    {
+                        qdrantIndexQueue: state.qdrantIndexQueue,
+                        qdrantIndexInterval: state.qdrantIndexInterval,
+                        isQdrantIndexingEnabled: state.isQdrantIndexingEnabled,
+                        indexingMetrics: state.indexingMetrics
+                    }
                 );
                 break;
             // [REMOVED] search_tasks_by_content — #625 dead code cleanup (not in alwaysAllow)

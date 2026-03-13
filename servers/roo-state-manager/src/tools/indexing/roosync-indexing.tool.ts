@@ -24,7 +24,7 @@ import { handleDiagnoseSemanticIndex } from './diagnose-index.tool.js';
  */
 export interface RooSyncIndexingArgs {
     /** Action d'indexation */
-    action: 'index' | 'reset' | 'rebuild' | 'diagnose' | 'status' | 'archive';
+    action: 'index' | 'reset' | 'rebuild' | 'diagnose' | 'archive' | 'status';
 
     /** ID de la tâche à indexer (requis pour action=index) */
     task_id?: string;
@@ -59,14 +59,14 @@ export interface RooSyncIndexingArgs {
  */
 export const roosyncIndexingTool: Tool = {
     name: 'roosync_indexing',
-    description: "Outil unifié de gestion de l'index sémantique, du cache et de l'archivage (indexation, reset, rebuild, diagnostic, status, archive Roo/Claude Code)",
+    description: "Outil unifié de gestion de l'index sémantique, du cache et de l'archivage (indexation, reset, rebuild, diagnostic, archive Roo/Claude Code)",
     inputSchema: {
         type: 'object',
         properties: {
             action: {
                 type: 'string',
-                enum: ['index', 'reset', 'rebuild', 'diagnose', 'status', 'archive'],
-                description: "Action: 'index' (indexer une tâche dans Qdrant), 'reset' (réinitialiser la collection Qdrant), 'rebuild' (reconstruire l'index SQLite VS Code), 'diagnose' (diagnostic complet de l'index), 'status' (état du background indexer), 'archive' (archiver une tâche Roo ou les sessions Claude Code sur GDrive)"
+                enum: ['index', 'reset', 'rebuild', 'diagnose', 'archive', 'status'],
+                description: "Action: 'index' (indexer une tâche dans Qdrant), 'reset' (réinitialiser la collection Qdrant), 'rebuild' (reconstruire l'index SQLite VS Code), 'diagnose' (diagnostic complet de l'index), 'archive' (archiver une tâche Roo ou les sessions Claude Code sur GDrive), 'status' (état du background indexer et métriques)"
             },
             task_id: {
                 type: 'string',
@@ -119,6 +119,20 @@ export const roosyncIndexingTool: Tool = {
  * Handler unifié pour roosync_indexing
  * Dispatche vers le handler approprié selon l'action
  */
+export interface IndexingState {
+    qdrantIndexQueue: Set<string>;
+    qdrantIndexInterval: NodeJS.Timeout | null;
+    isQdrantIndexingEnabled: boolean;
+    indexingMetrics: {
+        totalTasks: number;
+        skippedTasks: number;
+        indexedTasks: number;
+        failedTasks: number;
+        retryTasks: number;
+        bandwidthSaved: number;
+    };
+}
+
 export async function handleRooSyncIndexing(
     args: RooSyncIndexingArgs,
     conversationCache: Map<string, ConversationSkeleton>,
@@ -127,23 +141,20 @@ export async function handleRooSyncIndexing(
     qdrantIndexQueue: Set<string>,
     setQdrantIndexingEnabled: (enabled: boolean) => void,
     rebuildHandler: (args: any) => Promise<CallToolResult>,
-    // #685: Paramètres additionnels pour l'action status
-    isQdrantIndexingEnabled?: boolean,
-    qdrantIndexInterval?: NodeJS.Timeout | null,
-    indexingMetrics?: { totalTasks: number; skippedTasks: number; indexedTasks: number; failedTasks: number; retryTasks: number; bandwidthSaved: number }
+    indexingState?: IndexingState
 ): Promise<CallToolResult> {
     // Validation de l'action
     if (!args.action) {
         return {
             isError: true,
-            content: [{ type: 'text', text: 'Le paramètre "action" est requis. Valeurs possibles: index, reset, rebuild, diagnose, status, archive' }]
+            content: [{ type: 'text', text: 'Le paramètre "action" est requis. Valeurs possibles: index, reset, rebuild, diagnose, archive, status' }]
         };
     }
 
-    if (!['index', 'reset', 'rebuild', 'diagnose', 'status', 'archive'].includes(args.action)) {
+    if (!['index', 'reset', 'rebuild', 'diagnose', 'archive', 'status'].includes(args.action)) {
         return {
             isError: true,
-            content: [{ type: 'text', text: `Action "${args.action}" invalide. Valeurs possibles: index, reset, rebuild, diagnose, status, archive` }]
+            content: [{ type: 'text', text: `Action "${args.action}" invalide. Valeurs possibles: index, reset, rebuild, diagnose, archive, status` }]
         };
     }
 
@@ -182,84 +193,6 @@ export async function handleRooSyncIndexing(
 
         case 'diagnose': {
             return await handleDiagnoseSemanticIndex(conversationCache);
-        }
-
-        case 'status': {
-            // #685: Diagnostic de l'état du background indexer
-            const now = Date.now();
-            const report: Record<string, any> = {
-                action: 'background_indexer_status',
-                timestamp: new Date(now).toISOString(),
-                machine: process.env.ROOSYNC_MACHINE_ID || 'unknown',
-            };
-
-            // État du background indexer
-            report.enabled = isQdrantIndexingEnabled ?? false;
-            report.intervalRunning = qdrantIndexInterval !== null && qdrantIndexInterval !== undefined;
-            report.queueSize = qdrantIndexQueue?.size ?? 0;
-
-            // Métriques d'indexation
-            if (indexingMetrics) {
-                report.metrics = {
-                    totalTasks: indexingMetrics.totalTasks,
-                    indexedTasks: indexingMetrics.indexedTasks,
-                    skippedTasks: indexingMetrics.skippedTasks,
-                    failedTasks: indexingMetrics.failedTasks,
-                    retryTasks: indexingMetrics.retryTasks,
-                    bandwidthSaved: Math.round(indexingMetrics.bandwidthSaved / 1024 / 1024) + 'MB'
-                };
-            }
-
-            // Diagnostic de santé
-            let health = 'UNKNOWN';
-            let warnings: string[] = [];
-
-            if (!isQdrantIndexingEnabled) {
-                health = 'DISABLED';
-                warnings.push('⚠️ L\'indexation background est DÉSACTIVÉE (isQdrantIndexingEnabled=false)');
-            }
-
-            if (!qdrantIndexInterval) {
-                health = health === 'DISABLED' ? 'DISABLED' : 'NOT_RUNNING';
-                warnings.push('⚠️ Aucun interval détecté (qdrantIndexInterval=null)');
-            }
-
-            if (qdrantIndexQueue && qdrantIndexQueue.size > 0) {
-                warnings.push(`ℹ️ ${qdrantIndexQueue.size} tâches en attente dans la queue`);
-            }
-
-            if (warnings.length === 0 && isQdrantIndexingEnabled && qdrantIndexInterval) {
-                health = 'HEALTHY';
-            }
-
-            report.health = health;
-            if (warnings.length > 0) {
-                report.warnings = warnings;
-            }
-
-            // Tâches dans la queue (limité à 10 pour lisibilité)
-            if (qdrantIndexQueue && qdrantIndexQueue.size > 0) {
-                const queueArray = Array.from(qdrantIndexQueue).slice(0, 10);
-                report.queueSample = queueArray;
-                if (qdrantIndexQueue.size > 10) {
-                    report.queueSample.push(`... et ${qdrantIndexQueue.size - 10} autres`);
-                }
-            }
-
-            return {
-                isError: false,
-                content: [{
-                    type: 'text',
-                    text: '## Background Indexer Status\n\n```\n' + JSON.stringify(report, null, 2) + '\n```\n\n' +
-                        `**Santé:** ${health}\n\n` +
-                        (warnings.length > 0 ? warnings.join('\n') + '\n\n' : '') +
-                        `**Actions recommandées:**\n` +
-                        (health === 'HEALTHY' ? '- ✅ Le système fonctionne normalement\n' : '') +
-                        (health === 'DISABLED' ? '- Vérifier pourquoi l\'indexation a été désactivée\n' : '') +
-                        (health === 'NOT_RUNNING' ? '- Le processus d\'indexation ne tourne pas, vérifier les logs MCP\n' : '') +
-                        (report.queueSize > 0 ? `- Traiter les ${report.queueSize} tâches en attente\n` : '')
-                }]
-            };
         }
 
         case 'archive': {
@@ -318,6 +251,34 @@ export async function handleRooSyncIndexing(
                     }, null, 2) }]
                 };
             }
+        }
+
+        case 'status': {
+            const state = indexingState || {
+                qdrantIndexQueue,
+                qdrantIndexInterval: null,
+                isQdrantIndexingEnabled: false,
+                indexingMetrics: { totalTasks: 0, skippedTasks: 0, indexedTasks: 0, failedTasks: 0, retryTasks: 0, bandwidthSaved: 0 }
+            };
+            const status = {
+                background_indexer: {
+                    is_running: state.qdrantIndexInterval !== null,
+                    is_enabled: state.isQdrantIndexingEnabled,
+                    queue_size: state.qdrantIndexQueue.size,
+                    metrics: {
+                        total_tasks: state.indexingMetrics.totalTasks,
+                        indexed: state.indexingMetrics.indexedTasks,
+                        skipped: state.indexingMetrics.skippedTasks,
+                        failed: state.indexingMetrics.failedTasks,
+                        retry: state.indexingMetrics.retryTasks,
+                        bandwidth_saved_bytes: state.indexingMetrics.bandwidthSaved
+                    }
+                }
+            };
+            return {
+                isError: false,
+                content: [{ type: 'text', text: JSON.stringify(status, null, 2) }]
+            };
         }
 
         default:

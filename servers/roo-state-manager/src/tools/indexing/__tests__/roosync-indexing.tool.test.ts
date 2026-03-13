@@ -76,9 +76,9 @@ describe('roosyncIndexingTool', () => {
 		expect(roosyncIndexingTool.inputSchema.required).toEqual(['action']);
 	});
 
-	test('has action enum with 5 values', () => {
+	test('has action enum with 6 values', () => {
 		const actionProp = (roosyncIndexingTool.inputSchema.properties as any).action;
-		expect(actionProp.enum).toEqual(['index', 'reset', 'rebuild', 'diagnose', 'archive']);
+		expect(actionProp.enum).toEqual(['index', 'reset', 'rebuild', 'diagnose', 'archive', 'status']);
 	});
 
 	// ============================================================
@@ -299,5 +299,81 @@ describe('roosyncIndexingTool', () => {
 		}
 
 		expect(errorCaught).toBe(true);
+	});
+});
+
+// ============================================================
+// status action
+// ============================================================
+
+describe('roosync_indexing status action', () => {
+	const cache = new Map();
+	const ensureFresh = vi.fn().mockResolvedValue(true);
+	const saveSkeleton = vi.fn();
+	const setEnabled = vi.fn();
+	const mockRebuildHandler = vi.fn();
+
+	test('returns background indexer status with all fields', async () => {
+		const indexingState = {
+			qdrantIndexQueue: new Set(['task-1', 'task-2']),
+			qdrantIndexInterval: {} as NodeJS.Timeout,
+			isQdrantIndexingEnabled: true,
+			indexingMetrics: {
+				totalTasks: 100,
+				skippedTasks: 10,
+				indexedTasks: 85,
+				failedTasks: 5,
+				retryTasks: 2,
+				bandwidthSaved: 1024000
+			}
+		};
+
+		const result = await handleRooSyncIndexing(
+			{ action: 'status' },
+			cache, ensureFresh, saveSkeleton, new Set(), setEnabled, mockRebuildHandler,
+			indexingState
+		);
+
+		expect(result.isError).toBe(false);
+		const parsed = JSON.parse(result.content[0].text);
+		expect(parsed.background_indexer.is_running).toBe(true);
+		expect(parsed.background_indexer.is_enabled).toBe(true);
+		expect(parsed.background_indexer.queue_size).toBe(2);
+		expect(parsed.background_indexer.metrics.total_tasks).toBe(100);
+		expect(parsed.background_indexer.metrics.indexed).toBe(85);
+		expect(parsed.background_indexer.metrics.skipped).toBe(10);
+		expect(parsed.background_indexer.metrics.failed).toBe(5);
+	});
+
+	test('shows is_running=false when interval is null', async () => {
+		const indexingState = {
+			qdrantIndexQueue: new Set<string>(),
+			qdrantIndexInterval: null,
+			isQdrantIndexingEnabled: false,
+			indexingMetrics: { totalTasks: 0, skippedTasks: 0, indexedTasks: 0, failedTasks: 0, retryTasks: 0, bandwidthSaved: 0 }
+		};
+
+		const result = await handleRooSyncIndexing(
+			{ action: 'status' },
+			cache, ensureFresh, saveSkeleton, new Set(), setEnabled, mockRebuildHandler,
+			indexingState
+		);
+
+		const parsed = JSON.parse(result.content[0].text);
+		expect(parsed.background_indexer.is_running).toBe(false);
+		expect(parsed.background_indexer.queue_size).toBe(0);
+	});
+
+	test('falls back to qdrantIndexQueue param when no indexingState provided', async () => {
+		const queue = new Set(['task-a']);
+
+		const result = await handleRooSyncIndexing(
+			{ action: 'status' },
+			cache, ensureFresh, saveSkeleton, queue, setEnabled, mockRebuildHandler
+		);
+
+		expect(result.isError).toBe(false);
+		const parsed = JSON.parse(result.content[0].text);
+		expect(parsed.background_indexer.queue_size).toBe(1);
 	});
 });
