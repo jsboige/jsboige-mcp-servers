@@ -257,6 +257,9 @@ async function initializeQdrantIndexingService(state: ServerState): Promise<void
     } catch (error: any) {
         console.error('⚠️  Erreur lors de l\'initialisation de l\'indexation Qdrant (non-bloquant):', error);
         state.isQdrantIndexingEnabled = false;
+        console.error('❌ INDEXATION QDRANT DÉSACTIVÉE - La recherche sémantique ne sera pas disponible.');
+        console.error('   Vérifiez les variables d\'environnement: QDRANT_URL, QDRANT_API_KEY, EMBEDDING_API_KEY');
+        console.error('   Pour diagnostiquer: utilisez roosync_indexing(action: "diagnose")');
     }
 }
 
@@ -378,10 +381,14 @@ async function verifyQdrantConsistency(state: ServerState): Promise<void> {
     }
 }
 
+/** Nombre de tâches traitées par cycle d'indexation (batch processing) */
+export const QDRANT_INDEX_BATCH_SIZE = 5;
+
 /**
  * Démarre le processus d'indexation Qdrant en arrière-plan
+ * Traite jusqu'à QDRANT_INDEX_BATCH_SIZE tâches par intervalle (batch processing)
  */
-function startQdrantIndexingBackgroundProcess(state: ServerState): void {
+export function startQdrantIndexingBackgroundProcess(state: ServerState): void {
     if (state.qdrantIndexInterval) {
         clearInterval(state.qdrantIndexInterval);
     }
@@ -391,8 +398,9 @@ function startQdrantIndexingBackgroundProcess(state: ServerState): void {
             return;
         }
 
-        const taskId = state.qdrantIndexQueue.values().next().value;
-        if (taskId) {
+        // Traiter un batch de tâches par intervalle (au lieu d'une seule)
+        const taskIds = Array.from(state.qdrantIndexQueue.values()).slice(0, QDRANT_INDEX_BATCH_SIZE);
+        for (const taskId of taskIds) {
             state.qdrantIndexQueue.delete(taskId);
             await indexTaskInQdrant(taskId, state);
         }
@@ -404,7 +412,7 @@ function startQdrantIndexingBackgroundProcess(state: ServerState): void {
 /**
  * Indexe une tâche spécifique dans Qdrant
  */
-async function indexTaskInQdrant(taskId: string, state: ServerState): Promise<void> {
+export async function indexTaskInQdrant(taskId: string, state: ServerState): Promise<void> {
     try {
         const skeleton = state.conversationCache.get(taskId);
         if (!skeleton) {
