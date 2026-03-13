@@ -467,7 +467,7 @@ describe('handleDiagnoseSemanticIndex', () => {
             expect(diag.details.qdrant_connection).toBe('success');
         });
 
-        it('should return collection_error when getCollections throws', async () => {
+        it('should return connection_failed when getCollections throws', async () => {
             const mockQdrant = createMockQdrant({
                 getCollections: vi.fn().mockRejectedValue(new Error('Network error in getCollections')),
                 getCollection: vi.fn()
@@ -477,9 +477,9 @@ describe('handleDiagnoseSemanticIndex', () => {
             const result = await handleDiagnoseSemanticIndex(conversationCache);
             const diag = parseDiagnostics(result);
 
-            // getCollections throw is caught by the inner try/catch => collection_error
-            expect(diag.status).toBe('collection_error');
-            expect(diag.details.qdrant_connection).toBe('success');
+            // getCollections throw is caught by the inner try/catch => connection_failed
+            expect(diag.status).toBe('connection_failed');
+            expect(diag.details.qdrant_connection).toBe('failed');
         });
     });
 
@@ -536,15 +536,15 @@ describe('handleDiagnoseSemanticIndex', () => {
             expect(recoText).toContain('Qdrant');
         });
 
-        it('should not attempt OpenAI check when Qdrant connection fails', async () => {
+        it('should still attempt OpenAI check when Qdrant connection fails', async () => {
             mockGetQdrantClient.mockImplementation(() => {
                 throw new Error('Qdrant down');
             });
 
             await handleDiagnoseSemanticIndex(conversationCache);
 
-            // OpenAI client should not have been called
-            expect(mockGetOpenAIClient).not.toHaveBeenCalled();
+            // OpenAI check always runs, even when Qdrant fails
+            expect(mockGetOpenAIClient).toHaveBeenCalled();
         });
 
         it('should not include collection_info when connection fails', async () => {
