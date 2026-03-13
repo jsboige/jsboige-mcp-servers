@@ -238,6 +238,16 @@ export { roosyncManage, manageToolMetadata } from './manage.js';
 export { cleanupMessages, cleanupToolMetadata } from './cleanup.js';
 export type { CleanupMessagesArgs } from './cleanup.js';
 
+// #674: Outils de gestion des pièces jointes
+export {
+  roosyncListAttachments,
+  listAttachmentsToolMetadata,
+  roosyncGetAttachment,
+  getAttachmentToolMetadata,
+  roosyncDeleteAttachment,
+  deleteAttachmentToolMetadata
+} from './roosync-attachments.tool.js';
+
 // NOTE: modes-management.ts est une API INTERNE (pas un outil MCP séparé).
 // La gestion des modes sera intégrée dans le mécanisme unifié de config (#603).
 // Voir #595 (subsumed by #603). Ne PAS exposer comme outil MCP indépendant.
@@ -330,6 +340,13 @@ import { manageToolMetadata } from './manage.js';
 // #613 ISS-1: Import des métadonnées de l'outil cleanup
 import { cleanupToolMetadata } from './cleanup.js';
 
+// #674: Import des métadonnées des outils d'attachments
+import {
+  listAttachmentsToolMetadata,
+  getAttachmentToolMetadata,
+  deleteAttachmentToolMetadata
+} from './roosync-attachments.tool.js';
+
 // NOTE: modes-management.ts = API interne only, pas d'import MCP ici (#595/#603)
 
 // Métadonnées pour l'outil d'inventaire (format JSON Schema standard)
@@ -387,6 +404,7 @@ const exportBaselineToolMetadata = {
 
 /**
  * Liste de tous les outils RooSync pour enregistrement MCP
+ * Version 3.16 : 23 outils (#674: roosync_list_attachments, roosync_get_attachment, roosync_delete_attachment ajoutés)
  * Version 3.15 : 20 outils (#613 ISS-1: roosync_cleanup_messages ajouté)
  * Version 3.14 : 19 outils (#546: roosync_update_dashboard ajouté)
  * Version 3.13 : 18 outils (#533: roosync_sync_event retiré - jamais utilisé en production)
@@ -434,6 +452,10 @@ export const roosyncTools = [
   readToolMetadata,
   manageToolMetadata,
   // #613 ISS-1: Outil de cleanup en masse
-  cleanupToolMetadata
+  cleanupToolMetadata,
+  // #674: Outils de gestion des pièces jointes
+  listAttachmentsToolMetadata,
+  getAttachmentToolMetadata,
+  deleteAttachmentToolMetadata
   // NOTE: modes-management = API interne, pas d'outil MCP (#595/#603)
 ];

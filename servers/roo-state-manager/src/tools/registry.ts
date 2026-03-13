@@ -565,6 +565,28 @@ export function registerCallToolHandler(
            // roosync_send_message, roosync_read_inbox, roosync_get_message,
            // roosync_mark_message_read, roosync_archive_message, roosync_reply_message
            // Replaced by: roosync_send, roosync_read, roosync_manage
+           // #674: Outils de gestion des pièces jointes
+           case 'roosync_list_attachments':
+               try {
+                   result = await toolExports.roosyncListAttachments(args as any) as CallToolResult;
+               } catch (error) {
+                   result = { content: [{ type: 'text', text: `Error: ${(error as Error).message}` }], isError: true };
+               }
+               break;
+           case 'roosync_get_attachment':
+               try {
+                   result = await toolExports.roosyncGetAttachment(args as any) as CallToolResult;
+               } catch (error) {
+                   result = { content: [{ type: 'text', text: `Error: ${(error as Error).message}` }], isError: true };
+               }
+               break;
+           case 'roosync_delete_attachment':
+               try {
+                   result = await toolExports.roosyncDeleteAttachment(args as any) as CallToolResult;
+               } catch (error) {
+                   result = { content: [{ type: 'text', text: `Error: ${(error as Error).message}` }], isError: true };
+               }
+               break;
            // NOUVEAU: Outil d'inventaire
            case 'roosync_get_machine_inventory':
                try {

@@ -87,6 +87,13 @@ export interface Message {
     amendment_reason?: string;
     amendment_timestamp?: string;
   };
+
+  /** Pièces jointes (#674) */
+  attachments?: Array<{
+    uuid: string;
+    filename: string;
+    sizeBytes: number;
+  }>;
 }
 
 /**
@@ -386,6 +393,37 @@ export class MessageManager {
       logger.error('Error sending message', error);
       throw error;
     }
+  }
+
+  /**
+   * Met à jour les pièces jointes d'un message existant (#674)
+   *
+   * Met à jour les fichiers dans inbox/ et sent/ pour ajouter les refs d'attachments.
+   *
+   * @param messageId ID du message à mettre à jour
+   * @param attachments Liste des références d'attachments à ajouter
+   */
+  async updateMessageAttachments(
+    messageId: string,
+    attachments: Array<{ uuid: string; filename: string; sizeBytes: number }>
+  ): Promise<void> {
+    const locations = [
+      join(this.inboxPath, `${messageId}.json`),
+      join(this.sentPath, `${messageId}.json`),
+    ];
+
+    for (const filePath of locations) {
+      if (!existsSync(filePath)) continue;
+      try {
+        const raw = await fs.readFile(filePath, 'utf-8');
+        const msg: Message = JSON.parse(raw);
+        msg.attachments = attachments;
+        await fs.writeFile(filePath, JSON.stringify(msg, null, 2), 'utf-8');
+      } catch (err) {
+        logger.warn(`Failed to update attachments in ${filePath}`, err as Record<string, any>);
+      }
+    }
+    this.invalidateCache();
   }
 
   /**

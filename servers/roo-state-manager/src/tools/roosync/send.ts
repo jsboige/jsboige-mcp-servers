@@ -8,6 +8,7 @@
  */
 
 import { MessageManager } from '../../services/MessageManager.js';
+import { AttachmentManager } from '../../services/roosync/AttachmentManager.js';
 import { getSharedStatePath } from '../../utils/server-helpers.js';
 import { createLogger, Logger } from '../../utils/logger.js';
 import { recordRooSyncActivityAsync } from './heartbeat-activity.js';
@@ -68,6 +69,12 @@ interface RooSyncSendArgs {
   auto_destruct?: boolean;
   destruct_after_read_by?: string[];
   destruct_after?: string;
+
+  // Pièces jointes (#674)
+  attachments?: Array<{
+    path: string;
+    filename?: string;
+  }>;
 }
 
 /**
@@ -132,9 +139,37 @@ async function sendNewMessage(
     autoDestructOpts
   );
 
+  // Traiter les pièces jointes (#674)
+  let attachmentRefs: Array<{ uuid: string; filename: string; sizeBytes: number }> = [];
+  if (args.attachments && args.attachments.length > 0) {
+    const sharedStatePath = getSharedStatePath();
+    const attachmentManager = new AttachmentManager(sharedStatePath);
+    const uploaderMachineId = from;
+
+    for (const att of args.attachments) {
+      try {
+        const ref = await attachmentManager.uploadAttachment(att.path, uploaderMachineId, att.filename, message.id);
+        attachmentRefs.push(ref);
+        logger.info('📎 Attachment uploaded for message', { uuid: ref.uuid, filename: ref.filename, messageId: message.id });
+      } catch (err) {
+        logger.warn('⚠️ Failed to upload attachment (non-fatal)', { path: att.path, error: String(err) });
+      }
+    }
+
+    // Mettre à jour le message JSON avec les refs d'attachments
+    if (attachmentRefs.length > 0) {
+      message.attachments = attachmentRefs;
+      // Re-sauvegarder le message avec les attachments
+      await messageManager.updateMessageAttachments(message.id, attachmentRefs);
+    }
+  }
+
   // Formater le résultat
   const autoDestructInfo = message.auto_destruct
     ? `\n**🔥 Auto-destruction :** Activée${message.destruct_after ? ` (TTL: ${message.destruct_after})` : ''}${message.destruct_after_read_by ? ` (après lecture par: ${message.destruct_after_read_by.join(', ')})` : ' (après lecture par destinataire)'}${message.expires_at ? `\n**⏰ Expire :** ${formatDateFull(message.expires_at)}` : ''}`
+    : '';
+  const attachmentInfo = attachmentRefs.length > 0
+    ? `\n**📎 Pièces jointes :** ${attachmentRefs.length} fichier(s) attaché(s)\n${attachmentRefs.map(a => `  - \`${a.uuid}\` → ${a.filename} (${a.sizeBytes} octets)`).join('\n')}`
     : '';
   const result = `✅ **Message envoyé avec succès**
 
@@ -144,7 +179,8 @@ async function sendNewMessage(
 **Sujet :** ${message.subject}
 **Priorité :** ${getPriorityIcon(message.priority)} ${message.priority}
 **Timestamp :** ${formatDate(message.timestamp)}
-${args.tags && args.tags.length > 0 ? `**Tags :** ${args.tags.join(', ')}\n` : ''}${args.thread_id ? `**Thread :** ${args.thread_id}\n` : ''}${args.reply_to ? `**En réponse à :** ${args.reply_to}\n` : ''}${autoDestructInfo}Le message a été livré dans l'inbox de **${args.to}**.
+${args.tags && args.tags.length > 0 ? `**Tags :** ${args.tags.join(', ')}\n` : ''}${args.thread_id ? `**Thread :** ${args.thread_id}\n` : ''}${args.reply_to ? `**En réponse à :** ${args.reply_to}\n` : ''}${autoDestructInfo}${attachmentInfo}
+Le message a été livré dans l'inbox de **${args.to}**.
 
 ---
 
@@ -487,6 +523,24 @@ export const sendToolMetadata = {
       destruct_after: {
         type: 'string',
         description: 'Durée TTL avant destruction (ex: "30m", "2h", "1d"). Le message est détruit après ce délai même sans lecture'
+      },
+      attachments: {
+        type: 'array',
+        description: 'Pièces jointes à envoyer avec le message (#674)',
+        items: {
+          type: 'object',
+          properties: {
+            path: {
+              type: 'string',
+              description: 'Chemin local du fichier à attacher'
+            },
+            filename: {
+              type: 'string',
+              description: 'Nom du fichier (optionnel, défaut: basename du path)'
+            }
+          },
+          required: ['path']
+        }
       }
     },
     required: ['action']
