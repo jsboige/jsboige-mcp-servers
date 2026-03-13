@@ -20,6 +20,7 @@ import { DiffDetector } from '../../services/DiffDetector.js';
 import { execSync } from 'child_process';
 import type { BaselineConfig } from '../../types/baseline.js';
 import { BaselineServiceError, BaselineServiceErrorCode, StateManagerError } from '../../types/errors.js';
+import { readJSONFileSyncWithoutBOM } from '../../utils/encoding-helpers.js';
 
 const logger: Logger = createLogger('BaselineTool');
 
@@ -946,7 +947,8 @@ function updateDashboard(config: any, machineId: string, version: string, previo
   const dashboardPath = join(config.sharedPath, 'sync-dashboard.json');
   if (existsSync(dashboardPath)) {
     try {
-      const dashboard = JSON.parse(readFileSync(dashboardPath, 'utf-8'));
+      // BOM-safe read #664
+      const dashboard = readJSONFileSyncWithoutBOM<any>(dashboardPath);
 
       dashboard.baselineMachine = machineId;
       dashboard.baselineVersion = version;

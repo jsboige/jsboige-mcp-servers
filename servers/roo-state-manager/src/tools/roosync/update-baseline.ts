@@ -20,6 +20,7 @@ import { ConfigService } from '../../services/ConfigService.js';
 import { InventoryCollector, type MachineInventory } from '../../services/InventoryCollector.js';
 import { DiffDetector } from '../../services/DiffDetector.js';
 import type { BaselineConfig } from '../../types/baseline.js';
+import { readJSONFileSyncWithoutBOM } from '../../utils/encoding-helpers.js';
 
 // Logger instance for update baseline tool
 const logger: Logger = createLogger('UpdateBaselineTool');
@@ -244,7 +245,8 @@ export async function roosyncUpdateBaseline(args: UpdateBaselineArgs): Promise<U
     const dashboardPath = join(config.sharedPath, 'sync-dashboard.json');
     if (existsSync(dashboardPath)) {
       try {
-        const dashboard = JSON.parse(readFileSync(dashboardPath, 'utf-8'));
+        // BOM-safe read #664
+        const dashboard = readJSONFileSyncWithoutBOM<any>(dashboardPath);
         
         // Mettre à jour les informations de baseline
         dashboard.baselineMachine = args.machineId;

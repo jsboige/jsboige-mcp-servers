@@ -15,6 +15,7 @@ import { fileURLToPath } from 'url';
 import { promisify } from 'util';
 import { exec } from 'child_process';
 import { createLogger, Logger } from '../../utils/logger.js';
+import { readJSONFileSyncWithoutBOM } from '../../utils/encoding-helpers.js';
 
 const execAsync = promisify(exec);
 const __filename = fileURLToPath(import.meta.url);
@@ -194,8 +195,8 @@ export async function roosyncInit(args: InitArgs): Promise<InitResult> {
       writeFileSync(dashboardPath, dashboardContent, 'utf-8');
       filesCreated.push('sync-dashboard.json');
     } else {
-      // Dashboard existe : vérifier si machine est enregistrée
-      const existingDashboard = JSON.parse(readFileSync(dashboardPath, 'utf-8'));
+      // Dashboard existe : vérifier si machine est enregistrée (BOM-safe #664)
+      const existingDashboard = readJSONFileSyncWithoutBOM<any>(dashboardPath);
       if (!existingDashboard.machines[config.machineId]) {
         // Ajouter la machine au dashboard existant
         const now = new Date().toISOString();
@@ -277,7 +278,8 @@ export async function roosyncInit(args: InitArgs): Promise<InitResult> {
             let syncConfig: any;
             
             if (existsSync(configPath) && !args.force) {
-              syncConfig = JSON.parse(readFileSync(configPath, 'utf-8'));
+              // BOM-safe read #664
+              syncConfig = readJSONFileSyncWithoutBOM<any>(configPath);
             } else {
               syncConfig = {
                 version: '2.0.0',

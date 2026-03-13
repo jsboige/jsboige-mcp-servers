@@ -1,0 +1,43 @@
+{
+  "result1_diffs": [
+    {
+      "type": "config",
+      "path": "roo.modes",
+      "description": "Différence dans les modes Roo configurés",
+      "machines": [
+        "test-machine-1"
+      ],
+      "severity": "high"
+    },
+    {
+      "type": "config",
+      "path": "roo.mcpSettings.win-cli",
+      "description": "Valeur différente pour win-cli",
+      "machines": [
+        "test-machine-1"
+      ],
+      "severity": "high"
+    },
+    {
+      "type": "config",
+      "path": "roo.mcpSettings.0",
+      "description": "Valeur différente pour 0",
+      "machines": [
+        "test-machine-1"
+      ],
+      "severity": "high"
+    },
+    {
+      "type": "hardware",
+      "path": "hardware.gpu",
+      "description": "GPU différent : Unknown vs ",
+      "machines": [
+        "test-machine-1"
+      ],
+      "severity": "medium"
+    }
+  ],
+  "result1_totalDiffs": 4,
+  "baseline_version": "3.0.0",
+  "baseline_machines": 2
+}

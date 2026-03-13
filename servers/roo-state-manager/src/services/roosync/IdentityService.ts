@@ -1,5 +1,6 @@
 import * as fs from 'fs/promises';
 import * as path from 'path';
+import { readJSONFileWithoutBOM } from '../../utils/encoding-helpers.js';
 
 export interface IdentityValidationResult {
   machineId: string;
@@ -64,7 +65,8 @@ export class IdentityService {
       if (await this.fileExists(registryFile)) {
         result.checks.registryFile = true;
         try {
-          const content = JSON.parse(await fs.readFile(registryFile, 'utf-8'));
+          // BOM-safe read #664
+          const content = await readJSONFileWithoutBOM<any>(registryFile);
           result.details.registry = content;
           log(`Machine registry found with ${Object.keys(content.machines || {}).length} machines`, 'success');
         } catch (e: any) {
@@ -79,7 +81,8 @@ export class IdentityService {
       if (await this.fileExists(identityFile)) {
         result.checks.identityRegistry = true;
         try {
-          const content = JSON.parse(await fs.readFile(identityFile, 'utf-8'));
+          // BOM-safe read #664
+          const content = await readJSONFileWithoutBOM<any>(identityFile);
           result.details.identities = content;
           
           const conflicts: string[] = [];
@@ -117,7 +120,8 @@ export class IdentityService {
           
           for (const file of presenceFiles) {
             try {
-              const content = JSON.parse(await fs.readFile(path.join(presenceDir, file), 'utf-8'));
+              // BOM-safe read #664
+              const content = await readJSONFileWithoutBOM<any>(path.join(presenceDir, file));
               machineIds.push(content.id);
               presenceData.push({ file, ...content });
             } catch (e: any) {
@@ -145,7 +149,8 @@ export class IdentityService {
       if (await this.fileExists(dashboardFile)) {
         result.checks.dashboardFile = true;
         try {
-          const content = JSON.parse(await fs.readFile(dashboardFile, 'utf-8'));
+          // BOM-safe read #664
+          const content = await readJSONFileWithoutBOM<any>(dashboardFile);
           result.details.dashboard = content;
           log('Dashboard file found and valid', 'success');
         } catch (e: any) {
@@ -160,7 +165,8 @@ export class IdentityService {
       if (await this.fileExists(syncConfigFile)) {
         result.checks.configFiles = true;
         try {
-          const content = JSON.parse(await fs.readFile(syncConfigFile, 'utf-8'));
+          // BOM-safe read #664
+          const content = await readJSONFileWithoutBOM<any>(syncConfigFile);
           if (content.machineId === machineId) {
              log('sync-config.json matches machine ID', 'success');
           } else {

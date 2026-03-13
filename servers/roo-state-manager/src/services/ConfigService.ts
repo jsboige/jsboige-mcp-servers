@@ -98,11 +98,12 @@ export class ConfigService implements IConfigService {
 
   /**
    * Sauvegarde la configuration dans un fichier
+   * NOTE: 'utf-8' encoding in Node.js writes WITHOUT BOM by default
    * @throws {ConfigServiceError} Si la sauvegarde échoue
    */
   public async saveConfig(config: any): Promise<boolean> {
     try {
-      await fs.writeFile(this.configPath, JSON.stringify(config, null, 2));
+      await fs.writeFile(this.configPath, JSON.stringify(config, null, 2), 'utf-8');
       return true;
     } catch (error) {
       logger.error('Erreur lors de la sauvegarde de la configuration', error);
@@ -118,6 +119,7 @@ export class ConfigService implements IConfigService {
 
   /**
    * Retourne la version de configuration actuelle depuis le fichier sync-config.json
+   * NOTE: Uses readJSONFileWithoutBOM to handle BOM UTF-8 (issue #664)
    * @returns La version de configuration ou null si non disponible
    * @throws {ConfigServiceError} Si la lecture échoue
    */
@@ -129,8 +131,8 @@ export class ConfigService implements IConfigService {
         logger.warn('Fichier sync-config.json non trouvé', { syncConfigPath });
         return null;
       }
-      const content = await fs.readFile(syncConfigPath, 'utf-8');
-      const config = JSON.parse(content);
+      // Use BOM-safe read (issue #664)
+      const config = await readJSONFileWithoutBOM<{version?: string}>(syncConfigPath);
       return config.version || null;
     } catch (error) {
       logger.error('Erreur lors de la lecture de la version de configuration', error);

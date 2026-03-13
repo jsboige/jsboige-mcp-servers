@@ -432,7 +432,8 @@ export class ConfigSharingService implements IConfigSharingService {
           // Traitement spécial pour les settings Roo (state.vscdb SQLite) - Issue #509, #547
           const isSettingsFile = file.type === 'roo_settings';
           if (isSettingsFile) {
-            const rawContent = JSON.parse(await fs.readFile(sourcePath, 'utf-8'));
+            // Use BOM-safe read (issue #664)
+            const rawContent = await readJSONFileWithoutBOM<any>(sourcePath);
             // Support both wrapped format { metadata, settings } and raw dict
             const settingsToInject = rawContent.settings ?? rawContent;
 
@@ -490,8 +491,8 @@ export class ConfigSharingService implements IConfigSharingService {
             continue;
           }
 
-          // Lecture du contenu source (JSON)
-          const sourceContent = JSON.parse(await fs.readFile(sourcePath, 'utf-8'));
+          // Lecture du contenu source (JSON) - Use BOM-safe read (issue #664)
+          const sourceContent = await readJSONFileWithoutBOM<any>(sourcePath);
 
           // Issue #349: Filtrage granulaire des serveurs MCP si targets mcp:xxx sont spécifiés
           let finalContent = sourceContent;
@@ -529,7 +530,8 @@ export class ConfigSharingService implements IConfigSharingService {
             // Pour modes/mcp/profiles : fusion JSON
             const isReplacementTarget = file.type === 'roomodes_config' || file.type === 'model_config';
             if (!isReplacementTarget) {
-              const localContent = JSON.parse(await fs.readFile(destPath, 'utf-8'));
+              // Use BOM-safe read (issue #664)
+              const localContent = await readJSONFileWithoutBOM<any>(destPath);
               finalContent = JsonMerger.merge(finalContent, localContent, { arrayStrategy: 'replace' });
             }
 
@@ -680,7 +682,8 @@ export class ConfigSharingService implements IConfigSharingService {
           );
         }
 
-        const latestData = JSON.parse(await fs.readFile(latestPath, 'utf-8'));
+        // Use BOM-safe read (issue #664)
+        const latestData = await readJSONFileWithoutBOM<{path: string}>(latestPath);
         const modelConfigPath = join(latestData.path, 'model-configs', 'model-configs.json');
 
         if (!existsSync(modelConfigPath)) {
@@ -691,7 +694,8 @@ export class ConfigSharingService implements IConfigSharingService {
           );
         }
 
-        modelConfigs = JSON.parse(await fs.readFile(modelConfigPath, 'utf-8'));
+        // Use BOM-safe read (issue #664)
+        modelConfigs = await readJSONFileWithoutBOM<any>(modelConfigPath);
         this.logger.info(`model-configs.json chargé depuis ${options.sourceMachineId}`);
       } else {
         // Charger depuis le fichier local
@@ -713,7 +717,8 @@ export class ConfigSharingService implements IConfigSharingService {
           );
         }
 
-        modelConfigs = JSON.parse(await fs.readFile(localModelConfigPath, 'utf-8'));
+        // Use BOM-safe read (issue #664)
+        modelConfigs = await readJSONFileWithoutBOM<any>(localModelConfigPath);
         this.logger.info('model-configs.json chargé depuis fichier local');
       }
 
@@ -778,7 +783,7 @@ export class ConfigSharingService implements IConfigSharingService {
 
       // Construire le nouveau model-configs.json complet
       const currentConfig = existsSync(localModelConfigPath)
-        ? JSON.parse(await fs.readFile(localModelConfigPath, 'utf-8'))
+        ? await readJSONFileWithoutBOM<any>(localModelConfigPath) // Use BOM-safe read (issue #664)
         : {};
 
       const updatedConfig = {
@@ -928,8 +933,8 @@ export class ConfigSharingService implements IConfigSharingService {
           const srcPath = join(rooModesPath, entry);
           const destPath = join(modesDir, entry);
 
-          // Lecture et normalisation
-          const content = JSON.parse(await fs.readFile(srcPath, 'utf-8'));
+          // Lecture et normalisation (BOM-safe #664)
+          const content = await readJSONFileWithoutBOM<any>(srcPath);
           const normalized = await this.normalizationService.normalize(content, 'mode_definition');
 
           // Écriture du fichier normalisé
@@ -1105,8 +1110,8 @@ export class ConfigSharingService implements IConfigSharingService {
       try {
         const destPath = join(profilesDir, 'configuration-profiles.json');
 
-        // Lecture du fichier de profils
-        const content = JSON.parse(await fs.readFile(profilesSourcePath, 'utf-8'));
+        // Lecture du fichier de profils (BOM-safe #664)
+        const content = await readJSONFileWithoutBOM<any>(profilesSourcePath);
 
         // Normalisation des profils
         const normalized = await this.normalizationService.normalize(content, 'profile_settings');
@@ -1138,7 +1143,8 @@ export class ConfigSharingService implements IConfigSharingService {
       try {
         const destPath = join(profilesDir, 'machine-mappings.json');
 
-        const content = JSON.parse(await fs.readFile(mappingsSourcePath, 'utf-8'));
+        // Lecture BOM-safe #664
+        const content = await readJSONFileWithoutBOM<any>(mappingsSourcePath);
         const normalized = await this.normalizationService.normalize(content, 'profile_settings');
 
         await fs.writeFile(destPath, JSON.stringify(normalized, null, 2));
@@ -1165,7 +1171,8 @@ export class ConfigSharingService implements IConfigSharingService {
       try {
         const destPath = join(profilesDir, 'non-nominative-baseline.json');
 
-        const content = JSON.parse(await fs.readFile(baselineSourcePath, 'utf-8'));
+        // Lecture BOM-safe #664
+        const content = await readJSONFileWithoutBOM<any>(baselineSourcePath);
         const normalized = await this.normalizationService.normalize(content, 'profile_settings');
 
         await fs.writeFile(destPath, JSON.stringify(normalized, null, 2));
@@ -1214,8 +1221,8 @@ export class ConfigSharingService implements IConfigSharingService {
     if (existsSync(roomodesPath)) {
       const destPath = join(roomodesDir, '.roomodes');
 
-      // .roomodes est un fichier JSON - on le lit et normalise
-      const content = JSON.parse(await fs.readFile(roomodesPath, 'utf-8'));
+      // .roomodes est un fichier JSON - lecture BOM-safe #664
+      const content = await readJSONFileWithoutBOM<any>(roomodesPath);
       const normalized = await this.normalizationService.normalize(content, 'roomodes_config');
       await fs.writeFile(destPath, JSON.stringify(normalized, null, 2));
 
@@ -1262,7 +1269,8 @@ export class ConfigSharingService implements IConfigSharingService {
     if (existsSync(modelConfigPath)) {
       const destPath = join(modelDir, 'model-configs.json');
 
-      const content = JSON.parse(await fs.readFile(modelConfigPath, 'utf-8'));
+      // Lecture BOM-safe #664
+      const content = await readJSONFileWithoutBOM<any>(modelConfigPath);
       const normalized = await this.normalizationService.normalize(content, 'model_config');
       await fs.writeFile(destPath, JSON.stringify(normalized, null, 2));
 
