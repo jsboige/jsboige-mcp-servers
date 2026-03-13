@@ -716,24 +716,13 @@ export class MessageManager {
     const now = new Date();
     let destroyed = 0;
 
-    for (const dir of [this.inboxPath, this.sentPath]) {
-      if (!existsSync(dir)) continue;
-      const files = (await fs.readdir(dir)).filter(f => f.endsWith('.json'));
-      for (const file of files) {
-        try {
-          const content = await fs.readFile(join(dir, file), 'utf-8');
-          const message: Message = JSON.parse(content);
-          if (message.auto_destruct && message.expires_at && !message.destroyed_at) {
-            if (new Date(message.expires_at) <= now) {
-              // Only destroy from inbox (sent will be updated by destroyMessage)
-              if (dir === this.inboxPath) {
-                await this.destroyMessage(message.id, 'ttl_expired');
-                destroyed++;
-              }
-            }
-          }
-        } catch {
-          // Skip corrupted files
+    // Use cached inbox data instead of re-scanning GDrive directory
+    const { full } = await this.ensureInboxCache();
+    for (const message of full.values()) {
+      if (message.auto_destruct && message.expires_at && !message.destroyed_at) {
+        if (new Date(message.expires_at) <= now) {
+          await this.destroyMessage(message.id, 'ttl_expired');
+          destroyed++;
         }
       }
     }
@@ -755,69 +744,67 @@ export class MessageManager {
     const now = Date.now();
     let remindersSent = 0;
 
-    if (!existsSync(this.inboxPath)) return 0;
+    // Use cached inbox data instead of re-scanning GDrive directory
+    const { full } = await this.ensureInboxCache();
 
-    const files = (await fs.readdir(this.inboxPath)).filter(f => f.endsWith('.json'));
-    for (const file of files) {
-      try {
-        const filePath = join(this.inboxPath, file);
-        const content = await fs.readFile(filePath, 'utf-8');
-        const message: Message = JSON.parse(content);
+    for (const message of full.values()) {
+      // Only for auto-destruct messages with TTL that haven't been destroyed or reminded
+      if (!message.auto_destruct || !message.expires_at || !message.destruct_after ||
+          message.destroyed_at || message.reminder_sent) {
+        continue;
+      }
 
-        // Only for auto-destruct messages with TTL that haven't been destroyed or reminded
-        if (!message.auto_destruct || !message.expires_at || !message.destruct_after ||
-            message.destroyed_at || message.reminder_sent) {
-          continue;
-        }
+      const expiresAt = new Date(message.expires_at).getTime();
+      if (expiresAt <= now) continue; // Already expired, cleanup will handle it
 
-        const expiresAt = new Date(message.expires_at).getTime();
-        if (expiresAt <= now) continue; // Already expired, cleanup will handle it
+      // Calculate reminder threshold: max(5min, TTL × 10%)
+      const ttlMs = MessageManager.parseDuration(message.destruct_after);
+      if (!ttlMs) continue;
 
-        // Calculate reminder threshold: max(5min, TTL × 10%)
-        const ttlMs = MessageManager.parseDuration(message.destruct_after);
-        if (!ttlMs) continue;
+      const reminderThreshold = Math.max(5 * 60 * 1000, ttlMs * 0.1);
+      const timeUntilExpiry = expiresAt - now;
 
-        const reminderThreshold = Math.max(5 * 60 * 1000, ttlMs * 0.1);
-        const timeUntilExpiry = expiresAt - now;
+      if (timeUntilExpiry <= reminderThreshold) {
+        // Send reminder message
+        const minutesLeft = Math.ceil(timeUntilExpiry / 60000);
+        const reminderSubject = `[REMINDER] Message "${message.subject}" expires in ${minutesLeft}min`;
+        const reminderBody = `⏰ **Rappel d'expiration**\n\nLe message auto-destructeur suivant va expirer :\n\n` +
+          `- **ID:** \`${message.id}\`\n` +
+          `- **Sujet:** ${message.subject}\n` +
+          `- **De:** ${message.from}\n` +
+          `- **Expire dans:** ~${minutesLeft} minute${minutesLeft > 1 ? 's' : ''}\n\n` +
+          `Lisez-le avant qu'il ne soit détruit automatiquement.`;
 
-        if (timeUntilExpiry <= reminderThreshold) {
-          // Send reminder message
-          const minutesLeft = Math.ceil(timeUntilExpiry / 60000);
-          const reminderSubject = `[REMINDER] Message "${message.subject}" expires in ${minutesLeft}min`;
-          const reminderBody = `⏰ **Rappel d'expiration**\n\nLe message auto-destructeur suivant va expirer :\n\n` +
-            `- **ID:** \`${message.id}\`\n` +
-            `- **Sujet:** ${message.subject}\n` +
-            `- **De:** ${message.from}\n` +
-            `- **Expire dans:** ~${minutesLeft} minute${minutesLeft > 1 ? 's' : ''}\n\n` +
-            `Lisez-le avant qu'il ne soit détruit automatiquement.`;
+        await this.sendMessage(
+          'system', message.to, reminderSubject, reminderBody,
+          'HIGH', ['auto-destruct-reminder', 'system']
+        );
 
-          await this.sendMessage(
-            'system', message.to, reminderSubject, reminderBody,
-            'HIGH', ['auto-destruct-reminder', 'system']
-          );
-
-          // Mark reminder as sent on the original message
-          message.reminder_sent = true;
+        // Mark reminder as sent on the original message file
+        message.reminder_sent = true;
+        const msgFileName = `${message.id}.json`;
+        const filePath = join(this.inboxPath, msgFileName);
+        try {
           await fs.writeFile(filePath, JSON.stringify(message, null, 2));
-
-          // Also update sent copy if exists
-          const sentFile = join(this.sentPath, file);
-          if (existsSync(sentFile)) {
-            try {
-              const sentContent = await fs.readFile(sentFile, 'utf-8');
-              const sentMessage: Message = JSON.parse(sentContent);
-              sentMessage.reminder_sent = true;
-              await fs.writeFile(sentFile, JSON.stringify(sentMessage, null, 2));
-            } catch {
-              // Non-critical
-            }
-          }
-
-          remindersSent++;
-          logger.info(`Sent expiry reminder for message ${message.id} (${minutesLeft}min left)`);
+        } catch {
+          // Non-critical: cache is updated, file write may fail
         }
-      } catch {
-        // Skip corrupted files
+
+        // Also update sent copy if exists
+        const sentFile = join(this.sentPath, msgFileName);
+        if (existsSync(sentFile)) {
+          try {
+            const sentContent = await fs.readFile(sentFile, 'utf-8');
+            const sentMessage: Message = JSON.parse(sentContent);
+            sentMessage.reminder_sent = true;
+            await fs.writeFile(sentFile, JSON.stringify(sentMessage, null, 2));
+          } catch {
+            // Non-critical
+          }
+        }
+
+        remindersSent++;
+        logger.info(`Sent expiry reminder for message ${message.id} (${minutesLeft}min left)`);
       }
     }
 

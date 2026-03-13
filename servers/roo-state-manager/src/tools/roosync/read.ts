@@ -25,6 +25,10 @@ import { getRooSyncService } from '../../services/RooSyncService.js';
 // Logger instance for read tool
 const logger: Logger = createLogger('RooSyncReadTool');
 
+// Throttle fire-and-forget cleanup tasks: run at most once every 5 minutes
+const CLEANUP_THROTTLE_MS = 5 * 60 * 1000;
+let lastCleanupRunAt = 0;
+
 /**
  * Arguments de l'outil roosync_read
  */
@@ -86,20 +90,26 @@ async function readInboxMode(
     .registerHeartbeat(localMachineId, { lastActivity: 'roosync_read_inbox', messageCount: messages.length })
     .catch(err => logger.debug('Heartbeat update skipped (non-critical)', { error: String(err) }));
 
-  // Fire-and-forget auto-archive of old read messages (#638 Phase 3)
-  messageManager.autoArchiveOld(30, true)
-    .then(n => { if (n > 0) logger.info(`Auto-archived ${n} old messages`); })
-    .catch(err => logger.debug('Auto-archive skipped (non-critical)', { error: String(err) }));
+  // Throttled fire-and-forget cleanup tasks (run at most once every 5 min)
+  const now = Date.now();
+  if (now - lastCleanupRunAt > CLEANUP_THROTTLE_MS) {
+    lastCleanupRunAt = now;
 
-  // Fire-and-forget cleanup of expired auto-destruct messages (#629)
-  messageManager.cleanupExpiredMessages()
-    .then(n => { if (n > 0) logger.info(`Destroyed ${n} expired auto-destruct messages`); })
-    .catch(err => logger.debug('Auto-destruct cleanup skipped (non-critical)', { error: String(err) }));
+    // Auto-archive old read messages (#638 Phase 3)
+    messageManager.autoArchiveOld(30, true)
+      .then(n => { if (n > 0) logger.info(`Auto-archived ${n} old messages`); })
+      .catch(err => logger.debug('Auto-archive skipped (non-critical)', { error: String(err) }));
 
-  // Fire-and-forget expiry reminders for approaching TTL (#629)
-  messageManager.sendExpiryReminders()
-    .then(n => { if (n > 0) logger.info(`Sent ${n} expiry reminders`); })
-    .catch(err => logger.debug('Expiry reminders skipped (non-critical)', { error: String(err) }));
+    // Cleanup expired auto-destruct messages (#629)
+    messageManager.cleanupExpiredMessages()
+      .then(n => { if (n > 0) logger.info(`Destroyed ${n} expired auto-destruct messages`); })
+      .catch(err => logger.debug('Auto-destruct cleanup skipped (non-critical)', { error: String(err) }));
+
+    // Expiry reminders for approaching TTL (#629)
+    messageManager.sendExpiryReminders()
+      .then(n => { if (n > 0) logger.info(`Sent ${n} expiry reminders`); })
+      .catch(err => logger.debug('Expiry reminders skipped (non-critical)', { error: String(err) }));
+  }
 
   // Cas : aucun message
   if (messages.length === 0 && counts.total === 0) {
