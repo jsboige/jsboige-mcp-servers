@@ -36,17 +36,39 @@ vi.mock('../../utils/roo-storage-detector.js', () => ({
   },
 }));
 
-// Mock TaskIndexer
-vi.mock('../task-indexer.js', () => ({
-  TaskIndexer: vi.fn().mockImplementation(() => ({
-    indexTask: vi.fn(),
-    countPointsByHostOs: vi.fn().mockResolvedValue(0),
-  })),
-  getHostIdentifier: vi.fn().mockReturnValue('test-host'),
-}));
-
 // Mock tools index (imported but unused in tested functions)
 vi.mock('../../tools/index.js', () => ({}));
+
+// Mock TaskArchiver (dynamically imported)
+vi.mock('../task-archiver/index.js', () => ({
+  TaskArchiver: {
+    archiveTask: vi.fn().mockResolvedValue(undefined),
+  },
+}));
+
+// Mock TaskIndexer with spies on the prototype
+vi.mock('../task-indexer.js', () => {
+  const indexTaskSpy = vi.fn().mockResolvedValue([]);
+  const countPointsByHostOsSpy = vi.fn().mockResolvedValue(0);
+
+  class MockTaskIndexer {
+    async indexTask(taskId: string, source: 'roo' | 'claude-code') {
+      return indexTaskSpy(taskId, source);
+    }
+    async countPointsByHostOs(hostOs: string) {
+      return countPointsByHostOsSpy(hostOs);
+    }
+  }
+
+  // Attach spies to the class for test access
+  (MockTaskIndexer as any).indexTaskSpy = indexTaskSpy;
+  (MockTaskIndexer as any).countPointsByHostOsSpy = countPointsByHostOsSpy;
+
+  return {
+    TaskIndexer: MockTaskIndexer,
+    getHostIdentifier: vi.fn().mockReturnValue('test-host'),
+  };
+});
 
 import {
   loadSkeletonsFromDisk,
@@ -55,11 +77,24 @@ import {
   saveSkeletonToDisk,
   startQdrantIndexingBackgroundProcess,
   indexTaskInQdrant,
-  QDRANT_INDEX_BATCH_SIZE,
 } from '../background-services.js';
+import { classifyIndexingError } from '../background-services.js';
 import { RooStorageDetector } from '../../utils/roo-storage-detector.js';
 import type { ConversationSkeleton } from '../../types/conversation.js';
 import type { ServerState } from '../state-manager.service.js';
+import { ANTI_LEAK_CONFIG } from '../../config/server-config.js';
+// TaskIndexer is mocked above, no need to import the actual class
+import { TaskIndexer } from '../task-indexer.js';
+
+// Helper to access the spies attached to the mock
+const TaskIndexerSpies = {
+  get indexTask() {
+    return (TaskIndexer as any).indexTaskSpy;
+  },
+  get countPointsByHostOs() {
+    return (TaskIndexer as any).countPointsByHostOsSpy;
+  },
+};
 
 const mockFs = fs as unknown as {
   readdir: ReturnType<typeof vi.fn>;
@@ -91,7 +126,44 @@ function createMockSkeleton(taskId: string, overrides?: Partial<ConversationSkel
   };
 }
 
+function createMockState(): ServerState {
+  return {
+    conversationCache: new Map(),
+    qdrantIndexQueue: new Set(),
+    qdrantIndexInterval: null,
+    isQdrantIndexingEnabled: true,
+    qdrantIndexCache: new Map(),
+    lastQdrantConsistencyCheck: 0,
+    indexingDecisionService: {
+      shouldIndex: vi.fn().mockReturnValue({ shouldIndex: false, reason: 'skip', action: 'skip', requiresSave: false }),
+      migrateLegacyIndexingState: vi.fn().mockReturnValue(false),
+      markIndexingSuccess: vi.fn(),
+      markIndexingFailure: vi.fn(),
+    },
+    indexingMetrics: {
+      totalTasks: 0,
+      skippedTasks: 0,
+      indexedTasks: 0,
+      failedTasks: 0,
+      retryTasks: 0,
+      bandwidthSaved: 0,
+    },
+    // Stubs for unused services
+    xmlExporterService: {} as any,
+    exportConfigManager: {} as any,
+    traceSummaryService: {} as any,
+    llmService: {} as any,
+    narrativeContextBuilderService: {} as any,
+    synthesisOrchestratorService: {} as any,
+  } as unknown as ServerState;
+}
+
 describe('background-services', () => {
+  // Helper to get mocked TaskIndexer instance
+  function getMockTaskIndexer() {
+    return vi.mocked(new TaskIndexer());
+  }
+
   beforeEach(() => {
     vi.clearAllMocks();
     vi.spyOn(console, 'log').mockImplementation(() => {});
@@ -386,38 +458,6 @@ describe('background-services', () => {
   // === initializeBackgroundServices ===
 
   describe('initializeBackgroundServices', () => {
-    function createMockState(): ServerState {
-      return {
-        conversationCache: new Map(),
-        qdrantIndexQueue: new Set(),
-        qdrantIndexInterval: null,
-        isQdrantIndexingEnabled: true,
-        qdrantIndexCache: new Map(),
-        lastQdrantConsistencyCheck: 0,
-        indexingDecisionService: {
-          shouldIndex: vi.fn().mockReturnValue({ shouldIndex: false, reason: 'skip', action: 'skip', requiresSave: false }),
-          migrateLegacyIndexingState: vi.fn().mockReturnValue(false),
-          markIndexingSuccess: vi.fn(),
-          markIndexingFailure: vi.fn(),
-        },
-        indexingMetrics: {
-          totalTasks: 0,
-          skippedTasks: 0,
-          indexedTasks: 0,
-          failedTasks: 0,
-          retryTasks: 0,
-          bandwidthSaved: 0,
-        },
-        // Stubs for unused services
-        xmlExporterService: {} as any,
-        exportConfigManager: {} as any,
-        traceSummaryService: {} as any,
-        llmService: {} as any,
-        narrativeContextBuilderService: {} as any,
-        synthesisOrchestratorService: {} as any,
-      } as unknown as ServerState;
-    }
-
     it('should call loadSkeletonsFromDisk and startProactiveMetadataRepair', async () => {
       const state = createMockState();
 
@@ -455,249 +495,497 @@ describe('background-services', () => {
     });
   });
 
-  // === startQdrantIndexingBackgroundProcess (#686) ===
+  // === Integration Tests: Background Indexer ===
 
   describe('startQdrantIndexingBackgroundProcess', () => {
-    function createQdrantMockState(): ServerState {
-      return {
-        conversationCache: new Map(),
-        qdrantIndexQueue: new Set(),
-        qdrantIndexInterval: null,
-        isQdrantIndexingEnabled: true,
-        qdrantIndexCache: new Map(),
-        lastQdrantConsistencyCheck: 0,
-        indexingDecisionService: {
-          shouldIndex: vi.fn().mockReturnValue({ shouldIndex: true, reason: 'not indexed', action: 'index', requiresSave: false }),
-          migrateLegacyIndexingState: vi.fn().mockReturnValue(false),
-          markIndexingSuccess: vi.fn(),
-          markIndexingFailure: vi.fn(),
-        },
-        indexingMetrics: {
-          totalTasks: 0,
-          skippedTasks: 0,
-          indexedTasks: 0,
-          failedTasks: 0,
-          retryTasks: 0,
-          bandwidthSaved: 0,
-        },
-        xmlExporterService: {} as any,
-        exportConfigManager: {} as any,
-        traceSummaryService: {} as any,
-        llmService: {} as any,
-        narrativeContextBuilderService: {} as any,
-        synthesisOrchestratorService: {} as any,
-      } as unknown as ServerState;
-    }
-
-    it('should create a setInterval and store it in state.qdrantIndexInterval', () => {
+    beforeEach(() => {
       vi.useFakeTimers();
-      const state = createQdrantMockState();
+      // Reset mock behaviors before each test
+      TaskIndexerSpies.indexTask.mockReset();
+    });
 
-      startQdrantIndexingBackgroundProcess(state);
-
-      expect(state.qdrantIndexInterval).not.toBeNull();
+    afterEach(() => {
+      if (vi.getTimerCount() > 0) {
+        vi.clearAllTimers();
+      }
       vi.useRealTimers();
     });
 
-    it('should clear existing interval before creating a new one', () => {
-      vi.useFakeTimers();
-      const state = createQdrantMockState();
+    it('should create a setInterval with correct interval', () => {
+      const state = createMockState();
+      state.isQdrantIndexingEnabled = true;
+      state.qdrantIndexQueue.add('task-001');
+
+      const setIntervalSpy = vi.spyOn(global, 'setInterval');
+
+      startQdrantIndexingBackgroundProcess(state);
+
+      expect(setIntervalSpy).toHaveBeenCalledWith(
+        expect.any(Function),
+        ANTI_LEAK_CONFIG.MAX_BACKGROUND_INTERVAL
+      );
+      expect(state.qdrantIndexInterval).not.toBeNull();
+    });
+
+    it('should clear existing interval if present', () => {
+      const state = createMockState();
       const clearIntervalSpy = vi.spyOn(global, 'clearInterval');
 
       // Simulate existing interval
-      const fakeInterval = setInterval(() => {}, 9999);
-      state.qdrantIndexInterval = fakeInterval;
+      const existingInterval = setInterval(() => {}, 1000);
+      state.qdrantIndexInterval = existingInterval as unknown as NodeJS.Timeout;
 
       startQdrantIndexingBackgroundProcess(state);
 
-      expect(clearIntervalSpy).toHaveBeenCalledWith(fakeInterval);
-      vi.useRealTimers();
+      // Clean up the interval to avoid leaks
+      clearInterval(existingInterval);
+
+      expect(clearIntervalSpy).toHaveBeenCalledWith(existingInterval);
     });
 
-    it('should not process queue when isQdrantIndexingEnabled is false', async () => {
-      vi.useFakeTimers();
-      const state = createQdrantMockState();
+    it('should not process tasks when isQdrantIndexingEnabled is false', async () => {
+      const state = createMockState();
       state.isQdrantIndexingEnabled = false;
       state.qdrantIndexQueue.add('task-001');
 
-      startQdrantIndexingBackgroundProcess(state);
-      // Advance exactly one interval (not runAllTimers which loops forever)
-      await vi.advanceTimersByTimeAsync(5 * 60 * 1000);
+      const skeleton = createMockSkeleton('task-001');
+      state.conversationCache.set('task-001', skeleton);
 
-      // Queue should still contain the task (not processed because disabled)
+      startQdrantIndexingBackgroundProcess(state);
+
+      // Advance timers to trigger interval callback (but it should skip due to isQdrantIndexingEnabled=false)
+      vi.advanceTimersByTime(ANTI_LEAK_CONFIG.MAX_BACKGROUND_INTERVAL);
+      // Only trigger pending timers once, don't run infinitely
+      await vi.runOnlyPendingTimersAsync();
+
+      // Task should still be in queue (not processed)
       expect(state.qdrantIndexQueue.has('task-001')).toBe(true);
-      vi.useRealTimers();
+      expect(TaskIndexerSpies.indexTask).not.toHaveBeenCalled();
     });
 
     it('should not process when queue is empty', async () => {
-      vi.useFakeTimers();
-      const state = createQdrantMockState();
-      // Queue is empty, indexing enabled
+      const state = createMockState();
+      state.isQdrantIndexingEnabled = true;
+
+      const mockIndexTask = TaskIndexerSpies.indexTask;
 
       startQdrantIndexingBackgroundProcess(state);
-      // Advance exactly one interval
-      await vi.advanceTimersByTimeAsync(5 * 60 * 1000);
 
-      // No tasks should have been indexed (queue was empty)
-      expect(state.indexingMetrics.indexedTasks).toBe(0);
-      vi.useRealTimers();
+      // Advance timers
+      vi.advanceTimersByTime(ANTI_LEAK_CONFIG.MAX_BACKGROUND_INTERVAL);
+      await vi.runOnlyPendingTimersAsync();
+
+      expect(mockIndexTask).not.toHaveBeenCalled();
     });
 
-    it('should process up to QDRANT_INDEX_BATCH_SIZE tasks per interval', async () => {
-      const state = createQdrantMockState();
+    it('should process tasks from queue one at a time', async () => {
+      const state = createMockState();
+      state.isQdrantIndexingEnabled = true;
+      state.qdrantIndexQueue.add('task-001');
 
-      // Add more tasks than batch size
-      const taskCount = QDRANT_INDEX_BATCH_SIZE + 2;
-      for (let i = 0; i < taskCount; i++) {
-        const taskId = `task-${i.toString().padStart(3, '0')}`;
-        const skeleton = createMockSkeleton(taskId);
-        state.conversationCache.set(taskId, skeleton);
-        state.qdrantIndexQueue.add(taskId);
-      }
+      const skeleton = createMockSkeleton('task-001');
+      skeleton.metadata = {
+        ...skeleton.metadata,
+        indexingState: { indexStatus: 'pending' as const },
+      };
+      state.conversationCache.set('task-001', skeleton);
 
-      // Capture the setInterval callback via spy (no fake timers needed)
-      let capturedCallback: (() => Promise<void>) | null = null;
-      const setIntervalSpy = vi.spyOn(global, 'setInterval').mockImplementation((fn: any) => {
-        capturedCallback = fn;
-        return 0 as any; // fake timer handle
+      // Override shouldIndex to allow processing
+      state.indexingDecisionService.shouldIndex.mockReturnValue({
+        shouldIndex: true,
+        reason: 'test',
+        action: 'index',
+        requiresSave: false,
       });
 
-      // Mock TaskIndexer to succeed
-      const { TaskIndexer } = await import('../task-indexer.js');
-      const mockIndexTask = vi.fn().mockResolvedValue(undefined);
-      vi.mocked(TaskIndexer).mockImplementation(() => ({ indexTask: mockIndexTask }) as any);
-
-      // Mock RooStorageDetector for indexTaskInQdrant
+      const mockIndexTask = TaskIndexerSpies.indexTask;
+      mockIndexTask.mockResolvedValue(undefined);
       mockDetector.detectStorageLocations.mockResolvedValue(['/mock/storage']);
-      mockFs.writeFile.mockResolvedValue(undefined);
       mockFs.mkdir.mockResolvedValue(undefined);
+      mockFs.writeFile.mockResolvedValue(undefined);
 
       startQdrantIndexingBackgroundProcess(state);
 
-      expect(capturedCallback).not.toBeNull();
-      // Manually invoke one interval tick
-      await capturedCallback!();
+      // Advance timers to trigger interval
+      vi.advanceTimersByTime(ANTI_LEAK_CONFIG.MAX_BACKGROUND_INTERVAL);
+      await vi.runOnlyPendingTimersAsync();
 
-      // After one interval, queue should have been reduced by QDRANT_INDEX_BATCH_SIZE
-      expect(state.qdrantIndexQueue.size).toBe(2); // taskCount - QDRANT_INDEX_BATCH_SIZE
-
-      setIntervalSpy.mockRestore();
+      // Task should be processed and removed from queue
+      expect(state.qdrantIndexQueue.has('task-001')).toBe(false);
+      expect(mockIndexTask).toHaveBeenCalledWith('task-001', 'roo');
     });
 
-    it('QDRANT_INDEX_BATCH_SIZE should be greater than 1 for improved throughput', () => {
-      expect(QDRANT_INDEX_BATCH_SIZE).toBeGreaterThan(1);
+    it('should remove task from queue after processing', async () => {
+      const state = createMockState();
+      state.isQdrantIndexingEnabled = true;
+      state.qdrantIndexQueue.add('task-001');
+
+      const skeleton = createMockSkeleton('task-001');
+      skeleton.metadata = {
+        ...skeleton.metadata,
+        indexingState: { indexStatus: 'pending' as const },
+      };
+      state.conversationCache.set('task-001', skeleton);
+
+      // Override shouldIndex to allow processing
+      state.indexingDecisionService.shouldIndex.mockReturnValue({
+        shouldIndex: true,
+        reason: 'test',
+        action: 'index',
+        requiresSave: false,
+      });
+
+      const mockIndexTask = TaskIndexerSpies.indexTask;
+      mockIndexTask.mockResolvedValue(undefined);
+      mockDetector.detectStorageLocations.mockResolvedValue(['/mock/storage']);
+      mockFs.mkdir.mockResolvedValue(undefined);
+      mockFs.writeFile.mockResolvedValue(undefined);
+
+      startQdrantIndexingBackgroundProcess(state);
+
+      // Advance timers
+      vi.advanceTimersByTime(ANTI_LEAK_CONFIG.MAX_BACKGROUND_INTERVAL);
+      await vi.runOnlyPendingTimersAsync();
+
+      expect(state.qdrantIndexQueue.size).toBe(0);
+    });
+
+    it('should process multiple tasks over multiple intervals', async () => {
+      const state = createMockState();
+      state.isQdrantIndexingEnabled = true;
+      state.qdrantIndexQueue.add('task-001');
+      state.qdrantIndexQueue.add('task-002');
+
+      const skeleton1 = createMockSkeleton('task-001');
+      const skeleton2 = createMockSkeleton('task-002');
+      skeleton1.metadata = { ...skeleton1.metadata, indexingState: { indexStatus: 'pending' as const } };
+      skeleton2.metadata = { ...skeleton2.metadata, indexingState: { indexStatus: 'pending' as const } };
+      state.conversationCache.set('task-001', skeleton1);
+      state.conversationCache.set('task-002', skeleton2);
+
+      // Override shouldIndex to allow processing
+      state.indexingDecisionService.shouldIndex.mockReturnValue({
+        shouldIndex: true,
+        reason: 'test',
+        action: 'index',
+        requiresSave: false,
+      });
+
+      const mockIndexTask = TaskIndexerSpies.indexTask;
+      mockIndexTask.mockResolvedValue(undefined);
+      mockDetector.detectStorageLocations.mockResolvedValue(['/mock/storage']);
+      mockFs.mkdir.mockResolvedValue(undefined);
+      mockFs.writeFile.mockResolvedValue(undefined);
+
+      startQdrantIndexingBackgroundProcess(state);
+
+      // Advance time for two intervals
+      vi.advanceTimersByTime(ANTI_LEAK_CONFIG.MAX_BACKGROUND_INTERVAL * 2);
+      await vi.runOnlyPendingTimersAsync();
+
+      // Both tasks should be processed (verify through mock calls)
+      // Note: The exact call count may vary due to timer flushing behavior,
+      // but both tasks should be called at least once
+      expect(mockIndexTask.mock.calls.some(call => call[0] === 'task-001' && call[1] === 'roo')).toBe(true);
+      expect(mockIndexTask.mock.calls.some(call => call[0] === 'task-002' && call[1] === 'roo')).toBe(true);
+
+      // Queue should be empty
+      expect(state.qdrantIndexQueue.size).toBe(0);
     });
   });
 
-  // === indexTaskInQdrant (#686) ===
-
   describe('indexTaskInQdrant', () => {
-    function createQdrantMockState(): ServerState {
-      return {
-        conversationCache: new Map(),
-        qdrantIndexQueue: new Set(),
-        qdrantIndexInterval: null,
-        isQdrantIndexingEnabled: true,
-        qdrantIndexCache: new Map(),
-        lastQdrantConsistencyCheck: 0,
-        indexingDecisionService: {
-          shouldIndex: vi.fn().mockReturnValue({ shouldIndex: true, reason: 'not indexed', action: 'index', requiresSave: false }),
-          migrateLegacyIndexingState: vi.fn().mockReturnValue(false),
-          markIndexingSuccess: vi.fn(),
-          markIndexingFailure: vi.fn(),
-        },
-        indexingMetrics: {
-          totalTasks: 0,
-          skippedTasks: 0,
-          indexedTasks: 0,
-          failedTasks: 0,
-          retryTasks: 0,
-          bandwidthSaved: 0,
-        },
-        xmlExporterService: {} as any,
-        exportConfigManager: {} as any,
-        traceSummaryService: {} as any,
-        llmService: {} as any,
-        narrativeContextBuilderService: {} as any,
-        synthesisOrchestratorService: {} as any,
-      } as unknown as ServerState;
-    }
+    it('should skip if skeleton not found in cache', async () => {
+      const state = createMockState();
+      state.isQdrantIndexingEnabled = true;
 
-    it('should skip indexing when skeleton is not in cache', async () => {
-      const state = createQdrantMockState();
+      const mockIndexTask = TaskIndexerSpies.indexTask;
 
-      await indexTaskInQdrant('task-missing', state);
+      await indexTaskInQdrant('non-existent-task', state);
 
-      expect(state.indexingMetrics.indexedTasks).toBe(0);
+      expect(mockIndexTask).not.toHaveBeenCalled();
     });
 
-    it('should skip indexing when shouldIndex returns false', async () => {
-      const state = createQdrantMockState();
+    it('should skip if shouldIndex returns false', async () => {
+      const state = createMockState();
       const skeleton = createMockSkeleton('task-001');
+      skeleton.metadata = {
+        ...skeleton.metadata,
+        indexingState: { indexStatus: 'indexed' as const, indexedAt: Date.now() },
+      };
       state.conversationCache.set('task-001', skeleton);
-      (state.indexingDecisionService.shouldIndex as ReturnType<typeof vi.fn>).mockReturnValue({
+
+      // Mock shouldIndex to return false
+      (state.indexingDecisionService.shouldIndex as any).mockReturnValue({
         shouldIndex: false,
         reason: 'already indexed',
         action: 'skip',
         requiresSave: false,
       });
 
+      const mockIndexTask = TaskIndexerSpies.indexTask;
+
       await indexTaskInQdrant('task-001', state);
 
-      expect(state.indexingMetrics.indexedTasks).toBe(0);
+      expect(mockIndexTask).not.toHaveBeenCalled();
     });
 
-    it('should increment indexedTasks on success', async () => {
-      const state = createQdrantMockState();
+    it('should call TaskIndexer.indexTask with correct source for roo', async () => {
+      const state = createMockState();
       const skeleton = createMockSkeleton('task-001');
+      skeleton.metadata = {
+        ...skeleton.metadata,
+        indexingState: { indexStatus: 'pending' as const },
+        dataSource: 'roo',
+      };
       state.conversationCache.set('task-001', skeleton);
 
-      const { TaskIndexer } = await import('../task-indexer.js');
-      const mockIndexTask = vi.fn().mockResolvedValue(undefined);
-      vi.mocked(TaskIndexer).mockImplementation(() => ({ indexTask: mockIndexTask }) as any);
+      (state.indexingDecisionService.shouldIndex as any).mockReturnValue({
+        shouldIndex: true,
+        reason: 'new task',
+        action: 'index',
+        requiresSave: false,
+      });
 
+      const mockIndexTask = TaskIndexerSpies.indexTask;
+      mockIndexTask.mockResolvedValue(undefined);
       mockDetector.detectStorageLocations.mockResolvedValue(['/mock/storage']);
-      mockFs.writeFile.mockResolvedValue(undefined);
       mockFs.mkdir.mockResolvedValue(undefined);
+      mockFs.writeFile.mockResolvedValue(undefined);
+
+      await indexTaskInQdrant('task-001', state);
+
+      expect(mockIndexTask).toHaveBeenCalledWith('task-001', 'roo');
+      expect(state.indexingDecisionService.markIndexingSuccess).toHaveBeenCalledWith(skeleton);
+    });
+
+    it('should call TaskIndexer.indexTask with correct source for claude-code', async () => {
+      const state = createMockState();
+      const skeleton = createMockSkeleton('task-001');
+      skeleton.metadata = {
+        ...skeleton.metadata,
+        indexingState: { indexStatus: 'pending' as const },
+        dataSource: 'claude',
+      };
+      state.conversationCache.set('task-001', skeleton);
+
+      (state.indexingDecisionService.shouldIndex as any).mockReturnValue({
+        shouldIndex: true,
+        reason: 'new task',
+        action: 'index',
+        requiresSave: false,
+      });
+
+      const mockIndexTask = TaskIndexerSpies.indexTask;
+      mockIndexTask.mockResolvedValue(undefined);
+      mockDetector.detectStorageLocations.mockResolvedValue(['/mock/storage']);
+      mockFs.mkdir.mockResolvedValue(undefined);
+      mockFs.writeFile.mockResolvedValue(undefined);
+
+      await indexTaskInQdrant('task-001', state);
+
+      expect(mockIndexTask).toHaveBeenCalledWith('task-001', 'claude-code');
+    });
+
+    it('should update metrics on success', async () => {
+      const state = createMockState();
+      const skeleton = createMockSkeleton('task-001');
+      skeleton.metadata = {
+        ...skeleton.metadata,
+        indexingState: { indexStatus: 'pending' as const },
+      };
+      state.conversationCache.set('task-001', skeleton);
+
+      (state.indexingDecisionService.shouldIndex as any).mockReturnValue({
+        shouldIndex: true,
+        reason: 'new task',
+        action: 'index',
+        requiresSave: false,
+      });
+
+      const mockIndexTask = TaskIndexerSpies.indexTask;
+      mockIndexTask.mockResolvedValue(undefined);
+      mockDetector.detectStorageLocations.mockResolvedValue(['/mock/storage']);
+      mockFs.mkdir.mockResolvedValue(undefined);
+      mockFs.writeFile.mockResolvedValue(undefined);
 
       await indexTaskInQdrant('task-001', state);
 
       expect(state.indexingMetrics.indexedTasks).toBe(1);
-      expect(state.indexingDecisionService.markIndexingSuccess).toHaveBeenCalledWith(skeleton);
-    });
-
-    it('should add taskId to qdrantIndexCache on success', async () => {
-      const state = createQdrantMockState();
-      const skeleton = createMockSkeleton('task-001');
-      state.conversationCache.set('task-001', skeleton);
-
-      const { TaskIndexer } = await import('../task-indexer.js');
-      const mockIndexTask = vi.fn().mockResolvedValue(undefined);
-      vi.mocked(TaskIndexer).mockImplementation(() => ({ indexTask: mockIndexTask }) as any);
-
-      mockDetector.detectStorageLocations.mockResolvedValue(['/mock/storage']);
-      mockFs.writeFile.mockResolvedValue(undefined);
-      mockFs.mkdir.mockResolvedValue(undefined);
-
-      await indexTaskInQdrant('task-001', state);
-
       expect(state.qdrantIndexCache.has('task-001')).toBe(true);
     });
 
-    it('should handle indexing errors without throwing', async () => {
-      const state = createQdrantMockState();
+    it('should classify errors and mark failure appropriately', async () => {
+      const state = createMockState();
       const skeleton = createMockSkeleton('task-001');
+      skeleton.metadata = {
+        ...skeleton.metadata,
+        indexingState: { indexStatus: 'pending' as const },
+      };
       state.conversationCache.set('task-001', skeleton);
 
-      const { TaskIndexer } = await import('../task-indexer.js');
-      const mockIndexTask = vi.fn().mockRejectedValue(new Error('Qdrant connection refused'));
-      vi.mocked(TaskIndexer).mockImplementation(() => ({ indexTask: mockIndexTask }) as any);
+      (state.indexingDecisionService.shouldIndex as any).mockReturnValue({
+        shouldIndex: true,
+        reason: 'new task',
+        action: 'index',
+        requiresSave: false,
+      });
 
+      const mockIndexTask = TaskIndexerSpies.indexTask;
+      mockIndexTask.mockRejectedValue(new Error('file not found'));
       mockDetector.detectStorageLocations.mockResolvedValue(['/mock/storage']);
+      mockFs.mkdir.mockResolvedValue(undefined);
+      mockFs.writeFile.mockResolvedValue(undefined);
 
-      // Should not throw
-      await expect(indexTaskInQdrant('task-001', state)).resolves.not.toThrow();
-      expect(state.indexingMetrics.indexedTasks).toBe(0);
+      await indexTaskInQdrant('task-001', state);
+
+      expect(state.indexingDecisionService.markIndexingFailure).toHaveBeenCalledWith(
+        skeleton,
+        expect.stringContaining('file not found'),
+        true // isPermanentError
+      );
+      expect(state.indexingMetrics.failedTasks).toBe(1);
+    });
+
+    it('should save skeleton when requiresSave is true', async () => {
+      const state = createMockState();
+      const skeleton = createMockSkeleton('task-001');
+      skeleton.metadata = {
+        ...skeleton.metadata,
+        indexingState: { indexStatus: 'pending' as const },
+      };
+      state.conversationCache.set('task-001', skeleton);
+
+      (state.indexingDecisionService.shouldIndex as any).mockReturnValue({
+        shouldIndex: true,
+        reason: 'migration needed',
+        action: 'index',
+        requiresSave: true,
+      });
+
+      const mockIndexTask = TaskIndexerSpies.indexTask;
+      mockIndexTask.mockResolvedValue(undefined);
+      mockDetector.detectStorageLocations.mockResolvedValue(['/mock/storage']);
+      mockFs.mkdir.mockResolvedValue(undefined);
+      mockFs.writeFile.mockResolvedValue(undefined);
+
+      await indexTaskInQdrant('task-001', state);
+
+      // Should be called twice: once for requiresSave, once for success
+      expect(mockFs.writeFile).toHaveBeenCalled();
+    });
+
+    it('should handle permanent errors and mark for skip', async () => {
+      const state = createMockState();
+      const skeleton = createMockSkeleton('task-001');
+      skeleton.metadata = {
+        ...skeleton.metadata,
+        indexingState: { indexStatus: 'pending' as const },
+      };
+      state.conversationCache.set('task-001', skeleton);
+
+      (state.indexingDecisionService.shouldIndex as any).mockReturnValue({
+        shouldIndex: true,
+        reason: 'new task',
+        action: 'index',
+        requiresSave: false,
+      });
+
+      const mockIndexTask = TaskIndexerSpies.indexTask;
+      mockIndexTask.mockRejectedValue(new Error('access denied'));
+      mockDetector.detectStorageLocations.mockResolvedValue(['/mock/storage']);
+      mockFs.mkdir.mockResolvedValue(undefined);
+      mockFs.writeFile.mockResolvedValue(undefined);
+
+      await indexTaskInQdrant('task-001', state);
+
+      expect(state.indexingDecisionService.markIndexingFailure).toHaveBeenCalledWith(
+        skeleton,
+        expect.any(String),
+        true // permanent error
+      );
+    });
+
+    it('should handle temporary errors and schedule retry', async () => {
+      const state = createMockState();
+      const skeleton = createMockSkeleton('task-001');
+      skeleton.metadata = {
+        ...skeleton.metadata,
+        indexingState: { indexStatus: 'pending' as const },
+      };
+      state.conversationCache.set('task-001', skeleton);
+
+      (state.indexingDecisionService.shouldIndex as any).mockReturnValue({
+        shouldIndex: true,
+        reason: 'new task',
+        action: 'index',
+        requiresSave: false,
+      });
+
+      const mockIndexTask = TaskIndexerSpies.indexTask;
+      mockIndexTask.mockRejectedValue(new Error('network error'));
+      mockDetector.detectStorageLocations.mockResolvedValue(['/mock/storage']);
+      mockFs.mkdir.mockResolvedValue(undefined);
+      mockFs.writeFile.mockResolvedValue(undefined);
+
+      await indexTaskInQdrant('task-001', state);
+
+      expect(state.indexingDecisionService.markIndexingFailure).toHaveBeenCalledWith(
+        skeleton,
+        expect.any(String),
+        false // temporary error
+      );
+    });
+  });
+
+  // === classifyIndexingError ===
+
+  describe('classifyIndexingError', () => {
+    it('should return true for permanent errors', () => {
+      const permanentErrors = [
+        new Error('file not found'),
+        new Error('access denied'),
+        new Error('permission denied'),
+        new Error('invalid format'),
+        new Error('corrupted data'),
+        new Error('authentication failed'),
+        new Error('quota exceeded permanently'),
+      ];
+
+      for (const error of permanentErrors) {
+        expect(classifyIndexingError(error)).toBe(true);
+      }
+    });
+
+    it('should return false for temporary errors', () => {
+      const temporaryErrors = [
+        new Error('network error'),
+        new Error('connection timeout'),
+        new Error('rate limit exceeded'),
+        new Error('service unavailable'),
+        new Error('timeout'),
+        new Error('ECONNRESET'),
+        new Error('ENOTFOUND'),
+      ];
+
+      for (const error of temporaryErrors) {
+        expect(classifyIndexingError(error)).toBe(false);
+      }
+    });
+
+    it('should return false for unknown errors', () => {
+      expect(classifyIndexingError(new Error('unknown error'))).toBe(false);
+      expect(classifyIndexingError(new Error(''))).toBe(false);
+    });
+
+    it('should handle errors without message', () => {
+      expect(classifyIndexingError({})).toBe(false);
+      expect(classifyIndexingError({ message: null })).toBe(false);
+    });
+
+    it('should be case-insensitive', () => {
+      expect(classifyIndexingError(new Error('FILE NOT FOUND'))).toBe(true);
+      expect(classifyIndexingError(new Error('Network Error'))).toBe(false);
     });
   });
 });

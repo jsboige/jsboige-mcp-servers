@@ -485,7 +485,7 @@ export async function indexTaskInQdrant(taskId: string, state: ServerState): Pro
 /**
  * Classifie les erreurs d'indexation
  */
-function classifyIndexingError(error: any): boolean {
+export function classifyIndexingError(error: any): boolean {
     const errorMessage = error.message ? error.message.toLowerCase() : '';
 
     const permanentErrors = [
