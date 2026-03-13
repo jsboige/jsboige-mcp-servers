@@ -571,6 +571,31 @@ function extractTextFromMessage(message: ApiMessage): string {
     return '';
 }
 
+/**
+ * Extract the workspace (cwd) from the first line of a JSONL file.
+ * Reads only the first 4KB to minimize I/O — one read per project, not per file.
+ */
+async function extractCwdFromJsonl(filePath: string): Promise<string | undefined> {
+    let handle: import('fs/promises').FileHandle | undefined;
+    try {
+        handle = await fs.open(filePath, 'r');
+        const buf = Buffer.alloc(4096);
+        const { bytesRead } = await handle.read(buf, 0, 4096, 0);
+        const firstLine = buf.toString('utf-8', 0, bytesRead).split('\n')[0].trim();
+        if (firstLine) {
+            const entry = JSON.parse(firstLine);
+            if (entry.cwd) {
+                return entry.cwd.replace(/\\/g, '/');
+            }
+        }
+    } catch {
+        // Ignore — fallback to directory name
+    } finally {
+        await handle?.close();
+    }
+    return undefined;
+}
+
 // --- Claude session scan cache ---
 // Claude sessions are expensive to scan (2GB+, 200+ JSONL files parsed individually).
 // Cache results for 60s to avoid re-parsing on every list call.
@@ -619,13 +644,19 @@ async function scanClaudeSessions(workspaceFilter?: string): Promise<Conversatio
                 continue;
             }
 
-            // Derive workspace from project directory name
-            // Format: d--roo-extensions → d:/roo-extensions
-            const projectName = path.basename(location.projectPath);
+            // Derive workspace: read cwd from first JSONL line (reliable),
+            // fallback to directory name with hyphens preserved (ambiguous but better than wrong)
             let derivedWorkspace: string | undefined;
-            const driveMatch = projectName.match(/^([a-zA-Z])--(.*)/);
-            if (driveMatch) {
-                derivedWorkspace = `${driveMatch[1].toLowerCase()}:/${driveMatch[2].replace(/-/g, '/')}`;
+            if (files.length > 0) {
+                derivedWorkspace = await extractCwdFromJsonl(path.join(location.projectPath, files[0]));
+            }
+            if (!derivedWorkspace) {
+                const projectName = path.basename(location.projectPath);
+                const driveMatch = projectName.match(/^([a-zA-Z])--(.*)/);
+                if (driveMatch) {
+                    // Keep hyphens as-is — can't distinguish path separators from literal hyphens
+                    derivedWorkspace = `${driveMatch[1].toLowerCase()}:/${driveMatch[2]}`;
+                }
             }
 
             for (const file of files) {
