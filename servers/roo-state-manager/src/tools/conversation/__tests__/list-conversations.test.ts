@@ -325,7 +325,8 @@ describe('listConversationsTool.handler', () => {
       const parsed = _response.conversations ?? _response;
 
       expect(parsed[0].taskId).toBe('orphan-task');
-      expect(parsed[0].children).toEqual([]);
+      // Upstream compact format omits children when empty (no children key at all)
+      expect(parsed[0].children).toBeUndefined();
     });
   });
 
@@ -705,6 +706,112 @@ describe('listConversationsTool.handler', () => {
     test('inputSchema.properties contient limit', () => {
       const props = listConversationsTool.definition.inputSchema.properties as Record<string, any>;
       expect(props).toHaveProperty('limit');
+    });
+  });
+
+  // ============================================================
+  // #666: Claude session metadata enrichment
+  // ============================================================
+
+  describe('Claude session metadata enrichment (#666)', () => {
+    test('Claude sessions with _claudeFirstUserMessage appear in firstUserMessage', async () => {
+      const claudeSession = {
+        ...makeConversation('claude-proj--abc123', {
+          metadata: {
+            workspace: '/workspace/default',
+            mode: undefined as any,
+            timestamp: '2026-03-01T00:00:00Z',
+            lastActivity: '2026-03-10T12:00:00Z',
+            createdAt: '2026-03-01T00:00:00Z',
+            messageCount: 15,
+            actionCount: 0,
+            totalSize: 50000,
+            dataSource: 'claude',
+          },
+        }),
+        _claudeFirstUserMessage: 'Hello, can you help me fix a bug?',
+        _claudeLastUserMessage: 'Thanks, that worked!',
+      };
+
+      const cache = makeCache(claudeSession as any);
+      const result = await listConversationsTool.handler({}, cache);
+      const parsed = JSON.parse((result.content[0] as any).text);
+      const conversations = parsed.conversations ?? parsed;
+
+      expect(conversations).toHaveLength(1);
+      expect(conversations[0].firstUserMessage).toBe('Hello, can you help me fix a bug?');
+      expect(conversations[0].lastUserMessage).toBe('Thanks, that worked!');
+    });
+
+    test('Roo tasks with sequence take priority over _claude fields', async () => {
+      const rooTask = {
+        ...makeConversation('roo-task-1', {
+          sequence: [
+            { role: 'user', content: 'Roo first message' },
+            { role: 'assistant', content: 'Response' },
+            { role: 'user', content: 'Roo last message' },
+          ] as any,
+        }),
+        _claudeFirstUserMessage: 'Should NOT appear',
+        _claudeLastUserMessage: 'Should NOT appear either',
+      };
+
+      const cache = makeCache(rooTask as any);
+      const result = await listConversationsTool.handler({}, cache);
+      const parsed = JSON.parse((result.content[0] as any).text);
+      const conversations = parsed.conversations ?? parsed;
+
+      expect(conversations).toHaveLength(1);
+      expect(conversations[0].firstUserMessage).toBe('Roo first message');
+      expect(conversations[0].lastUserMessage).toBe('Roo last message');
+    });
+
+    test('Claude sessions without _claude fields have no messages', async () => {
+      const plainClaude = makeConversation('claude-proj--xyz', {
+        metadata: {
+          workspace: '/workspace/default',
+          mode: undefined as any,
+          timestamp: '2026-03-01T00:00:00Z',
+          lastActivity: '2026-03-05T00:00:00Z',
+          createdAt: '2026-03-01T00:00:00Z',
+          messageCount: 0,
+          actionCount: 0,
+          totalSize: 1000,
+          dataSource: 'claude',
+        },
+      });
+
+      const cache = makeCache(plainClaude);
+      const result = await listConversationsTool.handler({}, cache);
+      const parsed = JSON.parse((result.content[0] as any).text);
+      const conversations = parsed.conversations ?? parsed;
+
+      expect(conversations).toHaveLength(1);
+      expect(conversations[0].firstUserMessage).toBeUndefined();
+      expect(conversations[0].lastUserMessage).toBeUndefined();
+    });
+
+    test('Claude session approxMessageCount appears in metadata', async () => {
+      const claudeSession = makeConversation('claude-proj--def', {
+        metadata: {
+          workspace: '/workspace/default',
+          mode: undefined as any,
+          timestamp: '2026-03-01T00:00:00Z',
+          lastActivity: '2026-03-10T00:00:00Z',
+          createdAt: '2026-03-01T00:00:00Z',
+          messageCount: 42,
+          actionCount: 0,
+          totalSize: 70000,
+          dataSource: 'claude',
+        },
+      });
+
+      const cache = makeCache(claudeSession);
+      const result = await listConversationsTool.handler({}, cache);
+      const parsed = JSON.parse((result.content[0] as any).text);
+      const conversations = parsed.conversations ?? parsed;
+
+      expect(conversations[0].metadata.messageCount).toBe(42);
     });
   });
 });

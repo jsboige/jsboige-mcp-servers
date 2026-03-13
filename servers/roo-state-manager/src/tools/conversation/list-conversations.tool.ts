@@ -465,8 +465,8 @@ export const listConversationsTool = {
             let isCompleted = false;
             let completionMessage: string | undefined = undefined;
 
-            // Extraire les informations de la sequence si elle existe
-            if (sequence && Array.isArray(sequence)) {
+            // Extraire les informations de la sequence si elle existe (Roo tasks)
+            if (sequence && Array.isArray(sequence) && sequence.length > 0) {
                 // 1. Premier message utilisateur (augmenté de 200 à 300 caractères)
                 const firstUserMsg = sequence.find((msg: any) => msg.role === 'user');
                 if (firstUserMsg && firstUserMsg.content) {
@@ -515,6 +515,15 @@ export const listConversationsTool = {
             // the first user message truncated to ~100 chars from the cache
             if (!firstUserMessage && s.metadata.title) {
                 firstUserMessage = s.metadata.title;
+            }
+
+            // #666: Fallback for Claude sessions — use pre-extracted JSONL metadata
+            const claudeAny = s as any;
+            if (!firstUserMessage && claudeAny._claudeFirstUserMessage) {
+                firstUserMessage = claudeAny._claudeFirstUserMessage;
+            }
+            if (!lastUserMessage && claudeAny._claudeLastUserMessage) {
+                lastUserMessage = claudeAny._claudeLastUserMessage;
             }
 
             // Deduplicate: skip lastUserMessage if identical to firstUserMessage
@@ -803,6 +812,108 @@ async function extractCwdFromJsonl(filePath: string): Promise<string | undefined
     return undefined;
 }
 
+/**
+ * Metadata extracted from Claude JSONL file edges (first + last few KB).
+ * #666: Enriches Claude sessions with real metadata without full file parsing.
+ */
+interface ClaudeJsonlMetadata {
+    cwd?: string;
+    firstUserMessage?: string;
+    lastUserMessage?: string;
+    approxMessageCount: number;
+    title?: string;
+}
+
+/**
+ * Extract metadata from a Claude JSONL file by reading only the first and last 8KB.
+ * This provides cwd, first/last user messages, and an approximate message count
+ * without parsing the entire file (which can be many MB).
+ *
+ * JSONL format: each line is a JSON object with { type, message?, cwd?, timestamp? }
+ * User messages have type="user" with message.role="user" and message.content (string or array).
+ */
+async function extractClaudeJsonlMetadata(filePath: string, fileSize: number): Promise<ClaudeJsonlMetadata> {
+    const result: ClaudeJsonlMetadata = { approxMessageCount: 0 };
+    let handle: import('fs/promises').FileHandle | undefined;
+
+    try {
+        handle = await fs.open(filePath, 'r');
+        const CHUNK_SIZE = 8192;
+
+        // --- Read first chunk (first 8KB) ---
+        const headBuf = Buffer.alloc(Math.min(CHUNK_SIZE, fileSize));
+        const { bytesRead: headRead } = await handle.read(headBuf, 0, headBuf.length, 0);
+        const headText = headBuf.toString('utf-8', 0, headRead);
+        const headLines = headText.split('\n');
+
+        for (const line of headLines) {
+            const trimmed = line.trim();
+            if (!trimmed) continue;
+            try {
+                const entry = JSON.parse(trimmed);
+                // Extract cwd from first entry that has it
+                if (!result.cwd && entry.cwd) {
+                    result.cwd = entry.cwd.replace(/\\/g, '/');
+                }
+                // Extract first user message
+                if (!result.firstUserMessage && entry.type === 'user' && entry.message?.role === 'user') {
+                    const content = extractClaudeMessageText(entry.message.content);
+                    if (content) {
+                        result.firstUserMessage = content.length > 300 ? content.substring(0, 300) + '...' : content;
+                        // Derive title from first user message (skip command invocations)
+                        const titleText = content.replace(/<[^>]+>/g, '').trim();
+                        if (titleText.length > 3) {
+                            result.title = titleText.length > 80 ? titleText.substring(0, 80) + '...' : titleText;
+                        }
+                    }
+                }
+            } catch {
+                // Skip unparseable lines (e.g., truncated at chunk boundary)
+            }
+        }
+
+        // --- Read last chunk (last 8KB) ---
+        if (fileSize > CHUNK_SIZE) {
+            const tailOffset = Math.max(0, fileSize - CHUNK_SIZE);
+            const tailBuf = Buffer.alloc(Math.min(CHUNK_SIZE, fileSize - tailOffset));
+            const { bytesRead: tailRead } = await handle.read(tailBuf, 0, tailBuf.length, tailOffset);
+            const tailText = tailBuf.toString('utf-8', 0, tailRead);
+            const tailLines = tailText.split('\n');
+
+            // Walk backwards to find the last user message
+            for (let i = tailLines.length - 1; i >= 0; i--) {
+                const trimmed = tailLines[i].trim();
+                if (!trimmed) continue;
+                try {
+                    const entry = JSON.parse(trimmed);
+                    if (entry.type === 'user' && entry.message?.role === 'user') {
+                        const content = extractClaudeMessageText(entry.message.content);
+                        if (content) {
+                            result.lastUserMessage = content.length > 200 ? content.substring(0, 200) + '...' : content;
+                            break;
+                        }
+                    }
+                } catch {
+                    // Skip truncated lines at chunk boundary
+                }
+            }
+        }
+
+        // --- Approximate message count from file size ---
+        // Claude JSONL lines average ~500-2000 bytes. Use 1000 as middle ground.
+        // Only user+assistant messages matter, roughly 60% of lines.
+        const approxTotalLines = Math.max(1, Math.round(fileSize / 1000));
+        result.approxMessageCount = Math.max(1, Math.round(approxTotalLines * 0.6));
+
+    } catch {
+        // Return whatever we have so far
+    } finally {
+        await handle?.close();
+    }
+
+    return result;
+}
+
 // --- Claude session scan cache ---
 // Claude sessions are expensive to scan (2GB+, 200+ JSONL files parsed individually).
 // Cache results for 60s to avoid re-parsing on every list call.
@@ -871,15 +982,19 @@ async function scanClaudeSessions(workspaceFilter?: string): Promise<Conversatio
                     const taskId = `claude-${location.projectName}--${file.replace('.jsonl', '')}`;
                     const filePath = path.join(location.projectPath, file);
 
+                    // PERF: stat + lightweight JSONL metadata extraction
+                    // #666: Enriches with firstUserMessage, lastUserMessage, approxMessageCount
                     const fileStat = await fs.stat(filePath);
+                    const sessionMeta = await extractClaudeSessionMeta(filePath, fileStat.size);
+                    const jsonlMeta = await extractClaudeJsonlMetadata(filePath, fileStat.size);
+
+                    // Use per-file cwd if available, fallback to project-level workspace
+                    const fileWorkspace = jsonlMeta.cwd || derivedWorkspace;
 
                     // Derive a useful title: workspace basename + short session ID
                     const sessionId = file.replace('.jsonl', '');
-                    const wsName = derivedWorkspace ? path.basename(derivedWorkspace) : 'unknown';
-                    const claudeTitle = `[Claude] ${wsName} — ${sessionId.substring(0, 8)}`;
-
-                    // Extract first/last user messages from JSONL (lightweight: first+last 16KB only)
-                    const sessionMeta = await extractClaudeSessionMeta(filePath, fileStat.size);
+                    const wsName = (fileWorkspace || derivedWorkspace) ? path.basename(fileWorkspace || derivedWorkspace || '') : 'unknown';
+                    const claudeTitle = jsonlMeta.title || `[Claude] ${wsName} — ${sessionId.substring(0, 8)}`;
 
                     const skeleton: ConversationSkeleton = {
                         taskId,
@@ -888,23 +1003,28 @@ async function scanClaudeSessions(workspaceFilter?: string): Promise<Conversatio
                             title: claudeTitle,
                             createdAt: fileStat.birthtime.toISOString(),
                             lastActivity: fileStat.mtime.toISOString(),
-                            messageCount: sessionMeta.messageCount,
+                            messageCount: sessionMeta.messageCount || jsonlMeta.approxMessageCount,
                             actionCount: 0,
                             totalSize: fileStat.size,
-                            workspace: derivedWorkspace,
+                            workspace: fileWorkspace,
                             machineId: os.hostname(),
                             dataSource: 'claude',
                         },
-                    };
+                        // #666: Store extracted messages for SkeletonNode enrichment (fallback)
+                        _claudeFirstUserMessage: jsonlMeta.firstUserMessage,
+                        _claudeLastUserMessage: jsonlMeta.lastUserMessage,
+                    } as ConversationSkeleton & { _claudeFirstUserMessage?: string; _claudeLastUserMessage?: string };
 
                     // Inject first/last messages into sequence for toConversationSummary
-                    if (sessionMeta.firstUserMessage || sessionMeta.lastUserMessage) {
+                    const firstMsg = sessionMeta.firstUserMessage || jsonlMeta.firstUserMessage;
+                    const lastMsg = sessionMeta.lastUserMessage || jsonlMeta.lastUserMessage;
+                    if (firstMsg || lastMsg) {
                         const seq: any[] = [];
-                        if (sessionMeta.firstUserMessage) {
-                            seq.push({ role: 'user', content: sessionMeta.firstUserMessage });
+                        if (firstMsg) {
+                            seq.push({ role: 'user', content: firstMsg });
                         }
-                        if (sessionMeta.lastUserMessage && sessionMeta.lastUserMessage !== sessionMeta.firstUserMessage) {
-                            seq.push({ role: 'user', content: sessionMeta.lastUserMessage });
+                        if (lastMsg && lastMsg !== firstMsg) {
+                            seq.push({ role: 'user', content: lastMsg });
                         }
                         (skeleton as any).sequence = seq;
                     }
