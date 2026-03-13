@@ -214,7 +214,11 @@ export function registerCallToolHandler(
                     saveSkeletonToDisk,
                     state.qdrantIndexQueue,
                     (enabled: boolean) => { state.isQdrantIndexingEnabled = enabled; },
-                    toolExports.rebuildTaskIndexFixed.handler
+                    toolExports.rebuildTaskIndexFixed.handler,
+                    // #685: Paramètres additionnels pour l'action status
+                    state.isQdrantIndexingEnabled,
+                    state.qdrantIndexInterval,
+                    state.indexingMetrics
                 );
                 break;
             // [REMOVED] search_tasks_by_content — #625 dead code cleanup (not in alwaysAllow)
