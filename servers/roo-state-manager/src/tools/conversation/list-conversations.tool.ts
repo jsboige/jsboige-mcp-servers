@@ -12,6 +12,7 @@ import { RooStorageDetector } from '../../utils/roo-storage-detector.js';
 import { promises as fs } from 'fs';
 import path from 'path';
 import os from 'os';
+import { logProfilingReport, PROFILING_PHASES } from './profiling-instrumentation.js';
 
 /**
  * Node enrichi pour construire l'arbre hiérarchique
@@ -321,11 +322,17 @@ export const listConversationsTool = {
         },
         conversationCache: Map<string, ConversationSkeleton>
     ): Promise<CallToolResult> => {
+        // PROFILING: Start total timer
+        console.time('totalHandlerTime');
+
         const source = args.source || 'roo';
         const includeRoo = source === 'roo' || source === 'all';
         const includeClaude = source === 'claude' || source === 'all';
 
         let allSkeletons: ConversationSkeleton[] = [];
+
+        // PROFILING: Phase 1 - Disk scan Roo
+        console.time('diskScanRoo');
 
         // Include Roo conversations (default behavior)
         if (includeRoo) {
@@ -348,6 +355,7 @@ export const listConversationsTool = {
             } catch (scanError) {
                 console.warn('⚠️ list_conversations: Disk scan failed or timed out, using cache only:', scanError instanceof Error ? scanError.message : scanError);
             }
+            console.timeEnd('diskScanRoo'); // PROFILING: End Phase 1
 
             allSkeletons = Array.from(conversationCache.values()).filter(skeleton =>
                 skeleton.metadata
@@ -358,6 +366,8 @@ export const listConversationsTool = {
         if (includeClaude) {
             // PERF: Timeout wrapper (5s) prevents Claude session scan from blocking list responses
             // Claude sessions can be 2GB+ across 200+ JSONL files — scan must not block foreground tools
+            // PROFILING: Phase 2 - Claude session scan
+            console.time('claudeSessionScan');
             try {
                 const claudePromise = scanClaudeSessions(args.workspace);
                 const claudeTimeout = new Promise<ConversationSkeleton[]>((_, reject) =>
@@ -369,8 +379,11 @@ export const listConversationsTool = {
             } catch (claudeError) {
                 console.warn('⚠️ list_conversations: Claude session scan failed or timed out, using Roo-only:', claudeError instanceof Error ? claudeError.message : claudeError);
             }
+            console.timeEnd('claudeSessionScan'); // PROFILING: End Phase 2
         }
 
+        // PROFILING: Phase 3 - Workspace filter
+        console.time('workspaceFilter');
         // Filtrage par workspace
         let workspaceFilteredCount = 0;
         if (args.workspace) {
@@ -389,13 +402,16 @@ export const listConversationsTool = {
                 skeleton.metadata.workspace &&
                 normalizePath(skeleton.metadata.workspace) === normalizedWorkspace
             );
-            
+
             workspaceFilteredCount = countBeforeFilter - allSkeletons.length;
             // 🔇 LOG VERBEUX COMMENTÉ (explosion contexte)
             // console.log(`[DEBUG] Found ${allSkeletons.length} conversations matching workspace filter`);
         }
+        console.timeEnd('workspaceFilter'); // PROFILING: End Phase 3
 
         // Filtre : Tâches en attente de sous-tâche (NOUVEAU)
+        // PROFILING: Phase 4 - pendingSubtaskOnly filter
+        console.time('pendingSubtaskFilter');
         if (args.pendingSubtaskOnly === true) {
             console.log(`[DEBUG] Filtering by pendingSubtaskOnly`);
             const beforeCount = allSkeletons.length;
@@ -411,12 +427,15 @@ export const listConversationsTool = {
                     console.warn(`[FILTER] Error checking pending subtask for ${skeleton.taskId}:`, error);
                 }
             }
-            
+
             allSkeletons = pendingTasks;
             console.log(`[DEBUG] Pending subtask filter: ${beforeCount} -> ${allSkeletons.length} tasks`);
         }
+        console.timeEnd('pendingSubtaskFilter'); // PROFILING: End Phase 4
 
         // Filtre : Recherche de contenu (NOUVEAU)
+        // PROFILING: Phase 5 - contentPattern filter
+        console.time('contentPatternFilter');
         if (args.contentPattern && args.contentPattern.trim().length > 0) {
             console.log(`[DEBUG] Filtering by contentPattern: "${args.contentPattern}"`);
             const beforeCount = allSkeletons.length;
@@ -432,11 +451,14 @@ export const listConversationsTool = {
                     console.warn(`[FILTER] Error checking content pattern for ${skeleton.taskId}:`, error);
                 }
             }
-            
+
             allSkeletons = matchingTasks;
             console.log(`[DEBUG] Content pattern filter: ${beforeCount} -> ${allSkeletons.length} tasks`);
         }
+        console.timeEnd('contentPatternFilter'); // PROFILING: End Phase 5
 
+        // PROFILING: Phase 6 - Sorting
+        console.time('sorting');
         // Tri
         allSkeletons.sort((a, b) => {
             let comparison = 0;
@@ -454,7 +476,10 @@ export const listConversationsTool = {
             }
             return (args.sortOrder === 'asc') ? -comparison : comparison;
         });
-        
+        console.timeEnd('sorting'); // PROFILING: End Phase 6
+
+        // PROFILING: Phase 7 - SkeletonNode creation
+        console.time('skeletonNodeCreation');
         // Créer les SkeletonNode SANS la propriété sequence MAIS avec toutes les infos importantes
         const skeletonMap = new Map<string, SkeletonNode>(allSkeletons.map(s => {
             const sequence = (s as any).sequence;
@@ -546,9 +571,11 @@ export const listConversationsTool = {
                 children: []
             }];
         }));
+        console.timeEnd('skeletonNodeCreation'); // PROFILING: End Phase 7
 
         // Phase 2: Détecter les synthèses pour chaque nœud
         // NOTE: C'est une opération asynchrone qui peut prendre du temps si beaucoup de tâches
+        console.time('synthesisDetection'); // PROFILING: Start Phase 8
         const synthesisDetectionPromises: Promise<void>[] = [];
         for (const skeleton of allSkeletons) {
             const node = skeletonMap.get(skeleton.taskId);
@@ -564,6 +591,7 @@ export const listConversationsTool = {
             }
         }
         await Promise.all(synthesisDetectionPromises);
+        console.timeEnd('synthesisDetection'); // PROFILING: End Phase 8
 
         const forest: SkeletonNode[] = [];
 
@@ -576,6 +604,7 @@ export const listConversationsTool = {
         });
 
         // --- Pagination ---
+        console.time('paginationSerialization'); // PROFILING: Start Phase 9
         const perPage = Math.min(args.per_page || args.limit || 20, 50); // Cap at 50
         const page = Math.max(args.page || 1, 1);
         const totalCount = forest.length;
@@ -588,6 +617,7 @@ export const listConversationsTool = {
 
         // 📊 LOG AGRÉGÉ FINAL (remplace les logs verbeux commentés)
         console.log(`📊 list_conversations: Found ${allSkeletons.length} conversations (workspace filtered: ${workspaceFilteredCount}), returning page ${page}/${totalPages} (${summaries.length} of ${totalCount} top-level)`);
+        console.timeEnd('paginationSerialization'); // PROFILING: End Phase 9
 
         const result = JSON.stringify({
             conversations: summaries,
@@ -599,6 +629,8 @@ export const listConversationsTool = {
                 has_next: page < totalPages,
             }
         }, null, 2);
+
+        console.timeEnd('totalHandlerTime'); // PROFILING: End total timer
 
         return { content: [{ type: 'text', text: result }] };
     }
