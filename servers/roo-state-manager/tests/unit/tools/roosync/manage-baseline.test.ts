@@ -17,7 +17,7 @@ describe('roosync_manage_baseline - Interface', () => {
 
   beforeAll(async () => {
     module = await import('../../../../src/tools/roosync/manage-baseline.js');
-  }, 30000); // 30s timeout for module import (Issue #609)
+  }, 60000); // 60s timeout for module import (Issue #609 - cold cache)
 
   it('devrait exporter roosync_manage_baseline', () => {
     expect(module.roosync_manage_baseline).toBeDefined();
@@ -39,7 +39,7 @@ describe('roosync_manage_baseline - Schema Validation', () => {
 
   beforeAll(async () => {
     module = await import('../../../../src/tools/roosync/manage-baseline.js');
-  }, 30000); // 30s timeout for module import (Issue #609)
+  }, 60000); // 60s timeout for module import (Issue #609 - cold cache)
 
   it('devrait accepter action version', () => {
     const result = module.ManageBaselineArgsSchema.safeParse({
@@ -100,7 +100,7 @@ describe('roosync_manage_baseline - Metadata', () => {
 
   beforeAll(async () => {
     module = await import('../../../../src/tools/roosync/manage-baseline.js');
-  }, 30000); // 30s timeout for module import (Issue #609)
+  }, 60000); // 60s timeout for module import (Issue #609 - cold cache)
 
   it('devrait avoir les métadonnées correctes', () => {
     const metadata = module.manageBaselineToolMetadata;
