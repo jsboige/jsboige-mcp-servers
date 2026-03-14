@@ -21,6 +21,7 @@ import {
   getLocalWorkspaceId
 } from '../../utils/message-helpers.js';
 import { getRooSyncService } from '../../services/RooSyncService.js';
+import { AttachmentManager } from '../../services/roosync/AttachmentManager.js';
 
 // Logger instance for read tool
 const logger: Logger = createLogger('RooSyncReadTool');
@@ -33,8 +34,8 @@ let lastCleanupRunAt = 0;
  * Arguments de l'outil roosync_read
  */
 interface RooSyncReadArgs {
-  /** Mode de lecture : 'inbox' ou 'message' */
-  mode: 'inbox' | 'message';
+  /** Mode de lecture : 'inbox', 'message', ou 'attachments' */
+  mode: 'inbox' | 'message' | 'attachments';
 
   // Pour mode 'inbox'
   /** Filtrer par status (défaut: all) */
@@ -49,11 +50,11 @@ interface RooSyncReadArgs {
   /** Messages per page (requires page) */
   per_page?: number;
 
-  // Pour mode 'message'
-  /** ID du message à récupérer (requis si mode='message') */
+  // Pour mode 'message' et 'attachments'
+  /** ID du message à récupérer (requis si mode='message' ou 'attachments') */
   message_id?: string;
 
-  /** Marquer automatiquement comme lu (défaut: false) */
+  /** Marquer automatiquement comme lu (défaut: false, mode 'message' uniquement) */
   mark_as_read?: boolean;
 }
 
@@ -297,6 +298,60 @@ Le message n'a pas été trouvé dans :
 }
 
 /**
+ * Lit les pièces jointes d'un message
+ *
+ * @param args Arguments validés pour le mode attachments
+ * @returns Contenu formaté des pièces jointes
+ */
+async function readAttachmentsMode(args: RooSyncReadArgs): Promise<string> {
+  const messageId = args.message_id!;
+
+  logger.info('📎 Reading attachments for message', { messageId });
+
+  // Initialiser l'AttachmentManager
+  const sharedStatePath = getSharedStatePath();
+  const attachmentManager = new AttachmentManager(sharedStatePath);
+
+  // Lister les attachments pour ce message
+  const attachments = await attachmentManager.listAttachments(messageId);
+
+  // Cas : aucun attachment
+  if (attachments.length === 0) {
+    return `📎 **Pièces Jointes** - Message ${messageId}
+
+Aucune pièce jointe pour ce message.
+
+**💡 Actions disponibles :**
+- Utilisez \`roosync_send\` avec le paramètre \`attachments\` pour ajouter des fichiers à vos messages
+- Utilisez \`roosync_list_attachments\` pour lister toutes les pièces jointes disponibles`;
+  }
+
+  // Formatter la liste des attachments
+  let result = `📎 **Pièces Jointes** - Message ${messageId}\n\n`;
+  result += `**Total :** ${attachments.length} pièce${attachments.length > 1 ? 's' : ''} jointe${attachments.length > 1 ? 's' : ''}\n\n`;
+
+  result += `| UUID | Nom | Taille | Type | Uploadé par | Date |\n`;
+  result += `|------|-----|--------|------|-------------|------|\n`;
+
+  for (const att of attachments) {
+    const sizeKB = att.sizeBytes < 1024
+      ? `${att.sizeBytes} B`
+      : att.sizeBytes < 1024 * 1024
+      ? `${(att.sizeBytes / 1024).toFixed(1)} KB`
+      : `${(att.sizeBytes / (1024 * 1024)).toFixed(1)} MB`;
+    result += `| \`${att.uuid}\` | ${att.originalName} | ${sizeKB} | ${att.mimeType} | ${att.uploaderMachineId} | ${formatDate(att.uploadedAt)} |\n`;
+  }
+
+  result += `\n---\n\n`;
+  result += `**💡 Actions disponibles :**\n`;
+  result += `- 📥 **Télécharger** : Utilisez \`roosync_get_attachment\` avec l'UUID et un \`targetPath\`\n`;
+  result += `- 🗑️ **Supprimer** : Utilisez \`roosync_delete_attachment\` avec l'UUID\n`;
+  result += `- 📋 **Voir détails message** : Utilisez \`roosync_read\` avec \`mode: "message"\` et l'ID du message`;
+
+  return result;
+}
+
+/**
  * Outil principal roosync_read
  *
  * @param args Arguments de l'outil
@@ -307,14 +362,14 @@ Le message n'a pas été trouvé dans :
  */
 export const readToolMetadata = {
   name: 'roosync_read',
-  description: 'Lire la boîte de réception des messages RooSync ou obtenir les détails complets d\'un message spécifique',
+  description: 'Lire la boîte de réception des messages RooSync, obtenir les détails complets d\'un message spécifique, ou lister les pièces jointes d\'un message',
   inputSchema: {
     type: 'object',
     properties: {
       mode: {
         type: 'string',
-        enum: ['inbox', 'message'],
-        description: 'Mode de lecture : inbox (liste des messages) ou message (détails d\'un message)'
+        enum: ['inbox', 'message', 'attachments'],
+        description: 'Mode de lecture : inbox (liste des messages), message (détails d\'un message), ou attachments (pièces jointes d\'un message)'
       },
       status: {
         type: 'string',
@@ -335,7 +390,7 @@ export const readToolMetadata = {
       },
       message_id: {
         type: 'string',
-        description: 'ID du message à récupérer (requis pour mode=message)'
+        description: 'ID du message à récupérer (requis pour mode=message ou mode=attachments)'
       },
       mark_as_read: {
         type: 'boolean',
@@ -361,18 +416,18 @@ export async function roosyncRead(
       );
     }
 
-    if (args.mode !== 'inbox' && args.mode !== 'message') {
+    if (args.mode !== 'inbox' && args.mode !== 'message' && args.mode !== 'attachments') {
       throw new MessageManagerError(
-        `Mode invalide : "${args.mode}". Attendu : "inbox" ou "message"`,
+        `Mode invalide : "${args.mode}". Attendu : "inbox", "message" ou "attachments"`,
         MessageManagerErrorCode.INVALID_MESSAGE_FORMAT,
         { invalidMode: args.mode }
       );
     }
 
-    // Validation spécifique au mode 'message'
-    if (args.mode === 'message' && !args.message_id) {
+    // Validation spécifique au mode 'message' et 'attachments'
+    if ((args.mode === 'message' || args.mode === 'attachments') && !args.message_id) {
       throw new MessageManagerError(
-        'Paramètre "message_id" requis pour le mode "message"',
+        `Paramètre "message_id" requis pour le mode "${args.mode}"`,
         MessageManagerErrorCode.INVALID_MESSAGE_FORMAT,
         { missingParam: 'message_id', mode: args.mode }
       );
@@ -386,8 +441,10 @@ export async function roosyncRead(
     let result: string;
     if (args.mode === 'inbox') {
       result = await readInboxMode(args, messageManager);
-    } else {
+    } else if (args.mode === 'message') {
       result = await readMessage(args, messageManager);
+    } else {
+      result = await readAttachmentsMode(args);
     }
 
     logger.info('✅ roosync_read operation completed', { mode: args.mode });
@@ -412,8 +469,8 @@ export async function roosyncRead(
 
 **Vérifications :**
 - Le répertoire .shared-state est-il accessible ?
-- Le mode est-il correct ("inbox" ou "message") ?
-- Si mode="message", l'ID du message est-il fourni ?`
+- Le mode est-il correct ("inbox", "message" ou "attachments") ?
+- Si mode="message" ou mode="attachments", l'ID du message est-il fourni ?`
       }]
     };
   }
