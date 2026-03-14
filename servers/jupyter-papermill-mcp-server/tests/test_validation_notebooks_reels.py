@@ -100,8 +100,12 @@ class TestPhase1ALecture:
             result = await service.read_cells(str(nb_path), mode="list")
 
             assert result["success"] is True, f"read_cells failed for {nb_path.name}"
-            assert "cells" in result, f"Missing 'cells' key in result for {nb_path.name}"
-            assert isinstance(result["cells"], list), f"'cells' should be a list for {nb_path.name}"
+            assert (
+                "cells" in result
+            ), f"Missing 'cells' key in result for {nb_path.name}"
+            assert isinstance(
+                result["cells"], list
+            ), f"'cells' should be a list for {nb_path.name}"
             assert len(result["cells"]) > 0, f"No cells found in {nb_path.name}"
 
             # Vérifier preview
@@ -129,7 +133,9 @@ class TestPhase1ALecture:
         for nb_path in all_notebooks:
             print(f"📖 Testing read_cells mode=range 0-3 : {nb_path.name}")
 
-            result = await service.read_cells(str(nb_path), mode="range", start_index=0, end_index=3)
+            result = await service.read_cells(
+                str(nb_path), mode="range", start_index=0, end_index=3
+            )
 
             assert result["success"] is True
             assert "cells" in result
@@ -170,7 +176,10 @@ class TestPhase1BInspection:
 
             assert result["success"] is True
             assert "metadata" in result
-            assert "kernelspec" in result["metadata"] or "language_info" in result["metadata"]
+            assert (
+                "kernelspec" in result["metadata"]
+                or "language_info" in result["metadata"]
+            )
 
     @pytest.mark.asyncio
     async def test_inspect_notebook_mode_outputs(self, service, all_notebooks):
@@ -221,7 +230,10 @@ class TestPhase1BInspection:
 # Ces tests nécessitent des kernels actifs et seront validés dans une phase ultérieure
 # Pour l'instant, on se concentre sur la validation de la lecture/inspection (Phase 1A/1B)
 
-@pytest.mark.skip(reason="Phase 2-5 tests nécessitent kernels actifs - validation ultérieure")
+
+@pytest.mark.skip(
+    reason="Phase 2-5 tests nécessitent kernels actifs - validation ultérieure"
+)
 class TestPhase2_5_Skipped:
     """Tests Phases 2-5 reportés pour validation ultérieure"""
 
@@ -276,6 +288,7 @@ class TestStatistiques:
 # ============================================================================
 # CONFIGURATION PYTEST
 # ============================================================================
+
 
 def pytest_configure(config):
     """Configuration pytest"""

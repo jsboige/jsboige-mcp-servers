@@ -38,9 +38,11 @@ DEFAULT_MAX_RECURSION_DEPTH = 2
 # Dataclasses
 # ---------------------------------------------------------------------------
 
+
 @dataclass
 class ModelConfig:
     """A model endpoint (shared resource pool)."""
+
     id: str
     base_url: str = "http://localhost:5001/v1"
     api_key: str = "no-key"
@@ -94,6 +96,7 @@ class ModelConfig:
 @dataclass
 class McpConfig:
     """An MCP server (shared resource pool)."""
+
     id: str
     description: str = ""
     command: str = ""
@@ -125,6 +128,7 @@ class McpConfig:
 @dataclass
 class MemoryConfig:
     """Per-agent memory configuration."""
+
     enabled: bool = False
     collection: str = ""  # Auto-generated if empty: "{agent_id}-memory"
 
@@ -147,6 +151,7 @@ class MemoryConfig:
 @dataclass
 class EmbeddingsConfig:
     """Shared embeddings endpoint configuration."""
+
     base_url: str = ""
     api_key: str = ""
     api_key_env: str = ""
@@ -191,6 +196,7 @@ class EmbeddingsConfig:
 @dataclass
 class QdrantConfig:
     """Shared Qdrant vector store configuration."""
+
     url: str = "http://localhost"
     port: int = 6333
     api_key: str = ""
@@ -233,6 +239,7 @@ class QdrantConfig:
 @dataclass
 class AgentConfig:
     """An agent: model + system prompt + MCP subset + memory + parameters."""
+
     id: str
     description: str = ""
     model: str = ""  # Reference to a ModelConfig.id
@@ -265,12 +272,15 @@ class AgentConfig:
         }
 
 
-ConversationType = Literal["sequential", "concurrent", "group_chat", "handoff", "magentic"]
+ConversationType = Literal[
+    "sequential", "concurrent", "group_chat", "handoff", "magentic"
+]
 
 
 @dataclass
 class ConversationConfig:
     """A multi-agent conversation preset."""
+
     id: str
     description: str = ""
     type: ConversationType = "sequential"
@@ -306,6 +316,7 @@ class ConversationConfig:
 @dataclass
 class SKAgentConfig:
     """Top-level configuration for sk-agent v2."""
+
     config_version: int = 2
     max_recursion_depth: int = DEFAULT_MAX_RECURSION_DEPTH
     default_agent: str = ""
@@ -323,7 +334,9 @@ class SKAgentConfig:
     _model_map: dict[str, ModelConfig] = field(default_factory=dict, repr=False)
     _mcp_map: dict[str, McpConfig] = field(default_factory=dict, repr=False)
     _agent_map: dict[str, AgentConfig] = field(default_factory=dict, repr=False)
-    _conversation_map: dict[str, ConversationConfig] = field(default_factory=dict, repr=False)
+    _conversation_map: dict[str, ConversationConfig] = field(
+        default_factory=dict, repr=False
+    )
 
     def __post_init__(self):
         self._build_indexes()
@@ -404,6 +417,7 @@ class SKAgentConfig:
 # Helper functions
 # ---------------------------------------------------------------------------
 
+
 def _infer_context_window(model_data: dict) -> int:
     """Infer context window from model metadata when not explicitly set."""
     if model_data.get("vision", False):
@@ -425,6 +439,7 @@ def get_model_context_window(config: SKAgentConfig, model_id: str) -> int:
 # ---------------------------------------------------------------------------
 # V1 -> V2 Migration
 # ---------------------------------------------------------------------------
+
 
 def migrate_config_v1_to_v2(raw: dict) -> dict:
     """Migrate a v1 (model-centric) config to v2 (agent-centric) format.
@@ -460,7 +475,9 @@ def migrate_config_v1_to_v2(raw: dict) -> dict:
 
     migrated: dict[str, Any] = {
         "config_version": 2,
-        "max_recursion_depth": raw.get("max_recursion_depth", DEFAULT_MAX_RECURSION_DEPTH),
+        "max_recursion_depth": raw.get(
+            "max_recursion_depth", DEFAULT_MAX_RECURSION_DEPTH
+        ),
     }
 
     # Copy models as-is (shared pool)
@@ -534,8 +551,10 @@ def migrate_config_v1_to_v2(raw: dict) -> dict:
 # Validation
 # ---------------------------------------------------------------------------
 
+
 class ConfigValidationError(Exception):
     """Raised when config validation fails."""
+
     def __init__(self, errors: list[str]):
         self.errors = errors
         super().__init__(f"Config validation failed: {'; '.join(errors)}")
@@ -630,8 +649,7 @@ def validate_config(raw: dict) -> list[str]:
 
     # Validate embeddings (if memory is used by any agent)
     any_memory = any(
-        a.get("memory", {}).get("enabled", False)
-        for a in raw.get("agents", [])
+        a.get("memory", {}).get("enabled", False) for a in raw.get("agents", [])
     )
     embeddings = raw.get("embeddings", {})
     if any_memory and not (embeddings.get("base_url") and embeddings.get("model_id")):
@@ -646,6 +664,7 @@ def validate_config(raw: dict) -> list[str]:
 # ---------------------------------------------------------------------------
 # Loading
 # ---------------------------------------------------------------------------
+
 
 def load_config(path: str | None = None) -> SKAgentConfig:
     """Load and parse configuration from JSON file.
@@ -684,7 +703,9 @@ def _parse_config(raw: dict) -> SKAgentConfig:
     models = [ModelConfig.from_dict(m) for m in raw.get("models", [])]
     mcps = [McpConfig.from_dict(m) for m in raw.get("mcps", [])]
     agents = [AgentConfig.from_dict(a) for a in raw.get("agents", [])]
-    conversations = [ConversationConfig.from_dict(c) for c in raw.get("conversations", [])]
+    conversations = [
+        ConversationConfig.from_dict(c) for c in raw.get("conversations", [])
+    ]
 
     return SKAgentConfig(
         config_version=raw.get("config_version", 2),

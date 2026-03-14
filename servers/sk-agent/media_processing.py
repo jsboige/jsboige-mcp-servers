@@ -38,6 +38,7 @@ MAX_IMAGE_PIXELS = 774_144  # Qwen3-VL mini default (roughly 880x880)
 # Image Processing
 # ---------------------------------------------------------------------------
 
+
 def _crop_image(data: bytes, media_type: str, region: dict) -> tuple[bytes, str]:
     """Crop image to specified region.
 
@@ -154,6 +155,7 @@ def _image_to_base64_url(data: bytes, media_type: str) -> str:
         Base64 data URL string
     """
     import base64
+
     encoded = base64.b64encode(data).decode("utf-8")
     return f"data:{media_type};base64,{encoded}"
 
@@ -162,9 +164,11 @@ def _image_to_base64_url(data: bytes, media_type: str) -> str:
 # Video Processing
 # ---------------------------------------------------------------------------
 
+
 @dataclass
 class VideoInfo:
     """Video metadata."""
+
     duration: float  # seconds
     width: int
     height: int
@@ -184,10 +188,14 @@ def _get_video_info(video_path: str) -> VideoInfo | None:
     """
     try:
         cmd = [
-            "ffprobe", "-v", "quiet",
-            "-print_format", "json",
-            "-show_format", "-show_streams",
-            video_path
+            "ffprobe",
+            "-v",
+            "quiet",
+            "-print_format",
+            "json",
+            "-show_format",
+            "-show_streams",
+            video_path,
         ]
         result = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
 
@@ -195,6 +203,7 @@ def _get_video_info(video_path: str) -> VideoInfo | None:
             return None
 
         import json
+
         info = json.loads(result.stdout)
 
         # Find video stream
@@ -273,7 +282,10 @@ def _extract_video_frames(
 
     if effective_duration and effective_duration > 0:
         # Extract evenly distributed frames within the range
-        timestamps = [start + effective_duration * (i + 0.5) / num_frames for i in range(num_frames)]
+        timestamps = [
+            start + effective_duration * (i + 0.5) / num_frames
+            for i in range(num_frames)
+        ]
     else:
         # Fallback: extract at fixed intervals
         timestamps = [start + i * 2.0 for i in range(num_frames)]
@@ -283,8 +295,17 @@ def _extract_video_frames(
             output_path = os.path.join(tmpdir, f"frame_{i:03d}.jpg")
             try:
                 cmd = [
-                    "ffmpeg", "-y", "-ss", str(ts), "-i", video_path,
-                    "-frames:v", "1", "-q:v", "2", output_path
+                    "ffmpeg",
+                    "-y",
+                    "-ss",
+                    str(ts),
+                    "-i",
+                    video_path,
+                    "-frames:v",
+                    "1",
+                    "-q:v",
+                    "2",
+                    output_path,
                 ]
                 subprocess.run(cmd, capture_output=True, timeout=30, check=True)
 
@@ -293,7 +314,11 @@ def _extract_video_frames(
                         frame_data = f.read()
                     frames.append((frame_data, "image/jpeg"))
                     log.info("Extracted frame %d at %.2fs from video", i, ts)
-            except (subprocess.TimeoutExpired, subprocess.CalledProcessError, FileNotFoundError) as e:
+            except (
+                subprocess.TimeoutExpired,
+                subprocess.CalledProcessError,
+                FileNotFoundError,
+            ) as e:
                 log.warning("Failed to extract frame %d: %s", i, e)
                 continue
 
@@ -322,12 +347,18 @@ def _extract_keyframes(video_path: str, num_frames: int = 8) -> list[tuple[bytes
         try:
             # Extract keyframes using ffmpeg
             cmd = [
-                "ffmpeg", "-i", video_path,
-                "-vf", f"select='eq(pict_type,I)',scale=720:-1",
-                "-vsync", "vfr",
-                "-q:v", "2",
-                "-frames:v", str(num_frames),
-                output_pattern
+                "ffmpeg",
+                "-i",
+                video_path,
+                "-vf",
+                f"select='eq(pict_type,I)',scale=720:-1",
+                "-vsync",
+                "vfr",
+                "-q:v",
+                "2",
+                "-frames:v",
+                str(num_frames),
+                output_pattern,
             ]
             subprocess.run(cmd, capture_output=True, timeout=60, check=True)
 
@@ -338,7 +369,11 @@ def _extract_keyframes(video_path: str, num_frames: int = 8) -> list[tuple[bytes
                 frames.append((frame_data, "image/jpeg"))
                 log.info("Extracted keyframe: %s", frame_file.name)
 
-        except (subprocess.TimeoutExpired, subprocess.CalledProcessError, FileNotFoundError) as e:
+        except (
+            subprocess.TimeoutExpired,
+            subprocess.CalledProcessError,
+            FileNotFoundError,
+        ) as e:
             log.warning("Keyframe extraction failed, falling back to uniform: %s", e)
             return _extract_video_frames(video_path, num_frames=num_frames)
 

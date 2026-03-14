@@ -5,6 +5,7 @@ from unittest.mock import Mock, patch
 from nbformat import NotebookNode
 from papermill_mcp.services.notebook_crud_service import NotebookCRUDService
 
+
 @pytest.fixture
 def crud_service(temp_dir):
     """Fixture pour le service CRUD de notebooks"""
@@ -12,8 +13,8 @@ def crud_service(temp_dir):
     temp_dir.mkdir(parents=True, exist_ok=True)
     return NotebookCRUDService(workspace_dir=str(temp_dir))
 
-class TestNotebookCRUDService:
 
+class TestNotebookCRUDService:
     def test_resolve_path_absolute(self, crud_service, temp_dir):
         abs_path = str(temp_dir / "test.ipynb")
         resolved = crud_service.resolve_path(abs_path)
@@ -57,7 +58,7 @@ class TestNotebookCRUDService:
             notebook_path,
             cell_type="code",
             source="print('hello')",
-            metadata={"tag": "test"}
+            metadata={"tag": "test"},
         )
 
         assert result["success"] is True
@@ -78,10 +79,7 @@ class TestNotebookCRUDService:
         await crud_service.add_cell(notebook_path, "code", "original")
 
         result = await crud_service.update_cell(
-            notebook_path,
-            index=0,
-            source="updated",
-            metadata={"new": "meta"}
+            notebook_path, index=0, source="updated", metadata={"new": "meta"}
         )
 
         assert result["success"] is True
@@ -145,7 +143,9 @@ class TestNotebookCRUDService:
         for i in range(5):
             await crud_service.add_cell(notebook_path, "code", f"cell{i}")
 
-        result = await crud_service.read_cells(notebook_path, mode="range", start_index=1, end_index=3)
+        result = await crud_service.read_cells(
+            notebook_path, mode="range", start_index=1, end_index=3
+        )
 
         assert result["success"] is True
         assert len(result["cells"]) == 3
@@ -158,12 +158,14 @@ class TestNotebookCRUDService:
         await crud_service.create_notebook(notebook_path)
         await crud_service.add_cell(notebook_path, "code", "long content " * 20)
 
-        result = await crud_service.read_cells(notebook_path, mode="list", preview_length=10)
+        result = await crud_service.read_cells(
+            notebook_path, mode="list", preview_length=10
+        )
 
         assert result["success"] is True
         assert len(result["cells"]) == 1
         assert "preview" in result["cells"][0]
-        assert len(result["cells"][0]["preview"]) <= 13 # 10 + "..."
+        assert len(result["cells"][0]["preview"]) <= 13  # 10 + "..."
 
     @pytest.mark.asyncio
     async def test_read_cells_all(self, crud_service):

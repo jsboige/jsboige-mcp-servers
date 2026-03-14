@@ -74,6 +74,7 @@ class PageContent:
     - Text mode: text_content only
     - Hybrid mode: both image and text
     """
+
     page_number: int
     image_data: bytes | None = None
     media_type: str = "image/png"  # image/png or image/jpeg
@@ -102,6 +103,7 @@ class PageContent:
 @dataclass
 class PageRange:
     """Optional page range for document extraction."""
+
     start: int = 1  # 1-indexed, inclusive
     end: int | None = None  # None means "until max_pages or end of document"
 
@@ -118,6 +120,7 @@ class PageRange:
 # ---------------------------------------------------------------------------
 # LibreOffice Discovery
 # ---------------------------------------------------------------------------
+
 
 def _find_libreoffice() -> str | None:
     """Find LibreOffice executable in system PATH or common portable locations.
@@ -169,6 +172,7 @@ def set_libreoffice_path(path: str) -> bool:
 # ---------------------------------------------------------------------------
 # PDF Processing
 # ---------------------------------------------------------------------------
+
 
 def _pdf_to_images(
     pdf_path: str,
@@ -225,16 +229,15 @@ def _pdf_to_images(
         from pdf2image import convert_from_path
 
         pages = convert_from_path(
-            pdf_path,
-            first_page=first_page,
-            last_page=last_page,
-            dpi=180
+            pdf_path, first_page=first_page, last_page=last_page, dpi=180
         )
         for i, page in enumerate(pages):
             buf = io.BytesIO()
             page.save(buf, format="PNG")  # PNG for lossless quality
             images.append((buf.getvalue(), "image/png"))
-            log.info("Converted PDF page %d to PNG (pdf2image, DPI=180)", first_page + i)
+            log.info(
+                "Converted PDF page %d to PNG (pdf2image, DPI=180)", first_page + i
+            )
 
         log.info("Converted %d pages from PDF: %s", len(images), pdf_path)
         return images
@@ -252,6 +255,7 @@ def _pdf_to_images(
 # ---------------------------------------------------------------------------
 # PowerPoint Processing
 # ---------------------------------------------------------------------------
+
 
 def _ppt_to_images(
     ppt_path: str,
@@ -285,10 +289,18 @@ def _ppt_to_images(
     try:
         # Convert PPT to PDF using LibreOffice headless
         result = subprocess.run(
-            [libreoffice_cmd, "--headless", "--convert-to", "pdf", "--outdir", tmp_dir, ppt_path],
+            [
+                libreoffice_cmd,
+                "--headless",
+                "--convert-to",
+                "pdf",
+                "--outdir",
+                tmp_dir,
+                ppt_path,
+            ],
             capture_output=True,
             text=True,
-            timeout=120  # 2 minute timeout
+            timeout=120,  # 2 minute timeout
         )
 
         if result.returncode != 0:
@@ -304,7 +316,9 @@ def _ppt_to_images(
         log.info("Converted PPT to PDF: %s", pdf_path)
 
         # Convert PDF to images using existing function
-        images = _pdf_to_images(str(pdf_path), max_pages=max_pages, start_page=start_page)
+        images = _pdf_to_images(
+            str(pdf_path), max_pages=max_pages, start_page=start_page
+        )
         log.info("Converted %d slides from PPT: %s", len(images), ppt_path)
         return images
 
@@ -319,6 +333,7 @@ def _ppt_to_images(
 # ---------------------------------------------------------------------------
 # Word Document Processing
 # ---------------------------------------------------------------------------
+
 
 def _doc_to_text(doc_path: str) -> str:
     """Convert Word document (DOC/DOCX) to plain text using LibreOffice.
@@ -335,6 +350,7 @@ def _doc_to_text(doc_path: str) -> str:
         if doc_path.lower().endswith(".docx"):
             try:
                 from docx import Document
+
                 doc = Document(doc_path)
                 text_parts = [para.text for para in doc.paragraphs]
                 return "\n".join(text_parts)
@@ -354,10 +370,18 @@ def _doc_to_text(doc_path: str) -> str:
     try:
         # Convert DOC to TXT using LibreOffice headless
         result = subprocess.run(
-            [libreoffice_cmd, "--headless", "--convert-to", "txt:Text", "--outdir", tmp_dir, doc_path],
+            [
+                libreoffice_cmd,
+                "--headless",
+                "--convert-to",
+                "txt:Text",
+                "--outdir",
+                tmp_dir,
+                doc_path,
+            ],
             capture_output=True,
             text=True,
-            timeout=120
+            timeout=120,
         )
 
         if result.returncode != 0:
@@ -419,10 +443,18 @@ def _doc_to_images(
     try:
         # Convert DOC to PDF using LibreOffice headless
         result = subprocess.run(
-            [libreoffice_cmd, "--headless", "--convert-to", "pdf", "--outdir", tmp_dir, doc_path],
+            [
+                libreoffice_cmd,
+                "--headless",
+                "--convert-to",
+                "pdf",
+                "--outdir",
+                tmp_dir,
+                doc_path,
+            ],
             capture_output=True,
             text=True,
-            timeout=120
+            timeout=120,
         )
 
         if result.returncode != 0:
@@ -438,7 +470,9 @@ def _doc_to_images(
         log.info("Converted DOC to PDF: %s", pdf_path)
 
         # Convert PDF to images using existing function
-        images = _pdf_to_images(str(pdf_path), max_pages=max_pages, start_page=start_page)
+        images = _pdf_to_images(
+            str(pdf_path), max_pages=max_pages, start_page=start_page
+        )
         log.info("Converted %d pages from Word document: %s", len(images), doc_path)
         return images
 
@@ -452,6 +486,7 @@ def _doc_to_images(
 # ---------------------------------------------------------------------------
 # Excel Processing
 # ---------------------------------------------------------------------------
+
 
 def _xlsx_to_csv(xlsx_path: str, max_sheets: int = 10) -> list[tuple[str, str]]:
     """Convert Excel spreadsheet (XLS/XLSX) to CSV using pandas or LibreOffice.
@@ -501,10 +536,18 @@ def _xlsx_to_csv(xlsx_path: str, max_sheets: int = 10) -> list[tuple[str, str]]:
     try:
         # Convert XLSX to CSV using LibreOffice headless
         result = subprocess.run(
-            [libreoffice_cmd, "--headless", "--convert-to", "csv", "--outdir", tmp_dir, xlsx_path],
+            [
+                libreoffice_cmd,
+                "--headless",
+                "--convert-to",
+                "csv",
+                "--outdir",
+                tmp_dir,
+                xlsx_path,
+            ],
             capture_output=True,
             text=True,
-            timeout=120
+            timeout=120,
         )
 
         if result.returncode != 0:
@@ -558,10 +601,18 @@ def _xlsx_to_images(
     try:
         # Convert XLSX to PDF using LibreOffice headless
         result = subprocess.run(
-            [libreoffice_cmd, "--headless", "--convert-to", "pdf", "--outdir", tmp_dir, xlsx_path],
+            [
+                libreoffice_cmd,
+                "--headless",
+                "--convert-to",
+                "pdf",
+                "--outdir",
+                tmp_dir,
+                xlsx_path,
+            ],
             capture_output=True,
             text=True,
-            timeout=120
+            timeout=120,
         )
 
         if result.returncode != 0:
@@ -577,7 +628,9 @@ def _xlsx_to_images(
         log.info("Converted XLSX to PDF: %s", pdf_path)
 
         # Convert PDF to images (each sheet is typically a page)
-        images = _pdf_to_images(str(pdf_path), max_pages=max_sheets, start_page=start_sheet)
+        images = _pdf_to_images(
+            str(pdf_path), max_pages=max_sheets, start_page=start_sheet
+        )
         log.info("Converted %d sheets from Excel: %s", len(images), xlsx_path)
         return images
 
@@ -591,6 +644,7 @@ def _xlsx_to_images(
 # ---------------------------------------------------------------------------
 # Unified Document Page Extraction
 # ---------------------------------------------------------------------------
+
 
 def calculate_max_pages_for_tokens(
     context_window: int,
@@ -658,7 +712,11 @@ def extract_document_pages(
     if context_window:
         token_limit = calculate_max_pages_for_tokens(context_window, mode)
         max_pages = min(max_pages, token_limit)
-        log.info("Auto-limited to %d pages based on %d token context window", max_pages, context_window)
+        log.info(
+            "Auto-limited to %d pages based on %d token context window",
+            max_pages,
+            context_window,
+        )
 
     # Hard limit
     max_pages = min(max_pages, MAX_PAGES_HARD_LIMIT)
@@ -682,7 +740,11 @@ def extract_document_pages(
 
     log.info(
         "Extracted %d pages from %s (mode=%s, format=%s, start=%d)",
-        len(pages), document_path, mode, suffix, start_idx + 1
+        len(pages),
+        document_path,
+        mode,
+        suffix,
+        start_idx + 1,
     )
     return pages
 
@@ -699,7 +761,9 @@ def _extract_pdf_pages(
     if mode in ("visual", "hybrid"):
         # Get images
         try:
-            images = _pdf_to_images(pdf_path, max_pages=max_pages, start_page=start_page)
+            images = _pdf_to_images(
+                pdf_path, max_pages=max_pages, start_page=start_page
+            )
             for i, (img_data, media_type) in enumerate(images):
                 page = PageContent(
                     page_number=start_page + i + 1,
@@ -711,6 +775,7 @@ def _extract_pdf_pages(
                 if mode == "hybrid":
                     try:
                         import fitz  # PyMuPDF
+
                         doc = fitz.open(pdf_path)
                         page_idx = start_page + i
                         if page_idx < doc.page_count:
@@ -730,17 +795,22 @@ def _extract_pdf_pages(
         # Extract text only
         try:
             import fitz  # PyMuPDF
+
             doc = fitz.open(pdf_path)
             end_page = min(start_page + max_pages, doc.page_count)
             for page_idx in range(start_page, end_page):
                 text = doc.load_page(page_idx).get_text()
-                pages.append(PageContent(
-                    page_number=page_idx + 1,
-                    text_content=text if text.strip() else None,
-                ))
+                pages.append(
+                    PageContent(
+                        page_number=page_idx + 1,
+                        text_content=text if text.strip() else None,
+                    )
+                )
             doc.close()
         except ImportError:
-            raise RuntimeError("PDF text extraction requires PyMuPDF. Install with: pip install PyMuPDF")
+            raise RuntimeError(
+                "PDF text extraction requires PyMuPDF. Install with: pip install PyMuPDF"
+            )
 
     return pages
 
@@ -758,21 +828,25 @@ def _extract_ppt_pages(
         # Get images via LibreOffice
         images = _ppt_to_images(ppt_path, max_pages=max_pages, start_page=start_page)
         for i, (img_data, media_type) in enumerate(images):
-            pages.append(PageContent(
-                page_number=start_page + i + 1,
-                image_data=img_data,
-                media_type=media_type,
-                metadata={"source": "slide"},
-            ))
+            pages.append(
+                PageContent(
+                    page_number=start_page + i + 1,
+                    image_data=img_data,
+                    media_type=media_type,
+                    metadata={"source": "slide"},
+                )
+            )
 
     if mode == "text":
         # Text extraction from PPT is limited - convert to text via LibreOffice
         text = _doc_to_text(ppt_path)
-        pages.append(PageContent(
-            page_number=1,
-            text_content=text,
-            metadata={"source": "all_slides"},
-        ))
+        pages.append(
+            PageContent(
+                page_number=1,
+                text_content=text,
+                metadata={"source": "all_slides"},
+            )
+        )
 
     return pages
 
@@ -789,7 +863,9 @@ def _extract_doc_pages(
     if mode in ("visual", "hybrid"):
         # Get images via LibreOffice (DOC → PDF → Images)
         try:
-            images = _doc_to_images(doc_path, max_pages=max_pages, start_page=start_page)
+            images = _doc_to_images(
+                doc_path, max_pages=max_pages, start_page=start_page
+            )
             for i, (img_data, media_type) in enumerate(images):
                 page = PageContent(
                     page_number=start_page + i + 1,
@@ -810,19 +886,23 @@ def _extract_doc_pages(
         text = _doc_to_text(doc_path)
         # Split by form feed or approximate pages
         if "\f" in text:
-            text_parts = text.split("\f")[start_page:start_page + max_pages]
+            text_parts = text.split("\f")[start_page : start_page + max_pages]
             for i, part in enumerate(text_parts):
                 if part.strip():
-                    pages.append(PageContent(
-                        page_number=start_page + i + 1,
-                        text_content=part.strip(),
-                    ))
+                    pages.append(
+                        PageContent(
+                            page_number=start_page + i + 1,
+                            text_content=part.strip(),
+                        )
+                    )
         else:
-            pages.append(PageContent(
-                page_number=1,
-                text_content=text,
-                metadata={"source": "full_document"},
-            ))
+            pages.append(
+                PageContent(
+                    page_number=1,
+                    text_content=text,
+                    metadata={"source": "full_document"},
+                )
+            )
 
     return pages
 
@@ -839,7 +919,9 @@ def _extract_xlsx_pages(
     if mode in ("visual", "hybrid"):
         # Get images via LibreOffice (XLSX → PDF → Images)
         try:
-            images = _xlsx_to_images(xlsx_path, max_sheets=max_pages, start_sheet=start_sheet)
+            images = _xlsx_to_images(
+                xlsx_path, max_sheets=max_pages, start_sheet=start_sheet
+            )
             for i, (img_data, media_type) in enumerate(images):
                 page = PageContent(
                     page_number=start_sheet + i + 1,
@@ -857,10 +939,12 @@ def _extract_xlsx_pages(
         # Get CSV data per sheet
         sheets = _xlsx_to_csv(xlsx_path, max_sheets=max_pages + start_sheet)
         for i, (sheet_name, csv_content) in enumerate(sheets[start_sheet:]):
-            pages.append(PageContent(
-                page_number=start_sheet + i + 1,
-                text_content=csv_content,
-                metadata={"source": "sheet", "sheet_name": sheet_name},
-            ))
+            pages.append(
+                PageContent(
+                    page_number=start_sheet + i + 1,
+                    text_content=csv_content,
+                    metadata={"source": "sheet", "sheet_name": sheet_name},
+                )
+            )
 
     return pages

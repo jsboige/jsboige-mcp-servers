@@ -36,38 +36,47 @@ def get_kernel_service() -> KernelService:
 # Input models for tools
 class StartKernelInput(BaseModel):
     """Input model for start_kernel tool."""
-    kernel_name: str = Field(default="python3", description="Nom du kernel a demarrer (ex: python3)")
+
+    kernel_name: str = Field(
+        default="python3", description="Nom du kernel a demarrer (ex: python3)"
+    )
 
 
 class StopKernelInput(BaseModel):
     """Input model for stop_kernel tool."""
+
     kernel_id: str = Field(description="ID du kernel a arreter")
 
 
 class InterruptKernelInput(BaseModel):
     """Input model for interrupt_kernel tool."""
+
     kernel_id: str = Field(description="ID du kernel a interrompre")
 
 
 class RestartKernelInput(BaseModel):
     """Input model for restart_kernel tool."""
+
     kernel_id: str = Field(description="ID du kernel a redemarrer")
 
 
 class ExecuteCellInput(BaseModel):
     """Input model for execute_cell tool."""
+
     kernel_id: str = Field(description="ID du kernel sur lequel executer le code")
     code: str = Field(description="Code a executer")
 
 
 class ExecuteNotebookInput(BaseModel):
     """Input model for execute_notebook tool."""
+
     path: str = Field(description="Chemin du fichier notebook (.ipynb)")
     kernel_id: str = Field(description="ID du kernel sur lequel executer le notebook")
 
 
 class ExecuteNotebookCellInput(BaseModel):
     """Input model for execute_notebook_cell tool."""
+
     path: str = Field(description="Chemin du fichier notebook (.ipynb)")
     cell_index: int = Field(description="Index de la cellule a executer")
     kernel_id: str = Field(description="ID du kernel sur lequel executer la cellule")
@@ -75,12 +84,12 @@ class ExecuteNotebookCellInput(BaseModel):
 
 def register_kernel_tools(app: FastMCP) -> None:
     """Register all kernel tools with the FastMCP app."""
-    
+
     @app.tool()
     async def list_kernels() -> Dict[str, Any]:
         """
         Liste les kernels disponibles et actifs
-        
+
         Returns:
             Information sur les kernels disponibles et actifs
         """
@@ -92,18 +101,15 @@ def register_kernel_tools(app: FastMCP) -> None:
             return result
         except Exception as e:
             logger.error(f"Error listing kernels: {e}")
-            return {
-                "error": str(e),
-                "success": False
-            }
-    
+            return {"error": str(e), "success": False}
+
     # ============================================================================
     # DEPRECATED WRAPPERS - Commentés Phase 6c (2025-10-10)
     # Ces wrappers ont été remplacés par les outils consolidés (Phase 5 + Phase 2).
     # Code conservé pour référence historique et possibilité de rollback.
     # NE PAS DÉCOMMENTER sans validation architecture.
     # ============================================================================
-    
+
     # @app.tool()
     # async def start_kernel(kernel_name: str = "python3", working_dir: Optional[str] = None) -> Dict[str, Any]:
     #     """
@@ -120,7 +126,7 @@ def register_kernel_tools(app: FastMCP) -> None:
     #     """
     #     logger.warning("start_kernel is deprecated, use manage_kernel(action='start') instead")
     #     return await manage_kernel(action="start", kernel_name=kernel_name, working_dir=working_dir)
-    
+
     # @app.tool()
     # async def stop_kernel(kernel_id: str) -> Dict[str, Any]:
     #     """
@@ -136,7 +142,7 @@ def register_kernel_tools(app: FastMCP) -> None:
     #     """
     #     logger.warning("stop_kernel is deprecated, use manage_kernel(action='stop') instead")
     #     return await manage_kernel(action="stop", kernel_id=kernel_id)
-    
+
     # @app.tool()
     # async def interrupt_kernel(kernel_id: str) -> Dict[str, Any]:
     #     """
@@ -152,7 +158,7 @@ def register_kernel_tools(app: FastMCP) -> None:
     #     """
     #     logger.warning("interrupt_kernel is deprecated, use manage_kernel(action='interrupt') instead")
     #     return await manage_kernel(action="interrupt", kernel_id=kernel_id)
-    
+
     # @app.tool()
     # async def restart_kernel(kernel_id: str) -> Dict[str, Any]:
     #     """
@@ -168,7 +174,7 @@ def register_kernel_tools(app: FastMCP) -> None:
     #     """
     #     logger.warning("restart_kernel is deprecated, use manage_kernel(action='restart') instead")
     #     return await manage_kernel(action="restart", kernel_id=kernel_id)
-    
+
     # @app.tool()
     # async def execute_cell(kernel_id: str, code: str) -> Dict[str, Any]:
     #     """
@@ -185,7 +191,7 @@ def register_kernel_tools(app: FastMCP) -> None:
     #     """
     #     logger.warning("execute_cell is deprecated, use execute_on_kernel(mode='code') instead")
     #     return await execute_on_kernel(kernel_id=kernel_id, mode="code", code=code)
-    
+
     # @app.tool()
     # async def execute_notebook(path: str, kernel_id: str) -> Dict[str, Any]:
     #     """
@@ -202,7 +208,7 @@ def register_kernel_tools(app: FastMCP) -> None:
     #     """
     #     logger.warning("execute_notebook is deprecated, use execute_on_kernel(mode='notebook') instead")
     #     return await execute_on_kernel(kernel_id=kernel_id, mode="notebook", path=path)
-    
+
     # @app.tool()
     # async def execute_notebook_cell(path: str, cell_index: int, kernel_id: str) -> Dict[str, Any]:
     #     """
@@ -220,7 +226,7 @@ def register_kernel_tools(app: FastMCP) -> None:
     #     """
     #     logger.warning("execute_notebook_cell is deprecated, use execute_on_kernel(mode='notebook_cell') instead")
     #     return await execute_on_kernel(kernel_id=kernel_id, mode="notebook_cell", path=path, cell_index=cell_index)
-    
+
     @app.tool()
     async def execute_on_kernel(
         kernel_id: str,
@@ -228,13 +234,13 @@ def register_kernel_tools(app: FastMCP) -> None:
         code: Optional[str] = None,
         path: Optional[str] = None,
         cell_index: Optional[int] = None,
-        timeout: int = 60
+        timeout: int = 60,
     ) -> Dict[str, Any]:
         """
         🆕 OUTIL CONSOLIDÉ - Exécution de code sur un kernel.
-        
+
         Remplace: execute_cell, execute_notebook, execute_notebook_cell
-        
+
         Args:
             kernel_id: ID du kernel sur lequel exécuter
             mode: Type d'exécution
@@ -245,7 +251,7 @@ def register_kernel_tools(app: FastMCP) -> None:
             path: Chemin du notebook (pour mode="notebook" | "notebook_cell")
             cell_index: Index de la cellule (pour mode="notebook_cell", 0-based)
             timeout: Timeout en secondes (défaut: 60)
-            
+
         Returns:
             Mode "code":
             {
@@ -270,7 +276,7 @@ def register_kernel_tools(app: FastMCP) -> None:
                 "execution_time": float,
                 "success": bool
             }
-            
+
             Mode "notebook":
             {
                 "kernel_id": str,
@@ -293,7 +299,7 @@ def register_kernel_tools(app: FastMCP) -> None:
                 ],
                 "success": bool
             }
-            
+
             Mode "notebook_cell":
             {
                 "kernel_id": str,
@@ -308,7 +314,7 @@ def register_kernel_tools(app: FastMCP) -> None:
                 "execution_time": float,
                 "success": bool
             }
-        
+
         Validation:
             - mode="code" → code requis
             - mode="notebook" → path requis
@@ -323,7 +329,7 @@ def register_kernel_tools(app: FastMCP) -> None:
                 code=code,
                 path=path,
                 cell_index=cell_index,
-                timeout=timeout
+                timeout=timeout,
             )
             logger.info(f"Successfully executed on kernel {kernel_id} in mode: {mode}")
             return result
@@ -333,21 +339,21 @@ def register_kernel_tools(app: FastMCP) -> None:
                 "error": str(e),
                 "kernel_id": kernel_id,
                 "mode": mode,
-                "success": False
+                "success": False,
             }
-    
+
     @app.tool()
     async def manage_kernel(
         action: Literal["start", "stop", "interrupt", "restart"],
         kernel_name: Optional[str] = None,
         kernel_id: Optional[str] = None,
-        working_dir: Optional[str] = None
+        working_dir: Optional[str] = None,
     ) -> Dict[str, Any]:
         """
         🆕 OUTIL CONSOLIDÉ - Gestion du cycle de vie des kernels Jupyter.
-        
+
         Remplace: start_kernel, stop_kernel, interrupt_kernel, restart_kernel
-        
+
         Args:
             action: Action à effectuer sur le kernel
                 - "start": Démarrer un nouveau kernel
@@ -357,7 +363,7 @@ def register_kernel_tools(app: FastMCP) -> None:
             kernel_name: Nom du kernel à démarrer (requis pour action="start")
             kernel_id: ID du kernel (requis pour stop/interrupt/restart)
             working_dir: Répertoire de travail (optionnel, pour action="start")
-            
+
         Returns:
             Action "start":
             {
@@ -370,7 +376,7 @@ def register_kernel_tools(app: FastMCP) -> None:
                 "started_at": str,  # ISO 8601
                 "success": bool
             }
-            
+
             Action "stop":
             {
                 "action": "stop",
@@ -380,7 +386,7 @@ def register_kernel_tools(app: FastMCP) -> None:
                 "stopped_at": str,
                 "success": bool
             }
-            
+
             Action "interrupt":
             {
                 "action": "interrupt",
@@ -390,7 +396,7 @@ def register_kernel_tools(app: FastMCP) -> None:
                 "interrupted_at": str,
                 "success": bool
             }
-            
+
             Action "restart":
             {
                 "action": "restart",
@@ -402,7 +408,7 @@ def register_kernel_tools(app: FastMCP) -> None:
                 "restarted_at": str,
                 "success": bool
             }
-        
+
         Validation:
             - action="start" → kernel_name requis
             - action="stop"|"interrupt"|"restart" → kernel_id requis
@@ -415,17 +421,12 @@ def register_kernel_tools(app: FastMCP) -> None:
                 action=action,
                 kernel_name=kernel_name,
                 kernel_id=kernel_id,
-                working_dir=working_dir
+                working_dir=working_dir,
             )
             logger.info(f"Successfully managed kernel with action: {action}")
             return result
         except Exception as e:
             logger.error(f"Error managing kernel with action {action}: {e}")
-            return {
-                "error": str(e),
-                "action": action,
-                "success": False
-            }
-    
-    
+            return {"error": str(e), "action": action, "success": False}
+
     logger.info("Registered kernel tools")

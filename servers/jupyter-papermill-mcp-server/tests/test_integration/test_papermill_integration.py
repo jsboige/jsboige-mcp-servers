@@ -20,8 +20,7 @@ from papermill_mcp.core.papermill_executor import PapermillExecutor
 
 # Configuration du logging
 logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+    level=logging.INFO, format="%(asctime)s - %(name)s - %(levelname)s - %(message)s"
 )
 logger = logging.getLogger(__name__)
 
@@ -61,8 +60,8 @@ class PapermillIntegrationTester:
                         "# Cellule de parametres par defaut\n",
                         "name = 'World'\n",
                         "count = 5\n",
-                        "multiplier = 2\n"
-                    ]
+                        "multiplier = 2\n",
+                    ],
                 },
                 {
                     "cell_type": "markdown",
@@ -72,8 +71,8 @@ class PapermillIntegrationTester:
                     "source": [
                         "# Test Papermill MCP\n",
                         "\n",
-                        "Ce notebook teste l'injection de parametres via Papermill."
-                    ]
+                        "Ce notebook teste l'injection de parametres via Papermill.",
+                    ],
                 },
                 {
                     "cell_type": "code",
@@ -84,8 +83,8 @@ class PapermillIntegrationTester:
                         "# Affichage des parametres\n",
                         "print(f'Bonjour {name}!')\n",
                         "print(f'Count: {count}')\n",
-                        "print(f'Multiplier: {multiplier}')"
-                    ]
+                        "print(f'Multiplier: {multiplier}')",
+                    ],
                 },
                 {
                     "cell_type": "code",
@@ -106,27 +105,24 @@ class PapermillIntegrationTester:
                         "}\n",
                         "\n",
                         "print('Resultat final:')\n",
-                        "print(final_result)"
-                    ]
-                }
+                        "print(final_result)",
+                    ],
+                },
             ],
             "metadata": {
                 "kernelspec": {
                     "display_name": "Python 3",
                     "language": "python",
-                    "name": "python3"
+                    "name": "python3",
                 },
-                "language_info": {
-                    "name": "python",
-                    "version": "3.10.0"
-                }
+                "language_info": {"name": "python", "version": "3.10.0"},
             },
             "nbformat": 4,
-            "nbformat_minor": 5
+            "nbformat_minor": 5,
         }
 
         notebook_path = self.temp_dir / filename
-        with open(notebook_path, 'w', encoding='utf-8') as f:
+        with open(notebook_path, "w", encoding="utf-8") as f:
             json.dump(notebook_content, f, indent=2)
 
         logger.info(f"[OK] Notebook parametre cree: {notebook_path}")
@@ -145,8 +141,8 @@ class PapermillIntegrationTester:
                         "# Parametres complexes\n",
                         "data_list = [1, 2, 3, 4, 5]\n",
                         "config = {'mode': 'test', 'debug': True}\n",
-                        "title = 'Analyse par defaut'\n"
-                    ]
+                        "title = 'Analyse par defaut'\n",
+                    ],
                 },
                 {
                     "cell_type": "code",
@@ -174,23 +170,23 @@ class PapermillIntegrationTester:
                         "}\n",
                         "\n",
                         "print('\\nResultats de traitement:')\n",
-                        "print(json.dumps(results, indent=2))"
-                    ]
-                }
+                        "print(json.dumps(results, indent=2))",
+                    ],
+                },
             ],
             "metadata": {
                 "kernelspec": {
                     "display_name": "Python 3",
                     "language": "python",
-                    "name": "python3"
+                    "name": "python3",
                 }
             },
             "nbformat": 4,
-            "nbformat_minor": 5
+            "nbformat_minor": 5,
         }
 
         notebook_path = self.temp_dir / filename
-        with open(notebook_path, 'w', encoding='utf-8') as f:
+        with open(notebook_path, "w", encoding="utf-8") as f:
             json.dump(notebook_content, f, indent=2)
 
         logger.info(f"[OK] Notebook complexe cree: {notebook_path}")
@@ -206,11 +202,7 @@ class PapermillIntegrationTester:
             output_notebook = self.temp_dir / "output_basic.ipynb"
 
             # Parametres a injecter
-            parameters = {
-                "name": "Papermill MCP",
-                "count": 10,
-                "multiplier": 3
-            }
+            parameters = {"name": "Papermill MCP", "count": 10, "multiplier": 3}
 
             logger.info(f"Injection des parametres: {parameters}")
 
@@ -225,7 +217,9 @@ class PapermillIntegrationTester:
                 logger.info(f"[OK] Parametres prepares pour injection: {parameters}")
 
                 # Test de preparation des parametres
-                prepared_params = self.papermill_executor._prepare_parameters(parameters)
+                prepared_params = self.papermill_executor._prepare_parameters(
+                    parameters
+                )
                 logger.info(f"[OK] Parametres prepares: {prepared_params}")
 
                 return True
@@ -244,24 +238,24 @@ class PapermillIntegrationTester:
 
         try:
             # Creer le notebook complexe
-            input_notebook = self.create_complex_parameterized_notebook("input_complex.ipynb")
+            input_notebook = self.create_complex_parameterized_notebook(
+                "input_complex.ipynb"
+            )
 
             # Parametres complexes
             complex_parameters = {
                 "data_list": [10, 20, 30, 40, 50],
-                "config": {
-                    "mode": "production",
-                    "debug": False,
-                    "batch_size": 100
-                },
-                "title": "Analyse de donnees complexe"
+                "config": {"mode": "production", "debug": False, "batch_size": 100},
+                "title": "Analyse de donnees complexe",
             }
 
             logger.info(f"Injection des parametres complexes: {complex_parameters}")
 
             # Test de preparation des parametres complexes
             try:
-                prepared_params = self.papermill_executor._prepare_parameters(complex_parameters)
+                prepared_params = self.papermill_executor._prepare_parameters(
+                    complex_parameters
+                )
                 logger.info(f"[OK] Parametres complexes prepares: {prepared_params}")
                 return True
 
@@ -283,7 +277,7 @@ class PapermillIntegrationTester:
 
             # Test 1: Verifier la configuration
             logger.info("Test 1: Configuration de l'executeur...")
-            if hasattr(executor, 'config'):
+            if hasattr(executor, "config"):
                 logger.info("[OK] Configuration accessible")
 
             # Test 2: Test de preparation de parametres
@@ -298,7 +292,7 @@ class PapermillIntegrationTester:
             test_output = self.temp_dir / "output.ipynb"
 
             # Creer un fichier test minimal
-            with open(test_input, 'w') as f:
+            with open(test_input, "w") as f:
                 json.dump({"nbformat": 4, "cells": []}, f)
 
             logger.info("[OK] Validation des chemins reussie")
@@ -356,7 +350,9 @@ class PapermillIntegrationTester:
             results["executor_methods"] = await self.test_papermill_executor_methods()
             results["error_handling"] = await self.test_error_handling()
         else:
-            logger.error("[ERROR] ?chec de l'initialisation - tests Papermill interrompus")
+            logger.error(
+                "[ERROR] ?chec de l'initialisation - tests Papermill interrompus"
+            )
             return results
 
         # Resume des resultats
@@ -372,7 +368,11 @@ class PapermillIntegrationTester:
                 all_passed = False
 
         logger.info("=" * 50)
-        final_status = "[OK] TOUS LES TESTS PAPERMILL R?USSIS" if all_passed else "[ERROR] CERTAINS TESTS PAPERMILL ONT ?CHOU?"
+        final_status = (
+            "[OK] TOUS LES TESTS PAPERMILL R?USSIS"
+            if all_passed
+            else "[ERROR] CERTAINS TESTS PAPERMILL ONT ?CHOU?"
+        )
         logger.info(f"R?SULTAT GLOBAL: {final_status}")
         logger.info("=" * 50)
 
@@ -386,6 +386,7 @@ async def main():
 
     # Nettoyage avec gestion d'erreur
     import shutil
+
     try:
         if tester.temp_dir.exists():
             shutil.rmtree(tester.temp_dir)
@@ -401,5 +402,6 @@ async def main():
 
 if __name__ == "__main__":
     import sys
+
     exit_code = asyncio.run(main())
     sys.exit(exit_code)

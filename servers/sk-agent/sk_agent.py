@@ -110,16 +110,21 @@ try:
     from semantic_kernel.memory import SemanticTextMemory, VolatileMemoryStore
     from semantic_kernel.connectors.ai.open_ai import OpenAITextEmbedding
     from semantic_kernel.core_plugins import TextMemoryPlugin
+
     HAS_MEMORY = True
 except ImportError:
     HAS_MEMORY = False
 
 try:
-    from semantic_kernel.connectors.memory_stores.qdrant.qdrant_memory_store import QdrantMemoryStore
+    from semantic_kernel.connectors.memory_stores.qdrant.qdrant_memory_store import (
+        QdrantMemoryStore,
+    )
+
     HAS_QDRANT = True
 except ImportError:
     try:
         from semantic_kernel.connectors.memory.qdrant import QdrantMemoryStore
+
         HAS_QDRANT = True
     except ImportError:
         HAS_QDRANT = False
@@ -140,7 +145,17 @@ log = logging.getLogger("sk-agent")
 # ---------------------------------------------------------------------------
 
 # File extension -> content type mapping
-_IMAGE_EXTENSIONS = {".png", ".jpg", ".jpeg", ".gif", ".bmp", ".webp", ".tiff", ".tif", ".svg"}
+_IMAGE_EXTENSIONS = {
+    ".png",
+    ".jpg",
+    ".jpeg",
+    ".gif",
+    ".bmp",
+    ".webp",
+    ".tiff",
+    ".tif",
+    ".svg",
+}
 _VIDEO_EXTENSIONS = {".mp4", ".avi", ".mov", ".mkv", ".webm", ".flv", ".wmv"}
 _DOCUMENT_EXTENSIONS = {".pdf", ".ppt", ".pptx", ".doc", ".docx", ".xls", ".xlsx"}
 
@@ -154,10 +169,11 @@ def file_uri_to_path(uri: str) -> str:
     if not uri.startswith("file:///"):
         return uri
     from urllib.parse import urlparse, unquote
+
     parsed = urlparse(uri)
     path = unquote(parsed.path)
     # On Windows, remove leading slash before drive letter
-    if len(path) > 2 and path[0] == '/' and path[2] == ':':
+    if len(path) > 2 and path[0] == "/" and path[2] == ":":
         path = path[1:]
     return path
 
@@ -176,6 +192,7 @@ def classify_attachment(path: str) -> str | None:
     # URL: check extension from URL path
     if path.startswith(("http://", "https://")):
         from urllib.parse import urlparse
+
         url_path = urlparse(path).path
         ext = Path(url_path).suffix.lower()
     else:
@@ -193,6 +210,7 @@ def classify_attachment(path: str) -> str | None:
 # ---------------------------------------------------------------------------
 # Image/Media Processing Helpers
 # ---------------------------------------------------------------------------
+
 
 async def resolve_attachment(source: str) -> tuple[str, str]:
     """Convert a local file path, file:/// URI, or URL to (base64_data, media_type)."""
@@ -224,6 +242,7 @@ async def resolve_attachment(source: str) -> tuple[str, str]:
 # ---------------------------------------------------------------------------
 # Dynamic Description Builders
 # ---------------------------------------------------------------------------
+
 
 def build_call_agent_description(config: SKAgentConfig) -> str:
     """Build dynamic description for call_agent tool from config."""
@@ -262,29 +281,38 @@ def build_call_agent_description(config: SKAgentConfig) -> str:
         lines.append("")
         lines.append(default_info)
 
-    lines.extend([
-        "",
-        "Parameters:",
-        "  prompt: The question or instruction",
-        "  agent: Agent ID (default: auto-select based on attachment type)",
-        "  attachment: File path or URL (image, video, PDF, PPTX, DOCX, XLSX)",
-        "  options: JSON string with type-specific params: region, mode, max_pages, page_range, num_frames",
-        "  conversation_id: Continue previous conversation",
-        "  include_steps: Show intermediate tool/reasoning steps",
-    ])
+    lines.extend(
+        [
+            "",
+            "Parameters:",
+            "  prompt: The question or instruction",
+            "  agent: Agent ID (default: auto-select based on attachment type)",
+            "  attachment: File path or URL (image, video, PDF, PPTX, DOCX, XLSX)",
+            "  options: JSON string with type-specific params: region, mode, max_pages, page_range, num_frames",
+            "  conversation_id: Continue previous conversation",
+            "  include_steps: Show intermediate tool/reasoning steps",
+        ]
+    )
 
     return "\n".join(lines)
 
 
 def build_list_agents_description(config: SKAgentConfig) -> str:
     """Build dynamic description for list_agents tool."""
-    count = len([a for a in config.agents if config.get_model(a.model) and config.get_model(a.model).enabled])
+    count = len(
+        [
+            a
+            for a in config.agents
+            if config.get_model(a.model) and config.get_model(a.model).enabled
+        ]
+    )
     return f"List all {count} configured agents with their models, capabilities, tools, and memory status."
 
 
 # ---------------------------------------------------------------------------
 # Semantic Kernel Agent Manager (v2: Agent-Centric)
 # ---------------------------------------------------------------------------
+
 
 class SKAgentManager:
     """Manages agent-centric resources: shared model/MCP pools and per-agent kernels."""
@@ -294,24 +322,26 @@ class SKAgentManager:
         self._exit_stack = AsyncExitStack()
 
         # Shared resource pools
-        self._openai_clients: dict[str, AsyncOpenAI] = {}       # model_id -> client
-        self._services: dict[str, OpenAIChatCompletion] = {}     # model_id -> service
-        self._mcp_plugins: dict[str, Any] = {}                   # mcp_id -> connected plugin
-        self._mcp_plugin_list: list = []                         # Ordered list of all plugins
+        self._openai_clients: dict[str, AsyncOpenAI] = {}  # model_id -> client
+        self._services: dict[str, OpenAIChatCompletion] = {}  # model_id -> service
+        self._mcp_plugins: dict[str, Any] = {}  # mcp_id -> connected plugin
+        self._mcp_plugin_list: list = []  # Ordered list of all plugins
 
         # Per-agent resources
-        self._kernels: dict[str, Kernel] = {}                    # agent_id -> kernel
-        self._sk_agents: dict[str, ChatCompletionAgent] = {}     # agent_id -> SK agent
+        self._kernels: dict[str, Kernel] = {}  # agent_id -> kernel
+        self._sk_agents: dict[str, ChatCompletionAgent] = {}  # agent_id -> SK agent
 
         # Conversation threads
         self._threads: dict[str, ChatHistoryAgentThread] = {}
 
         # Memory
-        self._memory_stores: dict[str, Any] = {}                 # agent_id -> SemanticTextMemory
+        self._memory_stores: dict[str, Any] = {}  # agent_id -> SemanticTextMemory
 
         # Lazy MCP loading: track which MCPs are being loaded to avoid duplicates
         self._loading_mcps: set[str] = set()
-        self._mcp_configs: dict[str, McpConfig] = {cfg.id: cfg for cfg in self.config.mcps}
+        self._mcp_configs: dict[str, McpConfig] = {
+            cfg.id: cfg for cfg in self.config.mcps
+        }
 
     async def start(self):
         """Initialize shared pools and per-agent resources."""
@@ -326,7 +356,8 @@ class SKAgentManager:
         # This prevents blocking if agent initialization (MCP loading) fails
         log.info(
             "SK Agent Manager ready: %d agent configs, %d models ready",
-            len(self.config.agents), len(self._openai_clients),
+            len(self.config.agents),
+            len(self._openai_clients),
         )
 
     async def _init_model_pool(self):
@@ -345,7 +376,12 @@ class SKAgentManager:
                 service_id=model_cfg.id,
             )
             self._services[model_cfg.id] = service
-            log.info("Model pool: %s -> %s at %s", model_cfg.id, model_cfg.model_id, model_cfg.base_url)
+            log.info(
+                "Model pool: %s -> %s at %s",
+                model_cfg.id,
+                model_cfg.model_id,
+                model_cfg.base_url,
+            )
 
     async def _ensure_mcp_loaded(self, mcp_id: str) -> bool:
         """Ensure a specific MCP is loaded (lazy loading). Returns True if successful."""
@@ -381,7 +417,10 @@ class SKAgentManager:
 
             if is_self:
                 env["SK_AGENT_DEPTH"] = str(SK_AGENT_DEPTH + 1)
-                log.info("Self-inclusion: spawning child sk-agent with depth=%d", SK_AGENT_DEPTH + 1)
+                log.info(
+                    "Self-inclusion: spawning child sk-agent with depth=%d",
+                    SK_AGENT_DEPTH + 1,
+                )
 
             plugin = MCPStdioPlugin(
                 name=mcp_cfg.id,
@@ -423,7 +462,11 @@ class SKAgentManager:
             if await self._ensure_mcp_loaded(mcp_id):
                 agent_plugins.append(self._mcp_plugins[mcp_id])
             else:
-                log.warning("Agent '%s': MCP '%s' failed to load, agent will not have it", agent_id, mcp_id)
+                log.warning(
+                    "Agent '%s': MCP '%s' failed to load, agent will not have it",
+                    agent_id,
+                    mcp_id,
+                )
 
         # Set up memory if enabled
         if agent_cfg.memory.enabled and HAS_MEMORY:
@@ -451,8 +494,13 @@ class SKAgentManager:
         )
         self._kernels[agent_id] = kernel
         self._sk_agents[agent_id] = agent
-        log.info("Agent created: %s (model=%s, mcps=%s, memory=%s)",
-                 agent_id, model_cfg.id, agent_cfg.mcps, agent_cfg.memory.enabled)
+        log.info(
+            "Agent created: %s (model=%s, mcps=%s, memory=%s)",
+            agent_id,
+            model_cfg.id,
+            agent_cfg.mcps,
+            agent_cfg.memory.enabled,
+        )
 
     async def _get_or_create_agent(self, agent_id: str) -> ChatCompletionAgent | None:
         """Get an agent by ID, creating it lazily if needed."""
@@ -474,7 +522,9 @@ class SKAgentManager:
         # Get model config
         model = self.config.get_model(agent_cfg.model)
         if not model or not model.enabled:
-            log.warning("Agent '%s': model '%s' not available", agent_id, agent_cfg.model)
+            log.warning(
+                "Agent '%s': model '%s' not available", agent_id, agent_cfg.model
+            )
             return None
 
         # Create the agent
@@ -485,7 +535,10 @@ class SKAgentManager:
         """Set up vector memory for an agent. Returns TextMemoryPlugin or None."""
         emb = self.config.embeddings
         if not emb.is_configured:
-            log.warning("Agent '%s' has memory enabled but embeddings not configured", agent_cfg.id)
+            log.warning(
+                "Agent '%s' has memory enabled but embeddings not configured",
+                agent_cfg.id,
+            )
             return None
 
         collection = agent_cfg.memory.collection or f"{agent_cfg.id}-memory"
@@ -503,10 +556,17 @@ class SKAgentManager:
                 if qdrant_api_key:
                     qdrant_kwargs["api_key"] = qdrant_api_key
                 store = QdrantMemoryStore(**qdrant_kwargs)
-                log.info("Memory: using Qdrant for agent '%s' (collection=%s)", agent_cfg.id, full_collection)
+                log.info(
+                    "Memory: using Qdrant for agent '%s' (collection=%s)",
+                    agent_cfg.id,
+                    full_collection,
+                )
             else:
                 store = VolatileMemoryStore()
-                log.warning("Memory: qdrant-client not installed, using volatile store for '%s'", agent_cfg.id)
+                log.warning(
+                    "Memory: qdrant-client not installed, using volatile store for '%s'",
+                    agent_cfg.id,
+                )
 
             # Create embeddings generator
             emb_client = AsyncOpenAI(
@@ -591,7 +651,9 @@ class SKAgentManager:
 
         return None, None
 
-    def _get_or_create_thread(self, conversation_id: str | None) -> tuple[str, ChatHistoryAgentThread]:
+    def _get_or_create_thread(
+        self, conversation_id: str | None
+    ) -> tuple[str, ChatHistoryAgentThread]:
         """Get existing thread or create new one."""
         if conversation_id and conversation_id in self._threads:
             return conversation_id, self._threads[conversation_id]
@@ -643,28 +705,51 @@ class SKAgentManager:
             region = options.get("region")
             if region:
                 return await self._handle_image_region(
-                    resolved_id, agent, attachment, region, prompt,
-                    conversation_id, include_steps, options.get("zoom_context"),
+                    resolved_id,
+                    agent,
+                    attachment,
+                    region,
+                    prompt,
+                    conversation_id,
+                    include_steps,
+                    options.get("zoom_context"),
                 )
             else:
                 return await self._handle_image(
-                    resolved_id, agent, attachment, prompt,
-                    conversation_id, include_steps,
+                    resolved_id,
+                    agent,
+                    attachment,
+                    prompt,
+                    conversation_id,
+                    include_steps,
                 )
         elif attachment_type == "video":
             return await self._handle_video(
-                resolved_id, agent, attachment, prompt,
-                conversation_id, include_steps, options.get("num_frames", 8),
+                resolved_id,
+                agent,
+                attachment,
+                prompt,
+                conversation_id,
+                include_steps,
+                options.get("num_frames", 8),
             )
         elif attachment_type == "document":
             return await self._handle_document(
-                resolved_id, agent, attachment, prompt,
-                conversation_id, include_steps, options,
+                resolved_id,
+                agent,
+                attachment,
+                prompt,
+                conversation_id,
+                include_steps,
+                options,
             )
         else:
             return await self._handle_text(
-                resolved_id, agent, prompt,
-                conversation_id, include_steps,
+                resolved_id,
+                agent,
+                prompt,
+                conversation_id,
+                include_steps,
             )
 
     # -----------------------------------------------------------------------
@@ -689,7 +774,9 @@ class SKAgentManager:
         async for response in agent.invoke(
             messages=message,
             thread=thread,
-            on_intermediate_message=self._make_step_handler(steps) if include_steps else None,
+            on_intermediate_message=self._make_step_handler(steps)
+            if include_steps
+            else None,
         ):
             final_response = response
             thread = response.thread
@@ -729,7 +816,9 @@ class SKAgentManager:
             async for response in agent.invoke(
                 messages=message,
                 thread=thread,
-                on_intermediate_message=self._make_step_handler(steps) if include_steps else None,
+                on_intermediate_message=self._make_step_handler(steps)
+                if include_steps
+                else None,
             ):
                 final_response = response
                 thread = response.thread
@@ -768,7 +857,9 @@ class SKAgentManager:
                     resp = await client.get(image_source, follow_redirects=True)
                     resp.raise_for_status()
                     data = resp.content
-                    media_type = resp.headers.get("content-type", "").split(";")[0].strip()
+                    media_type = (
+                        resp.headers.get("content-type", "").split(";")[0].strip()
+                    )
             else:
                 p = Path(image_source)
                 if not p.exists():
@@ -777,7 +868,9 @@ class SKAgentManager:
                 media_type = mimetypes.guess_type(str(p))[0] or "image/png"
 
             cropped_data, cropped_type = _crop_image(data, media_type, region)
-            cropped_data, cropped_type = _resize_image_if_needed(cropped_data, cropped_type)
+            cropped_data, cropped_type = _resize_image_if_needed(
+                cropped_data, cropped_type
+            )
 
             context_msg = prompt
             if zoom_context:
@@ -796,7 +889,9 @@ class SKAgentManager:
             async for response in agent.invoke(
                 messages=message,
                 thread=thread,
-                on_intermediate_message=self._make_step_handler(steps) if include_steps else None,
+                on_intermediate_message=self._make_step_handler(steps)
+                if include_steps
+                else None,
             ):
                 final_response = response
                 thread = response.thread
@@ -849,7 +944,9 @@ class SKAgentManager:
 
         conv_id, thread = self._get_or_create_thread(conversation_id)
 
-        content_items = [TextContent(text=f"{prompt}\n\nThe video has {len(frames)} frames:")]
+        content_items = [
+            TextContent(text=f"{prompt}\n\nThe video has {len(frames)} frames:")
+        ]
         for i, (frame_data, media_type) in enumerate(frames):
             b64_data = base64.b64encode(frame_data).decode("ascii")
             data_url = f"data:{media_type};base64,{b64_data}"
@@ -863,7 +960,9 @@ class SKAgentManager:
         async for response in agent.invoke(
             messages=message,
             thread=thread,
-            on_intermediate_message=self._make_step_handler(steps) if include_steps else None,
+            on_intermediate_message=self._make_step_handler(steps)
+            if include_steps
+            else None,
         ):
             final_response = response
             thread = response.thread
@@ -897,7 +996,9 @@ class SKAgentManager:
     ) -> dict[str, Any]:
         """Handle document analysis."""
         mode = options.get("mode", "visual")
-        max_pages = max(1, min(options.get("max_pages", DEFAULT_MAX_PAGES), MAX_PAGES_HARD_LIMIT))
+        max_pages = max(
+            1, min(options.get("max_pages", DEFAULT_MAX_PAGES), MAX_PAGES_HARD_LIMIT)
+        )
         auto_limit_tokens = options.get("auto_limit_tokens", True)
 
         if mode not in ("visual", "text", "hybrid"):
@@ -909,7 +1010,9 @@ class SKAgentManager:
         # Get context window for auto-limiting
         model_id = self._get_agent_model_id(agent_id)
         model_cfg = self.config.get_model(model_id) if model_id else None
-        context_window = model_cfg.context_window if (auto_limit_tokens and model_cfg) else None
+        context_window = (
+            model_cfg.context_window if (auto_limit_tokens and model_cfg) else None
+        )
 
         # Parse page range
         range_obj = None
@@ -917,7 +1020,9 @@ class SKAgentManager:
         if page_range:
             if isinstance(page_range, str):
                 page_range = json.loads(page_range)
-            range_obj = PageRange(start=page_range.get("start", 1), end=page_range.get("end"))
+            range_obj = PageRange(
+                start=page_range.get("start", 1), end=page_range.get("end")
+            )
 
         try:
             pages = extract_document_pages(
@@ -937,9 +1042,13 @@ class SKAgentManager:
         needs_vision = has_images or mode == "visual"
 
         if needs_vision and model_cfg and not model_cfg.vision:
-            return {"error": "Agent's model does not support vision for visual/hybrid mode"}
+            return {
+                "error": "Agent's model does not support vision for visual/hybrid mode"
+            }
 
-        content_items = [TextContent(text=f"{prompt}\n\nThe document has {len(pages)} page(s):")]
+        content_items = [
+            TextContent(text=f"{prompt}\n\nThe document has {len(pages)} page(s):")
+        ]
         for page in pages:
             page_label = f"Page {page.page_number}"
             if page.metadata and page.metadata.get("sheet_name"):
@@ -963,7 +1072,9 @@ class SKAgentManager:
         async for response in agent.invoke(
             messages=message,
             thread=thread,
-            on_intermediate_message=self._make_step_handler(steps) if include_steps else None,
+            on_intermediate_message=self._make_step_handler(steps)
+            if include_steps
+            else None,
         ):
             final_response = response
             thread = response.thread
@@ -987,6 +1098,7 @@ class SKAgentManager:
 
     def _make_step_handler(self, steps: list):
         """Create a step handler callback for agent invocation."""
+
         async def handler(message) -> None:
             step_info = {"role": str(message.role)}
             for item in message.items:
@@ -1002,6 +1114,7 @@ class SKAgentManager:
                     step_info["content"] = item.text[:200]
             if "type" in step_info:
                 steps.append(step_info)
+
         return handler
 
     def _get_agent_model_id(self, agent_id: str) -> str:
@@ -1030,7 +1143,8 @@ class SKAgentManager:
                 "mcps": agent_cfg.mcps,
                 "memory": agent_cfg.memory.enabled,
                 "is_default": default_agent and agent_cfg.id == default_agent.id,
-                "is_default_vision": default_vision and agent_cfg.id == default_vision.id,
+                "is_default_vision": default_vision
+                and agent_cfg.id == default_vision.id,
             }
             result.append(info)
         return result
@@ -1096,6 +1210,7 @@ _mcp_kwargs: dict[str, Any] = dict(
 
 if _transport_mode == "streamable-http":
     from mcp.server.fastmcp.server import TransportSecuritySettings
+
     _mcp_kwargs.update(
         host="0.0.0.0",
         port=_http_port,
@@ -1149,7 +1264,9 @@ def _update_tool_descriptions(config: SKAgentConfig):
             tools["list_agents"].description = build_list_agents_description(config)
 
         if "run_conversation" in tools:
-            tools["run_conversation"].description = build_run_conversation_description(config)
+            tools["run_conversation"].description = build_run_conversation_description(
+                config
+            )
             log.info("Updated run_conversation description dynamically")
     except Exception:
         log.exception("Failed to update tool descriptions dynamically")
@@ -1158,6 +1275,7 @@ def _update_tool_descriptions(config: SKAgentConfig):
 # ---------------------------------------------------------------------------
 # Core Tools
 # ---------------------------------------------------------------------------
+
 
 @mcp_server.tool()
 async def call_agent(
@@ -1230,7 +1348,11 @@ async def list_agents() -> str:
         lines.append(f"## {a['id']}{badge_str}")
         lines.append(f"- Model: {a.get('model_id', 'unknown')} ({a.get('model', '')})")
         ctx = a.get("context_window", 0)
-        lines.append(f"- Context: {ctx:,} tokens" if isinstance(ctx, int) else f"- Context: {ctx}")
+        lines.append(
+            f"- Context: {ctx:,} tokens"
+            if isinstance(ctx, int)
+            else f"- Context: {ctx}"
+        )
         lines.append(f"- Vision: {'Yes' if a.get('vision') else 'No'}")
         if a.get("mcps"):
             lines.append(f"- Tools: {', '.join(a['mcps'])}")
@@ -1290,7 +1412,11 @@ async def install_libreoffice(force: bool = False, custom_path: str = "") -> str
             return f"Path not found: {custom_path}"
 
         if custom_path_obj.is_dir():
-            for exe_name in ["soffice.exe", "program/soffice.exe", "LibreOfficePortable.exe"]:
+            for exe_name in [
+                "soffice.exe",
+                "program/soffice.exe",
+                "LibreOfficePortable.exe",
+            ]:
                 candidate = custom_path_obj / exe_name
                 if candidate.exists():
                     custom_path = str(candidate)
@@ -1305,9 +1431,16 @@ async def install_libreoffice(force: bool = False, custom_path: str = "") -> str
         if set_libreoffice_path(str(custom_path_obj)):
             try:
                 result = subprocess.run(
-                    [custom_path, "--version"], capture_output=True, text=True, timeout=10
+                    [custom_path, "--version"],
+                    capture_output=True,
+                    text=True,
+                    timeout=10,
                 )
-                version = result.stdout.strip() or result.stderr.strip() or "(unknown version)"
+                version = (
+                    result.stdout.strip()
+                    or result.stderr.strip()
+                    or "(unknown version)"
+                )
                 return f"LibreOffice configured: {version}\nPath: {custom_path}"
             except Exception as e:
                 return f"LibreOffice configured: {custom_path}\nCould not verify version: {e}"
@@ -1318,7 +1451,10 @@ async def install_libreoffice(force: bool = False, custom_path: str = "") -> str
     if libreoffice_cmd and not force:
         try:
             result = subprocess.run(
-                [libreoffice_cmd, "--version"], capture_output=True, text=True, timeout=10
+                [libreoffice_cmd, "--version"],
+                capture_output=True,
+                text=True,
+                timeout=10,
             )
             version = result.stdout.strip() or result.stderr.strip()
             return f"LibreOffice already installed: {version}\nPath: {libreoffice_cmd}"
@@ -1336,12 +1472,21 @@ async def install_libreoffice(force: bool = False, custom_path: str = "") -> str
     if winget_path:
         try:
             result = subprocess.run(
-                [winget_path, "install", "TheDocumentFoundation.LibreOffice",
-                 "--accept-source-agreements", "--accept-package-agreements"],
-                capture_output=True, text=True, timeout=300,
+                [
+                    winget_path,
+                    "install",
+                    "TheDocumentFoundation.LibreOffice",
+                    "--accept-source-agreements",
+                    "--accept-package-agreements",
+                ],
+                capture_output=True,
+                text=True,
+                timeout=300,
             )
             if result.returncode == 0:
-                return "LibreOffice installed via winget! Restart your terminal/VS Code."
+                return (
+                    "LibreOffice installed via winget! Restart your terminal/VS Code."
+                )
         except subprocess.TimeoutExpired:
             return "Installation via winget timed out (>5min)."
         except Exception:
@@ -1352,7 +1497,9 @@ async def install_libreoffice(force: bool = False, custom_path: str = "") -> str
         try:
             result = subprocess.run(
                 [choco_path, "install", "libreoffice", "-y"],
-                capture_output=True, text=True, timeout=300,
+                capture_output=True,
+                text=True,
+                timeout=300,
             )
             if result.returncode == 0:
                 return "LibreOffice installed via Chocolatey! Restart your terminal/VS Code."
@@ -1374,6 +1521,7 @@ async def install_libreoffice(force: bool = False, custom_path: str = "") -> str
 # ---------------------------------------------------------------------------
 # Conversation Tools
 # ---------------------------------------------------------------------------
+
 
 @mcp_server.tool()
 async def run_conversation(
@@ -1443,6 +1591,7 @@ async def list_conversations() -> str:
 # ---------------------------------------------------------------------------
 # Deprecated Aliases (backward compatibility)
 # ---------------------------------------------------------------------------
+
 
 @mcp_server.tool()
 async def ask(
@@ -1654,7 +1803,11 @@ async def list_models() -> str:
         lines.append(f"## {a.get('model', 'unknown')}{badge_str}")
         lines.append(f"- Model: {a.get('model_id', 'unknown')}")
         ctx = a.get("context_window", 0)
-        lines.append(f"- Context: {ctx:,} tokens" if isinstance(ctx, int) else f"- Context: {ctx}")
+        lines.append(
+            f"- Context: {ctx:,} tokens"
+            if isinstance(ctx, int)
+            else f"- Context: {ctx}"
+        )
         lines.append(f"- Vision: {'Yes' if a.get('vision') else 'No'}")
         if a.get("description"):
             lines.append(f"- Description: {a['description']}")
@@ -1667,13 +1820,17 @@ async def list_models() -> str:
 # Entry point
 # ---------------------------------------------------------------------------
 
+
 def main():
     if _transport_mode == "streamable-http":
         auth_label = "API key required" if _http_api_key else "NO AUTH (open)"
         log.info(
             "Starting sk-agent MCP server v2.0 [streamable-http on 0.0.0.0:%d, %s] "
             "(config: %s, depth=%d)",
-            _http_port, auth_label, CONFIG_PATH, SK_AGENT_DEPTH,
+            _http_port,
+            auth_label,
+            CONFIG_PATH,
+            SK_AGENT_DEPTH,
         )
 
         if _http_api_key:
@@ -1692,7 +1849,9 @@ def main():
                     auth = request.headers.get("authorization", "")
                     if not auth.startswith("Bearer ") or auth[7:] != _http_api_key:
                         return JSONResponse(
-                            {"error": "Unauthorized – set Authorization: Bearer <SK_AGENT_API_KEY>"},
+                            {
+                                "error": "Unauthorized – set Authorization: Bearer <SK_AGENT_API_KEY>"
+                            },
                             status_code=401,
                         )
                     return await call_next(request)
@@ -1705,7 +1864,8 @@ def main():
     else:
         log.info(
             "Starting sk-agent MCP server v2.0 [stdio] (config: %s, depth=%d)",
-            CONFIG_PATH, SK_AGENT_DEPTH,
+            CONFIG_PATH,
+            SK_AGENT_DEPTH,
         )
         mcp_server.run(transport="stdio")
 
