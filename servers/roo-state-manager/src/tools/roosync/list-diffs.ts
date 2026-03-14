@@ -17,7 +17,10 @@ import { getRooSyncService, RooSyncServiceError } from '../../services/RooSyncSe
 export const ListDiffsArgsSchema = z.object({
   filterType: z.enum(['all', 'config', 'files', 'settings']).optional()
     .default('all')
-    .describe('Filtrer par type de différence')
+    .describe('Filtrer par type de différence'),
+  forceRefresh: z.boolean().optional()
+    .default(false)
+    .describe('Force le rafraîchissement du cache d\'inventaire (évite les données périmées)')
 });
 
 export type ListDiffsArgs = z.infer<typeof ListDiffsArgsSchema>;
@@ -41,10 +44,10 @@ export type ListDiffsResult = z.infer<typeof ListDiffsResultSchema>;
 
 /**
  * Outil roosync_list_diffs
- * 
+ *
  * Liste les différences détectées entre machines, avec possibilité de filtrer
- * par type (config, files, settings).
- * 
+ * par type (config, files, settings) et de forcer le rafraîchissement du cache.
+ *
  * @param args Arguments validés
  * @returns Liste des différences
  * @throws {RooSyncServiceError} En cas d'erreur
@@ -52,8 +55,8 @@ export type ListDiffsResult = z.infer<typeof ListDiffsResultSchema>;
 export async function roosyncListDiffs(args: ListDiffsArgs): Promise<ListDiffsResult> {
   try {
     const service = getRooSyncService();
-    const result = await service.listDiffs(args.filterType);
-    
+    const result = await service.listDiffs(args.filterType, args.forceRefresh);
+
     return {
       totalDiffs: result.totalDiffs,
       diffs: result.diffs.map(d => ({
@@ -66,7 +69,7 @@ export async function roosyncListDiffs(args: ListDiffsArgs): Promise<ListDiffsRe
     if (error instanceof RooSyncServiceError) {
       throw error;
     }
-    
+
     throw new RooSyncServiceError(
       `Erreur lors du listing: ${(error as Error).message}`,
       'ROOSYNC_LIST_ERROR'
@@ -103,6 +106,11 @@ export const listDiffsToolMetadata = {
         enum: ['all', 'config', 'files', 'settings'],
         description: 'Filtrer par type de différence',
         default: 'all'
+      },
+      forceRefresh: {
+        type: 'boolean',
+        description: 'Force le rafraîchissement du cache d\'inventaire (évite les données périmées)',
+        default: false
       }
     },
     additionalProperties: false

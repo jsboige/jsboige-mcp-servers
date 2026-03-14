@@ -683,8 +683,13 @@ export class RooSyncService {
 
   /**
    * Lister les différences détectées
+   * @param filterByType Type de différences à filtrer
+   * @param forceRefresh Force le rafraîchissement du cache d'inventaire
    */
-  public async listDiffs(filterByType?: 'all' | 'config' | 'files' | 'settings'): Promise<{
+  public async listDiffs(
+    filterByType?: 'all' | 'config' | 'files' | 'settings',
+    forceRefresh = false
+  ): Promise<{
     totalDiffs: number;
     diffs: {
       type: string;
@@ -693,7 +698,7 @@ export class RooSyncService {
       machines: string[];
     }[];
   }> {
-    return this.configComparator.listDiffs(filterByType);
+    return this.configComparator.listDiffs(filterByType, forceRefresh);
   }
 
   /**

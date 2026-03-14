@@ -42,6 +42,7 @@ describe('list-diffs', () => {
 		test('accepts empty input (defaults)', () => {
 			const result = ListDiffsArgsSchema.parse({});
 			expect(result.filterType).toBe('all');
+			expect(result.forceRefresh).toBe(false);
 		});
 
 		test('accepts valid filterType values', () => {
@@ -134,13 +135,25 @@ describe('list-diffs', () => {
 				diffs: [],
 			});
 
-			await roosyncListDiffs({ filterType: 'config' });
-			expect(mockListDiffs).toHaveBeenCalledWith('config');
+			// Parse through schema to apply defaults (mimics MCP layer behavior)
+			const args = ListDiffsArgsSchema.parse({ filterType: 'config' });
+			await roosyncListDiffs(args);
+			expect(mockListDiffs).toHaveBeenCalledWith('config', false);
+		});
+
+		test('passes forceRefresh to service', async () => {
+			mockListDiffs.mockResolvedValueOnce({
+				totalDiffs: 0,
+				diffs: [],
+			});
+
+			await roosyncListDiffs({ filterType: 'all', forceRefresh: true });
+			expect(mockListDiffs).toHaveBeenCalledWith('all', true);
 		});
 
 		test('throws RooSyncServiceError on service error', async () => {
 			mockListDiffs.mockRejectedValueOnce(new Error('Connection failed'));
-			await expect(roosyncListDiffs({ filterType: 'all' }))
+			await expect(roosyncListDiffs({ filterType: 'all', forceRefresh: false }))
 				.rejects.toThrow('Erreur lors du listing');
 		});
 	});

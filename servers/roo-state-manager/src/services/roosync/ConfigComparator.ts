@@ -145,8 +145,13 @@ export class ConfigComparator {
 
   /**
    * Lister les différences détectées
+   * @param filterByType Type de différences à filtrer
+   * @param forceRefresh Force le rafraîchissement du cache d'inventaire
    */
-  public async listDiffs(filterByType?: 'all' | 'config' | 'files' | 'settings'): Promise<{
+  public async listDiffs(
+    filterByType?: 'all' | 'config' | 'files' | 'settings',
+    forceRefresh = false
+  ): Promise<{
     totalDiffs: number;
     diffs: {
       type: string;
@@ -196,7 +201,10 @@ export class ConfigComparator {
       // Comparer chaque machine avec la baseline
       for (const machineId of Array.from(allMachines)) {
         try {
-          const comparisonReport = await this.baselineService.compareWithBaseline(machineId);
+          const comparisonReport = await this.baselineService.compareWithBaseline(
+            machineId,
+            forceRefresh
+          );
 
           if (comparisonReport && comparisonReport.differences.length > 0) {
             // Filtrer les différences selon le type
@@ -248,7 +256,8 @@ export class ConfigComparator {
       console.log(`[ConfigComparator] Liste des différences système générée en ${duration}ms`, {
         totalMachines: allMachines.size,
         totalDiffs: allDiffs.length,
-        filterType: filterByType || 'all'
+        filterType: filterByType || 'all',
+        forceRefresh
       });
 
       return {
