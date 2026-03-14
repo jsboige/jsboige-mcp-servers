@@ -27,11 +27,13 @@ vi.mock('../../../utils/roo-storage-detector.js', () => ({
 const mockReaddir = vi.fn();
 const mockReadFile = vi.fn();
 const mockStat = vi.fn();
+const mockAccess = vi.fn();
 
 vi.mock('fs/promises', () => ({
     readdir: mockReaddir,
     readFile: mockReadFile,
-    stat: mockStat
+    stat: mockStat,
+    access: mockAccess
 }));
 
 // Mock fs existsSync - return different values based on path patterns
@@ -67,6 +69,13 @@ describe('disk-scanner', () => {
         ]));
         // Return unique mtime each call to force full scan (no cache hit)
         mockStat.mockResolvedValue({ mtimeMs: Date.now() + Math.random() });
+        // Default: access resolves for ui_messages.json, rejects for invalid paths
+        mockAccess.mockImplementation((path: string) => {
+            if (typeof path === 'string' && path.includes('ui_messages.json') && !path.includes('invalid')) {
+                return Promise.resolve();
+            }
+            return Promise.reject(new Error('ENOENT'));
+        });
 
         // Dynamic import after mocks are set up
         const mod = await import('../disk-scanner.js');

@@ -162,27 +162,27 @@ export async function scanDiskForNewTasks(
 
         // Directory changed or first scan — do full readdir
         const taskDirs = await fs.readdir(tasksDir);
-        const newTasks: ConversationSkeleton[] = [];
 
-        for (const taskId of taskDirs) {
-            // Skip if already in cache
-            if (existingCache.has(taskId)) {
-                continue;
-            }
-
+        // Parallelize quickAnalyze for uncached tasks (perf: #673)
+        // existsSync replaced with async fs.access to avoid blocking the Node event loop
+        const uncachedIds = taskDirs.filter(id => !existingCache.has(id));
+        const analyzeTask = async (taskId: string): Promise<ConversationSkeleton | null> => {
             const taskPath = path.join(tasksDir, taskId);
             const uiPath = path.join(taskPath, 'ui_messages.json');
-
-            // Check if this is a valid conversation directory
-            if (existsSync(uiPath)) {
-                const skeleton = await quickAnalyze(taskId, taskPath);
-
-                // Filter by workspace if specified
-                if (!workspace || skeleton.metadata.workspace === workspace || !skeleton.metadata.workspace) {
-                    newTasks.push(skeleton);
-                }
+            try {
+                await fs.access(uiPath);
+            } catch {
+                return null; // not a valid conversation directory
             }
-        }
+            const skeleton = await quickAnalyze(taskId, taskPath);
+            if (workspace && skeleton.metadata.workspace !== workspace && skeleton.metadata.workspace) {
+                return null; // filtered by workspace
+            }
+            return skeleton;
+        };
+
+        const results = await Promise.all(uncachedIds.map(analyzeTask));
+        const newTasks = results.filter((s): s is ConversationSkeleton => s !== null);
 
         // Update cache
         lastScanTime = now;
