@@ -12,7 +12,7 @@
  * IMPORTANT: When adding new test exclusions here, also create a tracking
  * issue to fix the underlying test so it can run in CI.
  *
- * Last audit: 2026-03-11 (37 files excluded, see #626, #643)
+ * Last audit: 2026-03-14 (29 files excluded - removed 8 stale entries, see #699)
  */
 import { defineConfig, mergeConfig } from 'vitest/config';
 import baseConfig from './vitest.config.js';
@@ -84,22 +84,19 @@ export default mergeConfig(baseConfig, defineConfig({
       'src/tools/roosync/__tests__/update-dashboard.integration.test.ts',
       'tests/unit/tools/roosync/baseline.test.ts',
 
-      // ===== CI-excluded: DEBUG (debug files for local development) =====
-      // These are debug test files created to diagnose mock path resolution issues.
-      // They are not meant to run in CI - use them locally for troubleshooting.
-      'tests/unit/tools/roosync/console-test.test.ts',
-      'tests/unit/tools/roosync/debug-instance-check.test.ts',
-      'tests/unit/tools/roosync/debug-mock-direct.test.ts',
-      'tests/unit/tools/roosync/debug-mock-factory.test.ts',
-      'tests/unit/tools/roosync/debug-mock.test.ts',
-      'tests/unit/tools/roosync/debug-other-methods.test.ts',
-      'tests/unit/tools/roosync/debug-source-import.test.ts',
-
       // ===== CI-excluded: Export baseline (schema mismatch) =====
       'tests/unit/tools/roosync/export-baseline.test.ts',
 
-      // ===== CI-excluded: Storage (depends on removed tool) =====
-      'tests/unit/tools/storage/get-stats.test.ts',
+      // ===== NOTE: Stale entries removed (2026-03-14, #699 audit) =====
+      // The following files no longer exist and were removed from exclusion list:
+      // - tests/unit/tools/roosync/console-test.test.ts (deleted)
+      // - tests/unit/tools/roosync/debug-instance-check.test.ts (deleted)
+      // - tests/unit/tools/roosync/debug-mock-direct.test.ts (deleted)
+      // - tests/unit/tools/roosync/debug-mock-factory.test.ts (deleted)
+      // - tests/unit/tools/roosync/debug-mock.test.ts (deleted)
+      // - tests/unit/tools/roosync/debug-other-methods.test.ts (deleted)
+      // - tests/unit/tools/roosync/debug-source-import.test.ts (deleted)
+      // - tests/unit/tools/storage/get-stats.test.ts (removed tool)
 
       // ===== CI-excluded: PARENT_REPO (reads files from parent roo-extensions repo) =====
       'src/services/__tests__/skepticism-protocol.test.ts',
