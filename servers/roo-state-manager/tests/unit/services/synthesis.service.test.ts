@@ -171,7 +171,7 @@ describe('Synthesis Services - Phase 1 Structure Validation', () => {
     });
 
     describe('Phase 1 Mock Behavior', () => {
-        it('should throw Phase 1 not implemented errors for batch methods', async () => {
+        it('should create batch synthesis task with correct structure', async () => {
             const contextBuilder = new NarrativeContextBuilderService(narrativeOptions, new Map());
             const llmService = new LLMService(llmOptions);
             const orchestrator = new SynthesisOrchestratorService(
