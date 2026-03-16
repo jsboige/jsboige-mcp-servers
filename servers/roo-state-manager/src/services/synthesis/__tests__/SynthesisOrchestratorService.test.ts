@@ -235,12 +235,25 @@ describe('SynthesisOrchestratorService', () => {
 	// ============================================================
 
 	describe('updateSynthesisMetadata', () => {
-		test('throws NOT_IMPLEMENTED error', async () => {
+		test('updates skeleton with synthesis metadata', async () => {
 			const service = createService();
+			const skeleton: ConversationSkeleton = {
+				taskId: 'test-task',
+				workspace: 'test-workspace',
+				messages: [],
+				metadata: {}
+			};
+			const analysis: ConversationAnalysis = {
+				objectives: { goal: 'Test goal' },
+				metrics: { condensedBatchPath: '/tmp/batch.json' }
+			} as any;
 
-			await expect(
-				service.updateSynthesisMetadata({} as any, {} as any)
-			).rejects.toThrow(SynthesisServiceError);
+			const result = await service.updateSynthesisMetadata(skeleton, analysis);
+
+			expect(result.metadata.synthesis).toBeDefined();
+			expect(result.metadata.synthesis?.status).toBe('completed');
+			expect(result.metadata.synthesis?.headline).toBe('Test goal');
+			expect(result.metadata.synthesis?.condensedBatchPath).toBe('/tmp/batch.json');
 		});
 	});
 
@@ -249,12 +262,22 @@ describe('SynthesisOrchestratorService', () => {
 	// ============================================================
 
 	describe('startBatchSynthesis', () => {
-		test('throws NOT_IMPLEMENTED error', async () => {
+		test('creates a new batch synthesis task', async () => {
 			const service = createService();
+			const config: BatchSynthesisConfig = {
+				llmModelId: 'test-model',
+				maxConcurrency: 2,
+				overwriteExisting: false,
+				taskFilter: { taskIds: ['task1', 'task2'] }
+			};
 
-			await expect(
-				service.startBatchSynthesis({} as any)
-			).rejects.toThrow(SynthesisServiceError);
+			const result = await service.startBatchSynthesis(config);
+
+			expect(result.status).toBe('queued');
+			expect(result.batchId).toBeDefined();
+			expect(result.config).toEqual(config);
+			expect(result.progress.totalTasks).toBe(0);
+			expect(result.progress.completionPercentage).toBe(0);
 		});
 	});
 
