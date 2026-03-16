@@ -180,15 +180,51 @@ describe('Synthesis Services - Phase 1 Structure Validation', () => {
                 orchestratorOptions
             );
 
-            // Test que les m�thodes non impl�ment�es lancent des erreurs "Phase 1"
-            await expect(
-                orchestrator.startBatchSynthesis({
-                    taskFilter: { workspace: '/test' },
-                    maxConcurrency: 1,
-                    llmModelId: 'test-gpt-4',
-                    overwriteExisting: false
-                })
-            ).rejects.toThrow(/.*Pas encore implémenté \(Phase 1: Squelette\)/);
+            // Test que startBatchSynthesis crée correctement une tâche de lot
+            const batchConfig = {
+                taskFilter: { workspace: '/test' },
+                maxConcurrency: 1,
+                llmModelId: 'test-gpt-4',
+                overwriteExisting: false
+            };
+
+            const batchTask = await orchestrator.startBatchSynthesis(batchConfig);
+
+            // Vérifier la structure de la tâche retournée
+            expect(batchTask).toBeDefined();
+            expect(batchTask.batchId).toBeDefined();
+            expect(typeof batchTask.batchId).toBe('string');
+            expect(batchTask.batchId.length).toBeGreaterThan(0);
+
+            // Vérifier le statut initial
+            expect(batchTask.status).toBe('queued');
+
+            // Vérifier les dates
+            expect(batchTask.startTime).toBeDefined();
+            expect(new Date(batchTask.startTime).toISOString()).toBe(batchTask.startTime);
+
+            // Vérifier que la config est stockée
+            expect(batchTask.config).toEqual(batchConfig);
+
+            // Vérifier l'initialisation du progrès
+            expect(batchTask.progress).toEqual({
+                totalTasks: 0,
+                completedTasks: 0,
+                failedTasks: 0,
+                inProgressTasks: 0,
+                completionPercentage: 0
+            });
+
+            // Vérifier les résultats initiaux
+            expect(batchTask.results).toEqual({
+                synthesisCount: 0,
+                errorCount: 0,
+                errors: [],
+                outputFiles: []
+            });
+
+            // Vérifier taskIds initialisé comme tableau vide
+            expect(batchTask.taskIds).toEqual([]);
         });
     });
 
