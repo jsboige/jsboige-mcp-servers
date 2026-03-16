@@ -55,6 +55,8 @@ export interface ConversationSkeleton {
       parentTaskId?: string; // ID de la tâche parente pour reconstruction hiérarchique
       // NOUVEAU : État complet d'indexation avec mécanisme d'idempotence
       indexingState?: IndexingState;
+      // NOUVEAU : Métadonnées de synthèse pour cette conversation
+      synthesis?: import('../models/synthesis/SynthesisModels.js').SynthesisMetadata;
     };
    // Une séquence combinée et ordonnée de messages et d'actions.
    sequence: (MessageSkeleton | ActionMetadata)[];
