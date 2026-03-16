@@ -6,6 +6,7 @@
  */
 
 import { describe, test, expect, vi, beforeEach } from 'vitest';
+import path from 'path';
 import { SynthesisServiceError, SynthesisServiceErrorCode } from '../../../types/errors.js';
 
 // Mock NarrativeContextBuilderService
@@ -304,12 +305,96 @@ describe('SynthesisOrchestratorService', () => {
 	// ============================================================
 
 	describe('exportSynthesisResults', () => {
-		test('throws NOT_IMPLEMENTED error', async () => {
+		test('throws NO_ANALYSIS_FOUND when no analysis files exist', async () => {
 			const service = createService();
 
 			await expect(
-				service.exportSynthesisResults(['task-1'], {} as any)
+				service.exportSynthesisResults(['non-existent-task'], { format: 'json' } as any)
 			).rejects.toThrow(SynthesisServiceError);
+		});
+
+		test('exports analysis to JSON format', async () => {
+			const service = createService();
+			const mockFs = vi.importedMocks?.fs || require('fs');
+
+			// Create temporary analysis directory
+			const taskId = 'test-export-task';
+			const analysisDir = path.join('/tmp/synthesis', taskId);
+			await mockFs.promises.mkdir(analysisDir, { recursive: true });
+
+			// Write mock analysis file
+			const analysisPath = path.join(analysisDir, 'analysis.json');
+			const mockAnalysis = {
+				taskId: 'test-export-task',
+				objectives: { goal: 'Test export' },
+				strategy: { approach: 'simple' },
+				quality: { score: 0.8 },
+				metrics: {},
+				synthesis: { initialContextSummary: 'Test' }
+			};
+			await mockFs.promises.writeFile(analysisPath, JSON.stringify(mockAnalysis));
+
+			const result = await service.exportSynthesisResults([taskId], { format: 'json' });
+
+			expect(result).toContain('.json');
+			expect(result).toContain('exports');
+
+			// Cleanup
+			await mockFs.promises.rm(analysisDir, { recursive: true, force: true });
+		});
+
+		test('exports analysis to markdown format', async () => {
+			const service = createService();
+			const mockFs = vi.importedMocks?.fs || require('fs');
+
+			const taskId = 'test-md-task';
+			const analysisDir = path.join('/tmp/synthesis', taskId);
+			await mockFs.promises.mkdir(analysisDir, { recursive: true });
+
+			const analysisPath = path.join(analysisDir, 'analysis.json');
+			const mockAnalysis = {
+				taskId: 'test-md-task',
+				objectives: { goal: 'Markdown export' },
+				synthesis: { initialContextSummary: 'Test MD' }
+			};
+			await mockFs.promises.writeFile(analysisPath, JSON.stringify(mockAnalysis));
+
+			const result = await service.exportSynthesisResults([taskId], { format: 'markdown' });
+
+			expect(result).toContain('.md');
+			expect(result).toContain('exports');
+
+			// Cleanup
+			await mockFs.promises.rm(analysisDir, { recursive: true, force: true });
+		});
+
+		test('exports multiple analyses to CSV format', async () => {
+			const service = createService();
+			const mockFs = vi.importedMocks?.fs || require('fs');
+
+			// Create two analysis files
+			for (const id of ['task-1', 'task-2']) {
+				const analysisDir = path.join('/tmp/synthesis', id);
+				await mockFs.promises.mkdir(analysisDir, { recursive: true });
+
+				const analysisPath = path.join(analysisDir, 'analysis.json');
+				const mockAnalysis = {
+					taskId: id,
+					objectives: { goal: `CSV export ${id}` },
+					synthesis: { initialContextSummary: `Test ${id}` }
+				};
+				await mockFs.promises.writeFile(analysisPath, JSON.stringify(mockAnalysis));
+			}
+
+			const result = await service.exportSynthesisResults(['task-1', 'task-2'], { format: 'csv' });
+
+			expect(result).toContain('.csv');
+			expect(result).toContain('exports');
+
+			// Cleanup
+			for (const id of ['task-1', 'task-2']) {
+				await mockFs.promises.rm(path.join('/tmp/synthesis', id), { recursive: true, force: true });
+			}
 		});
 	});
 
