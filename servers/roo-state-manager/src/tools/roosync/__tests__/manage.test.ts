@@ -37,8 +37,20 @@ import { MessageManager } from '../../../services/MessageManager.js';
 
 describe('roosyncManage', () => {
   let messageManager: MessageManager;
+  let originalEnv: NodeJS.ProcessEnv;
 
   beforeEach(async () => {
+    // Sauvegarder l'environnement original
+    originalEnv = { ...process.env };
+
+    // Configuration de test pour loadRooSyncConfig()
+    process.env.NODE_ENV = 'test';
+    process.env.ROOSYNC_SHARED_PATH = testSharedStatePath;
+    process.env.ROOSYNC_MACHINE_ID = 'test-machine';
+    process.env.ROOSYNC_AUTO_SYNC = 'false';
+    process.env.ROOSYNC_CONFLICT_STRATEGY = 'manual';
+    process.env.ROOSYNC_LOG_LEVEL = 'info';
+
     // Setup : créer répertoire temporaire pour tests isolés
     const dirs = [
       testSharedStatePath,
@@ -62,6 +74,9 @@ describe('roosyncManage', () => {
     if (existsSync(testSharedStatePath)) {
       rmSync(testSharedStatePath, { recursive: true, force: true });
     }
+
+    // Restaurer l'environnement original
+    process.env = originalEnv;
   });
 
   // ============================================================
