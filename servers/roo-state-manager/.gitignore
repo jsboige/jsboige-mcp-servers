@@ -75,6 +75,17 @@ test-shared-state/
 .roo-state-manager/
 .shared-state/
 .shared-state-test/
+.shared-state-test-*/
+
+# Test-created directories (smoke tests)
+.test-messages/
+.test-storage/
+
+# Runtime lock files (never version these)
+*.json.lock
+
+# Debug outputs from tests
+outputs/
 
 # Backup files
 *.backup*

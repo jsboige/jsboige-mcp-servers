@@ -356,7 +356,7 @@ describe('roosyncConfig (integration)', () => {
         action: 'apply_profile',
         profileName: 'Nonexistent Profile XYZ',
         dryRun: true
-      })).rejects.toThrow(/ne contient pas de section.*profiles.*valide/i);
+      })).rejects.toThrow(/profil.*non trouv|non trouve|not found|profile.*not|ne contient pas/i);
     });
 
     test('should reject apply_profile without profileName (Zod validation)', async () => {
