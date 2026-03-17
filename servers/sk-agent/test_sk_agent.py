@@ -57,6 +57,7 @@ from media_processing import (
 # Helper: Create SKAgentConfig from v2 data
 # ---------------------------------------------------------------------------
 
+
 def make_v2_config(
     models: list | None = None,
     agents: list | None = None,
@@ -85,10 +86,12 @@ def make_v1_config(**overrides) -> SKAgentConfig:
 # Test Fixtures
 # ---------------------------------------------------------------------------
 
+
 @pytest.fixture
 def sample_image():
     """Create a sample PNG image for testing."""
     from PIL import Image
+
     img = Image.new("RGB", (100, 100), color="red")
     buf = io.BytesIO()
     img.save(buf, format="PNG")
@@ -100,7 +103,14 @@ def sample_image():
 def text_config():
     """Config with a single text model -> single agent."""
     return make_v2_config(
-        models=[{"id": "text-model", "base_url": "http://test", "model_id": "v1", "vision": False}],
+        models=[
+            {
+                "id": "text-model",
+                "base_url": "http://test",
+                "model_id": "v1",
+                "vision": False,
+            }
+        ],
         agents=[{"id": "text-agent", "model": "text-model"}],
         default_agent="text-agent",
     )
@@ -111,12 +121,28 @@ def vision_config():
     """Config with text + vision models -> two agents."""
     return make_v2_config(
         models=[
-            {"id": "text-model", "base_url": "http://test", "model_id": "v1", "vision": False, "context_window": 200000},
-            {"id": "vision-model", "base_url": "http://test", "model_id": "v1-vis", "vision": True, "context_window": 128000},
+            {
+                "id": "text-model",
+                "base_url": "http://test",
+                "model_id": "v1",
+                "vision": False,
+                "context_window": 200000,
+            },
+            {
+                "id": "vision-model",
+                "base_url": "http://test",
+                "model_id": "v1-vis",
+                "vision": True,
+                "context_window": 128000,
+            },
         ],
         agents=[
             {"id": "text-agent", "model": "text-model", "description": "Text agent"},
-            {"id": "vision-agent", "model": "vision-model", "description": "Vision agent"},
+            {
+                "id": "vision-agent",
+                "model": "vision-model",
+                "description": "Vision agent",
+            },
         ],
         default_agent="text-agent",
         default_vision_agent="vision-agent",
@@ -172,6 +198,7 @@ def isolated_config(tmp_path):
 # Configuration Tests
 # ---------------------------------------------------------------------------
 
+
 class TestConfigLoading:
     """Tests for config loading via the sk_agent module."""
 
@@ -201,6 +228,7 @@ class TestConfigLoading:
 # Attachment Classification Tests
 # ---------------------------------------------------------------------------
 
+
 class TestAttachmentClassification:
     """Tests for classify_attachment()."""
 
@@ -229,13 +257,16 @@ class TestAttachmentClassification:
     def test_url_classification(self):
         assert sk_agent.classify_attachment("https://example.com/photo.png") == "image"
         assert sk_agent.classify_attachment("https://example.com/video.mp4") == "video"
-        assert sk_agent.classify_attachment("https://example.com/report.pdf") == "document"
+        assert (
+            sk_agent.classify_attachment("https://example.com/report.pdf") == "document"
+        )
         assert sk_agent.classify_attachment("https://example.com/page") is None
 
 
 # ---------------------------------------------------------------------------
 # Image Processing Tests (from media_processing module)
 # ---------------------------------------------------------------------------
+
 
 class TestImageProcessing:
     """Tests for image processing utilities."""
@@ -256,7 +287,8 @@ class TestImageProcessing:
         large_data = buf.getvalue()
 
         resized_data, media_type = _resize_image_if_needed(
-            large_data, "image/png",
+            large_data,
+            "image/png",
             max_bytes=100_000,
             max_pixels=500_000,
         )
@@ -290,6 +322,7 @@ class TestImageProcessing:
 # Recursion Depth Tests
 # ---------------------------------------------------------------------------
 
+
 class TestRecursionDepth:
     """Tests for recursion depth protection."""
 
@@ -302,6 +335,7 @@ class TestRecursionDepth:
         monkeypatch.setenv("SK_AGENT_DEPTH", "3")
         import importlib
         import sk_agent_config
+
         importlib.reload(sk_agent_config)
         assert sk_agent_config.SK_AGENT_DEPTH == 3
         # Cleanup
@@ -312,6 +346,7 @@ class TestRecursionDepth:
 # ---------------------------------------------------------------------------
 # SKAgentManager Tests
 # ---------------------------------------------------------------------------
+
 
 class TestSKAgentManager:
     """Tests for SKAgentManager class."""
@@ -399,6 +434,7 @@ class TestSKAgentManager:
 # Agent Resolution Tests
 # ---------------------------------------------------------------------------
 
+
 class TestAgentResolution:
     """Tests for _resolve_agent() logic."""
 
@@ -470,6 +506,7 @@ class TestAgentResolution:
 # call_agent Integration Tests
 # ---------------------------------------------------------------------------
 
+
 class TestCallAgent:
     """Tests for the unified call_agent method."""
 
@@ -489,11 +526,13 @@ class TestCallAgent:
         manager = sk_agent.SKAgentManager(vision_config)
 
         mock_agent = MagicMock()
+
         async def fake_invoke(**kwargs):
             resp = MagicMock()
             resp.__str__ = lambda self: "Hello!"
             resp.thread = MagicMock()
             yield resp
+
         mock_agent.invoke = fake_invoke
         manager._sk_agents = {"text-agent": mock_agent, "vision-agent": MagicMock()}
 
@@ -502,20 +541,25 @@ class TestCallAgent:
         assert result["response"] == "Hello!"
 
     @pytest.mark.asyncio
-    async def test_call_agent_image_routing(self, vision_config, tmp_path, sample_image):
+    async def test_call_agent_image_routing(
+        self, vision_config, tmp_path, sample_image
+    ):
         """Image attachment routes to vision agent."""
         manager = sk_agent.SKAgentManager(vision_config)
 
         mock_agent = MagicMock()
+
         async def fake_invoke(**kwargs):
             resp = MagicMock()
             resp.__str__ = lambda self: "I see a red image"
             resp.thread = MagicMock()
             yield resp
+
         mock_agent.invoke = fake_invoke
         manager._sk_agents = {"text-agent": MagicMock(), "vision-agent": mock_agent}
 
         from PIL import Image
+
         img_path = tmp_path / "test.png"
         img = Image.open(io.BytesIO(sample_image))
         img.save(img_path)
@@ -530,11 +574,13 @@ class TestCallAgent:
         manager = sk_agent.SKAgentManager(vision_config)
 
         mock_vision = MagicMock()
+
         async def fake_invoke(**kwargs):
             resp = MagicMock()
             resp.__str__ = lambda self: "From vision"
             resp.thread = MagicMock()
             yield resp
+
         mock_vision.invoke = fake_invoke
         manager._sk_agents = {"text-agent": MagicMock(), "vision-agent": mock_vision}
 
@@ -545,6 +591,7 @@ class TestCallAgent:
 # ---------------------------------------------------------------------------
 # Dynamic Description Tests
 # ---------------------------------------------------------------------------
+
 
 class TestDynamicDescriptions:
     """Tests for build_call_agent_description and build_list_agents_description."""
@@ -572,7 +619,14 @@ class TestDynamicDescriptions:
         """Agents with MCPs show tool badges."""
         config = make_v2_config(
             models=[{"id": "m1", "base_url": "http://test", "model_id": "v1"}],
-            agents=[{"id": "researcher", "model": "m1", "mcps": ["searxng"], "description": "Web researcher"}],
+            agents=[
+                {
+                    "id": "researcher",
+                    "model": "m1",
+                    "mcps": ["searxng"],
+                    "description": "Web researcher",
+                }
+            ],
             mcps=[{"id": "searxng", "command": "npx", "args": ["-y", "mcp-searxng"]}],
         )
         desc = sk_agent.build_call_agent_description(config)
@@ -584,6 +638,7 @@ class TestDynamicDescriptions:
 # Model Enabled/Disabled Tests
 # ---------------------------------------------------------------------------
 
+
 class TestModelEnabled:
     """Tests for model enabled/disabled behavior in the agent layer."""
 
@@ -591,8 +646,18 @@ class TestModelEnabled:
         """Agents whose model is disabled are excluded from list_agents."""
         config = make_v2_config(
             models=[
-                {"id": "enabled-model", "enabled": True, "base_url": "http://test", "model_id": "v1"},
-                {"id": "disabled-model", "enabled": False, "base_url": "http://test", "model_id": "v2"},
+                {
+                    "id": "enabled-model",
+                    "enabled": True,
+                    "base_url": "http://test",
+                    "model_id": "v1",
+                },
+                {
+                    "id": "disabled-model",
+                    "enabled": False,
+                    "base_url": "http://test",
+                    "model_id": "v2",
+                },
             ],
             agents=[
                 {"id": "enabled-agent", "model": "enabled-model"},
@@ -609,12 +674,30 @@ class TestModelEnabled:
         """Agents with disabled models don't appear in dynamic description."""
         config = make_v2_config(
             models=[
-                {"id": "enabled-model", "enabled": True, "base_url": "http://test", "model_id": "v1"},
-                {"id": "disabled-model", "enabled": False, "base_url": "http://test", "model_id": "v2"},
+                {
+                    "id": "enabled-model",
+                    "enabled": True,
+                    "base_url": "http://test",
+                    "model_id": "v1",
+                },
+                {
+                    "id": "disabled-model",
+                    "enabled": False,
+                    "base_url": "http://test",
+                    "model_id": "v2",
+                },
             ],
             agents=[
-                {"id": "active-agent", "model": "enabled-model", "description": "Active"},
-                {"id": "inactive-agent", "model": "disabled-model", "description": "Inactive"},
+                {
+                    "id": "active-agent",
+                    "model": "enabled-model",
+                    "description": "Active",
+                },
+                {
+                    "id": "inactive-agent",
+                    "model": "disabled-model",
+                    "description": "Inactive",
+                },
             ],
         )
         desc = sk_agent.build_call_agent_description(config)
@@ -625,8 +708,20 @@ class TestModelEnabled:
         """V1 disabled models become agents but are filtered in list_agents."""
         config = make_v1_config(
             models=[
-                {"id": "enabled", "enabled": True, "base_url": "http://test", "model_id": "v1", "vision": False},
-                {"id": "disabled", "enabled": False, "base_url": "http://test", "model_id": "v2", "vision": False},
+                {
+                    "id": "enabled",
+                    "enabled": True,
+                    "base_url": "http://test",
+                    "model_id": "v1",
+                    "vision": False,
+                },
+                {
+                    "id": "disabled",
+                    "enabled": False,
+                    "base_url": "http://test",
+                    "model_id": "v2",
+                    "vision": False,
+                },
             ],
         )
         manager = sk_agent.SKAgentManager(config)
@@ -639,6 +734,7 @@ class TestModelEnabled:
 # Zoom Context Tests
 # ---------------------------------------------------------------------------
 
+
 class TestZoomContext:
     """Tests for zoom context handling."""
 
@@ -647,7 +743,7 @@ class TestZoomContext:
         zoom_context = {
             "depth": 1,
             "stack": [{"x": 100, "y": 200, "w": 300, "h": 400}],
-            "original_source": "test.png"
+            "original_source": "test.png",
         }
         context_str = json.dumps(zoom_context)
         parsed = json.loads(context_str)
@@ -657,13 +753,18 @@ class TestZoomContext:
     def test_progressive_zoom_depth(self):
         """Test that zoom depth increases with each zoom."""
         context_v1 = {"depth": 1, "stack": [], "original_source": "test.png"}
-        context_v2 = {"depth": 2, "stack": [{"x": 0, "y": 0, "w": 100, "h": 100}], "original_source": "test.png"}
+        context_v2 = {
+            "depth": 2,
+            "stack": [{"x": 0, "y": 0, "w": 100, "h": 100}],
+            "original_source": "test.png",
+        }
         assert context_v2["depth"] > context_v1["depth"]
 
 
 # ---------------------------------------------------------------------------
 # Video Analysis Tests
 # ---------------------------------------------------------------------------
+
 
 class TestVideoAnalysis:
     """Tests for video analysis via call_agent routing."""
@@ -684,9 +785,10 @@ class TestVideoAnalysis:
         fake_video.write_bytes(b"fake video")
 
         from PIL import Image
-        img = Image.new('RGB', (100, 100), color='red')
+
+        img = Image.new("RGB", (100, 100), color="red")
         buf = io.BytesIO()
-        img.save(buf, format='JPEG')
+        img.save(buf, format="JPEG")
         fake_frame = buf.getvalue()
 
         mock_video_info = MagicMock()
@@ -701,12 +803,12 @@ class TestVideoAnalysis:
             if "ffmpeg" in cmd and "-frames:v" in cmd:
                 output_path = cmd[-1]
                 Path(output_path).parent.mkdir(parents=True, exist_ok=True)
-                with open(output_path, 'wb') as f:
+                with open(output_path, "wb") as f:
                     f.write(fake_frame)
             return result
 
-        with patch('media_processing._get_video_info', return_value=mock_video_info):
-            with patch('media_processing.subprocess.run', side_effect=mock_run):
+        with patch("media_processing._get_video_info", return_value=mock_video_info):
+            with patch("media_processing.subprocess.run", side_effect=mock_run):
                 frames = _extract_video_frames(str(fake_video), num_frames=2)
 
         assert len(frames) == 2
@@ -717,11 +819,13 @@ class TestVideoAnalysis:
         manager = sk_agent.SKAgentManager(vision_config)
 
         mock_agent = MagicMock()
+
         async def fake_invoke(**kwargs):
             resp = MagicMock()
             resp.__str__ = lambda self: "Video summary"
             resp.thread = MagicMock()
             yield resp
+
         mock_agent.invoke = fake_invoke
         manager._sk_agents = {"text-agent": MagicMock(), "vision-agent": mock_agent}
 
@@ -729,17 +833,23 @@ class TestVideoAnalysis:
         fake_video.write_bytes(b"fake video")
 
         from PIL import Image
-        img = Image.new('RGB', (100, 100), color='red')
+
+        img = Image.new("RGB", (100, 100), color="red")
         buf = io.BytesIO()
-        img.save(buf, format='JPEG')
+        img.save(buf, format="JPEG")
         fake_frame = buf.getvalue()
 
-        with patch('sk_agent._get_video_info', return_value=None):
-            with patch('sk_agent._extract_keyframes', return_value=[
-                (fake_frame, "image/jpeg"),
-                (fake_frame, "image/jpeg"),
-            ]):
-                result = await manager.call_agent("Describe video", attachment=str(fake_video))
+        with patch("sk_agent._get_video_info", return_value=None):
+            with patch(
+                "sk_agent._extract_keyframes",
+                return_value=[
+                    (fake_frame, "image/jpeg"),
+                    (fake_frame, "image/jpeg"),
+                ],
+            ):
+                result = await manager.call_agent(
+                    "Describe video", attachment=str(fake_video)
+                )
 
         assert result.get("agent_used") == "vision-agent"
         assert result.get("frames_analyzed") == 2
@@ -749,13 +859,21 @@ class TestVideoAnalysis:
 # Context Window Tests (via sk_agent_config)
 # ---------------------------------------------------------------------------
 
+
 class TestContextWindow:
     """Tests for context window inference."""
 
     def test_explicit_context_window(self):
         """Explicit context_window in config is used."""
         config = make_v2_config(
-            models=[{"id": "test", "base_url": "http://test", "model_id": "v1", "context_window": 100_000}],
+            models=[
+                {
+                    "id": "test",
+                    "base_url": "http://test",
+                    "model_id": "v1",
+                    "context_window": 100_000,
+                }
+            ],
             agents=[{"id": "a", "model": "test"}],
         )
         result = get_model_context_window(config, "test")
@@ -764,7 +882,14 @@ class TestContextWindow:
     def test_vision_model_default_context_window(self):
         """Vision models default to 128K."""
         config = make_v2_config(
-            models=[{"id": "test", "base_url": "http://test", "model_id": "v1", "vision": True}],
+            models=[
+                {
+                    "id": "test",
+                    "base_url": "http://test",
+                    "model_id": "v1",
+                    "vision": True,
+                }
+            ],
             agents=[{"id": "a", "model": "test"}],
         )
         result = get_model_context_window(config, "test")
@@ -773,7 +898,14 @@ class TestContextWindow:
     def test_cloud_model_default_context_window(self):
         """Cloud models (z.ai) default to 200K."""
         config = make_v2_config(
-            models=[{"id": "test", "base_url": "https://api.z.ai/v1", "model_id": "v1", "vision": False}],
+            models=[
+                {
+                    "id": "test",
+                    "base_url": "https://api.z.ai/v1",
+                    "model_id": "v1",
+                    "vision": False,
+                }
+            ],
             agents=[{"id": "a", "model": "test"}],
         )
         result = get_model_context_window(config, "test")
@@ -789,6 +921,7 @@ class TestContextWindow:
 # ---------------------------------------------------------------------------
 # Backward Compatibility Tests (v1 -> v2)
 # ---------------------------------------------------------------------------
+
 
 class TestBackwardCompatibility:
     """Tests verifying v1 configs work correctly through the v2 stack."""
@@ -845,6 +978,7 @@ from sk_conversations import (
 # Memory Setup Tests
 # ---------------------------------------------------------------------------
 
+
 class TestMemorySetup:
     """Tests for _setup_memory and memory integration in agent creation."""
 
@@ -868,12 +1002,17 @@ class TestMemorySetup:
 
         return make_v2_config(
             models=[{"id": "m1", "base_url": "http://test", "model_id": "v1"}],
-            agents=[{
-                "id": "mem-agent",
-                "model": "m1",
-                "system_prompt": "Base prompt.",
-                "memory": {"enabled": memory_enabled, "collection": "my-collection"},
-            }],
+            agents=[
+                {
+                    "id": "mem-agent",
+                    "model": "m1",
+                    "system_prompt": "Base prompt.",
+                    "memory": {
+                        "enabled": memory_enabled,
+                        "collection": "my-collection",
+                    },
+                }
+            ],
             default_agent="mem-agent",
             **kwargs,
         )
@@ -897,14 +1036,17 @@ class TestMemorySetup:
         agent_cfg = config.agents[0]
         kernel = MagicMock()
 
-        with patch.object(sk_agent, "HAS_QDRANT", True), \
-             patch.object(sk_agent, "HAS_MEMORY", True), \
-             patch("sk_agent.QdrantMemoryStore") as MockQdrant, \
-             patch("sk_agent.SemanticTextMemory") as MockMemory, \
-             patch("sk_agent.TextMemoryPlugin") as MockPlugin, \
-             patch("sk_agent.OpenAITextEmbedding") as MockEmb, \
-             patch("sk_agent.AsyncOpenAI"):
-
+        with patch.object(sk_agent, "HAS_QDRANT", True), patch.object(
+            sk_agent, "HAS_MEMORY", True
+        ), patch("sk_agent.QdrantMemoryStore") as MockQdrant, patch(
+            "sk_agent.SemanticTextMemory"
+        ) as MockMemory, patch(
+            "sk_agent.TextMemoryPlugin"
+        ) as MockPlugin, patch(
+            "sk_agent.OpenAITextEmbedding"
+        ) as MockEmb, patch(
+            "sk_agent.AsyncOpenAI"
+        ):
             MockQdrant.return_value = MagicMock()
             MockMemory.return_value = MagicMock()
             MockPlugin.return_value = MagicMock()
@@ -929,14 +1071,17 @@ class TestMemorySetup:
         agent_cfg = config.agents[0]
         kernel = MagicMock()
 
-        with patch.object(sk_agent, "HAS_QDRANT", False), \
-             patch.object(sk_agent, "HAS_MEMORY", True), \
-             patch("sk_agent.VolatileMemoryStore") as MockVolatile, \
-             patch("sk_agent.SemanticTextMemory") as MockMemory, \
-             patch("sk_agent.TextMemoryPlugin") as MockPlugin, \
-             patch("sk_agent.OpenAITextEmbedding") as MockEmb, \
-             patch("sk_agent.AsyncOpenAI"):
-
+        with patch.object(sk_agent, "HAS_QDRANT", False), patch.object(
+            sk_agent, "HAS_MEMORY", True
+        ), patch("sk_agent.VolatileMemoryStore") as MockVolatile, patch(
+            "sk_agent.SemanticTextMemory"
+        ) as MockMemory, patch(
+            "sk_agent.TextMemoryPlugin"
+        ) as MockPlugin, patch(
+            "sk_agent.OpenAITextEmbedding"
+        ) as MockEmb, patch(
+            "sk_agent.AsyncOpenAI"
+        ):
             MockVolatile.return_value = MagicMock()
             MockMemory.return_value = MagicMock()
             MockPlugin.return_value = MagicMock()
@@ -955,14 +1100,17 @@ class TestMemorySetup:
         agent_cfg = config.agents[0]
         kernel = MagicMock()
 
-        with patch.object(sk_agent, "HAS_QDRANT", True), \
-             patch.object(sk_agent, "HAS_MEMORY", True), \
-             patch("sk_agent.QdrantMemoryStore") as MockQdrant, \
-             patch("sk_agent.SemanticTextMemory") as MockMemory, \
-             patch("sk_agent.TextMemoryPlugin") as MockPlugin, \
-             patch("sk_agent.OpenAITextEmbedding"), \
-             patch("sk_agent.AsyncOpenAI"):
-
+        with patch.object(sk_agent, "HAS_QDRANT", True), patch.object(
+            sk_agent, "HAS_MEMORY", True
+        ), patch("sk_agent.QdrantMemoryStore") as MockQdrant, patch(
+            "sk_agent.SemanticTextMemory"
+        ) as MockMemory, patch(
+            "sk_agent.TextMemoryPlugin"
+        ) as MockPlugin, patch(
+            "sk_agent.OpenAITextEmbedding"
+        ), patch(
+            "sk_agent.AsyncOpenAI"
+        ):
             MockQdrant.return_value = MagicMock()
             mock_memory = MagicMock()
             MockMemory.return_value = mock_memory
@@ -982,14 +1130,17 @@ class TestMemorySetup:
         agent_cfg = config.agents[0]
         kernel = MagicMock()
 
-        with patch.object(sk_agent, "HAS_QDRANT", True), \
-             patch.object(sk_agent, "HAS_MEMORY", True), \
-             patch("sk_agent.QdrantMemoryStore"), \
-             patch("sk_agent.SemanticTextMemory") as MockMemory, \
-             patch("sk_agent.TextMemoryPlugin"), \
-             patch("sk_agent.OpenAITextEmbedding") as MockEmb, \
-             patch("sk_agent.AsyncOpenAI") as MockClient:
-
+        with patch.object(sk_agent, "HAS_QDRANT", True), patch.object(
+            sk_agent, "HAS_MEMORY", True
+        ), patch("sk_agent.QdrantMemoryStore"), patch(
+            "sk_agent.SemanticTextMemory"
+        ) as MockMemory, patch(
+            "sk_agent.TextMemoryPlugin"
+        ), patch(
+            "sk_agent.OpenAITextEmbedding"
+        ) as MockEmb, patch(
+            "sk_agent.AsyncOpenAI"
+        ) as MockClient:
             MockEmb.return_value = MagicMock()
             MockMemory.return_value = MagicMock()
 
@@ -1006,10 +1157,11 @@ class TestMemorySetup:
         agent_cfg = config.agents[0]
         kernel = MagicMock()
 
-        with patch.object(sk_agent, "HAS_QDRANT", True), \
-             patch.object(sk_agent, "HAS_MEMORY", True), \
-             patch("sk_agent.QdrantMemoryStore", side_effect=Exception("Connection refused")):
-
+        with patch.object(sk_agent, "HAS_QDRANT", True), patch.object(
+            sk_agent, "HAS_MEMORY", True
+        ), patch(
+            "sk_agent.QdrantMemoryStore", side_effect=Exception("Connection refused")
+        ):
             result = await manager._setup_memory(agent_cfg, kernel)
             assert result is None
 
@@ -1050,7 +1202,9 @@ class TestMemorySetup:
         config = self._make_memory_config(memory_enabled=False)
         desc = sk_agent.build_call_agent_description(config)
         # Check only the agent listing line (starts with "  - mem-agent:")
-        agent_lines = [l for l in desc.splitlines() if l.strip().startswith("- mem-agent:")]
+        agent_lines = [
+            l for l in desc.splitlines() if l.strip().startswith("- mem-agent:")
+        ]
         assert len(agent_lines) == 1
         assert "memory" not in agent_lines[0]
 
@@ -1068,15 +1222,16 @@ class TestMemorySetup:
 
         mock_plugin = MagicMock()
 
-        with patch.object(sk_agent, "HAS_MEMORY", True), \
-             patch.object(manager, "_setup_memory", new_callable=AsyncMock, return_value=mock_plugin), \
-             patch("sk_agent.ChatCompletionAgent") as MockAgent:
-
+        with patch.object(sk_agent, "HAS_MEMORY", True), patch.object(
+            manager, "_setup_memory", new_callable=AsyncMock, return_value=mock_plugin
+        ), patch("sk_agent.ChatCompletionAgent") as MockAgent:
             MockAgent.return_value = MagicMock()
             await manager._create_agent(agent_cfg, model_cfg)
 
             # Verify _setup_memory was called
-            manager._setup_memory.assert_called_once_with(agent_cfg, manager._kernels["mem-agent"])
+            manager._setup_memory.assert_called_once_with(
+                agent_cfg, manager._kernels["mem-agent"]
+            )
 
             # Verify plugin was passed to ChatCompletionAgent
             call_kwargs = MockAgent.call_args.kwargs
@@ -1104,6 +1259,7 @@ class TestMemorySetup:
 # ---------------------------------------------------------------------------
 # Conversation Execution Tests
 # ---------------------------------------------------------------------------
+
 
 class TestConversationExecution:
     """Tests for actual conversation execution with mocked SK agents."""
@@ -1136,13 +1292,15 @@ class TestConversationExecution:
         """Group chat run collects steps from all agents."""
         runner, agents = self._make_runner_with_agents(
             agent_names=["agent-a", "agent-b"],
-            config_conversations=[{
-                "id": "test-conv",
-                "description": "Test",
-                "type": "group_chat",
-                "agents": ["agent-a", "agent-b"],
-                "max_rounds": 4,
-            }],
+            config_conversations=[
+                {
+                    "id": "test-conv",
+                    "description": "Test",
+                    "type": "group_chat",
+                    "agents": ["agent-a", "agent-b"],
+                    "max_rounds": 4,
+                }
+            ],
         )
 
         # Mock AgentGroupChat to yield fake messages
@@ -1179,18 +1337,20 @@ class TestConversationExecution:
         """Sequential conversation sets max_iterations to number of agents."""
         runner, agents = self._make_runner_with_agents(
             agent_names=["a", "b", "c"],
-            config_conversations=[{
-                "id": "seq-conv",
-                "description": "Sequential test",
-                "type": "sequential",
-                "agents": ["a", "b", "c"],
-                "max_rounds": 99,  # Should be ignored, capped to len(agents)=3
-            }],
+            config_conversations=[
+                {
+                    "id": "seq-conv",
+                    "description": "Sequential test",
+                    "type": "sequential",
+                    "agents": ["a", "b", "c"],
+                    "max_rounds": 99,  # Should be ignored, capped to len(agents)=3
+                }
+            ],
         )
 
-        with patch("sk_conversations.AgentGroupChat") as MockChat, \
-             patch("sk_conversations.DefaultTerminationStrategy") as MockTermination:
-
+        with patch("sk_conversations.AgentGroupChat") as MockChat, patch(
+            "sk_conversations.DefaultTerminationStrategy"
+        ) as MockTermination:
             mock_chat_instance = MagicMock()
 
             async def fake_invoke():
@@ -1213,12 +1373,14 @@ class TestConversationExecution:
         """Concurrent conversation runs all agents in parallel."""
         runner, agents = self._make_runner_with_agents(
             agent_names=["fast", "slow"],
-            config_conversations=[{
-                "id": "concurrent-conv",
-                "description": "Concurrent test",
-                "type": "concurrent",
-                "agents": ["fast", "slow"],
-            }],
+            config_conversations=[
+                {
+                    "id": "concurrent-conv",
+                    "description": "Concurrent test",
+                    "type": "concurrent",
+                    "agents": ["fast", "slow"],
+                }
+            ],
         )
 
         # Mock agent.invoke to return responses
@@ -1247,18 +1409,20 @@ class TestConversationExecution:
         """Options can override max_rounds."""
         runner, agents = self._make_runner_with_agents(
             agent_names=["a"],
-            config_conversations=[{
-                "id": "gc",
-                "description": "Test",
-                "type": "group_chat",
-                "agents": ["a"],
-                "max_rounds": 6,
-            }],
+            config_conversations=[
+                {
+                    "id": "gc",
+                    "description": "Test",
+                    "type": "group_chat",
+                    "agents": ["a"],
+                    "max_rounds": 6,
+                }
+            ],
         )
 
-        with patch("sk_conversations.AgentGroupChat") as MockChat, \
-             patch("sk_conversations.DefaultTerminationStrategy") as MockTermination:
-
+        with patch("sk_conversations.AgentGroupChat") as MockChat, patch(
+            "sk_conversations.DefaultTerminationStrategy"
+        ) as MockTermination:
             mock_chat_instance = MagicMock()
 
             async def fake_invoke():
@@ -1279,18 +1443,21 @@ class TestConversationExecution:
         """Magentic conversation tries KernelFunctionSelectionStrategy."""
         runner, agents = self._make_runner_with_agents(
             agent_names=["researcher", "synthesizer"],
-            config_conversations=[{
-                "id": "mag-conv",
-                "description": "Magentic test",
-                "type": "magentic",
-                "agents": ["researcher", "synthesizer"],
-            }],
+            config_conversations=[
+                {
+                    "id": "mag-conv",
+                    "description": "Magentic test",
+                    "type": "magentic",
+                    "agents": ["researcher", "synthesizer"],
+                }
+            ],
         )
 
-        with patch("sk_conversations.AgentGroupChat") as MockChat, \
-             patch("semantic_kernel.agents.strategies.KernelFunctionSelectionStrategy") as MockKFS, \
-             patch("semantic_kernel.functions.KernelFunctionFromPrompt") as MockKFP:
-
+        with patch("sk_conversations.AgentGroupChat") as MockChat, patch(
+            "semantic_kernel.agents.strategies.KernelFunctionSelectionStrategy"
+        ) as MockKFS, patch(
+            "semantic_kernel.functions.KernelFunctionFromPrompt"
+        ) as MockKFP:
             MockKFS.return_value = MagicMock()
             MockKFP.return_value = MagicMock()
 
@@ -1314,12 +1481,14 @@ class TestConversationExecution:
         """Conversation returns error dict when agent raises."""
         runner, agents = self._make_runner_with_agents(
             agent_names=["a"],
-            config_conversations=[{
-                "id": "fail-conv",
-                "description": "Failing",
-                "type": "group_chat",
-                "agents": ["a"],
-            }],
+            config_conversations=[
+                {
+                    "id": "fail-conv",
+                    "description": "Failing",
+                    "type": "group_chat",
+                    "agents": ["a"],
+                }
+            ],
         )
 
         with patch("sk_conversations.AgentGroupChat") as MockChat:
@@ -1337,16 +1506,26 @@ class TestConversationExecution:
             models=[{"id": "m1", "base_url": "http://test", "model_id": "v1"}],
             agents=[{"id": "base", "model": "m1"}],
             default_agent="base",
-            conversations=[{
-                "id": "inline-conv",
-                "description": "With inline",
-                "type": "sequential",
-                "agents": ["inline-a", "inline-b"],
-                "inline_agents": [
-                    {"id": "inline-a", "model": "m1", "system_prompt": "You are A."},
-                    {"id": "inline-b", "model": "m1", "system_prompt": "You are B."},
-                ],
-            }],
+            conversations=[
+                {
+                    "id": "inline-conv",
+                    "description": "With inline",
+                    "type": "sequential",
+                    "agents": ["inline-a", "inline-b"],
+                    "inline_agents": [
+                        {
+                            "id": "inline-a",
+                            "model": "m1",
+                            "system_prompt": "You are A.",
+                        },
+                        {
+                            "id": "inline-b",
+                            "model": "m1",
+                            "system_prompt": "You are B.",
+                        },
+                    ],
+                }
+            ],
         )
 
         mock_kernel = MagicMock()
@@ -1356,9 +1535,9 @@ class TestConversationExecution:
 
         runner = ConversationRunner(config, {"base": mock_base})
 
-        with patch("sk_conversations.ChatCompletionAgent") as MockAgent, \
-             patch("sk_conversations.AgentGroupChat") as MockChat:
-
+        with patch("sk_conversations.ChatCompletionAgent") as MockAgent, patch(
+            "sk_conversations.AgentGroupChat"
+        ) as MockChat:
             created_agents = []
 
             def track_creation(**kwargs):
@@ -1395,6 +1574,7 @@ class TestConversationExecution:
 # Dynamic Description Mutation Tests
 # ---------------------------------------------------------------------------
 
+
 class TestDynamicDescriptionMutation:
     """Tests for _update_tool_descriptions mutating FastMCP tool descriptions."""
 
@@ -1419,7 +1599,14 @@ class TestDynamicDescriptionMutation:
     def test_update_tool_descriptions_modifies_call_agent(self):
         """_update_tool_descriptions changes call_agent description based on config."""
         config = make_v2_config(
-            models=[{"id": "m1", "base_url": "http://test", "model_id": "v1", "context_window": 100000}],
+            models=[
+                {
+                    "id": "m1",
+                    "base_url": "http://test",
+                    "model_id": "v1",
+                    "context_window": 100000,
+                }
+            ],
             agents=[{"id": "test-agent", "model": "m1", "description": "A test agent"}],
             default_agent="test-agent",
         )
@@ -1446,12 +1633,14 @@ class TestDynamicDescriptionMutation:
         config = make_v2_config(
             models=[{"id": "m1", "base_url": "http://test", "model_id": "v1"}],
             agents=[{"id": "a1", "model": "m1"}],
-            conversations=[{
-                "id": "my-research",
-                "description": "Custom research pipeline",
-                "type": "sequential",
-                "agents": ["a1"],
-            }],
+            conversations=[
+                {
+                    "id": "my-research",
+                    "description": "Custom research pipeline",
+                    "type": "sequential",
+                    "agents": ["a1"],
+                }
+            ],
         )
 
         server = sk_agent.mcp_server
@@ -1472,12 +1661,14 @@ class TestDynamicDescriptionMutation:
         """Dynamic descriptions include [memory] for memory-enabled agents."""
         config = make_v2_config(
             models=[{"id": "m1", "base_url": "http://test", "model_id": "v1"}],
-            agents=[{
-                "id": "mem-agent",
-                "model": "m1",
-                "description": "Agent with memory",
-                "memory": {"enabled": True, "collection": "test-mem"},
-            }],
+            agents=[
+                {
+                    "id": "mem-agent",
+                    "model": "m1",
+                    "description": "Agent with memory",
+                    "memory": {"enabled": True, "collection": "test-mem"},
+                }
+            ],
             embeddings={
                 "base_url": "https://emb.test/v1",
                 "api_key": "key",
@@ -1507,6 +1698,7 @@ class TestDynamicDescriptionMutation:
 # Conversation Preset Tests (existing, keep unchanged)
 # ---------------------------------------------------------------------------
 
+
 class TestConversationPresets:
     """Tests for built-in conversation presets."""
 
@@ -1524,7 +1716,12 @@ class TestConversationPresets:
         assert DEEP_SEARCH_PRESET.max_rounds == 10
 
     def test_deep_think_has_correct_agents(self):
-        assert DEEP_THINK_PRESET.agents == ["optimist", "devils-advocate", "pragmatist", "mediator"]
+        assert DEEP_THINK_PRESET.agents == [
+            "optimist",
+            "devils-advocate",
+            "pragmatist",
+            "mediator",
+        ]
         assert DEEP_THINK_PRESET.type == "group_chat"
         assert DEEP_THINK_PRESET.max_rounds == 8
 
@@ -1568,7 +1765,12 @@ class TestConversationRunner:
             models=[{"id": "m1", "base_url": "http://test", "model_id": "v1"}],
             agents=[{"id": "a1", "model": "m1"}],
             conversations=[
-                {"id": "custom-conv", "description": "My custom", "type": "sequential", "agents": ["a1"]}
+                {
+                    "id": "custom-conv",
+                    "description": "My custom",
+                    "type": "sequential",
+                    "agents": ["a1"],
+                }
             ],
         )
         runner = ConversationRunner(config, {})
@@ -1585,7 +1787,12 @@ class TestConversationRunner:
             models=[{"id": "m1", "base_url": "http://test", "model_id": "v1"}],
             agents=[{"id": "a1", "model": "m1"}],
             conversations=[
-                {"id": "deep-search", "description": "My custom deep search", "type": "sequential", "agents": ["a1"]}
+                {
+                    "id": "deep-search",
+                    "description": "My custom deep search",
+                    "type": "sequential",
+                    "agents": ["a1"],
+                }
             ],
         )
         runner = ConversationRunner(config, {})
@@ -1649,7 +1856,12 @@ class TestConversationDescriptionBuilder:
             models=[{"id": "m1", "base_url": "http://test", "model_id": "v1"}],
             agents=[{"id": "a1", "model": "m1"}],
             conversations=[
-                {"id": "my-conv", "description": "Custom conversation", "type": "group_chat", "agents": ["a1"]}
+                {
+                    "id": "my-conv",
+                    "description": "Custom conversation",
+                    "type": "group_chat",
+                    "agents": ["a1"],
+                }
             ],
         )
         desc = build_run_conversation_description(config)
@@ -1662,13 +1874,22 @@ class TestConversationDescriptionBuilder:
             models=[{"id": "m1", "base_url": "http://test", "model_id": "v1"}],
             agents=[{"id": "a1", "model": "m1"}],
             conversations=[
-                {"id": "deep-search", "description": "Overridden", "type": "sequential", "agents": ["a1"]}
+                {
+                    "id": "deep-search",
+                    "description": "Overridden",
+                    "type": "sequential",
+                    "agents": ["a1"],
+                }
             ],
         )
         desc = build_run_conversation_description(config)
 
         # Only one conversation listing line for deep-search (not duplicated)
-        conv_lines = [line for line in desc.splitlines() if line.strip().startswith("- deep-search:")]
+        conv_lines = [
+            line
+            for line in desc.splitlines()
+            if line.strip().startswith("- deep-search:")
+        ]
         assert len(conv_lines) == 1
         assert "Overridden" in conv_lines[0]
 
@@ -1741,6 +1962,7 @@ class TestConversationInlineAgents:
 # Shared Agent Resolution Priority Tests
 # ---------------------------------------------------------------------------
 
+
 class TestSharedAgentResolutionPriority:
     """Tests that top-level (shared) agents take priority over inline agents.
 
@@ -1754,7 +1976,13 @@ class TestSharedAgentResolutionPriority:
         """Top-level SK agent is used when both top-level and inline exist with same ID."""
         config = make_v2_config(
             models=[{"id": "m1", "base_url": "http://test", "model_id": "v1"}],
-            agents=[{"id": "researcher", "model": "m1", "system_prompt": "TOP LEVEL researcher"}],
+            agents=[
+                {
+                    "id": "researcher",
+                    "model": "m1",
+                    "system_prompt": "TOP LEVEL researcher",
+                }
+            ],
             default_agent="researcher",
         )
 
@@ -1866,7 +2094,7 @@ class TestSharedAgentResolutionPriority:
             resolved = runner._resolve_conversation_agents(conv)
             assert len(resolved) == 2
             assert resolved[0] is mock_shared  # top-level
-            assert resolved[1] is mock_inline   # inline fallback
+            assert resolved[1] is mock_inline  # inline fallback
 
     def test_unresolvable_agent_skipped_with_warning(self):
         """Agent ID that exists neither top-level nor inline is skipped."""
@@ -1908,7 +2136,9 @@ class TestSharedConversationAgentConfig:
         agents_by_id = {a["id"]: a for a in raw.get("agents", [])}
 
         for agent_id in agent_ids_needed:
-            assert agent_id in agents_by_id, f"Shared agent '{agent_id}' missing from template"
+            assert (
+                agent_id in agents_by_id
+            ), f"Shared agent '{agent_id}' missing from template"
             agent = agents_by_id[agent_id]
             assert agent.get("model"), f"Agent '{agent_id}' has empty/missing model"
 
@@ -1925,7 +2155,9 @@ class TestSharedConversationAgentConfig:
         agents_by_id = {a["id"]: a for a in raw.get("agents", [])}
 
         for agent_id in agent_ids_needed:
-            assert agent_id in agents_by_id, f"Shared agent '{agent_id}' missing from template"
+            assert (
+                agent_id in agents_by_id
+            ), f"Shared agent '{agent_id}' missing from template"
             agent = agents_by_id[agent_id]
             assert agent.get("model"), f"Agent '{agent_id}' has empty/missing model"
 
@@ -1942,9 +2174,9 @@ class TestSharedConversationAgentConfig:
         for agent in raw.get("agents", []):
             prompt = agent.get("system_prompt", "")
             if prompt:
-                assert prompt not in prompts.values(), (
-                    f"Agent '{agent['id']}' has duplicate system_prompt with another agent"
-                )
+                assert (
+                    prompt not in prompts.values()
+                ), f"Agent '{agent['id']}' has duplicate system_prompt with another agent"
                 prompts[agent["id"]] = prompt
 
     def test_conversation_agents_individually_callable(self):
@@ -1955,7 +2187,11 @@ class TestSharedConversationAgentConfig:
                 {"id": "fast", "base_url": "http://test", "model_id": "v2"},
             ],
             agents=[
-                {"id": "researcher", "model": "strong", "description": "Research agent"},
+                {
+                    "id": "researcher",
+                    "model": "strong",
+                    "description": "Research agent",
+                },
                 {"id": "critic", "model": "fast", "description": "Critic agent"},
             ],
             default_agent="researcher",
@@ -1991,13 +2227,15 @@ class TestSharedConversationAgentConfig:
                 {"id": "synthesizer", "model": "m1"},
                 {"id": "critic", "model": "m1"},
             ],
-            conversations=[{
-                "id": "deep-search",
-                "description": "Test deep search",
-                "type": "magentic",
-                "agents": ["researcher", "synthesizer", "critic"],
-                "max_rounds": 5,
-            }],
+            conversations=[
+                {
+                    "id": "deep-search",
+                    "description": "Test deep search",
+                    "type": "magentic",
+                    "agents": ["researcher", "synthesizer", "critic"],
+                    "max_rounds": 5,
+                }
+            ],
         )
 
         # Create mock SK agents for all three
@@ -2025,12 +2263,12 @@ class TestSharedConversationAgentConfig:
         """Built-in preset inline agents all have non-empty system_prompts."""
         for preset_id, preset in PRESETS.items():
             for inline in preset.inline_agents:
-                assert inline.system_prompt, (
-                    f"Preset '{preset_id}' inline agent '{inline.id}' has empty system_prompt"
-                )
-                assert len(inline.system_prompt) > 50, (
-                    f"Preset '{preset_id}' inline agent '{inline.id}' has suspiciously short prompt"
-                )
+                assert (
+                    inline.system_prompt
+                ), f"Preset '{preset_id}' inline agent '{inline.id}' has empty system_prompt"
+                assert (
+                    len(inline.system_prompt) > 50
+                ), f"Preset '{preset_id}' inline agent '{inline.id}' has suspiciously short prompt"
 
     def test_model_diversity_in_template_agents(self):
         """Template agents use at least 2 different models (not all on same model)."""
@@ -2047,9 +2285,9 @@ class TestSharedConversationAgentConfig:
             if model:
                 models_used.add(model)
 
-        assert len(models_used) >= 2, (
-            f"Expected at least 2 different models across agents, got: {models_used}"
-        )
+        assert (
+            len(models_used) >= 2
+        ), f"Expected at least 2 different models across agents, got: {models_used}"
 
 
 # ---------------------------------------------------------------------------

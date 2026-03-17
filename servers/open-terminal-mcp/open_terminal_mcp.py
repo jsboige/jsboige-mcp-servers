@@ -163,6 +163,7 @@ TOOLS = [
 # Handlers
 # ---------------------------------------------------------------------------
 
+
 @server.list_tools()
 async def list_tools() -> list[Tool]:
     return TOOLS
@@ -199,7 +200,9 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
             return [TextContent(type="text", text=json.dumps(summary, indent=2))]
 
         elif name == "list_files":
-            result = await _get("/files/list", {"directory": arguments.get("path", ".")})
+            result = await _get(
+                "/files/list", {"directory": arguments.get("path", ".")}
+            )
             return [TextContent(type="text", text=json.dumps(result, indent=2))]
 
         elif name == "read_file":
@@ -210,34 +213,45 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
             return [TextContent(type="text", text=json.dumps(result, indent=2))]
 
         elif name == "write_file":
-            result = await _post("/files/write", {
-                "path": arguments["path"],
-                "content": arguments["content"],
-            })
+            result = await _post(
+                "/files/write",
+                {
+                    "path": arguments["path"],
+                    "content": arguments["content"],
+                },
+            )
             return [TextContent(type="text", text=json.dumps(result, indent=2))]
 
         elif name == "grep_search":
-            result = await _get("/files/grep", {
-                "query": arguments["pattern"],
-                "path": arguments.get("path", "."),
-            })
+            result = await _get(
+                "/files/grep",
+                {
+                    "query": arguments["pattern"],
+                    "path": arguments.get("path", "."),
+                },
+            )
             return [TextContent(type="text", text=json.dumps(result, indent=2))]
 
         elif name == "glob_search":
-            result = await _get("/files/glob", {
-                "pattern": arguments["pattern"],
-                "path": arguments.get("path", "."),
-            })
+            result = await _get(
+                "/files/glob",
+                {
+                    "pattern": arguments["pattern"],
+                    "path": arguments.get("path", "."),
+                },
+            )
             return [TextContent(type="text", text=json.dumps(result, indent=2))]
 
         else:
             return [TextContent(type="text", text=f"Unknown tool: {name}")]
 
     except httpx.HTTPStatusError as e:
-        return [TextContent(
-            type="text",
-            text=f"HTTP error {e.response.status_code}: {e.response.text}",
-        )]
+        return [
+            TextContent(
+                type="text",
+                text=f"HTTP error {e.response.status_code}: {e.response.text}",
+            )
+        ]
     except Exception as e:
         return [TextContent(type="text", text=f"Error: {e}")]
 
@@ -246,10 +260,13 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
 # Main
 # ---------------------------------------------------------------------------
 
+
 async def main():
     log.info("Starting open-terminal MCP server (url=%s)", BASE_URL)
     async with stdio_server() as (read_stream, write_stream):
-        await server.run(read_stream, write_stream, server.create_initialization_options())
+        await server.run(
+            read_stream, write_stream, server.create_initialization_options()
+        )
 
 
 if __name__ == "__main__":

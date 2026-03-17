@@ -17,7 +17,7 @@ describe('roosync_baseline - Interface', () => {
 
   beforeAll(async () => {
     module = await import('../../../../src/tools/roosync/baseline.js');
-  });
+  }, 60000); // 60s timeout for module import (Issue #609 - cold cache)
 
   it('devrait exporter roosync_baseline', () => {
     expect(module.roosync_baseline).toBeDefined();
@@ -43,7 +43,7 @@ describe('roosync_baseline - Schema Validation - Action: update', () => {
 
   beforeAll(async () => {
     module = await import('../../../../src/tools/roosync/baseline.js');
-  });
+  }, 60000); // 60s timeout for module import (Issue #609 - cold cache)
 
   it('devrait accepter action update avec machineId seul', () => {
     const result = module.BaselineArgsSchema.safeParse({
@@ -94,7 +94,7 @@ describe('roosync_baseline - Schema Validation - Action: version', () => {
 
   beforeAll(async () => {
     module = await import('../../../../src/tools/roosync/baseline.js');
-  });
+  }, 60000); // 60s timeout for module import (Issue #609 - cold cache)
 
   it('devrait accepter action version avec version seule', () => {
     const result = module.BaselineArgsSchema.safeParse({
@@ -123,7 +123,7 @@ describe('roosync_baseline - Schema Validation - Action: restore', () => {
 
   beforeAll(async () => {
     module = await import('../../../../src/tools/roosync/baseline.js');
-  });
+  }, 60000); // 60s timeout for module import (Issue #609 - cold cache)
 
   it('devrait accepter action restore avec source seule', () => {
     const result = module.BaselineArgsSchema.safeParse({
@@ -162,7 +162,7 @@ describe('roosync_baseline - Schema Validation - Action: export', () => {
 
   beforeAll(async () => {
     module = await import('../../../../src/tools/roosync/baseline.js');
-  });
+  }, 60000); // 60s timeout for module import (Issue #609 - cold cache)
 
   it('devrait accepter action export avec format json', () => {
     const result = module.BaselineArgsSchema.safeParse({
@@ -220,7 +220,7 @@ describe('roosync_baseline - Schema Validation - Errors', () => {
 
   beforeAll(async () => {
     module = await import('../../../../src/tools/roosync/baseline.js');
-  });
+  }, 60000); // 60s timeout for module import (Issue #609 - cold cache)
 
   it('devrait rejeter si action est manquante', () => {
     const result = module.BaselineArgsSchema.safeParse({
@@ -254,7 +254,7 @@ describe('roosync_baseline - Metadata', () => {
 
   beforeAll(async () => {
     module = await import('../../../../src/tools/roosync/baseline.js');
-  });
+  }, 60000); // 60s timeout for module import (Issue #609 - cold cache)
 
   it('devrait avoir le nom correct', () => {
     const metadata = module.baselineToolMetadata;

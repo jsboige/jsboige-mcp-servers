@@ -37,37 +37,49 @@ def get_notebook_service() -> NotebookService:
 # Input models for tools
 class ReadNotebookInput(BaseModel):
     """Input model for read_notebook tool."""
+
     path: str = Field(description="Chemin du fichier notebook (.ipynb)")
 
 
 class WriteNotebookInput(BaseModel):
     """Input model for write_notebook tool."""
+
     path: str = Field(description="Chemin du fichier notebook (.ipynb)")
-    content: Dict[str, Any] = Field(description="Contenu du notebook au format nbformat")
+    content: Dict[str, Any] = Field(
+        description="Contenu du notebook au format nbformat"
+    )
 
 
 class CreateNotebookInput(BaseModel):
     """Input model for create_notebook tool."""
+
     path: str = Field(description="Chemin du fichier notebook (.ipynb)")
     kernel: str = Field(default="python3", description="Nom du kernel (ex: python3)")
 
 
 class AddCellInput(BaseModel):
     """Input model for add_cell tool."""
+
     path: str = Field(description="Chemin du fichier notebook (.ipynb)")
-    cell_type: str = Field(description="Type de cellule", enum=["code", "markdown", "raw"])
+    cell_type: str = Field(
+        description="Type de cellule", enum=["code", "markdown", "raw"]
+    )
     source: str = Field(description="Contenu de la cellule")
-    metadata: Optional[Dict[str, Any]] = Field(default=None, description="Metadonnees de la cellule (optionnel)")
+    metadata: Optional[Dict[str, Any]] = Field(
+        default=None, description="Metadonnees de la cellule (optionnel)"
+    )
 
 
 class RemoveCellInput(BaseModel):
     """Input model for remove_cell tool."""
+
     path: str = Field(description="Chemin du fichier notebook (.ipynb)")
     index: int = Field(description="Index de la cellule a supprimer")
 
 
 class UpdateCellInput(BaseModel):
     """Input model for update_cell tool."""
+
     path: str = Field(description="Chemin du fichier notebook (.ipynb)")
     index: int = Field(description="Index de la cellule a modifier")
     source: str = Field(description="Nouveau contenu de la cellule")
@@ -75,15 +87,15 @@ class UpdateCellInput(BaseModel):
 
 def register_notebook_tools(app: FastMCP) -> None:
     """Register all notebook tools with the FastMCP app."""
-    
+
     @app.tool()
     async def read_notebook(path: str) -> Dict[str, Any]:
         """
         Lit un notebook Jupyter a partir d'un fichier
-        
+
         Args:
             path: Chemin du fichier notebook (.ipynb)
-            
+
         Returns:
             Contenu complet du notebook avec metadonnees
         """
@@ -95,21 +107,17 @@ def register_notebook_tools(app: FastMCP) -> None:
             return result
         except Exception as e:
             logger.error(f"Error reading notebook {path}: {e}")
-            return {
-                "error": str(e),
-                "path": path,
-                "success": False
-            }
-    
+            return {"error": str(e), "path": path, "success": False}
+
     @app.tool()
     async def write_notebook(path: str, content: Dict[str, Any]) -> Dict[str, Any]:
         """
         ?crit un notebook Jupyter dans un fichier
-        
+
         Args:
             path: Chemin du fichier notebook (.ipynb)
             content: Contenu du notebook au format nbformat
-            
+
         Returns:
             Resultat de l'operation d'ecriture
         """
@@ -121,21 +129,17 @@ def register_notebook_tools(app: FastMCP) -> None:
             return result
         except Exception as e:
             logger.error(f"Error writing notebook {path}: {e}")
-            return {
-                "error": str(e),
-                "path": path,
-                "success": False
-            }
-    
+            return {"error": str(e), "path": path, "success": False}
+
     @app.tool()
     async def create_notebook(path: str, kernel: str = "python3") -> Dict[str, Any]:
         """
         Cree un nouveau notebook vide
-        
+
         Args:
             path: Chemin du fichier notebook (.ipynb)
             kernel: Nom du kernel (ex: python3)
-            
+
         Returns:
             Resultat de la creation du notebook
         """
@@ -147,25 +151,24 @@ def register_notebook_tools(app: FastMCP) -> None:
             return result
         except Exception as e:
             logger.error(f"Error creating notebook {path}: {e}")
-            return {
-                "error": str(e),
-                "path": path,
-                "kernel": kernel,
-                "success": False
-            }
-    
+            return {"error": str(e), "path": path, "kernel": kernel, "success": False}
+
     @app.tool()
-    async def add_cell(path: str, cell_type: str, source: str, 
-                       metadata: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    async def add_cell(
+        path: str,
+        cell_type: str,
+        source: str,
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> Dict[str, Any]:
         """
         Ajoute une cellule a un notebook
-        
+
         Args:
             path: Chemin du fichier notebook (.ipynb)
             cell_type: Type de cellule
             source: Contenu de la cellule
             metadata: Metadonnees de la cellule (optionnel)
-            
+
         Returns:
             Resultat de l'ajout de cellule
         """
@@ -181,18 +184,18 @@ def register_notebook_tools(app: FastMCP) -> None:
                 "error": str(e),
                 "path": path,
                 "cell_type": cell_type,
-                "success": False
+                "success": False,
             }
-    
+
     @app.tool()
     async def remove_cell(path: str, index: int) -> Dict[str, Any]:
         """
         Supprime une cellule d'un notebook
-        
+
         Args:
             path: Chemin du fichier notebook (.ipynb)
             index: Index de la cellule a supprimer
-            
+
         Returns:
             Resultat de la suppression
         """
@@ -204,23 +207,18 @@ def register_notebook_tools(app: FastMCP) -> None:
             return result
         except Exception as e:
             logger.error(f"Error removing cell from notebook {path}: {e}")
-            return {
-                "error": str(e),
-                "path": path,
-                "index": index,
-                "success": False
-            }
-    
+            return {"error": str(e), "path": path, "index": index, "success": False}
+
     @app.tool()
     async def update_cell(path: str, index: int, source: str) -> Dict[str, Any]:
         """
         Modifie une cellule d'un notebook
-        
+
         Args:
             path: Chemin du fichier notebook (.ipynb)
             index: Index de la cellule a modifier
             source: Nouveau contenu de la cellule
-            
+
         Returns:
             Resultat de la modification
         """
@@ -232,13 +230,8 @@ def register_notebook_tools(app: FastMCP) -> None:
             return result
         except Exception as e:
             logger.error(f"Error updating cell in notebook {path}: {e}")
-            return {
-                "error": str(e),
-                "path": path,
-                "index": index,
-                "success": False
-            }
-    
+            return {"error": str(e), "path": path, "index": index, "success": False}
+
     @app.tool()
     async def read_cells(
         path: str,
@@ -247,13 +240,13 @@ def register_notebook_tools(app: FastMCP) -> None:
         start_index: Optional[int] = None,
         end_index: Optional[int] = None,
         include_preview: bool = True,
-        preview_length: int = 100
+        preview_length: int = 100,
     ) -> Dict[str, Any]:
         """
         🆕 OUTIL CONSOLIDÉ - Lecture flexible de cellules d'un notebook.
-        
+
         Remplace: read_cell, read_cells_range, list_notebook_cells
-        
+
         Args:
             path: Chemin du fichier notebook (.ipynb)
             mode: Mode de lecture
@@ -266,23 +259,23 @@ def register_notebook_tools(app: FastMCP) -> None:
             end_index: Index de fin pour mode="range" (0-based, inclus, None = jusqu'à la fin)
             include_preview: Inclure preview dans mode="list" (défaut: True)
             preview_length: Longueur du preview (défaut: 100 caractères)
-            
+
         Returns:
             Dictionary with cells data based on mode
-            
+
         Examples:
             # Lire cellule 5
             read_cells("nb.ipynb", mode="single", index=5)
-            
+
             # Lire cellules 10-20
             read_cells("nb.ipynb", mode="range", start_index=10, end_index=20)
-            
+
             # Lire cellules 10 jusqu'à la fin
             read_cells("nb.ipynb", mode="range", start_index=10)
-            
+
             # Liste avec preview (défaut)
             read_cells("nb.ipynb")
-            
+
             # Toutes les cellules complètes
             read_cells("nb.ipynb", mode="all")
         """
@@ -296,7 +289,7 @@ def register_notebook_tools(app: FastMCP) -> None:
                 start_index=start_index,
                 end_index=end_index,
                 include_preview=include_preview,
-                preview_length=preview_length
+                preview_length=preview_length,
             )
             logger.info(f"Successfully read cells from notebook: {path}")
             return result
@@ -307,16 +300,16 @@ def register_notebook_tools(app: FastMCP) -> None:
                 "error_type": type(e).__name__,
                 "path": path,
                 "mode": mode,
-                "success": False
+                "success": False,
             }
-    
+
     # ============================================================================
     # DEPRECATED WRAPPERS - Commentés Phase 6c (2025-10-10)
     # Ces wrappers ont été remplacés par les outils consolidés (Phase 1A + 1B).
     # Code conservé pour référence historique et possibilité de rollback.
     # NE PAS DÉCOMMENTER sans validation architecture.
     # ============================================================================
-    
+
     # @app.tool()
     # async def read_cell(path: str, index: int) -> Dict[str, Any]:
     #     """
@@ -346,7 +339,7 @@ def register_notebook_tools(app: FastMCP) -> None:
     #             "index": index,
     #             "success": False
     #         }
-    
+
     # @app.tool()
     # async def read_cells_range(path: str, start_index: int, end_index: Optional[int] = None) -> Dict[str, Any]:
     #     """
@@ -378,7 +371,7 @@ def register_notebook_tools(app: FastMCP) -> None:
     #             "end_index": end_index,
     #             "success": False
     #         }
-    
+
     # @app.tool()
     # async def list_notebook_cells(path: str) -> Dict[str, Any]:
     #     """
@@ -406,17 +399,14 @@ def register_notebook_tools(app: FastMCP) -> None:
     #             "path": path,
     #             "success": False
     #         }
-    
+
     @app.tool()
-    async def inspect_notebook(
-        path: str,
-        mode: str = "metadata"
-    ) -> Dict[str, Any]:
+    async def inspect_notebook(path: str, mode: str = "metadata") -> Dict[str, Any]:
         """
         🆕 OUTIL CONSOLIDÉ - Inspection et validation de notebooks.
-        
+
         Remplace: get_notebook_metadata, inspect_notebook_outputs, validate_notebook
-        
+
         Args:
             path: Chemin du fichier notebook (.ipynb)
             mode: Type d'inspection
@@ -424,20 +414,20 @@ def register_notebook_tools(app: FastMCP) -> None:
                 - "outputs": Analyse des sorties de toutes les cellules code
                 - "validate": Validation nbformat + rapport de problèmes
                 - "full": Combinaison de metadata + outputs + validate
-                
+
         Returns:
             Dictionary with inspection results based on mode
-            
+
         Examples:
             # Métadonnées seulement
             inspect_notebook("nb.ipynb", mode="metadata")
-            
+
             # Analyse des outputs
             inspect_notebook("nb.ipynb", mode="outputs")
-            
+
             # Validation du notebook
             inspect_notebook("nb.ipynb", mode="validate")
-            
+
             # Inspection complète
             inspect_notebook("nb.ipynb", mode="full")
         """
@@ -454,9 +444,9 @@ def register_notebook_tools(app: FastMCP) -> None:
                 "error_type": type(e).__name__,
                 "path": path,
                 "mode": mode,
-                "success": False
+                "success": False,
             }
-    
+
     # @app.tool()
     # async def get_notebook_metadata(path: str) -> Dict[str, Any]:
     #     """
@@ -484,7 +474,7 @@ def register_notebook_tools(app: FastMCP) -> None:
     #             "path": path,
     #             "success": False
     #         }
-    
+
     # @app.tool()
     # async def inspect_notebook_outputs(path: str) -> Dict[str, Any]:
     #     """
@@ -512,7 +502,7 @@ def register_notebook_tools(app: FastMCP) -> None:
     #             "path": path,
     #             "success": False
     #         }
-    
+
     # @app.tool()
     # async def validate_notebook(path: str) -> Dict[str, Any]:
     #     """
@@ -540,12 +530,12 @@ def register_notebook_tools(app: FastMCP) -> None:
     #             "path": path,
     #             "success": False
     #         }
-    
+
     @app.tool()
     async def system_info() -> Dict[str, Any]:
         """
         Informations systeme rapides et fiables
-        
+
         Returns:
             Informations detaillees sur le systeme, Python, et Jupyter
         """
@@ -557,9 +547,6 @@ def register_notebook_tools(app: FastMCP) -> None:
             return result
         except Exception as e:
             logger.error(f"Error getting system information: {e}")
-            return {
-                "error": str(e),
-                "success": False
-            }
-    
+            return {"error": str(e), "success": False}
+
     logger.info("Registered notebook tools (13 total)")

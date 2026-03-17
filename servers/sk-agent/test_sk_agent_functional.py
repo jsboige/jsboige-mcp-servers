@@ -82,6 +82,7 @@ def run_async(coro):
     loop = asyncio.get_event_loop()
     if loop.is_running():
         import concurrent.futures
+
         with concurrent.futures.ThreadPoolExecutor() as pool:
             return pool.submit(asyncio.run, coro).result()
     return loop.run_until_complete(coro)
@@ -90,6 +91,7 @@ def run_async(coro):
 # ---------------------------------------------------------------------------
 # Test: Manager Initialization
 # ---------------------------------------------------------------------------
+
 
 class TestManagerInitialization:
     """Verify the manager initializes correctly with real config."""
@@ -115,14 +117,25 @@ class TestManagerInitialization:
         """Shared conversation agents should be initialized as top-level agents."""
         agent_ids = set(manager._sk_agents.keys())
         # These were promoted to top-level in the v2.0 refactor
-        conversation_agents = {"researcher", "synthesizer", "critic", "optimist",
-                               "devils-advocate", "pragmatist", "mediator"}
+        conversation_agents = {
+            "researcher",
+            "synthesizer",
+            "critic",
+            "optimist",
+            "devils-advocate",
+            "pragmatist",
+            "mediator",
+        }
         present = agent_ids & conversation_agents
-        log.info("Conversation agents present: %s / %s", len(present), len(conversation_agents))
-        # At least the ones whose models are enabled should be present
-        assert len(present) >= 1, (
-            f"No conversation agents initialized. Agent IDs: {agent_ids}"
+        log.info(
+            "Conversation agents present: %s / %s",
+            len(present),
+            len(conversation_agents),
         )
+        # At least the ones whose models are enabled should be present
+        assert (
+            len(present) >= 1
+        ), f"No conversation agents initialized. Agent IDs: {agent_ids}"
 
     def test_mcp_plugins_loaded(self, manager: SKAgentManager):
         """MCP plugins should be loaded when depth < max_recursion_depth."""
@@ -135,6 +148,7 @@ class TestManagerInitialization:
 # Test: Individual Agent Calls (Text Only)
 # ---------------------------------------------------------------------------
 
+
 class TestAgentTextCalls:
     """Test each agent with a simple text prompt to verify LLM connectivity."""
 
@@ -144,10 +158,12 @@ class TestAgentTextCalls:
     def _call_agent(self, manager: SKAgentManager, agent_id: str) -> dict:
         """Helper to call a specific agent and return the result."""
         start = time.time()
-        result = run_async(manager.call_agent(
-            prompt=self.SIMPLE_PROMPT,
-            agent_id=agent_id,
-        ))
+        result = run_async(
+            manager.call_agent(
+                prompt=self.SIMPLE_PROMPT,
+                agent_id=agent_id,
+            )
+        )
         elapsed = time.time() - start
         log.info("Agent '%s' responded in %.1fs", agent_id, elapsed)
         return result
@@ -249,56 +265,69 @@ class TestAgentTextCalls:
 # Test: Conversation Continuity
 # ---------------------------------------------------------------------------
 
+
 class TestConversationContinuity:
     """Test that conversation threads maintain context."""
 
-    def test_conversation_thread_persists(self, manager: SKAgentManager, config: SKAgentConfig):
+    def test_conversation_thread_persists(
+        self, manager: SKAgentManager, config: SKAgentConfig
+    ):
         """Multi-turn conversation should maintain context."""
         default = config.get_default_agent()
         if not default or default.id not in manager._sk_agents:
             pytest.skip("Default agent not available")
 
         # Turn 1: Establish a fact
-        result1 = run_async(manager.call_agent(
-            prompt="Remember this secret code: ALPHA-7. Just confirm you noted it.",
-            agent_id=default.id,
-        ))
+        result1 = run_async(
+            manager.call_agent(
+                prompt="Remember this secret code: ALPHA-7. Just confirm you noted it.",
+                agent_id=default.id,
+            )
+        )
         assert "error" not in result1, f"Turn 1 error: {result1.get('error')}"
         conv_id = result1.get("conversation_id")
         assert conv_id, "No conversation_id returned"
 
         # Turn 2: Ask about the fact
-        result2 = run_async(manager.call_agent(
-            prompt="What was the secret code I just told you?",
-            agent_id=default.id,
-            conversation_id=conv_id,
-        ))
+        result2 = run_async(
+            manager.call_agent(
+                prompt="What was the secret code I just told you?",
+                agent_id=default.id,
+                conversation_id=conv_id,
+            )
+        )
         assert "error" not in result2, f"Turn 2 error: {result2.get('error')}"
         response2 = result2.get("response", "").upper()
-        assert "ALPHA" in response2 or "7" in response2, (
-            f"Agent forgot the code. Response: {result2['response'][:300]}"
-        )
+        assert (
+            "ALPHA" in response2 or "7" in response2
+        ), f"Agent forgot the code. Response: {result2['response'][:300]}"
         log.info("Conversation continuity verified: %s", result2["response"][:200])
 
-    def test_separate_threads_are_independent(self, manager: SKAgentManager, config: SKAgentConfig):
+    def test_separate_threads_are_independent(
+        self, manager: SKAgentManager, config: SKAgentConfig
+    ):
         """Two conversations should not share context."""
         default = config.get_default_agent()
         if not default or default.id not in manager._sk_agents:
             pytest.skip("Default agent not available")
 
         # Conversation A
-        result_a = run_async(manager.call_agent(
-            prompt="My favorite color is blue. Just confirm.",
-            agent_id=default.id,
-        ))
+        result_a = run_async(
+            manager.call_agent(
+                prompt="My favorite color is blue. Just confirm.",
+                agent_id=default.id,
+            )
+        )
         assert "error" not in result_a
 
         # Conversation B (new thread)
-        result_b = run_async(manager.call_agent(
-            prompt="What is my favorite color?",
-            agent_id=default.id,
-            # No conversation_id -> new thread
-        ))
+        result_b = run_async(
+            manager.call_agent(
+                prompt="What is my favorite color?",
+                agent_id=default.id,
+                # No conversation_id -> new thread
+            )
+        )
         assert "error" not in result_b
         # The agent should NOT know the color from conversation A
         # (It might guess, but it shouldn't have definitive knowledge)
@@ -308,6 +337,7 @@ class TestConversationContinuity:
 # ---------------------------------------------------------------------------
 # Test: Agent Resolution
 # ---------------------------------------------------------------------------
+
 
 class TestAgentResolutionLive:
     """Test agent resolution with real initialized agents."""
@@ -319,7 +349,9 @@ class TestAgentResolutionLive:
             assert resolved_id == agent_id
             assert agent is manager._sk_agents[agent_id]
 
-    def test_vision_default_resolution(self, manager: SKAgentManager, config: SKAgentConfig):
+    def test_vision_default_resolution(
+        self, manager: SKAgentManager, config: SKAgentConfig
+    ):
         """Vision request should resolve to vision agent if available."""
         vision_cfg = config.get_default_vision_agent()
         if not vision_cfg or vision_cfg.id not in manager._sk_agents:
@@ -342,6 +374,7 @@ class TestAgentResolutionLive:
 # Test: Multi-Agent Conversations
 # ---------------------------------------------------------------------------
 
+
 class TestMultiAgentConversations:
     """Test that conversation presets produce meaningful multi-agent output.
 
@@ -350,7 +383,9 @@ class TestMultiAgentConversations:
 
     TIMEOUT = 300  # 5 minutes max per conversation
 
-    def test_deep_search_produces_output(self, manager: SKAgentManager, config: SKAgentConfig):
+    def test_deep_search_produces_output(
+        self, manager: SKAgentManager, config: SKAgentConfig
+    ):
         """Deep-search conversation should produce a multi-agent research result."""
         runner = ConversationRunner(config, manager._sk_agents)
 
@@ -363,16 +398,20 @@ class TestMultiAgentConversations:
         if len(agents) < 2:
             pytest.skip(f"Not enough agents for deep-search: {len(agents)}")
 
-        result = run_async(runner.run(
-            prompt="What is the capital of France? Respond concisely.",
-            conversation_id="deep-search",
-            options={"max_rounds": 3},  # Limit rounds for speed
-        ))
+        result = run_async(
+            runner.run(
+                prompt="What is the capital of France? Respond concisely.",
+                conversation_id="deep-search",
+                options={"max_rounds": 3},  # Limit rounds for speed
+            )
+        )
 
         assert "error" not in result, f"Deep-search error: {result.get('error')}"
         assert result.get("response"), "Empty response from deep-search"
         assert result.get("rounds", 0) >= 1, "No rounds completed"
-        assert len(result.get("agents_used", [])) >= 2, "Less than 2 agents participated"
+        assert (
+            len(result.get("agents_used", [])) >= 2
+        ), "Less than 2 agents participated"
         log.info(
             "Deep-search: %d rounds, %d agents, response: %s",
             result.get("rounds", 0),
@@ -380,7 +419,9 @@ class TestMultiAgentConversations:
             result.get("response", "")[:300],
         )
 
-    def test_deep_think_produces_output(self, manager: SKAgentManager, config: SKAgentConfig):
+    def test_deep_think_produces_output(
+        self, manager: SKAgentManager, config: SKAgentConfig
+    ):
         """Deep-think conversation should produce multi-perspective deliberation."""
         runner = ConversationRunner(config, manager._sk_agents)
 
@@ -392,11 +433,13 @@ class TestMultiAgentConversations:
         if len(agents) < 2:
             pytest.skip(f"Not enough agents for deep-think: {len(agents)}")
 
-        result = run_async(runner.run(
-            prompt="Should a small team use microservices or a monolith? Be brief.",
-            conversation_id="deep-think",
-            options={"max_rounds": 4},
-        ))
+        result = run_async(
+            runner.run(
+                prompt="Should a small team use microservices or a monolith? Be brief.",
+                conversation_id="deep-think",
+                options={"max_rounds": 4},
+            )
+        )
 
         assert "error" not in result, f"Deep-think error: {result.get('error')}"
         assert result.get("response"), "Empty response from deep-think"
@@ -408,19 +451,25 @@ class TestMultiAgentConversations:
             result.get("response", "")[:300],
         )
 
-    def test_conversation_lists_available(self, manager: SKAgentManager, config: SKAgentConfig):
+    def test_conversation_lists_available(
+        self, manager: SKAgentManager, config: SKAgentConfig
+    ):
         """list_conversations should return all available conversations."""
         runner = ConversationRunner(config, manager._sk_agents)
         conversations = runner.list_conversations()
 
-        assert len(conversations) >= 2, f"Expected at least 2 conversations, got {len(conversations)}"
+        assert (
+            len(conversations) >= 2
+        ), f"Expected at least 2 conversations, got {len(conversations)}"
 
         ids = [c["id"] for c in conversations]
         assert "deep-search" in ids, f"deep-search not in {ids}"
         assert "deep-think" in ids, f"deep-think not in {ids}"
         log.info("Available conversations: %s", ids)
 
-    def test_code_review_conversation_resolves(self, manager: SKAgentManager, config: SKAgentConfig):
+    def test_code_review_conversation_resolves(
+        self, manager: SKAgentManager, config: SKAgentConfig
+    ):
         """Code-review conversation (inline agents) should resolve agents."""
         runner = ConversationRunner(config, manager._sk_agents)
 
@@ -438,6 +487,7 @@ class TestMultiAgentConversations:
 # Test: Dynamic Descriptions
 # ---------------------------------------------------------------------------
 
+
 class TestDynamicDescriptionsLive:
     """Verify dynamic descriptions are generated from real config."""
 
@@ -448,7 +498,9 @@ class TestDynamicDescriptionsLive:
         # Should contain at least the default agent
         default = config.get_default_agent()
         if default:
-            assert default.id in desc, f"Default agent '{default.id}' not in description"
+            assert (
+                default.id in desc
+            ), f"Default agent '{default.id}' not in description"
 
     def test_run_conversation_description_lists_presets(self, config: SKAgentConfig):
         """run_conversation description should list available conversations."""
@@ -467,6 +519,7 @@ class TestDynamicDescriptionsLive:
 # Test: List Agents (Real Data)
 # ---------------------------------------------------------------------------
 
+
 class TestListAgentsLive:
     """Test list_agents with real initialized agents."""
 
@@ -474,9 +527,9 @@ class TestListAgentsLive:
         """list_agents should return info for all initialized agents."""
         agents = manager.list_agents()
         assert len(agents) > 0, "No agents returned"
-        assert len(agents) == len(manager._sk_agents), (
-            f"list_agents returned {len(agents)} but {len(manager._sk_agents)} are initialized"
-        )
+        assert len(agents) == len(
+            manager._sk_agents
+        ), f"list_agents returned {len(agents)} but {len(manager._sk_agents)} are initialized"
 
         for agent_info in agents:
             assert "id" in agent_info
@@ -490,19 +543,27 @@ class TestListAgentsLive:
         agent_ids = {a.get("id") for a in agents}
 
         # Check for at least some promoted agents
-        conversation_agents = {"researcher", "synthesizer", "critic", "optimist",
-                               "devils-advocate", "pragmatist", "mediator"}
+        conversation_agents = {
+            "researcher",
+            "synthesizer",
+            "critic",
+            "optimist",
+            "devils-advocate",
+            "pragmatist",
+            "mediator",
+        }
         present = agent_ids & conversation_agents
         log.info("Conversation agents in list_agents: %s", present)
         # At least the ones with enabled models should be listed
-        assert len(present) >= 1, (
-            f"No conversation agents in list_agents. IDs: {agent_ids}"
-        )
+        assert (
+            len(present) >= 1
+        ), f"No conversation agents in list_agents. IDs: {agent_ids}"
 
 
 # ---------------------------------------------------------------------------
 # Test: Robustness
 # ---------------------------------------------------------------------------
+
 
 class TestRobustness:
     """Test error handling and edge cases with real endpoints."""
@@ -514,10 +575,12 @@ class TestRobustness:
             pytest.skip("Default agent not available")
 
         try:
-            result = run_async(manager.call_agent(
-                prompt="",
-                agent_id=default.id,
-            ))
+            result = run_async(
+                manager.call_agent(
+                    prompt="",
+                    agent_id=default.id,
+                )
+            )
             # If it returns, should be a dict (possibly with "error" key)
             assert isinstance(result, dict)
         except Exception:
@@ -526,10 +589,12 @@ class TestRobustness:
 
     def test_unknown_agent_returns_error(self, manager: SKAgentManager):
         """Requesting a non-existent agent should fallback or error gracefully."""
-        result = run_async(manager.call_agent(
-            prompt="Hello",
-            agent_id="nonexistent-agent-xyz",
-        ))
+        result = run_async(
+            manager.call_agent(
+                prompt="Hello",
+                agent_id="nonexistent-agent-xyz",
+            )
+        )
         # Should fallback to default or return error
         assert isinstance(result, dict)
 
@@ -540,10 +605,12 @@ class TestRobustness:
             pytest.skip("Default agent not available")
 
         long_prompt = "Repeat the word 'test'. " * 100  # ~2400 chars
-        result = run_async(manager.call_agent(
-            prompt=long_prompt,
-            agent_id=default.id,
-        ))
+        result = run_async(
+            manager.call_agent(
+                prompt=long_prompt,
+                agent_id=default.id,
+            )
+        )
         assert "error" not in result, f"Long prompt error: {result.get('error')}"
         assert result.get("response"), "Empty response for long prompt"
 
@@ -551,6 +618,7 @@ class TestRobustness:
 # ---------------------------------------------------------------------------
 # Test: End-to-End Persona Verification
 # ---------------------------------------------------------------------------
+
 
 class TestPersonaVerification:
     """Verify that each shared agent exhibits its persona characteristics.
@@ -569,9 +637,9 @@ class TestPersonaVerification:
         if "optimist" not in manager._sk_agents:
             pytest.skip("Optimist agent not available")
 
-        result = run_async(manager.call_agent(
-            prompt=self.PERSONA_PROMPT, agent_id="optimist"
-        ))
+        result = run_async(
+            manager.call_agent(prompt=self.PERSONA_PROMPT, agent_id="optimist")
+        )
         assert "error" not in result
         response = result.get("response", "").lower()
         assert result.get("response"), "Empty response"
@@ -584,9 +652,9 @@ class TestPersonaVerification:
         if "devils-advocate" not in manager._sk_agents:
             pytest.skip("Devils-advocate agent not available")
 
-        result = run_async(manager.call_agent(
-            prompt=self.PERSONA_PROMPT, agent_id="devils-advocate"
-        ))
+        result = run_async(
+            manager.call_agent(prompt=self.PERSONA_PROMPT, agent_id="devils-advocate")
+        )
         assert "error" not in result
         assert result.get("response"), "Empty response"
         log.info("Devil's advocate: %s", result["response"][:300])
@@ -596,9 +664,9 @@ class TestPersonaVerification:
         if "pragmatist" not in manager._sk_agents:
             pytest.skip("Pragmatist agent not available")
 
-        result = run_async(manager.call_agent(
-            prompt=self.PERSONA_PROMPT, agent_id="pragmatist"
-        ))
+        result = run_async(
+            manager.call_agent(prompt=self.PERSONA_PROMPT, agent_id="pragmatist")
+        )
         assert "error" not in result
         assert result.get("response"), "Empty response"
         log.info("Pragmatist: %s", result["response"][:300])
@@ -608,10 +676,12 @@ class TestPersonaVerification:
         if "critic" not in manager._sk_agents:
             pytest.skip("Critic agent not available")
 
-        result = run_async(manager.call_agent(
-            prompt="Review this claim: 'AI will replace all programmers by 2030'. Rate it Strong/Moderate/Weak.",
-            agent_id="critic",
-        ))
+        result = run_async(
+            manager.call_agent(
+                prompt="Review this claim: 'AI will replace all programmers by 2030'. Rate it Strong/Moderate/Weak.",
+                agent_id="critic",
+            )
+        )
         assert "error" not in result
         assert result.get("response"), "Empty response"
         log.info("Critic: %s", result["response"][:300])
@@ -621,15 +691,17 @@ class TestPersonaVerification:
         if "mediator" not in manager._sk_agents:
             pytest.skip("Mediator agent not available")
 
-        result = run_async(manager.call_agent(
-            prompt=(
-                "The optimist says 'AI is great for productivity'. "
-                "The devil's advocate says 'AI will cause job losses'. "
-                "The pragmatist says 'start with small pilots'. "
-                "Synthesize these perspectives into a recommendation."
-            ),
-            agent_id="mediator",
-        ))
+        result = run_async(
+            manager.call_agent(
+                prompt=(
+                    "The optimist says 'AI is great for productivity'. "
+                    "The devil's advocate says 'AI will cause job losses'. "
+                    "The pragmatist says 'start with small pilots'. "
+                    "Synthesize these perspectives into a recommendation."
+                ),
+                agent_id="mediator",
+            )
+        )
         assert "error" not in result
         assert result.get("response"), "Empty response"
         log.info("Mediator: %s", result["response"][:300])

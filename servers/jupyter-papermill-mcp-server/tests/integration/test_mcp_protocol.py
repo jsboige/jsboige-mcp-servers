@@ -11,6 +11,7 @@ import subprocess
 import pytest
 from pathlib import Path
 
+
 @pytest.mark.asyncio
 async def test_mcp_protocol():
     """Test du serveur via protocole MCP JSON-RPC"""
@@ -19,10 +20,8 @@ async def test_mcp_protocol():
 
     # Commande pour lancer le serveur - utiliser Python système
     import sys
-    cmd = [
-        sys.executable,
-        str(Path(__file__).parent.parent / "main.py")
-    ]
+
+    cmd = [sys.executable, str(Path(__file__).parent.parent / "main.py")]
 
     try:
         # Lancer le serveur
@@ -33,7 +32,7 @@ async def test_mcp_protocol():
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             text=True,
-            cwd="."
+            cwd=".",
         )
 
         # Message d'initialisation MCP
@@ -43,14 +42,9 @@ async def test_mcp_protocol():
             "method": "initialize",
             "params": {
                 "protocolVersion": "2024-11-05",
-                "capabilities": {
-                    "tools": {}
-                },
-                "clientInfo": {
-                    "name": "test-client",
-                    "version": "1.0.0"
-                }
-            }
+                "capabilities": {"tools": {}},
+                "clientInfo": {"name": "test-client", "version": "1.0.0"},
+            },
         }
 
         # Envoyer la requete d'initialisation
@@ -70,12 +64,17 @@ async def test_mcp_protocol():
             if process.returncode == 0:
                 print("SUCC?S - Serveur a repondu")
                 if stdout:
-                    print("Reponse:", stdout[:200] + "..." if len(stdout) > 200 else stdout)
+                    print(
+                        "Reponse:",
+                        stdout[:200] + "..." if len(stdout) > 200 else stdout,
+                    )
                 return True
             else:
                 print(f"?CHEC - Code de retour: {process.returncode}")
                 if stderr:
-                    print("Erreur:", stderr[:200] + "..." if len(stderr) > 200 else stderr)
+                    print(
+                        "Erreur:", stderr[:200] + "..." if len(stderr) > 200 else stderr
+                    )
                 return False
 
         except subprocess.TimeoutExpired:
@@ -86,6 +85,7 @@ async def test_mcp_protocol():
     except Exception as e:
         print(f"ERREUR de lancement: {e}")
         return False
+
 
 def main():
     """Test principal"""
@@ -102,6 +102,7 @@ def main():
         print("\n[ERROR] VALIDATION MCP ?CHOU?E")
         print("Le serveur ne repond pas correctement")
         return 1
+
 
 if __name__ == "__main__":
     sys.exit(main())

@@ -16,7 +16,7 @@ describe('roosync_get_machine_inventory - Interface', () => {
 
   beforeAll(async () => {
     module = await import('../../../../src/tools/roosync/get-machine-inventory.js');
-  }, 30000); // 30s timeout for module import (Issue #609)
+  }, 60000); // 60s timeout for module import (Issue #609 - cold cache)
 
   it('devrait exporter getMachineInventoryTool', () => {
     expect(module.getMachineInventoryTool).toBeDefined();
@@ -49,7 +49,7 @@ describe('roosync_get_machine_inventory - Execution - Success', () => {
 
   beforeAll(async () => {
     module = await import('../../../../src/tools/roosync/get-machine-inventory.js');
-  }, 30000); // 30s timeout for module import (Issue #609)
+  }, 60000); // 60s timeout for module import (Issue #609 - cold cache)
 
   // Créer des mocks pour les interfaces requises
   const createMockServices = () => ({

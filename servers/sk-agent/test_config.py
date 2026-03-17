@@ -42,6 +42,7 @@ from sk_agent_config import (
 # Fixtures
 # ---------------------------------------------------------------------------
 
+
 @pytest.fixture
 def v1_config() -> dict:
     """A typical v1 config (no config_version field)."""
@@ -127,8 +128,18 @@ def v2_config() -> dict:
             },
         ],
         "mcps": [
-            {"id": "searxng", "description": "Web search", "command": "npx", "args": ["-y", "mcp-searxng"]},
-            {"id": "playwright", "description": "Browser", "command": "npx", "args": ["-y", "@playwright/mcp"]},
+            {
+                "id": "searxng",
+                "description": "Web search",
+                "command": "npx",
+                "args": ["-y", "mcp-searxng"],
+            },
+            {
+                "id": "playwright",
+                "description": "Browser",
+                "command": "npx",
+                "args": ["-y", "@playwright/mcp"],
+            },
         ],
         "agents": [
             {
@@ -194,6 +205,7 @@ def config_file(tmp_path, v1_config):
 # ---------------------------------------------------------------------------
 # Migration Tests
 # ---------------------------------------------------------------------------
+
 
 class TestMigrateV1ToV2:
     """Test v1 -> v2 config migration."""
@@ -302,6 +314,7 @@ class TestMigrateV1ToV2:
 # Validation Tests
 # ---------------------------------------------------------------------------
 
+
 class TestValidation:
     """Test config validation."""
 
@@ -372,6 +385,7 @@ class TestValidation:
 # ---------------------------------------------------------------------------
 # Parsing / Round-trip Tests
 # ---------------------------------------------------------------------------
+
 
 class TestParsing:
     """Test parsing raw dict into SKAgentConfig and back."""
@@ -454,6 +468,7 @@ class TestParsing:
 # Dataclass Tests
 # ---------------------------------------------------------------------------
 
+
 class TestDataclasses:
     """Test individual dataclass behavior."""
 
@@ -510,6 +525,7 @@ class TestDataclasses:
 # Load from file Tests
 # ---------------------------------------------------------------------------
 
+
 class TestLoadConfig:
     """Test loading config from files."""
 
@@ -544,6 +560,7 @@ class TestLoadConfig:
 # ---------------------------------------------------------------------------
 # Helper Tests
 # ---------------------------------------------------------------------------
+
 
 class TestHelpers:
     """Test helper functions."""

@@ -21,6 +21,7 @@ try:
     print("1. Test d'importation des modules...")
     from papermill_mcp.main import create_app, JupyterPapermillMCPServer
     from papermill_mcp.config import get_config, MCPConfig
+
     print("   ? Importation reussie")
 
     # Test de chargement de la configuration
@@ -45,27 +46,39 @@ try:
     # Liste des outils theoriquement disponibles
     expected_tools = [
         # Notebook tools
-        "read_notebook", "write_notebook", "create_notebook", 
-        "add_cell", "remove_cell", "update_cell",
-        
-        # Kernel tools  
-        "list_kernels", "start_kernel", "stop_kernel", 
-        "interrupt_kernel", "restart_kernel", "execute_cell",
-        "execute_notebook", "execute_notebook_cell",
-        
+        "read_notebook",
+        "write_notebook",
+        "create_notebook",
+        "add_cell",
+        "remove_cell",
+        "update_cell",
+        # Kernel tools
+        "list_kernels",
+        "start_kernel",
+        "stop_kernel",
+        "interrupt_kernel",
+        "restart_kernel",
+        "execute_cell",
+        "execute_notebook",
+        "execute_notebook_cell",
         # Execution tools
-        "execute_notebook_papermill", "list_notebook_files", 
-        "get_notebook_info", "get_kernel_status", "cleanup_all_kernels",
-        "start_jupyter_server", "stop_jupyter_server", "debug_list_runtime_dir"
+        "execute_notebook_papermill",
+        "list_notebook_files",
+        "get_notebook_info",
+        "get_kernel_status",
+        "cleanup_all_kernels",
+        "start_jupyter_server",
+        "stop_jupyter_server",
+        "debug_list_runtime_dir",
     ]
-    
+
     print(f"\n5. Outils theoriquement disponibles ({len(expected_tools)}):")
     for i, tool in enumerate(expected_tools, 1):
         print(f"   {i:2}. {tool}")
 
     print("\n=== R?SULTAT: SUCCESS ===")
     print("Le serveur MCP Python s'initialise correctement !")
-    
+
 except Exception as e:
     print(f"\n=== R?SULTAT: ERROR ===")
     print(f"Erreur lors de l'initialisation: {e}")

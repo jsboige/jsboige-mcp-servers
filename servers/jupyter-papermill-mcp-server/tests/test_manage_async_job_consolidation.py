@@ -16,12 +16,17 @@ from datetime import datetime, timedelta, timezone
 from typing import Dict, Any
 
 # Import du service
-from papermill_mcp.services.notebook_service import ExecutionManager, ExecutionJob, JobStatus
+from papermill_mcp.services.notebook_service import (
+    ExecutionManager,
+    ExecutionJob,
+    JobStatus,
+)
 
 
 # ============================================================================
 # Fixtures et Helpers
 # ============================================================================
+
 
 @pytest.fixture
 def execution_manager():
@@ -38,9 +43,12 @@ def sample_job_running():
         output_path="/path/to/output.ipynb",
         parameters={"param1": "value1"},
         status=JobStatus.RUNNING,
-        started_at=datetime.now(timezone.utc)
+        started_at=datetime.now(timezone.utc),
     )
-    job.stdout_buffer = ["[2025-01-01T00:00:00] Starting execution", "[2025-01-01T00:00:01] Log line 2"]
+    job.stdout_buffer = [
+        "[2025-01-01T00:00:00] Starting execution",
+        "[2025-01-01T00:00:01] Log line 2",
+    ]
     job.stderr_buffer = []
     return job
 
@@ -50,14 +58,14 @@ def sample_job_completed():
     """Job terminé avec succès."""
     started = datetime.now(timezone.utc) - timedelta(minutes=5)
     completed = datetime.now(timezone.utc)
-    
+
     job = ExecutionJob(
         job_id="job-completed-001",
         input_path="/path/to/notebook.ipynb",
         output_path="/path/to/output.ipynb",
         parameters={"param1": "value1"},
         status=JobStatus.SUCCEEDED,
-        started_at=started
+        started_at=started,
     )
     job.ended_at = completed
     job.return_code = 0
@@ -71,14 +79,14 @@ def sample_job_failed():
     """Job terminé avec erreur."""
     started = datetime.now(timezone.utc) - timedelta(minutes=3)
     completed = datetime.now(timezone.utc)
-    
+
     job = ExecutionJob(
         job_id="job-failed-001",
         input_path="/path/to/notebook.ipynb",
         output_path="/path/to/output.ipynb",
         parameters={"param1": "value1"},
         status=JobStatus.FAILED,
-        started_at=started
+        started_at=started,
     )
     job.ended_at = completed
     job.return_code = 1
@@ -93,14 +101,14 @@ def sample_job_cancelled():
     """Job annulé."""
     started = datetime.now(timezone.utc) - timedelta(minutes=2)
     completed = datetime.now(timezone.utc)
-    
+
     job = ExecutionJob(
         job_id="job-cancelled-001",
         input_path="/path/to/notebook.ipynb",
         output_path="/path/to/output.ipynb",
         parameters={},
         status=JobStatus.CANCELED,
-        started_at=started
+        started_at=started,
     )
     job.ended_at = completed
     job.stdout_buffer = ["Log 1", "Cancelled"]
@@ -118,17 +126,16 @@ def inject_jobs(manager: ExecutionManager, *jobs: ExecutionJob):
 # Tests par Action (5 tests minimum)
 # ============================================================================
 
+
 @pytest.mark.asyncio
 async def test_manage_async_job_status_basic(execution_manager, sample_job_running):
     """Test action='status' basique sans logs."""
     inject_jobs(execution_manager, sample_job_running)
-    
+
     result = await execution_manager.manage_async_job_consolidated(
-        action="status",
-        job_id="job-running-001",
-        include_logs=False
+        action="status", job_id="job-running-001", include_logs=False
     )
-    
+
     assert result["action"] == "status"
     assert result["job_id"] == "job-running-001"
     assert result["status"] == "running"
@@ -136,7 +143,7 @@ async def test_manage_async_job_status_basic(execution_manager, sample_job_runni
     assert result["output_path"] == "/path/to/output.ipynb"
     assert result["parameters"] == {"param1": "value1"}
     assert "logs" not in result
-    
+
     # Vérifier le progress
     assert "progress" in result
     assert result["progress"]["percent"] == 50.0  # RUNNING = 50%
@@ -146,12 +153,11 @@ async def test_manage_async_job_status_basic(execution_manager, sample_job_runni
 async def test_manage_async_job_logs_basic(execution_manager, sample_job_running):
     """Test action='logs' basique sans tail."""
     inject_jobs(execution_manager, sample_job_running)
-    
+
     result = await execution_manager.manage_async_job_consolidated(
-        action="logs",
-        job_id="job-running-001"
+        action="logs", job_id="job-running-001"
     )
-    
+
     assert result["action"] == "logs"
     assert result["job_id"] == "job-running-001"
     assert len(result["logs"]) == 2
@@ -164,42 +170,41 @@ async def test_manage_async_job_logs_basic(execution_manager, sample_job_running
 async def test_manage_async_job_cancel_basic(execution_manager, sample_job_running):
     """Test action='cancel' basique."""
     inject_jobs(execution_manager, sample_job_running)
-    
+
     result = await execution_manager.manage_async_job_consolidated(
-        action="cancel",
-        job_id="job-running-001"
+        action="cancel", job_id="job-running-001"
     )
-    
+
     assert result["action"] == "cancel"
     assert result["job_id"] == "job-running-001"
     assert result["status"] == "cancelled"
     assert "message" in result
     assert "cancelled_at" in result
-    
+
     # Vérifier que le job est bien annulé
     job = execution_manager.jobs["job-running-001"]
     assert job.status == JobStatus.CANCELED
 
 
 @pytest.mark.asyncio
-async def test_manage_async_job_list_basic(execution_manager, sample_job_running, sample_job_completed):
+async def test_manage_async_job_list_basic(
+    execution_manager, sample_job_running, sample_job_completed
+):
     """Test action='list' basique sans filtre."""
     inject_jobs(execution_manager, sample_job_running, sample_job_completed)
-    
-    result = await execution_manager.manage_async_job_consolidated(
-        action="list"
-    )
-    
+
+    result = await execution_manager.manage_async_job_consolidated(action="list")
+
     assert result["action"] == "list"
     assert result["total"] == 2
     assert result["filter_status"] is None
     assert len(result["jobs"]) == 2
-    
+
     # Vérifier structure des jobs
     job_ids = {job["job_id"] for job in result["jobs"]}
     assert "job-running-001" in job_ids
     assert "job-completed-001" in job_ids
-    
+
     for job in result["jobs"]:
         assert "status" in job
         assert "started_at" in job
@@ -208,14 +213,14 @@ async def test_manage_async_job_list_basic(execution_manager, sample_job_running
 
 
 @pytest.mark.asyncio
-async def test_manage_async_job_cleanup_basic(execution_manager, sample_job_completed, sample_job_failed):
+async def test_manage_async_job_cleanup_basic(
+    execution_manager, sample_job_completed, sample_job_failed
+):
     """Test action='cleanup' basique sans filtre temporel."""
     inject_jobs(execution_manager, sample_job_completed, sample_job_failed)
-    
-    result = await execution_manager.manage_async_job_consolidated(
-        action="cleanup"
-    )
-    
+
+    result = await execution_manager.manage_async_job_consolidated(action="cleanup")
+
     assert result["action"] == "cleanup"
     assert result["jobs_removed"] == 2
     assert result["jobs_kept"] == 0
@@ -223,7 +228,7 @@ async def test_manage_async_job_cleanup_basic(execution_manager, sample_job_comp
     assert len(result["removed_job_ids"]) == 2
     assert "job-completed-001" in result["removed_job_ids"]
     assert "job-failed-001" in result["removed_job_ids"]
-    
+
     # Vérifier que les jobs sont bien supprimés
     assert len(execution_manager.jobs) == 0
 
@@ -232,17 +237,18 @@ async def test_manage_async_job_cleanup_basic(execution_manager, sample_job_comp
 # Tests Options Avancées (≥4 tests)
 # ============================================================================
 
+
 @pytest.mark.asyncio
-async def test_manage_async_job_status_with_logs(execution_manager, sample_job_completed):
+async def test_manage_async_job_status_with_logs(
+    execution_manager, sample_job_completed
+):
     """Test action='status' avec include_logs=True."""
     inject_jobs(execution_manager, sample_job_completed)
-    
+
     result = await execution_manager.manage_async_job_consolidated(
-        action="status",
-        job_id="job-completed-001",
-        include_logs=True
+        action="status", job_id="job-completed-001", include_logs=True
     )
-    
+
     assert result["action"] == "status"
     assert "logs" in result
     assert len(result["logs"]) == 4
@@ -253,13 +259,11 @@ async def test_manage_async_job_status_with_logs(execution_manager, sample_job_c
 async def test_manage_async_job_logs_with_tail(execution_manager, sample_job_completed):
     """Test action='logs' avec log_tail pour limiter les lignes."""
     inject_jobs(execution_manager, sample_job_completed)
-    
+
     result = await execution_manager.manage_async_job_consolidated(
-        action="logs",
-        job_id="job-completed-001",
-        log_tail=2
+        action="logs", job_id="job-completed-001", log_tail=2
     )
-    
+
     assert result["action"] == "logs"
     assert result["tail"] == 2
     assert result["total_lines"] == 4
@@ -268,16 +272,19 @@ async def test_manage_async_job_logs_with_tail(execution_manager, sample_job_com
 
 
 @pytest.mark.asyncio
-async def test_manage_async_job_list_with_filter(execution_manager, sample_job_running, sample_job_completed, sample_job_failed):
+async def test_manage_async_job_list_with_filter(
+    execution_manager, sample_job_running, sample_job_completed, sample_job_failed
+):
     """Test action='list' avec filter_status."""
-    inject_jobs(execution_manager, sample_job_running, sample_job_completed, sample_job_failed)
-    
+    inject_jobs(
+        execution_manager, sample_job_running, sample_job_completed, sample_job_failed
+    )
+
     # Filtrer seulement les jobs terminés avec succès
     result = await execution_manager.manage_async_job_consolidated(
-        action="list",
-        filter_status="completed"
+        action="list", filter_status="completed"
     )
-    
+
     assert result["action"] == "list"
     assert result["filter_status"] == "completed"
     assert result["total"] == 1
@@ -295,28 +302,27 @@ async def test_manage_async_job_cleanup_older_than(execution_manager):
         output_path="/path/to/output.ipynb",
         parameters={},
         status=JobStatus.SUCCEEDED,
-        started_at=datetime.now(timezone.utc) - timedelta(hours=5)
+        started_at=datetime.now(timezone.utc) - timedelta(hours=5),
     )
     old_job.ended_at = datetime.now(timezone.utc) - timedelta(hours=4)
-    
+
     recent_job = ExecutionJob(
         job_id="job-recent",
         input_path="/path/to/notebook2.ipynb",
         output_path="/path/to/output2.ipynb",
         parameters={},
         status=JobStatus.SUCCEEDED,
-        started_at=datetime.now(timezone.utc) - timedelta(minutes=30)
+        started_at=datetime.now(timezone.utc) - timedelta(minutes=30),
     )
     recent_job.ended_at = datetime.now(timezone.utc) - timedelta(minutes=20)
-    
+
     inject_jobs(execution_manager, old_job, recent_job)
-    
+
     # Nettoyer seulement les jobs > 2 heures
     result = await execution_manager.manage_async_job_consolidated(
-        action="cleanup",
-        cleanup_older_than=2
+        action="cleanup", cleanup_older_than=2
     )
-    
+
     assert result["action"] == "cleanup"
     assert result["older_than_hours"] == 2
     assert result["jobs_removed"] == 1
@@ -329,25 +335,26 @@ async def test_manage_async_job_cleanup_older_than(execution_manager):
 # Tests Edge Cases (≥4 tests)
 # ============================================================================
 
+
 @pytest.mark.asyncio
 async def test_manage_async_job_status_invalid_job_id(execution_manager):
     """Test action='status' avec job_id inexistant."""
     with pytest.raises(ValueError, match="Job 'invalid-job' not found"):
         await execution_manager.manage_async_job_consolidated(
-            action="status",
-            job_id="invalid-job"
+            action="status", job_id="invalid-job"
         )
 
 
 @pytest.mark.asyncio
-async def test_manage_async_job_cancel_already_completed(execution_manager, sample_job_completed):
+async def test_manage_async_job_cancel_already_completed(
+    execution_manager, sample_job_completed
+):
     """Test action='cancel' sur un job déjà terminé."""
     inject_jobs(execution_manager, sample_job_completed)
-    
+
     with pytest.raises(ValueError, match="Cannot cancel job"):
         await execution_manager.manage_async_job_consolidated(
-            action="cancel",
-            job_id="job-completed-001"
+            action="cancel", job_id="job-completed-001"
         )
 
 
@@ -360,18 +367,17 @@ async def test_manage_async_job_logs_empty(execution_manager):
         output_path="/path/to/output.ipynb",
         parameters={},
         status=JobStatus.RUNNING,
-        started_at=datetime.now(timezone.utc)
+        started_at=datetime.now(timezone.utc),
     )
     job_no_logs.stdout_buffer = []
     job_no_logs.stderr_buffer = []
-    
+
     inject_jobs(execution_manager, job_no_logs)
-    
+
     result = await execution_manager.manage_async_job_consolidated(
-        action="logs",
-        job_id="job-no-logs"
+        action="logs", job_id="job-no-logs"
     )
-    
+
     assert result["logs"] == []
     assert result["total_lines"] == 0
     assert result["returned_lines"] == 0
@@ -381,11 +387,9 @@ async def test_manage_async_job_logs_empty(execution_manager):
 async def test_manage_async_job_cleanup_no_jobs(execution_manager, sample_job_running):
     """Test action='cleanup' quand il n'y a que des jobs actifs."""
     inject_jobs(execution_manager, sample_job_running)
-    
-    result = await execution_manager.manage_async_job_consolidated(
-        action="cleanup"
-    )
-    
+
+    result = await execution_manager.manage_async_job_consolidated(action="cleanup")
+
     assert result["jobs_removed"] == 0
     assert result["jobs_kept"] == 1
     assert len(result["removed_job_ids"]) == 0
@@ -395,44 +399,42 @@ async def test_manage_async_job_cleanup_no_jobs(execution_manager, sample_job_ru
 # Tests Validation Paramètres (≥3 tests)
 # ============================================================================
 
+
 @pytest.mark.asyncio
 async def test_manage_async_job_status_requires_job_id(execution_manager):
     """Test que action='status' requiert job_id."""
-    with pytest.raises(ValueError, match="Parameter 'job_id' is required for action='status'"):
-        await execution_manager.manage_async_job_consolidated(
-            action="status"
-        )
+    with pytest.raises(
+        ValueError, match="Parameter 'job_id' is required for action='status'"
+    ):
+        await execution_manager.manage_async_job_consolidated(action="status")
 
 
 @pytest.mark.asyncio
 async def test_manage_async_job_invalid_action(execution_manager):
     """Test validation action invalide."""
     with pytest.raises(ValueError, match="Invalid action"):
-        await execution_manager.manage_async_job_consolidated(
-            action="invalid_action"
-        )
+        await execution_manager.manage_async_job_consolidated(action="invalid_action")
 
 
 @pytest.mark.asyncio
 async def test_manage_async_job_negative_tail(execution_manager, sample_job_running):
     """Test validation log_tail négatif."""
     inject_jobs(execution_manager, sample_job_running)
-    
+
     with pytest.raises(ValueError, match="Parameter 'log_tail' must be positive"):
         await execution_manager.manage_async_job_consolidated(
-            action="logs",
-            job_id="job-running-001",
-            log_tail=-5
+            action="logs", job_id="job-running-001", log_tail=-5
         )
 
 
 @pytest.mark.asyncio
 async def test_manage_async_job_negative_cleanup_older_than(execution_manager):
     """Test validation cleanup_older_than négatif."""
-    with pytest.raises(ValueError, match="Parameter 'cleanup_older_than' must be positive"):
+    with pytest.raises(
+        ValueError, match="Parameter 'cleanup_older_than' must be positive"
+    ):
         await execution_manager.manage_async_job_consolidated(
-            action="cleanup",
-            cleanup_older_than=-10
+            action="cleanup", cleanup_older_than=-10
         )
 
 
@@ -440,31 +442,34 @@ async def test_manage_async_job_negative_cleanup_older_than(execution_manager):
 # Tests Supplémentaires de Robustesse
 # ============================================================================
 
+
 @pytest.mark.asyncio
-async def test_manage_async_job_status_completed_with_result(execution_manager, sample_job_completed):
+async def test_manage_async_job_status_completed_with_result(
+    execution_manager, sample_job_completed
+):
     """Test que action='status' inclut 'result' pour job completed."""
     inject_jobs(execution_manager, sample_job_completed)
-    
+
     result = await execution_manager.manage_async_job_consolidated(
-        action="status",
-        job_id="job-completed-001"
+        action="status", job_id="job-completed-001"
     )
-    
+
     assert result["status"] == "completed"
     assert "result" in result
     assert result["result"]["success"] is True
 
 
 @pytest.mark.asyncio
-async def test_manage_async_job_status_failed_with_error(execution_manager, sample_job_failed):
+async def test_manage_async_job_status_failed_with_error(
+    execution_manager, sample_job_failed
+):
     """Test que action='status' inclut 'error' pour job failed."""
     inject_jobs(execution_manager, sample_job_failed)
-    
+
     result = await execution_manager.manage_async_job_consolidated(
-        action="status",
-        job_id="job-failed-001"
+        action="status", job_id="job-failed-001"
     )
-    
+
     assert result["status"] == "failed"
     assert "error" in result
     assert "Cell execution failed" in result["error"]["message"]
@@ -473,19 +478,23 @@ async def test_manage_async_job_status_failed_with_error(execution_manager, samp
 
 @pytest.mark.asyncio
 async def test_manage_async_job_list_multiple_statuses(
-    execution_manager, 
-    sample_job_running, 
-    sample_job_completed, 
-    sample_job_failed, 
-    sample_job_cancelled
+    execution_manager,
+    sample_job_running,
+    sample_job_completed,
+    sample_job_failed,
+    sample_job_cancelled,
 ):
     """Test action='list' avec jobs dans tous les statuts."""
-    inject_jobs(execution_manager, sample_job_running, sample_job_completed, sample_job_failed, sample_job_cancelled)
-    
-    result = await execution_manager.manage_async_job_consolidated(
-        action="list"
+    inject_jobs(
+        execution_manager,
+        sample_job_running,
+        sample_job_completed,
+        sample_job_failed,
+        sample_job_cancelled,
     )
-    
+
+    result = await execution_manager.manage_async_job_consolidated(action="list")
+
     assert result["total"] == 4
     statuses = {job["status"] for job in result["jobs"]}
     assert "running" in statuses
@@ -504,9 +513,9 @@ async def test_manage_async_job_progress_calculation(execution_manager):
         output_path="/path/to/output.ipynb",
         parameters={},
         status=JobStatus.PENDING,
-        started_at=datetime.now(timezone.utc)
+        started_at=datetime.now(timezone.utc),
     )
-    
+
     # Job RUNNING
     running_job = ExecutionJob(
         job_id="job-running",
@@ -514,9 +523,9 @@ async def test_manage_async_job_progress_calculation(execution_manager):
         output_path="/path/to/output.ipynb",
         parameters={},
         status=JobStatus.RUNNING,
-        started_at=datetime.now(timezone.utc)
+        started_at=datetime.now(timezone.utc),
     )
-    
+
     # Job SUCCEEDED
     succeeded_job = ExecutionJob(
         job_id="job-succeeded",
@@ -524,44 +533,42 @@ async def test_manage_async_job_progress_calculation(execution_manager):
         output_path="/path/to/output.ipynb",
         parameters={},
         status=JobStatus.SUCCEEDED,
-        started_at=datetime.now(timezone.utc) - timedelta(minutes=5)
+        started_at=datetime.now(timezone.utc) - timedelta(minutes=5),
     )
     succeeded_job.ended_at = datetime.now(timezone.utc)
-    
+
     inject_jobs(execution_manager, pending_job, running_job, succeeded_job)
-    
+
     # Test PENDING = 0%
     result_pending = await execution_manager.manage_async_job_consolidated(
-        action="status",
-        job_id="job-pending"
+        action="status", job_id="job-pending"
     )
     assert result_pending["progress"]["percent"] == 0.0
-    
+
     # Test RUNNING = 50%
     result_running = await execution_manager.manage_async_job_consolidated(
-        action="status",
-        job_id="job-running"
+        action="status", job_id="job-running"
     )
     assert result_running["progress"]["percent"] == 50.0
-    
+
     # Test SUCCEEDED = 100%
     result_succeeded = await execution_manager.manage_async_job_consolidated(
-        action="status",
-        job_id="job-succeeded"
+        action="status", job_id="job-succeeded"
     )
     assert result_succeeded["progress"]["percent"] == 100.0
 
 
 @pytest.mark.asyncio
-async def test_manage_async_job_execution_time_calculation(execution_manager, sample_job_completed):
+async def test_manage_async_job_execution_time_calculation(
+    execution_manager, sample_job_completed
+):
     """Test calcul de execution_time pour job terminé."""
     inject_jobs(execution_manager, sample_job_completed)
-    
+
     result = await execution_manager.manage_async_job_consolidated(
-        action="status",
-        job_id="job-completed-001"
+        action="status", job_id="job-completed-001"
     )
-    
+
     assert "execution_time" in result
     assert result["execution_time"] is not None
     assert result["execution_time"] > 0

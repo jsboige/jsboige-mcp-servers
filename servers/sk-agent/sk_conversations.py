@@ -164,10 +164,13 @@ PRESETS: dict[str, ConversationConfig] = {
 # Conversation Runner
 # ---------------------------------------------------------------------------
 
+
 class ConversationRunner:
     """Runs multi-agent conversations using SK AgentGroupChat."""
 
-    def __init__(self, config: SKAgentConfig, sk_agents: dict[str, ChatCompletionAgent]):
+    def __init__(
+        self, config: SKAgentConfig, sk_agents: dict[str, ChatCompletionAgent]
+    ):
         """
         Args:
             config: The full agent config (for model/agent lookups).
@@ -225,7 +228,9 @@ class ConversationRunner:
         conv_config = self._resolve_conversation(conversation_id)
         if not conv_config:
             available = [c.id for c in self.config.conversations] + list(PRESETS.keys())
-            return {"error": f"Conversation '{conversation_id}' not found. Available: {available}"}
+            return {
+                "error": f"Conversation '{conversation_id}' not found. Available: {available}"
+            }
 
         max_rounds = options.get("max_rounds", conv_config.max_rounds)
 
@@ -239,12 +244,16 @@ class ConversationRunner:
             if conv_config.type == "concurrent":
                 return await self._run_concurrent(prompt, agents, conv_config)
             else:
-                return await self._run_group_chat(prompt, agents, conv_config, max_rounds)
+                return await self._run_group_chat(
+                    prompt, agents, conv_config, max_rounds
+                )
         except Exception as e:
             log.exception("Conversation '%s' failed", conv_config.id)
             return {"error": str(e)}
 
-    def _resolve_conversation(self, conversation_id: str | None) -> ConversationConfig | None:
+    def _resolve_conversation(
+        self, conversation_id: str | None
+    ) -> ConversationConfig | None:
         """Find conversation config by ID."""
         cid = conversation_id or "deep-search"
 
@@ -257,7 +266,8 @@ class ConversationRunner:
         return PRESETS.get(cid)
 
     def _resolve_conversation_agents(
-        self, conv_config: ConversationConfig,
+        self,
+        conv_config: ConversationConfig,
     ) -> list[ChatCompletionAgent]:
         """Resolve agent references to actual SK agents.
 
@@ -282,11 +292,15 @@ class ConversationRunner:
                     agents.append(agent)
                     continue
 
-            log.warning("Agent '%s' not found for conversation '%s'", agent_id, conv_config.id)
+            log.warning(
+                "Agent '%s' not found for conversation '%s'", agent_id, conv_config.id
+            )
 
         return agents
 
-    def _create_inline_agent(self, agent_cfg: AgentConfig) -> ChatCompletionAgent | None:
+    def _create_inline_agent(
+        self, agent_cfg: AgentConfig
+    ) -> ChatCompletionAgent | None:
         """Create a temporary agent from inline config."""
         # Find model: use specified model, or first available
         model_id = agent_cfg.model
@@ -309,7 +323,8 @@ class ConversationRunner:
                 return ChatCompletionAgent(
                     kernel=kernel,
                     name=f"sk-conv-{safe_name}",
-                    instructions=agent_cfg.system_prompt or "You are a helpful assistant.",
+                    instructions=agent_cfg.system_prompt
+                    or "You are a helpful assistant.",
                 )
 
         # Fallback: use the first available agent's kernel
@@ -337,7 +352,9 @@ class ConversationRunner:
             # For magentic: use KernelFunction-based selection if possible
             # Fall back to sequential if no LLM selection available
             try:
-                from semantic_kernel.agents.strategies import KernelFunctionSelectionStrategy
+                from semantic_kernel.agents.strategies import (
+                    KernelFunctionSelectionStrategy,
+                )
                 from semantic_kernel.functions import KernelFunctionFromPrompt
                 from semantic_kernel.prompt_template import (
                     InputVariable,
@@ -379,19 +396,20 @@ class ConversationRunner:
                     function_name="select_next",
                     prompt_template_config=prompt_template_config,
                 )
+
                 def _parse_selection_result(result) -> str:
                     """Extract the agent name string from the function result."""
                     # result is a FunctionResult whose .value is list[ChatMessageContent]
-                    if hasattr(result, 'value'):
+                    if hasattr(result, "value"):
                         val = result.value
                         # If it's a list of ChatMessageContent, get text from the last one
                         if isinstance(val, list):
                             for item in reversed(val):
-                                if hasattr(item, 'items'):
+                                if hasattr(item, "items"):
                                     for sub in item.items:
-                                        if hasattr(sub, 'text') and sub.text:
+                                        if hasattr(sub, "text") and sub.text:
                                             return sub.text.strip()
-                                if hasattr(item, 'content') and item.content:
+                                if hasattr(item, "content") and item.content:
                                     return str(item.content).strip()
                         return str(val).strip()
                     return str(result).strip()
@@ -404,7 +422,10 @@ class ConversationRunner:
                     result_parser=_parse_selection_result,
                 )
             except (ImportError, Exception) as e:
-                log.warning("KernelFunctionSelectionStrategy not available, falling back to sequential: %s", e)
+                log.warning(
+                    "KernelFunctionSelectionStrategy not available, falling back to sequential: %s",
+                    e,
+                )
                 selection_strategy = SequentialSelectionStrategy()
         else:
             # sequential and group_chat both use round-robin
@@ -505,6 +526,7 @@ class ConversationRunner:
 # Description Builder
 # ---------------------------------------------------------------------------
 
+
 def build_run_conversation_description(config: SKAgentConfig) -> str:
     """Build dynamic description for run_conversation tool."""
     lines = [
@@ -523,15 +545,19 @@ def build_run_conversation_description(config: SKAgentConfig) -> str:
     for preset_id, preset in PRESETS.items():
         if preset_id not in config_ids:
             agent_list = ", ".join(preset.agents)
-            lines.append(f"  - {preset_id}: {preset.description} ({agent_list}) [{preset.type}, built-in]")
+            lines.append(
+                f"  - {preset_id}: {preset.description} ({agent_list}) [{preset.type}, built-in]"
+            )
 
-    lines.extend([
-        "",
-        "Parameters:",
-        "  prompt: The research question or topic to deliberate",
-        "  conversation: Conversation ID (default: deep-search)",
-        "  options: JSON - max_rounds override",
-        "  conversation_id: Not used (reserved for future thread continuity)",
-    ])
+    lines.extend(
+        [
+            "",
+            "Parameters:",
+            "  prompt: The research question or topic to deliberate",
+            "  conversation: Conversation ID (default: deep-search)",
+            "  options: JSON - max_rounds override",
+            "  conversation_id: Not used (reserved for future thread continuity)",
+        ]
+    )
 
     return "\n".join(lines)

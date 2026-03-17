@@ -25,6 +25,8 @@ import { ConversationSkeleton } from '../../types/conversation.js';
 import { NarrativeContextBuilderService } from './NarrativeContextBuilderService.js';
 import { LLMService } from './LLMService.js';
 import { SynthesisServiceError, SynthesisServiceErrorCode } from '../../types/errors.js';
+import * as fs from 'fs/promises';
+import * as path from 'path';
 
 /**
  * Options de configuration pour le service orchestrateur.
@@ -332,12 +334,25 @@ export class SynthesisOrchestratorService {
         skeleton: ConversationSkeleton,
         analysis: ConversationAnalysis
     ): Promise<ConversationSkeleton> {
-        // TODO Phase 2: Implémenter la mise à jour des métadonnées
-        throw new SynthesisServiceError(
-            'SynthesisOrchestratorService.updateSynthesisMetadata() - Pas encore implémenté (Phase 1: Squelette)',
-            SynthesisServiceErrorCode.NOT_IMPLEMENTED,
-            { method: 'updateSynthesisMetadata', phase: 1 }
-        );
+        // Créer les métadonnées de synthèse à partir de l'analyse
+        const synthesisMetadata: SynthesisMetadata = {
+            status: 'completed',
+            headline: analysis.synthesis?.initialContextSummary || analysis.objectives?.goal || 'Synthesis completed',
+            analysisFilePath: `${this.options.synthesisOutputDir}/${skeleton.taskId}/analysis.json`,
+            condensedBatchPath: analysis.metrics?.condensedBatchPath,
+            lastUpdated: new Date().toISOString()
+        };
+
+        // Mettre à jour le squelette avec les nouvelles métadonnées
+        const updatedSkeleton: ConversationSkeleton = {
+            ...skeleton,
+            metadata: {
+                ...skeleton.metadata,
+                synthesis: synthesisMetadata
+            }
+        };
+
+        return updatedSkeleton;
     }
 
     // =========================================================================
@@ -354,12 +369,40 @@ export class SynthesisOrchestratorService {
      * @returns Promise de la tâche de traitement créée
      */
     async startBatchSynthesis(config: BatchSynthesisConfig): Promise<BatchSynthesisTask> {
-        // TODO Phase 4: Implémenter la logique de traitement par lots
-        throw new SynthesisServiceError(
-            'SynthesisOrchestratorService.startBatchSynthesis() - Pas encore implémenté (Phase 1: Squelette)',
-            SynthesisServiceErrorCode.NOT_IMPLEMENTED,
-            { method: 'startBatchSynthesis', phase: 1, config }
-        );
+        // Valider la configuration
+        this.validateBatchConfig(config);
+
+        // Générer un ID unique pour le lot
+        const batchId = this.generateBatchId();
+
+        // Créer la tâche de traitement par lots
+        const batchTask: BatchSynthesisTask = {
+            batchId,
+            status: 'queued',
+            startTime: new Date().toISOString(),
+            config,
+            progress: {
+                totalTasks: 0,
+                completedTasks: 0,
+                failedTasks: 0,
+                inProgressTasks: 0,
+                completionPercentage: 0
+            },
+            taskIds: [],
+            results: {
+                synthesisCount: 0,
+                errorCount: 0,
+                errors: [],
+                outputFiles: []
+            }
+        };
+
+        // Stocker la tâche dans la map des lots actifs
+        this.activeBatches.set(batchId, batchTask);
+
+        console.log(`📦 [SynthesisOrchestrator] Lot créé: ${batchId} (maxConcurrency: ${config.maxConcurrency}, model: ${config.llmModelId})`);
+
+        return batchTask;
     }
 
     /**
@@ -381,13 +424,32 @@ export class SynthesisOrchestratorService {
      * @returns Promise<boolean> true si annulé avec succès
      */
     async cancelBatchSynthesis(batchId: string): Promise<boolean> {
-        // TODO Phase 4: Implémenter la logique d'annulation
         const batch = this.activeBatches.get(batchId);
-        if (batch && batch.status === 'running') {
-            // Logique d'annulation à implémenter
-            return false; // Placeholder
+
+        if (!batch) {
+            console.warn(`⚠️ [SynthesisOrchestrator] Lot non trouvé: ${batchId}`);
+            return false;
         }
-        return false;
+
+        // Vérifier si le lot peut être annulé (en cours ou en file d'attente)
+        if (batch.status !== 'running' && batch.status !== 'queued') {
+            console.warn(`⚠️ [SynthesisOrchestrator] Lot ${batchId} ne peut pas être annulé (statut: ${batch.status})`);
+            return false;
+        }
+
+        // Mettre à jour le statut du lot
+        const previousStatus = batch.status;
+        batch.status = 'cancelled';
+        batch.endTime = new Date().toISOString();
+
+        // Journaliser l'annulation
+        console.log(`🚫 [SynthesisOrchestrator] Lot ${batchId} annulé (était: ${previousStatus})`);
+        console.log(`   📊 Progression: ${batch.progress.completedTasks}/${batch.progress.totalTasks} tâches complétées`);
+
+        // Optionnel: Nettoyer les ressources associées
+        // Pour l'instant, on garde le lot dans activeBatches pour consultation
+
+        return true;
     }
 
     // =========================================================================
@@ -407,12 +469,313 @@ export class SynthesisOrchestratorService {
         taskIds: string[],
         options: ExportOptions
     ): Promise<string> {
-        // TODO Phase 4: Implémenter la logique d'export
-        throw new SynthesisServiceError(
-            'SynthesisOrchestratorService.exportSynthesisResults() - Pas encore implémenté (Phase 1: Squelette)',
-            SynthesisServiceErrorCode.NOT_IMPLEMENTED,
-            { method: 'exportSynthesisResults', phase: 1, taskIds, options }
-        );
+        console.log(`📤 [SynthesisOrchestrator] Export de ${taskIds.length} synthèses (format: ${options.format})`);
+
+        // Créer le répertoire de sortie si nécessaire
+        const outputDir = path.join(this.options.synthesisOutputDir, 'exports');
+        await fs.mkdir(outputDir, { recursive: true });
+
+        // Collecter les analyses pour chaque tâche
+        const analyses: ConversationAnalysis[] = [];
+        for (const taskId of taskIds) {
+            try {
+                // Lire le fichier d'analyse existant
+                const analysisPath = path.join(
+                    this.options.synthesisOutputDir,
+                    taskId,
+                    'analysis.json'
+                );
+                const analysisContent = await fs.readFile(analysisPath, 'utf-8');
+                const analysis = JSON.parse(analysisContent) as ConversationAnalysis;
+                analyses.push(analysis);
+            } catch (error) {
+                console.warn(`⚠️ [SynthesisOrchestrator] Analyse non trouvée pour ${taskId}`);
+            }
+        }
+
+        if (analyses.length === 0) {
+            throw new SynthesisServiceError(
+                'Aucune analyse trouvée pour les tâches spécifiées',
+                SynthesisServiceErrorCode.NO_ANALYSIS_FOUND,
+                { taskIds }
+            );
+        }
+
+        // Générer le contenu selon le format
+        const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
+        const filename = `synthesis-export-${timestamp}`;
+        let content: string;
+        let extension: string;
+
+        switch (options.format) {
+            case 'json':
+                content = this.exportAsJson(analyses, options);
+                extension = 'json';
+                break;
+            case 'markdown':
+                content = this.exportAsMarkdown(analyses, options);
+                extension = 'md';
+                break;
+            case 'html':
+                content = this.exportAsHtml(analyses, options);
+                extension = 'html';
+                break;
+            case 'csv':
+                content = this.exportAsCsv(analyses, options);
+                extension = 'csv';
+                break;
+            default:
+                throw new SynthesisServiceError(
+                    `Format d'export non supporté: ${options.format}`,
+                    SynthesisServiceErrorCode.INVALID_EXPORT_FORMAT,
+                    { format: options.format }
+                );
+        }
+
+        // Écrire le fichier
+        const outputPath = path.join(outputDir, `${filename}.${extension}`);
+        await fs.writeFile(outputPath, content, 'utf-8');
+
+        console.log(`✅ [SynthesisOrchestrator] Export terminé: ${outputPath}`);
+        return outputPath;
+    }
+
+    /**
+     * Exporte les analyses au format JSON.
+     */
+    private exportAsJson(analyses: ConversationAnalysis[], options: ExportOptions): string {
+        const exportData = analyses.map(analysis => {
+            const result: Record<string, any> = {
+                taskId: analysis.taskId,
+                analysisTimestamp: analysis.analysisTimestamp
+            };
+
+            if (options.includeMetadata) {
+                result.analysisEngineVersion = analysis.analysisEngineVersion;
+                result.llmModelId = analysis.llmModelId;
+            }
+
+            if (options.detailLevel === 'summary') {
+                result.synthesis = analysis.synthesis;
+            } else if (options.detailLevel === 'detailed') {
+                result.objectives = analysis.objectives;
+                result.strategy = analysis.strategy;
+                result.quality = analysis.quality;
+                result.synthesis = analysis.synthesis;
+            } else {
+                // full
+                result.objectives = analysis.objectives;
+                result.strategy = analysis.strategy;
+                result.quality = analysis.quality;
+                result.metrics = analysis.metrics;
+                result.synthesis = analysis.synthesis;
+            }
+
+            if (options.includeTraces) {
+                result.contextTrace = analysis.contextTrace;
+            }
+
+            return result;
+        });
+
+        return JSON.stringify(exportData, null, 2);
+    }
+
+    /**
+     * Exporte les analyses au format Markdown.
+     */
+    private exportAsMarkdown(analyses: ConversationAnalysis[], options: ExportOptions): string {
+        const lines: string[] = [
+            '# Synthèses de Conversations',
+            '',
+            `**Date d'export:** ${new Date().toISOString()}`,
+            `**Nombre de synthèses:** ${analyses.length}`,
+            ''
+        ];
+
+        for (const analysis of analyses) {
+            lines.push(`## ${analysis.taskId}`);
+            lines.push('');
+
+            if (options.includeMetadata) {
+                lines.push(`- **Version:** ${analysis.analysisEngineVersion}`);
+                lines.push(`- **Modèle:** ${analysis.llmModelId}`);
+                lines.push(`- **Date:** ${analysis.analysisTimestamp}`);
+                lines.push('');
+            }
+
+            if (analysis.synthesis?.initialContextSummary) {
+                lines.push('### Résumé du contexte');
+                lines.push('');
+                lines.push(analysis.synthesis.initialContextSummary);
+                lines.push('');
+            }
+
+            if (analysis.synthesis?.finalTaskSummary && options.detailLevel !== 'summary') {
+                lines.push('### Synthèse finale');
+                lines.push('');
+                lines.push(analysis.synthesis.finalTaskSummary);
+                lines.push('');
+            }
+
+            if (options.detailLevel === 'detailed' || options.detailLevel === 'full') {
+                if (analysis.objectives) {
+                    lines.push('### Objectifs');
+                    lines.push('```json');
+                    lines.push(JSON.stringify(analysis.objectives, null, 2));
+                    lines.push('```');
+                    lines.push('');
+                }
+
+                if (analysis.strategy) {
+                    lines.push('### Stratégie');
+                    lines.push('```json');
+                    lines.push(JSON.stringify(analysis.strategy, null, 2));
+                    lines.push('```');
+                    lines.push('');
+                }
+
+                if (analysis.quality && options.detailLevel === 'full') {
+                    lines.push('### Qualité');
+                    lines.push('```json');
+                    lines.push(JSON.stringify(analysis.quality, null, 2));
+                    lines.push('```');
+                    lines.push('');
+                }
+            }
+
+            if (options.includeTraces && analysis.contextTrace) {
+                lines.push('### Trace de contexte');
+                lines.push('```json');
+                lines.push(JSON.stringify(analysis.contextTrace, null, 2));
+                lines.push('```');
+                lines.push('');
+            }
+
+            lines.push('---');
+            lines.push('');
+        }
+
+        return lines.join('\n');
+    }
+
+    /**
+     * Exporte les analyses au format HTML.
+     */
+    private exportAsHtml(analyses: ConversationAnalysis[], options: ExportOptions): string {
+        const analysesHtml = analyses.map(analysis => {
+            let html = `
+        <article class="analysis">
+          <h2>${analysis.taskId}</h2>`;
+
+            if (options.includeMetadata) {
+                html += `
+          <div class="metadata">
+            <span class="version">Version: ${analysis.analysisEngineVersion}</span>
+            <span class="model">Modèle: ${analysis.llmModelId}</span>
+            <span class="date">Date: ${analysis.analysisTimestamp}</span>
+          </div>`;
+            }
+
+            if (analysis.synthesis?.initialContextSummary) {
+                html += `
+          <section class="context-summary">
+            <h3>Résumé du contexte</h3>
+            <p>${analysis.synthesis.initialContextSummary.replace(/\n/g, '<br>')}</p>
+          </section>`;
+            }
+
+            if (analysis.synthesis?.finalTaskSummary && options.detailLevel !== 'summary') {
+                html += `
+          <section class="final-summary">
+            <h3>Synthèse finale</h3>
+            <p>${analysis.synthesis.finalTaskSummary.replace(/\n/g, '<br>')}</p>
+          </section>`;
+            }
+
+            if (options.includeTraces && analysis.contextTrace) {
+                html += `
+          <section class="trace">
+            <h3>Trace de contexte</h3>
+            <pre>${JSON.stringify(analysis.contextTrace, null, 2)}</pre>
+          </section>`;
+            }
+
+            html += `
+        </article>`;
+
+            return html;
+        }).join('\n');
+
+        return `<!DOCTYPE html>
+<html lang="fr">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Synthèses de Conversations</title>
+  <style>
+    body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; max-width: 1200px; margin: 0 auto; padding: 20px; }
+    h1 { color: #333; border-bottom: 2px solid #007bff; padding-bottom: 10px; }
+    article { background: #f9f9f9; padding: 20px; margin: 20px 0; border-radius: 8px; }
+    h2 { color: #007bff; margin-top: 0; }
+    .metadata { font-size: 0.9em; color: #666; margin-bottom: 15px; }
+    .metadata span { margin-right: 15px; }
+    section { margin: 15px 0; }
+    h3 { color: #555; }
+    pre { background: #282c34; color: #abb2bf; padding: 15px; border-radius: 4px; overflow-x: auto; }
+  </style>
+</head>
+<body>
+  <h1>Synthèses de Conversations</h1>
+  <p><strong>Date d'export:</strong> ${new Date().toISOString()}</p>
+  <p><strong>Nombre de synthèses:</strong> ${analyses.length}</p>
+${analysesHtml}
+</body>
+</html>`;
+    }
+
+    /**
+     * Exporte les analyses au format CSV.
+     */
+    private exportAsCsv(analyses: ConversationAnalysis[], options: ExportOptions): string {
+        const headers = ['taskId', 'analysisTimestamp'];
+        if (options.includeMetadata) {
+            headers.push('analysisEngineVersion', 'llmModelId');
+        }
+        headers.push('contextSummary');
+        if (options.detailLevel !== 'summary') {
+            headers.push('finalSummary');
+        }
+
+        const rows = analyses.map(analysis => {
+            const row = [
+                `"${analysis.taskId}"`,
+                `"${analysis.analysisTimestamp}"`
+            ];
+
+            if (options.includeMetadata) {
+                row.push(
+                    `"${analysis.analysisEngineVersion}"`,
+                    `"${analysis.llmModelId}"`
+                );
+            }
+
+            // Nettoyer le texte pour CSV
+            const cleanText = (text: string | undefined) => {
+                if (!text) return '""';
+                return `"${text.replace(/"/g, '""').replace(/\n/g, ' ').substring(0, 500)}"`;
+            };
+
+            row.push(cleanText(analysis.synthesis?.initialContextSummary));
+
+            if (options.detailLevel !== 'summary') {
+                row.push(cleanText(analysis.synthesis?.finalTaskSummary));
+            }
+
+            return row.join(',');
+        });
+
+        return [headers.join(','), ...rows].join('\n');
     }
 
     /**

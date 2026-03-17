@@ -101,6 +101,9 @@ export default mergeConfig(baseConfig, defineConfig({
       // ===== CI-excluded: PARENT_REPO (reads files from parent roo-extensions repo) =====
       'src/services/__tests__/skepticism-protocol.test.ts',
 
+      // ===== CI-excluded: LIVE SERVICES (require Qdrant + Embedding service) =====
+      'src/tools/search/__tests__/search-live.integration.test.ts',
+
       // ===== E2E (already excluded in base) =====
       'tests/e2e/**',
     ],

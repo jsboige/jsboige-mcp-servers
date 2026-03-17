@@ -47,10 +47,12 @@ from document_processing import (
 # Test Fixtures
 # ---------------------------------------------------------------------------
 
+
 @pytest.fixture
 def sample_image():
     """Create a sample PNG image for testing."""
     from PIL import Image
+
     img = Image.new("RGB", (100, 100), color="red")
     buf = io.BytesIO()
     img.save(buf, format="PNG")
@@ -62,6 +64,7 @@ def sample_image():
 # LibreOffice Discovery Tests
 # ---------------------------------------------------------------------------
 
+
 class TestLibreOfficeDiscovery:
     """Tests for LibreOffice discovery functionality."""
 
@@ -69,9 +72,19 @@ class TestLibreOfficeDiscovery:
         """Test that _find_libreoffice function exists."""
         assert hasattr(document_processing, "_find_libreoffice")
         import inspect
+
         sig = inspect.signature(document_processing._find_libreoffice)
         # Should have no required parameters
-        assert len([p for p in sig.parameters.values() if p.default == inspect.Parameter.empty]) == 0
+        assert (
+            len(
+                [
+                    p
+                    for p in sig.parameters.values()
+                    if p.default == inspect.Parameter.empty
+                ]
+            )
+            == 0
+        )
 
     def test_find_libreoffice_with_global_path(self, tmp_path):
         """Test that global LIBREOFFICE_PATH is used when set."""
@@ -111,9 +124,9 @@ class TestLibreOfficeDiscovery:
             document_processing.LIBREOFFICE_PATH = None
 
             # Mock shutil.which to return None (not in PATH)
-            with patch.object(shutil, 'which', return_value=None):
+            with patch.object(shutil, "which", return_value=None):
                 # Mock Path.exists to return False for all portable paths
-                with patch.object(Path, 'exists', return_value=False):
+                with patch.object(Path, "exists", return_value=False):
                     result = _find_libreoffice()
 
             assert result is None
@@ -139,12 +152,14 @@ class TestLibreOfficeDiscovery:
 # PowerPoint Conversion Tests
 # ---------------------------------------------------------------------------
 
+
 class TestPowerPointConversion:
     """Tests for PowerPoint to image conversion."""
 
     def test_ppt_to_images_function_exists(self):
         """Test that _ppt_to_images function exists."""
         import inspect
+
         sig = inspect.signature(_ppt_to_images)
         params = list(sig.parameters.keys())
 
@@ -157,7 +172,7 @@ class TestPowerPointConversion:
         fake_ppt.write_bytes(b"fake ppt")
 
         # Mock _find_libreoffice to return None
-        with patch('document_processing._find_libreoffice', return_value=None):
+        with patch("document_processing._find_libreoffice", return_value=None):
             with pytest.raises(RuntimeError) as exc_info:
                 _ppt_to_images(str(fake_ppt))
 
@@ -177,13 +192,13 @@ class TestPowerPointConversion:
 
         # Create expected output images
         def create_test_image():
-            img = Image.new('RGB', (200, 200), color='white')
+            img = Image.new("RGB", (200, 200), color="white")
             buf = io.BytesIO()
-            img.save(buf, format='PNG')
+            img.save(buf, format="PNG")
             return buf.getvalue()
 
         # Mock _find_libreoffice to return our fake path
-        with patch('document_processing._find_libreoffice', return_value=str(fake_lo)):
+        with patch("document_processing._find_libreoffice", return_value=str(fake_lo)):
             # Mock subprocess.run to simulate LibreOffice conversion
             def mock_run(cmd, *args, **kwargs):
                 if "--convert-to" in cmd and "pdf" in cmd:
@@ -207,11 +222,14 @@ class TestPowerPointConversion:
                 return MagicMock(returncode=0)
 
             # Mock _pdf_to_images to return test images
-            with patch('document_processing._pdf_to_images', return_value=[
-                (create_test_image(), "image/png"),
-                (create_test_image(), "image/png"),
-            ]):
-                with patch('document_processing.subprocess.run', side_effect=mock_run):
+            with patch(
+                "document_processing._pdf_to_images",
+                return_value=[
+                    (create_test_image(), "image/png"),
+                    (create_test_image(), "image/png"),
+                ],
+            ):
+                with patch("document_processing.subprocess.run", side_effect=mock_run):
                     result = _ppt_to_images(str(fake_ppt), max_pages=2)
 
         assert len(result) == 2
@@ -224,12 +242,14 @@ class TestPowerPointConversion:
 # Word Document Conversion Tests
 # ---------------------------------------------------------------------------
 
+
 class TestWordDocumentConversion:
     """Tests for Word document to text conversion."""
 
     def test_doc_to_text_function_exists(self):
         """Test that _doc_to_text function exists."""
         import inspect
+
         sig = inspect.signature(_doc_to_text)
         params = list(sig.parameters.keys())
 
@@ -241,7 +261,7 @@ class TestWordDocumentConversion:
         fake_doc.write_bytes(b"fake doc")
 
         # Mock _find_libreoffice to return None
-        with patch('document_processing._find_libreoffice', return_value=None):
+        with patch("document_processing._find_libreoffice", return_value=None):
             with pytest.raises(RuntimeError) as exc_info:
                 _doc_to_text(str(fake_doc))
 
@@ -263,8 +283,8 @@ class TestWordDocumentConversion:
         mock_docx = MagicMock()
         mock_docx.Document = MagicMock(return_value=mock_document)
 
-        with patch('document_processing._find_libreoffice', return_value=None):
-            with patch.dict('sys.modules', {'docx': mock_docx}):
+        with patch("document_processing._find_libreoffice", return_value=None):
+            with patch.dict("sys.modules", {"docx": mock_docx}):
                 result = _doc_to_text(str(fake_doc))
 
         assert "First paragraph" in result
@@ -275,12 +295,14 @@ class TestWordDocumentConversion:
 # Excel Conversion Tests
 # ---------------------------------------------------------------------------
 
+
 class TestExcelConversion:
     """Tests for Excel to CSV conversion."""
 
     def test_xlsx_to_csv_function_exists(self):
         """Test that _xlsx_to_csv function exists."""
         import inspect
+
         sig = inspect.signature(_xlsx_to_csv)
         params = list(sig.parameters.keys())
 
@@ -305,7 +327,7 @@ class TestExcelConversion:
         mock_pd.ExcelFile = MagicMock(return_value=mock_excel)
         mock_pd.read_excel = MagicMock(return_value=mock_df)
 
-        with patch.dict('sys.modules', {'pandas': mock_pd}):
+        with patch.dict("sys.modules", {"pandas": mock_pd}):
             result = _xlsx_to_csv(str(fake_xlsx))
 
         assert len(result) == 2
@@ -319,17 +341,18 @@ class TestExcelConversion:
         fake_xlsx.write_bytes(b"PK fake xlsx")
 
         # Mock _find_libreoffice to return None
-        with patch('document_processing._find_libreoffice', return_value=None):
+        with patch("document_processing._find_libreoffice", return_value=None):
             # Need to trigger the import error
             import builtins
+
             original_import = builtins.__import__
 
             def mock_import(name, *args, **kwargs):
-                if name == 'pandas':
+                if name == "pandas":
                     raise ImportError("No pandas")
                 return original_import(name, *args, **kwargs)
 
-            with patch('builtins.__import__', side_effect=mock_import):
+            with patch("builtins.__import__", side_effect=mock_import):
                 with pytest.raises(RuntimeError) as exc_info:
                     _xlsx_to_csv(str(fake_xlsx))
 
@@ -340,13 +363,16 @@ class TestExcelConversion:
 # PageContent Tests
 # ---------------------------------------------------------------------------
 
+
 class TestPageContent:
     """Tests for PageContent dataclass."""
 
     def test_page_content_creation(self):
         """Test PageContent can be created with various data."""
         # Image only
-        page1 = PageContent(page_number=1, image_data=b"fake_image", media_type="image/png")
+        page1 = PageContent(
+            page_number=1, image_data=b"fake_image", media_type="image/png"
+        )
         assert page1.has_image
         assert not page1.has_text
 
@@ -365,7 +391,7 @@ class TestPageContent:
         page = PageContent(
             page_number=1,
             text_content="data",
-            metadata={"sheet_name": "Sheet1", "source": "sheet"}
+            metadata={"sheet_name": "Sheet1", "source": "sheet"},
         )
         assert page.metadata["sheet_name"] == "Sheet1"
 
@@ -385,6 +411,7 @@ class TestPageContent:
 # ---------------------------------------------------------------------------
 # PageRange Tests
 # ---------------------------------------------------------------------------
+
 
 class TestPageRange:
     """Tests for PageRange dataclass."""
@@ -420,6 +447,7 @@ class TestPageRange:
 # Token-based Limit Tests
 # ---------------------------------------------------------------------------
 
+
 class TestTokenLimits:
     """Tests for token-based page limiting."""
 
@@ -453,12 +481,14 @@ class TestTokenLimits:
 # Unified Document Extraction Tests
 # ---------------------------------------------------------------------------
 
+
 class TestUnifiedDocumentExtraction:
     """Tests for unified document page extraction."""
 
     def test_extract_document_pages_function_exists(self):
         """Test that extract_document_pages function exists."""
         import inspect
+
         sig = inspect.signature(extract_document_pages)
         params = list(sig.parameters.keys())
 
@@ -476,15 +506,19 @@ class TestUnifiedDocumentExtraction:
 
         # Mock _pdf_to_images
         from PIL import Image
-        img = Image.new('RGB', (100, 100), color='white')
+
+        img = Image.new("RGB", (100, 100), color="white")
         buf = io.BytesIO()
-        img.save(buf, format='PNG')
+        img.save(buf, format="PNG")
         fake_image = buf.getvalue()
 
-        with patch('document_processing._pdf_to_images', return_value=[
-            (fake_image, "image/png"),
-            (fake_image, "image/png"),
-        ]):
+        with patch(
+            "document_processing._pdf_to_images",
+            return_value=[
+                (fake_image, "image/png"),
+                (fake_image, "image/png"),
+            ],
+        ):
             pages = extract_document_pages(str(fake_pdf), mode="visual", max_pages=2)
 
         assert len(pages) == 2
@@ -495,7 +529,9 @@ class TestUnifiedDocumentExtraction:
         fake_doc = tmp_path / "test.docx"
         fake_doc.write_bytes(b"PK fake")
 
-        with patch('document_processing._doc_to_text', return_value="Document content here"):
+        with patch(
+            "document_processing._doc_to_text", return_value="Document content here"
+        ):
             pages = extract_document_pages(str(fake_doc), mode="text", max_pages=10)
 
         assert len(pages) >= 1
@@ -506,10 +542,13 @@ class TestUnifiedDocumentExtraction:
         fake_xlsx = tmp_path / "test.xlsx"
         fake_xlsx.write_bytes(b"PK fake")
 
-        with patch('document_processing._xlsx_to_csv', return_value=[
-            ("Sheet1", "a,b\n1,2"),
-            ("Sheet2", "c,d\n3,4"),
-        ]):
+        with patch(
+            "document_processing._xlsx_to_csv",
+            return_value=[
+                ("Sheet1", "a,b\n1,2"),
+                ("Sheet2", "c,d\n3,4"),
+            ],
+        ):
             pages = extract_document_pages(str(fake_xlsx), mode="text", max_pages=5)
 
         assert len(pages) == 2
@@ -532,16 +571,20 @@ class TestUnifiedDocumentExtraction:
         fake_pdf.write_bytes(b"%PDF-1.4 fake")
 
         from PIL import Image
-        img = Image.new('RGB', (100, 100), color='white')
+
+        img = Image.new("RGB", (100, 100), color="white")
         buf = io.BytesIO()
-        img.save(buf, format='PNG')
+        img.save(buf, format="PNG")
         fake_image = buf.getvalue()
 
         # Create 5 images but only request pages 2-3
-        with patch('document_processing._pdf_to_images', return_value=[
-            (fake_image, "image/png"),
-            (fake_image, "image/png"),
-        ]):
+        with patch(
+            "document_processing._pdf_to_images",
+            return_value=[
+                (fake_image, "image/png"),
+                (fake_image, "image/png"),
+            ],
+        ):
             page_range = PageRange(start=2, end=3)
             pages = extract_document_pages(
                 str(fake_pdf),
@@ -559,15 +602,19 @@ class TestUnifiedDocumentExtraction:
         fake_pdf.write_bytes(b"%PDF-1.4 fake")
 
         from PIL import Image
-        img = Image.new('RGB', (100, 100), color='white')
+
+        img = Image.new("RGB", (100, 100), color="white")
         buf = io.BytesIO()
-        img.save(buf, format='PNG')
+        img.save(buf, format="PNG")
         fake_image = buf.getvalue()
 
         # Request 50 pages but with small context window
-        with patch('document_processing._pdf_to_images', return_value=[
-            (fake_image, "image/png"),
-        ]):
+        with patch(
+            "document_processing._pdf_to_images",
+            return_value=[
+                (fake_image, "image/png"),
+            ],
+        ):
             pages = extract_document_pages(
                 str(fake_pdf),
                 mode="visual",
@@ -583,12 +630,14 @@ class TestUnifiedDocumentExtraction:
 # Document To Images Tests
 # ---------------------------------------------------------------------------
 
+
 class TestDocumentToImages:
     """Tests for visual document conversion functions."""
 
     def test_doc_to_images_function_exists(self):
         """Test that _doc_to_images function exists."""
         import inspect
+
         assert hasattr(document_processing, "_doc_to_images")
         sig = inspect.signature(_doc_to_images)
         params = list(sig.parameters.keys())
@@ -597,6 +646,7 @@ class TestDocumentToImages:
     def test_xlsx_to_images_function_exists(self):
         """Test that _xlsx_to_images function exists."""
         import inspect
+
         assert hasattr(document_processing, "_xlsx_to_images")
         sig = inspect.signature(_xlsx_to_images)
         params = list(sig.parameters.keys())

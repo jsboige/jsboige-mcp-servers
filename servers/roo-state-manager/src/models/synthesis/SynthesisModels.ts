@@ -280,10 +280,10 @@ export interface BatchResults {
 export interface BatchSynthesisTask {
   /** Identifiant unique du lot */
   batchId: string;
-  
+
   /** État actuel du traitement */
-  status: 'queued' | 'running' | 'completed' | 'failed';
-  
+  status: 'queued' | 'running' | 'completed' | 'failed' | 'cancelled';
+
   /** Timestamp de début du traitement (ISO 8601) */
   startTime: string;
   
