@@ -283,4 +283,130 @@ describe('roosync_dashboard', () => {
     expect(result.condensed).toBe(false);
     expect(result.archivedCount).toBe(0);
   });
+
+  // === Phase 3: Archive & Utils ===
+
+  // === Test 19: list retourne tableau vide si pas de dashboards ===
+  it('list returns empty array when no dashboards exist', async () => {
+    const roosyncDashboard = await getHandler();
+    const result = await roosyncDashboard({ action: 'list' });
+
+    expect(result.success).toBe(true);
+    expect(result.action).toBe('list');
+    expect(result.dashboards).toEqual([]);
+  });
+
+  // === Test 20: list retourne les dashboards existants ===
+  it('list returns all created dashboards', async () => {
+    const roosyncDashboard = await getHandler();
+    await roosyncDashboard({ action: 'write', type: 'global', content: '# Global' });
+    await roosyncDashboard({ action: 'write', type: 'machine', content: '# Machine' });
+
+    const result = await roosyncDashboard({ action: 'list' });
+
+    expect(result.success).toBe(true);
+    expect(result.dashboards?.length).toBe(2);
+    const keys = result.dashboards?.map(d => d.key);
+    expect(keys).toContain('global');
+    expect(keys).toContain('machine-test-machine');
+  });
+
+  // === Test 21: list résumés contiennent les champs attendus ===
+  it('list summaries include expected fields', async () => {
+    const roosyncDashboard = await getHandler();
+    await roosyncDashboard({ action: 'write', type: 'global', content: '# Test' });
+    await roosyncDashboard({ action: 'append', type: 'global', content: 'Message 1' });
+
+    const result = await roosyncDashboard({ action: 'list' });
+    const summary = result.dashboards?.[0];
+
+    expect(summary?.key).toBe('global');
+    expect(summary?.type).toBe('global');
+    expect(summary?.lastModified).toBeDefined();
+    expect(summary?.messageCount).toBe(1);
+    expect(summary?.statusLength).toBeGreaterThan(0);
+  });
+
+  // === Test 22: delete supprime un dashboard existant ===
+  it('delete removes an existing dashboard', async () => {
+    const roosyncDashboard = await getHandler();
+    await roosyncDashboard({ action: 'write', type: 'global', content: '# Test' });
+
+    const deleteResult = await roosyncDashboard({ action: 'delete', type: 'global' });
+    expect(deleteResult.success).toBe(true);
+
+    // Vérifier que le dashboard n'existe plus
+    const readResult = await roosyncDashboard({ action: 'read', type: 'global' });
+    expect(readResult.success).toBe(false);
+  });
+
+  // === Test 23: delete dashboard inexistant retourne failure ===
+  it('delete returns failure for non-existent dashboard', async () => {
+    const roosyncDashboard = await getHandler();
+    const result = await roosyncDashboard({ action: 'delete', type: 'global' });
+
+    expect(result.success).toBe(false);
+    expect(result.message).toContain('introuvable');
+  });
+
+  // === Test 24: read_archive sans archiveFile liste les archives ===
+  it('read_archive lists archives for a key', async () => {
+    const roosyncDashboard = await getHandler();
+    await roosyncDashboard({ action: 'write', type: 'global', content: '# Init' });
+    for (let i = 0; i < 10; i++) {
+      await roosyncDashboard({ action: 'append', type: 'global', content: `Msg ${i}` });
+    }
+    // Condenser pour créer une archive
+    await roosyncDashboard({ action: 'condense', type: 'global', keepMessages: 3 });
+
+    const result = await roosyncDashboard({ action: 'read_archive', type: 'global' });
+
+    expect(result.success).toBe(true);
+    expect(result.archives?.length).toBeGreaterThanOrEqual(1);
+    const archiveName = result.archives?.[0];
+    expect(archiveName).toMatch(/^global-/);
+    expect(archiveName).toMatch(/\.json$/);
+  });
+
+  // === Test 25: read_archive avec archiveFile lit l'archive ===
+  it('read_archive reads a specific archive file', async () => {
+    const roosyncDashboard = await getHandler();
+    await roosyncDashboard({ action: 'write', type: 'global', content: '# Init' });
+    for (let i = 0; i < 10; i++) {
+      await roosyncDashboard({ action: 'append', type: 'global', content: `Msg ${i}` });
+    }
+    await roosyncDashboard({ action: 'condense', type: 'global', keepMessages: 3 });
+
+    // D'abord lister les archives
+    const listResult = await roosyncDashboard({ action: 'read_archive', type: 'global' });
+    const archiveFile = listResult.archives?.[0];
+    expect(archiveFile).toBeDefined();
+
+    // Puis lire l'archive
+    const readResult = await roosyncDashboard({
+      action: 'read_archive',
+      type: 'global',
+      archiveFile
+    });
+
+    expect(readResult.success).toBe(true);
+    expect(readResult.archiveData?.key).toBe('global');
+    expect(readResult.archiveData?.messageCount).toBe(7); // 10 - 3 = 7 archivés
+    expect(readResult.archiveData?.messages.length).toBe(7);
+  });
+
+  // === Test 26: read_archive archive inexistante retourne failure ===
+  it('read_archive returns failure for non-existent archive', async () => {
+    const roosyncDashboard = await getHandler();
+    await roosyncDashboard({ action: 'write', type: 'global', content: '# Init' });
+
+    const result = await roosyncDashboard({
+      action: 'read_archive',
+      type: 'global',
+      archiveFile: 'global-nonexistent-archive.json'
+    });
+
+    expect(result.success).toBe(false);
+    expect(result.message).toContain('introuvable');
+  });
 });

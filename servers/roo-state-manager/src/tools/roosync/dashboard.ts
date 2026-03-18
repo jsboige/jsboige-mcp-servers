@@ -74,11 +74,11 @@ export type Dashboard = z.infer<typeof DashboardSchema>;
 
 // Schema args pour l'outil MCP
 export const DashboardArgsSchema = z.object({
-  action: z.enum(['read', 'write', 'append', 'condense'])
-    .describe('Action : read (lire), write (écrire status), append (ajouter message intercom), condense (condenser)'),
+  action: z.enum(['read', 'write', 'append', 'condense', 'list', 'delete', 'read_archive'])
+    .describe('Action : read, write, append, condense, list (tous les dashboards), delete (supprimer), read_archive (lire archives)'),
 
-  type: z.enum(['global', 'machine', 'workspace', 'workspace+machine'])
-    .describe('Type de dashboard'),
+  type: z.enum(['global', 'machine', 'workspace', 'workspace+machine']).optional()
+    .describe('Type de dashboard (requis sauf pour action=list)'),
 
   machineId: z.string().optional()
     .describe('ID machine (défaut: machine locale). Utilisé pour types machine et workspace+machine'),
@@ -106,7 +106,11 @@ export const DashboardArgsSchema = z.object({
 
   // Pour condense
   keepMessages: z.number().optional()
-    .describe('Nombre de messages à conserver lors de la condensation (défaut: 100)')
+    .describe('Nombre de messages à conserver lors de la condensation (défaut: 100)'),
+
+  // Pour read_archive
+  archiveFile: z.string().optional()
+    .describe('(read_archive) Nom du fichier archive à lire. Si absent, liste les archives disponibles.')
 });
 
 export type DashboardArgs = z.infer<typeof DashboardArgsSchema>;
@@ -200,7 +204,7 @@ async function writeDashboardFile(key: string, dashboard: Dashboard): Promise<vo
  * Crée un dashboard vide avec les valeurs par défaut
  */
 function createEmptyDashboard(
-  type: DashboardArgs['type'],
+  type: NonNullable<DashboardArgs['type']>,
   key: string,
   author: Author
 ): Dashboard {
@@ -285,6 +289,18 @@ async function condenseIntercom(
 // === Handler principal ===
 
 /**
+ * Résumé d'un dashboard (pour action=list)
+ */
+export interface DashboardSummary {
+  key: string;
+  type: string;
+  lastModified: string;
+  lastModifiedBy: Author;
+  messageCount: number;
+  statusLength: number;
+}
+
+/**
  * Résultat de l'outil roosync_dashboard
  */
 export interface DashboardResult {
@@ -297,12 +313,24 @@ export interface DashboardResult {
   condensed?: boolean;
   archivedCount?: number;
   message?: string;
+  dashboards?: DashboardSummary[];
+  archives?: string[];
+  archiveData?: { key: string; archivedAt: string; messageCount: number; messages: IntercomMessage[] };
 }
 
 /**
  * Handler pour l'outil roosync_dashboard
  */
 export async function roosyncDashboard(args: DashboardArgs): Promise<DashboardResult> {
+  // action=list ne nécessite pas de type
+  if (args.action === 'list') {
+    return handleList();
+  }
+
+  if (!args.type) {
+    throw new Error('type est requis pour action=' + args.action);
+  }
+
   const resolvedMachineId = args.machineId ?? getLocalMachineId();
   const resolvedWorkspace = args.workspace ?? getLocalWorkspaceId();
   const key = buildDashboardKey(args.type, resolvedMachineId, resolvedWorkspace);
@@ -319,6 +347,10 @@ export async function roosyncDashboard(args: DashboardArgs): Promise<DashboardRe
       return handleAppend(key, args, createIfNotExists, resolvedMachineId, resolvedWorkspace);
     case 'condense':
       return handleCondense(key, args);
+    case 'delete':
+      return handleDelete(key, args);
+    case 'read_archive':
+      return handleReadArchive(key, args);
     default:
       throw new Error(`Action inconnue: ${(args as any).action}`);
   }
@@ -336,7 +368,7 @@ async function handleRead(
       success: false,
       action: 'read',
       key,
-      type: args.type,
+      type: args.type!,
       message: `Dashboard '${key}' introuvable. Utilisez createIfNotExists: true lors d'un write/append pour le créer.`
     };
   }
@@ -369,7 +401,7 @@ async function handleRead(
     success: true,
     action: 'read',
     key,
-    type: args.type,
+    type: args.type!,
     data,
     messageCount: dashboard.intercom.messages.length
   };
@@ -397,11 +429,11 @@ async function handleWrite(
         success: false,
         action: 'write',
         key,
-        type: args.type,
+        type: args.type!,
         message: `Dashboard '${key}' introuvable et createIfNotExists=false`
       };
     }
-    dashboard = createEmptyDashboard(args.type, key, author);
+    dashboard = createEmptyDashboard(args.type!, key, author);
   }
 
   const now = new Date().toISOString();
@@ -420,7 +452,7 @@ async function handleWrite(
     success: true,
     action: 'write',
     key,
-    type: args.type,
+    type: args.type!,
     message: `Status mis à jour pour dashboard '${key}'`
   };
 }
@@ -447,11 +479,11 @@ async function handleAppend(
         success: false,
         action: 'append',
         key,
-        type: args.type,
+        type: args.type!,
         message: `Dashboard '${key}' introuvable et createIfNotExists=false`
       };
     }
-    dashboard = createEmptyDashboard(args.type, key, author);
+    dashboard = createEmptyDashboard(args.type!, key, author);
   }
 
   const message: IntercomMessage = {
@@ -490,7 +522,7 @@ async function handleAppend(
     success: true,
     action: 'append',
     key,
-    type: args.type,
+    type: args.type!,
     messageCount: finalDashboard.intercom.messages.length,
     condensed,
     archivedCount,
@@ -508,7 +540,7 @@ async function handleCondense(
       success: false,
       action: 'condense',
       key,
-      type: args.type,
+      type: args.type!,
       message: `Dashboard '${key}' introuvable`
     };
   }
@@ -521,7 +553,7 @@ async function handleCondense(
       success: true,
       action: 'condense',
       key,
-      type: args.type,
+      type: args.type!,
       messageCount: beforeCount,
       condensed: false,
       archivedCount: 0,
@@ -537,7 +569,7 @@ async function handleCondense(
     success: true,
     action: 'condense',
     key,
-    type: args.type,
+    type: args.type!,
     messageCount: condensedDashboard.intercom.messages.length,
     condensed: true,
     archivedCount: beforeCount - keepCount,
@@ -545,23 +577,157 @@ async function handleCondense(
   };
 }
 
+async function handleList(): Promise<DashboardResult> {
+  const dir = getDashboardsDir();
+  try {
+    await fs.mkdir(dir, { recursive: true });
+    const files = await fs.readdir(dir);
+    const jsonFiles = files.filter(f => f.endsWith('.json') && !f.endsWith('.tmp'));
+    const summaries: DashboardSummary[] = [];
+
+    for (const file of jsonFiles) {
+      const key = file.replace(/\.json$/, '');
+      try {
+        const dashboard = await readDashboardFile(key);
+        if (dashboard) {
+          summaries.push({
+            key: dashboard.key,
+            type: dashboard.type,
+            lastModified: dashboard.lastModified,
+            lastModifiedBy: dashboard.lastModifiedBy,
+            messageCount: dashboard.intercom.messages.length,
+            statusLength: dashboard.status.markdown.length
+          });
+        }
+      } catch {
+        // Skip malformed dashboards
+      }
+    }
+
+    summaries.sort((a, b) => b.lastModified.localeCompare(a.lastModified));
+    return {
+      success: true,
+      action: 'list',
+      key: '',
+      type: '',
+      dashboards: summaries,
+      message: `${summaries.length} dashboard(s) trouvé(s)`
+    };
+  } catch (error) {
+    return {
+      success: true,
+      action: 'list',
+      key: '',
+      type: '',
+      dashboards: [],
+      message: 'Répertoire dashboards vide ou inexistant'
+    };
+  }
+}
+
+async function handleDelete(key: string, args: DashboardArgs): Promise<DashboardResult> {
+  const filePath = getDashboardPath(key);
+  try {
+    await fs.unlink(filePath);
+    logger.info('Dashboard supprimé', { key });
+    return {
+      success: true,
+      action: 'delete',
+      key,
+      type: args.type ?? '',
+      message: `Dashboard '${key}' supprimé`
+    };
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') {
+      return {
+        success: false,
+        action: 'delete',
+        key,
+        type: args.type ?? '',
+        message: `Dashboard '${key}' introuvable`
+      };
+    }
+    throw error;
+  }
+}
+
+async function handleReadArchive(key: string, args: DashboardArgs): Promise<DashboardResult> {
+  const archiveDir = getArchiveDir();
+  await fs.mkdir(archiveDir, { recursive: true });
+
+  if (!args.archiveFile) {
+    // Lister toutes les archives pour cette clé
+    try {
+      const files = await fs.readdir(archiveDir);
+      const keyPrefix = key + '-';
+      const archives = files
+        .filter(f => f.startsWith(keyPrefix) && f.endsWith('.json'))
+        .sort()
+        .reverse(); // Plus récents en premier
+      return {
+        success: true,
+        action: 'read_archive',
+        key,
+        type: args.type ?? '',
+        archives,
+        message: `${archives.length} archive(s) trouvée(s) pour '${key}'`
+      };
+    } catch {
+      return {
+        success: true,
+        action: 'read_archive',
+        key,
+        type: args.type ?? '',
+        archives: [],
+        message: `Aucune archive pour '${key}'`
+      };
+    }
+  }
+
+  // Lire une archive spécifique
+  const archivePath = path.join(archiveDir, args.archiveFile);
+  try {
+    const content = await fs.readFile(archivePath, 'utf8');
+    const archiveData = JSON.parse(content);
+    return {
+      success: true,
+      action: 'read_archive',
+      key,
+      type: args.type ?? '',
+      archiveData,
+      message: `Archive '${args.archiveFile}' lue (${archiveData.messageCount} messages)`
+    };
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') {
+      return {
+        success: false,
+        action: 'read_archive',
+        key,
+        type: args.type ?? '',
+        message: `Archive '${args.archiveFile}' introuvable`
+      };
+    }
+    throw error;
+  }
+}
+
 // === Métadonnées de l'outil MCP ===
 
 export const dashboardToolMetadata = {
   name: 'roosync_dashboard',
-  description: 'Dashboards markdown partagés cross-machine. 4 types : global, machine, workspace, workspace+machine (remplace INTERCOM local). Actions : read, write (status diff), append (message intercom), condense.',
+  description: 'Dashboards markdown partagés cross-machine. 4 types : global, machine, workspace, workspace+machine (remplace INTERCOM local). Actions : read, write (status diff), append (message intercom), condense, list (tous dashboards), delete, read_archive.',
   inputSchema: {
     type: 'object' as const,
     properties: {
       action: {
         type: 'string',
-        enum: ['read', 'write', 'append', 'condense'],
-        description: 'Action : read (lire), write (écrire status), append (ajouter message intercom), condense (condenser manuellement)'
+        enum: ['read', 'write', 'append', 'condense', 'list', 'delete', 'read_archive'],
+        description: 'Action : read, write, append, condense, list (tous dashboards), delete (supprimer), read_archive (lire archives intercom)'
       },
       type: {
         type: 'string',
         enum: ['global', 'machine', 'workspace', 'workspace+machine'],
-        description: 'Type de dashboard. workspace+machine remplace INTERCOM local.'
+        description: 'Type de dashboard. workspace+machine remplace INTERCOM local. Requis sauf pour action=list.'
       },
       machineId: {
         type: 'string',
@@ -606,9 +772,13 @@ export const dashboardToolMetadata = {
       keepMessages: {
         type: 'number',
         description: '(condense) Nombre de messages à conserver (défaut: 100)'
+      },
+      archiveFile: {
+        type: 'string',
+        description: '(read_archive) Nom du fichier archive à lire. Si absent, liste les archives disponibles.'
       }
     },
-    required: ['action', 'type'],
+    required: ['action'],
     additionalProperties: false
   }
 };
