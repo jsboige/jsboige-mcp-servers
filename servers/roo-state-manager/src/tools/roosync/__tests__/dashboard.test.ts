@@ -4,10 +4,11 @@
  * @module tests/roosync/dashboard
  */
 
-import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { mkdtemp, rm } from 'fs/promises';
 import * as path from 'path';
 import * as os from 'os';
+import { roosyncDashboard } from '../dashboard.js';
 
 const testTmpBase = path.join(os.tmpdir(), 'dashboard-test-');
 
@@ -19,7 +20,6 @@ describe('roosync_dashboard', () => {
     process.env.ROOSYNC_SHARED_PATH = tmpDir;
     process.env.ROOSYNC_MACHINE_ID = 'test-machine';
     process.env.ROOSYNC_WORKSPACE_ID = 'test-workspace';
-    vi.resetModules();
   });
 
   afterEach(async () => {
@@ -29,14 +29,8 @@ describe('roosync_dashboard', () => {
     delete process.env.ROOSYNC_WORKSPACE_ID;
   });
 
-  async function getHandler() {
-    const { roosyncDashboard } = await import('../dashboard.js');
-    return roosyncDashboard;
-  }
-
   // === Test 1: Création dashboard global ===
   it('creates global dashboard on write', async () => {
-    const roosyncDashboard = await getHandler();
     const result = await roosyncDashboard({
       action: 'write',
       type: 'global',
@@ -51,7 +45,6 @@ describe('roosync_dashboard', () => {
 
   // === Test 2: Clé dashboard machine ===
   it('creates machine dashboard with correct key', async () => {
-    const roosyncDashboard = await getHandler();
     const result = await roosyncDashboard({
       action: 'write',
       type: 'machine',
@@ -64,7 +57,6 @@ describe('roosync_dashboard', () => {
 
   // === Test 3: Clé dashboard workspace ===
   it('creates workspace dashboard with correct key', async () => {
-    const roosyncDashboard = await getHandler();
     const result = await roosyncDashboard({
       action: 'write',
       type: 'workspace',
@@ -77,7 +69,6 @@ describe('roosync_dashboard', () => {
 
   // === Test 4: Clé dashboard workspace+machine ===
   it('creates workspace+machine dashboard (INTERCOM replacement)', async () => {
-    const roosyncDashboard = await getHandler();
     const result = await roosyncDashboard({
       action: 'write',
       type: 'workspace+machine',
@@ -90,7 +81,6 @@ describe('roosync_dashboard', () => {
 
   // === Test 5: Read dashboard complet ===
   it('reads dashboard with all sections', async () => {
-    const roosyncDashboard = await getHandler();
     await roosyncDashboard({ action: 'write', type: 'global', content: '# Test Status' });
 
     const result = await roosyncDashboard({
@@ -106,7 +96,6 @@ describe('roosync_dashboard', () => {
 
   // === Test 6: Read section status uniquement ===
   it('reads only status section', async () => {
-    const roosyncDashboard = await getHandler();
     await roosyncDashboard({ action: 'write', type: 'global', content: '# Status Test' });
     const result = await roosyncDashboard({ action: 'read', type: 'global', section: 'status' });
 
@@ -116,7 +105,6 @@ describe('roosync_dashboard', () => {
 
   // === Test 7: Read section intercom uniquement ===
   it('reads only intercom section', async () => {
-    const roosyncDashboard = await getHandler();
     await roosyncDashboard({ action: 'write', type: 'global', content: '# Init' });
     await roosyncDashboard({ action: 'append', type: 'global', content: 'Msg test' });
     const result = await roosyncDashboard({ action: 'read', type: 'global', section: 'intercom' });
@@ -127,7 +115,6 @@ describe('roosync_dashboard', () => {
 
   // === Test 8: Write remplace status.markdown ===
   it('write replaces status markdown', async () => {
-    const roosyncDashboard = await getHandler();
     await roosyncDashboard({ action: 'write', type: 'global', content: 'Old content' });
     await roosyncDashboard({ action: 'write', type: 'global', content: 'New content' });
     const result = await roosyncDashboard({ action: 'read', type: 'global', section: 'status' });
@@ -137,7 +124,6 @@ describe('roosync_dashboard', () => {
 
   // === Test 9: Append ajoute messages en ordre ===
   it('appends messages in order', async () => {
-    const roosyncDashboard = await getHandler();
     await roosyncDashboard({ action: 'write', type: 'global', content: '# Init' });
     await roosyncDashboard({ action: 'append', type: 'global', content: 'Message 1' });
     await roosyncDashboard({ action: 'append', type: 'global', content: 'Message 2' });
@@ -151,7 +137,6 @@ describe('roosync_dashboard', () => {
 
   // === Test 10: Append avec tags ===
   it('stores tags on intercom message', async () => {
-    const roosyncDashboard = await getHandler();
     await roosyncDashboard({ action: 'write', type: 'global', content: '# Init' });
     await roosyncDashboard({
       action: 'append',
@@ -167,7 +152,6 @@ describe('roosync_dashboard', () => {
 
   // === Test 11: Condensation manuelle ===
   it('condense keeps N most recent messages and archives the rest', async () => {
-    const roosyncDashboard = await getHandler();
     await roosyncDashboard({ action: 'write', type: 'global', content: '# Init' });
 
     for (let i = 0; i < 10; i++) {
@@ -191,7 +175,6 @@ describe('roosync_dashboard', () => {
 
   // === Test 12: Read dashboard inexistant ===
   it('returns failure for non-existent dashboard', async () => {
-    const roosyncDashboard = await getHandler();
     const result = await roosyncDashboard({ action: 'read', type: 'global' });
 
     expect(result.success).toBe(false);
@@ -200,7 +183,6 @@ describe('roosync_dashboard', () => {
 
   // === Test 13: createIfNotExists=false ===
   it('does not create dashboard when createIfNotExists=false', async () => {
-    const roosyncDashboard = await getHandler();
     const result = await roosyncDashboard({
       action: 'write',
       type: 'global',
@@ -214,7 +196,6 @@ describe('roosync_dashboard', () => {
 
   // === Test 14: Identification auteur ===
   it('stores author information', async () => {
-    const roosyncDashboard = await getHandler();
     const author = { machineId: 'myia-po-2025', workspace: 'roo-extensions', worktree: 'wt-123' };
     await roosyncDashboard({ action: 'write', type: 'global', content: '# Test', author });
 
@@ -225,7 +206,6 @@ describe('roosync_dashboard', () => {
 
   // === Test 15: Auto-détection machine/workspace ===
   it('uses env vars for auto-detection', async () => {
-    const roosyncDashboard = await getHandler();
     const result = await roosyncDashboard({
       action: 'write',
       type: 'workspace+machine',
@@ -237,7 +217,6 @@ describe('roosync_dashboard', () => {
 
   // === Test 16: Override explicite machine et workspace ===
   it('accepts explicit machineId and workspace overrides', async () => {
-    const roosyncDashboard = await getHandler();
     const result = await roosyncDashboard({
       action: 'write',
       type: 'workspace+machine',
@@ -251,7 +230,6 @@ describe('roosync_dashboard', () => {
 
   // === Test 17: intercomLimit ===
   it('respects intercomLimit when reading', async () => {
-    const roosyncDashboard = await getHandler();
     await roosyncDashboard({ action: 'write', type: 'global', content: '# Init' });
     for (let i = 0; i < 10; i++) {
       await roosyncDashboard({ action: 'append', type: 'global', content: `Msg ${i}` });
@@ -269,7 +247,6 @@ describe('roosync_dashboard', () => {
 
   // === Test 18: condense no-op quand peu de messages ===
   it('condense reports no-op when below threshold', async () => {
-    const roosyncDashboard = await getHandler();
     await roosyncDashboard({ action: 'write', type: 'global', content: '# Init' });
     await roosyncDashboard({ action: 'append', type: 'global', content: 'Only message' });
 
@@ -288,7 +265,6 @@ describe('roosync_dashboard', () => {
 
   // === Test 19: list retourne tableau vide si pas de dashboards ===
   it('list returns empty array when no dashboards exist', async () => {
-    const roosyncDashboard = await getHandler();
     const result = await roosyncDashboard({ action: 'list' });
 
     expect(result.success).toBe(true);
@@ -298,7 +274,6 @@ describe('roosync_dashboard', () => {
 
   // === Test 20: list retourne les dashboards existants ===
   it('list returns all created dashboards', async () => {
-    const roosyncDashboard = await getHandler();
     await roosyncDashboard({ action: 'write', type: 'global', content: '# Global' });
     await roosyncDashboard({ action: 'write', type: 'machine', content: '# Machine' });
 
@@ -313,7 +288,6 @@ describe('roosync_dashboard', () => {
 
   // === Test 21: list résumés contiennent les champs attendus ===
   it('list summaries include expected fields', async () => {
-    const roosyncDashboard = await getHandler();
     await roosyncDashboard({ action: 'write', type: 'global', content: '# Test' });
     await roosyncDashboard({ action: 'append', type: 'global', content: 'Message 1' });
 
@@ -329,7 +303,6 @@ describe('roosync_dashboard', () => {
 
   // === Test 22: delete supprime un dashboard existant ===
   it('delete removes an existing dashboard', async () => {
-    const roosyncDashboard = await getHandler();
     await roosyncDashboard({ action: 'write', type: 'global', content: '# Test' });
 
     const deleteResult = await roosyncDashboard({ action: 'delete', type: 'global' });
@@ -342,7 +315,6 @@ describe('roosync_dashboard', () => {
 
   // === Test 23: delete dashboard inexistant retourne failure ===
   it('delete returns failure for non-existent dashboard', async () => {
-    const roosyncDashboard = await getHandler();
     const result = await roosyncDashboard({ action: 'delete', type: 'global' });
 
     expect(result.success).toBe(false);
@@ -351,7 +323,6 @@ describe('roosync_dashboard', () => {
 
   // === Test 24: read_archive sans archiveFile liste les archives ===
   it('read_archive lists archives for a key', async () => {
-    const roosyncDashboard = await getHandler();
     await roosyncDashboard({ action: 'write', type: 'global', content: '# Init' });
     for (let i = 0; i < 10; i++) {
       await roosyncDashboard({ action: 'append', type: 'global', content: `Msg ${i}` });
@@ -370,7 +341,6 @@ describe('roosync_dashboard', () => {
 
   // === Test 25: read_archive avec archiveFile lit l'archive ===
   it('read_archive reads a specific archive file', async () => {
-    const roosyncDashboard = await getHandler();
     await roosyncDashboard({ action: 'write', type: 'global', content: '# Init' });
     for (let i = 0; i < 10; i++) {
       await roosyncDashboard({ action: 'append', type: 'global', content: `Msg ${i}` });
@@ -397,7 +367,6 @@ describe('roosync_dashboard', () => {
 
   // === Test 26: read_archive archive inexistante retourne failure ===
   it('read_archive returns failure for non-existent archive', async () => {
-    const roosyncDashboard = await getHandler();
     await roosyncDashboard({ action: 'write', type: 'global', content: '# Init' });
 
     const result = await roosyncDashboard({
