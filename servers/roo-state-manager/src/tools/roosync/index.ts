@@ -347,6 +347,26 @@ import {
   deleteAttachmentToolMetadata
 } from './roosync-attachments.tool.js';
 
+// #675: Dashboards markdown partagés cross-machine
+import { dashboardToolMetadata } from './dashboard.js';
+
+export {
+  roosyncDashboard,
+  dashboardToolMetadata,
+  DashboardArgsSchema,
+  DashboardSchema,
+  AuthorSchema,
+  IntercomMessageSchema
+} from './dashboard.js';
+
+export type {
+  DashboardArgs,
+  Dashboard,
+  Author,
+  IntercomMessage,
+  DashboardResult
+} from './dashboard.js';
+
 // NOTE: modes-management.ts = API interne only, pas d'import MCP ici (#595/#603)
 
 // Métadonnées pour l'outil d'inventaire (format JSON Schema standard)
@@ -456,6 +476,8 @@ export const roosyncTools = [
   // #674: Outils de gestion des pièces jointes
   listAttachmentsToolMetadata,
   getAttachmentToolMetadata,
-  deleteAttachmentToolMetadata
+  deleteAttachmentToolMetadata,
+  // #675: Dashboards markdown partagés cross-machine
+  dashboardToolMetadata
   // NOTE: modes-management = API interne, pas d'outil MCP (#595/#603)
 ];
