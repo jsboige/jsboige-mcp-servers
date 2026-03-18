@@ -204,7 +204,7 @@ export class IndexingDecisionService {
         } else {
             // Échec temporaire, programmer un retry
             skeleton.metadata.indexingState = {
-                ...skeleton.metadata.indexingState,
+                ...((skeleton.metadata.indexingState) || {}),
                 indexStatus: 'retry',
                 indexError: error,
                 lastIndexAttempt: now,
