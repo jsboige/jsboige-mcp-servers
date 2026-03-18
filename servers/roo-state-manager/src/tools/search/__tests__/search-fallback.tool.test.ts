@@ -394,6 +394,57 @@ describe('searchFallbackTool', () => {
 	});
 
 	// ============================================================
+	// Source filtering (#604)
+	// ============================================================
+
+	describe('source filtering', () => {
+		test('filters by source=roo using task ID prefix', async () => {
+			const rooTask = makeSkeleton('roo-task-123', {
+				metadata: { ...makeSkeleton('x').metadata, title: 'roo task content' }
+			});
+			const claudeTask = makeSkeleton('claude-task-456', {
+				metadata: { ...makeSkeleton('x').metadata, title: 'claude task content' }
+			});
+			const cache = makeCache(rooTask, claudeTask);
+
+			const result = await searchFallbackTool({ query: 'content', source: 'roo' }, cache);
+			const parsed = parseResult(result);
+			expect(parsed.totalFound).toBe(1);
+			expect(parsed.results[0].taskId).toBe('roo-task-123');
+		});
+
+		test('filters by source=claude-code using task ID prefix', async () => {
+			const rooTask = makeSkeleton('roo-task-123', {
+				metadata: { ...makeSkeleton('x').metadata, title: 'task content' }
+			});
+			const claudeTask = makeSkeleton('claude-task-456', {
+				metadata: { ...makeSkeleton('x').metadata, title: 'task content' }
+			});
+			const cache = makeCache(rooTask, claudeTask);
+
+			const result = await searchFallbackTool({ query: 'content', source: 'claude-code' }, cache);
+			const parsed = parseResult(result);
+			expect(parsed.totalFound).toBe(1);
+			expect(parsed.results[0].taskId).toBe('claude-task-456');
+		});
+
+		test('filters by source using metadata.dataSource when available', async () => {
+			const task1 = makeSkeleton('task-abc', {
+				metadata: { ...makeSkeleton('x').metadata, title: 'shared title', dataSource: 'claude-code' } as any
+			});
+			const task2 = makeSkeleton('task-xyz', {
+				metadata: { ...makeSkeleton('x').metadata, title: 'shared title', dataSource: 'roo' } as any
+			});
+			const cache = makeCache(task1, task2);
+
+			const result = await searchFallbackTool({ query: 'title', source: 'claude-code' }, cache);
+			const parsed = parseResult(result);
+			expect(parsed.totalFound).toBe(1);
+			expect(parsed.results[0].taskId).toBe('task-abc');
+		});
+	});
+
+	// ============================================================
 	// Error handling
 	// ============================================================
 
