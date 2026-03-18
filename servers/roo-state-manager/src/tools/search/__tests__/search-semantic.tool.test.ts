@@ -316,6 +316,79 @@ describe('searchTasksByContentTool', () => {
 			expect(searchCall.filter).toBeUndefined();
 		});
 
+		test('applies has_errors filter', async () => {
+			mockQdrantClient.search.mockResolvedValue([]);
+
+			await searchTasksByContentTool.handler(
+				{ search_query: 'test', has_errors: true },
+				makeCache(),
+				mockEnsureCache,
+				defaultFallback
+			);
+
+			const searchCall = mockQdrantClient.search.mock.calls[0][1];
+			expect(searchCall.filter).toEqual({
+				must: [{ key: 'has_error', match: { value: true } }]
+			});
+		});
+
+		test('applies model filter', async () => {
+			mockQdrantClient.search.mockResolvedValue([]);
+
+			await searchTasksByContentTool.handler(
+				{ search_query: 'test', model: 'opus' },
+				makeCache(),
+				mockEnsureCache,
+				defaultFallback
+			);
+
+			const searchCall = mockQdrantClient.search.mock.calls[0][1];
+			expect(searchCall.filter).toEqual({
+				must: [{ key: 'model', match: { value: 'opus' } }]
+			});
+		});
+
+		test('combines has_errors and model filters', async () => {
+			mockQdrantClient.search.mockResolvedValue([]);
+
+			await searchTasksByContentTool.handler(
+				{ search_query: 'test', has_errors: true, model: 'sonnet' },
+				makeCache(),
+				mockEnsureCache,
+				defaultFallback
+			);
+
+			const searchCall = mockQdrantClient.search.mock.calls[0][1];
+			expect(searchCall.filter.must).toHaveLength(2);
+			expect(searchCall.filter.must).toContainEqual({ key: 'has_error', match: { value: true } });
+			expect(searchCall.filter.must).toContainEqual({ key: 'model', match: { value: 'sonnet' } });
+		});
+
+		test('includes message_position when message_index and total_messages are in payload', async () => {
+			mockQdrantClient.search.mockResolvedValue([{
+				score: 0.8,
+				payload: {
+					task_id: 'task-1',
+					content: 'some content',
+					task_title: 'Test task',
+					host_os: 'machine-a',
+					message_index: 3,
+					total_messages: 10
+				}
+			}]);
+
+			const result = await searchTasksByContentTool.handler(
+				{ search_query: 'test' },
+				makeCache(),
+				mockEnsureCache,
+				defaultFallback
+			);
+
+			const parsed = JSON.parse(getTextContent(result));
+			const chunk = parsed.results[0].chunks[0];
+			expect(chunk.message_position).toBe('3/10');
+		});
+
 		test('uses max_results or default 10', async () => {
 			mockQdrantClient.search.mockResolvedValue([]);
 
