@@ -571,7 +571,15 @@ export function registerCallToolHandler(
            // roosync_send_message, roosync_read_inbox, roosync_get_message,
            // roosync_mark_message_read, roosync_archive_message, roosync_reply_message
            // Replaced by: roosync_send, roosync_read, roosync_manage
-           // #674: Outils de gestion des pièces jointes
+           // CONS-7: Outil consolidé gestion pièces jointes
+           case 'roosync_attachments':
+               try {
+                   result = await toolExports.roosyncAttachments(args as any) as CallToolResult;
+               } catch (error) {
+                   result = { content: [{ type: 'text', text: `Error: ${(error as Error).message}` }], isError: true };
+               }
+               break;
+           // #674: Outils legacy (backward compat — utiliser roosync_attachments à la place)
            case 'roosync_list_attachments':
                try {
                    result = await toolExports.roosyncListAttachments(args as any) as CallToolResult;

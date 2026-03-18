@@ -39,7 +39,9 @@ import {
   roosyncGetAttachment,
   getAttachmentToolMetadata,
   roosyncDeleteAttachment,
-  deleteAttachmentToolMetadata
+  deleteAttachmentToolMetadata,
+  roosyncAttachments,
+  attachmentsToolMetadata
 } from '../roosync-attachments.tool.js';
 
 // ============================================================
@@ -191,5 +193,77 @@ describe('roosync_delete_attachment', () => {
     mockDeleteAttachment.mockRejectedValue(new Error('permission denied'));
     const result = await roosyncDeleteAttachment({ uuid: 'x' });
     expect(result.content[0].text).toContain('Erreur');
+  });
+});
+
+// ============================================================
+// CONS-7: roosync_attachments (outil consolidé)
+// ============================================================
+
+describe('roosync_attachments (CONS-7)', () => {
+  beforeEach(() => vi.clearAllMocks());
+
+  test('exports attachmentsToolMetadata with name roosync_attachments', () => {
+    expect(attachmentsToolMetadata.name).toBe('roosync_attachments');
+  });
+
+  test('requires action field', () => {
+    expect(attachmentsToolMetadata.inputSchema.required).toContain('action');
+  });
+
+  test('action=list delegates to roosyncListAttachments', async () => {
+    mockListAttachments.mockResolvedValue([]);
+    const result = await roosyncAttachments({ action: 'list' });
+    expect(result.content[0].text).toContain('Aucune pièce jointe');
+    expect(mockListAttachments).toHaveBeenCalledWith(undefined);
+  });
+
+  test('action=list with message_id filters correctly', async () => {
+    mockListAttachments.mockResolvedValue([]);
+    await roosyncAttachments({ action: 'list', message_id: 'msg-123' });
+    expect(mockListAttachments).toHaveBeenCalledWith('msg-123');
+  });
+
+  test('action=get requires uuid', async () => {
+    const result = await roosyncAttachments({ action: 'get', targetPath: '/tmp/out' });
+    expect(result.content[0].text).toContain('uuid');
+  });
+
+  test('action=get requires targetPath', async () => {
+    const result = await roosyncAttachments({ action: 'get', uuid: 'some-uuid' });
+    expect(result.content[0].text).toContain('targetPath');
+  });
+
+  test('action=get delegates to roosyncGetAttachment', async () => {
+    const mockMeta = {
+      uuid: 'uuid-cons7', originalName: 'file.txt', sizeBytes: 100,
+      mimeType: 'text/plain', uploadedAt: '2026-03-18T00:00:00Z', uploaderMachineId: 'po-2025'
+    };
+    mockGetAttachment.mockResolvedValue(mockMeta);
+    const result = await roosyncAttachments({ action: 'get', uuid: 'uuid-cons7', targetPath: '/tmp/file.txt' });
+    expect(result.content[0].text).toContain('✅');
+    expect(result.content[0].text).toContain('uuid-cons7');
+  });
+
+  test('action=delete requires uuid', async () => {
+    const result = await roosyncAttachments({ action: 'delete' });
+    expect(result.content[0].text).toContain('uuid');
+  });
+
+  test('action=delete delegates to roosyncDeleteAttachment', async () => {
+    const mockMeta = {
+      uuid: 'uuid-del2', originalName: 'bye.txt', sizeBytes: 50,
+      mimeType: 'text/plain', uploadedAt: '2026-03-18T00:00:00Z', uploaderMachineId: 'po-2025'
+    };
+    mockGetAttachmentMetadata.mockResolvedValue(mockMeta);
+    mockDeleteAttachment.mockResolvedValue(undefined);
+    const result = await roosyncAttachments({ action: 'delete', uuid: 'uuid-del2' });
+    expect(result.content[0].text).toContain('✅');
+    expect(result.content[0].text).toContain('uuid-del2');
+  });
+
+  test('unknown action returns error', async () => {
+    const result = await roosyncAttachments({ action: 'unknown' as any });
+    expect(result.content[0].text).toContain('Action inconnue');
   });
 });

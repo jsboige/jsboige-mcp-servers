@@ -238,7 +238,7 @@ export { roosyncManage, manageToolMetadata } from './manage.js';
 export { cleanupMessages, cleanupToolMetadata } from './cleanup.js';
 export type { CleanupMessagesArgs } from './cleanup.js';
 
-// #674: Outils de gestion des pièces jointes
+// #674: Outils de gestion des pièces jointes (legacy — backward compat)
 export {
   roosyncListAttachments,
   listAttachmentsToolMetadata,
@@ -246,6 +246,12 @@ export {
   getAttachmentToolMetadata,
   roosyncDeleteAttachment,
   deleteAttachmentToolMetadata
+} from './roosync-attachments.tool.js';
+
+// CONS-7: Outil consolidé (list + get + delete → 1)
+export {
+  roosyncAttachments,
+  attachmentsToolMetadata
 } from './roosync-attachments.tool.js';
 
 // NOTE: modes-management.ts est une API INTERNE (pas un outil MCP séparé).
@@ -340,12 +346,15 @@ import { manageToolMetadata } from './manage.js';
 // #613 ISS-1: Import des métadonnées de l'outil cleanup
 import { cleanupToolMetadata } from './cleanup.js';
 
-// #674: Import des métadonnées des outils d'attachments
+// #674: Import des métadonnées des outils d'attachments (legacy)
 import {
   listAttachmentsToolMetadata,
   getAttachmentToolMetadata,
   deleteAttachmentToolMetadata
 } from './roosync-attachments.tool.js';
+
+// CONS-7: Import métadonnées outil consolidé
+import { attachmentsToolMetadata } from './roosync-attachments.tool.js';
 
 // #675: Dashboards markdown partagés cross-machine
 import { dashboardToolMetadata } from './dashboard.js';
@@ -424,7 +433,8 @@ const exportBaselineToolMetadata = {
 
 /**
  * Liste de tous les outils RooSync pour enregistrement MCP
- * Version 3.16 : 23 outils (#674: roosync_list_attachments, roosync_get_attachment, roosync_delete_attachment ajoutés)
+ * Version 3.17 : 22 outils (CONS-7: 3 outils attachments → 1 roosync_attachments)
+ * Version 3.16 : 24 outils (#675: roosync_dashboard ajouté + #674: 3 attachments)
  * Version 3.15 : 20 outils (#613 ISS-1: roosync_cleanup_messages ajouté)
  * Version 3.14 : 19 outils (#546: roosync_update_dashboard ajouté)
  * Version 3.13 : 18 outils (#533: roosync_sync_event retiré - jamais utilisé en production)
@@ -436,9 +446,11 @@ const exportBaselineToolMetadata = {
  * - Heartbeat (CONS-#443 Groupe 1): roosync_heartbeat
  * - [DEPRECATED] Synchronisation automatique (CONS-#443 Groupe 2): roosync_sync_event retiré (#533)
  * - Messagerie (CONS-1): roosync_send, roosync_read, roosync_manage, roosync_cleanup_messages
+ * - Attachments (CONS-7): roosync_attachments (remplace roosync_list/get/delete_attachment)
  * - Gestion MCP (CONS-#443 Groupe 3): roosync_mcp_management
  * - Gestion stockage (CONS-#443 Groupe 4): roosync_storage_management
  * - Diagnostic (CONS-#443 Groupe 5): roosync_diagnose
+ * - Dashboards: roosync_refresh_dashboard, roosync_update_dashboard (#546), roosync_dashboard (#675)
  */
 export const roosyncTools = [
   initToolMetadata,
@@ -473,10 +485,10 @@ export const roosyncTools = [
   manageToolMetadata,
   // #613 ISS-1: Outil de cleanup en masse
   cleanupToolMetadata,
-  // #674: Outils de gestion des pièces jointes
-  listAttachmentsToolMetadata,
-  getAttachmentToolMetadata,
-  deleteAttachmentToolMetadata,
+  // CONS-7: Outil consolidé gestion pièces jointes (list + get + delete → 1)
+  // [DEPRECATED] roosync_list_attachments, roosync_get_attachment, roosync_delete_attachment
+  // Conservés dans registry.ts pour backward compat uniquement
+  attachmentsToolMetadata,
   // #675: Dashboards markdown partagés cross-machine
   dashboardToolMetadata
   // NOTE: modes-management = API interne, pas d'outil MCP (#595/#603)

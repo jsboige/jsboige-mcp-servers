@@ -235,6 +235,61 @@ Utilisez \`roosync_list_attachments\` pour voir les UUIDs disponibles.`
 }
 
 // ============================================================
+// CONS-7: Outil consolidé roosync_attachments (list + get + delete → 1)
+// ============================================================
+
+export const attachmentsToolMetadata = {
+  name: 'roosync_attachments',
+  description: 'Gestion unifiée des pièces jointes RooSync (list, get, delete)',
+  inputSchema: {
+    type: 'object',
+    properties: {
+      action: {
+        type: 'string',
+        enum: ['list', 'get', 'delete'],
+        description: 'Action à effectuer : list (lister), get (récupérer), delete (supprimer)'
+      },
+      message_id: {
+        type: 'string',
+        description: '[list] ID du message dont on veut lister les pièces jointes (optionnel — si absent, liste tout)'
+      },
+      uuid: {
+        type: 'string',
+        description: '[get|delete] UUID de la pièce jointe'
+      },
+      targetPath: {
+        type: 'string',
+        description: '[get] Chemin local de destination où copier le fichier'
+      }
+    },
+    required: ['action']
+  }
+};
+
+export async function roosyncAttachments(
+  args: { action: 'list' | 'get' | 'delete'; message_id?: string; uuid?: string; targetPath?: string }
+): Promise<{ content: Array<{ type: string; text: string }> }> {
+  logger.info('📎 roosync_attachments called', { action: args.action, uuid: args.uuid });
+
+  switch (args.action) {
+    case 'list':
+      return roosyncListAttachments({ message_id: args.message_id });
+
+    case 'get':
+      if (!args.uuid) return { content: [{ type: 'text', text: '❌ Paramètre `uuid` requis pour action=get.' }] };
+      if (!args.targetPath) return { content: [{ type: 'text', text: '❌ Paramètre `targetPath` requis pour action=get.' }] };
+      return roosyncGetAttachment({ uuid: args.uuid, targetPath: args.targetPath });
+
+    case 'delete':
+      if (!args.uuid) return { content: [{ type: 'text', text: '❌ Paramètre `uuid` requis pour action=delete.' }] };
+      return roosyncDeleteAttachment({ uuid: args.uuid });
+
+    default:
+      return { content: [{ type: 'text', text: `❌ Action inconnue : ${(args as any).action}. Valeurs valides : list, get, delete.` }] };
+  }
+}
+
+// ============================================================
 // Helper
 // ============================================================
 
