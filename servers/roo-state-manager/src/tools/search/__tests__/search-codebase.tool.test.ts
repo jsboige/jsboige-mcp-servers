@@ -5,15 +5,22 @@
  * @module tools/search/__tests__/search-codebase.tool
  */
 
-import { describe, test, expect, vi, beforeEach } from 'vitest';
+import { describe, test, expect, vi, beforeEach, afterEach } from 'vitest';
 
-const { mockGetQdrantClient, mockQdrant } = vi.hoisted(() => ({
+const { mockGetQdrantClient, mockQdrant, mockEmbeddingCreate } = vi.hoisted(() => ({
 	mockGetQdrantClient: vi.fn(),
-	mockQdrant: { getCollection: vi.fn(), query: vi.fn() }
+	mockQdrant: { getCollection: vi.fn(), query: vi.fn() },
+	mockEmbeddingCreate: vi.fn()
 }));
 
 vi.mock('../../../services/qdrant.js', () => ({
 	getQdrantClient: mockGetQdrantClient
+}));
+
+vi.mock('openai', () => ({
+	default: vi.fn(() => ({
+		embeddings: { create: mockEmbeddingCreate }
+	}))
 }));
 
 import {
@@ -178,6 +185,177 @@ describe('search-codebase.tool', () => {
 			const parsed = JSON.parse(result.content[0].text);
 			expect(parsed.status).toBe('collection_not_found');
 			expect(parsed.tried_collections.length).toBeGreaterThan(0);
+		});
+	});
+
+	// ============================================================
+	// handleCodebaseSearch - successful search (interpretScore branches)
+	// ============================================================
+
+	describe('handleCodebaseSearch - successful search', () => {
+		beforeEach(() => {
+			process.env.EMBEDDING_API_KEY = 'test-key';
+			mockQdrant.getCollection.mockResolvedValue({ status: 'green' });
+			mockEmbeddingCreate.mockResolvedValue({
+				data: [{ embedding: new Array(8).fill(0.1) }]
+			});
+		});
+
+		afterEach(() => {
+			delete process.env.EMBEDDING_API_KEY;
+		});
+
+		test('returns success with moderate relevance (score 0.65)', async () => {
+			mockQdrant.query.mockResolvedValue({
+				points: [{
+					score: 0.65,
+					payload: { filePath: 'src/foo.ts', codeChunk: 'export function foo() {}', startLine: 1, endLine: 5 }
+				}]
+			});
+
+			const result = await handleCodebaseSearch({ query: 'foo function', workspace: '/ws' });
+			const parsed = JSON.parse(result.content[0].text);
+			expect(parsed.status).toBe('success');
+			expect(parsed.results[0].relevance).toBe('moderate');
+			expect(parsed.results[0].score).toBe(0.65);
+		});
+
+		test('returns success with weak relevance (score 0.45)', async () => {
+			mockQdrant.query.mockResolvedValue({
+				points: [{
+					score: 0.45,
+					payload: { filePath: 'src/bar.ts', codeChunk: 'const x = 1;', startLine: 10, endLine: 10 }
+				}]
+			});
+
+			const result = await handleCodebaseSearch({ query: 'x variable', workspace: '/ws' });
+			const parsed = JSON.parse(result.content[0].text);
+			expect(parsed.status).toBe('success');
+			expect(parsed.results[0].relevance).toBe('weak');
+		});
+
+		test('returns success with marginal relevance (score 0.3)', async () => {
+			mockQdrant.query.mockResolvedValue({
+				points: [{
+					score: 0.3,
+					payload: { filePath: 'src/baz.ts', codeChunk: 'let z;', startLine: 1, endLine: 1 }
+				}]
+			});
+
+			const result = await handleCodebaseSearch({ query: 'z', workspace: '/ws' });
+			const parsed = JSON.parse(result.content[0].text);
+			expect(parsed.status).toBe('success');
+			expect(parsed.results[0].relevance).toBe('marginal');
+		});
+
+		test('filters out results without filePath or codeChunk', async () => {
+			mockQdrant.query.mockResolvedValue({
+				points: [
+					{ score: 0.8, payload: { filePath: 'src/valid.ts', codeChunk: 'valid code' } },
+					{ score: 0.7, payload: { filePath: '', codeChunk: 'no path' } },
+					{ score: 0.6, payload: null }
+				]
+			});
+
+			const result = await handleCodebaseSearch({ query: 'valid', workspace: '/ws' });
+			const parsed = JSON.parse(result.content[0].text);
+			expect(parsed.results_count).toBe(1);
+			expect(parsed.results[0].file_path).toBe('src/valid.ts');
+		});
+
+		test('applies directory_prefix filter', async () => {
+			mockQdrant.query.mockResolvedValue({ points: [] });
+
+			const result = await handleCodebaseSearch({
+				query: 'search',
+				workspace: '/ws',
+				directory_prefix: 'src/tools'
+			});
+
+			const parsed = JSON.parse(result.content[0].text);
+			expect(parsed.status).toBe('success');
+			expect(parsed.results_count).toBe(0);
+			// Verify qdrant.query was called (directory filter applied)
+			expect(mockQdrant.query).toHaveBeenCalledWith(
+				expect.any(String),
+				expect.objectContaining({
+					filter: expect.objectContaining({ must: expect.any(Array) })
+				})
+			);
+		});
+	});
+
+	// ============================================================
+	// handleCodebaseSearch - outer catch block (embedding errors)
+	// ============================================================
+
+	describe('handleCodebaseSearch - embedding error handling', () => {
+		beforeEach(() => {
+			process.env.EMBEDDING_API_KEY = 'test-key';
+			// Collection found successfully
+			mockQdrant.getCollection.mockResolvedValue({ status: 'green' });
+		});
+
+		afterEach(() => {
+			delete process.env.EMBEDDING_API_KEY;
+		});
+
+		test('returns qdrant_connection_error on fetch failed', async () => {
+			mockEmbeddingCreate.mockRejectedValue(new Error('fetch failed: connection refused'));
+
+			const result = await handleCodebaseSearch({ query: 'test', workspace: '/ws' });
+			expect((result as any).isError).toBe(true);
+			const parsed = JSON.parse(result.content[0].text);
+			expect(parsed.status).toBe('qdrant_connection_error');
+			expect(parsed.hint).toContain('Qdrant');
+		});
+
+		test('returns qdrant_connection_error on ECONNREFUSED', async () => {
+			mockEmbeddingCreate.mockRejectedValue(new Error('ECONNREFUSED 127.0.0.1:6333'));
+
+			const result = await handleCodebaseSearch({ query: 'test', workspace: '/ws' });
+			expect((result as any).isError).toBe(true);
+			const parsed = JSON.parse(result.content[0].text);
+			expect(parsed.status).toBe('qdrant_connection_error');
+		});
+
+		test('returns auth_error on API key error', async () => {
+			mockEmbeddingCreate.mockRejectedValue(new Error('API key not valid'));
+
+			const result = await handleCodebaseSearch({ query: 'test', workspace: '/ws' });
+			expect((result as any).isError).toBe(true);
+			const parsed = JSON.parse(result.content[0].text);
+			expect(parsed.status).toBe('auth_error');
+			expect(parsed.hint).toContain('API');
+		});
+
+		test('returns auth_error on Unauthorized', async () => {
+			mockEmbeddingCreate.mockRejectedValue(new Error('Unauthorized: 401'));
+
+			const result = await handleCodebaseSearch({ query: 'test', workspace: '/ws' });
+			expect((result as any).isError).toBe(true);
+			const parsed = JSON.parse(result.content[0].text);
+			expect(parsed.status).toBe('auth_error');
+		});
+
+		test('returns generic error on unexpected exception', async () => {
+			mockEmbeddingCreate.mockRejectedValue(new Error('Unexpected internal error'));
+
+			const result = await handleCodebaseSearch({ query: 'test', workspace: '/ws' });
+			expect((result as any).isError).toBe(true);
+			const parsed = JSON.parse(result.content[0].text);
+			expect(parsed.status).toBe('error');
+			expect(parsed.error).toContain('Unexpected internal error');
+		});
+
+		test('handles non-Error thrown values', async () => {
+			mockEmbeddingCreate.mockRejectedValue('string error');
+
+			const result = await handleCodebaseSearch({ query: 'test', workspace: '/ws' });
+			expect((result as any).isError).toBe(true);
+			const parsed = JSON.parse(result.content[0].text);
+			expect(parsed.status).toBe('error');
+			expect(parsed.error).toBe('string error');
 		});
 	});
 });
