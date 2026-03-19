@@ -57,7 +57,7 @@ const TOOL_MAPPINGS: Record<string, string> = {
 
   // Diagnostic tools
   'analyze_roosync_problems': 'diagnostic/analyze_problems.ts',
-  'diagnose_env': 'diagnostic/diagnose_env.ts',
+  // diagnose_env: removed in #681/#698 — consolidated into roosync_diagnose (roosync/diagnose.ts)
   'read_vscode_logs': 'read-vscode-logs.ts',
 
   // Maintenance/Config tools
@@ -122,7 +122,7 @@ const ALL_MCP_TOOLS = [
   'codebase_search',
   'debug_analyze_task_parsing',
   'diagnose_conversation_bom',
-  'diagnose_env',
+  // 'diagnose_env': removed — consolidated into roosync_diagnose (#681/#698)
   'get_mcp_best_practices',
   'get_raw_conversation',
   'index_task_semantic',
