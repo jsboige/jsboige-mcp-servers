@@ -13,6 +13,7 @@ import { ConfigSharingServiceError, ConfigSharingServiceErrorCode } from '../../
 const mockCollectConfig = vi.fn();
 const mockPublishConfig = vi.fn();
 const mockApplyConfig = vi.fn();
+const mockApplyProfile = vi.fn();
 const mockGetConfigVersion = vi.fn();
 
 vi.mock('../../../services/RooSyncService.js', () => ({
@@ -21,7 +22,7 @@ vi.mock('../../../services/RooSyncService.js', () => ({
       collectConfig: mockCollectConfig,
       publishConfig: mockPublishConfig,
       applyConfig: mockApplyConfig,
-      applyProfile: vi.fn()
+      applyProfile: mockApplyProfile
     }),
     getConfigService: () => ({
       getConfigVersion: mockGetConfigVersion
@@ -600,6 +601,157 @@ describe('roosyncConfig', () => {
         })
       );
       expect(mockPublishConfig).toHaveBeenCalled();
+    });
+  });
+
+  // Tests for apply_profile action
+  describe('action: apply_profile', () => {
+    test('should apply profile with default parameters', async () => {
+      mockApplyProfile.mockResolvedValue({
+        success: true,
+        profileName: 'Production (Qwen 3.5 local + GLM-5 cloud)',
+        modesConfigured: 5,
+        apiConfigsCount: 3,
+        backupPath: '/tmp/backup-profile',
+        roomodesGenerated: true,
+        changes: ['modes.json', 'mcp.json']
+      });
+
+      const args: ConfigArgs = {
+        action: 'apply_profile',
+        profileName: 'Production (Qwen 3.5 local + GLM-5 cloud)'
+      };
+
+      const result = await roosyncConfig(args);
+
+      expect(result.status).toBe('success');
+      expect(result.message).toContain("Profil 'Production (Qwen 3.5 local + GLM-5 cloud)' appliqué avec succès");
+      expect(result.message).toContain('5 modes');
+      expect(result.message).toContain('3 configs API');
+      expect(result.message).toContain('.roomodes régénéré');
+      expect(result.profileName).toBe('Production (Qwen 3.5 local + GLM-5 cloud)');
+      expect(result.modesConfigured).toBe(5);
+      expect(result.apiConfigsCount).toBe(3);
+      expect(result.backupPath).toBe('/tmp/backup-profile');
+      expect(result.roomodesGenerated).toBe(true);
+      expect(mockApplyProfile).toHaveBeenCalledWith({
+        profileName: 'Production (Qwen 3.5 local + GLM-5 cloud)',
+        sourceMachineId: undefined,
+        backup: true,
+        dryRun: false
+      });
+    });
+
+    test('should throw when profileName is missing', async () => {
+      const args: ConfigArgs = {
+        action: 'apply_profile'
+      };
+
+      await expect(roosyncConfig(args)).rejects.toThrow(ConfigSharingServiceError);
+      await expect(roosyncConfig(args)).rejects.toThrow('profileName est requis pour action=apply_profile');
+    });
+
+    test('should handle roomodes generation failure in message', async () => {
+      mockApplyProfile.mockResolvedValue({
+        success: true,
+        profileName: 'Development Profile',
+        modesConfigured: 3,
+        apiConfigsCount: 2,
+        backupPath: null,
+        roomodesGenerated: false,
+        changes: ['modes.json'],
+        errors: ['Erreur lors de la génération du fichier .roomodes']
+      });
+
+      const args: ConfigArgs = {
+        action: 'apply_profile',
+        profileName: 'Development Profile'
+      };
+
+      const result = await roosyncConfig(args);
+
+      expect(result.status).toBe('success');
+      expect(result.message).toContain('.roomodes non régénéré');
+      expect(result.roomodesGenerated).toBe(false);
+    });
+
+    test('should support optional sourceMachineId parameter', async () => {
+      mockApplyProfile.mockResolvedValue({
+        success: true,
+        profileName: 'Shared Profile',
+        modesConfigured: 4,
+        apiConfigsCount: 2,
+        backupPath: '/tmp/backup',
+        roomodesGenerated: true,
+        changes: ['modes.json']
+      });
+
+      const args: ConfigArgs = {
+        action: 'apply_profile',
+        profileName: 'Shared Profile',
+        sourceMachineId: 'myia-ai-01'
+      };
+
+      await roosyncConfig(args);
+
+      expect(mockApplyProfile).toHaveBeenCalledWith({
+        profileName: 'Shared Profile',
+        sourceMachineId: 'myia-ai-01',
+        backup: true,
+        dryRun: false
+      });
+    });
+
+    test('should support backup=false parameter', async () => {
+      mockApplyProfile.mockResolvedValue({
+        success: true,
+        profileName: 'Quick Profile',
+        modesConfigured: 2,
+        apiConfigsCount: 1,
+        backupPath: null,
+        roomodesGenerated: true,
+        changes: ['mcp.json']
+      });
+
+      const args: ConfigArgs = {
+        action: 'apply_profile',
+        profileName: 'Quick Profile',
+        backup: false
+      };
+
+      await roosyncConfig(args);
+
+      expect(mockApplyProfile).toHaveBeenCalledWith({
+        profileName: 'Quick Profile',
+        sourceMachineId: undefined,
+        backup: false,
+        dryRun: false
+      });
+    });
+
+    test('should handle apply_profile failure', async () => {
+      mockApplyProfile.mockResolvedValue({
+        success: false,
+        profileName: 'Invalid Profile',
+        modesConfigured: 0,
+        apiConfigsCount: 0,
+        backupPath: null,
+        roomodesGenerated: false,
+        changes: [],
+        errors: ['Profile not found', 'Invalid configuration']
+      });
+
+      const args: ConfigArgs = {
+        action: 'apply_profile',
+        profileName: 'Invalid Profile'
+      };
+
+      const result = await roosyncConfig(args);
+
+      expect(result.status).toBe('error');
+      expect(result.message).toContain("Échec de l'application du profil 'Invalid Profile'");
+      expect(result.errors).toContain('Profile not found');
+      expect(result.errors).toContain('Invalid configuration');
     });
   });
 });

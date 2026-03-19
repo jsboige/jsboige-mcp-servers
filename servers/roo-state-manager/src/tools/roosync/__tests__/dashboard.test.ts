@@ -336,7 +336,7 @@ describe('roosync_dashboard', () => {
     expect(result.archives?.length).toBeGreaterThanOrEqual(1);
     const archiveName = result.archives?.[0];
     expect(archiveName).toMatch(/^global-/);
-    expect(archiveName).toMatch(/\.json$/);
+    expect(archiveName).toMatch(/\.md$/);
   });
 
   // === Test 25: read_archive avec archiveFile lit l'archive ===
@@ -372,7 +372,7 @@ describe('roosync_dashboard', () => {
     const result = await roosyncDashboard({
       action: 'read_archive',
       type: 'global',
-      archiveFile: 'global-nonexistent-archive.json'
+      archiveFile: 'global-nonexistent-archive.md'
     });
 
     expect(result.success).toBe(false);

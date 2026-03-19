@@ -6,15 +6,30 @@
  *
  * Architecture stockage :
  *   .shared-state/dashboards/
- *     global.json
- *     machine-{machineId}.json
- *     workspace-{workspaceName}.json
- *     workspace-{workspaceName},machine-{machineId}.json
+ *     global.md
+ *     machine-{machineId}.md
+ *     workspace-{workspaceName}.md
+ *     workspace-{workspaceName},machine-{machineId}.md
  *     archive/
- *       {key}-{date}.json
+ *       {key}-{date}.md
+ *
+ * Format fichier Markdown avec frontmatter YAML :
+ *   ---
+ *   type: workspace
+ *   lastModified: 2026-03-19T08:30:00Z
+ *   lastModifiedBy:
+ *     machineId: myia-po-2023
+ *     workspace: roo-extensions
+ *   ---
+ *
+ *   ## Status
+ *   ...
+ *
+ *   ## Intercom
+ *   ...
  *
  * @module tools/roosync/dashboard
- * @version 1.0.0
+ * @version 2.0.0
  * @issue #675
  */
 
@@ -22,6 +37,7 @@ import { z } from 'zod';
 import * as fs from 'fs/promises';
 import * as fsSync from 'fs';
 import * as path from 'path';
+import * as yaml from 'js-yaml';
 import { getSharedStatePath } from '../../utils/server-helpers.js';
 import { getLocalMachineId, getLocalWorkspaceId } from '../../utils/message-helpers.js';
 import { createLogger, Logger } from '../../utils/logger.js';
@@ -53,24 +69,31 @@ export const IntercomMessageSchema = z.object({
 
 export type IntercomMessage = z.infer<typeof IntercomMessageSchema>;
 
-export const DashboardSchema = z.object({
-  type: z.enum(['global', 'machine', 'workspace', 'workspace+machine'])
-    .describe('Type de dashboard'),
-  key: z.string().describe('Clé unique du dashboard'),
-  lastModified: z.string().describe('ISO 8601 timestamp de dernière modification'),
-  lastModifiedBy: AuthorSchema,
-  status: z.object({
-    markdown: z.string().describe('Contenu markdown de la section status (édition diff)'),
-    lastDiffCommit: z.string().optional().describe('Hash du dernier commit diff')
-  }),
-  intercom: z.object({
-    messages: z.array(IntercomMessageSchema).describe('Messages intercom (FIFO)'),
-    totalMessages: z.number().describe('Total messages ajoutés (y compris archivés)'),
-    lastCondensedAt: z.string().optional().describe('ISO 8601 timestamp dernière condensation')
-  })
-});
+// Dashboard au format Markdown (avec frontmatter YAML)
+export interface Dashboard {
+  type: 'global' | 'machine' | 'workspace' | 'workspace+machine';
+  key: string;
+  lastModified: string;
+  lastModifiedBy: Author;
+  status: {
+    markdown: string;
+    lastDiffCommit?: string;
+  };
+  intercom: {
+    messages: IntercomMessage[];
+    totalMessages: number;
+    lastCondensedAt?: string;
+  };
+}
 
-export type Dashboard = z.infer<typeof DashboardSchema>;
+// Frontmatter YAML (méta-données du fichier Markdown)
+export interface DashboardFrontmatter {
+  type: Dashboard['type'];
+  lastModified: string;
+  lastModifiedBy: Author;
+  totalMessages?: number;
+  lastCondensedAt?: string;
+}
 
 // Schema args pour l'outil MCP
 export const DashboardArgsSchema = z.object({
@@ -140,10 +163,10 @@ function buildDashboardKey(
 }
 
 /**
- * Convertit la clé en nom de fichier JSON
+ * Convertit la clé en nom de fichier Markdown
  */
 function keyToFilename(key: string): string {
-  return `${key}.json`;
+  return `${key}.md`;
 }
 
 /**
@@ -169,14 +192,66 @@ function getArchiveDir(): string {
 }
 
 /**
- * Lit un dashboard depuis le stockage. Retourne null si inexistant.
+ * Lit un dashboard depuis le stockage Markdown. Retourne null si inexistant.
  */
 async function readDashboardFile(key: string): Promise<Dashboard | null> {
   const filePath = getDashboardPath(key);
   try {
     const content = await fs.readFile(filePath, 'utf8');
-    const data = JSON.parse(content);
-    return DashboardSchema.parse(data);
+
+    // Parser le frontmatter YAML (entre --- et ---)
+    const frontmatterMatch = content.match(/^---\n([\s\S]+?)\n---/);
+    if (!frontmatterMatch) {
+      throw new Error(`Format dashboard invalide: frontmatter manquant dans ${filePath}`);
+    }
+
+    const frontmatter: DashboardFrontmatter = yaml.load(frontmatterMatch[1]) as DashboardFrontmatter;
+
+    // Extraire le contenu markdown après le frontmatter
+    const markdownContent = content.slice(frontmatterMatch[0].length);
+
+    // Séparer les sections Status et Intercom
+    const statusMatch = markdownContent.match(/## Status\n([\s\S]+?)(?=\n## Intercom|\n*$)/);
+    const intercomMatch = markdownContent.match(/## Intercom[\s\S]*?\n\n([\s\S]+)$/);
+
+    const statusMarkdown = statusMatch ? statusMatch[1].trim() : '';
+    const intercomMarkdown = intercomMatch ? intercomMatch[1].trim() : '';
+
+    // Parser les messages intercom (format: ### [timestamp] machine|workspace [tags]\n\ncontent)
+    const messages: IntercomMessage[] = [];
+    if (intercomMarkdown && !intercomMarkdown.includes('*Aucun message.*')) {
+      const messageBlocks = intercomMarkdown.split(/\n\n---\n\n/);
+      for (const block of messageBlocks) {
+        // Note: machineId et workspace peuvent contenir des tirets (ex: test-machine, roo-extensions)
+        // On utilise [^|\s]+ au lieu de \w+ pour permettre les tirets
+        const headerMatch = block.match(/### \[([^\]]+)\]\s+([^|]+)\|([^|\s]+)(\s+\[([^\]]+)\])?\n\n([\s\S]+)/);
+        if (headerMatch) {
+          const [, timestamp, machineId, workspace, , tagsStr, content] = headerMatch;
+          // tagsStr (groupe 5) contient déjà les tags sans les crochets: "WARN, SYSTEM"
+          const tags = tagsStr ? tagsStr.split(', ').map(t => t.trim()) : [];
+          messages.push({
+            id: generateMessageId(), // ID regénéré (pas stocké dans le format markdown)
+            timestamp,
+            author: { machineId: machineId.trim(), workspace: workspace.trim() },
+            content: content.trim(),
+            tags: tags.length > 0 ? tags : undefined
+          });
+        }
+      }
+    }
+
+    return {
+      type: frontmatter.type,
+      key,
+      lastModified: frontmatter.lastModified,
+      lastModifiedBy: frontmatter.lastModifiedBy,
+      status: { markdown: statusMarkdown },
+      intercom: {
+        messages,
+        totalMessages: frontmatter.totalMessages || messages.length,
+        lastCondensedAt: frontmatter.lastCondensedAt
+      }
+    };
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code === 'ENOENT') {
       return null;
@@ -187,14 +262,48 @@ async function readDashboardFile(key: string): Promise<Dashboard | null> {
 }
 
 /**
- * Écrit un dashboard dans le stockage (atomic via tmp file)
+ * Écrit un dashboard dans le stockage au format Markdown avec frontmatter YAML
  */
 async function writeDashboardFile(key: string, dashboard: Dashboard): Promise<void> {
   const dir = getDashboardsDir();
   await fs.mkdir(dir, { recursive: true });
   const filePath = getDashboardPath(key);
   const tmpPath = `${filePath}.tmp`;
-  const content = JSON.stringify(dashboard, null, 2);
+
+  // Construire le frontmatter YAML
+  const frontmatter: DashboardFrontmatter = {
+    type: dashboard.type,
+    lastModified: dashboard.lastModified,
+    lastModifiedBy: dashboard.lastModifiedBy,
+    totalMessages: dashboard.intercom.totalMessages,
+    lastCondensedAt: dashboard.intercom.lastCondensedAt
+  };
+
+  // Construire le contenu markdown
+  const yamlFrontmatter = yaml.dump(frontmatter);
+  const statusSection = dashboard.status.markdown || '*Aucun contenu.*';
+
+  // Construire la section intercom (messages en markdown)
+  const intercomSection = dashboard.intercom.messages.length > 0
+    ? dashboard.intercom.messages.map(msg => {
+        const tags = msg.tags?.length ? ` [${msg.tags.join(', ')}]` : '';
+        return `### [${msg.timestamp}] ${msg.author.machineId}|${msg.author.workspace}${tags}\n\n${msg.content}`;
+      }).join('\n\n---\n\n')
+    : '*Aucun message.*';
+
+  const content = `---
+${yamlFrontmatter.trim()}
+---
+
+## Status
+
+${statusSection}
+
+## Intercom (${dashboard.intercom.messages.length} messages)
+
+${intercomSection}
+`;
+
   await fs.writeFile(tmpPath, content, 'utf8');
   await fs.rename(tmpPath, filePath);
   logger.debug('Dashboard écrit', { key, path: filePath });
@@ -248,18 +357,40 @@ async function condenseIntercom(
   const toArchive = messages.slice(0, messages.length - keepCount);
   const toKeep = messages.slice(messages.length - keepCount);
 
-  // Archiver les anciens messages
+  // Archiver les anciens messages (format Markdown)
   const archiveDir = getArchiveDir();
   await fs.mkdir(archiveDir, { recursive: true });
   const dateStr = new Date().toISOString().replace(/[:.]/g, '-').substring(0, 19);
-  const archivePath = path.join(archiveDir, `${key}-${dateStr}.json`);
-  const archiveData = {
-    key,
+  const archivePath = path.join(archiveDir, `${key}-${dateStr}.md`);
+
+  // Construire le contenu markdown de l'archive
+  const archiveFrontmatter = yaml.dump({
+    type: 'archive',
+    originalKey: key,
     archivedAt: new Date().toISOString(),
-    messageCount: toArchive.length,
-    messages: toArchive
-  };
-  await fs.writeFile(archivePath, JSON.stringify(archiveData, null, 2), 'utf8');
+    messageCount: toArchive.length
+  });
+
+  const archiveMessages = toArchive.map(msg => {
+    const tags = msg.tags?.length ? ` [${msg.tags.join(', ')}]` : '';
+    return `### [${msg.timestamp}] ${msg.author.machineId}|${msg.author.workspace}${tags}\n\n${msg.content}`;
+  }).join('\n\n---\n\n');
+
+  const archiveContent = `---
+${archiveFrontmatter.trim()}
+---
+
+# Archive : ${key}
+
+Archivé le : ${new Date().toISOString()}
+Messages : ${toArchive.length}
+
+---
+
+${archiveMessages}
+`;
+
+  await fs.writeFile(archivePath, archiveContent, 'utf8');
   logger.info('Messages archivés', { key, count: toArchive.length, archivePath });
 
   // Ajouter message système de condensation
@@ -582,11 +713,11 @@ async function handleList(): Promise<DashboardResult> {
   try {
     await fs.mkdir(dir, { recursive: true });
     const files = await fs.readdir(dir);
-    const jsonFiles = files.filter(f => f.endsWith('.json') && !f.endsWith('.tmp'));
+    const mdFiles = files.filter(f => f.endsWith('.md') && !f.endsWith('.tmp'));
     const summaries: DashboardSummary[] = [];
 
-    for (const file of jsonFiles) {
-      const key = file.replace(/\.json$/, '');
+    for (const file of mdFiles) {
+      const key = file.replace(/\.md$/, '');
       try {
         const dashboard = await readDashboardFile(key);
         if (dashboard) {
@@ -661,7 +792,7 @@ async function handleReadArchive(key: string, args: DashboardArgs): Promise<Dash
       const files = await fs.readdir(archiveDir);
       const keyPrefix = key + '-';
       const archives = files
-        .filter(f => f.startsWith(keyPrefix) && f.endsWith('.json'))
+        .filter(f => f.startsWith(keyPrefix) && f.endsWith('.md'))
         .sort()
         .reverse(); // Plus récents en premier
       return {
@@ -684,18 +815,58 @@ async function handleReadArchive(key: string, args: DashboardArgs): Promise<Dash
     }
   }
 
-  // Lire une archive spécifique
+  // Lire une archive spécifique (format Markdown)
   const archivePath = path.join(archiveDir, args.archiveFile);
   try {
     const content = await fs.readFile(archivePath, 'utf8');
-    const archiveData = JSON.parse(content);
+
+    // Parser le frontmatter
+    const frontmatterMatch = content.match(/^---\n([\s\S]+?)\n---/);
+    if (!frontmatterMatch) {
+      throw new Error(`Format archive invalide: frontmatter manquant dans ${archivePath}`);
+    }
+
+    const archiveFrontmatter = yaml.load(frontmatterMatch[1]) as {
+      type: string;
+      originalKey: string;
+      archivedAt: string;
+      messageCount: number;
+    };
+
+    // Extraire les messages intercom
+    const markdownContent = content.slice(frontmatterMatch[0].length);
+    const messages: IntercomMessage[] = [];
+
+    // Trouver la section des messages (après les séparateurs ---)
+    const messageBlocks = markdownContent.split(/\n\n---\n\n/);
+    for (const block of messageBlocks) {
+      const headerMatch = block.match(/### \[([^\]]+)\]\s+([^|]+)\|([^|\s]+)(\s+\[([^\]]+)\])?\n\n([\s\S]+)/);
+      if (headerMatch) {
+        const [, timestamp, machineId, workspace, , tagsStr, msgContent] = headerMatch;
+        // tagsStr (groupe 5) contient déjà les tags sans les crochets: "WARN, SYSTEM"
+        const tags = tagsStr ? tagsStr.split(', ').map(t => t.trim()) : [];
+        messages.push({
+          id: generateMessageId(),
+          timestamp,
+          author: { machineId, workspace },
+          content: msgContent.trim(),
+          tags: tags.length > 0 ? tags : undefined
+        });
+      }
+    }
+
     return {
       success: true,
       action: 'read_archive',
       key,
       type: args.type ?? '',
-      archiveData,
-      message: `Archive '${args.archiveFile}' lue (${archiveData.messageCount} messages)`
+      archiveData: {
+        key: archiveFrontmatter.originalKey,
+        archivedAt: archiveFrontmatter.archivedAt,
+        messageCount: archiveFrontmatter.messageCount,
+        messages
+      },
+      message: `Archive '${args.archiveFile}' lue (${archiveFrontmatter.messageCount} messages)`
     };
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code === 'ENOENT') {

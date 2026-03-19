@@ -363,7 +363,6 @@ export {
   roosyncDashboard,
   dashboardToolMetadata,
   DashboardArgsSchema,
-  DashboardSchema,
   AuthorSchema,
   IntercomMessageSchema
 } from './dashboard.js';
