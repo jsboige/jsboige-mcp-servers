@@ -27,6 +27,9 @@ export class IndexingDecisionService {
      */
     public shouldIndex(skeleton: ConversationSkeleton): IndexingDecision {
         const taskId = skeleton.taskId;
+        if (!skeleton.metadata) {
+            return { shouldIndex: false, reason: 'Skeleton has no metadata', action: 'skip' };
+        }
         const indexingState = skeleton.metadata.indexingState || {};
         const lastActivity = new Date(skeleton.metadata.lastActivity).getTime();
         const now = Date.now();
@@ -241,6 +244,9 @@ export class IndexingDecisionService {
      * Migre l'ancien format qdrantIndexedAt vers le nouveau format
      */
     public migrateLegacyIndexingState(skeleton: ConversationSkeleton): boolean {
+        if (!skeleton.metadata) {
+            return false; // No metadata at all, nothing to migrate
+        }
         if (!skeleton.metadata.indexingState && skeleton.metadata.qdrantIndexedAt) {
             const now = new Date().toISOString();
             const nextReindex = new Date(Date.now() + (DEFAULT_REINDEX_TTL_HOURS * 60 * 60 * 1000)).toISOString();
