@@ -176,8 +176,9 @@ server.stdout.on('data', (data) => {
             const processed = cacheToolsList(trimmed);
             process.stdout.write(processed + '\n');
         } else if (trimmed.includes('Roo State Manager Server started')) {
-            // Laisser passer le message de démarrage
-            process.stdout.write(line + '\n');
+            // FIX: Redirect to stderr, NOT stdout - MCP stdio protocol requires
+            // only JSON-RPC messages on stdout. Non-JSON text breaks the handshake.
+            process.stderr.write('[MCP-WRAPPER] ' + line + '\n');
         }
         // Sinon, c'est un log de debug, on le supprime silencieusement
     });
