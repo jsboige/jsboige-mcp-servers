@@ -158,6 +158,7 @@ export class IndexingDecisionService {
      * Met à jour l'état d'indexation après un succès
      */
     public markIndexingSuccess(skeleton: ConversationSkeleton): void {
+        if (!skeleton.metadata) return;
         const now = new Date().toISOString();
         const nextReindex = new Date(Date.now() + (DEFAULT_REINDEX_TTL_HOURS * 60 * 60 * 1000)).toISOString();
 
@@ -187,6 +188,7 @@ export class IndexingDecisionService {
      * Met à jour l'état d'indexation après un échec
      */
     public markIndexingFailure(skeleton: ConversationSkeleton, error: string, isPermanent: boolean = false): void {
+        if (!skeleton.metadata) return;
         const now = new Date().toISOString();
 
         if (!skeleton.metadata.indexingState) {
@@ -230,6 +232,7 @@ export class IndexingDecisionService {
      * Réinitialise l'état d'indexation pour forcer une réindexation
      */
     public resetIndexingState(skeleton: ConversationSkeleton): void {
+        if (!skeleton.metadata) return;
         if (skeleton.metadata.indexingState) {
             skeleton.metadata.indexingState = {
                 indexVersion: this.indexVersion
