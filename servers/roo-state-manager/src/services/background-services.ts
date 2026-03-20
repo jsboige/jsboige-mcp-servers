@@ -306,7 +306,7 @@ async function scanForOutdatedQdrantIndex(state: ServerState): Promise<void> {
             state.indexingMetrics.skippedTasks++;
             console.log(`[SKIP] ${taskId}: ${decision.reason}`);
 
-            if (skeleton.metadata.indexingState?.indexStatus === 'failed') {
+            if (skeleton.metadata?.indexingState?.indexStatus === 'failed') {
                 failedCount++;
                 state.indexingMetrics.failedTasks++;
             }
