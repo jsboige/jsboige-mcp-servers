@@ -176,7 +176,7 @@ export class TaskInstructionIndex {
         for (const len of prefixLengths) {
             const searchPrefix = fullSearchPrefix.substring(0, len);
 
-            if (process.env.ROO_DEBUG_INSTRUCTIONS === '1' || true) { // Forcer le debug pour ce test
+            if (process.env.ROO_DEBUG_INSTRUCTIONS === '1') {
                 console.log(`[EXACT PREFIX SEARCH] SDDD: Trying prefix length ${len}: "${searchPrefix}"`);
             }
 
