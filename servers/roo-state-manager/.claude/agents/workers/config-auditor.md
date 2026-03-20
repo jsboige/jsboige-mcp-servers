@@ -19,7 +19,7 @@ Après chaque modification de config MCP (manage_mcp_settings(action: "write")),
 
 | MCP | Outils attendus | Rôle |
 |-----|-----------------|------|
-| roo-state-manager | 36 outils | Coordination RooSync, grounding conversationnel |
+| roo-state-manager | 34 outils | Coordination RooSync, grounding conversationnel |
 | win-cli | 9 outils (fork local 0.2.0) | Commandes shell (OBLIGATOIRE pour Roo scheduler) |
 
 **MCPs Standards :**
@@ -61,7 +61,7 @@ Configuré via l'interface VS Code ou le fichier settings.json global.
 **Statut : PASS** si tous les critères sont remplis, sinon **FAIL**
 - Serveur présent dans mcp_settings.json
 - disabled: false
-- alwaysAllow contient les 36 outils roosync_*
+- alwaysAllow contient les 34 outils roosync_*
 - alwaysAllow contient les outils de gestion
 - Chemin pointe vers mcps/internal/servers/roo-state-manager/mcp-wrapper.cjs
 

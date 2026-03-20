@@ -49,7 +49,7 @@ Les serveurs MCP sont placés dans le répertoire `servers/`:
 
 Le serveur **roo-state-manager** est le composant central du système RooSync Multi-Agent:
 
-- **36 outils MCP** pour la coordination multi-machine
+- **34 outils MCP** pour la coordination multi-machine
 - Gestion des conversations Roo (conversation_browser, view, tree, summarize)
 - Communication RooSync (send, read, manage, heartbeat, compare_config)
 - Gestion des baselines (update, version, restore, export)
