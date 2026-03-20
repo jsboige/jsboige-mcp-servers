@@ -65,37 +65,6 @@ export interface PipelineConfig {
 }
 
 /**
- * Résultat du parsing XML d'un appel d'outil
- */
-export interface XmlParsingResult {
-    success: boolean;
-    toolName?: string;
-    arguments?: Record<string, any>;
-    error?: string;
-    rawContent: string;
-}
-
-/**
- * Interface pour les services de parsing XML
- */
-export interface IXmlParsingService {
-    parseToolCall(xmlContent: string): XmlParsingResult;
-    isValidToolCall(content: string): boolean;
-    extractToolName(xmlContent: string): string | null;
-    extractArguments(xmlContent: string): Record<string, any> | null;
-}
-
-/**
- * Interface pour l'enrichissement de contenu
- */
-export interface IEnrichContentClassifier {
-    enrichContent(rawContent: ClassifiedContent[]): Promise<ClassifiedContent[]>;
-    classifyToolCall(content: string, index: number): Promise<ClassifiedContent>;
-    classifyToolResult(content: string, index: number): Promise<ClassifiedContent>;
-    calculateRelevanceScore(content: ClassifiedContent): number;
-}
-
-/**
  * Résultat du filtrage par les stratégies de reporting
  */
 export interface FilteringResult {

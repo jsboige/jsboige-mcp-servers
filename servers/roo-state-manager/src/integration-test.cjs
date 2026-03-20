@@ -29,11 +29,8 @@ function testArchitecture() {
     const files = [
         // Interfaces et types
         ['types/enhanced-conversation.ts', 'Types enrichis'],
-        
+
         // Services de base
-        ['services/XmlParsingService.ts', 'Service de parsing XML'],
-        ['services/EnrichContentClassifier.ts', 'Classificateur de contenu'],
-        ['services/SmartCleanerService.ts', 'Service de nettoyage intelligent'],
         ['services/MarkdownRenderer.ts', 'Rendu Markdown avancé'],
         ['services/ExportConfigManager.ts', 'Gestionnaire de configuration'],
         
@@ -152,9 +149,7 @@ function testCompilation() {
 function displayImplementationSummary() {
     console.log('📋 Résumé de l\'Implémentation SDDD:');
     console.log('');
-    console.log('✅ Phase 1 - Services de Base:');
-    console.log('   • XmlParsingService pour parsing avancé des outils');
-    console.log('   • EnrichContentClassifier pour classification intelligente');
+    console.log('✅ Phase 1 - Types de Base:');
     console.log('   • Types enrichis (ClassifiedContent, EnhancedSummaryOptions)');
     console.log('');
     console.log('✅ Phase 2 - Pattern Strategy:');
@@ -162,8 +157,7 @@ function displayImplementationSummary() {
     console.log('   • Strategies: Full, Messages, Summary, NoTools, etc.');
     console.log('   • Architecture extensible pour nouveaux niveaux');
     console.log('');
-    console.log('✅ Phase 3 - Services Avancés:');
-    console.log('   • SmartCleanerService pour nettoyage intelligent'); 
+    console.log('✅ Phase 3 - Services de Rendu:');
     console.log('   • MarkdownRenderer avec CSS et table des matières');
     console.log('   • ExportConfigManager pour configuration centralisée');
     console.log('');
