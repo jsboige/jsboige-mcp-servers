@@ -141,20 +141,12 @@ export function normalizeWorkspaceId(workspaceId: string): string {
   return path.basename(workspaceId.replace(/\\/g, '/')).toLowerCase();
 }
 
-// TEMPORARY: Ghost workspace IDs that were used due to the cwd bug (getLocalWorkspaceId
-// returned the MCP directory name instead of the VS Code workspace name).
-// Messages addressed to these IDs are treated as machine-level (visible by all workspaces
-// on that machine). This ensures old messages remain visible after the fix.
-// TODO: Remove this constant once all legacy messages have been processed (after 2026-04-01).
-const GHOST_WORKSPACE_IDS = new Set(['roo-state-manager']);
-
 /**
  * Vérifie si un message correspond au destinataire local
  *
  * Règles de matching :
  * - "all" / "All" → match tous
  * - "machineId" (sans workspace) → match toutes les instances sur cette machine
- * - "machineId:ghostWorkspace" → match toutes les instances (backward compat)
  * - "machineId:workspaceId" → match UNIQUEMENT ce workspace spécifique
  *   (comparaison normalisée : basename, case-insensitive)
  *
@@ -178,12 +170,6 @@ export function matchesRecipient(
   // Machine must match
   if (parsed.machineId !== localMachineId) {
     return false;
-  }
-
-  // Ghost workspace: old messages addressed to the MCP directory name
-  // are treated as machine-level (visible by all workspaces on that machine)
-  if (parsed.workspaceId && GHOST_WORKSPACE_IDS.has(normalizeWorkspaceId(parsed.workspaceId))) {
-    return true;
   }
 
   // If message targets a specific workspace, only that workspace should see it

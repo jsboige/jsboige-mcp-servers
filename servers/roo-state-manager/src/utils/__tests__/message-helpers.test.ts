@@ -220,17 +220,6 @@ describe('message-helpers', () => {
     test('workspace target with full path does NOT match different workspace', () => {
       expect(matchesRecipient('myia-ai-01:D:\\vllm', 'myia-ai-01', 'roo-extensions')).toBe(false);
     });
-
-    // Ghost workspace backward compatibility (cwd bug fix)
-    test('ghost workspace "roo-state-manager" matches ANY workspace on same machine', () => {
-      expect(matchesRecipient('myia-ai-01:roo-state-manager', 'myia-ai-01', 'roo-extensions')).toBe(true);
-      expect(matchesRecipient('myia-ai-01:roo-state-manager', 'myia-ai-01', 'myia-open-webui')).toBe(true);
-      expect(matchesRecipient('myia-ai-01:roo-state-manager', 'myia-ai-01', 'livresagites')).toBe(true);
-    });
-
-    test('ghost workspace does NOT match different machine', () => {
-      expect(matchesRecipient('myia-ai-01:roo-state-manager', 'myia-po-2024', 'roo-extensions')).toBe(false);
-    });
   });
 
   describe('normalizeWorkspaceId', () => {
