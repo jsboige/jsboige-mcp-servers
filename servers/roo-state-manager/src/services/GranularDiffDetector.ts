@@ -451,13 +451,19 @@ export class GranularDiffDetector {
       for (const [identity, targetItems] of targetMap) {
         if (!sourceMap.has(identity)) {
           for (const item of targetItems) {
-            const elementPath = `${currentPath}[${item.index}]`;
+            const itemName = this.extractItemName(item.value);
+            const elementPath = itemName
+              ? `${currentPath}.${itemName}`
+              : `${currentPath}[${item.index}]`;
+            const description = itemName
+              ? `Élément ajouté: '${itemName}'`
+              : `Élément ajouté à l'index ${item.index}`;
             diffs.push(this.createDiffResult(
               elementPath,
               'added',
               'INFO',
               'array',
-              `Élément ajouté à l'index ${item.index}`,
+              description,
               undefined,
               item.value,
               undefined,
@@ -472,13 +478,19 @@ export class GranularDiffDetector {
       for (const [identity, sourceItems] of sourceMap) {
         if (!targetMap.has(identity)) {
           for (const item of sourceItems) {
-            const elementPath = `${currentPath}[${item.index}]`;
+            const itemName = this.extractItemName(item.value);
+            const elementPath = itemName
+              ? `${currentPath}.${itemName}`
+              : `${currentPath}[${item.index}]`;
+            const description = itemName
+              ? `Élément supprimé: '${itemName}'`
+              : `Élément supprimé à l'index ${item.index}`;
             diffs.push(this.createDiffResult(
               elementPath,
               'removed',
               'WARNING',
               'array',
-              `Élément supprimé à l'index ${item.index}`,
+              description,
               item.value,
               undefined,
               undefined,
@@ -530,6 +542,17 @@ export class GranularDiffDetector {
     }
     
     return `${typeof value}:${value.toString()}`;
+  }
+
+  /**
+   * Extracts a human-readable name from an array element for better diff output (#758).
+   * Checks common discriminant fields: name, id, title, key, command.
+   */
+  private extractItemName(value: any): string | null {
+    if (value === null || value === undefined || typeof value !== 'object') {
+      return null;
+    }
+    return value.name || value.id || value.title || value.key || null;
   }
 
   /**
