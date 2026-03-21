@@ -2,7 +2,7 @@
  * Tests pour decision-helpers (utils)
  *
  * Couvre les fonctions pures: validateDecisionStatus, formatDecisionResult,
- * generateNextSteps, createBackup (mocked), restoreBackup (mocked).
+ * generateNextSteps, createBackup (mocked), restoreBackup (mocked), moveDecisionFile (mocked).
  *
  * @module tools/roosync/utils/decision-helpers.test
  */
@@ -212,5 +212,136 @@ describe('Interface - exports', () => {
     expect(typeof module.loadDecisionDetails).toBe('function');
     expect(typeof module.createBackup).toBe('function');
     expect(typeof module.restoreBackup).toBe('function');
+    expect(typeof module.moveDecisionFile).toBe('function');
+  });
+});
+
+describe('createBackup', () => {
+  let createBackup: typeof import('../../../../src/tools/roosync/utils/decision-helpers.js').createBackup;
+
+  beforeEach(async () => {
+    vi.resetModules();
+    vi.clearAllMocks();
+    const module = await import('../../../../src/tools/roosync/utils/decision-helpers.js');
+    createBackup = module.createBackup;
+  });
+
+  it('devrait retourner un objet avec les propriétés attendues', () => {
+    const files = ['/path/to/file1.txt'];
+    const backupPath = '/tmp/backups';
+
+    const result = createBackup(files, backupPath);
+
+    expect(result).toHaveProperty('timestamp');
+    expect(result).toHaveProperty('files');
+    expect(result).toHaveProperty('backupDir');
+  });
+
+  it('devrait gérer les fichiers inexistants sans erreur', () => {
+    const files = ['/nonexistent/file.txt'];
+    const backupPath = '/tmp/backups';
+
+    // Ne devrait pas lancer d'erreur même si le fichier n'existe pas
+    expect(() => createBackup(files, backupPath)).not.toThrow();
+  });
+});
+
+describe('restoreBackup', () => {
+  let restoreBackup: typeof import('../../../../src/tools/roosync/utils/decision-helpers.js').restoreBackup;
+
+  beforeEach(async () => {
+    vi.resetModules();
+    vi.clearAllMocks();
+    const module = await import('../../../../src/tools/roosync/utils/decision-helpers.js');
+    restoreBackup = module.restoreBackup;
+  });
+
+  it('devrait lancer une erreur si backupDir manquant', () => {
+    const backupInfo = {
+      timestamp: '2026-03-21T12-00-00',
+      files: [],
+      // backupDir manquant
+    };
+    const targetPath = '/target';
+
+    expect(() => restoreBackup(backupInfo, targetPath)).toThrow();
+  });
+});
+
+describe('moveDecisionFile', () => {
+  let moveDecisionFile: typeof import('../../../../src/tools/roosync/utils/decision-helpers.js').moveDecisionFile;
+
+  beforeEach(async () => {
+    vi.resetModules();
+    vi.clearAllMocks();
+    const module = await import('../../../../src/tools/roosync/utils/decision-helpers.js');
+    moveDecisionFile = module.moveDecisionFile;
+  });
+
+  it('devrait déplacer un fichier de décision et mettre à jour le statut', () => {
+    const sharedPath = '/shared-state';
+    const decisionId = 'DEC-001';
+    const fromStatus = 'pending';
+    const toStatus = 'approved';
+
+    const originalDecision = {
+      title: 'Test Decision',
+      status: 'pending'
+    };
+
+    mockFsFunctions.existsSync.mockReturnValue(true);
+    mockFsFunctions.readFileSync.mockReturnValue(JSON.stringify(originalDecision));
+
+    const result = moveDecisionFile(sharedPath, decisionId, fromStatus, toStatus);
+
+    expect(result).toBe(true);
+    expect(mockFsFunctions.readFileSync).toHaveBeenCalled();
+    expect(mockFsFunctions.writeFileSync).toHaveBeenCalled();
+    expect(mockFsFunctions.unlinkSync).toHaveBeenCalled();
+
+    // Vérifier que le statut a été mis à jour dans le JSON écrit
+    const writtenContent = mockFsFunctions.writeFileSync.mock.calls[0][1];
+    const updatedDecision = JSON.parse(writtenContent as string);
+    expect(updatedDecision.status).toBe('approved');
+  });
+
+  it('devrait retourner false si le fichier source n\'existe pas', () => {
+    const sharedPath = '/shared-state';
+    const decisionId = 'DEC-999';
+    const fromStatus = 'pending';
+    const toStatus = 'approved';
+
+    mockFsFunctions.existsSync.mockReturnValue(false);
+
+    const result = moveDecisionFile(sharedPath, decisionId, fromStatus, toStatus);
+
+    expect(result).toBe(false);
+    expect(mockFsFunctions.readFileSync).not.toHaveBeenCalled();
+  });
+
+  it('devrait ajouter les timestamps appropriés selon le statut', () => {
+    const sharedPath = '/shared-state';
+    const decisionId = 'DEC-002';
+    const fromStatus = 'approved';
+    const toStatus = 'applied';
+
+    const originalDecision = {
+      title: 'Test Decision',
+      status: 'approved',
+      approvedAt: '2026-03-20T10:00:00Z',
+      approvedBy: 'machine-1'
+    };
+
+    mockFsFunctions.existsSync.mockReturnValue(true);
+    mockFsFunctions.readFileSync.mockReturnValue(JSON.stringify(originalDecision));
+
+    moveDecisionFile(sharedPath, decisionId, fromStatus, toStatus);
+
+    const writtenContent = mockFsFunctions.writeFileSync.mock.calls[0][1];
+    const updatedDecision = JSON.parse(writtenContent as string);
+
+    expect(updatedDecision.status).toBe('applied');
+    expect(updatedDecision).toHaveProperty('appliedAt');
+    expect(updatedDecision).toHaveProperty('appliedBy');
   });
 });
