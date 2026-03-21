@@ -91,3 +91,7 @@ outputs/
 *.backup*
 src/index.ts.backup*
 roo-config/
+
+# Worker-generated audit reports (one-time outputs, don't belong in repo)
+AUDIT-REPORT-*.md
+analyze-coverage.*
