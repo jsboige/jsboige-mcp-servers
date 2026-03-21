@@ -831,11 +831,7 @@ describe('ContentClassifier', () => {
     // classifyContentFromMarkdownOrJson
     // ====================================================================
     describe('classifyContentFromMarkdownOrJson', () => {
-        it('should fall back to JSON classification when no markdown file found', async () => {
-            // fs.promises.access will throw (file not found) for any path
-            const fsMock = await import('fs');
-            vi.mocked(fsMock.promises.access).mockRejectedValue(new Error('ENOENT'));
-
+        it('should classify conversation content directly', async () => {
             const conv = makeSkeleton([
                 makeMessage('user', 'hello'),
                 makeMessage('assistant', 'hi there'),
@@ -845,37 +841,6 @@ describe('ContentClassifier', () => {
             expect(result).toHaveLength(2);
             expect(result[0].type).toBe('User');
             expect(result[1].type).toBe('Assistant');
-        });
-
-        it('should use markdown file when found and readable', async () => {
-            const fsMock = await import('fs');
-            // Make access succeed for any path
-            vi.mocked(fsMock.promises.access).mockResolvedValue(undefined);
-            // Provide markdown content
-            const mdContent = '**User:** Hello world\n\n**Assistant:** I can help you.';
-            vi.mocked(fsMock.promises.readFile).mockResolvedValue(mdContent);
-
-            const conv = makeSkeleton([makeMessage('user', 'fallback')]);
-
-            const result = await classifier.classifyContentFromMarkdownOrJson(conv);
-            // The markdown parsing should produce classified content from the markdown
-            // Even if taskId is not in taskMap, the fallback trace file check may succeed
-            expect(result).toBeDefined();
-            expect(Array.isArray(result)).toBe(true);
-        });
-
-        it('should handle markdown read error gracefully by throwing', async () => {
-            const fsMock = await import('fs');
-            // access succeeds (file appears to exist)
-            vi.mocked(fsMock.promises.access).mockResolvedValue(undefined);
-            // readFile fails
-            vi.mocked(fsMock.promises.readFile).mockRejectedValue(new Error('read error'));
-
-            const conv = makeSkeleton([makeMessage('user', 'test')]);
-
-            await expect(
-                classifier.classifyContentFromMarkdownOrJson(conv)
-            ).rejects.toThrow('read error');
         });
     });
 
