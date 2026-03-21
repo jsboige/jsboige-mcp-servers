@@ -131,7 +131,7 @@ describe('SummaryGenerator', () => {
 			expect(opts.includeCss).toBe(true);
 			expect(opts.generateToc).toBe(true);
 			expect(opts.outputFormat).toBe('markdown');
-			expect(opts.enableDetailLevels).toBe(false);
+			expect(opts.enableDetailLevels).toBe(true);
 			expect(opts.hideEnvironmentDetails).toBe(true);
 		});
 

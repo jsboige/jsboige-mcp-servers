@@ -631,8 +631,8 @@ export class TraceSummaryService {
             outputFormat: options.outputFormat || 'markdown',
             jsonVariant: options.jsonVariant,
             csvVariant: options.csvVariant,
-            // SDDD Phase 3: Feature flag pour les strategies (désactivé par défaut pour compatibilité)
-            enableDetailLevels: options.enableDetailLevels || false,
+            // SDDD Phase 3: Detail level strategies (enabled by default, #764)
+            enableDetailLevels: options.enableDetailLevels !== false,
             // CORRECTION CRITIQUE: tocStyle doit être synchronisé avec outputFormat
             // Si outputFormat est 'markdown', utiliser 'markdown' pour éviter les balises HTML
             tocStyle: options.tocStyle || ((options.outputFormat || 'markdown') === 'html' ? 'html' : 'markdown'),
