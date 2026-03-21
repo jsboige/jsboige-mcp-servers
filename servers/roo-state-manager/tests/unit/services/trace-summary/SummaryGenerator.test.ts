@@ -72,16 +72,16 @@ describe('SummaryGenerator', () => {
     });
 
     describe('generateSummary', () => {
-        it('should generate summary using standard renderer by default', async () => {
+        it('should generate summary using interactive features by default (#764)', async () => {
             const result = await generator.generateSummary(mockConversation);
 
             expect(result.success).toBe(true);
-            expect(result.content).toBe('Full Rendered Summary');
+            // With enableDetailLevels=true by default, interactive features are used
             expect(mockClassifier.classifyContentFromMarkdownOrJson).toHaveBeenCalledWith(
                 mockConversation,
-                expect.objectContaining({ detailLevel: 'Full' })
+                expect.objectContaining({ detailLevel: 'Full', enableDetailLevels: true })
             );
-            expect(mockRenderer.renderSummary).toHaveBeenCalled();
+            expect(mockInteractive.renderConversationContentWithStrategies).toHaveBeenCalled();
         });
 
         it('should use interactive features when enableDetailLevels is true', async () => {
