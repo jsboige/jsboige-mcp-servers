@@ -273,7 +273,13 @@ export async function handleCodebaseSearch(args: CodebaseSearchArgs): Promise<Ca
 			const segments = normalizedPrefix.split('/').filter(Boolean);
 
 			if (segments.length > 0) {
-				filter.must = segments.map((segment, index) => ({
+				// Qdrant only indexes pathSegments.0 through pathSegments.4 (5 levels).
+				// Filtering on unindexed levels with HNSW approximate search returns 0 results
+				// because post-filter on ANN candidates eliminates everything.
+				// Cap at 5 segments to match the indexed depth. (#797)
+				const MAX_INDEXED_DEPTH = 5;
+				const cappedSegments = segments.slice(0, MAX_INDEXED_DEPTH);
+				filter.must = cappedSegments.map((segment, index) => ({
 					key: `pathSegments.${index}`,
 					match: { value: segment }
 				}));
