@@ -126,19 +126,20 @@ const CondensedSynthesisBatchSchema = z.object({
 // =============================================================================
 
 /**
- * Configuration par défaut pour GPT-4o optimisée pour la synthèse
- * Note: GPT-4o supporte les structured outputs avec zodResponseFormat
+ * Configuration par défaut pour le modèle LLM de synthèse.
+ * Lit OPENAI_CHAT_MODEL_ID depuis l'environnement (ex: qwen3.5-35b-a3b).
+ * Le SDK OpenAI lit automatiquement OPENAI_BASE_URL pour le endpoint.
  */
 const DEFAULT_MODEL_CONFIG: LLMModelConfig = {
-    modelId: 'gpt-4o-mini-synthesis',
-    displayName: 'GPT-4o Mini (Synthèse)',
+    modelId: 'synthesis-default',
+    displayName: process.env.OPENAI_CHAT_MODEL_ID || 'LLM Synthesis',
     provider: 'openai',
     modelName: process.env.OPENAI_CHAT_MODEL_ID || 'gpt-4o-mini',
-    maxTokens: 128000,
-    costPerInputToken: 0.00015 / 1000,  // Prix GPT-4o-mini
-    costPerOutputToken: 0.0006 / 1000,   // Prix GPT-4o-mini
+    maxTokens: 262144,
+    costPerInputToken: 0,  // Self-hosted = free
+    costPerOutputToken: 0,
     parameters: {
-        temperature: 0.1
+        temperature: 0.6
     }
 };
 
@@ -147,8 +148,8 @@ const DEFAULT_MODEL_CONFIG: LLMModelConfig = {
  */
 const DEFAULT_SERVICE_OPTIONS: LLMServiceOptions = {
     models: [DEFAULT_MODEL_CONFIG],
-    defaultModelId: 'gpt-4o-mini-synthesis',
-    defaultTimeout: 60000, // 60 secondes
+    defaultModelId: 'synthesis-default',
+    defaultTimeout: 120000, // 120 secondes (modèle local plus lent)
     maxRetries: 3,
     retryDelay: 1000,
     enableCaching: true

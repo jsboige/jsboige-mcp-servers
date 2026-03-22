@@ -149,8 +149,8 @@ describe('LLMService', () => {
 	describe('isModelAvailable', () => {
 		test('returns true for configured model', () => {
 			const service = new LLMService();
-			// Default model is 'gpt-4o-mini-synthesis'
-			expect(service.isModelAvailable('gpt-4o-mini-synthesis')).toBe(true);
+			// Default model is 'synthesis-default'
+			expect(service.isModelAvailable('synthesis-default')).toBe(true);
 		});
 
 		test('returns false for unconfigured model', () => {
