@@ -269,38 +269,38 @@ describe('handleRooSyncSummarize', () => {
   // Dispatch type=synthesis
   // ============================================================
 
-  describe('dispatch type=synthesis', () => {
-    test('appelle handleGetConversationSynthesis', async () => {
-      await handleRooSyncSummarize(
-        { type: 'synthesis', taskId: 'task-001' },
-        mockGetConversationSkeleton
-      );
-
-      expect(mockHandleGetConversationSynthesis).toHaveBeenCalledOnce();
+  describe('dispatch type=synthesis — DISABLED due to stubs #767/#768', () => {
+    test('throws SYNTHESIS_DISABLED error', async () => {
+      await expect(
+        handleRooSyncSummarize(
+          { type: 'synthesis', taskId: 'task-001' },
+          mockGetConversationSkeleton
+        )
+      ).rejects.toThrow('disabled');
     });
 
-    test('retourne le résultat (string) de handleGetConversationSynthesis', async () => {
-      mockHandleGetConversationSynthesis.mockResolvedValue('synthesis string result');
+    test('does NOT call handleGetConversationSynthesis', async () => {
+      try {
+        await handleRooSyncSummarize(
+          { type: 'synthesis', taskId: 'task-001' },
+          mockGetConversationSkeleton
+        );
+      } catch { /* expected */ }
 
-      const result = await handleRooSyncSummarize(
-        { type: 'synthesis', taskId: 'task-001' },
-        mockGetConversationSkeleton
-      );
-
-      expect(result).toBe('synthesis string result');
+      expect(mockHandleGetConversationSynthesis).not.toHaveBeenCalled();
     });
 
-    test('sérialise en JSON si résultat est un objet', async () => {
-      mockHandleGetConversationSynthesis.mockResolvedValue({ key: 'value', count: 42 });
-
-      const result = await handleRooSyncSummarize(
-        { type: 'synthesis', taskId: 'task-001' },
-        mockGetConversationSkeleton
-      );
-
-      const parsed = JSON.parse(result);
-      expect(parsed.key).toBe('value');
-      expect(parsed.count).toBe(42);
+    test('error mentions issue 767 and suggests alternatives', async () => {
+      try {
+        await handleRooSyncSummarize(
+          { type: 'synthesis', taskId: 'task-001' },
+          mockGetConversationSkeleton
+        );
+        expect.unreachable('should have thrown');
+      } catch (error: any) {
+        expect(error.message).toContain('767');
+        expect(error.message).toContain('trace');
+      }
     });
   });
 

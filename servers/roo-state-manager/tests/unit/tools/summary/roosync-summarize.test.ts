@@ -93,7 +93,7 @@ describe('roosync_summarize - CONS-12', () => {
             ).resolves.toBeDefined();
         });
 
-        it('devrait accepter type=synthesis avec arguments valides', async () => {
+        it('devrait rejeter type=synthesis (désactivé — stubs #767/#768)', async () => {
             await expect(
                 handleRooSyncSummarize(
                     {
@@ -103,7 +103,7 @@ describe('roosync_summarize - CONS-12', () => {
                     },
                     getConversationSkeletonMock
                 )
-            ).resolves.toBeDefined();
+            ).rejects.toThrow('disabled');
         });
     });
 
@@ -135,19 +135,17 @@ describe('roosync_summarize - CONS-12', () => {
             expect(typeof result).toBe('string');
         });
 
-        it('devrait appeler le handler synthesis pour type=synthesis', async () => {
-            const result = await handleRooSyncSummarize(
-                {
-                    type: 'synthesis',
-                    taskId: 'test-123',
-                    outputFormat: 'json'
-                },
-                getConversationSkeletonMock
-            );
-
-            expect(typeof result).toBe('string');
-            // Devrait retourner du JSON valide
-            expect(() => JSON.parse(result)).not.toThrow();
+        it('devrait rejeter synthesis (désactivé — stubs #767/#768)', async () => {
+            await expect(
+                handleRooSyncSummarize(
+                    {
+                        type: 'synthesis',
+                        taskId: 'test-123',
+                        outputFormat: 'json'
+                    },
+                    getConversationSkeletonMock
+                )
+            ).rejects.toThrow('disabled');
         });
     });
 
@@ -185,17 +183,17 @@ describe('roosync_summarize - CONS-12', () => {
             expect(typeof result).toBe('string');
         });
 
-        it('devrait propager les paramètres synthesis correctement', async () => {
-            const result = await handleRooSyncSummarize(
-                {
-                    type: 'synthesis',
-                    taskId: 'test-123',
-                    outputFormat: 'markdown'
-                },
-                getConversationSkeletonMock
-            );
-
-            expect(typeof result).toBe('string');
+        it('devrait rejeter synthesis même avec paramètres valides (désactivé — stubs #767/#768)', async () => {
+            await expect(
+                handleRooSyncSummarize(
+                    {
+                        type: 'synthesis',
+                        taskId: 'test-123',
+                        outputFormat: 'markdown'
+                    },
+                    getConversationSkeletonMock
+                )
+            ).rejects.toThrow('disabled');
         });
     });
 
@@ -212,7 +210,7 @@ describe('roosync_summarize - CONS-12', () => {
             ).rejects.toThrow();
         });
 
-        it('devrait gérer une conversation inexistante pour synthesis', async () => {
+        it('devrait rejeter synthesis même avec conversation inexistante (désactivé avant dispatch)', async () => {
             await expect(
                 handleRooSyncSummarize(
                     {
@@ -221,7 +219,7 @@ describe('roosync_summarize - CONS-12', () => {
                     },
                     getConversationSkeletonMock
                 )
-            ).rejects.toThrow();
+            ).rejects.toThrow('disabled');
         });
     });
 
@@ -268,19 +266,17 @@ describe('roosync_summarize - CONS-12', () => {
             expect(typeof result).toBe('string');
         });
 
-        it('devrait supporter tous les paramètres de get_conversation_synthesis', async () => {
-            const result = await handleRooSyncSummarize(
-                {
-                    type: 'synthesis',
-                    taskId: 'test-123',
-                    outputFormat: 'json'
-                },
-                getConversationSkeletonMock
-            );
-
-            expect(typeof result).toBe('string');
-            const parsed = JSON.parse(result);
-            expect(parsed).toHaveProperty('taskId');
+        it('devrait rejeter synthesis backward compat (désactivé — stubs #767/#768)', async () => {
+            await expect(
+                handleRooSyncSummarize(
+                    {
+                        type: 'synthesis',
+                        taskId: 'test-123',
+                        outputFormat: 'json'
+                    },
+                    getConversationSkeletonMock
+                )
+            ).rejects.toThrow('disabled');
         });
     });
 });

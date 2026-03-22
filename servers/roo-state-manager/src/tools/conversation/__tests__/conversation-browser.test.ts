@@ -382,21 +382,8 @@ describe('conversation_browser', () => {
 	// Action: summarize with summarize_type='synthesis'
 	// ============================================================
 
-	describe('action: summarize (synthesis)', () => {
-		test('delegates to handleGetConversationSynthesis with correct args', async () => {
-			mockHandleGetConversationSynthesis.mockResolvedValue({
-				taskId: 'task-synth',
-				analysisEngineVersion: '3.0.0-phase3',
-				analysisTimestamp: '2026-03-09T12:00:00Z',
-				llmModelId: 'test-model',
-				contextTrace: { rootTaskId: 'task-synth', previousSiblingTaskIds: [] },
-				objectives: { goal: 'test' },
-				strategy: { approach: 'simple' },
-				quality: { score: 0.9 },
-				metrics: {},
-				synthesis: { initialContextSummary: 'Context', finalTaskSummary: 'Done' }
-			});
-
+	describe('action: summarize (synthesis) — DISABLED due to stubs #767/#768', () => {
+		test('synthesis returns disabled error with explanation', async () => {
 			const result = await handleConversationBrowser(
 				{
 					action: 'summarize',
@@ -410,61 +397,19 @@ describe('conversation_browser', () => {
 				mockFindChildren
 			);
 
-			expect(mockHandleGetConversationSynthesis).toHaveBeenCalledWith(
-				expect.objectContaining({
-					taskId: 'task-synth',
-					outputFormat: 'json'
-				}),
-				mockGetSkeleton
-			);
-			expect(result.isError).toBeFalsy();
+			expect(result.isError).toBe(true);
 			const text = getTextContent(result);
-			const parsed = JSON.parse(text);
-			expect(parsed.taskId).toBe('task-synth');
-			expect(parsed.analysisEngineVersion).toBe('3.0.0-phase3');
+			expect(text).toContain('disabled');
+			expect(text).toContain('#767');
+			expect(text).toContain('trace');
 		});
 
-		test('synthesis with markdown format returns string result', async () => {
-			mockHandleGetConversationSynthesis.mockResolvedValue(
-				'# Synthèse\n\nRésumé final de la tâche.'
-			);
-
-			const result = await handleConversationBrowser(
-				{
-					action: 'summarize',
-					summarize_type: 'synthesis',
-					taskId: 'task-md',
-					synthesis_output_format: 'markdown'
-				} as ConversationBrowserArgs,
-				mockCache,
-				mockEnsureCache,
-				undefined,
-				mockGetSkeleton,
-				mockFindChildren
-			);
-
-			expect(mockHandleGetConversationSynthesis).toHaveBeenCalledWith(
-				expect.objectContaining({
-					taskId: 'task-md',
-					outputFormat: 'markdown'
-				}),
-				mockGetSkeleton
-			);
-			expect(result.isError).toBeFalsy();
-			expect(getTextContent(result)).toContain('Synthèse');
-		});
-
-		test('synthesis with filePath passes it through', async () => {
-			mockHandleGetConversationSynthesis.mockResolvedValue(
-				'Synthèse exportée vers /tmp/synth.json'
-			);
-
+		test('synthesis does NOT call handleGetConversationSynthesis', async () => {
 			await handleConversationBrowser(
 				{
 					action: 'summarize',
 					summarize_type: 'synthesis',
-					taskId: 'task-file',
-					filePath: '/tmp/synth.json'
+					taskId: 'task-synth'
 				} as ConversationBrowserArgs,
 				mockCache,
 				mockEnsureCache,
@@ -473,78 +418,10 @@ describe('conversation_browser', () => {
 				mockFindChildren
 			);
 
-			expect(mockHandleGetConversationSynthesis).toHaveBeenCalledWith(
-				expect.objectContaining({
-					taskId: 'task-file',
-					filePath: '/tmp/synth.json'
-				}),
-				mockGetSkeleton
-			);
+			expect(mockHandleGetConversationSynthesis).not.toHaveBeenCalled();
 		});
 
-		test('synthesis resolves task_id alias to taskId', async () => {
-			mockHandleGetConversationSynthesis.mockResolvedValue({ taskId: 'alias-task' });
-
-			await handleConversationBrowser(
-				{
-					action: 'summarize',
-					summarize_type: 'synthesis',
-					task_id: 'alias-task'
-				} as ConversationBrowserArgs,
-				mockCache,
-				mockEnsureCache,
-				undefined,
-				mockGetSkeleton,
-				mockFindChildren
-			);
-
-			expect(mockHandleGetConversationSynthesis).toHaveBeenCalledWith(
-				expect.objectContaining({ taskId: 'alias-task' }),
-				mockGetSkeleton
-			);
-		});
-
-		test('synthesis returns error when getConversationSkeleton is missing', async () => {
-			const result = await handleConversationBrowser(
-				{
-					action: 'summarize',
-					summarize_type: 'synthesis',
-					taskId: 'task-no-getter'
-				} as ConversationBrowserArgs,
-				mockCache,
-				mockEnsureCache,
-				undefined,
-				undefined, // no getConversationSkeleton
-				mockFindChildren
-			);
-
-			expect(result.isError).toBe(true);
-			expect(getTextContent(result)).toContain('getConversationSkeleton');
-		});
-
-		test('synthesis handles LLM errors gracefully', async () => {
-			mockHandleGetConversationSynthesis.mockRejectedValue(
-				new Error('LLM API connection refused')
-			);
-
-			const result = await handleConversationBrowser(
-				{
-					action: 'summarize',
-					summarize_type: 'synthesis',
-					taskId: 'task-err'
-				} as ConversationBrowserArgs,
-				mockCache,
-				mockEnsureCache,
-				undefined,
-				mockGetSkeleton,
-				mockFindChildren
-			);
-
-			expect(result.isError).toBe(true);
-			expect(getTextContent(result)).toContain('LLM API connection refused');
-		});
-
-		test('synthesis is listed in the summarize_type schema enum', async () => {
+		test('synthesis is still listed in schema enum (for documentation)', async () => {
 			const { conversationBrowserTool } = await import('../conversation-browser.js');
 			const summarizeTypeEnum = (conversationBrowserTool.inputSchema as any).properties.summarize_type.enum;
 			expect(summarizeTypeEnum).toContain('synthesis');
