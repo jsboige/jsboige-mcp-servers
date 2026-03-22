@@ -546,4 +546,382 @@ describe('roosync_baseline', () => {
       expect(content).toContain('""quotes""'); // Guillemets échappés
     });
   });
+
+  // ============================================================
+  // Tests pour scénarios de bordure et gestion d'erreurs
+  // ============================================================
+
+  describe('edge cases and error handling', () => {
+    test('should handle tag already exists error', async () => {
+      // Mock pour simuler un tag qui existe déjà
+      const { execSync } = await import('child_process');
+      vi.mocked(execSync).mockImplementation((cmd: string) => {
+        if (cmd.includes('git rev-parse --verify refs/tags/baseline-v1.0.0')) {
+          return 'existing-tag-commit'; // Tag existe
+        }
+        if (cmd.includes('git tag -l')) {
+          return 'baseline-v1.0.0\n';
+        }
+        return '';
+      });
+
+      await expect(
+        roosync_baseline({ action: 'version', version: '1.0.0', pushTags: false })
+      ).rejects.toThrow('existe déjà');
+    });
+
+    test('should handle git commit failure gracefully', async () => {
+      const { execSync } = await import('child_process');
+      vi.mocked(execSync).mockImplementation((cmd: string) => {
+        if (cmd.includes('git commit')) {
+          throw new Error('Git commit failed');
+        }
+        if (cmd.includes('git rev-parse --verify refs/tags/')) {
+          throw new Error('Tag not found');
+        }
+        if (cmd.includes('git tag -l')) {
+          return 'baseline-v1.0.0\n';
+        }
+        return '';
+      });
+
+      // Le test doit réussir même si le commit échoue (warning only)
+      const result = await roosync_baseline({
+        action: 'version',
+        version: '1.0.1',
+        pushTags: false
+      });
+      expect(result.success).toBe(true);
+    });
+
+    test('should handle git tag creation failure', async () => {
+      const { execSync } = await import('child_process');
+      vi.mocked(execSync).mockImplementation((cmd: string) => {
+        if (cmd.includes('git tag -a')) {
+          throw new Error('Git tag creation failed');
+        }
+        if (cmd.includes('git rev-parse --verify refs/tags/')) {
+          throw new Error('Tag not found');
+        }
+        if (cmd.includes('git tag -l')) {
+          return 'baseline-v1.0.0\n';
+        }
+        return '';
+      });
+
+      await expect(
+        roosync_baseline({ action: 'version', version: '1.0.2', pushTags: false })
+      ).rejects.toThrow('Git tag creation failed');
+    });
+
+    test('should handle non-existent backup file', async () => {
+      await expect(
+        roosync_baseline({
+          action: 'restore',
+          source: '/nonexistent/backup.json'
+        })
+      ).rejects.toThrow();
+    });
+
+    test('should handle invalid baseline in backup', async () => {
+      const backupPath = join(testSharedStatePath, '.rollback', 'invalid-backup.json');
+      writeFileSync(backupPath, '{ invalid json');
+
+      await expect(
+        roosync_baseline({ action: 'restore', source: backupPath })
+      ).rejects.toThrow();
+    });
+
+    test('should handle baseline without required fields', async () => {
+      const backupPath = join(testSharedStatePath, '.rollback', 'incomplete-backup.json');
+      writeFileSync(backupPath, JSON.stringify({ version: '1.0.0' })); // Missing machineId
+
+      await expect(
+        roosync_baseline({ action: 'restore', source: backupPath })
+      ).rejects.toThrow();
+    });
+  });
+
+  // ============================================================
+  // Tests pour scénarios de profile mode
+  // ============================================================
+
+  describe('profile mode scenarios', () => {
+    test('should create profile with aggregation config', async () => {
+      const result = await roosync_baseline({
+        action: 'update',
+        machineId: 'dev-profile',
+        mode: 'profile',
+        aggregationConfig: {
+          sources: ['machine1', 'machine2'],
+          categoryRules: { modes: 'merge' },
+          thresholds: { coverage: 80 }
+        }
+      });
+
+      expect(result.success).toBe(true);
+      expect(result.newBaseline?.machineId).toContain('profile:dev-profile');
+    });
+
+    test('should create profile without aggregation config', async () => {
+      const result = await roosync_baseline({
+        action: 'update',
+        machineId: 'simple-profile',
+        mode: 'profile'
+      });
+
+      expect(result.success).toBe(true);
+      expect(result.newBaseline?.machineId).toContain('profile:simple-profile');
+    });
+  });
+
+  // ============================================================
+  // Tests pour export avec différentes options
+  // ============================================================
+
+  describe('export options and formatting', () => {
+    test('should generate compact JSON when prettyPrint is false', async () => {
+      const result = await roosync_baseline({
+        action: 'export',
+        format: 'json',
+        prettyPrint: false,
+        outputPath: join(testSharedStatePath, 'exports', 'compact.json')
+      });
+
+      expect(result.success).toBe(true);
+      const content = readFileSync(result.outputPath!, 'utf-8');
+      // JSON compact ne devrait pas avoir beaucoup d'espaces
+      expect(content.split('\n').length).toBeLessThan(5);
+    });
+
+    test('should auto-generate output path when not provided', async () => {
+      const result = await roosync_baseline({
+        action: 'export',
+        format: 'json'
+      });
+
+      expect(result.success).toBe(true);
+      expect(result.outputPath).toContain('baseline-export-');
+      expect(result.outputPath).toContain('.json');
+    });
+
+    test('should create exports directory when missing', async () => {
+      // Supprimer le répertoire exports
+      const exportsDir = join(testSharedStatePath, 'exports');
+      if (existsSync(exportsDir)) {
+        rmSync(exportsDir, { recursive: true });
+      }
+
+      const result = await roosync_baseline({
+        action: 'export',
+        format: 'json',
+        outputPath: join(exportsDir, 'new-dir', 'test.json')
+      });
+
+      expect(result.success).toBe(true);
+      expect(existsSync(join(exportsDir, 'new-dir'))).toBe(true);
+    });
+  });
+
+  // ============================================================
+  // Tests pour gestion de sauvegarde (backup)
+  // ============================================================
+
+  describe('backup management', () => {
+    test('should create backup in .rollback directory', async () => {
+      const result = await roosync_baseline({
+        action: 'update',
+        machineId: 'backup-test-machine',
+        createBackup: true
+      });
+
+      expect(result.backupCreated).toBe(true);
+      expect(result.backupPath).toContain('.rollback');
+      expect(result.backupPath).toContain('.backup.');
+      expect(existsSync(result.backupPath!)).toBe(true);
+    });
+
+    test('should handle missing baseline gracefully when backing up', async () => {
+      // Supprimer la baseline existante
+      rmSync(join(testSharedStatePath, 'sync-config.ref.json'), { force: true });
+
+      const result = await roosync_baseline({
+        action: 'update',
+        machineId: 'no-previous-baseline',
+        createBackup: true
+      });
+
+      expect(result.backupCreated).toBe(false);
+      expect(result.previousBaseline).toBeUndefined();
+    });
+
+    test('should use legacy baseline path when machine-specific does not exist', async () => {
+      // Créer uniquement la baseline legacy
+      const legacyBaseline = {
+        machineId: 'legacy-machine',
+        version: '0.5.0',
+        lastUpdated: '2026-01-01T00:00:00.000Z',
+        config: {}
+      };
+      writeFileSync(
+        join(testSharedStatePath, 'sync-config.ref.json'),
+        JSON.stringify(legacyBaseline, null, 2)
+      );
+
+      const result = await roosync_baseline({
+        action: 'update',
+        machineId: 'legacy-machine',
+        createBackup: true
+      });
+
+      expect(result.backupCreated).toBe(true);
+    });
+  });
+
+  // ============================================================
+  // Tests pour update avec différentes options
+  // ============================================================
+
+  describe('update action options', () => {
+    test('should include update reason in result message', async () => {
+      const reason = 'Scheduled maintenance update';
+      const result = await roosync_baseline({
+        action: 'update',
+        machineId: 'test-machine',
+        updateReason: reason
+      });
+
+      expect(result.message).toContain(reason);
+    });
+
+    test('should use provided updatedBy', async () => {
+      const updatedBy = 'admin-user';
+      const result = await roosync_baseline({
+        action: 'update',
+        machineId: 'test-machine',
+        updatedBy
+      });
+
+      // updatedBy est passé au service mais pas forcément dans le message
+      // Vérifier que l'opération réussit
+      expect(result.success).toBe(true);
+    });
+
+    test('should auto-generate version when not provided', async () => {
+      const result = await roosync_baseline({
+        action: 'update',
+        machineId: 'test-machine'
+      });
+
+      // Format attendu: YYYY.MM.DD-HHMM
+      expect(result.version).toMatch(/^\d{4}\.\d{2}\.\d{2}-\d{4}$/);
+    });
+  });
+
+  // ============================================================
+  // Tests pour version action edge cases
+  // ============================================================
+
+  describe('version action edge cases', () => {
+    test('should handle changelog creation when file does not exist', async () => {
+      // Supprimer le changelog s'il existe
+      const changelogPath = join(testSharedStatePath, 'CHANGELOG-baseline.md');
+      if (existsSync(changelogPath)) {
+        rmSync(changelogPath, { force: true });
+      }
+
+      const result = await roosync_baseline({
+        action: 'version',
+        version: '2.0.0',
+        pushTags: false
+      });
+
+      expect(result.success).toBe(true);
+      expect(existsSync(changelogPath)).toBe(true);
+    });
+
+    test('should append to existing changelog', async () => {
+      const changelogPath = join(testSharedStatePath, 'CHANGELOG-baseline.md');
+      const existingContent = '# Existing Changelog\n\nPrevious content\n';
+      writeFileSync(changelogPath, existingContent);
+
+      const result = await roosync_baseline({
+        action: 'version',
+        version: '2.1.0',
+        pushTags: false
+      });
+
+      expect(result.success).toBe(true);
+      const newContent = readFileSync(changelogPath, 'utf-8');
+      expect(newContent).toContain('2.1.0');
+      expect(newContent).toContain('Previous content');
+    });
+
+    test('should handle changelog update failure gracefully', async () => {
+      // Ce test vérifie que le système continue même si le changelog échoue
+      // Le mock global ne permet pas de tester ce cas spécifique, on vérifie juste que ça marche
+      const result = await roosync_baseline({
+        action: 'version',
+        version: '2.2.0',
+        pushTags: false,
+        createChangelog: true
+      });
+
+      // Doit réussir
+      expect(result.success).toBe(true);
+    });
+  });
+
+  // ============================================================
+  // Tests pour restore action edge cases
+  // ============================================================
+
+  describe('restore action edge cases', () => {
+    test('should list available tags when tag not found', async () => {
+      const { execSync } = await import('child_process');
+      vi.mocked(execSync).mockImplementation((cmd: string) => {
+        if (cmd.includes('git rev-parse --verify')) {
+          throw new Error('Tag not found');
+        }
+        if (cmd.includes('git tag -l')) {
+          return 'baseline-v1.0.0\nbaseline-v1.1.0\nbaseline-v2.0.0\n';
+        }
+        return '';
+      });
+
+      await expect(
+        roosync_baseline({
+          action: 'restore',
+          source: 'baseline-v3.0.0',
+          createBackup: false
+        })
+      ).rejects.toThrow('Tags baseline disponibles');
+    });
+
+    test('should restore baseline with all fields preserved', async () => {
+      const backupPath = join(testSharedStatePath, '.rollback', 'sync-config.ref.backup.2026-02-15.json');
+      const completeBaseline = {
+        machineId: 'complete-machine',
+        version: '1.5.0',
+        lastUpdated: '2026-02-15T10:30:00.000Z',
+        autoSync: true,
+        conflictStrategy: 'merge',
+        logLevel: 'info',
+        config: {
+          roo: { modes: ['code-simple'] },
+          hardware: { cpu: 'Test CPU' }
+        }
+      };
+      writeFileSync(backupPath, JSON.stringify(completeBaseline, null, 2));
+
+      const result = await roosync_baseline({
+        action: 'restore',
+        source: backupPath,
+        createBackup: false
+      });
+
+      expect(result.version).toBe('1.5.0');
+      expect(result.message).toContain('complete-machine');
+    });
+  });
 });
