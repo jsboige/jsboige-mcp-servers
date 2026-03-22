@@ -100,9 +100,7 @@ export async function handleExportProjectXml(
             return true;
         });
 
-        // TODO: Correction temporaire - adapter l'interface du service
-        const xmlContent = (xmlExporterService as any).generateProjectXml(relevantTasks, {
-            projectPath,
+        const xmlContent = xmlExporterService.generateProjectXml(relevantTasks, projectPath, {
             startDate,
             endDate,
             prettyPrint

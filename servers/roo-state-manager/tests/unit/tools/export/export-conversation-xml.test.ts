@@ -20,7 +20,7 @@ describe('export-conversation-xml.tool', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     // Reset default implementations
-    mockXmlExporterService.generateConversationXml.mockReturnValue('<conversation>test</conversation>');
+    mockXmlExporterService.generateConversationXml.mockImplementation((root: any, children: any[]) => `<conversation>${[root, ...children].map((t: any) => t.taskId).join(',')}</conversation>`);
     mockXmlExporterService.saveXmlToFile.mockResolvedValue(undefined);
     mockXmlExporterService.validateExportPath.mockReturnValue(true);
   });
@@ -144,7 +144,7 @@ describe('export-conversation-xml.tool', () => {
         // Pas de filePath
       };
 
-      mockXmlExporterService.generateConversationXml.mockReturnValue('<conversation>test-content</conversation>');
+      mockXmlExporterService.generateConversationXml.mockImplementation((tasks: any[]) => `<conversation>test-content</conversation>`);
 
       const result = await handleExportConversationXml(
         mockArgs,
@@ -196,10 +196,12 @@ describe('export-conversation-xml.tool', () => {
       );
 
       expect(mockXmlExporterService.generateConversationXml).toHaveBeenCalledWith(
-        expect.any(Array),
+        expect.any(Object), // rootTask
+        expect.any(Array),  // children
         expect.objectContaining({
           includeContent: mockIncludeContent,
-          prettyPrint: mockPrettyPrint
+          prettyPrint: mockPrettyPrint,
+          maxDepth: 5
         })
       );
     });
@@ -221,7 +223,8 @@ describe('export-conversation-xml.tool', () => {
       );
 
       expect(mockXmlExporterService.generateConversationXml).toHaveBeenCalledWith(
-        expect.any(Array),
+        expect.any(Object), // rootTask
+        expect.any(Array),  // children
         expect.objectContaining({
           includeContent: false,
           prettyPrint: false
@@ -274,10 +277,12 @@ describe('export-conversation-xml.tool', () => {
       );
 
       expect(mockXmlExporterService.generateConversationXml).toHaveBeenCalledWith(
-        expect.any(Array),
+        expect.any(Object), // rootTask
+        expect.any(Array),  // children
         expect.objectContaining({
           includeContent: mockIncludeContent,
-          prettyPrint: mockPrettyPrint
+          prettyPrint: mockPrettyPrint,
+          maxDepth: 5
         })
       );
     });
@@ -299,7 +304,8 @@ describe('export-conversation-xml.tool', () => {
       );
 
       expect(mockXmlExporterService.generateConversationXml).toHaveBeenCalledWith(
-        expect.any(Array),
+        expect.any(Object), // rootTask
+        expect.any(Array),  // children
         expect.objectContaining({
           includeContent: false,
           prettyPrint: mockPrettyPrint
@@ -324,7 +330,8 @@ describe('export-conversation-xml.tool', () => {
       );
 
       expect(mockXmlExporterService.generateConversationXml).toHaveBeenCalledWith(
-        expect.any(Array),
+        expect.any(Object), // rootTask
+        expect.any(Array),  // children
         expect.objectContaining({
           includeContent: mockIncludeContent,
           prettyPrint: false

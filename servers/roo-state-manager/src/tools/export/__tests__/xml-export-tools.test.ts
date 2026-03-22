@@ -313,6 +313,8 @@ describe('handleExportConversationXml', () => {
       const root = makeConversation('root-task');
       const cache = makeCache(root, child);
 
+      mockXmlExporterService.generateConversationXml.mockImplementation((root: ConversationSkeleton, children: ConversationSkeleton[]) => `<conversation>${[root, ...children].map(t => t.taskId).join(',')}</conversation>`);
+
       await handleExportConversationXml(
         { conversationId: 'root-task' },
         cache,
@@ -320,9 +322,10 @@ describe('handleExportConversationXml', () => {
         mockEnsureFresh
       );
 
-      const callArgs = mockXmlExporterService.generateConversationXml.mock.calls[0][0] as ConversationSkeleton[];
-      expect(callArgs.some(t => t.taskId === 'root-task')).toBe(true);
-      expect(callArgs.some(t => t.taskId === 'child-task')).toBe(true);
+      const rootTask = mockXmlExporterService.generateConversationXml.mock.calls[0][0] as ConversationSkeleton;
+      const children = mockXmlExporterService.generateConversationXml.mock.calls[0][1] as ConversationSkeleton[];
+      expect(rootTask.taskId).toBe('root-task');
+      expect(children.some(t => t.taskId === 'child-task')).toBe(true);
     });
 
     test('respecte maxDepth lors de la collecte', async () => {
@@ -331,6 +334,8 @@ describe('handleExportConversationXml', () => {
       const root = makeConversation('root-task');
       const cache = makeCache(root, level1, level2);
 
+      mockXmlExporterService.generateConversationXml.mockImplementation((root: ConversationSkeleton, children: ConversationSkeleton[]) => `<conversation>${[root, ...children].map(t => t.taskId).join(',')}</conversation>`);
+
       await handleExportConversationXml(
         { conversationId: 'root-task', maxDepth: 2 },
         cache,
@@ -338,11 +343,11 @@ describe('handleExportConversationXml', () => {
         mockEnsureFresh
       );
 
-      const callArgs = mockXmlExporterService.generateConversationXml.mock.calls[0][0] as ConversationSkeleton[];
+      const children = mockXmlExporterService.generateConversationXml.mock.calls[0][1] as ConversationSkeleton[];
       // Avec maxDepth=2: root (depth=0) et level1 (depth=1) sont inclus, level2 (depth=2) est exclu
       // car collectTasks vérifie currentDepth >= maxDepth avant d'inclure
-      expect(callArgs.some(t => t.taskId === 'level1')).toBe(true);
-      expect(callArgs.some(t => t.taskId === 'level2')).toBe(false);
+      expect(children.some(t => t.taskId === 'level1')).toBe(true);
+      expect(children.some(t => t.taskId === 'level2')).toBe(false);
     });
   });
 

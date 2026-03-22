@@ -107,10 +107,14 @@ export async function handleExportConversationXml(
 
         const allTasks = collectTasks(conversationId);
         
-        // TODO: Correction temporaire - adapter l'interface du service
-        const xmlContent = (xmlExporterService as any).generateConversationXml(allTasks, {
+        // Séparer la racine des enfants pour l'appel correct à generateConversationXml
+        const rootTask = allTasks[0];
+        const children = allTasks.slice(1);
+        
+        const xmlContent = xmlExporterService.generateConversationXml(rootTask, children, {
             includeContent,
-            prettyPrint
+            prettyPrint,
+            maxDepth
         });
 
         if (filePath) {

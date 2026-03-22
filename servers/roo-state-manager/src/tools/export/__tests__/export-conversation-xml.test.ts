@@ -78,7 +78,7 @@ describe('handleExportConversationXml', () => {
 		cache.set('child-1', { taskId: 'child-1', parentTaskId: 'root', metadata: {} });
 		cache.set('grandchild', { taskId: 'grandchild', parentTaskId: 'child-1', metadata: {} });
 		cache.set('unrelated', { taskId: 'unrelated', metadata: {} });
-		mockXmlService.generateConversationXml.mockReturnValue('<c/>');
+		mockXmlService.generateConversationXml.mockImplementation((root: any, children: any[]) => `<c>${[root, ...children].map((t: any) => t.taskId).join(',')}</c>`);
 
 		await handleExportConversationXml(
 			{ conversationId: 'root' },
@@ -87,12 +87,13 @@ describe('handleExportConversationXml', () => {
 			mockEnsureFresh
 		);
 
-		const passedTasks = mockXmlService.generateConversationXml.mock.calls[0][0];
-		const taskIds = passedTasks.map((t: any) => t.taskId);
-		expect(taskIds).toContain('root');
-		expect(taskIds).toContain('child-1');
-		expect(taskIds).toContain('grandchild');
-		expect(taskIds).not.toContain('unrelated');
+		const rootTask = mockXmlService.generateConversationXml.mock.calls[0][0];
+		const children = mockXmlService.generateConversationXml.mock.calls[0][1];
+		const allTaskIds = [rootTask, ...children].map((t: any) => t.taskId);
+		expect(allTaskIds).toContain('root');
+		expect(allTaskIds).toContain('child-1');
+		expect(allTaskIds).toContain('grandchild');
+		expect(allTaskIds).not.toContain('unrelated');
 	});
 
 	test('respects maxDepth', async () => {
@@ -100,7 +101,7 @@ describe('handleExportConversationXml', () => {
 		cache.set('root', { taskId: 'root', metadata: {} });
 		cache.set('child', { taskId: 'child', parentTaskId: 'root', metadata: {} });
 		cache.set('grandchild', { taskId: 'grandchild', parentTaskId: 'child', metadata: {} });
-		mockXmlService.generateConversationXml.mockReturnValue('<c/>');
+		mockXmlService.generateConversationXml.mockImplementation((root: any, children: any[]) => `<c>${[root, ...children].map((t: any) => t.taskId).join(',')}</c>`);
 
 		// maxDepth=2: root(0) + child(1) collected, grandchild(2) excluded
 		await handleExportConversationXml(
@@ -110,11 +111,12 @@ describe('handleExportConversationXml', () => {
 			mockEnsureFresh
 		);
 
-		const passedTasks = mockXmlService.generateConversationXml.mock.calls[0][0];
-		const taskIds = passedTasks.map((t: any) => t.taskId);
-		expect(taskIds).toContain('root');
-		expect(taskIds).toContain('child');
-		expect(taskIds).not.toContain('grandchild');
+		const rootTask = mockXmlService.generateConversationXml.mock.calls[0][0];
+		const children = mockXmlService.generateConversationXml.mock.calls[0][1];
+		const allTaskIds = [rootTask, ...children].map((t: any) => t.taskId);
+		expect(allTaskIds).toContain('root');
+		expect(allTaskIds).toContain('child');
+		expect(allTaskIds).not.toContain('grandchild');
 	});
 
 	test('calls ensureSkeletonCacheIsFresh', async () => {
