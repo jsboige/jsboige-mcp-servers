@@ -10,6 +10,9 @@
 
 import { promises as fs } from 'fs';
 import { join } from 'path';
+import { createLogger } from '../../utils/logger.js';
+
+const logger = createLogger('sync-decision-manager');
 import {
   parseRoadmapMarkdown,
   filterDecisionsByStatus,
@@ -272,23 +275,25 @@ export class SyncDecisionManager {
   /**
    * Génère des décisions RooSync depuis un rapport de comparaison
    */
+  /**
+   * Generates decisions from a comparison report.
+   * NOTE: Decision creation is not yet implemented (#783).
+   * Currently counts CRITICAL/IMPORTANT diffs but does not persist decisions.
+   */
   public async generateDecisionsFromReport(report: any): Promise<number> {
-    console.log(`[SyncDecisionManager] 📝 Génération décisions depuis rapport (${report.sourceMachine} vs ${report.targetMachine})`);
+    let count = 0;
 
-    let createdCount = 0;
-
-    // Pour chaque différence CRITICAL ou IMPORTANT, créer une décision
     for (const diff of report.differences) {
       if (diff.severity === 'CRITICAL' || diff.severity === 'IMPORTANT') {
-        // Créer décision dans roadmap
-        // TODO: Implémenter logique de création décision
-        // Pour l'instant, juste un placeholder
-        console.log(`[SyncDecisionManager] 📋 Décision à créer : ${diff.description}`);
-        createdCount++;
+        // #783: Decision creation not yet implemented — counting only
+        count++;
       }
     }
 
-    console.log(`[SyncDecisionManager] ✅ ${createdCount} décisions créées`);
-    return createdCount;
+    if (count > 0) {
+      logger.warn(`generateDecisionsFromReport: ${count} CRITICAL/IMPORTANT diffs found but decision creation not implemented (#783)`);
+    }
+
+    return count;
   }
 }

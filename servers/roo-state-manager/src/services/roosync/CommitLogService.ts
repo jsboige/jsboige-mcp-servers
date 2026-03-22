@@ -828,32 +828,19 @@ export class CommitLogService {
 
   /**
    * Synchronise le commit log avec les autres machines
+   * NOTE: Not yet implemented (#784). Timer disabled to avoid wasted cycles.
    */
   public async syncWithRemote(): Promise<void> {
-    logger.info('Synchronisation du commit log');
-    // TODO: Implémenter la synchronisation avec les autres machines
+    logger.debug('syncWithRemote: not yet implemented (#784)');
   }
 
   /**
    * Démarre la synchronisation automatique
+   * NOTE: Disabled until syncWithRemote is implemented (#784).
    */
   public async startAutoSync(): Promise<void> {
-    if (this.syncInterval) {
-      logger.warn('La synchronisation automatique est déjà démarrée');
-      return;
-    }
-
-    logger.info('Démarrage de la synchronisation automatique', {
-      interval: this.config.syncInterval
-    });
-
-    this.syncInterval = setInterval(async () => {
-      try {
-        await this.syncWithRemote();
-      } catch (error) {
-        logger.error('Erreur synchronisation automatique:', error);
-      }
-    }, this.config.syncInterval);
+    // #784: syncWithRemote is not implemented — don't start a timer that does nothing
+    logger.debug('Auto-sync disabled: syncWithRemote not yet implemented (#784)');
   }
 
   /**
