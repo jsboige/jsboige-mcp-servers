@@ -1466,12 +1466,15 @@ export class NarrativeContextBuilderService {
                 return;
             }
 
-            // 1. Traitement des frères précédents (ordre chronologique)
-            // NOTE: La structure ConversationSkeleton n'a pas de propriété childTasks
-            // TODO Phase 2: Implémenter la logique de collecte des frères via un service dédié
+            // 1. Collect previous sibling summaries (chronological order)
             if (skeleton.parentTaskId) {
-                // Placeholder pour la collecte des frères précédents
-                console.log(`TODO: Collecter les frères précédents pour ${taskId} via parent ${skeleton.parentTaskId}`);
+                const siblings = await this.collectSiblingTasks(taskId, false);
+                for (const sibling of siblings) {
+                    const summary = await this.getSummaryForTask(sibling.taskId);
+                    if (summary) {
+                        contextSummaries.push(`=== Sibling Task: ${sibling.taskId} ===\n${summary}\n`);
+                    }
+                }
             }
 
             // 2. Remontée récursive vers le parent
