@@ -68,6 +68,9 @@ export class SynthesisOrchestratorService {
      */
     private activeBatches: Map<string, BatchSynthesisTask> = new Map();
 
+    /** Counter for total batches processed since service start */
+    private totalBatchesProcessedCount: number = 0;
+
     /**
      * Constructeur avec injection de dépendances.
      *
@@ -342,6 +345,9 @@ export class SynthesisOrchestratorService {
             condensedBatchPath: analysis.metrics?.condensedBatchPath,
             lastUpdated: new Date().toISOString()
         };
+
+        // Track completed synthesis
+        this.totalBatchesProcessedCount++;
 
         // Mettre à jour le squelette avec les nouvelles métadonnées
         const updatedSkeleton: ConversationSkeleton = {
@@ -856,7 +862,7 @@ ${analysesHtml}
     } {
         return {
             activeBatches: this.activeBatches.size,
-            totalBatchesProcessed: 0, // TODO: Compteur à implémenter
+            totalBatchesProcessed: this.totalBatchesProcessedCount,
             memoryUsage: process.memoryUsage()
         };
     }

@@ -20,6 +20,8 @@ import OpenAI from 'openai';
 // L'import zodResponseFormat a été remplacé par l'utilisation directe de response_format
 import { z } from 'zod';
 import * as crypto from 'crypto';
+import * as fs from 'fs/promises';
+import * as path from 'path';
 import { SynthesisServiceError, SynthesisServiceErrorCode } from '../../types/errors.js';
 
 // =============================================================================
@@ -910,12 +912,44 @@ Nombre de synthèses à condenser : ${analyses.length}`;
      * Appelé lors de l'arrêt du serveur MCP.
      */
     async cleanup(): Promise<void> {
-        // Persister le cache si configuré
-        if (this.options.cacheDirectory && this.options.enableCaching) {
-            // TODO Phase 3: Implémenter la persistance du cache
+        // Persist cache to disk if configured
+        if (this.options.cacheDirectory && this.options.enableCaching && this.responseCache.size > 0) {
+            try {
+                await fs.mkdir(this.options.cacheDirectory, { recursive: true });
+                const cacheFile = path.join(this.options.cacheDirectory, 'llm-response-cache.json');
+                const cacheData = Object.fromEntries(this.responseCache);
+                await fs.writeFile(cacheFile, JSON.stringify(cacheData, null, 2), 'utf-8');
+            } catch (error) {
+                // Best-effort persistence — don't throw on cleanup
+                console.error('[LLMService] Failed to persist cache:', error instanceof Error ? error.message : error);
+            }
         }
 
         this.clearCache();
         this.callHistory = [];
+    }
+
+    /**
+     * Load cached responses from disk if available.
+     * Call during initialization to restore cache from previous session.
+     */
+    async loadPersistedCache(): Promise<number> {
+        if (!this.options.cacheDirectory || !this.options.enableCaching) {
+            return 0;
+        }
+        try {
+            const cacheFile = path.join(this.options.cacheDirectory, 'llm-response-cache.json');
+            const data = await fs.readFile(cacheFile, 'utf-8');
+            const parsed = JSON.parse(data) as Record<string, LLMCallResult>;
+            let count = 0;
+            for (const [key, value] of Object.entries(parsed)) {
+                this.responseCache.set(key, value);
+                count++;
+            }
+            return count;
+        } catch {
+            // Cache file doesn't exist or is corrupt — start fresh
+            return 0;
+        }
     }
 }
