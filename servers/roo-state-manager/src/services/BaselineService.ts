@@ -57,8 +57,6 @@ export class BaselineService {
     private inventoryCollector: IInventoryCollector,
     private diffDetector: IDiffDetector
   ) {
-    console.log('[DEBUG] BaselineService.constructor() appelé');
-
     // FIX: Use default config instead of non-existent getBaselineServiceConfig() method
     // ConfigService only provides getSharedStatePath(), not getBaselineServiceConfig()
     this.config = {
@@ -70,7 +68,6 @@ export class BaselineService {
     };
     // Utiliser getSharedStatePath() qui gère ROOSYNC_SHARED_PATH (et lève une erreur si non défini)
     const sharedStatePath = getSharedStatePath();
-    console.log('[DEBUG] sharedStatePath:', sharedStatePath);
 
     // PRIORITÉ ABSOLUE : Forcer l'utilisation du chemin mocké en environnement de test
     if (process.env.SHARED_STATE_PATH) {
@@ -81,9 +78,6 @@ export class BaselineService {
       this.baselinePath = this.config.baselinePath || join(sharedStatePath, 'sync-config.ref.json');
       this.roadmapPath = this.config.roadmapPath || join(sharedStatePath, 'sync-roadmap.md');
     }
-
-    console.log('[DEBUG] this.baselinePath forcé:', this.baselinePath);
-    console.log('[DEBUG] this.roadmapPath:', this.roadmapPath);
 
     this.state = {
       isBaselineLoaded: false,
@@ -97,12 +91,6 @@ export class BaselineService {
     this.baselineLoader = new BaselineLoader(this.configValidator);
     this.differenceDetector = new DifferenceDetector();
     this.changeApplier = new ChangeApplier();
-
-    console.log('[DEBUG] Vérification existence du fichier baseline...');
-    const fileExists = existsSync(this.baselinePath);
-    console.log('[DEBUG] Fichier baseline existe:', fileExists);
-    console.log('[DEBUG] Chemin résolu:', resolve(this.baselinePath));
-    console.log('[DEBUG] Working directory:', process.cwd());
 
     this.logInfo('BaselineService initialisé', {
       baselinePath: this.baselinePath,

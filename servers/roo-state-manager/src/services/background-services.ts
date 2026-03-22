@@ -541,8 +541,7 @@ export async function saveSkeletonToDisk(skeleton: ConversationSkeleton): Promis
         const filePath = path.join(skeletonsCacheDir, `${skeleton.taskId}.json`);
         await fs.writeFile(filePath, JSON.stringify(skeleton, null, 2), 'utf8');
 
-        console.log(`[BACKGROUND-SAVE-DEBUG] ✅ Skeleton sauvegardé: ${filePath}`);
-        console.log(`[BACKGROUND-SAVE-DEBUG] 🏷️ parentTaskId: ${skeleton.parentTaskId || 'undefined'}`);
+        // Skeleton saved successfully
     } catch (error: any) {
         console.error(`Erreur lors de la sauvegarde du squelette ${skeleton.taskId}:`, error);
     }

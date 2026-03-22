@@ -21,11 +21,7 @@ const __dirname = dirname(__filename);
 // Charger les variables d'environnement AVANT tout autre import
 // CORRECTION : Utiliser __dirname pour charger le .env depuis le répertoire du serveur MCP
 const envPath = path.join(__dirname, '..', '.env');
-// Note: console.log utilisé ici car le logger n'est pas encore initialisé
-console.log('🔧 [DEBUG] Chargement .env depuis:', envPath);
-console.log('🔧 [DEBUG] __dirname:', __dirname);
 const envResult = dotenv.config({ path: envPath, override: true });
-console.log('🔧 [DEBUG] dotenv.config result:', envResult.error ? 'ERROR' : 'SUCCESS');
 if (envResult.error) {
   console.error('🔧 [DEBUG] dotenv.config error:', envResult.error);
 }
@@ -52,8 +48,7 @@ if (missingVars.length > 0) {
     process.exit(1);
 }
 
-console.log('✅ Toutes les variables d\'environnement critiques sont présentes');
-console.log('🔧 [DEBUG] ROOSYNC_SHARED_PATH =', process.env.ROOSYNC_SHARED_PATH);
+console.log('✅ Variables d\'environnement critiques présentes');
 
 // NOTE: Système de vérification des conflits d'identité (T2.5) SUPPRIMÉ
 // Raison: Fonctionnalité non demandée par l'utilisateur, bloquait le multi-agent

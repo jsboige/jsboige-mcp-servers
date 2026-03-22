@@ -30,8 +30,6 @@ import { SkeletonComparator } from './skeleton-comparator.js';
 import { getParsingConfig, isComparisonMode, shouldUseNewParsing } from './parsing-config.js';
 import { WorkspaceDetector } from './workspace-detector.js';
 
-console.log('[DEBUG] RooStorageDetector module loaded');
-
 export class RooStorageDetector {
   private static readonly COMMON_ROO_PATHS = [
     // Chemins VSCode typiques
