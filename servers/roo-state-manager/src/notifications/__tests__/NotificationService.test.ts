@@ -205,15 +205,39 @@ describe('NotificationService', () => {
   // ============================================================
 
   describe('notify - require_approval', () => {
-    test('notifie les listeners même si require_approval', async () => {
+    test('queues event for approval instead of immediate notification', async () => {
       const { listener, calls } = makeListener();
       service.subscribe(listener);
       service.loadFilterRules([makeRule({ action: 'require_approval' })]);
 
       await service.notify(makeEvent());
 
-      // require_approval logs warning but still notifies
+      // require_approval queues — does NOT notify listeners yet
+      expect(calls.length).toBe(0);
+      expect(service.getStats().pendingApprovalsCount).toBe(1);
+
+      // Approve the pending notification — now it should notify
+      await service.approvePending(0);
       expect(calls.length).toBe(1);
+      expect(service.getStats().pendingApprovalsCount).toBe(0);
+    });
+
+    test('rejectPending removes without notifying', async () => {
+      const { listener, calls } = makeListener();
+      service.subscribe(listener);
+      service.loadFilterRules([makeRule({ action: 'require_approval' })]);
+
+      await service.notify(makeEvent());
+      expect(service.getStats().pendingApprovalsCount).toBe(1);
+
+      service.rejectPending(0);
+      expect(calls.length).toBe(0);
+      expect(service.getStats().pendingApprovalsCount).toBe(0);
+    });
+
+    test('approvePending returns false for invalid index', async () => {
+      const result = await service.approvePending(99);
+      expect(result).toBe(false);
     });
   });
 

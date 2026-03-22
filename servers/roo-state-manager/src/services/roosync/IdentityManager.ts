@@ -443,8 +443,13 @@ export class IdentityManager {
             if (!dryRun) {
               if (orphan.source === 'presence') {
                 await this.presenceManager.removePresence(orphan.machineId);
+              } else if (orphan.source === 'registry') {
+                // Remove from local identity registry
+                const registry = await this.loadIdentityRegistry();
+                registry.delete(orphan.machineId);
+                await this.saveIdentityRegistry(registry);
               }
-              // TODO: Ajouter le nettoyage pour les autres sources
+              // 'baseline' and 'dashboard' are on GDrive — log only, don't modify
             }
             result.removed.push(orphan.machineId);
             console.log(`[IdentityManager] ${dryRun ? '[DRY RUN] ' : ''}Identité orpheline supprimée: ${orphan.machineId} (${orphan.source})`);
@@ -461,7 +466,16 @@ export class IdentityManager {
             // Stratégie: conserver l'identité de la configuration courante
             if (conflict.machineId === this.config.machineId) {
               if (!dryRun) {
-                // TODO: Implémenter la résolution de conflits
+                // Re-sync registry: config identity is authoritative
+                // Remove stale entries from non-config sources, keep config as primary
+                for (const source of conflict.sources) {
+                  if (source === 'presence') {
+                    // Re-register in presence to ensure it's current
+                    await this.presenceManager.updatePresence(conflict.machineId, { status: 'online' });
+                  }
+                }
+                // Update the registry to reflect resolved state
+                await this.syncIdentityRegistry();
               }
               result.resolved.push(conflict.machineId);
               console.log(`[IdentityManager] ${dryRun ? '[DRY RUN] ' : ''}Conflit résolu pour: ${conflict.machineId} (identité principale conservée)`);

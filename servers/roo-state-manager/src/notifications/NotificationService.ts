@@ -88,6 +88,9 @@ export class NotificationService {
   /** Règles de filtrage actives */
   private filterRules: FilterRule[] = [];
 
+  /** Events pending approval (queued when action is 'require_approval') */
+  private pendingApprovals: Array<{ event: NotificationEvent; ruleId: string; timestamp: string }> = [];
+
   /**
    * Abonner un listener aux notifications
    * @param listener Listener à ajouter
@@ -145,8 +148,21 @@ export class NotificationService {
     }
 
     if (decision.action === 'require_approval') {
-      logger.warn('Notification requires approval (not implemented)');
-      // TODO: Implémenter système d'approbation si nécessaire
+      // Queue the event for later approval review
+      this.pendingApprovals.push({
+        event,
+        ruleId: decision.ruleId || 'unknown',
+        timestamp: new Date().toISOString()
+      });
+      logger.warn('Notification queued for approval', {
+        type: event.type,
+        source: event.source,
+        priority: event.priority,
+        ruleId: decision.ruleId,
+        pendingCount: this.pendingApprovals.length
+      });
+      // Don't emit to listeners until approved — return early
+      return;
     }
 
     // Notifier tous les listeners
@@ -241,17 +257,44 @@ export class NotificationService {
    * Afficher une notification système (Windows/macOS)
    * @param event Événement à notifier
    */
-  private showSystemNotification(event: NotificationEvent): void {
-    logger.debug('Showing system notification');
+  /**
+   * Approve a pending notification by index, emitting it to listeners
+   * @param index Index in pendingApprovals array (0-based)
+   */
+  async approvePending(index: number): Promise<boolean> {
+    if (index < 0 || index >= this.pendingApprovals.length) {
+      return false;
+    }
+    const { event } = this.pendingApprovals.splice(index, 1)[0];
+    logger.info('Pending notification approved', { type: event.type, source: event.source });
+    await Promise.all(this.listeners.map(listener => listener.onNotify(event)));
+    return true;
+  }
 
-    // Pour Phase 1, on log seulement
-    // TODO: Implémenter avec node-notifier ou équivalent
-    logger.debug('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
-    logger.debug(`NOTIFICATION: ${event.type.toUpperCase()}`);
-    logger.debug(`   Source: ${event.source}`);
-    logger.debug(`   Priority: ${event.priority}`);
-    logger.debug(`   Payload: ${JSON.stringify(event.payload, null, 2)}`);
-    logger.debug('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
+  /**
+   * Reject a pending notification, removing it from the queue
+   * @param index Index in pendingApprovals array (0-based)
+   */
+  rejectPending(index: number): boolean {
+    if (index < 0 || index >= this.pendingApprovals.length) {
+      return false;
+    }
+    const { event } = this.pendingApprovals.splice(index, 1)[0];
+    logger.info('Pending notification rejected', { type: event.type, source: event.source });
+    return true;
+  }
+
+  private showSystemNotification(event: NotificationEvent): void {
+    // Write to stderr (captured by VS Code output channel for MCP servers)
+    const prefix = event.priority === 'URGENT' ? '🔴' : event.priority === 'HIGH' ? '🟠' : '🔵';
+    const message = `${prefix} [${event.type.toUpperCase()}] ${event.source}: ${typeof event.payload === 'string' ? event.payload : JSON.stringify(event.payload)}`;
+    // Use console.error for stderr visibility (MCP protocol reserves stdout for JSON-RPC)
+    console.error(`[NOTIFICATION] ${message}`);
+    logger.info('System notification emitted to stderr', {
+      type: event.type,
+      source: event.source,
+      priority: event.priority
+    });
   }
 
   /**
@@ -262,11 +305,15 @@ export class NotificationService {
     listenersCount: number;
     rulesCount: number;
     rules: FilterRule[];
+    pendingApprovalsCount: number;
+    pendingApprovals: Array<{ event: NotificationEvent; ruleId: string; timestamp: string }>;
   } {
     return {
       listenersCount: this.listeners.length,
       rulesCount: this.filterRules.length,
-      rules: this.filterRules
+      rules: this.filterRules,
+      pendingApprovalsCount: this.pendingApprovals.length,
+      pendingApprovals: this.pendingApprovals
     };
   }
 }
