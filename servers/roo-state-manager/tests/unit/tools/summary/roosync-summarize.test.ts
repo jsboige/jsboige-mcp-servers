@@ -93,7 +93,7 @@ describe('roosync_summarize - CONS-12', () => {
             ).resolves.toBeDefined();
         });
 
-        it('devrait rejeter type=synthesis (désactivé — stubs #767/#768)', async () => {
+        it('devrait accepter type=synthesis avec arguments valides', async () => {
             await expect(
                 handleRooSyncSummarize(
                     {
@@ -103,7 +103,7 @@ describe('roosync_summarize - CONS-12', () => {
                     },
                     getConversationSkeletonMock
                 )
-            ).rejects.toThrow('disabled');
+            ).resolves.toBeDefined();
         });
     });
 
@@ -135,17 +135,17 @@ describe('roosync_summarize - CONS-12', () => {
             expect(typeof result).toBe('string');
         });
 
-        it('devrait rejeter synthesis (désactivé — stubs #767/#768)', async () => {
-            await expect(
-                handleRooSyncSummarize(
-                    {
-                        type: 'synthesis',
-                        taskId: 'test-123',
-                        outputFormat: 'json'
-                    },
-                    getConversationSkeletonMock
-                )
-            ).rejects.toThrow('disabled');
+        it('devrait appeler le handler synthesis pour type=synthesis', async () => {
+            const result = await handleRooSyncSummarize(
+                {
+                    type: 'synthesis',
+                    taskId: 'test-123',
+                    outputFormat: 'json'
+                },
+                getConversationSkeletonMock
+            );
+
+            expect(typeof result).toBe('string');
         });
     });
 
@@ -183,17 +183,17 @@ describe('roosync_summarize - CONS-12', () => {
             expect(typeof result).toBe('string');
         });
 
-        it('devrait rejeter synthesis même avec paramètres valides (désactivé — stubs #767/#768)', async () => {
-            await expect(
-                handleRooSyncSummarize(
-                    {
-                        type: 'synthesis',
-                        taskId: 'test-123',
-                        outputFormat: 'markdown'
-                    },
-                    getConversationSkeletonMock
-                )
-            ).rejects.toThrow('disabled');
+        it('devrait propager les paramètres synthesis correctement', async () => {
+            const result = await handleRooSyncSummarize(
+                {
+                    type: 'synthesis',
+                    taskId: 'test-123',
+                    outputFormat: 'markdown'
+                },
+                getConversationSkeletonMock
+            );
+
+            expect(typeof result).toBe('string');
         });
     });
 
@@ -210,7 +210,7 @@ describe('roosync_summarize - CONS-12', () => {
             ).rejects.toThrow();
         });
 
-        it('devrait rejeter synthesis même avec conversation inexistante (désactivé avant dispatch)', async () => {
+        it('devrait gérer une conversation inexistante pour synthesis', async () => {
             await expect(
                 handleRooSyncSummarize(
                     {
@@ -219,7 +219,7 @@ describe('roosync_summarize - CONS-12', () => {
                     },
                     getConversationSkeletonMock
                 )
-            ).rejects.toThrow('disabled');
+            ).rejects.toThrow();
         });
     });
 
@@ -266,17 +266,17 @@ describe('roosync_summarize - CONS-12', () => {
             expect(typeof result).toBe('string');
         });
 
-        it('devrait rejeter synthesis backward compat (désactivé — stubs #767/#768)', async () => {
-            await expect(
-                handleRooSyncSummarize(
-                    {
-                        type: 'synthesis',
-                        taskId: 'test-123',
-                        outputFormat: 'json'
-                    },
-                    getConversationSkeletonMock
-                )
-            ).rejects.toThrow('disabled');
+        it('devrait supporter tous les paramètres de get_conversation_synthesis', async () => {
+            const result = await handleRooSyncSummarize(
+                {
+                    type: 'synthesis',
+                    taskId: 'test-123',
+                    outputFormat: 'json'
+                },
+                getConversationSkeletonMock
+            );
+
+            expect(typeof result).toBe('string');
         });
     });
 });

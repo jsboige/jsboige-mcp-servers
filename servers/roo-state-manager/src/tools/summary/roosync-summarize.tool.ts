@@ -364,22 +364,14 @@ export async function handleRooSyncSummarize(
                 return await dispatchClusterHandler(args, actualGetConversationSkeleton, actualFindChildTasks);
 
             case 'synthesis':
-                // DISABLED: Synthesis pipeline contains stub methods returning fake data (issues #767, #768)
-                throw new StateManagerError(
-                    'summarize type="synthesis" is currently disabled. The LLM synthesis pipeline contains ' +
-                    'stub methods returning hardcoded/fake values (confidence=0.85, themes=["theme1"], empty patterns). ' +
-                    'Use type="trace" or "cluster" instead. See: https://github.com/jsboige/roo-extensions/issues/767',
-                    'SYNTHESIS_DISABLED',
-                    'RooSyncSummarizeTool',
-                    { type: args.type }
-                );
+                return await dispatchSynthesisHandler(args, actualGetConversationSkeleton);
 
             default:
                 throw new StateManagerError(
                     `Type d'opération non supporté: ${args.type}`,
                     'INVALID_TYPE',
                     'RooSyncSummarizeTool',
-                    { type: args.type, supportedTypes: ['trace', 'cluster'] }
+                    { type: args.type, supportedTypes: ['trace', 'cluster', 'synthesis'] }
                 );
         }
 

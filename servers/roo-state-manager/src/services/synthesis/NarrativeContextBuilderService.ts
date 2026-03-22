@@ -379,78 +379,314 @@ export class NarrativeContextBuilderService {
     }
 
     // =========================================================================
-    // MÉTHODES AUXILIAIRES POUR L'ENRICHISSEMENT (STUBS PHASE 2)
+    // MÉTHODES D'ENRICHISSEMENT — Analyse algorithmique des conversations
+    // Phase 2 implementation (2026-03-22, issue #767)
     // =========================================================================
 
     /**
-     * Effectue une analyse sémantique du contexte narratif.
-     * TODO Phase 2: Implémenter l'analyse sémantique réelle
+     * Analyse sémantique du contexte narratif.
+     * Extrait les thèmes par fréquence de mots-clés dans les messages.
      */
     private async performSemanticAnalysis(context: NarrativeContext): Promise<any> {
+        const skeleton = this.conversationCache.get(context.taskId);
+        if (!skeleton) {
+            return { themes: [], clusters: [], similarity: 0, evolution: [] };
+        }
+
+        // Extract words from all messages, filter stopwords
+        const stopwords = new Set(['the', 'a', 'an', 'is', 'are', 'was', 'were', 'be', 'been',
+            'has', 'have', 'had', 'do', 'does', 'did', 'will', 'would', 'could', 'should',
+            'may', 'might', 'can', 'shall', 'to', 'of', 'in', 'for', 'on', 'with', 'at',
+            'by', 'from', 'as', 'into', 'about', 'it', 'its', 'this', 'that', 'these',
+            'those', 'and', 'or', 'but', 'not', 'no', 'if', 'then', 'else', 'when',
+            'up', 'out', 'so', 'than', 'too', 'very', 'just', 'also', 'now', 'here',
+            'le', 'la', 'les', 'un', 'une', 'des', 'de', 'du', 'en', 'et', 'est',
+            'que', 'qui', 'dans', 'pour', 'pas', 'sur', 'avec', 'ce', 'il', 'ne',
+            'se', 'son', 'sa', 'ses', 'au', 'aux', 'par', 'plus', 'ou', 'mais']);
+
+        const wordFreq = new Map<string, number>();
+        const messages = skeleton.sequence.filter(s => 'role' in s) as MessageSkeleton[];
+
+        for (const msg of messages) {
+            const words = msg.content.toLowerCase()
+                .replace(/[^a-zA-ZÀ-ÿ0-9\s-_]/g, ' ')
+                .split(/\s+/)
+                .filter(w => w.length > 3 && !stopwords.has(w));
+            for (const word of words) {
+                wordFreq.set(word, (wordFreq.get(word) || 0) + 1);
+            }
+        }
+
+        // Top themes by frequency
+        const sortedWords = [...wordFreq.entries()]
+            .sort((a, b) => b[1] - a[1])
+            .slice(0, 15);
+
+        const themes = sortedWords.map(([word, freq]) => word);
+
+        // Group into clusters by co-occurrence (simplified: top 3 clusters)
+        const clusters: string[][] = [];
+        const used = new Set<string>();
+        for (const theme of themes) {
+            if (used.has(theme)) continue;
+            const cluster = [theme];
+            used.add(theme);
+            // Find co-occurring words (appear in same messages)
+            for (const other of themes) {
+                if (used.has(other)) continue;
+                const coOccurrence = messages.filter(m =>
+                    m.content.toLowerCase().includes(theme) &&
+                    m.content.toLowerCase().includes(other)
+                ).length;
+                if (coOccurrence >= 2) {
+                    cluster.push(other);
+                    used.add(other);
+                }
+            }
+            if (clusters.length < 5) clusters.push(cluster);
+        }
+
+        // Topic evolution: themes by message position (first half vs second half)
+        const midpoint = Math.floor(messages.length / 2);
+        const firstHalf = messages.slice(0, midpoint);
+        const secondHalf = messages.slice(midpoint);
+        const evolution = themes.slice(0, 5).map(theme => {
+            const earlyCount = firstHalf.filter(m => m.content.toLowerCase().includes(theme)).length;
+            const lateCount = secondHalf.filter(m => m.content.toLowerCase().includes(theme)).length;
+            return { theme, trend: lateCount > earlyCount ? 'growing' : lateCount < earlyCount ? 'declining' : 'stable' };
+        });
+
         return {
-            themes: ['theme1', 'theme2'],
-            clusters: [],
-            similarity: 0.8,
-            evolution: []
+            themes,
+            clusters,
+            similarity: messages.length > 0 ? Math.min(0.95, 0.5 + clusters.length * 0.1) : 0,
+            evolution
         };
     }
 
     /**
-     * Détecte les patterns de communication dans le contexte.
-     * TODO Phase 2: Implémenter la détection de patterns
+     * Détecte les patterns de communication depuis la séquence de messages.
      */
     private async detectCommunicationPatterns(context: NarrativeContext): Promise<any> {
-        return {
-            flows: [],
-            styles: [],
-            approaches: [],
-            decisions: []
-        };
+        const skeleton = this.conversationCache.get(context.taskId);
+        if (!skeleton) {
+            return { flows: [], styles: [], approaches: [], decisions: [] };
+        }
+
+        const messages = skeleton.sequence.filter(s => 'role' in s) as MessageSkeleton[];
+        const actions = skeleton.sequence.filter(s => 'type' in s && (s as any).type === 'tool') as ActionMetadata[];
+
+        // Detect interaction flows
+        const flows: string[] = [];
+        let consecutiveUser = 0;
+        let consecutiveAssistant = 0;
+        for (const msg of messages) {
+            if (msg.role === 'user') { consecutiveUser++; consecutiveAssistant = 0; }
+            else { consecutiveAssistant++; consecutiveUser = 0; }
+        }
+        if (messages.length > 0) {
+            const userMsgs = messages.filter(m => m.role === 'user').length;
+            const ratio = userMsgs / messages.length;
+            if (ratio > 0.4) flows.push('interactive-dialogue');
+            else flows.push('assistant-driven');
+            if (actions.length > messages.length) flows.push('tool-heavy');
+        }
+
+        // Detect communication styles
+        const styles: string[] = [];
+        const avgMsgLen = messages.reduce((sum, m) => sum + m.content.length, 0) / (messages.length || 1);
+        if (avgMsgLen > 500) styles.push('detailed');
+        else if (avgMsgLen < 100) styles.push('concise');
+        else styles.push('moderate');
+
+        const questionCount = messages.filter(m => m.content.includes('?')).length;
+        if (questionCount > messages.length * 0.3) styles.push('inquiry-driven');
+
+        // Detect approaches
+        const approaches: string[] = [];
+        const toolTypes = new Set(actions.map(a => a.name));
+        if (toolTypes.has('read_file') || toolTypes.has('Read')) approaches.push('code-exploration');
+        if (toolTypes.has('write_to_file') || toolTypes.has('Write') || toolTypes.has('Edit')) approaches.push('code-modification');
+        if (toolTypes.has('execute_command') || toolTypes.has('Bash')) approaches.push('command-execution');
+        if (toolTypes.has('new_task') || toolTypes.has('Agent')) approaches.push('task-delegation');
+        if (approaches.length === 0) approaches.push('discussion');
+
+        // Detect decisions (messages with decision-indicating keywords)
+        const decisionKeywords = ['decided', 'choosing', 'going with', 'let\'s', 'we\'ll',
+            'décidé', 'choisir', 'allons', 'faisons', 'option'];
+        const decisions = messages
+            .filter(m => decisionKeywords.some(kw => m.content.toLowerCase().includes(kw)))
+            .map(m => m.content.slice(0, 100));
+
+        return { flows, styles, approaches, decisions: decisions.slice(0, 5) };
     }
 
     /**
-     * Construit les profils des acteurs.
-     * TODO Phase 2: Implémenter le profilage des acteurs
+     * Construit les profils des acteurs depuis les messages.
      */
     private async buildActorProfiles(context: NarrativeContext): Promise<any> {
-        return {
-            roles: [],
-            expertise: [],
-            dynamics: [],
-            contributions: []
+        const skeleton = this.conversationCache.get(context.taskId);
+        if (!skeleton) {
+            return { roles: [], expertise: [], dynamics: [], contributions: [] };
+        }
+
+        const messages = skeleton.sequence.filter(s => 'role' in s) as MessageSkeleton[];
+        const actions = skeleton.sequence.filter(s => 'type' in s && (s as any).type === 'tool') as ActionMetadata[];
+
+        const userMsgs = messages.filter(m => m.role === 'user');
+        const assistantMsgs = messages.filter(m => m.role === 'assistant');
+
+        // Roles
+        const roles = [
+            {
+                role: 'user' as const,
+                messageCount: userMsgs.length,
+                avgLength: userMsgs.reduce((s, m) => s + m.content.length, 0) / (userMsgs.length || 1)
+            },
+            {
+                role: 'assistant' as const,
+                messageCount: assistantMsgs.length,
+                avgLength: assistantMsgs.reduce((s, m) => s + m.content.length, 0) / (assistantMsgs.length || 1)
+            }
+        ];
+
+        // Expertise domains (from tool usage)
+        const toolUsage = new Map<string, number>();
+        for (const action of actions) {
+            toolUsage.set(action.name, (toolUsage.get(action.name) || 0) + 1);
+        }
+        const expertise = [...toolUsage.entries()]
+            .sort((a, b) => b[1] - a[1])
+            .slice(0, 5)
+            .map(([tool, count]) => ({ tool, count }));
+
+        // Dynamics
+        const dynamics: string[] = [];
+        if (userMsgs.length > assistantMsgs.length * 2) dynamics.push('user-directed');
+        else if (assistantMsgs.length > userMsgs.length * 2) dynamics.push('assistant-autonomous');
+        else dynamics.push('collaborative');
+
+        // Contributions
+        const contributions = {
+            userChars: userMsgs.reduce((s, m) => s + m.content.length, 0),
+            assistantChars: assistantMsgs.reduce((s, m) => s + m.content.length, 0),
+            toolCalls: actions.length
         };
+
+        return { roles, expertise, dynamics, contributions };
     }
 
     /**
-     * Extrait les métadonnées comportementales.
-     * TODO Phase 2: Implémenter l'extraction de métadonnées
+     * Extrait les métadonnées comportementales depuis la timeline.
      */
     private async extractBehavioralMetadata(context: NarrativeContext): Promise<any> {
-        return {
-            temporal: [],
-            efficiency: {},
-            quality: {},
-            adaptation: []
+        const skeleton = this.conversationCache.get(context.taskId);
+        if (!skeleton) {
+            return { temporal: [], efficiency: {}, quality: {}, adaptation: [] };
+        }
+
+        const messages = skeleton.sequence.filter(s => 'role' in s) as MessageSkeleton[];
+        const actions = skeleton.sequence.filter(s => 'type' in s && (s as any).type === 'tool') as ActionMetadata[];
+
+        // Temporal patterns
+        const temporal: Array<{ phase: string; messageCount: number }> = [];
+        if (messages.length > 0) {
+            const third = Math.ceil(messages.length / 3);
+            temporal.push({ phase: 'opening', messageCount: Math.min(third, messages.length) });
+            temporal.push({ phase: 'middle', messageCount: Math.min(third, Math.max(0, messages.length - third)) });
+            temporal.push({ phase: 'closing', messageCount: Math.max(0, messages.length - 2 * third) });
+        }
+
+        // Efficiency metrics
+        const efficiency = {
+            messagesPerAction: actions.length > 0 ? messages.length / actions.length : 0,
+            actionsTotal: actions.length,
+            messagesTotal: messages.length,
+            totalSequenceLength: skeleton.sequence.length,
+            isCompleted: skeleton.isCompleted ?? false
         };
+
+        // Quality signals
+        const errorCount = actions.filter(a => a.status === 'failure').length;
+        const retryIndicators = messages.filter(m =>
+            m.content.toLowerCase().includes('try again') ||
+            m.content.toLowerCase().includes('retry') ||
+            m.content.toLowerCase().includes('réessay')
+        ).length;
+
+        const quality = {
+            errorRate: actions.length > 0 ? errorCount / actions.length : 0,
+            retryCount: retryIndicators,
+            completionStatus: skeleton.isCompleted ? 'completed' : 'in-progress'
+        };
+
+        return { temporal, efficiency, quality, adaptation: [] };
     }
 
     /**
-     * Calcule le score de confiance global.
-     * TODO Phase 2: Implémenter le calcul de confiance
+     * Calcule le score de confiance basé sur les données réelles d'enrichissement.
      */
-    private calculateOverallConfidence(...args: any[]): number {
-        return 0.85; // Placeholder
+    private calculateOverallConfidence(
+        semanticAnalysis: any,
+        communicationPatterns: any,
+        actorProfiles: any
+    ): number {
+        let score = 0;
+        let factors = 0;
+
+        // Semantic coverage: more themes = higher confidence
+        if (semanticAnalysis?.themes?.length > 0) {
+            score += Math.min(1, semanticAnalysis.themes.length / 5);
+            factors++;
+        }
+
+        // Communication patterns detected
+        if (communicationPatterns?.flows?.length > 0) {
+            score += Math.min(1, communicationPatterns.flows.length / 2);
+            factors++;
+        }
+
+        // Actor profiles available
+        if (actorProfiles?.roles?.length > 0) {
+            const totalMessages = actorProfiles.roles.reduce((s: number, r: any) => s + (r.messageCount || 0), 0);
+            score += totalMessages > 10 ? 1 : totalMessages > 3 ? 0.7 : 0.3;
+            factors++;
+        }
+
+        // Cluster coherence
+        if (semanticAnalysis?.clusters?.length > 0) {
+            score += Math.min(1, semanticAnalysis.clusters.length / 3);
+            factors++;
+        }
+
+        return factors > 0 ? Math.round((score / factors) * 100) / 100 : 0;
     }
 
     /**
-     * Calcule les métriques de couverture.
-     * TODO Phase 2: Implémenter le calcul de couverture
+     * Calcule les métriques de couverture basées sur les données réelles.
      */
     private calculateCoverageMetrics(context: NarrativeContext, analysis: any): any {
-        return {
-            completeness: 0.9,
-            accuracy: 0.85
-        };
+        const skeleton = this.conversationCache.get(context.taskId);
+        if (!skeleton) {
+            return { completeness: 0, accuracy: 0 };
+        }
+
+        const messages = skeleton.sequence.filter(s => 'role' in s) as MessageSkeleton[];
+        const totalChars = messages.reduce((s, m) => s + m.content.length, 0);
+        const contextChars = context.contextSummary?.length || 0;
+
+        // Completeness: ratio of context summary to source material (capped)
+        const completeness = totalChars > 0
+            ? Math.min(1, Math.round((contextChars / totalChars) * 100) / 100)
+            : 0;
+
+        // Accuracy proxy: based on how many themes were extracted vs messages
+        const themeCount = analysis?.themes?.length || 0;
+        const accuracy = messages.length > 0
+            ? Math.min(1, Math.round((themeCount / Math.max(1, Math.sqrt(messages.length))) * 100) / 100)
+            : 0;
+
+        return { completeness, accuracy };
     }
 
     /**

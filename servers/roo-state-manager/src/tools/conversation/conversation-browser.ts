@@ -273,7 +273,7 @@ export const conversationBrowserTool: Tool = {
             summarize_type: {
                 type: 'string',
                 enum: ['trace', 'cluster', 'synthesis'],
-                description: '[summarize] Type de résumé (requis si action=summarize). "trace" = statistiques et timeline. "cluster" = grappes parent-enfant. "synthesis" = DÉSACTIVÉ (stubs #767, utiliser trace ou cluster).'
+                description: '[summarize] Type de résumé (requis si action=summarize). "trace" = statistiques et timeline. "cluster" = grappes parent-enfant. "synthesis" = pipeline LLM avec analyse sémantique et profils d\'acteurs.'
             },
             taskId: {
                 type: 'string',
@@ -585,24 +585,15 @@ export async function handleConversationBrowser(
                 // Résoudre taskId depuis taskId ou task_id
                 const resolvedTaskId = (args.taskId || args.task_id)!;
 
-                // === Synthesis: DISABLED — stub methods return fake data (issues #767, #768) ===
-                // The synthesis pipeline (NarrativeContextBuilder, SynthesisOrchestrator) contains
-                // 11+ stub methods returning hardcoded values (confidence=0.85, themes=['theme1'],
-                // empty patterns/actors). Until Phase 2 is implemented, this mode is disabled
-                // to prevent agents from consuming fake data that appears authoritative.
+                // === Synthesis: LLM pipeline via SynthesisOrchestratorService ===
+                // Enrichment methods implemented algorithmically (Phase 2, issue #767)
                 if (args.summarize_type === 'synthesis') {
-                    return {
-                        content: [{
-                            type: 'text',
-                            text: '⚠️ summarize_type="synthesis" is currently disabled.\n\n' +
-                                'The LLM synthesis pipeline contains stub methods that return ' +
-                                'hardcoded/fake values (confidence=0.85, themes=["theme1"], empty patterns). ' +
-                                'These stubs were discovered in issues #767 and #768.\n\n' +
-                                'Use summarize_type="trace" or "cluster" instead — these are fully functional.\n\n' +
-                                'See: https://github.com/jsboige/roo-extensions/issues/767'
-                        }],
-                        isError: true
-                    };
+                    return await handleSynthesisAction(
+                        resolvedTaskId,
+                        args.synthesis_output_format || 'json',
+                        args.filePath,
+                        getConversationSkeleton
+                    );
                 }
 
                 // Resolve source for summarize: 'all' not supported, auto-detect from taskId prefix
