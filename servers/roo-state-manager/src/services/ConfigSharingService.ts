@@ -494,8 +494,12 @@ export class ConfigSharingService implements IConfigSharingService {
           // Lecture du contenu source (JSON) - Use BOM-safe read (issue #664)
           const sourceContent = await readJSONFileWithoutBOM<any>(sourcePath);
 
+          // Fix #759: Denormalize content before applying (restore paths and secrets)
+          const configType = (file.type || 'mcp_config') as import('./ConfigNormalizationService.js').ConfigType;
+          const denormalizedContent = await this.normalizationService.denormalize(sourceContent, configType);
+
           // Issue #349: Filtrage granulaire des serveurs MCP si targets mcp:xxx sont spécifiés
-          let finalContent = sourceContent;
+          let finalContent = denormalizedContent;
           if (file.path === 'mcp-settings/mcp_settings.json' && hasMcpTargets && !hasMcpTarget) {
             if (!sourceContent.mcpServers) {
               this.logger.warn('Aucun serveur MCP trouvé dans la configuration source');

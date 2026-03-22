@@ -12,7 +12,7 @@ export interface MachineContext {
 
 export interface INormalizationService {
   normalize(content: any, type: ConfigType): Promise<any>;
-  denormalize(content: any, type: ConfigType, context: MachineContext): Promise<any>;
+  denormalize(content: any, type: ConfigType, context?: MachineContext): Promise<any>;
 }
 
 export class ConfigNormalizationService implements INormalizationService {
@@ -34,10 +34,12 @@ export class ConfigNormalizationService implements INormalizationService {
   }
 
   /**
-   * Dénormalise une configuration pour l'application locale
+   * Dénormalise une configuration pour l'application locale.
+   * If no context is provided, uses the current machine context (fix #759).
    */
-  public async denormalize(content: any, type: ConfigType, context: MachineContext): Promise<any> {
-    return this.processObject(content, context, 'denormalize');
+  public async denormalize(content: any, type: ConfigType, context?: MachineContext): Promise<any> {
+    const resolvedContext = context || this.contextOverride || this.getCurrentContext();
+    return this.processObject(content, resolvedContext, 'denormalize');
   }
 
   private getCurrentContext(): MachineContext {
@@ -73,9 +75,22 @@ export class ConfigNormalizationService implements INormalizationService {
              result[key] = `{{SECRET:${key}}}`;
           }
         } else {
-          // En mode dénormalisation, on garde le placeholder si on n'a pas de valeur de remplacement
-          // TODO: Implémenter la récupération depuis une config locale existante si nécessaire
-          result[key] = value;
+          // En mode dénormalisation, restaurer les secrets depuis les variables d'environnement
+          if (typeof value === 'string' && value.startsWith('{{SECRET:') && value.endsWith('}}')) {
+            const secretKey = value.slice(9, -2); // Extract key from {{SECRET:key}}
+            // Try to find the value in env vars (case-insensitive match)
+            const envValue = context.envVars?.[secretKey]
+              || context.envVars?.[secretKey.toUpperCase()]
+              || context.envVars?.[secretKey.replace(/([A-Z])/g, '_$1').toUpperCase()];
+            if (envValue) {
+              result[key] = envValue;
+            } else {
+              // Keep placeholder if no env var found — caller should handle
+              result[key] = value;
+            }
+          } else {
+            result[key] = value;
+          }
         }
         continue;
       }
@@ -158,6 +173,13 @@ export class ConfigNormalizationService implements INormalizationService {
 
   private denormalizePath(value: string, context: MachineContext): string {
     let denormalized = value;
+
+    // 0. Only denormalize values that look like paths or contain known placeholders
+    // Regex patterns, URLs, identifiers etc. must NOT be modified (fix #759)
+    const hasPlaceholder = denormalized.includes(this.HOME_PLACEHOLDER) || denormalized.includes(this.ROOT_PLACEHOLDER);
+    if (!hasPlaceholder && !this.looksLikePath(denormalized)) {
+      return value;
+    }
 
     // 1. Remplacement des placeholders (toujours convertir backslashes pour cohérence)
     if (denormalized.includes(this.HOME_PLACEHOLDER)) {

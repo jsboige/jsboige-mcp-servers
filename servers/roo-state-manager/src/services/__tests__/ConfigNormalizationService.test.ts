@@ -194,15 +194,62 @@ describe('ConfigNormalizationService', () => {
       expect(result.root).toBe('/opt/roo-extensions/src/index.ts');
     });
 
-    it('should keep secrets masked during denormalization if no value provided', async () => {
+    it('should keep secrets masked during denormalization if no env var found', async () => {
       const service = new ConfigNormalizationService();
       const input = {
         apiKey: '{{SECRET:apiKey}}'
       };
 
-      const result = await service.denormalize(input, 'mcp_config', windowsContext);
+      const contextNoEnv: MachineContext = { ...windowsContext, envVars: {} };
+      const result = await service.denormalize(input, 'mcp_config', contextNoEnv);
 
       expect(result.apiKey).toBe('{{SECRET:apiKey}}');
+    });
+
+    it('should restore secrets from env vars during denormalization (#759)', async () => {
+      const service = new ConfigNormalizationService();
+      const input = {
+        apiKey: '{{SECRET:apiKey}}',
+        githubToken: '{{SECRET:githubToken}}'
+      };
+
+      const contextWithEnv: MachineContext = {
+        ...windowsContext,
+        envVars: {
+          apiKey: 'sk-real-api-key-123',
+          githubToken: 'ghp_token456'
+        }
+      };
+      const result = await service.denormalize(input, 'mcp_config', contextWithEnv);
+
+      expect(result.apiKey).toBe('sk-real-api-key-123');
+      expect(result.githubToken).toBe('ghp_token456');
+    });
+
+    it('should NOT modify regex patterns during denormalization (#759)', async () => {
+      const service = new ConfigNormalizationService();
+      const input = {
+        pattern: '\\.md$',
+        filter: '^src/.*\\.ts$',
+        normalPath: '%USERPROFILE%/Documents'
+      };
+
+      const result = await service.denormalize(input, 'mcp_config', windowsContext);
+
+      // Regex patterns must be preserved as-is
+      expect(result.pattern).toBe('\\.md$');
+      expect(result.filter).toBe('^src/.*\\.ts$');
+      // But paths with placeholders must be denormalized
+      expect(result.normalPath).toContain('TestUser');
+    });
+
+    it('should use default context when none provided (#759)', async () => {
+      const service = new ConfigNormalizationService();
+      const input = { simple: 'value' };
+
+      // Should not throw when no context provided
+      const result = await service.denormalize(input, 'mcp_config');
+      expect(result.simple).toBe('value');
     });
   });
 });
