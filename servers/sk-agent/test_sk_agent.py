@@ -438,49 +438,55 @@ class TestSKAgentManager:
 class TestAgentResolution:
     """Tests for _resolve_agent() logic."""
 
-    def test_resolve_explicit_agent_id(self, vision_config):
+    @pytest.mark.asyncio
+    async def test_resolve_explicit_agent_id(self, vision_config):
         """Explicit agent_id overrides all defaults."""
         manager = sk_agent.SKAgentManager(vision_config)
         manager._sk_agents = {"text-agent": MagicMock(), "vision-agent": MagicMock()}
 
-        agent_id, agent = manager._resolve_agent(agent_id="vision-agent")
+        agent_id, agent = await manager._resolve_agent(agent_id="vision-agent")
         assert agent_id == "vision-agent"
         assert agent is not None
 
-    def test_resolve_default_agent(self, vision_config):
+    @pytest.mark.asyncio
+    async def test_resolve_default_agent(self, vision_config):
         """No hints -> default agent."""
         manager = sk_agent.SKAgentManager(vision_config)
         manager._sk_agents = {"text-agent": MagicMock(), "vision-agent": MagicMock()}
 
-        agent_id, agent = manager._resolve_agent()
+        agent_id, agent = await manager._resolve_agent()
         assert agent_id == "text-agent"
 
-    def test_resolve_vision_default(self, vision_config):
+    @pytest.mark.asyncio
+    async def test_resolve_vision_default(self, vision_config):
         """needs_vision=True -> default vision agent."""
         manager = sk_agent.SKAgentManager(vision_config)
         manager._sk_agents = {"text-agent": MagicMock(), "vision-agent": MagicMock()}
 
-        agent_id, agent = manager._resolve_agent(needs_vision=True)
+        agent_id, agent = await manager._resolve_agent(needs_vision=True)
         assert agent_id == "vision-agent"
 
-    def test_resolve_no_agents(self):
+    @pytest.mark.asyncio
+    async def test_resolve_no_agents(self):
         """No agents initialized -> (None, None)."""
         config = make_v2_config()
         manager = sk_agent.SKAgentManager(config)
 
-        agent_id, agent = manager._resolve_agent()
+        agent_id, agent = await manager._resolve_agent()
         assert agent_id is None
         assert agent is None
 
-    def test_resolve_model_id_backward_compat(self, vision_config):
+    @pytest.mark.asyncio
+    async def test_resolve_model_id_backward_compat(self, vision_config):
         """model_id maps to agent that uses that model."""
         manager = sk_agent.SKAgentManager(vision_config)
         manager._sk_agents = {"text-agent": MagicMock(), "vision-agent": MagicMock()}
 
-        agent_id, agent = manager._resolve_agent(model_id="vision-model")
+        agent_id, agent = await manager._resolve_agent(model_id="vision-model")
         assert agent_id == "vision-agent"
 
-    def test_resolve_first_available(self):
+    @pytest.mark.asyncio
+    async def test_resolve_first_available(self):
         """No default configured -> first available agent."""
         config = make_v2_config(
             models=[{"id": "m1", "base_url": "http://test", "model_id": "v1"}],
@@ -489,15 +495,16 @@ class TestAgentResolution:
         manager = sk_agent.SKAgentManager(config)
         manager._sk_agents = {"only-agent": MagicMock()}
 
-        agent_id, agent = manager._resolve_agent()
+        agent_id, agent = await manager._resolve_agent()
         assert agent_id == "only-agent"
 
-    def test_resolve_nonexistent_agent_id_falls_through(self, vision_config):
+    @pytest.mark.asyncio
+    async def test_resolve_nonexistent_agent_id_falls_through(self, vision_config):
         """Nonexistent agent_id falls through to defaults."""
         manager = sk_agent.SKAgentManager(vision_config)
         manager._sk_agents = {"text-agent": MagicMock(), "vision-agent": MagicMock()}
 
-        agent_id, agent = manager._resolve_agent(agent_id="nonexistent")
+        agent_id, agent = await manager._resolve_agent(agent_id="nonexistent")
         # Falls through: not in _sk_agents -> goes to default
         assert agent_id == "text-agent"
 
@@ -2179,7 +2186,8 @@ class TestSharedConversationAgentConfig:
                 ), f"Agent '{agent['id']}' has duplicate system_prompt with another agent"
                 prompts[agent["id"]] = prompt
 
-    def test_conversation_agents_individually_callable(self):
+    @pytest.mark.asyncio
+    async def test_conversation_agents_individually_callable(self):
         """Shared conversation agents can be resolved individually via call_agent."""
         config = make_v2_config(
             models=[
@@ -2210,11 +2218,11 @@ class TestSharedConversationAgentConfig:
         }
 
         # Verify each conversation agent resolves individually
-        agent_id, sk_agent_obj = manager._resolve_agent(agent_id="researcher")
+        agent_id, sk_agent_obj = await manager._resolve_agent(agent_id="researcher")
         assert agent_id == "researcher"
         assert sk_agent_obj is mock_researcher
 
-        agent_id, sk_agent_obj = manager._resolve_agent(agent_id="critic")
+        agent_id, sk_agent_obj = await manager._resolve_agent(agent_id="critic")
         assert agent_id == "critic"
         assert sk_agent_obj is mock_critic
 
