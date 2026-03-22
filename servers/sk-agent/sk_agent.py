@@ -62,8 +62,12 @@ from mcp.server.fastmcp import FastMCP
 from openai import AsyncOpenAI
 
 from semantic_kernel import Kernel
+from semantic_kernel.functions import KernelArguments
 from semantic_kernel.agents import ChatCompletionAgent, ChatHistoryAgentThread
-from semantic_kernel.connectors.ai.open_ai import OpenAIChatCompletion
+from semantic_kernel.connectors.ai.open_ai import (
+    OpenAIChatCompletion,
+    OpenAIChatPromptExecutionSettings,
+)
 from semantic_kernel.connectors.mcp import MCPStdioPlugin
 from semantic_kernel.contents import (
     AuthorRole,
@@ -337,6 +341,11 @@ class SKAgentManager:
         # Memory
         self._memory_stores: dict[str, Any] = {}  # agent_id -> SemanticTextMemory
 
+        # Execution settings (sampling) from config
+        self._execution_settings: OpenAIChatPromptExecutionSettings | None = (
+            self._build_execution_settings()
+        )
+
         # Lazy MCP loading: track which MCPs are being loaded to avoid duplicates
         self._loading_mcps: set[str] = set()
         self._mcp_configs: dict[str, McpConfig] = {
@@ -382,6 +391,37 @@ class SKAgentManager:
                 model_cfg.model_id,
                 model_cfg.base_url,
             )
+
+    def _build_execution_settings(self) -> OpenAIChatPromptExecutionSettings | None:
+        """Build execution settings from config sampling params."""
+        sampling = self.config.sampling
+        # Build extra_body for vLLM-specific params not in the OpenAI API
+        extra_body: dict[str, Any] = {}
+        if sampling.top_k >= 0:
+            extra_body["top_k"] = sampling.top_k
+        if sampling.min_p > 0:
+            extra_body["min_p"] = sampling.min_p
+        if sampling.repetition_penalty != 1.0:
+            extra_body["repetition_penalty"] = sampling.repetition_penalty
+
+        settings = OpenAIChatPromptExecutionSettings(
+            temperature=sampling.temperature,
+            top_p=sampling.top_p,
+            presence_penalty=sampling.presence_penalty,
+            max_tokens=sampling.max_tokens,
+        )
+        if extra_body:
+            settings.extra_body = extra_body
+
+        log.info(
+            "Sampling settings: temp=%.2f, top_p=%.2f, pp=%.1f, max_tokens=%d%s",
+            sampling.temperature,
+            sampling.top_p,
+            sampling.presence_penalty,
+            sampling.max_tokens,
+            f", extra_body={extra_body}" if extra_body else "",
+        )
+        return settings
 
     async def _ensure_mcp_loaded(self, mcp_id: str) -> bool:
         """Ensure a specific MCP is loaded (lazy loading). Returns True if successful."""
@@ -756,6 +796,12 @@ class SKAgentManager:
     # Handler Methods
     # -----------------------------------------------------------------------
 
+    def _get_invoke_kwargs(self) -> dict[str, Any]:
+        """Build extra kwargs for agent.invoke() with sampling settings."""
+        if not self._execution_settings:
+            return {}
+        return {"arguments": KernelArguments(settings=self._execution_settings)}
+
     async def _handle_text(
         self,
         agent_id: str,
@@ -771,12 +817,14 @@ class SKAgentManager:
 
         steps = []
         final_response = None
+        invoke_kwargs = self._get_invoke_kwargs()
         async for response in agent.invoke(
             messages=message,
             thread=thread,
             on_intermediate_message=self._make_step_handler(steps)
             if include_steps
             else None,
+            **invoke_kwargs,
         ):
             final_response = response
             thread = response.thread
@@ -813,12 +861,14 @@ class SKAgentManager:
 
             steps = []
             final_response = None
+            invoke_kwargs = self._get_invoke_kwargs()
             async for response in agent.invoke(
                 messages=message,
                 thread=thread,
                 on_intermediate_message=self._make_step_handler(steps)
                 if include_steps
                 else None,
+                **invoke_kwargs,
             ):
                 final_response = response
                 thread = response.thread
@@ -886,12 +936,14 @@ class SKAgentManager:
 
             steps = []
             final_response = None
+            invoke_kwargs = self._get_invoke_kwargs()
             async for response in agent.invoke(
                 messages=message,
                 thread=thread,
                 on_intermediate_message=self._make_step_handler(steps)
                 if include_steps
                 else None,
+                **invoke_kwargs,
             ):
                 final_response = response
                 thread = response.thread
@@ -957,12 +1009,14 @@ class SKAgentManager:
 
         steps = []
         final_response = None
+        invoke_kwargs = self._get_invoke_kwargs()
         async for response in agent.invoke(
             messages=message,
             thread=thread,
             on_intermediate_message=self._make_step_handler(steps)
             if include_steps
             else None,
+            **invoke_kwargs,
         ):
             final_response = response
             thread = response.thread
@@ -1069,12 +1123,14 @@ class SKAgentManager:
 
         steps = []
         final_response = None
+        invoke_kwargs = self._get_invoke_kwargs()
         async for response in agent.invoke(
             messages=message,
             thread=thread,
             on_intermediate_message=self._make_step_handler(steps)
             if include_steps
             else None,
+            **invoke_kwargs,
         ):
             final_response = response
             thread = response.thread

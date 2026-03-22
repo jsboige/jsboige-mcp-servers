@@ -237,6 +237,44 @@ class QdrantConfig:
 
 
 @dataclass
+class SamplingConfig:
+    """Global sampling parameters for LLM inference."""
+
+    temperature: float = 1.0
+    top_p: float = 1.0
+    top_k: int = -1  # -1 = disabled (server default)
+    min_p: float = 0.0
+    presence_penalty: float = 0.0
+    repetition_penalty: float = 1.0
+    max_tokens: int = 4096
+
+    @classmethod
+    def from_dict(cls, data: dict | None) -> SamplingConfig:
+        if not data:
+            return cls()
+        return cls(
+            temperature=data.get("temperature", 1.0),
+            top_p=data.get("top_p", 1.0),
+            top_k=data.get("top_k", -1),
+            min_p=data.get("min_p", 0.0),
+            presence_penalty=data.get("presence_penalty", 0.0),
+            repetition_penalty=data.get("repetition_penalty", 1.0),
+            max_tokens=data.get("max_tokens", 4096),
+        )
+
+    def to_dict(self) -> dict:
+        return {
+            "temperature": self.temperature,
+            "top_p": self.top_p,
+            "top_k": self.top_k,
+            "min_p": self.min_p,
+            "presence_penalty": self.presence_penalty,
+            "repetition_penalty": self.repetition_penalty,
+            "max_tokens": self.max_tokens,
+        }
+
+
+@dataclass
 class AgentConfig:
     """An agent: model + system prompt + MCP subset + memory + parameters."""
 
@@ -329,6 +367,7 @@ class SKAgentConfig:
     conversations: list[ConversationConfig] = field(default_factory=list)
     embeddings: EmbeddingsConfig = field(default_factory=EmbeddingsConfig)
     qdrant: QdrantConfig = field(default_factory=QdrantConfig)
+    sampling: SamplingConfig = field(default_factory=SamplingConfig)
 
     # Indexes for fast lookup (built by _build_indexes)
     _model_map: dict[str, ModelConfig] = field(default_factory=dict, repr=False)
@@ -410,6 +449,7 @@ class SKAgentConfig:
         if self.embeddings.is_configured:
             d["embeddings"] = self.embeddings.to_dict()
         d["qdrant"] = self.qdrant.to_dict()
+        d["sampling"] = self.sampling.to_dict()
         return d
 
 
@@ -719,6 +759,7 @@ def _parse_config(raw: dict) -> SKAgentConfig:
         conversations=conversations,
         embeddings=EmbeddingsConfig.from_dict(raw.get("embeddings")),
         qdrant=QdrantConfig.from_dict(raw.get("qdrant")),
+        sampling=SamplingConfig.from_dict(raw.get("sampling")),
     )
 
 
