@@ -97,8 +97,8 @@ export interface DashboardFrontmatter {
 
 // Schema args pour l'outil MCP
 export const DashboardArgsSchema = z.object({
-  action: z.enum(['read', 'write', 'append', 'condense', 'list', 'delete', 'read_archive'])
-    .describe('Action : read, write, append, condense, list (tous les dashboards), delete (supprimer), read_archive (lire archives)'),
+  action: z.enum(['read', 'write', 'append', 'condense', 'list', 'delete', 'read_archive', 'read_overview'])
+    .describe('Action : read, write, append, condense, list (tous dashboards), delete (supprimer), read_archive (lire archives), read_overview (vue concaténée des 4 niveaux)'),
 
   type: z.enum(['global', 'machine', 'workspace', 'workspace+machine']).optional()
     .describe('Type de dashboard (requis sauf pour action=list)'),
@@ -447,15 +447,27 @@ export interface DashboardResult {
   dashboards?: DashboardSummary[];
   archives?: string[];
   archiveData?: { key: string; archivedAt: string; messageCount: number; messages: IntercomMessage[] };
+  overview?: Record<string, {
+    key: string;
+    status: string;
+    intercom: { totalMessages: number; recentMessages: IntercomMessage[] };
+    lastModified: string;
+    lastModifiedBy: Author;
+  } | null>;
 }
 
 /**
  * Handler pour l'outil roosync_dashboard
  */
 export async function roosyncDashboard(args: DashboardArgs): Promise<DashboardResult> {
-  // action=list ne nécessite pas de type
+  // action=list et read_overview ne nécessitent pas de type
   if (args.action === 'list') {
     return handleList();
+  }
+  if (args.action === 'read_overview') {
+    const resolvedMachineId = args.machineId ?? getLocalMachineId();
+    const resolvedWorkspace = args.workspace ?? getLocalWorkspaceId();
+    return handleReadOverview(resolvedMachineId, resolvedWorkspace, args);
   }
 
   if (!args.type) {
@@ -708,6 +720,70 @@ async function handleCondense(
   };
 }
 
+/**
+ * read_overview: Vue concaténée des 4 niveaux de dashboard en un seul appel.
+ * Retourne global + machine + workspace + workspace+machine avec troncature.
+ * (#808 Proposition 1)
+ */
+async function handleReadOverview(
+  resolvedMachineId: string,
+  resolvedWorkspace: string,
+  args: DashboardArgs
+): Promise<DashboardResult> {
+  const intercomLimit = args.intercomLimit ?? 5;
+  const STATUS_MAX_LENGTH = 2000;
+
+  const dashboardTypes: Array<{ type: Dashboard['type']; label: string }> = [
+    { type: 'global', label: 'Global' },
+    { type: 'machine', label: 'Machine' },
+    { type: 'workspace', label: 'Workspace' },
+    { type: 'workspace+machine', label: 'INTERCOM local' },
+  ];
+
+  const overview: Record<string, {
+    key: string;
+    status: string;
+    intercom: { totalMessages: number; recentMessages: IntercomMessage[] };
+    lastModified: string;
+    lastModifiedBy: Author;
+  } | null> = {};
+
+  let foundCount = 0;
+
+  for (const { type } of dashboardTypes) {
+    const key = buildDashboardKey(type, resolvedMachineId, resolvedWorkspace);
+    const dashboard = await readDashboardFile(key);
+
+    if (dashboard) {
+      foundCount++;
+      const statusText = dashboard.status.markdown;
+      overview[type] = {
+        key,
+        status: statusText.length > STATUS_MAX_LENGTH
+          ? statusText.substring(0, STATUS_MAX_LENGTH) + `\n\n... (tronqué, ${statusText.length} chars total)`
+          : statusText,
+        intercom: {
+          totalMessages: dashboard.intercom.messages.length,
+          recentMessages: dashboard.intercom.messages.slice(-intercomLimit)
+        },
+        lastModified: dashboard.lastModified,
+        lastModifiedBy: dashboard.lastModifiedBy
+      };
+    } else {
+      overview[type] = null;
+    }
+  }
+
+  return {
+    success: true,
+    action: 'read_overview',
+    key: `overview-${resolvedMachineId}-${resolvedWorkspace}`,
+    type: 'overview',
+    overview,
+    message: `Vue d'ensemble: ${foundCount}/4 dashboards trouvés (machine: ${resolvedMachineId}, workspace: ${resolvedWorkspace})`
+  };
+}
+
 async function handleList(): Promise<DashboardResult> {
   const dir = getDashboardsDir();
   try {
@@ -886,14 +962,14 @@ async function handleReadArchive(key: string, args: DashboardArgs): Promise<Dash
 
 export const dashboardToolMetadata = {
   name: 'roosync_dashboard',
-  description: 'Dashboards markdown partagés cross-machine. 4 types : global, machine, workspace, workspace+machine (remplace INTERCOM local). Actions : read, write (status diff), append (message intercom), condense, list (tous dashboards), delete, read_archive.',
+  description: 'Dashboards markdown partagés cross-machine. 4 types : global, machine, workspace, workspace+machine (remplace INTERCOM local). Actions : read, write (status diff), append (message intercom), condense, list (tous dashboards), delete, read_archive, read_overview (vue concaténée des 4 niveaux en 1 appel).',
   inputSchema: {
     type: 'object' as const,
     properties: {
       action: {
         type: 'string',
-        enum: ['read', 'write', 'append', 'condense', 'list', 'delete', 'read_archive'],
-        description: 'Action : read, write, append, condense, list (tous dashboards), delete (supprimer), read_archive (lire archives intercom)'
+        enum: ['read', 'write', 'append', 'condense', 'list', 'delete', 'read_archive', 'read_overview'],
+        description: 'Action : read, write, append, condense, list (tous dashboards), delete (supprimer), read_archive (lire archives intercom), read_overview (vue concaténée des 4 niveaux en 1 appel)'
       },
       type: {
         type: 'string',
