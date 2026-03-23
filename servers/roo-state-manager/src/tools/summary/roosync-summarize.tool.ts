@@ -236,9 +236,12 @@ export const roosyncSummarizeTool: Tool = {
 
 /**
  * Crée le bon getter de conversation selon la source
+ * @param source 'roo' ou 'claude'
+ * @param options Options de parsing (maxContentLength pour contrôler la troncature)
  */
 function createConversationGetter(
-    source: 'roo' | 'claude'
+    source: 'roo' | 'claude',
+    options?: { maxContentLength?: number }
 ): (taskId: string) => Promise<ConversationSkeleton | null> {
     return async (taskId: string) => {
         if (source === 'claude') {
@@ -246,7 +249,11 @@ function createConversationGetter(
             const locations = await ClaudeStorageDetector.detectStorageLocations();
 
             for (const location of locations) {
-                const skeleton = await ClaudeStorageDetector.analyzeConversation(taskId, location.projectPath);
+                const skeleton = await ClaudeStorageDetector.analyzeConversation(
+                    taskId,
+                    location.projectPath,
+                    { maxContentLength: options?.maxContentLength }
+                );
                 if (skeleton) {
                     return skeleton;
                 }
@@ -338,8 +345,12 @@ export async function handleRooSyncSummarize(
         let actualFindChildTasks: ((rootTaskId: string) => Promise<ConversationSkeleton[]>) | undefined;
 
         if (source === 'claude') {
-            // Pour Claude, créer un getter spécial
-            actualGetConversationSkeleton = createConversationGetter('claude');
+            // Pour Claude, créer un getter spécial avec contenu adapté au type d'opération
+            // trace/cluster: 2000 chars (meaningful snippets for stats/display)
+            // synthesis: 5000 chars (richer context for LLM analysis)
+            // (#798: default 400 was too aggressive, losing 60%+ of message content)
+            const maxContentLength = args.type === 'synthesis' ? 5000 : 2000;
+            actualGetConversationSkeleton = createConversationGetter('claude', { maxContentLength });
             actualFindChildTasks = createChildTasksFinder('claude');
         } else {
             // Pour Roo, utiliser les getters injectés

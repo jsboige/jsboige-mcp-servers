@@ -216,6 +216,69 @@ describe('ClaudeStorageDetector - TDD Suite', () => {
         });
     });
 
+    describe('maxContentLength option (#798)', () => {
+        it('DEVRAIT tronquer le contenu avec maxContentLength par défaut (400)', async () => {
+            const longContent = 'A'.repeat(800); // 800 chars, will be truncated at 400
+            const jsonlContent = [
+                JSON.stringify({ type: 'user', message: { role: 'user', content: longContent }, timestamp: '2024-01-01T10:00:00.000Z', uuid: '1' }),
+            ].join('\n');
+
+            const testJsonlPath = path.join(testProjectDir, 'conversation.jsonl');
+            await fs.writeFile(testJsonlPath, jsonlContent);
+
+            const skeleton = await ClaudeStorageDetector.analyzeConversation('test-id', testProjectDir);
+
+            expect(skeleton).toBeDefined();
+            const msg = skeleton!.sequence[0] as any;
+            expect(msg.role).toBe('user');
+            expect(msg.isTruncated).toBe(true);
+            expect(msg.content.length).toBeLessThan(800);
+            expect(msg.content).toContain('...');
+        });
+
+        it('DEVRAIT préserver le contenu complet avec maxContentLength élevé', async () => {
+            const longContent = 'B'.repeat(800); // 800 chars, within 2000 limit
+            const jsonlContent = [
+                JSON.stringify({ type: 'user', message: { role: 'user', content: longContent }, timestamp: '2024-01-01T10:00:00.000Z', uuid: '1' }),
+            ].join('\n');
+
+            const testJsonlPath = path.join(testProjectDir, 'conversation.jsonl');
+            await fs.writeFile(testJsonlPath, jsonlContent);
+
+            const skeleton = await ClaudeStorageDetector.analyzeConversation('test-id', testProjectDir, {
+                maxContentLength: 2000,
+            });
+
+            expect(skeleton).toBeDefined();
+            const msg = skeleton!.sequence[0] as any;
+            expect(msg.role).toBe('user');
+            expect(msg.isTruncated).toBe(false);
+            expect(msg.content).toBe(longContent);
+            expect(msg.content.length).toBe(800);
+        });
+
+        it('DEVRAIT tronquer à la limite choisie pour les très longs messages', async () => {
+            const veryLongContent = 'C'.repeat(5000); // 5000 chars
+            const jsonlContent = [
+                JSON.stringify({ type: 'user', message: { role: 'user', content: veryLongContent }, timestamp: '2024-01-01T10:00:00.000Z', uuid: '1' }),
+            ].join('\n');
+
+            const testJsonlPath = path.join(testProjectDir, 'conversation.jsonl');
+            await fs.writeFile(testJsonlPath, jsonlContent);
+
+            const skeleton = await ClaudeStorageDetector.analyzeConversation('test-id', testProjectDir, {
+                maxContentLength: 2000,
+            });
+
+            expect(skeleton).toBeDefined();
+            const msg = skeleton!.sequence[0] as any;
+            expect(msg.isTruncated).toBe(true);
+            // Content should be ~2003 chars (1000 front + '...' + 1000 back)
+            expect(msg.content.length).toBeLessThanOrEqual(2010);
+            expect(msg.content.length).toBeGreaterThan(1500);
+        });
+    });
+
     describe('Intégration', () => {
         it('DEVRAIT être compatible avec linterface ConversationSkeleton', async () => {
             const jsonlContent = [
