@@ -170,7 +170,63 @@ describe('Synthesis Services - Phase 1 Structure Validation', () => {
         });
     });
 
-    // [REMOVED] Phase 1 Mock Behavior — startBatchSynthesis retired (#780, #788 Phase 2)
+    describe('Phase 1 Mock Behavior', () => {
+        it('should create batch synthesis task with correct structure', async () => {
+            const contextBuilder = new NarrativeContextBuilderService(narrativeOptions, new Map());
+            const llmService = new LLMService(llmOptions);
+            const orchestrator = new SynthesisOrchestratorService(
+                contextBuilder,
+                llmService,
+                orchestratorOptions
+            );
+
+            // Test que startBatchSynthesis crée correctement une tâche de lot
+            const batchConfig = {
+                taskFilter: { workspace: '/test' },
+                maxConcurrency: 1,
+                llmModelId: 'test-gpt-4',
+                overwriteExisting: false
+            };
+
+            const batchTask = await orchestrator.startBatchSynthesis(batchConfig);
+
+            // Vérifier la structure de la tâche retournée
+            expect(batchTask).toBeDefined();
+            expect(batchTask.batchId).toBeDefined();
+            expect(typeof batchTask.batchId).toBe('string');
+            expect(batchTask.batchId.length).toBeGreaterThan(0);
+
+            // Vérifier le statut initial
+            expect(batchTask.status).toBe('queued');
+
+            // Vérifier les dates
+            expect(batchTask.startTime).toBeDefined();
+            expect(new Date(batchTask.startTime).toISOString()).toBe(batchTask.startTime);
+
+            // Vérifier que la config est stockée
+            expect(batchTask.config).toEqual(batchConfig);
+
+            // Vérifier l'initialisation du progrès
+            expect(batchTask.progress).toEqual({
+                totalTasks: 0,
+                completedTasks: 0,
+                failedTasks: 0,
+                inProgressTasks: 0,
+                completionPercentage: 0
+            });
+
+            // Vérifier les résultats initiaux
+            expect(batchTask.results).toEqual({
+                synthesisCount: 0,
+                errorCount: 0,
+                errors: [],
+                outputFiles: []
+            });
+
+            // Vérifier taskIds initialisé comme tableau vide
+            expect(batchTask.taskIds).toEqual([]);
+        });
+    });
 
     describe('Dependency Injection', () => {
         it('should accept dependencies correctly', () => {
@@ -243,6 +299,7 @@ describe('Synthesis Services - Phase 1 Structure Validation', () => {
             expect(typeof contextBuilder.buildNarrativeContext).toBe('function');
             expect(typeof llmService.generateSynthesis).toBe('function');
             expect(typeof orchestrator.synthesizeConversation).toBe('function');
+            expect(typeof orchestrator.startBatchSynthesis).toBe('function');
         });
 
         it('should support method calls (Phase 2: functional methods)', async () => {

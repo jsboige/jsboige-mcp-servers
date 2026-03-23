@@ -17,7 +17,8 @@ import {
     ContextBuildingOptions,
     ContextBuildingResult,
     ContextTrace,
-    ConversationAnalysis
+    ConversationAnalysis,
+    CondensedSynthesisBatch
 } from '../../models/synthesis/SynthesisModels.js';
 
 // Type temporaire pour Phase 2 - sera défini dans SynthesisModels plus tard
@@ -58,7 +59,10 @@ export interface TreeTraversalResult {
     
     /** Analyses de synthèse collectées (si disponibles) */
     collectedAnalyses: ConversationAnalysis[];
-
+    
+    /** Lots condensés utilisés pendant la construction */
+    usedCondensedBatches: CondensedSynthesisBatch[];
+    
     /** Profondeur maximale atteinte pendant le parcours */
     maxDepthReached: number;
 }
@@ -264,7 +268,7 @@ export class NarrativeContextBuilderService {
                 contextSummary,
                 buildTrace,
                 wasCondensed,
-                condensedBatchPath: undefined
+                condensedBatchPath: wasCondensed ? this.generateCondensedBatchPath(taskId) : undefined
             };
 
             return result;
@@ -780,6 +784,7 @@ export class NarrativeContextBuilderService {
         const result: TreeTraversalResult = {
             collectedSkeletons: [],
             collectedAnalyses: [],
+            usedCondensedBatches: [],
             maxDepthReached: 0
         };
 
@@ -926,8 +931,45 @@ export class NarrativeContextBuilderService {
      */
     // Méthode déplacée vers la fin (évite la duplication)
 
-    // [REMOVED] findExistingCondensedBatch — Stub #775, condensation subsystem retired (see #788 Phase 2)
-    // [REMOVED] createCondensedBatch — Stub #776, condensation subsystem retired (see #788 Phase 2)
+    /**
+     * Recherche un lot de synthèse condensée existant pour les tâches données.
+     * 
+     * Cette méthode vérifie s'il existe déjà un lot condensé couvrant
+     * les tâches spécifiées pour éviter la re-condensation.
+     * 
+     * Phase 3 : Implémentera la logique de recherche de lots condensés.
+     * 
+     * @param taskIds Liste des IDs de tâches à couvrir
+     * @returns Promise du lot condensé trouvé ou null
+     */
+    async findExistingCondensedBatch(taskIds: string[]): Promise<CondensedSynthesisBatch | null> {
+        // TODO Phase 3: Implémenter la recherche de lots condensés
+        return null; // Placeholder Phase 1
+    }
+
+    /**
+     * Créé un nouveau lot de synthèse condensée pour optimiser le contexte.
+     * 
+     * Cette méthode lance la création d'un lot condensé quand la taille
+     * du contexte dépasse les seuils configurés.
+     * 
+     * Phase 3 : Implémentera la logique de création de lots condensés.
+     * 
+     * @param analyses Liste des analyses à condenser
+     * @param llmModelId Modèle LLM à utiliser pour la condensation
+     * @returns Promise du lot condensé créé
+     */
+    async createCondensedBatch(
+        analyses: ConversationAnalysis[],
+        llmModelId: string
+    ): Promise<CondensedSynthesisBatch> {
+        // TODO Phase 3: Implémenter la création de lots condensés
+        throw new SynthesisServiceError(
+            'NarrativeContextBuilderService.createCondensedBatch() - Pas encore implémenté (Phase 1: Squelette)',
+            SynthesisServiceErrorCode.NOT_IMPLEMENTED,
+            { method: 'createCondensedBatch', phase: 1, llmModelId, analysesCount: analyses.length }
+        );
+    }
 
     // =========================================================================
     // MÉTHODES D'ACCÈS AUX DONNÉES
@@ -947,16 +989,24 @@ export class NarrativeContextBuilderService {
     }
 
     /**
-     * Retrieves a conversation analysis from the in-memory cache.
-     *
-     * The cache is populated during synthesis runs (synthesizeConversation).
-     * Returns null for tasks not yet synthesized in the current session.
-     *
-     * @param taskId ID of the task
-     * @returns Cached analysis or null if not available
+     * Charge une analyse de synthèse depuis le cache ou le stockage.
+     * 
+     * Cette méthode gère l'accès optimisé aux analyses avec mise en cache
+     * pour éviter les re-lectures coûteuses.
+     * 
+     * Phase 2 : Implémentera la logique de chargement avec cache.
+     * 
+     * @param taskId ID de la tâche dont charger l'analyse
+     * @returns Promise de l'analyse ou null si non trouvée
      */
     async getConversationAnalysis(taskId: string): Promise<ConversationAnalysis | null> {
-        return this.analysisCache.get(taskId) ?? null;
+        // Vérifier le cache d'abord
+        if (this.analysisCache.has(taskId)) {
+            return this.analysisCache.get(taskId)!;
+        }
+
+        // TODO Phase 2: Charger depuis le fichier de synthèse et mettre en cache
+        return null; // Placeholder Phase 1
     }
 
     // =========================================================================
@@ -1018,6 +1068,7 @@ export class NarrativeContextBuilderService {
         const parentContexts: Array<any> = [];
         const siblingContexts: Array<any> = [];
         const childContexts: Array<any> = [];
+        const condensedBatches: Array<any> = [];
         
         // ✅ SDDD Phase 3 FIX : Utiliser TaskNavigator pour remplir correctement les contextes hiérarchiques
         const taskNavigator = new TaskNavigator(this.conversationCache);
@@ -1058,11 +1109,25 @@ export class NarrativeContextBuilderService {
             });
         }
         
-        // Calculer le synthesisType selon les contextes présents
+        // Remplir les lots condensés depuis le traversal
+        if (traversalResult?.usedCondensedBatches) {
+            for (const batch of traversalResult.usedCondensedBatches) {
+                condensedBatches.push({
+                    batchId: batch.batchId,
+                    sourceTaskIds: batch.sourceTaskIds,
+                    batchSummary: batch.batchSummary,
+                    usedInContext: true
+                });
+            }
+        }
+
+        // ✅ SDDD Phase 3 FIX : Calculer le synthesisType selon les contextes présents
         // Types valides : 'atomic' | 'condensed' | 'generated_on_demand'
         let synthesisType: 'atomic' | 'condensed' | 'generated_on_demand' = 'atomic';
-
-        if (parentContexts.length > 0 || siblingContexts.length > 0 || childContexts.length > 0) {
+        
+        if (condensedBatches.length > 0) {
+            synthesisType = 'condensed';
+        } else if (parentContexts.length > 0 || siblingContexts.length > 0 || childContexts.length > 0) {
             synthesisType = 'generated_on_demand';
         }
         
@@ -1073,6 +1138,7 @@ export class NarrativeContextBuilderService {
             parentContexts: parentContexts.length > 0 ? parentContexts : undefined,
             siblingContexts: siblingContexts.length > 0 ? siblingContexts : undefined,
             childContexts: childContexts.length > 0 ? childContexts : undefined,
+            condensedBatches: condensedBatches.length > 0 ? condensedBatches : undefined,
             synthesisType
         };
     }
@@ -1253,6 +1319,13 @@ export class NarrativeContextBuilderService {
     }
 
     /**
+     * Génère le chemin d'un lot condensé
+     */
+    private generateCondensedBatchPath(taskId: string): string {
+        return `${this.options.condensedBatchesDir}/batch-${taskId}-${Date.now()}.json`;
+    }
+
+    /**
      * Détecte si un message est un résultat d'outil (pattern de TraceSummaryService)
      */
     private isToolResult(content: string): boolean {
@@ -1415,10 +1488,15 @@ export class NarrativeContextBuilderService {
     }
 
     /**
-     * Generates an on-demand summary for a task from its skeleton.
+     * Récupère la synthèse d'une tâche selon la logique de priorité définie.
      *
-     * @param taskId ID of the task
-     * @returns Generated summary string or null if skeleton unavailable
+     * Priorité selon l'architecture v3 :
+     * 1. Lot condensé (condensedBatchPath) - priorité haute
+     * 2. Synthèse atomique (analysisFilePath) - priorité normale
+     * 3. Génération à la volée si aucune synthèse disponible
+     *
+     * @param taskId ID de la tâche
+     * @returns Promise de la synthèse ou null si indisponible
      */
     private async getSummaryForTask(taskId: string): Promise<string | null> {
         try {
@@ -1426,15 +1504,61 @@ export class NarrativeContextBuilderService {
             if (!skeleton) {
                 return null;
             }
+
+            // Vérifier si skeleton a les métadonnées de synthèse (extension selon synthesis_models.md)
+            const metadata = (skeleton as any).synthesisMetadata;
+            if (!metadata) {
+                return await this.generateOnDemandSummary(skeleton);
+            }
+
+            // 1. Priorité au lot condensé
+            if (metadata.condensedBatchPath) {
+                return await this.readCondensedBatchSummary(metadata.condensedBatchPath);
+            }
+
+            // 2. Synthèse atomique
+            if (metadata.analysisFilePath) {
+                return await this.readAtomicSynthesis(metadata.analysisFilePath);
+            }
+
+            // 3. Génération à la volée
             return await this.generateOnDemandSummary(skeleton);
+
         } catch (error) {
             console.error(`Erreur lors de la récupération de synthèse pour ${taskId}:`, error);
             return null;
         }
     }
 
-    // [REMOVED] readCondensedBatchSummary — Dead code, condensation subsystem retired (#788)
-    // [REMOVED] readAtomicSynthesis — Dead code, condensation subsystem retired (#788)
+    /**
+     * Lit la synthèse d'un lot condensé.
+     */
+    private async readCondensedBatchSummary(batchPath: string): Promise<string> {
+        try {
+            const fs = await import('fs/promises');
+            const batchContent = await fs.readFile(batchPath, 'utf-8');
+            const batch = JSON.parse(batchContent);
+            return batch.batchSummary || 'Lot condensé sans résumé';
+        } catch (error) {
+            console.error(`Erreur lecture lot condensé ${batchPath}:`, error);
+            return 'Lot condensé inaccessible';
+        }
+    }
+
+    /**
+     * Lit une synthèse atomique.
+     */
+    private async readAtomicSynthesis(analysisPath: string): Promise<string> {
+        try {
+            const fs = await import('fs/promises');
+            const analysisContent = await fs.readFile(analysisPath, 'utf-8');
+            const analysis = JSON.parse(analysisContent);
+            return analysis.finalTaskSummary || 'Synthèse atomique sans résumé';
+        } catch (error) {
+            console.error(`Erreur lecture synthèse atomique ${analysisPath}:`, error);
+            return 'Synthèse atomique inaccessible';
+        }
+    }
 
     /**
      * Génère une synthèse à la volée pour une tâche sans synthèse existante.

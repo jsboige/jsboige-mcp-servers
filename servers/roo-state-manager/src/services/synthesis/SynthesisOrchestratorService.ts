@@ -15,6 +15,8 @@
 import {
     SynthesisMetadata,
     ConversationAnalysis,
+    BatchSynthesisTask,
+    BatchSynthesisConfig,
     ContextBuildingOptions,
     ContextBuildingResult,
     ExportOptions
@@ -60,8 +62,14 @@ export class SynthesisOrchestratorService {
     private llmService: LLMService;
     private options: SynthesisOrchestratorOptions;
 
-    /** Counter for total syntheses processed since service start */
-    private totalSynthesesProcessedCount: number = 0;
+    /**
+     * File d'attente des tâches de synthèse en cours.
+     * Utilisée pour gérer la concurrence et le statut des opérations.
+     */
+    private activeBatches: Map<string, BatchSynthesisTask> = new Map();
+
+    /** Counter for total batches processed since service start */
+    private totalBatchesProcessedCount: number = 0;
 
     /**
      * Constructeur avec injection de dépendances.
@@ -339,7 +347,7 @@ export class SynthesisOrchestratorService {
         };
 
         // Track completed synthesis
-        this.totalSynthesesProcessedCount++;
+        this.totalBatchesProcessedCount++;
 
         // Mettre à jour le squelette avec les nouvelles métadonnées
         const updatedSkeleton: ConversationSkeleton = {
@@ -353,13 +361,102 @@ export class SynthesisOrchestratorService {
         return updatedSkeleton;
     }
 
-    // [REMOVED] Batch processing subsystem — Stubs retired (#780, #788 Phase 2)
-    // startBatchSynthesis, getBatchStatus, cancelBatchSynthesis removed
-    // Batch processing was never implemented (queued forever, no execution logic)
+    // =========================================================================
+    // MÉTHODES DE TRAITEMENT PAR LOTS
+    // =========================================================================
 
-    // Kept for cleanup() compatibility
-    async _batchCleanupNoop(): Promise<void> {}
+    /**
+     * Lance un traitement de synthèse par lots.
+     *
+     * Phase 1 : Méthode squelette pour la structure.
+     * Phase 4 : Implémentera la logique complète de traitement par lots.
+     *
+     * @param config Configuration du lot de traitement
+     * @returns Promise de la tâche de traitement créée
+     */
+    async startBatchSynthesis(config: BatchSynthesisConfig): Promise<BatchSynthesisTask> {
+        // Valider la configuration
+        this.validateBatchConfig(config);
 
+        // Générer un ID unique pour le lot
+        const batchId = this.generateBatchId();
+
+        // Créer la tâche de traitement par lots
+        const batchTask: BatchSynthesisTask = {
+            batchId,
+            status: 'queued',
+            startTime: new Date().toISOString(),
+            config,
+            progress: {
+                totalTasks: 0,
+                completedTasks: 0,
+                failedTasks: 0,
+                inProgressTasks: 0,
+                completionPercentage: 0
+            },
+            taskIds: [],
+            results: {
+                synthesisCount: 0,
+                errorCount: 0,
+                errors: [],
+                outputFiles: []
+            }
+        };
+
+        // Stocker la tâche dans la map des lots actifs
+        this.activeBatches.set(batchId, batchTask);
+
+        console.log(`📦 [SynthesisOrchestrator] Lot créé: ${batchId} (maxConcurrency: ${config.maxConcurrency}, model: ${config.llmModelId})`);
+
+        return batchTask;
+    }
+
+    /**
+     * Récupère le statut d'une tâche de traitement par lots.
+     *
+     * @param batchId ID du lot à vérifier
+     * @returns Promise de la tâche de traitement ou null si non trouvée
+     */
+    async getBatchStatus(batchId: string): Promise<BatchSynthesisTask | null> {
+        return this.activeBatches.get(batchId) || null;
+    }
+
+    /**
+     * Annule un traitement par lots en cours.
+     *
+     * Phase 4 : Méthode pour l'annulation propre des traitements.
+     *
+     * @param batchId ID du lot à annuler
+     * @returns Promise<boolean> true si annulé avec succès
+     */
+    async cancelBatchSynthesis(batchId: string): Promise<boolean> {
+        const batch = this.activeBatches.get(batchId);
+
+        if (!batch) {
+            console.warn(`⚠️ [SynthesisOrchestrator] Lot non trouvé: ${batchId}`);
+            return false;
+        }
+
+        // Vérifier si le lot peut être annulé (en cours ou en file d'attente)
+        if (batch.status !== 'running' && batch.status !== 'queued') {
+            console.warn(`⚠️ [SynthesisOrchestrator] Lot ${batchId} ne peut pas être annulé (statut: ${batch.status})`);
+            return false;
+        }
+
+        // Mettre à jour le statut du lot
+        const previousStatus = batch.status;
+        batch.status = 'cancelled';
+        batch.endTime = new Date().toISOString();
+
+        // Journaliser l'annulation
+        console.log(`🚫 [SynthesisOrchestrator] Lot ${batchId} annulé (était: ${previousStatus})`);
+        console.log(`   📊 Progression: ${batch.progress.completedTasks}/${batch.progress.totalTasks} tâches complétées`);
+
+        // Optionnel: Nettoyer les ressources associées
+        // Pour l'instant, on garde le lot dans activeBatches pour consultation
+
+        return true;
+    }
 
     // =========================================================================
     // MÉTHODES D'EXPORT ET UTILITAIRES
@@ -694,14 +791,59 @@ ${analysesHtml}
      * @returns Promise<void>
      */
     async cleanup(): Promise<void> {
-        // No-op: batch processing subsystem retired (#788)
+        // Nettoyer les tâches actives
+        for (const [batchId, batch] of this.activeBatches) {
+            if (batch.status === 'running') {
+                await this.cancelBatchSynthesis(batchId);
+            }
+        }
+        this.activeBatches.clear();
     }
 
     // =========================================================================
     // MÉTHODES PRIVÉES ET UTILITAIRES
     // =========================================================================
 
-    // [REMOVED] generateBatchId, validateBatchConfig — Part of batch subsystem, retired (#788)
+    /**
+     * Génère un ID unique pour un nouveau lot de traitement.
+     *
+     * @returns string ID unique du lot
+     */
+    private generateBatchId(): string {
+        return `batch_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
+    }
+
+    /**
+     * Valide la configuration d'un lot de traitement.
+     *
+     * @param config Configuration à valider
+     * @throws Error si la configuration est invalide
+     */
+    private validateBatchConfig(config: BatchSynthesisConfig): void {
+        if (!config.llmModelId) {
+            throw new SynthesisServiceError(
+                'llmModelId est requis dans la configuration du lot',
+                SynthesisServiceErrorCode.LLM_MODEL_REQUIRED,
+                { config }
+            );
+        }
+
+        if (config.maxConcurrency <= 0) {
+            throw new SynthesisServiceError(
+                'maxConcurrency doit être supérieur à 0',
+                SynthesisServiceErrorCode.MAX_CONCURRENCY_INVALID,
+                { maxConcurrency: config.maxConcurrency }
+            );
+        }
+
+        if (!config.taskFilter || (!config.taskFilter.taskIds && !config.taskFilter.workspace)) {
+            throw new SynthesisServiceError(
+                'taskFilter doit spécifier soit taskIds soit workspace',
+                SynthesisServiceErrorCode.TASK_FILTER_INVALID,
+                { taskFilter: config.taskFilter }
+            );
+        }
+    }
 
     // =========================================================================
     // MÉTHODES DE DIAGNOSTIC ET DEBUG
@@ -714,11 +856,13 @@ ${analysesHtml}
      * @returns Statistiques d'utilisation
      */
     getServiceStats(): {
-        totalSynthesesProcessed: number;
+        activeBatches: number;
+        totalBatchesProcessed: number;
         memoryUsage: NodeJS.MemoryUsage;
     } {
         return {
-            totalSynthesesProcessed: this.totalSynthesesProcessedCount,
+            activeBatches: this.activeBatches.size,
+            totalBatchesProcessed: this.totalBatchesProcessedCount,
             memoryUsage: process.memoryUsage()
         };
     }

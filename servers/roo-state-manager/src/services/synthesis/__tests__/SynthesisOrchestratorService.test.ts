@@ -259,9 +259,46 @@ describe('SynthesisOrchestratorService', () => {
 	});
 
 	// ============================================================
-	// Batch methods — Retired (#780, #788 Phase 2)
-	// startBatchSynthesis, getBatchStatus, cancelBatchSynthesis removed
+	// Batch methods
 	// ============================================================
+
+	describe('startBatchSynthesis', () => {
+		test('creates a new batch synthesis task', async () => {
+			const service = createService();
+			const config: BatchSynthesisConfig = {
+				llmModelId: 'test-model',
+				maxConcurrency: 2,
+				overwriteExisting: false,
+				taskFilter: { taskIds: ['task1', 'task2'] }
+			};
+
+			const result = await service.startBatchSynthesis(config);
+
+			expect(result.status).toBe('queued');
+			expect(result.batchId).toBeDefined();
+			expect(result.config).toEqual(config);
+			expect(result.progress.totalTasks).toBe(0);
+			expect(result.progress.completionPercentage).toBe(0);
+		});
+	});
+
+	describe('getBatchStatus', () => {
+		test('returns null for unknown batch', async () => {
+			const service = createService();
+
+			const result = await service.getBatchStatus('unknown-id');
+			expect(result).toBeNull();
+		});
+	});
+
+	describe('cancelBatchSynthesis', () => {
+		test('returns false for unknown batch', async () => {
+			const service = createService();
+
+			const result = await service.cancelBatchSynthesis('unknown-id');
+			expect(result).toBe(false);
+		});
+	});
 
 	// ============================================================
 	// Export
@@ -366,10 +403,13 @@ describe('SynthesisOrchestratorService', () => {
 	// ============================================================
 
 	describe('cleanup', () => {
-		test('completes without error', async () => {
+		test('clears active batches', async () => {
 			const service = createService();
-			// cleanup is now a no-op (batch subsystem retired #788)
-			await expect(service.cleanup()).resolves.not.toThrow();
+
+			await service.cleanup();
+			// After cleanup, all batches should be cleared
+			const status = await service.getBatchStatus('any');
+			expect(status).toBeNull();
 		});
 	});
 
@@ -378,11 +418,12 @@ describe('SynthesisOrchestratorService', () => {
 	// ============================================================
 
 	describe('getServiceStats', () => {
-		test('returns stats with memory usage', () => {
+		test('returns stats with zero active batches', () => {
 			const service = createService();
 
 			const stats = service.getServiceStats();
-			expect(stats.totalSynthesesProcessed).toBe(0);
+			expect(stats.activeBatches).toBe(0);
+			expect(stats.totalBatchesProcessed).toBe(0);
 			expect(stats.memoryUsage).toBeDefined();
 			expect(stats.memoryUsage.heapUsed).toBeGreaterThan(0);
 		});

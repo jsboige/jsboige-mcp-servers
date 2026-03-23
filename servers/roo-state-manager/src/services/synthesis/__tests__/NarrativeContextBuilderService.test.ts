@@ -403,22 +403,40 @@ describe('NarrativeContextBuilderService', () => {
 	});
 
 	// ============================================================
-	// getConversationAnalysis (cache-only, #777 cleanup)
+	// findExistingCondensedBatch
 	// ============================================================
 
-	describe('getConversationAnalysis', () => {
-		test('returns null when no analysis is cached', async () => {
+	describe('findExistingCondensedBatch', () => {
+		test('returns null (Phase 1 stub)', async () => {
 			const service = new NarrativeContextBuilderService(defaultOptions, cache);
-			const result = await service.getConversationAnalysis('task-1');
+			const result = await service.findExistingCondensedBatch(['task-1', 'task-2']);
 			expect(result).toBeNull();
 		});
 	});
 
 	// ============================================================
-	// Retired stubs (#788 Phase 2)
-	// findExistingCondensedBatch (#775) — removed
-	// createCondensedBatch (#776) — removed
+	// createCondensedBatch
 	// ============================================================
+
+	describe('createCondensedBatch', () => {
+		test('throws not implemented error', async () => {
+			const service = new NarrativeContextBuilderService(defaultOptions, cache);
+			await expect(service.createCondensedBatch([], 'model-1'))
+				.rejects.toThrow('Pas encore implémenté');
+		});
+	});
+
+	// ============================================================
+	// getConversationAnalysis
+	// ============================================================
+
+	describe('getConversationAnalysis', () => {
+		test('returns null when no analysis exists', async () => {
+			const service = new NarrativeContextBuilderService(defaultOptions, cache);
+			const result = await service.getConversationAnalysis('task-1');
+			expect(result).toBeNull();
+		});
+	});
 
 	// ============================================================
 	// buildContextForTask
