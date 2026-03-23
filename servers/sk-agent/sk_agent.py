@@ -1291,8 +1291,10 @@ async def _get_manager() -> SKAgentManager:
         _config = load_config()
         _manager = SKAgentManager(_config)
         await _manager.start()
-        # Create conversation runner with the manager's agents
-        _conversation_runner = ConversationRunner(_config, _manager._sk_agents)
+        # Create conversation runner with the manager's agents and lazy factory
+        _conversation_runner = ConversationRunner(
+            _config, _manager._sk_agents, _manager._get_or_create_agent
+        )
         # Update tool descriptions dynamically
         _update_tool_descriptions(_config)
     return _manager
