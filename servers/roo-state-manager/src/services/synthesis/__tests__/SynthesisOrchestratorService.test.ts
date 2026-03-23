@@ -259,46 +259,9 @@ describe('SynthesisOrchestratorService', () => {
 	});
 
 	// ============================================================
-	// Batch methods
+	// Batch methods — Retired (#780, #788 Phase 2)
+	// startBatchSynthesis, getBatchStatus, cancelBatchSynthesis removed
 	// ============================================================
-
-	describe('startBatchSynthesis', () => {
-		test('creates a new batch synthesis task', async () => {
-			const service = createService();
-			const config: BatchSynthesisConfig = {
-				llmModelId: 'test-model',
-				maxConcurrency: 2,
-				overwriteExisting: false,
-				taskFilter: { taskIds: ['task1', 'task2'] }
-			};
-
-			const result = await service.startBatchSynthesis(config);
-
-			expect(result.status).toBe('queued');
-			expect(result.batchId).toBeDefined();
-			expect(result.config).toEqual(config);
-			expect(result.progress.totalTasks).toBe(0);
-			expect(result.progress.completionPercentage).toBe(0);
-		});
-	});
-
-	describe('getBatchStatus', () => {
-		test('returns null for unknown batch', async () => {
-			const service = createService();
-
-			const result = await service.getBatchStatus('unknown-id');
-			expect(result).toBeNull();
-		});
-	});
-
-	describe('cancelBatchSynthesis', () => {
-		test('returns false for unknown batch', async () => {
-			const service = createService();
-
-			const result = await service.cancelBatchSynthesis('unknown-id');
-			expect(result).toBe(false);
-		});
-	});
 
 	// ============================================================
 	// Export
@@ -403,13 +366,10 @@ describe('SynthesisOrchestratorService', () => {
 	// ============================================================
 
 	describe('cleanup', () => {
-		test('clears active batches', async () => {
+		test('completes without error', async () => {
 			const service = createService();
-
-			await service.cleanup();
-			// After cleanup, all batches should be cleared
-			const status = await service.getBatchStatus('any');
-			expect(status).toBeNull();
+			// cleanup is now a no-op (batch subsystem retired #788)
+			await expect(service.cleanup()).resolves.not.toThrow();
 		});
 	});
 
@@ -418,12 +378,11 @@ describe('SynthesisOrchestratorService', () => {
 	// ============================================================
 
 	describe('getServiceStats', () => {
-		test('returns stats with zero active batches', () => {
+		test('returns stats with memory usage', () => {
 			const service = createService();
 
 			const stats = service.getServiceStats();
-			expect(stats.activeBatches).toBe(0);
-			expect(stats.totalBatchesProcessed).toBe(0);
+			expect(stats.totalSynthesesProcessed).toBe(0);
 			expect(stats.memoryUsage).toBeDefined();
 			expect(stats.memoryUsage.heapUsed).toBeGreaterThan(0);
 		});
