@@ -19,7 +19,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
-from typing import Any
+from typing import Any, Callable, Awaitable
 
 from semantic_kernel import Kernel
 from semantic_kernel.agents import AgentGroupChat, ChatCompletionAgent
@@ -169,15 +169,20 @@ class ConversationRunner:
     """Runs multi-agent conversations using SK AgentGroupChat."""
 
     def __init__(
-        self, config: SKAgentConfig, sk_agents: dict[str, ChatCompletionAgent]
+        self,
+        config: SKAgentConfig,
+        sk_agents: dict[str, ChatCompletionAgent],
+        agent_factory: Callable[[str], Awaitable[ChatCompletionAgent | None]] | None = None,
     ):
         """
         Args:
             config: The full agent config (for model/agent lookups).
             sk_agents: Map of agent_id -> initialized ChatCompletionAgent from SKAgentManager.
+            agent_factory: Async callable to lazily create agents by ID (e.g. manager._get_or_create_agent).
         """
         self.config = config
         self.sk_agents = sk_agents
+        self._agent_factory = agent_factory
 
     def list_conversations(self) -> list[dict]:
         """List available conversation presets."""
@@ -234,8 +239,8 @@ class ConversationRunner:
 
         max_rounds = options.get("max_rounds", conv_config.max_rounds)
 
-        # Resolve agents for this conversation
-        agents = self._resolve_conversation_agents(conv_config)
+        # Resolve agents for this conversation (async: may trigger lazy creation)
+        agents = await self._resolve_conversation_agents(conv_config)
         if not agents:
             return {"error": f"No agents available for conversation '{conv_config.id}'"}
 
@@ -265,7 +270,7 @@ class ConversationRunner:
         # Check built-in presets
         return PRESETS.get(cid)
 
-    def _resolve_conversation_agents(
+    async def _resolve_conversation_agents(
         self,
         conv_config: ConversationConfig,
     ) -> list[ChatCompletionAgent]:
@@ -273,7 +278,8 @@ class ConversationRunner:
 
         Priority:
         1. Top-level agents from config (shared, preferred)
-        2. Inline agent definitions (conversation-scoped fallback)
+        2. Lazy creation via agent_factory (triggers on-demand initialization)
+        3. Inline agent definitions (conversation-scoped fallback)
         """
         agents = []
         inline_map = {a.id: a for a in conv_config.inline_agents}
@@ -284,7 +290,14 @@ class ConversationRunner:
                 agents.append(self.sk_agents[agent_id])
                 continue
 
-            # 2. Check inline agent definitions -> create on-the-fly
+            # 2. Try lazy creation via factory (fixes #801: agents are lazy-initialized)
+            if self._agent_factory:
+                agent = await self._agent_factory(agent_id)
+                if agent:
+                    agents.append(agent)
+                    continue
+
+            # 3. Check inline agent definitions -> create on-the-fly
             if agent_id in inline_map:
                 inline_cfg = inline_map[agent_id]
                 agent = self._create_inline_agent(inline_cfg)
