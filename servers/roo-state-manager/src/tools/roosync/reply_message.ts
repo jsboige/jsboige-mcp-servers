@@ -7,8 +7,7 @@
  * @module roosync/reply_message
  */
 
-import { MessageManager } from '../../services/MessageManager.js';
-import { getSharedStatePath } from '../../utils/server-helpers.js';
+import { getMessageManager } from '../../services/MessageManager.js';
 import { createLogger, Logger } from '../../utils/logger.js';
 import { MessageManagerError, MessageManagerErrorCode } from '../../types/errors.js';
 import { getLocalFullId } from '../../utils/message-helpers.js';
@@ -97,9 +96,8 @@ export async function replyMessage(
       );
     }
 
-    // Initialiser le MessageManager
-    const sharedStatePath = getSharedStatePath();
-    const messageManager = new MessageManager(sharedStatePath);
+    // Initialiser le MessageManager (singleton)
+    const messageManager = getMessageManager();
 
     // Récupérer le message original
     logger.debug('🔍 Fetching original message', { messageId: args.message_id });

@@ -17,12 +17,18 @@ const { mockGetLocalMachineId } = vi.hoisted(() => ({
 	mockGetLocalMachineId: vi.fn()
 }));
 
-vi.mock('../../../services/MessageManager.js', () => ({
-	MessageManager: class {
-		constructor() {}
-		bulkOperation(...args: any[]) { return mockBulkOperation(...args); }
-	}
-}));
+vi.mock('../../../services/MessageManager.js', () => {
+	const mockInstance = {
+		bulkOperation: (...args: any[]) => mockBulkOperation(...args),
+	};
+	return {
+		MessageManager: class {
+			constructor() {}
+			bulkOperation(...args: any[]) { return mockBulkOperation(...args); }
+		},
+		getMessageManager: () => mockInstance,
+	};
+});
 
 vi.mock('../../../utils/server-helpers.js', () => ({
 	getSharedStatePath: mockGetSharedStatePath

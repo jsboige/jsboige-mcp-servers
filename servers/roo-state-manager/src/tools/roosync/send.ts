@@ -7,7 +7,7 @@
  * @version 1.0.0
  */
 
-import { MessageManager } from '../../services/MessageManager.js';
+import { MessageManager, getMessageManager } from '../../services/MessageManager.js';
 import { AttachmentManager } from '../../services/roosync/AttachmentManager.js';
 import { getSharedStatePath } from '../../utils/server-helpers.js';
 import { createLogger, Logger } from '../../utils/logger.js';
@@ -562,9 +562,8 @@ export async function roosyncSend(
       );
     }
 
-    // Initialiser le MessageManager
-    const sharedStatePath = getSharedStatePath();
-    const messageManager = new MessageManager(sharedStatePath);
+    // Initialiser le MessageManager (singleton)
+    const messageManager = getMessageManager();
 
     // Routing selon action
     let result: string;

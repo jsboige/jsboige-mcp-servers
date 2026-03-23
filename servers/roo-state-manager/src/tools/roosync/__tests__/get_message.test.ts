@@ -15,13 +15,20 @@ const { mockGetSharedStatePath } = vi.hoisted(() => ({
 	mockGetSharedStatePath: vi.fn()
 }));
 
-vi.mock('../../../services/MessageManager.js', () => ({
-	MessageManager: class {
-		constructor() {}
-		getMessage(...args: any[]) { return mockGetMessage(...args); }
-		markAsRead(...args: any[]) { return mockMarkAsRead(...args); }
-	}
-}));
+vi.mock('../../../services/MessageManager.js', () => {
+	const mockInstance = {
+		getMessage: (...args: any[]) => mockGetMessage(...args),
+		markAsRead: (...args: any[]) => mockMarkAsRead(...args),
+	};
+	return {
+		MessageManager: class {
+			constructor() {}
+			getMessage(...args: any[]) { return mockGetMessage(...args); }
+			markAsRead(...args: any[]) { return mockMarkAsRead(...args); }
+		},
+		getMessageManager: () => mockInstance,
+	};
+});
 
 vi.mock('../../../utils/server-helpers.js', () => ({
 	getSharedStatePath: mockGetSharedStatePath

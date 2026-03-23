@@ -37,8 +37,8 @@ describe('roosync_mark_message_read - Validation', () => {
     vi.resetModules();
 
     // Mock des dépendances
-    vi.doMock('../../../../src/services/MessageManager.js', () => ({
-      MessageManager: vi.fn().mockImplementation(() => ({
+    vi.doMock('../../../../src/services/MessageManager.js', () => {
+      const mockInstance = {
         getMessage: vi.fn().mockImplementation((messageId: string) => {
           if (messageId === 'msg-20260115T100000-abc123') {
             return Promise.resolve({ ...mockUnreadMessage });
@@ -49,8 +49,12 @@ describe('roosync_mark_message_read - Validation', () => {
           return Promise.resolve(null);
         }),
         markAsRead: vi.fn().mockResolvedValue(undefined)
-      }))
-    }));
+      };
+      return {
+        MessageManager: vi.fn().mockImplementation(() => mockInstance),
+        getMessageManager: vi.fn().mockReturnValue(mockInstance),
+      };
+    });
 
     vi.doMock('../../../../src/utils/server-helpers.js', () => ({
       getSharedStatePath: vi.fn().mockReturnValue('/mock/shared-state')

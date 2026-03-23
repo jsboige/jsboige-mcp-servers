@@ -7,8 +7,7 @@
  * @module roosync/mark_message_read
  */
 
-import { MessageManager } from '../../services/MessageManager.js';
-import { getSharedStatePath } from '../../utils/server-helpers.js';
+import { getMessageManager } from '../../services/MessageManager.js';
 import { createLogger, Logger } from '../../utils/logger.js';
 import { MessageManagerError, MessageManagerErrorCode } from '../../types/errors.js';
 import { getLocalMachineId } from '../../utils/message-helpers.js';
@@ -64,9 +63,8 @@ export async function markMessageRead(
       );
     }
 
-    // Initialiser le MessageManager
-    const sharedStatePath = getSharedStatePath();
-    const messageManager = new MessageManager(sharedStatePath);
+    // Initialiser le MessageManager (singleton)
+    const messageManager = getMessageManager();
 
     // Vérifier existence du message
     logger.debug('🔍 Checking message existence', { messageId: args.message_id });

@@ -7,8 +7,7 @@
  * @module roosync/get_message
  */
 
-import { MessageManager } from '../../services/MessageManager.js';
-import { getSharedStatePath } from '../../utils/server-helpers.js';
+import { getMessageManager } from '../../services/MessageManager.js';
 import { createLogger, Logger } from '../../utils/logger.js';
 import { MessageManagerError, MessageManagerErrorCode } from '../../types/errors.js';
 import { getLocalMachineId } from '../../utils/message-helpers.js';
@@ -98,9 +97,8 @@ export async function getMessage(
       );
     }
 
-    // Initialiser le MessageManager
-    const sharedStatePath = getSharedStatePath();
-    const messageManager = new MessageManager(sharedStatePath);
+    // Initialiser le MessageManager (singleton)
+    const messageManager = getMessageManager();
 
     // Récupérer le message
     logger.debug('🔍 Fetching message', { messageId: args.message_id });

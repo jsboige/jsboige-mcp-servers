@@ -7,8 +7,7 @@
  * @module roosync/amend_message
  */
 
-import { MessageManager } from '../../services/MessageManager.js';
-import { getSharedStatePath } from '../../utils/server-helpers.js';
+import { getMessageManager } from '../../services/MessageManager.js';
 import { existsSync, readFileSync } from 'fs';
 import { join } from 'path';
 import os from 'os';
@@ -80,9 +79,8 @@ export async function amendMessage(
       );
     }
 
-    // Initialiser le MessageManager
-    const sharedStatePath = getSharedStatePath();
-    const messageManager = new MessageManager(sharedStatePath);
+    // Initialiser le MessageManager (singleton)
+    const messageManager = getMessageManager();
 
     // Obtenir l'ID complet local (émetteur, inclut workspace si configuré)
     const senderId = getLocalFullId();

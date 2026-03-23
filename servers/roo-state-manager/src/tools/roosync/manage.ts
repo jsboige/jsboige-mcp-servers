@@ -7,8 +7,7 @@
  * @version 1.0.0
  */
 
-import { MessageManager } from '../../services/MessageManager.js';
-import { getSharedStatePath } from '../../utils/server-helpers.js';
+import { MessageManager, getMessageManager } from '../../services/MessageManager.js';
 import { createLogger, Logger } from '../../utils/logger.js';
 import { MessageManagerError, MessageManagerErrorCode } from '../../types/errors.js';
 import { recordRooSyncActivityAsync } from './heartbeat-activity.js';
@@ -475,9 +474,8 @@ export async function roosyncManage(
       );
     }
 
-    // Initialiser le MessageManager
-    const sharedStatePath = getSharedStatePath();
-    const messageManager = new MessageManager(sharedStatePath);
+    // Initialiser le MessageManager (singleton)
+    const messageManager = getMessageManager();
 
     // Routing selon action
     let result: string;

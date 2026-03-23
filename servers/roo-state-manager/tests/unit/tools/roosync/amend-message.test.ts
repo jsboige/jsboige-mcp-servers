@@ -26,11 +26,15 @@ describe('roosync_amend_message - Validation', () => {
     vi.resetModules();
 
     // Mock des dépendances
-    vi.doMock('../../../../src/services/MessageManager.js', () => ({
-      MessageManager: vi.fn().mockImplementation(() => ({
+    vi.doMock('../../../../src/services/MessageManager.js', () => {
+      const mockInstance = {
         amendMessage: vi.fn().mockResolvedValue(mockAmendResult)
-      }))
-    }));
+      };
+      return {
+        MessageManager: vi.fn().mockImplementation(() => mockInstance),
+        getMessageManager: vi.fn().mockReturnValue(mockInstance),
+      };
+    });
 
     vi.doMock('../../../../src/utils/server-helpers.js', () => ({
       getSharedStatePath: vi.fn().mockReturnValue('/mock/shared-state')

@@ -67,7 +67,7 @@ import { createRequire } from 'module';
 import { handleBuildSkeletonCache } from './tools/index.js';
 import { NotificationService } from './notifications/NotificationService.js';
 import { ToolUsageInterceptor } from './notifications/ToolUsageInterceptor.js';
-import { MessageManager } from './services/MessageManager.js';
+import { getMessageManager } from './services/MessageManager.js';
 import { createLogger } from './utils/logger.js';
 
 const logger = createLogger('RooStateManagerServer');
@@ -129,7 +129,7 @@ class RooStateManagerServer {
                 logger.warn('⚠️ [Notifications] ROOSYNC_SHARED_PATH non défini, notifications push désactivées');
                 return;
             }
-            const messageManager = new MessageManager(sharedStatePath);
+            const messageManager = getMessageManager();
             // Charger les règles de filtrage
             const minPriority = process.env.NOTIFICATIONS_MIN_PRIORITY || 'MEDIUM';
             this.notificationService.loadFilterRules([

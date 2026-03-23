@@ -46,8 +46,8 @@ describe('roosync_read_inbox - Validation', () => {
     vi.resetModules();
 
     // Mock des dépendances
-    vi.doMock('../../../../src/services/MessageManager.js', () => ({
-      MessageManager: vi.fn().mockImplementation(() => ({
+    vi.doMock('../../../../src/services/MessageManager.js', () => {
+      const mockInstance = {
         readInbox: vi.fn().mockImplementation(
           (machineId: string, status?: string, limit?: number) => {
             let filtered = [...mockMessages];
@@ -60,8 +60,12 @@ describe('roosync_read_inbox - Validation', () => {
             return Promise.resolve(filtered);
           }
         )
-      }))
-    }));
+      };
+      return {
+        MessageManager: vi.fn().mockImplementation(() => mockInstance),
+        getMessageManager: vi.fn().mockReturnValue(mockInstance),
+      };
+    });
 
     vi.doMock('../../../../src/utils/server-helpers.js', () => ({
       getSharedStatePath: vi.fn().mockReturnValue('/mock/shared-state')
@@ -126,11 +130,15 @@ describe('roosync_read_inbox - Inbox vide', () => {
   beforeEach(async () => {
     vi.resetModules();
 
-    vi.doMock('../../../../src/services/MessageManager.js', () => ({
-      MessageManager: vi.fn().mockImplementation(() => ({
+    vi.doMock('../../../../src/services/MessageManager.js', () => {
+      const mockInstance = {
         readInbox: vi.fn().mockResolvedValue([])
-      }))
-    }));
+      };
+      return {
+        MessageManager: vi.fn().mockImplementation(() => mockInstance),
+        getMessageManager: vi.fn().mockReturnValue(mockInstance),
+      };
+    });
 
     vi.doMock('../../../../src/utils/server-helpers.js', () => ({
       getSharedStatePath: vi.fn().mockReturnValue('/mock/shared-state')
@@ -180,11 +188,15 @@ describe('roosync_read_inbox - Couverture icônes et troncature', () => {
   beforeEach(async () => {
     vi.resetModules();
 
-    vi.doMock('../../../../src/services/MessageManager.js', () => ({
-      MessageManager: vi.fn().mockImplementation(() => ({
+    vi.doMock('../../../../src/services/MessageManager.js', () => {
+      const mockInstance = {
         readInbox: vi.fn().mockResolvedValue([...messagesWithAllVariants])
-      }))
-    }));
+      };
+      return {
+        MessageManager: vi.fn().mockImplementation(() => mockInstance),
+        getMessageManager: vi.fn().mockReturnValue(mockInstance),
+      };
+    });
 
     vi.doMock('../../../../src/utils/server-helpers.js', () => ({
       getSharedStatePath: vi.fn().mockReturnValue('/mock/shared-state')

@@ -12,8 +12,7 @@
  * @version 1.0.0 - Issue #613 ISS-1
  */
 
-import { MessageManager } from '../../services/MessageManager.js';
-import { getSharedStatePath } from '../../utils/server-helpers.js';
+import { getMessageManager } from '../../services/MessageManager.js';
 import { getLocalMachineId } from '../../utils/message-helpers.js';
 import { createLogger, Logger } from '../../utils/logger.js';
 
@@ -111,9 +110,8 @@ export async function cleanupMessages(
   logger.info('🧹 Starting cleanup operation', { operation: args.operation });
 
   try {
-    // Initialiser le MessageManager
-    const sharedStatePath = getSharedStatePath();
-    const messageManager = new MessageManager(sharedStatePath);
+    // Initialiser le MessageManager (singleton)
+    const messageManager = getMessageManager();
 
     // Obtenir l'ID de la machine locale
     const machineId = getLocalMachineId();

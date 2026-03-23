@@ -13,6 +13,7 @@ import { join } from 'path';
 import { createLogger } from '../utils/logger.js';
 import { MessageManagerError, MessageManagerErrorCode } from '../types/errors.js';
 import { parseMachineWorkspace, matchesRecipient, getLocalWorkspaceId } from '../utils/message-helpers.js';
+import { getSharedStatePath } from '../utils/server-helpers.js';
 
 const logger = createLogger('MessageManager');
 
@@ -1258,4 +1259,32 @@ export class MessageManager {
 
     return stats;
   }
+}
+
+/**
+ * Singleton MessageManager instance (#809 perf fix).
+ * Ensures the in-memory inbox cache (TTL 30s) survives across tool calls.
+ * Without this, each tool invocation created a new MessageManager, making the cache useless.
+ */
+let _singletonInstance: MessageManager | null = null;
+
+/**
+ * Returns the singleton MessageManager instance.
+ * Creates it on first call using getSharedStatePath().
+ *
+ * @returns The shared MessageManager instance
+ */
+export function getMessageManager(): MessageManager {
+  if (!_singletonInstance) {
+    _singletonInstance = new MessageManager(getSharedStatePath());
+  }
+  return _singletonInstance;
+}
+
+/**
+ * Reset the singleton instance (for tests only).
+ * @internal
+ */
+export function _resetMessageManagerSingleton(): void {
+  _singletonInstance = null;
 }

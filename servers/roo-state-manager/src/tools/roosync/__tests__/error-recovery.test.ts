@@ -37,6 +37,15 @@ vi.mock('../../../services/RooSyncService.js', () => ({
   }))
 }));
 
+// Mock getMessageManager to use test path (real getMessageManager uses require() which fails in vitest ESM)
+vi.mock('../../../services/MessageManager.js', async () => {
+  const actual = await vi.importActual('../../../services/MessageManager.js') as any;
+  return {
+    ...actual,
+    getMessageManager: () => new actual.MessageManager(testSharedStatePath),
+  };
+});
+
 // Import après les mocks
 import { roosyncSend } from '../send.js';
 import { roosyncRead } from '../read.js';

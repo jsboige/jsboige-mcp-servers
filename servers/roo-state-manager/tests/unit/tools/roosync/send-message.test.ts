@@ -20,8 +20,8 @@ describe('roosync_send_message - Validation', () => {
     vi.resetModules();
 
     // Mock des dépendances
-    vi.doMock('../../../../src/services/MessageManager.js', () => ({
-      MessageManager: vi.fn().mockImplementation(() => ({
+    vi.doMock('../../../../src/services/MessageManager.js', () => {
+      const mockInstance = {
         sendMessage: vi.fn().mockResolvedValue({
           id: 'msg-test-123',
           from: 'test-machine',
@@ -31,8 +31,12 @@ describe('roosync_send_message - Validation', () => {
           priority: 'MEDIUM',
           timestamp: '2026-01-15T12:00:00Z'
         })
-      }))
-    }));
+      };
+      return {
+        MessageManager: vi.fn().mockImplementation(() => mockInstance),
+        getMessageManager: vi.fn().mockReturnValue(mockInstance),
+      };
+    });
 
     vi.doMock('../../../../src/utils/server-helpers.js', () => ({
       getSharedStatePath: vi.fn().mockReturnValue('/mock/shared-state')

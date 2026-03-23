@@ -7,8 +7,7 @@
  * @module roosync/read_inbox
  */
 
-import { MessageManager } from '../../services/MessageManager.js';
-import { getSharedStatePath } from '../../utils/server-helpers.js';
+import { getMessageManager } from '../../services/MessageManager.js';
 import { existsSync, readFileSync } from 'fs';
 import { join } from 'path';
 import os from 'os';
@@ -97,9 +96,8 @@ export async function readInbox(
   logger.info('📬 Starting read inbox operation');
 
   try {
-    // Initialiser le MessageManager
-    const sharedStatePath = getSharedStatePath();
-    const messageManager = new MessageManager(sharedStatePath);
+    // Initialiser le MessageManager (singleton)
+    const messageManager = getMessageManager();
 
     // Obtenir l'ID de la machine locale
     const machineId = getLocalMachineId();

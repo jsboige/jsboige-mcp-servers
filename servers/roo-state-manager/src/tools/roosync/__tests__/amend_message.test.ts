@@ -18,12 +18,18 @@ const { mockHostname } = vi.hoisted(() => ({
 	mockHostname: vi.fn()
 }));
 
-vi.mock('../../../services/MessageManager.js', () => ({
-	MessageManager: class {
-		constructor() {}
-		amendMessage(...args: any[]) { return mockAmendMessage(...args); }
-	}
-}));
+vi.mock('../../../services/MessageManager.js', () => {
+	const mockInstance = {
+		amendMessage: (...args: any[]) => mockAmendMessage(...args),
+	};
+	return {
+		MessageManager: class {
+			constructor() {}
+			amendMessage(...args: any[]) { return mockAmendMessage(...args); }
+		},
+		getMessageManager: () => mockInstance,
+	};
+});
 
 vi.mock('../../../utils/server-helpers.js', () => ({
 	getSharedStatePath: mockGetSharedStatePath

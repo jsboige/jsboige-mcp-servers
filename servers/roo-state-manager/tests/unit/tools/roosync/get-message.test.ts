@@ -33,8 +33,8 @@ describe('roosync_get_message - Validation', () => {
     vi.resetModules();
 
     // Mock des dépendances
-    vi.doMock('../../../../src/services/MessageManager.js', () => ({
-      MessageManager: vi.fn().mockImplementation(() => ({
+    vi.doMock('../../../../src/services/MessageManager.js', () => {
+      const mockInstance = {
         getMessage: vi.fn().mockImplementation((messageId: string) => {
           if (messageId === 'msg-20260115T100000-abc123') {
             return Promise.resolve({ ...mockMessage });
@@ -42,8 +42,12 @@ describe('roosync_get_message - Validation', () => {
           return Promise.resolve(null);
         }),
         markAsRead: vi.fn().mockResolvedValue(undefined)
-      }))
-    }));
+      };
+      return {
+        MessageManager: vi.fn().mockImplementation(() => mockInstance),
+        getMessageManager: vi.fn().mockReturnValue(mockInstance),
+      };
+    });
 
     vi.doMock('../../../../src/utils/server-helpers.js', () => ({
       getSharedStatePath: vi.fn().mockReturnValue('/mock/shared-state')
@@ -163,12 +167,16 @@ describe('roosync_get_message - Validation', () => {
   // Nécessite vi.resetModules() pour contourner le cache de beforeEach.
   const createGetMessageWith = async (messageData: object) => {
     vi.resetModules();
-    vi.doMock('../../../../src/services/MessageManager.js', () => ({
-      MessageManager: vi.fn().mockImplementation(() => ({
+    vi.doMock('../../../../src/services/MessageManager.js', () => {
+      const mockInstance = {
         getMessage: vi.fn().mockResolvedValue(messageData),
         markAsRead: vi.fn()
-      }))
-    }));
+      };
+      return {
+        MessageManager: vi.fn().mockImplementation(() => mockInstance),
+        getMessageManager: vi.fn().mockReturnValue(mockInstance),
+      };
+    });
     vi.doMock('../../../../src/utils/server-helpers.js', () => ({
       getSharedStatePath: vi.fn().mockReturnValue('/mock/shared-state')
     }));

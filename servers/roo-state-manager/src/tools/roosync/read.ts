@@ -7,7 +7,7 @@
  * @version 1.0.0
  */
 
-import { MessageManager } from '../../services/MessageManager.js';
+import { MessageManager, getMessageManager } from '../../services/MessageManager.js';
 import { getSharedStatePath } from '../../utils/server-helpers.js';
 import { createLogger, Logger } from '../../utils/logger.js';
 import { MessageManagerError, MessageManagerErrorCode } from '../../types/errors.js';
@@ -96,8 +96,8 @@ async function readInboxMode(
   if (now - lastCleanupRunAt > CLEANUP_THROTTLE_MS) {
     lastCleanupRunAt = now;
 
-    // Auto-archive old read messages (#638 Phase 3)
-    messageManager.autoArchiveOld(30, true)
+    // Auto-archive old read messages (#638 Phase 3, #809 reduced from 30d to 7d)
+    messageManager.autoArchiveOld(7, true)
       .then(n => { if (n > 0) logger.info(`Auto-archived ${n} old messages`); })
       .catch(err => logger.debug('Auto-archive skipped (non-critical)', { error: String(err) }));
 
@@ -433,9 +433,8 @@ export async function roosyncRead(
       );
     }
 
-    // Initialiser le MessageManager
-    const sharedStatePath = getSharedStatePath();
-    const messageManager = new MessageManager(sharedStatePath);
+    // Initialiser le MessageManager (singleton)
+    const messageManager = getMessageManager();
 
     // Router selon le mode
     let result: string;

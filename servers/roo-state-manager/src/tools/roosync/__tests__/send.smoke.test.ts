@@ -7,7 +7,20 @@
  * @see docs/testing/issue-564-phase1-audit-report.md (lines 162-176)
  */
 
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
+
+// Mock getMessageManager to use ROOSYNC_SHARED_PATH env var (real getMessageManager uses require() which fails in vitest ESM)
+vi.mock('../../../services/MessageManager.js', async () => {
+  const actual = await vi.importActual('../../../services/MessageManager.js') as any;
+  return {
+    ...actual,
+    getMessageManager: () => {
+      const sharedPath = process.env.ROOSYNC_SHARED_PATH || process.cwd();
+      return new actual.MessageManager(sharedPath);
+    },
+  };
+});
+
 import { roosyncSend } from '../send.js';
 import * as fs from 'fs';
 import * as path from 'path';
