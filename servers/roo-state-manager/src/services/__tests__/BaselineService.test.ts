@@ -322,8 +322,10 @@ describe('BaselineService', () => {
       expect(ChangeApplier).toHaveBeenCalled();
     });
 
-    it('devrait verifier l\'existence du fichier baseline', () => {
-      expect(existsSync).toHaveBeenCalled();
+    it('devrait initialiser baselinePath et roadmapPath', () => {
+      // Constructor no longer calls existsSync directly — paths are set from SHARED_STATE_PATH
+      const state = service.getState();
+      expect(state.isBaselineLoaded).toBe(false);
     });
   });
 
