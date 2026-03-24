@@ -10,7 +10,7 @@
 import { promises as fs, existsSync, readFileSync, constants } from 'fs';
 import { join } from 'path';
 import { RooSyncConfig } from '../../config/roosync-config.js';
-import { RooSyncServiceError } from '../RooSyncService.js';
+import { RooSyncServiceError } from '../../types/errors.js';
 import type { RooSyncDashboard } from '../../utils/roosync-parsers.js';
 
 /**

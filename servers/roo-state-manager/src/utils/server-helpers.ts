@@ -10,7 +10,10 @@ import { CallToolResult } from '@modelcontextprotocol/sdk/types.js';
 import { ConversationSkeleton } from '../types/conversation.js';
 import { RooStorageDetector } from './roo-storage-detector.js';
 import { OUTPUT_CONFIG } from '../config/server-config.js';
-import * as toolExports from '../tools/index.js';
+// FIX: Dynamic import to break circular dependency cycle:
+// server-helpers → tools/index → roosync/* → RooSyncService → InventoryCollector → server-helpers
+// This circular dep causes ESM module evaluation deadlock (Node.js v24).
+// Only 2 functions use toolExports, so lazy-loading is safe.
 import { GenericError, GenericErrorCode } from '../types/errors.js';
 
 /**
@@ -125,6 +128,7 @@ export async function handleExportConversationJson(
             return conversationCache.get(id) || null;
         };
 
+        const toolExports = await import('../tools/index.js');
         const result = await toolExports.handleExportConversationJson(args, getConversationSkeleton);
 
         return {
@@ -168,6 +172,7 @@ export async function handleExportConversationCsv(
             return conversationCache.get(id) || null;
         };
 
+        const toolExports = await import('../tools/index.js');
         const result = await toolExports.handleExportConversationCsv(args, getConversationSkeleton);
 
         return {

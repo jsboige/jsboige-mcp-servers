@@ -95,6 +95,22 @@ export class ConfigServiceError extends StateManagerError {
 }
 
 /**
+ * Erreur du service RooSync
+ * Moved from RooSyncService.ts to break circular dependency:
+ * RooSyncService → SyncDecisionManager/ConfigComparator/BaselineManager → RooSyncServiceError → RooSyncService
+ */
+export class RooSyncServiceError extends Error {
+  constructor(
+    message: string,
+    public readonly code?: string,
+    public readonly details?: any
+  ) {
+    super(`[RooSync Service] ${message}`);
+    this.name = 'RooSyncServiceError';
+  }
+}
+
+/**
  * Codes d'erreur pour IdentityManager
  */
 export enum IdentityManagerErrorCode {

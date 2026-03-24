@@ -22,7 +22,7 @@ import {
 } from '../../utils/roosync-parsers.js';
 import { PowerShellExecutor } from '../PowerShellExecutor.js';
 import { RooSyncConfig } from '../../config/roosync-config.js';
-import { RooSyncServiceError } from '../RooSyncService.js';
+import { RooSyncServiceError } from '../../types/errors.js';
 
 /**
  * Résultat d'exécution de décision
