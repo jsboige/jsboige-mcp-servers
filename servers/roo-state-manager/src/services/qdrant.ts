@@ -38,6 +38,7 @@ export function getQdrantClient(): QdrantClient {
       apiKey: process.env.QDRANT_API_KEY,
       port: 443, // Force HTTPS port
       checkCompatibility: false,
+      timeout: 15000, // 15s timeout (#851)
     };
 
     client = new QdrantClient(qdrantConfig);

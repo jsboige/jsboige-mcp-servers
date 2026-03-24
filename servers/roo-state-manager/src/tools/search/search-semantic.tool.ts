@@ -463,7 +463,14 @@ export const searchTasksByContentTool = {
                 vector: queryVector,
                 limit: max_results || 10,
                 filter: filter,
-                with_payload: true
+                with_payload: {
+                    include: ['task_id', 'timestamp', 'chunk_type', 'content_summary', 'workspace', 'source', 'chunk_id', 'task_title', 'role']
+                },
+                params: {
+                    hnsw_ef: 128,
+                    exact: false,
+                    quantization: { rescore: true }
+                }
             });
 
             // DEBUG: Log pour diagnostiquer
