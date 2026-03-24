@@ -7,7 +7,6 @@
  */
 
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import * as fs from 'fs';
 
 // Mock QdrantClient and OpenAI clients using hoisting to avoid initialization order issues
 // Matching the pattern from search-semantic.tool.test.ts
@@ -105,9 +104,6 @@ describe('diagnose-index.tool (unit tests)', () => {
 		it('should verify mock setup is correct', async () => {
 			// Verify the mock client instance has the required methods
 			const client = mockQdrantClient;
-			console.log('Mock client:', client);
-			console.log('getCollections:', client.getCollections);
-			console.log('getCollection:', client.getCollection);
 			expect(client.getCollections).toBeDefined();
 			expect(client.getCollection).toBeDefined();
 
@@ -117,28 +113,15 @@ describe('diagnose-index.tool (unit tests)', () => {
 		});
 
 		it('should trace through the implementation', async () => {
-			// Call the function and see what happens
-			console.log('=== BEFORE CALL ===');
-			console.log('mockGetCollections mock.calls:', mockQdrantClient.getCollections.mock.calls.length);
-			const testClient = mockQdrantClient;
-			console.log('Test client methods:', Object.keys(testClient));
-			console.log('getCollections is function?', typeof testClient.getCollections);
-
-			// Check what the mock will return
 			const collectionsResult = await mockQdrantClient.getCollections();
-			console.log('=== MOCK RESULT ===');
-			console.log('getCollections returns:', JSON.stringify(collectionsResult, null, 2));
-			console.log('Collection name from env:', process.env.QDRANT_COLLECTION_NAME);
-			console.log('Finding collection:', collectionsResult.collections?.find(c => c.name === process.env.QDRANT_COLLECTION_NAME));
+			expect(collectionsResult.collections).toBeDefined();
 
 			const result = await handleDiagnoseSemanticIndex(conversationCache);
 
-			console.log('=== AFTER CALL ===');
-			console.log('mockGetCollections was called:', mockQdrantClient.getCollections.mock.calls.length, 'times');
+			expect(mockQdrantClient.getCollections).toHaveBeenCalled();
 
 			const parsed = JSON.parse(result.content[0].text);
-			console.log('=== PARSED RESULT ===');
-			console.log('Status:', parsed.status);
+			expect(parsed.status).toBeDefined();
 		});
 	});
 
@@ -146,9 +129,6 @@ describe('diagnose-index.tool (unit tests)', () => {
 		beforeEach(() => {
 			// Set up this scenario's mocks (override defaults)
 			const collName = process.env.QDRANT_COLLECTION_NAME;
-
-			// Debug: Write to file to investigate
-			fs.writeFileSync('test-debug-healthy.log', `HEALTHY BEFOREACH:\ncollName: ${collName}\nEnv QDRANT_COLLECTION_NAME: ${process.env.QDRANT_COLLECTION_NAME}\nDate: ${new Date().toISOString()}\n`);
 
 			mockQdrantClient.getCollections.mockResolvedValue({
 				collections: [
@@ -171,34 +151,15 @@ describe('diagnose-index.tool (unit tests)', () => {
 			mockOpenAIClient.embeddings.create.mockResolvedValue({
 				data: [{ embedding: new Array(1536).fill(0.1) }]
 			});
-			// Verify mock was set
-			console.log('[HEALTHY BEFOREACH] Mock set, will return:', { collections: [{ name: collName || 'test-roo-state-manager' }] });
 		});
 
 		it('should return healthy status when collection exists with points', async () => {
-			// Debug: Check what the mock will return
-			const mockResult = await mockQdrantClient.getCollections();
-			fs.appendFileSync('test-debug-healthy.log', `TEST: Mock result collections: ${JSON.stringify(mockResult.collections)}\n`);
-			fs.appendFileSync('test-debug-healthy.log', `TEST: Env QDRANT_COLLECTION_NAME: ${process.env.QDRANT_COLLECTION_NAME}\n`);
-			fs.appendFileSync('test-debug-healthy.log', `TEST: Found collection: ${JSON.stringify(mockResult.collections?.find((c: any) => c.name === process.env.QDRANT_COLLECTION_NAME))}\n`);
-
-			// Get qdrant client and check type
-			const { getQdrantClient } = await import('../../../services/qdrant.js');
-			const qdrantInstance = getQdrantClient();
-			fs.appendFileSync('test-debug-healthy.log', `TEST: qdrantInstance type: ${typeof qdrantInstance}, getCollections type: ${typeof qdrantInstance.getCollections}\n`);
-			fs.appendFileSync('test-debug-healthy.log', `TEST: qdrantInstance === mockQdrantClient: ${qdrantInstance === mockQdrantClient}\n`);
-
 			const result = await handleDiagnoseSemanticIndex(conversationCache);
 
-			// Verify mock was called
-			fs.appendFileSync('test-debug-healthy.log', `TEST: getCollections calls: ${mockQdrantClient.getCollections.mock.calls.length}\n`);
 			expect(mockQdrantClient.getCollections).toHaveBeenCalled();
 
 			expect(result.content).toHaveLength(1);
 			const parsed = JSON.parse(result.content[0].text);
-			fs.appendFileSync('test-debug-healthy.log', `TEST: Result status: ${parsed.status}\n`);
-			fs.appendFileSync('test-debug-healthy.log', `TEST: Result details: ${JSON.stringify(parsed.details)}\n`);
-			fs.appendFileSync('test-debug-healthy.log', `TEST: Errors: ${JSON.stringify(parsed.errors)}\n`);
 			expect(parsed.status).toBe('healthy');
 			expect(parsed.errors).toHaveLength(0);
 		});
@@ -362,9 +323,6 @@ describe('diagnose-index.tool (unit tests)', () => {
 			const result = await handleDiagnoseSemanticIndex(conversationCache);
 
 			const parsed = JSON.parse(result.content[0].text);
-			console.log('DEBUG status:', parsed.status);
-			console.log('DEBUG errors:', parsed.errors);
-			console.log('DEBUG details:', JSON.stringify(parsed.details, null, 2));
 			expect(parsed.status).toBe('collection_error');
 		});
 
@@ -372,7 +330,6 @@ describe('diagnose-index.tool (unit tests)', () => {
 			const result = await handleDiagnoseSemanticIndex(conversationCache);
 
 			const parsed = JSON.parse(result.content[0].text);
-			console.log('DEBUG all errors:', parsed.errors);
 			expect(parsed.errors.some(e => e.includes('Erreur lors de l\'accès à la collection'))).toBe(true);
 		});
 	});
