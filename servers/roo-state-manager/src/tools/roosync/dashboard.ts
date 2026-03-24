@@ -974,7 +974,7 @@ export const dashboardToolMetadata = {
       type: {
         type: 'string',
         enum: ['global', 'machine', 'workspace', 'workspace+machine'],
-        description: 'Type de dashboard. workspace+machine remplace INTERCOM local. Requis sauf pour action=list.'
+        description: 'Type de dashboard. workspace+machine remplace INTERCOM local. Requis sauf pour action=list et action=read_overview.'
       },
       machineId: {
         type: 'string',
