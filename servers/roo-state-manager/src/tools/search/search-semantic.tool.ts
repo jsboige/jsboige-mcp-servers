@@ -467,13 +467,21 @@ export const searchTasksByContentTool = {
                 console.warn('[WARN] #831: Semantic search without workspace filter on 9.93M vector index may timeout. Consider providing workspace parameter.');
             }
 
+            // #851: Optimized search params for 10M+ vector collection
             // #831: Timeout wrapper for Qdrant search
             const searchWithTimeout = Promise.race([
                 qdrant.search(collectionName, {
                     vector: queryVector,
                     limit: max_results || 10,
                     filter: filter,
-                    with_payload: true
+                    params: {
+                        hnsw_ef: 128,
+                        exact: false,
+                        quantization: { rescore: true }
+                    },
+                    with_payload: {
+                        include: ['task_id', 'timestamp', 'chunk_type', 'content_summary', 'workspace', 'source', 'role', 'model']
+                    }
                 }),
                 new Promise((_, reject) =>
                     setTimeout(() => reject(new Error(`Qdrant search timeout after ${searchTimeoutMs}ms (9.93M vectors). Tip: Provide workspace parameter to narrow search.`)), searchTimeoutMs)
