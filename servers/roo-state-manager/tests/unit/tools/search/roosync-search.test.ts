@@ -160,7 +160,7 @@ describe('roosync_search - CONS-11', () => {
     describe('action: semantic', () => {
         it('should perform semantic search successfully', async () => {
             const result = await handleRooSyncSearch(
-                { action: 'semantic', search_query: 'test query', max_results: 5 },
+                { action: 'semantic', search_query: 'test query', max_results: 5, workspace: 'd:\\test-workspace' },
                 conversationCache,
                 ensureCacheFreshCallback,
                 fallbackHandler
@@ -196,11 +196,23 @@ describe('roosync_search - CONS-11', () => {
             );
         });
 
+        it('should return error when workspace is missing for semantic', async () => {
+            const result = await handleRooSyncSearch(
+                { action: 'semantic', search_query: 'test query' },
+                conversationCache,
+                ensureCacheFreshCallback,
+                fallbackHandler
+            );
+            expect(result.isError).toBe(true);
+            expect((result.content[0] as any).text).toContain('workspace');
+            expect((result.content[0] as any).text).toContain('OBLIGATOIRE');
+        });
+
         it('should fallback to text on semantic error', async () => {
             mockOpenAIClient.embeddings.create.mockRejectedValue(new Error('OpenAI Error'));
 
             const result = await handleRooSyncSearch(
-                { action: 'semantic', search_query: 'test query' },
+                { action: 'semantic', search_query: 'test query', workspace: 'd:\\test-workspace' },
                 conversationCache,
                 ensureCacheFreshCallback,
                 fallbackHandler
