@@ -67,18 +67,6 @@ describe('roosync_dashboard', () => {
     expect(result.key).toBe('workspace-test-workspace');
   });
 
-  // === Test 4: Clé dashboard workspace+machine ===
-  it('creates workspace+machine dashboard (INTERCOM replacement)', async () => {
-    const result = await roosyncDashboard({
-      action: 'write',
-      type: 'workspace+machine',
-      content: '# Local INTERCOM'
-    });
-
-    expect(result.success).toBe(true);
-    expect(result.key).toBe('workspace-test-workspace,machine-test-machine');
-  });
-
   // === Test 5: Read dashboard complet ===
   it('reads dashboard with all sections', async () => {
     await roosyncDashboard({ action: 'write', type: 'global', content: '# Test Status' });
@@ -204,28 +192,16 @@ describe('roosync_dashboard', () => {
     expect(result.data?.lastModifiedBy?.worktree).toBe('wt-123');
   });
 
-  // === Test 15: Auto-détection machine/workspace ===
-  it('uses env vars for auto-detection', async () => {
+  // === Test 15: Override explicite machine et workspace ===
+  it('accepts explicit machineId and workspace overrides for machine type', async () => {
     const result = await roosyncDashboard({
       action: 'write',
-      type: 'workspace+machine',
-      content: '# Auto'
-    });
-
-    expect(result.key).toBe('workspace-test-workspace,machine-test-machine');
-  });
-
-  // === Test 16: Override explicite machine et workspace ===
-  it('accepts explicit machineId and workspace overrides', async () => {
-    const result = await roosyncDashboard({
-      action: 'write',
-      type: 'workspace+machine',
+      type: 'machine',
       machineId: 'myia-ai-01',
-      workspace: 'roo-extensions',
-      content: '# Explicit'
+      content: '# Explicit machine'
     });
 
-    expect(result.key).toBe('workspace-roo-extensions,machine-myia-ai-01');
+    expect(result.key).toBe('machine-myia-ai-01');
   });
 
   // === Test 17: intercomLimit ===

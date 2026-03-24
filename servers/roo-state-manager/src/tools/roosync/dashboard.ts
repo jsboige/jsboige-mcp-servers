@@ -2,14 +2,13 @@
  * Outil MCP : roosync_dashboard
  *
  * Dashboards markdown partagés pour la collaboration cross-machine.
- * Support 4 types : global, machine, workspace, workspace+machine (remplace INTERCOM local).
+ * Support 3 types : global, machine, workspace.
  *
  * Architecture stockage :
  *   .shared-state/dashboards/
  *     global.md
  *     machine-{machineId}.md
  *     workspace-{workspaceName}.md
- *     workspace-{workspaceName},machine-{machineId}.md
  *     archive/
  *       {key}-{date}.md
  *
@@ -71,7 +70,7 @@ export type IntercomMessage = z.infer<typeof IntercomMessageSchema>;
 
 // Dashboard au format Markdown (avec frontmatter YAML)
 export interface Dashboard {
-  type: 'global' | 'machine' | 'workspace' | 'workspace+machine';
+  type: 'global' | 'machine' | 'workspace';
   key: string;
   lastModified: string;
   lastModifiedBy: Author;
@@ -98,16 +97,16 @@ export interface DashboardFrontmatter {
 // Schema args pour l'outil MCP
 export const DashboardArgsSchema = z.object({
   action: z.enum(['read', 'write', 'append', 'condense', 'list', 'delete', 'read_archive', 'read_overview'])
-    .describe('Action : read, write, append, condense, list (tous dashboards), delete (supprimer), read_archive (lire archives), read_overview (vue concaténée des 4 niveaux)'),
+    .describe('Action : read, write, append, condense, list (tous dashboards), delete (supprimer), read_archive (lire archives), read_overview (vue concaténée des 3 niveaux)'),
 
-  type: z.enum(['global', 'machine', 'workspace', 'workspace+machine']).optional()
+  type: z.enum(['global', 'machine', 'workspace']).optional()
     .describe('Type de dashboard (requis sauf pour action=list)'),
 
   machineId: z.string().optional()
-    .describe('ID machine (défaut: machine locale). Utilisé pour types machine et workspace+machine'),
+    .describe('ID machine (défaut: machine locale). Utilisé pour type machine'),
 
   workspace: z.string().optional()
-    .describe('Workspace (défaut: workspace courant). Utilisé pour types workspace et workspace+machine'),
+    .describe('Workspace (défaut: workspace courant). Utilisé pour type workspace'),
 
   // Pour read
   section: z.enum(['status', 'intercom', 'all']).optional()
@@ -155,8 +154,6 @@ function buildDashboardKey(
       return `machine-${machineId}`;
     case 'workspace':
       return `workspace-${workspace}`;
-    case 'workspace+machine':
-      return `workspace-${workspace},machine-${machineId}`;
     default:
       throw new Error(`Type dashboard inconnu: ${type}`);
   }
@@ -721,8 +718,8 @@ async function handleCondense(
 }
 
 /**
- * read_overview: Vue concaténée des 4 niveaux de dashboard en un seul appel.
- * Retourne global + machine + workspace + workspace+machine avec troncature.
+ * read_overview: Vue concaténée des 3 niveaux de dashboard en un seul appel.
+ * Retourne global + machine + workspace avec troncature.
  * (#808 Proposition 1)
  */
 async function handleReadOverview(
@@ -737,7 +734,6 @@ async function handleReadOverview(
     { type: 'global', label: 'Global' },
     { type: 'machine', label: 'Machine' },
     { type: 'workspace', label: 'Workspace' },
-    { type: 'workspace+machine', label: 'INTERCOM local' },
   ];
 
   const overview: Record<string, {
@@ -780,7 +776,7 @@ async function handleReadOverview(
     key: `overview-${resolvedMachineId}-${resolvedWorkspace}`,
     type: 'overview',
     overview,
-    message: `Vue d'ensemble: ${foundCount}/4 dashboards trouvés (machine: ${resolvedMachineId}, workspace: ${resolvedWorkspace})`
+    message: `Vue d'ensemble: ${foundCount}/3 dashboards trouvés (machine: ${resolvedMachineId}, workspace: ${resolvedWorkspace})`
   };
 }
 
@@ -962,27 +958,27 @@ async function handleReadArchive(key: string, args: DashboardArgs): Promise<Dash
 
 export const dashboardToolMetadata = {
   name: 'roosync_dashboard',
-  description: 'Dashboards markdown partagés cross-machine. 4 types : global, machine, workspace, workspace+machine (remplace INTERCOM local). Actions : read, write (status diff), append (message intercom), condense, list (tous dashboards), delete, read_archive, read_overview (vue concaténée des 4 niveaux en 1 appel).',
+  description: 'Dashboards markdown partagés cross-machine. 3 types : global, machine, workspace. Actions : read, write (status diff), append (message intercom), condense, list (tous dashboards), delete, read_archive, read_overview (vue concaténée des 3 niveaux en 1 appel).',
   inputSchema: {
     type: 'object' as const,
     properties: {
       action: {
         type: 'string',
         enum: ['read', 'write', 'append', 'condense', 'list', 'delete', 'read_archive', 'read_overview'],
-        description: 'Action : read, write, append, condense, list (tous dashboards), delete (supprimer), read_archive (lire archives intercom), read_overview (vue concaténée des 4 niveaux en 1 appel)'
+        description: 'Action : read, write, append, condense, list (tous dashboards), delete (supprimer), read_archive (lire archives intercom), read_overview (vue concaténée des 3 niveaux en 1 appel)'
       },
       type: {
         type: 'string',
-        enum: ['global', 'machine', 'workspace', 'workspace+machine'],
-        description: 'Type de dashboard. workspace+machine remplace INTERCOM local. Requis sauf pour action=list et action=read_overview.'
+        enum: ['global', 'machine', 'workspace'],
+        description: 'Type de dashboard. Requis sauf pour action=list et action=read_overview.'
       },
       machineId: {
         type: 'string',
-        description: 'ID machine (défaut: machine locale). Pour types machine et workspace+machine.'
+        description: 'ID machine (défaut: machine locale). Pour type machine.'
       },
       workspace: {
         type: 'string',
-        description: 'Workspace ID (défaut: workspace courant). Pour types workspace et workspace+machine.'
+        description: 'Workspace ID (défaut: workspace courant). Pour type workspace.'
       },
       section: {
         type: 'string',
