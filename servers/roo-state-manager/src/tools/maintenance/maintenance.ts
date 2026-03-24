@@ -18,11 +18,12 @@ import { ServerState } from '../../services/state-manager.service.js';
 import { handleBuildSkeletonCache } from '../cache/build-skeleton-cache.tool.js';
 import { diagnoseConversationBomTool } from '../repair/diagnose-conversation-bom.tool.js';
 import { repairConversationBomTool } from '../repair/repair-conversation-bom.tool.js';
+import { handleRebuildTaskIndex } from './rebuild-task-index.js';
 
 /**
  * Actions supportées par maintenance
  */
-export type MaintenanceAction = 'cache_rebuild' | 'diagnose_bom' | 'repair_bom';
+export type MaintenanceAction = 'cache_rebuild' | 'diagnose_bom' | 'repair_bom' | 'rebuild_index';
 
 /**
  * Arguments consolidés du tool maintenance
@@ -42,8 +43,12 @@ export interface MaintenanceArgs {
     // BOM-specific options
     /** Si true, répare automatiquement les fichiers trouvés (action=diagnose_bom) */
     fix_found?: boolean;
-    /** Si true, simule la réparation sans modifier les fichiers (action=repair_bom) */
+    /** Si true, simule la réparation sans modifier les fichiers (action=repair_bom, rebuild_index) */
     dry_run?: boolean;
+
+    // Rebuild-index-specific options
+    /** Nombre maximum de tâches à traiter (action=rebuild_index) */
+    max_tasks?: number;
 }
 
 /**
@@ -57,8 +62,8 @@ export const maintenanceToolDefinition = {
         properties: {
             action: {
                 type: 'string',
-                enum: ['cache_rebuild', 'diagnose_bom', 'repair_bom'],
-                description: 'Action: cache_rebuild, diagnose_bom, ou repair_bom.'
+                enum: ['cache_rebuild', 'diagnose_bom', 'repair_bom', 'rebuild_index'],
+                description: 'Action: cache_rebuild, diagnose_bom, repair_bom, ou rebuild_index (reconstruit l\'index SQLite des tâches VS Code).'
             },
             force_rebuild: {
                 type: 'boolean',
@@ -81,8 +86,13 @@ export const maintenanceToolDefinition = {
             },
             dry_run: {
                 type: 'boolean',
-                description: 'Simuler la réparation sans modifier les fichiers (action=repair_bom).',
+                description: 'Simuler la réparation sans modifier les fichiers (action=repair_bom, rebuild_index).',
                 default: false
+            },
+            max_tasks: {
+                type: 'number',
+                description: 'Nombre maximum de tâches à traiter (action=rebuild_index). 0 = toutes.',
+                default: 0
             }
         },
         required: ['action']
@@ -124,11 +134,18 @@ export async function handleMaintenance(
                 dry_run: args.dry_run
             });
 
+        case 'rebuild_index':
+            return handleRebuildTaskIndex({
+                workspace_filter: args.workspace_filter,
+                max_tasks: args.max_tasks,
+                dry_run: args.dry_run ?? true
+            });
+
         default:
             return {
                 content: [{
                     type: 'text',
-                    text: `Action inconnue: '${action}'. Actions valides: cache_rebuild, diagnose_bom, repair_bom.`
+                    text: `Action inconnue: '${action}'. Actions valides: cache_rebuild, diagnose_bom, repair_bom, rebuild_index.`
                 }],
                 isError: true
             };
