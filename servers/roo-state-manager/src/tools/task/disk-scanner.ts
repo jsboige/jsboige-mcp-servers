@@ -90,7 +90,7 @@ async function quickAnalyze(
 // --- Incremental disk scan cache ---
 // Only re-scans when the tasks/ directory has actually changed (mtime check).
 // Falls back to TTL-based invalidation as safety net.
-const DISK_SCAN_CACHE_TTL = 30_000; // 30 seconds (safety net)
+const DISK_SCAN_CACHE_TTL = 300_000; // 5 minutes (was 30s, #834 perf fix)
 let lastScanTime = 0;
 let lastScanResults: ConversationSkeleton[] | null = null;
 let lastTasksDirMtime = 0; // mtime of the tasks/ directory at last scan
