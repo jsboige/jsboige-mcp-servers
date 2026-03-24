@@ -15,11 +15,10 @@ import baseConfig from './vitest.config.js';
 
 export default mergeConfig(baseConfig, defineConfig({
   test: {
-    // Minimal reporter format (Vitest v3+)
-    // Replaces deprecated 'basic' reporter
-    reporters: [
-      ['default', { summary: false }]
-    ],
+    // Use 'basic' reporter despite deprecation warning
+    // Testing shows: basic=7688 lines vs default format=11687 lines
+    // For Roo schedulers consuming output via LLM, minimal is critical
+    reporters: ['basic'],
 
     // Disable coverage (not needed for scheduler validation)
     coverage: {
