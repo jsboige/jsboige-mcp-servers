@@ -8,9 +8,11 @@
 import { describe, test, expect, vi, beforeEach } from 'vitest';
 
 // Hoisted mocks for ESM compatibility
-const { mockSemanticHandler, mockFallbackHandler } = vi.hoisted(() => ({
+const { mockSemanticHandler, mockFallbackHandler, mockIsLargeCollection, mockGetCollectionSize } = vi.hoisted(() => ({
 	mockSemanticHandler: vi.fn(),
-	mockFallbackHandler: vi.fn()
+	mockFallbackHandler: vi.fn(),
+	mockIsLargeCollection: vi.fn(async () => false),
+	mockGetCollectionSize: vi.fn(async () => 1000)
 }));
 
 // Mock semantic search tool
@@ -26,6 +28,14 @@ vi.mock('../search-semantic.tool.js', () => ({
 vi.mock('../search-fallback.tool.js', () => ({
 	handleSearchTasksSemanticFallback: mockFallbackHandler,
 	SearchFallbackArgs: {}
+}));
+
+// Mock qdrant functions for workspace check (#831)
+vi.mock('../../../services/qdrant.js', () => ({
+	getQdrantClient: vi.fn(),
+	resetQdrantClient: vi.fn(),
+	isLargeCollection: mockIsLargeCollection,
+	getCollectionSize: mockGetCollectionSize
 }));
 
 import { handleRooSyncSearch, RooSyncSearchArgs } from '../roosync-search.tool.js';

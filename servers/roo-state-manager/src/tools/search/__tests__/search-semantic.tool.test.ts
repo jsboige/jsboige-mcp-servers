@@ -37,7 +37,10 @@ const { mockGetHostIdentifier } = vi.hoisted(() => ({
 }));
 
 vi.mock('../../../services/qdrant.js', () => ({
-	getQdrantClient: () => mockQdrantClient
+	getQdrantClient: () => mockQdrantClient,
+	resetQdrantClient: vi.fn(),
+	isLargeCollection: vi.fn(async () => false),
+	getCollectionSize: vi.fn(async () => 1000)
 }));
 
 vi.mock('../../../services/openai.js', () => ({
