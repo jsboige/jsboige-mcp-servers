@@ -57,19 +57,11 @@ interface CacheEntry<T> {
   fileHash?: string; // Hash du fichier source pour invalidation intelligente
 }
 
-/**
- * Erreur du service RooSync
- */
-export class RooSyncServiceError extends Error {
-  constructor(
-    message: string,
-    public readonly code?: string,
-    public readonly details?: any
-  ) {
-    super(`[RooSync Service] ${message}`);
-    this.name = 'RooSyncServiceError';
-  }
-}
+// Import + re-export RooSyncServiceError from types/errors.ts to maintain backward compat.
+// Moved there to break circular dependency:
+// RooSyncService → SyncDecisionManager/ConfigComparator/BaselineManager → RooSyncServiceError → RooSyncService
+import { RooSyncServiceError } from '../types/errors.js';
+export { RooSyncServiceError };
 
 /**
  * Service Singleton pour gérer RooSync
