@@ -24,12 +24,18 @@ const dotenv = require('dotenv');
 // Charger le .env du projet AVANT de lancer le serveur
 // Cela évite de dupliquer les variables dans settings.json
 const envPath = path.join(__dirname, '.env');
+// CRITICAL: dotenv v17+ logs to stdout, which breaks MCP stdio protocol.
+// Temporarily suppress console.log during dotenv.config().
+const _origLog = console.log;
+console.log = () => {};
 const envResult = dotenv.config({ path: envPath });
+console.log = _origLog;
 if (envResult.error) {
     console.error(`[MCP-WRAPPER] ⚠️  Warning: Could not load .env from ${envPath}`);
     console.error(`[MCP-WRAPPER] Error: ${envResult.error.message}`);
 } else {
-    console.log(`[MCP-WRAPPER] ✅ Loaded .env from ${envPath}`);
+    // FIX: Use stderr, NOT stdout — MCP stdio protocol requires only JSON-RPC on stdout
+    console.error(`[MCP-WRAPPER] ✅ Loaded .env from ${envPath}`);
 }
 
 // Chemin vers le serveur MCP réel
