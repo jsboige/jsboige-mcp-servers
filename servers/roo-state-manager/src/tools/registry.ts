@@ -214,7 +214,7 @@ export function registerCallToolHandler(
                     saveSkeletonToDisk,
                     state.qdrantIndexQueue,
                     (enabled: boolean) => { state.isQdrantIndexingEnabled = enabled; },
-                    toolExports.rebuildTaskIndexFixed.handler,
+                    toolExports.handleRebuildTaskIndex,
                     {
                         qdrantIndexQueue: state.qdrantIndexQueue,
                         qdrantIndexInterval: state.qdrantIndexInterval,
@@ -256,8 +256,9 @@ export function registerCallToolHandler(
            case toolExports.getMcpBestPractices.name:
                result = await toolExports.getMcpBestPractices.handler();
                break;
-           case toolExports.rebuildTaskIndexFixed.name:
-               result = await toolExports.rebuildTaskIndexFixed.handler(args as any);
+           // #814: rebuild_task_index redirects to new implementation (backward compat)
+           case 'rebuild_task_index':
+               result = await toolExports.handleRebuildTaskIndex(args as any);
                break;
            case 'diagnose_conversation_bom':
                result = await toolExports.diagnoseConversationBomTool.handler(args as any);

@@ -35,7 +35,7 @@ vi.mock('fs/promises', () => ({
   access: (...args: any[]) => mockAccess(...args),
 }));
 
-// os.homedir() utilisé par rebuildTaskIndexFixed
+// os.homedir() utilisé par manageMcpSettings pour le chemin mcp_settings.json
 vi.mock('os', () => ({
   default: { homedir: () => '/mock/home' },
   homedir: () => '/mock/home',

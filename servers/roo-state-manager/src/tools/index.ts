@@ -3,7 +3,7 @@ export * from './storage/index.js';
 export * from './rebuild-and-restart.js';
 export { getMcpBestPractices } from './get_mcp_best_practices.js';
 export * from './manage-mcp-settings.js';
-export { rebuildTaskIndexFixed } from './manage-mcp-settings.js';
+// [REMOVED] rebuildTaskIndexFixed — #814: replaced by handleRebuildTaskIndex in maintenance/
 export { viewConversationTree } from './view-conversation-tree.js';
 
 // Conversation tools - Batch 2 refactoring

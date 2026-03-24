@@ -49,7 +49,7 @@ const TOOL_MAPPINGS: Record<string, string> = {
   'search_tasks_by_content': 'indexing/roosync-indexing.tool.ts', // deprecated
   'index_task_semantic': 'indexing/index-task.tool.ts',
   'reset_qdrant_collection': 'indexing/reset-collection.tool.ts',
-  'rebuild_task_index_fixed': 'rebuild-and-restart.ts',
+  // [REMOVED] rebuild_task_index_fixed — #814: replaced by maintenance/rebuild-task-index.ts
 
   // Export tools
   'export_data': 'export/export-data.ts',
@@ -130,7 +130,7 @@ const ALL_MCP_TOOLS = [
   'maintenance',
   'manage_mcp_settings',
   'rebuild_and_restart',
-  'rebuild_task_index_fixed',
+  // 'rebuild_task_index_fixed': removed — #814: replaced by maintenance(action='rebuild_index')
   'repair_conversation_bom',
   'reset_qdrant_collection',
   'roosync_apply_config',
