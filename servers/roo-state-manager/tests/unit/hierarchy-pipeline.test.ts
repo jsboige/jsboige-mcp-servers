@@ -327,7 +327,7 @@ describe('Pipeline Complet de Reconstruction Hiérarchique', () => {
         it('devrait résoudre le parent en MODE STRICT', async () => {
             const engine = new HierarchyReconstructionEngine({
                 strictMode: true,
-                debugMode: true
+                debugMode: false
             });
 
             const parentInstruction = 'Mission debug critique : réparation système';
@@ -591,7 +591,7 @@ describe('Pipeline Complet de Reconstruction Hiérarchique', () => {
             // Exécuter la reconstruction
             const engine = new HierarchyReconstructionEngine({
                 strictMode: true,
-                debugMode: true
+                debugMode: false
             });
 
             // Mock de extractSubtaskInstructions pour éviter l'import dynamique de 'fs'

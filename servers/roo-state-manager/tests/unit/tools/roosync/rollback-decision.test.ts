@@ -121,14 +121,9 @@ describe('roosync_rollback_decision', () => {
     // Mock getDecision to return test decisions
     // Note: The service is already mocked by jest.setup.js, we just need to add the spy
     const service = getRooSyncService();
-    console.log('[DEBUG] service:', service);
-    console.log('[DEBUG] service.getConfig:', typeof service?.getConfig);
-    console.log('[DEBUG] process.env.ROOSYNC_MACHINE_ID:', process.env.ROOSYNC_MACHINE_ID);
-    console.log('[DEBUG] process.env.ROOSYNC_SHARED_PATH:', process.env.ROOSYNC_SHARED_PATH);
 
     if (service?.getConfig) {
-      const testConfig = service.getConfig();
-      console.log('[DEBUG] testConfig:', testConfig);
+      service.getConfig();
     }
 
     // Add the spy for getDecision

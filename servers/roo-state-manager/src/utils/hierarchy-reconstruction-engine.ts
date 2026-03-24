@@ -169,15 +169,7 @@ export class HierarchyReconstructionEngine {
                     }
 
                     // Extraire les instructions depuis ui_messages.json
-                    console.log(`[ENGINE-PHASE1-EXTRACT] TaskID: ${skeleton.taskId.substring(0, 8)}`);
-                    console.log(`[ENGINE-PHASE1-EXTRACT] DataSource: ${skeleton.metadata?.dataSource || 'N/A'}`);
-
                     const instructions = await this.extractSubtaskInstructions(skeleton);
-
-                    console.log(`[ENGINE-PHASE1-EXTRACT] Instruction count: ${instructions.length}`);
-                    if (instructions.length > 0) {
-                        console.log(`[ENGINE-PHASE1-EXTRACT] First instruction preview: "${instructions[0].message.substring(0, 100)}..."`);
-                    }
 
                     if (process.env.ROO_DEBUG_INSTRUCTIONS === '1') {
                         try { console.log(`[Phase1] extracted for ${skeleton.taskId} ds=${skeleton.metadata?.dataSource || 'N/A'} → ${instructions.length}`); } catch {}
@@ -208,11 +200,11 @@ export class HierarchyReconstructionEngine {
                             extractedCount++;
                         }
 
-                        console.log(`[ENGINE-PHASE1-INDEX] Task ${skeleton.taskId.substring(0, 8)}: ${extractedCount} sub-instructions indexed`);
+                        this.log(`[ENGINE-PHASE1-INDEX] Task ${skeleton.taskId.substring(0, 8)}: ${extractedCount} sub-instructions indexed`);
                         result.totalInstructionsExtracted += extractedCount;
                         result.parsedCount++;
                     } else {
-                        console.log(`[ENGINE-PHASE1-EXTRACT] No instructions found for ${skeleton.taskId.substring(0, 8)}`);
+                        this.log(`[ENGINE-PHASE1-EXTRACT] No instructions found for ${skeleton.taskId.substring(0, 8)}`);
                     }
 
                     this.updateProcessingState(skeleton, 'phase1', true);
@@ -314,7 +306,7 @@ export class HierarchyReconstructionEngine {
             try {
                 // Ignorer les tâches racines légitimes
                 if (this.isRootTask(orphan)) {
-                    console.log(`[ENGINE-PHASE2-ROOT] ✅ MARKED AS ROOT: ${orphan.taskId.substring(0, 8)} (strict=${mergedConfig.strictMode})`);
+                    this.log(`[ENGINE-PHASE2-ROOT] MARKED AS ROOT: ${orphan.taskId.substring(0, 8)} (strict=${mergedConfig.strictMode})`);
                     orphan.isRootTask = true;
                     orphan.parentResolutionMethod = 'root_detected';
                     this.incrementResolutionMethod(result, 'root_detected');
@@ -322,23 +314,23 @@ export class HierarchyReconstructionEngine {
                     continue;
                 }
 
-                console.log(`[ENGINE-PHASE2-SEARCH] Searching parent for child: ${orphan.taskId.substring(0, 8)}`);
+                this.log(`[ENGINE-PHASE2-SEARCH] Searching parent for child: ${orphan.taskId.substring(0, 8)}`);
                 if (orphan.truncatedInstruction) {
-                    console.log(`[ENGINE-PHASE2-SEARCH] Child truncatedInstruction: "${orphan.truncatedInstruction.substring(0, 80)}..."`);
+                    this.log(`[ENGINE-PHASE2-SEARCH] Child truncatedInstruction: "${orphan.truncatedInstruction.substring(0, 80)}..."`);
                 }
 
                 // Chercher un parent candidat
                 const candidate = await this.findParentCandidate(orphan, skeletonMap, mergedConfig);
 
                 if (candidate) {
-                    console.log(`[ENGINE-PHASE2-MATCH] ✅ CANDIDATE FOUND: ${orphan.taskId.substring(0, 8)} → ${candidate.parentId.substring(0, 8)}`);
-                    console.log(`[ENGINE-PHASE2-MATCH] Confidence: ${candidate.confidence}, Method: ${candidate.method}`);
+                    this.log(`[ENGINE-PHASE2-MATCH] CANDIDATE FOUND: ${orphan.taskId.substring(0, 8)} → ${candidate.parentId.substring(0, 8)}`);
+                    this.log(`[ENGINE-PHASE2-MATCH] Confidence: ${candidate.confidence}, Method: ${candidate.method}`);
 
                     // Valider le candidat
                     const validation = await this.validateParentCandidate(orphan, candidate.parentId, skeletonMap);
 
                     if (validation.isValid) {
-                        console.log(`[ENGINE-PHASE2-MATCH] ✅ VALIDATION PASSED: ${orphan.taskId.substring(0, 8)} → ${candidate.parentId.substring(0, 8)}`);
+                        this.log(`[ENGINE-PHASE2-MATCH] VALIDATION PASSED: ${orphan.taskId.substring(0, 8)} → ${candidate.parentId.substring(0, 8)}`);
                         orphan.reconstructedParentId = candidate.parentId;
                         (orphan as any).reconstructionConfidence = candidate.confidence;
                         (orphan as any).reconstructionMethod = candidate.method;
@@ -347,14 +339,14 @@ export class HierarchyReconstructionEngine {
                         confidenceScores.push(candidate.confidence);
                         this.incrementResolutionMethod(result, candidate.method);
                     } else {
-                        console.log(`[ENGINE-PHASE2-NOMATCH] ❌ VALIDATION FAILED: ${orphan.taskId.substring(0, 8)}`);
-                        console.log(`[ENGINE-PHASE2-NOMATCH] Validation details:`, JSON.stringify(validation, null, 2));
+                        this.log(`[ENGINE-PHASE2-NOMATCH] VALIDATION FAILED: ${orphan.taskId.substring(0, 8)}`);
+                        this.log(`[ENGINE-PHASE2-NOMATCH] Validation details:`, JSON.stringify(validation, null, 2));
                         result.unresolvedCount++;
                     }
                 } else {
                     // Si aucun parent trouvé, c'est peut-être une racine non détectée
                     // En mode strict, on ne force pas le rattachement
-                    console.log(`[ENGINE-PHASE2-NOMATCH] No candidate found for ${orphan.taskId.substring(0, 8)}`);
+                    this.log(`[ENGINE-PHASE2-NOMATCH] No candidate found for ${orphan.taskId.substring(0, 8)}`);
                     result.unresolvedCount++;
                 }
 
@@ -376,18 +368,20 @@ export class HierarchyReconstructionEngine {
         // Garantit un temps > 0ms pour satisfaire les tests de timing
         result.processingTimeMs = Math.max(1, Date.now() - startTime);
 
-        // ========== LOGS FIN PHASE 2 ==========
-        console.log('[ENGINE-PHASE2-END] ====================================');
-        console.log('[ENGINE-PHASE2-END] Relations detected:', result.resolvedCount);
-        console.log('[ENGINE-PHASE2-END] Tasks unresolved:', result.unresolvedCount);
-        console.log('[ENGINE-PHASE2-END] Tasks processed:', result.processedCount);
-        console.log('[ENGINE-PHASE2-END] Resolution methods:', JSON.stringify(result.resolutionMethods, null, 2));
-        console.log('[ENGINE-PHASE2-END] Average confidence:', result.averageConfidenceScore.toFixed(3));
-        console.log('[ENGINE-PHASE2-END] Errors:', result.errors.length);
-        if (result.errors.length > 0) {
-            console.log('[ENGINE-PHASE2-END] Error details:', JSON.stringify(result.errors, null, 2));
+        // Phase 2 end report (only in debug mode)
+        if (this.config.debugMode) {
+            console.log('[ENGINE-PHASE2-END] ====================================');
+            console.log('[ENGINE-PHASE2-END] Relations detected:', result.resolvedCount);
+            console.log('[ENGINE-PHASE2-END] Tasks unresolved:', result.unresolvedCount);
+            console.log('[ENGINE-PHASE2-END] Tasks processed:', result.processedCount);
+            console.log('[ENGINE-PHASE2-END] Resolution methods:', JSON.stringify(result.resolutionMethods, null, 2));
+            console.log('[ENGINE-PHASE2-END] Average confidence:', result.averageConfidenceScore.toFixed(3));
+            console.log('[ENGINE-PHASE2-END] Errors:', result.errors.length);
+            if (result.errors.length > 0) {
+                console.log('[ENGINE-PHASE2-END] Error details:', JSON.stringify(result.errors, null, 2));
+            }
+            console.log('[ENGINE-PHASE2-END] ====================================');
         }
-        console.log('[ENGINE-PHASE2-END] ====================================');
 
         return result;
     }

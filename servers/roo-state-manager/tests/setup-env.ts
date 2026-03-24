@@ -9,9 +9,10 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
 // Charger .env.test en priorité (ne surcharge pas si déjà défini)
-dotenv.config({ path: path.join(__dirname, '..', '.env.test') });
+// quiet: true supprime les 888 lignes de messages promotionnels dotenv (#832)
+dotenv.config({ path: path.join(__dirname, '..', '.env.test'), quiet: true });
 // Charger .env pour les clés manquantes (ex: API keys) - SANS écraser les valeurs existantes
-dotenv.config({ path: path.join(__dirname, '..', '.env'), override: false });
+dotenv.config({ path: path.join(__dirname, '..', '.env'), override: false, quiet: true });
 
 // GLOBAL SAFETY GUARD: Redirect APPDATA to a temp directory for ALL tests.
 // This prevents any test from accidentally reading/writing the real

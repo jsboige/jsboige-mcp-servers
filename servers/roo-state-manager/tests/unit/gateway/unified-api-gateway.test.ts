@@ -66,7 +66,7 @@ describe('UnifiedApiGateway - Architecture consolidée', () => {
 
     gateway = createUnifiedApiGateway({
       services: mockServices,
-      debugMode: true,
+      debugMode: false,
       cacheProtection: {
         maxTrafficGB: 220,
         consistencyCheckHours: 24,
@@ -552,7 +552,7 @@ describe('UnifiedApiGateway - Architecture consolidée', () => {
 
     test('Création avec configuration personnalisée', () => {
       const customGateway = createUnifiedApiGateway({
-        debugMode: true,
+        debugMode: false,
         immediateProcessingTimeout: 10000,
         cacheProtection: {
           maxTrafficGB: 100,

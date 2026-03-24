@@ -39,7 +39,7 @@ describe('Orphan Robustness Tests - Mission WEB', () => {
 
     beforeEach(() => {
         engine = new HierarchyReconstructionEngine({
-            debugMode: true,
+            debugMode: false,
             batchSize: 100, // Augmenter la taille du lot pour tout traiter d'un coup
             similarityThreshold: 0.5,
             minConfidenceScore: 0.5,

@@ -332,12 +332,6 @@ describe('🛡️ TaskIndexer - Validation Vectorielle Améliorée', () => {
         }
       ];
 
-      // DEBUG: Check if upsertPointsBatch is the mocked function
-      console.log('[DEBUG] taskIndexer.upsertPointsBatch:', typeof (taskIndexer as any).upsertPointsBatch);
-      console.log('[DEBUG] taskIndexer.upsertPointsBatch name:', (taskIndexer as any).upsertPointsBatch.name);
-      console.log('[DEBUG] mockUpsertPointsBatch:', typeof mockUpsertPointsBatch);
-      console.log('[DEBUG] mockUpsertPointsBatch mock.calls:', mockUpsertPointsBatch.mock.calls.length);
-
       // Le mock upsertPointsBatch valide les vecteurs comme l'implémentation réelle
       await expect(
         (taskIndexer as any).upsertPointsBatch(points, { batchSize: 10 })

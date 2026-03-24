@@ -63,16 +63,16 @@ describe('Controlled Hierarchy Reconstruction - TEST-HIERARCHY Dataset', () => {
     let realControlledSkeletons: ConversationSkeleton[];
 
     beforeEach(async () => {
-        process.env.ROO_DEBUG_INSTRUCTIONS = '1'; // Activer les logs de debug
-
-        // Rediriger console.log vers console.error pour voir les logs du moteur
-        vi.spyOn(console, 'log').mockImplementation((...args) => process.stderr.write(formatArgs(args)));
+        // Debug logging disabled (#832) — was emitting 613 lines of ENGINE-PHASE noise
+        // Set ROO_DEBUG_INSTRUCTIONS=1 and uncomment the spy below to re-enable for debugging
+        // process.env.ROO_DEBUG_INSTRUCTIONS = '1';
+        // vi.spyOn(console, 'log').mockImplementation((...args) => process.stderr.write(formatArgs(args)));
 
         // Réinitialiser l'engine avec mode strict activé
         engine = new HierarchyReconstructionEngine({
             batchSize: 10,
             strictMode: true,  // Mode strict OBLIGATOIRE car le mode fuzzy est désactivé
-            debugMode: true,
+            debugMode: false,
             forceRebuild: true
         });
 
@@ -372,7 +372,7 @@ describe('Controlled Hierarchy Reconstruction - TEST-HIERARCHY Dataset', () => {
             // par rapport à ce que le test attend (incohérence fixtures vs test logic)
             const patchedSkeletons = testSkeletons.map(s => enhanceSkeleton(s));
 
-            const engine = new HierarchyReconstructionEngine({ debugMode: true, strictMode: true });
+            const engine = new HierarchyReconstructionEngine({ debugMode: false, strictMode: true });
             // Cast nécessaire car doReconstruction attend ConversationSkeleton[] mais on passe EnhancedConversationSkeleton[]
             // C'est compatible car Enhanced étend ConversationSkeleton
             const enhancedSkeletons = await engine.doReconstruction(patchedSkeletons as any);
@@ -434,10 +434,6 @@ describe('Controlled Hierarchy Reconstruction - TEST-HIERARCHY Dataset', () => {
 async function loadControlledTestData(): Promise<ConversationSkeleton[]> {
     const skeletons: ConversationSkeleton[] = [];
 
-    console.error(`[DEBUG] CONTROLLED_DATA_PATH: ${CONTROLLED_DATA_PATH}`);
-    console.error(`[DEBUG] __dirname: ${__dirname}`);
-    console.error(`[DEBUG] CWD: ${process.cwd()}`);
-
     // Exclure la tâche de collecte (e73ea764) car elle n'est pas partie de la hiérarchie de test
     const taskIds = Object.values(TEST_HIERARCHY_IDS).filter(id => id !== TEST_HIERARCHY_IDS.COLLECTE);
 
@@ -445,9 +441,7 @@ async function loadControlledTestData(): Promise<ConversationSkeleton[]> {
         const taskDir = path.join(CONTROLLED_DATA_PATH, taskId);
         const metadataPath = path.join(taskDir, 'task_metadata.json');
 
-        console.error(`[DEBUG] Checking metadata path: ${metadataPath}`);
         if (fs.existsSync(metadataPath)) {
-            console.error(`[DEBUG] Found metadata for ${taskId}`);
             try {
                 const metadata = JSON.parse(fs.readFileSync(metadataPath, 'utf-8'));
 
