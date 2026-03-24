@@ -321,6 +321,36 @@ export const searchTasksByContentTool = {
         // **FAILSAFE: Auto-rebuild cache si nécessaire avec filtre workspace**
         await ensureCacheFreshCallback({ workspace });
 
+        // #831: Check if workspace is provided for large collection search
+        const { isLargeCollection, getCollectionSize } = await import('../../services/qdrant.js');
+        if (!workspace) {
+            const collectionSize = await getCollectionSize();
+            if (await isLargeCollection()) {
+                console.warn(`[WARN] Semantic search on large collection without workspace filter will be slow.`);
+                return {
+                    isError: false,
+                    content: [{
+                        type: 'text',
+                        text: [
+                            'WARNING: Semantic search requires workspace parameter for large collections.',
+                            '',
+                            `Collection size: ${String(collectionSize)} vectors (very large).`,
+                            'Without workspace filter, scanning entire collection is very slow.',
+                            '',
+                            'TO FIX: Add workspace parameter to narrow search scope.',
+                            'Example: workspace: "d:\\\\roo-extensions" (or your workspace path).',
+                            '',
+                            'Performance tips:',
+                            '- max_results: 10-20 for faster searches',
+                            "- chunk_type: 'message_exchange' to filter only conversation messages",
+                            '- start_date / end_date to filter by time range',
+                            "- role: 'user' to search only user messages (faster)"
+                        ].join('\n')
+                    }]
+                };
+            }
+        }
+
         // Mode diagnostic - retourne des informations sur l'état de l'indexation
         if (diagnose_index) {
             if (diagnoseHandler) {

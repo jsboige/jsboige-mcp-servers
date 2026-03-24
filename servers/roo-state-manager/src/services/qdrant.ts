@@ -38,11 +38,13 @@ export function getQdrantClient(): QdrantClient {
       apiKey: process.env.QDRANT_API_KEY,
       port: 443, // Force HTTPS port
       checkCompatibility: false,
-      timeout: 15000, // 15s timeout (#851)
+      // #831: Add timeout to prevent hanging on large collections
+      // #851: Reduced default to 15s for faster failure detection
+      timeout: parseInt(process.env.QDRANT_TIMEOUT_MS || '15000'), // 15s default, configurable
     };
 
     client = new QdrantClient(qdrantConfig);
-    console.log(`Qdrant client initialized with URL: ${process.env.QDRANT_URL}`);
+    console.log(`Qdrant client initialized with URL: ${process.env.QDRANT_URL}, timeout: ${qdrantConfig.timeout}ms`);
   }
   return client;
 }
@@ -50,7 +52,34 @@ export function getQdrantClient(): QdrantClient {
 /**
  * Réinitialise le client Qdrant (utile après changement de configuration)
  */
+/**
+ * Reset the Qdrant client (utile après changement de configuration)
+ */
 export function resetQdrantClient(): void {
   client = null;
   console.log('Qdrant client reset.');
+}
+
+/**
+ * Get collection size information
+ * @returns Number of points count or */
+export async function getCollectionSize(): Promise<number> {
+  const qdrant = getQdrantClient();
+  const collectionName = process.env.QDRANT_COLLECTION_NAME || 'roo_tasks_semantic_index';
+
+  try {
+    const collection = await qdrant.getCollection(collectionName);
+    return collection?.points_count || 0;
+  } catch {
+    return 1; // Default to 1 if we fails
+  }
+}
+
+/**
+ * Check if collection is large (>5M vectors)
+ * Used to warn users about potential slow searches
+ */
+export async function isLargeCollection(): Promise<boolean> {
+  const size = await getCollectionSize();
+  return size > 5_000_000;
 }
