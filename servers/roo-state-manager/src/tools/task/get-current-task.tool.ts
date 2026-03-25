@@ -94,16 +94,21 @@ export const getCurrentTaskTool = {
                 workspace: {
                     type: 'string',
                     description: 'Chemin du workspace (détection auto si omis)'
+                },
+                force_refresh: {
+                    type: 'boolean',
+                    description: 'Forcer un scan disque (défaut: false). Utile si une nouvelle tâche a été créée récemment.',
+                    default: false
                 }
             }
         }
     },
-    
+
     /**
      * Handler pour l'outil get_current_task
      */
     handler: async (
-        args: { workspace?: string },
+        args: { workspace?: string; force_refresh?: boolean },
         conversationCache: Map<string, ConversationSkeleton>,
         contextWorkspace?: string,
         ensureSkeletonCacheIsFresh?: () => Promise<void>
@@ -129,9 +134,12 @@ export const getCurrentTaskTool = {
         }
         
         console.log('[get_current_task] Using workspace:', targetWorkspace);
-        
-        // Chercher la tâche la plus récente avec scan disque activé
-        const currentTask = await findMostRecentTask(conversationCache, targetWorkspace, true);
+
+        // Chercher la tâche la plus récente
+        // #834: forceRescan désactivé par défaut - le TTL cache (5min) suffit pour la fraîcheur
+        // Le scan disque à chaque appel cause des timeouts sur machines avec beaucoup de tâches
+        // force_refresh permet de forcer le scan si nécessaire (ex: nouvelle tâche créée récemment)
+        const currentTask = await findMostRecentTask(conversationCache, targetWorkspace, args.force_refresh === true);
         
         if (!currentTask) {
             throw new StateManagerError(
