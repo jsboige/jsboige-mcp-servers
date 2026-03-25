@@ -211,6 +211,46 @@ def classify_attachment(path: str) -> str | None:
     return None
 
 
+def validate_attachment(path: str) -> tuple[bool, str]:
+    """Validate an attachment file.
+
+    Returns: (is_valid, error_message)
+    - (True, "") if valid or no attachment
+    - (False, error_message) if invalid
+    """
+    if not path:
+        return True, ""
+
+    # Convert file:/// URI to local path
+    local_path = file_uri_to_path(path)
+
+    # URL: can't validate existence, only extension
+    if local_path.startswith(("http://", "https://")):
+        from urllib.parse import urlparse
+
+        url_path = urlparse(local_path).path
+        ext = Path(url_path).suffix.lower()
+        all_extensions = _IMAGE_EXTENSIONS | _VIDEO_EXTENSIONS | _DOCUMENT_EXTENSIONS
+        if ext not in all_extensions:
+            supported = ", ".join(sorted(all_extensions))
+            return False, f"Unsupported attachment extension '{ext}'. Supported: {supported}"
+        return True, ""
+
+    # Local file: check existence and extension
+    ext = Path(local_path).suffix.lower()
+    all_extensions = _IMAGE_EXTENSIONS | _VIDEO_EXTENSIONS | _DOCUMENT_EXTENSIONS
+
+    if ext not in all_extensions:
+        supported = ", ".join(sorted(all_extensions))
+        return False, f"Unsupported attachment extension '{ext}'. Supported: {supported}"
+
+    p = Path(local_path)
+    if not p.exists():
+        return False, f"Attachment file not found: {local_path}"
+
+    return True, ""
+
+
 # ---------------------------------------------------------------------------
 # Image/Media Processing Helpers
 # ---------------------------------------------------------------------------
@@ -711,19 +751,33 @@ class SKAgentManager:
         self,
         prompt: str,
         agent_id: str | None = None,
-        attachment: str | None = None,
+        attachment: str | list[str] | None = None,
         options: dict | None = None,
         conversation_id: str | None = None,
         include_steps: bool = False,
         # Backward compat params
         model_id: str | None = None,
     ) -> dict[str, Any]:
-        """Unified agent invocation with optional attachment routing."""
+        """Unified agent invocation with optional attachment routing.
+
+        Supports multiple attachments for images - pass a list of paths.
+        """
         if not self.config.agents:
             return {"error": "No agents configured"}
 
         options = options or {}
-        attachment_type = classify_attachment(attachment) if attachment else None
+
+        # Normalize attachment to list for multi-image support
+        attachments_list: list[str] | None = None
+        if attachment:
+            if isinstance(attachment, str):
+                attachments_list = [attachment]
+            else:
+                attachments_list = attachment
+
+        # Classify based on first attachment
+        first_attachment = attachments_list[0] if attachments_list else None
+        attachment_type = classify_attachment(first_attachment) if first_attachment else None
         needs_vision = attachment_type in ("image", "video", "document")
 
         # If mode=text for document, we don't necessarily need vision
@@ -744,10 +798,11 @@ class SKAgentManager:
         if attachment_type == "image":
             region = options.get("region")
             if region:
+                # Region only supported for single image
                 return await self._handle_image_region(
                     resolved_id,
                     agent,
-                    attachment,
+                    first_attachment,
                     region,
                     prompt,
                     conversation_id,
@@ -755,10 +810,12 @@ class SKAgentManager:
                     options.get("zoom_context"),
                 )
             else:
+                # Pass single image or list of images
+                image_source = attachments_list[0] if len(attachments_list) == 1 else attachments_list
                 return await self._handle_image(
                     resolved_id,
                     agent,
-                    attachment,
+                    image_source,
                     prompt,
                     conversation_id,
                     include_steps,
@@ -767,7 +824,7 @@ class SKAgentManager:
             return await self._handle_video(
                 resolved_id,
                 agent,
-                attachment,
+                first_attachment,
                 prompt,
                 conversation_id,
                 include_steps,
@@ -777,7 +834,7 @@ class SKAgentManager:
             return await self._handle_document(
                 resolved_id,
                 agent,
-                attachment,
+                first_attachment,
                 prompt,
                 conversation_id,
                 include_steps,
@@ -844,19 +901,28 @@ class SKAgentManager:
         self,
         agent_id: str,
         agent: ChatCompletionAgent,
-        image_source: str,
+        image_source: str | list[str],
         prompt: str,
         conversation_id: str | None,
         include_steps: bool,
     ) -> dict[str, Any]:
-        """Handle image analysis."""
+        """Handle image analysis. Supports single image or list of images."""
         try:
-            b64_data, media_type = await resolve_attachment(image_source)
-            data_url = f"data:{media_type};base64,{b64_data}"
-            image_item = ImageContent(data_uri=data_url)
+            # Normalize to list
+            image_sources = image_source if isinstance(image_source, list) else [image_source]
+
+            # Build items with all images
+            items = []
+            for i, src in enumerate(image_sources):
+                b64_data, media_type = await resolve_attachment(src)
+                data_url = f"data:{media_type};base64,{b64_data}"
+                image_item = ImageContent(data_uri=data_url)
+                items.append(image_item)
+
+            # Add text prompt
+            items.append(TextContent(text=prompt))
 
             conv_id, thread = self._get_or_create_thread(conversation_id)
-            items = [image_item, TextContent(text=prompt)]
             message = ChatMessageContent(role=AuthorRole.USER, items=items)
 
             steps = []
@@ -879,6 +945,7 @@ class SKAgentManager:
                 "conversation_id": conv_id,
                 "agent_used": agent_id,
                 "model_used": self._get_agent_model_id(agent_id),
+                "images_analyzed": len(image_sources),
             }
             if include_steps:
                 result["steps"] = steps
@@ -1352,7 +1419,8 @@ async def call_agent(
     Args:
         prompt: The question or instruction.
         agent: Agent ID (default: auto-select based on attachment type).
-        attachment: File path or URL (image, video, PDF, PPTX, DOCX, XLSX).
+        attachment: File path, URL, or JSON array of paths (image, video, PDF, PPTX, DOCX, XLSX).
+                   For multiple images: '["path1.png", "path2.png"]'
         options: JSON string with type-specific params (region, mode, max_pages, page_range, num_frames).
         conversation_id: Continue previous conversation.
         include_steps: Show intermediate tool/reasoning steps.
@@ -1360,6 +1428,27 @@ async def call_agent(
     Returns:
         JSON string with: response, conversation_id, agent_used, model_used, and type-specific fields.
     """
+    # Parse attachment - can be single path or JSON array
+    attachments_list = None
+    if attachment:
+        # Try to parse as JSON array first
+        try:
+            parsed = json.loads(attachment)
+            if isinstance(parsed, list):
+                attachments_list = parsed
+            else:
+                # Single value, treat as single attachment
+                attachments_list = [attachment]
+        except json.JSONDecodeError:
+            # Not JSON, treat as single path
+            attachments_list = [attachment]
+
+        # Validate all attachments
+        for i, att in enumerate(attachments_list):
+            is_valid, error_msg = validate_attachment(att)
+            if not is_valid:
+                return json.dumps({"error": f"Attachment {i+1}: {error_msg}"}, ensure_ascii=False)
+
     manager = await _get_manager()
 
     opts = {}
@@ -1372,7 +1461,7 @@ async def call_agent(
     result = await manager.call_agent(
         prompt=prompt,
         agent_id=agent if agent else None,
-        attachment=attachment if attachment else None,
+        attachment=attachments_list if attachments_list else None,
         options=opts,
         conversation_id=conversation_id if conversation_id else None,
         include_steps=include_steps,
