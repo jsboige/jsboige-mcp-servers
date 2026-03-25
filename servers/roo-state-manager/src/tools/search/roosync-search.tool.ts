@@ -95,7 +95,7 @@ export const roosyncSearchTool: Tool = {
             },
             workspace: {
                 type: 'string',
-                description: 'Filtre les résultats par workspace spécifique'
+                description: '⚠️ OBLIGATOIRE pour action="semantic" (10.1M vectors indexés - timeout sans filtre). Filtre les résultats par workspace spécifique.'
             },
             source: {
                 type: 'string',
@@ -175,6 +175,24 @@ export async function handleRooSyncSearch(
                     content: [{ type: 'text', text: 'Le paramètre "search_query" est requis pour action=semantic' }]
                 };
             }
+
+            // FIX #831: Rendre workspace obligatoire pour éviter de scanner 10M+ vectors
+            if (!args.workspace) {
+                return {
+                    isError: true,
+                    content: [{
+                        type: 'text',
+                        text: 'ERREUR #831: Le paramètre "workspace" est OBLIGATOIRE pour action=semantic.\n\n' +
+                              'Raison: L\'index contient 10.1M vectors. Une recherche sans filtre workspace timeout.\n' +
+                              'Solution: Ajoutez workspace: "d:\\roo-extensions" (ou votre chemin workspace).\n\n' +
+                              'Exemple: roosync_search(action: "semantic", search_query: "votre requête", workspace: "d:\\\\roo-extensions")\n\n' +
+                              'Alternatives:\n' +
+                              '- action: "text" (recherche dans cache local, pas de timeout)\n' +
+                              '- action: "diagnose" (diagnostic de l\'index)'
+                    }]
+                };
+            }
+
             // Déléguer au handler sémantique existant (inclut fallback automatique sur erreur)
             const semanticArgs: SearchTasksByContentArgs = {
                 search_query: args.search_query,

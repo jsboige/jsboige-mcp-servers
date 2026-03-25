@@ -154,7 +154,10 @@ describe('SyncDecisionManager', () => {
 
     test('lève RooSyncServiceError si sync-roadmap.md introuvable', async () => {
       mockAccess.mockRejectedValue(new Error('ENOENT'));
-      await expect(manager.loadDecisions()).rejects.toBeInstanceOf(RooSyncServiceError);
+      await expect(manager.loadDecisions()).rejects.toMatchObject({
+        code: 'FILE_NOT_FOUND',
+        name: 'RooSyncServiceError',
+      });
     });
 
     test('code FILE_NOT_FOUND si fichier absent', async () => {
