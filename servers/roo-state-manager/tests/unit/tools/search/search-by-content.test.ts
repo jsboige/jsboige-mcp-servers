@@ -76,8 +76,7 @@ describe('🔍 search_tasks_by_content', () => {
   it('should perform semantic search successfully', async () => {
     const args = {
       search_query: 'test query',
-      max_results: 5,
-      workspace: 'test-workspace'
+      max_results: 5
     };
 
     const result = await searchTasksByContentTool.handler(
@@ -97,9 +96,8 @@ describe('🔍 search_tasks_by_content', () => {
       expect.objectContaining({
         vector: expect.any(Array),
         limit: 5,
-        with_payload: {
-          include: expect.any(Array)
-        }
+        with_payload: expect.any(Object),
+        params: expect.any(Object)
       })
     );
 
@@ -140,8 +138,7 @@ describe('🔍 search_tasks_by_content', () => {
   it('should handle diagnostic mode', async () => {
     const args = {
       search_query: 'ignored',
-      diagnose_index: true,
-      workspace: 'test-workspace'
+      diagnose_index: true
     };
 
     const result = await searchTasksByContentTool.handler(
@@ -160,8 +157,7 @@ describe('🔍 search_tasks_by_content', () => {
     mockOpenAIClient.embeddings.create.mockRejectedValue(new Error('OpenAI Error'));
 
     const args = {
-      search_query: 'test query',
-      workspace: 'test-workspace'
+      search_query: 'test query'
     };
 
     const result = await searchTasksByContentTool.handler(
@@ -179,8 +175,7 @@ describe('🔍 search_tasks_by_content', () => {
     mockQdrantClient.search.mockResolvedValue([]);
 
     const args = {
-      search_query: 'no match',
-      workspace: 'test-workspace'
+      search_query: 'no match'
     };
 
     const result = await searchTasksByContentTool.handler(

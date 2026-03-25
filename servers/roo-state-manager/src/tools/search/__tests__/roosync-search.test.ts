@@ -99,13 +99,25 @@ describe('roosync_search', () => {
 
 		test('semantic requires search_query', async () => {
 			const result = await handleRooSyncSearch(
-				{ action: 'semantic' },
+				{ action: 'semantic', workspace: 'test-workspace' },
 				mockCache,
 				mockEnsureCache,
 				mockFallbackHandler
 			);
 			expect(result.isError).toBe(true);
 			expect(getTextContent(result)).toContain('search_query');
+		});
+
+		test('semantic requires workspace (fix #831)', async () => {
+			const result = await handleRooSyncSearch(
+				{ action: 'semantic', search_query: 'test' },
+				mockCache,
+				mockEnsureCache,
+				mockFallbackHandler
+			);
+			expect(result.isError).toBe(true);
+			expect(getTextContent(result)).toContain('workspace');
+			expect(getTextContent(result)).toContain('#831');
 		});
 
 		test('text requires search_query', async () => {
@@ -172,7 +184,7 @@ describe('roosync_search', () => {
 			});
 
 			const result = await handleRooSyncSearch(
-				{ action: 'semantic', search_query: 'test query', workspace: 'test-ws' },
+				{ action: 'semantic', search_query: 'test query', workspace: 'test-workspace' },
 				mockCache,
 				mockEnsureCache,
 				mockFallbackHandler
@@ -183,7 +195,7 @@ describe('roosync_search', () => {
 
 		test('passes diagnose_index=false for semantic', async () => {
 			await handleRooSyncSearch(
-				{ action: 'semantic', search_query: 'test', workspace: 'test-ws' },
+				{ action: 'semantic', search_query: 'test', workspace: 'test-workspace' },
 				mockCache,
 				mockEnsureCache,
 				mockFallbackHandler
@@ -321,25 +333,16 @@ describe('roosync_search', () => {
 
 	describe('error handling', () => {
 		test('propagates semantic handler errors', async () => {
-			// Le handler sémantique intercepte les erreurs et retourne un objet isError: false
-			// avec un message d'erreur dans le contenu, au lieu de rejeter la promesse
-			mockSemanticHandler.mockResolvedValue({
-				isError: false,
-				content: [{
-					type: 'text',
-					text: 'Erreur lors de la recherche sémantique: Qdrant down'
-				}]
-			});
+			mockSemanticHandler.mockRejectedValue(new Error('Qdrant down'));
 
-			const result = await handleRooSyncSearch(
-				{ action: 'semantic', search_query: 'test', workspace: 'd:\\roo-extensions' },
-				mockCache,
-				mockEnsureCache,
-				mockFallbackHandler
-			);
-
-			expect(result.isError).toBe(false);
-			expect(result.content[0].text).toContain('Qdrant down');
+			await expect(
+				handleRooSyncSearch(
+					{ action: 'semantic', search_query: 'test', workspace: 'test-workspace' },
+					mockCache,
+					mockEnsureCache,
+					mockFallbackHandler
+				)
+			).rejects.toThrow('Qdrant down');
 		});
 
 		test('propagates text handler errors', async () => {
@@ -380,9 +383,9 @@ describe('roosync_search', () => {
 				{
 					action: 'semantic',
 					search_query: 'heartbeat',
+					workspace: 'test-workspace',
 					start_date: '2026-03-01',
-					end_date: '2026-03-11',
-					workspace: 'test-ws'
+					end_date: '2026-03-11'
 				},
 				mockCache,
 				mockEnsureCache,
@@ -397,7 +400,7 @@ describe('roosync_search', () => {
 
 		test('temporal filters are optional (undefined when not provided)', async () => {
 			await handleRooSyncSearch(
-				{ action: 'semantic', search_query: 'test', workspace: 'test-ws' },
+				{ action: 'semantic', search_query: 'test', workspace: 'test-workspace' },
 				mockCache,
 				mockEnsureCache,
 				mockFallbackHandler
@@ -413,8 +416,8 @@ describe('roosync_search', () => {
 				{
 					action: 'semantic',
 					search_query: 'recent tasks',
-					start_date: '2026-03-10',
-					workspace: 'test-ws'
+					workspace: 'test-workspace',
+					start_date: '2026-03-10'
 				},
 				mockCache,
 				mockEnsureCache,
@@ -431,8 +434,8 @@ describe('roosync_search', () => {
 				{
 					action: 'semantic',
 					search_query: 'old tasks',
-					end_date: '2026-02-28',
-					workspace: 'test-ws'
+					workspace: 'test-workspace',
+					end_date: '2026-02-28'
 				},
 				mockCache,
 				mockEnsureCache,
@@ -450,9 +453,9 @@ describe('roosync_search', () => {
 	// ============================================================
 
 	describe('optional parameters', () => {
-		test('semantic works without optional params (except workspace)', async () => {
+		test('semantic works without optional params', async () => {
 			await handleRooSyncSearch(
-				{ action: 'semantic', search_query: 'minimal query', workspace: 'test-ws' },
+				{ action: 'semantic', search_query: 'minimal query', workspace: 'test-workspace' },
 				mockCache,
 				mockEnsureCache,
 				mockFallbackHandler
@@ -462,7 +465,7 @@ describe('roosync_search', () => {
 			expect(callArgs.search_query).toBe('minimal query');
 			expect(callArgs.conversation_id).toBeUndefined();
 			expect(callArgs.max_results).toBeUndefined();
-			expect(callArgs.workspace).toBe('test-ws');
+			expect(callArgs.workspace).toBe('test-workspace');
 		});
 
 		test('text works without workspace', async () => {

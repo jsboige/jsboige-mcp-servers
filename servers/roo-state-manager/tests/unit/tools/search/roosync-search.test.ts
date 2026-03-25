@@ -163,7 +163,7 @@ describe('roosync_search - CONS-11', () => {
     describe('action: semantic', () => {
         it('should perform semantic search successfully', async () => {
             const result = await handleRooSyncSearch(
-                { action: 'semantic', search_query: 'test query', max_results: 5, workspace: 'test-ws' },
+                { action: 'semantic', search_query: 'test query', max_results: 5, workspace: 'test-workspace' },
                 conversationCache,
                 ensureCacheFreshCallback,
                 fallbackHandler
@@ -203,7 +203,7 @@ describe('roosync_search - CONS-11', () => {
             mockOpenAIClient.embeddings.create.mockRejectedValue(new Error('OpenAI Error'));
 
             const result = await handleRooSyncSearch(
-                { action: 'semantic', search_query: 'test query', workspace: 'test-ws' },
+                { action: 'semantic', search_query: 'test query', workspace: 'test-workspace' },
                 conversationCache,
                 ensureCacheFreshCallback,
                 fallbackHandler
