@@ -354,4 +354,93 @@ describe('roosync_dashboard', () => {
     expect(result.success).toBe(false);
     expect(result.message).toContain('introuvable');
   });
+
+  // ============================================================
+  // Tests LLM Summary (#858)
+  // ============================================================
+
+  // === Test 27: Condensation sans LLM (fallback behaviour) ===
+  it('condense without LLM service falls back to standard condensation', async () => {
+    // Sans configurer OPENAI_API_KEY, le LLM devrait échouer et utiliser le fallback
+    delete process.env.OPENAI_API_KEY;
+    delete process.env.OPENAI_BASE_URL;
+
+    await roosyncDashboard({ action: 'write', type: 'global', content: '# Init' });
+    for (let i = 0; i < 10; i++) {
+      await roosyncDashboard({ action: 'append', type: 'global', content: `Message ${i}` });
+    }
+
+    const condenseResult = await roosyncDashboard({
+      action: 'condense',
+      type: 'global',
+      keepMessages: 3
+    });
+
+    expect(condenseResult.success).toBe(true);
+    expect(condenseResult.condensed).toBe(true);
+
+    const readResult = await roosyncDashboard({ action: 'read', type: 'global', section: 'intercom' });
+    const messages = readResult.data?.intercom?.messages;
+
+    // Avec fallback: seulement CONDENSATION + 3 gardés = 4 messages
+    expect(messages?.length).toBe(4);
+
+    // Vérifier que le premier message est CONDENSATION standard avec fallback
+    expect(messages?.[0].tags).toContain('CONDENSATION');
+    expect(messages?.[0].tags).toContain('SYSTEM');
+    // Le message devrait indiquer que le résumé LLM est indisponible
+    expect(messages?.[0].content).toMatch(/Résumé LLM/);
+  });
+
+  // === Test 28: Condensation préserve les messages récents ===
+  it('condense preserves most recent messages regardless of LLM status', async () => {
+    await roosyncDashboard({ action: 'write', type: 'global', content: '# Init' });
+    const messages: string[] = [];
+    for (let i = 0; i < 10; i++) {
+      messages.push(`Message ${i}`);
+      await roosyncDashboard({ action: 'append', type: 'global', content: `Message ${i}` });
+    }
+
+    await roosyncDashboard({
+      action: 'condense',
+      type: 'global',
+      keepMessages: 3
+    });
+
+    const readResult = await roosyncDashboard({ action: 'read', type: 'global', section: 'intercom' });
+    const msgs = readResult.data?.intercom?.messages;
+
+    // Les 3 derniers messages originaux devraient être conservés (après le message système)
+    expect(msgs?.length).toBeGreaterThanOrEqual(3);
+    // Vérifier le contenu des derniers messages
+    const lastMessage = msgs?.[msgs.length - 1]?.content;
+    const secondLast = msgs?.[msgs.length - 2]?.content;
+    const thirdLast = msgs?.[msgs.length - 3]?.content;
+
+    expect(lastMessage).toBe('Message 9');
+    expect(secondLast).toBe('Message 8');
+    expect(thirdLast).toBe('Message 7');
+  });
+
+  // === Test 29: Tags corrects pour condensation ===
+  it('condense adds correct system tags', async () => {
+    await roosyncDashboard({ action: 'write', type: 'global', content: '# Init' });
+    for (let i = 0; i < 10; i++) {
+      await roosyncDashboard({ action: 'append', type: 'global', content: `Message ${i}` });
+    }
+
+    await roosyncDashboard({
+      action: 'condense',
+      type: 'global',
+      keepMessages: 3
+    });
+
+    const readResult = await roosyncDashboard({ action: 'read', type: 'global', section: 'intercom' });
+    const firstMessage = readResult.data?.intercom?.messages?.[0];
+
+    expect(firstMessage?.tags).toContain('SYSTEM');
+    expect(firstMessage?.tags).toContain('CONDENSATION');
+    expect(firstMessage?.author.machineId).toBe('system');
+    expect(firstMessage?.author.workspace).toBe('system');
+  });
 });

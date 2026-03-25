@@ -40,6 +40,8 @@ import * as yaml from 'js-yaml';
 import { getSharedStatePath } from '../../utils/server-helpers.js';
 import { getLocalMachineId, getLocalWorkspaceId } from '../../utils/message-helpers.js';
 import { createLogger, Logger } from '../../utils/logger.js';
+import { getChatOpenAIClient } from '../../services/openai.js';
+import type OpenAI from 'openai';
 
 const logger: Logger = createLogger('DashboardTool');
 
@@ -338,6 +340,109 @@ function generateMessageId(): string {
 }
 
 /**
+ * Génère un résumé LLM des messages intercom (#858)
+ *
+ * @param messages - Messages à résumer
+ * @returns Résumé markdown ou null si échec (fallback)
+ */
+async function generateLLMSummary(messages: IntercomMessage[]): Promise<string | null> {
+  const timeoutMs = 30000; // 30 secondes
+  const startTime = Date.now();
+
+  try {
+    // Construire le prompt avec les messages
+    const messagesContent = messages.map(msg => {
+      const tags = msg.tags?.length ? ` [${msg.tags.join(', ')}]` : '';
+      const header = `[${msg.timestamp}] ${msg.author.machineId}|${msg.author.workspace}${tags}`;
+      return `${header}\n${msg.content}`;
+    }).join('\n\n---\n\n');
+
+    const systemPrompt = `Tu es un assistant qui synthétise les communications techniques entre agents multi-machines.
+Ta tâche : générer un résumé structuré et concis des messages fournis.
+
+Format de sortie attendu (Markdown) :
+## Résumé Thématique
+- Thème 1 : description
+- Thème 2 : description
+...
+
+## Actions Clés
+- Action 1 : [status] description
+- Action 2 : [status] description
+...
+
+## Points d'Attention
+- Point 1
+- Point 2
+
+## Métriques (si applicable)
+- X messages traités
+- Y issues/bugs
+- Z bloquages
+
+IMPORTANT :
+- Être CONCIS (max 20-30 lignes)
+- Regrouper par thèmes, ne pas lister chaque message
+- Identifier les patterns, pas les détails
+- Les tags [DONE], [ERROR], [WARN], [ASK] sont prioritaires
+- Ne pas inventer d'informations, rester factuel`;
+
+    const userPrompt = `Voici ${messages.length} messages à synthétiser :\n\n${messagesContent}\n\nGénère un résumé structuré de ces communications.`;
+
+    logger.info('Calling LLM for intercom summary', { messageCount: messages.length });
+
+    // Appeler le LLM avec timeout
+    const openai = getChatOpenAIClient();
+    const modelId = process.env.OPENAI_CHAT_MODEL_ID || 'qwen3.5-35b-a3b';
+
+    // Créer un abort controller pour le timeout
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
+
+    try {
+      const response = await openai.chat.completions.create({
+        model: modelId,
+        messages: [
+          { role: 'system', content: systemPrompt },
+          { role: 'user', content: userPrompt }
+        ],
+        max_tokens: 1000,
+        temperature: 0.3
+      }, {
+        timeout: timeoutMs
+      });
+
+      clearTimeout(timeoutId);
+
+      const summary = response.choices[0]?.message?.content;
+      if (!summary) {
+        logger.warn('LLM returned empty summary');
+        return null;
+      }
+
+      const elapsed = Date.now() - startTime;
+      logger.info('LLM summary generated', { elapsed: `${elapsed}ms`, summaryLength: summary.length });
+
+      return summary;
+
+    } catch (error: unknown) {
+      clearTimeout(timeoutId);
+      if (error instanceof Error && error.name === 'AbortError') {
+        logger.warn('LLM summary timeout', { timeout: timeoutMs });
+        return null;
+      }
+      throw error;
+    }
+
+  } catch (error) {
+    logger.error('LLM summary failed, falling back to truncation', {
+      error: error instanceof Error ? error.message : String(error)
+    });
+    return null;
+  }
+}
+
+/**
  * Condense les messages intercom : archive les anciens, conserve les récents.
  * Retourne le dashboard condensé.
  */
@@ -353,6 +458,9 @@ async function condenseIntercom(
 
   const toArchive = messages.slice(0, messages.length - keepCount);
   const toKeep = messages.slice(messages.length - keepCount);
+
+  // #858 : Générer un résumé LLM avant d'archiver
+  const llmSummary = await generateLLMSummary(toArchive);
 
   // Archiver les anciens messages (format Markdown)
   const archiveDir = getArchiveDir();
@@ -390,24 +498,46 @@ ${archiveMessages}
   await fs.writeFile(archivePath, archiveContent, 'utf8');
   logger.info('Messages archivés', { key, count: toArchive.length, archivePath });
 
-  // Ajouter message système de condensation
+  // Créer les messages système de condensation
+  const now = new Date().toISOString();
+  const systemMessages: IntercomMessage[] = [];
+
+  // Ajouter le résumé LLM si disponible (#858)
+  if (llmSummary) {
+    const summaryMessage: IntercomMessage = {
+      id: generateMessageId(),
+      timestamp: now,
+      author: {
+        machineId: 'system',
+        workspace: 'system'
+      },
+      content: `---\n**CONDENSATION-SUMMARY** - ${now}\n\n${llmSummary}\n---`,
+      tags: ['SYSTEM', 'CONDENSATION-SUMMARY']
+    };
+    systemMessages.push(summaryMessage);
+    logger.info('LLM summary added to dashboard', { summaryLength: llmSummary.length });
+  } else {
+    logger.info('LLM summary failed, using fallback', { archivedCount: toArchive.length });
+  }
+
+  // Ajouter le message de condensation standard (avec ou sans résumé LLM)
   const condenseNotice: IntercomMessage = {
     id: generateMessageId(),
-    timestamp: new Date().toISOString(),
+    timestamp: now,
     author: {
       machineId: 'system',
       workspace: 'system'
     },
-    content: `---\n**CONDENSATION** - ${new Date().toISOString()}\n\n${toArchive.length} messages archivés dans \`archive/${path.basename(archivePath)}\`\n${toKeep.length} messages conservés (plus récents)\n---`,
+    content: `---\n**CONDENSATION** - ${now}\n\n${toArchive.length} messages archivés dans \`archive/${path.basename(archivePath)}\`\n${toKeep.length} messages conservés (plus récents)\n${llmSummary ? '✅ Résumé LLM généré' : '⚠️ Résumé LLM indisponible (fallback)'}\n---`,
     tags: ['SYSTEM', 'CONDENSATION']
   };
+  systemMessages.push(condenseNotice);
 
-  const now = new Date().toISOString();
   return {
     ...dashboard,
     lastModified: now,
     intercom: {
-      messages: [condenseNotice, ...toKeep],
+      messages: [...systemMessages, ...toKeep],
       totalMessages: dashboard.intercom.totalMessages,
       lastCondensedAt: now
     }
