@@ -45,10 +45,10 @@ import type OpenAI from 'openai';
 
 const logger: Logger = createLogger('DashboardTool');
 
-// Auto-condensation threshold
-const CONDENSE_THRESHOLD = 500;
-const CONDENSE_KEEP = 100;
-const CONDENSE_ARCHIVE = CONDENSE_THRESHOLD - CONDENSE_KEEP; // 400
+// Auto-condensation threshold (#858 - ajusté à 150/50)
+const CONDENSE_THRESHOLD = 150;
+const CONDENSE_KEEP = 50;
+const CONDENSE_ARCHIVE = CONDENSE_THRESHOLD - CONDENSE_KEEP; // 100
 
 // === Schemas Zod ===
 
@@ -443,7 +443,112 @@ IMPORTANT :
 }
 
 /**
+ * Génère une mise à jour du statut dashboard à partir de la version précédente
+ * et des messages condensés (#858 Phase 2)
+ *
+ * @param previousStatus - Contenu markdown du statut précédent
+ * @param archivedMessages - Messages qui vont être archivés
+ * @returns Nouveau statut markdown ou null si échec (fallback = statut inchangé)
+ */
+async function generateStatusUpdate(
+  previousStatus: string,
+  archivedMessages: IntercomMessage[]
+): Promise<string | null> {
+  const timeoutMs = 30000; // 30 secondes
+  const startTime = Date.now();
+
+  try {
+    // Construire le contenu des messages archivés
+    const messagesContent = archivedMessages.map(msg => {
+      const tags = msg.tags?.length ? ` [${msg.tags.join(', ')}]` : '';
+      const header = `[${msg.timestamp}] ${msg.author.machineId}|${msg.author.workspace}${tags}`;
+      return `${header}\n${msg.content}`;
+    }).join('\n\n---\n\n');
+
+    const systemPrompt = `Tu es un assistant qui met à jour les dashboards de coordination multi-agents.
+Ta tâche : intégrer les informations importantes des messages archivés dans le statut existant.
+
+Règles de mise à jour :
+1. PRÉSERVER la structure et les informations toujours valides du statut précédent
+2. AJOUTER les nouvelles informations importantes issues des messages (tâches terminées, blocages, alertes)
+3. METTRE À JOUR les statuts de tâches si les messages indiquent des changements
+4. RETIRER les informations obsolètes (tâches déjà complétées mentionnées dans le statut)
+5. GARDER le format Markdown existant
+
+Format de sortie : Markdown structuré avec le même style que le statut précédent.
+
+IMPORTANT :
+- Être CONCIS (max 100 lignes)
+- Ne PAS répéter les informations
+- Priorité aux tags [DONE], [ERROR], [WARN], [BLOCKED]
+- Conserver les sections utiles du statut précédent
+- Ajouter une section "## Dernière Condensation" avec un résumé des changements`;
+
+    const userPrompt = `**Statut précédent :**
+${previousStatus}
+
+**Messages archivés (${archivedMessages.length} messages) :**
+${messagesContent}
+
+Génère le statut mis à jour en intégrant les informations importantes des messages archivés.`;
+
+    logger.info('Calling LLM for status update', {
+      previousStatusLength: previousStatus.length,
+      messageCount: archivedMessages.length
+    });
+
+    const openai = getChatOpenAIClient();
+    const modelId = process.env.OPENAI_CHAT_MODEL_ID || 'qwen3.5-35b-a3b';
+
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
+
+    try {
+      const response = await openai.chat.completions.create({
+        model: modelId,
+        messages: [
+          { role: 'system', content: systemPrompt },
+          { role: 'user', content: userPrompt }
+        ],
+        max_tokens: 2000,
+        temperature: 0.3
+      }, {
+        timeout: timeoutMs
+      });
+
+      clearTimeout(timeoutId);
+
+      const newStatus = response.choices[0]?.message?.content;
+      if (!newStatus) {
+        logger.warn('LLM returned empty status update');
+        return null;
+      }
+
+      const elapsed = Date.now() - startTime;
+      logger.info('LLM status update generated', { elapsed: `${elapsed}ms`, newStatusLength: newStatus.length });
+
+      return newStatus;
+
+    } catch (error: unknown) {
+      clearTimeout(timeoutId);
+      if (error instanceof Error && error.name === 'AbortError') {
+        logger.warn('LLM status update timeout', { timeout: timeoutMs });
+        return null;
+      }
+      throw error;
+    }
+
+  } catch (error) {
+    logger.error('LLM status update failed, keeping previous status', {
+      error: error instanceof Error ? error.message : String(error)
+    });
+    return null;
+  }
+}
+
+/**
  * Condense les messages intercom : archive les anciens, conserve les récents.
+ * Met à jour le statut avec les informations des messages archivés (#858 Phase 2).
  * Retourne le dashboard condensé.
  */
 async function condenseIntercom(
@@ -459,8 +564,23 @@ async function condenseIntercom(
   const toArchive = messages.slice(0, messages.length - keepCount);
   const toKeep = messages.slice(messages.length - keepCount);
 
-  // #858 : Générer un résumé LLM avant d'archiver
+  // #858 : Générer les résumés LLM AVANT d'archiver
   const llmSummary = await generateLLMSummary(toArchive);
+  const previousStatus = dashboard.status.markdown;
+  const newStatus = await generateStatusUpdate(previousStatus, toArchive);
+
+  // #864 : Si les DEUX opérations LLM échouent, ANNULER la condensation
+  // On ne veut pas archiver sans au moins un résumé LLM
+  if (!llmSummary && !newStatus) {
+    logger.warn('LLM unavailable (both summary and status failed), condensation cancelled', {
+      key,
+      messageCount: toArchive.length
+    });
+    return dashboard; // Retourner le dashboard inchangé
+  }
+
+  // Au moins une opération LLM a réussi, on peut archiver
+  const statusUpdated = newStatus !== null;
 
   // Archiver les anciens messages (format Markdown)
   const archiveDir = getArchiveDir();
@@ -473,7 +593,9 @@ async function condenseIntercom(
     type: 'archive',
     originalKey: key,
     archivedAt: new Date().toISOString(),
-    messageCount: toArchive.length
+    messageCount: toArchive.length,
+    llmGenerated: !!llmSummary,
+    statusUpdated
   });
 
   const archiveMessages = toArchive.map(msg => {
@@ -517,7 +639,16 @@ ${archiveMessages}
     systemMessages.push(summaryMessage);
     logger.info('LLM summary added to dashboard', { summaryLength: llmSummary.length });
   } else {
-    logger.info('LLM summary failed, using fallback', { archivedCount: toArchive.length });
+    logger.info('LLM summary failed, but status updated - proceeding with archive', { archivedCount: toArchive.length });
+  }
+
+  if (statusUpdated) {
+    logger.info('Status updated from archived messages', {
+      previousLength: previousStatus.length,
+      newLength: newStatus!.length
+    });
+  } else {
+    logger.info('Status update failed, but LLM summary generated - proceeding with archive');
   }
 
   // Ajouter le message de condensation standard (avec ou sans résumé LLM)
@@ -528,7 +659,7 @@ ${archiveMessages}
       machineId: 'system',
       workspace: 'system'
     },
-    content: `---\n**CONDENSATION** - ${now}\n\n${toArchive.length} messages archivés dans \`archive/${path.basename(archivePath)}\`\n${toKeep.length} messages conservés (plus récents)\n${llmSummary ? '✅ Résumé LLM généré' : '⚠️ Résumé LLM indisponible (fallback)'}\n---`,
+    content: `---\n**CONDENSATION** - ${now}\n\n${toArchive.length} messages archivés dans \`archive/${path.basename(archivePath)}\`\n${toKeep.length} messages conservés (plus récents)\n${llmSummary ? '✅ Résumé LLM généré' : '⚠️ Résumé LLM indisponible'}\n${statusUpdated ? '✅ Statut mis à jour' : '⚠️ Statut non mis à jour'}\n---`,
     tags: ['SYSTEM', 'CONDENSATION']
   };
   systemMessages.push(condenseNotice);
@@ -536,6 +667,10 @@ ${archiveMessages}
   return {
     ...dashboard,
     lastModified: now,
+    status: {
+      ...dashboard.status,
+      markdown: statusUpdated ? newStatus! : previousStatus
+    },
     intercom: {
       messages: [...systemMessages, ...toKeep],
       totalMessages: dashboard.intercom.totalMessages,
