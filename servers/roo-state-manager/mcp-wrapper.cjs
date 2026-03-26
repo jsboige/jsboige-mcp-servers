@@ -62,6 +62,13 @@ logDebug('Starting roo-state-manager MCP server v4.0 (pass-through + anti-duplic
 // (critical for RooSync cross-workspace message routing).
 const originalCwd = process.cwd();
 
+// #883: Log workspace detection for diagnostics
+console.error(`[MCP-WRAPPER] 🔍 Workspace detection:`);
+console.error(`[MCP-WRAPPER]   process.cwd() (originalCwd): ${originalCwd}`);
+console.error(`[MCP-WRAPPER]   process.env.WORKSPACE_PATH:  ${process.env.WORKSPACE_PATH || '(not set)'}`);
+console.error(`[MCP-WRAPPER]   __dirname:                   ${__dirname}`);
+console.error(`[MCP-WRAPPER]   → WORKSPACE_PATH passed to server: ${process.env.WORKSPACE_PATH || originalCwd}`);
+
 // Spawn le serveur avec stdout et stderr redirigés pour filtrage
 const server = spawn('node', [serverPath], {
     cwd: __dirname,

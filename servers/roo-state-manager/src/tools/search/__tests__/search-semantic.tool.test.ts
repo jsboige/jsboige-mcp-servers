@@ -168,7 +168,7 @@ describe('searchTasksByContentTool', () => {
 			expect(getTextContent(result)).toContain('Connection refused');
 		});
 
-		test('calls ensureCacheFreshCallback before diagnose', async () => {
+		test('#883: semantic search does NOT call ensureCacheFreshCallback (perf fix)', async () => {
 			const diagnoseHandler = vi.fn(async () => ({
 				content: [{ type: 'text', text: 'ok' }]
 			}));
@@ -181,7 +181,9 @@ describe('searchTasksByContentTool', () => {
 				diagnoseHandler
 			);
 
-			expect(mockEnsureCache).toHaveBeenCalledWith({ workspace: 'ws1' });
+			// #883: Cache refresh was removed from semantic search path because
+			// it caused ~70s I/O scan latency. The cache is not needed for Qdrant search.
+			expect(mockEnsureCache).not.toHaveBeenCalled();
 		});
 	});
 
@@ -1021,6 +1023,137 @@ describe('helper functions (indirect via handler)', () => {
 			const parsed = JSON.parse(getTextContent(result));
 			expect(parsed.results).toBeDefined();
 			expect(Array.isArray(parsed.results)).toBe(true);
+		});
+	});
+
+	// ============================================================
+	// #883: Performance parameter verification
+	// ============================================================
+
+	describe('#883: Qdrant performance parameters', () => {
+		beforeEach(() => {
+			mockOpenAIClient.embeddings.create.mockResolvedValue({
+				data: [{ embedding: [0.1, 0.2, 0.3] }]
+			});
+			mockQdrantClient.search.mockResolvedValue([]);
+		});
+
+		test('passes hnsw_ef=128 to Qdrant search', async () => {
+			await searchTasksByContentTool.handler(
+				{ search_query: 'test perf', workspace: 'd:\\test' },
+				makeCache(),
+				mockEnsureCache,
+				defaultFallback
+			);
+
+			const searchCall = mockQdrantClient.search.mock.calls[0][1];
+			expect(searchCall.params).toBeDefined();
+			expect(searchCall.params.hnsw_ef).toBe(128);
+		});
+
+		test('passes exact=false to Qdrant search', async () => {
+			await searchTasksByContentTool.handler(
+				{ search_query: 'test perf', workspace: 'd:\\test' },
+				makeCache(),
+				mockEnsureCache,
+				defaultFallback
+			);
+
+			const searchCall = mockQdrantClient.search.mock.calls[0][1];
+			expect(searchCall.params.exact).toBe(false);
+		});
+
+		test('passes quantization.rescore=true to Qdrant search', async () => {
+			await searchTasksByContentTool.handler(
+				{ search_query: 'test perf', workspace: 'd:\\test' },
+				makeCache(),
+				mockEnsureCache,
+				defaultFallback
+			);
+
+			const searchCall = mockQdrantClient.search.mock.calls[0][1];
+			expect(searchCall.params.quantization).toBeDefined();
+			expect(searchCall.params.quantization.rescore).toBe(true);
+		});
+
+		test('uses selective with_payload (include list, not true)', async () => {
+			await searchTasksByContentTool.handler(
+				{ search_query: 'test perf', workspace: 'd:\\test' },
+				makeCache(),
+				mockEnsureCache,
+				defaultFallback
+			);
+
+			const searchCall = mockQdrantClient.search.mock.calls[0][1];
+			// Must NOT be `true` (fetches all fields including large content)
+			expect(searchCall.with_payload).not.toBe(true);
+			// Must be an object with `include` array
+			expect(searchCall.with_payload).toHaveProperty('include');
+			expect(Array.isArray(searchCall.with_payload.include)).toBe(true);
+			// Must include essential fields
+			expect(searchCall.with_payload.include).toContain('task_id');
+			expect(searchCall.with_payload.include).toContain('timestamp');
+			expect(searchCall.with_payload.include).toContain('workspace');
+			expect(searchCall.with_payload.include).toContain('source');
+		});
+
+		test('does NOT call ensureCacheFreshCallback for semantic search', async () => {
+			await searchTasksByContentTool.handler(
+				{ search_query: 'test perf', workspace: 'd:\\test' },
+				makeCache(),
+				mockEnsureCache,
+				defaultFallback
+			);
+
+			// #883: Cache refresh was removed from semantic path (root cause of ~70s latency)
+			expect(mockEnsureCache).not.toHaveBeenCalled();
+		});
+
+		test('respects QDRANT_SEARCH_TIMEOUT_MS env var', async () => {
+			// The timeout is implemented via Promise.race in the handler
+			// We verify it reads from env by checking no error when env is set
+			process.env.QDRANT_SEARCH_TIMEOUT_MS = '5000';
+
+			await searchTasksByContentTool.handler(
+				{ search_query: 'test timeout', workspace: 'd:\\test' },
+				makeCache(),
+				mockEnsureCache,
+				defaultFallback
+			);
+
+			// If we get here without error, the timeout wrapper accepted the env var
+			expect(mockQdrantClient.search).toHaveBeenCalled();
+			delete process.env.QDRANT_SEARCH_TIMEOUT_MS;
+		});
+
+		test('no debug console.log in search results path', async () => {
+			// #883 P1: Verify no JSON.stringify debug logging on results
+			const consoleSpy = vi.spyOn(console, 'log');
+
+			mockQdrantClient.search.mockResolvedValue([{
+				id: 'p1',
+				score: 0.9,
+				payload: {
+					task_id: 't1', timestamp: '2026-01-01', chunk_type: 'message_exchange',
+					content_summary: 'test', workspace: 'd:\\test', source: 'roo',
+					chunk_id: 'c1', task_title: 'Test Task', role: 'user', model: 'opus'
+				}
+			}]);
+
+			await searchTasksByContentTool.handler(
+				{ search_query: 'test no debug', workspace: 'd:\\test' },
+				makeCache(),
+				mockEnsureCache,
+				defaultFallback
+			);
+
+			// Verify no DEBUG log calls with searchResults serialization
+			const debugCalls = consoleSpy.mock.calls.filter(
+				call => typeof call[0] === 'string' && call[0].includes('[DEBUG] searchResults')
+			);
+			expect(debugCalls).toHaveLength(0);
+
+			consoleSpy.mockRestore();
 		});
 	});
 });

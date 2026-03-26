@@ -178,7 +178,7 @@ describe('roosync_search - CONS-11', () => {
             expect(content.results[0].taskId).toBe('task-1');
         });
 
-        it('should pass workspace filter', async () => {
+        it('#883: basename filters on workspace_name, full path on workspace', async () => {
             await handleRooSyncSearch(
                 { action: 'semantic', search_query: 'test', workspace: 'my-workspace' },
                 conversationCache,
@@ -186,28 +186,20 @@ describe('roosync_search - CONS-11', () => {
                 fallbackHandler
             );
 
-            expect(mockQdrantClient.search).toHaveBeenCalledWith(
-                expect.any(String),
-                expect.objectContaining({
-                    filter: {
-                        must: [
-                            { key: 'workspace', match: { value: 'my-workspace' } }
-                        ]
-                    }
-                })
-            );
+            // Basename → uses workspace_name field for cross-machine matching
+            const searchCall = mockQdrantClient.search.mock.calls[0][1];
+            expect(searchCall.filter.must).toContainEqual({ key: 'workspace_name', match: { value: 'my-workspace' } });
         });
 
-        it('should return error when workspace is missing for semantic', async () => {
+        it('#883: should auto-default workspace when missing for semantic', async () => {
             const result = await handleRooSyncSearch(
                 { action: 'semantic', search_query: 'test query' },
                 conversationCache,
                 ensureCacheFreshCallback,
                 fallbackHandler
             );
-            expect(result.isError).toBe(true);
-            expect((result.content[0] as any).text).toContain('workspace');
-            expect((result.content[0] as any).text).toContain('OBLIGATOIRE');
+            // Should NOT error — workspace is auto-defaulted from CACHE_CONFIG.DEFAULT_WORKSPACE
+            expect(result.isError).toBeFalsy();
         });
 
         it('should fallback to text on semantic error', async () => {
@@ -330,17 +322,14 @@ describe('roosync_search - CONS-11', () => {
             );
 
             expect(result.isError).toBeFalsy();
-            expect(mockQdrantClient.search).toHaveBeenCalledWith(
-                expect.any(String),
-                expect.objectContaining({
-                    filter: {
-                        must: expect.arrayContaining([
-                            { key: 'task_id', match: { value: 'conv-123' } },
-                            { key: 'workspace', match: { value: 'test-ws' } }
-                        ])
-                    }
-                })
-            );
+            // #883: Verify filter contains conversation_id and workspace
+            const searchCall = mockQdrantClient.search.mock.calls[0][1];
+            expect(searchCall.filter).toBeDefined();
+            expect(searchCall.filter.must).toBeDefined();
+            // conversation_id filter
+            expect(searchCall.filter.must).toContainEqual({ key: 'task_id', match: { value: 'conv-123' } });
+            // workspace basename → workspace_name field
+            expect(searchCall.filter.must).toContainEqual({ key: 'workspace_name', match: { value: 'test-ws' } });
         });
     });
 });

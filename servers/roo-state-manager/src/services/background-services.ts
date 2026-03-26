@@ -189,6 +189,135 @@ export async function loadClaudeCodeSessions(conversationCache: Map<string, Conv
     }
 }
 
+/** #883: Interval for skeleton refresh worker (2 minutes) */
+export const SKELETON_REFRESH_INTERVAL_MS = 2 * 60 * 1000;
+
+/**
+ * #883 Worker A: Periodic incremental skeleton refresh
+ * Scans for tasks modified since last check and updates skeletons in cache.
+ * When a skeleton is updated (lastActivity changes), queues it for Qdrant indexation.
+ */
+export function startSkeletonRefreshWorker(state: ServerState): void {
+    if (state.skeletonRefreshInterval) {
+        clearInterval(state.skeletonRefreshInterval);
+    }
+
+    state.skeletonRefreshInterval = setInterval(async () => {
+        try {
+            const startTime = Date.now();
+            const lastCheck = state.lastSkeletonRefreshAt || 0;
+            let updatedCount = 0;
+            let newCount = 0;
+
+            // --- Scan Roo tasks ---
+            const storageLocations = await RooStorageDetector.detectStorageLocations();
+            for (const location of storageLocations) {
+                try {
+                    const tasksDir = path.join(location, 'tasks');
+                    const entries = await fs.readdir(tasksDir, { withFileTypes: true });
+
+                    for (const entry of entries) {
+                        if (!entry.isDirectory() || entry.name === '.skeletons') continue;
+
+                        try {
+                            // Check if api_conversation_history.json was modified since last scan
+                            const historyPath = path.join(tasksDir, entry.name, 'api_conversation_history.json');
+                            const stat = await fs.stat(historyPath);
+                            const mtimeMs = stat.mtime.getTime();
+
+                            if (mtimeMs <= lastCheck) continue; // Not modified since last check
+
+                            const existingSkeleton = state.conversationCache.get(entry.name);
+                            const existingLastActivity = existingSkeleton?.metadata?.lastActivity
+                                ? new Date(existingSkeleton.metadata.lastActivity).getTime()
+                                : 0;
+
+                            // Only rebuild if the file is actually newer than our cached skeleton
+                            if (mtimeMs > existingLastActivity) {
+                                const taskPath = path.join(tasksDir, entry.name);
+                                const skeleton = await RooStorageDetector.analyzeConversation(entry.name, taskPath);
+                                if (skeleton) {
+                                    state.conversationCache.set(entry.name, skeleton);
+                                    // Queue for Qdrant indexation if lastActivity > lastIndexedAt
+                                    const lastIndexed = skeleton.metadata?.indexingState?.lastIndexedAt;
+                                    if (!lastIndexed || new Date(skeleton.metadata.lastActivity).getTime() > new Date(lastIndexed).getTime()) {
+                                        state.qdrantIndexQueue.add(entry.name);
+                                    }
+                                    if (existingSkeleton) { updatedCount++; } else { newCount++; }
+                                }
+                            }
+                        } catch {
+                            // Skip individual task errors (file not found, etc.)
+                        }
+                    }
+                } catch {
+                    // Skip storage location errors
+                }
+            }
+
+            // --- Scan Claude Code sessions ---
+            try {
+                const { ClaudeStorageDetector } = await import('../utils/claude-storage-detector.js');
+                const claudeLocations = await ClaudeStorageDetector.detectStorageLocations();
+                const seenProjects = new Set<string>();
+
+                for (const location of claudeLocations) {
+                    if (seenProjects.has(location.projectPath)) continue;
+                    seenProjects.add(location.projectPath);
+
+                    try {
+                        const files = (await fs.readdir(location.projectPath)).filter(f => f.endsWith('.jsonl'));
+                        for (const file of files) {
+                            try {
+                                const filePath = path.join(location.projectPath, file);
+                                const stat = await fs.stat(filePath);
+                                if (stat.mtime.getTime() <= lastCheck) continue;
+
+                                const taskId = `claude-${file.replace('.jsonl', '')}`;
+                                const existingSkeleton = state.conversationCache.get(taskId);
+                                const existingLastActivity = existingSkeleton?.metadata?.lastActivity
+                                    ? new Date(existingSkeleton.metadata.lastActivity).getTime()
+                                    : 0;
+
+                                if (stat.mtime.getTime() > existingLastActivity) {
+                                    const skeleton = await ClaudeStorageDetector.analyzeConversation(taskId, location.projectPath);
+                                    if (skeleton && skeleton.sequence.length > 0) {
+                                        if (!skeleton.metadata) skeleton.metadata = {} as any;
+                                        skeleton.metadata.dataSource = 'claude';
+                                        state.conversationCache.set(taskId, skeleton);
+                                        const lastIndexed = skeleton.metadata?.indexingState?.lastIndexedAt;
+                                        if (!lastIndexed || new Date(skeleton.metadata.lastActivity).getTime() > new Date(lastIndexed).getTime()) {
+                                            state.qdrantIndexQueue.add(taskId);
+                                        }
+                                        if (existingSkeleton) { updatedCount++; } else { newCount++; }
+                                    }
+                                }
+                            } catch {
+                                // Skip individual file errors
+                            }
+                        }
+                    } catch {
+                        // Skip project dir errors
+                    }
+                }
+            } catch {
+                // Claude detection not critical
+            }
+
+            state.lastSkeletonRefreshAt = startTime;
+            const elapsed = Date.now() - startTime;
+
+            if (updatedCount > 0 || newCount > 0) {
+                console.log(`[Skeleton-Worker] Refresh: ${newCount} new, ${updatedCount} updated, ${state.qdrantIndexQueue.size} queued for Qdrant (${elapsed}ms)`);
+            }
+        } catch (error) {
+            console.error('[Skeleton-Worker] Error during refresh:', error);
+        }
+    }, SKELETON_REFRESH_INTERVAL_MS);
+
+    console.log(`🔄 Worker A (skeleton refresh) started — interval: ${SKELETON_REFRESH_INTERVAL_MS / 1000}s`);
+}
+
 /**
  * Initialise les services background
  */
@@ -205,7 +334,10 @@ export async function initializeBackgroundServices(state: ServerState): Promise<
         // Auto-réparation proactive: Génération des métadonnées manquantes
         await startProactiveMetadataRepair();
 
-        // Niveau 2: Initialisation du service d'indexation Qdrant asynchrone
+        // #883 Worker A: Start periodic skeleton refresh (incremental, non-blocking)
+        startSkeletonRefreshWorker(state);
+
+        // Niveau 2: Initialisation du service d'indexation Qdrant asynchrone (Worker B)
         await initializeQdrantIndexingService(state);
 
         // Heartbeat service: disabled by default to prevent GDrive sync storm (#607)

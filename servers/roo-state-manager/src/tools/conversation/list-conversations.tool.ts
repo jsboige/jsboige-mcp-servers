@@ -123,11 +123,14 @@ function toConversationSummary(node: SkeletonNode, _depth = 0): Record<string, u
     // Clean and truncate root messages
     let firstMsg = stripXmlTags(node.firstUserMessage);
     let lastMsg = stripXmlTags(node.lastUserMessage);
-    if (firstMsg && firstMsg.length > 200) firstMsg = firstMsg.substring(0, 200) + '...';
-    if (lastMsg && lastMsg.length > 200) lastMsg = lastMsg.substring(0, 200) + '...';
+    // #883: Increased snippet lengths for richer context (was 200)
+    if (firstMsg && firstMsg.length > 400) firstMsg = firstMsg.substring(0, 400) + '...';
+    if (lastMsg && lastMsg.length > 400) lastMsg = lastMsg.substring(0, 400) + '...';
 
     // Build summary — always include key fields for readability
     const summary: Record<string, unknown> = { taskId: node.taskId };
+    // #883: Always show source type (roo/claude)
+    summary.source = node.taskId.startsWith('claude-') ? 'claude' : 'roo';
     if (node.parentTaskId) summary.parentTaskId = node.parentTaskId;
     if (firstMsg) summary.firstUserMessage = firstMsg;
     if (lastMsg) summary.lastUserMessage = lastMsg;
@@ -161,7 +164,8 @@ function toConversationSummary(node: SkeletonNode, _depth = 0): Record<string, u
     if (node.children.length > 0) {
         const shown = node.children.slice(0, MAX_CHILDREN_SHOWN).map((child: SkeletonNode) => {
             let childMsg = stripXmlTags(child.firstUserMessage) || child.metadata.title;
-            if (childMsg && childMsg.length > 100) childMsg = childMsg.substring(0, 100) + '...';
+            // #883: Increased from 100 to 200 chars
+            if (childMsg && childMsg.length > 200) childMsg = childMsg.substring(0, 200) + '...';
             const c: Record<string, unknown> = { taskId: child.taskId, messageCount: child.metadata.messageCount };
             if (childMsg) c.firstUserMessage = childMsg;
             if (child.metadata.mode) c.mode = child.metadata.mode;

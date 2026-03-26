@@ -53,7 +53,8 @@ export interface Chunk {
   participants?: ('user' | 'assistant')[];
   tool_details?: ToolDetails | null;
   custom_tags?: string[];
-  workspace?: string;
+  workspace?: string;           // Full path (e.g., "d:/roo-extensions") — intra-machine filtering
+  workspace_name?: string;      // Basename (e.g., "roo-extensions") — cross-machine filtering
   task_title?: string;
   message_index?: number;
   total_messages?: number;
@@ -198,6 +199,7 @@ export async function extractChunksFromTask(taskId: string, taskPath: string): P
                         participants: [msg.role],
                         tool_details: null,
                         workspace: workspace,
+                        workspace_name: workspace ? path.basename(workspace) : undefined,
                         task_title: taskTitle,
                         message_index: messageIndex,
                         total_messages: totalMessages,
@@ -243,6 +245,7 @@ export async function extractChunksFromTask(taskId: string, taskPath: string): P
                         tool_name: toolCall.function.name,
                         model: taskModel,
                         workspace: workspace,
+                        workspace_name: workspace ? path.basename(workspace) : undefined,
                         task_title: taskTitle,
                         host_os: getHostIdentifier(),
                     });
@@ -425,6 +428,7 @@ export async function extractChunksFromClaudeSession(
                     participants: [role],
                     tool_details: null,
                     workspace: metadata?.workspace,
+                    workspace_name: metadata?.workspace ? path.basename(metadata.workspace) : undefined,
                     task_title: metadata?.title,
                     message_index: messageIndex,
                     role,

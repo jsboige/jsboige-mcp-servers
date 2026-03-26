@@ -95,7 +95,7 @@ export const roosyncSearchTool: Tool = {
             },
             workspace: {
                 type: 'string',
-                description: '⚠️ OBLIGATOIRE pour action="semantic" (10.1M vectors indexés - timeout sans filtre). Filtre les résultats par workspace spécifique.'
+                description: 'Filtre par nom de workspace (ex: "roo-extensions"). Auto-défaut: workspace courant du MCP. Pour une recherche globale cross-workspace, passer workspace: "*" ou workspace: "all".'
             },
             source: {
                 type: 'string',
@@ -176,21 +176,13 @@ export async function handleRooSyncSearch(
                 };
             }
 
-            // FIX #831: Rendre workspace obligatoire pour éviter de scanner 10M+ vectors
-            if (!args.workspace) {
-                return {
-                    isError: true,
-                    content: [{
-                        type: 'text',
-                        text: 'ERREUR #831: Le paramètre "workspace" est OBLIGATOIRE pour action=semantic.\n\n' +
-                              'Raison: L\'index contient 10.1M vectors. Une recherche sans filtre workspace timeout.\n' +
-                              'Solution: Ajoutez workspace: "d:\\roo-extensions" (ou votre chemin workspace).\n\n' +
-                              'Exemple: roosync_search(action: "semantic", search_query: "votre requête", workspace: "d:\\\\roo-extensions")\n\n' +
-                              'Alternatives:\n' +
-                              '- action: "text" (recherche dans cache local, pas de timeout)\n' +
-                              '- action: "diagnose" (diagnostic de l\'index)'
-                    }]
-                };
+            // #883: Workspace filtering is optional — no default imposed.
+            // The caller (agent) passes workspace if they want to filter.
+            // Accepts full paths ("d:\roo-extensions") or basenames ("roo-extensions").
+            // Special values "*" or "all" = explicit global search (no filter).
+            let effectiveWorkspace: string | undefined = args.workspace;
+            if (effectiveWorkspace === '*' || effectiveWorkspace === 'all') {
+                effectiveWorkspace = undefined;
             }
 
             // Déléguer au handler sémantique existant (inclut fallback automatique sur erreur)
@@ -198,7 +190,7 @@ export async function handleRooSyncSearch(
                 search_query: args.search_query,
                 conversation_id: args.conversation_id,
                 max_results: args.max_results,
-                workspace: args.workspace,
+                workspace: effectiveWorkspace,
                 source: args.source,
                 diagnose_index: false,
                 // #636: Advanced filters

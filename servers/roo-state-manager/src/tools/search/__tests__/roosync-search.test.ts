@@ -109,16 +109,17 @@ describe('roosync_search', () => {
 			expect(getTextContent(result)).toContain('search_query');
 		});
 
-		test('semantic requires workspace (#831)', async () => {
-			const result = await handleRooSyncSearch(
+		test('#883: semantic works without workspace (global search)', async () => {
+			await handleRooSyncSearch(
 				{ action: 'semantic', search_query: 'test query' },
 				mockCache,
 				mockEnsureCache,
 				mockFallbackHandler
 			);
-			expect(result.isError).toBe(true);
-			expect(getTextContent(result)).toContain('workspace');
-			expect(getTextContent(result)).toContain('OBLIGATOIRE');
+			// Should NOT error — workspace is optional, searches globally when not provided
+			expect(mockSemanticHandler).toHaveBeenCalled();
+			const callArgs = mockSemanticHandler.mock.calls[0][0];
+			expect(callArgs.workspace).toBeUndefined();
 		});
 
 		test('diagnose does not require search_query', async () => {
@@ -443,17 +444,16 @@ describe('roosync_search', () => {
 	// ============================================================
 
 	describe('optional parameters', () => {
-		test('semantic requires workspace (#831)', async () => {
-			const result = await handleRooSyncSearch(
-				{ action: 'semantic', search_query: 'minimal query' },
+		test('#883: semantic with workspace=* does global search (no filter)', async () => {
+			await handleRooSyncSearch(
+				{ action: 'semantic', search_query: 'global query', workspace: '*' },
 				mockCache,
 				mockEnsureCache,
 				mockFallbackHandler
 			);
 
-			expect(result.isError).toBe(true);
-			expect(getTextContent(result)).toContain('workspace');
-			expect(getTextContent(result)).toContain('OBLIGATOIRE');
+			const callArgs = mockSemanticHandler.mock.calls[0][0];
+			expect(callArgs.workspace).toBeUndefined();
 		});
 
 		test('semantic works with only required params (search_query + workspace)', async () => {
@@ -466,6 +466,7 @@ describe('roosync_search', () => {
 
 			const callArgs = mockSemanticHandler.mock.calls[0][0];
 			expect(callArgs.search_query).toBe('minimal query');
+			// #883: Full paths are passed through — semantic handler does flexible matching
 			expect(callArgs.workspace).toBe('d:\\test-workspace');
 			expect(callArgs.conversation_id).toBeUndefined();
 			expect(callArgs.max_results).toBeUndefined();
