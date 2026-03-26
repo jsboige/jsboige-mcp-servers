@@ -25,10 +25,14 @@ export interface ServerState {
     indexingMetrics: IndexingMetrics;
     
     // Services de background pour l'architecture à 2 niveaux
+    // Worker A: Skeleton refresh
+    skeletonRefreshInterval: NodeJS.Timeout | null;
+    lastSkeletonRefreshAt: number;
+    // Worker B: Qdrant indexation (driven by skeleton state)
     qdrantIndexQueue: Set<string>;
     qdrantIndexInterval: NodeJS.Timeout | null;
     isQdrantIndexingEnabled: boolean;
-    
+
     // 🛡️ CACHE ANTI-FUITE - Protection contre 220GB de trafic réseau (LEGACY)
     qdrantIndexCache: Map<string, number>;
     lastQdrantConsistencyCheck: number;
@@ -100,6 +104,8 @@ export class StateManager {
                 retryTasks: 0,
                 bandwidthSaved: 0
             },
+            skeletonRefreshInterval: null,
+            lastSkeletonRefreshAt: 0,
             qdrantIndexQueue: new Set(),
             qdrantIndexInterval: null,
             isQdrantIndexingEnabled: true,

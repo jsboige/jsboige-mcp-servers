@@ -86,8 +86,21 @@ class RooStateManagerServer {
     // FIX: Store initialization promise to prevent race condition
     // Tool handlers can await this to ensure cache is loaded before proceeding
     private initializationPromise: Promise<void>;
+    // #883: Throttle cache freshness checks to avoid repeated I/O scans
+    private lastCacheCheckAt: number = 0;
+    private static readonly CACHE_CHECK_THROTTLE_MS = 60_000; // 1 minute minimum between checks
 
     constructor() {
+        // #883: Log workspace detection at startup for diagnostics
+        const wsPath = process.env.WORKSPACE_PATH;
+        const cwd = process.cwd();
+        logger.info(`[Workspace] WORKSPACE_PATH env: ${wsPath || '(not set)'}`);
+        logger.info(`[Workspace] process.cwd(): ${cwd}`);
+        logger.info(`[Workspace] DEFAULT_WORKSPACE resolves to: ${wsPath || cwd}`);
+        if (!wsPath) {
+            logger.warn(`[Workspace] ⚠️ WORKSPACE_PATH not set — falling back to process.cwd(). For Claude Code, this is the MCP server directory, NOT the user workspace.`);
+        }
+
         // Initialisation de l'état global via StateManager
         this.stateManager = new StateManager();
         // Création du serveur MCP
@@ -221,6 +234,14 @@ class RooStateManagerServer {
      */
     private async ensureSkeletonCacheIsFresh(args?: { workspace?: string }): Promise<boolean> {
         try {
+            // #883: Throttle to avoid repeated I/O scans (root cause of ~70s latency)
+            const checkTime = Date.now();
+            if (this.lastCacheCheckAt > 0 && (checkTime - this.lastCacheCheckAt) < RooStateManagerServer.CACHE_CHECK_THROTTLE_MS) {
+                logger.debug(`[FAILSAFE] Cache check throttled (last check ${Math.round((checkTime - this.lastCacheCheckAt) / 1000)}s ago, threshold ${RooStateManagerServer.CACHE_CHECK_THROTTLE_MS / 1000}s)`);
+                return false;
+            }
+            this.lastCacheCheckAt = checkTime;
+
             logger.debug('[FAILSAFE] Checking skeleton cache freshness...');
 
             const state = this.stateManager.getState();
@@ -244,7 +265,9 @@ class RooStateManagerServer {
 
             let needsUpdate = false;
             const now = Date.now();
-            const CACHE_VALIDITY_MS = 5 * 60 * 1000; // 5 minutes
+            // #883: Increased from 5min to 1h — background services handle freshness,
+            // this failsafe only catches tasks created VERY recently that background hasn't picked up yet
+            const CACHE_VALIDITY_MS = 60 * 60 * 1000; // 1 hour
 
             // Vérifier les modifications récentes dans chaque emplacement
             for (const location of storageLocations) {

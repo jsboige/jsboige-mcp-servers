@@ -122,17 +122,14 @@ describe('🔍 search_tasks_by_content', () => {
       fallbackHandler
     );
 
-    expect(mockQdrantClient.search).toHaveBeenCalledWith(
-      expect.any(String),
-      expect.objectContaining({
-        filter: {
-          must: [
-            { key: 'task_id', match: { value: 'task-123' } },
-            { key: 'workspace', match: { value: 'specific-workspace' } }
-          ]
-        }
-      })
-    );
+    // #883: Verify filter structure — basename workspace uses should (OR) clause
+    const searchCall = mockQdrantClient.search.mock.calls[0][1];
+    expect(searchCall.filter).toBeDefined();
+    expect(searchCall.filter.must).toBeDefined();
+    // conversation_id exact filter
+    expect(searchCall.filter.must).toContainEqual({ key: 'task_id', match: { value: 'task-123' } });
+    // #883: basename → workspace_name field for cross-machine matching
+    expect(searchCall.filter.must).toContainEqual({ key: 'workspace_name', match: { value: 'specific-workspace' } });
   });
 
   it('should handle diagnostic mode', async () => {

@@ -318,37 +318,16 @@ export const searchTasksByContentTool = {
         // #636 Phase 3: resolve effective chunk_type (exclude_tool_results is a convenience alias)
         const effectiveChunkType = chunk_type ?? (exclude_tool_results ? 'message_exchange' : undefined);
 
-        // **FAILSAFE: Auto-rebuild cache si nécessaire avec filtre workspace**
-        await ensureCacheFreshCallback({ workspace });
+        // #883 P0: Skip cache refresh for semantic searches — the skeleton cache is NOT used
+        // for Qdrant vector search, only for post-search enrichment. The ensureCacheFreshCallback
+        // scans ALL task directories (I/O heavy, ~70s with thousands of tasks), which is the
+        // root cause of roosync_search being slow. Cache refresh is only needed for text fallback.
+        // await ensureCacheFreshCallback({ workspace }); // REMOVED: #883
 
-        // #831: Check if workspace is provided for large collection search
-        const { isLargeCollection, getCollectionSize } = await import('../../services/qdrant.js');
+        // #883: Workspace filter is now auto-defaulted by roosync_search.
+        // If still empty here, it means global search was requested explicitly.
         if (!workspace) {
-            const collectionSize = await getCollectionSize();
-            if (await isLargeCollection()) {
-                console.warn(`[WARN] Semantic search on large collection without workspace filter will be slow.`);
-                return {
-                    isError: false,
-                    content: [{
-                        type: 'text',
-                        text: [
-                            'WARNING: Semantic search requires workspace parameter for large collections.',
-                            '',
-                            `Collection size: ${String(collectionSize)} vectors (very large).`,
-                            'Without workspace filter, scanning entire collection is very slow.',
-                            '',
-                            'TO FIX: Add workspace parameter to narrow search scope.',
-                            'Example: workspace: "d:\\\\roo-extensions" (or your workspace path).',
-                            '',
-                            'Performance tips:',
-                            '- max_results: 10-20 for faster searches',
-                            "- chunk_type: 'message_exchange' to filter only conversation messages",
-                            '- start_date / end_date to filter by time range',
-                            "- role: 'user' to search only user messages (faster)"
-                        ].join('\n')
-                    }]
-                };
-            }
+            console.warn('[INFO] Global semantic search (no workspace filter). May be slower on large collections.');
         }
 
         // Mode diagnostic - retourne des informations sur l'état de l'indexation
@@ -401,7 +380,6 @@ export const searchTasksByContentTool = {
 
         // Tentative de recherche sémantique via Qdrant/OpenAI
         try {
-            console.log('[DEBUG] Starting semantic search');
             const qdrant = getQdrantClient();
             const openai = getOpenAIClient();
 
@@ -427,13 +405,24 @@ export const searchTasksByContentTool = {
                 });
             }
 
+            // #883: Dual workspace fields in Qdrant:
+            // - "workspace": full path (d:\roo-extensions) — for intra-machine exact match
+            // - "workspace_name": basename (roo-extensions) — for cross-machine filtering
+            // If caller passes a basename → filter on workspace_name
+            // If caller passes a full path → filter on workspace (exact match)
             if (workspace) {
-                filterConditions.push({
-                    key: "workspace",
-                    match: {
-                        value: workspace
-                    }
-                });
+                const isBasename = !workspace.includes('/') && !workspace.includes('\\');
+                if (isBasename) {
+                    filterConditions.push({
+                        key: "workspace_name",
+                        match: { value: workspace }
+                    });
+                } else {
+                    filterConditions.push({
+                        key: "workspace",
+                        match: { value: workspace }
+                    });
+                }
             }
 
             // #604: Filter by conversation source (roo vs claude-code)
@@ -481,21 +470,15 @@ export const searchTasksByContentTool = {
             }
 
             if (filterConditions.length > 0) {
-                filter = {
-                    must: filterConditions
-                };
+                filter = { must: filterConditions };
             } else {
-                // Si pas de filtres, recherche globale - filtre undefined
                 filter = undefined;
             }
 
             // #831: Add configurable timeout for large vector indexes (9.93M vectors)
             const searchTimeoutMs = parseInt(process.env.QDRANT_SEARCH_TIMEOUT_MS || '30000', 10); // Default 30s
 
-            // #831: Warn if workspace not provided for large index searches
-            if (!workspace && !conversation_id) {
-                console.warn('[WARN] #831: Semantic search without workspace filter on 9.93M vector index may timeout. Consider providing workspace parameter.');
-            }
+            // #883: Global search is now allowed (workspace auto-defaults in roosync_search)
 
             // #851: Optimized search params for 10M+ vector collection
             // #831: Timeout wrapper for Qdrant search
@@ -510,7 +493,7 @@ export const searchTasksByContentTool = {
                         quantization: { rescore: true }
                     },
                     with_payload: {
-                        include: ['task_id', 'timestamp', 'chunk_type', 'content_summary', 'workspace', 'source', 'chunk_id', 'task_title', 'role', 'model']
+                        include: ['task_id', 'timestamp', 'chunk_type', 'content_summary', 'workspace', 'workspace_name', 'source', 'chunk_id', 'task_title', 'role', 'model']
                     }
                 }),
                 new Promise((_, reject) =>
@@ -519,11 +502,6 @@ export const searchTasksByContentTool = {
             ]);
 
             const searchResults = await searchWithTimeout;
-
-            // DEBUG: Log pour diagnostiquer
-            console.log('[DEBUG] searchResults:', JSON.stringify(searchResults, null, 2));
-            console.log('[DEBUG] filter:', JSON.stringify(filter, null, 2));
-            console.log('[DEBUG] collectionName:', collectionName);
 
             // Obtenir l'identifiant de la machine actuelle pour l'en-tête
             const { TaskIndexer, getHostIdentifier } = await import('../../services/task-indexer.js');
@@ -629,18 +607,15 @@ export const searchTasksByContentTool = {
             };
 
         } catch (semanticError) {
-            console.log('[DEBUG] Caught semantic error:', semanticError);
-            console.log(`[INFO] Recherche sémantique échouée, utilisation du fallback textuel: ${semanticError instanceof Error ? semanticError.message : String(semanticError)}`);
+            console.warn(`[WARN] Semantic search failed, falling back to text search: ${semanticError instanceof Error ? semanticError.message : String(semanticError)}`);
 
             // Fallback vers la recherche textuelle simple
             try {
-                console.log('[DEBUG] Calling fallbackHandler');
                 // Fix: mapper search_query → query pour le fallback
                 const fallbackResult = await fallbackHandler(
                     { query: args.search_query, workspace: args.workspace },
                     conversationCache
                 );
-                console.log('[DEBUG] fallbackResult:', JSON.stringify(fallbackResult));
 
                 // Le fallback handler retourne déjà le bon format : content: [objets avec taskId, score, match, etc.]
                 // Pas besoin de transformation, retourner directement le résultat
