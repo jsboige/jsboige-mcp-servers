@@ -106,7 +106,11 @@ export class DetailLevelStrategyFactory {
             case 'Summary':
                 return 'Table des matières avec liens et instruction initiale uniquement';
             case 'NoTools':
+                return 'Alias de Compact — filtre les paramètres d\'outils et résume les résultats volumineux';
+            case 'NoToolParams':
                 return 'Messages complets avec paramètres d\'outils masqués mais résultats affichés';
+            case 'Compact':
+                return 'Mode compact — filtre les paramètres d\'outils et résume les résultats volumineux';
             case 'NoResults':
                 return 'Messages avec paramètres d\'outils complets mais résultats masqués';
             case 'UserOnly':

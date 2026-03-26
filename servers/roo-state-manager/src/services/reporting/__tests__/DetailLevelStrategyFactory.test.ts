@@ -22,6 +22,8 @@ import { SummaryReportingStrategy } from '../strategies/SummaryReportingStrategy
 import { NoToolsReportingStrategy } from '../strategies/NoToolsReportingStrategy.js';
 import { NoResultsReportingStrategy } from '../strategies/NoResultsReportingStrategy.js';
 import { UserOnlyReportingStrategy } from '../strategies/UserOnlyReportingStrategy.js';
+import { CompactReportingStrategy } from '../strategies/CompactReportingStrategy.js';
+import { NoToolParamsReportingStrategy } from '../strategies/NoToolParamsReportingStrategy.js';
 
 // Suppress console output during tests
 beforeEach(() => {
@@ -29,7 +31,7 @@ beforeEach(() => {
     vi.spyOn(console, 'info').mockImplementation(() => {});
 });
 
-const ALL_DETAIL_LEVELS: DetailLevel[] = ['Full', 'Messages', 'Summary', 'NoTools', 'NoResults', 'UserOnly'];
+const ALL_DETAIL_LEVELS: DetailLevel[] = ['Full', 'Messages', 'Summary', 'NoTools', 'NoToolParams', 'Compact', 'NoResults', 'UserOnly'];
 
 describe('DetailLevelStrategyFactory', () => {
 
@@ -52,9 +54,19 @@ describe('DetailLevelStrategyFactory', () => {
             expect(strategy).toBeInstanceOf(SummaryReportingStrategy);
         });
 
-        it('should create a NoToolsReportingStrategy for "NoTools"', () => {
+        it('should create a CompactReportingStrategy for "NoTools" (#881: alias)', () => {
             const strategy = DetailLevelStrategyFactory.createStrategy('NoTools');
-            expect(strategy).toBeInstanceOf(NoToolsReportingStrategy);
+            expect(strategy).toBeInstanceOf(CompactReportingStrategy);
+        });
+
+        it('should create a NoToolParamsReportingStrategy for "NoToolParams"', () => {
+            const strategy = DetailLevelStrategyFactory.createStrategy('NoToolParams');
+            expect(strategy).toBeInstanceOf(NoToolParamsReportingStrategy);
+        });
+
+        it('should create a CompactReportingStrategy for "Compact"', () => {
+            const strategy = DetailLevelStrategyFactory.createStrategy('Compact');
+            expect(strategy).toBeInstanceOf(CompactReportingStrategy);
         });
 
         it('should create a NoResultsReportingStrategy for "NoResults"', () => {
@@ -159,9 +171,9 @@ describe('DetailLevelStrategyFactory', () => {
     // getSupportedDetailLevels
     // =========================================================================
     describe('getSupportedDetailLevels', () => {
-        it('should return all 6 supported detail levels', () => {
+        it('should return all 8 supported detail levels', () => {
             const levels = DetailLevelStrategyFactory.getSupportedDetailLevels();
-            expect(levels).toHaveLength(6);
+            expect(levels).toHaveLength(8);
         });
 
         it('should contain all expected levels', () => {
@@ -352,10 +364,10 @@ describe('DetailLevelStrategyFactory', () => {
     // createAllStrategies
     // =========================================================================
     describe('createAllStrategies', () => {
-        it('should return a Map with all 6 entries', () => {
+        it('should return a Map with all 8 entries', () => {
             const strategies = DetailLevelStrategyFactory.createAllStrategies();
             expect(strategies).toBeInstanceOf(Map);
-            expect(strategies.size).toBe(6);
+            expect(strategies.size).toBe(8);
         });
 
         it('should contain entries for each supported level', () => {
