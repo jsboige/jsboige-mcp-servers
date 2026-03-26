@@ -346,7 +346,7 @@ function generateMessageId(): string {
  * @returns Résumé markdown ou null si échec (fallback)
  */
 async function generateLLMSummary(messages: IntercomMessage[]): Promise<string | null> {
-  const timeoutMs = 30000; // 30 secondes
+  const timeoutMs = 60000; // 60 secondes (1 minute)
   const startTime = Date.now();
 
   try {
@@ -454,7 +454,7 @@ async function generateStatusUpdate(
   previousStatus: string,
   archivedMessages: IntercomMessage[]
 ): Promise<string | null> {
-  const timeoutMs = 30000; // 30 secondes
+  const timeoutMs = 60000; // 60 secondes (1 minute)
   const startTime = Date.now();
 
   try {
