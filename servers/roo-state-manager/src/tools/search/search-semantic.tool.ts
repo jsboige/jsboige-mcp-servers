@@ -321,6 +321,36 @@ export const searchTasksByContentTool = {
         // **FAILSAFE: Auto-rebuild cache si nécessaire avec filtre workspace**
         await ensureCacheFreshCallback({ workspace });
 
+        // #831: Check if workspace is provided for large collection search
+        const { isLargeCollection, getCollectionSize } = await import('../../services/qdrant.js');
+        if (!workspace) {
+            const collectionSize = await getCollectionSize();
+            if (await isLargeCollection()) {
+                console.warn(`[WARN] Semantic search on large collection without workspace filter will be slow.`);
+                return {
+                    isError: false,
+                    content: [{
+                        type: 'text',
+                        text: [
+                            'WARNING: Semantic search requires workspace parameter for large collections.',
+                            '',
+                            `Collection size: ${String(collectionSize)} vectors (very large).`,
+                            'Without workspace filter, scanning entire collection is very slow.',
+                            '',
+                            'TO FIX: Add workspace parameter to narrow search scope.',
+                            'Example: workspace: "d:\\\\roo-extensions" (or your workspace path).',
+                            '',
+                            'Performance tips:',
+                            '- max_results: 10-20 for faster searches',
+                            "- chunk_type: 'message_exchange' to filter only conversation messages",
+                            '- start_date / end_date to filter by time range',
+                            "- role: 'user' to search only user messages (faster)"
+                        ].join('\n')
+                    }]
+                };
+            }
+        }
+
         // Mode diagnostic - retourne des informations sur l'état de l'indexation
         if (diagnose_index) {
             if (diagnoseHandler) {
@@ -459,12 +489,36 @@ export const searchTasksByContentTool = {
                 filter = undefined;
             }
 
-            const searchResults = await qdrant.search(collectionName, {
-                vector: queryVector,
-                limit: max_results || 10,
-                filter: filter,
-                with_payload: true
-            });
+            // #831: Add configurable timeout for large vector indexes (9.93M vectors)
+            const searchTimeoutMs = parseInt(process.env.QDRANT_SEARCH_TIMEOUT_MS || '30000', 10); // Default 30s
+
+            // #831: Warn if workspace not provided for large index searches
+            if (!workspace && !conversation_id) {
+                console.warn('[WARN] #831: Semantic search without workspace filter on 9.93M vector index may timeout. Consider providing workspace parameter.');
+            }
+
+            // #851: Optimized search params for 10M+ vector collection
+            // #831: Timeout wrapper for Qdrant search
+            const searchWithTimeout = Promise.race([
+                qdrant.search(collectionName, {
+                    vector: queryVector,
+                    limit: max_results || 10,
+                    filter: filter,
+                    params: {
+                        hnsw_ef: 128,
+                        exact: false,
+                        quantization: { rescore: true }
+                    },
+                    with_payload: {
+                        include: ['task_id', 'timestamp', 'chunk_type', 'content_summary', 'workspace', 'source', 'chunk_id', 'task_title', 'role', 'model']
+                    }
+                }),
+                new Promise((_, reject) =>
+                    setTimeout(() => reject(new Error(`Qdrant search timeout after ${searchTimeoutMs}ms (9.93M vectors). Tip: Provide workspace parameter to narrow search.`)), searchTimeoutMs)
+                )
+            ]);
+
+            const searchResults = await searchWithTimeout;
 
             // DEBUG: Log pour diagnostiquer
             console.log('[DEBUG] searchResults:', JSON.stringify(searchResults, null, 2));

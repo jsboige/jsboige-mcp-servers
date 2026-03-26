@@ -638,4 +638,107 @@ describe('registry.ts - Tool Registration', () => {
             expect(result.content[0].type).toBe('text');
         });
     });
+
+    describe('Additional Tool Coverage - Idle Worker Extension', () => {
+        let mockServer: any;
+        let mockState: ServerState;
+
+        beforeEach(() => {
+            mockServer = {
+                setRequestHandler: vi.fn()
+            };
+
+            mockState = {
+                conversationCache: new Map<string, ConversationSkeleton>(),
+                qdrantIndexQueue: new Set<string>(),
+                isQdrantIndexingEnabled: false,
+                xmlExporterService: {},
+                exportConfigManager: {}
+            } as any;
+        });
+
+        it('should route roosync_send to handler', async () => {
+            registerCallToolHandler(
+                mockServer,
+                mockState,
+                vi.fn().mockResolvedValue({ content: [] }),
+                vi.fn().mockResolvedValue(true),
+                vi.fn().mockResolvedValue(undefined)
+            );
+
+            const handler = mockServer.setRequestHandler.mock.calls[0][1];
+            const request = {
+                params: {
+                    name: 'roosync_send',
+                    arguments: {
+                        action: 'send',
+                        to: 'test-machine',
+                        subject: 'Test Subject',
+                        body: 'Test message body'
+                    }
+                }
+            };
+
+            const result = await handler(request);
+
+            expect(result).toBeDefined();
+            expect(result).toHaveProperty('content');
+            expect(Array.isArray(result.content)).toBe(true);
+        });
+
+        it('should route roosync_dashboard to handler', async () => {
+            registerCallToolHandler(
+                mockServer,
+                mockState,
+                vi.fn().mockResolvedValue({ content: [] }),
+                vi.fn().mockResolvedValue(true),
+                vi.fn().mockResolvedValue(undefined)
+            );
+
+            const handler = mockServer.setRequestHandler.mock.calls[0][1];
+            const request = {
+                params: {
+                    name: 'roosync_dashboard',
+                    arguments: {
+                        action: 'read',
+                        type: 'workspace',
+                        workspace: 'test-workspace'
+                    }
+                }
+            };
+
+            const result = await handler(request);
+
+            expect(result).toBeDefined();
+            expect(result).toHaveProperty('content');
+            expect(Array.isArray(result.content)).toBe(true);
+        });
+
+        it('should route roosync_mcp_management to handler', async () => {
+            registerCallToolHandler(
+                mockServer,
+                mockState,
+                vi.fn().mockResolvedValue({ content: [] }),
+                vi.fn().mockResolvedValue(true),
+                vi.fn().mockResolvedValue(undefined)
+            );
+
+            const handler = mockServer.setRequestHandler.mock.calls[0][1];
+            const request = {
+                params: {
+                    name: 'roosync_mcp_management',
+                    arguments: {
+                        action: 'manage',
+                        subAction: 'read'
+                    }
+                }
+            };
+
+            const result = await handler(request);
+
+            expect(result).toBeDefined();
+            expect(result).toHaveProperty('content');
+            expect(Array.isArray(result.content)).toBe(true);
+        });
+    });
 });

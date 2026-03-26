@@ -70,4 +70,12 @@ export function getChatOpenAIClient(): OpenAI {
   return chatOpenai;
 }
 
+/**
+ * #864: Reset the chat OpenAI client singleton.
+ * Used for testing to simulate LLM unavailability.
+ */
+export function resetChatOpenAIClient(): void {
+  chatOpenai = null;
+}
+
 export default getOpenAIClient;

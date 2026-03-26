@@ -15,7 +15,10 @@ const mockOpenAIClient = {
 };
 
 vi.mock('../../../../src/services/qdrant.js', () => ({
-  getQdrantClient: vi.fn(() => mockQdrantClient)
+  getQdrantClient: vi.fn(() => mockQdrantClient),
+  resetQdrantClient: vi.fn(),
+  isLargeCollection: vi.fn(async () => false),
+  getCollectionSize: vi.fn(async () => 1000)
 }));
 
 vi.mock('../../../../src/services/openai.js', () => ({
@@ -93,7 +96,8 @@ describe('🔍 search_tasks_by_content', () => {
       expect.objectContaining({
         vector: expect.any(Array),
         limit: 5,
-        with_payload: true
+        with_payload: expect.any(Object),
+        params: expect.any(Object)
       })
     );
 
