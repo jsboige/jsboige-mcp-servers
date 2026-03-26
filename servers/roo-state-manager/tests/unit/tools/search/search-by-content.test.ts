@@ -33,6 +33,10 @@ vi.mock('../../../../src/services/task-indexer.js', () => ({
   getHostIdentifier: vi.fn(() => 'test-host-os')
 }));
 
+vi.mock('../../../../src/services/task-indexer/ChunkExtractor.js', () => ({
+  getHostIdentifier: vi.fn(() => 'test-host-os')
+}));
+
 describe('🔍 search_tasks_by_content', () => {
   let conversationCache: Map<string, any>;
   let ensureCacheFreshCallback: any;
