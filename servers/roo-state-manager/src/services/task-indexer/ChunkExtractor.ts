@@ -360,14 +360,16 @@ export function splitChunk(chunk: Chunk, maxSize: number): Chunk[] {
  * Reads the JSONL format (one JSON object per line) and converts
  * user/assistant messages to indexable chunks.
  *
+ * #852 FIX: Now accepts a project directory and scans all JSONL files within it.
+ *
  * @param taskId The session identifier (prefixed with 'claude-')
- * @param jsonlPath Path to the .jsonl file
+ * @param projectPath Path to the project directory (will scan for .jsonl files) OR direct .jsonl file path
  * @param metadata Optional metadata (workspace, title)
  * @returns Chunk array suitable for Qdrant indexation
  */
 export async function extractChunksFromClaudeSession(
     taskId: string,
-    jsonlPath: string,
+    projectPath: string,
     metadata?: { workspace?: string; title?: string }
 ): Promise<Chunk[]> {
     const chunks: Chunk[] = [];
@@ -375,7 +377,30 @@ export async function extractChunksFromClaudeSession(
     let messageIndex = 0;
 
     try {
-        const content = await fs.readFile(jsonlPath, 'utf-8');
+        // #852 FIX: Accept project directory and scan for JSONL files
+        const stat = await fs.stat(projectPath);
+        let jsonlFiles: string[];
+
+        if (stat.isDirectory()) {
+            // projectPath is a directory - scan for JSONL files
+            const entries = await fs.readdir(projectPath);
+            jsonlFiles = entries
+                .filter(e => e.endsWith('.jsonl'))
+                .map(e => path.join(projectPath, e));
+
+            if (jsonlFiles.length === 0) {
+                console.log(`[Claude] No JSONL files found in ${projectPath}`);
+                return [];
+            }
+            console.log(`[Claude] Found ${jsonlFiles.length} JSONL files in ${projectPath}`);
+        } else {
+            // projectPath is a file - use directly (backward compatibility)
+            jsonlFiles = [projectPath];
+        }
+
+        // Process all JSONL files
+        for (const jsonlFile of jsonlFiles) {
+            const content = await fs.readFile(jsonlFile, 'utf-8');
         const lines = content.split('\n').filter(line => line.trim());
 
         for (const line of lines) {
@@ -443,13 +468,14 @@ export async function extractChunksFromClaudeSession(
                 continue;
             }
         }
+        } // End of for (const jsonlFile of jsonlFiles)
     } catch (error) {
-        console.error(`❌ Error extracting chunks from Claude session ${jsonlPath}:`, error);
+        console.error(`❌ Error extracting chunks from Claude session ${projectPath}:`, error);
         throw new StateManagerError(
             `Extraction chunks échouée pour Claude session ${taskId}: ${error instanceof Error ? error.message : String(error)}`,
             'CHUNK_EXTRACTION_FAILED',
             'ChunkExtractor',
-            { taskId, jsonlPath },
+            { taskId, projectPath },
             error instanceof Error ? error : undefined
         );
     }
