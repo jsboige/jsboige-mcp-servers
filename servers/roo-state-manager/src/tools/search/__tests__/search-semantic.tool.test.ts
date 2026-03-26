@@ -53,6 +53,10 @@ vi.mock('../../../services/task-indexer.js', () => ({
 	getHostIdentifier: () => mockGetHostIdentifier()
 }));
 
+vi.mock('../../../services/task-indexer/ChunkExtractor.js', () => ({
+	getHostIdentifier: () => mockGetHostIdentifier()
+}));
+
 vi.mock('../search-fallback.tool.js', () => ({
 	handleSearchTasksSemanticFallback: mockFallbackHandler
 }));

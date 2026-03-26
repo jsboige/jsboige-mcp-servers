@@ -8,6 +8,7 @@ import { ConversationSkeleton } from '../../types/conversation.js';
 import { getQdrantClient } from '../../services/qdrant.js';
 import getOpenAIClient, { getEmbeddingModel } from '../../services/openai.js';
 import { handleSearchTasksSemanticFallback } from './search-fallback.tool.js';
+import { getHostIdentifier } from '../../services/task-indexer/ChunkExtractor.js';
 
 export interface SearchTasksByContentArgs {
     conversation_id?: string;
@@ -504,7 +505,6 @@ export const searchTasksByContentTool = {
             const searchResults = await searchWithTimeout;
 
             // Obtenir l'identifiant de la machine actuelle pour l'en-tête
-            const { TaskIndexer, getHostIdentifier } = await import('../../services/task-indexer.js');
             const currentHostId = getHostIdentifier();
 
             // Normalisation de la réponse Qdrant (supporte format tableau direct ou objet { result/points: [...] })
