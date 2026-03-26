@@ -185,7 +185,7 @@ describe('get-current-task.tool', () => {
       mockScan.mockResolvedValue([]);
 
       await getCurrentTaskTool.handler(
-        { workspace: '/workspace/test' },
+        { workspace: '/workspace/test', force_refresh: true },
         conversationCache,
         undefined,
         undefined
@@ -213,7 +213,7 @@ describe('get-current-task.tool', () => {
       mockScan.mockResolvedValue([newTask]);
 
       const result = await getCurrentTaskTool.handler(
-        { workspace: '/workspace/test' },
+        { workspace: '/workspace/test', force_refresh: true },
         conversationCache,
         undefined,
         undefined
