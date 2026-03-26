@@ -5,8 +5,10 @@
 
 /**
  * Niveaux de détail pour l'export Markdown selon script PowerShell référence
+ *
+ * #881: Ajout de 'Compact' (filtre params + résume résultats) et 'NoToolParams' (anciennement NoTools)
  */
-export type DetailLevel = 'Full' | 'NoTools' | 'NoResults' | 'Messages' | 'Summary' | 'UserOnly';
+export type DetailLevel = 'Full' | 'NoTools' | 'NoToolParams' | 'Compact' | 'NoResults' | 'Messages' | 'Summary' | 'UserOnly';
 
 /**
  * Détails structurés d'un appel d'outil parsé depuis XML
@@ -158,7 +160,7 @@ export interface TruncatedContent {
  * Options étendues pour la génération de résumés
  */
 export interface EnhancedSummaryOptions {
-    detailLevel?: 'Full' | 'NoTools' | 'NoResults' | 'Messages' | 'Summary' | 'UserOnly';
+    detailLevel?: 'Full' | 'NoTools' | 'NoToolParams' | 'Compact' | 'NoResults' | 'Messages' | 'Summary' | 'UserOnly';
     outputFormat?: 'markdown' | 'html' | 'text';
     truncationChars?: number;
     compactStats?: boolean;

@@ -3,6 +3,8 @@
  *
  * Implémente le pattern Factory pour instancier la bonne stratégie selon DetailLevel
  * Version complète avec tous les 6 niveaux selon script PowerShell référence
+ *
+ * #881: Ajout de 'Compact' et 'NoToolParams', alias NoTools → Compact
  */
 
 import { IReportingStrategy } from './IReportingStrategy.js';
@@ -11,6 +13,8 @@ import { FullReportingStrategy } from './strategies/FullReportingStrategy.js';
 import { MessagesReportingStrategy } from './strategies/MessagesReportingStrategy.js';
 import { SummaryReportingStrategy } from './strategies/SummaryReportingStrategy.js';
 import { NoToolsReportingStrategy } from './strategies/NoToolsReportingStrategy.js';
+import { NoToolParamsReportingStrategy } from './strategies/NoToolParamsReportingStrategy.js';
+import { CompactReportingStrategy } from './strategies/CompactReportingStrategy.js';
 import { NoResultsReportingStrategy } from './strategies/NoResultsReportingStrategy.js';
 import { UserOnlyReportingStrategy } from './strategies/UserOnlyReportingStrategy.js';
 import { StateManagerError } from '../../types/errors.js';
@@ -23,7 +27,12 @@ export class DetailLevelStrategyFactory {
         ['Full', () => new FullReportingStrategy()],
         ['Messages', () => new MessagesReportingStrategy()],
         ['Summary', () => new SummaryReportingStrategy()],
-        ['NoTools', () => new NoToolsReportingStrategy()],
+        // #881: NoTools maintenant alias vers Compact (filtre params + résume résultats)
+        ['NoTools', () => new CompactReportingStrategy()],
+        // Nouveau: NoToolParams = ancien comportement NoTools (masque params, garde résultats)
+        ['NoToolParams', () => new NoToolParamsReportingStrategy()],
+        // Nouveau: Compact = filtre params + résume résultats
+        ['Compact', () => new CompactReportingStrategy()],
         ['NoResults', () => new NoResultsReportingStrategy()],
         ['UserOnly', () => new UserOnlyReportingStrategy()]
     ]);
