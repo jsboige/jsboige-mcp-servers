@@ -24,7 +24,9 @@ const mockOpenAIClient = {
 };
 
 vi.mock('../../../../src/services/qdrant.js', () => ({
-    getQdrantClient: vi.fn(() => mockQdrantClient)
+    getQdrantClient: vi.fn(() => mockQdrantClient),
+    isLargeCollection: vi.fn(() => Promise.resolve(false)),
+    getCollectionSize: vi.fn(() => Promise.resolve(0))
 }));
 
 vi.mock('../../../../src/services/openai.js', () => ({
