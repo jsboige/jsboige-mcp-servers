@@ -6,6 +6,7 @@
 import { CallToolResult } from '@modelcontextprotocol/sdk/types.js';
 import { ConversationSkeleton } from '../../types/conversation.js';
 import { RooStorageDetector } from '../../utils/roo-storage-detector.js';
+import { ClaudeStorageDetector } from '../../utils/claude-storage-detector.js';
 import { GenericError, GenericErrorCode } from '../../types/errors.js';
 
 export interface IndexTaskSemanticArgs {
@@ -23,9 +24,9 @@ export const indexTaskSemanticTool = {
         inputSchema: {
             type: 'object' as const,
             properties: {
-                task_id: { 
-                    type: 'string', 
-                    description: 'ID de la tâche à indexer.' 
+                task_id: {
+                    type: 'string',
+                    description: 'ID de la tâche à indexer.'
                 },
             },
             required: ['task_id'],
@@ -42,10 +43,11 @@ export const indexTaskSemanticTool = {
     ): Promise<CallToolResult> => {
         try {
             const { task_id } = args;
-            
+            const source = args.source || 'roo';
+
             // **FAILSAFE: Auto-rebuild cache si nécessaire**
             await ensureCacheFreshCallback();
-            
+
             // Vérification des variables d'environnement
             // EMBEDDING_API_KEY is preferred (self-hosted vLLM), OPENAI_API_KEY as fallback
             const embeddingKey = process.env.EMBEDDING_API_KEY || process.env.OPENAI_API_KEY;
@@ -55,30 +57,45 @@ export const indexTaskSemanticTool = {
             if (!embeddingKey) {
                 throw new GenericError('No embedding API key configured. Set EMBEDDING_API_KEY (preferred) or OPENAI_API_KEY.', GenericErrorCode.INVALID_ARGUMENT);
             }
-            
-            const skeleton = conversationCache.get(task_id);
-            if (!skeleton) {
-                throw new GenericError(`Task with ID '${task_id}' not found in cache.`, GenericErrorCode.INVALID_ARGUMENT);
+
+            let taskPath: string | undefined;
+
+            if (source === 'claude-code') {
+                // #852: Pour les sessions Claude Code, utiliser ClaudeStorageDetector
+                const claudeConversation = await ClaudeStorageDetector.findConversationById(task_id);
+                taskPath = claudeConversation?.metadata?.dataSource;
+
+                if (!taskPath) {
+                    throw new GenericError(
+                        `Claude Code session '${task_id}' not found. Check that the session exists in ~/.claude/projects/*/sessions/`,
+                        GenericErrorCode.FILE_SYSTEM_ERROR
+                    );
+                }
+            } else {
+                // Pour les tâches Roo, utiliser le cache + RooStorageDetector
+                const skeleton = conversationCache.get(task_id);
+                if (!skeleton) {
+                    throw new GenericError(`Task with ID '${task_id}' not found in cache.`, GenericErrorCode.INVALID_ARGUMENT);
+                }
+
+                const conversation = await RooStorageDetector.findConversationById(task_id);
+                taskPath = conversation?.path;
             }
-            
-            const conversation = await RooStorageDetector.findConversationById(task_id);
-            const taskPath = conversation?.path;
-            
+
             if (!taskPath) {
                 throw new GenericError(`Task directory for '${task_id}' not found in any storage location.`, GenericErrorCode.FILE_SYSTEM_ERROR);
             }
-            
+
             console.log(`[DEBUG] Attempting to import indexTask from task-indexer.js`);
             const { indexTask } = await import('../../services/task-indexer.js');
-            const source = args.source || 'roo';
             console.log(`[DEBUG] Import successful, calling indexTask with taskId=${task_id}, taskPath=${taskPath}, source=${source}`);
             const indexedPoints = await indexTask(task_id, taskPath, source);
             console.log(`[DEBUG] indexTask completed, returned ${indexedPoints.length} points`);
-            
+
             return {
                 content: [{
                     type: "text",
-                    text: `# Indexation sémantique terminée\n\n**Tâche:** ${task_id}\n**Chemin:** ${taskPath}\n**Chunks indexés:** ${indexedPoints.length}\n\n**Variables d'env:**\n- EMBEDDING_API_KEY: ${embeddingKey ? 'SET' : 'MISSING'}\n- QDRANT_URL: ${qdrantUrl || 'MISSING'}\n- QDRANT_COLLECTION: ${qdrantCollection || 'MISSING'}`
+                    text: `# Indexation sémantique terminée\n\n**Tâche:** ${task_id}\n**Source:** ${source}\n**Chemin:** ${taskPath}\n**Chunks indexés:** ${indexedPoints.length}\n\n**Variables d'env:**\n- EMBEDDING_API_KEY: ${embeddingKey ? 'SET' : 'MISSING'}\n- QDRANT_URL: ${qdrantUrl || 'MISSING'}\n- QDRANT_COLLECTION: ${qdrantCollection || 'MISSING'}`
                 }]
             };
         } catch (error) {
