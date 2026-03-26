@@ -487,15 +487,27 @@ export class ClaudeStorageDetector {
 
     /**
      * Analyse une conversation par son ID
+     * #852 FIX: Only return the conversation if the project name matches the taskId
      */
     public static async findConversationById(taskId: string): Promise<ConversationSkeleton | null> {
         const locations = await this.detectStorageLocations();
+
+        // #852: Extract project name from taskId (format: claude-{projectName})
+        if (!taskId.startsWith('claude-')) {
+            return null;
+        }
+        const targetProjectName = taskId.substring(7); // Remove 'claude-' prefix
 
         for (const location of locations) {
             // Chercher dans tous les projets
             const projects = await this.listProjects(location.path);
 
             for (const projectName of projects) {
+                // #852 FIX: Only check projects that match the taskId
+                if (projectName !== targetProjectName) {
+                    continue;
+                }
+
                 const projectPath = path.join(location.path, projectName);
 
                 // Vérifier si c'est la bonne conversation

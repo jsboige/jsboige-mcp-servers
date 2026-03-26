@@ -172,9 +172,10 @@ export async function loadClaudeCodeSessions(conversationCache: Map<string, Conv
                     taskId, location.projectPath
                 );
                 if (skeleton && skeleton.sequence.length > 0) {
-                    // Mark as Claude source for background indexer
+                    // #852 FIX: Keep dataSource as project path (for indexing), add separate source field
                     if (!skeleton.metadata) skeleton.metadata = {} as any;
-                    skeleton.metadata.dataSource = 'claude';
+                    skeleton.metadata.source = 'claude-code'; // For filtering in Qdrant
+                    // dataSource already set by extractMetadata() to projectPath - DON'T overwrite!
                     conversationCache.set(taskId, skeleton);
                     loaded++;
                 }

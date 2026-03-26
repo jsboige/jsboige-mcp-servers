@@ -51,7 +51,8 @@ export interface ConversationSkeleton {
       workspace?: string;
       machineId?: string; // Identifiant de la machine (hostname: myia-po-2023, etc.)
       qdrantIndexedAt?: string; // DEPRECATED - utiliser indexingState.lastIndexedAt
-      dataSource?: string; // Source des données pour le debug
+      dataSource?: string; // Chemin du projet (pour l'indexation) ou identifiant de source
+      source?: 'roo' | 'claude-code'; // #852: Source de la conversation pour filtrage Qdrant
       parentTaskId?: string; // ID de la tâche parente pour reconstruction hiérarchique
       // NOUVEAU : État complet d'indexation avec mécanisme d'idempotence
       indexingState?: IndexingState;

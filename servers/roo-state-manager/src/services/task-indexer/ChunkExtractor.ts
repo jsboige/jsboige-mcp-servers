@@ -360,14 +360,16 @@ export function splitChunk(chunk: Chunk, maxSize: number): Chunk[] {
  * Reads the JSONL format (one JSON object per line) and converts
  * user/assistant messages to indexable chunks.
  *
+ * #852 FIX: Now accepts a project directory and scans all JSONL files within it.
+ *
  * @param taskId The session identifier (prefixed with 'claude-')
- * @param jsonlPath Path to the .jsonl file
+ * @param projectPath Path to the project directory (will scan for .jsonl files) OR direct .jsonl file path
  * @param metadata Optional metadata (workspace, title)
  * @returns Chunk array suitable for Qdrant indexation
  */
 export async function extractChunksFromClaudeSession(
     taskId: string,
-    jsonlPath: string,
+    projectPath: string,
     metadata?: { workspace?: string; title?: string }
 ): Promise<Chunk[]> {
     const chunks: Chunk[] = [];
@@ -375,81 +377,125 @@ export async function extractChunksFromClaudeSession(
     let messageIndex = 0;
 
     try {
-        const content = await fs.readFile(jsonlPath, 'utf-8');
-        const lines = content.split('\n').filter(line => line.trim());
+        // #852 FIX: Accept project directory and scan for JSONL files
+        const stat = await fs.stat(projectPath);
+        let jsonlFiles: string[];
 
-        for (const line of lines) {
+        if (stat.isDirectory()) {
+            // projectPath is a directory - scan for JSONL files
+            const entries = await fs.readdir(projectPath);
+            jsonlFiles = entries
+                .filter(e => e.endsWith('.jsonl'))
+                .map(e => path.join(projectPath, e));
+
+            if (jsonlFiles.length === 0) {
+                console.log(`[Claude] No JSONL files found in ${projectPath}`);
+                return [];
+            }
+            console.log(`[Claude] Found ${jsonlFiles.length} JSONL files in ${projectPath}`);
+        } else {
+            // projectPath is a file - use directly (backward compatibility)
+            jsonlFiles = [projectPath];
+        }
+
+        // Process all JSONL files - collect partial results on error
+        const fileErrors: { file: string; error: string }[] = [];
+
+        for (const jsonlFile of jsonlFiles) {
             try {
-                const entry = JSON.parse(line);
+                const content = await fs.readFile(jsonlFile, 'utf-8');
+                const lines = content.split('\n').filter(line => line.trim());
+                let fileMessageCount = 0;
 
-                // Claude Code JSONL has entries with type and message fields
-                const entryType = entry.type;
-                const message = entry.message;
+                for (const line of lines) {
+                    try {
+                        const entry = JSON.parse(line);
 
-                // Only index user and assistant messages (not tool results, system, etc.)
-                if (!message || !message.content) continue;
-                if (entryType !== 'user' && entryType !== 'assistant') continue;
+                        // Claude Code JSONL has entries with type and message fields
+                        const entryType = entry.type;
+                        const message = entry.message;
 
-                const role: 'user' | 'assistant' = entryType === 'user' ? 'user' : 'assistant';
+                        // Only index user and assistant messages (not tool results, system, etc.)
+                        if (!message || !message.content) continue;
+                        if (entryType !== 'user' && entryType !== 'assistant') continue;
 
-                // Extract text content (can be string or array of content blocks)
-                let contentText = '';
-                if (typeof message.content === 'string') {
-                    contentText = message.content;
-                } else if (Array.isArray(message.content)) {
-                    contentText = message.content
-                        .filter((block: any) => block && block.type === 'text' && typeof block.text === 'string')
-                        .map((block: any) => block.text)
-                        .join(' ')
-                        .trim();
+                        const role: 'user' | 'assistant' = entryType === 'user' ? 'user' : 'assistant';
+
+                        // Extract text content (can be string or array of content blocks)
+                        let contentText = '';
+                        if (typeof message.content === 'string') {
+                            contentText = message.content;
+                        } else if (Array.isArray(message.content)) {
+                            contentText = message.content
+                                .filter((block: any) => block && block.type === 'text' && typeof block.text === 'string')
+                                .map((block: any) => block.text)
+                                .join(' ')
+                                .trim();
+                        }
+
+                        if (!contentText.trim()) continue;
+
+                        // Truncate oversized content to prevent embedding explosion
+                        contentText = truncateForIndexing(contentText, `claude-${role}:msg#${messageIndex + 1}`);
+
+                        messageIndex++;
+                        fileMessageCount++;
+                        // #636: Detect error patterns and extract model
+                        const ccLower = contentText.toLowerCase();
+                        const ccHasError = ccLower.includes('error') || ccLower.includes('failed') || ccLower.includes('❌');
+
+                        chunks.push({
+                            chunk_id: uuidv4(),
+                            task_id: taskId,
+                            parent_task_id: null,
+                            root_task_id: null,
+                            chunk_type: 'message_exchange',
+                            sequence_order: sequenceOrder++,
+                            timestamp: entry.timestamp || new Date().toISOString(),
+                            indexed: true,
+                            content: contentText,
+                            content_summary: contentText.substring(0, 200),
+                            participants: [role],
+                            tool_details: null,
+                            workspace: metadata?.workspace,
+                            workspace_name: metadata?.workspace ? path.basename(metadata.workspace) : undefined,
+                            task_title: metadata?.title,
+                            message_index: messageIndex,
+                            role,
+                            host_os: getHostIdentifier(),
+                            source: 'claude-code',
+                            // #636: Enriched metadata
+                            model: entry.model || message?.model,
+                            has_error: ccHasError || undefined,
+                        });
+                    } catch (parseError) {
+                        // Skip malformed lines but log for debugging
+                        console.warn(`[Claude] Skipping malformed line in ${jsonlFile}: ${parseError}`);
+                        continue;
+                    }
                 }
 
-                if (!contentText.trim()) continue;
-
-                // Truncate oversized content to prevent embedding explosion
-                contentText = truncateForIndexing(contentText, `claude-${role}:msg#${messageIndex + 1}`);
-
-                messageIndex++;
-                // #636: Detect error patterns and extract model
-                const ccLower = contentText.toLowerCase();
-                const ccHasError = ccLower.includes('error') || ccLower.includes('failed') || ccLower.includes('❌');
-
-                chunks.push({
-                    chunk_id: uuidv4(),
-                    task_id: taskId,
-                    parent_task_id: null,
-                    root_task_id: null,
-                    chunk_type: 'message_exchange',
-                    sequence_order: sequenceOrder++,
-                    timestamp: entry.timestamp || new Date().toISOString(),
-                    indexed: true,
-                    content: contentText,
-                    content_summary: contentText.substring(0, 200),
-                    participants: [role],
-                    tool_details: null,
-                    workspace: metadata?.workspace,
-                    workspace_name: metadata?.workspace ? path.basename(metadata.workspace) : undefined,
-                    task_title: metadata?.title,
-                    message_index: messageIndex,
-                    role,
-                    host_os: getHostIdentifier(),
-                    source: 'claude-code',
-                    // #636: Enriched metadata
-                    model: entry.model || message?.model,
-                    has_error: ccHasError || undefined,
-                });
-            } catch {
-                // Skip malformed lines
-                continue;
+                console.log(`[Claude] Extracted ${fileMessageCount} chunks from ${path.basename(jsonlFile)}`);
+            } catch (fileError) {
+                // Log file-level errors but continue processing other files
+                const errorMsg = fileError instanceof Error ? fileError.message : String(fileError);
+                fileErrors.push({ file: jsonlFile, error: errorMsg });
+                console.error(`[Claude] Error reading ${jsonlFile}: ${errorMsg}`);
             }
         }
+
+        // Log summary if there were file errors
+        if (fileErrors.length > 0) {
+            console.warn(`[Claude] Completed with ${fileErrors.length} file error(s): ${fileErrors.map(e => e.file).join(', ')}`);
+        }
     } catch (error) {
-        console.error(`❌ Error extracting chunks from Claude session ${jsonlPath}:`, error);
+        // Only throw for critical errors (e.g., directory not found, permission denied)
+        console.error(`❌ Critical error extracting chunks from Claude session ${projectPath}:`, error);
         throw new StateManagerError(
             `Extraction chunks échouée pour Claude session ${taskId}: ${error instanceof Error ? error.message : String(error)}`,
             'CHUNK_EXTRACTION_FAILED',
             'ChunkExtractor',
-            { taskId, jsonlPath },
+            { taskId, projectPath },
             error instanceof Error ? error : undefined
         );
     }

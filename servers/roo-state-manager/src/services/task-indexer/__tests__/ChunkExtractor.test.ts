@@ -242,4 +242,9 @@ describe('ChunkExtractor', () => {
       expect(reassembled).toBe(content);
     });
   });
+
+  // NOTE: extractChunksFromClaudeSession tests require ESM-compatible mocking (vi.mock at module level)
+  // which is not compatible with vitest's vi.spyOn for ESM modules.
+  // These tests should be implemented in a separate test file with proper vi.mock setup.
+  // See: https://vitest.dev/guide/browser/#limitations
 });
