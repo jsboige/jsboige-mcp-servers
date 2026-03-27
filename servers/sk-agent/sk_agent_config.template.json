@@ -13,7 +13,7 @@
       "api_key": "YOUR_ZAI_API_KEY_HERE",
       "model_id": "glm-5.1",
       "vision": false,
-      "description": "GLM-5.1 reasoning via z.ai cloud (200K context) - 45.3/113 coding (+28% vs GLM-5)",
+      "description": "GLM-5.1 reasoning via z.ai cloud (200K context, 45.3/113 coding, +28% vs GLM-5)",
       "context_window": 200000
     },
     {
