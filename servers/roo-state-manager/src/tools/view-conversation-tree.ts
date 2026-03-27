@@ -66,10 +66,10 @@ async function handleViewConversationTreeExecutionAsync(
     if (truncate === 0) {
         switch (detail_level) {
             case 'skeleton':
-                truncate = 3;
+                truncate = 20; // #901 Fix: 3→20 — 3 lines was unreadable
                 break;
             case 'summary':
-                truncate = 100; // #594 Fix: 10→100 pour éviter résumés vides sur grosses tâches Roo
+                truncate = 0; // #901 Fix: no truncation for summary — smart_truncation handles length
                 break;
             case 'full':
                 truncate = 0;
@@ -157,7 +157,7 @@ async function handleViewConversationTreeExecutionAsync(
                         output += `${indent}  [${icon} ${item.name}] → ${item.status}${timestamp ? ` (${timestamp})` : ''}\n`;
                         if (item.parameters && Object.keys(item.parameters).length > 0) {
                             const paramStr = JSON.stringify(item.parameters, null, 2);
-                            const truncatedParams = truncateMessage(paramStr, 5);
+                            const truncatedParams = truncateMessage(paramStr, 15); // #901: 5→15 lines
                             output += `${indent}    Params: ${truncatedParams}\n`;
                         }
                         break;
@@ -309,10 +309,10 @@ function handleViewConversationTreeExecution(
     if (truncate === 0) {
         switch (detail_level) {
             case 'skeleton':
-                truncate = 3;
+                truncate = 20; // #901 Fix: 3→20 — 3 lines was unreadable
                 break;
             case 'summary':
-                truncate = 100; // #594 Fix: 10→100 pour éviter résumés vides sur grosses tâches Roo
+                truncate = 0; // #901 Fix: no truncation for summary — smart_truncation handles length
                 break;
             case 'full':
                 truncate = 0;
@@ -696,7 +696,7 @@ function createFormatTaskFunction(detail_level: string, truncate: number, curren
                         output += `${indent}  [${icon} ${item.name}] → ${item.status}${timestamp ? ` (${timestamp})` : ''}\n`;
                         if (item.parameters && Object.keys(item.parameters).length > 0) {
                             const paramStr = JSON.stringify(item.parameters, null, 2);
-                            const truncatedParams = truncateMessage(paramStr, 5);
+                            const truncatedParams = truncateMessage(paramStr, 15); // #901: 5→15 lines
                             output += `${indent}    Params: ${truncatedParams}\n`;
                         }
                         break;
