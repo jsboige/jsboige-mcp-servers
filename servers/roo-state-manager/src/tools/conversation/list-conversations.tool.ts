@@ -91,8 +91,8 @@ interface ConversationSummary {
     children: ConversationSummary[];
 }
 
-/** Max children shown inline in list output */
-const MAX_CHILDREN_SHOWN = 3;
+/** Max children shown inline in list output (was 10 before regression, 3 was too aggressive) */
+const MAX_CHILDREN_SHOWN = 10;
 
 /**
  * Strip XML wrapper tags (<user_message>, </user_message>, <task>, etc.) from message text.

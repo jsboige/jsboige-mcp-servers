@@ -66,10 +66,10 @@ async function handleViewConversationTreeExecutionAsync(
     if (truncate === 0) {
         switch (detail_level) {
             case 'skeleton':
-                truncate = 3;
+                truncate = 20; // #901 Fix: 3→20 — 3 lines was unreadable
                 break;
             case 'summary':
-                truncate = 100; // #594 Fix: 10→100 pour éviter résumés vides sur grosses tâches Roo
+                truncate = 0; // #901 Fix: no truncation for summary — smart_truncation handles length
                 break;
             case 'full':
                 truncate = 0;
@@ -131,11 +131,10 @@ async function handleViewConversationTreeExecutionAsync(
             if ('role' in item) { // Message user/assistant
                 const role = item.role === 'user' ? '👤 User' : '🤖 Assistant';
 
-                // FIX P0-2: Mode skeleton ultra-compact (1 ligne résumée vs 3+3 lignes)
+                // #901: skeleton shows first 300 chars (was 50 — unusable)
                 if (detail_level === 'skeleton') {
-                    // Résumé 1 ligne (50 chars max) au lieu de 3+3 lignes
-                    const summary = item.content.substring(0, 50).replace(/\n/g, ' ');
-                    const ellipsis = item.content.length > 50 ? '...' : '';
+                    const summary = item.content.substring(0, 300).replace(/\n/g, ' ');
+                    const ellipsis = item.content.length > 300 ? '...' : '';
                     output += `${indent}  [${role}]: ${summary}${ellipsis}\n`;
                 } else {
                     // Summary/Full : comportement original
@@ -157,7 +156,7 @@ async function handleViewConversationTreeExecutionAsync(
                         output += `${indent}  [${icon} ${item.name}] → ${item.status}${timestamp ? ` (${timestamp})` : ''}\n`;
                         if (item.parameters && Object.keys(item.parameters).length > 0) {
                             const paramStr = JSON.stringify(item.parameters, null, 2);
-                            const truncatedParams = truncateMessage(paramStr, 5);
+                            const truncatedParams = truncateMessage(paramStr, 15); // #901: 5→15 lines
                             output += `${indent}    Params: ${truncatedParams}\n`;
                         }
                         break;
@@ -309,10 +308,10 @@ function handleViewConversationTreeExecution(
     if (truncate === 0) {
         switch (detail_level) {
             case 'skeleton':
-                truncate = 3;
+                truncate = 20; // #901 Fix: 3→20 — 3 lines was unreadable
                 break;
             case 'summary':
-                truncate = 100; // #594 Fix: 10→100 pour éviter résumés vides sur grosses tâches Roo
+                truncate = 0; // #901 Fix: no truncation for summary — smart_truncation handles length
                 break;
             case 'full':
                 truncate = 0;
@@ -670,11 +669,10 @@ function createFormatTaskFunction(detail_level: string, truncate: number, curren
             if ('role' in item) { // Message user/assistant
                 const role = item.role === 'user' ? '👤 User' : '🤖 Assistant';
 
-                // FIX P0-2: Mode skeleton ultra-compact (1 ligne résumée vs 3+3 lignes)
+                // #901: skeleton shows first 300 chars (was 50 — unusable)
                 if (detail_level === 'skeleton') {
-                    // Résumé 1 ligne (50 chars max) au lieu de 3+3 lignes
-                    const summary = item.content.substring(0, 50).replace(/\n/g, ' ');
-                    const ellipsis = item.content.length > 50 ? '...' : '';
+                    const summary = item.content.substring(0, 300).replace(/\n/g, ' ');
+                    const ellipsis = item.content.length > 300 ? '...' : '';
                     output += `${indent}  [${role}]: ${summary}${ellipsis}\n`;
                 } else {
                     // Summary/Full : comportement original
@@ -696,7 +694,7 @@ function createFormatTaskFunction(detail_level: string, truncate: number, curren
                         output += `${indent}  [${icon} ${item.name}] → ${item.status}${timestamp ? ` (${timestamp})` : ''}\n`;
                         if (item.parameters && Object.keys(item.parameters).length > 0) {
                             const paramStr = JSON.stringify(item.parameters, null, 2);
-                            const truncatedParams = truncateMessage(paramStr, 5);
+                            const truncatedParams = truncateMessage(paramStr, 15); // #901: 5→15 lines
                             output += `${indent}    Params: ${truncatedParams}\n`;
                         }
                         break;
