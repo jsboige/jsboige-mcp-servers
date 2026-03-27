@@ -69,14 +69,16 @@ describe('view_conversation_tree Tool', () => {
     });
 
     it('should truncate long content when max_output_length is exceeded', async () => {
-        const longContent = 'line\n'.repeat(50);
+        // #901: skeleton snippet increased from 50→300 chars, so content must exceed 300 chars
+        // to trigger the '...' ellipsis in skeleton mode
+        const longContent = 'This is a long line of content for testing truncation behavior.\n'.repeat(20);
         mockCache.set('long_task', createMockSkeleton('long_task', undefined, 'Long Task', '2025-01-02T00:00:00Z', longContent));
 
         const result = await viewConversationTree.handler({ task_id: 'long_task', max_output_length: 200 }, mockCache);
         const textContent = result.content[0].type === 'text' ? result.content[0].text : '';
 
-        // FIX P0-2: Mode skeleton utilise résumé 1 ligne (50 chars) avec '...' au lieu de '[...]'
-        // Accepter les 2 formats : ancien '[...]' (summary/full) ou nouveau '...' (skeleton)
+        // Mode skeleton uses substring(0, 300) + '...' for content > 300 chars
+        // Legacy truncation adds 'Sortie estimée' when output exceeds max_output_length
         const hasTruncationMarker = textContent.includes('[...]') || textContent.includes('...');
         expect(hasTruncationMarker).toBe(true);
         expect(textContent).toContain('Sortie estimée');
