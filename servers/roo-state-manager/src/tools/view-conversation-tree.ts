@@ -131,11 +131,10 @@ async function handleViewConversationTreeExecutionAsync(
             if ('role' in item) { // Message user/assistant
                 const role = item.role === 'user' ? '👤 User' : '🤖 Assistant';
 
-                // FIX P0-2: Mode skeleton ultra-compact (1 ligne résumée vs 3+3 lignes)
+                // #901: skeleton shows first 300 chars (was 50 — unusable)
                 if (detail_level === 'skeleton') {
-                    // Résumé 1 ligne (50 chars max) au lieu de 3+3 lignes
-                    const summary = item.content.substring(0, 50).replace(/\n/g, ' ');
-                    const ellipsis = item.content.length > 50 ? '...' : '';
+                    const summary = item.content.substring(0, 300).replace(/\n/g, ' ');
+                    const ellipsis = item.content.length > 300 ? '...' : '';
                     output += `${indent}  [${role}]: ${summary}${ellipsis}\n`;
                 } else {
                     // Summary/Full : comportement original
@@ -670,11 +669,10 @@ function createFormatTaskFunction(detail_level: string, truncate: number, curren
             if ('role' in item) { // Message user/assistant
                 const role = item.role === 'user' ? '👤 User' : '🤖 Assistant';
 
-                // FIX P0-2: Mode skeleton ultra-compact (1 ligne résumée vs 3+3 lignes)
+                // #901: skeleton shows first 300 chars (was 50 — unusable)
                 if (detail_level === 'skeleton') {
-                    // Résumé 1 ligne (50 chars max) au lieu de 3+3 lignes
-                    const summary = item.content.substring(0, 50).replace(/\n/g, ' ');
-                    const ellipsis = item.content.length > 50 ? '...' : '';
+                    const summary = item.content.substring(0, 300).replace(/\n/g, ' ');
+                    const ellipsis = item.content.length > 300 ? '...' : '';
                     output += `${indent}  [${role}]: ${summary}${ellipsis}\n`;
                 } else {
                     // Summary/Full : comportement original
