@@ -132,10 +132,23 @@ async function handleViewConversationTreeExecutionAsync(
                 const role = item.role === 'user' ? '👤 User' : '🤖 Assistant';
 
                 // #901: skeleton shows first 300 chars (was 50 — unusable)
+                // #902: respect truncate parameter in skeleton mode
                 if (detail_level === 'skeleton') {
-                    const summary = item.content.substring(0, 300).replace(/\n/g, ' ');
-                    const ellipsis = item.content.length > 300 ? '...' : '';
-                    output += `${indent}  [${role}]: ${summary}${ellipsis}\n`;
+                    if (truncate === 0) {
+                        // truncate=0: show full message (single line format)
+                        const summary = item.content.replace(/\n/g, ' ');
+                        output += `${indent}  [${role}]: ${summary}\n`;
+                    } else if (truncate > 0) {
+                        // truncate>0: apply truncateMessage then format as single line
+                        const truncated = truncateMessage(item.content, truncate);
+                        const summary = truncated.replace(/\n/g, ' ');
+                        output += `${indent}  [${role}]: ${summary}\n`;
+                    } else {
+                        // Fallback: show first 300 chars (legacy behavior)
+                        const summary = item.content.substring(0, 300).replace(/\n/g, ' ');
+                        const ellipsis = item.content.length > 300 ? '...' : '';
+                        output += `${indent}  [${role}]: ${summary}${ellipsis}\n`;
+                    }
                 } else {
                     // Summary/Full : comportement original
                     const message = truncateMessage(item.content, truncate);
@@ -670,10 +683,23 @@ function createFormatTaskFunction(detail_level: string, truncate: number, curren
                 const role = item.role === 'user' ? '👤 User' : '🤖 Assistant';
 
                 // #901: skeleton shows first 300 chars (was 50 — unusable)
+                // #902: respect truncate parameter in skeleton mode
                 if (detail_level === 'skeleton') {
-                    const summary = item.content.substring(0, 300).replace(/\n/g, ' ');
-                    const ellipsis = item.content.length > 300 ? '...' : '';
-                    output += `${indent}  [${role}]: ${summary}${ellipsis}\n`;
+                    if (truncate === 0) {
+                        // truncate=0: show full message (single line format)
+                        const summary = item.content.replace(/\n/g, ' ');
+                        output += `${indent}  [${role}]: ${summary}\n`;
+                    } else if (truncate > 0) {
+                        // truncate>0: apply truncateMessage then format as single line
+                        const truncated = truncateMessage(item.content, truncate);
+                        const summary = truncated.replace(/\n/g, ' ');
+                        output += `${indent}  [${role}]: ${summary}\n`;
+                    } else {
+                        // Fallback: show first 300 chars (legacy behavior)
+                        const summary = item.content.substring(0, 300).replace(/\n/g, ' ');
+                        const ellipsis = item.content.length > 300 ? '...' : '';
+                        output += `${indent}  [${role}]: ${summary}${ellipsis}\n`;
+                    }
                 } else {
                     // Summary/Full : comportement original
                     const message = truncateMessage(item.content, truncate);
