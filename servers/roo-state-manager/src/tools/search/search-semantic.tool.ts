@@ -514,7 +514,7 @@ export const searchTasksByContentTool = {
 
             // Phase 2: Enriched results with snippets, score interpretation, deduplication
             const results: RawSearchResult[] = rawPoints.map((result: any) => {
-                const content = String(result.payload?.content || '');
+                const content = String(result.payload?.content_summary || result.payload?.content || '');
                 const score = result.score || 0;
                 return {
                     taskId: result.payload?.task_id || 'unknown',
