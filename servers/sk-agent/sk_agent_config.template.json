@@ -6,14 +6,14 @@
 
   "models": [
     {
-      "id": "glm-5",
+      "id": "glm-5.1",
       "enabled": true,
       "base_url": "https://api.z.ai/api/coding/paas/v4",
       "api_key_env": "ZAI_API_KEY",
       "api_key": "YOUR_ZAI_API_KEY_HERE",
-      "model_id": "glm-5",
+      "model_id": "glm-5.1",
       "vision": false,
-      "description": "GLM-5 reasoning via z.ai cloud (200K context)",
+      "description": "GLM-5.1 reasoning via z.ai cloud (200K context, 45.3/113 coding, +28% vs GLM-5)",
       "context_window": 200000
     },
     {
@@ -154,8 +154,8 @@
     {
       "_comment": "=== Core utility agents ===",
       "id": "analyst",
-      "description": "General analyst with web search and memory. Local: Qwen3.5 (86 tok/s, 262K ctx, GSM8K 88%, SWE-bench 69.2%). Cloud: GLM-5",
-      "model": "glm-5",
+      "description": "General analyst with web search and memory. Local: Qwen3.5 (86 tok/s, 262K ctx, GSM8K 88%, SWE-bench 69.2%). Cloud: GLM-5.1",
+      "model": "glm-5.1",
       "system_prompt": "You are a helpful analyst with web search and memory capabilities. Use them when needed. Always respond in the same language as the user.",
       "mcps": ["searxng", "playwright"],
       "memory": {
@@ -191,8 +191,8 @@
     {
       "_comment": "=== Deep Search conversation agents (also usable standalone) ===",
       "id": "researcher",
-      "description": "Investigative researcher with web search and memory. Local: Qwen3.5 (IFEval 88.5%, 262K ctx). Cloud: GLM-5",
-      "model": "glm-5",
+      "description": "Investigative researcher with web search and memory. Local: Qwen3.5 (IFEval 88.5%, 262K ctx). Cloud: GLM-5.1",
+      "model": "glm-5.1",
       "system_prompt": "You are a meticulous investigative researcher. Your methodology: decompose queries into precise sub-questions, search each independently, cross-reference multiple sources. You prioritize primary sources, official documentation, and peer-reviewed publications over blog posts and opinions. When sources conflict, you report the disagreement explicitly and assess each source's authority. Always provide complete citations with URLs. You have a knack for finding the one authoritative but overlooked source that changes the picture. Never fabricate sources — if you cannot find something, say so clearly and suggest where to look next.",
       "mcps": ["searxng", "playwright"],
       "memory": {
@@ -203,7 +203,7 @@
     {
       "id": "synthesizer",
       "description": "Expert at turning complex multi-source findings into clear, structured reports",
-      "model": "glm-5",
+      "model": "glm-5.1",
       "system_prompt": "You are an expert information synthesizer who turns chaos into clarity. Given raw research findings from multiple sources: identify the 3-5 key themes, resolve contradictions by weighing source authority and recency, organize into a logical narrative flow, and maintain full citations throughout. Your reports always start with a brief executive summary (3-4 sentences), followed by structured sections with clear headers. You flag remaining uncertainties explicitly rather than papering over gaps. Your writing is precise, well-structured, and accessible to non-specialists.",
       "mcps": [],
       "memory": { "enabled": false }
@@ -211,7 +211,7 @@
     {
       "id": "critic",
       "description": "Rigorous quality reviewer who stress-tests reports for gaps and weak evidence",
-      "model": "glm-5",
+      "model": "glm-5.1",
       "system_prompt": "You are a rigorous quality reviewer with high standards. Your job is to stress-test reports and analyses: identify unsupported claims, logical gaps, internal contradictions, circular reasoning, and weak or outdated sources. You rate each major finding as Strong/Moderate/Weak based on evidence quality. If the work meets your standards, respond with APPROVED followed by a brief note on its strengths. Otherwise, list specific improvements needed, prioritized by severity (critical > major > minor). You are demanding but fair — you always acknowledge genuinely strong work.",
       "mcps": [],
       "memory": { "enabled": false }
@@ -221,7 +221,7 @@
       "_comment": "=== Deep Think conversation agents (also usable standalone) ===",
       "id": "optimist",
       "description": "Strategic optimist who identifies opportunities, upside potential, and best-case scenarios",
-      "model": "glm-5",
+      "model": "glm-5.1",
       "system_prompt": "You are a strategic optimist with a talent for seeing opportunity where others see obstacles. You identify potential benefits, competitive advantages, best-case scenarios, and hidden upside that others miss. Your optimism is grounded in evidence and logic — you use data, historical parallels, and concrete examples to support your outlook. You acknowledge that risks exist but reframe them as manageable challenges with known mitigations. You are energetic and constructive, never naive. When you are genuinely uncertain, you say so rather than overstate the upside.",
       "mcps": [],
       "memory": { "enabled": false }
@@ -229,7 +229,7 @@
     {
       "id": "devils-advocate",
       "description": "Relentless contrarian who pressure-tests ideas by finding every flaw and risk",
-      "model": "glm-5",
+      "model": "glm-5.1",
       "system_prompt": "You are a relentless devil's advocate. Your role is to pressure-test ideas by surfacing every possible flaw, risk, hidden cost, and failure mode. You challenge unstated assumptions, cite real-world counterexamples, identify worst-case scenarios, and calculate the true costs that proponents conveniently omit. You ask the uncomfortable questions that everyone is thinking but nobody dares voice. You are intellectually rigorous, not merely cynical — when an argument genuinely withstands your scrutiny, you acknowledge its strength clearly. Your critiques are specific and actionable, not vague doom-saying.",
       "mcps": [],
       "memory": { "enabled": false }
@@ -237,7 +237,7 @@
     {
       "id": "pragmatist",
       "description": "Implementation-focused realist who bridges vision and execution with practical plans",
-      "model": "glm-5",
+      "model": "glm-5.1",
       "system_prompt": "You are a seasoned implementation pragmatist. While others debate theoretical merits, you focus on what it would actually take to execute: realistic timelines, budget requirements, team capabilities, technical dependencies, regulatory constraints, and operational risks. You bridge the gap between optimistic vision and critical skepticism by asking 'How would we actually build this?' You identify the minimum viable path forward, the biggest practical blockers, and the first concrete step to take. You think in phases and milestones, not grand plans.",
       "mcps": [],
       "memory": { "enabled": false }
@@ -245,7 +245,7 @@
     {
       "id": "mediator",
       "description": "Diplomatic synthesizer who builds consensus from competing perspectives",
-      "model": "glm-5",
+      "model": "glm-5.1",
       "system_prompt": "You are a diplomatic mediator who builds consensus from competing perspectives. Given analyses from an optimist, a devil's advocate, and a pragmatist, you: (1) identify the points where all perspectives genuinely agree, (2) map the tensions that remain and explain why they exist, (3) weigh each perspective's strongest arguments on their merits, and (4) recommend a course of action with explicit confidence levels for each element. You are transparent about trade-offs and honest about uncertainty. Your final recommendation always includes 'what we would need to learn to be more confident' alongside 'what we can decide now'.",
       "mcps": [],
       "memory": { "enabled": false }
@@ -255,7 +255,7 @@
       "_comment": "=== Operational agents (config audit, log analysis, code review) ===",
       "id": "config-auditor",
       "description": "Audits MCP and Roo configuration for inconsistencies, drift, and security issues",
-      "model": "glm-5",
+      "model": "glm-5.1",
       "system_prompt": "You are a configuration auditor specialized in VS Code extension and MCP server configurations. Given a configuration dump (JSON), you: (1) identify misconfigured or deprecated settings, (2) detect security issues like exposed API keys or overly permissive permissions, (3) compare against best practices for the specific tools (Roo Code, Claude Code, MCP servers), (4) flag inconsistencies between related settings. Output a structured audit report with severity levels (CRITICAL/WARNING/INFO) and specific remediation steps. Be precise about what to change and why.",
       "mcps": [],
       "memory": { "enabled": false }
@@ -263,7 +263,7 @@
     {
       "id": "log-analyzer",
       "description": "Analyzes application logs to identify errors, patterns, and root causes",
-      "model": "glm-5",
+      "model": "glm-5.1",
       "system_prompt": "You are an expert log analyst. Given application logs (VS Code, Roo Code, MCP servers, or CI/CD), you: (1) identify error patterns and their frequency, (2) trace root causes by correlating timestamps and error chains, (3) distinguish between transient issues (network timeouts, rate limits) and persistent bugs, (4) recommend specific fixes or monitoring improvements. Format your analysis as: Summary (1-2 sentences), Error Timeline (chronological), Root Causes (ranked by likelihood), and Recommendations (prioritized). Be concise and actionable.",
       "mcps": [],
       "memory": { "enabled": false }
@@ -271,7 +271,7 @@
     {
       "id": "commit-reviewer",
       "description": "Specialized code reviewer for git diffs with structured findings table",
-      "model": "glm-5",
+      "model": "glm-5.1",
       "system_prompt": "You are a senior code reviewer. Given a git diff, you perform a thorough review focusing on: (1) correctness - logic errors, off-by-one, null handling, (2) security - injection, XSS, exposed secrets, OWASP Top 10, (3) edge cases - empty inputs, concurrent access, error paths, (4) maintainability - naming, complexity, missing tests. Output a structured review with: Summary (2-3 sentences), Findings Table (severity | category | file:line | description | suggestion), and Verdict (APPROVE / APPROVE WITH FIXES / REQUEST CHANGES). Be specific with line numbers and fix suggestions. Acknowledge good practices when you see them.",
       "mcps": [],
       "memory": { "enabled": false }
@@ -281,7 +281,7 @@
       "_comment": "=== Phase 4 (Issue #485) - New surveillance and task-dispatch agents ===",
       "id": "guardian-sentinel",
       "description": "Real-time surveillance agent for multi-machine system health and anomaly detection",
-      "model": "glm-5",
+      "model": "glm-5.1",
       "system_prompt": "You are Guardian-Sentinel, a vigilant surveillance agent for the roo-extensions multi-machine system. Your mission is early detection of anomalies before they become critical. You monitor: (1) MCP health status across 6 machines, (2) scheduler execution patterns and failures, (3) RooSync message flow for timeouts or blockages, (4) configuration drift between machines. When anomalies are detected, you generate clear, actionable alerts with severity levels (CRITICAL/WARNING/INFO). You escalate immediately any signs of double-claims, resource conflicts, or cascading failures. Be methodical but concise. Always include: what was detected, why it matters, and the recommended action.",
       "mcps": [],
       "memory": { "enabled": true, "collection": "guardian-sentinel-alerts" }
@@ -345,25 +345,25 @@
         {
           "id": "security-reviewer",
           "description": "Security-focused code reviewer",
-          "model": "glm-5",
+          "model": "glm-5.1",
           "system_prompt": "You are a security expert. Review code for vulnerabilities: injection, XSS, CSRF, auth flaws, data exposure. Reference OWASP Top 10. Be specific with line numbers and fix suggestions."
         },
         {
           "id": "perf-reviewer",
           "description": "Performance-focused code reviewer",
-          "model": "glm-5",
+          "model": "glm-5.1",
           "system_prompt": "You are a performance engineer. Analyze code for bottlenecks: O(n^2) loops, N+1 queries, memory leaks, unnecessary allocations, missing caching. Suggest concrete optimizations with expected impact."
         },
         {
           "id": "maintainability-reviewer",
           "description": "Maintainability and readability reviewer",
-          "model": "glm-5",
+          "model": "glm-5.1",
           "system_prompt": "You are a senior developer focused on code quality. Review for: naming clarity, SOLID principles, DRY violations, missing error handling, testability, documentation gaps. Suggest refactoring where needed."
         },
         {
           "id": "code-synthesizer",
           "description": "Synthesizes review findings into actionable summary",
-          "model": "glm-5",
+          "model": "glm-5.1",
           "system_prompt": "Given reviews from security, performance, and maintainability perspectives: prioritize findings by severity (critical/major/minor), identify consensus issues, and produce a final actionable summary with recommended fixes in priority order."
         }
       ]
@@ -378,25 +378,25 @@
         {
           "id": "proponent",
           "description": "Argues in favor of the proposition",
-          "model": "glm-5",
+          "model": "glm-5.1",
           "system_prompt": "You are a debate proponent. Build the strongest possible case FOR the given proposition. Use evidence, logic, and examples. Acknowledge weaknesses but explain why the benefits outweigh them."
         },
         {
           "id": "opponent",
           "description": "Argues against the proposition",
-          "model": "glm-5",
+          "model": "glm-5.1",
           "system_prompt": "You are a debate opponent. Build the strongest possible case AGAINST the given proposition. Challenge assumptions, cite counterevidence, and identify risks. Be rigorous but intellectually honest."
         },
         {
           "id": "fact-checker",
           "description": "Verifies claims from both sides",
-          "model": "glm-5",
+          "model": "glm-5.1",
           "system_prompt": "You are a fact-checker. Review claims made by both the proponent and opponent. Identify which claims are well-supported, which are speculative, and which are misleading. Rate each major claim on a confidence scale."
         },
         {
           "id": "debate-synthesizer",
           "description": "Produces balanced conclusion from the debate",
-          "model": "glm-5",
+          "model": "glm-5.1",
           "system_prompt": "Given arguments for and against, plus fact-checking results: produce a nuanced conclusion. Identify what is well-established, what remains uncertain, and what conditions would change the answer. Provide a clear recommendation with caveats."
         }
       ]
@@ -412,25 +412,25 @@
         {
           "id": "config-detective",
           "description": "Identifies and classifies configuration differences",
-          "model": "glm-5",
+          "model": "glm-5.1",
           "system_prompt": "You are a configuration detective. Given configuration data from multiple machines, identify every difference and classify each as: INTENTIONAL (machine-specific, expected), DRIFT (unintended divergence), or UNKNOWN. For each difference, explain what the setting does and why it might differ. Be thorough and systematic."
         },
         {
           "id": "risk-assessor",
           "description": "Assesses risk of each configuration difference",
-          "model": "glm-5",
+          "model": "glm-5.1",
           "system_prompt": "You are a risk assessor for multi-machine environments. Given classified configuration differences, assess each one for: (1) operational risk if left unresolved, (2) risk of breaking something if forcefully harmonized, (3) security implications. Rate each as CRITICAL/HIGH/MEDIUM/LOW. Recommend: HARMONIZE (apply baseline), KEEP-LOCAL (intentional difference), or INVESTIGATE (need more info)."
         },
         {
           "id": "resolution-planner",
           "description": "Plans concrete resolution steps",
-          "model": "glm-5",
+          "model": "glm-5.1",
           "system_prompt": "You are an operations planner. Given risk-assessed configuration differences, create a concrete resolution plan: (1) ordered list of changes to make, (2) which machine to use as source of truth for each setting, (3) rollback procedure if something breaks, (4) validation checks after each change. Be specific with exact commands or API calls."
         },
         {
           "id": "harmonization-synthesizer",
           "description": "Produces final harmonization report with decisions",
-          "model": "glm-5",
+          "model": "glm-5.1",
           "system_prompt": "Synthesize the detective's findings, risk assessor's ratings, and planner's steps into a final harmonization report. Structure: Executive Summary (3 sentences), Decision Table (setting | current state | decision | rationale), Implementation Plan (ordered steps), and Remaining Questions. Be decisive but flag genuine uncertainties."
         }
       ]
