@@ -509,10 +509,11 @@ function handleLegacyTruncation(
         return sum + taskSize;
     }, 0);
     
-    const formatTask = createFormatTaskFunction(detail_level, truncate, currentTaskId);
-    
     // Logique intelligente de troncature basée sur detail_level (ORIGINALE)
-    if (detail_level !== 'full' && truncate === 0 && estimatedSize > max_output_length) {
+    // FIX #833: also recalculate when truncate was auto-set (not user-specified) but output still exceeds limit
+    // The auto-set value (20 for skeleton) is a default, not an explicit user choice
+    const wasTruncateAutoSet = args.truncate === undefined || args.truncate === 0;
+    if (detail_level !== 'full' && wasTruncateAutoSet && estimatedSize > max_output_length) {
         // Pour skeleton/summary seulement : forcer une troncature intelligente si la sortie est trop grande
         const totalMessages = tasksToDisplay.reduce((count, task) =>
             count + task.sequence.filter(item => 'role' in item).length, 0);
@@ -520,7 +521,10 @@ function handleLegacyTruncation(
     }
     // Mode full : JAMAIS de troncature automatique, respecter strictement la demande de l'utilisateur
     // truncate reste à sa valeur initiale (0 par défaut ou valeur explicite de l'utilisateur)
-    
+
+    // FIX #833: create formatTask AFTER truncate recalculation so the closure captures the correct value
+    const formatTask = createFormatTaskFunction(detail_level, truncate, currentTaskId);
+
     let formattedOutput = `Conversation Tree (Mode: ${view_mode}, Detail: ${detail_level})\n======================================\n`;
     if (estimatedSize > max_output_length && truncate > 0) {
         formattedOutput += `⚠️  Sortie estimée: ${Math.round(estimatedSize/1000)}k chars, limite: ${Math.round(max_output_length/1000)}k chars, troncature: ${truncate} lignes\n\n`;
