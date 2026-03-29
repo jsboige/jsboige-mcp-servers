@@ -494,7 +494,7 @@ export const searchTasksByContentTool = {
                         quantization: { rescore: true }
                     },
                     with_payload: {
-                        include: ['task_id', 'timestamp', 'chunk_type', 'content_summary', 'workspace', 'workspace_name', 'source', 'chunk_id', 'task_title', 'role', 'model']
+                        include: ['task_id', 'timestamp', 'chunk_type', 'content', 'content_summary', 'workspace', 'workspace_name', 'source', 'chunk_id', 'task_title', 'role', 'model']
                     }
                 }),
                 new Promise((_, reject) =>
@@ -514,13 +514,15 @@ export const searchTasksByContentTool = {
 
             // Phase 2: Enriched results with snippets, score interpretation, deduplication
             const results: RawSearchResult[] = rawPoints.map((result: any) => {
+                // #982 FIX: Prefer full content for snippet extraction (content_summary is only 200 chars)
+                const fullContent = String(result.payload?.content || result.payload?.content_summary || '');
                 const content = String(result.payload?.content_summary || result.payload?.content || '');
                 const score = result.score || 0;
                 return {
                     taskId: result.payload?.task_id || 'unknown',
                     score,
                     content: truncateMessage(content, 5),
-                    snippet: extractSnippet(content, search_query),
+                    snippet: extractSnippet(fullContent, search_query),
                     relevance: interpretScore(score),
                     metadata: {
                         chunk_id: result.payload?.chunk_id,
