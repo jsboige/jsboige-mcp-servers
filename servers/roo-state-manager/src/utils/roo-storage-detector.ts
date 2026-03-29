@@ -497,6 +497,25 @@ export class RooStorageDetector {
             }
         }
 
+        // #975 OOM FIX: Read each file ONCE and pass preloaded content to helpers
+        // Previously ui_messages.json was read 3 times and api_conversation_history.json 2 times per task
+        let preloadedUiContent: string | undefined = undefined;
+        let preloadedApiContent: string | undefined = undefined;
+        if (uiMessagesStats) {
+            try {
+                let raw = await fs.readFile(uiMessagesPath, 'utf-8');
+                if (raw.charCodeAt(0) === 0xFEFF) raw = raw.slice(1);
+                preloadedUiContent = raw;
+            } catch { /* will be handled by individual callers */ }
+        }
+        if (apiHistoryStats) {
+            try {
+                let raw = await fs.readFile(apiHistoryPath, 'utf-8');
+                if (raw.charCodeAt(0) === 0xFEFF) raw = raw.slice(1);
+                preloadedApiContent = raw;
+            } catch { /* will be handled by individual callers */ }
+        }
+
         // 🚀 PRODUCTION : Logique de reconstruction hiérarchique en deux passes
         // Priorité: task_metadata.json > history_item.json (fallback pour versions récentes de Roo)
         let parentTaskId = rawMetadata.parentTaskId || rawMetadata.parent_task_id || historyItemData.parentTaskId;
@@ -505,7 +524,7 @@ export class RooStorageDetector {
         if (useProductionHierarchy) {
             // Phase 1: Extraire les préfixes d'instructions de cette tâche
             if (uiMessagesStats) {
-                const instructions = await this.extractNewTaskInstructionsFromUI(uiMessagesPath, 0); // Pas de limite
+                const instructions = await this.extractNewTaskInstructionsFromUI(uiMessagesPath, 0, preloadedUiContent); // Pas de limite
 
                 childTaskInstructionPrefixes = [...new Set(instructions.map(inst => {
                     // 🎯 CORRECTION SDDD Phase 2: Utiliser computeInstructionPrefix pour alignement strict
@@ -526,7 +545,7 @@ export class RooStorageDetector {
             console.log(`[analyzeConversation] 🛡️ useProductionHierarchy=false pour ${taskId}, pas d'inférence de parent (évite récursion)`);
         }
 
-        const sequence = await this.buildSequenceFromFiles(apiHistoryPath, uiMessagesPath);
+        const sequence = await this.buildSequenceFromFiles(apiHistoryPath, uiMessagesPath, preloadedApiContent, preloadedUiContent);
 
         const messageCount = sequence.filter(s => 'role' in s).length;
         const actionCount = sequence.length - messageCount;
@@ -546,7 +565,7 @@ export class RooStorageDetector {
         // Elle se trouve dans le premier message say/text du fichier ui_messages.json
         let truncatedInstruction: string | undefined;
         if (uiMessagesStats) {
-            const mainInstruction = await this.extractMainInstructionFromUI(uiMessagesPath);
+            const mainInstruction = await this.extractMainInstructionFromUI(uiMessagesPath, preloadedUiContent);
             if (mainInstruction) {
                 // Normaliser avec computeInstructionPrefix pour cohérence avec les sous-tâches
                 truncatedInstruction = computeInstructionPrefix(mainInstruction, 192);
@@ -560,14 +579,11 @@ export class RooStorageDetector {
         const timestamps: Date[] = [];
 
         // 1. Lire les timestamps "ts" et extraire le workspace depuis api_conversation_history.json
+        // #975 OOM FIX: Reuse preloaded content instead of re-reading the file
         let extractedWorkspace: string | undefined = undefined;
-        if (apiHistoryStats) {
+        if (apiHistoryStats && preloadedApiContent) {
             try {
-                let apiContent = await fs.readFile(apiHistoryPath, 'utf-8');
-                // Nettoyage explicite du BOM (Byte Order Mark)
-                if (apiContent.charCodeAt(0) === 0xFEFF) {
-                    apiContent = apiContent.slice(1);
-                }
+                const apiContent = preloadedApiContent;
                 const apiData = JSON.parse(apiContent);
                 const messages = Array.isArray(apiData) ? apiData : (apiData?.messages || []);
 
@@ -1244,7 +1260,8 @@ export class RooStorageDetector {
    */
   private static async extractNewTaskInstructionsFromUI(
     uiMessagesPath: string,
-    maxLines: number = 0
+    maxLines: number = 0,
+    preloadedContent?: string
   ): Promise<NewTaskInstruction[]> {
     const instructions: NewTaskInstruction[] = [];
 
@@ -1252,7 +1269,7 @@ export class RooStorageDetector {
     // Les tests unitaires prouvent que ui_messages.json contient des balises XML <task> et <new_task>
     // qui doivent être parsées. Le flag onlyJsonFormat=false active tous les patterns de parsing.
     // Cette méthode lit UNIQUEMENT ui_messages.json, donc pas de contamination depuis api_conversation_history.json
-    await this.extractFromMessageFile(uiMessagesPath, instructions, maxLines, false);
+    await this.extractFromMessageFile(uiMessagesPath, instructions, maxLines, false, preloadedContent);
 
     if (process.env.ROO_DEBUG_INSTRUCTIONS === '1') {
       console.log(`[extractNewTaskInstructionsFromUI] ✅ ${instructions.length} instructions trouvées depuis ui_messages.json uniquement`);
@@ -1266,18 +1283,24 @@ export class RooStorageDetector {
    * @returns L'instruction principale ou undefined
    */
   public static async extractMainInstructionFromUI(
-    uiMessagesPath: string
+    uiMessagesPath: string,
+    preloadedContent?: string
   ): Promise<string | undefined> {
     try {
-      if (!existsSync(uiMessagesPath)) {
-        return undefined;
-      }
+      let content: string;
+      if (preloadedContent !== undefined) {
+        content = preloadedContent;
+      } else {
+        if (!existsSync(uiMessagesPath)) {
+          return undefined;
+        }
 
-      let content = await fs.readFile(uiMessagesPath, 'utf-8');
+        content = await fs.readFile(uiMessagesPath, 'utf-8');
 
-      // Nettoyage BOM
-      if (content.charCodeAt(0) === 0xFEFF) {
-        content = content.slice(1);
+        // Nettoyage BOM
+        if (content.charCodeAt(0) === 0xFEFF) {
+          content = content.slice(1);
+        }
       }
 
       const messages = JSON.parse(content);
@@ -1329,18 +1352,24 @@ export class RooStorageDetector {
     filePath: string,
     instructions: NewTaskInstruction[],
     maxLines: number = 0,
-    onlyJsonFormat: boolean = false
+    onlyJsonFormat: boolean = false,
+    preloadedContent?: string
   ): Promise<void> {
     try {
-      if (!existsSync(filePath)) {
-        return;
-      }
+      let content: string;
+      if (preloadedContent !== undefined) {
+        content = preloadedContent;
+      } else {
+        if (!existsSync(filePath)) {
+          return;
+        }
 
-      let content = await fs.readFile(filePath, 'utf-8');
+        content = await fs.readFile(filePath, 'utf-8');
 
-      // Nettoyage BOM
-      if (content.charCodeAt(0) === 0xFEFF) {
-        content = content.slice(1);
+        // Nettoyage BOM
+        if (content.charCodeAt(0) === 0xFEFF) {
+          content = content.slice(1);
+        }
       }
 
       // ✅ PRODUCTION : Traitement complet du fichier
@@ -1583,17 +1612,24 @@ export class RooStorageDetector {
    */
   private static async buildSequenceFromFiles(
     apiHistoryPath: string,
-    uiMessagesPath: string
+    uiMessagesPath: string,
+    preloadedApiContent?: string,
+    preloadedUiContent?: string
   ): Promise<(MessageSkeleton | ActionMetadata)[]> {
     let combinedItems: any[] = [];
     const MAX_CONTENT_LENGTH = 400;
 
     // Helper pour lire et parser un fichier JSON en toute sécurité
-    const readJsonFile = async (filePath: string): Promise<any[]> => {
-        if (!existsSync(filePath)) return [];
+    const readJsonFile = async (filePath: string, preloadedContent?: string): Promise<any[]> => {
         try {
-            let content = await fs.readFile(filePath, 'utf-8');
-            if (content.charCodeAt(0) === 0xFEFF) content = content.slice(1);
+            let content: string;
+            if (preloadedContent !== undefined) {
+                content = preloadedContent;
+            } else {
+                if (!existsSync(filePath)) return [];
+                content = await fs.readFile(filePath, 'utf-8');
+                if (content.charCodeAt(0) === 0xFEFF) content = content.slice(1);
+            }
 
             // 1. Tentative de parsing JSON standard (pour api_conversation_history.json)
             try {
@@ -1649,8 +1685,8 @@ export class RooStorageDetector {
         }
     };
 
-    const apiItems = await readJsonFile(apiHistoryPath);
-    const uiItems = await readJsonFile(uiMessagesPath);
+    const apiItems = await readJsonFile(apiHistoryPath, preloadedApiContent);
+    const uiItems = await readJsonFile(uiMessagesPath, preloadedUiContent);
     combinedItems = [...apiItems, ...uiItems];
 
     let sequence: (MessageSkeleton | ActionMetadata)[] = [];
