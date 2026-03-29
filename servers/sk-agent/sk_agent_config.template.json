@@ -28,13 +28,13 @@
       "context_window": 128000
     },
     {
-      "id": "zwz-8b",
+      "id": "omnicoder-9b",
       "enabled": false,
       "base_url": "https://api.mini.text-generation-webui.myia.io/v1",
       "api_key": "YOUR_MINI_API_KEY_HERE",
-      "model_id": "zwz-8b",
+      "model_id": "omnicoder-9b",
       "vision": true,
-      "description": "ZwZ-8B AWQ — 135 tok/s, 131K ctx. Fine-grained vision specialist (MMStar 63%, MME 1248). Beats Qwen3.5 on spatial/OCR tasks (+9.8 pts MMStar)",
+      "description": "OmniCoder-9B — 96-107 tok/s, 131K ctx, thinking+vision, OCR 97.5%, MME 1258.5, tool call 1.09s. Replaces ZwZ-8B on GPU 2 (port 5001). qwen3_coder parser.",
       "context_window": 131072
     },
     {
@@ -165,7 +165,7 @@
     },
     {
       "id": "vision-analyst",
-      "description": "Image and document analysis specialist. Cloud: GLM-4.6V. Local alternative: vision-local (ZwZ-8B, faster, better fine-grained)",
+      "description": "Image and document analysis specialist. Cloud: GLM-4.6V. Local alternative: vision-local (OmniCoder-9B, thinking+vision, OCR 97.5%)",
       "model": "glm-4.6v",
       "system_prompt": "You are a vision analysis specialist. Describe images in detail, focusing on relevant visual elements. Be precise and thorough.",
       "mcps": ["searxng"],
@@ -173,9 +173,17 @@
     },
     {
       "id": "vision-local",
-      "description": "Fast local fine-grained vision (ZwZ-8B — 135 tok/s, MMStar 63%). Best for OCR, spatial reasoning, detailed analysis",
-      "model": "zwz-8b",
+      "description": "Fast local vision+thinking (OmniCoder-9B — 96-107 tok/s, OCR 97.5%, MME 1258.5). Best for OCR, spatial reasoning, detailed analysis with thinking mode",
+      "model": "omnicoder-9b",
       "system_prompt": "You are a vision analysis assistant. Analyze images carefully and describe what you see. Be concise but thorough.",
+      "mcps": [],
+      "memory": { "enabled": false }
+    },
+    {
+      "id": "coder",
+      "description": "Agentic coding assistant (OmniCoder-9B — 96-107 tok/s, tool call 1.09s, thinking mode). Best for local coding tasks with tool use",
+      "model": "omnicoder-9b",
+      "system_prompt": "You are an agentic coding assistant. When given a coding task: (1) analyze the requirements, (2) plan your approach, (3) implement step by step, (4) verify the result. Use tools when available. Think carefully about edge cases and error handling. Always respond in the same language as the user.",
       "mcps": [],
       "memory": { "enabled": false }
     },
