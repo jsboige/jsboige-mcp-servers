@@ -120,6 +120,8 @@ export async function startProactiveMetadataRepair(): Promise<void> {
 
         // 2. Traiter la réparation en parallèle (avec une limite)
         const concurrencyLimit = 5;
+        let processedCount = 0;
+        let stoppedByMemoryPressure = false;
         for (let i = 0; i < tasksToRepair.length; i += concurrencyLimit) {
             const batch = tasksToRepair.slice(i, i + concurrencyLimit);
             await Promise.all(batch.map(async (task) => {
@@ -136,10 +138,28 @@ export async function startProactiveMetadataRepair(): Promise<void> {
                      console.debug(`[Auto-Repair] ❌ Échec de réparation pour ${task.taskId}:`, e);
                 }
             }));
+            processedCount = i + batch.length;
             console.log(`[Auto-Repair] 📊 Lot traité, ${repairedCount}/${tasksToRepair.length} réparées jusqu'à présent...`);
+
+            // #975 OOM FIX: Memory pressure guard — stop repair if heap exceeds 1.5 GB
+            const memUsage = process.memoryUsage();
+            if (memUsage.heapUsed > 1.5 * 1024 * 1024 * 1024) {
+                console.warn(`[Auto-Repair] ⚠️ Memory pressure detected (${Math.round(memUsage.heapUsed / 1024 / 1024)}MB heap used). Pausing repair — ${tasksToRepair.length - processedCount} tasks remaining.`);
+                stoppedByMemoryPressure = true;
+                break;
+            }
         }
 
-        console.log(`[Auto-Repair] ✅ Scan terminé. ${repairedCount} métadonnées réparées avec succès.`);
+        // #975 OOM FIX: Hint GC after heavy repair loop
+        if (global.gc) {
+            global.gc();
+        }
+
+        if (stoppedByMemoryPressure) {
+            console.log(`[Auto-Repair] ⚠️ Scan interrompu par pression mémoire. ${repairedCount} métadonnées réparées sur ${tasksToRepair.length} prévues.`);
+        } else {
+            console.log(`[Auto-Repair] ✅ Scan terminé. ${repairedCount} métadonnées réparées avec succès.`);
+        }
 
     } catch (error) {
         console.error('[Auto-Repair] ❌ Erreur critique lors du scan:', error);
