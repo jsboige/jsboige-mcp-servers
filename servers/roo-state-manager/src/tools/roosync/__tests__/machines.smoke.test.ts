@@ -97,9 +97,9 @@ describe('SMOKE: roosync_machines', () => {
   });
 
   afterEach(() => {
-    // Cleanup test files
+    // Cleanup test files (maxRetries for CI where ENOTEMPTY can occur transiently)
     if (fs.existsSync(testSharedStatePath)) {
-      fs.rmSync(testSharedStatePath, { recursive: true, force: true });
+      fs.rmSync(testSharedStatePath, { recursive: true, force: true, maxRetries: 3, retryDelay: 100 });
     }
 
     // Reset RooSyncService singleton to restore original state
