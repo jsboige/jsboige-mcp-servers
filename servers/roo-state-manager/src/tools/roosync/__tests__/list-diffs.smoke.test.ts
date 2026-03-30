@@ -205,9 +205,20 @@ describe('SMOKE: roosync_list_diffs', () => {
     // Restore original environment
     process.env = originalEnv;
 
-    // Cleanup test files
+    // Cleanup test files (retry for Node 22 ENOTEMPTY on CI Linux)
     if (fs.existsSync(testSharedStatePath)) {
-      fs.rmSync(testSharedStatePath, { recursive: true, force: true });
+      for (let attempt = 0; attempt < 3; attempt++) {
+        try {
+          fs.rmSync(testSharedStatePath, { recursive: true, force: true });
+          break;
+        } catch (e: any) {
+          if (e.code === 'ENOTEMPTY' && attempt < 2) {
+            // Brief pause then retry
+            continue;
+          }
+          throw e;
+        }
+      }
     }
 
     // Note: No RooSyncService reset needed - smoke tests use tool functions directly
