@@ -192,10 +192,10 @@ export async function loadClaudeCodeSessions(conversationCache: Map<string, Conv
                     taskId, location.projectPath
                 );
                 if (skeleton && skeleton.sequence.length > 0) {
-                    // #852 FIX: Keep dataSource as project path (for indexing), add separate source field
+                    // #937 FIX: Set both source and dataSource consistently for Claude sessions
                     if (!skeleton.metadata) skeleton.metadata = {} as any;
                     skeleton.metadata.source = 'claude-code'; // For filtering in Qdrant
-                    // dataSource already set by extractMetadata() to projectPath - DON'T overwrite!
+                    skeleton.metadata.dataSource = 'claude'; // For indexTaskInQdrant() source detection
                     conversationCache.set(taskId, skeleton);
                     loaded++;
                 }
@@ -294,7 +294,10 @@ export function startSkeletonRefreshWorker(state: ServerState): void {
                                 const stat = await fs.stat(filePath);
                                 if (stat.mtime.getTime() <= lastCheck) continue;
 
-                                const taskId = `claude-${file.replace('.jsonl', '')}`;
+                                // #937 FIX: Use project-dir--UUID format so TaskIndexer can resolve the path
+                                const projectBasename = path.basename(location.projectPath);
+                                const sessionUuid = file.replace('.jsonl', '');
+                                const taskId = `claude-${projectBasename}--${sessionUuid}`;
                                 const existingSkeleton = state.conversationCache.get(taskId);
                                 const existingLastActivity = existingSkeleton?.metadata?.lastActivity
                                     ? new Date(existingSkeleton.metadata.lastActivity).getTime()

@@ -495,9 +495,12 @@ export class LLMService {
             const client = getChatOpenAIClient();
             
             // Configuration de l'appel
+            // #954: Prepend /no_think for Qwen 3.5 thinking models — prevents content:null
+            // when reasoning tokens consume all max_tokens before generating output
+            const effectivePrompt = '/no_think\n' + prompt;
             const openaiParams = {
                 model: modelConfig.modelName,
-                messages: [{ role: 'user' as const, content: prompt }],
+                messages: [{ role: 'user' as const, content: effectivePrompt }],
                 temperature: 0.1,
                 max_tokens: 4000,
                 // Ajouter response_format si présent
@@ -515,7 +518,9 @@ export class LLMService {
             const duration = endTime - startTime;
 
             // Extraction de la réponse
-            const response = completion.choices[0]?.message?.content || '';
+            // #954: Fallback to reasoning field for thinking models (Qwen 3.5) where content may be null
+            const message = completion.choices[0]?.message;
+            const response = message?.content || (message as any)?.reasoning || '';
             
             // Construction du résultat
             const result: LLMCallResult = {
