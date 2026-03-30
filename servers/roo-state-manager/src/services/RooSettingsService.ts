@@ -59,6 +59,7 @@ const SYNC_SAFE_KEYS = new Set([
   'currentApiConfigName',
   'listApiConfigMeta',
   'profileThresholds',
+  'modeApiConfigs',
   // Behavior settings
   'autoApprovalEnabled',
   'alwaysAllowReadOnly',
