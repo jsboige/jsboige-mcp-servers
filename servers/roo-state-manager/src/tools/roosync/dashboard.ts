@@ -45,9 +45,9 @@ import type OpenAI from 'openai';
 
 const logger: Logger = createLogger('DashboardTool');
 
-// Auto-condensation threshold (#858 - ajusté à 150/50)
-const CONDENSE_THRESHOLD = 150;
-const CONDENSE_KEEP = 50;
+// Auto-condensation threshold (#858 - #1017 ajusté à 100/25)
+const CONDENSE_THRESHOLD = 100;
+const CONDENSE_KEEP = 25;
 const CONDENSE_ARCHIVE = CONDENSE_THRESHOLD - CONDENSE_KEEP; // 100
 
 // === Schemas Zod ===
@@ -561,8 +561,26 @@ async function condenseIntercom(
     return dashboard; // Rien à condenser
   }
 
+  // #1017: Tags critiques à préserver même s'ils sont dans la zone d'archive
+  const CRITICAL_TAGS = ['WARN', 'ERROR', 'TASK', 'WAKE-CLAUDE'];
+
   const toArchive = messages.slice(0, messages.length - keepCount);
-  const toKeep = messages.slice(messages.length - keepCount);
+  let toKeep = messages.slice(messages.length - keepCount);
+
+  // #1017: Sauvetage des messages critiques depuis la zone d'archive
+  const criticalFromArchive = toArchive.filter(msg =>
+    msg.tags?.some(tag => CRITICAL_TAGS.includes(tag))
+  );
+  let rescuedCount = 0;
+  if (criticalFromArchive.length > 0) {
+    const keepIds = new Set(toKeep.map(m => m.id));
+    const newCritical = criticalFromArchive.filter(m => !keepIds.has(m.id));
+    if (newCritical.length > 0) {
+      toKeep = [...newCritical, ...toKeep];
+      rescuedCount = newCritical.length;
+      logger.info('Critical messages rescued from archive', { key, rescuedCount, tags: CRITICAL_TAGS });
+    }
+  }
 
   // #858 : Générer les résumés LLM AVANT d'archiver
   const llmSummary = await generateLLMSummary(toArchive);
@@ -659,7 +677,7 @@ ${archiveMessages}
       machineId: 'system',
       workspace: 'system'
     },
-    content: `---\n**CONDENSATION** - ${now}\n\n${toArchive.length} messages archivés dans \`archive/${path.basename(archivePath)}\`\n${toKeep.length} messages conservés (plus récents)\n${llmSummary ? '✅ Résumé LLM généré' : '⚠️ Résumé LLM indisponible'}\n${statusUpdated ? '✅ Statut mis à jour' : '⚠️ Statut non mis à jour'}\n---`,
+    content: `---\n**CONDENSATION** - ${now}\n\n${toArchive.length} messages archivés dans \`archive/${path.basename(archivePath)}\`\n${toKeep.length} messages conservés (25 récents${rescuedCount > 0 ? ` + ${rescuedCount} critiques rescapés` : ''})\n${llmSummary ? '✅ Résumé LLM généré' : '⚠️ Résumé LLM indisponible'}\n${statusUpdated ? '✅ Statut mis à jour' : '⚠️ Statut non mis à jour'}\n---`,
     tags: ['SYSTEM', 'CONDENSATION']
   };
   systemMessages.push(condenseNotice);
@@ -779,7 +797,7 @@ async function handleRead(
   }
 
   const section = args.section ?? 'all';
-  const intercomLimit = args.intercomLimit ?? 50;
+  const intercomLimit = args.intercomLimit ?? 20;
   let data: Partial<Dashboard> = {};
 
   if (section === 'status' || section === 'all') {

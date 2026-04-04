@@ -637,7 +637,25 @@ export function registerCallToolHandler(
            case 'roosync_dashboard':
                try {
                    const dashboardResult = await toolExports.roosyncDashboard(args as any);
-                   result = { content: [{ type: 'text', text: JSON.stringify(dashboardResult, null, 2) }] };
+                   let jsonStr = JSON.stringify(dashboardResult, null, 2);
+                   // #1017: Size guard — prevent host "written to file" redirect
+                   const MAX_DASHBOARD_RESPONSE = 100_000; // 100KB
+                   if (jsonStr.length > MAX_DASHBOARD_RESPONSE && dashboardResult.data?.intercom?.messages) {
+                       const originalCount = dashboardResult.data.intercom.messages.length;
+                       const truncated = {
+                           ...dashboardResult,
+                           data: {
+                               ...dashboardResult.data,
+                               intercom: {
+                                   ...dashboardResult.data.intercom,
+                                   messages: dashboardResult.data.intercom.messages.slice(-10)
+                               }
+                           }
+                       };
+                       truncated.message = `[SIZE-GUARD] Response truncated: ${originalCount}→10 messages (${Math.round(jsonStr.length / 1024)}KB exceeded 100KB). Use intercomLimit for targeted reads.`;
+                       jsonStr = JSON.stringify(truncated, null, 2);
+                   }
+                   result = { content: [{ type: 'text', text: jsonStr }] };
                } catch (error) {
                    result = { content: [{ type: 'text', text: `Error: ${(error as Error).message}` }], isError: true };
                }
