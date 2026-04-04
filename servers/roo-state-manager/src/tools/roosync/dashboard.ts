@@ -1001,18 +1001,24 @@ async function handleCondense(
   }
 
   const condensedDashboard = await condenseIntercom(key, dashboard, keepCount);
-  await writeDashboardFile(key, condensedDashboard);
+  const actuallyCondensed = condensedDashboard.intercom.messages.length < beforeCount;
 
-  const archivedCount = beforeCount - condensedDashboard.intercom.messages.length + 1; // +1 pour le message système
+  if (actuallyCondensed) {
+    await writeDashboardFile(key, condensedDashboard);
+  }
+
+  const archivedCount = actuallyCondensed ? beforeCount - condensedDashboard.intercom.messages.length : 0;
   return {
     success: true,
     action: 'condense',
     key,
     type: args.type!,
     messageCount: condensedDashboard.intercom.messages.length,
-    condensed: true,
-    archivedCount: beforeCount - keepCount,
-    message: `Condensation terminée : ${beforeCount - keepCount} messages archivés, ${keepCount} conservés`
+    condensed: actuallyCondensed,
+    archivedCount,
+    message: actuallyCondensed
+      ? `Condensation terminée : ${archivedCount} messages archivés, ${condensedDashboard.intercom.messages.length} conservés`
+      : `Condensation annulée (LLM indisponible) — ${beforeCount} messages inchangés`
   };
 }
 
