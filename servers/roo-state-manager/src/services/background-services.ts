@@ -63,6 +63,13 @@ export async function loadSkeletonsFromDisk(conversationCache: Map<string, Conve
 }
 
 /**
+ * #1072: Maximum number of tasks to scan during proactive repair.
+ * On machines with thousands of tasks, scanning all of them blocks startup.
+ * The remaining tasks will be handled by the periodic skeleton refresh worker.
+ */
+const MAX_PROACTIVE_REPAIR_TASKS = 200;
+
+/**
  * Auto-réparation proactive des métadonnées manquantes au démarrage
  */
 export async function startProactiveMetadataRepair(): Promise<void> {
@@ -116,7 +123,14 @@ export async function startProactiveMetadataRepair(): Promise<void> {
             return;
         }
 
-        console.log(`[Auto-Repair] 📋 Trouvé ${tasksToRepair.length} tâches nécessitant une réparation de métadonnées.`);
+        // #1072 FIX: Cap the number of tasks to repair at startup
+        const totalFound = tasksToRepair.length;
+        if (tasksToRepair.length > MAX_PROACTIVE_REPAIR_TASKS) {
+            console.log(`[Auto-Repair] ⚠️ ${totalFound} tâches trouvées, limitées à ${MAX_PROACTIVE_REPAIR_TASKS} (le reste sera traité par le worker périodique)`);
+            tasksToRepair.length = MAX_PROACTIVE_REPAIR_TASKS;
+        }
+
+        console.log(`[Auto-Repair] 📋 Trouvé ${totalFound} tâches nécessitant une réparation, traitement de ${tasksToRepair.length}.`);
 
         // 2. Traiter la réparation en parallèle (avec une limite)
         const concurrencyLimit = 5;
@@ -344,49 +358,65 @@ export function startSkeletonRefreshWorker(state: ServerState): void {
 
 /**
  * Initialise les services background
+ *
+ * #1072 FIX: Only skeleton loading is blocking (needed for tool handlers).
+ * Everything else (metadata repair, Qdrant indexing, heartbeat) runs as
+ * fire-and-forget background tasks so MCP tools are available immediately.
  */
 export async function initializeBackgroundServices(state: ServerState): Promise<void> {
     try {
         console.log('🚀 Initialisation des services background à 2 niveaux...');
 
+        // ===== BLOCKING PHASE (fast, required for tools) =====
         // Niveau 1: Chargement initial des squelettes depuis le disque
         await loadSkeletonsFromDisk(state.conversationCache);
 
         // #604: Discover Claude Code sessions for background indexation
         await loadClaudeCodeSessions(state.conversationCache);
 
-        // Auto-réparation proactive: Génération des métadonnées manquantes
-        await startProactiveMetadataRepair();
+        console.log('✅ Phase bloquante terminée — outils MCP disponibles');
+
+        // ===== NON-BLOCKING PHASE (fire-and-forget) =====
+        // #1072 FIX: These run in background and MUST NOT block tool availability.
+        // On machines with thousands of tasks or Qdrant inconsistencies (e.g. po-2023
+        // with 165k point discrepancy), these can take minutes or never finish.
+
+        // Auto-réparation proactive: fire-and-forget with timeout
+        startProactiveMetadataRepair().catch((error: any) => {
+            console.warn('[Auto-Repair] Background repair failed (non-blocking):', error?.message || error);
+        });
 
         // #883 Worker A: Start periodic skeleton refresh (incremental, non-blocking)
         startSkeletonRefreshWorker(state);
 
         // Niveau 2: Initialisation du service d'indexation Qdrant asynchrone (Worker B)
-        await initializeQdrantIndexingService(state);
+        // Fire-and-forget — if Qdrant is slow or inconsistent, tools still work
+        initializeQdrantIndexingService(state).catch((error: any) => {
+            console.warn('[Qdrant] Background indexing init failed (non-blocking):', error?.message || error);
+        });
 
         // Heartbeat service: disabled by default to prevent GDrive sync storm (#607)
         // Each 30s write × 6 machines = 720 GDrive syncs/hour
         // Use HEARTBEAT_AUTO_START=true to enable, or call roosync_heartbeat tool on-demand
         if (process.env.HEARTBEAT_AUTO_START === 'true') {
-            try {
-                const rooSyncService = RooSyncService.getInstance();
-                await rooSyncService.startHeartbeatService(
-                    (machineId: string) => {
-                        console.log(`[Heartbeat] Machine offline: ${machineId}`);
-                    },
-                    (machineId: string) => {
-                        console.log(`[Heartbeat] Machine online: ${machineId}`);
-                    }
-                );
+            const rooSyncService = RooSyncService.getInstance();
+            rooSyncService.startHeartbeatService(
+                (machineId: string) => {
+                    console.log(`[Heartbeat] Machine offline: ${machineId}`);
+                },
+                (machineId: string) => {
+                    console.log(`[Heartbeat] Machine online: ${machineId}`);
+                }
+            ).then(() => {
                 console.log('✅ Heartbeat service auto-started');
-            } catch (error: any) {
+            }).catch((error: any) => {
                 console.warn('⚠️ Heartbeat init failed (non-blocking):', error.message);
-            }
+            });
         } else {
             console.log('ℹ️ Heartbeat auto-start disabled (#607). Use roosync_heartbeat tool or set HEARTBEAT_AUTO_START=true');
         }
 
-        console.log('✅ Services background initialisés avec succès');
+        console.log('✅ Services background initialisés — tâches de fond en cours');
     } catch (error: any) {
         console.error('❌ Erreur lors de l\'initialisation des services background:', error);
         throw error;
@@ -420,6 +450,13 @@ async function initializeQdrantIndexingService(state: ServerState): Promise<void
 }
 
 /**
+ * #1072: Maximum queue size for initial Qdrant indexation scan.
+ * Prevents the queue from exploding on machines with massive Qdrant inconsistencies.
+ * The background worker processes the queue progressively.
+ */
+const MAX_INITIAL_INDEX_QUEUE = 500;
+
+/**
  * Scanner pour identifier les squelettes ayant besoin d'une réindexation
  */
 async function scanForOutdatedQdrantIndex(state: ServerState): Promise<void> {
@@ -450,6 +487,11 @@ async function scanForOutdatedQdrantIndex(state: ServerState): Promise<void> {
         }
 
         if (decision.shouldIndex) {
+            // #1072 FIX: Cap the initial queue size to prevent explosion
+            if (state.qdrantIndexQueue.size >= MAX_INITIAL_INDEX_QUEUE) {
+                skipCount++;
+                continue; // Will be picked up by periodic refresh worker
+            }
             state.qdrantIndexQueue.add(taskId);
             if (decision.action === 'retry') {
                 retryCount++;
