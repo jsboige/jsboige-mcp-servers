@@ -693,7 +693,7 @@ describe('helper functions (indirect via handler)', () => {
 	});
 
 	test('extractSnippet: centers around query match', async () => {
-		const longContent = 'A'.repeat(200) + ' rate limiting implementation here ' + 'B'.repeat(200);
+		const longContent = 'A'.repeat(400) + ' rate limiting implementation here ' + 'B'.repeat(400);
 		mockQdrantClient.search.mockResolvedValue([
 			{ score: 0.8, payload: { task_id: 't1', content: longContent, host_os: 'h1' } }
 		]);

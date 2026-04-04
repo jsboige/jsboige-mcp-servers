@@ -51,7 +51,7 @@ function truncateMessage(message: string, truncate: number): string {
  * Extract a context snippet centered around the best matching portion of content.
  * Looks for query words in the content and returns surrounding text.
  */
-function extractSnippet(content: string, query: string, maxChars: number = 300): string {
+function extractSnippet(content: string, query: string, maxChars: number = 600): string {
     if (!content) return '';
 
     const lowerContent = content.toLowerCase();
