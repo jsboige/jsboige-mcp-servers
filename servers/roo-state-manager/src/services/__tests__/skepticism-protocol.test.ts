@@ -13,7 +13,7 @@ import * as path from 'path'
 
 // Path to skepticism-protocol.md files
 const CLAUDE_RULES_PATH = path.resolve(__dirname, '../../../../../../../.claude/rules/skepticism-protocol.md')
-const ROO_RULES_PATH = path.resolve(__dirname, '../../../../../../../.roo/rules/20-skepticism-protocol.md')
+const ROO_RULES_PATH = path.resolve(__dirname, '../../../../../../../.roo/rules/21-skepticism-protocol.md')
 
 describe('Skepticism Protocol - File Validation', () => {
   it('skepticism-protocol.md exists in .claude/rules/', () => {
