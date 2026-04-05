@@ -9,7 +9,7 @@ import { describe, test, expect, vi, beforeEach, afterEach } from 'vitest';
 
 const { mockGetQdrantClient, mockQdrant, mockEmbeddingCreate } = vi.hoisted(() => ({
 	mockGetQdrantClient: vi.fn(),
-	mockQdrant: { getCollection: vi.fn(), query: vi.fn() },
+	mockQdrant: { getCollection: vi.fn(), query: vi.fn(), getCollections: vi.fn() },
 	mockEmbeddingCreate: vi.fn()
 }));
 
@@ -26,6 +26,7 @@ vi.mock('openai', () => ({
 import {
 	getWorkspaceCollectionName,
 	getWorkspaceCollectionVariants,
+	listWorkspaceCollections,
 	codebaseSearchTool,
 	handleCodebaseSearch
 } from '../search-codebase.tool.js';
@@ -143,6 +144,101 @@ describe('search-codebase.tool', () => {
 			expect(winVariants.length).toBeGreaterThanOrEqual(unixVariants.length);
 		});
 	});
+
+		// ============================================================
+		// listWorkspaceCollections
+		// ============================================================
+
+		describe('listWorkspaceCollections', () => {
+			test('returns ws-* collection names', async () => {
+				mockQdrant.getCollections.mockResolvedValue({
+					collections: [
+						{ name: 'ws-abc123' },
+						{ name: 'ws-def456' },
+						{ name: 'roo_tasks_semantic_index' }
+					]
+				});
+
+				const collections = await listWorkspaceCollections();
+				expect(collections).toEqual(['ws-abc123', 'ws-def456']);
+			});
+
+			test('returns empty array on error', async () => {
+				mockQdrant.getCollections.mockRejectedValue(new Error('connection failed'));
+				const collections = await listWorkspaceCollections();
+				expect(collections).toEqual([]);
+			});
+
+			test('returns empty array when no ws-* collections exist', async () => {
+				mockQdrant.getCollections.mockResolvedValue({
+					collections: [{ name: 'roo_tasks_semantic_index' }]
+				});
+				const collections = await listWorkspaceCollections();
+				expect(collections).toEqual([]);
+			});
+		});
+
+		// ============================================================
+		// handleCodebaseSearch - Phase B fallback (#1085)
+		// ============================================================
+
+		describe('handleCodebaseSearch - Phase B fallback', () => {
+			beforeEach(() => {
+				process.env.EMBEDDING_API_KEY = 'test-key';
+			});
+
+			afterEach(() => {
+				delete process.env.EMBEDDING_API_KEY;
+			});
+
+			test('falls back to listWorkspaceCollections when no hash variant matches', async () => {
+				// Phase A: all hash variants fail (getCollection rejects for non-fallback names)
+				// Phase B: getCollection succeeds for ws-fallbackcollection
+				mockQdrant.getCollection.mockImplementation(async (name: string) => {
+					if (name === 'ws-fallbackcollection') {
+						return { points_count: 5000 };
+					}
+					throw new Error('not found');
+				});
+
+				// Phase B: listCollections returns a ws-* collection
+				mockQdrant.getCollections.mockResolvedValue({
+					collections: [{ name: 'ws-fallbackcollection' }]
+				});
+
+				// Embedding + search succeed
+				mockEmbeddingCreate.mockResolvedValue({
+					data: [{ embedding: new Array(8).fill(0.1) }]
+				});
+				mockQdrant.query.mockResolvedValue({
+					points: [{
+						score: 0.85,
+						payload: { filePath: 'src/app.ts', codeChunk: 'const x = 1;', startLine: 1, endLine: 5 }
+					}]
+				});
+
+				const result = await handleCodebaseSearch({ query: 'app', workspace: '/ws' });
+				const parsed = JSON.parse(result.content[0].text);
+				expect(parsed.status).toBe('success');
+				expect(parsed.collection).toBe('ws-fallbackcollection');
+				expect(mockQdrant.getCollections).toHaveBeenCalled();
+			});
+
+			test('returns collection_not_found with fallback_list_tried when both phases fail', async () => {
+				// Phase A: all hash variants fail
+				mockQdrant.getCollection.mockRejectedValue(new Error('not found'));
+
+				// Phase B: no ws-* collections exist
+				mockQdrant.getCollections.mockResolvedValue({
+					collections: [{ name: 'roo_tasks_semantic_index' }]
+				});
+
+				const result = await handleCodebaseSearch({ query: 'test', workspace: '/fake' });
+				const parsed = JSON.parse(result.content[0].text);
+				expect(parsed.status).toBe('collection_not_found');
+				expect(parsed.fallback_list_tried).toBe(true);
+			});
+		});
 
 	// ============================================================
 	// handleCodebaseSearch - validation
