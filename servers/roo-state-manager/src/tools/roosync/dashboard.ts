@@ -45,10 +45,11 @@ import type OpenAI from 'openai';
 
 const logger: Logger = createLogger('DashboardTool');
 
-// Auto-condensation threshold (#858 - ajusté à 150/50)
-const CONDENSE_THRESHOLD = 150;
-const CONDENSE_KEEP = 50;
-const CONDENSE_ARCHIVE = CONDENSE_THRESHOLD - CONDENSE_KEEP; // 100
+// Auto-condensation: size-based (50KB) + keep 20 most recent messages
+// When dashboard file exceeds MAX_DASHBOARD_SIZE_BYTES, condense old messages
+// into the status section via LLM, keeping only CONDENSE_KEEP recent messages.
+const MAX_DASHBOARD_SIZE_BYTES = 50 * 1024; // 50 KB
+const CONDENSE_KEEP = 20;
 
 // === Schemas Zod ===
 
@@ -114,7 +115,7 @@ export const DashboardArgsSchema = z.object({
   section: z.enum(['status', 'intercom', 'all']).optional()
     .describe('Section à lire (défaut: all)'),
   intercomLimit: z.number().optional()
-    .describe('Nombre max de messages intercom retournés (défaut: 50)'),
+    .describe('Nombre max de messages intercom retournés (défaut: tous). Le dashboard est auto-condensé à 50KB, donc tous les messages sont normalement visibles.'),
 
   // Pour write (section status)
   content: z.string().optional()
@@ -346,7 +347,7 @@ function generateMessageId(): string {
  * @returns Résumé markdown ou null si échec (fallback)
  */
 async function generateLLMSummary(messages: IntercomMessage[]): Promise<string | null> {
-  const timeoutMs = 60000; // 60 secondes (1 minute)
+  const timeoutMs = 180000; // 180 secondes (3 minutes — LLM local peut mettre du temps à démarrer)
   const startTime = Date.now();
 
   try {
@@ -454,7 +455,7 @@ async function generateStatusUpdate(
   previousStatus: string,
   archivedMessages: IntercomMessage[]
 ): Promise<string | null> {
-  const timeoutMs = 60000; // 60 secondes (1 minute)
+  const timeoutMs = 180000; // 180 secondes (3 minutes — LLM local peut mettre du temps à démarrer)
   const startTime = Date.now();
 
   try {
@@ -478,11 +479,12 @@ Règles de mise à jour :
 Format de sortie : Markdown structuré avec le même style que le statut précédent.
 
 IMPORTANT :
-- Être CONCIS (max 100 lignes)
+- Être CONCIS mais COMPLET (max 150 lignes)
 - Ne PAS répéter les informations
-- Priorité aux tags [DONE], [ERROR], [WARN], [BLOCKED]
+- Priorité aux tags [DONE], [ERROR], [WARN], [BLOCKED], [TASK], [WAKE-CLAUDE]
 - Conserver les sections utiles du statut précédent
-- Ajouter une section "## Dernière Condensation" avec un résumé des changements`;
+- Ajouter une section "## Dernière Condensation" avec un résumé des changements
+- Le statut est la MÉMOIRE CONSOLIDÉE du dashboard — tout ce qui n'est pas dans les messages récents doit être ici`;
 
     const userPrompt = `**Statut précédent :**
 ${previousStatus}
@@ -510,7 +512,7 @@ Génère le statut mis à jour en intégrant les informations importantes des me
           { role: 'system', content: systemPrompt },
           { role: 'user', content: userPrompt }
         ],
-        max_tokens: 2000,
+        max_tokens: 3000,
         temperature: 0.3
       }, {
         timeout: timeoutMs
@@ -761,6 +763,25 @@ export async function roosyncDashboard(args: DashboardArgs): Promise<DashboardRe
   }
 }
 
+/**
+ * Estimates the serialized file size of a dashboard (in bytes).
+ * Used to decide when to trigger size-based condensation.
+ */
+function estimateDashboardSize(dashboard: Dashboard): number {
+  // Approximate: frontmatter (~200B) + status + messages serialized as markdown
+  let size = 200; // frontmatter overhead
+  size += Buffer.byteLength(dashboard.status.markdown || '', 'utf8');
+  for (const msg of dashboard.intercom.messages) {
+    // Each message: header (~100B) + content + separator (~10B)
+    size += 110;
+    size += Buffer.byteLength(msg.content || '', 'utf8');
+    if (msg.tags) {
+      size += msg.tags.join(', ').length + 10;
+    }
+  }
+  return size;
+}
+
 async function handleRead(
   key: string,
   args: DashboardArgs,
@@ -779,14 +800,19 @@ async function handleRead(
   }
 
   const section = args.section ?? 'all';
-  const intercomLimit = args.intercomLimit ?? 50;
+  // intercomLimit is kept as an optional safety net but defaults to returning ALL messages.
+  // The dashboard should stay under 50KB thanks to size-based condensation,
+  // so agents always see the full picture without needing to paginate.
+  const intercomLimit = args.intercomLimit;
   let data: Partial<Dashboard> = {};
 
   if (section === 'status' || section === 'all') {
     data.status = dashboard.status;
   }
   if (section === 'intercom' || section === 'all') {
-    const messages = dashboard.intercom.messages.slice(-intercomLimit);
+    const messages = intercomLimit
+      ? dashboard.intercom.messages.slice(-intercomLimit)
+      : dashboard.intercom.messages;
     data.intercom = {
       ...dashboard.intercom,
       messages
@@ -911,15 +937,23 @@ async function handleAppend(
     }
   };
 
-  // Auto-condensation si > CONDENSE_THRESHOLD messages
+  // Auto-condensation based on file size (50KB threshold)
+  // Estimate the file size by serializing the dashboard content
   let condensed = false;
   let archivedCount = 0;
   let finalDashboard = updatedDashboard;
-  if (updatedDashboard.intercom.messages.length > CONDENSE_THRESHOLD) {
-    logger.info('Auto-condensation déclenchée', { key, count: updatedDashboard.intercom.messages.length });
+  const estimatedSize = estimateDashboardSize(updatedDashboard);
+  if (estimatedSize > MAX_DASHBOARD_SIZE_BYTES && updatedDashboard.intercom.messages.length > CONDENSE_KEEP) {
+    logger.info('Auto-condensation déclenchée (taille)', {
+      key,
+      estimatedSize: `${Math.round(estimatedSize / 1024)}KB`,
+      threshold: `${Math.round(MAX_DASHBOARD_SIZE_BYTES / 1024)}KB`,
+      messageCount: updatedDashboard.intercom.messages.length
+    });
+    const beforeCount = updatedDashboard.intercom.messages.length;
     finalDashboard = await condenseIntercom(key, updatedDashboard, CONDENSE_KEEP);
-    condensed = true;
-    archivedCount = CONDENSE_ARCHIVE;
+    archivedCount = beforeCount - finalDashboard.intercom.messages.length;
+    condensed = archivedCount > 0;
   }
 
   await writeDashboardFile(key, finalDashboard);
@@ -931,7 +965,7 @@ async function handleAppend(
     messageCount: finalDashboard.intercom.messages.length,
     condensed,
     archivedCount,
-    message: `Message ajouté au dashboard '${key}'${condensed ? ` (auto-condensation: ${archivedCount} messages archivés)` : ''}`
+    message: `Message ajouté au dashboard '${key}'${condensed ? ` (auto-condensation: ${archivedCount} messages archivés, taille réduite)` : ''}`
   };
 }
 
@@ -967,18 +1001,24 @@ async function handleCondense(
   }
 
   const condensedDashboard = await condenseIntercom(key, dashboard, keepCount);
-  await writeDashboardFile(key, condensedDashboard);
+  const actuallyCondensed = condensedDashboard.intercom.messages.length < beforeCount;
 
-  const archivedCount = beforeCount - condensedDashboard.intercom.messages.length + 1; // +1 pour le message système
+  if (actuallyCondensed) {
+    await writeDashboardFile(key, condensedDashboard);
+  }
+
+  const archivedCount = actuallyCondensed ? beforeCount - condensedDashboard.intercom.messages.length : 0;
   return {
     success: true,
     action: 'condense',
     key,
     type: args.type!,
     messageCount: condensedDashboard.intercom.messages.length,
-    condensed: true,
-    archivedCount: beforeCount - keepCount,
-    message: `Condensation terminée : ${beforeCount - keepCount} messages archivés, ${keepCount} conservés`
+    condensed: actuallyCondensed,
+    archivedCount,
+    message: actuallyCondensed
+      ? `Condensation terminée : ${archivedCount} messages archivés, ${condensedDashboard.intercom.messages.length} conservés`
+      : `Condensation annulée (LLM indisponible) — ${beforeCount} messages inchangés`
   };
 }
 
@@ -992,6 +1032,7 @@ async function handleReadOverview(
   resolvedWorkspace: string,
   args: DashboardArgs
 ): Promise<DashboardResult> {
+  // read_overview still uses a small limit since it combines 3 dashboards
   const intercomLimit = args.intercomLimit ?? 5;
   const STATUS_MAX_LENGTH = 2000;
 
@@ -1252,7 +1293,7 @@ export const dashboardToolMetadata = {
       },
       intercomLimit: {
         type: 'number',
-        description: '(read) Nombre max de messages intercom retournés (défaut: 50)'
+        description: '(read) Nombre max de messages intercom retournés (défaut: tous). Auto-condensation à 50KB garantit un dashboard lisible.'
       },
       content: {
         type: 'string',

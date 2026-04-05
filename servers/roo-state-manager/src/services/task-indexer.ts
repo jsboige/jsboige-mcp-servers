@@ -96,17 +96,33 @@ export class TaskIndexer {
      */
     async indexTask(taskId: string, source: 'roo' | 'claude-code' = 'roo'): Promise<PointStruct[]> {
         try {
-            // #604: For Claude Code sessions, resolve path via ClaudeStorageDetector
+            // #604/#937: For Claude Code sessions, resolve path via ClaudeStorageDetector
+            // Supports two taskId formats:
+            //   - Per-project (legacy): claude-{projectDir}  → indexes all JSONL files in dir
+            //   - Per-session (#937):   claude-{projectDir}--{sessionUUID} → indexes single JSONL file
             if (source === 'claude-code') {
                 const { ClaudeStorageDetector } = await import('../utils/claude-storage-detector.js');
                 const locations = await ClaudeStorageDetector.detectStorageLocations();
-                // taskId format: claude-{projectHash} — match against projectPath basename
                 const suffix = taskId.replace(/^claude-/, '');
                 for (const loc of locations) {
-                    if (path.basename(loc.projectPath) === suffix) {
-                        // For Claude sessions, taskPath = projectPath (contains JSONL files)
+                    const basename = path.basename(loc.projectPath);
+                    if (basename === suffix) {
+                        // Per-project taskId (legacy): index entire project directory
                         const points = await indexTask(taskId, loc.projectPath, source);
                         return points;
+                    }
+                    // #937: Per-session taskId — match project dir prefix, resolve specific JSONL file
+                    if (suffix.startsWith(basename + '--')) {
+                        const sessionUuid = suffix.substring(basename.length + 2);
+                        const sessionFile = path.join(loc.projectPath, sessionUuid + '.jsonl');
+                        try {
+                            await fs.access(sessionFile);
+                            // Pass the specific file — extractChunksFromClaudeSession() handles single files
+                            const points = await indexTask(taskId, sessionFile, source);
+                            return points;
+                        } catch {
+                            // File doesn't exist in this location, continue searching
+                        }
                     }
                 }
                 throw new StateManagerError(
