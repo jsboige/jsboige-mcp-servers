@@ -28,32 +28,61 @@ export function getWorkspaceCollectionName(workspacePath: string): string {
 
 /**
  * Génère toutes les variantes possibles de noms de collection pour un workspace.
- * Roo Code ne normalise pas le chemin avant le hachage, donc la casse et le
- * séparateur peuvent varier. On essaie toutes les combinaisons plausibles.
+ * Roo Code hashes the raw fsPath from VS Code without normalization.
+ *
+ * Root cause #1085: Roo on Windows uses backslash fsPath (c:\dev\project),
+ * but Claude Code may pass forward slashes (c:/dev/project) from Git Bash.
+ * The hashes are completely different, so the collection isn't found.
+ *
+ * Strategy: try path variants first, then fallback to listing Qdrant collections.
  */
 export function getWorkspaceCollectionVariants(workspacePath: string): string[] {
 	const cleaned = workspacePath.replace(/\\{2,}/g, '\\').replace(/\/+$|\\+$/g, '');
 	const variants = new Set<string>();
 
-	// 1. Exact path (cleaned)
+	// 1. Exact path (cleaned) — as-is
 	variants.add(cleaned);
 
 	// 2. Lowercase (Windows is case-insensitive)
 	variants.add(cleaned.toLowerCase());
 
-	// 3. With forward slashes
+	// 3. With forward slashes (Git Bash / WSL style)
 	variants.add(cleaned.replace(/\\/g, '/'));
 	variants.add(cleaned.toLowerCase().replace(/\\/g, '/'));
 
-	// 4. With backslashes (Windows native)
+	// 4. With backslashes (Windows native fsPath — Roo's convention)
 	variants.add(cleaned.replace(/\//g, '\\'));
 	variants.add(cleaned.toLowerCase().replace(/\//g, '\\'));
+
+	// 5. Uppercase drive letter (VS Code may capitalize)
+	if (/^[a-z]:/.test(cleaned)) {
+		const upper = cleaned[0].toUpperCase() + cleaned.slice(1);
+		variants.add(upper);
+		variants.add(upper.replace(/\//g, '\\'));
+	}
 
 	// Generate collection names for each variant
 	return [...variants].map(v => {
 		const hash = createHash('sha256').update(v).digest('hex');
 		return `ws-${hash.substring(0, 16)}`;
 	});
+}
+
+/**
+ * Fallback: list all ws-* collections from Qdrant and return them.
+ * Used when no hash variant matches, to handle unknown path formats.
+ * #1085: The workspace path hashing is fragile across agents/environments.
+ */
+export async function listWorkspaceCollections(): Promise<string[]> {
+	try {
+		const qdrant = getQdrantClient();
+		const response = await qdrant.getCollections();
+		return response.collections
+			.map((c: any) => c.name)
+			.filter((name: string) => name.startsWith('ws-'));
+	} catch {
+		return [];
+	}
 }
 
 /**
@@ -235,6 +264,24 @@ export async function handleCodebaseSearch(args: CodebaseSearchArgs): Promise<Ca
 			}
 		}
 
+
+		// Phase B: Fallback — list all ws-* collections from Qdrant
+		// #1085: Hash mismatches between Roo (Windows fsPath backslashes) and
+		// Claude Code (Git Bash forward slashes) produce different hashes.
+		if (!collectionName) {
+			const allWsCollections = await listWorkspaceCollections();
+			for (const wsCol of allWsCollections) {
+				try {
+					const info = await qdrant.getCollection(wsCol);
+					if (info && (info as any).points_count > 0) {
+						collectionName = wsCol;
+						break;
+					}
+				} catch {
+					continue;
+				}
+			}
+		}
 		if (!collectionName) {
 			return {
 				isError: false,
@@ -245,6 +292,7 @@ export async function handleCodebaseSearch(args: CodebaseSearchArgs): Promise<Ca
 						message: `Collection Qdrant non trouvée pour le workspace "${workspace}".`,
 						hint: 'Le workspace doit être indexé par Roo Code avant de pouvoir effectuer des recherches. Ouvrez le workspace dans VS Code avec Roo activé pour démarrer l\'indexation.',
 						tried_collections: collectionVariants,
+						fallback_list_tried: true,
 						workspace: workspace
 					}, null, 2)
 				}]
