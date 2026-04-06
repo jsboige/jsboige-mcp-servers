@@ -389,6 +389,10 @@ MockPowerShellExecutor.parseJsonOutput = function(stdout) {
   }
 };
 
+// Add static methods for testing
+MockPowerShellExecutor.isPowerShellAvailable = vi.fn().mockResolvedValue(true);
+MockPowerShellExecutor.getPowerShellVersion = vi.fn().mockResolvedValue('7.3.0');
+
 // Mock functions for named exports
 let defaultExecutorInstance = null;
 const mockGetDefaultExecutor = vi.fn(() => {

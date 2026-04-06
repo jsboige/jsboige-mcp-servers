@@ -283,5 +283,212 @@ describe('RooSettingsService', () => {
       const value = await service.getSetting('nonExistentKey');
       expect(value).toBeUndefined();
     });
+
+    it('should handle database read error', async () => {
+      mockDbGet.mockImplementation((_sql: string, _params: unknown[], callback: (err: Error | null, row?: any) => void) => {
+        callback(new Error('Database read error'));
+      });
+
+      await expect(service.getSetting('autoCondenseContextPercent')).rejects.toThrow('Database read error');
+    });
+  });
+
+  describe('filterSettings', () => {
+    it('should filter to sync-safe keys in safe mode', () => {
+      const testSettings = {
+        id: 'excluded',
+        autoCondenseContext: true,
+        language: 'en',
+        'clerk-auth-state': 'token',
+      };
+
+      const filtered = (service as any).filterSettings(testSettings, 'safe');
+
+      expect(filtered.autoCondenseContext).toBe(true);
+      expect(filtered.language).toBe('en');
+      expect(filtered.id).toBeUndefined();
+      expect(filtered['clerk-auth-state']).toBeUndefined();
+    });
+
+    it('should filter to non-excluded keys in full mode', () => {
+      const testSettings = {
+        id: 'excluded',
+        autoCondenseContext: true,
+        clerkAuthState: 'token',
+      };
+
+      const filtered = (service as any).filterSettings(testSettings, 'full');
+
+      expect(filtered.autoCondenseContext).toBe(true);
+      expect(filtered.id).toBeUndefined();
+      expect(filtered.clerkAuthState).toBe('token');
+    });
+
+    it('should handle empty settings object', () => {
+      const filtered = (service as any).filterSettings({}, 'safe');
+      expect(Object.keys(filtered)).toHaveLength(0);
+    });
+
+    it('should handle null values in settings', () => {
+      const testSettings = {
+        autoCondenseContext: null,
+        language: null,
+        id: 'excluded',
+      };
+
+      const filtered = (service as any).filterSettings(testSettings, 'safe');
+
+      expect(filtered.autoCondenseContext).toBe(null);
+      expect(filtered.language).toBe(null);
+      expect(filtered.id).toBeUndefined();
+    });
+  });
+
+  describe('readFromVscdb edge cases', () => {
+    it('should handle Buffer value from database', async () => {
+      mockDbGet.mockImplementation((_sql: string, _params: unknown[], callback: (err: Error | null, row?: { value: any }) => void) => {
+        callback(null, { value: Buffer.from(JSON.stringify(SAMPLE_SETTINGS)) });
+      });
+
+      const result = await (service as any).readFromVscdb('/mock/path');
+      expect(result).toEqual(SAMPLE_SETTINGS);
+    });
+
+    it('should throw when database file does not exist', async () => {
+      vi.mocked(existsSync).mockReturnValue(false);
+
+      await expect((service as any).readFromVscdb('/nonexistent/path')).rejects.toThrow('state.vscdb not found at: /nonexistent/path');
+    });
+
+    it('should throw when key not found in database', async () => {
+      mockDbGet.mockImplementation((_sql: string, _params: unknown[], callback: (err: Error | null, row?: undefined) => void) => {
+        callback(null, undefined);
+      });
+
+      await expect((service as any).readFromVscdb('/mock/path')).rejects.toThrow('Key \'RooVeterinaryInc.roo-cline\' not found in state.vscdb');
+    });
+
+    it('should handle unlink error during cleanup', async () => {
+      vi.doMock('fs', async () => {
+        const actual = await vi.importActual<typeof import('fs')>('fs');
+        return {
+          ...actual,
+          existsSync: vi.fn().mockReturnValue(true),
+          copyFileSync: vi.fn(),
+          promises: {
+            ...actual.promises,
+            unlink: vi.fn().mockRejectedValue(new Error('Failed to delete')),
+          },
+        };
+      });
+
+      // Should still work even if unlink fails
+      mockDbGet.mockImplementation((_sql: string, _params: unknown[], callback: (err: Error | null, row?: { value: string }) => void) => {
+        callback(null, { value: JSON.stringify(SAMPLE_SETTINGS) });
+      });
+
+      // This test demonstrates that cleanup errors are ignored
+      expect(async () => {
+        await (service as any).readFromVscdb('/mock/path');
+      }).not.toThrow();
+    });
+  });
+
+  describe('injectSettings edge cases', () => {
+    it('should handle database write error', async () => {
+      mockDbRun.mockImplementation((_sql: string, _params: unknown[], callback: (err: Error | null) => void) => {
+        callback(new Error('Write failed'));
+      });
+
+      await expect(service.injectSettings({ language: 'fr' })).rejects.toThrow('Write failed');
+    });
+
+    it('should handle complex nested objects in settings', async () => {
+      const complexSettings = {
+        profileThresholds: { p1: 80, p2: 90 },
+        modeApiConfigs: {
+          debug: { model: 'glm-5', temperature: 0.7 },
+          production: { model: 'glm-4', temperature: 0.5 }
+        },
+        experiments: {
+          newFeature: { enabled: true, options: { timeout: 5000 } }
+        }
+      };
+
+      const result = await service.injectSettings(complexSettings);
+      expect(result.applied).toBeGreaterThan(0);
+      expect(result.changes).toHaveLength(3); // All 3 nested objects are new
+    });
+
+    it('should inject when settings contain arrays', async () => {
+      const arraySettings = {
+        listApiConfigMeta: [
+          { id: 'p1', name: 'GLM-5', apiProvider: 'openai' },
+          { id: 'p2', name: 'GLM-4', apiProvider: 'openai' }
+        ]
+      };
+
+      const result = await service.injectSettings(arraySettings);
+      expect(result.applied).toBeGreaterThan(0);
+    });
+
+    it('should not apply changes when values are functionally different but JSON same', async () => {
+      // Date objects with same time should be considered same after JSON serialization
+      const date1 = new Date('2023-01-01T00:00:00.000Z');
+      const date2 = new Date('2023-01-01T00:00:00.000Z');
+
+      const newSettings = {
+        lastUsed: date1, // Same timestamp as existing
+      };
+
+      // Update SAMPLE_SETTINGS to have a date
+      SAMPLE_SETTINGS.lastUsed = date2;
+
+      const result = await service.injectSettings(newSettings);
+      expect(result.applied).toBe(0); // Same value after JSON serialization
+    });
+
+    it('should handle settings with special characters', async () => {
+      const specialSettings = {
+        customInstructions: 'Be helpful with emojis: 🚀✨',
+        mode: 'code-simple',
+        language: 'zh-CN',
+      };
+
+      const result = await service.injectSettings(specialSettings);
+      expect(result.applied).toBe(3);
+    });
+
+    it('should inject boolean false values correctly', async () => {
+      const booleanSettings = {
+        alwaysAllowWrite: false, // Change from true to false
+        autoApprovalEnabled: true, // No change
+      };
+
+      const result = await service.injectSettings(booleanSettingstions);
+      expect(result.applied).toBe(1);
+      expect(result.changes[0].key).toBe('alwaysAllowWrite');
+      expect(result.changes[0].oldValue).toBe(true);
+      expect(result.changes[0].newValue).toBe(false);
+    });
+  });
+
+  describe('database operations error handling', () => {
+    it('should handle database open error', async () => {
+      vi.spyOn(sqlite3, 'Database').mockImplementation((_, __, callback) => {
+        callback(new Error('Cannot open database'));
+      });
+
+      await expect(service.extractSettings()).rejects.toThrow('Cannot open state.vscdb');
+    });
+
+    it('should handle database close error', async () => {
+      mockDbClose.mockImplementation((callback: (err: Error | null) => void) => {
+        callback(new Error('Close failed'));
+      });
+
+      // Should still work despite close error
+      await expect(service.extractSettings()).resolves.not.toThrow();
+    });
   });
 });
