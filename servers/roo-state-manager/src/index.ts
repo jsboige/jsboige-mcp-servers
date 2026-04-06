@@ -97,6 +97,7 @@ class RooStateManagerServer {
     private lastCacheCheckAt: number = 0;
     private static readonly CACHE_CHECK_THROTTLE_MS = 60_000; // 1 minute minimum between checks
     private _initPromise: Promise<void>;
+    private _initError: Error | null = null;
 
     constructor() {
         // Create MCP server IMMEDIATELY — no heavy imports yet
@@ -108,6 +109,7 @@ class RooStateManagerServer {
         // Start heavy initialization in background (non-blocking)
         this._initPromise = this.initializeAsync().catch((error: Error) => {
             logger.error("Error during async initialization:", { error });
+            this._initError = error;
         });
     }
 
@@ -144,10 +146,11 @@ class RooStateManagerServer {
         if (!this.stateManager) {
             await this._initPromise;
         }
+        if (this._initError) {
+            throw new Error(`MCP server initialization failed: ${this._initError.message}`);
+        }
         if (!this.stateManager) {
-            // If still null after init, create one
-            const { StateManager } = await getStateManager();
-            this.stateManager = new StateManager();
+            throw new Error('StateManager not available after initialization');
         }
         return this.stateManager;
     }
