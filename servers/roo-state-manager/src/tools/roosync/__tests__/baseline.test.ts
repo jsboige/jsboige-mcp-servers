@@ -897,7 +897,7 @@ describe('roosync_baseline', () => {
       // Sauvegarder le mock original
       const originalImplementation = vi.mocked(execSync).mockImplementation;
 
-      // Configurer le mock pour simuler un succès de création de tag et de changement
+      // Configurer le mock pour simuler un succès de création de tag
       vi.mocked(execSync).mockImplementation((cmd: string) => {
         // Simuler que le tag n'existe pas avant la création
         if (cmd.includes('git rev-parse --verify refs/tags/baseline-v')) {
@@ -905,10 +905,18 @@ describe('roosync_baseline', () => {
           if (tagVersion && compareVersions(tagVersion, '2.1.0') > 0) {
             return 'tag-commit-hash'; // Tag existe
           }
-          return ''; // Tag n'existe pas
+          throw new Error('Tag not found'); // Simuler que le tag n'existe pas
         }
         // Simuler la création réussie du tag
         if (cmd.includes('git tag -a baseline-v2.1.0')) {
+          return ''; // Succès
+        }
+        // Simuler la création du commit
+        if (cmd.includes('git commit -m')) {
+          return ''; // Succès
+        }
+        // Simuler git status et autres commandes
+        if (cmd.includes('git status') || cmd.includes('git add') || cmd.includes('git diff')) {
           return ''; // Succès
         }
         // Ne pas lancer d'erreur pour les autres commandes
@@ -949,10 +957,18 @@ describe('roosync_baseline', () => {
           if (tagVersion && compareVersions(tagVersion, '2.2.0') > 0) {
             return 'tag-commit-hash'; // Tag existe
           }
-          return ''; // Tag n'existe pas
+          throw new Error('Tag not found'); // Simuler que le tag n'existe pas
         }
         // Simuler la création réussie du tag
         if (cmd.includes('git tag -a baseline-v2.2.0')) {
+          return ''; // Succès
+        }
+        // Simuler la création du commit
+        if (cmd.includes('git commit -m')) {
+          return ''; // Succès
+        }
+        // Simuler git status et autres commandes
+        if (cmd.includes('git status') || cmd.includes('git add') || cmd.includes('git diff')) {
           return ''; // Succès
         }
         // Ne pas lancer d'erreur pour les autres commandes

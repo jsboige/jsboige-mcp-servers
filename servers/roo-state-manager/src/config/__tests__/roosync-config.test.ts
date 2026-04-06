@@ -93,6 +93,50 @@ describe('roosync-config', () => {
 				expect(config.logLevel).toBe(level);
 			}
 		});
+
+		test('throws on invalid logLevel value with specific message', () => {
+			process.env.ROOSYNC_LOG_LEVEL = 'invalid';
+			expect(() => loadRooSyncConfig()).toThrow(RooSyncConfigError);
+			expect(() => loadRooSyncConfig()).toThrow('ROOSYNC_LOG_LEVEL invalide');
+		});
+	});
+
+	// ============================================================
+	// tryLoadRooSyncConfig et isRooSyncEnabled
+	// ============================================================
+
+	describe('tryLoadRooSyncConfig', () => {
+		test('returns config when valid', () => {
+			const config = tryLoadRooSyncConfig();
+			expect(config).toBeDefined();
+			expect(config?.sharedPath).toBe('/tmp/test-shared');
+			expect(config?.machineId).toBe('test-machine-01');
+		});
+
+		test('returns null when config is invalid', () => {
+			delete process.env.ROOSYNC_SHARED_PATH;
+			const config = tryLoadRooSyncConfig();
+			expect(config).toBeNull();
+		});
+
+		test('returns null when machineId is missing', () => {
+			delete process.env.ROOSYNC_MACHINE_ID;
+			const config = tryLoadRooSyncConfig();
+			expect(config).toBeNull();
+		});
+	});
+
+	describe('isRooSyncEnabled', () => {
+		test('returns true when config is valid', () => {
+			const enabled = isRooSyncEnabled();
+			expect(enabled).toBe(true);
+		});
+
+		test('returns false when config is invalid', () => {
+			delete process.env.ROOSYNC_SHARED_PATH;
+			const enabled = isRooSyncEnabled();
+			expect(enabled).toBe(false);
+		});
 	});
 
 	// ============================================================
@@ -209,6 +253,163 @@ describe('roosync-config', () => {
 		test('is instance of Error', () => {
 			const error = new RooSyncConfigError('test');
 			expect(error).toBeInstanceOf(Error);
+		});
+	});
+
+	// ============================================================
+	// validateMachineIdUniqueness
+	// ============================================================
+
+	describe('validateMachineIdUniqueness', () => {
+		const mockSharedPath = '/tmp/test-shared';
+
+		beforeEach(() => {
+			// Mock fs modules
+			const mockFs = {
+				existsSync: vi.fn(),
+				readFileSync: vi.fn(),
+				writeFile: vi.fn()
+			};
+			const mockPath = {
+				join: vi.fn((...args) => args.join('/'))
+			};
+
+			// Mock dynamique des imports
+			vi.doMock('fs', () => mockFs);
+			vi.doMock('path', () => mockPath);
+		});
+
+		test('returns valid when no registry file exists', async () => {
+			const { existsSync } = await import('fs');
+			existsSync.mockReturnValue(false);
+
+			const result = await validateMachineIdUniqueness('test-machine', mockSharedPath);
+
+			expect(result.isValid).toBe(true);
+			expect(result.conflictDetected).toBe(false);
+		});
+
+		test('returns valid when registry exists but machineId not found', async () => {
+			const { existsSync, readFileSync } = await import('fs');
+			existsSync.mockReturnValue(true);
+			readFileSync.mockReturnValue(JSON.stringify({
+				machines: {
+					'other-machine': {
+						machineId: 'other-machine',
+						firstSeen: '2026-01-01T00:00:00.000Z',
+						lastSeen: '2026-01-01T00:00:00.000Z',
+						source: 'test',
+						status: 'online'
+					}
+				}
+			}));
+
+			const result = await validateMachineIdUniqueness('new-machine', mockSharedPath);
+
+			expect(result.isValid).toBe(true);
+			expect(result.conflictDetected).toBe(false);
+		});
+
+		test('returns conflict when machineId already exists', async () => {
+			const { existsSync, readFileSync } = await import('fs');
+			existsSync.mockReturnValue(true);
+			readFileSync.mockReturnValue(JSON.stringify({
+				machines: {
+					'existing-machine': {
+						machineId: 'existing-machine',
+						firstSeen: '2026-01-01T00:00:00.000Z',
+						lastSeen: '2026-01-02T00:00:00.000Z',
+						source: 'test',
+						status: 'online'
+					}
+				}
+			}));
+
+			const result = await validateMachineIdUniqueness('existing-machine', mockSharedPath);
+
+			expect(result.isValid).toBe(false);
+			expect(result.conflictDetected).toBe(true);
+			expect(result.warningMessage).toContain('CONFLIT D\'IDENTITÉ');
+			expect(result.warningMessage).toContain('déjà utilisé dans le registre');
+			expect(result.existingEntry).toBeDefined();
+			expect(result.existingEntry?.machineId).toBe('existing-machine');
+		});
+
+		test('handles JSON parse error gracefully', async () => {
+			const { existsSync, readFileSync } = await import('fs');
+			existsSync.mockReturnValue(true);
+			readFileSync.mockReturnValue('invalid json');
+
+			const result = await validateMachineIdUniqueness('test-machine', mockSharedPath);
+
+			// En cas d'erreur, la fonction retourne quand même isValid: true
+			expect(result.isValid).toBe(true);
+			expect(result.conflictDetected).toBe(false);
+		});
+	});
+
+	// ============================================================
+	// registerMachineId
+	// ============================================================
+
+	describe('registerMachineId', () => {
+		const mockSharedPath = '/tmp/test-shared';
+
+		beforeEach(() => {
+			// Mock fs modules
+			const mockFs = {
+				existsSync: vi.fn(),
+				readFileSync: vi.fn(),
+				writeFile: vi.fn()
+			};
+			const mockPath = {
+				join: vi.fn((...args) => args.join('/'))
+			};
+
+			// Mock des promesses fs
+			mockFs.promises = {
+				writeFile: vi.fn().mockResolvedValue(undefined)
+			};
+
+			vi.doMock('fs', () => mockFs);
+			vi.doMock('path', () => mockPath);
+		});
+
+		test('creates new registry when none exists', async () => {
+			const { existsSync, readFileSync, promises } = await import('fs');
+			existsSync.mockReturnValue(false);
+			readFileSync.mockReturnValue('');
+
+			const result = await registerMachineId('new-machine', mockSharedPath, 'test');
+
+			expect(result).toBe(true);
+			expect(promises.writeFile).toHaveBeenCalledWith(
+				`${mockSharedPath}/.machine-registry.json`,
+				expect.any(String),
+				'utf-8'
+			);
+		});
+
+		test('updates existing registry', async () => {
+			const { existsSync, readFileSync, promises } = await import('fs');
+			existsSync.mockReturnValue(true);
+			readFileSync.mockReturnValue(JSON.stringify({
+				machines: {
+					'existing-machine': {
+						machineId: 'existing-machine',
+						firstSeen: '2026-01-01T00:00:00.000Z',
+						lastSeen: '2026-01-01T00:00:00.000Z',
+						source: 'old',
+						status: 'online'
+					}
+				},
+				lastUpdated: '2026-01-01T00:00:00.000Z'
+			}));
+
+			const result = await registerMachineId('new-machine', mockSharedPath, 'test');
+
+			expect(result).toBe(true);
+			expect(promises.writeFile).toHaveBeenCalled();
 		});
 	});
 });
