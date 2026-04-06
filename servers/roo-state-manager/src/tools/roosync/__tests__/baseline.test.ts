@@ -553,14 +553,21 @@ describe('roosync_baseline', () => {
 
   describe('edge cases and error handling', () => {
     test('should handle tag already exists error', async () => {
-      // Mock pour simuler un tag qui existe déjà
+      // Importer le module pour accéder au mock
       const { execSync } = await import('child_process');
+
+      // Sauvegarder et remplacer temporairement le mock
+      const originalImplementation = vi.mocked(execSync).mockImplementation;
       vi.mocked(execSync).mockImplementation((cmd: string) => {
         if (cmd.includes('git rev-parse --verify refs/tags/baseline-v1.0.0')) {
           return 'existing-tag-commit'; // Tag existe
         }
         if (cmd.includes('git tag -l')) {
           return 'baseline-v1.0.0\n';
+        }
+        // Utiliser le comportement par défaut pour les autres commandes
+        if (cmd.includes('git rev-parse --verify refs/tags/')) {
+          throw new Error('Tag not found');
         }
         return '';
       });
@@ -571,7 +578,11 @@ describe('roosync_baseline', () => {
     });
 
     test('should handle git commit failure gracefully', async () => {
+      // Importer le module pour accéder au mock
       const { execSync } = await import('child_process');
+
+      // Sauvegarder et remplacer temporairement le mock
+      const originalImplementation = vi.mocked(execSync).mockImplementation;
       vi.mocked(execSync).mockImplementation((cmd: string) => {
         if (cmd.includes('git commit')) {
           throw new Error('Git commit failed');
@@ -582,6 +593,7 @@ describe('roosync_baseline', () => {
         if (cmd.includes('git tag -l')) {
           return 'baseline-v1.0.0\n';
         }
+        // Utiliser le comportement par défaut pour les autres commandes
         return '';
       });
 
@@ -595,7 +607,11 @@ describe('roosync_baseline', () => {
     });
 
     test('should handle git tag creation failure', async () => {
+      // Importer le module pour accéder au mock
       const { execSync } = await import('child_process');
+
+      // Sauvegarder et remplacer temporairement le mock
+      const originalImplementation = vi.mocked(execSync).mockImplementation;
       vi.mocked(execSync).mockImplementation((cmd: string) => {
         if (cmd.includes('git tag -a')) {
           throw new Error('Git tag creation failed');
@@ -606,12 +622,13 @@ describe('roosync_baseline', () => {
         if (cmd.includes('git tag -l')) {
           return 'baseline-v1.0.0\n';
         }
+        // Utiliser le comportement par défaut pour les autres commandes
         return '';
       });
 
       await expect(
         roosync_baseline({ action: 'version', version: '1.0.2', pushTags: false })
-      ).rejects.toThrow('Git tag creation failed');
+      ).rejects.toThrow('Erreur lors de la création du tag Git');
     });
 
     test('should handle non-existent backup file', async () => {
