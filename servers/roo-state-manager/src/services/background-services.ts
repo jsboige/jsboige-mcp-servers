@@ -13,7 +13,9 @@ import { ANTI_LEAK_CONFIG } from '../config/server-config.js';
 import { TaskIndexer, getHostIdentifier } from './task-indexer.js';
 // REMOVED: import * as toolExports — was unused, added 6s to startup by importing ALL tools
 import { RooStorageDetectorError, RooStorageDetectorErrorCode } from '../types/errors.js';
-import { RooSyncService } from './RooSyncService.js';
+// #1140: Lazy import — RooSyncService loads 17 heavy modules (~6s).
+// Only needed when HEARTBEAT_AUTO_START=true (disabled by default).
+// import { RooSyncService } from './RooSyncService.js';
 
 /**
  * Extract the SkeletonHeader from a full ConversationSkeleton.
@@ -530,6 +532,8 @@ export async function initializeBackgroundServices(state: ServerState): Promise<
 
         // Heartbeat service: disabled by default to prevent GDrive sync storm (#607)
         if (process.env.HEARTBEAT_AUTO_START === 'true') {
+            // #1140: Dynamic import to avoid loading RooSyncService at startup
+            const { RooSyncService } = await import('./RooSyncService.js');
             const rooSyncService = RooSyncService.getInstance();
             rooSyncService.startHeartbeatService(
                 (machineId: string) => {
