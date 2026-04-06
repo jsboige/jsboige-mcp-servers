@@ -8,16 +8,23 @@
 import { Server } from '@modelcontextprotocol/sdk/server/index.js';
 import { CallToolRequestSchema, ListToolsRequestSchema, CallToolResult } from '@modelcontextprotocol/sdk/types.js';
 import { ServerState } from '../services/state-manager.service.js';
-// #1140: Dynamic import — barrel loads RooSyncService chain (~6s, 17 modules).
-// Tools are loaded on first request, not at startup.
+// #1140: Dynamic import — barrel loads RooSyncService chain (~15s on slow machines).
+// Pre-load in background right after module parse, so it's ready by the time
+// VS Code calls tools/list. If not ready yet, getToolExports() awaits it.
 // import * as toolExports from './index.js';
 let _toolExports: any = null;
+let _toolExportsPromise: Promise<any> | null = null;
 async function getToolExports() {
     if (!_toolExports) {
-        _toolExports = await import('./index.js');
+        if (!_toolExportsPromise) {
+            _toolExportsPromise = import('./index.js');
+        }
+        _toolExports = await _toolExportsPromise;
     }
     return _toolExports;
 }
+// Start pre-loading immediately (non-blocking — runs in background)
+getToolExports().catch(() => {});
 import { GenericError, GenericErrorCode } from '../types/errors.js';
 import { RooStorageDetector } from '../utils/roo-storage-detector.js';
 import { ClaudeStorageDetector } from '../utils/claude-storage-detector.js';
