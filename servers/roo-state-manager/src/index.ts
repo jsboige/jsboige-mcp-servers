@@ -243,7 +243,7 @@ class RooStateManagerServer {
                 await handleBuildSkeletonCache({
                     force_rebuild: false,
                     workspace_filter: args?.workspace
-                }, state.conversationCache);
+                }, state.conversationCache as any);
                 return true;
             }
 
@@ -343,7 +343,7 @@ class RooStateManagerServer {
                 await handleBuildSkeletonCache({
                     force_rebuild: false,
                     workspace_filter: args?.workspace
-                }, state.conversationCache);
+                }, state.conversationCache as any);
                 return true;
             }
 

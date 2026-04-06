@@ -15,7 +15,7 @@
 import { NotificationService, NotificationEvent } from './NotificationService.js';
 import { MessageManager, Message } from '../services/MessageManager.js';
 import { scanDiskForNewTasks } from '../tools/task/disk-scanner.js';
-import { ConversationSkeleton } from '../types/conversation.js';
+import { SkeletonHeader } from '../types/conversation.js';
 
 /**
  * Configuration de l'intercepteur
@@ -47,7 +47,7 @@ export interface InterceptorConfig {
 export class ToolUsageInterceptor {
   private notificationService: NotificationService;
   private messageManager: MessageManager;
-  private conversationCache: Map<string, ConversationSkeleton>;
+  private conversationCache: Map<string, SkeletonHeader>;
   private config: InterceptorConfig;
   
   /**
@@ -59,7 +59,7 @@ export class ToolUsageInterceptor {
   constructor(
     notificationService: NotificationService,
     messageManager: MessageManager,
-    conversationCache: Map<string, ConversationSkeleton>,
+    conversationCache: Map<string, SkeletonHeader>,
     config: InterceptorConfig
   ) {
     this.notificationService = notificationService;
@@ -139,7 +139,7 @@ export class ToolUsageInterceptor {
     try {
       // FIX: Actually integrate discovered tasks into the cache
       // Previously, scanDiskForNewTasks return value was discarded
-      const newTasks = await scanDiskForNewTasks(this.conversationCache);
+      const newTasks = await scanDiskForNewTasks(this.conversationCache as any);
       if (newTasks.length > 0) {
         for (const task of newTasks) {
           this.conversationCache.set(task.taskId, task);

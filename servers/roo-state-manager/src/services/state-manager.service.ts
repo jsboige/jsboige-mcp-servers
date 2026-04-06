@@ -2,7 +2,7 @@
  * Service de gestion de l'état global du serveur
  */
 
-import { ConversationSkeleton } from '../types/conversation.js';
+import { SkeletonHeader } from '../types/conversation.js';
 import { TraceSummaryService } from './TraceSummaryService.js';
 import { IndexingDecisionService } from './indexing-decision.js';
 import { XmlExporterService } from './XmlExporterService.js';
@@ -14,7 +14,7 @@ import { IndexingMetrics } from '../types/indexing.js';
 import { ANTI_LEAK_CONFIG } from '../config/server-config.js';
 
 export interface ServerState {
-    conversationCache: Map<string, ConversationSkeleton>;
+    conversationCache: Map<string, SkeletonHeader>;
     xmlExporterService: XmlExporterService;
     exportConfigManager: ExportConfigManager;
     traceSummaryService: TraceSummaryService;
@@ -76,11 +76,11 @@ export class StateManager {
             defaultLlmModel: 'gpt-4'
         };
 
-        const conversationCache = new Map<string, ConversationSkeleton>();
+        const conversationCache = new Map<string, SkeletonHeader>();
         const exportConfigManager = new ExportConfigManager();
 
         const llmService = new LLMService(defaultLLMOptions);
-        const narrativeContextBuilderService = new NarrativeContextBuilderService(defaultContextOptions, conversationCache);
+        const narrativeContextBuilderService = new NarrativeContextBuilderService(defaultContextOptions, conversationCache as any);
         const synthesisOrchestratorService = new SynthesisOrchestratorService(
             narrativeContextBuilderService,
             llmService,
@@ -118,7 +118,7 @@ export class StateManager {
         return this.state;
     }
 
-    getConversationCache(): Map<string, ConversationSkeleton> {
+    getConversationCache(): Map<string, SkeletonHeader> {
         return this.state.conversationCache;
     }
 
