@@ -8,7 +8,7 @@
  */
 
 import { z } from 'zod';
-import { getRooSyncService } from '../../services/RooSyncService.js';
+import { getRooSyncService } from '../../services/lazy-roosync.js';
 import { HeartbeatServiceError } from '../../services/roosync/HeartbeatService.js';
 
 /**
@@ -107,7 +107,7 @@ export async function roosyncHeartbeatService(args: HeartbeatServiceArgs): Promi
   const { action } = args;
 
   try {
-    const rooSyncService = getRooSyncService();
+    const rooSyncService = await getRooSyncService();
     const heartbeatService = rooSyncService.getHeartbeatService();
 
     switch (action) {

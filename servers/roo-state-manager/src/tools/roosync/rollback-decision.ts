@@ -11,7 +11,7 @@
 
 import { z } from 'zod';
 import { zodToJsonSchema } from 'zod-to-json-schema';
-import { getRooSyncService, RooSyncServiceError } from '../../services/RooSyncService.js';
+import { getRooSyncService, RooSyncServiceError } from '../../services/lazy-roosync.js';
 import { writeFileSync, readFileSync, existsSync } from 'fs';
 import { join } from 'path';
 
@@ -61,7 +61,7 @@ export async function roosyncRollbackDecision(args: RollbackDecisionArgs): Promi
     executionLog.push(`[ROLLBACK_DECISION] Début du rollback pour décision ${args.decisionId}`);
     executionLog.push(`[ROLLBACK_DECISION] Raison: ${args.reason}`);
 
-    const service = getRooSyncService();
+    const service = await getRooSyncService();
     const config = service.getConfig();
 
     executionLog.push(`[ROLLBACK_DECISION] Machine: ${config.machineId}`);

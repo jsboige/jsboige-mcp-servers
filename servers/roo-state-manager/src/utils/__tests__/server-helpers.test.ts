@@ -17,8 +17,8 @@ import { CallToolResult } from '@modelcontextprotocol/sdk/types.js';
 import { ConversationSkeleton } from '../../types/conversation.js';
 
 // Mock fs before importing module
-vi.mock('fs', () => {
-    const actual = vi.importActual('fs');
+vi.mock('fs', async () => {
+    const actual = await vi.importActual('fs');
     return {
         ...actual,
         default: actual,
@@ -37,9 +37,11 @@ vi.mock('child_process', () => ({
     exec: vi.fn(),
 }));
 
-// Mock tools/index.js
-vi.mock('../../tools/index.js', () => ({
+// #1110 FIX: Mock direct sub-module imports instead of barrel (avoids ESM circular deadlock)
+vi.mock('../../tools/export/export-conversation-json.js', () => ({
     handleExportConversationJson: vi.fn(async () => '{"export": "json"}'),
+}));
+vi.mock('../../tools/export/export-conversation-csv.js', () => ({
     handleExportConversationCsv: vi.fn(async () => 'col1,col2\nval1,val2'),
 }));
 

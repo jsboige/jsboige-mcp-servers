@@ -17,7 +17,7 @@ import {
   getLocalMachineId,
   parseMachineWorkspace
 } from '../../utils/message-helpers.js';
-import { getRooSyncService } from '../../services/RooSyncService.js';
+import { getRooSyncService } from '../../services/lazy-roosync.js';
 
 // Logger instance for manage tool
 const logger: Logger = createLogger('RooSyncManageTool');
@@ -113,7 +113,7 @@ Le message était déjà marqué comme lu. Aucune modification nécessaire.`;
   await messageManager.markAsRead(args.message_id, localMachine);
 
   // Fire-and-forget heartbeat update: marking a message read proves the machine is active
-  getRooSyncService().getHeartbeatService()
+  (await getRooSyncService()).getHeartbeatService()
     .registerHeartbeat(getLocalMachineId(), { lastActivity: 'roosync_mark_read', messageId: args.message_id })
     .catch(err => logger.debug('Heartbeat update skipped (non-critical)', { error: String(err) }));
 
@@ -206,7 +206,7 @@ Le message est déjà archivé. Il se trouve dans le dossier \`messages/archive/
   await messageManager.archiveMessage(args.message_id);
 
   // Fire-and-forget heartbeat update: archiving a message proves the machine is active
-  getRooSyncService().getHeartbeatService()
+  (await getRooSyncService()).getHeartbeatService()
     .registerHeartbeat(getLocalMachineId(), { lastActivity: 'roosync_archive', messageId: args.message_id })
     .catch(err => logger.debug('Heartbeat update skipped (non-critical)', { error: String(err) }));
 

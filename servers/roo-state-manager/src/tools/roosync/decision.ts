@@ -11,7 +11,7 @@
 
 import { z, ZodError } from 'zod';
 import { zodToJsonSchema } from 'zod-to-json-schema';
-import { getRooSyncService, RooSyncServiceError } from '../../services/RooSyncService.js';
+import { getRooSyncService, RooSyncServiceError } from '../../services/lazy-roosync.js';
 import {
   updateRoadmapStatus,
   validateDecisionStatus,
@@ -143,7 +143,7 @@ export async function roosyncDecision(args: RooSyncDecisionArgs): Promise<RooSyn
     // Utilisation de parse() au lieu de safeParse() pour que les erreurs .superRefine() soient lancées
     RooSyncDecisionArgsSchema.parse(args);
 
-    const service = getRooSyncService();
+    const service = await getRooSyncService();
     const config = service.getConfig();
     const machineId = config.machineId;
 

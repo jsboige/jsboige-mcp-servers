@@ -13,7 +13,9 @@ import { join } from 'path';
 import { createLogger } from '../utils/logger.js';
 import { MessageManagerError, MessageManagerErrorCode } from '../types/errors.js';
 import { parseMachineWorkspace, matchesRecipient, getLocalWorkspaceId } from '../utils/message-helpers.js';
-import { getSharedStatePath } from '../utils/server-helpers.js';
+// #1110 FIX: Dynamic import to break ESM circular dependency.
+// server-helpers → tools/index → roosync/* → MessageManager → server-helpers
+import { GenericError, GenericErrorCode } from '../types/errors.js';
 
 const logger = createLogger('MessageManager');
 
@@ -1276,7 +1278,13 @@ let _singletonInstance: MessageManager | null = null;
  */
 export function getMessageManager(): MessageManager {
   if (!_singletonInstance) {
-    _singletonInstance = new MessageManager(getSharedStatePath());
+    // #1110 FIX: Inline getSharedStatePath() to avoid importing server-helpers.js
+    // at module load time, breaking the ESM circular dependency deadlock.
+    const sharedStatePath = process.env.ROOSYNC_SHARED_PATH;
+    if (!sharedStatePath) {
+      throw new Error('ROOSYNC_SHARED_PATH environment variable is required for MessageManager');
+    }
+    _singletonInstance = new MessageManager(sharedStatePath);
   }
   return _singletonInstance;
 }

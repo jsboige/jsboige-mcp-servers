@@ -9,7 +9,7 @@
  */
 
 import { z } from 'zod';
-import { getRooSyncService } from '../../services/RooSyncService.js';
+import { getRooSyncService } from '../../services/lazy-roosync.js';
 import { HeartbeatServiceError } from '../../services/roosync/HeartbeatService.js';
 
 /**
@@ -72,7 +72,7 @@ export async function roosyncStartHeartbeatService(args: StartHeartbeatServiceAr
       offlineTimeout
     } = args;
 
-    const rooSyncService = getRooSyncService();
+    const rooSyncService = await getRooSyncService();
     const heartbeatService = rooSyncService.getHeartbeatService();
 
     // Mettre à jour la configuration si nécessaire

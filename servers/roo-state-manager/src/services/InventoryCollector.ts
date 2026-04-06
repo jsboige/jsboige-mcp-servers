@@ -17,7 +17,7 @@ import { fileURLToPath } from 'url';
 import os from 'os';
 import { createLogger, Logger } from '../utils/logger.js';
 import { getGitHelpers, type GitHelpers } from '../utils/git-helpers.js';
-import { getSharedStatePath } from '../utils/server-helpers.js';
+import { getSharedStatePath } from '../utils/shared-state-path.js';
 
 const execAsync = promisify(exec);
 const __filename = fileURLToPath(import.meta.url);

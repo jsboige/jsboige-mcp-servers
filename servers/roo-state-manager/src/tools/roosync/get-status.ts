@@ -10,7 +10,7 @@
 
 import { z } from 'zod';
 import { zodToJsonSchema } from 'zod-to-json-schema';
-import { getRooSyncService, RooSyncServiceError } from '../../services/RooSyncService.js';
+import { getRooSyncService, RooSyncServiceError } from '../../services/lazy-roosync.js';
 
 /**
  * Schema de validation pour roosync_get_status
@@ -82,11 +82,11 @@ export async function roosyncGetStatus(args: GetStatusArgs): Promise<GetStatusRe
       console.log('[RESET] Réinitialisation du cache du service demandée...');
       // Import dynamique pour éviter les dépendances circulaires
       const { RooSyncService } = await import('../../services/RooSyncService.js');
-      RooSyncService.resetInstance();
+      await RooSyncService.resetInstance();
       console.log('[RESET] Service réinitialisé avec succès');
     }
     
-    const service = getRooSyncService();
+    const service = await getRooSyncService();
     console.log('[CRITICAL] Service obtenu, appel de loadDashboard...');
     const dashboard = await service.loadDashboard();
     console.log('[CRITICAL] Dashboard obtenu:', JSON.stringify(dashboard, null, 2));

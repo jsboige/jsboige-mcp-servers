@@ -1,34 +1,28 @@
+/**
+ * Tools barrel — Re-exports all tool definitions and handlers.
+ *
+ * WARNING: This barrel has 19+ ESM circular dependency paths on Node v24+.
+ * Do NOT import statically from this barrel — use dynamic import or direct sub-module imports.
+ *
+ * For the MCP server (registry.ts): use individual sub-module imports instead:
+ *   import { conversationBrowserTool } from './conversation/index.js';
+ *   import { roosyncTools } from './roosync/index.js';
+ */
+
 export * from './read-vscode-logs.js';
 export * from './storage/index.js';
 export * from './rebuild-and-restart.js';
 export { getMcpBestPractices } from './get_mcp_best_practices.js';
 export * from './manage-mcp-settings.js';
-// [REMOVED] rebuildTaskIndexFixed — #814: replaced by handleRebuildTaskIndex in maintenance/
 export { viewConversationTree } from './view-conversation-tree.js';
-
-// Conversation tools - Batch 2 refactoring
 export * from './conversation/index.js';
-
-// Task tools - Batch 3 refactoring
 export * from './task/index.js';
-
-// Search & Indexing tools - Batch 4 refactoring
 export * from './search/index.js';
-// XML Export tools - Batch 5 refactoring
 export * from './export/index.js';
 export * from './indexing/index.js';
-
-// Summary & Synthesis tools - Batch 6 refactoring
 export * from './summary/index.js';
-// RooSync tools - Batch 6 synchronization
 export * from './roosync/index.js';
-
-// Cache & Repair tools - Batch 8 refactoring
 export * from './cache/index.js';
 export * from './repair/index.js';
-
-// CONS-13: Maintenance tools consolidés (5→2)
 export * from './maintenance/index.js';
-
-// Diagnostic Tools - WP4 (Cycle 7)
 export * from './diagnostic/index.js';

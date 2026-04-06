@@ -10,7 +10,7 @@
 
 import { z } from 'zod';
 import { zodToJsonSchema } from 'zod-to-json-schema';
-import { getRooSyncService, RooSyncServiceError } from '../../services/RooSyncService.js';
+import { getRooSyncService, RooSyncServiceError } from '../../services/lazy-roosync.js';
 import { writeFileSync, readFileSync } from 'fs';
 import { join } from 'path';
 
@@ -52,7 +52,7 @@ export type RejectDecisionResult = z.infer<typeof RejectDecisionResultSchema>;
  */
 export async function roosyncRejectDecision(args: RejectDecisionArgs): Promise<RejectDecisionResult> {
   try {
-    const service = getRooSyncService();
+    const service = await getRooSyncService();
     const config = service.getConfig();
     
     // Charger la décision

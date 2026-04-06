@@ -8,7 +8,7 @@
  */
 
 import { MessageManager, getMessageManager } from '../../services/MessageManager.js';
-import { getSharedStatePath } from '../../utils/server-helpers.js';
+import { getSharedStatePath } from '../../utils/shared-state-path.js';
 import { createLogger, Logger } from '../../utils/logger.js';
 import { MessageManagerError, MessageManagerErrorCode } from '../../types/errors.js';
 import { recordRooSyncActivityAsync } from './heartbeat-activity.js';
@@ -20,7 +20,7 @@ import {
   getLocalMachineId,
   getLocalWorkspaceId
 } from '../../utils/message-helpers.js';
-import { getRooSyncService } from '../../services/RooSyncService.js';
+import { getRooSyncService } from '../../services/lazy-roosync.js';
 import { AttachmentManager } from '../../services/roosync/AttachmentManager.js';
 
 // Logger instance for read tool
@@ -87,7 +87,7 @@ async function readInboxMode(
   );
 
   // Fire-and-forget heartbeat update
-  getRooSyncService().getHeartbeatService()
+  (await getRooSyncService()).getHeartbeatService()
     .registerHeartbeat(localMachineId, { lastActivity: 'roosync_read_inbox', messageCount: messages.length })
     .catch(err => logger.debug('Heartbeat update skipped (non-critical)', { error: String(err) }));
 

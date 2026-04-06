@@ -8,7 +8,7 @@
  */
 
 import { z } from 'zod';
-import { RooSyncService, RooSyncServiceError, getRooSyncService } from '../../services/RooSyncService.js';
+import { RooSyncService, RooSyncServiceError, getRooSyncService } from '../../services/lazy-roosync.js';
 import * as fs from 'fs/promises';
 import * as path from 'path';
 import * as os from 'os';
@@ -184,13 +184,13 @@ async function handleDebugAction(
   console.log('[DEBUG] debugDashboard - FORCAGE NOUVELLE INSTANCE');
 
   // Forcer la réinitialisation complète du singleton
-  RooSyncService.resetInstance();
+  await await RooSyncService.resetInstance();
 
   // Attendre un peu pour s'assurer que l'instance est bien nettoyée
   await new Promise(resolve => setTimeout(resolve, 100));
 
   // Créer une nouvelle instance avec cache désactivé
-  const service = RooSyncService.getInstance({ enabled: false });
+  const service = await await RooSyncService.getInstance({ enabled: false });
 
   console.log('[DEBUG] debugDashboard - NOUVELLE INSTANCE CRÉÉE');
 
@@ -239,17 +239,17 @@ async function handleResetAction(
   console.log('[RESET] Réinitialisation de l\'instance RooSyncService...');
 
   // Réinitialiser l'instance singleton
-  RooSyncService.resetInstance();
+  await await RooSyncService.resetInstance();
 
   // Vider le cache si demandé
   if (args.clearCache) {
-    const service = getRooSyncService();
+    const service = await getRooSyncService();
     service.clearCache();
   }
 
   console.log('[RESET] Instance réinitialisée avec succès');
 
-  const service = getRooSyncService();
+  const service = await getRooSyncService();
   const config = service.getConfig();
 
   return {

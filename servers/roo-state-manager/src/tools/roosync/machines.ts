@@ -9,7 +9,7 @@
 
 import { z } from 'zod';
 import { UnifiedToolContract, ToolCategory, ProcessingLevel, ToolResult } from '../../interfaces/UnifiedToolInterface.js';
-import { getRooSyncService } from '../../services/RooSyncService.js';
+import { getRooSyncService } from '../../services/lazy-roosync.js';
 import { HeartbeatServiceError } from '../../services/roosync/HeartbeatService.js';
 
 /**
@@ -112,7 +112,7 @@ export const machinesTool: UnifiedToolContract = {
     const startTime = Date.now();
     try {
       const { status, includeDetails = false } = input;
-      const rooSyncService = getRooSyncService();
+      const rooSyncService = await getRooSyncService();
       const heartbeatService = rooSyncService.getHeartbeatService();
       const checkedAt = new Date().toISOString();
 

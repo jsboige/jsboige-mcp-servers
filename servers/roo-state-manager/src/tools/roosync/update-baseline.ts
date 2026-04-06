@@ -11,7 +11,7 @@
  */
 
 import { z } from 'zod';
-import { getRooSyncService, RooSyncServiceError } from '../../services/RooSyncService.js';
+import { getRooSyncService, RooSyncServiceError } from '../../services/lazy-roosync.js';
 import { existsSync, readFileSync, writeFileSync, copyFileSync } from 'fs';
 import { join } from 'path';
 import { createLogger, Logger } from '../../utils/logger.js';
@@ -144,7 +144,7 @@ export async function roosyncUpdateBaseline(args: UpdateBaselineArgs): Promise<U
       createBackup: args.createBackup
     });
 
-    const service = getRooSyncService();
+    const service = await getRooSyncService();
     const config = service.getConfig();
     
     // 1. Initialiser les services nécessaires
