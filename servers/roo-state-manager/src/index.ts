@@ -21,7 +21,9 @@ const __dirname = dirname(__filename);
 // Charger les variables d'environnement AVANT tout autre import
 // CORRECTION : Utiliser __dirname pour charger le .env depuis le répertoire du serveur MCP
 const envPath = path.join(__dirname, '..', '.env');
-const envResult = dotenv.config({ path: envPath, override: true });
+// #1140: quiet: true prevents dotenv v17 from writing to stdout,
+// which would corrupt the MCP JSON-RPC stdio transport.
+const envResult = dotenv.config({ path: envPath, override: true, quiet: true });
 if (envResult.error) {
   console.error('🔧 [DEBUG] dotenv.config error:', envResult.error);
 }
@@ -48,7 +50,8 @@ if (missingVars.length > 0) {
     process.exit(1);
 }
 
-console.log('✅ Variables d\'environnement critiques présentes');
+// Use stderr — stdout is reserved for MCP JSON-RPC protocol
+console.error('✅ Variables d\'environnement critiques présentes');
 
 // NOTE: Système de vérification des conflits d'identité (T2.5) SUPPRIMÉ
 // Raison: Fonctionnalité non demandée par l'utilisateur, bloquait le multi-agent
