@@ -6,7 +6,7 @@ import { FullInventory, InventoryData, McpServerInfo, RooModeInfo, ScriptInfo, C
 import { PowerShellExecutor } from '../PowerShellExecutor';
 import { readJSONFileWithoutBOM } from '../../utils/encoding-helpers.js';
 import { InventoryCollectorError, InventoryCollectorErrorCode } from '../../types/errors.js';
-import { getSharedStatePath } from '../../utils/server-helpers.js';
+import { getSharedStatePath } from '../../utils/shared-state-path.js';
 
 export class InventoryService {
   private static instance: InventoryService;

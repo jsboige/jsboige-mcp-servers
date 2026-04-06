@@ -9,7 +9,7 @@
 
 import { MessageManager, getMessageManager } from '../../services/MessageManager.js';
 import { AttachmentManager } from '../../services/roosync/AttachmentManager.js';
-import { getSharedStatePath } from '../../utils/server-helpers.js';
+import { getSharedStatePath } from '../../utils/shared-state-path.js';
 import { createLogger, Logger } from '../../utils/logger.js';
 import { recordRooSyncActivityAsync } from './heartbeat-activity.js';
 import { MessageManagerError, MessageManagerErrorCode } from '../../types/errors.js';
@@ -21,7 +21,7 @@ import {
   getLocalMachineId,
   getLocalFullId
 } from '../../utils/message-helpers.js';
-import { getRooSyncService } from '../../services/RooSyncService.js';
+import { getRooSyncService } from '../../services/lazy-roosync.js';
 import { updateDashboardActivityAsync } from '../../utils/dashboard-helpers.js';
 
 // Logger instance for send tool
@@ -198,7 +198,7 @@ ${truncateBodyPreview(args.body!)}
 
   logger.info('✅ Message sent successfully', { messageId: message.id, to: args.to });
   // Fire-and-forget heartbeat update: sending a message proves the machine is active
-  getRooSyncService().getHeartbeatService()
+  (await getRooSyncService()).getHeartbeatService()
     .registerHeartbeat(getLocalMachineId(), { lastActivity: 'roosync_send', messageId: message.id })
     .catch(err => logger.debug('Heartbeat update skipped (non-critical)', { error: String(err) }));
   // Fire-and-forget dashboard update: track last activity (#546 Phase 2)
@@ -348,7 +348,7 @@ ${truncateBodyPreview(args.body!)}
 
   logger.info('✅ Reply sent successfully', { replyId: replyMessageObj.id, threadId });
   // Fire-and-forget heartbeat update: sending a reply proves the machine is active
-  getRooSyncService().getHeartbeatService()
+  (await getRooSyncService()).getHeartbeatService()
     .registerHeartbeat(getLocalMachineId(), { lastActivity: 'roosync_reply', messageId: replyMessageObj.id })
     .catch(err => logger.debug('Heartbeat update skipped (non-critical)', { error: String(err) }));
   // Fire-and-forget dashboard update: track last activity (#546 Phase 2)

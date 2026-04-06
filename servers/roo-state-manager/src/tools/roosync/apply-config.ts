@@ -2,7 +2,7 @@
  * @deprecated Superseded by roosync_config(action: 'apply'). Kept for backward compatibility in registry.ts.
  */
 import { z } from 'zod';
-import { getRooSyncService } from '../../services/RooSyncService.js';
+import { getRooSyncService } from '../../services/lazy-roosync.js';
 import { ConfigSharingServiceError, ConfigSharingServiceErrorCode } from '../../types/errors.js';
 
 export const ApplyConfigArgsSchema = z.object({
@@ -70,7 +70,7 @@ export async function roosyncApplyConfig(args: ApplyConfigArgs) {
   const { version, machineId, targets, backup = true, dryRun = false } = args;
 
   try {
-    const rooSyncService = getRooSyncService();
+    const rooSyncService = await getRooSyncService();
     const configService = rooSyncService.getConfigService();
     const configSharingService = rooSyncService.getConfigSharingService();
 

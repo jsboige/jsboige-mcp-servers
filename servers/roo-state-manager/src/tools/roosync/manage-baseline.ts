@@ -11,7 +11,7 @@ import { createLogger, Logger } from '../../utils/logger.js';
 
 import { z } from 'zod';
 import { zodToJsonSchema } from 'zod-to-json-schema';
-import { getRooSyncService, RooSyncServiceError } from '../../services/RooSyncService.js';
+import { getRooSyncService, RooSyncServiceError } from '../../services/lazy-roosync.js';
 import { existsSync, readFileSync, writeFileSync } from 'fs';
 import { join } from 'path';
 import { BaselineService } from '../../services/BaselineService.js';
@@ -91,7 +91,7 @@ function validateSemanticVersion(version: string): boolean {
 export async function roosync_manage_baseline(args: ManageBaselineArgs): Promise<ManageBaselineResult> {
   try {
     const timestamp = new Date().toISOString();
-    const service = getRooSyncService();
+    const service = await getRooSyncService();
     const config = service.getConfig();
 
     if (args.action === 'version') {

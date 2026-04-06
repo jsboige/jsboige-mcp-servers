@@ -10,7 +10,7 @@
 import { z } from 'zod';
 import { UnifiedToolContract, ToolCategory, ProcessingLevel, ToolResult } from '../../interfaces/UnifiedToolInterface.js';
 import { InventoryService } from '../../services/roosync/InventoryService.js';
-import { getRooSyncService } from '../../services/RooSyncService.js';
+import { getRooSyncService } from '../../services/lazy-roosync.js';
 import { HeartbeatServiceError } from '../../services/roosync/HeartbeatService.js';
 
 /**
@@ -135,7 +135,7 @@ export const inventoryTool: UnifiedToolContract = {
 
       // Récupérer l'état heartbeat si demandé
       if (type === 'heartbeat' || type === 'all') {
-        const rooSyncService = getRooSyncService();
+        const rooSyncService = await getRooSyncService();
         const heartbeatService = rooSyncService.getHeartbeatService();
         const state = heartbeatService.getState();
 

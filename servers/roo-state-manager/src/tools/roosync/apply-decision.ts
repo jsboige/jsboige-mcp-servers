@@ -11,7 +11,7 @@
 
 import { z } from 'zod';
 import { zodToJsonSchema } from 'zod-to-json-schema';
-import { getRooSyncService, RooSyncServiceError } from '../../services/RooSyncService.js';
+import { getRooSyncService, RooSyncServiceError } from '../../services/lazy-roosync.js';
 import { BaselineServiceError, BaselineServiceErrorCode } from '../../types/errors.js';
 import { writeFileSync, readFileSync } from 'fs';
 import { join } from 'path';
@@ -63,7 +63,7 @@ export type ApplyDecisionResult = z.infer<typeof ApplyDecisionResultSchema>;
  */
 export async function roosyncApplyDecision(args: ApplyDecisionArgs): Promise<ApplyDecisionResult> {
   try {
-    const service = getRooSyncService();
+    const service = await getRooSyncService();
     const config = service.getConfig();
     
     // Charger la décision

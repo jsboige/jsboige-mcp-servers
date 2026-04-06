@@ -34,7 +34,7 @@ import { BaselineLoader } from './baseline/BaselineLoader.js';
 import { DifferenceDetector } from './baseline/DifferenceDetector.js';
 import { ChangeApplier } from './baseline/ChangeApplier.js';
 import { ConfigValidator } from './baseline/ConfigValidator.js';
-import { getSharedStatePath } from '../utils/server-helpers.js';
+import { getSharedStatePath } from '../utils/shared-state-path.js';
 
 /**
  * Service BaselineService - Cœur de l'architecture baseline-driven

@@ -2,7 +2,7 @@
  * @deprecated Superseded by roosync_config(action: 'publish'). Kept for backward compatibility in registry.ts.
  */
 import { z } from 'zod';
-import { getRooSyncService } from '../../services/RooSyncService.js';
+import { getRooSyncService } from '../../services/lazy-roosync.js';
 import { ConfigSharingServiceError, ConfigSharingServiceErrorCode } from '../../types/errors.js';
 export const PublishConfigArgsSchema = z.object({
   packagePath: z.string().describe('Chemin du package temporaire créé par roosync_collect_config'),
@@ -17,7 +17,7 @@ export async function roosyncPublishConfig(args: PublishConfigArgs) {
   const { packagePath, version, description, machineId } = args;
   
   try {
-    const rooSyncService = getRooSyncService();
+    const rooSyncService = await getRooSyncService();
     const configSharingService = rooSyncService.getConfigSharingService();
     
     const result = await configSharingService.publishConfig({

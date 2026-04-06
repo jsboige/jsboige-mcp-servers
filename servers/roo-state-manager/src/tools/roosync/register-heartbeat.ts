@@ -9,7 +9,7 @@
  */
 
 import { z } from 'zod';
-import { getRooSyncService } from '../../services/RooSyncService.js';
+import { getRooSyncService } from '../../services/lazy-roosync.js';
 import { HeartbeatServiceError } from '../../services/roosync/HeartbeatService.js';
 
 /**
@@ -54,7 +54,7 @@ export type RegisterHeartbeatResult = z.infer<typeof RegisterHeartbeatResultSche
  */
 export async function roosyncRegisterHeartbeat(args: RegisterHeartbeatArgs): Promise<RegisterHeartbeatResult> {
   try {
-    const rooSyncService = getRooSyncService();
+    const rooSyncService = await getRooSyncService();
     const heartbeatService = rooSyncService.getHeartbeatService();
 
     // Vérifier si la machine existe déjà

@@ -12,7 +12,7 @@ import { existsSync, readFileSync, unlinkSync, writeFileSync } from 'fs';
 import { join } from 'path';
 import type { RooSyncConfig } from '../../../config/roosync-config.js';
 import { parseRoadmapMarkdown, findDecisionById, type RooSyncDecision } from '../../../utils/roosync-parsers.js';
-import { getSharedStatePath } from '../../../utils/server-helpers.js';
+import { getSharedStatePath } from '../../../utils/shared-state-path.js';
 
 /**
  * Met à jour le statut d'une décision dans sync-roadmap.md

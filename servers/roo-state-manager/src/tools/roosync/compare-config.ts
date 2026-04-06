@@ -10,7 +10,7 @@
 
 import { z } from 'zod';
 import { zodToJsonSchema } from 'zod-to-json-schema';
-import { getRooSyncService, RooSyncServiceError } from '../../services/RooSyncService.js';
+import { getRooSyncService, RooSyncServiceError } from '../../services/lazy-roosync.js';
 import { GranularDiffDetector } from '../../services/GranularDiffDetector.js';
 import type { GranularDiffReport, GranularDiffResult } from '../../services/GranularDiffDetector.js';
 import { RooSettingsService, SYNC_SAFE_KEYS } from '../../services/RooSettingsService.js';
@@ -132,7 +132,7 @@ export async function roosyncCompareConfig(args: CompareConfigArgs): Promise<Com
       // Gestion gracieuse : si RooSyncService ne peut pas être initialisé (répertoire manquant, etc.)
       // retourner un résultat CRITICAL au lieu de lancer une exception
       try {
-          service = getRooSyncService();
+          service = await getRooSyncService();
           config = service.getConfig();
 
           // Déterminer machines source et cible

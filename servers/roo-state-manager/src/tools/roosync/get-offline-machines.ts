@@ -9,7 +9,7 @@
  */
 
 import { z } from 'zod';
-import { getRooSyncService } from '../../services/RooSyncService.js';
+import { getRooSyncService } from '../../services/lazy-roosync.js';
 import { HeartbeatServiceError } from '../../services/roosync/HeartbeatService.js';
 
 /**
@@ -77,7 +77,7 @@ export type GetOfflineMachinesResult = z.infer<typeof GetOfflineMachinesResultSc
  */
 export async function roosyncGetOfflineMachines(args: GetOfflineMachinesArgs): Promise<GetOfflineMachinesResult> {
   try {
-    const rooSyncService = getRooSyncService();
+    const rooSyncService = await getRooSyncService();
     const heartbeatService = rooSyncService.getHeartbeatService();
 
     const offlineMachines = heartbeatService.getOfflineMachines();
