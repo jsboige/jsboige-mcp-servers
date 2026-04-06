@@ -218,10 +218,14 @@ async function readDashboardFile(key: string): Promise<Dashboard | null> {
     const intercomMarkdown = intercomMatch ? intercomMatch[1].trim() : '';
 
     // Parser les messages intercom (format: ### [timestamp] machine|workspace [tags]\n\ncontent)
+    // Bug fix: split on message headers instead of `---` which can appear in message content
     const messages: IntercomMessage[] = [];
     if (intercomMarkdown && !intercomMarkdown.includes('*Aucun message.*')) {
-      const messageBlocks = intercomMarkdown.split(/\n\n---\n\n/);
-      for (const block of messageBlocks) {
+      // Split on message headers (### [) while keeping the header in each block
+      const messageBlocks = intercomMarkdown.split(/(?=^### \[)/m).filter(b => b.trim());
+      for (const rawBlock of messageBlocks) {
+        // Strip trailing --- separators (leftover from write format)
+        const block = rawBlock.replace(/\n---\s*$/, '').trim();
         // Note: machineId et workspace peuvent contenir des tirets (ex: test-machine, roo-extensions)
         // On utilise [^|\s]+ au lieu de \w+ pour permettre les tirets
         const headerMatch = block.match(/### \[([^\]]+)\]\s+([^|]+)\|([^|\s]+)(\s+\[([^\]]+)\])?\n\n([\s\S]+)/);
@@ -635,7 +639,7 @@ ${archiveMessages}
         machineId: 'system',
         workspace: 'system'
       },
-      content: `---\n**CONDENSATION-SUMMARY** - ${now}\n\n${llmSummary}\n---`,
+      content: `**CONDENSATION-SUMMARY** - ${now}\n\n${llmSummary}`,
       tags: ['SYSTEM', 'CONDENSATION-SUMMARY']
     };
     systemMessages.push(summaryMessage);
@@ -661,7 +665,7 @@ ${archiveMessages}
       machineId: 'system',
       workspace: 'system'
     },
-    content: `---\n**CONDENSATION** - ${now}\n\n${toArchive.length} messages archivés dans \`archive/${path.basename(archivePath)}\`\n${toKeep.length} messages conservés (plus récents)\n${llmSummary ? '✅ Résumé LLM généré' : '⚠️ Résumé LLM indisponible'}\n${statusUpdated ? '✅ Statut mis à jour' : '⚠️ Statut non mis à jour'}\n---`,
+    content: `**CONDENSATION** - ${now}\n\n${toArchive.length} messages archivés dans \`archive/${path.basename(archivePath)}\`\n${toKeep.length} messages conservés (plus récents)\n${llmSummary ? '✅ Résumé LLM généré' : '⚠️ Résumé LLM indisponible'}\n${statusUpdated ? '✅ Statut mis à jour' : '⚠️ Statut non mis à jour'}`,
     tags: ['SYSTEM', 'CONDENSATION']
   };
   systemMessages.push(condenseNotice);
@@ -1215,9 +1219,10 @@ async function handleReadArchive(key: string, args: DashboardArgs): Promise<Dash
     const markdownContent = content.slice(frontmatterMatch[0].length);
     const messages: IntercomMessage[] = [];
 
-    // Trouver la section des messages (après les séparateurs ---)
-    const messageBlocks = markdownContent.split(/\n\n---\n\n/);
-    for (const block of messageBlocks) {
+    // Split on message headers instead of `---` to avoid content interference
+    const messageBlocks = markdownContent.split(/(?=^### \[)/m).filter(b => b.trim());
+    for (const rawBlock of messageBlocks) {
+      const block = rawBlock.replace(/\n---\s*$/, '').trim();
       const headerMatch = block.match(/### \[([^\]]+)\]\s+([^|]+)\|([^|\s]+)(\s+\[([^\]]+)\])?\n\n([\s\S]+)/);
       if (headerMatch) {
         const [, timestamp, machineId, workspace, , tagsStr, msgContent] = headerMatch;
