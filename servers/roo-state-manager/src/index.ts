@@ -64,7 +64,7 @@ import { RooStorageDetector } from './utils/roo-storage-detector.js';
 import { ClaudeStorageDetector } from './utils/claude-storage-detector.js';
 import { promises as fs } from 'fs';
 import { createRequire } from 'module';
-import { handleBuildSkeletonCache } from './tools/index.js';
+// handleBuildSkeletonCache loaded dynamically to avoid importing ALL tools at startup
 import { NotificationService } from './notifications/NotificationService.js';
 import { ToolUsageInterceptor } from './notifications/ToolUsageInterceptor.js';
 import { getMessageManager } from './services/MessageManager.js';
@@ -240,6 +240,7 @@ class RooStateManagerServer {
             // Vérifier si le cache est vide - reconstruction nécessaire
             if (state.conversationCache.size === 0) {
                 logger.info('[FAILSAFE] Cache empty, triggering differential rebuild...');
+                const { handleBuildSkeletonCache } = await import('./tools/index.js');
                 await handleBuildSkeletonCache({
                     force_rebuild: false,
                     workspace_filter: args?.workspace
@@ -340,7 +341,8 @@ class RooStateManagerServer {
             // Déclencher reconstruction différentielle si nécessaire
             if (needsUpdate) {
                 logger.info('[FAILSAFE] Cache outdated, triggering differential rebuild...');
-                await handleBuildSkeletonCache({
+                const { handleBuildSkeletonCache: rebuildCache } = await import('./tools/index.js');
+                await rebuildCache({
                     force_rebuild: false,
                     workspace_filter: args?.workspace
                 }, state.conversationCache as any);

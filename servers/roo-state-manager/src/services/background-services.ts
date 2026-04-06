@@ -11,7 +11,7 @@ import { RooStorageDetector } from '../utils/roo-storage-detector.js';
 import { ServerState } from './state-manager.service.js';
 import { ANTI_LEAK_CONFIG } from '../config/server-config.js';
 import { TaskIndexer, getHostIdentifier } from './task-indexer.js';
-import * as toolExports from '../tools/index.js';
+// REMOVED: import * as toolExports — was unused, added 6s to startup by importing ALL tools
 import { RooStorageDetectorError, RooStorageDetectorErrorCode } from '../types/errors.js';
 import { RooSyncService } from './RooSyncService.js';
 
