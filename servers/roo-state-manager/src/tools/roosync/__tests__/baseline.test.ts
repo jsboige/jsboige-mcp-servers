@@ -1351,18 +1351,47 @@ First release
 `;
       writeFileSync(changelogPath, initialContent);
 
-      const result = await roosync_baseline({
-        action: 'version',
-        version: '9.0.0',
-        pushTags: false,
-        createChangelog: true
+      // Importer le module pour accéder au mock
+      const { execSync } = await import('child_process');
+
+      // Sauvegarder le mock original
+      const originalImplementation = vi.mocked(execSync).mockImplementation;
+
+      // Configurer le mock pour simuler un succès de création de tag
+      vi.mocked(execSync).mockImplementation((cmd: string) => {
+        // Simuler que le tag n'existe pas avant la création
+        if (cmd.includes('git rev-parse --verify refs/tags/baseline-v')) {
+          const tagVersion = cmd.match(/baseline-v([^/\s]+)/)?.[1];
+          if (tagVersion && compareVersions(tagVersion, '9.0.0') > 0) {
+            return 'tag-commit-hash'; // Tag existe
+          }
+          return ''; // Tag n'existe pas
+        }
+        // Simuler la création réussie du tag
+        if (cmd.includes('git tag -a baseline-v9.0.0')) {
+          return ''; // Succès
+        }
+        // Ne pas lancer d'erreur pour les autres commandes
+        return '';
       });
 
-      expect(result.success).toBe(true);
+      try {
+        const result = await roosync_baseline({
+          action: 'version',
+          version: '9.0.0',
+          pushTags: false,
+          createChangelog: true
+        });
 
-      const changelogContent = readFileSync(changelogPath, 'utf-8');
-      expect(changelogContent).toContain('## [9.0.0]');
-      expect(changelogContent).toContain('## [1.0.0]'); // Ancien contenu préservé
+        expect(result.success).toBe(true);
+
+        const changelogContent = readFileSync(changelogPath, 'utf-8');
+        expect(changelogContent).toContain('## [9.0.0]');
+        expect(changelogContent).toContain('## [1.0.0]'); // Ancien contenu préservé
+      } finally {
+        // Restaurer le mock original
+        vi.mocked(execSync).mockImplementation = originalImplementation;
+      }
     });
 
     test('should skip changelog creation when createChangelog is false', async () => {
