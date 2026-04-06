@@ -197,7 +197,7 @@ function getArchiveDir(): string {
 async function readDashboardFile(key: string): Promise<Dashboard | null> {
   const filePath = getDashboardPath(key);
   try {
-    const content = await fs.readFile(filePath, 'utf8');
+    const content = (await fs.readFile(filePath, 'utf8')).replace(/\r\n/g, '\n');
 
     // Parser le frontmatter YAML (entre --- et ---)
     const frontmatterMatch = content.match(/^---\n([\s\S]+?)\n---/);
@@ -351,7 +351,7 @@ function generateMessageId(): string {
  * @returns Résumé markdown ou null si échec (fallback)
  */
 async function generateLLMSummary(messages: IntercomMessage[]): Promise<string | null> {
-  const timeoutMs = 180000; // 180 secondes (3 minutes — LLM local peut mettre du temps à démarrer)
+  const timeoutMs = 600000; // 600 secondes (10 minutes — LLM local peut mettre du temps à démarrer)
   const startTime = Date.now();
 
   try {
@@ -362,37 +362,35 @@ async function generateLLMSummary(messages: IntercomMessage[]): Promise<string |
       return `${header}\n${msg.content}`;
     }).join('\n\n---\n\n');
 
-    const systemPrompt = `Tu es un assistant qui synthétise les communications techniques entre agents multi-machines.
-Ta tâche : générer un résumé structuré et concis des messages fournis.
+    const systemPrompt = `Tu es un expert en synthèse de communications inter-agents.
 
-Format de sortie attendu (Markdown) :
-## Résumé Thématique
-- Thème 1 : description
-- Thème 2 : description
-...
+CONTEXTE : Ces messages viennent d'être RETIRÉS d'un dashboard de coordination et archivés.
+Ce résumé sera le SEUL enregistrement visible de ces messages dans le dashboard.
 
-## Actions Clés
-- Action 1 : [status] description
-- Action 2 : [status] description
-...
+EXIGENCES :
+- ZÉRO perte d'information actionnable (décisions, résultats, blocages résolus)
+- Regrouper par THÈMES, pas par message individuel
+- Préserver les métriques chiffrées exactes (scores, taux, nombres)
+- Préserver les dates des événements importants
+- Maximum 30 lignes. Pas d'emojis.
+- Ne JAMAIS inventer d'informations absentes des messages
 
-## Points d'Attention
-- Point 1
-- Point 2
+FORMAT :
+## Résumé des ${messages.length} messages archivés
 
-## Métriques (si applicable)
-- X messages traités
-- Y issues/bugs
-- Z bloquages
+### Thèmes principaux
+- [thème] : synthèse factuelle
 
-IMPORTANT :
-- Être CONCIS (max 20-30 lignes)
-- Regrouper par thèmes, ne pas lister chaque message
-- Identifier les patterns, pas les détails
-- Les tags [DONE], [ERROR], [WARN], [ASK] sont prioritaires
-- Ne pas inventer d'informations, rester factuel`;
+### Actions et résultats
+- [DONE/BLOCKED/EN COURS] description avec dates
 
-    const userPrompt = `Voici ${messages.length} messages à synthétiser :\n\n${messagesContent}\n\nGénère un résumé structuré de ces communications.`;
+### Décisions et métriques
+- Décisions prises, valeurs chiffrées, résultats mesurés
+
+### Points d'attention transmis
+- Alertes, warnings, ou questions non résolues`;
+
+    const userPrompt = `${messages.length} messages retirés du dashboard à synthétiser :\n\n${messagesContent}\n\nRésume ces messages archivés. Ce résumé sera la seule trace visible dans le dashboard.`;
 
     logger.info('Calling LLM for intercom summary', { messageCount: messages.length });
 
@@ -411,7 +409,7 @@ IMPORTANT :
           { role: 'system', content: systemPrompt },
           { role: 'user', content: userPrompt }
         ],
-        max_tokens: 1000,
+        max_tokens: 20000,
         temperature: 0.3
       }, {
         timeout: timeoutMs
@@ -421,7 +419,7 @@ IMPORTANT :
 
       const summary = response.choices[0]?.message?.content;
       if (!summary) {
-        logger.warn('LLM returned empty summary');
+        logger.warn('LLM returned empty summary (content is null — model may need more max_tokens for reasoning + response)');
         return null;
       }
 
@@ -457,50 +455,89 @@ IMPORTANT :
  */
 async function generateStatusUpdate(
   previousStatus: string,
-  archivedMessages: IntercomMessage[]
+  allMessages: IntercomMessage[],
+  archivedCount: number
 ): Promise<string | null> {
-  const timeoutMs = 180000; // 180 secondes (3 minutes — LLM local peut mettre du temps à démarrer)
+  const timeoutMs = 600000; // 600 secondes (10 minutes — LLM local peut mettre du temps à démarrer)
   const startTime = Date.now();
 
   try {
-    // Construire le contenu des messages archivés
-    const messagesContent = archivedMessages.map(msg => {
+    // Format messages with archive/keep annotations
+    const messagesContent = allMessages.map((msg, index) => {
       const tags = msg.tags?.length ? ` [${msg.tags.join(', ')}]` : '';
-      const header = `[${msg.timestamp}] ${msg.author.machineId}|${msg.author.workspace}${tags}`;
+      const annotation = index < archivedCount ? '[SERA ARCHIVÉ]' : '[CONSERVÉ]';
+      const header = `${annotation} [${msg.timestamp}] ${msg.author.machineId}|${msg.author.workspace}${tags}`;
       return `${header}\n${msg.content}`;
     }).join('\n\n---\n\n');
 
-    const systemPrompt = `Tu es un assistant qui met à jour les dashboards de coordination multi-agents.
-Ta tâche : intégrer les informations importantes des messages archivés dans le statut existant.
+    // Extract lastDate from the last message timestamp
+    const lastDate = allMessages.length > 0 ? allMessages[allMessages.length - 1].timestamp : new Date().toISOString();
 
-Règles de mise à jour :
-1. PRÉSERVER la structure et les informations toujours valides du statut précédent
-2. AJOUTER les nouvelles informations importantes issues des messages (tâches terminées, blocages, alertes)
-3. METTRE À JOUR les statuts de tâches si les messages indiquent des changements
-4. RETIRER les informations obsolètes (tâches déjà complétées mentionnées dans le statut)
-5. GARDER le format Markdown existant
+    const systemPrompt = `Tu es un expert en synthèse de dashboards de coordination multi-agents.
 
-Format de sortie : Markdown structuré avec le même style que le statut précédent.
+CONTEXTE : Le dashboard contient un STATUT (mémoire de travail du projet) et des MESSAGES INTERCOM (communications entre agents).
+Les messages intercom les plus anciens vont être archivés car ils sont trop nombreux.
+Ta mission est de RÉÉCRIRE le statut pour y INTÉGRER les informations importantes des messages qui vont disparaître.
 
-IMPORTANT :
-- Être CONCIS mais COMPLET (max 150 lignes)
-- Ne PAS répéter les informations
-- Priorité aux tags [DONE], [ERROR], [WARN], [BLOCKED], [TASK], [WAKE-CLAUDE]
-- Conserver les sections utiles du statut précédent
-- Ajouter une section "## Dernière Condensation" avec un résumé des changements
-- Le statut est la MÉMOIRE CONSOLIDÉE du dashboard — tout ce qui n'est pas dans les messages récents doit être ici`;
+Le statut est la MÉMOIRE DE TRAVAIL du projet — il doit être aussi RICHE et COMPLET que nécessaire.
+Ne le raccourcis PAS artificiellement. Un statut de 200+ lignes est normal s'il contient des informations utiles.
+
+Tu reçois :
+- L'ANCIEN statut (peut contenir des infos obsolètes à mettre à jour)
+- TOUS les messages intercom (les plus anciens marqués [SERA ARCHIVÉ], les récents marqués [CONSERVÉ])
+
+EXIGENCES DE QUALITÉ :
+1. ZÉRO perte d'information stratégique — chaque décision, blocage, livrable, métrique mentionné dans les messages DOIT être reflété dans le statut
+2. Les DATES doivent être à jour : utilise les timestamps des messages les plus récents, pas ceux de l'ancien statut
+3. Les informations CONTRADICTOIRES entre ancien statut et messages récents : les messages récents ont RAISON (ils sont plus frais)
+4. Les tâches marquées [DONE] dans les messages récents doivent apparaître comme TERMINÉES, pas "en cours"
+5. Les métriques chiffrées (scores, taux, Sharpe ratios, etc.) DOIVENT être préservées avec leurs valeurs exactes
+6. INTÉGRER dans le statut toute information des messages [SERA ARCHIVÉ] qui serait perdue autrement
+7. Pas d'emojis.
+
+STRUCTURE DE SORTIE (adapter les sections au contenu réel du projet) :
+## [Nom du workspace] — État au ${lastDate}
+
+### Résumé
+[2-3 phrases : état global, tendance, prochaine échéance]
+
+### Livrables récents
+[Réalisations concrètes avec dates — détailler autant que nécessaire]
+
+### En cours
+[Tâches actives avec responsable si connu]
+
+### Blocages / Points d'attention
+[Problèmes non résolus, risques identifiés]
+
+### Décisions prises
+[Choix architecturaux, stratégiques ou organisationnels actés]
+
+### Métriques et résultats
+[Chiffres clés, scores, taux — section optionnelle mais OBLIGATOIRE si des métriques existent]
+
+[Ajouter d'autres sections si le projet le nécessite — ne PAS sacrifier l'information pour la brièveté]
+
+CE QUE TU NE DOIS PAS FAIRE :
+- Copier-coller l'ancien statut tel quel (tu SYNTHÉTISES et METS À JOUR)
+- Garder des sections devenues obsolètes (tâches terminées depuis longtemps sans valeur de référence)
+- Lister chaque commit/PR individuellement (synthétiser par thème)
+- Inventer des informations absentes des sources
+- Utiliser des dates de l'ancien statut si des messages plus récents les contredisent
+- RACCOURCIR le statut au détriment de l'information — la concision est un MOYEN, pas un OBJECTIF`;
 
     const userPrompt = `**Statut précédent :**
 ${previousStatus}
 
-**Messages archivés (${archivedMessages.length} messages) :**
+**${allMessages.length} messages intercom (dont ${archivedCount} seront archivés, ${allMessages.length - archivedCount} conservés) :**
 ${messagesContent}
 
-Génère le statut mis à jour en intégrant les informations importantes des messages archivés.`;
+Réécris le statut en intégrant les informations des messages [SERA ARCHIVÉ]. Date de référence : ${lastDate}.`;
 
     logger.info('Calling LLM for status update', {
       previousStatusLength: previousStatus.length,
-      messageCount: archivedMessages.length
+      messageCount: allMessages.length,
+      archivedCount
     });
 
     const openai = getChatOpenAIClient();
@@ -516,7 +553,7 @@ Génère le statut mis à jour en intégrant les informations importantes des me
           { role: 'system', content: systemPrompt },
           { role: 'user', content: userPrompt }
         ],
-        max_tokens: 3000,
+        max_tokens: 20000,
         temperature: 0.3
       }, {
         timeout: timeoutMs
@@ -526,7 +563,7 @@ Génère le statut mis à jour en intégrant les informations importantes des me
 
       const newStatus = response.choices[0]?.message?.content;
       if (!newStatus) {
-        logger.warn('LLM returned empty status update');
+        logger.warn('LLM returned empty status update (content is null — model may need more max_tokens for reasoning + response)');
         return null;
       }
 
@@ -562,6 +599,7 @@ async function condenseIntercom(
   dashboard: Dashboard,
   keepCount: number
 ): Promise<Dashboard> {
+  const condensationStart = Date.now();
   const messages = dashboard.intercom.messages;
   if (messages.length <= keepCount) {
     return dashboard; // Rien à condenser
@@ -571,22 +609,32 @@ async function condenseIntercom(
   const toKeep = messages.slice(messages.length - keepCount);
 
   // #858 : Générer les résumés LLM AVANT d'archiver
-  const llmSummary = await generateLLMSummary(toArchive);
+  // Pass ALL messages to status update so LLM sees full context
   const previousStatus = dashboard.status.markdown;
-  const newStatus = await generateStatusUpdate(previousStatus, toArchive);
 
-  // #864 : Si les DEUX opérations LLM échouent, ANNULER la condensation
-  // On ne veut pas archiver sans au moins un résumé LLM
-  if (!llmSummary && !newStatus) {
-    logger.warn('LLM unavailable (both summary and status failed), condensation cancelled', {
+  const t1 = Date.now();
+  const newStatus = await generateStatusUpdate(previousStatus, messages, toArchive.length);
+  const t1Elapsed = Date.now() - t1;
+  logger.info('Status update LLM call completed', { elapsed: `${t1Elapsed}ms`, success: newStatus !== null });
+
+  const t2 = Date.now();
+  const llmSummary = await generateLLMSummary(toArchive);
+  const t2Elapsed = Date.now() - t2;
+  logger.info('Summary LLM call completed', { elapsed: `${t2Elapsed}ms`, success: llmSummary !== null });
+
+  // Both LLM calls are MANDATORY — if either fails, cancel condensation
+  if (!llmSummary || !newStatus) {
+    logger.warn('LLM call failed, condensation cancelled', {
       key,
-      messageCount: toArchive.length
+      messageCount: toArchive.length,
+      summaryOk: !!llmSummary,
+      statusOk: !!newStatus
     });
     return dashboard; // Retourner le dashboard inchangé
   }
 
-  // Au moins une opération LLM a réussi, on peut archiver
-  const statusUpdated = newStatus !== null;
+  // Both operations succeeded
+  const statusUpdated = true;
 
   // Archiver les anciens messages (format Markdown)
   const archiveDir = getArchiveDir();
@@ -648,16 +696,13 @@ ${archiveMessages}
     logger.info('LLM summary failed, but status updated - proceeding with archive', { archivedCount: toArchive.length });
   }
 
-  if (statusUpdated) {
-    logger.info('Status updated from archived messages', {
-      previousLength: previousStatus.length,
-      newLength: newStatus!.length
-    });
-  } else {
-    logger.info('Status update failed, but LLM summary generated - proceeding with archive');
-  }
+  logger.info('Status updated from archived messages', {
+    previousLength: previousStatus.length,
+    newLength: newStatus!.length
+  });
 
-  // Ajouter le message de condensation standard (avec ou sans résumé LLM)
+  // Ajouter le message de condensation standard avec timing
+  const totalElapsed = Date.now() - condensationStart;
   const condenseNotice: IntercomMessage = {
     id: generateMessageId(),
     timestamp: now,
@@ -665,17 +710,19 @@ ${archiveMessages}
       machineId: 'system',
       workspace: 'system'
     },
-    content: `**CONDENSATION** - ${now}\n\n${toArchive.length} messages archivés dans \`archive/${path.basename(archivePath)}\`\n${toKeep.length} messages conservés (plus récents)\n${llmSummary ? '✅ Résumé LLM généré' : '⚠️ Résumé LLM indisponible'}\n${statusUpdated ? '✅ Statut mis à jour' : '⚠️ Statut non mis à jour'}`,
+    content: `**CONDENSATION** - ${now}\n\n${toArchive.length} messages archivés dans \`archive/${path.basename(archivePath)}\`\n${toKeep.length} messages conservés (plus récents)\nStatut mis à jour, résumé LLM généré\nDurée: ${Math.round(totalElapsed / 1000)}s (status: ${Math.round(t1Elapsed / 1000)}s, summary: ${Math.round(t2Elapsed / 1000)}s)`,
     tags: ['SYSTEM', 'CONDENSATION']
   };
   systemMessages.push(condenseNotice);
+
+  logger.info('Condensation completed', { totalElapsed: `${totalElapsed}ms` });
 
   return {
     ...dashboard,
     lastModified: now,
     status: {
       ...dashboard.status,
-      markdown: statusUpdated ? newStatus! : previousStatus
+      markdown: newStatus!
     },
     intercom: {
       messages: [...systemMessages, ...toKeep],
@@ -1004,7 +1051,9 @@ async function handleCondense(
     };
   }
 
+  const condenseStart = Date.now();
   const condensedDashboard = await condenseIntercom(key, dashboard, keepCount);
+  const condenseElapsed = Date.now() - condenseStart;
   const actuallyCondensed = condensedDashboard.intercom.messages.length < beforeCount;
 
   if (actuallyCondensed) {
@@ -1021,8 +1070,8 @@ async function handleCondense(
     condensed: actuallyCondensed,
     archivedCount,
     message: actuallyCondensed
-      ? `Condensation terminée : ${archivedCount} messages archivés, ${condensedDashboard.intercom.messages.length} conservés`
-      : `Condensation annulée (LLM indisponible) — ${beforeCount} messages inchangés`
+      ? `Condensation terminée en ${Math.round(condenseElapsed / 1000)}s : ${archivedCount} messages archivés, ${condensedDashboard.intercom.messages.length} conservés`
+      : `Condensation annulée (LLM indisponible) — ${beforeCount} messages inchangés (${Math.round(condenseElapsed / 1000)}s)`
   };
 }
 
@@ -1243,7 +1292,7 @@ async function handleReadArchive(key: string, args: DashboardArgs): Promise<Dash
   // Lire une archive spécifique (format Markdown)
   const archivePath = path.join(archiveDir, args.archiveFile);
   try {
-    const content = await fs.readFile(archivePath, 'utf8');
+    const content = (await fs.readFile(archivePath, 'utf8')).replace(/\r\n/g, '\n');
 
     // Parser le frontmatter
     const frontmatterMatch = content.match(/^---\n([\s\S]+?)\n---/);

@@ -3,7 +3,7 @@
  * Implémente la logique "shouldIndex" avec règles de skip anti-fuite
  */
 
-import { ConversationSkeleton } from '../types/conversation.js';
+import { SkeletonHeader } from '../types/conversation.js';
 import { 
     IndexingDecision, 
     IndexingState, 
@@ -25,7 +25,7 @@ export class IndexingDecisionService {
     /**
      * Décide si une tâche doit être indexée selon les règles d'idempotence
      */
-    public shouldIndex(skeleton: ConversationSkeleton): IndexingDecision {
+    public shouldIndex(skeleton: SkeletonHeader): IndexingDecision {
         const taskId = skeleton.taskId;
         if (!skeleton.metadata) {
             return { shouldIndex: false, reason: 'Skeleton has no metadata', action: 'skip' };
@@ -157,7 +157,7 @@ export class IndexingDecisionService {
     /**
      * Met à jour l'état d'indexation après un succès
      */
-    public markIndexingSuccess(skeleton: ConversationSkeleton): void {
+    public markIndexingSuccess(skeleton: SkeletonHeader): void {
         if (!skeleton.metadata) return;
         const now = new Date().toISOString();
         const nextReindex = new Date(Date.now() + (DEFAULT_REINDEX_TTL_HOURS * 60 * 60 * 1000)).toISOString();
@@ -187,7 +187,7 @@ export class IndexingDecisionService {
     /**
      * Met à jour l'état d'indexation après un échec
      */
-    public markIndexingFailure(skeleton: ConversationSkeleton, error: string, isPermanent: boolean = false): void {
+    public markIndexingFailure(skeleton: SkeletonHeader, error: string, isPermanent: boolean = false): void {
         if (!skeleton.metadata) return;
         const now = new Date().toISOString();
 
@@ -231,7 +231,7 @@ export class IndexingDecisionService {
     /**
      * Réinitialise l'état d'indexation pour forcer une réindexation
      */
-    public resetIndexingState(skeleton: ConversationSkeleton): void {
+    public resetIndexingState(skeleton: SkeletonHeader): void {
         if (!skeleton.metadata) return;
         if (skeleton.metadata.indexingState) {
             skeleton.metadata.indexingState = {
@@ -246,7 +246,7 @@ export class IndexingDecisionService {
     /**
      * Migre l'ancien format qdrantIndexedAt vers le nouveau format
      */
-    public migrateLegacyIndexingState(skeleton: ConversationSkeleton): boolean {
+    public migrateLegacyIndexingState(skeleton: SkeletonHeader): boolean {
         if (!skeleton.metadata) {
             return false; // No metadata at all, nothing to migrate
         }

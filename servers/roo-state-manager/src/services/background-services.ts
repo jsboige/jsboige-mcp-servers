@@ -6,7 +6,7 @@
 
 import { promises as fs } from 'fs';
 import path from 'path';
-import { ConversationSkeleton } from '../types/conversation.js';
+import { ConversationSkeleton, SkeletonHeader } from '../types/conversation.js';
 import { RooStorageDetector } from '../utils/roo-storage-detector.js';
 import { ServerState } from './state-manager.service.js';
 import { ANTI_LEAK_CONFIG } from '../config/server-config.js';
@@ -15,27 +15,33 @@ import * as toolExports from '../tools/index.js';
 import { RooStorageDetectorError, RooStorageDetectorErrorCode } from '../types/errors.js';
 import { RooSyncService } from './RooSyncService.js';
 
+/**
+ * Extract the SkeletonHeader from a full ConversationSkeleton.
+ * Only metadata, prefixes, and flags — no sequence.
+ */
+export function toHeader(skeleton: ConversationSkeleton): SkeletonHeader {
+    return {
+        taskId: skeleton.taskId,
+        parentTaskId: skeleton.parentTaskId,
+        metadata: skeleton.metadata,
+        isCompleted: skeleton.isCompleted,
+        truncatedInstruction: skeleton.truncatedInstruction,
+        childTaskInstructionPrefixes: skeleton.childTaskInstructionPrefixes,
+    };
+}
+
 /** Index filename — lightweight metadata for all skeletons, loaded at startup */
 const SKELETON_INDEX_FILENAME = '_skeleton_index.json';
 
 /**
  * Structure of the skeleton index file.
- * Contains metadata-only entries (no sequence) for fast startup.
+ * Entries are SkeletonHeaders — no sequence data.
  */
 interface SkeletonIndex {
     version: number;
     generatedAt: string;
     count: number;
-    entries: SkeletonIndexEntry[];
-}
-
-interface SkeletonIndexEntry {
-    taskId: string;
-    parentTaskId?: string;
-    metadata: ConversationSkeleton['metadata'];
-    isCompleted?: boolean;
-    truncatedInstruction?: string;
-    childTaskInstructionPrefixes?: string[];
+    entries: SkeletonHeader[];
 }
 
 /**
@@ -48,7 +54,7 @@ interface SkeletonIndexEntry {
  *
  * Result: startup <1s instead of 90s+ on slow machines.
  */
-export async function loadSkeletonsFromDisk(conversationCache: Map<string, ConversationSkeleton>): Promise<void> {
+export async function loadSkeletonsFromDisk(conversationCache: Map<string, SkeletonHeader>): Promise<void> {
     try {
         const startTime = Date.now();
         console.log('[Startup] Loading skeleton index...');
@@ -85,7 +91,7 @@ export async function loadSkeletonsFromDisk(conversationCache: Map<string, Conve
  */
 async function loadSkeletonsFromIndex(
     indexPath: string,
-    conversationCache: Map<string, ConversationSkeleton>
+    conversationCache: Map<string, SkeletonHeader>
 ): Promise<boolean> {
     try {
         let content = await fs.readFile(indexPath, 'utf8');
@@ -100,17 +106,7 @@ async function loadSkeletonsFromIndex(
 
         for (const entry of index.entries) {
             if (entry.taskId) {
-                // Create lightweight skeleton with empty sequence
-                const skeleton: ConversationSkeleton = {
-                    taskId: entry.taskId,
-                    parentTaskId: entry.parentTaskId,
-                    metadata: entry.metadata,
-                    sequence: [], // Loaded on-demand
-                    isCompleted: entry.isCompleted,
-                    truncatedInstruction: entry.truncatedInstruction,
-                    childTaskInstructionPrefixes: entry.childTaskInstructionPrefixes,
-                };
-                conversationCache.set(entry.taskId, skeleton);
+                conversationCache.set(entry.taskId, entry);
             }
         }
 
@@ -126,7 +122,7 @@ async function loadSkeletonsFromIndex(
  */
 export async function loadFullSkeleton(
     taskId: string,
-    conversationCache: Map<string, ConversationSkeleton>
+    conversationCache: Map<string, SkeletonHeader>
 ): Promise<ConversationSkeleton | null> {
     try {
         const storageLocations = await RooStorageDetector.detectStorageLocations();
@@ -141,8 +137,8 @@ export async function loadFullSkeleton(
         }
         const skeleton: ConversationSkeleton = JSON.parse(content);
 
-        // Update cache with full skeleton
-        conversationCache.set(taskId, skeleton);
+        // Update cache with header only — sequence stays on disk
+        conversationCache.set(taskId, toHeader(skeleton));
         return skeleton;
     } catch {
         return null;
@@ -154,7 +150,7 @@ export async function loadFullSkeleton(
  * Called in background after skeleton loading or periodically by the refresh worker.
  */
 export async function saveSkeletonIndex(
-    conversationCache: Map<string, ConversationSkeleton>
+    conversationCache: Map<string, SkeletonHeader>
 ): Promise<void> {
     try {
         const storageLocations = await RooStorageDetector.detectStorageLocations();
@@ -164,17 +160,8 @@ export async function saveSkeletonIndex(
         await fs.mkdir(skeletonsCacheDir, { recursive: true });
         const indexPath = path.join(skeletonsCacheDir, SKELETON_INDEX_FILENAME);
 
-        const entries: SkeletonIndexEntry[] = [];
-        for (const skeleton of conversationCache.values()) {
-            entries.push({
-                taskId: skeleton.taskId,
-                parentTaskId: skeleton.parentTaskId,
-                metadata: skeleton.metadata,
-                isCompleted: skeleton.isCompleted,
-                truncatedInstruction: skeleton.truncatedInstruction,
-                childTaskInstructionPrefixes: skeleton.childTaskInstructionPrefixes,
-            });
-        }
+        // Cache already contains SkeletonHeaders — serialize directly
+        const entries = Array.from(conversationCache.values());
 
         const index: SkeletonIndex = {
             version: 1,
@@ -313,7 +300,7 @@ export async function startProactiveMetadataRepair(): Promise<void> {
  * #604: Discover and load Claude Code sessions into the conversation cache
  * Scans ~/.claude/projects/ for JSONL files and creates skeletons
  */
-export async function loadClaudeCodeSessions(conversationCache: Map<string, ConversationSkeleton>): Promise<void> {
+export async function loadClaudeCodeSessions(conversationCache: Map<string, SkeletonHeader>): Promise<void> {
     try {
         const { ClaudeStorageDetector } = await import('../utils/claude-storage-detector.js');
         const locations = await ClaudeStorageDetector.detectStorageLocations();
@@ -339,7 +326,7 @@ export async function loadClaudeCodeSessions(conversationCache: Map<string, Conv
                     if (!skeleton.metadata) skeleton.metadata = {} as any;
                     skeleton.metadata.source = 'claude-code'; // For filtering in Qdrant
                     skeleton.metadata.dataSource = 'claude'; // For indexTaskInQdrant() source detection
-                    conversationCache.set(taskId, skeleton);
+                    conversationCache.set(taskId, toHeader(skeleton));
                     loaded++;
                 }
             } catch (error) {
@@ -401,7 +388,7 @@ export function startSkeletonRefreshWorker(state: ServerState): void {
                                 const taskPath = path.join(tasksDir, entry.name);
                                 const skeleton = await RooStorageDetector.analyzeConversation(entry.name, taskPath);
                                 if (skeleton) {
-                                    state.conversationCache.set(entry.name, skeleton);
+                                    state.conversationCache.set(entry.name, toHeader(skeleton));
                                     // Queue for Qdrant indexation if lastActivity > lastIndexedAt
                                     const lastIndexed = skeleton.metadata?.indexingState?.lastIndexedAt;
                                     if (!lastIndexed || new Date(skeleton.metadata.lastActivity).getTime() > new Date(lastIndexed).getTime()) {
@@ -451,7 +438,7 @@ export function startSkeletonRefreshWorker(state: ServerState): void {
                                     if (skeleton && skeleton.sequence.length > 0) {
                                         if (!skeleton.metadata) skeleton.metadata = {} as any;
                                         skeleton.metadata.dataSource = 'claude';
-                                        state.conversationCache.set(taskId, skeleton);
+                                        state.conversationCache.set(taskId, toHeader(skeleton));
                                         const lastIndexed = skeleton.metadata?.indexingState?.lastIndexedAt;
                                         if (!lastIndexed || new Date(skeleton.metadata.lastActivity).getTime() > new Date(lastIndexed).getTime()) {
                                             state.qdrantIndexQueue.add(taskId);
@@ -518,6 +505,10 @@ export async function initializeBackgroundServices(state: ServerState): Promise<
         // Load skeleton index in background — first tool call that needs it
         // will find it already loaded (or will trigger lazy load via ensureSkeletonCacheLoaded)
         loadSkeletonsFromDisk(state.conversationCache).then(() => {
+            // Mark refresh timestamp AFTER index is loaded, so the first worker tick
+            // only picks up tasks modified AFTER this point — NOT all 7620 tasks.
+            // Without this, lastSkeletonRefreshAt=0 causes the worker to re-analyze everything.
+            state.lastSkeletonRefreshAt = Date.now();
             // Once index is loaded, discover Claude sessions too
             return loadClaudeCodeSessions(state.conversationCache);
         }).catch((error: any) => {
@@ -790,7 +781,7 @@ export async function indexTaskInQdrant(taskId: string, state: ServerState): Pro
             const { TaskArchiver } = await import('./task-archiver/index.js');
             const conversation = await RooStorageDetector.findConversationById(taskId);
             if (conversation?.path && skeleton) {
-                await TaskArchiver.archiveTask(taskId, conversation.path, skeleton);
+                await TaskArchiver.archiveTask(taskId, conversation.path, skeleton as any);
             }
         } catch (archiveError) {
             console.warn(`[ARCHIVE] Non-blocking archive failed for ${taskId}:`, archiveError);
@@ -858,9 +849,12 @@ export function classifyIndexingError(error: any): boolean {
 }
 
 /**
- * Sauvegarde un squelette sur le disque
+ * Sauvegarde un squelette sur le disque.
+ * Accepts SkeletonHeader (from cache) — merges updated metadata into the
+ * existing on-disk full skeleton so the sequence is preserved.
+ * Also accepts ConversationSkeleton (full) which is written directly.
  */
-export async function saveSkeletonToDisk(skeleton: ConversationSkeleton): Promise<void> {
+export async function saveSkeletonToDisk(skeleton: SkeletonHeader): Promise<void> {
     try {
         const storageLocations = await RooStorageDetector.detectStorageLocations();
         if (storageLocations.length === 0) {
@@ -877,7 +871,25 @@ export async function saveSkeletonToDisk(skeleton: ConversationSkeleton): Promis
         await fs.mkdir(skeletonsCacheDir, { recursive: true });
 
         const filePath = path.join(skeletonsCacheDir, `${skeleton.taskId}.json`);
-        await fs.writeFile(filePath, JSON.stringify(skeleton, null, 2), 'utf8');
+
+        // If the input already has a sequence (ConversationSkeleton), write directly.
+        // Otherwise merge header metadata into existing on-disk skeleton to preserve sequence.
+        let toWrite: any = skeleton;
+        if (!('sequence' in skeleton)) {
+            try {
+                let existing = await fs.readFile(filePath, 'utf8');
+                if (existing.charCodeAt(0) === 0xFEFF) existing = existing.slice(1);
+                const parsed = JSON.parse(existing);
+                if (parsed && Array.isArray(parsed.sequence)) {
+                    // Merge: keep on-disk sequence, update header fields
+                    toWrite = { ...parsed, ...skeleton, sequence: parsed.sequence };
+                }
+            } catch {
+                // No existing file or parse error — write header as-is
+            }
+        }
+
+        await fs.writeFile(filePath, JSON.stringify(toWrite, null, 2), 'utf8');
 
         // Skeleton saved successfully
     } catch (error: any) {

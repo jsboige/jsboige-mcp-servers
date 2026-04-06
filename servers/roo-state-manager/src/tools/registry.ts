@@ -87,6 +87,9 @@ export function registerCallToolHandler(
 ): void {
     server.setRequestHandler(CallToolRequestSchema, async (request): Promise<CallToolResult> => {
         const { name, arguments: args } = request.params;
+        // Temporary cast: cache holds SkeletonHeader but many callees still expect ConversationSkeleton.
+        // Safe because those callees only read header fields. Will be fixed in follow-up refactor.
+        const cache = state.conversationCache as any as Map<string, import('../types/conversation.js').ConversationSkeleton>;
 
         let result: CallToolResult;
 
@@ -99,7 +102,7 @@ export function registerCallToolHandler(
            case 'list_conversations':
                result = await toolExports.listConversationsTool.handler(
                    args as any,
-                   state.conversationCache
+                   cache
                );
                break;
            // #519: Anciens outils storage retirés (detect_storage, get_storage_stats)
@@ -108,27 +111,28 @@ export function registerCallToolHandler(
                 break;
             // CONS-13: Outil Maintenance consolidé
             case 'maintenance':
-                result = await toolExports.handleMaintenance(args as any, state.conversationCache, state);
+                result = await toolExports.handleMaintenance(args as any, cache, state);
                 break;
             // [REMOVED] build_skeleton_cache — #625 dead code cleanup (not in alwaysAllow)
             // CONS-X (#457): Outil consolidé conversation_browser
             case 'conversation_browser':
                 result = await toolExports.handleConversationBrowser(
                     args as any,
-                    state.conversationCache,
+                    cache,
                     async () => { await ensureSkeletonCacheIsFresh(); },
                     CACHE_CONFIG.DEFAULT_WORKSPACE,  // contextWorkspace: utilise process.cwd() ou WORKSPACE_PATH
                     async (id: string) => {
-                        // 1. Try RAM cache first
-                        const cached = state.conversationCache.get(id);
+                        // 1. Try RAM cache first (cache holds SkeletonHeader, no sequence)
+                        const cached = cache.get(id);
                         if (cached) {
-                            // #1110: If skeleton loaded from index (sequence: []), load full on demand
-                            if (cached.sequence.length === 0 && cached.metadata.messageCount > 0) {
-                                const full = await loadFullSkeleton(id, state.conversationCache);
+                            // #1110: Cache holds headers only — load full skeleton on demand
+                            if (cached.metadata.messageCount > 0) {
+                                const full = await loadFullSkeleton(id, cache);
                                 if (full) return full;
-                                // Fall through to disk scan if skeleton cache miss
+                                // Fall through to disk scan if full skeleton load fails
                             } else {
-                                return cached;
+                                // Empty conversation — return header as skeleton (no sequence needed)
+                                return { ...cached, sequence: [] } as any;
                             }
                         }
                         // 2. Claude Code sessions (taskId starts with 'claude-')
@@ -136,7 +140,7 @@ export function registerCallToolHandler(
                             try {
                                 const skeleton = await ClaudeStorageDetector.findConversationById(id);
                                 if (skeleton) {
-                                    state.conversationCache.set(id, skeleton);
+                                    cache.set(id, skeleton);
                                     return skeleton;
                                 }
                             } catch { /* Claude fallback failed */ }
@@ -150,7 +154,7 @@ export function registerCallToolHandler(
                                 if (existsSync(taskPath)) {
                                     const skeleton = await RooStorageDetector.analyzeConversation(id, taskPath);
                                     if (skeleton) {
-                                        state.conversationCache.set(id, skeleton);
+                                        cache.set(id, skeleton);
                                         return skeleton;
                                     }
                                 }
@@ -166,13 +170,13 @@ export function registerCallToolHandler(
                                 const taskPath = path.join(loc, rootId);
                                 if (existsSync(taskPath)) {
                                     const skeleton = await RooStorageDetector.analyzeConversation(rootId, taskPath);
-                                    if (skeleton && !state.conversationCache.has(rootId)) {
-                                        state.conversationCache.set(rootId, skeleton);
+                                    if (skeleton && !cache.has(rootId)) {
+                                        cache.set(rootId, skeleton);
                                     }
                                 }
                             }
                         } catch { /* ignore disk errors */ }
-                        const allTasks = Array.from(state.conversationCache.values());
+                        const allTasks = Array.from(cache.values());
                         return allTasks.filter(task => task.metadata?.parentTaskId === rootId);
                     },
                     state // Pass serverState for rebuild action
@@ -182,7 +186,7 @@ export function registerCallToolHandler(
             case 'task_browse':
                 result = await toolExports.handleTaskBrowse(
                     args as any,
-                    state.conversationCache,
+                    cache,
                     async () => { await ensureSkeletonCacheIsFresh(); },
                     CACHE_CONFIG.DEFAULT_WORKSPACE  // contextWorkspace: utilise process.cwd() ou WORKSPACE_PATH
                 );
@@ -190,25 +194,25 @@ export function registerCallToolHandler(
             case 'task_export':
                 result = await toolExports.handleTaskExport(
                     args as any,
-                    state.conversationCache,
+                    cache,
                     async () => { await ensureSkeletonCacheIsFresh(); }
                 );
                 break;
             // [DEPRECATED] #457: view_conversation_tree conservé pour backward compat
             case toolExports.viewConversationTree.name:
-                result = await toolExports.viewConversationTree.handler(args as any, state.conversationCache);
+                result = await toolExports.viewConversationTree.handler(args as any, cache);
                 break;
             case toolExports.viewTaskDetailsTool.definition.name:
-                result = await toolExports.viewTaskDetailsTool.handler(args as any, state.conversationCache);
+                result = await toolExports.viewTaskDetailsTool.handler(args as any, cache);
                 break;
             // CONS-11: Outil unifié roosync_search
             case 'roosync_search':
                 result = await toolExports.handleRooSyncSearch(
                     args as any,
-                    state.conversationCache,
+                    cache,
                     ensureSkeletonCacheIsFresh,
                     toolExports.handleSearchTasksSemanticFallback,
-                    () => toolExports.handleDiagnoseSemanticIndex(state.conversationCache)
+                    () => toolExports.handleDiagnoseSemanticIndex(cache)
                 );
                 break;
             // #452 Phase 2: Recherche sémantique dans le code workspace
@@ -219,7 +223,7 @@ export function registerCallToolHandler(
             case 'roosync_indexing':
                 result = await toolExports.handleRooSyncIndexing(
                     args as any,
-                    state.conversationCache,
+                    cache,
                     ensureSkeletonCacheIsFresh,
                     saveSkeletonToDisk,
                     state.qdrantIndexQueue,
@@ -235,7 +239,7 @@ export function registerCallToolHandler(
                 break;
             // [REMOVED] search_tasks_by_content — #625 dead code cleanup (not in alwaysAllow)
            case toolExports.debugAnalyzeTool.definition.name:
-               result = await toolExports.debugAnalyzeTool.handler(args as any, state.conversationCache);
+               result = await toolExports.debugAnalyzeTool.handler(args as any, cache);
                break;
            // CONS-9: debug_task_parsing retiré (remplacé par task_export action='debug')
            case toolExports.readVscodeLogs.name:
@@ -247,14 +251,14 @@ export function registerCallToolHandler(
            case toolExports.indexTaskSemanticTool.definition.name:
                result = await toolExports.indexTaskSemanticTool.handler(
                    args as any,
-                   state.conversationCache,
+                   cache,
                    ensureSkeletonCacheIsFresh
                );
                break;
            case toolExports.resetQdrantCollectionTool.definition.name:
                result = await toolExports.resetQdrantCollectionTool.handler(
                    args as any,
-                   state.conversationCache,
+                   cache,
                    saveSkeletonToDisk,
                    state.qdrantIndexQueue,
                    (enabled: boolean) => { state.isQdrantIndexingEnabled = enabled; }
@@ -281,10 +285,10 @@ export function registerCallToolHandler(
            case toolExports.exportDataTool.name:
                result = await toolExports.handleExportData(
                    args as any,
-                   state.conversationCache,
+                   cache,
                    state.xmlExporterService,
                    async (options?: { workspace?: string }) => { await ensureSkeletonCacheIsFresh(options); },
-                   async (id: string) => state.conversationCache.get(id) || null
+                   async (id: string) => cache.get(id) || null
                );
                break;
            case toolExports.exportConfigTool.name:
@@ -297,7 +301,7 @@ export function registerCallToolHandler(
                    args as any,
                    async (id: string) => {
                        // 1. Try RAM cache first
-                       const cached = state.conversationCache.get(id);
+                       const cached = cache.get(id);
                        if (cached) return cached;
                        // 2. Fallback: scan disk for Roo conversations (#449)
                        try {
@@ -307,7 +311,7 @@ export function registerCallToolHandler(
                                if (existsSync(taskPath)) {
                                    const skeleton = await RooStorageDetector.analyzeConversation(id, taskPath);
                                    if (skeleton) {
-                                       state.conversationCache.set(id, skeleton);
+                                       cache.set(id, skeleton);
                                        return skeleton;
                                    }
                                }
@@ -317,7 +321,7 @@ export function registerCallToolHandler(
                    },
                    async (rootId: string) => {
                        // Fonction findChildTasks pour le mode cluster
-                       const allTasks = Array.from(state.conversationCache.values());
+                       const allTasks = Array.from(cache.values());
                        // Also check disk for child tasks (#449)
                        try {
                            const locations = await RooStorageDetector.detectStorageLocations();
@@ -325,13 +329,13 @@ export function registerCallToolHandler(
                                const taskPath = path.join(loc, rootId);
                                if (existsSync(taskPath)) {
                                    const skeleton = await RooStorageDetector.analyzeConversation(rootId, taskPath);
-                                   if (skeleton && !state.conversationCache.has(rootId)) {
-                                       state.conversationCache.set(rootId, skeleton);
+                                   if (skeleton && !cache.has(rootId)) {
+                                       cache.set(rootId, skeleton);
                                    }
                                }
                            }
                        } catch { /* ignore disk errors */ }
-                       const allTasksUpdated = Array.from(state.conversationCache.values());
+                       const allTasksUpdated = Array.from(cache.values());
                        return allTasksUpdated.filter(task => task.metadata?.parentTaskId === rootId);
                    }
                );
@@ -675,7 +679,7 @@ export function registerCallToolHandler(
            // CONS-#443 Groupe 4: Consolidation Storage management (storage_info + maintenance → roosync_storage_management)
            case 'roosync_storage_management':
                try {
-                   const storageManagementResult = await toolExports.roosyncStorageManagement(args as any, state.conversationCache, state);
+                   const storageManagementResult = await toolExports.roosyncStorageManagement(args as any, cache, state);
                    result = { content: [{ type: 'text', text: JSON.stringify(storageManagementResult, null, 2) }] };
                } catch (error) {
                    result = { content: [{ type: 'text', text: `Error: ${(error as Error).message}` }], isError: true };

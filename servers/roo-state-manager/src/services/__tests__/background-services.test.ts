@@ -203,8 +203,8 @@ describe('background-services', () => {
       await loadSkeletonsFromDisk(cache);
 
       expect(cache.size).toBe(2);
-      // Skeletons loaded from index have empty sequences
-      expect(cache.get('task-001')?.sequence).toEqual([]);
+      // Cache stores SkeletonHeaders — no sequence field
+      expect((cache.get('task-001') as any)?.sequence).toBeUndefined();
       expect(cache.get('task-001')?.metadata).toEqual(skeleton1.metadata);
     });
 
