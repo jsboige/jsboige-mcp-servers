@@ -15,6 +15,7 @@ import { ClaudeStorageDetector } from '../utils/claude-storage-detector.js';
 import * as path from 'path';
 import { existsSync } from 'fs';
 import { CACHE_CONFIG } from '../config/server-config.js';
+import { loadFullSkeleton } from '../services/background-services.js';
 
 /**
  * Enregistre le handler pour ListTools
@@ -120,7 +121,16 @@ export function registerCallToolHandler(
                     async (id: string) => {
                         // 1. Try RAM cache first
                         const cached = state.conversationCache.get(id);
-                        if (cached) return cached;
+                        if (cached) {
+                            // #1110: If skeleton loaded from index (sequence: []), load full on demand
+                            if (cached.sequence.length === 0 && cached.metadata.messageCount > 0) {
+                                const full = await loadFullSkeleton(id, state.conversationCache);
+                                if (full) return full;
+                                // Fall through to disk scan if skeleton cache miss
+                            } else {
+                                return cached;
+                            }
+                        }
                         // 2. Claude Code sessions (taskId starts with 'claude-')
                         if (id.startsWith('claude-')) {
                             try {

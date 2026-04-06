@@ -83,9 +83,6 @@ class RooStateManagerServer {
     private stateManager: StateManager;
     private notificationService: NotificationService;
     private toolInterceptor: ToolUsageInterceptor | null = null;
-    // FIX: Store initialization promise to prevent race condition
-    // Tool handlers can await this to ensure cache is loaded before proceeding
-    private initializationPromise: Promise<void>;
     // #883: Throttle cache freshness checks to avoid repeated I/O scans
     private lastCacheCheckAt: number = 0;
     private static readonly CACHE_CHECK_THROTTLE_MS = 60_000; // 1 minute minimum between checks
@@ -110,20 +107,15 @@ class RooStateManagerServer {
         this.initializeNotificationSystem();
         // Enregistrement des handlers
         this.registerHandlers();
-        // FIX: Store the promise so handlers can await it
-        this.initializationPromise = this.initializeBackgroundServices();
-        this.initializationPromise.catch((error: Error) => {
+        // #1110 FIX: Background services are fully non-blocking.
+        // No tool call waits for initialization. Cache loads lazily on first use.
+        this.initializeBackgroundServices().catch((error: Error) => {
             logger.error("Error during background services initialization:", { error });
         });
     }
 
-    /**
-     * Wait for background services initialization to complete
-     * Call this at the start of tool handlers that depend on the cache
-     */
-    async waitForInitialization(): Promise<void> {
-        await this.initializationPromise;
-    }
+    // #1110: waitForInitialization removed — no tool call blocks on startup anymore.
+    // The skeleton cache loads in background; tools work with whatever is available.
 
     /**
      * Initialise le système de notifications push
@@ -200,9 +192,8 @@ class RooStateManagerServer {
         const originalCallTool = this.server['_requestHandlers'].get('tools/call');
         if (originalCallTool) {
             this.server['_requestHandlers'].set('tools/call', async (request: any) => {
-                // FIX: Wait for background services initialization to prevent race condition
-                // This ensures the skeleton cache is loaded before any tool that depends on it
-                await this.initializationPromise;
+                // #1110 FIX: No blocking wait. Tools work immediately.
+                // Cache may be empty for first few seconds — tools handle this gracefully.
 
                 // Si l'intercepteur est activé, l'utiliser
                 if (this.toolInterceptor) {
