@@ -1138,8 +1138,51 @@ async function handleList(): Promise<DashboardResult> {
   }
 }
 
+/**
+ * Safety threshold: dashboards modified within this period cannot be deleted.
+ * Protection against accidental mass-deletion by agents (incident 2026-04-05 #1128).
+ */
+const DASHBOARD_PROTECTION_DAYS = 7;
+
 async function handleDelete(key: string, args: DashboardArgs): Promise<DashboardResult> {
   const filePath = getDashboardPath(key);
+
+  // Safety check: read the dashboard to verify it's not recently active (#1128)
+  try {
+    const dashboard = await readDashboardFile(key);
+    if (dashboard) {
+      const lastModified = new Date(dashboard.lastModified);
+      const ageMs = Date.now() - lastModified.getTime();
+      const ageDays = ageMs / (1000 * 60 * 60 * 24);
+
+      const messageCount = dashboard.intercom?.messages?.length ?? 0;
+      if (ageDays < DASHBOARD_PROTECTION_DAYS && messageCount > 0) {
+        logger.warn('Delete blocked: dashboard recently active with messages', { key, ageDays: ageDays.toFixed(1), messageCount });
+        return {
+          success: false,
+          action: 'delete',
+          key,
+          type: args.type ?? '',
+          message: `⛔ REFUSÉ: Dashboard '${key}' modifié il y a ${ageDays.toFixed(1)} jours (seuil: ${DASHBOARD_PROTECTION_DAYS}j). ${messageCount} messages seraient perdus. Utilisez 'condense' pour archiver les anciens messages sans supprimer le dashboard.`
+        };
+      }
+
+      // Archive before deleting (safety net for dashboards older than threshold)
+      if (dashboard.intercom?.messages?.length > 0) {
+        const archiveDir = getArchiveDir();
+        await fs.mkdir(archiveDir, { recursive: true });
+        const now = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
+        const archivePath = path.join(archiveDir, `${key}-pre-delete-${now}.md`);
+        const originalContent = await fs.readFile(filePath, 'utf8');
+        await fs.writeFile(archivePath, originalContent, 'utf8');
+        logger.info('Dashboard archived before deletion', { key, archivePath, messageCount: dashboard.intercom.messages.length });
+      }
+    }
+  } catch (readError) {
+    // If we can't read the dashboard, still allow deletion (file may be corrupted)
+    logger.warn('Could not read dashboard before delete, proceeding', { key, error: String(readError) });
+  }
+
   try {
     await fs.unlink(filePath);
     logger.info('Dashboard supprimé', { key });
@@ -1148,7 +1191,7 @@ async function handleDelete(key: string, args: DashboardArgs): Promise<Dashboard
       action: 'delete',
       key,
       type: args.type ?? '',
-      message: `Dashboard '${key}' supprimé`
+      message: `Dashboard '${key}' supprimé (archivé en sécurité avant suppression)`
     };
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code === 'ENOENT') {
