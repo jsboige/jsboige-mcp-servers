@@ -260,6 +260,18 @@ export async function handleRooSyncIndexing(
                 isQdrantIndexingEnabled: false,
                 indexingMetrics: { totalTasks: 0, skippedTasks: 0, indexedTasks: 0, failedTasks: 0, retryTasks: 0, bandwidthSaved: 0 }
             };
+            // Diagnostic hints
+            const hints: string[] = [];
+            if (!state.isQdrantIndexingEnabled) {
+                hints.push('Indexation Qdrant désactivée. Vérifiez les variables d\'environnement: QDRANT_URL, QDRANT_API_KEY, EMBEDDING_API_KEY');
+            }
+            if (state.qdrantIndexQueue.size > 0 && !state.qdrantIndexInterval) {
+                hints.push('Queue non vide mais worker non démarré. Le serveur MCP peut ne pas avoir initialisé les services background.');
+            }
+            if (state.indexingMetrics.failedTasks > 0) {
+                hints.push(`${state.indexingMetrics.failedTasks} tâches en échec permanent. Utilisez action: "diagnose" pour plus de détails.`);
+            }
+
             const status = {
                 background_indexer: {
                     is_running: state.qdrantIndexInterval !== null,
@@ -273,7 +285,8 @@ export async function handleRooSyncIndexing(
                         retry: state.indexingMetrics.retryTasks,
                         bandwidth_saved_bytes: state.indexingMetrics.bandwidthSaved
                     }
-                }
+                },
+                diagnostic_hints: hints.length > 0 ? hints : undefined
             };
             return {
                 isError: false,

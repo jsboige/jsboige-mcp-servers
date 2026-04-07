@@ -367,7 +367,7 @@ async function handleUpdateAction(args: BaselineArgs, timestamp: string): Promis
 async function handleVersionAction(args: BaselineArgs, timestamp: string): Promise<BaselineResult> {
   if (!args.version) {
     throw new RooSyncServiceError(
-      'version est requise pour l\'action version',
+      'version est requise pour l\'action version (format attendu: X.Y.Z, ex: 2.3.15)',
       'MISSING_VERSION'
     );
   }
