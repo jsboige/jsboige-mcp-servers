@@ -44,7 +44,7 @@
     "@modelcontextprotocol/sdk": "^1.16.0",
     "@qdrant/js-client-rest": "^1.16.2",
     "@xmldom/xmldom": "^0.8.11",
-    "dotenv": "^17.2.3",
+    "dotenv": "^17.4.0",
     "exact-trie": "^1.0.13",
     "glob": "^10.3.10",
     "js-yaml": "^4.1.1",

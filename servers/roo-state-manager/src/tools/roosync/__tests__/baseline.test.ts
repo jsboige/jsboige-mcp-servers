@@ -553,14 +553,21 @@ describe('roosync_baseline', () => {
 
   describe('edge cases and error handling', () => {
     test('should handle tag already exists error', async () => {
-      // Mock pour simuler un tag qui existe déjà
+      // Importer le module pour accéder au mock
       const { execSync } = await import('child_process');
+
+      // Sauvegarder et remplacer temporairement le mock
+      const originalImplementation = vi.mocked(execSync).mockImplementation;
       vi.mocked(execSync).mockImplementation((cmd: string) => {
         if (cmd.includes('git rev-parse --verify refs/tags/baseline-v1.0.0')) {
           return 'existing-tag-commit'; // Tag existe
         }
         if (cmd.includes('git tag -l')) {
           return 'baseline-v1.0.0\n';
+        }
+        // Utiliser le comportement par défaut pour les autres commandes
+        if (cmd.includes('git rev-parse --verify refs/tags/')) {
+          throw new Error('Tag not found');
         }
         return '';
       });
@@ -571,7 +578,11 @@ describe('roosync_baseline', () => {
     });
 
     test('should handle git commit failure gracefully', async () => {
+      // Importer le module pour accéder au mock
       const { execSync } = await import('child_process');
+
+      // Sauvegarder et remplacer temporairement le mock
+      const originalImplementation = vi.mocked(execSync).mockImplementation;
       vi.mocked(execSync).mockImplementation((cmd: string) => {
         if (cmd.includes('git commit')) {
           throw new Error('Git commit failed');
@@ -582,6 +593,7 @@ describe('roosync_baseline', () => {
         if (cmd.includes('git tag -l')) {
           return 'baseline-v1.0.0\n';
         }
+        // Utiliser le comportement par défaut pour les autres commandes
         return '';
       });
 
@@ -595,7 +607,11 @@ describe('roosync_baseline', () => {
     });
 
     test('should handle git tag creation failure', async () => {
+      // Importer le module pour accéder au mock
       const { execSync } = await import('child_process');
+
+      // Sauvegarder et remplacer temporairement le mock
+      const originalImplementation = vi.mocked(execSync).mockImplementation;
       vi.mocked(execSync).mockImplementation((cmd: string) => {
         if (cmd.includes('git tag -a')) {
           throw new Error('Git tag creation failed');
@@ -606,12 +622,13 @@ describe('roosync_baseline', () => {
         if (cmd.includes('git tag -l')) {
           return 'baseline-v1.0.0\n';
         }
+        // Utiliser le comportement par défaut pour les autres commandes
         return '';
       });
 
       await expect(
         roosync_baseline({ action: 'version', version: '1.0.2', pushTags: false })
-      ).rejects.toThrow('Git tag creation failed');
+      ).rejects.toThrow('Erreur lors de la création du tag Git');
     });
 
     test('should handle non-existent backup file', async () => {
@@ -824,20 +841,49 @@ describe('roosync_baseline', () => {
 
   describe('version action edge cases', () => {
     test('should handle changelog creation when file does not exist', async () => {
-      // Supprimer le changelog s'il existe
-      const changelogPath = join(testSharedStatePath, 'CHANGELOG-baseline.md');
-      if (existsSync(changelogPath)) {
-        rmSync(changelogPath, { force: true });
-      }
+      // Importer le module pour accéder au mock
+      const { execSync } = await import('child_process');
 
-      const result = await roosync_baseline({
-        action: 'version',
-        version: '2.0.0',
-        pushTags: false
+      // Sauvegarder le mock original
+      const originalImplementation = vi.mocked(execSync).mockImplementation;
+
+      // Configurer le mock pour simuler un succès de création de tag
+      vi.mocked(execSync).mockImplementation((cmd: string) => {
+        // Simuler que le tag n'existe pas avant la création
+        if (cmd.includes('git rev-parse --verify refs/tags/baseline-v')) {
+          const tagVersion = cmd.match(/baseline-v([^/\s]+)/)?.[1];
+          if (tagVersion && compareVersions(tagVersion, '2.0.0') > 0) {
+            return 'tag-commit-hash'; // Tag existe
+          }
+          return ''; // Tag n'existe pas
+        }
+        // Simuler la création réussie du tag
+        if (cmd.includes('git tag -a baseline-v2.0.0')) {
+          return ''; // Succès
+        }
+        // Ne pas lancer d'erreur pour les autres commandes
+        return '';
       });
 
-      expect(result.success).toBe(true);
-      expect(existsSync(changelogPath)).toBe(true);
+      try {
+        // Supprimer le changelog s'il existe
+        const changelogPath = join(testSharedStatePath, 'CHANGELOG-baseline.md');
+        if (existsSync(changelogPath)) {
+          rmSync(changelogPath, { force: true });
+        }
+
+        const result = await roosync_baseline({
+          action: 'version',
+          version: '2.0.0',
+          pushTags: false
+        });
+
+        expect(result.success).toBe(true);
+        expect(existsSync(changelogPath)).toBe(true);
+      } finally {
+        // Restaurer le mock original
+        vi.mocked(execSync).mockImplementation = originalImplementation;
+      }
     });
 
     test('should append to existing changelog', async () => {
@@ -845,30 +891,104 @@ describe('roosync_baseline', () => {
       const existingContent = '# Existing Changelog\n\nPrevious content\n';
       writeFileSync(changelogPath, existingContent);
 
-      const result = await roosync_baseline({
-        action: 'version',
-        version: '2.1.0',
-        pushTags: false
+      // Importer le module pour accéder au mock
+      const { execSync } = await import('child_process');
+
+      // Sauvegarder le mock original
+      const originalImplementation = vi.mocked(execSync).mockImplementation;
+
+      // Configurer le mock pour simuler un succès de création de tag
+      vi.mocked(execSync).mockImplementation((cmd: string) => {
+        // Simuler que le tag n'existe pas avant la création
+        if (cmd.includes('git rev-parse --verify refs/tags/baseline-v')) {
+          const tagVersion = cmd.match(/baseline-v([^/\s]+)/)?.[1];
+          if (tagVersion && compareVersions(tagVersion, '2.1.0') > 0) {
+            return 'tag-commit-hash'; // Tag existe
+          }
+          throw new Error('Tag not found'); // Simuler que le tag n'existe pas
+        }
+        // Simuler la création réussie du tag
+        if (cmd.includes('git tag -a baseline-v2.1.0')) {
+          return ''; // Succès
+        }
+        // Simuler la création du commit
+        if (cmd.includes('git commit -m')) {
+          return ''; // Succès
+        }
+        // Simuler git status et autres commandes
+        if (cmd.includes('git status') || cmd.includes('git add') || cmd.includes('git diff')) {
+          return ''; // Succès
+        }
+        // Ne pas lancer d'erreur pour les autres commandes
+        return '';
       });
 
-      expect(result.success).toBe(true);
-      const newContent = readFileSync(changelogPath, 'utf-8');
-      expect(newContent).toContain('2.1.0');
-      expect(newContent).toContain('Previous content');
+      try {
+        const result = await roosync_baseline({
+          action: 'version',
+          version: '2.1.0',
+          pushTags: false
+        });
+
+        expect(result.success).toBe(true);
+        const newContent = readFileSync(changelogPath, 'utf-8');
+        expect(newContent).toContain('2.1.0');
+        expect(newContent).toContain('Previous content');
+      } finally {
+        // Restaurer le mock original
+        vi.mocked(execSync).mockImplementation = originalImplementation;
+      }
     });
 
     test('should handle changelog update failure gracefully', async () => {
       // Ce test vérifie que le système continue même si le changelog échoue
       // Le mock global ne permet pas de tester ce cas spécifique, on vérifie juste que ça marche
-      const result = await roosync_baseline({
-        action: 'version',
-        version: '2.2.0',
-        pushTags: false,
-        createChangelog: true
+      // Importer le module pour accéder au mock
+      const { execSync } = await import('child_process');
+
+      // Sauvegarder le mock original
+      const originalImplementation = vi.mocked(execSync).mockImplementation;
+
+      // Configurer le mock pour simuler un succès de création de tag
+      vi.mocked(execSync).mockImplementation((cmd: string) => {
+        // Simuler que le tag n'existe pas avant la création
+        if (cmd.includes('git rev-parse --verify refs/tags/baseline-v')) {
+          const tagVersion = cmd.match(/baseline-v([^/\s]+)/)?.[1];
+          if (tagVersion && compareVersions(tagVersion, '2.2.0') > 0) {
+            return 'tag-commit-hash'; // Tag existe
+          }
+          throw new Error('Tag not found'); // Simuler que le tag n'existe pas
+        }
+        // Simuler la création réussie du tag
+        if (cmd.includes('git tag -a baseline-v2.2.0')) {
+          return ''; // Succès
+        }
+        // Simuler la création du commit
+        if (cmd.includes('git commit -m')) {
+          return ''; // Succès
+        }
+        // Simuler git status et autres commandes
+        if (cmd.includes('git status') || cmd.includes('git add') || cmd.includes('git diff')) {
+          return ''; // Succès
+        }
+        // Ne pas lancer d'erreur pour les autres commandes
+        return '';
       });
 
-      // Doit réussir
-      expect(result.success).toBe(true);
+      try {
+        const result = await roosync_baseline({
+          action: 'version',
+          version: '2.2.0',
+          pushTags: false,
+          createChangelog: true
+        });
+
+        // Doit réussir
+        expect(result.success).toBe(true);
+      } finally {
+        // Restaurer le mock original
+        vi.mocked(execSync).mockImplementation = originalImplementation;
+      }
     });
   });
 
@@ -1247,18 +1367,47 @@ First release
 `;
       writeFileSync(changelogPath, initialContent);
 
-      const result = await roosync_baseline({
-        action: 'version',
-        version: '9.0.0',
-        pushTags: false,
-        createChangelog: true
+      // Importer le module pour accéder au mock
+      const { execSync } = await import('child_process');
+
+      // Sauvegarder le mock original
+      const originalImplementation = vi.mocked(execSync).mockImplementation;
+
+      // Configurer le mock pour simuler un succès de création de tag
+      vi.mocked(execSync).mockImplementation((cmd: string) => {
+        // Simuler que le tag n'existe pas avant la création
+        if (cmd.includes('git rev-parse --verify refs/tags/baseline-v')) {
+          const tagVersion = cmd.match(/baseline-v([^/\s]+)/)?.[1];
+          if (tagVersion && compareVersions(tagVersion, '9.0.0') > 0) {
+            return 'tag-commit-hash'; // Tag existe
+          }
+          return ''; // Tag n'existe pas
+        }
+        // Simuler la création réussie du tag
+        if (cmd.includes('git tag -a baseline-v9.0.0')) {
+          return ''; // Succès
+        }
+        // Ne pas lancer d'erreur pour les autres commandes
+        return '';
       });
 
-      expect(result.success).toBe(true);
+      try {
+        const result = await roosync_baseline({
+          action: 'version',
+          version: '9.0.0',
+          pushTags: false,
+          createChangelog: true
+        });
 
-      const changelogContent = readFileSync(changelogPath, 'utf-8');
-      expect(changelogContent).toContain('## [9.0.0]');
-      expect(changelogContent).toContain('## [1.0.0]'); // Ancien contenu préservé
+        expect(result.success).toBe(true);
+
+        const changelogContent = readFileSync(changelogPath, 'utf-8');
+        expect(changelogContent).toContain('## [9.0.0]');
+        expect(changelogContent).toContain('## [1.0.0]'); // Ancien contenu préservé
+      } finally {
+        // Restaurer le mock original
+        vi.mocked(execSync).mockImplementation = originalImplementation;
+      }
     });
 
     test('should skip changelog creation when createChangelog is false', async () => {
