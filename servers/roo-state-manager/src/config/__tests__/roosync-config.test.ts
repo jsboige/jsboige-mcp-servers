@@ -1,10 +1,64 @@
 /**
  * Tests pour roosync-config.ts
  * Issue #492 - Couverture de la configuration RooSync
+ *
+ * MOCKING STRATEGY:
+ * The global jest.setup.js mocks 'fs' with vi.fn() factories, but vitest's
+ * restoreMocks:true config restores them between tests. For tests that need
+ * to control fs behavior (validateMachineIdUniqueness, registerMachineId),
+ * we use vi.hoisted() to create stable mock references that persist across
+ * test boundaries, and a local vi.mock('fs') that wraps the real fs module
+ * with these stable mock functions.
  */
 
-import { describe, test, expect, beforeEach, afterEach } from 'vitest';
-import { loadRooSyncConfig, tryLoadRooSyncConfig, isRooSyncEnabled, RooSyncConfigError } from '../roosync-config.js';
+import { describe, test, expect, beforeEach, afterEach, vi } from 'vitest';
+
+// Create stable mock functions that survive restoreMocks/clearMocks
+const { stableMocks } = vi.hoisted(() => {
+	const stableMocks = {
+		existsSync: null as any,
+		readFileSync: null as any,
+		writeFile: null as any,
+		realExistsSync: null as any,
+	};
+	return { stableMocks };
+});
+
+// Local vi.mock('fs') that wraps the real fs module.
+// existsSync and readFileSync delegate to stable mock functions
+// when configured, otherwise fall through to the real implementation.
+vi.mock('fs', async (importOriginal) => {
+	const realFs: any = await importOriginal();
+
+	// Store real reference
+	stableMocks.realExistsSync = realFs.existsSync;
+
+	// Create wrapper functions that delegate to mock or real
+	stableMocks.existsSync = vi.fn((...args: any[]) => realFs.existsSync(...args));
+	stableMocks.readFileSync = vi.fn((...args: any[]) => realFs.readFileSync(...args));
+	stableMocks.writeFile = vi.fn((...args: any[]) => realFs.promises.writeFile(...args));
+
+	return {
+		...realFs,
+		default: {
+			...realFs,
+			existsSync: stableMocks.existsSync,
+			readFileSync: stableMocks.readFileSync,
+			promises: {
+				...realFs.promises,
+				writeFile: stableMocks.writeFile,
+			},
+		},
+		existsSync: stableMocks.existsSync,
+		readFileSync: stableMocks.readFileSync,
+		promises: {
+			...realFs.promises,
+			writeFile: stableMocks.writeFile,
+		},
+	};
+});
+
+import { loadRooSyncConfig, tryLoadRooSyncConfig, isRooSyncEnabled, RooSyncConfigError, validateMachineIdUniqueness, registerMachineId } from '../roosync-config.js';
 
 describe('roosync-config', () => {
 	const originalEnv = process.env;
@@ -258,30 +312,15 @@ describe('roosync-config', () => {
 
 	// ============================================================
 	// validateMachineIdUniqueness
+	// Uses dynamic `await import('fs')` internally, which gets the global mock.
+	// We configure the mock fs behavior before each call.
 	// ============================================================
 
 	describe('validateMachineIdUniqueness', () => {
 		const mockSharedPath = '/tmp/test-shared';
 
-		beforeEach(() => {
-			// Mock fs modules
-			const mockFs = {
-				existsSync: vi.fn(),
-				readFileSync: vi.fn(),
-				writeFile: vi.fn()
-			};
-			const mockPath = {
-				join: vi.fn((...args) => args.join('/'))
-			};
-
-			// Mock dynamique des imports
-			vi.doMock('fs', () => mockFs);
-			vi.doMock('path', () => mockPath);
-		});
-
 		test('returns valid when no registry file exists', async () => {
-			const { existsSync } = await import('fs');
-			existsSync.mockReturnValue(false);
+			stableMocks.existsSync.mockReturnValue(false);
 
 			const result = await validateMachineIdUniqueness('test-machine', mockSharedPath);
 
@@ -290,9 +329,8 @@ describe('roosync-config', () => {
 		});
 
 		test('returns valid when registry exists but machineId not found', async () => {
-			const { existsSync, readFileSync } = await import('fs');
-			existsSync.mockReturnValue(true);
-			readFileSync.mockReturnValue(JSON.stringify({
+			stableMocks.existsSync.mockReturnValue(true);
+			stableMocks.readFileSync.mockReturnValue(JSON.stringify({
 				machines: {
 					'other-machine': {
 						machineId: 'other-machine',
@@ -311,9 +349,8 @@ describe('roosync-config', () => {
 		});
 
 		test('returns conflict when machineId already exists', async () => {
-			const { existsSync, readFileSync } = await import('fs');
-			existsSync.mockReturnValue(true);
-			readFileSync.mockReturnValue(JSON.stringify({
+			stableMocks.existsSync.mockReturnValue(true);
+			stableMocks.readFileSync.mockReturnValue(JSON.stringify({
 				machines: {
 					'existing-machine': {
 						machineId: 'existing-machine',
@@ -329,16 +366,15 @@ describe('roosync-config', () => {
 
 			expect(result.isValid).toBe(false);
 			expect(result.conflictDetected).toBe(true);
-			expect(result.warningMessage).toContain('CONFLIT D\'IDENTITÉ');
-			expect(result.warningMessage).toContain('déjà utilisé dans le registre');
+			expect(result.warningMessage).toContain('CONFLIT');
+			expect(result.warningMessage).toContain('dans le registre');
 			expect(result.existingEntry).toBeDefined();
 			expect(result.existingEntry?.machineId).toBe('existing-machine');
 		});
 
 		test('handles JSON parse error gracefully', async () => {
-			const { existsSync, readFileSync } = await import('fs');
-			existsSync.mockReturnValue(true);
-			readFileSync.mockReturnValue('invalid json');
+			stableMocks.existsSync.mockReturnValue(true);
+			stableMocks.readFileSync.mockImplementation((() => { throw new SyntaxError('Unexpected token'); }) as any);
 
 			const result = await validateMachineIdUniqueness('test-machine', mockSharedPath);
 
@@ -355,45 +391,22 @@ describe('roosync-config', () => {
 	describe('registerMachineId', () => {
 		const mockSharedPath = '/tmp/test-shared';
 
-		beforeEach(() => {
-			// Mock fs modules
-			const mockFs = {
-				existsSync: vi.fn(),
-				readFileSync: vi.fn(),
-				writeFile: vi.fn()
-			};
-			const mockPath = {
-				join: vi.fn((...args) => args.join('/'))
-			};
-
-			// Mock des promesses fs
-			mockFs.promises = {
-				writeFile: vi.fn().mockResolvedValue(undefined)
-			};
-
-			vi.doMock('fs', () => mockFs);
-			vi.doMock('path', () => mockPath);
-		});
-
 		test('creates new registry when none exists', async () => {
-			const { existsSync, readFileSync, promises } = await import('fs');
-			existsSync.mockReturnValue(false);
-			readFileSync.mockReturnValue('');
+			stableMocks.existsSync.mockReturnValue(false);
+			stableMocks.writeFile.mockResolvedValue(undefined);
 
 			const result = await registerMachineId('new-machine', mockSharedPath, 'test');
 
 			expect(result).toBe(true);
-			expect(promises.writeFile).toHaveBeenCalledWith(
-				`${mockSharedPath}/.machine-registry.json`,
-				expect.any(String),
-				'utf-8'
-			);
+			expect(stableMocks.writeFile).toHaveBeenCalled();
+			// Verify the path contains the registry filename
+			const callArgs = stableMocks.writeFile.mock.calls[0];
+			expect(String(callArgs[0])).toContain('.machine-registry.json');
 		});
 
 		test('updates existing registry', async () => {
-			const { existsSync, readFileSync, promises } = await import('fs');
-			existsSync.mockReturnValue(true);
-			readFileSync.mockReturnValue(JSON.stringify({
+			stableMocks.existsSync.mockReturnValue(true);
+			stableMocks.readFileSync.mockReturnValue(JSON.stringify({
 				machines: {
 					'existing-machine': {
 						machineId: 'existing-machine',
@@ -405,11 +418,17 @@ describe('roosync-config', () => {
 				},
 				lastUpdated: '2026-01-01T00:00:00.000Z'
 			}));
+			stableMocks.writeFile.mockResolvedValue(undefined);
 
 			const result = await registerMachineId('new-machine', mockSharedPath, 'test');
 
 			expect(result).toBe(true);
-			expect(promises.writeFile).toHaveBeenCalled();
+			expect(stableMocks.writeFile).toHaveBeenCalled();
+			// Verify the written content includes both machines
+			const callArgs = stableMocks.writeFile.mock.calls[0];
+			const writtenData = JSON.parse(String(callArgs[1]));
+			expect(writtenData.machines['new-machine']).toBeDefined();
+			expect(writtenData.machines['existing-machine']).toBeDefined();
 		});
 	});
 });

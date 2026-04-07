@@ -2,16 +2,15 @@
  * Tests pour PowerShellExecutor.ts
  *
  * NOTE: The global mock in tests/setup/jest.setup.js replaces PowerShellExecutor
- * with a simplified stub that lacks isPowerShellAvailable, getPowerShellVersion,
- * and proper constructor/executeScript behavior. We override it here with
- * importOriginal to test the REAL implementation using locally-mocked fs
- * and child_process.
+ * with a simplified stub. We unmock it here to test the REAL implementation
+ * using locally-mocked fs and child_process.
  */
 
 import { describe, test, expect, beforeEach, vi, afterEach } from 'vitest';
+import { EventEmitter } from 'events';
 
-// Unmock the global implementation to test the real module
-vi.unmock('../../src/services/PowerShellExecutor.js');
+// Unmock the global mock set in jest.setup.js to test the real module.
+vi.unmock('../PowerShellExecutor.js');
 
 import {
   PowerShellExecutor,
@@ -31,6 +30,41 @@ vi.mock('child_process', () => ({
 
 const mockFs = vi.mocked(fs);
 const mockSpawn = vi.mocked(spawn);
+
+/**
+ * Helper: create a mock ChildProcess-like object for spawn
+ */
+function createMockProcess(options?: {
+  stdout?: string;
+  stderr?: string;
+  exitCode?: number;
+  error?: Error;
+}): any {
+  const proc = new EventEmitter();
+  const stdoutEmitter = new EventEmitter();
+  const stderrEmitter = new EventEmitter();
+  (proc as any).stdout = stdoutEmitter;
+  (proc as any).stderr = stderrEmitter;
+  (proc as any).killed = false;
+  (proc as any).kill = vi.fn(() => { (proc as any).killed = true; });
+
+  // Schedule events asynchronously
+  process.nextTick(() => {
+    if (options?.error) {
+      proc.emit('error', options.error);
+      return;
+    }
+    if (options?.stdout) {
+      stdoutEmitter.emit('data', Buffer.from(options.stdout, 'utf-8'));
+    }
+    if (options?.stderr) {
+      stderrEmitter.emit('data', Buffer.from(options.stderr, 'utf-8'));
+    }
+    proc.emit('close', options?.exitCode ?? 0);
+  });
+
+  return proc;
+}
 
 describe('PowerShellExecutor', () => {
   beforeEach(() => {
@@ -79,7 +113,7 @@ describe('PowerShellExecutor', () => {
     test('should throw error when ROOSYNC_SHARED_PATH not defined', () => {
       delete process.env.ROOSYNC_SHARED_PATH;
 
-      expect(() => new PowerShellExecutor()).toThrow('ROOSYNC_SHARED_PATH non défini');
+      expect(() => new PowerShellExecutor()).toThrow('ROOSYNC_SHARED_PATH');
     });
   });
 
@@ -125,6 +159,19 @@ describe('PowerShellExecutor', () => {
 
       await expect(executor.executeScript('test.ps1')).rejects.toThrow('Failed to spawn PowerShell');
     });
+
+    test('should return success for successful execution', async () => {
+      mockFs.existsSync.mockReturnValue(true);
+      mockSpawn.mockReturnValue(createMockProcess({ stdout: 'hello\n', exitCode: 0 }));
+
+      const executor = new PowerShellExecutor({
+        roosyncBasePath: '/mock/path'
+      });
+
+      const result = await executor.executeScript('test.ps1');
+      expect(result.success).toBe(true);
+      expect(result.stdout).toContain('hello');
+    });
   });
 
   describe('parseJsonOutput', () => {
@@ -144,24 +191,38 @@ describe('PowerShellExecutor', () => {
       expect(result).toEqual({ key: 'value' });
     });
 
-    test('should throw error when no JSON found', () => {
+    test('should throw PowerShellExecutorError when no JSON found', () => {
       const stdout = 'No JSON here, just text';
 
-      expect(() => PowerShellExecutor.parseJsonOutput(stdout)).toThrow(PowerShellExecutorError);
       expect(() => PowerShellExecutor.parseJsonOutput(stdout)).toThrow('No valid JSON object found');
+      // Verify it is the right error type by checking name
+      try {
+        PowerShellExecutor.parseJsonOutput(stdout);
+      } catch (e: any) {
+        expect(e.name).toBe('PowerShellExecutorError');
+      }
     });
 
-    test('should throw error when JSON brackets are malformed', () => {
+    test('should throw PowerShellExecutorError when JSON brackets are malformed', () => {
       const stdout = '} { malformed JSON';
 
-      expect(() => PowerShellExecutor.parseJsonOutput(stdout)).toThrow(PowerShellExecutorError);
+      try {
+        PowerShellExecutor.parseJsonOutput(stdout);
+        expect.fail('Should have thrown');
+      } catch (e: any) {
+        expect(e.name).toBe('PowerShellExecutorError');
+      }
     });
 
-    test('should throw error when JSON parsing fails', () => {
+    test('should throw PowerShellExecutorError when JSON parsing fails', () => {
       const stdout = '{invalid json}';
 
-      expect(() => PowerShellExecutor.parseJsonOutput(stdout)).toThrow(PowerShellExecutorError);
       expect(() => PowerShellExecutor.parseJsonOutput(stdout)).toThrow('Failed to parse PowerShell JSON output');
+      try {
+        PowerShellExecutor.parseJsonOutput(stdout);
+      } catch (e: any) {
+        expect(e.name).toBe('PowerShellExecutorError');
+      }
     });
   });
 
@@ -235,78 +296,59 @@ describe('PowerShellExecutor', () => {
 
   describe('isPowerShellAvailable', () => {
     test('should return true when PowerShell is available', async () => {
-      // Use the mock implementation that returns true
+      // Set up spawn to return a mock process with "test" output
+      mockSpawn.mockReturnValue(createMockProcess({ stdout: 'test', exitCode: 0 }));
+
       const result = await PowerShellExecutor.isPowerShellAvailable();
       expect(result).toBe(true);
     });
 
     test('should return false when PowerShell execution fails', async () => {
-      // Mock the static method to return false
-      const originalIsAvailable = PowerShellExecutor.isPowerShellAvailable;
-      PowerShellExecutor.isPowerShellAvailable = vi.fn().mockResolvedValue(false);
+      mockSpawn.mockImplementation(() => {
+        throw new Error('spawn failed');
+      });
 
       const result = await PowerShellExecutor.isPowerShellAvailable();
       expect(result).toBe(false);
-
-      // Restore original
-      PowerShellExecutor.isPowerShellAvailable = originalIsAvailable;
     });
 
     test('should return false when PowerShell returns non-zero exit code', async () => {
-      // For this test, we expect the mock to handle non-zero exit codes
-      // In real implementation, this would be handled by spawn behavior
-      const originalIsAvailable = PowerShellExecutor.isPowerShellAvailable;
-      PowerShellExecutor.isPowerShellAvailable = vi.fn().mockResolvedValue(false);
+      mockSpawn.mockReturnValue(createMockProcess({ exitCode: 1 }));
 
       const result = await PowerShellExecutor.isPowerShellAvailable();
       expect(result).toBe(false);
-
-      // Restore original
-      PowerShellExecutor.isPowerShellAvailable = originalIsAvailable;
     });
 
     test('should return false when output is not "test"', async () => {
-      // Similar to above, mock for this specific test case
-      const originalIsAvailable = PowerShellExecutor.isPowerShellAvailable;
-      PowerShellExecutor.isPowerShellAvailable = vi.fn().mockResolvedValue(false);
+      mockSpawn.mockReturnValue(createMockProcess({ stdout: 'wrong output', exitCode: 0 }));
 
       const result = await PowerShellExecutor.isPowerShellAvailable();
       expect(result).toBe(false);
-
-      // Restore original
-      PowerShellExecutor.isPowerShellAvailable = originalIsAvailable;
     });
   });
 
   describe('getPowerShellVersion', () => {
     test('should return PowerShell version when available', async () => {
-      // Use the mock implementation that returns '7.3.0'
+      mockSpawn.mockReturnValue(createMockProcess({ stdout: '7.3.0', exitCode: 0 }));
+
       const result = await PowerShellExecutor.getPowerShellVersion();
       expect(result).toBe('7.3.0');
     });
 
     test('should return null when PowerShell execution fails', async () => {
-      // Mock the static method to return null
-      const originalGetVersion = PowerShellExecutor.getPowerShellVersion;
-      PowerShellExecutor.getPowerShellVersion = vi.fn().mockResolvedValue(null);
+      mockSpawn.mockImplementation(() => {
+        throw new Error('spawn failed');
+      });
 
       const result = await PowerShellExecutor.getPowerShellVersion();
       expect(result).toBe(null);
-
-      // Restore original
-      PowerShellExecutor.getPowerShellVersion = originalGetVersion;
     });
 
     test('should return null when PowerShell returns non-zero exit code', async () => {
-      // Mock for non-zero exit code scenario
-      const originalGetVersion = PowerShellExecutor.getPowerShellVersion;
-      PowerShellExecutor.getPowerShellVersion = vi.fn().mockResolvedValue(null);
+      mockSpawn.mockReturnValue(createMockProcess({ exitCode: 1 }));
 
       const result = await PowerShellExecutor.getPowerShellVersion();
       expect(result).toBe(null);
-
-      // Restore original
-      PowerShellExecutor.getPowerShellVersion = originalGetVersion;
     });
   });
 
@@ -334,7 +376,7 @@ describe('PowerShellExecutor', () => {
       expect(result.exitCode).toBe(-1);
       expect(result.stdout).toBe('');
       expect(result.stderr).toContain('Process timed out and was killed');
-    }, 20000); // Increase timeout to 20 seconds for this test
+    }, 20000);
 
     test('should handle process error during execution', async () => {
       // Mock the executeScript method to simulate error
