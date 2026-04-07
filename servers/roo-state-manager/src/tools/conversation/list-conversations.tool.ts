@@ -37,6 +37,7 @@ interface SkeletonNode {
     };
     firstUserMessage?: string;
     lastUserMessage?: string;
+    lastAction?: string;
     isCompleted?: boolean;
     completionMessage?: string;
     synthesis?: {
@@ -70,6 +71,7 @@ interface ConversationSummary {
     parentTaskId?: string;
     firstUserMessage?: string;
     lastUserMessage?: string;
+    lastAction?: string;
     isCompleted?: boolean;
     completionMessage?: string;
     synthesis?: {
@@ -108,6 +110,27 @@ function stripXmlTags(text?: string): string | undefined {
 }
 
 /**
+ * Truncate text at the last word/sentence boundary within maxLength.
+ * Avoids cutting mid-word, producing cleaner snippets for conversation_browser list.
+ * #1177: Replaces raw substring truncation for firstUserMessage.
+ */
+function truncateAtBoundary(text: string, maxLength: number): string {
+    if (!text || text.length <= maxLength) return text;
+    // Try sentence boundary first (. ! ? followed by space)
+    const sentenceCut = text.lastIndexOf('. ', maxLength - 2);
+    if (sentenceCut > maxLength * 0.4) {
+        return text.substring(0, sentenceCut + 1);
+    }
+    // Try word boundary
+    const wordCut = text.lastIndexOf(' ', maxLength - 2);
+    if (wordCut > maxLength * 0.4) {
+        return text.substring(0, wordCut) + '...';
+    }
+    // Fallback: hard cut
+    return text.substring(0, maxLength - 3) + '...';
+}
+
+/**
  * Convertit un SkeletonNode vers un objet JSON compact pour le list output.
  *
  * Compactness strategy (target: ~500 chars/root, ~100 chars/child):
@@ -120,12 +143,11 @@ function stripXmlTags(text?: string): string | undefined {
  * - synthesis only when available
  */
 function toConversationSummary(node: SkeletonNode, _depth = 0): Record<string, unknown> {
-    // Clean and truncate root messages
+    // Clean and truncate root messages — #1177: use word-boundary truncation for cleaner output
     let firstMsg = stripXmlTags(node.firstUserMessage);
     let lastMsg = stripXmlTags(node.lastUserMessage);
-    // #883: Increased snippet lengths for richer context (was 200)
-    if (firstMsg && firstMsg.length > 400) firstMsg = firstMsg.substring(0, 400) + '...';
-    if (lastMsg && lastMsg.length > 400) lastMsg = lastMsg.substring(0, 400) + '...';
+    if (firstMsg) firstMsg = truncateAtBoundary(firstMsg, 400);
+    if (lastMsg) lastMsg = truncateAtBoundary(lastMsg, 400);
 
     // Build summary — always include key fields for readability
     const summary: Record<string, unknown> = { taskId: node.taskId };
@@ -134,6 +156,7 @@ function toConversationSummary(node: SkeletonNode, _depth = 0): Record<string, u
     if (node.parentTaskId) summary.parentTaskId = node.parentTaskId;
     if (firstMsg) summary.firstUserMessage = firstMsg;
     if (lastMsg) summary.lastUserMessage = lastMsg;
+    if (node.lastAction) summary.lastAction = node.lastAction;
     summary.isCompleted = node.isCompleted || false;
     if (node.completionMessage) summary.completionMessage = node.completionMessage;
     if (node.synthesis?.available) summary.synthesis = node.synthesis;
@@ -466,27 +489,52 @@ export const listConversationsTool = {
             // Variables pour les informations à extraire
             let firstUserMessage: string | undefined = undefined;
             let lastUserMessage: string | undefined = undefined;
+            let lastAction: string | undefined = undefined;
             let isCompleted = false;
             let completionMessage: string | undefined = undefined;
 
             // Extraire les informations de la sequence si elle existe (Roo tasks)
             if (sequence && Array.isArray(sequence) && sequence.length > 0) {
-                // 1. Premier message utilisateur (augmenté de 200 à 300 caractères)
+                // 1. Premier message utilisateur — #1177: strip XML, truncate at word boundary
                 const firstUserMsg = sequence.find((msg: any) => msg.role === 'user');
                 if (firstUserMsg && firstUserMsg.content) {
-                    firstUserMessage = firstUserMsg.content.length > 300
-                        ? firstUserMsg.content.substring(0, 300) + '...'
-                        : firstUserMsg.content;
+                    const cleaned = stripXmlTags(firstUserMsg.content) || firstUserMsg.content;
+                    firstUserMessage = truncateAtBoundary(cleaned, 200);
                 }
 
-                // 2. Dernier message utilisateur (NOUVEAU - permet de voir la fin de la conversation)
+                // 2. Dernier message utilisateur (permet de voir la fin de la conversation)
                 const userMessages = sequence.filter((msg: any) => msg.role === 'user');
                 if (userMessages.length > 0) {
                     const lastUserMsg = userMessages[userMessages.length - 1];
                     if (lastUserMsg && lastUserMsg.content) {
-                        lastUserMessage = lastUserMsg.content.length > 200
-                            ? lastUserMsg.content.substring(0, 200) + '...'
-                            : lastUserMsg.content;
+                        const cleaned = stripXmlTags(lastUserMsg.content) || lastUserMsg.content;
+                        lastUserMessage = truncateAtBoundary(cleaned, 200);
+                    }
+                }
+
+                // 3. Last action/tool used — #1177: extract from ActionMetadata or tool_use blocks
+                // Check ActionMetadata items (type: 'tool') first, then assistant tool_use blocks
+                const actionItems = sequence.filter((msg: any) => msg.type === 'tool' || msg.type === 'command');
+                if (actionItems.length > 0) {
+                    const lastAct = actionItems[actionItems.length - 1];
+                    lastAction = lastAct.name || undefined;
+                } else {
+                    // Fallback: scan last 5 assistant messages for tool_use
+                    const recentAssistant = sequence
+                        .filter((msg: any) => msg.role === 'assistant')
+                        .slice(-5)
+                        .reverse();
+                    for (const msg of recentAssistant) {
+                        if (msg.content && Array.isArray(msg.content)) {
+                            for (let i = msg.content.length - 1; i >= 0; i--) {
+                                const c = msg.content[i];
+                                if (c.type === 'tool_use' && c.name) {
+                                    lastAction = c.name;
+                                    break;
+                                }
+                            }
+                            if (lastAction) break;
+                        }
                     }
                 }
 
@@ -544,6 +592,7 @@ export const listConversationsTool = {
                 metadata: s.metadata,
                 firstUserMessage,
                 lastUserMessage,
+                lastAction,
                 isCompleted,
                 completionMessage,
                 // NOTE: La synthèse sera détectée en Phase 2 (après création de skeletonMap)
@@ -714,9 +763,7 @@ async function extractClaudeSessionMeta(filePath: string, fileSize: number): Pro
                 if (entry.type === 'user' && entry.message) {
                     const text = extractClaudeMessageText(entry.message.content);
                     if (text && text.length > 0) {
-                        result.firstUserMessage = text.length > 300
-                            ? text.substring(0, 300) + '...'
-                            : text;
+                        result.firstUserMessage = truncateAtBoundary(text, 200);
                         break;
                     }
                 }
@@ -739,9 +786,7 @@ async function extractClaudeSessionMeta(filePath: string, fileSize: number): Pro
                     if (entry.type === 'user' && entry.message) {
                         const text = extractClaudeMessageText(entry.message.content);
                         if (text && text.length > 0) {
-                            result.lastUserMessage = text.length > 300
-                                ? text.substring(0, 300) + '...'
-                                : text;
+                            result.lastUserMessage = truncateAtBoundary(text, 200);
                             break;
                         }
                     }
@@ -861,7 +906,7 @@ async function extractClaudeJsonlMetadata(filePath: string, fileSize: number): P
                 if (!result.firstUserMessage && entry.type === 'user' && entry.message?.role === 'user') {
                     const content = extractClaudeMessageText(entry.message.content);
                     if (content) {
-                        result.firstUserMessage = content.length > 300 ? content.substring(0, 300) + '...' : content;
+                        result.firstUserMessage = truncateAtBoundary(content, 200);
                         // Derive title from first user message (skip command invocations)
                         const titleText = content.replace(/<[^>]+>/g, '').trim();
                         if (titleText.length > 3) {
@@ -891,7 +936,7 @@ async function extractClaudeJsonlMetadata(filePath: string, fileSize: number): P
                     if (entry.type === 'user' && entry.message?.role === 'user') {
                         const content = extractClaudeMessageText(entry.message.content);
                         if (content) {
-                            result.lastUserMessage = content.length > 200 ? content.substring(0, 200) + '...' : content;
+                            result.lastUserMessage = truncateAtBoundary(content, 200);
                             break;
                         }
                     }
