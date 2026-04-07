@@ -98,6 +98,8 @@ class RooStateManagerServer {
     private static readonly CACHE_CHECK_THROTTLE_MS = 60_000; // 1 minute minimum between checks
     private _initPromise: Promise<void>;
     private _initError: Error | null = null;
+    private _resolveInit!: () => void;
+    private _rejectInit!: (error: Error) => void;
 
     constructor() {
         // Create MCP server IMMEDIATELY — no heavy imports yet
@@ -106,10 +108,30 @@ class RooStateManagerServer {
         // Register handlers with lazy dependencies
         this.registerHandlers();
 
-        // Start heavy initialization in background (non-blocking)
-        this._initPromise = this.initializeAsync().catch((error: Error) => {
-            logger.error("Error during async initialization:", { error });
-            this._initError = error;
+        // #1110: Do NOT start initializeAsync() here.
+        // Dynamic import() blocks the event loop during module evaluation (7s on fast machines, 45s+ on slow).
+        // If started in constructor, run() can't connect transport until imports finish → MCP timeout.
+        // Instead, startBackgroundInit() is called AFTER run() connects the transport.
+        this._initPromise = new Promise((resolve, reject) => {
+            this._resolveInit = resolve;
+            this._rejectInit = reject;
+        });
+    }
+
+    /**
+     * Start heavy initialization in background AFTER transport is connected.
+     * Uses setImmediate to yield the event loop first, so the MCP handshake
+     * (initialize request) can be processed before imports block the event loop.
+     */
+    startBackgroundInit(): void {
+        setImmediate(() => {
+            this.initializeAsync()
+                .then(() => this._resolveInit())
+                .catch((error: Error) => {
+                    logger.error("Error during async initialization:", { error });
+                    this._initError = error;
+                    this._rejectInit(error);
+                });
         });
     }
 
@@ -400,6 +422,12 @@ class RooStateManagerServer {
         const transport = new StdioServerTransport();
         await this.server.connect(transport);
         logger.info(`Roo State Manager Server started - v${packageJson.version}`);
+
+        // #1110: Start heavy initialization AFTER transport is connected.
+        // setImmediate inside startBackgroundInit() yields the event loop,
+        // allowing the MCP initialize handshake to complete before
+        // dynamic import() blocks the event loop during module evaluation.
+        this.startBackgroundInit();
     }
 
     /**
