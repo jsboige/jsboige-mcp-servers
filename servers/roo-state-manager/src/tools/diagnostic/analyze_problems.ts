@@ -1,7 +1,7 @@
 import { Tool } from '@modelcontextprotocol/sdk/types.js';
 import * as fs from 'fs/promises';
 import * as path from 'path';
-import { getSharedStatePath } from '../../utils/server-helpers.js';
+import { getSharedStatePath } from '../../utils/shared-state-path.js';
 
 interface AnalyzeOptions {
     roadmapPath?: string;

@@ -9,7 +9,7 @@
  */
 
 import { z } from 'zod';
-import { getRooSyncService } from '../../services/RooSyncService.js';
+import { getRooSyncService } from '../../services/lazy-roosync.js';
 import { HeartbeatServiceError } from '../../services/roosync/HeartbeatService.js';
 
 /**
@@ -52,7 +52,7 @@ export async function roosyncStopHeartbeatService(args: StopHeartbeatServiceArgs
   try {
     const { saveState = true } = args;
 
-    const rooSyncService = getRooSyncService();
+    const rooSyncService = await getRooSyncService();
     const heartbeatService = rooSyncService.getHeartbeatService();
 
     // Arrêter le service

@@ -35,7 +35,8 @@ const MCP_SETTINGS_PATH = path.join(
     'mcp_settings.json'
 );
 
-async function getMcpConfiguration(): Promise<McpSettings | null> {
+/* @internal - exported for testing */
+export async function getMcpConfiguration(): Promise<McpSettings | null> {
     try {
         const content = await fs.readFile(MCP_SETTINGS_PATH, 'utf-8');
         return JSON.parse(content) as McpSettings;
@@ -44,8 +45,12 @@ async function getMcpConfiguration(): Promise<McpSettings | null> {
     }
 }
 
-async function getMcpPath(mcpName: string, config: McpServer): Promise<string | null> {
+/* @internal - exported for testing */
+export async function getMcpPath(mcpName: string, config: McpServer | undefined): Promise<string | null> {
     try {
+        if (!config) {
+            return null;
+        }
         if (config.options?.cwd) {
             return config.options.cwd;
         } else if (config.args?.[0]) {
@@ -62,7 +67,8 @@ async function getMcpPath(mcpName: string, config: McpServer): Promise<string | 
     }
 }
 
-async function scanMcpDirectory(mcpPath: string): Promise<string> {
+/* @internal - exported for testing */
+export async function scanMcpDirectory(mcpPath: string): Promise<string> {
     try {
         const stats = await fs.stat(mcpPath);
         if (!stats.isDirectory()) {
@@ -110,7 +116,8 @@ async function scanMcpDirectory(mcpPath: string): Promise<string> {
     }
 }
 
-async function getPackageInfo(mcpPath: string): Promise<string> {
+/* @internal - exported for testing */
+export async function getPackageInfo(mcpPath: string): Promise<string> {
     try {
         const packageJsonPath = path.join(mcpPath, 'package.json');
         const content = await fs.readFile(packageJsonPath, 'utf-8');

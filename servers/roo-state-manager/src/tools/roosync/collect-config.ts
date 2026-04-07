@@ -2,7 +2,7 @@
  * @deprecated Superseded by roosync_config(action: 'collect'). Kept for backward compatibility in registry.ts.
  */
 import { z } from 'zod';
-import { getRooSyncService } from '../../services/RooSyncService.js';
+import { getRooSyncService } from '../../services/lazy-roosync.js';
 import { ConfigSharingServiceError, ConfigSharingServiceErrorCode } from '../../types/errors.js';
 export const CollectConfigArgsSchema = z.object({
   targets: z.array(z.string()).optional().describe('Liste des cibles à collecter (modes, mcp, profiles). Défaut: ["modes", "mcp"]'),
@@ -15,7 +15,7 @@ export async function roosyncCollectConfig(args: CollectConfigArgs) {
   const { targets = ['modes', 'mcp'], dryRun = false } = args;
   
   try {
-    const rooSyncService = getRooSyncService();
+    const rooSyncService = await getRooSyncService();
     const configSharingService = rooSyncService.getConfigSharingService();
     
     const result = await configSharingService.collectConfig({

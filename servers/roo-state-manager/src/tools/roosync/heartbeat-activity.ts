@@ -7,7 +7,7 @@
  * @module tools/roosync/heartbeat-activity
  */
 
-import { getRooSyncService } from '../../services/RooSyncService.js';
+import { getRooSyncService } from '../../services/lazy-roosync.js';
 import { getLocalMachineId } from '../../utils/message-helpers.js';
 import { createLogger } from '../../utils/logger.js';
 import os from 'os';
@@ -43,7 +43,7 @@ export async function recordRooSyncActivity(
 	metadata?: Record<string, unknown>
 ): Promise<void> {
 	try {
-		const service = getRooSyncService();
+		const service = await getRooSyncService();
 		const realMachineId = getRealMachineId();
 		const heartbeatService = service.getHeartbeatService();
 		await heartbeatService.registerHeartbeat(realMachineId, {

@@ -8,11 +8,11 @@
  */
 
 import { z } from 'zod';
-import { getRooSyncService, RooSyncServiceError } from '../../services/RooSyncService.js';
+import { getRooSyncService, RooSyncServiceError } from '../../services/lazy-roosync.js';
 import { existsSync, readFileSync, writeFileSync, copyFileSync, mkdirSync } from 'fs';
 import { join, dirname } from 'path';
 import { createLogger, Logger } from '../../utils/logger.js';
-import { getSharedStatePath } from '../../utils/server-helpers.js';
+import { getSharedStatePath } from '../../utils/shared-state-path.js';
 import { BaselineService } from '../../services/BaselineService.js';
 import { ConfigService } from '../../services/ConfigService.js';
 import { InventoryCollector } from '../../services/InventoryCollector.js';
@@ -193,7 +193,7 @@ async function handleUpdateAction(args: BaselineArgs, timestamp: string): Promis
     version: args.version
   });
 
-  const service = getRooSyncService();
+  const service = await getRooSyncService();
   const config = service.getConfig();
 
   // Initialiser les services
@@ -367,7 +367,7 @@ async function handleUpdateAction(args: BaselineArgs, timestamp: string): Promis
 async function handleVersionAction(args: BaselineArgs, timestamp: string): Promise<BaselineResult> {
   if (!args.version) {
     throw new RooSyncServiceError(
-      'version est requise pour l\'action version',
+      'version est requise pour l\'action version (format attendu: X.Y.Z, ex: 2.3.15)',
       'MISSING_VERSION'
     );
   }
@@ -385,7 +385,7 @@ async function handleVersionAction(args: BaselineArgs, timestamp: string): Promi
     createChangelog: args.createChangelog
   });
 
-  const service = getRooSyncService();
+  const service = await getRooSyncService();
   const config = service.getConfig();
   const sharedPath = getSharedStatePath();
   const configService = new ConfigService(sharedPath);
@@ -567,7 +567,7 @@ async function handleRestoreAction(args: BaselineArgs, timestamp: string): Promi
     createBackup: args.createBackup
   });
 
-  const service = getRooSyncService();
+  const service = await getRooSyncService();
   const config = service.getConfig();
   const sharedPath = getSharedStatePath();
   const configService = new ConfigService(sharedPath);

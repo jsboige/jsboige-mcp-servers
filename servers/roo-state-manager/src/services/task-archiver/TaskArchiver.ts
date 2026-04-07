@@ -16,7 +16,7 @@ import { gzip, gunzip } from 'zlib';
 import { promisify } from 'util';
 import { createReadStream } from 'fs';
 import { createInterface } from 'readline';
-import { getSharedStatePath } from '../../utils/server-helpers.js';
+import { getSharedStatePath } from '../../utils/shared-state-path.js';
 import { ConversationSkeleton } from '../../types/conversation.js';
 import { ArchivedTask, ArchivedTaskMessage } from './types.js';
 

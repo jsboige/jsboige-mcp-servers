@@ -9,7 +9,7 @@
  */
 
 import { z } from 'zod';
-import { getRooSyncService } from '../../services/RooSyncService.js';
+import { getRooSyncService } from '../../services/lazy-roosync.js';
 import { HeartbeatServiceError } from '../../services/roosync/HeartbeatService.js';
 
 /**
@@ -73,7 +73,7 @@ export async function roosyncSyncOnOffline(args: SyncOnOfflineArgs): Promise<Syn
       dryRun = false
     } = args;
 
-    const rooSyncService = getRooSyncService();
+    const rooSyncService = await getRooSyncService();
     const heartbeatService = rooSyncService.getHeartbeatService();
 
     // Vérifier que la machine est bien offline

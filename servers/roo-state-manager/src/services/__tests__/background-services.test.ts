@@ -179,36 +179,33 @@ describe('background-services', () => {
   // === loadSkeletonsFromDisk ===
 
   describe('loadSkeletonsFromDisk', () => {
-    it('should load skeletons from .skeletons cache directory', async () => {
+    // #1110: loadSkeletonsFromDisk now loads from a lightweight index file (_skeleton_index.json)
+    // instead of reading individual skeleton files. Skeletons are loaded with sequence: [].
+
+    it('should load skeleton metadata from index file', async () => {
       const cache = new Map<string, ConversationSkeleton>();
       const skeleton1 = createMockSkeleton('task-001');
       const skeleton2 = createMockSkeleton('task-002');
 
+      const index = {
+        version: 1,
+        generatedAt: new Date().toISOString(),
+        count: 2,
+        entries: [
+          { taskId: skeleton1.taskId, metadata: skeleton1.metadata, isCompleted: skeleton1.isCompleted },
+          { taskId: skeleton2.taskId, metadata: skeleton2.metadata, isCompleted: skeleton2.isCompleted },
+        ],
+      };
+
       mockDetector.detectStorageLocations.mockResolvedValue(['/mock/storage']);
-      mockFs.readdir.mockResolvedValue(['task-001.json', 'task-002.json']);
-      mockFs.readFile
-        .mockResolvedValueOnce(JSON.stringify(skeleton1))
-        .mockResolvedValueOnce(JSON.stringify(skeleton2));
+      mockFs.readFile.mockResolvedValueOnce(JSON.stringify(index));
 
       await loadSkeletonsFromDisk(cache);
 
       expect(cache.size).toBe(2);
-      expect(cache.get('task-001')).toEqual(skeleton1);
-      expect(cache.get('task-002')).toEqual(skeleton2);
-    });
-
-    it('should skip non-JSON files', async () => {
-      const cache = new Map<string, ConversationSkeleton>();
-      const skeleton1 = createMockSkeleton('task-001');
-
-      mockDetector.detectStorageLocations.mockResolvedValue(['/mock/storage']);
-      mockFs.readdir.mockResolvedValue(['task-001.json', 'README.md', 'notes.txt']);
-      mockFs.readFile.mockResolvedValueOnce(JSON.stringify(skeleton1));
-
-      await loadSkeletonsFromDisk(cache);
-
-      expect(cache.size).toBe(1);
-      expect(mockFs.readFile).toHaveBeenCalledTimes(1);
+      // Cache stores SkeletonHeaders — no sequence field
+      expect((cache.get('task-001') as any)?.sequence).toBeUndefined();
+      expect(cache.get('task-001')?.metadata).toEqual(skeleton1.metadata);
     });
 
     it('should handle no storage locations', async () => {
@@ -221,31 +218,27 @@ describe('background-services', () => {
       expect(cache.size).toBe(0);
     });
 
-    it('should handle missing cache directory gracefully', async () => {
+    it('should handle missing index file gracefully', async () => {
       const cache = new Map<string, ConversationSkeleton>();
 
       mockDetector.detectStorageLocations.mockResolvedValue(['/mock/storage']);
-      mockFs.readdir.mockRejectedValue(new Error('ENOENT'));
+      mockFs.readFile.mockRejectedValueOnce(new Error('ENOENT'));
+
+      await loadSkeletonsFromDisk(cache);
+
+      // No index = empty cache, background worker will populate it
+      expect(cache.size).toBe(0);
+    });
+
+    it('should handle corrupt index file gracefully', async () => {
+      const cache = new Map<string, ConversationSkeleton>();
+
+      mockDetector.detectStorageLocations.mockResolvedValue(['/mock/storage']);
+      mockFs.readFile.mockResolvedValueOnce('not valid json {{{');
 
       await loadSkeletonsFromDisk(cache);
 
       expect(cache.size).toBe(0);
-    });
-
-    it('should skip corrupt skeleton files and continue', async () => {
-      const cache = new Map<string, ConversationSkeleton>();
-      const skeleton2 = createMockSkeleton('task-002');
-
-      mockDetector.detectStorageLocations.mockResolvedValue(['/mock/storage']);
-      mockFs.readdir.mockResolvedValue(['task-001.json', 'task-002.json']);
-      mockFs.readFile
-        .mockResolvedValueOnce('not valid json {{{')
-        .mockResolvedValueOnce(JSON.stringify(skeleton2));
-
-      await loadSkeletonsFromDisk(cache);
-
-      expect(cache.size).toBe(1);
-      expect(cache.has('task-002')).toBe(true);
     });
 
     it('should handle detectStorageLocations failure', async () => {
@@ -258,20 +251,27 @@ describe('background-services', () => {
       expect(cache.size).toBe(0);
     });
 
-    it('should strip BOM UTF-8 from skeleton file content', async () => {
+    it('should strip BOM UTF-8 from index file content', async () => {
       const cache = new Map<string, ConversationSkeleton>();
       const skeleton = createMockSkeleton('task-bom');
 
+      const index = {
+        version: 1,
+        generatedAt: new Date().toISOString(),
+        count: 1,
+        entries: [
+          { taskId: skeleton.taskId, metadata: skeleton.metadata },
+        ],
+      };
+
       mockDetector.detectStorageLocations.mockResolvedValue(['/mock/storage']);
-      mockFs.readdir.mockResolvedValue(['task-bom.json']);
-      // Content with BOM at start (charCode 0xFEFF)
-      const contentWithBom = '\uFEFF' + JSON.stringify(skeleton);
+      const contentWithBom = '\uFEFF' + JSON.stringify(index);
       mockFs.readFile.mockResolvedValueOnce(contentWithBom);
 
       await loadSkeletonsFromDisk(cache);
 
       expect(cache.size).toBe(1);
-      expect(cache.get('task-bom')).toEqual(skeleton);
+      expect(cache.get('task-bom')?.metadata).toEqual(skeleton.metadata);
     });
   });
 

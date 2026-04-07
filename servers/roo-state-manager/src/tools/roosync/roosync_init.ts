@@ -8,7 +8,7 @@
  */
 
 import { z } from 'zod';
-import { getRooSyncService, RooSyncServiceError } from '../../services/RooSyncService.js';
+import { getRooSyncService, RooSyncServiceError } from '../../services/lazy-roosync.js';
 import { existsSync, mkdirSync, writeFileSync, readFileSync, unlinkSync } from 'fs';
 import { join, dirname } from 'path';
 import { fileURLToPath } from 'url';
@@ -173,7 +173,7 @@ _Fichier généré automatiquement par roosync_init_
  */
 export async function roosyncInit(args: InitArgs): Promise<InitResult> {
   try {
-    const service = getRooSyncService();
+    const service = await getRooSyncService();
     const config = service.getConfig();
     
     const filesCreated: string[] = [];

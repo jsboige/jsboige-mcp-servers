@@ -11,7 +11,7 @@
 
 import { z } from 'zod';
 import { zodToJsonSchema } from 'zod-to-json-schema';
-import { getRooSyncService, RooSyncServiceError } from '../../services/RooSyncService.js';
+import { getRooSyncService, RooSyncServiceError } from '../../services/lazy-roosync.js';
 import { parseRoadmapMarkdown, findDecisionById } from '../../utils/roosync-parsers.js';
 import { join } from 'path';
 
@@ -114,7 +114,7 @@ export type RooSyncDecisionInfoResult = z.infer<typeof RooSyncDecisionInfoResult
 export async function roosyncDecisionInfo(
   args: RooSyncDecisionInfoArgs
 ): Promise<RooSyncDecisionInfoResult> {
-  const service = getRooSyncService();
+  const service = await getRooSyncService();
   const config = service.getConfig();
 
   // Charger les détails de la décision

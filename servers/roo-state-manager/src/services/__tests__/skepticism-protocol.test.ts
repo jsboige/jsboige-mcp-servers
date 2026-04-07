@@ -1,19 +1,32 @@
 /**
  * Tests for skepticism-protocol.md validation
- * Issue #567 Section 5 - Assigned to myia-po-2024
+ * Issue #567 Section 5 - Updated for v3.0.0 condensed format
  *
  * These tests verify:
  * 1. The skepticism-protocol.md file exists and has valid format
- * 2. The anti-patterns documented are covered by guards
+ * 2. Key content elements are present in the condensed v3.0.0 format
+ *
+ * NOTE: These tests read files from the PARENT roo-extensions repo,
+ * so they are excluded from CI (vitest.config.ci.ts).
+ * The fs module is globally mocked in jest.setup.js, so we must
+ * unmock it to read real files.
  */
 
-import { describe, it, expect } from 'vitest'
-import * as fs from 'fs'
+import { describe, it, expect, vi } from 'vitest'
 import * as path from 'path'
 
-// Path to skepticism-protocol.md files
-const CLAUDE_RULES_PATH = path.resolve(__dirname, '../../../../../../../.claude/rules/skepticism-protocol.md')
-const ROO_RULES_PATH = path.resolve(__dirname, '../../../../../../../.roo/rules/21-skepticism-protocol.md')
+// Unmock fs to read real files from the parent repo
+vi.unmock('fs');
+vi.unmock('fs/promises');
+
+// Import fs AFTER unmocking
+import * as fs from 'fs'
+
+// Path to skepticism-protocol.md - resolve from the roo-state-manager root
+// up to the roo-extensions repo root
+const REPO_ROOT = path.resolve(__dirname, '../../../../../../..');
+const CLAUDE_RULES_PATH = path.resolve(REPO_ROOT, '.claude/rules/skepticism-protocol.md');
+const ROO_RULES_PATH = path.resolve(REPO_ROOT, '.roo/rules/21-skepticism-protocol.md');
 
 describe('Skepticism Protocol - File Validation', () => {
   it('skepticism-protocol.md exists in .claude/rules/', () => {
@@ -24,57 +37,32 @@ describe('Skepticism Protocol - File Validation', () => {
     expect(fs.existsSync(ROO_RULES_PATH)).toBe(true)
   })
 
-  it('skepticism-protocol.md has valid markdown structure', () => {
+  it('skepticism-protocol.md has valid markdown structure (v3.0 condensed)', () => {
     const content = fs.readFileSync(CLAUDE_RULES_PATH, 'utf-8')
 
-    // Check for required sections
+    // Check for required sections (v3.0.0 condensed format)
     expect(content).toContain('# Protocole de Scepticisme Raisonnable')
     expect(content).toContain('## Principe')
-    expect(content).toContain('## Declencheurs de Scepticisme')
-    expect(content).toContain('## Protocole de Verification')
+    expect(content).toContain('## Qualification Obligatoire')
+    expect(content).toContain('## Declencheurs')
+    expect(content).toContain('## Verification')
     expect(content).toContain('## Regles Anti-Propagation')
-    expect(content).toContain('## Anti-Patterns Documentes')
   })
 
   it('skepticism-protocol.md contains version metadata', () => {
     const content = fs.readFileSync(CLAUDE_RULES_PATH, 'utf-8')
 
     expect(content).toContain('**Version:**')
-    expect(content).toContain('**Cree:**')
+    expect(content).toContain('**MAJ:**')
   })
 
-  it('skepticism-protocol.md documents GPU anti-pattern', () => {
+  it('skepticism-protocol.md documents GPU anti-pattern trigger', () => {
     const content = fs.readFileSync(CLAUDE_RULES_PATH, 'utf-8')
 
     expect(content).toContain('GPU insuffisante')
-    expect(content).toContain('GPU Fleet')
   })
 
-  it('skepticism-protocol.md documents machine silence anti-pattern', () => {
-    const content = fs.readFileSync(CLAUDE_RULES_PATH, 'utf-8')
-
-    expect(content).toContain('machine "silencieuse"')
-    expect(content).toContain('Verifier inbox complet')
-  })
-
-  it('skepticism-protocol.md documents duplicate work anti-pattern', () => {
-    const content = fs.readFileSync(CLAUDE_RULES_PATH, 'utf-8')
-
-    expect(content).toContain('Dupliquer le travail')
-    expect(content).toContain('Claim protocol')
-  })
-})
-
-describe('Skepticism Protocol - Guards Coverage', () => {
-  it('verifies verification levels are defined (Niveau 1-3)', () => {
-    const content = fs.readFileSync(CLAUDE_RULES_PATH, 'utf-8')
-
-    expect(content).toContain('Niveau 1')
-    expect(content).toContain('Niveau 2')
-    expect(content).toContain('Niveau 3')
-  })
-
-  it('verifies claim qualification labels are defined', () => {
+  it('skepticism-protocol.md documents qualification labels', () => {
     const content = fs.readFileSync(CLAUDE_RULES_PATH, 'utf-8')
 
     expect(content).toContain('VERIFIE')
@@ -82,10 +70,28 @@ describe('Skepticism Protocol - Guards Coverage', () => {
     expect(content).toContain('SUPPOSE')
   })
 
+  it('skepticism-protocol.md documents verification levels', () => {
+    const content = fs.readFileSync(CLAUDE_RULES_PATH, 'utf-8')
+
+    expect(content).toContain('Rapide')
+    expect(content).toContain('Active')
+    expect(content).toContain('Croisee')
+  })
+})
+
+describe('Skepticism Protocol - Guards Coverage', () => {
+  it('verifies verification levels are defined', () => {
+    const content = fs.readFileSync(CLAUDE_RULES_PATH, 'utf-8')
+
+    // v3.0.0 uses "Rapide", "Active", "Croisee" instead of "Niveau 1-3"
+    expect(content).toContain('Rapide')
+    expect(content).toContain('Active')
+    expect(content).toContain('Croisee')
+  })
+
   it('verifies reference sources are documented', () => {
     const content = fs.readFileSync(CLAUDE_RULES_PATH, 'utf-8')
 
-    expect(content).toContain('GPU Fleet')
     expect(content).toContain('CLAUDE.md')
     expect(content).toContain('MEMORY.md')
   })
@@ -101,24 +107,24 @@ describe('Skepticism Protocol - Guards Coverage', () => {
 })
 
 describe('Skepticism Protocol - Integration Points', () => {
-  it('documents integration with /coordinate command', () => {
+  it('documents anti-propagation rules for coordinateur', () => {
     const content = fs.readFileSync(CLAUDE_RULES_PATH, 'utf-8')
 
-    expect(content).toContain('/coordinate')
-    expect(content).toContain('Verifier les rapports AVANT de dispatcher')
+    expect(content).toContain('Coordinateur')
+    expect(content).toContain('JAMAIS')
   })
 
-  it('documents integration with /executor command', () => {
+  it('documents anti-propagation rules for executeur', () => {
     const content = fs.readFileSync(CLAUDE_RULES_PATH, 'utf-8')
 
-    expect(content).toContain('/executor')
-    expect(content).toContain('Verifier les premisses des instructions recues')
+    expect(content).toContain('Executeur')
+    expect(content).toContain('impossible')
   })
 
-  it('documents integration with roosync-hub agent', () => {
+  it('documents the smell test triggers', () => {
     const content = fs.readFileSync(CLAUDE_RULES_PATH, 'utf-8')
 
-    expect(content).toContain('roosync-hub')
-    expect(content).toContain('Croiser rapports avec git/GitHub')
+    expect(content).toContain('Declencheurs')
+    expect(content).toContain('PAUSE et VERIFIE')
   })
 })

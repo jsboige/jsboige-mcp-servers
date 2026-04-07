@@ -45,7 +45,15 @@ vi.mock('../../../types/errors.js', () => ({
 			super(message); this.name = 'BaselineServiceError'; this.code = code;
 		}
 	},
-	BaselineServiceErrorCode: { APPLICATION_FAILED: 'APPLICATION_FAILED' }
+	BaselineServiceErrorCode: { APPLICATION_FAILED: 'APPLICATION_FAILED' },
+	// #1110: lazy-roosync.ts re-exports RooSyncServiceError from types/errors.js
+	// Must be included here or instanceof checks fail with "not an object"
+	RooSyncServiceError: class extends Error {
+		code: string;
+		constructor(message: string, code: string) {
+			super(`[RooSync Service] ${message}`); this.name = 'RooSyncServiceError'; this.code = code;
+		}
+	}
 }));
 
 vi.mock('fs', async () => {

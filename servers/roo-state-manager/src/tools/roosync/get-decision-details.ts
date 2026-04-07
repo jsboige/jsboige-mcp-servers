@@ -10,7 +10,7 @@
 
 import { z } from 'zod';
 import { zodToJsonSchema } from 'zod-to-json-schema';
-import { getRooSyncService, RooSyncServiceError } from '../../services/RooSyncService.js';
+import { getRooSyncService, RooSyncServiceError } from '../../services/lazy-roosync.js';
 import { readFileSync } from 'fs';
 import { join } from 'path';
 
@@ -174,7 +174,7 @@ function parseDecisionHistory(blockContent: string): GetDecisionDetailsResult['h
  */
 export async function roosyncGetDecisionDetails(args: GetDecisionDetailsArgs): Promise<GetDecisionDetailsResult> {
   try {
-    const service = getRooSyncService();
+    const service = await getRooSyncService();
     const config = service.getConfig();
     
     // Options par défaut

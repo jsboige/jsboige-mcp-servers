@@ -6,21 +6,60 @@
 
 import { promises as fs } from 'fs';
 import path from 'path';
-import { ConversationSkeleton } from '../types/conversation.js';
+import { ConversationSkeleton, SkeletonHeader } from '../types/conversation.js';
 import { RooStorageDetector } from '../utils/roo-storage-detector.js';
 import { ServerState } from './state-manager.service.js';
 import { ANTI_LEAK_CONFIG } from '../config/server-config.js';
 import { TaskIndexer, getHostIdentifier } from './task-indexer.js';
-import * as toolExports from '../tools/index.js';
+// REMOVED: import * as toolExports — was unused, added 6s to startup by importing ALL tools
 import { RooStorageDetectorError, RooStorageDetectorErrorCode } from '../types/errors.js';
-import { RooSyncService } from './RooSyncService.js';
+// #1140: Lazy import — RooSyncService loads 17 heavy modules (~6s).
+// Only needed when HEARTBEAT_AUTO_START=true (disabled by default).
+// import { RooSyncService } from './RooSyncService.js';
 
 /**
- * Charge les squelettes existants depuis le disque au démarrage
+ * Extract the SkeletonHeader from a full ConversationSkeleton.
+ * Only metadata, prefixes, and flags — no sequence.
  */
-export async function loadSkeletonsFromDisk(conversationCache: Map<string, ConversationSkeleton>): Promise<void> {
+export function toHeader(skeleton: ConversationSkeleton): SkeletonHeader {
+    return {
+        taskId: skeleton.taskId,
+        parentTaskId: skeleton.parentTaskId,
+        metadata: skeleton.metadata,
+        isCompleted: skeleton.isCompleted,
+        truncatedInstruction: skeleton.truncatedInstruction,
+        childTaskInstructionPrefixes: skeleton.childTaskInstructionPrefixes,
+    };
+}
+
+/** Index filename — lightweight metadata for all skeletons, loaded at startup */
+const SKELETON_INDEX_FILENAME = '_skeleton_index.json';
+
+/**
+ * Structure of the skeleton index file.
+ * Entries are SkeletonHeaders — no sequence data.
+ */
+interface SkeletonIndex {
+    version: number;
+    generatedAt: string;
+    count: number;
+    entries: SkeletonHeader[];
+}
+
+/**
+ * #1110 FIX: Load skeleton INDEX at startup — metadata only, no sequences.
+ *
+ * Strategy:
+ *  1. Load _skeleton_index.json (single file, ~1-2MB for 7000+ tasks) → instant
+ *  2. Populate cache with lightweight skeletons (sequence: [])
+ *  3. Full skeletons loaded on-demand by view/summarize, or by background worker
+ *
+ * Result: startup <1s instead of 90s+ on slow machines.
+ */
+export async function loadSkeletonsFromDisk(conversationCache: Map<string, SkeletonHeader>): Promise<void> {
     try {
-        console.log('Loading existing skeletons from disk...');
+        const startTime = Date.now();
+        console.log('[Startup] Loading skeleton index...');
         const storageLocations = await RooStorageDetector.detectStorageLocations();
 
         if (storageLocations.length === 0) {
@@ -28,37 +67,116 @@ export async function loadSkeletonsFromDisk(conversationCache: Map<string, Conve
             return;
         }
 
-        // ✅ FIX CRITIQUE: Utiliser tasks/.skeletons comme build-skeleton-cache.tool.ts
         const tasksDir = path.join(storageLocations[0], 'tasks');
         const skeletonsCacheDir = path.join(tasksDir, '.skeletons');
+        const indexPath = path.join(skeletonsCacheDir, SKELETON_INDEX_FILENAME);
 
-        try {
-            const skeletonFiles = await fs.readdir(skeletonsCacheDir);
-            const jsonFiles = skeletonFiles.filter(file => file.endsWith('.json'));
+        const loadedFromIndex = await loadSkeletonsFromIndex(indexPath, conversationCache);
 
-            console.log(`Found ${jsonFiles.length} skeleton files to load`);
+        const elapsed = Date.now() - startTime;
 
-            for (const file of jsonFiles) {
-                try {
-                    const filePath = path.join(skeletonsCacheDir, file);
-                    let content = await fs.readFile(filePath, 'utf8');
-                    // Strip BOM UTF-8 si présent (fix Windows encoding issues)
-                    if (content.charCodeAt(0) === 0xFEFF) {
-                        content = content.slice(1);
-                    }
-                    const skeleton: ConversationSkeleton = JSON.parse(content);
-                    conversationCache.set(skeleton.taskId, skeleton);
-                } catch (error) {
-                    console.warn(`Failed to load skeleton ${file}:`, error);
-                }
-            }
-
-            console.log(`Loaded ${conversationCache.size} skeletons from disk`);
-        } catch (error) {
-            console.warn('Skeleton cache directory not found, will be created when needed');
+        if (loadedFromIndex) {
+            console.log(`[Startup] Loaded ${conversationCache.size} skeleton metadata from index in ${elapsed}ms`);
+        } else {
+            // No index yet — first run or index corrupted.
+            // Don't block startup. Background worker will build the cache and generate the index.
+            console.log(`[Startup] No skeleton index found (${elapsed}ms). Background worker will populate cache.`);
         }
     } catch (error) {
-        console.error('Failed to load skeletons from disk:', error);
+        console.error('[Startup] Failed to load skeleton index:', error);
+    }
+}
+
+/**
+ * Load skeleton metadata from the index file.
+ * Returns true if successful, false if index is missing/corrupted.
+ */
+async function loadSkeletonsFromIndex(
+    indexPath: string,
+    conversationCache: Map<string, SkeletonHeader>
+): Promise<boolean> {
+    try {
+        let content = await fs.readFile(indexPath, 'utf8');
+        if (content.charCodeAt(0) === 0xFEFF) {
+            content = content.slice(1);
+        }
+        const index: SkeletonIndex = JSON.parse(content);
+        if (!index.entries || !Array.isArray(index.entries)) {
+            console.warn('[Index] Invalid index format');
+            return false;
+        }
+
+        for (const entry of index.entries) {
+            if (entry.taskId) {
+                conversationCache.set(entry.taskId, entry);
+            }
+        }
+
+        return conversationCache.size > 0;
+    } catch {
+        return false;
+    }
+}
+
+/**
+ * Load a single full skeleton from disk (with sequence).
+ * Called on-demand when view/summarize needs the full conversation data.
+ */
+export async function loadFullSkeleton(
+    taskId: string,
+    conversationCache: Map<string, SkeletonHeader>
+): Promise<ConversationSkeleton | null> {
+    try {
+        const storageLocations = await RooStorageDetector.detectStorageLocations();
+        if (storageLocations.length === 0) return null;
+
+        const skeletonsCacheDir = path.join(storageLocations[0], 'tasks', '.skeletons');
+        const filePath = path.join(skeletonsCacheDir, `${taskId}.json`);
+
+        let content = await fs.readFile(filePath, 'utf8');
+        if (content.charCodeAt(0) === 0xFEFF) {
+            content = content.slice(1);
+        }
+        const skeleton: ConversationSkeleton = JSON.parse(content);
+
+        // Update cache with header only — sequence stays on disk
+        conversationCache.set(taskId, toHeader(skeleton));
+        return skeleton;
+    } catch {
+        return null;
+    }
+}
+
+/**
+ * Generate or update the skeleton index file from current cache.
+ * Called in background after skeleton loading or periodically by the refresh worker.
+ */
+export async function saveSkeletonIndex(
+    conversationCache: Map<string, SkeletonHeader>
+): Promise<void> {
+    try {
+        const storageLocations = await RooStorageDetector.detectStorageLocations();
+        if (storageLocations.length === 0) return;
+
+        const skeletonsCacheDir = path.join(storageLocations[0], 'tasks', '.skeletons');
+        await fs.mkdir(skeletonsCacheDir, { recursive: true });
+        const indexPath = path.join(skeletonsCacheDir, SKELETON_INDEX_FILENAME);
+
+        // Cache already contains SkeletonHeaders — serialize directly
+        const entries = Array.from(conversationCache.values());
+
+        const index: SkeletonIndex = {
+            version: 1,
+            generatedAt: new Date().toISOString(),
+            count: entries.length,
+            entries,
+        };
+
+        const content = JSON.stringify(index);
+        await fs.writeFile(indexPath, content, 'utf8');
+        console.log(`[Index] Saved skeleton index: ${entries.length} entries (${Math.round(content.length / 1024)}KB)`);
+    } catch (error: any) {
+        console.warn('[Index] Failed to save skeleton index:', error?.message || error);
     }
 }
 
@@ -184,7 +302,7 @@ export async function startProactiveMetadataRepair(): Promise<void> {
  * #604: Discover and load Claude Code sessions into the conversation cache
  * Scans ~/.claude/projects/ for JSONL files and creates skeletons
  */
-export async function loadClaudeCodeSessions(conversationCache: Map<string, ConversationSkeleton>): Promise<void> {
+export async function loadClaudeCodeSessions(conversationCache: Map<string, SkeletonHeader>): Promise<void> {
     try {
         const { ClaudeStorageDetector } = await import('../utils/claude-storage-detector.js');
         const locations = await ClaudeStorageDetector.detectStorageLocations();
@@ -210,7 +328,7 @@ export async function loadClaudeCodeSessions(conversationCache: Map<string, Conv
                     if (!skeleton.metadata) skeleton.metadata = {} as any;
                     skeleton.metadata.source = 'claude-code'; // For filtering in Qdrant
                     skeleton.metadata.dataSource = 'claude'; // For indexTaskInQdrant() source detection
-                    conversationCache.set(taskId, skeleton);
+                    conversationCache.set(taskId, toHeader(skeleton));
                     loaded++;
                 }
             } catch (error) {
@@ -272,7 +390,7 @@ export function startSkeletonRefreshWorker(state: ServerState): void {
                                 const taskPath = path.join(tasksDir, entry.name);
                                 const skeleton = await RooStorageDetector.analyzeConversation(entry.name, taskPath);
                                 if (skeleton) {
-                                    state.conversationCache.set(entry.name, skeleton);
+                                    state.conversationCache.set(entry.name, toHeader(skeleton));
                                     // Queue for Qdrant indexation if lastActivity > lastIndexedAt
                                     const lastIndexed = skeleton.metadata?.indexingState?.lastIndexedAt;
                                     if (!lastIndexed || new Date(skeleton.metadata.lastActivity).getTime() > new Date(lastIndexed).getTime()) {
@@ -322,7 +440,7 @@ export function startSkeletonRefreshWorker(state: ServerState): void {
                                     if (skeleton && skeleton.sequence.length > 0) {
                                         if (!skeleton.metadata) skeleton.metadata = {} as any;
                                         skeleton.metadata.dataSource = 'claude';
-                                        state.conversationCache.set(taskId, skeleton);
+                                        state.conversationCache.set(taskId, toHeader(skeleton));
                                         const lastIndexed = skeleton.metadata?.indexingState?.lastIndexedAt;
                                         if (!lastIndexed || new Date(skeleton.metadata.lastActivity).getTime() > new Date(lastIndexed).getTime()) {
                                             state.qdrantIndexQueue.add(taskId);
@@ -347,11 +465,26 @@ export function startSkeletonRefreshWorker(state: ServerState): void {
 
             if (updatedCount > 0 || newCount > 0) {
                 console.log(`[Skeleton-Worker] Refresh: ${newCount} new, ${updatedCount} updated, ${state.qdrantIndexQueue.size} queued for Qdrant (${elapsed}ms)`);
+
+                // #1110: Regenerate skeleton index for fast next-startup
+                saveSkeletonIndex(state.conversationCache).catch((err: any) => {
+                    console.warn('[Skeleton-Worker] Index save failed (non-blocking):', err?.message || err);
+                });
             }
         } catch (error) {
             console.error('[Skeleton-Worker] Error during refresh:', error);
         }
     }, SKELETON_REFRESH_INTERVAL_MS);
+
+    // #1110: Generate initial index after first population
+    // Wait 30s for background loading to complete, then save index
+    setTimeout(() => {
+        if (state.conversationCache.size > 0) {
+            saveSkeletonIndex(state.conversationCache).catch((err: any) => {
+                console.warn('[Skeleton-Worker] Initial index save failed:', err?.message || err);
+            });
+        }
+    }, 30_000);
 
     console.log(`🔄 Worker A (skeleton refresh) started — interval: ${SKELETON_REFRESH_INTERVAL_MS / 1000}s`);
 }
@@ -359,27 +492,30 @@ export function startSkeletonRefreshWorker(state: ServerState): void {
 /**
  * Initialise les services background
  *
- * #1072 FIX: Only skeleton loading is blocking (needed for tool handlers).
- * Everything else (metadata repair, Qdrant indexing, heartbeat) runs as
- * fire-and-forget background tasks so MCP tools are available immediately.
+ * #1110 FIX: ZERO blocking I/O at startup.
+ *  - BLOCKING PHASE: Nothing. Server is ready instantly.
+ *  - ALL I/O is non-blocking: skeleton index, Claude sessions, repair, Qdrant, heartbeat.
+ *  - The skeleton index is loaded lazily on first tool call that needs it
+ *    (via ensureSkeletonCacheLoaded), not at startup.
  */
 export async function initializeBackgroundServices(state: ServerState): Promise<void> {
     try {
-        console.log('🚀 Initialisation des services background à 2 niveaux...');
+        console.log('🚀 Initialisation des services background (zero blocking I/O)...');
 
-        // ===== BLOCKING PHASE (fast, required for tools) =====
-        // Niveau 1: Chargement initial des squelettes depuis le disque
-        await loadSkeletonsFromDisk(state.conversationCache);
+        // ===== ALL NON-BLOCKING (fire-and-forget) =====
 
-        // #604: Discover Claude Code sessions for background indexation
-        await loadClaudeCodeSessions(state.conversationCache);
-
-        console.log('✅ Phase bloquante terminée — outils MCP disponibles');
-
-        // ===== NON-BLOCKING PHASE (fire-and-forget) =====
-        // #1072 FIX: These run in background and MUST NOT block tool availability.
-        // On machines with thousands of tasks or Qdrant inconsistencies (e.g. po-2023
-        // with 165k point discrepancy), these can take minutes or never finish.
+        // Load skeleton index in background — first tool call that needs it
+        // will find it already loaded (or will trigger lazy load via ensureSkeletonCacheLoaded)
+        loadSkeletonsFromDisk(state.conversationCache).then(() => {
+            // Mark refresh timestamp AFTER index is loaded, so the first worker tick
+            // only picks up tasks modified AFTER this point — NOT all 7620 tasks.
+            // Without this, lastSkeletonRefreshAt=0 causes the worker to re-analyze everything.
+            state.lastSkeletonRefreshAt = Date.now();
+            // Once index is loaded, discover Claude sessions too
+            return loadClaudeCodeSessions(state.conversationCache);
+        }).catch((error: any) => {
+            console.warn('[Startup] Background skeleton/Claude load failed (non-blocking):', error?.message || error);
+        });
 
         // Auto-réparation proactive: fire-and-forget with timeout
         startProactiveMetadataRepair().catch((error: any) => {
@@ -390,15 +526,14 @@ export async function initializeBackgroundServices(state: ServerState): Promise<
         startSkeletonRefreshWorker(state);
 
         // Niveau 2: Initialisation du service d'indexation Qdrant asynchrone (Worker B)
-        // Fire-and-forget — if Qdrant is slow or inconsistent, tools still work
         initializeQdrantIndexingService(state).catch((error: any) => {
             console.warn('[Qdrant] Background indexing init failed (non-blocking):', error?.message || error);
         });
 
         // Heartbeat service: disabled by default to prevent GDrive sync storm (#607)
-        // Each 30s write × 6 machines = 720 GDrive syncs/hour
-        // Use HEARTBEAT_AUTO_START=true to enable, or call roosync_heartbeat tool on-demand
         if (process.env.HEARTBEAT_AUTO_START === 'true') {
+            // #1140: Dynamic import to avoid loading RooSyncService at startup
+            const { RooSyncService } = await import('./RooSyncService.js');
             const rooSyncService = RooSyncService.getInstance();
             rooSyncService.startHeartbeatService(
                 (machineId: string) => {
@@ -416,7 +551,7 @@ export async function initializeBackgroundServices(state: ServerState): Promise<
             console.log('ℹ️ Heartbeat auto-start disabled (#607). Use roosync_heartbeat tool or set HEARTBEAT_AUTO_START=true');
         }
 
-        console.log('✅ Services background initialisés — tâches de fond en cours');
+        console.log('✅ Services background lancés');
     } catch (error: any) {
         console.error('❌ Erreur lors de l\'initialisation des services background:', error);
         throw error;
@@ -650,7 +785,7 @@ export async function indexTaskInQdrant(taskId: string, state: ServerState): Pro
             const { TaskArchiver } = await import('./task-archiver/index.js');
             const conversation = await RooStorageDetector.findConversationById(taskId);
             if (conversation?.path && skeleton) {
-                await TaskArchiver.archiveTask(taskId, conversation.path, skeleton);
+                await TaskArchiver.archiveTask(taskId, conversation.path, skeleton as any);
             }
         } catch (archiveError) {
             console.warn(`[ARCHIVE] Non-blocking archive failed for ${taskId}:`, archiveError);
@@ -718,9 +853,12 @@ export function classifyIndexingError(error: any): boolean {
 }
 
 /**
- * Sauvegarde un squelette sur le disque
+ * Sauvegarde un squelette sur le disque.
+ * Accepts SkeletonHeader (from cache) — merges updated metadata into the
+ * existing on-disk full skeleton so the sequence is preserved.
+ * Also accepts ConversationSkeleton (full) which is written directly.
  */
-export async function saveSkeletonToDisk(skeleton: ConversationSkeleton): Promise<void> {
+export async function saveSkeletonToDisk(skeleton: SkeletonHeader): Promise<void> {
     try {
         const storageLocations = await RooStorageDetector.detectStorageLocations();
         if (storageLocations.length === 0) {
@@ -737,7 +875,25 @@ export async function saveSkeletonToDisk(skeleton: ConversationSkeleton): Promis
         await fs.mkdir(skeletonsCacheDir, { recursive: true });
 
         const filePath = path.join(skeletonsCacheDir, `${skeleton.taskId}.json`);
-        await fs.writeFile(filePath, JSON.stringify(skeleton, null, 2), 'utf8');
+
+        // If the input already has a sequence (ConversationSkeleton), write directly.
+        // Otherwise merge header metadata into existing on-disk skeleton to preserve sequence.
+        let toWrite: any = skeleton;
+        if (!('sequence' in skeleton)) {
+            try {
+                let existing = await fs.readFile(filePath, 'utf8');
+                if (existing.charCodeAt(0) === 0xFEFF) existing = existing.slice(1);
+                const parsed = JSON.parse(existing);
+                if (parsed && Array.isArray(parsed.sequence)) {
+                    // Merge: keep on-disk sequence, update header fields
+                    toWrite = { ...parsed, ...skeleton, sequence: parsed.sequence };
+                }
+            } catch {
+                // No existing file or parse error — write header as-is
+            }
+        }
+
+        await fs.writeFile(filePath, JSON.stringify(toWrite, null, 2), 'utf8');
 
         // Skeleton saved successfully
     } catch (error: any) {

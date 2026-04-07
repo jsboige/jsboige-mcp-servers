@@ -47,7 +47,7 @@ interface McpSettings {
  * Roo MCP configs on ai-01 (753 backup files created).
  */
 export function getMcpSettingsPath(): string {
-    return path.join(
+    const resolved = path.join(
         process.env.APPDATA || path.join(os.homedir(), 'AppData', 'Roaming'),
         'Code',
         'User',
@@ -56,6 +56,35 @@ export function getMcpSettingsPath(): string {
         'settings',
         'mcp_settings.json'
     );
+    // SAFETY GUARD: In test environments, reject paths that point to the REAL
+    // mcp_settings.json. This prevents tests from wiping production MCP configs.
+    // Incidents: 2026-03-08 (ai-01, 753 backups), 2026-04-03 (po-2023).
+    if (process.env.NODE_ENV === 'test' || process.env.VITEST) {
+        const appdata = process.env.APPDATA || '';
+        // Known test APPDATA values:
+        // - __test-data__ (integration tests via vi.hoisted)
+        // - __roo-state-manager-test-appdata__ (setup-env.ts global guard)
+        // - mcp-settings-integration (touch integration tests)
+        // - C:\Users\Test\... (unit tests with mocked fs)
+        // - /home/test (unit tests with mocked os.homedir)
+        // - os.tmpdir() based paths
+        const isTestPath = appdata.includes('__test-data__') ||
+            appdata.includes('__roo-state-manager-test-appdata__') ||
+            appdata.includes('mcp-settings-integration') ||
+            resolved.includes('__test-data__') ||
+            appdata === 'C:\\Users\\Test\\AppData\\Roaming' ||
+            appdata.includes('/home/test') ||
+            appdata.includes('/tmp/');
+        if (!isTestPath) {
+            throw new Error(
+                `SAFETY ABORT: getMcpSettingsPath() would resolve to the REAL mcp_settings.json in test mode!\n` +
+                `  Resolved: ${resolved}\n` +
+                `  APPDATA: ${process.env.APPDATA || '(unset)'}\n` +
+                `  This would destroy production Roo MCP configs. Fix the test isolation.`
+            );
+        }
+    }
+    return resolved;
 }
 
 // ====================================================================

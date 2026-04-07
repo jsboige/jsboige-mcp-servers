@@ -10,7 +10,7 @@ import * as fs from 'fs/promises';
 import { existsSync } from 'fs';
 import * as path from 'path';
 import os from 'os';
-import { ConversationSkeleton } from '../../types/conversation.js';
+import { ConversationSkeleton, SkeletonHeader } from '../../types/conversation.js';
 import { RooStorageDetector } from '../../utils/roo-storage-detector.js';
 
 /**
@@ -113,7 +113,7 @@ export function invalidateDiskScanCache(): void {
  * @returns Array of newly discovered conversation skeletons
  */
 export async function scanDiskForNewTasks(
-    existingCache: Map<string, ConversationSkeleton>,
+    existingCache: Map<string, SkeletonHeader>,
     workspace?: string
 ): Promise<ConversationSkeleton[]> {
     const now = Date.now();

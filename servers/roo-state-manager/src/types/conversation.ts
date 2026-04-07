@@ -35,38 +35,45 @@ export interface MessageSkeleton {
 }
 
 /**
- * Nouvelle représentation "squelette" d'une conversation, optimisée pour la mémoire.
+ * Metadata shared between SkeletonHeader (cache) and ConversationSkeleton (full).
  */
-export interface ConversationSkeleton {
+export interface SkeletonMetadata {
+    title?: string;
+    lastActivity: string;
+    createdAt: string;
+    mode?: string;
+    messageCount: number;
+    actionCount: number;
+    totalSize: number;
+    workspace?: string;
+    machineId?: string;
+    qdrantIndexedAt?: string; // DEPRECATED - utiliser indexingState.lastIndexedAt
+    dataSource?: string;
+    source?: 'roo' | 'claude-code';
+    parentTaskId?: string;
+    indexingState?: IndexingState;
+    synthesis?: import('../models/synthesis/SynthesisModels.js').SynthesisMetadata;
+}
+
+/**
+ * Lightweight header for the in-memory cache. No conversation content.
+ * Used by conversation_browser(list), filtering, tree building, etc.
+ */
+export interface SkeletonHeader {
    taskId: string;
    parentTaskId?: string;
-   metadata: {
-     title?: string;
-     lastActivity: string;
-     createdAt: string;
-     mode?: string;
-     messageCount: number;
-     actionCount: number;
-     totalSize: number; // Taille totale de la conversation sur le disque
-      workspace?: string;
-      machineId?: string; // Identifiant de la machine (hostname: myia-po-2023, etc.)
-      qdrantIndexedAt?: string; // DEPRECATED - utiliser indexingState.lastIndexedAt
-      dataSource?: string; // Chemin du projet (pour l'indexation) ou identifiant de source
-      source?: 'roo' | 'claude-code'; // #852: Source de la conversation pour filtrage Qdrant
-      parentTaskId?: string; // ID de la tâche parente pour reconstruction hiérarchique
-      // NOUVEAU : État complet d'indexation avec mécanisme d'idempotence
-      indexingState?: IndexingState;
-      // NOUVEAU : Métadonnées de synthèse pour cette conversation
-      synthesis?: import('../models/synthesis/SynthesisModels.js').SynthesisMetadata;
-    };
-   // Une séquence combinée et ordonnée de messages et d'actions.
-   sequence: (MessageSkeleton | ActionMetadata)[];
-   // Préfixes des instructions de création de sous-tâches (pour radix-tree)
-   childTaskInstructionPrefixes?: string[]; // Tronqués à 200 caractères max
-   // Nouveau : Indique si la tâche est terminée (détectée via attempt_completion)
+   metadata: SkeletonMetadata;
+   childTaskInstructionPrefixes?: string[];
    isCompleted?: boolean;
-   // Nouveau : Instruction de la tâche tronquée à 200 caractères depuis le premier message utilisateur
    truncatedInstruction?: string;
+}
+
+/**
+ * Full skeleton with conversation sequence. Loaded on-demand from disk.
+ * Never stored in the cache — only used transiently by view/summarize/export.
+ */
+export interface ConversationSkeleton extends SkeletonHeader {
+   sequence: (MessageSkeleton | ActionMetadata)[];
 }
 
 // Représente les métadonnées complètes d'une tâche.

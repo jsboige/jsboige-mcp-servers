@@ -290,7 +290,7 @@ export async function handleCodebaseSearch(args: CodebaseSearchArgs): Promise<Ca
 					text: JSON.stringify({
 						status: 'collection_not_found',
 						message: `Collection Qdrant non trouvée pour le workspace "${workspace}".`,
-						hint: 'Le workspace doit être indexé par Roo Code avant de pouvoir effectuer des recherches. Ouvrez le workspace dans VS Code avec Roo activé pour démarrer l\'indexation.',
+						hint: 'Le workspace doit être indexé par Roo Code avant de pouvoir effectuer des recherches. Ouvrez le workspace dans VS Code avec Roo activé pour démarrer l\'indexation automatique. Alternativement, exécutez "roosync_indexing" avec action: "rebuild" pour forcer la reconstruction de l\'index.',
 						tried_collections: collectionVariants,
 						fallback_list_tried: true,
 						workspace: workspace

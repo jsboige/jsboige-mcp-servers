@@ -16,7 +16,7 @@ import { existsSync } from 'fs';
 import { join, dirname } from 'path';
 import { fileURLToPath } from 'url';
 import { IConfigService, BaselineServiceConfig } from '../types/baseline.js';
-import { getSharedStatePath } from '../utils/server-helpers.js';
+import { getSharedStatePath } from '../utils/shared-state-path.js';
 import { readJSONFileWithoutBOM } from '../utils/encoding-helpers.js';
 import {
   ConfigServiceError,

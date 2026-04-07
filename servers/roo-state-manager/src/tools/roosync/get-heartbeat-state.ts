@@ -9,7 +9,7 @@
  */
 
 import { z } from 'zod';
-import { getRooSyncService } from '../../services/RooSyncService.js';
+import { getRooSyncService } from '../../services/lazy-roosync.js';
 import { HeartbeatServiceError } from '../../services/roosync/HeartbeatService.js';
 
 /**
@@ -101,7 +101,7 @@ export type GetHeartbeatStateResult = z.infer<typeof GetHeartbeatStateResultSche
 export async function roosyncGetHeartbeatState(args: GetHeartbeatStateArgs): Promise<GetHeartbeatStateResult> {
   try {
     const { includeHeartbeats = true } = args;
-    const rooSyncService = getRooSyncService();
+    const rooSyncService = await getRooSyncService();
     const heartbeatService = rooSyncService.getHeartbeatService();
 
     const state = heartbeatService.getState();

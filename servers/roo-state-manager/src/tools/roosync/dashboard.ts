@@ -37,7 +37,7 @@ import * as fs from 'fs/promises';
 import * as fsSync from 'fs';
 import * as path from 'path';
 import * as yaml from 'js-yaml';
-import { getSharedStatePath } from '../../utils/server-helpers.js';
+import { getSharedStatePath } from '../../utils/shared-state-path.js';
 import { getLocalMachineId, getLocalWorkspaceId } from '../../utils/message-helpers.js';
 import { createLogger, Logger } from '../../utils/logger.js';
 import { getChatOpenAIClient } from '../../services/openai.js';
@@ -45,11 +45,17 @@ import type OpenAI from 'openai';
 
 const logger: Logger = createLogger('DashboardTool');
 
-// Auto-condensation: size-based (50KB) + keep 20 most recent messages
+// Auto-condensation: size-based (50KB) + keep 10 most recent messages
 // When dashboard file exceeds MAX_DASHBOARD_SIZE_BYTES, condense old messages
 // into the status section via LLM, keeping only CONDENSE_KEEP recent messages.
 const MAX_DASHBOARD_SIZE_BYTES = 50 * 1024; // 50 KB
-const CONDENSE_KEEP = 20;
+const CONDENSE_KEEP = 10;
+
+// Size limits for LLM outputs (bytes). If exceeded, retry with a stricter prompt.
+const MAX_STATUS_SIZE_BYTES = 15 * 1024;  // 15 KB
+const MAX_SUMMARY_SIZE_BYTES = 5 * 1024;  // 5 KB
+const LLM_MAX_RETRIES = 3;
+const LLM_INITIAL_BACKOFF_MS = 2000; // 2s, doubles each retry
 
 // === Schemas Zod ===
 
@@ -131,7 +137,7 @@ export const DashboardArgsSchema = z.object({
 
   // Pour condense
   keepMessages: z.number().optional()
-    .describe('Nombre de messages à conserver lors de la condensation (défaut: 100)'),
+    .describe('Nombre de messages à conserver lors de la condensation (défaut: 10)'),
 
   // Pour read_archive
   archiveFile: z.string().optional()
@@ -197,7 +203,7 @@ function getArchiveDir(): string {
 async function readDashboardFile(key: string): Promise<Dashboard | null> {
   const filePath = getDashboardPath(key);
   try {
-    const content = await fs.readFile(filePath, 'utf8');
+    const content = (await fs.readFile(filePath, 'utf8')).replace(/\r\n/g, '\n');
 
     // Parser le frontmatter YAML (entre --- et ---)
     const frontmatterMatch = content.match(/^---\n([\s\S]+?)\n---/);
@@ -218,10 +224,14 @@ async function readDashboardFile(key: string): Promise<Dashboard | null> {
     const intercomMarkdown = intercomMatch ? intercomMatch[1].trim() : '';
 
     // Parser les messages intercom (format: ### [timestamp] machine|workspace [tags]\n\ncontent)
+    // Bug fix: split on message headers instead of `---` which can appear in message content
     const messages: IntercomMessage[] = [];
     if (intercomMarkdown && !intercomMarkdown.includes('*Aucun message.*')) {
-      const messageBlocks = intercomMarkdown.split(/\n\n---\n\n/);
-      for (const block of messageBlocks) {
+      // Split on message headers (### [) while keeping the header in each block
+      const messageBlocks = intercomMarkdown.split(/(?=^### \[)/m).filter(b => b.trim());
+      for (const rawBlock of messageBlocks) {
+        // Strip trailing --- separators (leftover from write format)
+        const block = rawBlock.replace(/\n---\s*$/, '').trim();
         // Note: machineId et workspace peuvent contenir des tirets (ex: test-machine, roo-extensions)
         // On utilise [^|\s]+ au lieu de \w+ pour permettre les tirets
         const headerMatch = block.match(/### \[([^\]]+)\]\s+([^|]+)\|([^|\s]+)(\s+\[([^\]]+)\])?\n\n([\s\S]+)/);
@@ -347,59 +357,57 @@ function generateMessageId(): string {
  * @returns Résumé markdown ou null si échec (fallback)
  */
 async function generateLLMSummary(messages: IntercomMessage[]): Promise<string | null> {
-  const timeoutMs = 180000; // 180 secondes (3 minutes — LLM local peut mettre du temps à démarrer)
-  const startTime = Date.now();
+  const timeoutMs = 600000; // 600 secondes (10 minutes — LLM local peut mettre du temps à démarrer)
 
+  // Construire le prompt avec les messages
+  const messagesContent = messages.map(msg => {
+    const tags = msg.tags?.length ? ` [${msg.tags.join(', ')}]` : '';
+    const header = `[${msg.timestamp}] ${msg.author.machineId}|${msg.author.workspace}${tags}`;
+    return `${header}\n${msg.content}`;
+  }).join('\n\n---\n\n');
+
+  const systemPrompt = `Tu es un expert en synthèse de communications inter-agents.
+
+CONTEXTE : Ces messages viennent d'être RETIRÉS d'un dashboard de coordination et archivés.
+Ce résumé sera le SEUL enregistrement visible de ces messages dans le dashboard.
+
+EXIGENCES :
+- ZÉRO perte d'information actionnable (décisions, résultats, blocages résolus)
+- Regrouper par THÈMES, pas par message individuel
+- Préserver les métriques chiffrées exactes (scores, taux, nombres)
+- Préserver les dates des événements importants
+- Maximum 20 lignes. Pas d'emojis. Pas de prose, que du factuel.
+- Le résumé DOIT faire moins de 5 Ko. Être CONCIS mais COMPLET.
+- Ne JAMAIS inventer d'informations absentes des messages
+
+FORMAT :
+## Résumé des ${messages.length} messages archivés
+
+### Thèmes principaux
+- [thème] : synthèse factuelle
+
+### Actions et résultats
+- [DONE/BLOCKED/EN COURS] description avec dates
+
+### Décisions et métriques
+- Décisions prises, valeurs chiffrées, résultats mesurés`;
+
+  const userPrompt = `${messages.length} messages retirés du dashboard à synthétiser :\n\n${messagesContent}\n\nRésume ces messages archivés. Ce résumé sera la seule trace visible dans le dashboard.`;
+
+  logger.info('Calling LLM for intercom summary', { messageCount: messages.length });
+
+  let openai: OpenAI;
   try {
-    // Construire le prompt avec les messages
-    const messagesContent = messages.map(msg => {
-      const tags = msg.tags?.length ? ` [${msg.tags.join(', ')}]` : '';
-      const header = `[${msg.timestamp}] ${msg.author.machineId}|${msg.author.workspace}${tags}`;
-      return `${header}\n${msg.content}`;
-    }).join('\n\n---\n\n');
+    openai = getChatOpenAIClient();
+  } catch (error) {
+    logger.error('LLM client init failed for summary', { error: error instanceof Error ? error.message : String(error) });
+    return null;
+  }
+  const modelId = process.env.OPENAI_CHAT_MODEL_ID || 'qwen3.5-35b-a3b';
 
-    const systemPrompt = `Tu es un assistant qui synthétise les communications techniques entre agents multi-machines.
-Ta tâche : générer un résumé structuré et concis des messages fournis.
-
-Format de sortie attendu (Markdown) :
-## Résumé Thématique
-- Thème 1 : description
-- Thème 2 : description
-...
-
-## Actions Clés
-- Action 1 : [status] description
-- Action 2 : [status] description
-...
-
-## Points d'Attention
-- Point 1
-- Point 2
-
-## Métriques (si applicable)
-- X messages traités
-- Y issues/bugs
-- Z bloquages
-
-IMPORTANT :
-- Être CONCIS (max 20-30 lignes)
-- Regrouper par thèmes, ne pas lister chaque message
-- Identifier les patterns, pas les détails
-- Les tags [DONE], [ERROR], [WARN], [ASK] sont prioritaires
-- Ne pas inventer d'informations, rester factuel`;
-
-    const userPrompt = `Voici ${messages.length} messages à synthétiser :\n\n${messagesContent}\n\nGénère un résumé structuré de ces communications.`;
-
-    logger.info('Calling LLM for intercom summary', { messageCount: messages.length });
-
-    // Appeler le LLM avec timeout
-    const openai = getChatOpenAIClient();
-    const modelId = process.env.OPENAI_CHAT_MODEL_ID || 'qwen3.5-35b-a3b';
-
-    // Créer un abort controller pour le timeout
-    const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
-
+  // Retry with exponential backoff (error/empty only — size handled post-hoc)
+  for (let attempt = 1; attempt <= LLM_MAX_RETRIES; attempt++) {
+    const startTime = Date.now();
     try {
       const response = await openai.chat.completions.create({
         model: modelId,
@@ -407,40 +415,47 @@ IMPORTANT :
           { role: 'system', content: systemPrompt },
           { role: 'user', content: userPrompt }
         ],
-        max_tokens: 1000,
+        max_tokens: 10000,
         temperature: 0.3
       }, {
         timeout: timeoutMs
       });
 
-      clearTimeout(timeoutId);
-
       const summary = response.choices[0]?.message?.content;
       if (!summary) {
-        logger.warn('LLM returned empty summary');
+        logger.warn('LLM returned empty summary', { attempt });
+        if (attempt < LLM_MAX_RETRIES) {
+          const backoff = LLM_INITIAL_BACKOFF_MS * Math.pow(2, attempt - 1);
+          logger.info(`Retrying summary in ${backoff}ms...`, { attempt, backoff });
+          await new Promise(resolve => setTimeout(resolve, backoff));
+          continue;
+        }
         return null;
       }
 
+      const sizeBytes = Buffer.byteLength(summary, 'utf8');
       const elapsed = Date.now() - startTime;
-      logger.info('LLM summary generated', { elapsed: `${elapsed}ms`, summaryLength: summary.length });
-
+      logger.info('LLM summary generated', { attempt, elapsed: `${elapsed}ms`, summaryLength: summary.length, sizeKB: `${(sizeBytes / 1024).toFixed(1)}KB` });
       return summary;
 
     } catch (error: unknown) {
-      clearTimeout(timeoutId);
+      const elapsed = Date.now() - startTime;
       if (error instanceof Error && error.name === 'AbortError') {
-        logger.warn('LLM summary timeout', { timeout: timeoutMs });
-        return null;
+        logger.warn('LLM summary timeout', { attempt, timeout: timeoutMs, elapsed: `${elapsed}ms` });
+      } else {
+        logger.error('LLM summary error', { attempt, elapsed: `${elapsed}ms`, error: error instanceof Error ? error.message : String(error) });
       }
-      throw error;
+      if (attempt < LLM_MAX_RETRIES) {
+        const backoff = LLM_INITIAL_BACKOFF_MS * Math.pow(2, attempt - 1);
+        logger.info(`Retrying summary in ${backoff}ms...`, { attempt, backoff });
+        await new Promise(resolve => setTimeout(resolve, backoff));
+        continue;
+      }
+      return null;
     }
-
-  } catch (error) {
-    logger.error('LLM summary failed, falling back to truncation', {
-      error: error instanceof Error ? error.message : String(error)
-    });
-    return null;
   }
+
+  return null;
 }
 
 /**
@@ -453,58 +468,89 @@ IMPORTANT :
  */
 async function generateStatusUpdate(
   previousStatus: string,
-  archivedMessages: IntercomMessage[]
+  allMessages: IntercomMessage[],
+  archivedCount: number
 ): Promise<string | null> {
-  const timeoutMs = 180000; // 180 secondes (3 minutes — LLM local peut mettre du temps à démarrer)
-  const startTime = Date.now();
+  const timeoutMs = 600000; // 600 secondes (10 minutes — LLM local peut mettre du temps à démarrer)
 
-  try {
-    // Construire le contenu des messages archivés
-    const messagesContent = archivedMessages.map(msg => {
-      const tags = msg.tags?.length ? ` [${msg.tags.join(', ')}]` : '';
-      const header = `[${msg.timestamp}] ${msg.author.machineId}|${msg.author.workspace}${tags}`;
-      return `${header}\n${msg.content}`;
-    }).join('\n\n---\n\n');
+  // Format messages with archive/keep annotations
+  const messagesContent = allMessages.map((msg, index) => {
+    const tags = msg.tags?.length ? ` [${msg.tags.join(', ')}]` : '';
+    const annotation = index < archivedCount ? '[SERA ARCHIVÉ]' : '[CONSERVÉ]';
+    const header = `${annotation} [${msg.timestamp}] ${msg.author.machineId}|${msg.author.workspace}${tags}`;
+    return `${header}\n${msg.content}`;
+  }).join('\n\n---\n\n');
 
-    const systemPrompt = `Tu es un assistant qui met à jour les dashboards de coordination multi-agents.
-Ta tâche : intégrer les informations importantes des messages archivés dans le statut existant.
+  // Extract lastDate from the last message timestamp
+  const lastDate = allMessages.length > 0 ? allMessages[allMessages.length - 1].timestamp : new Date().toISOString();
 
-Règles de mise à jour :
-1. PRÉSERVER la structure et les informations toujours valides du statut précédent
-2. AJOUTER les nouvelles informations importantes issues des messages (tâches terminées, blocages, alertes)
-3. METTRE À JOUR les statuts de tâches si les messages indiquent des changements
-4. RETIRER les informations obsolètes (tâches déjà complétées mentionnées dans le statut)
-5. GARDER le format Markdown existant
+  const systemPrompt = `Tu es un expert en synthèse de dashboards de coordination multi-agents.
 
-Format de sortie : Markdown structuré avec le même style que le statut précédent.
+CONTEXTE : Le dashboard contient un STATUT (mémoire de travail du projet) et des MESSAGES INTERCOM.
+Les messages les plus anciens vont être archivés. Ta mission : RÉÉCRIRE le statut en y INTÉGRANT les infos importantes des messages qui vont disparaître.
 
-IMPORTANT :
-- Être CONCIS mais COMPLET (max 150 lignes)
-- Ne PAS répéter les informations
-- Priorité aux tags [DONE], [ERROR], [WARN], [BLOCKED], [TASK], [WAKE-CLAUDE]
-- Conserver les sections utiles du statut précédent
-- Ajouter une section "## Dernière Condensation" avec un résumé des changements
-- Le statut est la MÉMOIRE CONSOLIDÉE du dashboard — tout ce qui n'est pas dans les messages récents doit être ici`;
+Le statut doit rester COMPACT (max 15 Ko) tout en préservant l'information critique.
+Viser 50-100 lignes. Au-delà, synthétiser plus agressivement.
 
-    const userPrompt = `**Statut précédent :**
+EXIGENCES :
+1. ZÉRO perte d'information stratégique (décisions, blocages, livrables, métriques)
+2. DATES à jour : timestamps messages récents > dates ancien statut
+3. CONTRADICTIONS : messages récents ont RAISON (plus frais)
+4. [DONE] dans messages récents → TERMINÉ dans statut (pas "en cours")
+5. Métriques chiffrées EXACTES préservées
+6. INTÉGRER infos des messages [SERA ARCHIVÉ] sinon perdues
+7. Pas d'emojis. Pas de prose. Factuel et structuré.
+
+STRUCTURE :
+## [Workspace] — État au ${lastDate}
+
+### Résumé
+[2-3 phrases : état global, tendance]
+
+### Livrables récents
+[Réalisations avec dates — synthétiser par thème, pas par PR/commit individuel]
+
+### En cours
+[Tâches actives avec responsable]
+
+### Blocages / Attention
+[Problèmes non résolus]
+
+### Décisions et métriques
+[Choix actés + chiffres clés]
+
+NE PAS :
+- Copier-coller l'ancien statut (SYNTHÉTISER et METTRE À JOUR)
+- Garder des tâches terminées depuis longtemps sans valeur de référence
+- Lister chaque commit/PR individuellement
+- Inventer des informations absentes des sources`;
+
+  const userPrompt = `**Statut précédent :**
 ${previousStatus}
 
-**Messages archivés (${archivedMessages.length} messages) :**
+**${allMessages.length} messages intercom (dont ${archivedCount} seront archivés, ${allMessages.length - archivedCount} conservés) :**
 ${messagesContent}
 
-Génère le statut mis à jour en intégrant les informations importantes des messages archivés.`;
+Réécris le statut en intégrant les informations des messages [SERA ARCHIVÉ]. Date de référence : ${lastDate}.`;
 
-    logger.info('Calling LLM for status update', {
-      previousStatusLength: previousStatus.length,
-      messageCount: archivedMessages.length
-    });
+  logger.info('Calling LLM for status update', {
+    previousStatusLength: previousStatus.length,
+    messageCount: allMessages.length,
+    archivedCount
+  });
 
-    const openai = getChatOpenAIClient();
-    const modelId = process.env.OPENAI_CHAT_MODEL_ID || 'qwen3.5-35b-a3b';
+  let openai: OpenAI;
+  try {
+    openai = getChatOpenAIClient();
+  } catch (error) {
+    logger.error('LLM client init failed for status update', { error: error instanceof Error ? error.message : String(error) });
+    return null;
+  }
+  const modelId = process.env.OPENAI_CHAT_MODEL_ID || 'qwen3.5-35b-a3b';
 
-    const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
-
+  // Retry with exponential backoff
+  for (let attempt = 1; attempt <= LLM_MAX_RETRIES; attempt++) {
+    const startTime = Date.now();
     try {
       const response = await openai.chat.completions.create({
         model: modelId,
@@ -512,45 +558,130 @@ Génère le statut mis à jour en intégrant les informations importantes des me
           { role: 'system', content: systemPrompt },
           { role: 'user', content: userPrompt }
         ],
-        max_tokens: 3000,
+        max_tokens: 10000,
         temperature: 0.3
       }, {
         timeout: timeoutMs
       });
 
-      clearTimeout(timeoutId);
-
       const newStatus = response.choices[0]?.message?.content;
       if (!newStatus) {
-        logger.warn('LLM returned empty status update');
+        logger.warn('LLM returned empty status update', { attempt });
+        if (attempt < LLM_MAX_RETRIES) {
+          const backoff = LLM_INITIAL_BACKOFF_MS * Math.pow(2, attempt - 1);
+          logger.info(`Retrying status update in ${backoff}ms...`, { attempt, backoff });
+          await new Promise(resolve => setTimeout(resolve, backoff));
+          continue;
+        }
         return null;
       }
 
+      const sizeBytes = Buffer.byteLength(newStatus, 'utf8');
       const elapsed = Date.now() - startTime;
-      logger.info('LLM status update generated', { elapsed: `${elapsed}ms`, newStatusLength: newStatus.length });
-
+      logger.info('LLM status update generated', { attempt, elapsed: `${elapsed}ms`, newStatusLength: newStatus.length, sizeKB: `${(sizeBytes / 1024).toFixed(1)}KB` });
       return newStatus;
 
     } catch (error: unknown) {
-      clearTimeout(timeoutId);
+      const elapsed = Date.now() - startTime;
       if (error instanceof Error && error.name === 'AbortError') {
-        logger.warn('LLM status update timeout', { timeout: timeoutMs });
-        return null;
+        logger.warn('LLM status update timeout', { attempt, timeout: timeoutMs, elapsed: `${elapsed}ms` });
+      } else {
+        logger.error('LLM status update error', { attempt, elapsed: `${elapsed}ms`, error: error instanceof Error ? error.message : String(error) });
       }
-      throw error;
+      if (attempt < LLM_MAX_RETRIES) {
+        const backoff = LLM_INITIAL_BACKOFF_MS * Math.pow(2, attempt - 1);
+        logger.info(`Retrying status update in ${backoff}ms...`, { attempt, backoff });
+        await new Promise(resolve => setTimeout(resolve, backoff));
+        continue;
+      }
+      return null;
+    }
+  }
+
+  return null;
+}
+
+/**
+ * Auto-condense a text (status or summary) if it exceeds maxSizeBytes.
+ * Uses a dedicated LLM call asking to compress the text while preserving all info.
+ * Returns the condensed text, or the original if condensation fails.
+ */
+async function condenseTextIfTooLarge(
+  text: string,
+  maxSizeBytes: number,
+  label: string
+): Promise<string> {
+  const sizeBytes = Buffer.byteLength(text, 'utf8');
+  if (sizeBytes <= maxSizeBytes) return text;
+
+  logger.info(`${label} exceeds size limit, auto-condensing`, { sizeBytes, limit: maxSizeBytes, sizeKB: `${(sizeBytes / 1024).toFixed(1)}KB` });
+
+  let openai: OpenAI;
+  try {
+    openai = getChatOpenAIClient();
+  } catch {
+    logger.warn(`Cannot auto-condense ${label}: no LLM client`);
+    return text;
+  }
+  const modelId = process.env.OPENAI_CHAT_MODEL_ID || 'qwen3.5-35b-a3b';
+
+  const systemPrompt = `Tu es un expert en synthèse. Le texte suivant dépasse la limite de ${Math.round(maxSizeBytes / 1024)} Ko.
+
+MISSION : Condenser ce texte en dessous de ${Math.round(maxSizeBytes / 1024)} Ko tout en préservant TOUTE l'information critique.
+
+RÈGLES :
+- Préserver les métriques chiffrées exactes
+- Préserver les dates et décisions
+- Fusionner les éléments redondants
+- Supprimer les formulations verbeuses, garder le factuel
+- Supprimer les sections obsolètes (tâches terminées sans valeur de référence)
+- Pas d'emojis, pas de prose
+- Le résultat DOIT être plus court que l'original`;
+
+  const startTime = Date.now();
+  try {
+    const response = await openai.chat.completions.create({
+      model: modelId,
+      messages: [
+        { role: 'system', content: systemPrompt },
+        { role: 'user', content: text }
+      ],
+      max_tokens: 10000,
+      temperature: 0.3
+    }, {
+      timeout: 300000  // 5 minutes
+    });
+
+    const condensed = response.choices[0]?.message?.content;
+    if (!condensed) {
+      logger.warn(`Auto-condense ${label}: LLM returned empty, keeping original`);
+      return text;
     }
 
+    const newSize = Buffer.byteLength(condensed, 'utf8');
+    const elapsed = Date.now() - startTime;
+    logger.info(`Auto-condensed ${label}`, {
+      elapsed: `${elapsed}ms`,
+      beforeKB: `${(sizeBytes / 1024).toFixed(1)}KB`,
+      afterKB: `${(newSize / 1024).toFixed(1)}KB`,
+      reduction: `${Math.round((1 - newSize / sizeBytes) * 100)}%`
+    });
+    return condensed;
+
   } catch (error) {
-    logger.error('LLM status update failed, keeping previous status', {
+    const elapsed = Date.now() - startTime;
+    logger.warn(`Auto-condense ${label} failed, keeping original`, {
+      elapsed: `${elapsed}ms`,
       error: error instanceof Error ? error.message : String(error)
     });
-    return null;
+    return text;
   }
 }
 
 /**
  * Condense les messages intercom : archive les anciens, conserve les récents.
  * Met à jour le statut avec les informations des messages archivés (#858 Phase 2).
+ * Si le statut ou le résumé dépasse les limites de taille, auto-condense via LLM.
  * Retourne le dashboard condensé.
  */
 async function condenseIntercom(
@@ -558,6 +689,7 @@ async function condenseIntercom(
   dashboard: Dashboard,
   keepCount: number
 ): Promise<Dashboard> {
+  const condensationStart = Date.now();
   const messages = dashboard.intercom.messages;
   if (messages.length <= keepCount) {
     return dashboard; // Rien à condenser
@@ -567,22 +699,34 @@ async function condenseIntercom(
   const toKeep = messages.slice(messages.length - keepCount);
 
   // #858 : Générer les résumés LLM AVANT d'archiver
-  const llmSummary = await generateLLMSummary(toArchive);
+  // Pass ALL messages to status update so LLM sees full context
   const previousStatus = dashboard.status.markdown;
-  const newStatus = await generateStatusUpdate(previousStatus, toArchive);
 
-  // #864 : Si les DEUX opérations LLM échouent, ANNULER la condensation
-  // On ne veut pas archiver sans au moins un résumé LLM
-  if (!llmSummary && !newStatus) {
-    logger.warn('LLM unavailable (both summary and status failed), condensation cancelled', {
+  const t1 = Date.now();
+  let newStatus = await generateStatusUpdate(previousStatus, messages, toArchive.length);
+  const t1Elapsed = Date.now() - t1;
+  logger.info('Status update LLM call completed', { elapsed: `${t1Elapsed}ms`, success: newStatus !== null });
+
+  const t2 = Date.now();
+  let llmSummary = await generateLLMSummary(toArchive);
+  const t2Elapsed = Date.now() - t2;
+  logger.info('Summary LLM call completed', { elapsed: `${t2Elapsed}ms`, success: llmSummary !== null });
+
+  // Both LLM calls are MANDATORY — if either fails, cancel condensation
+  if (!llmSummary || !newStatus) {
+    logger.warn('LLM call failed, condensation cancelled', {
       key,
-      messageCount: toArchive.length
+      messageCount: toArchive.length,
+      summaryOk: !!llmSummary,
+      statusOk: !!newStatus
     });
     return dashboard; // Retourner le dashboard inchangé
   }
 
-  // Au moins une opération LLM a réussi, on peut archiver
-  const statusUpdated = newStatus !== null;
+  // Both operations succeeded — now auto-condense if outputs exceed size limits
+  newStatus = await condenseTextIfTooLarge(newStatus, MAX_STATUS_SIZE_BYTES, 'Status');
+  llmSummary = await condenseTextIfTooLarge(llmSummary, MAX_SUMMARY_SIZE_BYTES, 'Summary');
+  const statusUpdated = true;
 
   // Archiver les anciens messages (format Markdown)
   const archiveDir = getArchiveDir();
@@ -635,7 +779,7 @@ ${archiveMessages}
         machineId: 'system',
         workspace: 'system'
       },
-      content: `---\n**CONDENSATION-SUMMARY** - ${now}\n\n${llmSummary}\n---`,
+      content: `**CONDENSATION-SUMMARY** - ${now}\n\n${llmSummary}`,
       tags: ['SYSTEM', 'CONDENSATION-SUMMARY']
     };
     systemMessages.push(summaryMessage);
@@ -644,16 +788,17 @@ ${archiveMessages}
     logger.info('LLM summary failed, but status updated - proceeding with archive', { archivedCount: toArchive.length });
   }
 
-  if (statusUpdated) {
-    logger.info('Status updated from archived messages', {
-      previousLength: previousStatus.length,
-      newLength: newStatus!.length
-    });
-  } else {
-    logger.info('Status update failed, but LLM summary generated - proceeding with archive');
-  }
+  const statusSizeBytes = Buffer.byteLength(newStatus!, 'utf8');
+  const summarySizeBytes = Buffer.byteLength(llmSummary!, 'utf8');
+  logger.info('Status updated from archived messages', {
+    previousLength: previousStatus.length,
+    newLength: newStatus!.length,
+    statusSizeKB: `${(statusSizeBytes / 1024).toFixed(1)}KB`,
+    summarySizeKB: `${(summarySizeBytes / 1024).toFixed(1)}KB`
+  });
 
-  // Ajouter le message de condensation standard (avec ou sans résumé LLM)
+  // Ajouter le message de condensation standard avec timing et tailles
+  const totalElapsed = Date.now() - condensationStart;
   const condenseNotice: IntercomMessage = {
     id: generateMessageId(),
     timestamp: now,
@@ -661,17 +806,19 @@ ${archiveMessages}
       machineId: 'system',
       workspace: 'system'
     },
-    content: `---\n**CONDENSATION** - ${now}\n\n${toArchive.length} messages archivés dans \`archive/${path.basename(archivePath)}\`\n${toKeep.length} messages conservés (plus récents)\n${llmSummary ? '✅ Résumé LLM généré' : '⚠️ Résumé LLM indisponible'}\n${statusUpdated ? '✅ Statut mis à jour' : '⚠️ Statut non mis à jour'}\n---`,
+    content: `**CONDENSATION** - ${now}\n\n${toArchive.length} messages archivés dans \`archive/${path.basename(archivePath)}\`\n${toKeep.length} messages conservés (plus récents)\nStatut mis à jour (${(statusSizeBytes / 1024).toFixed(1)}KB), résumé LLM généré (${(summarySizeBytes / 1024).toFixed(1)}KB)\nDurée: ${Math.round(totalElapsed / 1000)}s (status: ${Math.round(t1Elapsed / 1000)}s, summary: ${Math.round(t2Elapsed / 1000)}s)`,
     tags: ['SYSTEM', 'CONDENSATION']
   };
   systemMessages.push(condenseNotice);
+
+  logger.info('Condensation completed', { totalElapsed: `${totalElapsed}ms` });
 
   return {
     ...dashboard,
     lastModified: now,
     status: {
       ...dashboard.status,
-      markdown: statusUpdated ? newStatus! : previousStatus
+      markdown: newStatus!
     },
     intercom: {
       messages: [...systemMessages, ...toKeep],
@@ -1000,7 +1147,9 @@ async function handleCondense(
     };
   }
 
+  const condenseStart = Date.now();
   const condensedDashboard = await condenseIntercom(key, dashboard, keepCount);
+  const condenseElapsed = Date.now() - condenseStart;
   const actuallyCondensed = condensedDashboard.intercom.messages.length < beforeCount;
 
   if (actuallyCondensed) {
@@ -1017,8 +1166,8 @@ async function handleCondense(
     condensed: actuallyCondensed,
     archivedCount,
     message: actuallyCondensed
-      ? `Condensation terminée : ${archivedCount} messages archivés, ${condensedDashboard.intercom.messages.length} conservés`
-      : `Condensation annulée (LLM indisponible) — ${beforeCount} messages inchangés`
+      ? `Condensation terminée en ${Math.round(condenseElapsed / 1000)}s : ${archivedCount} messages archivés, ${condensedDashboard.intercom.messages.length} conservés`
+      : `Condensation annulée (LLM indisponible) — ${beforeCount} messages inchangés (${Math.round(condenseElapsed / 1000)}s)`
   };
 }
 
@@ -1134,8 +1283,51 @@ async function handleList(): Promise<DashboardResult> {
   }
 }
 
+/**
+ * Safety threshold: dashboards modified within this period cannot be deleted.
+ * Protection against accidental mass-deletion by agents (incident 2026-04-05 #1128).
+ */
+const DASHBOARD_PROTECTION_DAYS = 7;
+
 async function handleDelete(key: string, args: DashboardArgs): Promise<DashboardResult> {
   const filePath = getDashboardPath(key);
+
+  // Safety check: read the dashboard to verify it's not recently active (#1128)
+  try {
+    const dashboard = await readDashboardFile(key);
+    if (dashboard) {
+      const lastModified = new Date(dashboard.lastModified);
+      const ageMs = Date.now() - lastModified.getTime();
+      const ageDays = ageMs / (1000 * 60 * 60 * 24);
+
+      const messageCount = dashboard.intercom?.messages?.length ?? 0;
+      if (ageDays < DASHBOARD_PROTECTION_DAYS && messageCount > 0) {
+        logger.warn('Delete blocked: dashboard recently active with messages', { key, ageDays: ageDays.toFixed(1), messageCount });
+        return {
+          success: false,
+          action: 'delete',
+          key,
+          type: args.type ?? '',
+          message: `⛔ REFUSÉ: Dashboard '${key}' modifié il y a ${ageDays.toFixed(1)} jours (seuil: ${DASHBOARD_PROTECTION_DAYS}j). ${messageCount} messages seraient perdus. Utilisez 'condense' pour archiver les anciens messages sans supprimer le dashboard.`
+        };
+      }
+
+      // Archive before deleting (safety net for dashboards older than threshold)
+      if (dashboard.intercom?.messages?.length > 0) {
+        const archiveDir = getArchiveDir();
+        await fs.mkdir(archiveDir, { recursive: true });
+        const now = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
+        const archivePath = path.join(archiveDir, `${key}-pre-delete-${now}.md`);
+        const originalContent = await fs.readFile(filePath, 'utf8');
+        await fs.writeFile(archivePath, originalContent, 'utf8');
+        logger.info('Dashboard archived before deletion', { key, archivePath, messageCount: dashboard.intercom.messages.length });
+      }
+    }
+  } catch (readError) {
+    // If we can't read the dashboard, still allow deletion (file may be corrupted)
+    logger.warn('Could not read dashboard before delete, proceeding', { key, error: String(readError) });
+  }
+
   try {
     await fs.unlink(filePath);
     logger.info('Dashboard supprimé', { key });
@@ -1144,7 +1336,7 @@ async function handleDelete(key: string, args: DashboardArgs): Promise<Dashboard
       action: 'delete',
       key,
       type: args.type ?? '',
-      message: `Dashboard '${key}' supprimé`
+      message: `Dashboard '${key}' supprimé (archivé en sécurité avant suppression)`
     };
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code === 'ENOENT') {
@@ -1196,7 +1388,7 @@ async function handleReadArchive(key: string, args: DashboardArgs): Promise<Dash
   // Lire une archive spécifique (format Markdown)
   const archivePath = path.join(archiveDir, args.archiveFile);
   try {
-    const content = await fs.readFile(archivePath, 'utf8');
+    const content = (await fs.readFile(archivePath, 'utf8')).replace(/\r\n/g, '\n');
 
     // Parser le frontmatter
     const frontmatterMatch = content.match(/^---\n([\s\S]+?)\n---/);
@@ -1215,9 +1407,10 @@ async function handleReadArchive(key: string, args: DashboardArgs): Promise<Dash
     const markdownContent = content.slice(frontmatterMatch[0].length);
     const messages: IntercomMessage[] = [];
 
-    // Trouver la section des messages (après les séparateurs ---)
-    const messageBlocks = markdownContent.split(/\n\n---\n\n/);
-    for (const block of messageBlocks) {
+    // Split on message headers instead of `---` to avoid content interference
+    const messageBlocks = markdownContent.split(/(?=^### \[)/m).filter(b => b.trim());
+    for (const rawBlock of messageBlocks) {
+      const block = rawBlock.replace(/\n---\s*$/, '').trim();
       const headerMatch = block.match(/### \[([^\]]+)\]\s+([^|]+)\|([^|\s]+)(\s+\[([^\]]+)\])?\n\n([\s\S]+)/);
       if (headerMatch) {
         const [, timestamp, machineId, workspace, , tagsStr, msgContent] = headerMatch;

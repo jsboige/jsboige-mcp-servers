@@ -54,6 +54,25 @@ export async function handleTouchMcpSettings(): Promise<CallToolResult> {
     try {
         const appDataPath = process.env.APPDATA || path.join(os.homedir(), 'AppData', 'Roaming');
         const settingsPath = path.join(appDataPath, 'Code', 'User', 'globalStorage', 'rooveterinaryinc.roo-cline', 'settings', 'mcp_settings.json');
+
+        // SAFETY GUARD: In test environments, reject paths to REAL mcp_settings.json.
+        // Incidents: 2026-03-08 (ai-01), 2026-04-03 (po-2023).
+        if (process.env.NODE_ENV === 'test' || process.env.VITEST) {
+            const isTestPath = appDataPath.includes('__test-data__') ||
+                appDataPath.includes('__roo-state-manager-test-appdata__') ||
+                appDataPath.includes('mcp-settings-integration') ||
+                settingsPath.includes('__test-data__') ||
+                appDataPath === 'C:\\Users\\Test\\AppData\\Roaming' ||
+                appDataPath.includes('/home/test') ||
+                appDataPath.includes('/tmp/');
+            if (!isTestPath) {
+                throw new Error(
+                    `SAFETY ABORT: handleTouchMcpSettings() would touch REAL mcp_settings.json in test mode!\n` +
+                    `  Resolved: ${settingsPath}\n` +
+                    `  APPDATA: ${process.env.APPDATA || '(unset)'}`
+                );
+            }
+        }
         
         // Vérifier que le fichier existe
         try {
@@ -128,8 +147,9 @@ export async function handleExportConversationJson(
             return conversationCache.get(id) || null;
         };
 
-        const toolExports = await import('../tools/index.js');
-        const result = await toolExports.handleExportConversationJson(args, getConversationSkeleton);
+        // #1110 FIX: Direct import from sub-module instead of barrel (avoids ESM circular deadlock)
+        const { handleExportConversationJson: handleExportJson } = await import('../tools/export/export-conversation-json.js');
+        const result = await handleExportJson(args, getConversationSkeleton);
 
         return {
             content: [{ type: 'text', text: result }]
@@ -172,8 +192,9 @@ export async function handleExportConversationCsv(
             return conversationCache.get(id) || null;
         };
 
-        const toolExports = await import('../tools/index.js');
-        const result = await toolExports.handleExportConversationCsv(args, getConversationSkeleton);
+        // #1110 FIX: Direct import from sub-module instead of barrel (avoids ESM circular deadlock)
+        const { handleExportConversationCsv: handleExportCsv } = await import('../tools/export/export-conversation-csv.js');
+        const result = await handleExportCsv(args, getConversationSkeleton);
 
         return {
             content: [{ type: 'text', text: result }]

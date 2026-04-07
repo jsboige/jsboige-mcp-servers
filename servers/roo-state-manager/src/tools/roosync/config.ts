@@ -1,5 +1,5 @@
 import { z } from 'zod';
-import { getRooSyncService } from '../../services/RooSyncService.js';
+import { getRooSyncService } from '../../services/lazy-roosync.js';
 import { ConfigSharingServiceError, ConfigSharingServiceErrorCode } from '../../types/errors.js';
 
 /**
@@ -127,7 +127,7 @@ export async function roosyncConfig(args: ConfigArgs) {
   const { action, machineId, dryRun = false, scope } = args;
 
   try {
-    const rooSyncService = getRooSyncService();
+    const rooSyncService = await getRooSyncService();
     const configSharingService = rooSyncService.getConfigSharingService();
 
     switch (action) {

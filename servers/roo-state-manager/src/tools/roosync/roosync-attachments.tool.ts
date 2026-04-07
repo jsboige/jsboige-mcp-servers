@@ -10,7 +10,7 @@
  */
 
 import { AttachmentManager } from '../../services/roosync/AttachmentManager.js';
-import { getSharedStatePath } from '../../utils/server-helpers.js';
+import { getSharedStatePath } from '../../utils/shared-state-path.js';
 import { createLogger } from '../../utils/logger.js';
 
 const logger = createLogger('RooSyncAttachmentTools');

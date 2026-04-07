@@ -118,16 +118,23 @@ describe('handleTouchMcpSettings (integration)', () => {
     });
 
     test('should work when APPDATA is not set (fallback to homedir)', async () => {
-      // Supprimer APPDATA pour tester le fallback
-      delete process.env.APPDATA;
+      // SAFETY: Save and restore APPDATA immediately.
+      // Never leave APPDATA deleted — other parallel tests may write to the REAL
+      // mcp_settings.json if APPDATA is unset (incident 2026-03-08, 2026-04-03).
+      const savedAppdata = process.env.APPDATA;
+      try {
+        delete process.env.APPDATA;
 
-      // Cette teste ne peut pas fonctionner correctement sans le vrai homedir
-      // On vérifie juste que le code ne crash pas
-      const result = await handleTouchMcpSettings();
+        // handleTouchMcpSettings should not crash — it will try homedir fallback
+        const result = await handleTouchMcpSettings();
 
-      // Le résultat devrait être une erreur (fichier non trouvé dans le homedir)
-      expect(result).toBeDefined();
-      expect(result.content).toHaveLength(1);
+        // Should return an error (file not found in homedir path)
+        expect(result).toBeDefined();
+        expect(result.content).toHaveLength(1);
+      } finally {
+        // ALWAYS restore — even if the test fails
+        process.env.APPDATA = savedAppdata;
+      }
     });
   });
 

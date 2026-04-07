@@ -9,7 +9,7 @@
 
 import { z } from 'zod';
 import { zodToJsonSchema } from 'zod-to-json-schema';
-import { getRooSyncService, RooSyncServiceError } from '../../services/RooSyncService.js';
+import { getRooSyncService, RooSyncServiceError } from '../../services/lazy-roosync.js';
 
 /**
  * Schema de validation pour roosync_list_diffs
@@ -54,7 +54,7 @@ export type ListDiffsResult = z.infer<typeof ListDiffsResultSchema>;
  */
 export async function roosyncListDiffs(args: ListDiffsArgs): Promise<ListDiffsResult> {
   try {
-    const service = getRooSyncService();
+    const service = await getRooSyncService();
     const result = await service.listDiffs(args.filterType, args.forceRefresh);
 
     return {
