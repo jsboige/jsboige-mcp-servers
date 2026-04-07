@@ -78,7 +78,8 @@ const server = spawn('node', [serverPath], {
         // unless already explicitly set via config
         WORKSPACE_PATH: process.env.WORKSPACE_PATH || originalCwd,
     },
-    stdio: ['inherit', 'pipe', 'pipe']
+    stdio: ['inherit', 'pipe', 'pipe'],
+    windowsHide: true
 });
 
 // Rediriger stderr du serveur vers notre stderr (filtre les logs trop verbeux)
