@@ -499,7 +499,7 @@ export const listConversationsTool = {
                 const firstUserMsg = sequence.find((msg: any) => msg.role === 'user');
                 if (firstUserMsg && firstUserMsg.content) {
                     const cleaned = stripXmlTags(firstUserMsg.content) || firstUserMsg.content;
-                    firstUserMessage = truncateAtBoundary(cleaned, 200);
+                    firstUserMessage = truncateAtBoundary(cleaned, 300);
                 }
 
                 // 2. Dernier message utilisateur (permet de voir la fin de la conversation)
@@ -763,7 +763,7 @@ async function extractClaudeSessionMeta(filePath: string, fileSize: number): Pro
                 if (entry.type === 'user' && entry.message) {
                     const text = extractClaudeMessageText(entry.message.content);
                     if (text && text.length > 0) {
-                        result.firstUserMessage = truncateAtBoundary(text, 200);
+                        result.firstUserMessage = truncateAtBoundary(text, 300);
                         break;
                     }
                 }
@@ -906,7 +906,7 @@ async function extractClaudeJsonlMetadata(filePath: string, fileSize: number): P
                 if (!result.firstUserMessage && entry.type === 'user' && entry.message?.role === 'user') {
                     const content = extractClaudeMessageText(entry.message.content);
                     if (content) {
-                        result.firstUserMessage = truncateAtBoundary(content, 200);
+                        result.firstUserMessage = truncateAtBoundary(content, 300);
                         // Derive title from first user message (skip command invocations)
                         const titleText = content.replace(/<[^>]+>/g, '').trim();
                         if (titleText.length > 3) {

@@ -350,7 +350,7 @@ describe('listConversationsTool.handler', () => {
       expect(parsed[0].firstUserMessage).toBe('Initial user instruction');
     });
 
-    test('tronque le premier message à 200 caractères', async () => {
+    test('tronque le premier message à 300 caractères', async () => {
       const longContent = 'x'.repeat(400);
       const task = makeConversation('task-long') as any;
       task.sequence = [{ role: 'user', content: longContent }];
@@ -360,7 +360,7 @@ describe('listConversationsTool.handler', () => {
       const _response = JSON.parse((result.content[0] as any).text);
       const parsed = _response.conversations ?? _response;
 
-      expect(parsed[0].firstUserMessage.length).toBeLessThanOrEqual(203); // max 200 + boundary truncation
+      expect(parsed[0].firstUserMessage.length).toBeLessThanOrEqual(303); // max 300 + boundary truncation
       expect(parsed[0].firstUserMessage).toContain('...');
     });
 

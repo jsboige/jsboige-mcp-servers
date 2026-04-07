@@ -134,8 +134,8 @@ export interface CodebaseSearchArgs {
 /**
  * Configuration par défaut
  */
-const DEFAULT_LIMIT = 10;
-const MAX_LIMIT = 30;
+const DEFAULT_LIMIT = 15;
+const MAX_LIMIT = 50;
 const DEFAULT_MIN_SCORE = 0.5;
 
 /**
@@ -347,7 +347,7 @@ export async function handleCodebaseSearch(args: CodebaseSearchArgs): Promise<Ca
 			score_threshold: effectiveMinScore,
 			limit: effectiveLimit,
 			params: {
-				hnsw_ef: 128,
+				hnsw_ef: 256,
 				exact: false
 			},
 			with_payload: {
