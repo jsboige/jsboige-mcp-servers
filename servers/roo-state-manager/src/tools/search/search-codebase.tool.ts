@@ -134,8 +134,8 @@ export interface CodebaseSearchArgs {
 /**
  * Configuration par défaut
  */
-const DEFAULT_LIMIT = 10;
-const MAX_LIMIT = 30;
+const DEFAULT_LIMIT = 15;
+const MAX_LIMIT = 50;
 const DEFAULT_MIN_SCORE = 0.5;
 
 /**
@@ -178,8 +178,8 @@ export const codebaseSearchTool: Tool = {
 function interpretScore(score: number): string {
 	if (score >= 0.9) return 'excellent';
 	if (score >= 0.75) return 'good';
-	if (score >= 0.6) return 'moderate';
-	if (score >= 0.4) return 'weak';
+	if (score >= 0.65) return 'moderate';
+	if (score >= 0.5) return 'low';
 	return 'marginal';
 }
 
@@ -312,7 +312,13 @@ export async function handleCodebaseSearch(args: CodebaseSearchArgs): Promise<Ca
 
 		// 4. Construire le filtre si directory_prefix fourni
 		let filter: any = {
-			must_not: [{ key: 'type', match: { value: 'metadata' } }]
+			must_not: [
+				{ key: 'type', match: { value: 'metadata' } },
+				// #1178: Exclude roo-code/ submodule (reference only)
+				{ key: 'pathSegments.0', match: { value: 'roo-code' } },
+				// Exclude i18n directories
+				{ key: 'pathSegments.0', match: { value: 'i18n' } },
+			]
 		};
 
 		if (directory_prefix) {
@@ -341,7 +347,7 @@ export async function handleCodebaseSearch(args: CodebaseSearchArgs): Promise<Ca
 			score_threshold: effectiveMinScore,
 			limit: effectiveLimit,
 			params: {
-				hnsw_ef: 128,
+				hnsw_ef: 256,
 				exact: false
 			},
 			with_payload: {

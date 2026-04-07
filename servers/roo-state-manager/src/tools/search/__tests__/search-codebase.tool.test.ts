@@ -316,7 +316,7 @@ describe('search-codebase.tool', () => {
 			expect(parsed.results[0].score).toBe(0.65);
 		});
 
-		test('returns success with weak relevance (score 0.45)', async () => {
+		test('returns success with marginal relevance (score 0.45)', async () => {
 			mockQdrant.query.mockResolvedValue({
 				points: [{
 					score: 0.45,
@@ -327,7 +327,7 @@ describe('search-codebase.tool', () => {
 			const result = await handleCodebaseSearch({ query: 'x variable', workspace: '/ws' });
 			const parsed = JSON.parse(result.content[0].text);
 			expect(parsed.status).toBe('success');
-			expect(parsed.results[0].relevance).toBe('weak');
+			expect(parsed.results[0].relevance).toBe('marginal');
 		});
 
 		test('returns success with marginal relevance (score 0.3)', async () => {
