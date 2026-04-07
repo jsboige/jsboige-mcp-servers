@@ -198,7 +198,7 @@ async function handleViewConversationTreeExecutionAsync(
         let totalSize = 0;
         for (const skeleton of skeletons) {
             totalSize += 200; // En-tête de tâche
-            for (const item of skeleton.sequence) {
+            for (const item of skeleton.sequence ?? []) {
                 if ('role' in item) {
                     totalSize += item.content.length + 100; // Message + formatage
                 } else {
@@ -218,7 +218,7 @@ async function handleViewConversationTreeExecutionAsync(
     // FIX #584: Lazy load full skeleton if sequence is empty but messageCount suggests content exists
     // This happens when scanDiskForNewTasks creates minimal skeletons for discovery
     // FIX #594: Throw explicit error instead of failing silently when lazy loading fails
-    if (mainTask.sequence.length === 0 && mainTask.metadata.messageCount > 0) {
+    if ((!mainTask.sequence || mainTask.sequence.length === 0) && mainTask.metadata.messageCount > 0) {
         console.log(`[view] Lazy loading full skeleton for ${task_id} (messageCount: ${mainTask.metadata.messageCount})`);
 
         // Find the task path by checking all storage locations
@@ -515,7 +515,7 @@ function handleLegacyTruncation(
     if (detail_level !== 'full' && truncate === 0 && estimatedSize > max_output_length) {
         // Pour skeleton/summary seulement : forcer une troncature intelligente si la sortie est trop grande
         const totalMessages = tasksToDisplay.reduce((count, task) =>
-            count + task.sequence.filter(item => 'role' in item).length, 0);
+            count + (task.sequence ?? []).filter(item => 'role' in item).length, 0);
         truncate = Math.max(2, Math.floor(max_output_length / (estimatedSize / Math.max(1, totalMessages * 20))));
     }
     // Mode full : JAMAIS de troncature automatique, respecter strictement la demande de l'utilisateur
