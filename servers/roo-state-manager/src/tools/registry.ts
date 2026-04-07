@@ -20,6 +20,9 @@ import * as path from 'path';
 import { existsSync } from 'fs';
 import { CACHE_CONFIG } from '../config/server-config.js';
 import { loadFullSkeleton } from '../services/background-services.js';
+import { createLogger } from '../utils/logger.js';
+
+const registryLogger = createLogger('ToolRegistry');
 
 /**
  * Enregistre le handler pour ListTools
@@ -51,8 +54,10 @@ export function registerCallToolHandler(
         // Safe because those callees only read header fields. Will be fixed in follow-up refactor.
         const cache = state.conversationCache as any as Map<string, import('../types/conversation.js').ConversationSkeleton>;
 
+        const toolCallStart = Date.now();
         let result: CallToolResult;
 
+        try {
         switch (name) {
            // CONS-13: Outil Storage consolidé
            case 'storage_info': {
@@ -775,6 +780,28 @@ export function registerCallToolHandler(
            default:
                throw new GenericError(`Tool not found: ${name}`, GenericErrorCode.INVALID_ARGUMENT);
        }
+
+        } catch (error) {
+            const elapsed = Date.now() - toolCallStart;
+            registryLogger.error(`Tool call FAILED: ${name}`, {
+                tool: name,
+                elapsed: `${elapsed}ms`,
+                error: error instanceof Error ? error.message : String(error),
+                stack: error instanceof Error ? error.stack?.split('\n').slice(0, 3).join(' | ') : undefined
+            });
+            throw error;
+        }
+
+        // Log successful tool calls with duration
+        const elapsed = Date.now() - toolCallStart;
+        const isError = result?.isError === true;
+        if (isError) {
+            registryLogger.warn(`Tool call returned error: ${name}`, { tool: name, elapsed: `${elapsed}ms` });
+        } else if (elapsed > 5000) {
+            registryLogger.warn(`Tool call SLOW: ${name}`, { tool: name, elapsed: `${elapsed}ms` });
+        } else {
+            registryLogger.info(`Tool call OK: ${name}`, { tool: name, elapsed: `${elapsed}ms` });
+        }
 
         return result;
     });
