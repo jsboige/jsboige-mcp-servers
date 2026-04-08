@@ -75,7 +75,7 @@ class SizeCalculator {
         totalSize += 200; // Approximation pour l'en-tête
         
         // Contenu de la séquence
-        for (const item of skeleton.sequence) {
+        for (const item of skeleton.sequence ?? []) {
             if ('role' in item) {
                 // Message utilisateur/assistant
                 totalSize += item.content.length + 100; // Contenu + formatage
@@ -264,7 +264,7 @@ export class SmartTruncationEngine {
         let remainingBudget = truncationBudget;
 
         // Identifier les éléments candidats à la troncature (messages centraux prioritairement)
-        const elements = task.sequence.map((item, index) => ({
+        const elements = (task.sequence ?? []).map((item, index) => ({
             index,
             item,
             size: SizeCalculator.calculateElementSize(item),

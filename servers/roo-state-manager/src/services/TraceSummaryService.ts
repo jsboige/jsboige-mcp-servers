@@ -339,7 +339,7 @@ export class TraceSummaryService {
      * Extrait le premier message utilisateur d'une conversation
      */
     private extractFirstUserMessage(conversation: ConversationSkeleton): string {
-        const userMessages = conversation.sequence.filter(item =>
+        const userMessages = (conversation.sequence ?? []).filter(item =>
             'role' in item && item.role === 'user'
         ) as MessageSkeleton[];
 
@@ -353,7 +353,7 @@ export class TraceSummaryService {
      * Convertit les messages en format JSON avec extraction des tool calls
      */
     private convertToJsonMessages(conversation: ConversationSkeleton, options: SummaryOptions): JsonMessage[] {
-        const messages = conversation.sequence.filter(item =>
+        const messages = (conversation.sequence ?? []).filter(item =>
             'role' in item && 'content' in item
         ) as MessageSkeleton[];
 
@@ -456,7 +456,7 @@ export class TraceSummaryService {
             'isTruncated', 'toolCount', 'workspace'
         ];
 
-        const messages = conversation.sequence.filter(item =>
+        const messages = (conversation.sequence ?? []).filter(item =>
             'role' in item && 'content' in item
         ) as MessageSkeleton[];
 
@@ -488,7 +488,7 @@ export class TraceSummaryService {
         ];
 
         const rows: any[][] = [];
-        const messages = conversation.sequence.filter(item =>
+        const messages = (conversation.sequence ?? []).filter(item =>
             'role' in item && 'content' in item
         ) as MessageSkeleton[];
 
@@ -586,7 +586,7 @@ export class TraceSummaryService {
             totalMessages += conv.metadata.messageCount;
             totalSize += conv.metadata.totalSize;
 
-            const messages = conv.sequence.filter(item =>
+            const messages = (conv.sequence ?? []).filter(item =>
                 'role' in item && 'content' in item
             ) as MessageSkeleton[];
 
@@ -654,7 +654,7 @@ export class TraceSummaryService {
      * Calcule la taille du contenu original
      */
     private getOriginalContentSize(conversation: ConversationSkeleton): number {
-        const messages = conversation.sequence.filter((item): item is MessageSkeleton =>
+        const messages = (conversation.sequence ?? []).filter((item): item is MessageSkeleton =>
             'role' in item && 'content' in item);
 
         return messages.reduce((total: number, message: MessageSkeleton) => total + message.content.length, 0);

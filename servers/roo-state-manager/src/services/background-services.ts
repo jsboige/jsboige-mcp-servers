@@ -323,7 +323,7 @@ export async function loadClaudeCodeSessions(conversationCache: Map<string, Skel
                 const skeleton = await ClaudeStorageDetector.analyzeConversation(
                     taskId, location.projectPath
                 );
-                if (skeleton && skeleton.sequence.length > 0) {
+                if (skeleton && (skeleton.sequence ?? []).length > 0) {
                     // #937 FIX: Set both source and dataSource consistently for Claude sessions
                     if (!skeleton.metadata) skeleton.metadata = {} as any;
                     skeleton.metadata.source = 'claude-code'; // For filtering in Qdrant
@@ -437,7 +437,7 @@ export function startSkeletonRefreshWorker(state: ServerState): void {
 
                                 if (stat.mtime.getTime() > existingLastActivity) {
                                     const skeleton = await ClaudeStorageDetector.analyzeConversation(taskId, location.projectPath);
-                                    if (skeleton && skeleton.sequence.length > 0) {
+                                    if (skeleton && (skeleton.sequence ?? []).length > 0) {
                                         if (!skeleton.metadata) skeleton.metadata = {} as any;
                                         skeleton.metadata.dataSource = 'claude';
                                         state.conversationCache.set(taskId, toHeader(skeleton));

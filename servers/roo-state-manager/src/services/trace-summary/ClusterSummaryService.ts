@@ -431,7 +431,7 @@ export class ClusterSummaryService {
         let totalContentSize = 0;
 
         for (const task of tasks) {
-            const messages = task.sequence.filter((item): item is MessageSkeleton =>
+            const messages = (task.sequence ?? []).filter((item): item is MessageSkeleton =>
                 'role' in item);
 
             for (const message of messages) {
@@ -881,7 +881,7 @@ ${sortedByDate.map(task => {
 
         for (const task of organizedTasks.allTasks) {
             // Extrait le contexte principal de chaque tâche
-            const messages = task.sequence.filter((item): item is MessageSkeleton => 'role' in item);
+            const messages = (task.sequence ?? []).filter((item): item is MessageSkeleton => 'role' in item);
 
             // Première et dernière interaction utilisateur pour le contexte
             const userMessages = messages.filter(m => m.role === 'user' && !this.classifier.isToolResult(m.content));
@@ -992,7 +992,7 @@ ${task !== organizedTasks.rootTask ? `**Parent :** ${organizedTasks.rootTask.met
 </thead>
 <tbody>
     ${organizedTasks.sortedTasks.map(task => {
-                const messageCount = task.sequence.filter(item => 'role' in item).length;
+                const messageCount = (task.sequence ?? []).filter(item => 'role' in item).length;
                 const icon = task === organizedTasks.rootTask ? '🎯' : '📝';
                 return `<tr>
         <td>${icon} ${task.metadata.title || task.taskId}</td>
@@ -1008,7 +1008,7 @@ ${task !== organizedTasks.rootTask ? `**Parent :** ${organizedTasks.rootTask.met
             parts.push(`| Tâche | Mode | Taille | Messages | Date |
 |-------|------|--------|----------|------|
 ${organizedTasks.sortedTasks.map(task => {
-                const messageCount = task.sequence.filter(item => 'role' in item).length;
+                const messageCount = (task.sequence ?? []).filter(item => 'role' in item).length;
                 const icon = task === organizedTasks.rootTask ? '🎯' : '📝';
                 return `| ${icon} ${task.metadata.title || task.taskId} | ${task.metadata.mode || 'N/A'} | ${this.formatBytes(task.metadata.totalSize)} | ${messageCount} | ${new Date(task.metadata.createdAt).toLocaleDateString('fr-FR')} |`;
             }).join('\n')}`);
@@ -1037,7 +1037,7 @@ ${organizedTasks.sortedTasks.map(task => {
             const tools = new Set<string>();
             const contentTypes = { user: 0, assistant: 0, tools: 0 };
 
-            const messages = task.sequence.filter((item): item is MessageSkeleton => 'role' in item);
+            const messages = (task.sequence ?? []).filter((item): item is MessageSkeleton => 'role' in item);
 
             for (const message of messages) {
                 if (message.role === 'user') {

@@ -18,7 +18,7 @@ export class EnrichContentClassifier {
 		const classified: ClassifiedContent[] = [];
 		let index = 0;
 
-		const messages = conversation.sequence.filter((item): item is MessageSkeleton =>
+		const messages = (conversation.sequence ?? []).filter((item): item is MessageSkeleton =>
 			'role' in item && 'content' in item);
 
 		for (const message of messages) {

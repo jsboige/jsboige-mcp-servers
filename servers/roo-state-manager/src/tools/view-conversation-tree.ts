@@ -127,7 +127,7 @@ async function handleViewConversationTreeExecutionAsync(
         output += `${indent}  Parent: ${skeleton.parentTaskId || 'None'}\n`;
         output += `${indent}  Messages: ${skeleton.metadata.messageCount}\n`;
         
-        skeleton.sequence.forEach(item => {
+        (skeleton.sequence ?? []).forEach(item => {
             if ('role' in item) { // Message user/assistant
                 const role = item.role === 'user' ? '👤 User' : '🤖 Assistant';
 
@@ -242,12 +242,12 @@ async function handleViewConversationTreeExecutionAsync(
 
         if (taskPath) {
             const fullSkeleton = await RooStorageDetector.analyzeConversation(task_id, taskPath);
-            if (fullSkeleton && fullSkeleton.sequence.length > 0) {
+            if (fullSkeleton && (fullSkeleton.sequence ?? []).length > 0) {
                 // Update the cache with complete skeleton
                 conversationCache.set(task_id, fullSkeleton);
                 // Refresh mainTask reference
                 mainTask = fullSkeleton;
-                console.log(`[view] Successfully loaded ${fullSkeleton.sequence.length} sequence items for ${task_id}`);
+                console.log(`[view] Successfully loaded ${(fullSkeleton.sequence ?? []).length} sequence items for ${task_id}`);
             } else {
                 // Task found but analyzeConversation returned null/empty
                 throw new GenericError(
@@ -499,7 +499,7 @@ function handleLegacyTruncation(
     // Utilisation du SizeCalculator du module smart-truncation pour cohérence
     const estimatedSize = tasksToDisplay.reduce((sum, task) => {
         let taskSize = 200; // En-tête de tâche
-        for (const item of task.sequence) {
+        for (const item of task.sequence ?? []) {
             if ('role' in item) {
                 taskSize += item.content.length + 100; // Message + formatage
             } else {
@@ -678,7 +678,7 @@ function createFormatTaskFunction(detail_level: string, truncate: number, curren
         output += `${indent}  Parent: ${skeleton.parentTaskId || 'None'}\n`;
         output += `${indent}  Messages: ${skeleton.metadata.messageCount}\n`;
         
-        skeleton.sequence.forEach(item => {
+        (skeleton.sequence ?? []).forEach(item => {
             if ('role' in item) { // Message user/assistant
                 const role = item.role === 'user' ? '👤 User' : '🤖 Assistant';
 

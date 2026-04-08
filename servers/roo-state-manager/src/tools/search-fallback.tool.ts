@@ -89,7 +89,7 @@ export async function handleSearchTasksSemanticFallback(
             let hasMatch = false;
             let matchText = '';
             
-            for (const item of skeleton.sequence) {
+            for (const item of skeleton.sequence ?? []) {
                 if ('content' in item && typeof item.content === 'string') {
                     const content = item.content.toLowerCase();
                     const queryLower = query.toLowerCase();
@@ -160,7 +160,7 @@ export async function handleSearchTasksSemanticFallback(
     const query = search_query.toLowerCase();
     const results: any[] = [];
 
-    for (const item of skeleton.sequence) {
+    for (const item of skeleton.sequence ?? []) {
         if (results.length >= max_results) {
             break;
         }
