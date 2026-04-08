@@ -17,8 +17,8 @@ const mockedFs = vi.mocked(fs);
 describe('get_mcp_best_practices - fonctions internes', () => {
   beforeEach(() => {
     vi.clearAllMocks();
-    // Reset env vars
-    process.env.APPDATA = 'C:\\Users\\test\\AppData';
+    // Use a path recognized by getMcpSettingsPath() safety guard
+    process.env.APPDATA = 'C:\\Users\\Test\\AppData\\Roaming';
   });
 
   afterEach(() => {

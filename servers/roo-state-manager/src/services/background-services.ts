@@ -667,8 +667,8 @@ async function scanForOutdatedQdrantIndex(state: ServerState): Promise<void> {
     const totalToProcess = indexCount + retryCount;
     if (totalToProcess > 1000) {
         console.log(`⚠️  Queue importante détectée: ${totalToProcess} tâches à traiter`);
-        console.log(`💡 Traitement progressif avec rate limiting intelligent (100 ops/min)`);
-        console.log(`⏱️  Temps estimé: ${Math.ceil(totalToProcess / 100)} minutes`);
+        console.log(`💡 Traitement progressif avec rate limiting intelligent (200 ops/min)`);
+        console.log(`⏱️  Temps estimé: ${Math.ceil(totalToProcess / 200)} minutes`);
     }
 
     // Estimation de la bande passante économisée

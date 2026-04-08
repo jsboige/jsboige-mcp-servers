@@ -1,16 +1,16 @@
 /**
  * Outil MCP : roosync_get_status
  *
- * Obtient l'état de synchronisation actuel du système RooSync.
- * Fusionné avec roosync_read_dashboard pour inclure les détails des différences.
+ * Retourne un snapshot ultra-compact de l'état RooSync avec flags actionnables.
+ * Un seul appel suffit pour décider des prochaines actions.
  *
  * @module tools/roosync/get-status
- * @version 2.3.0
+ * @version 3.0.0 — #1206 Option B (compact status with flags)
  */
 
 import { z } from 'zod';
-import { zodToJsonSchema } from 'zod-to-json-schema';
 import { getRooSyncService, RooSyncServiceError } from '../../services/lazy-roosync.js';
+import { getMessageManager } from '../../services/MessageManager.js';
 
 /**
  * Schema de validation pour roosync_get_status
@@ -19,138 +19,220 @@ export const GetStatusArgsSchema = z.object({
   machineFilter: z.string().optional()
     .describe('ID de machine pour filtrer les résultats (optionnel)'),
   resetCache: z.boolean().optional()
-    .describe('Forcer la réinitialisation du cache du service (défaut: false)'),
-  includeDetails: z.boolean().optional()
-    .describe('Inclure les détails complets des différences (défaut: false)')
+    .describe('Forcer la réinitialisation du cache du service (défaut: false)')
 });
 
 export type GetStatusArgs = z.infer<typeof GetStatusArgsSchema>;
 
 /**
- * Schema de retour pour roosync_get_status
+ * Schema de retour — Option B: compact status with flags
  */
 export const GetStatusResultSchema = z.object({
-  status: z.enum(['synced', 'diverged', 'conflict', 'unknown'])
-    .describe('État global de synchronisation'),
-  
-  lastSync: z.string()
-    .describe('Date de dernière synchronisation (ISO 8601)'),
-  
-  machines: z.array(z.object({
-    id: z.string().describe('ID de la machine'),
-    status: z.enum(['online', 'offline', 'unknown', 'synced', 'diverged', 'conflict']).describe('État de la machine'),
-    lastSync: z.string().describe('Dernière synchronisation'),
-    pendingDecisions: z.number().describe('Nombre de décisions en attente'),
-    diffsCount: z.number().describe('Nombre de différences détectées')
-  })).describe('Liste des machines synchronisées'),
-  
-  summary: z.object({
-    totalMachines: z.number().describe('Nombre total de machines'),
-    onlineMachines: z.number().describe('Machines en ligne'),
-    totalDiffs: z.number().describe('Total des différences'),
-    totalPendingDecisions: z.number().describe('Total des décisions en attente')
-  }).optional().describe('Résumé statistique'),
-  
-  diffs: z.array(z.object({
-    type: z.enum(['added', 'modified', 'deleted']).describe('Type de différence'),
-    path: z.string().describe('Chemin du fichier concerné'),
-    machineId: z.string().describe('ID de la machine source'),
-    baselinePath: z.string().optional().describe('Chemin dans la baseline'),
-    details: z.any().optional().describe('Détails supplémentaires')
-  })).optional().describe('Liste des différences détectées (si includeDetails=true)')
+  status: z.enum(['HEALTHY', 'WARNING', 'CRITICAL'])
+    .describe('État global du système RooSync'),
+
+  machines: z.object({
+    online: z.number(),
+    offline: z.number(),
+    total: z.number()
+  }).describe('Compteurs machines par état'),
+
+  inbox: z.object({
+    unread: z.number(),
+    urgent: z.number()
+  }).describe('Messages non-lus et urgents'),
+
+  decisions: z.object({
+    pending: z.number()
+  }).describe('Décisions en attente'),
+
+  dashboards: z.object({
+    active: z.number()
+  }).describe('Dashboards avec activité récente (<24h)'),
+
+  flags: z.array(z.string())
+    .describe('Flags actionnables (ex: HEARTBEAT_STALE:myia-po-2025)'),
+
+  lastUpdated: z.string()
+    .describe('Timestamp ISO 8601 du snapshot')
 });
 
 export type GetStatusResult = z.infer<typeof GetStatusResultSchema>;
 
 /**
+ * Génère les flags actionnables à partir des données collectées
+ */
+function buildFlags(
+  heartbeatState: { onlineMachines: string[]; offlineMachines: string[]; warningMachines: string[] },
+  inboxStats: { unread: number; urgent: number },
+  pendingDecisions: number,
+  machines: Array<{ id: string; status: string; lastSync?: string }>
+): string[] {
+  const flags: string[] = [];
+
+  // Offline machines
+  for (const machineId of heartbeatState.offlineMachines) {
+    flags.push(`OFFLINE:${machineId}`);
+  }
+
+  // Warning machines (heartbeat stale)
+  for (const machineId of heartbeatState.warningMachines) {
+    flags.push(`HEARTBEAT_STALE:${machineId}`);
+  }
+
+  // Inbox overflow (>10 unread)
+  if (inboxStats.unread > 10) {
+    flags.push(`INBOX_OVERFLOW:${inboxStats.unread}_unread`);
+  }
+
+  // Urgent messages
+  if (inboxStats.urgent > 0) {
+    flags.push(`INBOX_URGENT:${inboxStats.urgent}`);
+  }
+
+  // Pending decisions
+  if (pendingDecisions > 0) {
+    flags.push(`DECISIONS_PENDING:${pendingDecisions}`);
+  }
+
+  // Stale syncs (>24h since last sync)
+  const oneDayAgo = Date.now() - 24 * 60 * 60 * 1000;
+  for (const m of machines) {
+    if (m.lastSync) {
+      const syncDate = new Date(m.lastSync).getTime();
+      if (!isNaN(syncDate) && syncDate < oneDayAgo && m.status !== 'offline') {
+        flags.push(`SYNC_STALE:${m.id}`);
+      }
+    }
+  }
+
+  return flags;
+}
+
+/**
  * Outil roosync_get_status
- * 
- * Obtient l'état de synchronisation actuel, avec possibilité de filtrer
- * par machine spécifique.
- * 
+ *
+ * Retourne un snapshot compact avec flags actionnables.
+ * Un seul appel remplace les 4-5 appels précédents.
+ *
  * @param args Arguments validés
- * @returns État de synchronisation
+ * @returns État compact du système RooSync
  * @throws {RooSyncServiceError} En cas d'erreur
  */
 export async function roosyncGetStatus(args: GetStatusArgs): Promise<GetStatusResult> {
   try {
-    // CRITICAL DEBUG: Log pour vérifier que le tool est appelé
-    console.log('[CRITICAL] roosyncGetStatus appelé à', new Date().toISOString());
-    
-    // Si resetCache est true, réinitialiser l'instance du service
+    // Reset cache si demandé
     if (args.resetCache) {
-      console.log('[RESET] Réinitialisation du cache du service demandée...');
-      // Import dynamique pour éviter les dépendances circulaires
       const { RooSyncService } = await import('../../services/RooSyncService.js');
       await RooSyncService.resetInstance();
-      console.log('[RESET] Service réinitialisé avec succès');
     }
-    
+
     const service = await getRooSyncService();
-    console.log('[CRITICAL] Service obtenu, appel de loadDashboard...');
-    const dashboard = await service.loadDashboard();
-    console.log('[CRITICAL] Dashboard obtenu:', JSON.stringify(dashboard, null, 2));
-    
-    // CRITICAL FIX: Utiliser les champs machinesArray et summary si disponibles
-    // pour garantir la cohérence avec roosync_list_diffs
-    let machines = dashboard.machinesArray || Object.entries(dashboard.machines).map(([id, info]) => ({
-      id,
-      status: info.status,
-      lastSync: info.lastSync,
-      pendingDecisions: info.pendingDecisions,
-      diffsCount: info.diffsCount
-    }));
-    
+    const now = new Date().toISOString();
+
+    // Collecte parallèle des données
+    const [dashboard, heartbeatState, inboxStats, pendingDecisions] = await Promise.all([
+      service.loadDashboard().catch(() => null),
+      (async () => {
+        try {
+          const heartbeatService = service.getHeartbeatService();
+          await heartbeatService.checkHeartbeats();
+          return heartbeatService.getState();
+        } catch {
+          return { onlineMachines: [] as string[], offlineMachines: [] as string[], warningMachines: [] as string[] };
+        }
+      })(),
+      (async () => {
+        try {
+          const config = service.getConfig();
+          const messageManager = getMessageManager();
+          const stats = await messageManager.getInboxStats(config.machineId);
+          return {
+            unread: stats.unread,
+            urgent: stats.by_priority?.URGENT ?? 0
+          };
+        } catch {
+          return { unread: 0, urgent: 0 };
+        }
+      })(),
+      service.loadPendingDecisions()
+        .then(d => d.length)
+        .catch(() => 0)
+    ]);
+
+    // Dashboard machines data
+    const machines = dashboard?.machinesArray ||
+      (dashboard?.machines
+        ? Object.entries(dashboard.machines).map(([id, info]) => ({
+            id,
+            status: info.status,
+            lastSync: info.lastSync
+          }))
+        : []);
+
+    // Dashboard activity (<24h)
+    const oneDayAgo = Date.now() - 24 * 60 * 60 * 1000;
+    const activeDashboards = dashboard?.lastUpdate
+      ? (new Date(dashboard.lastUpdate).getTime() > oneDayAgo ? 1 : 0)
+      : 0;
+
+    // Compute machine counts
+    const onlineMachines = heartbeatState?.onlineMachines ?? [];
+    const offlineMachines = heartbeatState?.offlineMachines ?? [];
+    const totalMachines = Math.max(machines.length, onlineMachines.length + offlineMachines.length);
+
+    // Build flags
+    const flags = buildFlags(
+      {
+        onlineMachines: onlineMachines as string[],
+        offlineMachines: offlineMachines as string[],
+        warningMachines: (heartbeatState?.warningMachines ?? []) as string[]
+      },
+      inboxStats,
+      pendingDecisions,
+      machines
+    );
+
+    // Derive overall status
+    let status: 'HEALTHY' | 'WARNING' | 'CRITICAL' = 'HEALTHY';
+    if (offlineMachines.length > 0 || inboxStats.urgent > 0) {
+      status = 'CRITICAL';
+    } else if (offlineMachines.length === 0 && (flags.length > 0 || inboxStats.unread > 5)) {
+      status = 'WARNING';
+    }
+
+    // Apply machine filter if specified
     if (args.machineFilter) {
-      machines = machines.filter(m => m.id === args.machineFilter);
-      
-      if (machines.length === 0) {
+      const machineExists = machines.some(m => m.id === args.machineFilter) ||
+        onlineMachines.includes(args.machineFilter) ||
+        offlineMachines.includes(args.machineFilter);
+
+      if (!machineExists) {
         throw new RooSyncServiceError(
           `Machine '${args.machineFilter}' non trouvée`,
           'MACHINE_NOT_FOUND'
         );
       }
     }
-    
-    // Utiliser le summary précalculé si disponible, sinon le calculer
-    const summary = dashboard.summary || {
-      totalMachines: machines.length,
-      onlineMachines: machines.filter(m => m.status === 'online').length,
-      totalDiffs: machines.reduce((sum, m) => sum + m.diffsCount, 0),
-      totalPendingDecisions: machines.reduce((sum, m) => sum + m.pendingDecisions, 0)
-    };
-    
-    // Récupérer les différences si demandé (fusion avec read-dashboard)
-    let diffs = undefined;
-    if (args.includeDetails) {
-      try {
-        console.log('[STATUS] Récupération des détails des différences...');
-        const diffsResult = await service.listDiffs('all');
-        diffs = diffsResult.diffs.map(d => ({
-          type: d.type as 'added' | 'modified' | 'deleted',
-          path: d.path,
-          machineId: d.machines[0] || 'unknown',
-          baselinePath: d.path,
-          details: { description: d.description, machines: d.machines }
-        }));
-        console.log('[STATUS] Différences récupérées:', diffs.length);
-      } catch (diffError) {
-        console.warn('[STATUS] Impossible de récupérer les détails des différences:', diffError);
-      }
-    }
-    
+
     return {
-      status: dashboard.overallStatus,
-      lastSync: dashboard.lastUpdate,
-      machines,
-      summary,
-      diffs
+      status,
+      machines: {
+        online: onlineMachines.length,
+        offline: offlineMachines.length,
+        total: totalMachines
+      },
+      inbox: inboxStats,
+      decisions: { pending: pendingDecisions },
+      dashboards: { active: activeDashboards },
+      flags,
+      lastUpdated: now
     };
   } catch (error) {
     if (error instanceof RooSyncServiceError) {
       throw error;
     }
-    
+
     throw new RooSyncServiceError(
       `Erreur lors de la récupération du statut: ${(error as Error).message}`,
       'ROOSYNC_UNKNOWN_ERROR'
@@ -160,11 +242,10 @@ export async function roosyncGetStatus(args: GetStatusArgs): Promise<GetStatusRe
 
 /**
  * Métadonnées de l'outil pour l'enregistrement MCP
- * Utilise Zod.shape natif pour compatibilité MCP
  */
 export const getStatusToolMetadata = {
   name: 'roosync_get_status',
-  description: 'Obtenir l\'état de synchronisation actuel du système RooSync (fusionné avec read-dashboard)',
+  description: 'Obtenir un snapshot compact de l\'état RooSync avec flags actionnables. Remplace 4-5 appels séparés.',
   inputSchema: {
     type: 'object' as const,
     properties: {
@@ -175,10 +256,6 @@ export const getStatusToolMetadata = {
       resetCache: {
         type: 'boolean',
         description: 'Forcer la réinitialisation du cache du service (défaut: false)'
-      },
-      includeDetails: {
-        type: 'boolean',
-        description: 'Inclure les détails complets des différences (défaut: false)'
       }
     },
     additionalProperties: false

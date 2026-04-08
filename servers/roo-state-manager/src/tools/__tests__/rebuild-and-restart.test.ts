@@ -44,7 +44,8 @@ describe('rebuild-and-restart', () => {
 
 	beforeEach(() => {
 		vi.clearAllMocks();
-		process.env.APPDATA = 'C:\\Users\\test\\AppData\\Roaming';
+		// Use a path recognized by getMcpSettingsPath() safety guard
+		process.env.APPDATA = 'C:\\Users\\Test\\AppData\\Roaming';
 	});
 
 	afterEach(() => {
