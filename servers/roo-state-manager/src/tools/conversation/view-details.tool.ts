@@ -119,7 +119,7 @@ export const viewTaskDetailsTool = {
             output += `Dernière activité: ${skeleton.metadata.lastActivity}\n\n`;
 
             // Filtrer pour ne garder que les actions (pas les messages)
-            const actions = skeleton.sequence.filter((item: any) => !('role' in item));
+            const actions = (skeleton.sequence ?? []).filter((item: any) => !('role' in item));
             
             if (actions.length === 0) {
                 output += "ℹ️ Aucune action technique trouvée dans cette tâche.\n";

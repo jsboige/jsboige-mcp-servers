@@ -27,7 +27,7 @@ export class ContentClassifier {
         let index = 0;
 
         // Filtrer seulement les MessageSkeleton de la sequence
-        let messages = conversation.sequence.filter((item): item is MessageSkeleton =>
+        let messages = (conversation.sequence ?? []).filter((item): item is MessageSkeleton =>
             'role' in item && 'content' in item);
 
         // Appliquer le filtrage par plage si spécifié
@@ -41,7 +41,7 @@ export class ContentClassifier {
                 // Log pour debugging
                 console.log(`[Range Filter] Processing messages ${startIdx + 1} to ${endIdx} (${messages.length} messages)`);
             } else {
-                console.warn(`[Range Filter] Invalid range: start=${options.startIndex}, end=${options.endIndex}, total=${conversation.sequence.length}`);
+                console.warn(`[Range Filter] Invalid range: start=${options.startIndex}, end=${options.endIndex}, total=${(conversation.sequence ?? []).length}`);
             }
         }
 

@@ -199,7 +199,7 @@ export class SummaryGenerator {
      * Calcule la taille du contenu original
      */
     public getOriginalContentSize(conversation: ConversationSkeleton): number {
-        const messages = conversation.sequence.filter((item): item is MessageSkeleton =>
+        const messages = (conversation.sequence ?? []).filter((item): item is MessageSkeleton =>
             'role' in item && 'content' in item);
 
         return messages.reduce((total: number, message: MessageSkeleton) => total + message.content.length, 0);

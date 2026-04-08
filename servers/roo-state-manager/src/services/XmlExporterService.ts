@@ -58,7 +58,7 @@ export class XmlExporterService {
         // Ajout de la séquence
         const sequence = root.ele('sequence');
         
-        for (const item of skeleton.sequence) {
+        for (const item of skeleton.sequence ?? []) {
             if ('role' in item) {
                 // C'est un message
                 const messageElement = sequence.ele('message', {
@@ -143,7 +143,7 @@ export class XmlExporterService {
             // Séquence (même logique que generateTaskXml)
             const sequence = taskElement.ele('sequence');
             
-            for (const item of skeleton.sequence) {
+            for (const item of skeleton.sequence ?? []) {
                 if ('role' in item) {
                     const messageElement = sequence.ele('message', {
                         role: item.role,
