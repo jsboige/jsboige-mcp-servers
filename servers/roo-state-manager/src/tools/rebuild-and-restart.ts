@@ -9,26 +9,38 @@ import { GenericError, GenericErrorCode } from '../types/errors.js';
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
 
+const NPM_BUILD_TIMEOUT_MS = 120_000; // 2 minutes
+const TOUCH_TIMEOUT_MS = 15_000;      // 15 seconds
+
 async function runNpmBuild(mcpPath: string): Promise<string> {
     return new Promise((resolve, reject) => {
-        exec('npm run build', { cwd: mcpPath, windowsHide: true }, (error, stdout, stderr) => {
+        const child = exec('npm run build', { cwd: mcpPath, windowsHide: true, timeout: NPM_BUILD_TIMEOUT_MS }, (error, stdout, stderr) => {
             if (error) {
-                return reject(new GenericError(`Build failed: ${error.message}`, GenericErrorCode.FILE_SYSTEM_ERROR));
+                const msg = error.killed
+                    ? `Build timed out after ${NPM_BUILD_TIMEOUT_MS / 1000}s`
+                    : `Build failed: ${error.message}`;
+                return reject(new GenericError(msg, GenericErrorCode.FILE_SYSTEM_ERROR));
             }
             resolve(stdout);
         });
+        // Safety: ensure child is killed if Promise is abandoned
+        child.on('exit', () => { /* natural cleanup */ });
     });
 }
 
 async function touchFile(filePath: string): Promise<string> {
     const command = `(Get-Item -LiteralPath "${filePath}").LastWriteTime = Get-Date`;
     return new Promise((resolve, reject) => {
-        exec(`powershell.exe -Command "${command}"`, { windowsHide: true }, (error, stdout, stderr) => {
+        const child = exec(`powershell.exe -Command "${command}"`, { windowsHide: true, timeout: TOUCH_TIMEOUT_MS }, (error, stdout, stderr) => {
             if (error) {
-                return reject(new GenericError(`Touch failed for ${filePath}: ${error.message}`, GenericErrorCode.FILE_SYSTEM_ERROR));
+                const msg = error.killed
+                    ? `Touch timed out after ${TOUCH_TIMEOUT_MS / 1000}s for ${filePath}`
+                    : `Touch failed for ${filePath}: ${error.message}`;
+                return reject(new GenericError(msg, GenericErrorCode.FILE_SYSTEM_ERROR));
             }
             resolve(`Touched: ${filePath}`);
         });
+        child.on('exit', () => { /* natural cleanup */ });
     });
 }
 

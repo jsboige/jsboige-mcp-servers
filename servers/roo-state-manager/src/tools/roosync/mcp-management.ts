@@ -589,27 +589,37 @@ async function backupMcpSettings(): Promise<string> {
 }
 
 async function runNpmBuild(mcpPath: string): Promise<string> {
+    const timeout = 120_000; // 2 minutes
     return new Promise((resolve, reject) => {
-        exec('npm run build', { cwd: mcpPath, windowsHide: true }, (error, stdout, stderr) => {
+        const child = exec('npm run build', { cwd: mcpPath, windowsHide: true, timeout }, (error, stdout, stderr) => {
             if (error) {
-                reject(new HeartbeatServiceError(`Build échoué: ${error.message}`, 'BUILD_FAILED'));
+                const msg = error.killed
+                    ? `Build timed out after ${timeout / 1000}s`
+                    : `Build échoué: ${error.message}`;
+                reject(new HeartbeatServiceError(msg, 'BUILD_FAILED'));
             } else {
                 resolve(stdout);
             }
         });
+        child.on('exit', () => { /* natural cleanup */ });
     });
 }
 
 async function touchFile(filePath: string): Promise<void> {
+    const timeout = 15_000; // 15 seconds
     const command = `(Get-Item -LiteralPath "${filePath}").LastWriteTime = Get-Date`;
     return new Promise((resolve, reject) => {
-        exec(`powershell.exe -Command "${command}"`, { windowsHide: true }, (error) => {
+        const child = exec(`powershell.exe -Command "${command}"`, { windowsHide: true, timeout }, (error) => {
             if (error) {
-                reject(new HeartbeatServiceError(`Touch échoué pour ${filePath}: ${error.message}`, 'TOUCH_FAILED'));
+                const msg = error.killed
+                    ? `Touch timed out after ${timeout / 1000}s for ${filePath}`
+                    : `Touch échoué pour ${filePath}: ${error.message}`;
+                reject(new HeartbeatServiceError(msg, 'TOUCH_FAILED'));
             } else {
                 resolve();
             }
         });
+        child.on('exit', () => { /* natural cleanup */ });
     });
 }
 

@@ -394,7 +394,7 @@ describe('roosyncMcpManagement', () => {
                         }
                     });
                 }
-                return {} as any;
+                return { on: vi.fn() } as any;
             }) as any);
 
             const result = await roosyncMcpManagement({
@@ -433,7 +433,7 @@ describe('roosyncMcpManagement', () => {
                         }
                     });
                 }
-                return {} as any;
+                return { on: vi.fn() } as any;
             }) as any);
 
             const result = await roosyncMcpManagement({
@@ -485,7 +485,7 @@ describe('roosyncMcpManagement', () => {
                         }
                     });
                 }
-                return {} as any;
+                return { on: vi.fn() } as any;
             }) as any);
 
             await expect(roosyncMcpManagement({

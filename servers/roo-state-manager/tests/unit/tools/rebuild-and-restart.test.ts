@@ -84,8 +84,8 @@ describe('rebuild_and_restart_mcp Tool', () => {
 
         expect(result.content[0].text).toContain('Build for "test-mcp" successful');
         expect(result.content[0].text).toContain('targeted restart via watchPaths');
-        expect(mockExec).toHaveBeenCalledWith('npm run build', { cwd: '/path/to/test-mcp', windowsHide: true }, expect.any(Function));
-        expect(mockExec).toHaveBeenCalledWith(expect.stringContaining('powershell.exe'), { windowsHide: true }, expect.any(Function));
+        expect(mockExec).toHaveBeenCalledWith('npm run build', { cwd: '/path/to/test-mcp', windowsHide: true, timeout: 120_000 }, expect.any(Function));
+        expect(mockExec).toHaveBeenCalledWith(expect.stringContaining('powershell.exe'), { windowsHide: true, timeout: 15_000 }, expect.any(Function));
     });
 
     it('should fallback to global restart when watchPaths is missing', async () => {
@@ -117,7 +117,7 @@ describe('rebuild_and_restart_mcp Tool', () => {
         const result = await rebuildAndRestart.handler({ mcp_name: 'mcp-with-options-cwd' });
         
         expect(result.content[0].text).toContain('Build for "mcp-with-options-cwd" successful');
-        expect(mockExec).toHaveBeenCalledWith('npm run build', { cwd: '/path/to/mcp-with-options-cwd', windowsHide: true }, expect.any(Function));
+        expect(mockExec).toHaveBeenCalledWith('npm run build', { cwd: '/path/to/mcp-with-options-cwd', windowsHide: true, timeout: 120_000 }, expect.any(Function));
     });
 
     it('should throw error when MCP not found', async () => {
@@ -136,9 +136,25 @@ describe('rebuild_and_restart_mcp Tool', () => {
         });
 
         const result = await rebuildAndRestart.handler({ mcp_name: 'test-mcp' });
-        
+
         expect(result.content[0].text).toContain('Error during rebuild and restart');
         expect(result.content[0].text).toContain('Build failed');
+    });
+
+    it('should handle build timeout', async () => {
+        mockExec.mockImplementation((command: string, optionsOrCallback: any, callback?: any) => {
+            const cb = typeof optionsOrCallback === 'function' ? optionsOrCallback : callback;
+            if (command === 'npm run build') {
+                const err = new Error('Build timed out') as any;
+                err.killed = true;
+                cb(err, '', '');
+            }
+        });
+
+        const result = await rebuildAndRestart.handler({ mcp_name: 'test-mcp' });
+
+        expect(result.content[0].text).toContain('Error during rebuild and restart');
+        expect(result.content[0].text).toContain('timed out');
     });
 
     it('should handle touch file failure', async () => {
@@ -152,8 +168,26 @@ describe('rebuild_and_restart_mcp Tool', () => {
         });
 
         const result = await rebuildAndRestart.handler({ mcp_name: 'test-mcp' });
-        
+
         expect(result.content[0].text).toContain('Error during rebuild and restart');
         expect(result.content[0].text).toContain('Touch failed');
+    });
+
+    it('should handle touch timeout', async () => {
+        mockExec.mockImplementation((command: string, optionsOrCallback: any, callback?: any) => {
+            const cb = typeof optionsOrCallback === 'function' ? optionsOrCallback : callback;
+            if (command === 'npm run build') {
+                cb(null, 'Build output', '');
+            } else if (command.includes('powershell.exe')) {
+                const err = new Error('Touch timed out') as any;
+                err.killed = true;
+                cb(err, '', '');
+            }
+        });
+
+        const result = await rebuildAndRestart.handler({ mcp_name: 'test-mcp' });
+
+        expect(result.content[0].text).toContain('Error during rebuild and restart');
+        expect(result.content[0].text).toContain('timed out');
     });
 });

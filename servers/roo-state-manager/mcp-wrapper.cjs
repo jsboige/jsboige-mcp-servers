@@ -207,3 +207,22 @@ server.on('exit', (code) => {
     logDebug(`Server exited with code ${code}`);
     process.exit(code || 0);
 });
+
+// #1188: Ensure child server process is killed when parent exits
+// Prevents zombie PowerShell/cmd.exe processes that become unkillable
+function cleanup() {
+    try {
+        if (server && !server.killed) {
+            server.kill('SIGTERM');
+            // Force kill after 3s if SIGTERM didn't work
+            setTimeout(() => {
+                try { server.kill('SIGKILL'); } catch (e) { /* ignore */ }
+            }, 3000);
+        }
+    } catch (e) { /* ignore cleanup errors */ }
+}
+
+process.on('SIGINT', cleanup);
+process.on('SIGTERM', cleanup);
+process.on('SIGHUP', cleanup);
+process.on('exit', cleanup);
