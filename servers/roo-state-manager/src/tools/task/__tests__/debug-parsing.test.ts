@@ -51,11 +51,11 @@ describe('debug-parsing.tool', () => {
     beforeEach(async () => {
         vi.clearAllMocks();
 
-        // Setup existsSync mock behavior - return true for valid-task directories
+        // Setup existsSync mock behavior - return true for valid-task UUID directories
         mockExistsSync.mockImplementation((path: string) => {
             if (typeof path === 'string') {
-                // Return true for valid-task directories
-                if (path.includes('valid-task') && !path.includes('nonexistent')) {
+                // Return true for valid-task UUID directories
+                if (path.includes('a1b2c3d4-e5f6-4a8b-9c0d-1e2f3a4b5c6d') && !path.includes('00000000')) {
                     return true;
                 }
             }
@@ -65,8 +65,8 @@ describe('debug-parsing.tool', () => {
         // Default mock setup
         mockDetectStorageLocations.mockResolvedValue(['/mock/storage']);
         mockAnalyzeConversation.mockResolvedValue({
-            taskId: 'valid-task-123',
-            parentTaskId: 'parent-task-456',
+            taskId: 'a1b2c3d4-e5f6-4a8b-9c0d-1e2f3a4b5c6d',
+            parentTaskId: 'b2c3d4e5-f6a7-4b8c-9d0e-2f3a4b5c6d7e',
             truncatedInstruction: 'This is a truncated instruction preview...',
             childTaskInstructionPrefixes: ['prefix1', 'prefix2', 'prefix3']
         });
@@ -112,7 +112,7 @@ describe('debug-parsing.tool', () => {
             test('should return error when no storage locations', async () => {
                 mockDetectStorageLocations.mockResolvedValue([]);
 
-                const args = { task_id: 'nonexistent-task' };
+                const args = { task_id: '00000000-0000-4000-a000-000000000000' };
                 const result = await handleDebugTaskParsing(args);
 
                 expect(getTextContent(result)).toContain('not found');
@@ -121,7 +121,7 @@ describe('debug-parsing.tool', () => {
             test('should return error when task not in any storage location', async () => {
                 mockDetectStorageLocations.mockResolvedValue(['/mock/storage']);
 
-                const args = { task_id: 'nonexistent-task' };
+                const args = { task_id: '00000000-0000-4000-a000-000000000000' };
                 const result = await handleDebugTaskParsing(args);
 
                 expect(getTextContent(result)).toContain('not found');
@@ -130,21 +130,21 @@ describe('debug-parsing.tool', () => {
 
         describe('task found scenarios', () => {
             test('should return task path in debug info', async () => {
-                const args = { task_id: 'valid-task' };
+                const args = { task_id: 'a1b2c3d4-e5f6-4a8b-9c0d-1e2f3a4b5c6d' };
                 const result = await handleDebugTaskParsing(args);
 
                 expect(getTextContent(result)).toContain('Task path');
             });
 
             test('should check for ui_messages.json existence', async () => {
-                const args = { task_id: 'valid-task' };
+                const args = { task_id: 'a1b2c3d4-e5f6-4a8b-9c0d-1e2f3a4b5c6d' };
                 const result = await handleDebugTaskParsing(args);
 
                 expect(getTextContent(result)).toContain('UI Messages');
             });
 
             test('should check for api_conversation_history.json existence', async () => {
-                const args = { task_id: 'valid-task' };
+                const args = { task_id: 'a1b2c3d4-e5f6-4a8b-9c0d-1e2f3a4b5c6d' };
                 const result = await handleDebugTaskParsing(args);
 
                 expect(getTextContent(result)).toContain('API History');
@@ -157,7 +157,7 @@ describe('debug-parsing.tool', () => {
                     { role: 'user', content: 'How are you?' }
                 ]));
 
-                const args = { task_id: 'valid-task' };
+                const args = { task_id: 'a1b2c3d4-e5f6-4a8b-9c0d-1e2f3a4b5c6d' };
                 const result = await handleDebugTaskParsing(args);
 
                 expect(getTextContent(result)).toContain('UI Messages count');
@@ -169,7 +169,7 @@ describe('debug-parsing.tool', () => {
                     { role: 'user', content: 'Some text <task>do something</task> more text' }
                 ]));
 
-                const args = { task_id: 'valid-task' };
+                const args = { task_id: 'a1b2c3d4-e5f6-4a8b-9c0d-1e2f3a4b5c6d' };
                 const result = await handleDebugTaskParsing(args);
 
                 expect(getTextContent(result)).toContain('<task>');
@@ -181,7 +181,7 @@ describe('debug-parsing.tool', () => {
                     { role: 'user', content: '<task>task 1</task> and <task>task 2</task>' }
                 ]));
 
-                const args = { task_id: 'valid-task' };
+                const args = { task_id: 'a1b2c3d4-e5f6-4a8b-9c0d-1e2f3a4b5c6d' };
                 const result = await handleDebugTaskParsing(args);
 
                 expect(getTextContent(result)).toContain('Total <task> tags found: 2');
@@ -192,7 +192,7 @@ describe('debug-parsing.tool', () => {
                     { role: 'assistant', content: 'Delegating: <new_task>subtask</new_task>' }
                 ]));
 
-                const args = { task_id: 'valid-task' };
+                const args = { task_id: 'a1b2c3d4-e5f6-4a8b-9c0d-1e2f3a4b5c6d' };
                 const result = await handleDebugTaskParsing(args);
 
                 expect(getTextContent(result)).toContain('<new_task>');
@@ -204,7 +204,7 @@ describe('debug-parsing.tool', () => {
                     { role: 'user', content: '<task>This is the task content to extract</task>' }
                 ]));
 
-                const args = { task_id: 'valid-task' };
+                const args = { task_id: 'a1b2c3d4-e5f6-4a8b-9c0d-1e2f3a4b5c6d' };
                 const result = await handleDebugTaskParsing(args);
 
                 expect(getTextContent(result)).toContain('Content preview');
@@ -221,7 +221,7 @@ describe('debug-parsing.tool', () => {
                     }
                 ]));
 
-                const args = { task_id: 'valid-task' };
+                const args = { task_id: 'a1b2c3d4-e5f6-4a8b-9c0d-1e2f3a4b5c6d' };
                 const result = await handleDebugTaskParsing(args);
 
                 expect(getTextContent(result)).toContain('Array content task');
@@ -233,7 +233,7 @@ describe('debug-parsing.tool', () => {
                 ]);
                 mockReadFile.mockResolvedValue(bomJson);
 
-                const args = { task_id: 'valid-task' };
+                const args = { task_id: 'a1b2c3d4-e5f6-4a8b-9c0d-1e2f3a4b5c6d' };
                 const result = await handleDebugTaskParsing(args);
 
                 // Should parse successfully despite BOM
@@ -241,25 +241,25 @@ describe('debug-parsing.tool', () => {
             });
 
             test('should call RooStorageDetector.analyzeConversation', async () => {
-                const args = { task_id: 'valid-task' };
+                const args = { task_id: 'a1b2c3d4-e5f6-4a8b-9c0d-1e2f3a4b5c6d' };
                 await handleDebugTaskParsing(args);
 
                 expect(mockAnalyzeConversation).toHaveBeenCalled();
             });
 
             test('should include skeleton analysis results', async () => {
-                const args = { task_id: 'valid-task' };
+                const args = { task_id: 'a1b2c3d4-e5f6-4a8b-9c0d-1e2f3a4b5c6d' };
                 const result = await handleDebugTaskParsing(args);
 
                 expect(getTextContent(result)).toContain('Analysis complete');
                 expect(getTextContent(result)).toContain('TaskId');
-                expect(getTextContent(result)).toContain('valid-task-123');
+                expect(getTextContent(result)).toContain('a1b2c3d4-e5f6-4a8b-9c0d-1e2f3a4b5c6d');
                 expect(getTextContent(result)).toContain('ParentTaskId');
-                expect(getTextContent(result)).toContain('parent-task-456');
+                expect(getTextContent(result)).toContain('b2c3d4e5-f6a7-4b8c-9d0e-2f3a4b5c6d7e');
             });
 
             test('should include truncated instruction preview', async () => {
-                const args = { task_id: 'valid-task' };
+                const args = { task_id: 'a1b2c3d4-e5f6-4a8b-9c0d-1e2f3a4b5c6d' };
                 const result = await handleDebugTaskParsing(args);
 
                 expect(getTextContent(result)).toContain('TruncatedInstruction');
@@ -267,7 +267,7 @@ describe('debug-parsing.tool', () => {
             });
 
             test('should include childTaskInstructionPrefixes count', async () => {
-                const args = { task_id: 'valid-task' };
+                const args = { task_id: 'a1b2c3d4-e5f6-4a8b-9c0d-1e2f3a4b5c6d' };
                 const result = await handleDebugTaskParsing(args);
 
                 expect(getTextContent(result)).toContain('ChildTaskInstructionPrefixes');
@@ -275,7 +275,7 @@ describe('debug-parsing.tool', () => {
             });
 
             test('should show prefixes preview when available', async () => {
-                const args = { task_id: 'valid-task' };
+                const args = { task_id: 'a1b2c3d4-e5f6-4a8b-9c0d-1e2f3a4b5c6d' };
                 const result = await handleDebugTaskParsing(args);
 
                 expect(getTextContent(result)).toContain('Prefixes preview');
@@ -284,7 +284,7 @@ describe('debug-parsing.tool', () => {
             test('should handle null analysis result', async () => {
                 mockAnalyzeConversation.mockResolvedValue(null);
 
-                const args = { task_id: 'valid-task' };
+                const args = { task_id: 'a1b2c3d4-e5f6-4a8b-9c0d-1e2f3a4b5c6d' };
                 const result = await handleDebugTaskParsing(args);
 
                 expect(getTextContent(result)).toContain('Analysis returned null');
@@ -292,13 +292,13 @@ describe('debug-parsing.tool', () => {
 
             test('should handle analysis without parent task', async () => {
                 mockAnalyzeConversation.mockResolvedValue({
-                    taskId: 'orphan-task',
+                    taskId: '11111111-2222-4333-a444-555555555555',
                     parentTaskId: undefined,
                     truncatedInstruction: undefined,
                     childTaskInstructionPrefixes: []
                 });
 
-                const args = { task_id: 'valid-task' };
+                const args = { task_id: 'a1b2c3d4-e5f6-4a8b-9c0d-1e2f3a4b5c6d' };
                 const result = await handleDebugTaskParsing(args);
 
                 expect(getTextContent(result)).toContain('ParentTaskId');
@@ -307,13 +307,13 @@ describe('debug-parsing.tool', () => {
 
             test('should handle analysis without child prefixes', async () => {
                 mockAnalyzeConversation.mockResolvedValue({
-                    taskId: 'no-children-task',
-                    parentTaskId: 'parent',
+                    taskId: '22222222-3333-4444-a555-666666666666',
+                    parentTaskId: '33333333-4444-4555-a666-777777777777',
                     truncatedInstruction: 'instruction',
                     childTaskInstructionPrefixes: undefined
                 });
 
-                const args = { task_id: 'valid-task' };
+                const args = { task_id: 'a1b2c3d4-e5f6-4a8b-9c0d-1e2f3a4b5c6d' };
                 const result = await handleDebugTaskParsing(args);
 
                 expect(getTextContent(result)).toContain('0 prefixes');
@@ -324,7 +324,7 @@ describe('debug-parsing.tool', () => {
             test('should handle JSON parse error', async () => {
                 mockReadFile.mockResolvedValue('invalid json {{{');
 
-                const args = { task_id: 'valid-task' };
+                const args = { task_id: 'a1b2c3d4-e5f6-4a8b-9c0d-1e2f3a4b5c6d' };
                 const result = await handleDebugTaskParsing(args);
 
                 // Should not crash, error should be in output
@@ -334,7 +334,7 @@ describe('debug-parsing.tool', () => {
             test('should handle file read error', async () => {
                 mockReadFile.mockRejectedValue(new Error('Permission denied'));
 
-                const args = { task_id: 'valid-task' };
+                const args = { task_id: 'a1b2c3d4-e5f6-4a8b-9c0d-1e2f3a4b5c6d' };
                 const result = await handleDebugTaskParsing(args);
 
                 // Should handle error gracefully
@@ -345,7 +345,7 @@ describe('debug-parsing.tool', () => {
                 mockReadFile.mockResolvedValue('[]');
                 mockAnalyzeConversation.mockRejectedValue(new Error('Analysis failed'));
 
-                const args = { task_id: 'valid-task' };
+                const args = { task_id: 'a1b2c3d4-e5f6-4a8b-9c0d-1e2f3a4b5c6d' };
                 const result = await handleDebugTaskParsing(args);
 
                 expect(getTextContent(result)).toContain('ERROR');
@@ -357,7 +357,7 @@ describe('debug-parsing.tool', () => {
             test('should handle empty messages array', async () => {
                 mockReadFile.mockResolvedValue('[]');
 
-                const args = { task_id: 'valid-task' };
+                const args = { task_id: 'a1b2c3d4-e5f6-4a8b-9c0d-1e2f3a4b5c6d' };
                 const result = await handleDebugTaskParsing(args);
 
                 expect(getTextContent(result)).toContain('UI Messages count: 0');
@@ -369,7 +369,7 @@ describe('debug-parsing.tool', () => {
                     { role: 'assistant', content: '' } // empty content
                 ]));
 
-                const args = { task_id: 'valid-task' };
+                const args = { task_id: 'a1b2c3d4-e5f6-4a8b-9c0d-1e2f3a4b5c6d' };
                 const result = await handleDebugTaskParsing(args);
 
                 expect(getTextContent(result)).toContain('UI Messages count: 2');
@@ -385,7 +385,7 @@ describe('debug-parsing.tool', () => {
                     }
                 ]));
 
-                const args = { task_id: 'valid-task' };
+                const args = { task_id: 'a1b2c3d4-e5f6-4a8b-9c0d-1e2f3a4b5c6d' };
                 const result = await handleDebugTaskParsing(args);
 
                 // Should handle gracefully without finding tags
@@ -398,7 +398,7 @@ describe('debug-parsing.tool', () => {
                     '/storage2'
                 ]);
 
-                const args = { task_id: 'valid-task' };
+                const args = { task_id: 'a1b2c3d4-e5f6-4a8b-9c0d-1e2f3a4b5c6d' };
                 const result = await handleDebugTaskParsing(args);
 
                 expect(result.content).toBeDefined();

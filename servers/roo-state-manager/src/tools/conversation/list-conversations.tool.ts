@@ -446,7 +446,7 @@ export const listConversationsTool = {
         // Filtre : Recherche de contenu
         if (args.contentPattern && args.contentPattern.trim().length > 0) {
             const beforeCount = allSkeletons.length;
-            
+
             const matchingTasks: ConversationSkeleton[] = [];
             for (const skeleton of allSkeletons) {
                 try {
@@ -675,7 +675,7 @@ async function matchesContentPattern(taskId: string, pattern: string): Promise<b
     try {
         const apiMessages = await loadApiMessages(taskId);
         const normalizedPattern = pattern.toLowerCase().trim();
-        
+
         return apiMessages.some(msg => {
             const textContent = extractTextFromMessage(msg).toLowerCase();
             return textContent.includes(normalizedPattern);
@@ -690,14 +690,24 @@ async function matchesContentPattern(taskId: string, pattern: string): Promise<b
  * Charge les messages API d'une tâche
  */
 async function loadApiMessages(taskId: string): Promise<ApiMessage[]> {
-    const tasksPath = path.join(os.homedir(), 'AppData', 'Roaming', 'Code', 'User', 'globalStorage', 'rooveterinaryinc.roo-cline', 'tasks');
-    const apiHistoryPath = path.join(tasksPath, taskId, 'api_conversation_history.json');
-    
-    const content = await fs.readFile(apiHistoryPath, 'utf-8');
-    const data = JSON.parse(content);
-    
-    // Le fichier peut être un array direct ou un objet avec une propriété messages
-    return Array.isArray(data) ? data : (data.messages || []);
+    const locations = await RooStorageDetector.detectStorageLocations();
+    const parseErrors: string[] = [];
+
+    for (const loc of locations) {
+        const apiHistoryPath = path.join(loc, 'tasks', taskId, 'api_conversation_history.json');
+        try {
+            let content = await fs.readFile(apiHistoryPath, 'utf-8');
+            if (content.charCodeAt(0) === 0xFEFF) {
+                content = content.slice(1);
+            }
+            const data = JSON.parse(content);
+            return Array.isArray(data) ? data : (data.messages || []);
+        } catch {
+            parseErrors.push(apiHistoryPath);
+        }
+    }
+
+    throw new Error(`Task '${taskId}' api_conversation_history not found in any storage location. Tried: ${parseErrors.join(', ')}`);
 }
 
 /**
