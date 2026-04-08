@@ -63,7 +63,7 @@ export async function searchFallbackTool(
       // Chercher aussi dans les messages de la séquence
       let messageMatch = false;
       if (skeleton.sequence && Array.isArray(skeleton.sequence)) {
-        messageMatch = skeleton.sequence.some((msg: any) =>
+        messageMatch = (skeleton.sequence ?? []).some((msg: any) =>
           (msg.content || msg.text) && (msg.content || msg.text).toLowerCase().includes(searchText)
 
         );

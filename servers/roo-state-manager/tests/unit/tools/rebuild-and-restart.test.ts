@@ -71,7 +71,8 @@ describe('rebuild_and_restart_mcp Tool', () => {
     it('should rebuild and restart MCP with watchPaths', async () => {
         // Mock exec pour gérer les deux cas (avec et sans options)
         mockExec.mockImplementation((command: string, optionsOrCallback: any, callback?: any) => {
-            const cb = callback || optionsOrCallback;
+            // Handle both exec(cmd, opts, cb) and exec(cmd, cb) signatures
+            const cb = typeof optionsOrCallback === 'function' ? optionsOrCallback : callback;
             if (command === 'npm run build') {
                 cb(null, 'Build output', '');
             } else if (command.includes('powershell.exe')) {
@@ -80,16 +81,16 @@ describe('rebuild_and_restart_mcp Tool', () => {
         });
 
         const result = await rebuildAndRestart.handler({ mcp_name: 'test-mcp' });
-        
+
         expect(result.content[0].text).toContain('Build for "test-mcp" successful');
         expect(result.content[0].text).toContain('targeted restart via watchPaths');
-        expect(mockExec).toHaveBeenCalledWith('npm run build', { cwd: '/path/to/test-mcp' }, expect.any(Function));
-        expect(mockExec).toHaveBeenCalledWith(expect.stringContaining('powershell.exe'), expect.any(Function));
+        expect(mockExec).toHaveBeenCalledWith('npm run build', { cwd: '/path/to/test-mcp', windowsHide: true }, expect.any(Function));
+        expect(mockExec).toHaveBeenCalledWith(expect.stringContaining('powershell.exe'), { windowsHide: true }, expect.any(Function));
     });
 
     it('should fallback to global restart when watchPaths is missing', async () => {
         mockExec.mockImplementation((command: string, optionsOrCallback: any, callback?: any) => {
-            const cb = callback || optionsOrCallback;
+            const cb = typeof optionsOrCallback === 'function' ? optionsOrCallback : callback;
             if (command === 'npm run build') {
                 cb(null, 'Build output', '');
             } else if (command.includes('powershell.exe')) {
@@ -98,14 +99,14 @@ describe('rebuild_and_restart_mcp Tool', () => {
         });
 
         const result = await rebuildAndRestart.handler({ mcp_name: 'mcp-without-watchpaths' });
-        
+
         expect(result.content[0].text).toContain('global restart as fallback');
         expect(result.content[0].text).toContain('WARNING');
     });
 
     it('should handle MCP with options.cwd', async () => {
         mockExec.mockImplementation((command: string, optionsOrCallback: any, callback?: any) => {
-            const cb = callback || optionsOrCallback;
+            const cb = typeof optionsOrCallback === 'function' ? optionsOrCallback : callback;
             if (command === 'npm run build') {
                 cb(null, 'Build output', '');
             } else if (command.includes('powershell.exe')) {
@@ -116,7 +117,7 @@ describe('rebuild_and_restart_mcp Tool', () => {
         const result = await rebuildAndRestart.handler({ mcp_name: 'mcp-with-options-cwd' });
         
         expect(result.content[0].text).toContain('Build for "mcp-with-options-cwd" successful');
-        expect(mockExec).toHaveBeenCalledWith('npm run build', { cwd: '/path/to/mcp-with-options-cwd' }, expect.any(Function));
+        expect(mockExec).toHaveBeenCalledWith('npm run build', { cwd: '/path/to/mcp-with-options-cwd', windowsHide: true }, expect.any(Function));
     });
 
     it('should throw error when MCP not found', async () => {
@@ -128,7 +129,7 @@ describe('rebuild_and_restart_mcp Tool', () => {
 
     it('should handle build failure', async () => {
         mockExec.mockImplementation((command: string, optionsOrCallback: any, callback?: any) => {
-            const cb = callback || optionsOrCallback;
+            const cb = typeof optionsOrCallback === 'function' ? optionsOrCallback : callback;
             if (command === 'npm run build') {
                 cb(new Error('Build failed'), '', '');
             }
@@ -142,7 +143,7 @@ describe('rebuild_and_restart_mcp Tool', () => {
 
     it('should handle touch file failure', async () => {
         mockExec.mockImplementation((command: string, optionsOrCallback: any, callback?: any) => {
-            const cb = callback || optionsOrCallback;
+            const cb = typeof optionsOrCallback === 'function' ? optionsOrCallback : callback;
             if (command === 'npm run build') {
                 cb(null, 'Build output', '');
             } else if (command.includes('powershell.exe')) {

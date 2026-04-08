@@ -38,7 +38,7 @@ export class ContentTruncator {
     ): ConversationSkeleton {
         const elementPlanMap = new Map(plan.elementPlans.map(ep => [ep.sequenceIndex, ep]));
         
-        const truncatedSequence = task.sequence.map((item, index) => {
+        const truncatedSequence = (task.sequence ?? []).map((item, index) => {
             const elementPlan = elementPlanMap.get(index);
             if (!elementPlan) {
                 return item; // Pas de troncature pour cet élément

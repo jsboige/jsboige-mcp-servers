@@ -405,7 +405,7 @@ export class NarrativeContextBuilderService {
             'se', 'son', 'sa', 'ses', 'au', 'aux', 'par', 'plus', 'ou', 'mais']);
 
         const wordFreq = new Map<string, number>();
-        const messages = skeleton.sequence.filter(s => 'role' in s) as MessageSkeleton[];
+        const messages = (skeleton.sequence ?? []).filter(s => 'role' in s) as MessageSkeleton[];
 
         for (const msg of messages) {
             const words = msg.content.toLowerCase()
@@ -473,8 +473,8 @@ export class NarrativeContextBuilderService {
             return { flows: [], styles: [], approaches: [], decisions: [] };
         }
 
-        const messages = skeleton.sequence.filter(s => 'role' in s) as MessageSkeleton[];
-        const actions = skeleton.sequence.filter(s => 'type' in s && (s as any).type === 'tool') as ActionMetadata[];
+        const messages = (skeleton.sequence ?? []).filter(s => 'role' in s) as MessageSkeleton[];
+        const actions = (skeleton.sequence ?? []).filter(s => 'type' in s && (s as any).type === 'tool') as ActionMetadata[];
 
         // Detect interaction flows
         const flows: string[] = [];
@@ -530,8 +530,8 @@ export class NarrativeContextBuilderService {
             return { roles: [], expertise: [], dynamics: [], contributions: [] };
         }
 
-        const messages = skeleton.sequence.filter(s => 'role' in s) as MessageSkeleton[];
-        const actions = skeleton.sequence.filter(s => 'type' in s && (s as any).type === 'tool') as ActionMetadata[];
+        const messages = (skeleton.sequence ?? []).filter(s => 'role' in s) as MessageSkeleton[];
+        const actions = (skeleton.sequence ?? []).filter(s => 'type' in s && (s as any).type === 'tool') as ActionMetadata[];
 
         const userMsgs = messages.filter(m => m.role === 'user');
         const assistantMsgs = messages.filter(m => m.role === 'assistant');
@@ -585,8 +585,8 @@ export class NarrativeContextBuilderService {
             return { temporal: [], efficiency: {}, quality: {}, adaptation: [] };
         }
 
-        const messages = skeleton.sequence.filter(s => 'role' in s) as MessageSkeleton[];
-        const actions = skeleton.sequence.filter(s => 'type' in s && (s as any).type === 'tool') as ActionMetadata[];
+        const messages = (skeleton.sequence ?? []).filter(s => 'role' in s) as MessageSkeleton[];
+        const actions = (skeleton.sequence ?? []).filter(s => 'type' in s && (s as any).type === 'tool') as ActionMetadata[];
 
         // Temporal patterns
         const temporal: Array<{ phase: string; messageCount: number }> = [];
@@ -602,7 +602,7 @@ export class NarrativeContextBuilderService {
             messagesPerAction: actions.length > 0 ? messages.length / actions.length : 0,
             actionsTotal: actions.length,
             messagesTotal: messages.length,
-            totalSequenceLength: skeleton.sequence.length,
+            totalSequenceLength: (skeleton.sequence ?? []).length,
             isCompleted: skeleton.isCompleted ?? false
         };
 
@@ -671,7 +671,7 @@ export class NarrativeContextBuilderService {
             return { completeness: 0, accuracy: 0 };
         }
 
-        const messages = skeleton.sequence.filter(s => 'role' in s) as MessageSkeleton[];
+        const messages = (skeleton.sequence ?? []).filter(s => 'role' in s) as MessageSkeleton[];
         const totalChars = messages.reduce((s, m) => s + m.content.length, 0);
         const contextChars = context.contextSummary?.length || 0;
 
@@ -1228,7 +1228,7 @@ export class NarrativeContextBuilderService {
      * Analyse le contenu d'une conversation en utilisant les patterns de TraceSummaryService
      */
     private async analyzeConversationContent(conversation: ConversationSkeleton): Promise<string> {
-        const messages = conversation.sequence.filter((item): item is any =>
+        const messages = (conversation.sequence ?? []).filter((item): item is any =>
             'role' in item && 'content' in item);
 
         if (messages.length === 0) {

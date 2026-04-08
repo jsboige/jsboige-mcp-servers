@@ -360,7 +360,7 @@ describe('listConversationsTool.handler', () => {
       const _response = JSON.parse((result.content[0] as any).text);
       const parsed = _response.conversations ?? _response;
 
-      expect(parsed[0].firstUserMessage.length).toBeLessThanOrEqual(303); // 300 + '...'
+      expect(parsed[0].firstUserMessage.length).toBeLessThanOrEqual(303); // max 300 + boundary truncation
       expect(parsed[0].firstUserMessage).toContain('...');
     });
 

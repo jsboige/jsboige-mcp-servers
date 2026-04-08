@@ -127,7 +127,7 @@ async function handleViewConversationTreeExecutionAsync(
         output += `${indent}  Parent: ${skeleton.parentTaskId || 'None'}\n`;
         output += `${indent}  Messages: ${skeleton.metadata.messageCount}\n`;
         
-        skeleton.sequence.forEach(item => {
+        (skeleton.sequence ?? []).forEach(item => {
             if ('role' in item) { // Message user/assistant
                 const role = item.role === 'user' ? '👤 User' : '🤖 Assistant';
 
@@ -198,7 +198,7 @@ async function handleViewConversationTreeExecutionAsync(
         let totalSize = 0;
         for (const skeleton of skeletons) {
             totalSize += 200; // En-tête de tâche
-            for (const item of skeleton.sequence) {
+            for (const item of skeleton.sequence ?? []) {
                 if ('role' in item) {
                     totalSize += item.content.length + 100; // Message + formatage
                 } else {
@@ -218,7 +218,7 @@ async function handleViewConversationTreeExecutionAsync(
     // FIX #584: Lazy load full skeleton if sequence is empty but messageCount suggests content exists
     // This happens when scanDiskForNewTasks creates minimal skeletons for discovery
     // FIX #594: Throw explicit error instead of failing silently when lazy loading fails
-    if (mainTask.sequence.length === 0 && mainTask.metadata.messageCount > 0) {
+    if ((!mainTask.sequence || mainTask.sequence.length === 0) && mainTask.metadata.messageCount > 0) {
         console.log(`[view] Lazy loading full skeleton for ${task_id} (messageCount: ${mainTask.metadata.messageCount})`);
 
         // Find the task path by checking all storage locations
@@ -242,12 +242,12 @@ async function handleViewConversationTreeExecutionAsync(
 
         if (taskPath) {
             const fullSkeleton = await RooStorageDetector.analyzeConversation(task_id, taskPath);
-            if (fullSkeleton && fullSkeleton.sequence.length > 0) {
+            if (fullSkeleton && (fullSkeleton.sequence ?? []).length > 0) {
                 // Update the cache with complete skeleton
                 conversationCache.set(task_id, fullSkeleton);
                 // Refresh mainTask reference
                 mainTask = fullSkeleton;
-                console.log(`[view] Successfully loaded ${fullSkeleton.sequence.length} sequence items for ${task_id}`);
+                console.log(`[view] Successfully loaded ${(fullSkeleton.sequence ?? []).length} sequence items for ${task_id}`);
             } else {
                 // Task found but analyzeConversation returned null/empty
                 throw new GenericError(
@@ -499,7 +499,7 @@ function handleLegacyTruncation(
     // Utilisation du SizeCalculator du module smart-truncation pour cohérence
     const estimatedSize = tasksToDisplay.reduce((sum, task) => {
         let taskSize = 200; // En-tête de tâche
-        for (const item of task.sequence) {
+        for (const item of task.sequence ?? []) {
             if ('role' in item) {
                 taskSize += item.content.length + 100; // Message + formatage
             } else {
@@ -515,7 +515,7 @@ function handleLegacyTruncation(
     if (detail_level !== 'full' && truncate === 0 && estimatedSize > max_output_length) {
         // Pour skeleton/summary seulement : forcer une troncature intelligente si la sortie est trop grande
         const totalMessages = tasksToDisplay.reduce((count, task) =>
-            count + task.sequence.filter(item => 'role' in item).length, 0);
+            count + (task.sequence ?? []).filter(item => 'role' in item).length, 0);
         truncate = Math.max(2, Math.floor(max_output_length / (estimatedSize / Math.max(1, totalMessages * 20))));
     }
     // Mode full : JAMAIS de troncature automatique, respecter strictement la demande de l'utilisateur
@@ -678,7 +678,7 @@ function createFormatTaskFunction(detail_level: string, truncate: number, curren
         output += `${indent}  Parent: ${skeleton.parentTaskId || 'None'}\n`;
         output += `${indent}  Messages: ${skeleton.metadata.messageCount}\n`;
         
-        skeleton.sequence.forEach(item => {
+        (skeleton.sequence ?? []).forEach(item => {
             if ('role' in item) { // Message user/assistant
                 const role = item.role === 'user' ? '👤 User' : '🤖 Assistant';
 

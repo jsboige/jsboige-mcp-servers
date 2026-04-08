@@ -590,7 +590,7 @@ async function backupMcpSettings(): Promise<string> {
 
 async function runNpmBuild(mcpPath: string): Promise<string> {
     return new Promise((resolve, reject) => {
-        exec('npm run build', { cwd: mcpPath }, (error, stdout, stderr) => {
+        exec('npm run build', { cwd: mcpPath, windowsHide: true }, (error, stdout, stderr) => {
             if (error) {
                 reject(new HeartbeatServiceError(`Build échoué: ${error.message}`, 'BUILD_FAILED'));
             } else {
@@ -603,7 +603,7 @@ async function runNpmBuild(mcpPath: string): Promise<string> {
 async function touchFile(filePath: string): Promise<void> {
     const command = `(Get-Item -LiteralPath "${filePath}").LastWriteTime = Get-Date`;
     return new Promise((resolve, reject) => {
-        exec(`powershell.exe -Command "${command}"`, (error) => {
+        exec(`powershell.exe -Command "${command}"`, { windowsHide: true }, (error) => {
             if (error) {
                 reject(new HeartbeatServiceError(`Touch échoué pour ${filePath}: ${error.message}`, 'TOUCH_FAILED'));
             } else {

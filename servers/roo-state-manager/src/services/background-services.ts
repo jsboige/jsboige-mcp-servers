@@ -323,7 +323,7 @@ export async function loadClaudeCodeSessions(conversationCache: Map<string, Skel
                 const skeleton = await ClaudeStorageDetector.analyzeConversation(
                     taskId, location.projectPath
                 );
-                if (skeleton && skeleton.sequence.length > 0) {
+                if (skeleton && (skeleton.sequence ?? []).length > 0) {
                     // #937 FIX: Set both source and dataSource consistently for Claude sessions
                     if (!skeleton.metadata) skeleton.metadata = {} as any;
                     skeleton.metadata.source = 'claude-code'; // For filtering in Qdrant
@@ -437,7 +437,7 @@ export function startSkeletonRefreshWorker(state: ServerState): void {
 
                                 if (stat.mtime.getTime() > existingLastActivity) {
                                     const skeleton = await ClaudeStorageDetector.analyzeConversation(taskId, location.projectPath);
-                                    if (skeleton && skeleton.sequence.length > 0) {
+                                    if (skeleton && (skeleton.sequence ?? []).length > 0) {
                                         if (!skeleton.metadata) skeleton.metadata = {} as any;
                                         skeleton.metadata.dataSource = 'claude';
                                         state.conversationCache.set(taskId, toHeader(skeleton));
@@ -565,22 +565,32 @@ async function initializeQdrantIndexingService(state: ServerState): Promise<void
     try {
         console.log('🔍 Initialisation du service d\'indexation Qdrant...');
 
-        // Vérifier la cohérence entre squelettes et index Qdrant
-        await verifyQdrantConsistency(state);
+        // FIX #1199: Split verification and scanning into separate phases with defensive error handling
+        // Phase 1: Verify consistency (non-critical, safe to skip if Qdrant is down)
+        try {
+            await verifyQdrantConsistency(state);
+        } catch (error: any) {
+            console.warn('⚠️  Vérification cohérence Qdrant échouée (non-critique):', error?.message || error);
+            // Continue anyway - this is not critical for startup
+        }
 
-        // Vérifier les squelettes qui nécessitent une réindexation
-        await scanForOutdatedQdrantIndex(state);
+        // Phase 2: Scan for outdated indices (non-critical, safe to skip if Qdrant is down)
+        try {
+            await scanForOutdatedQdrantIndex(state);
+        } catch (error: any) {
+            console.warn('⚠️  Scan Qdrant échoué (non-critique):', error?.message || error);
+            // Continue anyway - this is not critical for startup
+        }
 
-        // Démarrer le service d'indexation en arrière-plan
+        // Phase 3: Start background process (always safe - doesn't contact Qdrant immediately)
         startQdrantIndexingBackgroundProcess(state);
 
-        console.log('✅ Service d\'indexation Qdrant initialisé');
+        console.log('✅ Service d\'indexation Qdrant initialisé (indexation en arrière-plan activée)');
     } catch (error: any) {
-        console.error('⚠️  Erreur lors de l\'initialisation de l\'indexation Qdrant (non-bloquant):', error);
-        state.isQdrantIndexingEnabled = false;
-        console.error('❌ INDEXATION QDRANT DÉSACTIVÉE - La recherche sémantique ne sera pas disponible.');
-        console.error('   Vérifiez les variables d\'environnement: QDRANT_URL, QDRANT_API_KEY, EMBEDDING_API_KEY');
-        console.error('   Pour diagnostiquer: utilisez roosync_indexing(action: "diagnose")');
+        console.error('⚠️  Erreur lors de l\'initialisation du service d\'indexation Qdrant (non-bloquant):', error?.message || error);
+        // Even if this fails, we still want to proceed and let the background process handle it gracefully
+        state.isQdrantIndexingEnabled = true; // Keep it enabled - let the background process disable if needed
+        console.error('⚠️  Service d\'indexation continuera en arrière-plan avec gestion des erreurs renforcée');
     }
 }
 
@@ -669,6 +679,7 @@ async function scanForOutdatedQdrantIndex(state: ServerState): Promise<void> {
 
 /**
  * Vérifie la cohérence entre les squelettes locaux et l'index Qdrant
+ * FIX #1199: Made completely non-blocking - errors don't propagate, just logged as warnings
  */
 async function verifyQdrantConsistency(state: ServerState): Promise<void> {
     try {
@@ -678,7 +689,7 @@ async function verifyQdrantConsistency(state: ServerState): Promise<void> {
             return;
         }
 
-        console.log('🔍 Vérification de la cohérence Qdrant vs Squelettes...');
+        console.log('🔍 Vérification de la cohérence Qdrant vs Squelettes (timeout: 10s)...');
 
         const taskIndexer = new TaskIndexer();
         const currentHostId = getHostIdentifier();
@@ -691,7 +702,22 @@ async function verifyQdrantConsistency(state: ServerState): Promise<void> {
             }
         }
 
-        const qdrantCount = await taskIndexer.countPointsByHostOs(currentHostId);
+        // FIX #1199: Wrap countPointsByHostOs with timeout to prevent hanging
+        let qdrantCount = 0;
+        try {
+            const countPromise = taskIndexer.countPointsByHostOs(currentHostId);
+            qdrantCount = await Promise.race([
+                countPromise,
+                new Promise<number>((_, reject) =>
+                    setTimeout(() => reject(new Error('Qdrant count timeout after 10s')), 10000)
+                )
+            ]);
+        } catch (error: any) {
+            console.warn(`⚠️  Impossible de compter les points Qdrant (timeout ou connexion échouée): ${error?.message || error}`);
+            // Return gracefully - Qdrant is unreachable, but we don't want to crash the server
+            return;
+        }
+
         state.lastQdrantConsistencyCheck = now;
 
         console.log(`📊 Cohérence Qdrant:`);
@@ -709,8 +735,9 @@ async function verifyQdrantConsistency(state: ServerState): Promise<void> {
             console.log(`✅ Cohérence Qdrant-Squelettes validée (écart acceptable: ${discrepancy})`);
         }
 
-    } catch (error) {
-        console.error('❌ Erreur lors de la vérification de cohérence Qdrant:', error);
+    } catch (error: any) {
+        console.warn('⚠️  Erreur lors de la vérification de cohérence Qdrant (non-bloquant):', error?.message || error);
+        // Don't re-throw - we want this to be completely non-blocking
     }
 }
 

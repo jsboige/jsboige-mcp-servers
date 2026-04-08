@@ -11,7 +11,7 @@ const __dirname = dirname(__filename);
 
 async function runNpmBuild(mcpPath: string): Promise<string> {
     return new Promise((resolve, reject) => {
-        exec('npm run build', { cwd: mcpPath }, (error, stdout, stderr) => {
+        exec('npm run build', { cwd: mcpPath, windowsHide: true }, (error, stdout, stderr) => {
             if (error) {
                 return reject(new GenericError(`Build failed: ${error.message}`, GenericErrorCode.FILE_SYSTEM_ERROR));
             }
@@ -23,7 +23,7 @@ async function runNpmBuild(mcpPath: string): Promise<string> {
 async function touchFile(filePath: string): Promise<string> {
     const command = `(Get-Item -LiteralPath "${filePath}").LastWriteTime = Get-Date`;
     return new Promise((resolve, reject) => {
-        exec(`powershell.exe -Command "${command}"`, (error, stdout, stderr) => {
+        exec(`powershell.exe -Command "${command}"`, { windowsHide: true }, (error, stdout, stderr) => {
             if (error) {
                 return reject(new GenericError(`Touch failed for ${filePath}: ${error.message}`, GenericErrorCode.FILE_SYSTEM_ERROR));
             }

@@ -228,7 +228,7 @@ describe('codebase_search - handleCodebaseSearch - Search success', () => {
 		await hcs({ query: 'test', limit: 100 });
 		expect(mockQuery).toHaveBeenCalledWith(
 			expect.anything(),
-			expect.objectContaining({ limit: 30 })
+			expect.objectContaining({ limit: 50 })
 		);
 	});
 
