@@ -521,4 +521,75 @@ describe('roosync_dashboard', () => {
     const hasCondensationTag = messages?.some(m => m.tags?.includes('CONDENSATION'));
     expect(hasCondensationTag).toBe(false);
   });
+
+  // === Test 32: Content with ### [ prefix doesn't break parsing (#1123) ===
+  it('preserves message content containing ### [ at line start', async () => {
+    await roosyncDashboard({ action: 'write', type: 'global', content: '# Init', createIfNotExists: true });
+
+    // Message with ### [ in content — this used to cause false message splits
+    const maliciousContent = 'Normal text\n\n### [This looks like a header]\n\nMore text';
+    await roosyncDashboard({
+      action: 'append',
+      type: 'global',
+      content: maliciousContent,
+      tags: ['INFO']
+    });
+
+    // Add a second message to verify split didn't corrupt
+    await roosyncDashboard({
+      action: 'append',
+      type: 'global',
+      content: 'Second message'
+    });
+
+    const result = await roosyncDashboard({ action: 'read', type: 'global', section: 'intercom' });
+    const messages = result.data?.intercom?.messages;
+
+    expect(messages.length).toBe(2);
+    // First message should preserve the ### [ content exactly
+    expect(messages[0].content).toBe(maliciousContent);
+    expect(messages[1].content).toBe('Second message');
+  });
+
+  // === Test 33: Content with --- separator doesn't break parsing ===
+  it('preserves message content containing --- separator', async () => {
+    await roosyncDashboard({ action: 'write', type: 'global', content: '# Init', createIfNotExists: true });
+
+    const contentWithDashes = 'Some text\n---\nMore text after dash separator';
+    await roosyncDashboard({
+      action: 'append',
+      type: 'global',
+      content: contentWithDashes
+    });
+
+    await roosyncDashboard({
+      action: 'append',
+      type: 'global',
+      content: 'After'
+    });
+
+    const result = await roosyncDashboard({ action: 'read', type: 'global', section: 'intercom' });
+    const messages = result.data?.intercom?.messages;
+
+    expect(messages.length).toBe(2);
+    expect(messages[0].content).toBe(contentWithDashes);
+  });
+
+  // === Test 34: Content with pipe | in body preserves correctly ===
+  it('preserves message content containing pipe characters', async () => {
+    await roosyncDashboard({ action: 'write', type: 'global', content: '# Init', createIfNotExists: true });
+
+    const contentWithPipes = 'Column A | Column B | Column C\n--- | --- | ---\n1 | 2 | 3';
+    await roosyncDashboard({
+      action: 'append',
+      type: 'global',
+      content: contentWithPipes
+    });
+
+    const result = await roosyncDashboard({ action: 'read', type: 'global', section: 'intercom' });
+    const messages = result.data?.intercom?.messages;
+
+    expect(messages.length).toBe(1);
+    expect(messages[0].content).toBe(contentWithPipes);
+  });
 });

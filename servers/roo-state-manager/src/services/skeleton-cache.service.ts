@@ -191,7 +191,11 @@ export class SkeletonCacheService {
                 for (const file of jsonFiles) {
                     try {
                         const filePath = path.join(skeletonDir, file);
-                        const content = await fs.readFile(filePath, 'utf-8');
+                        let content = await fs.readFile(filePath, 'utf-8');
+                        // FIX #1123: Strip UTF-8 BOM if present (Windows editors can add it)
+                        if (content.charCodeAt(0) === 0xFEFF) {
+                            content = content.slice(1);
+                        }
                         const skeleton: ConversationSkeleton = JSON.parse(content);
 
                         if (skeleton.taskId) {

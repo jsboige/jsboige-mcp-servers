@@ -239,11 +239,13 @@ async function readDashboardFile(key: string): Promise<Dashboard | null> {
           const [, timestamp, machineId, workspace, , tagsStr, content] = headerMatch;
           // tagsStr (groupe 5) contient déjà les tags sans les crochets: "WARN, SYSTEM"
           const tags = tagsStr ? tagsStr.split(', ').map(t => t.trim()) : [];
+          // FIX #1123: Unescape "### [" that was escaped during write to prevent false splits
+          const unescapedContent = content.trim().replace(/^\\#\\#\\# \[/gm, '### [');
           messages.push({
             id: generateMessageId(), // ID regénéré (pas stocké dans le format markdown)
             timestamp,
             author: { machineId: machineId.trim(), workspace: workspace.trim() },
-            content: content.trim(),
+            content: unescapedContent,
             tags: tags.length > 0 ? tags : undefined
           });
         }
@@ -294,10 +296,13 @@ async function writeDashboardFile(key: string, dashboard: Dashboard): Promise<vo
   const statusSection = dashboard.status.markdown || '*Aucun contenu.*';
 
   // Construire la section intercom (messages en markdown)
+  // FIX #1123: Escape "### [" at line start in content to prevent false message splits
+  const escapeContent = (text: string): string =>
+    text.replace(/^### \[/gm, '\\#\\#\\# [');
   const intercomSection = dashboard.intercom.messages.length > 0
     ? dashboard.intercom.messages.map(msg => {
         const tags = msg.tags?.length ? ` [${msg.tags.join(', ')}]` : '';
-        return `### [${msg.timestamp}] ${msg.author.machineId}|${msg.author.workspace}${tags}\n\n${msg.content}`;
+        return `### [${msg.timestamp}] ${msg.author.machineId}|${msg.author.workspace}${tags}\n\n${escapeContent(msg.content)}`;
       }).join('\n\n---\n\n')
     : '*Aucun message.*';
 
