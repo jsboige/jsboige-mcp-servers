@@ -256,6 +256,21 @@ describe('SkeletonCacheService', () => {
 			const service = SkeletonCacheService.getInstance();
 			const cache = await service.getCache();
 			expect(cache.size).toBe(0);
-		});
+			});
+
+			// FIX #1123: BOM in skeleton file should be stripped before JSON.parse
+			test("loads skeleton files with UTF-8 BOM prefix", async () => {
+				mockDetectStorageLocations.mockResolvedValue(["/mock/storage"]);
+				mockStat.mockResolvedValue({ isDirectory: () => true });
+				mockReaddir.mockResolvedValue(["bom-skeleton.json"]);
+				// BOM char (0xFEFF) + valid JSON
+				const bomJson = "﻿" + JSON.stringify({ taskId: "bom-test", metadata: { mode: "code-simple" } });
+				mockReadFile.mockResolvedValue(bomJson);
+
+				const service = SkeletonCacheService.getInstance();
+				const cache = await service.getCache();
+				expect(cache.size).toBe(1);
+				expect(cache.has("bom-test")).toBe(true);
+			});
 	});
 });
