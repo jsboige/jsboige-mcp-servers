@@ -12,18 +12,20 @@ import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { roosyncMachines } from '../machines.js';
 import { RooSyncService } from '../../../services/RooSyncService.js';
 import * as fs from 'fs';
+import * as os from 'os';
 import * as path from 'path';
 
 // Unmock modules that jest.setup.js mocks globally.
 // Smoke tests need real filesystem and real RooSyncService (not mocks).
 vi.unmock('fs');
 vi.unmock('fs/promises');
+vi.unmock('os');
 vi.unmock('../../../services/RooSyncService.js');
 vi.unmock('../../../services/ConfigService.js');
 
 describe('SMOKE: roosync_machines', () => {
   // Use unique directory per test file to avoid ENOTEMPTY cleanup errors
-  const testSharedStatePath = path.join(process.cwd(), '.shared-state-test-machines');
+  const testSharedStatePath = path.join(os.tmpdir(), '.shared-state-test-machines');
   const testHeartbeatsDir = path.join(testSharedStatePath, 'heartbeats');
   let originalEnv: NodeJS.ProcessEnv;
 
