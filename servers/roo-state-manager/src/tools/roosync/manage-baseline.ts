@@ -17,6 +17,10 @@ import { join } from 'path';
 import { BaselineService } from '../../services/BaselineService.js';
 import { ConfigService } from '../../services/ConfigService.js';
 import { execSync } from 'child_process';
+
+/** Timeouts for git operations in baseline management */
+const GIT_TIMEOUT_MS = 60_000;
+const GIT_QUICK_TIMEOUT_MS = 10_000;
 import type { BaselineConfig } from '../../types/baseline.js';
 import { BaselineServiceError, BaselineServiceErrorCode, StateManagerError } from '../../types/errors.js';
 
@@ -161,7 +165,7 @@ async function handleVersionAction(
   // Vérifier si le tag existe déjà
   let tagExists = false;
   try {
-    execSync(`git rev-parse --verify refs/tags/${tagName}`, { stdio: 'pipe' });
+    execSync(`git rev-parse --verify refs/tags/${tagName}`, { stdio: 'pipe', timeout: GIT_QUICK_TIMEOUT_MS });
     tagExists = true;
     logger.warn('Tag already exists', { tagName });
   } catch (error) {
@@ -179,8 +183,8 @@ async function handleVersionAction(
   let baselineCommitted = false;
   try {
     const baselinePath = join(sharedPath, 'sync-config.ref.json');
-    execSync(`git add "${baselinePath}"`, { stdio: 'pipe' });
-    execSync(`git commit -m "chore: baseline version ${args.version}"`, { stdio: 'pipe' });
+    execSync(`git add "${baselinePath}"`, { stdio: 'pipe', timeout: GIT_TIMEOUT_MS });
+    execSync(`git commit -m "chore: baseline version ${args.version}"`, { stdio: 'pipe', timeout: GIT_TIMEOUT_MS });
     baselineCommitted = true;
     logger.info('✅ Baseline committed successfully', { baselinePath });
   } catch (error) {
@@ -191,7 +195,7 @@ async function handleVersionAction(
   // Créer le tag Git
   let tagCreated = false;
   try {
-    execSync(`git tag -a ${tagName} -m "${tagMessage}"`, { stdio: 'pipe' });
+    execSync(`git tag -a ${tagName} -m "${tagMessage}"`, { stdio: 'pipe', timeout: GIT_TIMEOUT_MS });
     tagCreated = true;
     logger.info('✅ Git tag created successfully', { tagName });
   } catch (error) {
@@ -205,7 +209,7 @@ async function handleVersionAction(
   let tagPushed = false;
   if (args.pushTags !== false) {
     try {
-      execSync('git push --tags', { stdio: 'pipe' });
+      execSync('git push --tags', { stdio: 'pipe', timeout: GIT_TIMEOUT_MS });
       tagPushed = true;
       logger.info('✅ Git tag pushed successfully', { tagName });
     } catch (error) {
@@ -375,7 +379,7 @@ async function handleRestoreAction(
       // Créer le répertoire de sauvegarde si nécessaire
       const backupDir = join(sharedPath, '.rollback');
       if (!existsSync(backupDir)) {
-        execSync(`mkdir -p "${backupDir}"`, { stdio: 'pipe' });
+        execSync(`mkdir -p "${backupDir}"`, { stdio: 'pipe', timeout: GIT_QUICK_TIMEOUT_MS });
       }
 
       writeFileSync(backupPath, JSON.stringify(currentBaseline, null, 2), 'utf-8');
@@ -406,12 +410,12 @@ async function handleRestoreAction(
 
       // Fix Bug #291: Vérifier si le tag existe avant de tenter la restauration
       try {
-        execSync(`git rev-parse --verify ${args.source}^{commit}`, { encoding: 'utf8', stdio: 'pipe' });
+        execSync(`git rev-parse --verify ${args.source}^{commit}`, { encoding: 'utf8', stdio: 'pipe', timeout: GIT_QUICK_TIMEOUT_MS });
       } catch (tagError) {
         // Récupérer la liste des tags disponibles
         let availableTags = '';
         try {
-          const allTags = execSync('git tag -l', { encoding: 'utf8' });
+          const allTags = execSync('git tag -l', { encoding: 'utf8', timeout: GIT_QUICK_TIMEOUT_MS });
           const baselineTags = allTags.split('\n').filter(tag => tag.startsWith('baseline-v'));
           if (baselineTags.length > 0) {
             availableTags = `\n\nTags baseline disponibles:\n${baselineTags.map(t => `  - ${t}`).join('\n')}`;
@@ -427,7 +431,8 @@ async function handleRestoreAction(
           if (existsSync(backupDir)) {
             const backupFiles = execSync(`ls -t "${backupDir}" 2>/dev/null || dir /b /o-d "${backupDir}" 2>nul`, {
               encoding: 'utf8',
-              shell: 'powershell.exe'
+              shell: 'powershell.exe',
+              timeout: GIT_QUICK_TIMEOUT_MS
             });
             const backups = backupFiles.split('\n').filter(f => f.includes('sync-config.ref.backup.'));
             if (backups.length > 0) {
@@ -450,7 +455,7 @@ async function handleRestoreAction(
       }
 
       // Récupérer le contenu du tag
-      const baselineContent = execSync(`git show ${args.source}:sync-config.ref.json`, { encoding: 'utf8' });
+      const baselineContent = execSync(`git show ${args.source}:sync-config.ref.json`, { encoding: 'utf8', timeout: GIT_TIMEOUT_MS });
       restoredBaseline = JSON.parse(baselineContent) as BaselineConfig;
 
       // Valider la baseline

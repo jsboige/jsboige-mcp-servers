@@ -18,6 +18,10 @@ import { ConfigService } from '../../services/ConfigService.js';
 import { InventoryCollector } from '../../services/InventoryCollector.js';
 import { DiffDetector } from '../../services/DiffDetector.js';
 import { execSync } from 'child_process';
+
+/** Timeout for git operations in baseline management */
+const GIT_TIMEOUT_MS = 60_000;
+const GIT_QUICK_TIMEOUT_MS = 10_000; // For rev-parse, tag -l
 import type { BaselineConfig } from '../../types/baseline.js';
 import { BaselineServiceError, BaselineServiceErrorCode, StateManagerError } from '../../types/errors.js';
 import { readJSONFileSyncWithoutBOM } from '../../utils/encoding-helpers.js';
@@ -409,7 +413,7 @@ async function handleVersionAction(args: BaselineArgs, timestamp: string): Promi
   // Vérifier si le tag existe déjà
   let tagExists = false;
   try {
-    execSync(`git rev-parse --verify refs/tags/${tagName}`, { stdio: 'pipe' });
+    execSync(`git rev-parse --verify refs/tags/${tagName}`, { stdio: 'pipe', timeout: GIT_QUICK_TIMEOUT_MS });
     tagExists = true;
   } catch (error) {
     // Le tag n'existe pas, c'est normal
@@ -425,8 +429,8 @@ async function handleVersionAction(args: BaselineArgs, timestamp: string): Promi
   // Committer le fichier de baseline
   try {
     const baselinePath = join(sharedPath, 'sync-config.ref.json');
-    execSync(`git add "${baselinePath}"`, { stdio: 'pipe' });
-    execSync(`git commit -m "chore: baseline version ${args.version}"`, { stdio: 'pipe' });
+    execSync(`git add "${baselinePath}"`, { stdio: 'pipe', timeout: GIT_TIMEOUT_MS });
+    execSync(`git commit -m "chore: baseline version ${args.version}"`, { stdio: 'pipe', timeout: GIT_TIMEOUT_MS });
     logger.info('✅ Baseline committed successfully');
   } catch (error) {
     logger.warn('⚠️ Could not commit baseline file', { error: (error as Error).message });
@@ -434,7 +438,7 @@ async function handleVersionAction(args: BaselineArgs, timestamp: string): Promi
 
   // Créer le tag Git
   try {
-    execSync(`git tag -a ${tagName} -m "${tagMessage}"`, { stdio: 'pipe' });
+    execSync(`git tag -a ${tagName} -m "${tagMessage}"`, { stdio: 'pipe', timeout: GIT_TIMEOUT_MS });
     logger.info('✅ Git tag created successfully', { tagName });
   } catch (error) {
     throw new RooSyncServiceError(
@@ -447,7 +451,7 @@ async function handleVersionAction(args: BaselineArgs, timestamp: string): Promi
   let tagPushed = false;
   if (args.pushTags !== false) {
     try {
-      execSync('git push --tags', { stdio: 'pipe' });
+      execSync('git push --tags', { stdio: 'pipe', timeout: GIT_TIMEOUT_MS });
       tagPushed = true;
       logger.info('✅ Git tag pushed successfully');
     } catch (error) {
@@ -591,7 +595,7 @@ async function handleRestoreAction(args: BaselineArgs, timestamp: string): Promi
 
       const backupDir = join(sharedPath, '.rollback');
       if (!existsSync(backupDir)) {
-        execSync(`mkdir -p "${backupDir}"`, { stdio: 'pipe' });
+        execSync(`mkdir -p "${backupDir}"`, { stdio: 'pipe', timeout: GIT_QUICK_TIMEOUT_MS });
       }
 
       writeFileSync(backupPath, JSON.stringify(currentBaseline, null, 2), 'utf-8');
@@ -614,12 +618,12 @@ async function handleRestoreAction(args: BaselineArgs, timestamp: string): Promi
 
       // Vérifier si le tag existe
       try {
-        execSync(`git rev-parse --verify ${args.source}^{commit}`, { encoding: 'utf8', stdio: 'pipe' });
+        execSync(`git rev-parse --verify ${args.source}^{commit}`, { encoding: 'utf8', stdio: 'pipe', timeout: GIT_QUICK_TIMEOUT_MS });
       } catch (tagError) {
         // Récupérer les tags disponibles
         let availableTags = '';
         try {
-          const allTags = execSync('git tag -l', { encoding: 'utf8' });
+          const allTags = execSync('git tag -l', { encoding: 'utf8', timeout: GIT_QUICK_TIMEOUT_MS });
           const baselineTags = allTags.split('\n').filter(tag => tag.startsWith('baseline-v'));
           if (baselineTags.length > 0) {
             availableTags = `\n\nTags baseline disponibles:\n${baselineTags.map(t => `  - ${t}`).join('\n')}`;
@@ -637,7 +641,7 @@ async function handleRestoreAction(args: BaselineArgs, timestamp: string): Promi
       }
 
       // Récupérer le contenu du tag
-      const baselineContent = execSync(`git show ${args.source}:sync-config.ref.json`, { encoding: 'utf8' });
+      const baselineContent = execSync(`git show ${args.source}:sync-config.ref.json`, { encoding: 'utf8', timeout: GIT_TIMEOUT_MS });
       restoredBaseline = JSON.parse(baselineContent) as BaselineConfig;
 
       if (!restoredBaseline.machineId || !restoredBaseline.version) {
