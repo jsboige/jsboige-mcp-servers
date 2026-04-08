@@ -68,6 +68,16 @@ export interface ConversationBrowserArgs {
     // ===== Arguments pour action='current' =====
     /** [current/view] Chemin du workspace (détection auto si omis) */
     workspace?: string;
+    /** [list] #1244 Couche 2.2 — Strategie de matching du workspace.
+     * 'exact' = comparaison stricte, 'normalized' (defaut) = match basename tolerant cross-machine,
+     * 'substring' = test includes pour recherches exploratoires. */
+    workspacePathMatch?: 'exact' | 'normalized' | 'substring';
+    /** [list] #1244 Couche 2.1 — Date debut (ISO 8601 ou YYYY-MM-DD). Filtre lastActivity >= startDate. */
+    startDate?: string;
+    /** [list] #1244 Couche 2.1 — Date fin (ISO 8601 ou YYYY-MM-DD). Filtre lastActivity <= endDate. */
+    endDate?: string;
+    /** [list] #1244 Couche 2.1 — Filtre par identifiant machine (cross-machine). */
+    machineId?: string;
 
     // ===== Arguments pour action='view' (via view_conversation_tree) =====
     /** [view] ID de la tâche de départ */
@@ -80,7 +90,7 @@ export interface ConversationBrowserArgs {
     truncate?: number;
     /** [view] Limite max de caractères en sortie */
     max_output_length?: number;
-    /** [view] Activer la troncature intelligente */
+    /** [view] #1244 Couche 2.5 — Troncature intelligente avec gradient. Activee PAR DEFAUT. */
     smart_truncation?: boolean;
     /** [view] Configuration troncature intelligente */
     smart_truncation_config?: {
@@ -88,6 +98,10 @@ export interface ConversationBrowserArgs {
         minPreservationRate?: number;
         maxTruncationRate?: number;
     };
+    /** [view] #1244 Couche 2.6 — Index 0-based du premier message a inclure (inclusif). */
+    messageStart?: number;
+    /** [view] #1244 Couche 2.6 — Index 0-based du dernier message a inclure (exclusif). */
+    messageEnd?: number;
     /** [view] Chemin pour sauvegarder l'arbre */
     output_file?: string;
 
@@ -144,6 +158,10 @@ export interface ConversationBrowserArgs {
     force_rebuild?: boolean;
     /** [rebuild] Liste d'IDs de tâches spécifiques à reconstruire */
     task_ids?: string[];
+    /** [rebuild] #1244 Couche 1.4 — Sources de squelettes ('roo'|'claude'|'archive'). Defaut: ['roo']. */
+    sources?: Array<'roo' | 'claude' | 'archive'>;
+    /** [rebuild] #1244 Couche 1.4 — Si true, force l'enqueue Qdrant pour tous les squelettes (tous tiers). */
+    reindex?: boolean;
 }
 
 /**
@@ -151,14 +169,14 @@ export interface ConversationBrowserArgs {
  */
 export const conversationBrowserTool: Tool = {
     name: 'conversation_browser',
-    description: 'Outil consolidé pour naviguer, visualiser et résumer les conversations. Actions: "list" (lister les conversations récentes), "tree" (arbre des tâches), "current" (tâche active), "view" (vue conversation), "summarize" (résumé/synthèse — types: "trace", "cluster", "synthesis" pour analyse LLM complète), "rebuild" (reconstruire le cache de squelettes sur disque). Commencez par "list" pour découvrir les IDs de tâches.',
+    description: 'Outil consolide pour naviguer, visualiser et resumer les conversations Roo et Claude Code (cross-machine via archives GDrive). Actions: "list" (decouvrir les conversations avec filtres), "tree" (arbre parent-enfant), "current" (tache active du workspace), "view" (zoom contenu d\'une conversation, supporte la pagination message-level), "summarize" (resume/synthese), "rebuild" (reconstruire le cache multi-tier roo+claude+archive). Pattern de zoom: list -> view(detail_level=skeleton) -> view(messageStart/messageEnd) -> summarize. Toujours commencer par "list" pour decouvrir les IDs.',
     inputSchema: {
         type: 'object',
         properties: {
             action: {
                 type: 'string',
                 enum: ['list', 'tree', 'current', 'view', 'summarize', 'rebuild'],
-                description: 'Action à effectuer. Utilisez "list" pour découvrir les conversations disponibles et leurs IDs. "rebuild" force la reconstruction du cache de squelettes.'
+                description: 'Action a effectuer. "list" = decouvrir les conversations (filtres workspace, machineId, startDate/endDate, contentPattern, source). "view" = inspecter une tache (detail_level=skeleton/summary/full, messageStart/messageEnd pour pagination). "summarize" = trace/cluster/synthesis. "tree" = arbre parent-enfant. "rebuild" = reconstruire le cache multi-tier (sources=[roo,claude,archive]).'
             },
             // --- Arguments list ---
             limit: {
@@ -224,21 +242,39 @@ export const conversationBrowserTool: Tool = {
                 type: 'string',
                 description: '[current/view] Chemin du workspace (détection auto si omis).'
             },
+            workspacePathMatch: {
+                type: 'string',
+                enum: ['exact', 'normalized', 'substring'],
+                description: '[list] #1244 Couche 2.2 — Strategie de matching du workspace. "exact": comparaison stricte (apres normalisation forward-slash). "normalized" (defaut): match par basename, tolere les variations de chemin parent (`d:/dev/CoursIA` == `d:/CoursIA`) — strategie cross-machine la plus robuste. "substring": test includes lowercase, le plus tolerant.',
+                default: 'normalized'
+            },
+            startDate: {
+                type: 'string',
+                description: '[list] #1244 Couche 2.1 — Date debut (ISO 8601 ou YYYY-MM-DD). Filtre les taches dont lastActivity >= startDate. Combinable avec endDate. Exemple: "2026-04-07".'
+            },
+            endDate: {
+                type: 'string',
+                description: '[list] #1244 Couche 2.1 — Date fin (ISO 8601 ou YYYY-MM-DD). Filtre les taches dont lastActivity <= endDate (inclusif jusqu\'a fin de journee). Exemple: "2026-04-08".'
+            },
+            machineId: {
+                type: 'string',
+                description: '[list] #1244 Couche 2.1 — Filtre par identifiant machine (cross-machine). Permet d\'isoler les conversations d\'une machine specifique parmi les archives chargees depuis GDrive. Exemple: "myia-po-2025".'
+            },
             // --- Arguments view ---
             task_id: {
                 type: 'string',
-                description: '[view] ID de la tâche de départ.'
+                description: '[view/summarize] ID de la tâche à inspecter. Decouvrir les IDs via action="list" en premier. Pour les sessions Claude Code, le prefixe peut etre "claude-" ; les taches Roo et les archives utilisent l\'UUID brut.'
             },
             view_mode: {
                 type: 'string',
                 enum: ['single', 'chain', 'cluster'],
-                description: '[view] Mode d\'affichage.',
+                description: '[view] Mode d\'affichage. "single" = une tache, "chain" (defaut) = remonte la chaine parent, "cluster" = arbre enfants.',
                 default: 'chain'
             },
             detail_level: {
                 type: 'string',
                 enum: ['skeleton', 'summary', 'full'],
-                description: '[view] Niveau de détail.',
+                description: '[view] Niveau de detail (zoom progressif). "skeleton" (defaut, ~15k chars) = vue overview ; "summary" (~50k) = contenu principal condense ; "full" (~150k) = sequence complete avec tous les outils. Combiner avec messageStart/messageEnd pour pagination message-level.',
                 default: 'skeleton'
             },
             truncate: {
@@ -248,13 +284,13 @@ export const conversationBrowserTool: Tool = {
             },
             max_output_length: {
                 type: 'number',
-                description: '[view] Limite max de caractères en sortie.',
+                description: '[view] Limite max de caractères en sortie. Un hard cap final est applique pour garantir le respect de cette limite quel que soit le mode de troncature.',
                 default: 300000
             },
             smart_truncation: {
                 type: 'boolean',
-                description: '[view] Activer la troncature intelligente avec gradient.',
-                default: false
+                description: '[view] #1244 Couche 2.5 — Algorithme de troncature intelligente (gradient temporel + priorisation par type, preserve debut/fin de conversation). Active PAR DEFAUT depuis #1244. Passer false uniquement pour debug ou comparaison avec le legacy path.',
+                default: true
             },
             smart_truncation_config: {
                 type: 'object',
@@ -264,6 +300,14 @@ export const conversationBrowserTool: Tool = {
                     minPreservationRate: { type: 'number' },
                     maxTruncationRate: { type: 'number' }
                 }
+            },
+            messageStart: {
+                type: 'number',
+                description: '[view] #1244 Couche 2.6 — Index 0-based du premier message a inclure (inclusif). Permet la pagination message-level sur les longues conversations. Defaut: 0 (debut). Pour paginer, re-appeler view avec messageStart = messageEnd precedent.'
+            },
+            messageEnd: {
+                type: 'number',
+                description: '[view] #1244 Couche 2.6 — Index 0-based du dernier message a inclure (exclusif). Si > total, est clampe a total. Defaut: jusqu\'a la fin. La reponse inclut messageRange: {start, end, total} et truncated: bool pour faciliter la navigation.'
             },
             output_file: {
                 type: 'string',
@@ -393,6 +437,16 @@ export const conversationBrowserTool: Tool = {
                 type: 'array',
                 items: { type: 'string' },
                 description: '[rebuild] Liste optionnelle d\'IDs de tâches spécifiques à reconstruire.'
+            },
+            sources: {
+                type: 'array',
+                items: { type: 'string', enum: ['roo', 'claude', 'archive'] },
+                description: '[rebuild] #1244 Couche 1.4 — Sources de squelettes a charger. Defaut: ["roo"]. "claude" inclut les sessions Claude Code locales (Tier 2). "archive" inclut les archives cross-machine GDrive (Tier 3, requiert ROOSYNC_SHARED_PATH).'
+            },
+            reindex: {
+                type: 'boolean',
+                description: '[rebuild] #1244 Couche 1.4 — Si true, force l\'enqueue Qdrant pour tous les squelettes construits/charges (tous tiers).',
+                default: false
             }
         },
         required: ['action']
@@ -523,9 +577,14 @@ export async function handleConversationBrowser(
                         sortBy: args.sortBy,
                         sortOrder: args.sortOrder,
                         workspace: args.workspace,
+                        workspacePathMatch: args.workspacePathMatch,
                         pendingSubtaskOnly: args.pendingSubtaskOnly,
                         contentPattern: args.contentPattern,
-                        source: args.source
+                        source: args.source,
+                        // #1244 Couche 2.1 — Filtres date/machine cross-machine
+                        startDate: args.startDate,
+                        endDate: args.endDate,
+                        machineId: args.machineId
                     },
                     conversationCache
                 );
@@ -575,6 +634,9 @@ export async function handleConversationBrowser(
                         max_output_length: args.max_output_length,
                         smart_truncation: args.smart_truncation,
                         smart_truncation_config: args.smart_truncation_config,
+                        // #1244 Couche 2.6 — Pagination message-level
+                        messageStart: args.messageStart,
+                        messageEnd: args.messageEnd,
                         output_file: args.output_file
                     },
                     conversationCache
@@ -640,11 +702,14 @@ export async function handleConversationBrowser(
 
             case 'rebuild': {
                 // Delegate to the existing build_skeleton_cache handler
+                // #1244 Couche 1.4 — Forward sources/reindex pour le multi-tier rebuild
                 return await handleBuildSkeletonCache(
                     {
                         force_rebuild: args.force_rebuild,
                         workspace_filter: args.workspace,
-                        task_ids: args.task_ids
+                        task_ids: args.task_ids,
+                        sources: args.sources,
+                        reindex: args.reindex
                     },
                     conversationCache,
                     serverState

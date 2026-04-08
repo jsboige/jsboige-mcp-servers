@@ -6,9 +6,11 @@ import { CallToolResult } from '@modelcontextprotocol/sdk/types.js';
 import { ConversationSkeleton } from '../../types/conversation.js';
 import { SkeletonCacheService } from '../../services/skeleton-cache.service.js';
 import { normalizePath } from '../../utils/path-normalizer.js';
+import { normalizeWorkspaceId } from '../../utils/message-helpers.js';
 import { scanDiskForNewTasks } from '../task/disk-scanner.js';
 import { ClaudeStorageDetector } from '../../utils/claude-storage-detector.js';
 import { RooStorageDetector } from '../../utils/roo-storage-detector.js';
+import { parseFilterDate, isWithinDateRange } from '../../utils/date-filters.js';
 import { promises as fs } from 'fs';
 import path from 'path';
 import os from 'os';
@@ -68,6 +70,10 @@ interface ApiMessage {
  */
 interface ConversationSummary {
     taskId: string;
+    /** #883 / #1244 Couche 3.2 — 'roo' or 'claude'. Prefer metadata.source over taskId prefix. */
+    source?: 'roo' | 'claude';
+    /** #1244 Couche 3.2 — 'local' (hot tier 1/2) or 'archive' (cold tier 3 GDrive). */
+    tier?: 'local' | 'archive';
     parentTaskId?: string;
     firstUserMessage?: string;
     lastUserMessage?: string;
@@ -152,7 +158,22 @@ function toConversationSummary(node: SkeletonNode, _depth = 0): Record<string, u
     // Build summary — always include key fields for readability
     const summary: Record<string, unknown> = { taskId: node.taskId };
     // #883: Always show source type (roo/claude)
-    summary.source = node.taskId.startsWith('claude-') ? 'claude' : 'roo';
+    // #1244 Couche 3.2 — Prefer metadata.source (set by SkeletonCacheService Tier 2/3)
+    // before falling back to taskId prefix detection. Allows archives to surface their
+    // ORIGINAL source ('roo' or 'claude-code') instead of being inferred from the prefix.
+    const metaSource = (node.metadata as any)?.source;
+    if (metaSource === 'claude-code' || metaSource === 'claude') {
+        summary.source = 'claude';
+    } else if (metaSource === 'roo') {
+        summary.source = 'roo';
+    } else {
+        summary.source = node.taskId.startsWith('claude-') ? 'claude' : 'roo';
+    }
+    // #1244 Couche 3.2 — Tier indicator: 'archive' (cold, cross-machine GDrive) vs 'local' (hot).
+    // Derived from metadata.dataSource set by archive-skeleton-builder / Claude tier loader.
+    // Lets agents know whether a result comes from local fast cache or remote archive.
+    const dataSource = node.metadata?.dataSource;
+    summary.tier = dataSource === 'archive' ? 'archive' : 'local';
     if (node.parentTaskId) summary.parentTaskId = node.parentTaskId;
     if (firstMsg) summary.firstUserMessage = firstMsg;
     if (lastMsg) summary.lastUserMessage = lastMsg;
@@ -303,6 +324,34 @@ function truncateSummary(summary: string, maxLength: number): string {
 }
 
 /**
+ * #1244 Couche 2.2 — Strategie de matching de workspace.
+ *
+ * - 'exact'      : equivalent strict (apres normalisation forward-slash + lowercase)
+ *                  via normalizePath. Conserve le chemin complet (`d:/dev/CoursIA` != `d:/CoursIA`).
+ * - 'normalized' : (defaut) match basename via normalizeWorkspaceId. Tolere les
+ *                  variations de chemin parent (`d:/dev/CoursIA` == `d:/CoursIA` == `CoursIA`).
+ *                  C'est la strategie cross-machine la plus robuste — un meme workspace
+ *                  ouvert depuis differents drives ou via des liens symboliques matche.
+ * - 'substring'  : test `includes` lowercase. Le plus tolerant, pour les recherches
+ *                  exploratoires (`workspace: 'CoursIA'` matche tout chemin contenant CoursIA).
+ */
+function matchesWorkspace(
+    skeletonWorkspace: string | undefined,
+    queryWorkspace: string,
+    strategy: 'exact' | 'normalized' | 'substring' = 'normalized'
+): boolean {
+    if (!skeletonWorkspace) return false;
+    if (strategy === 'exact') {
+        return normalizePath(skeletonWorkspace) === normalizePath(queryWorkspace);
+    }
+    if (strategy === 'substring') {
+        return skeletonWorkspace.toLowerCase().includes(queryWorkspace.toLowerCase());
+    }
+    // 'normalized' (default)
+    return normalizeWorkspaceId(skeletonWorkspace) === normalizeWorkspaceId(queryWorkspace);
+}
+
+/**
  * Définition de l'outil list_conversations
  */
 export const listConversationsTool = {
@@ -320,6 +369,12 @@ export const listConversationsTool = {
                 hasApiHistory: { type: 'boolean' },
                 hasUiMessages: { type: 'boolean' },
                 workspace: { type: 'string', description: 'Filtre les conversations par chemin de workspace.' },
+                workspacePathMatch: {
+                    type: 'string',
+                    enum: ['exact', 'normalized', 'substring'],
+                    description: '#1244 Couche 2.2 — Strategie de matching du workspace. "exact": comparaison stricte (apres forward-slash + lowercase). "normalized" (defaut): match par basename, tolere les variations de chemin parent (`d:/dev/CoursIA` == `d:/CoursIA`). "substring": test includes lowercase, le plus tolerant.',
+                    default: 'normalized'
+                },
                 pendingSubtaskOnly: {
                     type: 'boolean',
                     description: 'Si true, retourne uniquement les tâches ayant une instruction de sous-tâche non complétée'
@@ -327,6 +382,18 @@ export const listConversationsTool = {
                 contentPattern: {
                     type: 'string',
                     description: 'Filtre les tâches contenant ce texte dans leurs messages (recherche insensible à la casse)'
+                },
+                startDate: {
+                    type: 'string',
+                    description: '#1244 Couche 2.1 — Date debut (ISO 8601 ou YYYY-MM-DD). Filtre les taches dont lastActivity >= startDate. Combinable avec endDate pour fenetrer une periode.'
+                },
+                endDate: {
+                    type: 'string',
+                    description: '#1244 Couche 2.1 — Date fin (ISO 8601 ou YYYY-MM-DD). Filtre les taches dont lastActivity <= endDate. Combinable avec startDate.'
+                },
+                machineId: {
+                    type: 'string',
+                    description: '#1244 Couche 2.1 — Filtre par identifiant machine (cross-machine). Permet d\'isoler les conversations d\'une machine specifique (ex: "myia-po-2025") parmi les archives chargees depuis GDrive.'
                 },
             },
         },
@@ -343,9 +410,14 @@ export const listConversationsTool = {
             sortBy?: 'lastActivity' | 'messageCount' | 'totalSize',
             sortOrder?: 'asc' | 'desc',
             workspace?: string,
+            workspacePathMatch?: 'exact' | 'normalized' | 'substring',
             pendingSubtaskOnly?: boolean,
             contentPattern?: string,
-            source?: 'roo' | 'claude' | 'all'
+            source?: 'roo' | 'claude' | 'all',
+            // #1244 Couche 2.1 — Filtres date/machine cross-machine
+            startDate?: string,
+            endDate?: string,
+            machineId?: string
         },
         conversationCache: Map<string, ConversationSkeleton>
     ): Promise<CallToolResult> => {
@@ -384,12 +456,15 @@ export const listConversationsTool = {
             );
         }
 
+        // #1244 Couche 2.2 — Strategie de matching du workspace (defaut: 'normalized')
+        const workspaceMatchStrategy = args.workspacePathMatch || 'normalized';
+
         // Include Claude Code sessions
         if (includeClaude) {
             // PERF: Timeout wrapper (5s) prevents Claude session scan from blocking list responses
             // Claude sessions can be 2GB+ across 200+ JSONL files — scan must not block foreground tools
             try {
-                const claudePromise = scanClaudeSessions(args.workspace);
+                const claudePromise = scanClaudeSessions(args.workspace, workspaceMatchStrategy);
                 const claudeTimeout = new Promise<ConversationSkeleton[]>((_, reject) =>
                     setTimeout(() => reject(new Error('Claude session scan timeout (5s)')), 5000)
                 );
@@ -403,25 +478,34 @@ export const listConversationsTool = {
         // Filtrage par workspace
         let workspaceFilteredCount = 0;
         if (args.workspace) {
-            const normalizedWorkspace = normalizePath(args.workspace);
             const countBeforeFilter = allSkeletons.length;
-            
-            // 🔇 LOGS VERBEUX COMMENTÉS (explosion contexte - liste workspaces disponibles)
-            // console.log(`[DEBUG] Filtering by workspace: "${args.workspace}" -> normalized: "${normalizedWorkspace}"`);
-            // const workspaces = allSkeletons
-            //     .filter(s => s.metadata.workspace)
-            //     .map(s => `"${s.metadata.workspace!}" -> normalized: "${normalizePath(s.metadata.workspace!)}"`)
-            //     .slice(0, 5);
-            // console.log(`[DEBUG] Available workspaces (first 5):`, workspaces);
-            
             allSkeletons = allSkeletons.filter(skeleton =>
-                skeleton.metadata.workspace &&
-                normalizePath(skeleton.metadata.workspace) === normalizedWorkspace
+                matchesWorkspace(skeleton.metadata.workspace, args.workspace!, workspaceMatchStrategy)
             );
-
             workspaceFilteredCount = countBeforeFilter - allSkeletons.length;
             // 🔇 LOG VERBEUX COMMENTÉ (explosion contexte)
             // console.log(`[DEBUG] Found ${allSkeletons.length} conversations matching workspace filter`);
+        }
+
+        // #1244 Couche 2.1 — Filtre par fenetre temporelle (lastActivity dans [startDate, endDate])
+        // Les bornes acceptent ISO 8601 ou YYYY-MM-DD. endDate inclut la journee entiere.
+        const parsedStartDate = parseFilterDate(args.startDate);
+        const parsedEndDate = parseFilterDate(args.endDate);
+        if (parsedStartDate || parsedEndDate) {
+            allSkeletons = allSkeletons.filter(skeleton =>
+                isWithinDateRange(skeleton.metadata?.lastActivity, parsedStartDate, parsedEndDate)
+            );
+        }
+
+        // #1244 Couche 2.1 — Filtre par identifiant machine (cross-machine).
+        // Permet d'isoler les conversations d'une machine specifique parmi les
+        // squelettes charges depuis archive (Tier 3) ou Roo local.
+        if (args.machineId && args.machineId.trim().length > 0) {
+            const targetMachineId = args.machineId.trim().toLowerCase();
+            allSkeletons = allSkeletons.filter(skeleton => {
+                const m = (skeleton.metadata?.machineId || '').toLowerCase();
+                return m === targetMachineId;
+            });
         }
 
         // Filtre : Tâches en attente de sous-tâche
@@ -444,13 +528,13 @@ export const listConversationsTool = {
         }
 
         // Filtre : Recherche de contenu
+        // #1244 Couche 2.4 — On passe le skeleton entier pour permettre la recherche
+        // memoire sur les Tier 2/3 (sequence deja chargee) sans I/O disque inutile.
         if (args.contentPattern && args.contentPattern.trim().length > 0) {
-            const beforeCount = allSkeletons.length;
-
             const matchingTasks: ConversationSkeleton[] = [];
             for (const skeleton of allSkeletons) {
                 try {
-                    const matches = await matchesContentPattern(skeleton.taskId, args.contentPattern);
+                    const matches = await matchesContentPattern(skeleton, args.contentPattern);
                     if (matches) {
                         matchingTasks.push(skeleton);
                     }
@@ -669,21 +753,48 @@ async function hasPendingSubtask(taskId: string): Promise<boolean> {
 }
 
 /**
- * Vérifie si les messages d'une tâche contiennent un motif de texte
+ * Vérifie si les messages d'une tâche contiennent un motif de texte.
+ *
+ * #1244 Couche 2.4 — Multi-source contentPattern :
+ *  - Tier 2 (Claude) et Tier 3 (Archive) : la sequence est deja en memoire
+ *    (full skeleton dans le cache). On cherche directement dedans, sans I/O disque.
+ *  - Tier 1 (Roo local) : lecture de `api_conversation_history.json` depuis le disque
+ *    via `loadApiMessages()`. Comportement historique.
+ *
+ * Avant le fix, seules les taches Roo avec api_conversation_history sur disque etaient
+ * traversees — les sessions Claude et les archives cross-machine etaient invisibles.
  */
-async function matchesContentPattern(taskId: string, pattern: string): Promise<boolean> {
-    try {
-        const apiMessages = await loadApiMessages(taskId);
-        const normalizedPattern = pattern.toLowerCase().trim();
+async function matchesContentPattern(skeleton: ConversationSkeleton, pattern: string): Promise<boolean> {
+    const normalizedPattern = pattern.toLowerCase().trim();
+    if (normalizedPattern.length === 0) return true;
 
-        return apiMessages.some(msg => {
-            const textContent = extractTextFromMessage(msg).toLowerCase();
-            return textContent.includes(normalizedPattern);
+    // 1. Sequence deja chargee (Tier 2 Claude / Tier 3 Archive) — recherche memoire
+    const sequence = (skeleton as any).sequence;
+    if (Array.isArray(sequence) && sequence.length > 0) {
+        return sequence.some((msg: any) => {
+            if (!msg || msg.role === undefined) return false;
+            const raw = typeof msg.content === 'string' ? msg.content : '';
+            return raw.toLowerCase().includes(normalizedPattern);
         });
-    } catch (error) {
-        console.warn(`[matchesContentPattern] Error for task ${taskId}:`, error);
-        return false;
     }
+
+    // 2. Tier 1 (Roo local) — lire api_conversation_history depuis le disque
+    //    (les taches Roo n'ont pas de sequence en cache, juste un SkeletonHeader)
+    if (!skeleton.taskId.startsWith('claude-')) {
+        try {
+            const apiMessages = await loadApiMessages(skeleton.taskId);
+            return apiMessages.some(msg => {
+                const textContent = extractTextFromMessage(msg).toLowerCase();
+                return textContent.includes(normalizedPattern);
+            });
+        } catch (error) {
+            console.warn(`[matchesContentPattern] Error reading Roo task ${skeleton.taskId}:`, error);
+            return false;
+        }
+    }
+
+    // 3. Claude session without cached sequence (Tier 2 disabled / load failed) — pas de fallback fiable
+    return false;
 }
 
 /**
@@ -986,16 +1097,18 @@ let lastClaudeScanResults: ConversationSkeleton[] | null = null;
  * Full content parsing was O(n²) — analyzeConversation re-read ALL project files for each file.
  * Now: one stat per file, metadata from filename/stat only. Content available via view action.
  */
-async function scanClaudeSessions(workspaceFilter?: string): Promise<ConversationSkeleton[]> {
+async function scanClaudeSessions(
+    workspaceFilter?: string,
+    workspaceMatchStrategy: 'exact' | 'normalized' | 'substring' = 'normalized'
+): Promise<ConversationSkeleton[]> {
     const now = Date.now();
 
     // Return cached results if TTL hasn't expired
     if (lastClaudeScanResults !== null && (now - lastClaudeScanTime) < CLAUDE_SCAN_CACHE_TTL) {
         // Apply workspace filter on cached results
         if (workspaceFilter) {
-            const normalizedFilter = normalizePath(workspaceFilter);
             return lastClaudeScanResults.filter(s =>
-                s.metadata?.workspace && normalizePath(s.metadata.workspace) === normalizedFilter
+                matchesWorkspace(s.metadata?.workspace, workspaceFilter, workspaceMatchStrategy)
             );
         }
         return lastClaudeScanResults;
@@ -1100,11 +1213,10 @@ async function scanClaudeSessions(workspaceFilter?: string): Promise<Conversatio
     lastClaudeScanTime = now;
     lastClaudeScanResults = skeletons;
 
-    // Apply workspace filter
+    // Apply workspace filter (#1244 Couche 2.2 — strategy-aware)
     if (workspaceFilter) {
-        const normalizedFilter = normalizePath(workspaceFilter);
         return skeletons.filter(s =>
-            s.metadata?.workspace && normalizePath(s.metadata.workspace) === normalizedFilter
+            matchesWorkspace(s.metadata?.workspace, workspaceFilter, workspaceMatchStrategy)
         );
     }
 

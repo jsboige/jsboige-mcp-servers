@@ -91,10 +91,21 @@ export function registerCallToolHandler(
                     async () => { await ensureSkeletonCacheIsFresh(); },
                     CACHE_CONFIG.DEFAULT_WORKSPACE,  // contextWorkspace: utilise process.cwd() ou WORKSPACE_PATH
                     async (id: string) => {
-                        // 1. Try RAM cache first (cache holds SkeletonHeader, no sequence)
+                        // 1. Try RAM cache first
                         const cached = cache.get(id);
                         if (cached) {
-                            // #1110: Cache holds headers only — load full skeleton on demand
+                            // #1244 Couche 2.3 — Source unifiee : Tier 2 (Claude) et Tier 3 (Archive)
+                            // stockent des squelettes COMPLETS (avec sequence) directement dans le cache.
+                            // Seul Tier 1 (Roo local) stocke des SkeletonHeader et necessite loadFullSkeleton.
+                            // On detecte la presence d'un sequence non-vide pour court-circuiter loadFullSkeleton
+                            // sur les tiers chauds — sinon les archives etaient perdues car loadFullSkeleton
+                            // ne lit que `<storage>/tasks/.skeletons/<id>.json` (Tier 1 disk).
+                            const cachedAny = cached as any;
+                            const hasFullSequence = Array.isArray(cachedAny.sequence) && cachedAny.sequence.length > 0;
+                            if (hasFullSequence) {
+                                return cached as any;
+                            }
+                            // #1110: Cache holds headers only (Tier 1 Roo) — load full skeleton on demand
                             if (cached.metadata.messageCount > 0) {
                                 const full = await loadFullSkeleton(id, cache);
                                 if (full) return full;
