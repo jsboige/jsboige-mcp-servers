@@ -279,4 +279,66 @@ describe('viewConversationTree.handler', () => {
       expect(result.content[0].text).toContain('5');
     });
   });
+
+  // ============================================================
+  // Regression: undefined sequence (SkeletonHeader without sequence)
+  // ============================================================
+
+  describe('regression: undefined sequence (#73 incomplete fix)', () => {
+    test('does not crash when skeleton has undefined sequence', async () => {
+      // SkeletonHeaders stored in cache lack the sequence field.
+      // This must not cause "task.sequence is not iterable".
+      const skeletonWithoutSequence = {
+        taskId: 'no-seq',
+        metadata: {
+          title: 'Task without sequence',
+          messageCount: 0,
+          lastActivity: '2026-01-01T10:00:00.000Z',
+          workspace: '/test/workspace',
+          firstActivity: '2026-01-01T09:00:00.000Z',
+          actionCount: 0,
+          totalSize: 0,
+        },
+        // sequence is deliberately MISSING (undefined)
+      } as unknown as ConversationSkeleton;
+
+      const cache = makeCache([skeletonWithoutSequence]);
+
+      // Should not throw "task.sequence is not iterable"
+      const result = await viewConversationTree.handler(
+        { task_id: 'no-seq', view_mode: 'single' },
+        cache
+      );
+
+      expect(result).toBeDefined();
+      expect(result.content[0].text).toContain('no-seq');
+    });
+
+    test('does not crash with chain view when parent has no sequence', async () => {
+      const parentNoSeq = {
+        taskId: 'parent-no-seq',
+        metadata: {
+          title: 'Parent without sequence',
+          messageCount: 0,
+          lastActivity: '2026-01-01T09:00:00.000Z',
+          workspace: '/test/workspace',
+          firstActivity: '2026-01-01T08:00:00.000Z',
+          actionCount: 0,
+          totalSize: 0,
+        },
+        // no sequence
+      } as unknown as ConversationSkeleton;
+
+      const child = makeSkeleton({ taskId: 'child-with-seq', parentTaskId: 'parent-no-seq' });
+      const cache = makeCache([parentNoSeq, child]);
+
+      const result = await viewConversationTree.handler(
+        { task_id: 'child-with-seq', view_mode: 'chain' },
+        cache
+      );
+
+      expect(result).toBeDefined();
+      expect(result.content[0].text).toContain('child-with-seq');
+    });
+  });
 });
