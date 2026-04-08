@@ -15,7 +15,7 @@ vi.mock('../../../services/MessageManager.js', async () => {
   return {
     ...actual,
     getMessageManager: () => {
-      const sharedPath = process.env.ROOSYNC_SHARED_PATH || process.cwd();
+      const sharedPath = process.env.ROOSYNC_SHARED_PATH || os.tmpdir();
       return new actual.MessageManager(sharedPath);
     },
   };
@@ -23,10 +23,11 @@ vi.mock('../../../services/MessageManager.js', async () => {
 
 import { roosyncSend } from '../send.js';
 import * as fs from 'fs';
+import * as os from 'os';
 import * as path from 'path';
 
 describe('SMOKE: roosync_send', () => {
-  const testMessagesPath = path.join(process.cwd(), '.test-messages');
+  const testMessagesPath = path.join(os.tmpdir(), '.test-messages');
   const testSentPath = path.join(testMessagesPath, 'messages', 'sent');
   const testInboxPath = path.join(testMessagesPath, 'messages', 'inbox');
   let originalEnv: NodeJS.ProcessEnv;
