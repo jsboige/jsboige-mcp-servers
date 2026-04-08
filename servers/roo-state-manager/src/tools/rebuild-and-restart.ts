@@ -5,6 +5,7 @@ import * as fs from 'fs/promises';
 import { fileURLToPath } from 'url';
 import { dirname } from 'path';
 import { GenericError, GenericErrorCode } from '../types/errors.js';
+import { getMcpSettingsPath } from './roosync/mcp-management.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
@@ -45,7 +46,9 @@ export const rebuildAndRestart = {
     handler: async (args: { mcp_name: string }): Promise<CallToolResult> => {
         try {
             const { mcp_name } = args;
-            const settingsPath = path.join(process.env.APPDATA || '', 'Code', 'User', 'globalStorage', 'rooveterinaryinc.roo-cline', 'settings', 'mcp_settings.json');
+            // FIX: Use centralized getMcpSettingsPath() with safety guard
+            // instead of inline path resolution (no test isolation protection).
+            const settingsPath = getMcpSettingsPath();
             
             const settingsContent = await fs.readFile(settingsPath, 'utf-8');
             const settings = JSON.parse(settingsContent);

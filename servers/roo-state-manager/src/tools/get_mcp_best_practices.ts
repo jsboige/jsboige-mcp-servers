@@ -3,6 +3,7 @@ import * as fs from 'fs/promises';
 import * as path from 'path';
 import { fileURLToPath } from 'url';
 import { dirname } from 'path';
+import { getMcpSettingsPath } from './roosync/mcp-management.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
@@ -25,20 +26,14 @@ interface McpSettings {
     mcpServers: Record<string, McpServer>;
 }
 
-const MCP_SETTINGS_PATH = path.join(
-    process.env.APPDATA || '',
-    'Code',
-    'User',
-    'globalStorage',
-    'rooveterinaryinc.roo-cline',
-    'settings',
-    'mcp_settings.json'
-);
+// FIX: Use centralized getMcpSettingsPath() instead of module-level constant.
+// Module-level constants are evaluated at import time, before test setup can
+// override APPDATA — this caused incidents 2026-03-08 (ai-01) and 2026-04-03 (po-2023).
 
 /* @internal - exported for testing */
 export async function getMcpConfiguration(): Promise<McpSettings | null> {
     try {
-        const content = await fs.readFile(MCP_SETTINGS_PATH, 'utf-8');
+        const content = await fs.readFile(getMcpSettingsPath(), 'utf-8');
         return JSON.parse(content) as McpSettings;
     } catch {
         return null;
@@ -256,7 +251,7 @@ export const getMcpBestPractices = {
             const mcpSettings = await getMcpConfiguration();
             if (mcpSettings) {
                 combinedContent += `## 📋 CONFIGURATION MCP ACTUELLE\n\n`;
-                combinedContent += `**Fichier:** \`${MCP_SETTINGS_PATH}\`\n\n`;
+                combinedContent += `**Fichier:** \`${getMcpSettingsPath()}\`\n\n`;
                 combinedContent += `**MCPs configurés (${Object.keys(mcpSettings.mcpServers).length}):**\n\n`;
                 
                 for (const [name, config] of Object.entries(mcpSettings.mcpServers)) {

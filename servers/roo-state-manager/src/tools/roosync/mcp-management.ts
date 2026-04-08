@@ -68,13 +68,16 @@ export function getMcpSettingsPath(): string {
         // - C:\Users\Test\... (unit tests with mocked fs)
         // - /home/test (unit tests with mocked os.homedir)
         // - os.tmpdir() based paths
+        const appdataLower = appdata.toLowerCase();
         const isTestPath = appdata.includes('__test-data__') ||
             appdata.includes('__roo-state-manager-test-appdata__') ||
             appdata.includes('mcp-settings-integration') ||
             resolved.includes('__test-data__') ||
-            appdata === 'C:\\Users\\Test\\AppData\\Roaming' ||
-            appdata.includes('/home/test') ||
-            appdata.includes('/tmp/');
+            appdataLower === 'c:\\users\\test\\appdata\\roaming' ||
+            appdataLower.includes('/home/test') ||
+            appdataLower.includes('/tmp/') ||
+            appdataLower.includes('\\temp\\') ||
+            appdata === '';
         if (!isTestPath) {
             throw new Error(
                 `SAFETY ABORT: getMcpSettingsPath() would resolve to the REAL mcp_settings.json in test mode!\n` +
