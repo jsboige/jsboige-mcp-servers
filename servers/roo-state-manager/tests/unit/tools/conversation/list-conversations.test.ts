@@ -66,6 +66,13 @@ describe('list_conversations tool', () => {
         mockCache.set('task-2', task2);
 
         vi.mocked(path.join).mockImplementation((...args) => args.join('/'));
+        // #1244 Couche 2.2 — list-conversations now uses normalizeWorkspaceId() which calls path.basename
+        vi.mocked(path.basename).mockImplementation((p: string) => {
+            if (!p) return '';
+            const normalized = p.replace(/\\/g, '/');
+            const parts = normalized.split('/').filter(Boolean);
+            return parts[parts.length - 1] || '';
+        });
     });
 
     it('should have correct definition', () => {

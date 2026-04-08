@@ -79,8 +79,10 @@ function createMockOpenAI(overrides: Partial<{
 }> = {}) {
     return {
         embeddings: {
+            // Default healthy embedding: matches the default collection dimension (1536)
+            // so the dimension_check added by #1244 Couche 1.2 doesn't flag a mismatch.
             create: overrides.create ?? vi.fn().mockResolvedValue({
-                data: [{ embedding: [0.1, 0.2, 0.3] }]
+                data: [{ embedding: new Array(1536).fill(0.1) }]
             })
         }
     };
