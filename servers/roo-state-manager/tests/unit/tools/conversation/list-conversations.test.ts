@@ -2,6 +2,7 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { listConversationsTool } from '../../../../src/tools/conversation/list-conversations.tool';
 import { ConversationSkeleton } from '../../../../src/types/conversation';
 import { normalizePath } from '../../../../src/utils/path-normalizer';
+import { RooStorageDetector } from '../../../../src/utils/roo-storage-detector';
 import { promises as fs } from 'fs';
 import path from 'path';
 import os from 'os';
@@ -13,7 +14,16 @@ vi.mock('fs', () => ({
     }
 }));
 vi.mock('path');
-vi.mock('os');
+vi.mock('os', () => ({
+    default: {
+        hostname: () => 'test-host',
+        homedir: () => '/home/user',
+        tmpdir: () => '/tmp',
+    },
+    hostname: () => 'test-host',
+    homedir: () => '/home/user',
+    tmpdir: () => '/tmp',
+}));
 
 describe('list_conversations tool', () => {
     let mockCache: Map<string, ConversationSkeleton>;
@@ -21,7 +31,10 @@ describe('list_conversations tool', () => {
     beforeEach(() => {
         vi.clearAllMocks();
         mockCache = new Map();
-        
+
+        // vi.spyOn for RooStorageDetector (#1123 — vi.mock doesn't work for loadApiMessages)
+        vi.spyOn(RooStorageDetector, 'detectStorageLocations').mockResolvedValue(['/mock/storage']);
+
         // Setup mock data
         const task1: ConversationSkeleton = {
             taskId: 'task-1',
@@ -35,7 +48,7 @@ describe('list_conversations tool', () => {
                 actionCount: 5
             }
         };
-        
+
         const task2: ConversationSkeleton = {
             taskId: 'task-2',
             sequence: [],
@@ -53,7 +66,6 @@ describe('list_conversations tool', () => {
         mockCache.set('task-2', task2);
 
         vi.mocked(path.join).mockImplementation((...args) => args.join('/'));
-        vi.mocked(os.homedir).mockReturnValue('/home/user');
     });
 
     it('should have correct definition', () => {

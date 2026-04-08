@@ -31,12 +31,6 @@ vi.mock('../../../utils/claude-storage-detector.js', () => ({
   },
 }));
 
-vi.mock('../../../utils/roo-storage-detector.js', () => ({
-  RooStorageDetector: {
-    detectStorageLocations: vi.fn().mockResolvedValue([]),
-  },
-}));
-
 // Mock `fs` (utilisé via `import { promises as fs } from 'fs'` dans la source)
 vi.mock('fs', async () => {
   const actual = await vi.importActual<typeof import('fs')>('fs');
@@ -52,6 +46,7 @@ vi.mock('fs', async () => {
 });
 
 import { listConversationsTool } from '../list-conversations.tool.js';
+import { RooStorageDetector } from '../../../utils/roo-storage-detector.js';
 import type { ConversationSkeleton } from '../../../types/conversation.js';
 
 // ─────────────────── helper ───────────────────
@@ -83,6 +78,8 @@ beforeEach(() => {
   mockScanDisk.mockResolvedValue([]);
   mockDetectClaudeLocations.mockResolvedValue([]);
   mockFsReadFile.mockRejectedValue(new Error('readFile: not mocked'));
+  // vi.spyOn works where vi.mock fails for RooStorageDetector (#1123)
+  vi.spyOn(RooStorageDetector, 'detectStorageLocations').mockResolvedValue(['/mock/storage']);
 });
 
 // ─────────────────── tests ───────────────────

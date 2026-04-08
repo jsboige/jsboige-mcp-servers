@@ -32,7 +32,8 @@ vi.mock('../../task/disk-scanner.js', () => ({
   scanDiskForNewTasks: (...args: any[]) => mockScanDiskForNewTasks(...args),
 }));
 
-// Mock fs for contentPattern tests (loadApiMessages uses `import { promises as fs } from 'fs'`)
+// Mock fs for loadApiMessages (contentPattern/pendingSubtaskOnly)
+// loadApiMessages uses `import { promises as fs } from 'fs'` internally
 const { mockFsReadFile } = vi.hoisted(() => ({
   mockFsReadFile: vi.fn().mockRejectedValue(new Error('Not mocked for this test')),
 }));
@@ -51,6 +52,7 @@ vi.mock('fs', async () => {
 });
 
 import { listConversationsTool } from '../list-conversations.tool.js';
+import { RooStorageDetector } from '../../../utils/roo-storage-detector.js';
 import type { ConversationSkeleton } from '../../../types/conversation.js';
 
 // ─────────────────── helpers ───────────────────
@@ -83,11 +85,16 @@ function makeCache(...skeletons: ConversationSkeleton[]): Map<string, Conversati
 // ─────────────────── setup ───────────────────
 
 let emptyCache: Map<string, ConversationSkeleton>;
+let storageSpy: ReturnType<typeof vi.spyOn>;
 
 beforeEach(() => {
   vi.clearAllMocks();
   emptyCache = new Map();
   mockScanDiskForNewTasks.mockResolvedValue([]);
+  // vi.spyOn works where vi.mock fails for RooStorageDetector (#1123)
+  // Root cause: SkeletonCacheService (transitive dep) also imports RooStorageDetector,
+  // creating a module resolution path that vi.mock() doesn't intercept for loadApiMessages.
+  storageSpy = vi.spyOn(RooStorageDetector, 'detectStorageLocations').mockResolvedValue(['/mock/storage']);
 });
 
 // ─────────────────── tests ───────────────────

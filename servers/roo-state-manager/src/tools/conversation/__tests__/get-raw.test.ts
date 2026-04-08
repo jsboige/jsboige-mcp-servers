@@ -1,11 +1,15 @@
 /**
  * Tests for get-raw.tool.ts
  * Coverage target: 28% → 70%+
+ * Issue #1123 - Updated for security: taskId must be UUID or claude- session, no path leak
  */
 
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { getRawConversationTool } from '../get-raw.tool.js';
 import { GenericError, GenericErrorCode } from '../../../types/errors.js';
+
+// Valid UUID for tests
+const TASK_UUID = 'a1b2c3d4-e5f6-4a8b-9c0d-1e2f3a4b5c6d';
 
 // Mock fs/promises
 const mockAccess = vi.fn();
@@ -64,7 +68,7 @@ describe('get-raw.tool', () => {
           return Promise.resolve(JSON.stringify([{ type: 'text', text: 'response' }]));
         }
         if (path.includes('task_metadata.json')) {
-          return Promise.resolve(JSON.stringify({ taskId: 'test-task', mode: 'test' }));
+          return Promise.resolve(JSON.stringify({ taskId: TASK_UUID, mode: 'test' }));
         }
         return Promise.resolve('{}');
       });
@@ -74,13 +78,13 @@ describe('get-raw.tool', () => {
         size: 1024
       });
 
-      const result = await getRawConversationTool.handler({ taskId: 'test-task-123' });
+      const result = await getRawConversationTool.handler({ taskId: TASK_UUID });
 
       expect(result.content).toHaveLength(1);
       expect(result.content[0].type).toBe('text');
 
       const data = JSON.parse((result.content[0] as any).text as string);
-      expect(data.taskId).toBe('test-task-123');
+      expect(data.taskId).toBe(TASK_UUID);
       expect(data.api_conversation_history).toBeDefined();
       expect(data.ui_messages).toBeDefined();
     });
@@ -102,7 +106,7 @@ describe('get-raw.tool', () => {
         size: 1024
       });
 
-      const result = await getRawConversationTool.handler({ taskId: 'test-task' });
+      const result = await getRawConversationTool.handler({ taskId: TASK_UUID });
 
       const data = JSON.parse((result.content[0] as any).text as string);
       // Should parse successfully despite BOM
@@ -129,7 +133,7 @@ describe('get-raw.tool', () => {
         size: 1024
       });
 
-      const result = await getRawConversationTool.handler({ taskId: 'test-task' });
+      const result = await getRawConversationTool.handler({ taskId: TASK_UUID });
 
       const data = JSON.parse((result.content[0] as any).text as string);
       expect(data.metadata).toBeNull();
@@ -140,7 +144,7 @@ describe('get-raw.tool', () => {
       mockReadFile.mockResolvedValue(JSON.stringify({ test: 'data' }));
       mockStat.mockRejectedValue(new Error('Stat error'));
 
-      const result = await getRawConversationTool.handler({ taskId: 'test-task' });
+      const result = await getRawConversationTool.handler({ taskId: TASK_UUID });
 
       const data = JSON.parse((result.content[0] as any).text as string);
       expect(data.taskStats).toBeNull();
@@ -160,11 +164,23 @@ describe('get-raw.tool', () => {
       ).rejects.toThrow('taskId is required');
     });
 
+    it('should throw error for path traversal attempts', async () => {
+      await expect(
+        getRawConversationTool.handler({ taskId: '../../etc/passwd' })
+      ).rejects.toThrow('path separators');
+    });
+
+    it('should throw error for invalid taskId format', async () => {
+      await expect(
+        getRawConversationTool.handler({ taskId: 'not-a-uuid' })
+      ).rejects.toThrow('Invalid taskId format');
+    });
+
     it('should throw error when task not found in any location', async () => {
       mockAccess.mockRejectedValue(new Error('Not found'));
 
       await expect(
-        getRawConversationTool.handler({ taskId: 'non-existent-task' })
+        getRawConversationTool.handler({ taskId: TASK_UUID })
       ).rejects.toThrow('not found in any storage location');
     });
   });
@@ -188,11 +204,11 @@ describe('get-raw.tool', () => {
         size: 1024
       });
 
-      const result = await getRawConversationTool.handler({ taskId: 'test-task' });
+      const result = await getRawConversationTool.handler({ taskId: TASK_UUID });
 
       expect(mockAccess).toHaveBeenCalledTimes(2);
       const data = JSON.parse((result.content[0] as any).text as string);
-      expect(data.location).toContain('secondary');
+      expect(data.taskId).toBe(TASK_UUID);
     });
   });
 
@@ -206,15 +222,16 @@ describe('get-raw.tool', () => {
         size: 1024
       });
 
-      const result = await getRawConversationTool.handler({ taskId: 'test-task' });
+      const result = await getRawConversationTool.handler({ taskId: TASK_UUID });
       const data = JSON.parse((result.content[0] as any).text as string);
 
       expect(data).toHaveProperty('taskId');
-      expect(data).toHaveProperty('location');
       expect(data).toHaveProperty('taskStats');
       expect(data).toHaveProperty('metadata');
       expect(data).toHaveProperty('api_conversation_history');
       expect(data).toHaveProperty('ui_messages');
+      // Security: location field removed (path leak, issue #1123)
+      expect(data).not.toHaveProperty('location');
     });
   });
 });

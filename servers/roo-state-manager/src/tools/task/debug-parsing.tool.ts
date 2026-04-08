@@ -8,6 +8,7 @@ import { promises as fs } from 'fs';
 import { existsSync } from 'fs';
 import path from 'path';
 import { RooStorageDetector } from '../../utils/roo-storage-detector.js';
+import { GenericError, GenericErrorCode } from '../../types/errors.js';
 
 export interface DebugTaskParsingArgs {
     task_id: string;
@@ -39,7 +40,24 @@ export async function handleDebugTaskParsing(
     args: DebugTaskParsingArgs
 ): Promise<CallToolResult> {
     const { task_id } = args;
-    
+
+    // Security: Reject path traversal attempts (check before format to prevent bypass)
+    if (task_id.includes('..') || task_id.includes('/') || task_id.includes('\\')) {
+        throw new GenericError(
+            `Invalid task_id: path separators and parent directory references are not allowed.`,
+            GenericErrorCode.INVALID_ARGUMENT
+        );
+    }
+
+    // Security: Validate task_id format — must be UUID
+    const UUID_REGEX = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+    if (!UUID_REGEX.test(task_id)) {
+        throw new GenericError(
+            `Invalid task_id format: '${task_id.slice(0, 20)}...'. Expected UUID.`,
+            GenericErrorCode.INVALID_ARGUMENT
+        );
+    }
+
     console.log(`🔍 DEBUG: Starting detailed analysis of task ${task_id}`);
     const debugInfo: string[] = [];
     

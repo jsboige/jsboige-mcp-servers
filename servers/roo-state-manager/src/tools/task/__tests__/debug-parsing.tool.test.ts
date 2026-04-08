@@ -44,11 +44,11 @@ describe('debug-parsing.tool', () => {
 
       vi.mocked(existsSync).mockReturnValue(false);
 
-      const args: DebugTaskParsingArgs = { task_id: 'nonexistent-task-id' };
+      const args: DebugTaskParsingArgs = { task_id: '00000000-0000-4000-a000-000000000000' };
       const result = await handleDebugTaskParsing(args);
 
       expect(result.content[0].type).toBe('text');
-      expect(result.content[0].text).toContain('Task nonexistent-task-id not found');
+      expect(result.content[0].text).toContain('Task 00000000-0000-4000-a000-000000000000 not found');
     });
 
     it('should detect task path and analyze files', async () => {
@@ -59,8 +59,8 @@ describe('debug-parsing.tool', () => {
       const { RooStorageDetector } = await import('../../../utils/roo-storage-detector.js');
       RooStorageDetector.detectStorageLocations = mockDetectStorageLocations;
       RooStorageDetector.analyzeConversation = vi.fn().mockResolvedValue({
-        taskId: 'test-task-id',
-        parentTaskId: 'parent-task-id',
+        taskId: 'a1b2c3d4-e5f6-4a8b-9c0d-1e2f3a4b5c6d',
+        parentTaskId: 'b2c3d4e5-f6a7-4b8c-9d0e-2f3a4b5c6d7e',
         truncatedInstruction: 'Test instruction here',
         childTaskInstructionPrefixes: ['Prefix 1', 'Prefix 2']
       });
@@ -68,7 +68,7 @@ describe('debug-parsing.tool', () => {
       const existsSyncMock = vi.mocked(existsSync);
       existsSyncMock.mockImplementation((path: any) => {
         if (typeof path === 'string') {
-          return path.includes('test-task-id') || path.includes('ui_messages.json');
+          return path.includes('a1b2c3d4-e5f6-4a8b-9c0d-1e2f3a4b5c6d') || path.includes('ui_messages.json');
         }
         return false;
       });
@@ -86,7 +86,7 @@ describe('debug-parsing.tool', () => {
 
       vi.mocked(fs.readFile).mockResolvedValue(JSON.stringify(mockMessages));
 
-      const args: DebugTaskParsingArgs = { task_id: 'test-task-id' };
+      const args: DebugTaskParsingArgs = { task_id: 'a1b2c3d4-e5f6-4a8b-9c0d-1e2f3a4b5c6d' };
       const result = await handleDebugTaskParsing(args);
 
       expect(result.content[0].type).toBe('text');
@@ -94,7 +94,7 @@ describe('debug-parsing.tool', () => {
 
       // Vérifier les informations de base
       expect(text).toContain('📁 Task path:');
-      expect(text).toContain('test-task-id');
+      expect(text).toContain('a1b2c3d4-e5f6-4a8b-9c0d-1e2f3a4b5c6d');
 
       // Vérifier la détection des fichiers
       expect(text).toContain('📄 UI Messages:');
@@ -110,8 +110,8 @@ describe('debug-parsing.tool', () => {
       // Vérifier l'analyse RooStorageDetector
       expect(text).toContain('🧪 TESTING RooStorageDetector.analyzeConversation');
       expect(text).toContain('✅ Analysis complete');
-      expect(text).toContain('TaskId: test-task-id');
-      expect(text).toContain('ParentTaskId: parent-task-id');
+      expect(text).toContain('TaskId: a1b2c3d4-e5f6-4a8b-9c0d-1e2f3a4b5c6d');
+      expect(text).toContain('ParentTaskId: b2c3d4e5-f6a7-4b8c-9d0e-2f3a4b5c6d7e');
     });
 
     it('should handle BOM in UTF-8 files', async () => {
@@ -126,7 +126,7 @@ describe('debug-parsing.tool', () => {
       const existsSyncMock = vi.mocked(existsSync);
       existsSyncMock.mockImplementation((path: any) => {
         if (typeof path === 'string') {
-          return path.includes('test-task-id') || path.includes('ui_messages.json');
+          return path.includes('a1b2c3d4-e5f6-4a8b-9c0d-1e2f3a4b5c6d') || path.includes('ui_messages.json');
         }
         return false;
       });
@@ -136,7 +136,7 @@ describe('debug-parsing.tool', () => {
       const jsonWithBom = '\uFEFF' + JSON.stringify(mockMessages);
       vi.mocked(fs.readFile).mockResolvedValue(jsonWithBom);
 
-      const args: DebugTaskParsingArgs = { task_id: 'test-task-id' };
+      const args: DebugTaskParsingArgs = { task_id: 'a1b2c3d4-e5f6-4a8b-9c0d-1e2f3a4b5c6d' };
       const result = await handleDebugTaskParsing(args);
 
       expect(result.content[0].type).toBe('text');
@@ -158,7 +158,7 @@ describe('debug-parsing.tool', () => {
       const existsSyncMock = vi.mocked(existsSync);
       existsSyncMock.mockImplementation((path: any) => {
         if (typeof path === 'string') {
-          return path.includes('test-task-id') || path.includes('ui_messages.json');
+          return path.includes('a1b2c3d4-e5f6-4a8b-9c0d-1e2f3a4b5c6d') || path.includes('ui_messages.json');
         }
         return false;
       });
@@ -175,7 +175,7 @@ describe('debug-parsing.tool', () => {
 
       vi.mocked(fs.readFile).mockResolvedValue(JSON.stringify(mockMessages));
 
-      const args: DebugTaskParsingArgs = { task_id: 'test-task-id' };
+      const args: DebugTaskParsingArgs = { task_id: 'a1b2c3d4-e5f6-4a8b-9c0d-1e2f3a4b5c6d' };
       const result = await handleDebugTaskParsing(args);
 
       expect(result.content[0].type).toBe('text');
@@ -199,12 +199,12 @@ describe('debug-parsing.tool', () => {
       existsSyncMock.mockImplementation((path: any) => {
         if (typeof path === 'string') {
           // Task exists, but ui_messages.json doesn't
-          return path.includes('test-task-id') && !path.includes('ui_messages.json');
+          return path.includes('a1b2c3d4-e5f6-4a8b-9c0d-1e2f3a4b5c6d') && !path.includes('ui_messages.json');
         }
         return false;
       });
 
-      const args: DebugTaskParsingArgs = { task_id: 'test-task-id' };
+      const args: DebugTaskParsingArgs = { task_id: 'a1b2c3d4-e5f6-4a8b-9c0d-1e2f3a4b5c6d' };
       const result = await handleDebugTaskParsing(args);
 
       expect(result.content[0].type).toBe('text');
@@ -226,7 +226,7 @@ describe('debug-parsing.tool', () => {
       const existsSyncMock = vi.mocked(existsSync);
       existsSyncMock.mockImplementation((path: any) => {
         if (typeof path === 'string') {
-          return path.includes('test-task-id');
+          return path.includes('a1b2c3d4-e5f6-4a8b-9c0d-1e2f3a4b5c6d');
         }
         return false;
       });
@@ -234,7 +234,7 @@ describe('debug-parsing.tool', () => {
       const mockMessages = [{ role: 'user', content: 'Test message' }];
       vi.mocked(fs.readFile).mockResolvedValue(JSON.stringify(mockMessages));
 
-      const args: DebugTaskParsingArgs = { task_id: 'test-task-id' };
+      const args: DebugTaskParsingArgs = { task_id: 'a1b2c3d4-e5f6-4a8b-9c0d-1e2f3a4b5c6d' };
       const result = await handleDebugTaskParsing(args);
 
       expect(result.content[0].type).toBe('text');
@@ -249,7 +249,7 @@ describe('debug-parsing.tool', () => {
       const { RooStorageDetector } = await import('../../../utils/roo-storage-detector.js');
       RooStorageDetector.detectStorageLocations = mockDetectStorageLocations;
 
-      const args: DebugTaskParsingArgs = { task_id: 'test-task-id' };
+      const args: DebugTaskParsingArgs = { task_id: 'a1b2c3d4-e5f6-4a8b-9c0d-1e2f3a4b5c6d' };
       const result = await handleDebugTaskParsing(args);
 
       expect(result.content[0].type).toBe('text');
@@ -270,7 +270,7 @@ describe('debug-parsing.tool', () => {
       const existsSyncMock = vi.mocked(existsSync);
       existsSyncMock.mockImplementation((path: any) => {
         if (typeof path === 'string') {
-          return path.includes('test-task-id') || path.includes('ui_messages.json');
+          return path.includes('a1b2c3d4-e5f6-4a8b-9c0d-1e2f3a4b5c6d') || path.includes('ui_messages.json');
         }
         return false;
       });
@@ -285,7 +285,7 @@ describe('debug-parsing.tool', () => {
 
       vi.mocked(fs.readFile).mockResolvedValue(JSON.stringify(mockMessages));
 
-      const args: DebugTaskParsingArgs = { task_id: 'test-task-id' };
+      const args: DebugTaskParsingArgs = { task_id: 'a1b2c3d4-e5f6-4a8b-9c0d-1e2f3a4b5c6d' };
       const result = await handleDebugTaskParsing(args);
 
       expect(result.content[0].type).toBe('text');
@@ -304,7 +304,7 @@ describe('debug-parsing.tool', () => {
       const { RooStorageDetector } = await import('../../../utils/roo-storage-detector.js');
       RooStorageDetector.detectStorageLocations = mockDetectStorageLocations;
       RooStorageDetector.analyzeConversation = vi.fn().mockResolvedValue({
-        taskId: 'test-task-id',
+        taskId: 'a1b2c3d4-e5f6-4a8b-9c0d-1e2f3a4b5c6d',
         parentTaskId: null,
         truncatedInstruction: 'Parent instruction',
         childTaskInstructionPrefixes: [
@@ -318,7 +318,7 @@ describe('debug-parsing.tool', () => {
       const existsSyncMock = vi.mocked(existsSync);
       existsSyncMock.mockImplementation((path: any) => {
         if (typeof path === 'string') {
-          return path.includes('test-task-id');
+          return path.includes('a1b2c3d4-e5f6-4a8b-9c0d-1e2f3a4b5c6d');
         }
         return false;
       });
@@ -326,7 +326,7 @@ describe('debug-parsing.tool', () => {
       const mockMessages = [{ role: 'user', content: 'Test message' }];
       vi.mocked(fs.readFile).mockResolvedValue(JSON.stringify(mockMessages));
 
-      const args: DebugTaskParsingArgs = { task_id: 'test-task-id' };
+      const args: DebugTaskParsingArgs = { task_id: 'a1b2c3d4-e5f6-4a8b-9c0d-1e2f3a4b5c6d' };
       const result = await handleDebugTaskParsing(args);
 
       expect(result.content[0].type).toBe('text');
