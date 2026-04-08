@@ -5,7 +5,7 @@
 import { promises as fs } from 'fs';
 import path from 'path';
 import os from 'os';
-import { exec } from 'child_process';
+import { exec } from 'child_process'; // kept for potential future use
 import { CallToolResult } from '@modelcontextprotocol/sdk/types.js';
 import { ConversationSkeleton } from '../types/conversation.js';
 import { RooStorageDetector } from './roo-storage-detector.js';

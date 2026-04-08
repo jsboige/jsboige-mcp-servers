@@ -207,3 +207,26 @@ server.on('exit', (code) => {
     logDebug(`Server exited with code ${code}`);
     process.exit(code || 0);
 });
+
+// #1188: Kill child server process when parent exits (SIGTERM, SIGINT, or uncaught exception)
+// Prevents zombie/orphan processes that linger after VS Code or Claude Code closes.
+function gracefulShutdown(signal) {
+    logDebug(`Received ${signal}, killing server process...`);
+    try {
+        server.kill('SIGTERM');
+        // Give it 3 seconds, then force kill
+        setTimeout(() => {
+            try { server.kill('SIGKILL'); } catch {}
+            process.exit(0);
+        }, 3000);
+    } catch (e) {
+        process.exit(0);
+    }
+}
+
+process.on('SIGTERM', () => gracefulShutdown('SIGTERM'));
+process.on('SIGINT', () => gracefulShutdown('SIGINT'));
+process.on('exit', () => {
+    // Synchronous cleanup on any exit
+    try { server.kill(); } catch {}
+});

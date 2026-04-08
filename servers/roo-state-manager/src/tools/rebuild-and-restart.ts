@@ -1,5 +1,5 @@
 import { CallToolResult } from '@modelcontextprotocol/sdk/types.js';
-import { exec } from 'child_process';
+import { exec, ExecOptions } from 'child_process';
 import * as path from 'path';
 import * as fs from 'fs/promises';
 import { fileURLToPath } from 'url';
@@ -9,27 +9,41 @@ import { GenericError, GenericErrorCode } from '../types/errors.js';
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
 
-async function runNpmBuild(mcpPath: string): Promise<string> {
+/** Default timeouts */
+const BUILD_TIMEOUT_MS = 120_000; // 120s for npm build
+const TOUCH_TIMEOUT_MS = 15_000;  // 15s for PowerShell touch
+
+/**
+ * Execute a command with timeout protection.
+ * Kills the child process if timeout expires, preventing zombie processes.
+ */
+function execWithTimeout(command: string, options: ExecOptions): Promise<string> {
     return new Promise((resolve, reject) => {
-        exec('npm run build', { cwd: mcpPath, windowsHide: true }, (error, stdout, stderr) => {
+        const child = exec(command, options, (error, stdout, stderr) => {
             if (error) {
-                return reject(new GenericError(`Build failed: ${error.message}`, GenericErrorCode.FILE_SYSTEM_ERROR));
+                const msg = (error as any).killed
+                    ? `Command timed out after ${options.timeout}ms: ${command}`
+                    : error.message;
+                return reject(new GenericError(msg, GenericErrorCode.FILE_SYSTEM_ERROR));
             }
-            resolve(stdout);
+            resolve(stdout?.toString() ?? '');
         });
+
+        // Safety net: ensure child is killed if process exits prematurely
+        const cleanup = () => { try { child.kill(); } catch {} };
+        process.on('exit', cleanup);
+        child.on('exit', () => { process.removeListener('exit', cleanup); });
     });
+}
+
+async function runNpmBuild(mcpPath: string): Promise<string> {
+    return execWithTimeout('npm run build', { cwd: mcpPath, windowsHide: true, timeout: BUILD_TIMEOUT_MS });
 }
 
 async function touchFile(filePath: string): Promise<string> {
     const command = `(Get-Item -LiteralPath "${filePath}").LastWriteTime = Get-Date`;
-    return new Promise((resolve, reject) => {
-        exec(`powershell.exe -Command "${command}"`, { windowsHide: true }, (error, stdout, stderr) => {
-            if (error) {
-                return reject(new GenericError(`Touch failed for ${filePath}: ${error.message}`, GenericErrorCode.FILE_SYSTEM_ERROR));
-            }
-            resolve(`Touched: ${filePath}`);
-        });
-    });
+    return execWithTimeout(`powershell.exe -Command "${command}"`, { windowsHide: true, timeout: TOUCH_TIMEOUT_MS })
+        .then(() => `Touched: ${filePath}`);
 }
 
 export const rebuildAndRestart = {
