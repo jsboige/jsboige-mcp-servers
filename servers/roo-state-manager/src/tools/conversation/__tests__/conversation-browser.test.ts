@@ -383,36 +383,26 @@ describe('conversation_browser', () => {
 	// ============================================================
 
 	describe('action: summarize (synthesis)', () => {
-		test('delegates to handleGetConversationSynthesis with correct args', async () => {
-			mockHandleGetConversationSynthesis.mockResolvedValue({
-				taskId: 'task-synth',
-				analysisEngineVersion: '3.0.0-phase3'
+			test('synthesis is disabled and returns SYNTHESIS_DISABLED error', async () => {
+				const result = await handleConversationBrowser(
+					{
+						action: 'summarize',
+						summarize_type: 'synthesis',
+						taskId: 'task-synth'
+					} as ConversationBrowserArgs,
+					mockCache,
+					mockEnsureCache,
+					undefined,
+					mockGetSkeleton,
+					mockFindChildren
+				);
+
+				expect(result.isError).toBe(true);
+				expect(getTextContent(result)).toContain('SYNTHESIS_DISABLED');
+				expect(mockHandleGetConversationSynthesis).not.toHaveBeenCalled();
 			});
 
-			const result = await handleConversationBrowser(
-				{
-					action: 'summarize',
-					summarize_type: 'synthesis',
-					taskId: 'task-synth'
-				} as ConversationBrowserArgs,
-				mockCache,
-				mockEnsureCache,
-				undefined,
-				mockGetSkeleton,
-				mockFindChildren
-			);
-
-			expect(mockHandleGetConversationSynthesis).toHaveBeenCalledWith(
-				expect.objectContaining({
-					taskId: 'task-synth',
-					outputFormat: 'json'
-				}),
-				mockGetSkeleton
-			);
-			expect(result.isError).toBeFalsy();
-		});
-
-		test('synthesis returns error when getConversationSkeleton is missing', async () => {
+		test('synthesis disabled even when getConversationSkeleton is missing', async () => {
 			const result = await handleConversationBrowser(
 				{
 					action: 'summarize',
@@ -427,10 +417,10 @@ describe('conversation_browser', () => {
 			);
 
 			expect(result.isError).toBe(true);
-			expect(getTextContent(result)).toContain('getConversationSkeleton');
+			expect(getTextContent(result)).toContain('SYNTHESIS_DISABLED');
 		});
 
-		test('synthesis handles LLM errors gracefully', async () => {
+		test('synthesis disabled — does not reach LLM error handling', async () => {
 			mockHandleGetConversationSynthesis.mockRejectedValue(
 				new Error('LLM API connection refused')
 			);
@@ -449,7 +439,9 @@ describe('conversation_browser', () => {
 			);
 
 			expect(result.isError).toBe(true);
-			expect(getTextContent(result)).toContain('LLM API connection refused');
+			expect(getTextContent(result)).toContain('SYNTHESIS_DISABLED');
+			// Verify the LLM error handler is never reached
+			expect(mockHandleGetConversationSynthesis).not.toHaveBeenCalled();
 		});
 
 		test('synthesis is listed in the summarize_type schema enum', async () => {
